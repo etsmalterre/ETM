@@ -100,7 +100,10 @@ export const mainNavigation: MainMenuItem[] = [
     title: 'Transferts',
     icon: Truck,
     href: '/transferts',
-    submenus: [],
+    submenus: [
+      { title: 'Rouleaux', href: '/transferts/rouleaux' },
+      { title: 'Fils', href: '/transferts/fils' },
+    ],
   },
   {
     id: 'fils',
@@ -215,6 +218,8 @@ export const routeTitles: Record<string, string> = {
   '/sous-traitants/gestion': 'Gestion',
   // Transferts
   '/transferts': 'Transferts',
+  '/transferts/rouleaux': 'Rouleaux',
+  '/transferts/fils': 'Fils',
   // Fils
   '/fils': 'Fils',
   '/fils/references': 'Références',

@@ -18,6 +18,7 @@ import { commandesClientRouter } from './routes/commandes-client.js'
 import { facturesRouter } from './routes/factures.js'
 import { devisRouter } from './routes/devis.js'
 import { expeditionsRouter } from './routes/expeditions.js'
+import { transfertsRouter } from './routes/transferts.js'
 import { clientsRouter } from './routes/clients.js'
 import { sousTraitantsRouter } from './routes/sous-traitants.js'
 import { etudesColorisRouter } from './routes/etudes-coloris.js'
@@ -104,6 +105,7 @@ app.use('/api/commandes-client', commandesClientRouter)
 app.use('/api/factures', facturesRouter)
 app.use('/api/devis', devisRouter)
 app.use('/api/expeditions', expeditionsRouter)
+app.use('/api/transferts', transfertsRouter)
 app.use('/api/clients', clientsRouter)
 app.use('/api/sous-traitants', sousTraitantsRouter)
 app.use('/api/etudes-coloris', etudesColorisRouter)

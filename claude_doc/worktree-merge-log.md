@@ -10,6 +10,41 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-24 — feat/transfert
+Transferts › Rouleaux + Fils — **the Transferts placeholder becomes two real screens**
+(`/transferts/rouleaux`, `/transferts/fils`), porting legacy `FEN_Bons_de_transfert` /
+`FEN_Gestion_d_un_bon_de_transfert` / `ETAT_Bon_de_transfert`. Data model (established by
+live introspection — `bon_transfert`/`piece_transfert` were undocumented): header
+`bon_transfert` (`type_matiere` 1=pièces / 2=fil discriminates the screens; `DATE` is a
+reserved word; `commentaire` is PLAIN text; `est_valide` is dead since 02/2025 — written 0,
+never shown) + polymorphic lines `piece_transfert` (`IDpiece_ecru`/`IDpiece_fini`/
+`IDstock_fil`, exactly one non-zero). "Magasins" are `sous_traitant` rows with **0 = Ets
+Malterre** (the actual `magasin` table is broken/unused); stock location =
+`stock_ecru.IDmagasin` / `stock_fini.IDmagasin` / `stock_fil.IDMagasin` (capital M). New
+API cluster `apps/api/src/routes/transferts.ts` (`/api/transferts`): infinite list, detail
+with enriched lines, create (defaults destination address to the sst's default; `IDadresse
+= 1` for Ets Malterre), update, delete, `available` stock at the source (TOP 200 most
+recent + server-side `?q=` — magasins hold 30k+ legacy rolls; stock_fil reads follow
+stock.ts's IS_WINDOWS split + terminé-by-prefix), bulk piece add / remove. **Stock moves
+immediately** (user-confirmed legacy semantics): add → roll/lot's magasin = destination;
+remove/delete → back to source; source/destination therefore lock (400 `magasins_locked`)
+once lines exist. PDF `BonTransfertPdf.tsx` renders the "Bordereau de livraison N° X"
+(per-référence bands with designation - composition — fini composition comes from the
+parent écru ref —, Coloris/Numéro/Lot/Poids/Métrage columns, gold grand-total; fils
+variant Lot/Référence/Coloris/Poids/Fournisseur). Email pair (`email-defaults` + `email`)
+targets the destination sous-traitant's contacts (`envoi_bl` → selected); no `envoi_email`
+audit row (the type_doc catalog has no "bon de transfert" entry). Web: shared
+`pages/transferts/TransfertsScreen.tsx` (Fiche master-detail) behind thin
+`TransfertsRouleaux`/`TransfertsFils` wrappers — piece cards with TM/Fini/Bobine icons +
+2e-choix badge, totals footer (pièces · kg · Ml), §31 in-screen picker drawer (TM/Fini
+tabs, search, checkbox multi-select, "Tout sélectionner", works in view mode since adds
+are immediate), sidebar Info/Adresse/Commentaire cards (magasin PopoverSelects use a +1 id
+offset so Ets Malterre id 0 survives the empty-sentinel), Nouveau dialog (source defaults
+Ets Malterre, transporteur defaults Divers), unsaved guard, ConfirmDialog, SendEmailDialog.
+Verified end-to-end on the dev DB: full add/remove/delete cycles for both kinds with
+magasin flips checked in-table, PDFs rendered against real legacy bons, CSV TAD & legacy
+"Transport" button intentionally omitted.
+
 ## 2026-07-24 — feat/cmd-client
 Clients › Commandes — **Affectation drawer UX overhaul + left-list color standard.**
 (1) Roll état pills: shared `EtatPill` gains a `variant` prop — `soft` (pastel, tables)

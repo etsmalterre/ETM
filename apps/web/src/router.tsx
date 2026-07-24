@@ -5,7 +5,6 @@ import { Dashboard } from '@/pages/Dashboard'
 import {
   ShoppingCart,
   FileText,
-  Truck,
   Box,
   FileBarChart,
   Palette,
@@ -33,8 +32,6 @@ function createPlaceholder(title: string, description: string, Icon: LucideIcon)
 // Fils placeholder (prévisions only — other Fils sub-screens are real)
 const FilsPrevisionsPage = createPlaceholder('Prévisions Fournisseurs', 'Prévisions d\'approvisionnement fournisseurs', FileText)
 
-// Legacy-menu top-level placeholders
-const TransfertsPage = createPlaceholder('Transferts', 'Transferts de stock entre sites et sous-traitants', Truck)
 // Références Finis — real screen (not a placeholder anymore)
 // Études coloris — real screen (not a placeholder anymore)
 const FinisTarifsPage = createPlaceholder('Tarifs Finis', 'Tarifs des produits finis', Euro)
@@ -61,6 +58,10 @@ import { ClientsGestion } from '@/pages/ClientsGestion'
 // Sous-traitants pages (real)
 import { SousTraitantsCommandes } from '@/pages/SousTraitantsCommandes'
 import { SousTraitantsGestion } from '@/pages/SousTraitantsGestion'
+
+// Transferts pages (real)
+import { TransfertsRouleaux } from '@/pages/TransfertsRouleaux'
+import { TransfertsFils } from '@/pages/TransfertsFils'
 
 // Qualité pages (real)
 import { QualiteSuiviLots } from '@/pages/QualiteSuiviLots'
@@ -112,7 +113,9 @@ export const router = createBrowserRouter([
       { path: 'sous-traitants/gestion', element: <SousTraitantsGestion /> },
 
       // Transferts
-      { path: 'transferts', element: <TransfertsPage /> },
+      { path: 'transferts', element: <Navigate to="/transferts/rouleaux" replace /> },
+      { path: 'transferts/rouleaux', element: <TransfertsRouleaux /> },
+      { path: 'transferts/fils', element: <TransfertsFils /> },
 
       // Fils
       { path: 'fils', element: <Navigate to="/fils/references" replace /> },
