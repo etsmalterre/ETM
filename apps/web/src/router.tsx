@@ -10,7 +10,6 @@ import {
   Euro,
   Droplet,
   TrendingUp,
-  FolderOpen,
   ClipboardCheck,
   BarChart3,
   type LucideIcon,
@@ -36,7 +35,6 @@ const FilsPrevisionsPage = createPlaceholder('Prévisions Fournisseurs', 'Prévi
 const FinisTarifsPage = createPlaceholder('Tarifs Finis', 'Tarifs des produits finis', Euro)
 const FinisColorisTeintPage = createPlaceholder('Coloris Teint', 'Coloris teints et ennoblissement', Droplet)
 const FinisPrevisionsPage = createPlaceholder('Prévisions Finis', 'Prévisions des produits finis', TrendingUp)
-const QualiteDossiersPage = createPlaceholder('Dossiers', 'Dossiers qualité', FolderOpen)
 const QualiteActionsPage = createPlaceholder('Actions', 'Actions qualité', ClipboardCheck)
 const QualiteAnalysePage = createPlaceholder('Analyse', 'Analyse qualité', BarChart3)
 const RapportsCommandesClientsPage = createPlaceholder('Commandes clients', 'Rapports sur les commandes clients', ShoppingCart)
@@ -63,6 +61,7 @@ import { TransfertsFils } from '@/pages/TransfertsFils'
 
 // Qualité pages (real)
 import { QualiteSuiviLots } from '@/pages/QualiteSuiviLots'
+import { QualiteDossiers } from '@/pages/QualiteDossiers'
 
 // Tombé Métier pages (real)
 import { TombeMetierReferences } from '@/pages/TombeMetierReferences'
@@ -147,7 +146,7 @@ export const router = createBrowserRouter([
       // Qualité
       { path: 'qualite', element: <Navigate to="/qualite/suivi-lots" replace /> },
       { path: 'qualite/suivi-lots', element: <QualiteSuiviLots /> },
-      { path: 'qualite/dossiers', element: <QualiteDossiersPage /> },
+      { path: 'qualite/dossiers', element: <QualiteDossiers /> },
       { path: 'qualite/actions', element: <QualiteActionsPage /> },
       { path: 'qualite/analyse', element: <QualiteAnalysePage /> },
 

@@ -10,6 +10,71 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-27 — feat/dossier-qualite
+Qualité › **Dossiers** (`/qualite/dossiers`) — the non-conformity dossier screen, porting
+legacy `FI_Dossier_QualitéV2`. **Classeur** layout (§39): left list of the 166 `dossier_qualite`
+rows (N° · client · défaut · date · référence, search, En cours / Terminé / **Tous** — Tous is
+the default because dossiers close as soon as the FNC round-trip completes, so the open bucket
+is empty nearly always and "En cours" would open on a blank list), center master tabs
+**Dossier** / **Traçabilité**, right sidebar tabs **Journal** / **Documents** / **FNC**, binary
+`terminé` status footer pill (§29.3). Left-list urgency (§41) keys on `echéance` with a
+screen-specific rule: a *missing* échéance is NOT urgent (unlike §30) because legacy leaves it
+null on almost every row; red = échéance atteinte/dépassée, amber = dans les 3 jours, each with
+its own counter pill next to the search. Gated on the existing `responsable_qualite` permission
+(description extended to cover this screen); without it the screen is read-only — no Modifier,
+no Nouveau, no status toggle.
+
+**Traçabilité tab** rebuilds the legacy bottom panel and is the substantive new capability:
+from the dossier's affectation it walks `stock_ecru` (by `numero`) back to the yarns and forward
+to the two subcontract orders — `IDordre_fabrication → asso_fil_of → stock_fil →
+ref_fil`/`colori_fil` + `ref_fil_commande → commande_fil` (fournisseur, n° commande, date, and
+the `ged` docs on that purchase order) for the **Fil** sub-tab; `IDref_commande_source` → lcsst
+`type=1` for **Tricotage**; `IDref_commande_affectation` → lcsst `type=2` (+ its `suivilot` lots
+and `ged` BLs) for **Ennoblissement**. `Type_Reference` is a *string* discriminator on the
+free-text `reference` column ('1' = numéro de pièce, '2' = lot de fil, anything else = none;
+`IDreference` is dead, always 0), surfaced as an Affectation type picker.
+
+**FNC model, reverse-engineered from the data**: `messageFNC` is what the responsable qualité
+reports; `reponseFNC` stores `"<résolution libellé>\r\n<commentaires>"` — the responding company
+picks a `resolution_qualite` row and types a note, and legacy concatenates the two. The FNC tab
+splits it into a Résolution picker + comment box on read and rejoins on write, so the column
+stays readable to the legacy app. `IDSociétéFNC` is a **1-based index into the non-ETM societes**
+(1 → Tricotage Malterre, 2 → Malterre Confection), not the `societe` PK — every existing row is
+`1` and legacy renders "Tricotage Malterre", the only mapping consistent with the data. Print
+renders a branded **Fiche de non-conformité** PDF (`lib/pdf/FncPdf.tsx`, ports `ETAT_FNC`):
+destinataire card + client/défaut/date metadata, observation block, pièces-affectées chips,
+réponse block (verdict line + free text, "En attente de réponse" when unanswered), signature
+rules. Email is the §18.A-bis placeholder for now.
+
+**HFSQL — new write pattern worth knowing.** `dossier_qualite` has six accented columns
+(`echéance`, `résolution`, `defaut_qualité`, `terminé`, `IDaction_qualité`, `IDSociétéFNC`) that
+the Linux bridge cannot name in SQL at all, but an **ASCII PK**. Rather than the
+`references-fil.ts` delete-the-whole-set shape, writes are **split**: the 13 ASCII columns take a
+normal named `UPDATE` on both platforms, and only a change to `terminé` / `echéance` /
+`IDSociétéFNC` triggers `patchAccented()` — named `SET` on Windows, and on Linux a full-row
+**positional rewrite keyed on the ASCII PK** (read via `queryB64Text` so accents survive →
+`DELETE WHERE IDdossier_qualite` → positional `INSERT` with the same PK so `doc_qualite` /
+`asso_lot_dq` FKs survive), with a best-effort restore if the insert throws. Reads are always
+`SELECT *` + a `readCol()` resolver that matches the real name, its accent-truncated twin, or a
+case-insensitive fallback (reserved-word `DATE` comes back uppercased). Column order and
+accent/NULL fidelity of the rewrite are guarded by `apps/api/src/scripts/test-dq-positional-rewrite.ts`
+(read → DELETE → positional INSERT → read back → field-by-field compare); it passes on the dev DB.
+CLAUDE.md's accented-identifier rule now documents this variant.
+
+**Known gap — Documents tab.** `doc_qualite` has an accented PK *and* an accented dossier FK
+(`IDdoc_qualité`, `IDdossier_qualité`), so on the Linux bridge there is no way to scope a query
+to one dossier, and a `SELECT *` would drag ~87 MB of photo blobs across it. The tab is fully
+functional on the Windows/ODBC path (list + inline viewer; images render via `<img
+object-contain>` on a dark backdrop instead of an unscaled iframe, since most attachments are
+phone photos); on the bridge the endpoint returns `{ documents: [], degraded: true }` and the tab
+says the attachments are only viewable in the legacy app rather than silently claiming there are
+none. Fixing it for prod needs a product decision: store new quality docs in `ged` under a
+dedicated `type_doc`, or add an ASCII FK column to `doc_qualite` in the WinDev analysis.
+
+Verified: `pnpm build` + `pnpm test` green; endpoints exercised against the live dev DB
+(list/detail/create/update/status/delete/traçabilité/documents/PDF, accents round-tripping); the
+§28 unsaved-changes guard manually exercised end-to-end (row switch pops the dialog, Annuler
+preserves the draft, Abandonner discards without writing, route navigation blocked).
 ## 2026-07-27 — feat/ref-diverses
 Divers › **Références** (`/divers/references`) — the `ref_divers` catalog, ported from the
 legacy `FI_Ref_Divers.wdw`. Divers is no longer a placeholder: the nav entry gains a

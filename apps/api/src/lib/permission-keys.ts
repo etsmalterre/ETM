@@ -188,7 +188,7 @@ export const PERMISSION_KEYS = [
     key: 'responsable_qualite',
     label: 'Responsable qualité',
     description:
-      'Autorise la validation / reprise des lots et la saisie des contrôles dans Qualité > Suivi des lots. Sans cette permission, l’écran est en lecture seule.',
+      'Autorise la validation / reprise des lots et la saisie des contrôles dans Qualité > Suivi des lots, ainsi que la création et la modification des dossiers de non-conformité dans Qualité > Dossiers. Sans cette permission, ces écrans sont en lecture seule.',
     category: 'Qualité',
   },
 ] as const
