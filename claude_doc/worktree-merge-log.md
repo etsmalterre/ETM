@@ -10,6 +10,68 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-27 — feat/gestion-client
+Clients > Gestion — **permission granularity, an add-a-coloris path for users who can't touch
+tarifs, and the first email-notification subsystem.**
+
+(1) **`gestion_coloris`.** New permission letting someone add a coloris to an *existing* client
+reference without `gestion_references` or `gestion_tarifs`. Surfaces as a single affordance:
+"Ajouter un coloris" at the foot of the §31 coloris drawer, shown only in edit mode and only
+when the user lacks `gestion_references` (that dialog already manages coloris). Opens a new
+`AddColorisDialog`. Because such a user can't set a tarif, the new rows must inherit the terms
+already in force — which only exist if the ref is uniform: every coloris on tarif standard, all
+sharing one `lst_tranche`. Otherwise it refuses with "Merci de demander à un utilisateur ayant
+le droit d'éditer les tarifs pour ajouter ce coloris." Mirrored server-side in
+`POST /clients/:id/references/:did/coloris` (gate skipped for `gestion_tarifs` holders, who can
+fix the tarif after). Archived `ref_client_colori` rows are revived rather than duplicated, and
+are included in the uniformity audit so a revived contract can't slip past it. `syncRccRows`
+now returns its add/remove delta.
+
+(2) **Five tab-scoped permissions** in Gestion client: `edit_client_info` (the whole Info tab,
+including the *Client interne* toggle), `edit_client_rapport_qualite` (the lone *Inclure
+rapports contrôle* toggle, grantable on its own), `edit_client_commercial`,
+`crud_client_contacts`, `crud_client_adresses`. Each tab gets `isEditing && <key>`, so without
+the right it renders exactly like view mode. `PUT /clients/:id` saves the whole client in one
+request, so instead of 403-ing the save each scope contributes its own SET clauses only when
+held — columns outside the caller's scopes are never named and keep their stored value (no
+read-back, no re-encode). New generic `requirePermission(req, res, key)`;
+`requireDeleteClientPermission` delegates to it. **Breaking for existing non-admins**: contacts,
+adresses, info and commercial editing were previously ungated — grant the new keys in
+Paramètres > Utilisateurs. `nom` stays ungated (it lives in the detail header, not a tab).
+
+(3) **Notifications — new subsystem.** Paramètres > Utilisateurs gains a **Notifications** tab.
+Deliberately *not* permissions: separate catalog (`lib/notification-keys.ts`), separate store
+(`lib/notifications.ts` → `data/notifications.json`), and **no admin bypass** — nobody receives
+an email they didn't opt into. Delivery reuses the `user-emails.json` mapping; the tab warns
+when a subscriber has no address on file. Two types: `notif_coloris_ajoute` (any coloris
+addition, via either the full *Référence client* dialog or the restricted button; removals made
+in the same save are reported as context) and `notif_coloris_refuse` (fires when a blocked user
+clicks *Prévenir le responsable* — an explicit action, not an automatic send on dialog open,
+which would fire on every idle open). The blocked dialog keeps its checklist live so the request
+names what's wanted, adds an optional note, and reports honestly: "un email a été envoyé au
+responsable" only when a send actually succeeded, else "personne n'est abonné" / "l'envoi a
+échoué". `lib/notify.ts` never throws — the addition sites fire `void notify(...)` after
+`res.json()` and short-circuit before any HFSQL read when there are no subscribers; only the
+request endpoint awaits, because its UI must report the real outcome.
+
+(4) **Branded HTML notification emails** (`lib/notification-email.ts`): navy header band with the
+gold "M" badge and MPS / ETS MALTERRE lockup, a 3px accent rule (gold = info, amber = alert),
+label/value detail table, optional gold-edged note block and amber callout. Tables + inline
+styles only, `cid:` logo, no external assets. HTML and its text/plain twin render from one
+content object so they can't drift. `sendMail` gained `bodyHtml` — it previously *generated* the
+HTML part from the plain text and could not render this — and no longer drops inline images when
+there's no signature (this template carries a cid logo with no signature). `gmail.test.ts`
+updated: the "drops inline images when the signature is absent" assertion encoded the old
+contract and was replaced by two tests plus a `bodyHtml` test. `src/scripts/dump-notification-emails.ts`
+renders every notification to standalone HTML for offline review — no DB, no Gmail. The design is
+now an ecosystem skill, `malterre_email_report` in `etsmalterre/my_skills`; keep the two in sync.
+
+(5) **Info tab cleanup.** Removed the Téléphone / Fax / % AJEOL rows (the draft still round-trips
+the stored values, so a save never blanks those columns). `KVText`'s edit input widened 200 →
+220px to line up with `PopoverSelect` / `SearchableCombobox` at `size="sm"` (§11bis), so every
+row in Général and Facturation shares one column. `TogglePill`'s disabled state no longer reacts
+to hover and dims its label — a read-only toggle that lit up under the cursor read as clickable
+and silently swallowed the click.
 ## 2026-07-27 — feat/dossier-qualite
 Qualité › **Dossiers** (`/qualite/dossiers`) — the non-conformity dossier screen, porting
 legacy `FI_Dossier_QualitéV2`. **Classeur** layout (§39): left list of the 166 `dossier_qualite`

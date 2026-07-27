@@ -27,11 +27,14 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
 import { IS_WINDOWS, esc } from '../lib/sst-shared.js'
 import { userHasPermission } from '../lib/permissions.js'
+import type { PermissionKey } from '../lib/permission-keys.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
+import { notify } from '../lib/notify.js'
+import { subscribersOf } from '../lib/notifications.js'
 
 export const clientsRouter: RouterType = Router()
 
@@ -378,34 +381,56 @@ clientsRouter.post('/', async (req: Request, res: Response) => {
 })
 
 // PUT /api/clients/:id — update master-data fields. Never names archivé/bloqué.
+//
+// The screen saves the whole client in one shot, but its fields belong to three
+// independently-granted scopes (Info tab / the lone "Inclure rapports contrôle"
+// toggle / Commercial tab). Rather than 403 the whole save — which would break
+// a user who legitimately only edited contacts — each scope contributes its SET
+// clauses only when the caller holds it. Columns outside the caller's scopes are
+// simply not named, so they keep their stored value (no read-back, no re-encode).
 clientsRouter.put('/:id', async (req: Request, res: Response) => {
   try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const parsed = clientBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const b = parsed.data
 
-    const sets = [
-      `nom = ${sqlText(b.nom)}`,
-      `tel = ${sqlText(b.tel)}`,
-      `fax = ${sqlText(b.fax)}`,
-      `num_tva = ${sqlText(b.num_tva)}`,
-      `compte = ${sqlText(b.compte)}`,
-      `commentaire = ${sqlText(b.commentaire)}`,
-      `journal_commercial = ${sqlText(b.journal_commercial)}`,
-      `pct_remise = ${floatOf(b.pct_remise)}`,
-      `pct_ajeol = ${floatOf(b.pct_ajeol)}`,
-      `IDtva = ${intOf(b.IDtva)}`,
-      `IDmode_paiement = ${intOf(b.IDmode_paiement)}`,
-      `IDecheance = ${intOf(b.IDecheance)}`,
-      `IDcode_comptable = ${intOf(b.IDcode_comptable)}`,
-      `IDsecteur_activite = ${intOf(b.IDsecteur_activite)}`,
-      `IDactivite = ${intOf(b.IDactivite)}`,
-      `client_interne = ${flag(b.client_interne)}`,
-      `inclureRapportQualite = ${flag(b.inclureRapportQualite)}`,
-      `dernier_contact = '${dateDigitsOnly(b.dernier_contact)}'`,
-    ]
+    const admin = isEffectiveAdmin(req)
+    const [canInfo, canRapportQualite, canCommercial] = await Promise.all([
+      userHasPermission(req.userId, admin, 'edit_client_info'),
+      userHasPermission(req.userId, admin, 'edit_client_rapport_qualite'),
+      userHasPermission(req.userId, admin, 'edit_client_commercial'),
+    ])
+
+    // `nom` lives in the detail header, not in a permission-scoped tab.
+    const sets = [`nom = ${sqlText(b.nom)}`]
+    if (canInfo) {
+      sets.push(
+        `tel = ${sqlText(b.tel)}`,
+        `fax = ${sqlText(b.fax)}`,
+        `num_tva = ${sqlText(b.num_tva)}`,
+        `compte = ${sqlText(b.compte)}`,
+        `commentaire = ${sqlText(b.commentaire)}`,
+        `pct_remise = ${floatOf(b.pct_remise)}`,
+        `pct_ajeol = ${floatOf(b.pct_ajeol)}`,
+        `IDtva = ${intOf(b.IDtva)}`,
+        `IDmode_paiement = ${intOf(b.IDmode_paiement)}`,
+        `IDecheance = ${intOf(b.IDecheance)}`,
+        `IDcode_comptable = ${intOf(b.IDcode_comptable)}`,
+        `IDsecteur_activite = ${intOf(b.IDsecteur_activite)}`,
+        `IDactivite = ${intOf(b.IDactivite)}`,
+        `client_interne = ${flag(b.client_interne)}`,
+      )
+    }
+    if (canRapportQualite) sets.push(`inclureRapportQualite = ${flag(b.inclureRapportQualite)}`)
+    if (canCommercial) {
+      sets.push(
+        `journal_commercial = ${sqlText(b.journal_commercial)}`,
+        `dernier_contact = '${dateDigitsOnly(b.dernier_contact)}'`,
+      )
+    }
     await query(`UPDATE client SET ${sets.join(', ')} WHERE IDclient = ${id}`)
     res.json({ ok: true })
   } catch (err) {
@@ -416,19 +441,24 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
 
 // ── Delete / archive (permission-gated: delete_client) ──
 
-/** 401/403 guard shared by DELETE and the archive endpoints. Returns true when
- *  the request may proceed (response already sent otherwise). */
-async function requireDeleteClientPermission(req: Request, res: Response): Promise<boolean> {
+/** 401/403 guard for a permission-gated route. Returns true when the request
+ *  may proceed (the response is already sent otherwise). */
+async function requirePermission(req: Request, res: Response, key: PermissionKey): Promise<boolean> {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return false
   }
-  const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'delete_client')
+  const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), key)
   if (!allowed) {
-    res.status(403).json({ error: 'permission denied: delete_client' })
+    res.status(403).json({ error: `permission denied: ${key}` })
     return false
   }
   return true
+}
+
+/** 401/403 guard shared by DELETE and the archive endpoints. */
+async function requireDeleteClientPermission(req: Request, res: Response): Promise<boolean> {
+  return requirePermission(req, res, 'delete_client')
 }
 
 /** A client with commandes or marchandise (client-owned finished rolls) can
@@ -1003,23 +1033,34 @@ async function rccColorisColumn(IDref_fini: number): Promise<'IDref_fini_colori'
 }
 
 /** Reconcile the designation's ref_client_colori rows against the wanted catalog
- *  coloris ids: unarchive returning ones, archive removed ones, insert new ones. */
-async function syncRccRows(did: number, col: 'IDref_fini_colori' | 'IDcolori_ecru', wantedIds: number[]): Promise<void> {
+ *  coloris ids: unarchive returning ones, archive removed ones, insert new ones.
+ *  Returns the delta so the caller can fire the notif_coloris_ajoute email. */
+async function syncRccRows(
+  did: number,
+  col: 'IDref_fini_colori' | 'IDcolori_ecru',
+  wantedIds: number[],
+): Promise<{ added: number[]; removed: number[] }> {
   const existing = await readRccRows(did)
   const wanted = new Set(wantedIds)
+  const added: number[] = []
+  const removed: number[] = []
   for (const row of existing) {
     const rowCol: 'IDref_fini_colori' | 'IDcolori_ecru' = row.IDref_fini_colori > 0 ? 'IDref_fini_colori' : 'IDcolori_ecru'
     const colorisId = rowCol === 'IDref_fini_colori' ? row.IDref_fini_colori : row.IDcolori_ecru
     const isWanted = rowCol === col && wanted.has(colorisId)
     if (isWanted) {
       wanted.delete(colorisId)
-      if (row.archive === 1) await setRccArchive(row, 0)
+      // An archived row coming back is an addition from the user's point of view.
+      if (row.archive === 1) { await setRccArchive(row, 0); added.push(colorisId) }
     } else if (row.archive === 0) {
       await setRccArchive(row, 1)
+      removed.push(colorisId)
     }
   }
+  if (wanted.size === 0) return { added, removed }
   let pk = await nextPk('ref_client_colori', 'IDref_client_colori')
   for (const colorisId of wanted) {
+    added.push(colorisId)
     await insertRccPositional({
       IDref_client_colori: pk++,
       IDdesignation_client: did,
@@ -1034,6 +1075,7 @@ async function syncRccRows(did: number, col: 'IDref_fini_colori' | 'IDcolori_ecr
       prevision: 0,
     })
   }
+  return { added, removed }
 }
 
 /** Reconcile the hidden "Reference Associée" child rows (caché=1) of a parent
@@ -1139,9 +1181,10 @@ clientsRouter.post('/:id/references', async (req: Request, res: Response) => {
       nowDateTime(),
     )
     const col = await rccColorisColumn(b.IDref_fini)
-    await syncRccRows(newDid, col, b.coloris)
+    const delta = await syncRccRows(newDid, col, b.coloris)
     if (b.IDref_fini > 0 && b.associees.length > 0) await syncAssociees(id, newDid, '', b.associees)
     res.status(201).json({ IDdesignation_client: newDid })
+    void notifyColorisAjoute({ userId: req.userId, clientId: id, did: newDid, col, ...delta, lstTranche: DEFAULT_TRANCHE_IDX.join(',') })
   } catch (err) {
     console.error('Error creating client reference:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -1188,13 +1231,335 @@ clientsRouter.put('/:id/references/:did', async (req: Request, res: Response) =>
     }
 
     const col = await rccColorisColumn(b.IDref_fini)
-    await syncRccRows(did, col, b.coloris)
+    const delta = await syncRccRows(did, col, b.coloris)
     // Always reconcile (deletes unlinked hidden children when the user
     // unchecks a ref or switches the designation to a TM/écru ref).
     await syncAssociees(id, did, original.associee, b.IDref_fini > 0 ? b.associees : [])
     res.json({ ok: true })
+    void notifyColorisAjoute({ userId: req.userId, clientId: id, did, col, ...delta, lstTranche: DEFAULT_TRANCHE_IDX.join(',') })
   } catch (err) {
     console.error('Error updating client reference:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** Catalog coloris ids selectable for a client reference, in whichever rcc
+ *  column applies (mirrors /commandes-client/lookups/colori-fini | colori-ecru). */
+async function catalogColorisIds(
+  IDref_fini: number,
+  IDref_ecru: number,
+  col: 'IDref_fini_colori' | 'IDcolori_ecru',
+): Promise<Set<number>> {
+  if (col === 'IDref_fini_colori') {
+    const rows = await query<Record<string, unknown>>(
+      `SELECT IDref_fini_colori FROM ref_fini_colori WHERE IDref_fini = ${IDref_fini}`,
+    )
+    return new Set(rows.map((r) => numOf(r.IDref_fini_colori)))
+  }
+  // Wash coloris hang off the écru ref — the designation's own one (TM ref) or
+  // the one behind the fini ref (avec_teinture = 0).
+  let idEcru = IDref_ecru
+  if (idEcru <= 0 && IDref_fini > 0) {
+    const rows = await query<Record<string, unknown>>(`SELECT IDref_ecru FROM ref_fini WHERE IDref_fini = ${IDref_fini}`)
+    idEcru = numOf(rows[0]?.IDref_ecru)
+  }
+  if (idEcru <= 0) return new Set()
+  const rows = await query<Record<string, unknown>>(`SELECT IDcolori_ecru FROM colori_ecru WHERE IDref_ecru = ${idEcru}`)
+  return new Set(rows.map((r) => numOf(r.IDcolori_ecru)))
+}
+
+/** Which coloris catalog an rcc row points at (dye vs wash). */
+function rccRowColumn(r: RccRow): 'IDref_fini_colori' | 'IDcolori_ecru' {
+  return r.IDref_fini_colori > 0 ? 'IDref_fini_colori' : 'IDcolori_ecru'
+}
+function rccRowColorisId(r: RccRow): number {
+  return r.IDref_fini_colori > 0 ? r.IDref_fini_colori : r.IDcolori_ecru
+}
+
+/** Refusal shown to a gestion_coloris-only user when the ref's existing coloris
+ *  don't share one set of standard terms to copy onto the new one. */
+const COLORIS_TERMS_MISMATCH =
+  'Merci de demander à un utilisateur ayant le droit d’éditer les tarifs pour ajouter ce coloris.'
+
+// ── Coloris notifications (notif_coloris_ajoute / notif_coloris_refuse) ──
+// Everything below runs AFTER the response has been sent and is wrapped so a
+// failure can never surface to the caller — see lib/notify.ts.
+
+const TRANCHE_ROLL_LABEL = ['< 1', '1', '2', '3', '4', '5', '10', '15', '30']
+
+/** "< 1 · 1 · 2 · 3 · 4 · 5 · 10 rouleaux" for an rcc lst_tranche. */
+function trancheSummaryFr(lstTranche: string): string {
+  const labels = parseLstTrancheIdx(lstTranche).map((i) => TRANCHE_ROLL_LABEL[i]).filter(Boolean)
+  return labels.length === 0 ? '—' : `${labels.join(' · ')} rouleaux`
+}
+
+/** Display name of the user whose action triggered a notification. */
+async function actorName(userId: number | undefined): Promise<string> {
+  if (userId === undefined) return 'Un utilisateur'
+  try {
+    const rows = await query<Record<string, unknown>>(
+      `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${userId}`,
+    )
+    const fixed = await fixEncoding(rows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
+    const name = [strOf(fixed[0]?.prenom), strOf(fixed[0]?.nom)].filter(Boolean).join(' ').trim()
+    return name || `Utilisateur #${userId}`
+  } catch {
+    return `Utilisateur #${userId}`
+  }
+}
+
+interface ColorisNotifContext {
+  clientNom: string
+  refLabel: string
+  labelOf: (id: number) => string
+}
+
+/** Resolve the human labels a coloris notification needs (client, référence,
+ *  coloris names) in the rcc column that applies. */
+async function colorisNotifContext(
+  clientId: number,
+  did: number,
+  col: 'IDref_fini_colori' | 'IDcolori_ecru',
+  ids: number[],
+): Promise<ColorisNotifContext> {
+  const [clientRows, desigRows] = await Promise.all([
+    query<Record<string, unknown>>(`SELECT IDclient, nom FROM client WHERE IDclient = ${clientId}`),
+    query<Record<string, unknown>>(`SELECT * FROM designation_client WHERE IDdesignation_client = ${did}`),
+  ])
+  const clientFixed = await fixEncoding(clientRows, 'client', 'IDclient', ['nom'])
+  const clientNom = strOf(clientFixed[0]?.nom) ?? `Client #${clientId}`
+
+  let refLabel = `Référence #${did}`
+  if (desigRows.length > 0) {
+    const ref = normalizeDesignationRow(desigRows[0])
+    const interne = ref.IDref_fini > 0
+      ? (await mapRefFini([ref.IDref_fini])).get(ref.IDref_fini)?.reference
+      : (await mapRefEcruFull([ref.IDref_ecru])).get(ref.IDref_ecru)?.reference
+    refLabel = [ref.designation || `#${did}`, interne ? `(${interne})` : ''].filter(Boolean).join(' ')
+  }
+
+  const labels = col === 'IDref_fini_colori'
+    ? await mapSimpleRef('ref_fini_colori', 'IDref_fini_colori', ids)
+    : await mapSimpleRef('colori_ecru', 'IDcolori_ecru', ids)
+  return { clientNom, refLabel, labelOf: (id) => labels.get(id) || `#${id}` }
+}
+
+/** Fire-and-forget: someone added coloris to a client reference. */
+async function notifyColorisAjoute(args: {
+  userId?: number
+  clientId: number
+  did: number
+  col: 'IDref_fini_colori' | 'IDcolori_ecru'
+  added: number[]
+  removed: number[]
+  lstTranche: string
+}): Promise<void> {
+  try {
+    if (args.added.length === 0) return
+    // Early-out before touching HFSQL — with no subscriber there is nothing to
+    // build, and this runs on every reference save.
+    if ((await subscribersOf('notif_coloris_ajoute')).length === 0) return
+
+    const ctx = await colorisNotifContext(args.clientId, args.did, args.col, [...args.added, ...args.removed])
+    const who = await actorName(args.userId)
+    const plural = args.added.length > 1 ? 'coloris ont été ajoutés' : 'coloris a été ajouté'
+    const rows = [
+      { label: 'Client', value: ctx.clientNom },
+      { label: 'Référence', value: ctx.refLabel },
+      { label: 'Coloris ajoutés', value: args.added.map(ctx.labelOf).join(', ') },
+      { label: 'Tranches appliquées', value: trancheSummaryFr(args.lstTranche) },
+    ]
+    if (args.removed.length > 0) {
+      rows.push({ label: 'Retirés en même temps', value: args.removed.map(ctx.labelOf).join(', ') })
+    }
+    await notify('notif_coloris_ajoute', {
+      subject: `Coloris ajouté - ${ctx.clientNom} - ${ctx.refLabel}`,
+      content: {
+        title: 'Coloris ajouté',
+        tone: 'info',
+        intro: `${args.added.length} ${plural} à une référence client par **${who}**.`,
+        rows,
+      },
+      actingUserId: args.userId,
+      actingUserName: who,
+    })
+  } catch (err) {
+    console.error('notifyColorisAjoute failed:', err)
+  }
+}
+
+const addColorisBody = z.object({
+  coloris: z.array(z.number().int().positive()).min(1).max(500),
+})
+
+// POST /api/clients/:id/references/:did/coloris — add coloris to an EXISTING
+// client reference without touching the reference itself. Entry point for the
+// `gestion_coloris` permission: a user allowed to extend a ref's coloris list
+// while managing neither references nor tarifs.
+//
+// Such a user can't set a tarif, so the new rows must inherit the terms already
+// in force — which only exists if the ref is uniform: every coloris on tarif
+// standard, all sharing the same visible tranches (lst_tranche). Otherwise
+// there is no single "same terms" to copy and we refuse, pointing at someone
+// who can edit tarifs. Callers holding gestion_tarifs skip the gate (they can
+// set the tarif afterwards).
+clientsRouter.post('/:id/references/:did/coloris', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const admin = isEffectiveAdmin(req)
+    const [allowedColoris, allowedRefs, allowedTarifs] = await Promise.all([
+      userHasPermission(req.userId, admin, 'gestion_coloris'),
+      userHasPermission(req.userId, admin, 'gestion_references'),
+      userHasPermission(req.userId, admin, 'gestion_tarifs'),
+    ])
+    if (!allowedColoris && !allowedRefs) { res.status(403).json({ error: 'permission denied: gestion_coloris' }); return }
+    const id = parseInt(req.params.id, 10)
+    const did = parseInt(req.params.did, 10)
+    if (isNaN(id) || isNaN(did)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = addColorisBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+
+    const rows = await query<Record<string, unknown>>(
+      `SELECT * FROM designation_client WHERE IDdesignation_client = ${did} AND IDclient = ${id}`,
+    )
+    if (rows.length === 0) { res.status(404).json({ error: 'Reference not found' }); return }
+    const ref = normalizeDesignationRow(rows[0])
+    if (ref.archive === 1) { res.status(404).json({ error: 'Reference not found' }); return }
+
+    const col = await rccColorisColumn(ref.IDref_fini)
+    const catalog = await catalogColorisIds(ref.IDref_fini, ref.IDref_ecru, col)
+    const wanted = [...new Set(parsed.data.coloris)].filter((c) => catalog.has(c))
+    if (wanted.length === 0) { res.status(400).json({ error: 'Aucun coloris valide pour cette référence' }); return }
+
+    const existing = await readRccRows(did)
+    const active = existing.filter((r) => r.archive === 0)
+    const alreadyLinked = new Set(active.filter((r) => rccRowColumn(r) === col).map(rccRowColorisId))
+    const toAdd = wanted.filter((c) => !alreadyLinked.has(c))
+    if (toAdd.length === 0) { res.json({ ok: true, added: 0 }); return }
+
+    // Unchecking a coloris archives its rcc row (tarif linkage intact) — revive
+    // that row instead of inserting a duplicate.
+    const reviveByColoris = new Map<number, RccRow>()
+    for (const r of existing) {
+      if (r.archive === 1 && rccRowColumn(r) === col && toAdd.includes(rccRowColorisId(r))) {
+        reviveByColoris.set(rccRowColorisId(r), r)
+      }
+    }
+
+    let lstTranche = DEFAULT_TRANCHE_IDX.join(',')
+    // Rows whose terms the new coloris must match (revived ones included — they
+    // come back with their old tarif and would break the ref's uniformity).
+    const audited = [...active, ...reviveByColoris.values()]
+    const signatures = new Set(audited.map((r) => parseLstTrancheIdx(r.lst_tranche).join(',')))
+
+    if (!allowedTarifs) {
+      const modes = await fetchTarifModes(audited.map((r) => ({ id: r.IDref_client_colori, contrat: r.contrat })))
+      const allStandard = audited.every((r) => (modes.get(r.IDref_client_colori)?.tarif_mode ?? 'standard') === 'standard')
+      if (!allStandard || signatures.size > 1) {
+        res.status(403).json({ error: 'tarifs_non_uniformes', message: COLORIS_TERMS_MISMATCH })
+        return
+      }
+    }
+    // Copy the ref's shared tranches when they're unanimous; otherwise (only
+    // reachable with gestion_tarifs) fall back to the standard 0..6 default.
+    if (signatures.size === 1) lstTranche = [...signatures][0]
+
+    let pk = 0
+    for (const colorisId of toAdd) {
+      const revive = reviveByColoris.get(colorisId)
+      if (revive) { await setRccArchive(revive, 0); continue }
+      if (pk === 0) pk = await nextPk('ref_client_colori', 'IDref_client_colori')
+      await insertRccPositional({
+        IDref_client_colori: pk++,
+        IDdesignation_client: did,
+        IDref_fini_colori: col === 'IDref_fini_colori' ? colorisId : 0,
+        IDcolori_ecru: col === 'IDcolori_ecru' ? colorisId : 0,
+        lst_tranche: lstTranche,
+        contrat: 0,
+        IDphoto_produit: 0,
+        archive: 0,
+        prevision: 0,
+      })
+    }
+    res.status(201).json({ ok: true, added: toAdd.length })
+    void notifyColorisAjoute({ userId: req.userId, clientId: id, did, col, added: toAdd, removed: [], lstTranche })
+  } catch (err) {
+    console.error('Error adding client reference coloris:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const colorisDemandeBody = z.object({
+  coloris: z.array(z.number().int().positive()).max(500).default([]),
+  note: z.string().max(1000).default(''),
+})
+
+// POST /api/clients/:id/references/:did/coloris/demande — "Prévenir le
+// responsable" from the blocked Ajouter-un-coloris dialog.
+//
+// Deliberately an explicit user action rather than an automatic email on the
+// rejection: the dialog blocks client-side, so an automatic send would fire
+// every time someone merely opened it. One click = one email, and the
+// requester's note tells the recipient what is actually wanted.
+//
+// Unlike the other notification call sites this one AWAITS the send, because
+// the UI only claims an email went out when one actually did.
+clientsRouter.post('/:id/references/:did/coloris/demande', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const admin = isEffectiveAdmin(req)
+    const [allowedColoris, allowedRefs] = await Promise.all([
+      userHasPermission(req.userId, admin, 'gestion_coloris'),
+      userHasPermission(req.userId, admin, 'gestion_references'),
+    ])
+    if (!allowedColoris && !allowedRefs) { res.status(403).json({ error: 'permission denied: gestion_coloris' }); return }
+    const id = parseInt(req.params.id, 10)
+    const did = parseInt(req.params.did, 10)
+    if (isNaN(id) || isNaN(did)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = colorisDemandeBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+
+    if ((await subscribersOf('notif_coloris_refuse')).length === 0) {
+      res.json({ subscribers: 0, notified: 0 })
+      return
+    }
+
+    const rows = await query<Record<string, unknown>>(
+      `SELECT * FROM designation_client WHERE IDdesignation_client = ${did} AND IDclient = ${id}`,
+    )
+    if (rows.length === 0) { res.status(404).json({ error: 'Reference not found' }); return }
+    const ref = normalizeDesignationRow(rows[0])
+    const col = await rccColorisColumn(ref.IDref_fini)
+    const ctx = await colorisNotifContext(id, did, col, parsed.data.coloris)
+    const who = await actorName(req.userId)
+
+    const detailRows = [
+      { label: 'Client', value: ctx.clientNom },
+      { label: 'Référence', value: ctx.refLabel },
+    ]
+    if (parsed.data.coloris.length > 0) {
+      detailRows.push({ label: 'Coloris souhaités', value: parsed.data.coloris.map(ctx.labelOf).join(', ') })
+    }
+    detailRows.push({ label: 'Demandé par', value: who })
+
+    const result = await notify('notif_coloris_refuse', {
+      subject: `Demande d’ajout de coloris - ${ctx.clientNom} - ${ctx.refLabel}`,
+      content: {
+        title: 'Demande d’ajout de coloris',
+        tone: 'alert',
+        intro:
+          `**${who}** souhaite ajouter un coloris à une référence client, mais l’opération est bloquée : ` +
+          'les coloris existants de cette référence n’ont pas tous le tarif standard avec les mêmes tranches.',
+        rows: detailRows,
+        note: parsed.data.note.trim() ? { label: 'Note du demandeur', value: parsed.data.note } : null,
+        callout: 'L’ajout doit être réalisé par un utilisateur ayant le droit d’éditer les tarifs.',
+      },
+      actingUserId: req.userId,
+      actingUserName: who,
+    })
+    res.json(result)
+  } catch (err) {
+    console.error('Error sending coloris request notification:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1590,6 +1955,7 @@ clientsRouter.post('/:id/marchandise/retour-stock', async (req: Request, res: Re
 
 clientsRouter.post('/:id/contacts', async (req: Request, res: Response) => {
   try {
+    if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
@@ -1606,6 +1972,7 @@ clientsRouter.post('/:id/contacts', async (req: Request, res: Response) => {
 
 clientsRouter.put('/:id/contacts/:cid', async (req: Request, res: Response) => {
   try {
+    if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
     const cid = parseInt(req.params.cid, 10)
     if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
@@ -1623,6 +1990,7 @@ clientsRouter.put('/:id/contacts/:cid', async (req: Request, res: Response) => {
 
 clientsRouter.delete('/:id/contacts/:cid', async (req: Request, res: Response) => {
   try {
+    if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
     const cid = parseInt(req.params.cid, 10)
     if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
     await query(`DELETE FROM contact WHERE IDcontact = ${cid}`)
@@ -1637,6 +2005,7 @@ clientsRouter.delete('/:id/contacts/:cid', async (req: Request, res: Response) =
 
 clientsRouter.post('/:id/adresses', async (req: Request, res: Response) => {
   try {
+    if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const { nom, adresse1, adresse2, adresse3, cp, ville, pays, commentaire, est_defaut_facturation, est_defaut_livraison } = req.body
@@ -1653,6 +2022,7 @@ clientsRouter.post('/:id/adresses', async (req: Request, res: Response) => {
 
 clientsRouter.put('/:id/adresses/:aid', async (req: Request, res: Response) => {
   try {
+    if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
     const aid = parseInt(req.params.aid, 10)
     if (isNaN(aid)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const { nom, adresse1, adresse2, adresse3, cp, ville, pays, commentaire, est_defaut_facturation, est_defaut_livraison } = req.body
@@ -1671,6 +2041,7 @@ clientsRouter.put('/:id/adresses/:aid', async (req: Request, res: Response) => {
 
 clientsRouter.delete('/:id/adresses/:aid', async (req: Request, res: Response) => {
   try {
+    if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
     const aid = parseInt(req.params.aid, 10)
     if (isNaN(aid)) { res.status(400).json({ error: 'Invalid ID' }); return }
     await query(`DELETE FROM adresse WHERE IDadresse = ${aid}`)

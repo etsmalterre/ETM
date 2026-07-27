@@ -87,6 +87,41 @@ export const PERMISSION_KEYS = [
     category: 'Gestion client',
   },
   {
+    key: 'edit_client_info',
+    label: 'Modifier la fiche client',
+    description:
+      'Autorise la modification des champs de l’onglet « Info » de Clients > Gestion — cartes Général (dont le bouton « Client interne »), Facturation et Commentaire. Sans ce droit, l’onglet reste en lecture seule même en mode édition.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'edit_client_rapport_qualite',
+    label: 'Inclure rapports contrôle',
+    description:
+      'Autorise le seul bouton « Inclure rapports contrôle (exp.) » de l’onglet « Info » de Clients > Gestion. Indépendant de « Modifier la fiche client » — peut être accordé seul.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'edit_client_commercial',
+    label: 'Suivi commercial',
+    description:
+      'Autorise la modification de l’onglet « Commercial » de Clients > Gestion : date de dernier contact et journal commercial.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'crud_client_contacts',
+    label: 'Gestion des contacts',
+    description:
+      'Autorise la création, la modification et la suppression des contacts dans l’onglet « Contacts » de Clients > Gestion.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'crud_client_adresses',
+    label: 'Gestion des adresses',
+    description:
+      'Autorise la création, la modification et la suppression des adresses dans l’onglet « Adresses » de Clients > Gestion.',
+    category: 'Gestion client',
+  },
+  {
     key: 'gestion_tarifs',
     label: 'Gestion des tarifs',
     description:
@@ -98,6 +133,13 @@ export const PERMISSION_KEYS = [
     label: 'Gestion des références',
     description:
       'Autorise la création et la modification des références client et de leurs coloris — dialogue « Référence client » et bouton « Ajouter une référence » — dans Clients > Gestion.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'gestion_coloris',
+    label: 'Gestion des coloris',
+    description:
+      'Autorise l’ajout d’un coloris à une référence client existante — bouton « Ajouter un coloris » du tiroir Coloris de Clients > Gestion — sans donner accès aux références ni aux tarifs. Le nouveau coloris reprend les conditions déjà en place ; l’ajout est refusé si les coloris existants n’ont pas tous le tarif standard avec les mêmes tranches.',
     category: 'Gestion client',
   },
   {

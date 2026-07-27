@@ -8,6 +8,7 @@ import {
   Search,
   Loader2,
   AlertCircle,
+  Check,
   MapPin,
   Mail,
   User,
@@ -238,7 +239,18 @@ export function ClientsGestion() {
   const canDelete = useHasPermission('delete_client')
   const canManageTarifs = useHasPermission('gestion_tarifs')
   const canManageRefs = useHasPermission('gestion_references')
+  // Narrow permission: add a coloris to an existing ref without the (broader)
+  // références / tarifs rights. Redundant when canManageRefs is granted.
+  const canManageColoris = useHasPermission('gestion_coloris')
   const canRetourMarchandise = useHasPermission('retour_marchandise')
+  // Sidebar tab scopes — each grants edit rights on one tab only. The lone
+  // "Inclure rapports contrôle" toggle is separate from the rest of the Info
+  // tab so it can be granted on its own.
+  const canEditInfo = useHasPermission('edit_client_info')
+  const canEditRapportQualite = useHasPermission('edit_client_rapport_qualite')
+  const canEditCommercial = useHasPermission('edit_client_commercial')
+  const canCrudContacts = useHasPermission('crud_client_contacts')
+  const canCrudAdresses = useHasPermission('crud_client_adresses')
   const { data: deletability } = useQuery<Deletability>({
     queryKey: ['client-deletability', selectedId],
     queryFn: () => apiFetch(`/clients/${selectedId}/deletability`),
@@ -378,10 +390,13 @@ export function ClientsGestion() {
           onPrint={() => setTarifsSelector('print')} onEmail={() => setTarifsSelector('email')} />}
         detail={<DetailMain client={detail ?? null} isLoading={detailLoading && selectedId !== null}
           hasSelection={selectedId !== null} isEditing={isEditing} canManageTarifs={canManageTarifs}
-          canManageRefs={canManageRefs} canRetourMarchandise={canRetourMarchandise} />}
+          canManageRefs={canManageRefs} canManageColoris={canManageColoris}
+          canRetourMarchandise={canRetourMarchandise} />}
         sidebar={selectedId !== null ? <DetailSidebar client={detail ?? null} isLoading={detailLoading}
           isEditing={isEditing} clientId={selectedId} onMutationSuccess={invalidateAll}
           onSubFormsDirtyChange={setSubFormsDirty} draft={draft} onPatch={patch}
+          canEditInfo={canEditInfo} canEditRapportQualite={canEditRapportQualite} canEditCommercial={canEditCommercial}
+          canCrudContacts={canCrudContacts} canCrudAdresses={canCrudAdresses}
           secteurs={secteurs} activites={activites} modesPaiement={modesPaiement} echeances={echeances} tvas={tvas} codesComptables={codesComptables} /> : null}
         sidebarTitle="Contacts & Adresses" hasSelection={selectedId !== null}
         onBack={() => guard.guardAction(() => { setIsEditing(false); setDraft(null); setSelectedId(null) })}
@@ -786,12 +801,15 @@ function TogglePill({ label, checked, disabled, onChange }: {
 }) {
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-border/60 bg-white shadow-sm">
-      <span className="text-xs font-medium">{label}</span>
+      <span className={cn('text-xs font-medium', disabled && 'text-muted-foreground')}>{label}</span>
+      {/* The hover tint is gated on !disabled: a read-only pill that still
+          lights up on hover reads as clickable and silently swallows the click. */}
       <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
         className={cn('relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
           'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-          'disabled:opacity-60 disabled:cursor-not-allowed',
-          checked ? 'bg-accent shadow-inner' : 'bg-zinc-300 hover:bg-zinc-400/80')}>
+          'disabled:opacity-50 disabled:cursor-not-allowed',
+          checked ? 'bg-accent shadow-inner' : 'bg-zinc-300',
+          !disabled && !checked && 'hover:bg-zinc-400/80')}>
         <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
           checked ? 'translate-x-[18px]' : 'translate-x-0.5')} />
       </button>
@@ -810,9 +828,9 @@ const MAIN_TABS = [
 ] as const
 type MainTab = (typeof MAIN_TABS)[number]['key']
 
-function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarifs, canManageRefs, canRetourMarchandise }: {
+function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarifs, canManageRefs, canManageColoris, canRetourMarchandise }: {
   client: ClientDetail | null; isLoading: boolean; hasSelection: boolean; isEditing: boolean; canManageTarifs: boolean
-  canManageRefs: boolean; canRetourMarchandise: boolean
+  canManageRefs: boolean; canManageColoris: boolean; canRetourMarchandise: boolean
 }) {
   const [activeTab, setActiveTab] = useState<MainTab>('references')
   // Land on Références (the client's main info) whenever the selection changes.
@@ -849,7 +867,7 @@ function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarif
           Références can host the §31 in-screen drawer with the shrink mechanic. */}
       <div className="flex-1 min-h-0 flex flex-col gap-2 pt-3 pb-1">
         {/* Commercial sub-views (tarif modes editable in edit mode, permission-gated) */}
-        {activeTab === 'references' && <ReferencesTab clientId={client.IDclient} isEditing={isEditing} canManageTarifs={canManageTarifs} canManageRefs={canManageRefs} />}
+        {activeTab === 'references' && <ReferencesTab clientId={client.IDclient} isEditing={isEditing} canManageTarifs={canManageTarifs} canManageRefs={canManageRefs} canManageColoris={canManageColoris} />}
         {activeTab === 'historique' && (
           <div className="flex-1 min-h-0 overflow-auto scrollbar-transparent px-1"><HistoriqueTab clientId={client.IDclient} /></div>
         )}
@@ -892,10 +910,14 @@ function InlineForm({ title, children, onSave, onCancel, isSaving }: { title: st
 
 type SidebarTab = 'info' | 'commercial' | 'contacts' | 'adresses'
 
-function DetailSidebar({ client, isLoading, isEditing, clientId, onMutationSuccess, onSubFormsDirtyChange, draft, onPatch, secteurs, activites, modesPaiement, echeances, tvas, codesComptables }: {
+function DetailSidebar({ client, isLoading, isEditing, clientId, onMutationSuccess, onSubFormsDirtyChange, draft, onPatch,
+  canEditInfo, canEditRapportQualite, canEditCommercial, canCrudContacts, canCrudAdresses,
+  secteurs, activites, modesPaiement, echeances, tvas, codesComptables }: {
   client: ClientDetail | null; isLoading: boolean; isEditing: boolean; clientId: number; onMutationSuccess: () => void
   onSubFormsDirtyChange: (dirty: boolean) => void
   draft: Draft | null; onPatch: (p: Partial<Draft>) => void
+  canEditInfo: boolean; canEditRapportQualite: boolean; canEditCommercial: boolean
+  canCrudContacts: boolean; canCrudAdresses: boolean
   secteurs: LookupLabel[]; activites: LookupLabel[]; modesPaiement: LookupLabel[]; echeances: LookupLabel[]; tvas: LookupLabel[]; codesComptables: LookupLabel[]
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('info')
@@ -929,11 +951,14 @@ function DetailSidebar({ client, isLoading, isEditing, clientId, onMutationSucce
         })}
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-transparent">
-        {activeTab === 'info' && <InfoTab client={client} isEditing={isEditing} draft={draft} onPatch={onPatch}
+        {/* Each tab gets its own permission scope — without it, edit mode renders
+            that tab exactly like view mode (mirrored server-side in clients.ts). */}
+        {activeTab === 'info' && <InfoTab client={client} isEditing={isEditing && canEditInfo}
+          canEditRapportQualite={isEditing && canEditRapportQualite} draft={draft} onPatch={onPatch}
           secteurs={secteurs} activites={activites} modesPaiement={modesPaiement} echeances={echeances} tvas={tvas} codesComptables={codesComptables} />}
-        {activeTab === 'commercial' && <CommercialTab client={client} isEditing={isEditing} draft={draft} onPatch={onPatch} />}
-        {activeTab === 'contacts' && <ContactsTab contacts={client.contacts} isEditing={isEditing} clientId={clientId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
-        {activeTab === 'adresses' && <AdressesTab adresses={client.adresses} isEditing={isEditing} clientId={clientId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
+        {activeTab === 'commercial' && <CommercialTab client={client} isEditing={isEditing && canEditCommercial} draft={draft} onPatch={onPatch} />}
+        {activeTab === 'contacts' && <ContactsTab contacts={client.contacts} isEditing={isEditing && canCrudContacts} clientId={clientId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
+        {activeTab === 'adresses' && <AdressesTab adresses={client.adresses} isEditing={isEditing && canCrudAdresses} clientId={clientId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
       </div>
     </div>
   )
@@ -965,9 +990,11 @@ function KVText({ label, value, edit, onChange, type = 'text' }: {
   return (
     <KVRow label={label}>
       {edit ? (
+        // w-[220px] matches PopoverSelect / SearchableCombobox size="sm"
+        // (mps_designer §11bis) so text inputs and dropdowns share one KV column.
         <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
           autoComplete="off" data-form-type="other" data-lpignore="true"
-          className="h-7 w-[200px] px-2 text-sm text-right rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+          className="h-7 w-[220px] px-2 text-sm text-right rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
       ) : (
         <span className="block truncate">{value?.trim() ? value : <span className="text-muted-foreground">—</span>}</span>
       )}
@@ -994,19 +1021,23 @@ function KVSelect({ label, value, edit, options, onChange, searchable }: {
   )
 }
 
-function InfoTab({ client, isEditing, draft, onPatch, secteurs, activites, modesPaiement, echeances, tvas, codesComptables }: {
-  client: ClientDetail; isEditing: boolean; draft: Draft | null; onPatch: (p: Partial<Draft>) => void
+function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, secteurs, activites, modesPaiement, echeances, tvas, codesComptables }: {
+  client: ClientDetail; isEditing: boolean
+  /** "Inclure rapports contrôle" is its own permission — editable even when the
+   *  rest of the tab is read-only, and read-only when the rest is editable. */
+  canEditRapportQualite: boolean
+  draft: Draft | null; onPatch: (p: Partial<Draft>) => void
   secteurs: LookupLabel[]; activites: LookupLabel[]; modesPaiement: LookupLabel[]; echeances: LookupLabel[]; tvas: LookupLabel[]; codesComptables: LookupLabel[]
 }) {
   const ed = isEditing && draft !== null
+  const edRapport = canEditRapportQualite && draft !== null
+  // tel / fax / pct_ajeol are still carried by the draft (so a save round-trips
+  // the stored values untouched) — they're just no longer surfaced here.
   const v = {
-    tel: ed ? draft!.tel : client.tel ?? '',
-    fax: ed ? draft!.fax : client.fax ?? '',
     num_tva: ed ? draft!.num_tva : client.num_tva ?? '',
     compte: ed ? draft!.compte : client.compte ?? '',
     commentaire: ed ? draft!.commentaire : client.commentaire ?? '',
     pct_remise: ed ? draft!.pct_remise : (client.pct_remise ? String(client.pct_remise) : ''),
-    pct_ajeol: ed ? draft!.pct_ajeol : (client.pct_ajeol ? String(client.pct_ajeol) : ''),
     IDtva: ed ? draft!.IDtva : client.IDtva,
     IDmode_paiement: ed ? draft!.IDmode_paiement : client.IDmode_paiement,
     IDecheance: ed ? draft!.IDecheance : client.IDecheance,
@@ -1014,20 +1045,18 @@ function InfoTab({ client, isEditing, draft, onPatch, secteurs, activites, modes
     IDsecteur_activite: ed ? draft!.IDsecteur_activite : client.IDsecteur_activite,
     IDactivite: ed ? draft!.IDactivite : client.IDactivite,
     client_interne: ed ? draft!.client_interne : !!client.client_interne,
-    inclureRapportQualite: ed ? draft!.inclureRapportQualite : !!client.inclureRapportQualite,
+    inclureRapportQualite: edRapport ? draft!.inclureRapportQualite : !!client.inclureRapportQualite,
   }
   return (
     <>
-      <InfoCard icon={<Briefcase className="h-4 w-4 text-accent" />} title="Général" isEditing={ed}>
-        <KVText label="Téléphone" value={v.tel} edit={ed} onChange={(x) => onPatch({ tel: x })} />
-        <KVText label="Fax" value={v.fax} edit={ed} onChange={(x) => onPatch({ fax: x })} />
+      {/* Général carries both scopes — the gold edit edge shows if either applies. */}
+      <InfoCard icon={<Briefcase className="h-4 w-4 text-accent" />} title="Général" isEditing={ed || edRapport}>
         <KVText label="Remise (%)" value={v.pct_remise} edit={ed} type="number" onChange={(x) => onPatch({ pct_remise: x })} />
-        <KVText label="% AJEOL" value={v.pct_ajeol} edit={ed} type="number" onChange={(x) => onPatch({ pct_ajeol: x })} />
         <KVSelect label="Secteur" value={v.IDsecteur_activite} edit={ed} options={secteurs} onChange={(id) => onPatch({ IDsecteur_activite: id })} searchable />
         <KVSelect label="Activité" value={v.IDactivite} edit={ed} options={activites} onChange={(id) => onPatch({ IDactivite: id })} searchable />
         <div className="space-y-2 pt-1">
           <TogglePill label="Client interne" checked={v.client_interne} disabled={!ed} onChange={(x) => onPatch({ client_interne: x })} />
-          <TogglePill label="Inclure rapports contrôle (exp.)" checked={v.inclureRapportQualite} disabled={!ed} onChange={(x) => onPatch({ inclureRapportQualite: x })} />
+          <TogglePill label="Inclure rapports contrôle (exp.)" checked={v.inclureRapportQualite} disabled={!edRapport} onChange={(x) => onPatch({ inclureRapportQualite: x })} />
         </div>
       </InfoCard>
 
@@ -1382,11 +1411,18 @@ function normSearch(s: string): string {
   return s.normalize('NFD').replace(COMBINING_MARKS, '').toLowerCase()
 }
 
-function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs }: { clientId: number; isEditing: boolean; canManageTarifs: boolean; canManageRefs: boolean }) {
+function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs, canManageColoris }: {
+  clientId: number; isEditing: boolean; canManageTarifs: boolean; canManageRefs: boolean; canManageColoris: boolean
+}) {
   // Without the gestion_references permission, edit mode behaves like view
   // mode on this tab: cards open the coloris drawer, no settings dialog,
   // no "Ajouter une référence".
   const canEditRefs = isEditing && canManageRefs
+  // gestion_coloris users get the one extra affordance they're entitled to:
+  // "Ajouter un coloris" in the drawer. Redundant when they can edit the ref
+  // outright (the settings dialog already manages the coloris list).
+  const canAddColoris = isEditing && !canManageRefs && canManageColoris
+  const [addColorisRefId, setAddColorisRefId] = useState<number | null>(null)
   const [tarif, setTarif] = useState<{ rccId: number; label: string } | null>(null)
   const [tarifMode, setTarifMode] = useState<{ coloris: RefColoris; label: string; duplicate?: boolean } | null>(null)
   // Ref-level settings dialog: { refId: null } = create, { refId: n } = edit.
@@ -1499,6 +1535,7 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs }: 
           <ColorisDrawer
             refItem={drawerRef}
             tarifEditable={isEditing && canManageTarifs}
+            onAddColoris={canAddColoris ? () => setAddColorisRefId(drawerRef.IDdesignation_client) : undefined}
             onClose={() => setDrawerRefId(null)}
             onOpenTarif={(c) => setTarif({ rccId: c.IDref_client_colori, label: `${drawerRef.client_ref} · ${c.label}` })}
             onOpenTarifMode={(c) => setTarifMode({ coloris: c, label: `${drawerRef.client_ref} · ${c.label}` })}
@@ -1512,6 +1549,12 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs }: 
           </Button>
         </div>
       )}
+      <AddColorisDialog
+        open={addColorisRefId !== null}
+        refItem={addColorisRefId !== null ? (data ?? []).find((r) => r.IDdesignation_client === addColorisRefId) ?? null : null}
+        clientId={clientId}
+        canManageTarifs={canManageTarifs}
+        onClose={() => setAddColorisRefId(null)} />
       <TarifDialog open={tarif !== null} onClose={() => setTarif(null)} clientId={clientId} rccId={tarif?.rccId ?? 0} label={tarif?.label ?? ''} />
       <TarifModeDialog open={tarifMode !== null} onClose={() => setTarifMode(null)} clientId={clientId} target={tarifMode} />
       <RefSettingsDialog open={settings !== null} existing={settingsExisting} clientId={clientId} onClose={() => setSettings(null)}
@@ -1524,9 +1567,11 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs }: 
 
 // ── Coloris drawer (§31 in-screen contained drawer, slides up under the ref list) ──
 
-function ColorisDrawer({ refItem, tarifEditable, onClose, onOpenTarif, onOpenTarifMode }: {
+function ColorisDrawer({ refItem, tarifEditable, onAddColoris, onClose, onOpenTarif, onOpenTarifMode }: {
   refItem: ClientReference
   tarifEditable: boolean
+  /** Provided only for gestion_coloris users (§ add-a-coloris permission) — opens AddColorisDialog. */
+  onAddColoris?: () => void
   onClose: () => void
   onOpenTarif: (c: RefColoris) => void
   onOpenTarifMode: (c: RefColoris) => void
@@ -1545,7 +1590,7 @@ function ColorisDrawer({ refItem, tarifEditable, onClose, onOpenTarif, onOpenTar
       <div className="flex-1 overflow-y-auto p-3 scrollbar-transparent">
         {refItem.coloris.length === 0 ? (
           <p className="text-sm text-muted-foreground italic">
-            Aucun coloris disponible pour cette référence{tarifEditable ? ' - ajoutez-en via le crayon de la référence' : ''}
+            Aucun coloris disponible pour cette référence{tarifEditable && !onAddColoris ? ' - ajoutez-en via le crayon de la référence' : ''}
           </p>
         ) : (
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-2">
@@ -1577,7 +1622,221 @@ function ColorisDrawer({ refItem, tarifEditable, onClose, onOpenTarif, onOpenTar
           </div>
         )}
       </div>
+      {onAddColoris && (
+        <div className="flex-shrink-0 p-2 border-t bg-zinc-200/50">
+          <Button variant="ghost" size="sm" className="w-full text-muted-foreground hover:text-foreground" onClick={onAddColoris}>
+            <Plus className="h-4 w-4 mr-1.5" />Ajouter un coloris
+          </Button>
+        </div>
+      )}
     </div>
+  )
+}
+
+// ── Ajouter un coloris (gestion_coloris) ───────────────────────────
+// Restricted path for users who may extend a ref's coloris list but can't edit
+// the reference or its tarifs. The new coloris has to inherit the terms already
+// in force, so the ref must be uniform: every coloris on tarif standard, all
+// sharing the same visible tranches. When it isn't, the dialog explains that a
+// tarif manager has to do it. Mirrored server-side in POST
+// /clients/:id/references/:did/coloris — this is UX, not the security boundary.
+
+/** Normalised, comparable form of an rcc lst_tranche ("" → the 0..6 default). */
+function trancheSignature(raw: string): string {
+  const idx = [...new Set(
+    String(raw ?? '').split(',').map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isInteger(n) && n >= 0 && n <= 8),
+  )].sort((a, b) => a - b)
+  return idx.length === 0 ? '0,1,2,3,4,5,6' : idx.join(',')
+}
+
+/** Human recap of a tranche signature, e.g. "< 1 · 1 · 2 · 3 · 4 · 5 · 10 rouleaux". */
+function trancheSummary(signature: string): string {
+  const labels = signature.split(',')
+    .map((s) => TRANCHE_NB_VALUES[parseInt(s, 10)])
+    .filter((v) => v !== undefined)
+    .map((v) => (v === 0 ? '< 1' : String(v)))
+  return labels.length === 0 ? '—' : `${labels.join(' · ')} rouleaux`
+}
+
+/** The single set of terms shared by every coloris of a ref, or null when they diverge. */
+function sharedStandardTerms(coloris: RefColoris[]): string | null {
+  if (coloris.length === 0) return '0,1,2,3,4,5,6'
+  if (coloris.some((c) => c.tarif_mode !== 'standard')) return null
+  const signatures = new Set(coloris.map((c) => trancheSignature(c.lst_tranche)))
+  return signatures.size === 1 ? [...signatures][0] : null
+}
+
+function AddColorisDialog({ open, refItem, clientId, canManageTarifs, onClose }: {
+  open: boolean
+  refItem: ClientReference | null
+  clientId: number
+  canManageTarifs: boolean
+  onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [checked, setChecked] = useState<Set<number>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+  // Blocked path: an explicit "Prévenir le responsable" click, never an
+  // automatic send on dialog open — one email per real request.
+  const [note, setNote] = useState('')
+  const [demande, setDemande] = useState<{ subscribers: number; notified: number } | null>(null)
+
+  const refId = refItem ? (refItem.IDref_fini > 0 ? refItem.IDref_fini : refItem.IDref_ecru) : 0
+  const isFini = (refItem?.IDref_fini ?? 0) > 0
+  const did = refItem?.IDdesignation_client ?? 0
+
+  useEffect(() => {
+    if (!open) return
+    setChecked(new Set())
+    setError(null)
+    setNote('')
+    setDemande(null)
+  }, [open, did])
+
+  const colorisQ = useQuery<Array<{ id?: number; IDcolori_ecru?: number; reference: string }>>({
+    queryKey: ['lookup-ref-coloris', isFini ? 'ennobli' : 'tm', refId],
+    queryFn: () => isFini
+      ? apiFetch(`/commandes-client/lookups/colori-fini?ref_fini=${refId}`)
+      : apiFetch(`/commandes-client/lookups/colori-ecru?ref_ecru=${refId}`),
+    enabled: open && refId > 0,
+  })
+
+  // Terms the new coloris will inherit. A tarif manager isn't blocked by a
+  // divergent ref — they can set the tarif afterwards.
+  const sharedTerms = refItem ? sharedStandardTerms(refItem.coloris) : null
+  const blocked = !canManageTarifs && sharedTerms === null
+
+  const linked = new Set((refItem?.coloris ?? []).map((c) => c.coloris_id).filter((x) => x > 0))
+  const available = (colorisQ.data ?? [])
+    .map((c) => ({ id: c.id ?? c.IDcolori_ecru ?? 0, label: c.reference }))
+    .filter((c) => c.id > 0 && !linked.has(c.id))
+
+  const demandeMut = useMutation({
+    mutationFn: () => apiFetch<{ subscribers: number; notified: number }>(
+      `/clients/${clientId}/references/${did}/coloris/demande`,
+      { method: 'POST', body: JSON.stringify({ coloris: [...checked], note: note.trim() }) },
+    ),
+    onSuccess: (r) => setDemande(r),
+    onError: () => setDemande({ subscribers: 0, notified: 0 }),
+  })
+
+  const saveMut = useMutation({
+    mutationFn: () => apiFetch(`/clients/${clientId}/references/${did}/coloris`, {
+      method: 'POST',
+      body: JSON.stringify({ coloris: [...checked] }),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['client-references', clientId] })
+      onClose()
+    },
+    onError: (e: unknown) => {
+      // The API re-checks the same rule; a 403 here means the ref diverged
+      // between load and save.
+      const status = (e as { status?: number } | null)?.status
+      setError(status === 403
+        ? 'Merci de demander à un utilisateur ayant le droit d’éditer les tarifs pour ajouter ce coloris.'
+        : e instanceof Error ? e.message : 'Erreur lors de l’enregistrement')
+    },
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={() => onClose()}>
+      <DialogContent className="max-w-md max-h-[85vh] flex flex-col" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Palette className="h-5 w-5 text-accent" />
+            Ajouter un coloris{refItem ? ` - ${refItem.client_ref}` : ''}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="mt-4 flex-1 min-h-0 overflow-y-auto scrollbar-transparent px-1 space-y-3">
+          {blocked ? (
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 text-amber-800">
+              <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold">
+                  Merci de demander à un utilisateur ayant le droit d’éditer les tarifs pour ajouter ce coloris.
+                </p>
+                <p className="text-[11px] mt-1 text-amber-800/80">
+                  Les coloris de cette référence n’ont pas tous le même tarif standard avec les mêmes tranches - il n’y a
+                  pas de conditions uniques à reprendre pour un nouveau coloris.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-border/60 bg-white shadow-sm">
+              <BadgeEuro className="h-3.5 w-3.5 text-accent flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold">Conditions appliquées</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Tarif standard · {trancheSummary(sharedTerms ?? '0,1,2,3,4,5,6')}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* The checklist stays live when blocked: picking the coloris is what
+              makes the request to the responsable actionable. */}
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              {blocked ? 'Coloris souhaités' : 'Coloris à ajouter'}
+              {available.length > 0 && ` (${[...checked].filter((id) => available.some((c) => c.id === id)).length}/${available.length})`}
+            </label>
+            <CheckList items={available}
+              isChecked={(id) => checked.has(id)}
+              onToggle={(id) => setChecked((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })}
+              emptyText="Tous les coloris du catalogue sont déjà attribués à cette référence"
+              isLoading={colorisQ.isLoading} />
+          </div>
+
+          {blocked && demande === null && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Note pour le responsable (facultatif)</label>
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
+                placeholder="Ex : commande client à saisir cette semaine"
+                className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
+            </div>
+          )}
+
+          {demande !== null && (
+            <div className={cn('flex items-start gap-2 px-3 py-2.5 rounded-lg border text-xs font-medium',
+              demande.notified > 0
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800'
+                : 'border-amber-500/30 bg-amber-500/10 text-amber-800')}>
+              {demande.notified > 0
+                ? <Check className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                : <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />}
+              <span>
+                {demande.notified > 0
+                  ? 'Un email a été envoyé au responsable.'
+                  : demande.subscribers === 0
+                    ? 'Aucun responsable n’est abonné à ces notifications. Prévenez directement une personne pouvant éditer les tarifs.'
+                    : 'L’envoi de l’email a échoué. Prévenez directement une personne pouvant éditer les tarifs.'}
+              </span>
+            </div>
+          )}
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose}>{blocked ? 'Fermer' : 'Annuler'}</Button>
+          {blocked ? (
+            demande === null && (
+              <Button onClick={() => demandeMut.mutate()} disabled={demandeMut.isPending}>
+                <AtSign className="h-3.5 w-3.5 mr-1.5" />
+                {demandeMut.isPending ? 'Envoi...' : 'Prévenir le responsable'}
+              </Button>
+            )
+          ) : (
+            <Button onClick={() => saveMut.mutate()} disabled={checked.size === 0 || saveMut.isPending}>
+              {saveMut.isPending ? 'Ajout...' : 'Ajouter'}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

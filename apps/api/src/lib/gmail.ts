@@ -91,6 +91,11 @@ export interface SendMailOptions {
    *  markup: the HTML part renders it as <strong>, the plain-text part
    *  strips the markers. */
   body: string
+  /** Pre-rendered HTML for the text/html alternative. When set it replaces the
+   *  auto-generated HTML and `body` is used only for the text/plain part — the
+   *  two must therefore say the same thing. Used by the branded notification
+   *  template; ordinary user-composed mails leave it undefined. */
+  bodyHtml?: string
   attachments?: SendMailAttachment[]
   /** Sender's HTML signature, appended after the body in both MIME parts.
    *  When undefined, sendMail() resolves it from the `from` address via the
@@ -195,7 +200,7 @@ export function buildMimeMessage(opts: SendMailOptions): Buffer {
   const plainBody =
     bodyToPlain(opts.body) + (sig ? `${crlf}${crlf}${signatureToPlain(sig)}` : '')
   const htmlBody =
-    bodyToHtml(opts.body) +
+    (opts.bodyHtml ?? bodyToHtml(opts.body)) +
     (sig ? `<br><br>${crlf}<div class="mps-signature">${sig}</div>` : '')
 
   const altPart =
@@ -209,9 +214,11 @@ export function buildMimeMessage(opts: SendMailOptions): Buffer {
     htmlBody + crlf +
     `--${altBoundary}--${crlf}`
 
-  // Inline images are only meaningful when the signature that references
-  // them made it into the message.
-  const inlineImages = sig ? opts.inlineImages ?? [] : []
+  // Whatever the caller passed: `cid:` images may be referenced by the
+  // signature OR by a pre-rendered bodyHtml (the notification template's logo).
+  // The signature-resolution path above already leaves this empty when it
+  // found no signature to render.
+  const inlineImages = opts.inlineImages ?? []
 
   // Body section: the alternative pair, wrapped in multipart/related when
   // inline (cid:) images are present.

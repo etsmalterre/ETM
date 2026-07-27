@@ -34,6 +34,7 @@ import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { authRouter } from './routes/auth.js'
 import { ticketsRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
+import { notificationsRouter } from './routes/notifications.js'
 import { userEmailsRouter } from './routes/user-emails.js'
 import { userProfilesRouter } from './routes/user-profiles.js'
 import { query } from './lib/hfsql-auto.js'
@@ -94,6 +95,7 @@ app.use('/api/auth', authRouter)
 // Bug/feature ticket reporting — proxy to the LIVA issue tracker
 app.use('/api/tickets', ticketsRouter)
 app.use('/api/permissions', permissionsRouter)
+app.use('/api/notifications', notificationsRouter)
 app.use('/api/user-emails', userEmailsRouter)
 app.use('/api/user-profiles', userProfilesRouter)
 app.use('/api/entreprises', entreprisesRouter)

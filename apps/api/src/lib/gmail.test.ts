@@ -72,14 +72,39 @@ describe('buildMimeMessage inline images (cid:)', () => {
     expect(mime).toContain('Content-Disposition: attachment; filename="doc.pdf"')
   })
 
-  it('drops inline images when the signature is absent', () => {
+  it('embeds inline images without a signature (notification template logo)', () => {
+    // The notification template renders its own branded bodyHtml that
+    // references the logo by cid: — there is no signature to carry it.
     const mime = buildMimeMessage({
       ...baseOpts,
       signatureHtml: null,
+      bodyHtml: '<div><img src="cid:logo-malterre@etsmalterre.com"></div>',
       inlineImages: [LOGO],
     }).toString('utf8')
+    expect(mime).toContain('multipart/related')
+    expect(mime).toContain('Content-ID: <logo-malterre@etsmalterre.com>')
+  })
+
+  it('embeds no related section when the caller passes no inline images', () => {
+    const mime = buildMimeMessage({ ...baseOpts, signatureHtml: null }).toString('utf8')
     expect(mime).not.toContain('multipart/related')
     expect(mime).not.toContain('Content-ID:')
+  })
+})
+
+describe('buildMimeMessage bodyHtml', () => {
+  it('replaces the generated HTML part but keeps body as the plain part', () => {
+    const mime = buildMimeMessage({
+      ...baseOpts,
+      body: 'Texte brut **gras**',
+      bodyHtml: '<table><tr><td>Rendu HTML</td></tr></table>',
+      signatureHtml: null,
+    }).toString('utf8')
+    // text/plain keeps the caller's text, with the bold markers stripped
+    expect(mime).toContain('Texte brut gras')
+    // text/html is the pre-rendered markup, NOT the auto-generated <div>
+    expect(mime).toContain('<table><tr><td>Rendu HTML</td></tr></table>')
+    expect(mime).not.toContain('<strong>gras</strong>')
   })
 })
 

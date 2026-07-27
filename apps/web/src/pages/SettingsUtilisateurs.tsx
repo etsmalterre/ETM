@@ -10,7 +10,7 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Search, Loader2, AlertCircle, Shield, Check, Mail, Save,
+  Search, Loader2, AlertCircle, Shield, Check, Mail, Save, Bell,
   Image as ImageIcon, PenLine, Trash2, User as UserIcon, ChevronDown,
 } from 'lucide-react'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -78,6 +78,13 @@ interface PermissionKeyDef {
   /** Sub-permission: rendered indented under its parent toggle, visible only
    *  while the parent is granted. */
   parent?: string
+}
+
+/** Notification catalog entries share PermissionKeyDef's shape (minus `parent`)
+ *  so the Notifications tab reuses CategorySection as-is. */
+interface NotificationSubscriptionRow {
+  IDutilisateur: number
+  subscribed: string[]
 }
 
 // Maps the lowercase pc value to a human-readable role label (same as picker).
@@ -165,6 +172,37 @@ export function SettingsUtilisateurs() {
     return map
   }, [profiles])
 
+  // Notification subscriptions — same shape as permissions, separate store
+  // (see api/src/lib/notification-keys.ts for why they aren't permissions).
+  const { data: notifKeys } = useQuery<PermissionKeyDef[]>({
+    queryKey: ['notif-keys'],
+    queryFn: () => apiFetch<PermissionKeyDef[]>('/notifications/keys'),
+    staleTime: Infinity,
+  })
+
+  const { data: notifRows } = useQuery<NotificationSubscriptionRow[]>({
+    queryKey: ['notif-users'],
+    queryFn: () => apiFetch<NotificationSubscriptionRow[]>('/notifications/users'),
+    enabled: viewerIsAdmin,
+  })
+
+  const subscribedByUserId = useMemo(() => {
+    const map = new Map<number, string[]>()
+    if (notifRows) for (const r of notifRows) map.set(r.IDutilisateur, r.subscribed)
+    return map
+  }, [notifRows])
+
+  const updateNotifMut = useMutation({
+    mutationFn: ({ id, subscribed }: { id: number; subscribed: string[] }) =>
+      apiFetch<{ IDutilisateur: number; subscribed: string[] }>(
+        `/notifications/users/${id}`,
+        { method: 'PUT', body: JSON.stringify({ subscribed }) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notif-users'] })
+    },
+  })
+
   const setEmailMut = useMutation({
     mutationFn: ({ id, email }: { id: number; email: string }) =>
       apiFetch<{ IDutilisateur: number; email: string | null }>(
@@ -248,6 +286,16 @@ export function SettingsUtilisateurs() {
           isSavingEmail={setEmailMut.isPending}
           emailSaveError={setEmailMut.error instanceof Error ? setEmailMut.error.message : null}
           keys={keys ?? []}
+          notifKeys={notifKeys ?? []}
+          subscribed={selected ? subscribedByUserId.get(selected.IDutilisateur) ?? [] : []}
+          isUpdatingNotif={updateNotifMut.isPending}
+          onToggleNotif={(key, nextValue) => {
+            if (!selected) return
+            const current = new Set(subscribedByUserId.get(selected.IDutilisateur) ?? [])
+            if (nextValue) current.add(key)
+            else current.delete(key)
+            updateNotifMut.mutate({ id: selected.IDutilisateur, subscribed: Array.from(current) })
+          }}
           isUpdating={updateMut.isPending}
           onToggle={(key, nextValue) => {
             if (!selected) return
@@ -405,12 +453,14 @@ function DetailHeader({ user }: { user: PermissionUser | null }) {
 const MAIN_TABS = [
   { key: 'profil', label: 'Profil', icon: UserIcon },
   { key: 'permissions', label: 'Permissions', icon: Shield },
+  { key: 'notifications', label: 'Notifications', icon: Bell },
 ] as const
 type MainTab = (typeof MAIN_TABS)[number]['key']
 
 function DetailBody({
   user, profile, currentEmail, onSaveEmail, isSavingEmail, emailSaveError,
   keys, isUpdating, onToggle,
+  notifKeys, subscribed, isUpdatingNotif, onToggleNotif,
 }: {
   user: PermissionUser | null
   profile: UserProfileRow | null
@@ -421,6 +471,10 @@ function DetailBody({
   keys: PermissionKeyDef[]
   isUpdating: boolean
   onToggle: (key: string, nextValue: boolean) => void
+  notifKeys: PermissionKeyDef[]
+  subscribed: string[]
+  isUpdatingNotif: boolean
+  onToggleNotif: (key: string, nextValue: boolean) => void
 }) {
   const [activeTab, setActiveTab] = useState<MainTab>('profil')
 
@@ -438,6 +492,16 @@ function DetailBody({
     }
     return Array.from(g.entries())
   }, [keys])
+
+  const notifGrouped = useMemo(() => {
+    const g = new Map<string, PermissionKeyDef[]>()
+    for (const k of notifKeys) {
+      const cat = k.category || 'Général'
+      if (!g.has(cat)) g.set(cat, [])
+      g.get(cat)!.push(k)
+    }
+    return Array.from(g.entries())
+  }, [notifKeys])
 
   if (!user) return (
     <div className="flex-1 flex items-center justify-center">
@@ -538,6 +602,49 @@ function DetailBody({
                 isUpdating={isUpdating}
                 grantedSet={grantedSet}
                 onToggle={onToggle}
+              />
+            ))}
+          </>
+        )}
+
+        {activeTab === 'notifications' && (
+          <>
+            {/* Notifications are opt-in for everyone — there is no admin
+                bypass, hence isVin={false} on the sections below. */}
+            <div className="flex items-start gap-3 p-3 rounded-lg border border-border/60 bg-white shadow-sm">
+              <Bell className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold">Notifications par email</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Cet utilisateur reçoit un email à chaque évènement activé ci-dessous, à l’adresse
+                  définie dans l’onglet « Profil ». Les administrateurs ne sont pas abonnés
+                  automatiquement.
+                </p>
+              </div>
+            </div>
+
+            {subscribed.length > 0 && !currentEmail.trim() && (
+              <div className="flex items-start gap-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
+                <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-bold text-amber-800">Aucune adresse email définie</p>
+                  <p className="text-xs text-amber-800/80 mt-0.5">
+                    Les notifications activées ci-dessous ne seront envoyées à personne tant qu’une
+                    adresse n’est pas renseignée dans l’onglet « Profil ».
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {notifGrouped.map(([category, items]) => (
+              <CategorySection
+                key={category}
+                category={category}
+                items={items}
+                isVin={false}
+                isUpdating={isUpdatingNotif}
+                grantedSet={new Set(subscribed)}
+                onToggle={onToggleNotif}
               />
             ))}
           </>
