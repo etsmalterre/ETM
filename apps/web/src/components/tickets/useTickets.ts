@@ -3,12 +3,16 @@
 // server-side. Uses a local raw fetch instead of apiFetch because the proxy
 // returns French error messages (no_reporter_email, not_configured…) that
 // must reach the UI verbatim, and apiFetch discards response bodies.
+//
+// The "my tickets" list itself lives in useTicketNotifications (React Query,
+// polled for the unread badge) — this hook owns the write side plus detail
+// fetches, and exports the primitives the list query is built on.
 
 import { useState, useCallback } from 'react'
 import { API_URL } from '@/lib/api'
 import type { Ticket, TicketAttachment, TicketCategory, TicketSeverity, TicketStatus } from './types'
 
-async function ticketFetch<T>(path: string, options?: RequestInit): Promise<T> {
+export async function ticketFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const isForm = options?.body instanceof FormData
   const res = await fetch(`${API_URL}/tickets${path}`, {
     ...options,
@@ -29,7 +33,7 @@ async function ticketFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-function mapTicket(raw: Record<string, unknown>): Ticket {
+export function mapTicket(raw: Record<string, unknown>): Ticket {
   return {
     id: raw.id as string,
     number: typeof raw.number === 'number' ? raw.number : null,
@@ -49,6 +53,15 @@ function mapTicket(raw: Record<string, unknown>): Ticket {
   }
 }
 
+/** The session user's tickets, newest first. The proxy scopes the list to the
+ *  session user's reporter_email — the browser never names it. per_page is
+ *  raised to the tracker's max so the closed-tickets drawer and the unread
+ *  badge see the whole history rather than the first page. */
+export async function listMyTickets(): Promise<Ticket[]> {
+  const data = await ticketFetch<{ items?: Record<string, unknown>[] }>('?per_page=100')
+  return (data.items || []).map(mapTicket)
+}
+
 export interface NewTicket {
   title: string
   description: string
@@ -58,24 +71,7 @@ export interface NewTicket {
 }
 
 export function useTickets() {
-  const [tickets, setTickets] = useState<Ticket[]>([])
-  const [isLoading, setIsLoading] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [listError, setListError] = useState<string | null>(null)
-
-  const fetchMyTickets = useCallback(async () => {
-    setIsLoading(true)
-    setListError(null)
-    try {
-      // The proxy scopes the list to the session user's reporter_email.
-      const data = await ticketFetch<{ items?: Record<string, unknown>[] }>('')
-      setTickets((data.items || []).map(mapTicket))
-    } catch (err) {
-      setListError(err instanceof Error ? err.message : 'Erreur inconnue')
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
 
   const submitTicket = useCallback(async (data: NewTicket): Promise<Ticket> => {
     setIsSubmitting(true)
@@ -91,9 +87,7 @@ export function useTickets() {
           environment: import.meta.env.DEV ? 'Development' : 'Production',
         }),
       })
-      const ticket = mapTicket(created)
-      setTickets((prev) => [ticket, ...prev])
-      return ticket
+      return mapTicket(created)
     } finally {
       setIsSubmitting(false)
     }
@@ -111,11 +105,7 @@ export function useTickets() {
   }, [])
 
   return {
-    tickets,
-    isLoading,
     isSubmitting,
-    listError,
-    fetchMyTickets,
     submitTicket,
     fetchTicket,
     uploadAttachments,

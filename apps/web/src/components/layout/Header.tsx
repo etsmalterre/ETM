@@ -10,6 +10,7 @@ import { apiFetch } from '@/lib/api'
 import { useUser, canSwitchUser } from '@/contexts/UserContext'
 import { ProfileModal, userPhotoUrl, type UserProfileMe } from '@/components/profile/ProfileModal'
 import { TicketModal } from '@/components/tickets/TicketModal'
+import { useTicketNotifications } from '@/components/tickets/useTicketNotifications'
 
 interface HeaderProps {
   onMenuClick: () => void
@@ -50,6 +51,9 @@ export function Header({ onMenuClick }: HeaderProps) {
   const [ticketOpen, setTicketOpen] = useState(false)
   const [screenshot, setScreenshot] = useState<File | null>(null)
   const [capturingScreenshot, setCapturingScreenshot] = useState(false)
+  // Unread = a ticket of this user moved status or got a developer reply since
+  // they last opened it. Read state is client-side (localStorage) — no DB.
+  const { unreadCount } = useTicketNotifications()
 
   const openTicketModal = useCallback(() => {
     setScreenshot(null)
@@ -178,16 +182,31 @@ export function Header({ onMenuClick }: HeaderProps) {
 
       {/* Actions */}
       <div className="flex items-center gap-2">
-        {/* Ticket report */}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={openTicketModal}
-          title="Envoyer un ticket"
-        >
-          <MessageSquarePlus className="h-5 w-5" />
-          <span className="sr-only">Envoyer un ticket</span>
-        </Button>
+        {/* Ticket report — red count badge when tickets have news */}
+        <div className="relative">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={openTicketModal}
+            title={
+              unreadCount > 0
+                ? `${unreadCount} ticket${unreadCount > 1 ? 's' : ''} mis à jour`
+                : 'Envoyer un ticket'
+            }
+          >
+            <MessageSquarePlus className="h-5 w-5" />
+            <span className="sr-only">
+              {unreadCount > 0
+                ? `Envoyer un ticket — ${unreadCount} mis à jour`
+                : 'Envoyer un ticket'}
+            </span>
+          </Button>
+          {unreadCount > 0 && (
+            <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white/80 shadow-sm pointer-events-none">
+              {unreadCount > 9 ? '9+' : unreadCount}
+            </span>
+          )}
+        </div>
 
         {/* Fullscreen toggle */}
         <Button

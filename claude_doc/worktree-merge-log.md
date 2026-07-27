@@ -10,6 +10,45 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-27 — feat/issue-tracker
+Tickets — **"Mes tickets" hides closed tickets behind a drawer, and the header trigger gets a
+red unread badge. LIVA ticket widget bumped to feature version 1.1.0.** (1) The list view now
+splits on `isClosedStatus` (new in `tickets/types.ts`, covering `resolu` / `ferme` /
+`ne_sera_pas_corrige`): open tickets render directly, closed ones collapse behind a single
+`bg-zinc-100/80` row carrying the total count and a rotating chevron (§23 collapsible-section
+language). The row list moved into a shared `TicketRow` component so both sections render
+identically. (2) **Unread tracking with no DB change**, which was the open question: the LIVA
+tracker has no per-user read state and no webhook, but `GET /bugs` turns out to return *full*
+bug objects (`comment`, `fixed_in_version`, `resolved_at`, `updated_at`), so one poll of the
+existing list endpoint is enough. New `useTicketNotifications.ts` derives a per-ticket
+*signature* from the fields a reporter actually cares about (`status | comment |
+fixed_in_version | resolved_at`) and stores the last-seen value in `localStorage` under
+`mps.tickets.seen.<IDutilisateur>`. Deliberately **not** `updated_at`: that also moves on
+assignee / internal-title churn and would badge tickets that explain nothing when opened. The
+store is **seeded silently on first run** (adopt every current signature, show zero unread),
+otherwise every user's first load would badge their whole history. Unread rows get the gold
+attention frame plus a dot, opening a detail clears that ticket, "Tout marquer comme lu"
+clears the rest, and the drawer **auto-expands when it holds unread tickets** so a
+just-resolved ticket is not hidden exactly when the badge sends the user looking for it.
+(3) Plumbing: the list fetch moved out of `useTickets` into a React Query query
+(`['my-tickets', userId]`, `per_page=100` so the drawer and the count see the whole history
+instead of page 1) shared by the header badge and the modal, backed by a module-level
+seen-store with `useSyncExternalStore` (plus a cross-tab `storage` listener) so the two
+surfaces can never disagree. Polling is 5 min + on window focus, and stops **permanently** on
+400 / 401 / 503 (no mapped email, no session, tracker unconfigured) since none of those heal
+by retrying and each poll costs a session lookup. `markSeen` also writes the fresher detail
+object back into the list cache, otherwise a stale cached signature relights the badge on the
+next render. `useTickets` keeps only the write side (submit / detail / attachments) and now
+exports `ticketFetch` / `mapTicket` / `listMyTickets`. Verified in the browser: silent
+seeding, correct count after tampering with stored signatures, drawer auto-expansion, and the
+badge decrementing when a detail is opened. (4) The `issue_tracker_integration` skill (in
+`C:\dev\claude_config`) was versioned in the same pass: CONTRACT.md gains a **§ Read state**
+with the binding rules for this pattern, the two new UX invariants, and the `GET /bugs`
+full-object / `per_page=100` findings; SKILL.md gains a **§ Feature version** with a
+changelog, the "record the version marker in the host repo" rule, and an upgrade path for
+projects still on 1.0.0. The marker lives at the top of `TicketModal.tsx` and in the Tickets
+row of `CLAUDE.md`. Note: this branch had **no API changes** and no HFSQL schema change.
+
 ## 2026-07-27 — feat/expe
 Email — **Cci (bcc) support app-wide + auto-copy of the sous-traitants holding the shipped
 rolls.** (1) `SendEmailDialog` gains a Cci field alongside Cc, and both are now **collapsed

@@ -101,3 +101,12 @@ export const statusColors: Record<TicketStatus, string> = {
 
 export const bugSeverities: TicketSeverity[] = ['cosmetique', 'mineur', 'majeur', 'critique']
 export const featureSeverities: TicketSeverity[] = ['basse', 'moyenne', 'haute']
+
+/** Statuses that take a ticket out of the user's working set. Those are
+ *  collapsed into the "Tickets clôturés" drawer of the "Mes tickets" list so
+ *  only what's still moving stays on screen. */
+export const closedStatuses: TicketStatus[] = ['resolu', 'ferme', 'ne_sera_pas_corrige']
+
+export function isClosedStatus(status: TicketStatus): boolean {
+  return closedStatuses.includes(status)
+}

@@ -4,6 +4,9 @@
 // portals so the modal is never in the shot) and arrives here as
 // initialScreenshot, exposed as an "include screenshot" attachment button
 // that shows a spinner while capturingScreenshot is true.
+//
+// LIVA ticket widget — feature version 1.1.0 (see the
+// issue_tracker_integration skill; bump both together).
 
 import { useState, useEffect, useRef } from 'react'
 import {
@@ -11,6 +14,7 @@ import {
   ArrowLeft,
   Clock,
   ChevronRight,
+  ChevronDown,
   Loader2,
   MessageSquare,
   MessageSquarePlus,
@@ -21,12 +25,15 @@ import {
   X,
   FileText,
   CheckCircle2,
+  CheckCheck,
+  Archive,
 } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useTicketContext } from './useTicketContext'
 import { useTickets } from './useTickets'
+import { useTicketNotifications } from './useTicketNotifications'
 import type { Ticket, TicketCategory, TicketSeverity } from './types'
 import {
   severityLabels,
@@ -37,6 +44,7 @@ import {
   categoryColors,
   bugSeverities,
   featureSeverities,
+  isClosedStatus,
 } from './types'
 
 interface TicketModalProps {
@@ -110,6 +118,60 @@ function StatusChip({ status }: { status: Ticket['status'] }) {
   )
 }
 
+/** One row of the "Mes tickets" list. Unread rows (a status move or a
+ *  developer reply the user hasn't opened yet) get the gold attention frame
+ *  and a dot, matching the app's "needs your attention" language. */
+function TicketRow({
+  ticket,
+  unread,
+  onOpen,
+}: {
+  ticket: Ticket
+  unread: boolean
+  onOpen: () => void
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-3 p-3 rounded-md border cursor-pointer transition-colors',
+        unread
+          ? 'border-accent/50 bg-accent/[0.05] hover:bg-accent/10'
+          : 'hover:border-accent/50 hover:bg-accent/5',
+      )}
+      onClick={onOpen}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          {unread && (
+            <span
+              className="h-2 w-2 rounded-full bg-accent flex-shrink-0"
+              title="Mis à jour depuis votre dernière consultation"
+            />
+          )}
+          {!!ticket.number && (
+            <span className="text-[10px] font-semibold text-muted-foreground tabular-nums">
+              N°{ticket.number}
+            </span>
+          )}
+          <CategoryChip category={ticket.category} />
+          <SeverityChip severity={ticket.severity} />
+          <StatusChip status={ticket.status} />
+          {!!ticket.fixed_in_version && (
+            <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-green-50 text-green-700 border border-green-200">
+              v{ticket.fixed_in_version}
+            </span>
+          )}
+        </div>
+        <p className={cn('text-sm truncate', unread ? 'font-semibold' : 'font-medium')}>
+          {ticket.title}
+        </p>
+        <p className="text-xs text-muted-foreground">{formatDate(ticket.created_at)}</p>
+      </div>
+      <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+    </div>
+  )
+}
+
 export function TicketModal({ open, onOpenChange, initialScreenshot, capturingScreenshot }: TicketModalProps) {
   const [view, setView] = useState<View>('form')
   const [titre, setTitre] = useState('')
@@ -123,6 +185,7 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
+  const [closedOpen, setClosedOpen] = useState(false)
 
   const [attachments, setAttachments] = useState<File[]>([])
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
@@ -131,25 +194,33 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const contexte = useTicketContext()
-  const {
-    tickets,
-    isLoading,
-    isSubmitting,
-    listError,
-    fetchMyTickets,
-    submitTicket,
-    fetchTicket,
-    uploadAttachments,
-  } = useTickets()
+  const { isSubmitting, submitTicket, fetchTicket, uploadAttachments } = useTickets()
+  const { tickets, isLoading, listError, refresh, unreadCount, isUnread, markSeen, markAllSeen } =
+    useTicketNotifications()
 
   const severityOptions = categorie === 'bug' ? bugSeverities : featureSeverities
+
+  // Split the list: what's still moving stays on screen, everything closed
+  // goes into the collapsible drawer at the bottom.
+  const openTickets = tickets.filter((t) => !isClosedStatus(t.status))
+  const closedTickets = tickets.filter((t) => isClosedStatus(t.status))
+  const closedUnread = closedTickets.filter(isUnread).length
 
   // Refresh the list every time the user lands on the "Mes tickets" view.
   useEffect(() => {
     if (view === 'list' && open) {
-      fetchMyTickets()
+      refresh()
     }
-  }, [view, open, fetchMyTickets])
+    // refresh() is stable per query instance; re-running on its identity would
+    // refetch on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, open])
+
+  // A ticket that just got resolved is both "closed" and "unread" — opening
+  // the drawer for the user is how they find the reply they were notified of.
+  useEffect(() => {
+    if (view === 'list' && closedUnread > 0) setClosedOpen(true)
+  }, [view, closedUnread])
 
   const addFiles = (files: FileList | File[]) => {
     setAttachmentError(null)
@@ -216,7 +287,10 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
     setDetailError(null)
     setView('detail')
     try {
-      setSelectedTicket(await fetchTicket(id))
+      const ticket = await fetchTicket(id)
+      setSelectedTicket(ticket)
+      // Reading the detail is what clears the unread badge for this ticket.
+      markSeen(ticket)
     } catch (err) {
       setSelectedTicket(null)
       setDetailError(err instanceof Error ? err.message : 'Erreur lors du chargement')
@@ -247,6 +321,9 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
           )
         }
       }
+      // The user just wrote it — it must not come back as unread.
+      markSeen(ticket)
+      refresh()
       setSentNumber(ticket.number)
       setSent(true)
     } catch (err) {
@@ -649,35 +726,76 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
             ) : tickets.length === 0 ? (
               <div className="py-8 text-center text-sm text-muted-foreground">Aucun ticket</div>
             ) : (
-              <div className="space-y-1 max-h-[50vh] overflow-y-auto scrollbar-transparent">
-                {tickets.map((ticket) => (
-                  <div
-                    key={ticket.id}
-                    className="flex items-center gap-3 p-3 rounded-md border cursor-pointer hover:border-accent/50 hover:bg-accent/5 transition-colors"
-                    onClick={() => handleOpenDetail(ticket.id)}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        {!!ticket.number && (
-                          <span className="text-[10px] font-semibold text-muted-foreground tabular-nums">
-                            N°{ticket.number}
-                          </span>
-                        )}
-                        <CategoryChip category={ticket.category} />
-                        <SeverityChip severity={ticket.severity} />
-                        <StatusChip status={ticket.status} />
-                        {!!ticket.fixed_in_version && (
-                          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-green-50 text-green-700 border border-green-200">
-                            v{ticket.fixed_in_version}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-sm font-medium truncate">{ticket.title}</p>
-                      <p className="text-xs text-muted-foreground">{formatDate(ticket.created_at)}</p>
-                    </div>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+              <div className="space-y-2 max-h-[55vh] overflow-y-auto scrollbar-transparent p-0.5">
+                {unreadCount > 0 && (
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-accent font-medium">
+                      {unreadCount} ticket{unreadCount > 1 ? 's' : ''} mis à jour
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-muted-foreground"
+                      onClick={markAllSeen}
+                    >
+                      <CheckCheck className="h-3.5 w-3.5 mr-1" />
+                      Tout marquer comme lu
+                    </Button>
                   </div>
-                ))}
+                )}
+
+                {/* Tickets en cours */}
+                {openTickets.length > 0 ? (
+                  <div className="space-y-1">
+                    {openTickets.map((ticket) => (
+                      <TicketRow
+                        key={ticket.id}
+                        ticket={ticket}
+                        unread={isUnread(ticket)}
+                        onOpen={() => handleOpenDetail(ticket.id)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="py-6 text-center text-sm text-muted-foreground">
+                    Aucun ticket en cours
+                  </p>
+                )}
+
+                {/* Drawer: everything closed, collapsed by default */}
+                {closedTickets.length > 0 && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setClosedOpen((o) => !o)}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-md border border-border/60 bg-zinc-100/80 hover:bg-zinc-100 text-xs font-medium text-muted-foreground transition-colors select-none"
+                    >
+                      <Archive className="h-3.5 w-3.5" />
+                      <span>Tickets clôturés</span>
+                      {closedUnread > 0 && (
+                        <span className="inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-accent text-accent-foreground text-[10px] font-bold tabular-nums">
+                          {closedUnread}
+                        </span>
+                      )}
+                      <span className="ml-auto tabular-nums">{closedTickets.length}</span>
+                      <ChevronDown
+                        className={cn('h-3.5 w-3.5 transition-transform', closedOpen && 'rotate-180')}
+                      />
+                    </button>
+                    {closedOpen && (
+                      <div className="mt-1 space-y-1">
+                        {closedTickets.map((ticket) => (
+                          <TicketRow
+                            key={ticket.id}
+                            ticket={ticket}
+                            unread={isUnread(ticket)}
+                            onOpen={() => handleOpenDetail(ticket.id)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
