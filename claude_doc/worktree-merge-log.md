@@ -10,6 +10,47 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-27 — feat/commande-client
+Clients › Commandes — **lignes de commande "Divers" become shippable**, porting the legacy
+Commandes › Expédition tab for type-3 lines and the `FEN_Expéditions_Groupées` modal. A
+divers line names a catalog article (`ref_divers` narrowed by up to two variation axes,
+`ligne_commande_client.IDVariation1/2` → `ref_divers_variation`, axis names from
+`ref_divers.sTypeVariation1/2`) instead of stock rolls, and ships through the
+`expedition_divers` ledger whose header back-points at the order
+(`expedition_divers.IDcommande_client` — previously always written 0 by MPS_NG):
+`expédition → ligne_expedition_divers` (a CARTON) `→ ref_divers_expedie` (ref + variations
++ qty + prix). **Line drawer** (`DiversLineDrawer`, click a Divers line in view mode, §31
+in-screen drawer): article card with the two variations, Commandé / Expédié / Reste, *Stock
+disponible* from `stock_divers` (green/amber/red vs. the remainder, "non suivi" when the
+combo has no ledger row) and prix unitaire; a per-line shipments table (N° / date /
+conteneur / quantité / facturée + BL print + email, reusing `/expeditions/divers/:id/pdf`
+and `/email`); and a footer ship bar prefilled with `min(reste, stock)` whose *Expédier*
+appends to the order's open (non-facturée) expédition — creating it and `CARTON 1` if none
+— which is the legacy "Quelle quantité voulez-vous expédier" prompt. **Grouped shipment**
+(`ExpeditionGroupeeDialog`, new `Boxes` header icon-button left of print/email, rendered
+only when the order has a divers line): expédition picker + "＋", Date / Référence client /
+Transporteur / Adresse de livraison (text+date save on blur, selects on change, so the
+modal never holds unsaved work), carton list with add/rename/delete, and the selected
+carton's article table (Référence / Variation 1 / Variation 2 / Quantité / Total) with
+inline quantity edit, delete, and an add-article picker sourced from **the order's own
+divers lines** showing each one's `reste` and `stock` and prefilling the quantity; footer
+prints the existing BL divers. Facturée or soldée ⇒ read-only with a lock banner. New API:
+`GET/POST /commandes-client/:id/expeditions-divers`, `GET /:id/lignes/:ligneId/divers`,
+`POST /:id/lignes/:ligneId/expedier-divers`; the detail endpoint now reads
+`IDVariation1/2`, resolves their labels and computes divers `expedie` by matching
+`(IDref_divers, v1, v2)` across the order's shipments (line cards gained the Expédié stat +
+a shipped gauge; the ligne form gained the two variation pickers — without them a
+MPS_NG-created divers line could never match stock or shipment items). **`stock_divers` is
+now written** (user-confirmed legacy parity, since both apps share the live DB):
+`adjustDiversStock()` in `expeditions.ts` is the single owner of the ledger and is wired
+into `ref_divers_expedie` create/update/delete **and** the carton/expédition cascade
+deletes — so Clients › Expéditions keeps divers stock in sync too, which it previously did
+not. MPS_NG never *creates* a `stock_divers` row (legacy `FEN_Gestion_Stock_Divers` opens
+them on receipt); an untracked combo is a no-op and surfaces as "non suivi". Verified live
+end-to-end on commande 3690: ship 3 → expédition + CARTON 1 created, stock 5→2; add a
+carton + 4 articles from the modal → stock 4→0; delete carton → 0→4; edit qty 3→1 → 2→4;
+expédition deleted afterwards, DB left as found.
+
 ## 2026-07-27 — feat/issue-tracker
 Tickets — **"Mes tickets" hides closed tickets behind a drawer, and the header trigger gets a
 red unread badge. LIVA ticket widget bumped to feature version 1.1.0.** (1) The list view now

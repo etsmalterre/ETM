@@ -41,6 +41,7 @@ import {
   ClipboardList,
   Truck,
   Gift,
+  Boxes,
 } from 'lucide-react'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -88,6 +89,12 @@ interface LigneCommande {
   type: number // 1=écru, 2=fini, 3=divers
   IDreference: number
   IDcolori: number
+  /** Divers (type 3) only — the two ref_divers variation axes that, with
+   *  IDreference, identify the exact article the line ships. */
+  IDVariation1: number
+  IDVariation2: number
+  variation1_label: string | null
+  variation2_label: string | null
   quantite: number
   unite: number
   unite_label: string
@@ -251,7 +258,22 @@ interface ModePaiement { IDmode_paiement: number; libelle: string }
 interface Echeance { IDecheance: number; libelle: string }
 interface RefEcru { IDref_ecru: number; reference: string }
 interface RefFini { IDref_fini: number; reference: string; designation: string; avec_teinture: number }
-interface RefDivers { IDref_divers: number; designation: string; unite: number }
+/** ref_divers catalog row (from the shared /expeditions/divers lookup — it
+ *  carries the two variation-axis labels the line form needs). */
+interface RefDivers {
+  IDref_divers: number
+  designation: string
+  unite: number
+  unite_label: string
+  archive: number
+  sTypeVariation1: string
+  sTypeVariation2: string
+}
+interface RefDiversVariation {
+  IDref_divers_variation: number
+  designation: string
+  niveau: number
+}
 interface ColoriOption { id: number; reference: string }
 interface LinePriceInfo {
   prix: number | null
@@ -366,6 +388,8 @@ export function ClientsCommandes() {
   const [emailDoc, setEmailDoc] = useState<CommandeDocKind | null>(null)
   const [autoEditForId, setAutoEditForId] = useState<number | null>(null)
   const [deleteCommandeConfirmOpen, setDeleteCommandeConfirmOpen] = useState(false)
+  // Whole-order divers shipment editor (header button, divers orders only).
+  const [expGroupeeOpen, setExpGroupeeOpen] = useState(false)
 
   // Edit-mode header draft.
   const [editDateCommande, setEditDateCommande] = useState('')
@@ -594,6 +618,7 @@ export function ClientsCommandes() {
               window.open(`${API_URL}/commandes-client/${selectedId}${doc === 'proforma' ? '/proforma/pdf' : '/pdf'}`, '_blank')
             }}
             onEmailDoc={setEmailDoc}
+            onOpenExpeditionGroupee={() => setExpGroupeeOpen(true)}
           />
         }
         detail={
@@ -646,6 +671,15 @@ export function ClientsCommandes() {
           setAutoEditForId(newId)
         }}
       />
+
+      {detail && (
+        <ExpeditionGroupeeDialog
+          open={expGroupeeOpen}
+          commande={detail}
+          onClose={() => setExpGroupeeOpen(false)}
+          onMutationSuccess={invalidateAll}
+        />
+      )}
 
       <ConfirmDialog
         open={deleteCommandeConfirmOpen}
@@ -892,7 +926,7 @@ function DocMenuButton({ icon: TriggerIcon, title, items, onSelect }: {
 function DetailHeader({
   commande, isLoading, isEditing, canEdit,
   onStartEdit, onCancelEdit, onSave, isSaving,
-  onDelete, onPrintDoc, onEmailDoc,
+  onDelete, onPrintDoc, onEmailDoc, onOpenExpeditionGroupee,
 }: {
   commande: CommandeDetail | null
   isLoading: boolean
@@ -905,6 +939,7 @@ function DetailHeader({
   onDelete: () => void
   onPrintDoc: (doc: CommandeDocKind) => void
   onEmailDoc: (doc: CommandeDocKind) => void
+  onOpenExpeditionGroupee: () => void
 }) {
   if (!commande && !isLoading) return null
   // Donation orders never produce an invoice — no proforma menu entry.
@@ -912,6 +947,10 @@ function DetailHeader({
     { key: 'confirmation', label: 'Confirmation de commande', icon: FileCheck2 },
     ...(commande?.donation === 1 ? [] : [{ key: 'proforma' as const, label: 'Facture proforma', icon: ReceiptText }]),
   ]
+  // Divers lines ship through the expedition_divers ledger, which is organised
+  // per carton across the whole order — hence a dedicated grouped-shipment
+  // editor, offered only when the order actually carries such a line.
+  const hasDiversLines = (commande?.lignes ?? []).some((l) => l.type === 3)
   return (
     <div className="flex-shrink-0 pt-0.5">
       <div className="flex items-center gap-3">
@@ -957,6 +996,11 @@ function DetailHeader({
               </>
             ) : (
               <>
+                {hasDiversLines && (
+                  <Button variant="outline" size="icon" className="h-9 w-9" title="Expédition groupée" onClick={onOpenExpeditionGroupee}>
+                    <Boxes className="h-4 w-4" />
+                  </Button>
+                )}
                 <DocMenuButton icon={Printer} title="Imprimer" items={docItems} onSelect={onPrintDoc} />
                 <DocMenuButton icon={AtSign} title="Envoyer un email" items={docItems} onSelect={onEmailDoc} />
                 {canEdit && (
@@ -1042,6 +1086,9 @@ const emptyLineForm = {
   type: 2,
   IDreference: 0,
   IDcolori: 0,
+  // Divers only — the two ref_divers variation axes (0 = none).
+  IDVariation1: 0,
+  IDVariation2: 0,
   quantite: '',
   unite: 3,
   prix: '',
@@ -1165,15 +1212,26 @@ function LignesSection({
 
         {drawerOpen && drawerLigne && (
           <div className="flex-1 min-h-0 flex flex-col mt-3 rounded-lg border border-border/60 overflow-hidden bg-zinc-50/80 animate-in slide-in-from-bottom-4 fade-in-0 duration-200">
-            <AffectationDrawer
-              key={drawerLigne.IDligne_commande_client}
-              commandeId={commande.IDcommande_client}
-              ligne={drawerLigne}
-              clientNom={commande.client_nom}
-              soldee={Number(commande.est_soldee) === 1}
-              onClose={() => onOpenAffectation(null)}
-              onSuccess={onMutationSuccess}
-            />
+            {drawerLigne.type === 3 ? (
+              <DiversLineDrawer
+                key={drawerLigne.IDligne_commande_client}
+                commandeId={commande.IDcommande_client}
+                ligne={drawerLigne}
+                soldee={Number(commande.est_soldee) === 1}
+                onClose={() => onOpenAffectation(null)}
+                onSuccess={onMutationSuccess}
+              />
+            ) : (
+              <AffectationDrawer
+                key={drawerLigne.IDligne_commande_client}
+                commandeId={commande.IDcommande_client}
+                ligne={drawerLigne}
+                clientNom={commande.client_nom}
+                soldee={Number(commande.est_soldee) === 1}
+                onClose={() => onOpenAffectation(null)}
+                onSuccess={onMutationSuccess}
+              />
+            )}
           </div>
         )}
 
@@ -1653,9 +1711,15 @@ function LineCard({
   // écru → TmRollIcon, fini → FiniRollIcon, divers → Box.
   const TypeIcon = line.type === 2 ? FiniRollIcon : line.type === 3 ? Box : TmRollIcon
   const canAffect = line.type === 1 || line.type === 2
-  const clickable = !isEditing && canAffect
+  // Divers lines carry no rolls, but they DO open a drawer — theirs ships
+  // catalog articles through the expedition_divers ledger.
+  const isDivers = line.type === 3
+  const clickable = !isEditing && (canAffect || isDivers)
   const target = Number(line.quantite) || 0
   const pct = target > 0 ? Math.min(100, (line.affecte / target) * 100) : 0
+  // Divers gauge tracks shipped-vs-ordered (there is nothing to reserve).
+  const shipPct = target > 0 ? Math.min(100, (line.expedie / target) * 100) : 0
+  const variations = [line.variation1_label, line.variation2_label].filter(Boolean).join(' · ')
 
   return (
     <div
@@ -1677,6 +1741,7 @@ function LineCard({
             <p className="text-sm font-medium truncate">
               {line.ref_label || '—'}
               {line.colori_reference ? <span className="text-muted-foreground"> / {line.colori_reference}</span> : null}
+              {variations ? <span className="text-muted-foreground"> · {variations}</span> : null}
             </p>
           </div>
         </div>
@@ -1701,7 +1766,7 @@ function LineCard({
           its urgency color. Single source for the ordered quantity. */}
       <div className="mt-2 ml-9 flex flex-wrap items-end gap-x-6 gap-y-1.5">
         <LineStat label="Commandé" value={`${fmtNum(line.quantite, 1)} ${line.unite_label}`} />
-        {canAffect && (
+        {(canAffect || isDivers) && (
           <LineStat
             label="Expédié"
             value={`${fmtNum(line.expedie, 1)} ${line.unite_label}`}
@@ -1739,6 +1804,20 @@ function LineCard({
           </div>
           <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">
             Affecté {fmtNum(line.affecte, 1)} / {fmtNum(line.quantite, 1)} {line.unite_label}
+          </span>
+        </div>
+      )}
+      {/* Divers lines have nothing to reserve — the gauge tracks what shipped. */}
+      {isDivers && (
+        <div className="mt-2 ml-9 flex items-center gap-2">
+          <div className="h-1.5 flex-1 rounded-full bg-zinc-200 overflow-hidden">
+            <div
+              className={cn('h-full rounded-full transition-all', shipPct >= 99.9 ? 'bg-green-500' : 'bg-accent')}
+              style={{ width: `${shipPct}%` }}
+            />
+          </div>
+          <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">
+            Expédié {fmtNum(line.expedie, 1)} / {fmtNum(line.quantite, 1)} {line.unite_label}
           </span>
         </div>
       )}
@@ -2657,6 +2736,878 @@ function ExpeditionTab({
         </section>
       )}
     </div>
+  )
+}
+
+// ── Divers lines: shipment drawer + grouped shipment modal ──
+// A divers (type 3) line names a catalog article (ref_divers + up to two
+// variation axes) instead of stock rolls. It ships through expedition_divers:
+//   expédition (header, back-pointing at the commande)
+//     └ carton (ligne_expedition_divers)
+//         └ article (ref_divers_expedie) — ref + variations + quantity
+// The drawer below is the per-line view (legacy Commandes › Expédition tab);
+// ExpeditionGroupeeDialog is the whole-order editor (legacy Expéditions
+// Groupées modal).
+
+interface DiversShipItem {
+  IDref_divers_expedie: number
+  IDref_divers: number
+  ref_designation: string
+  designation: string
+  IDVariation1: number
+  variation1_label: string | null
+  IDVariation2: number
+  variation2_label: string | null
+  quantite: number
+  unite: number
+  unite_label: string
+  prix: number
+}
+interface DiversShipCarton {
+  IDligne_expedition_divers: number
+  detail_ligne: string
+  items: DiversShipItem[]
+}
+interface DiversShipExpedition {
+  IDexpedition_divers: number
+  date: string | null
+  ref_client: string | null
+  est_valide: number
+  est_facture: number
+  /** Facturée → the shipment and all its cartons are read-only. */
+  locked: number
+  IDtransporteur: number
+  transporteur_nom: string
+  IDadresse: number
+  adresse_nom: string
+  adresse_ville: string
+  cartons: DiversShipCarton[]
+}
+interface DiversLinePayload {
+  IDligne_commande_client: number
+  IDref_divers: number
+  ref_designation: string
+  IDVariation1: number
+  variation1_label: string | null
+  IDVariation2: number
+  variation2_label: string | null
+  unite: number
+  unite_label: string
+  prix: number
+  quantite_commandee: number
+  quantite_expediee: number
+  /** stock_divers on-hand for this exact article; null = no ledger row. */
+  stock_disponible: number | null
+  expeditions: DiversShipExpedition[]
+}
+
+/** Label for a shipped article: its own designation when set, else the catalog
+ *  designation, narrowed by whichever variation axes it carries. */
+function diversArticleLabel(
+  ref: string, v1: string | null | undefined, v2: string | null | undefined,
+): string {
+  const variations = [v1, v2].filter(Boolean).join(' · ')
+  return variations ? `${ref || '—'} · ${variations}` : (ref || '—')
+}
+
+function DiversLineDrawer({
+  commandeId, ligne, soldee = false, onClose, onSuccess,
+}: {
+  commandeId: number
+  ligne: LigneCommande
+  /** Commande terminée → the drawer is a read-only record of what shipped. */
+  soldee?: boolean
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const queryClient = useQueryClient()
+  const queryKey = ['commande-client-divers-line', commandeId, ligne.IDligne_commande_client]
+
+  const { data, isLoading, isError } = useQuery<DiversLinePayload>({
+    queryKey,
+    queryFn: () => apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/divers`),
+  })
+
+  const [qty, setQty] = useState('')
+  const [qtyTouched, setQtyTouched] = useState(false)
+  const [confirmShip, setConfirmShip] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [emailExpId, setEmailExpId] = useState<number | null>(null)
+
+  const uniteLabel = data?.unite_label ?? ligne.unite_label
+  const commandee = data?.quantite_commandee ?? (Number(ligne.quantite) || 0)
+  const expediee = data?.quantite_expediee ?? (Number(ligne.expedie) || 0)
+  const reste = Math.max(0, Math.round((commandee - expediee) * 100) / 100)
+  const stock = data?.stock_disponible ?? null
+
+  // Prefill with what's left to ship, capped by what's actually on hand —
+  // the legacy "Quelle quantité voulez-vous expédier" default. Stops
+  // prefilling once the user types, so a refetch can't clobber their input.
+  useEffect(() => {
+    if (!data || qtyTouched) return
+    const suggested = stock != null && stock > 0 ? Math.min(reste, stock) : reste
+    setQty(suggested > 0 ? String(suggested) : '')
+  }, [data, qtyTouched, reste, stock])
+
+  const shipMut = useMutation({
+    mutationFn: (quantite: number) =>
+      apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/expedier-divers`, {
+        method: 'POST',
+        body: JSON.stringify({ quantite }),
+      }),
+    onSuccess: () => {
+      setConfirmShip(false)
+      setQtyTouched(false)
+      setError(null)
+      queryClient.invalidateQueries({ queryKey })
+      queryClient.invalidateQueries({ queryKey: ['commande-client-divers-expeditions', commandeId] })
+      onSuccess()
+    },
+    onError: (e: unknown) => {
+      setConfirmShip(false)
+      setError(e instanceof Error ? e.message : 'Erreur')
+    },
+  })
+
+  const qtyNum = Number(qty.replace(',', '.'))
+  const canShip = !soldee && Number.isFinite(qtyNum) && qtyNum > 0
+
+  return (
+    <>
+      <div className="flex flex-col h-full min-h-0 overflow-hidden bg-zinc-100/80">
+        {/* Tab strip + close (mps_designer §31.4) — single tab, the drawer has
+            one job: ship this article and show where it already went. */}
+        <div className="flex-shrink-0 flex items-center border-b bg-zinc-200/50 p-1 gap-1">
+          <span className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-accent-foreground shadow-sm">
+            <Truck className="h-3.5 w-3.5" />
+            <span>Expédition</span>
+          </span>
+          <div className="ml-auto flex items-center pr-1">
+            <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7" title="Fermer">
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
+          {soldee && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border/60 bg-zinc-200/40 text-[11px] text-muted-foreground">
+              <Lock className="h-3.5 w-3.5 flex-shrink-0" />
+              Commande terminée — expédition en lecture seule.
+            </div>
+          )}
+          {isLoading && (
+            <div className="space-y-2">{[1, 2].map((i) => <div key={i} className="h-14 bg-muted animate-pulse rounded-lg" />)}</div>
+          )}
+          {isError && (
+            <div className="flex flex-col items-center justify-center py-6 text-destructive">
+              <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
+            </div>
+          )}
+
+          {data && (
+            <section>
+              <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
+                Article
+              </h3>
+              <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-stone-400/10">
+                    <Box className="h-3.5 w-3.5 text-stone-600" />
+                  </div>
+                  <p className="text-sm font-medium truncate">{data.ref_designation || '—'}</p>
+                </div>
+                <div className="ml-9 space-y-1">
+                  {!!data.variation1_label && <KV label="Variation 1" value={data.variation1_label} />}
+                  {!!data.variation2_label && <KV label="Variation 2" value={data.variation2_label} />}
+                  <KV label="Commandé" value={`${fmtNum(commandee, 1)} ${uniteLabel}`} />
+                  <KV
+                    label="Expédié"
+                    value={
+                      <span className={cn('tabular-nums', commandee > 0 && expediee >= commandee - 0.001 && 'text-green-600 font-semibold')}>
+                        {fmtNum(expediee, 1)} {uniteLabel}
+                      </span>
+                    }
+                  />
+                  <KV label="Reste à expédier" value={`${fmtNum(reste, 1)} ${uniteLabel}`} />
+                  <KV
+                    label="Stock disponible"
+                    value={
+                      stock == null
+                        ? <span className="text-muted-foreground italic">non suivi</span>
+                        : (
+                          <span className={cn('tabular-nums font-semibold', stock <= 0 ? 'text-destructive' : stock < reste ? 'text-amber-600' : 'text-green-600')}>
+                            {fmtNum(stock, 1)} {uniteLabel}
+                          </span>
+                        )
+                    }
+                  />
+                  {data.prix > 0 && <KV label="Prix unitaire" value={`${fmtNum(data.prix, 2)} €`} />}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {data && (
+            <section>
+              <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
+                Expéditions de la ligne
+              </h3>
+              {data.expeditions.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                  <Truck className="h-8 w-8 mb-2 opacity-50" />
+                  <p className="text-sm font-medium">Aucune expédition pour cette ligne</p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-zinc-200/60 border-b border-border/60">
+                      <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <th className="px-2.5 py-2 font-semibold text-left">N°</th>
+                        <th className="px-2.5 py-2 font-semibold text-left">Date</th>
+                        <th className="px-2.5 py-2 font-semibold text-left w-full">Conteneur</th>
+                        <th className="px-2.5 py-2 font-semibold text-right">Quantité</th>
+                        <th className="px-2.5 py-2 font-semibold text-left">État</th>
+                        <th className="px-2.5 py-2 font-semibold text-right"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.expeditions.flatMap((e) =>
+                        e.cartons.map((c, ci) => {
+                          const cartonQty = c.items.reduce((s, i) => s + i.quantite, 0)
+                          return (
+                            <tr key={c.IDligne_expedition_divers} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
+                              <td className="px-2.5 py-1.5 whitespace-nowrap tabular-nums font-medium">
+                                {ci === 0 ? e.IDexpedition_divers : ''}
+                              </td>
+                              <td className="px-2.5 py-1.5 whitespace-nowrap">{ci === 0 ? fmtSupplyDate(e.date) : ''}</td>
+                              <td className="px-2.5 py-1.5 truncate">
+                                <span className="inline-flex items-center gap-1.5 font-medium">
+                                  <Package className="h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
+                                  {c.detail_ligne || '—'}
+                                </span>
+                              </td>
+                              <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums font-semibold">
+                                {fmtNum(cartonQty, 1)} {uniteLabel}
+                              </td>
+                              <td className="px-2.5 py-1.5 whitespace-nowrap">
+                                {ci === 0 && (
+                                  e.est_facture
+                                    ? <Badge variant="outline" className="text-[10px] py-0 gap-1 border text-white bg-success border-success">Facturée</Badge>
+                                    : <Badge variant="outline" className="text-[10px] py-0 gap-1 border text-white bg-primary border-primary">Non facturée</Badge>
+                                )}
+                              </td>
+                              <td className="px-2.5 py-1.5 whitespace-nowrap text-right">
+                                {ci === 0 && (
+                                  <span className="inline-flex items-center gap-0.5">
+                                    <Button
+                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent"
+                                      title="Imprimer le bon de livraison"
+                                      onClick={() => window.open(`${API_URL}/expeditions/divers/${e.IDexpedition_divers}/pdf`, '_blank')}
+                                    >
+                                      <Printer className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent"
+                                      title="Envoyer un email"
+                                      onClick={() => setEmailExpId(e.IDexpedition_divers)}
+                                    >
+                                      <AtSign className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        }),
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
+
+          {error && (
+            <div className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Ship bar — the legacy "Expédier" button + quantity prompt, inlined. */}
+        {!soldee && data && (
+          <div className="flex-shrink-0 px-3 py-2 border-t bg-zinc-200/50 flex items-center gap-2">
+            <label className="text-[11px] text-muted-foreground font-medium">Quantité à expédier</label>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={qty}
+              onChange={(e) => { setQty(e.target.value); setQtyTouched(true); setError(null) }}
+              className="h-8 w-24 px-2 text-sm text-right tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <span className="text-[11px] text-muted-foreground">{uniteLabel}</span>
+            {stock != null && Number.isFinite(qtyNum) && qtyNum > stock && (
+              <span className="text-[11px] text-amber-600 font-medium">Au-delà du stock disponible</span>
+            )}
+            <Button
+              size="sm"
+              className="ml-auto flex-shrink-0"
+              disabled={!canShip || shipMut.isPending}
+              onClick={() => setConfirmShip(true)}
+            >
+              {shipMut.isPending
+                ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                : <Truck className="h-3.5 w-3.5 mr-1.5" />}
+              Expédier
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {emailExpId !== null && (
+        <SendEmailDialog
+          open
+          onClose={() => setEmailExpId(null)}
+          contextLabel={`Expédition N° ${emailExpId}`}
+          queryKey={['expedition-email-defaults', 'divers', emailExpId]}
+          loadDefaults={() => apiFetch(`/expeditions/divers/${emailExpId}/email-defaults`)}
+          pdfUrl={`${API_URL}/expeditions/divers/${emailExpId}/pdf`}
+          pdfAttachmentLabel={`BL-${emailExpId}.pdf`}
+          onSend={(p) => postEmail(`${API_URL}/expeditions/divers/${emailExpId}/email`, p, { includeAttachPdf: true })}
+        />
+      )}
+
+      <ConfirmDialog
+        open={confirmShip}
+        variant="default"
+        title="Expédier l'article"
+        description={
+          `Expédier ${fmtNum(qtyNum, 1)} ${uniteLabel} de ${diversArticleLabel(data?.ref_designation ?? '', data?.variation1_label, data?.variation2_label)} ?`
+          + ' La quantité est ajoutée au dernier carton de l’expédition en cours (créée si besoin) et déduite du stock.'
+        }
+        confirmLabel="Expédier"
+        isPending={shipMut.isPending}
+        onCancel={() => setConfirmShip(false)}
+        onConfirm={() => shipMut.mutate(qtyNum)}
+      />
+    </>
+  )
+}
+
+// ── Expédition groupée (legacy FEN_Expéditions_Groupées) ──
+
+/** One divers line of the order, with what it still owes and what's on hand. */
+interface DiversOrderLine {
+  IDligne_commande_client: number
+  IDref_divers: number
+  ref_designation: string
+  IDVariation1: number
+  variation1_label: string | null
+  IDVariation2: number
+  variation2_label: string | null
+  unite: number
+  unite_label: string
+  prix: number
+  quantite_commandee: number
+  quantite_expediee: number
+  reste: number
+  stock_disponible: number | null
+}
+interface DiversGroupPayload {
+  lignes: DiversOrderLine[]
+  expeditions: DiversShipExpedition[]
+  defaults: { IDclient: number; IDadresse: number; IDtransporteur: number; ref_client: string } | null
+}
+interface TransporteurLite { IDtransporteur: number; nom: string }
+
+/** Whole-order divers shipment editor: pick/create the expédition, set its
+ *  header, organise cartons, and drop the order's articles into them. */
+function ExpeditionGroupeeDialog({
+  open, commande, onClose, onMutationSuccess,
+}: {
+  open: boolean
+  commande: CommandeDetail
+  onClose: () => void
+  onMutationSuccess: () => void
+}) {
+  const commandeId = commande.IDcommande_client
+  const queryClient = useQueryClient()
+  const queryKey = ['commande-client-divers-expeditions', commandeId]
+
+  const { data, isLoading } = useQuery<DiversGroupPayload>({
+    queryKey,
+    queryFn: () => apiFetch(`/commandes-client/${commandeId}/expeditions-divers`),
+    enabled: open,
+  })
+  const { data: transporteurs } = useQuery<TransporteurLite[]>({
+    queryKey: ['exp-transporteurs'],
+    queryFn: () => apiFetch('/expeditions/lookups/transporteurs'),
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
+  })
+  const { data: adresses } = useQuery<AdresseLookup[]>({
+    queryKey: ['cc-adresses', commande.IDclient],
+    queryFn: () => apiFetch(`/commandes-client/lookups/adresses?client=${commande.IDclient}`),
+    enabled: open && commande.IDclient > 0,
+  })
+
+  const [expId, setExpId] = useState<number | null>(null)
+  const [cartonId, setCartonId] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  // Header drafts — text/date fields save on blur, selects on change, so the
+  // modal never holds unsaved work the user can lose by closing it.
+  const [draftDate, setDraftDate] = useState('')
+  const [draftRef, setDraftRef] = useState('')
+  const [addRefId, setAddRefId] = useState(0)
+  const [addQty, setAddQty] = useState('')
+  const [deleteCarton, setDeleteCarton] = useState<DiversShipCarton | null>(null)
+  const [deleteItem, setDeleteItem] = useState<DiversShipItem | null>(null)
+
+  const expeditions = useMemo(() => data?.expeditions ?? [], [data])
+  const selectedExp = expeditions.find((e) => e.IDexpedition_divers === expId) ?? null
+  const selectedCarton = selectedExp?.cartons.find((c) => c.IDligne_expedition_divers === cartonId)
+    ?? selectedExp?.cartons[0] ?? null
+  const locked = selectedExp ? selectedExp.locked === 1 : false
+  const soldee = Number(commande.est_soldee) === 1
+  const readOnly = locked || soldee
+
+  // Land on the order's open shipment (or the most recent one) and keep the
+  // selection valid as shipments/cartons come and go.
+  useEffect(() => {
+    if (!open) return
+    if (expeditions.length === 0) { setExpId(null); return }
+    const stillThere = expId !== null && expeditions.some((e) => e.IDexpedition_divers === expId)
+    if (!stillThere) setExpId((expeditions.find((e) => e.locked === 0) ?? expeditions[0]).IDexpedition_divers)
+  }, [open, expeditions, expId])
+
+  useEffect(() => {
+    if (!selectedExp) { setCartonId(null); return }
+    const stillThere = cartonId !== null && selectedExp.cartons.some((c) => c.IDligne_expedition_divers === cartonId)
+    if (!stillThere) setCartonId(selectedExp.cartons[0]?.IDligne_expedition_divers ?? null)
+  }, [selectedExp, cartonId])
+
+  // Re-seed the header drafts whenever the selected shipment changes.
+  useEffect(() => {
+    setDraftDate(hfsqlDateToInput(selectedExp?.date ?? null))
+    setDraftRef(selectedExp?.ref_client ?? '')
+  }, [selectedExp?.IDexpedition_divers, selectedExp?.date, selectedExp?.ref_client])
+
+  useEffect(() => {
+    if (!open) { setError(null); setAddRefId(0); setAddQty('') }
+  }, [open])
+
+  const refresh = useCallback(() => {
+    // Also drops the per-line drawer cache — a grouped edit changes what a
+    // line shows as expédié.
+    queryClient.invalidateQueries({ queryKey: ['commande-client-divers-expeditions', commandeId] })
+    queryClient.invalidateQueries({ queryKey: ['commande-client-divers-line', commandeId] })
+    onMutationSuccess()
+  }, [queryClient, onMutationSuccess, commandeId])
+
+  const fail = (e: unknown) => setError(e instanceof Error ? e.message : 'Erreur')
+
+  const createExpMut = useMutation({
+    mutationFn: () => apiFetch<{ IDexpedition_divers: number }>(`/commandes-client/${commandeId}/expeditions-divers`, { method: 'POST' }),
+    onSuccess: (r) => { setExpId(r.IDexpedition_divers); setError(null); refresh() },
+    onError: fail,
+  })
+  const headerMut = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch(`/expeditions/divers/${selectedExp!.IDexpedition_divers}`, { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: () => { setError(null); refresh() },
+    onError: fail,
+  })
+  const addCartonMut = useMutation({
+    mutationFn: (detail_ligne: string) =>
+      apiFetch(`/expeditions/divers/${selectedExp!.IDexpedition_divers}/lignes`, { method: 'POST', body: JSON.stringify({ detail_ligne }) }),
+    onSuccess: () => { setError(null); refresh() },
+    onError: fail,
+  })
+  const renameCartonMut = useMutation({
+    mutationFn: ({ id, detail_ligne }: { id: number; detail_ligne: string }) =>
+      apiFetch(`/expeditions/divers/lignes/${id}`, { method: 'PUT', body: JSON.stringify({ detail_ligne }) }),
+    onSuccess: () => { setError(null); refresh() },
+    onError: fail,
+  })
+  const deleteCartonMut = useMutation({
+    mutationFn: (id: number) => apiFetch(`/expeditions/divers/lignes/${id}`, { method: 'DELETE' }),
+    onSuccess: () => { setDeleteCarton(null); setError(null); refresh() },
+    onError: fail,
+  })
+  const addItemMut = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch(`/expeditions/divers/lignes/${selectedCarton!.IDligne_expedition_divers}/items`, { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => { setAddRefId(0); setAddQty(''); setError(null); refresh() },
+    onError: fail,
+  })
+  const updateItemMut = useMutation({
+    mutationFn: ({ id, quantite }: { id: number; quantite: number }) =>
+      apiFetch(`/expeditions/divers/items/${id}`, { method: 'PUT', body: JSON.stringify({ quantite }) }),
+    onSuccess: () => { setError(null); refresh() },
+    onError: fail,
+  })
+  const deleteItemMut = useMutation({
+    mutationFn: (id: number) => apiFetch(`/expeditions/divers/items/${id}`, { method: 'DELETE' }),
+    onSuccess: () => { setDeleteItem(null); setError(null); refresh() },
+    onError: fail,
+  })
+
+  const lignes = data?.lignes ?? []
+  const addLine = lignes.find((l) => l.IDligne_commande_client === addRefId) ?? null
+  const addQtyNum = Number(addQty.replace(',', '.'))
+  const canAddItem = !readOnly && !!selectedCarton && !!addLine && Number.isFinite(addQtyNum) && addQtyNum > 0
+
+  // Prefill the quantity with the picked line's remainder (capped by stock).
+  useEffect(() => {
+    if (!addLine) { setAddQty(''); return }
+    const suggested = addLine.stock_disponible != null && addLine.stock_disponible > 0
+      ? Math.min(addLine.reste, addLine.stock_disponible)
+      : addLine.reste
+    setAddQty(suggested > 0 ? String(suggested) : '')
+  }, [addRefId])
+
+  if (!open) return null
+
+  const cartonTotal = (c: DiversShipCarton) => c.items.reduce((s, i) => s + i.quantite, 0)
+  const expTotalEur = selectedExp
+    ? selectedExp.cartons.reduce((s, c) => s + c.items.reduce((is, i) => is + i.quantite * i.prix, 0), 0)
+    : 0
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+        <DialogContent className="max-w-5xl w-[92vw] h-[85vh] flex flex-col" onClose={onClose}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Boxes className="h-5 w-5 text-accent" />
+              Expédition groupée
+              <span className="text-sm font-normal text-muted-foreground">
+                · N° {commande.numero ?? commande.IDcommande_client} · {commande.client_nom || '—'}
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+
+          {isLoading ? (
+            <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
+          ) : expeditions.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
+              <Truck className="h-12 w-12 opacity-40" />
+              <p className="text-sm font-medium">Aucune expédition sur cette commande</p>
+              {!soldee && (
+                <Button size="sm" onClick={() => createExpMut.mutate()} disabled={createExpMut.isPending}>
+                  {createExpMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Plus className="h-3.5 w-3.5 mr-1.5" />}
+                  Nouvelle expédition
+                </Button>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Header: which shipment, and its delivery details */}
+              <div className="flex-shrink-0 mt-4 grid grid-cols-2 gap-x-4 gap-y-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Expédition</label>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <PopoverSelect
+                        options={expeditions.map((e) => ({
+                          id: e.IDexpedition_divers,
+                          primary: `N° ${e.IDexpedition_divers}${e.date ? ` du ${formatHfsqlDate(e.date)}` : ''}`,
+                          secondary: e.est_facture ? 'facturée' : undefined,
+                        }))}
+                        value={expId ?? 0}
+                        onChange={(id) => setExpId(id || null)}
+                        hideEmpty
+                      />
+                    </div>
+                    {!soldee && (
+                      <Button variant="outline" size="icon" className="h-9 w-9 flex-shrink-0" title="Nouvelle expédition"
+                        onClick={() => createExpMut.mutate()} disabled={createExpMut.isPending}>
+                        {createExpMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Date</label>
+                  <input
+                    type="date"
+                    value={draftDate}
+                    disabled={readOnly}
+                    onChange={(e) => setDraftDate(e.target.value)}
+                    onBlur={() => {
+                      if (readOnly || !selectedExp) return
+                      if (draftDate === hfsqlDateToInput(selectedExp.date)) return
+                      headerMut.mutate({ date: inputDateToHfsql(draftDate) })
+                    }}
+                    className={cn('w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'bg-zinc-100 text-muted-foreground')}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Référence client</label>
+                  <input
+                    type="text"
+                    value={draftRef}
+                    disabled={readOnly}
+                    onChange={(e) => setDraftRef(e.target.value)}
+                    onBlur={() => {
+                      if (readOnly || !selectedExp) return
+                      if (draftRef === (selectedExp.ref_client ?? '')) return
+                      headerMut.mutate({ ref_client: draftRef })
+                    }}
+                    className={cn('w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'bg-zinc-100 text-muted-foreground')}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Transporteur</label>
+                  <PopoverSelect
+                    options={(transporteurs ?? []).map((t) => ({ id: t.IDtransporteur, primary: t.nom }))}
+                    value={selectedExp?.IDtransporteur ?? 0}
+                    onChange={(id) => { if (!readOnly) headerMut.mutate({ IDtransporteur: id }) }}
+                    disabled={readOnly}
+                    emptyLabel="— aucun —"
+                  />
+                </div>
+                <div className="space-y-1 col-span-2">
+                  <label className="text-xs font-medium text-muted-foreground">Adresse de livraison</label>
+                  <PopoverSelect
+                    options={(adresses ?? []).map(adresseOption)}
+                    value={selectedExp?.IDadresse ?? 0}
+                    onChange={(id) => { if (!readOnly) headerMut.mutate({ IDadresse: id }) }}
+                    disabled={readOnly}
+                    emptyLabel="— aucune —"
+                  />
+                </div>
+              </div>
+
+              {readOnly && (
+                <div className="flex-shrink-0 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg border border-border/60 bg-zinc-200/40 text-[11px] text-muted-foreground">
+                  <Lock className="h-3.5 w-3.5 flex-shrink-0" />
+                  {soldee ? 'Commande terminée — expédition en lecture seule.' : 'Expédition facturée — non modifiable.'}
+                </div>
+              )}
+
+              {/* Cartons (left) + the selected carton's articles (right) */}
+              <div className="flex-1 min-h-0 mt-3 flex gap-3">
+                <div className="w-56 flex-shrink-0 flex flex-col rounded-lg border border-border/60 bg-zinc-100/80 overflow-hidden">
+                  <div className="flex-shrink-0 px-3 py-2 border-b bg-zinc-200/50 text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+                    Conteneurs ({selectedExp?.cartons.length ?? 0})
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5 scrollbar-transparent">
+                    {(selectedExp?.cartons ?? []).map((c) => {
+                      const active = selectedCarton?.IDligne_expedition_divers === c.IDligne_expedition_divers
+                      return (
+                        <button
+                          key={c.IDligne_expedition_divers}
+                          type="button"
+                          onClick={() => setCartonId(c.IDligne_expedition_divers)}
+                          className={cn(
+                            'w-full text-left p-2.5 rounded-lg border bg-card shadow-sm transition-colors',
+                            active ? 'border-accent ring-1 ring-accent' : 'border-border/60 hover:border-accent/40',
+                          )}
+                        >
+                          <span className="flex items-center gap-2 min-w-0">
+                            <Package className="h-4 w-4 text-amber-600 flex-shrink-0" />
+                            <span className="text-sm font-medium truncate">{c.detail_ligne || '—'}</span>
+                          </span>
+                          <span className="block mt-1 ml-6 text-[11px] text-muted-foreground tabular-nums">
+                            {c.items.length} article{c.items.length > 1 ? 's' : ''} · {fmtNum(cartonTotal(c), 1)}
+                          </span>
+                        </button>
+                      )
+                    })}
+                    {!readOnly && (
+                      <Button
+                        variant="ghost" size="sm"
+                        onClick={() => addCartonMut.mutate(`CARTON ${(selectedExp?.cartons.length ?? 0) + 1}`)}
+                        disabled={addCartonMut.isPending}
+                        className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
+                      >
+                        <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un carton
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex-1 min-w-0 flex flex-col rounded-lg border border-border/60 bg-white overflow-hidden">
+                  {selectedCarton ? (
+                    <>
+                      <div className="flex-shrink-0 px-3 py-2 border-b bg-zinc-200/50 flex items-center gap-2">
+                        <Package className="h-4 w-4 text-amber-600 flex-shrink-0" />
+                        <input
+                          key={selectedCarton.IDligne_expedition_divers}
+                          type="text"
+                          defaultValue={selectedCarton.detail_ligne}
+                          disabled={readOnly}
+                          onBlur={(e) => {
+                            const v = e.target.value
+                            if (readOnly || v === selectedCarton.detail_ligne) return
+                            renameCartonMut.mutate({ id: selectedCarton.IDligne_expedition_divers, detail_ligne: v })
+                          }}
+                          className={cn('flex-1 min-w-0 h-7 px-2 text-sm font-medium rounded-md border border-transparent bg-transparent hover:border-input focus:border-input focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'hover:border-transparent')}
+                        />
+                        {!readOnly && (
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive flex-shrink-0"
+                            title="Supprimer le carton" onClick={() => setDeleteCarton(selectedCarton)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent">
+                        <table className="w-full text-xs">
+                          <thead className="bg-zinc-100 border-b border-border/60 sticky top-0">
+                            <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                              <th className="px-2.5 py-2 font-semibold text-left w-full">Référence</th>
+                              <th className="px-2.5 py-2 font-semibold text-left">Variation 1</th>
+                              <th className="px-2.5 py-2 font-semibold text-left">Variation 2</th>
+                              <th className="px-2.5 py-2 font-semibold text-right">Quantité</th>
+                              <th className="px-2.5 py-2 font-semibold text-right">Total</th>
+                              <th className="px-2.5 py-2 font-semibold text-right"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedCarton.items.length === 0 && (
+                              <tr><td colSpan={6} className="px-2.5 py-6 text-center text-muted-foreground italic">Aucun article dans ce carton</td></tr>
+                            )}
+                            {selectedCarton.items.map((it) => (
+                              <tr key={it.IDref_divers_expedie} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
+                                <td className="px-2.5 py-1.5 truncate font-medium" title={it.ref_designation}>
+                                  {it.designation.trim() || it.ref_designation || `Réf #${it.IDref_divers}`}
+                                </td>
+                                <td className="px-2.5 py-1.5 whitespace-nowrap">{it.variation1_label || '—'}</td>
+                                <td className="px-2.5 py-1.5 whitespace-nowrap">{it.variation2_label || '—'}</td>
+                                <td className="px-2.5 py-1.5 text-right">
+                                  <input
+                                    key={`${it.IDref_divers_expedie}-${it.quantite}`}
+                                    type="text"
+                                    inputMode="decimal"
+                                    defaultValue={String(it.quantite)}
+                                    disabled={readOnly}
+                                    onBlur={(e) => {
+                                      const v = Number(e.target.value.replace(',', '.'))
+                                      if (readOnly || !Number.isFinite(v) || v < 0 || v === it.quantite) return
+                                      updateItemMut.mutate({ id: it.IDref_divers_expedie, quantite: v })
+                                    }}
+                                    className={cn('h-7 w-20 px-1.5 text-xs text-right tabular-nums rounded-md border border-transparent bg-transparent hover:border-input focus:border-input focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'hover:border-transparent')}
+                                  />
+                                </td>
+                                <td className="px-2.5 py-1.5 text-right tabular-nums whitespace-nowrap">{fmtNum(it.quantite * it.prix, 2)} €</td>
+                                <td className="px-2.5 py-1.5 text-right">
+                                  {!readOnly && (
+                                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive"
+                                      title="Retirer du carton" onClick={() => setDeleteItem(it)}>
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Add an article — picked from the order's own divers lines */}
+                      {!readOnly && (
+                        <div className="flex-shrink-0 px-2.5 py-2 border-t bg-zinc-200/50 flex items-center gap-2">
+                          <div className="flex-1 min-w-0">
+                            <SearchableCombobox<{ id: number; primary: string; secondary?: string }>
+                              size="sm"
+                              options={lignes.map((l) => ({
+                                id: l.IDligne_commande_client,
+                                primary: diversArticleLabel(l.ref_designation, l.variation1_label, l.variation2_label),
+                                secondary: `reste ${fmtNum(l.reste, 1)}${l.stock_disponible != null ? ` · stock ${fmtNum(l.stock_disponible, 1)}` : ''}`,
+                              }))}
+                              value={addRefId}
+                              onChange={setAddRefId}
+                              getId={(o) => o.id}
+                              getPrimary={(o) => o.primary}
+                              getSecondary={(o) => o.secondary}
+                              placeholder="Ajouter un article de la commande"
+                            />
+                          </div>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={addQty}
+                            onChange={(e) => setAddQty(e.target.value)}
+                            placeholder="Qté"
+                            className="h-7 w-20 px-2 text-xs text-right tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                          />
+                          <Button
+                            size="sm" className="h-7 flex-shrink-0"
+                            disabled={!canAddItem || addItemMut.isPending}
+                            onClick={() => addItemMut.mutate({
+                              IDref_divers: addLine!.IDref_divers,
+                              IDVariation1: addLine!.IDVariation1,
+                              IDVariation2: addLine!.IDVariation2,
+                              quantite: addQtyNum,
+                              prix: addLine!.prix,
+                            })}
+                          >
+                            {addItemMut.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Plus className="h-3 w-3 mr-1" />}
+                            Ajouter
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
+                      <Package className="h-10 w-10 opacity-40" />
+                      <p className="text-sm">Aucun carton — ajoutez-en un pour commencer</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {error && (
+                <div className="flex-shrink-0 flex items-start gap-1.5 text-xs text-destructive mt-3">
+                  <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span>{error}</span>
+                </div>
+              )}
+
+              <DialogFooter className="mt-4 sm:justify-between items-center">
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {selectedExp?.cartons.length ?? 0} carton{(selectedExp?.cartons.length ?? 0) > 1 ? 's' : ''}
+                  {expTotalEur > 0 ? ` · ${fmtNum(expTotalEur, 2)} €` : ''}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline" size="sm" disabled={!selectedExp}
+                    onClick={() => selectedExp && window.open(`${API_URL}/expeditions/divers/${selectedExp.IDexpedition_divers}/pdf`, '_blank')}
+                  >
+                    <Printer className="h-3.5 w-3.5 mr-1.5" />Bon de livraison
+                  </Button>
+                  <Button size="sm" onClick={onClose}>Fermer</Button>
+                </div>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={deleteCarton !== null}
+        title="Supprimer le carton"
+        description="Le carton et tous ses articles seront supprimés, et les quantités remises en stock."
+        confirmLabel="Supprimer"
+        isPending={deleteCartonMut.isPending}
+        onCancel={() => setDeleteCarton(null)}
+        onConfirm={() => { if (deleteCarton) deleteCartonMut.mutate(deleteCarton.IDligne_expedition_divers) }}
+      />
+
+      <ConfirmDialog
+        open={deleteItem !== null}
+        title="Retirer l'article"
+        description={deleteItem
+          ? `${diversArticleLabel(deleteItem.ref_designation, deleteItem.variation1_label, deleteItem.variation2_label)} sera retiré du carton et sa quantité remise en stock.`
+          : undefined}
+        confirmLabel="Retirer"
+        isPending={deleteItemMut.isPending}
+        onCancel={() => setDeleteItem(null)}
+        onConfirm={() => { if (deleteItem) deleteItemMut.mutate(deleteItem.IDref_divers_expedie) }}
+      />
+    </>
   )
 }
 
@@ -3778,6 +4729,8 @@ function LineFormDialog({
         type: line.type || 2,
         IDreference: line.IDreference || 0,
         IDcolori: line.IDcolori || 0,
+        IDVariation1: line.IDVariation1 || 0,
+        IDVariation2: line.IDVariation2 || 0,
         quantite: line.quantite != null ? String(line.quantite) : '',
         unite: line.unite || 3,
         prix: line.prix != null ? String(line.prix) : '',
@@ -3834,7 +4787,24 @@ function LineFormDialog({
   // divers are generic and stay unrestricted.
   const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['cc-refs-ecru', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-ecru?client=${commande.IDclient}`), enabled: open && form.type === 1 })
   const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['cc-refs-fini', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-fini?client=${commande.IDclient}`), enabled: open && form.type === 2 })
-  const { data: refsDivers } = useQuery<RefDivers[]>({ queryKey: ['cc-refs-divers'], queryFn: () => apiFetch('/commandes-client/lookups/refs-divers'), enabled: open && form.type === 3 })
+  // Divers refs come from the shared expéditions lookup — it's the only one
+  // that exposes the sTypeVariation1/2 axis labels the variation pickers need.
+  const { data: refsDivers } = useQuery<RefDivers[]>({
+    queryKey: ['exp-divers-refs'],
+    queryFn: () => apiFetch('/expeditions/divers/lookups/refs'),
+    enabled: open && form.type === 3,
+    staleTime: 5 * 60 * 1000,
+  })
+  const selRefDivers = (refsDivers ?? []).find((r) => r.IDref_divers === form.IDreference) ?? null
+  const { data: diversVariations } = useQuery<RefDiversVariation[]>({
+    queryKey: ['exp-divers-vars', form.IDreference],
+    queryFn: () => apiFetch(`/expeditions/divers/lookups/refs/${form.IDreference}/variations`),
+    enabled: open && form.type === 3 && form.IDreference > 0,
+    staleTime: 5 * 60 * 1000,
+  })
+  // niveau 1 ↔ sTypeVariation1 axis (0 = pre-axis legacy rows), niveau 2 ↔ axis 2.
+  const diversVars1 = (diversVariations ?? []).filter((v) => v.niveau <= 1)
+  const diversVars2 = (diversVariations ?? []).filter((v) => v.niveau === 2)
 
   // Coloris lookup for the selected ref (écru/fini only).
   const { data: coloriOptions } = useQuery<ColoriOption[]>({
@@ -3855,6 +4825,8 @@ function LineFormDialog({
         type: form.type,
         IDreference: form.IDreference,
         IDcolori: form.IDcolori,
+        IDVariation1: form.type === 3 ? form.IDVariation1 : 0,
+        IDVariation2: form.type === 3 ? form.IDVariation2 : 0,
         quantite: Number(form.quantite) || 0,
         unite: form.unite,
         prix: Number(form.prix) || 0,
@@ -3873,10 +4845,13 @@ function LineFormDialog({
     ? (refsEcru ?? []).map((r) => ({ id: r.IDref_ecru, primary: r.reference }))
     : form.type === 2
       ? (refsFini ?? []).map((r) => ({ id: r.IDref_fini, primary: r.reference, secondary: r.designation }))
-      : (refsDivers ?? []).map((r) => ({ id: r.IDref_divers, primary: r.designation }))
+      // Archived divers refs stay hidden, except the one an existing line points at.
+      : (refsDivers ?? [])
+        .filter((r) => !r.archive || r.IDref_divers === (line?.IDreference ?? 0))
+        .map((r) => ({ id: r.IDref_divers, primary: r.designation, secondary: r.unite_label || undefined }))
 
   const setType = (t: number) => {
-    setForm({ ...form, type: t, IDreference: 0, IDcolori: 0, unite: t === 1 ? 1 : t === 3 ? 4 : 3 })
+    setForm({ ...form, type: t, IDreference: 0, IDcolori: 0, IDVariation1: 0, IDVariation2: 0, unite: t === 1 ? 1 : t === 3 ? 4 : 3 })
   }
 
   const canSave = form.IDreference > 0 && Number(form.quantite) > 0
@@ -3917,7 +4892,7 @@ function LineFormDialog({
             <SearchableCombobox<{ id: number; primary: string; secondary?: string }>
               options={refOptions}
               value={form.IDreference}
-              onChange={(id) => setForm({ ...form, IDreference: id, IDcolori: 0 })}
+              onChange={(id) => setForm({ ...form, IDreference: id, IDcolori: 0, IDVariation1: 0, IDVariation2: 0 })}
               getId={(r) => r.id}
               getPrimary={(r) => r.primary}
               getSecondary={(r) => r.secondary}
@@ -3933,6 +4908,35 @@ function LineFormDialog({
                 onChange={(id) => setForm({ ...form, IDcolori: id })}
                 disabled={!form.IDreference}
                 emptyLabel="— Choisir —"
+              />
+            </div>
+          )}
+          {/* Divers: the two variation axes narrow the catalog ref down to the
+              exact article shipped — they key both the stock ledger and the
+              expedition items, so a line without them can't be shipped. */}
+          {form.type === 3 && form.IDreference > 0 && diversVars1.length > 0 && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">
+                {selRefDivers && selRefDivers.sTypeVariation1 !== 'Aucun' ? selRefDivers.sTypeVariation1 : 'Variation'}
+              </label>
+              <PopoverSelect
+                options={diversVars1.map((v) => ({ id: v.IDref_divers_variation, primary: v.designation }))}
+                value={form.IDVariation1}
+                onChange={(id) => setForm({ ...form, IDVariation1: id })}
+                emptyLabel="— aucune —"
+              />
+            </div>
+          )}
+          {form.type === 3 && form.IDreference > 0 && diversVars2.length > 0 && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">
+                {selRefDivers && selRefDivers.sTypeVariation2 !== 'Aucun' ? selRefDivers.sTypeVariation2 : 'Variation 2'}
+              </label>
+              <PopoverSelect
+                options={diversVars2.map((v) => ({ id: v.IDref_divers_variation, primary: v.designation }))}
+                value={form.IDVariation2}
+                onChange={(id) => setForm({ ...form, IDVariation2: id })}
+                emptyLabel="— aucune —"
               />
             </div>
           )}

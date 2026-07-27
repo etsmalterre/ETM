@@ -793,6 +793,10 @@ const createBody = z.object({
   // divers
   IDclient: z.number().int().nonnegative().optional(),
   ref_client: z.string().optional(),
+  // divers — optional back-pointer to the client order the shipment fulfils
+  // (expedition_divers.IDcommande_client; set by the Clients › Commandes
+  // "Expédition groupée" flow, left at 0 for standalone misc shipments).
+  IDcommande_client_divers: z.number().int().nonnegative().optional(),
   // shared
   date: z.string().optional(),
   IDtransporteur: z.number().int().nonnegative().optional(),
@@ -842,7 +846,7 @@ expeditionsRouter.post('/:kind', async (req: Request, res: Response) => {
     const before = await maxId('expedition_divers', 'IDexpedition_divers')
     await query(
       `INSERT INTO expedition_divers (IDclient, ref_client, IDadresse, IDtransporteur, DATE, est_valide, est_facture, IDcommande_client) ` +
-        `VALUES (${n(d.IDclient)}, ${sqlText(d.ref_client)}, ${n(d.IDadresse)}, ${n(d.IDtransporteur)}, '${date}', 0, 0, 0)`,
+        `VALUES (${n(d.IDclient)}, ${sqlText(d.ref_client)}, ${n(d.IDadresse)}, ${n(d.IDtransporteur)}, '${date}', 0, 0, ${n(d.IDcommande_client_divers ?? 0)})`,
     )
     const newId = await newIdAfterInsert('expedition_divers', 'IDexpedition_divers', before)
     res.status(201).json({ id: newId, kind })
@@ -927,6 +931,7 @@ expeditionsRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
       )
       const lineIds = lineRows.map((r) => Number(r.IDligne_expedition_divers)).filter((x) => x > 0)
       if (lineIds.length > 0) {
+        await restoreDiversStockForCartons(lineIds)
         await query(`DELETE FROM ref_divers_expedie WHERE IDligne_expedition_divers IN (${lineIds.join(',')})`)
       }
       await query(`DELETE FROM ligne_expedition_divers WHERE IDexpedition_divers = ${id}`)
@@ -1179,7 +1184,8 @@ expeditionsRouter.delete('/divers/lignes/:lineId', async (req: Request, res: Res
     const parent = await diversLineParent(lineId)
     if (parent === 0) { res.status(404).json({ error: 'Line not found' }); return }
     if (await isLocked('divers', parent)) { res.status(409).json(FACTURE_LOCK); return }
-    // Cascade: the carton's items go with it.
+    // Cascade: the carton's items go with it — their quantities go back on stock.
+    await restoreDiversStockForCartons([lineId])
     await query(`DELETE FROM ref_divers_expedie WHERE IDligne_expedition_divers = ${lineId}`)
     await query(`DELETE FROM ligne_expedition_divers WHERE IDligne_expedition_divers = ${lineId}`)
     res.json({ ok: true })
@@ -1195,6 +1201,45 @@ expeditionsRouter.delete('/divers/lignes/:lineId', async (req: Request, res: Res
 
 /** Kill HFSQL REAL artifacts (69.440002 → 69.44). Prices/qty keep 4 decimals. */
 const r4 = (v: unknown): number => Math.round((Number(v) || 0) * 10000) / 10000
+
+/** Divers stock ledger — the legacy "Stock disponible" of a divers order line.
+ *  `stock_divers` holds one on-hand row per (IDref_divers, IDVariation1,
+ *  IDVariation2); legacy decrements it when an expédition divers ships that
+ *  combo and puts it back when the shipment is undone. Every write to
+ *  `ref_divers_expedie` in this file goes through here so the two apps agree
+ *  on the same live rows.
+ *
+ *  `delta` is signed: negative = shipped (take off stock), positive = restored.
+ *  MPS_NG never CREATES a stock_divers row — rows are opened by the legacy
+ *  FEN_Gestion_Stock_Divers screen when goods are received. A combo with no
+ *  row is simply untracked and the call is a no-op. */
+export async function adjustDiversStock(
+  refId: number, v1: number, v2: number, delta: number,
+): Promise<void> {
+  if (!(refId > 0) || !Number.isFinite(delta) || delta === 0) return
+  const rows = await query<{ IDstock_divers: number; quantite: number | null }>(
+    `SELECT IDstock_divers, quantite FROM stock_divers
+      WHERE IDref_divers = ${n(refId)} AND IDVariation1 = ${n(v1)} AND IDVariation2 = ${n(v2)}`,
+  )
+  if (rows.length === 0) return
+  const id = Number(rows[0].IDstock_divers) || 0
+  if (id <= 0) return
+  await query(`UPDATE stock_divers SET quantite = ${r4((Number(rows[0].quantite) || 0) + delta)} WHERE IDstock_divers = ${id}`)
+}
+
+/** Restore the divers stock consumed by a set of cartons — used by the cascade
+ *  deletes (carton dropped, expédition dropped). Reads the items before they go. */
+async function restoreDiversStockForCartons(ligneIds: number[]): Promise<void> {
+  const ids = ligneIds.filter((x) => Number.isInteger(x) && x > 0)
+  if (ids.length === 0) return
+  const rows = await query<any>(
+    `SELECT quantite, IDref_divers, IDVariation1, IDVariation2 FROM ref_divers_expedie ` +
+      `WHERE IDligne_expedition_divers IN (${ids.join(',')})`,
+  )
+  for (const r of rows as any[]) {
+    await adjustDiversStock(Number(r.IDref_divers) || 0, Number(r.IDVariation1) || 0, Number(r.IDVariation2) || 0, r4(r.quantite))
+  }
+}
 
 export interface DiversItem {
   IDref_divers_expedie: number
@@ -1213,7 +1258,7 @@ export interface DiversItem {
 
 /** Load ref_divers_expedie items for a set of cartons, with ref + variation
  *  labels resolved (batched — one query per table, one CONVERT per column). */
-async function loadDiversItems(ligneIds: number[]): Promise<Map<number, DiversItem[]>> {
+export async function loadDiversItems(ligneIds: number[]): Promise<Map<number, DiversItem[]>> {
   const out = new Map<number, DiversItem[]>()
   const ids = ligneIds.filter((x) => Number.isInteger(x) && x > 0)
   if (ids.length === 0) return out
@@ -1322,6 +1367,8 @@ expeditionsRouter.post('/divers/lignes/:lineId/items', async (req: Request, res:
       `INSERT INTO ref_divers_expedie (IDligne_expedition_divers, designation, quantite, unite, prix, IDref_divers, IDVariation1, IDVariation2) ` +
         `VALUES (${lineId}, ${sqlText(d.designation ?? '')}, ${r4(d.quantite)}, ${unite}, ${r4(prix)}, ${n(d.IDref_divers)}, ${n(v1)}, ${n(v2)})`,
     )
+    // Shipping takes the quantity off the divers stock ledger (legacy parity).
+    await adjustDiversStock(d.IDref_divers, v1, v2, -r4(d.quantite))
     res.status(201).json({ ok: true })
   } catch (err) {
     console.error('Error adding divers item:', err)
@@ -1341,6 +1388,19 @@ expeditionsRouter.put('/divers/items/:itemId', async (req: Request, res: Respons
     const parsed = diversItemBody.partial().safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+    // Snapshot the pre-edit ref/variation/quantity so the stock ledger can be
+    // rebalanced: put the old quantity back, take the new one off.
+    const beforeRows = await query<any>(
+      `SELECT quantite, IDref_divers, IDVariation1, IDVariation2 FROM ref_divers_expedie WHERE IDref_divers_expedie = ${itemId}`,
+    )
+    const before = beforeRows[0]
+      ? {
+          qty: r4(beforeRows[0].quantite),
+          ref: Number(beforeRows[0].IDref_divers) || 0,
+          v1: Number(beforeRows[0].IDVariation1) || 0,
+          v2: Number(beforeRows[0].IDVariation2) || 0,
+        }
+      : null
     const sets: string[] = []
     if (d.IDref_divers !== undefined) {
       const refRows = await query<any>(`SELECT IDref_divers, unite FROM ref_divers WHERE IDref_divers = ${n(d.IDref_divers)}`)
@@ -1354,6 +1414,15 @@ expeditionsRouter.put('/divers/items/:itemId', async (req: Request, res: Respons
     if (d.designation !== undefined) sets.push(`designation = ${sqlText(d.designation)}`)
     if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
     await query(`UPDATE ref_divers_expedie SET ${sets.join(', ')} WHERE IDref_divers_expedie = ${itemId}`)
+    if (before) {
+      await adjustDiversStock(before.ref, before.v1, before.v2, before.qty)
+      await adjustDiversStock(
+        d.IDref_divers ?? before.ref,
+        d.IDVariation1 ?? before.v1,
+        d.IDVariation2 ?? before.v2,
+        -(d.quantite !== undefined ? r4(d.quantite) : before.qty),
+      )
+    }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating divers item:', err)
@@ -1370,7 +1439,16 @@ expeditionsRouter.delete('/divers/items/:itemId', async (req: Request, res: Resp
     const parent = await diversLineParent(ligneId)
     if (parent === 0) { res.status(404).json({ error: 'Line not found' }); return }
     if (await isLocked('divers', parent)) { res.status(409).json(FACTURE_LOCK); return }
+    const rows = await query<any>(
+      `SELECT quantite, IDref_divers, IDVariation1, IDVariation2 FROM ref_divers_expedie WHERE IDref_divers_expedie = ${itemId}`,
+    )
     await query(`DELETE FROM ref_divers_expedie WHERE IDref_divers_expedie = ${itemId}`)
+    if (rows[0]) {
+      await adjustDiversStock(
+        Number(rows[0].IDref_divers) || 0, Number(rows[0].IDVariation1) || 0, Number(rows[0].IDVariation2) || 0,
+        r4(rows[0].quantite),
+      )
+    }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error deleting divers item:', err)

@@ -36,7 +36,7 @@ import { calcLignePriceClient } from '../lib/pricing-ligne-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
-import { stripRtf } from '../lib/rtf-utils.js'
+import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { IS_WINDOWS, esc, n, dateDigits as dateStr, addWorkingDays } from '../lib/sst-shared.js'
@@ -44,6 +44,7 @@ import { createKnitOrder, TRICOTAGE_MALTERRE_ID } from './commandes-sous-traitan
 import { computeDateEcheance, loadEcheanceRule } from './factures.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
+import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const commandesClientRouter: RouterType = Router()
@@ -282,6 +283,11 @@ const ligneBody = z.object({
   type: z.number().int().optional(),
   IDreference: z.number().int().nonnegative().optional(),
   IDcolori: z.number().int().nonnegative().optional(),
+  // Divers (type 3) only: the two variation axes of ref_divers
+  // (sTypeVariation1/2 — Couleur / Taille / Reference). Together with
+  // IDreference they identify the exact article the line ships.
+  IDVariation1: z.number().int().nonnegative().optional(),
+  IDVariation2: z.number().int().nonnegative().optional(),
   quantite: z.number().optional(),
   unite: z.number().int().optional(),
   prix: z.number().optional(),
@@ -979,6 +985,82 @@ async function lineReservationAggregates(
 }
 
 // ════════════════════════════════════════════════════════
+//  DIVERS LINES (type 3) — article identity + shipment ledger
+//  A divers line is NOT backed by stock rolls: it names a catalog article
+//  (ref_divers) narrowed by up to two variation axes (IDVariation1/2 →
+//  ref_divers_variation). It ships through the expedition_divers ledger, whose
+//  header carries an IDcommande_client back-pointer:
+//    expedition_divers (IDcommande_client = this order)
+//      └ ligne_expedition_divers   = a CARTON (detail_ligne = its label)
+//          └ ref_divers_expedie    = one row per article shipped in the carton
+//  "Expédié" for a line = Σ quantite of the items whose (ref, v1, v2) matches
+//  the line. On-hand comes from stock_divers, keyed on the same triple.
+// ════════════════════════════════════════════════════════
+
+/** Article key for a divers line / shipped item — ref + both variation axes. */
+function diversKey(refId: number, v1: number, v2: number): string {
+  return `${refId}|${v1}|${v2}`
+}
+
+/** Batch-resolve ref_divers_variation labels (accent repair via repairAliased,
+ *  same as the Expéditions screen — designation is a plain-named column). */
+async function resolveDiversVariations(ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  const u = Array.from(new Set(ids.filter((x) => Number.isInteger(x) && x > 0)))
+  if (u.length === 0) return out
+  const raw = await query<any>(
+    `SELECT IDref_divers_variation, designation FROM ref_divers_variation WHERE IDref_divers_variation IN (${u.join(',')})`,
+  )
+  const fixed = await repairAliased(raw, 'ref_divers_variation', 'IDref_divers_variation', { designation: 'designation' })
+  for (const v of fixed as any[]) out.set(Number(v.IDref_divers_variation), (v.designation ?? '').toString())
+  return out
+}
+
+/** All expedition_divers headers attached to a commande, newest first. */
+async function diversExpeditionIds(commandeId: number): Promise<number[]> {
+  const rows = await query<{ IDexpedition_divers: number }>(
+    `SELECT IDexpedition_divers FROM expedition_divers WHERE IDcommande_client = ${commandeId}`,
+  )
+  return rows.map((r) => Number(r.IDexpedition_divers)).filter((x) => x > 0).sort((a, b) => b - a)
+}
+
+/** Σ shipped quantity per article key across the commande's divers shipments. */
+async function diversShippedByArticle(commandeId: number): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  const expIds = await diversExpeditionIds(commandeId)
+  if (expIds.length === 0) return out
+  const cartons = await query<{ IDligne_expedition_divers: number }>(
+    `SELECT IDligne_expedition_divers FROM ligne_expedition_divers WHERE IDexpedition_divers IN (${expIds.join(',')})`,
+  )
+  const cartonIds = cartons.map((c) => Number(c.IDligne_expedition_divers)).filter((x) => x > 0)
+  if (cartonIds.length === 0) return out
+  const items = await query<any>(
+    `SELECT quantite, IDref_divers, IDVariation1, IDVariation2 FROM ref_divers_expedie ` +
+      `WHERE IDligne_expedition_divers IN (${cartonIds.join(',')})`,
+  )
+  for (const i of items as any[]) {
+    const k = diversKey(Number(i.IDref_divers) || 0, Number(i.IDVariation1) || 0, Number(i.IDVariation2) || 0)
+    out.set(k, round2c((out.get(k) ?? 0) + (Number(i.quantite) || 0)))
+  }
+  return out
+}
+
+/** On-hand stock_divers quantity for a set of article keys (0 when untracked). */
+async function diversStockByArticle(refIds: number[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  const u = Array.from(new Set(refIds.filter((x) => x > 0)))
+  if (u.length === 0) return out
+  const rows = await query<any>(
+    `SELECT IDref_divers, quantite, IDVariation1, IDVariation2 FROM stock_divers WHERE IDref_divers IN (${u.join(',')})`,
+  )
+  for (const r of rows as any[]) {
+    const k = diversKey(Number(r.IDref_divers) || 0, Number(r.IDVariation1) || 0, Number(r.IDVariation2) || 0)
+    out.set(k, round2c((out.get(k) ?? 0) + (Number(r.quantite) || 0)))
+  }
+  return out
+}
+
+// ════════════════════════════════════════════════════════
 //  DETAIL
 // ════════════════════════════════════════════════════════
 
@@ -1018,7 +1100,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       // name the accented delai_annoncé / déverrouiller columns.
       query<any>(
         `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind,
-                IDreference, IDcolori, quantite, unite, prix, poids, date_livraison, commentaire
+                IDreference, IDcolori, IDVariation1, IDVariation2,
+                quantite, unite, prix, poids, date_livraison, commentaire
          FROM ligne_commande_client
          WHERE IDcommande_client = ${id}
          ORDER BY IDligne_commande_client`,
@@ -1044,6 +1127,14 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       refId: Number(l.IDreference) || 0,
     })))
 
+    // Divers lines carry no rolls — their variation labels and shipped totals
+    // come from the ref_divers_variation catalog and the expedition_divers ledger.
+    const diversLines = lignesFixed.filter((l) => Number(l.type_kind) === 3)
+    const [variationLabels, diversShipped] = await Promise.all([
+      resolveDiversVariations(diversLines.flatMap((l) => [Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0])),
+      diversLines.length > 0 ? diversShippedByArticle(id) : Promise.resolve(new Map<string, number>()),
+    ])
+
     const lignes = lignesFixed.map((l) => {
       const typeKind = Number(l.type_kind) || 0
       const refId = Number(l.IDreference) || 0
@@ -1052,12 +1143,18 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       const agg = aggMap.get(Number(l.IDligne_commande_client)) ?? { nb_rolls: 0, total_metrage: 0, total_poids: 0, exp_metrage: 0, exp_poids: 0 }
       const qty = Number(l.quantite) || 0
       const prix = Number(l.prix) || 0
+      const v1 = Number(l.IDVariation1) || 0
+      const v2 = Number(l.IDVariation2) || 0
       return {
         IDligne_commande_client: Number(l.IDligne_commande_client),
         IDcommande_client: Number(l.IDcommande_client),
         type: typeKind,
         IDreference: refId,
         IDcolori: colId,
+        IDVariation1: v1,
+        IDVariation2: v2,
+        variation1_label: typeKind === 3 && v1 > 0 ? (variationLabels.get(v1) ?? null) : null,
+        variation2_label: typeKind === 3 && v2 > 0 ? (variationLabels.get(v2) ?? null) : null,
         quantite: qty,
         unite: Number(l.unite) || 0,
         unite_label: uniteLabel(l.unite),
@@ -1074,7 +1171,9 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         total_metrage: agg.total_metrage,
         total_poids: agg.total_poids,
         affecte: lineDim(l.unite) === 'metrage' ? agg.total_metrage : agg.total_poids,
-        expedie: lineDim(l.unite) === 'metrage' ? agg.exp_metrage : agg.exp_poids,
+        expedie: typeKind === 3
+          ? (diversShipped.get(diversKey(refId, v1, v2)) ?? 0)
+          : lineDim(l.unite) === 'metrage' ? agg.exp_metrage : agg.exp_poids,
       }
     })
 
@@ -1581,9 +1680,11 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     await query(
       `INSERT INTO ligne_commande_client
          (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
+          IDVariation1, IDVariation2,
           quantite, unite, prix, poids, date_livraison, commentaire)
        VALUES
          (${id}, 0, ${typeKind}, ${n(d.IDreference ?? 0)}, ${n(d.IDcolori ?? 0)},
+          ${n(typeKind === 3 ? (d.IDVariation1 ?? 0) : 0)}, ${n(typeKind === 3 ? (d.IDVariation2 ?? 0) : 0)},
           ${Number(d.quantite) || 0}, ${n(d.unite ?? 0)}, ${Number(d.prix) || 0},
           ${Number(d.poids) || 0}, '${d.date_livraison ? dateStr(d.date_livraison) : ''}',
           ${sqlText(d.commentaire ?? '')})`,
@@ -1615,6 +1716,10 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     if (d.type !== undefined) sets.push(`TYPE = ${Number(d.type) || 0}`)
     if (d.IDreference !== undefined) sets.push(`IDreference = ${n(d.IDreference)}`)
     if (d.IDcolori !== undefined) sets.push(`IDcolori = ${n(d.IDcolori)}`)
+    // Variations only mean anything on divers lines — switching a line to
+    // écru/fini clears them so a stale axis can't survive the type change.
+    if (d.IDVariation1 !== undefined) sets.push(`IDVariation1 = ${n(d.type !== undefined && d.type !== 3 ? 0 : d.IDVariation1)}`)
+    if (d.IDVariation2 !== undefined) sets.push(`IDVariation2 = ${n(d.type !== undefined && d.type !== 3 ? 0 : d.IDVariation2)}`)
     if (d.quantite !== undefined) sets.push(`quantite = ${Number(d.quantite) || 0}`)
     if (d.unite !== undefined) sets.push(`unite = ${n(d.unite)}`)
     if (d.prix !== undefined) sets.push(`prix = ${Number(d.prix) || 0}`)
@@ -3477,6 +3582,414 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
     res.status(201).json({ ok: true, IDexpedition: expId, shipped: usable.length })
   } catch (err) {
     console.error('Error creating expedition from client line:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  EXPÉDITIONS DIVERS — per-line drawer + grouped shipment
+//  Ports the legacy Commandes › Expédition tab for divers lines (stock
+//  disponible + "Expédier" quantity prompt) and the FEN_Expéditions_Groupées
+//  modal (one expedition_divers per order, several cartons, articles inside).
+//  Writes go through the same expedition_divers model the Clients ›
+//  Expéditions screen edits, and through adjustDiversStock so the stock_divers
+//  ledger stays in sync with the legacy app.
+// ════════════════════════════════════════════════════════
+
+interface DiversLineContext {
+  commandeId: number
+  ligneId: number
+  refId: number
+  v1: number
+  v2: number
+  unite: number
+  quantite: number
+  prix: number
+}
+
+/** Load a divers (type 3) line, refusing anything else. */
+async function loadDiversLineContext(commandeId: number, ligneId: number): Promise<DiversLineContext | null> {
+  const rows = await query<any>(
+    `SELECT IDcommande_client, TYPE AS type_kind, IDreference, IDVariation1, IDVariation2, unite, quantite, prix
+     FROM ligne_commande_client WHERE IDligne_commande_client = ${ligneId}`,
+  )
+  if (rows.length === 0) return null
+  const l = rows[0]
+  if (Number(l.IDcommande_client) !== commandeId) return null
+  if (Number(l.type_kind) !== 3) return null
+  return {
+    commandeId,
+    ligneId,
+    refId: Number(l.IDreference) || 0,
+    v1: Number(l.IDVariation1) || 0,
+    v2: Number(l.IDVariation2) || 0,
+    unite: Number(l.unite) || 0,
+    quantite: Number(l.quantite) || 0,
+    prix: Number(l.prix) || 0,
+  }
+}
+
+interface DiversCartonOut {
+  IDligne_expedition_divers: number
+  detail_ligne: string
+  items: DiversItem[]
+}
+interface DiversExpeditionOut {
+  IDexpedition_divers: number
+  date: string | null
+  ref_client: string | null
+  est_valide: number
+  est_facture: number
+  locked: number
+  IDtransporteur: number
+  transporteur_nom: string
+  IDadresse: number
+  adresse_nom: string
+  adresse_ville: string
+  cartons: DiversCartonOut[]
+}
+
+/** Every divers shipment attached to a commande, with cartons + articles.
+ *  One round-trip per table (headers / cartons / items), newest expedition first. */
+async function loadCommandeDiversExpeditions(commandeId: number): Promise<DiversExpeditionOut[]> {
+  const expIds = await diversExpeditionIds(commandeId)
+  if (expIds.length === 0) return []
+  const inExp = expIds.join(',')
+  // DATE is a reserved word → alias (same quirk as the Expéditions screen).
+  const heads = await query<any>(
+    `SELECT IDexpedition_divers, DATE AS dexp, ref_client, est_valide, est_facture, IDtransporteur, IDadresse
+       FROM expedition_divers WHERE IDexpedition_divers IN (${inExp})`,
+  )
+  const headsFixed = await fixEncoding(heads, 'expedition_divers', 'IDexpedition_divers', ['ref_client'])
+  const cartonsRaw = await query<any>(
+    `SELECT IDligne_expedition_divers, IDexpedition_divers, detail_ligne
+       FROM ligne_expedition_divers WHERE IDexpedition_divers IN (${inExp}) ORDER BY IDligne_expedition_divers`,
+  )
+  const cartonsFixed = await fixEncoding(cartonsRaw, 'ligne_expedition_divers', 'IDligne_expedition_divers', ['detail_ligne'])
+  const cartonIds = (cartonsFixed as any[]).map((c) => Number(c.IDligne_expedition_divers)).filter((x) => x > 0)
+  const [itemsByCarton, transNames, adrRows] = await Promise.all([
+    loadDiversItems(cartonIds),
+    resolveTransporteurNamesCC((headsFixed as any[]).map((h) => Number(h.IDtransporteur))),
+    (async () => {
+      const ids = Array.from(new Set((headsFixed as any[]).map((h) => Number(h.IDadresse)).filter((x: number) => x > 0)))
+      if (ids.length === 0) return new Map<number, { nom: string; ville: string }>()
+      const rows = await query<any>(`SELECT IDadresse, nom, ville FROM adresse WHERE IDadresse IN (${ids.join(',')})`)
+      const fixed = await fixEncoding(rows, 'adresse', 'IDadresse', ['nom', 'ville'])
+      return new Map<number, { nom: string; ville: string }>(
+        (fixed as any[]).map((a) => [Number(a.IDadresse), { nom: (a.nom ?? '').toString().trim(), ville: (a.ville ?? '').toString().trim() }]),
+      )
+    })(),
+  ])
+
+  const cartonsByExp = new Map<number, DiversCartonOut[]>()
+  for (const c of cartonsFixed as any[]) {
+    const expId = Number(c.IDexpedition_divers) || 0
+    const cid = Number(c.IDligne_expedition_divers) || 0
+    const arr = cartonsByExp.get(expId) ?? []
+    arr.push({
+      IDligne_expedition_divers: cid,
+      detail_ligne: stripRtf(c.detail_ligne) ?? '',
+      items: itemsByCarton.get(cid) ?? [],
+    })
+    cartonsByExp.set(expId, arr)
+  }
+
+  return (headsFixed as any[])
+    .map((h): DiversExpeditionOut => {
+      const expId = Number(h.IDexpedition_divers) || 0
+      const adr = adrRows.get(Number(h.IDadresse))
+      const estFacture = Number(h.est_facture) || 0
+      return {
+        IDexpedition_divers: expId,
+        date: h.dexp ?? null,
+        ref_client: h.ref_client ?? null,
+        est_valide: Number(h.est_valide) || 0,
+        est_facture: estFacture,
+        // Facturée → the whole shipment is read-only (same rule as the
+        // Expéditions screen; its endpoints reject the writes anyway).
+        locked: estFacture === 1 ? 1 : 0,
+        IDtransporteur: Number(h.IDtransporteur) || 0,
+        transporteur_nom: transNames.get(Number(h.IDtransporteur)) ?? '',
+        IDadresse: Number(h.IDadresse) || 0,
+        adresse_nom: adr?.nom ?? '',
+        adresse_ville: adr?.ville ?? '',
+        cartons: cartonsByExp.get(expId) ?? [],
+      }
+    })
+    .sort((a, b) => b.IDexpedition_divers - a.IDexpedition_divers)
+}
+
+/** Header defaults for a new expedition_divers on this commande: client +
+ *  livraison address + ref_client from the order, carrier from the client
+ *  (mirrors the écru/fini quick-ship defaults). */
+async function diversExpeditionDefaults(commandeId: number): Promise<
+  { IDclient: number; IDadresse: number; IDtransporteur: number; ref_client: string } | null
+> {
+  const cmdRows = await query<any>(
+    `SELECT IDclient, IDadresse_livraison, numero, date_commande, ref_client
+       FROM commande_client WHERE IDcommande_client = ${commandeId} AND IDsociete = 1`,
+  )
+  if (cmdRows.length === 0) return null
+  const fixed = (await fixEncoding(cmdRows, 'commande_client', 'IDcommande_client', ['ref_client']))[0] as any
+  const IDclient = Number(cmdRows[0].IDclient) || 0
+  const clientRows = IDclient > 0
+    ? await query<{ IDtransporteur: number }>(`SELECT IDtransporteur FROM client WHERE IDclient = ${IDclient}`)
+    : []
+  // Legacy seeds ref_client with the order's own customer reference, falling
+  // back to "Commande C<numero> du <date>" — the label seen on live rows.
+  const numero = cmdRows[0].numero != null ? Number(cmdRows[0].numero) : 0
+  const fallback = numero > 0
+    ? `Commande C${numero}${cmdRows[0].date_commande ? ` du ${formatHfsqlDateFr(cmdRows[0].date_commande)}` : ''}`
+    : ''
+  return {
+    IDclient,
+    IDadresse: Number(cmdRows[0].IDadresse_livraison) || 0,
+    IDtransporteur: Number(clientRows[0]?.IDtransporteur) || 0,
+    ref_client: (fixed?.ref_client ?? '').toString().trim() || fallback,
+  }
+}
+
+/** Create an expedition_divers for a commande and return its id. */
+async function createDiversExpeditionForCommande(commandeId: number): Promise<number> {
+  const d = await diversExpeditionDefaults(commandeId)
+  if (!d) return 0
+  const before = await query<{ m: number | null }>(`SELECT MAX(IDexpedition_divers) AS m FROM expedition_divers`)
+  const beforeId = Number(before[0]?.m) || 0
+  await query(
+    `INSERT INTO expedition_divers (IDclient, ref_client, IDadresse, IDtransporteur, DATE, est_valide, est_facture, IDcommande_client) ` +
+      `VALUES (${d.IDclient}, ${sqlText(d.ref_client)}, ${d.IDadresse}, ${d.IDtransporteur}, '${dateStr(new Date().toISOString().slice(0, 10))}', 0, 0, ${commandeId})`,
+  )
+  const rows = await query<{ id: number }>(
+    `SELECT TOP 1 IDexpedition_divers AS id FROM expedition_divers WHERE IDexpedition_divers > ${beforeId} ORDER BY IDexpedition_divers DESC`,
+  )
+  return Number(rows[0]?.id) || 0
+}
+
+/** First carton of an expedition, creating "CARTON 1" when there is none. */
+async function ensureDiversCarton(expId: number): Promise<number> {
+  const existing = await query<{ IDligne_expedition_divers: number }>(
+    `SELECT IDligne_expedition_divers FROM ligne_expedition_divers WHERE IDexpedition_divers = ${expId} ORDER BY IDligne_expedition_divers`,
+  )
+  const ids = existing.map((r) => Number(r.IDligne_expedition_divers)).filter((x) => x > 0)
+  if (ids.length > 0) return ids[ids.length - 1]
+  const before = await query<{ m: number | null }>(`SELECT MAX(IDligne_expedition_divers) AS m FROM ligne_expedition_divers`)
+  const beforeId = Number(before[0]?.m) || 0
+  await query(
+    `INSERT INTO ligne_expedition_divers (IDexpedition_divers, detail_ligne) VALUES (${expId}, ${sqlText(wrapRtf('CARTON 1'))})`,
+  )
+  const rows = await query<{ id: number }>(
+    `SELECT TOP 1 IDligne_expedition_divers AS id FROM ligne_expedition_divers WHERE IDligne_expedition_divers > ${beforeId} ORDER BY IDligne_expedition_divers DESC`,
+  )
+  return Number(rows[0]?.id) || 0
+}
+
+// Drawer payload for a divers line: the article it names, what's on hand, what
+// already shipped, and the cartons carrying it.
+commandesClientRouter.get('/:id/lignes/:ligneId/divers', async (req: Request, res: Response) => {
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const ctx = await loadDiversLineContext(commandeId, ligneId)
+    if (!ctx) { res.status(404).json({ error: 'Ligne divers introuvable' }); return }
+
+    const key = diversKey(ctx.refId, ctx.v1, ctx.v2)
+    const [refRows, varLabels, stockMap, expeditions] = await Promise.all([
+      ctx.refId > 0
+        ? query<any>(`SELECT IDref_divers, designation FROM ref_divers WHERE IDref_divers = ${ctx.refId}`)
+        : Promise.resolve([]),
+      resolveDiversVariations([ctx.v1, ctx.v2]),
+      diversStockByArticle([ctx.refId]),
+      loadCommandeDiversExpeditions(commandeId),
+    ])
+    const refFixed = (await repairAliased(refRows as any[], 'ref_divers', 'IDref_divers', { designation: 'designation' }))[0] as any
+
+    // Keep only the cartons that actually carry this line's article, and expose
+    // the matching item so the drawer can show its quantity + price.
+    const scoped = expeditions
+      .map((e) => ({
+        ...e,
+        cartons: e.cartons
+          .map((c) => ({
+            ...c,
+            items: c.items.filter((i) => diversKey(i.IDref_divers, i.IDVariation1, i.IDVariation2) === key),
+          }))
+          .filter((c) => c.items.length > 0),
+      }))
+      .filter((e) => e.cartons.length > 0)
+
+    const expedie = scoped.reduce(
+      (s, e) => s + e.cartons.reduce((cs, c) => cs + c.items.reduce((is, i) => is + i.quantite, 0), 0),
+      0,
+    )
+
+    res.json({
+      IDligne_commande_client: ligneId,
+      IDref_divers: ctx.refId,
+      ref_designation: (refFixed?.designation ?? '').toString(),
+      IDVariation1: ctx.v1,
+      variation1_label: ctx.v1 > 0 ? (varLabels.get(ctx.v1) ?? null) : null,
+      IDVariation2: ctx.v2,
+      variation2_label: ctx.v2 > 0 ? (varLabels.get(ctx.v2) ?? null) : null,
+      unite: ctx.unite,
+      unite_label: uniteLabel(ctx.unite),
+      prix: round2c(ctx.prix),
+      quantite_commandee: round2c(ctx.quantite),
+      quantite_expediee: round2c(expedie),
+      // stock_divers on-hand for this exact article; null = no ledger row
+      // (the combo is untracked — legacy opens rows from Gestion Stock Divers).
+      stock_disponible: stockMap.has(key) ? round2c(stockMap.get(key)!) : null,
+      expeditions: scoped,
+    })
+  } catch (err) {
+    console.error('Error fetching divers line shipments:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const expedierDiversBody = z.object({
+  quantite: z.number().positive(),
+  /** Target shipment. Omitted / 0 → append to the order's open (non-facturée)
+   *  shipment, creating one when there is none. */
+  IDexpedition_divers: z.number().int().nonnegative().optional(),
+  IDligne_expedition_divers: z.number().int().nonnegative().optional(),
+})
+
+// Quick-ship a divers line — the legacy "Expédier" button + quantity prompt.
+commandesClientRouter.post('/:id/lignes/:ligneId/expedier-divers', async (req: Request, res: Response) => {
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = expedierDiversBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const ctx = await loadDiversLineContext(commandeId, ligneId)
+    if (!ctx) { res.status(404).json({ error: 'Ligne divers introuvable' }); return }
+    if (ctx.refId <= 0) { res.status(400).json({ error: 'Ligne sans référence divers' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
+    const qty = round2c(parsed.data.quantite)
+    if (!(qty > 0)) { res.status(400).json({ error: 'Quantité invalide' }); return }
+
+    // Target carton: explicit, else the last carton of the order's open
+    // shipment, else a fresh shipment + CARTON 1.
+    let cartonId = Number(parsed.data.IDligne_expedition_divers) || 0
+    let expId = Number(parsed.data.IDexpedition_divers) || 0
+    if (cartonId > 0) {
+      const owner = await query<{ IDexpedition_divers: number }>(
+        `SELECT IDexpedition_divers FROM ligne_expedition_divers WHERE IDligne_expedition_divers = ${cartonId}`,
+      )
+      expId = Number(owner[0]?.IDexpedition_divers) || 0
+      if (expId <= 0) { res.status(400).json({ error: 'Carton introuvable' }); return }
+    }
+    if (expId <= 0) {
+      const open = (await loadCommandeDiversExpeditions(commandeId)).find((e) => e.locked === 0)
+      expId = open?.IDexpedition_divers ?? 0
+    }
+    if (expId <= 0) {
+      expId = await createDiversExpeditionForCommande(commandeId)
+      if (expId <= 0) { res.status(500).json({ error: "Création de l'expédition échouée" }); return }
+    }
+    // The shipment must belong to this order and not be invoiced.
+    const head = await query<{ IDcommande_client: number; est_facture: number | null }>(
+      `SELECT IDcommande_client, est_facture FROM expedition_divers WHERE IDexpedition_divers = ${expId}`,
+    )
+    if (head.length === 0 || Number(head[0].IDcommande_client) !== commandeId) {
+      res.status(400).json({ error: 'Expédition hors de cette commande' }); return
+    }
+    if (Number(head[0].est_facture) === 1) {
+      res.status(409).json({ error: 'expedition_facturee', message: 'Expédition facturée — non modifiable.' }); return
+    }
+    if (cartonId <= 0) cartonId = await ensureDiversCarton(expId)
+    if (cartonId <= 0) { res.status(500).json({ error: 'Création du carton échouée' }); return }
+
+    // unite comes from the catalog (ref_divers), price from the order line —
+    // that's what the customer is billed, and what live rows carry.
+    const refRows = await query<{ unite: number | null }>(`SELECT IDref_divers, unite FROM ref_divers WHERE IDref_divers = ${ctx.refId}`)
+    if (refRows.length === 0) { res.status(400).json({ error: 'Référence divers introuvable' }); return }
+    await query(
+      `INSERT INTO ref_divers_expedie (IDligne_expedition_divers, designation, quantite, unite, prix, IDref_divers, IDVariation1, IDVariation2) ` +
+        `VALUES (${cartonId}, '', ${qty}, ${Number(refRows[0].unite) || 0}, ${round2c(ctx.prix)}, ${ctx.refId}, ${ctx.v1}, ${ctx.v2})`,
+    )
+    await adjustDiversStock(ctx.refId, ctx.v1, ctx.v2, -qty)
+
+    res.status(201).json({ ok: true, IDexpedition_divers: expId, IDligne_expedition_divers: cartonId, quantite: qty })
+  } catch (err) {
+    console.error('Error shipping divers line:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Grouped-shipment payload: every divers shipment of the order with its
+// cartons and articles, plus the order's shippable lines and their remainders.
+commandesClientRouter.get('/:id/expeditions-divers', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const lignesRaw = await query<any>(
+      `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDVariation1, IDVariation2, quantite, unite, prix
+         FROM ligne_commande_client WHERE IDcommande_client = ${id} ORDER BY IDligne_commande_client`,
+    )
+    const diversLines = (lignesRaw as any[]).filter((l) => Number(l.type_kind) === 3)
+    const refIds = Array.from(new Set(diversLines.map((l) => Number(l.IDreference) || 0).filter((x) => x > 0)))
+
+    const [expeditions, shipped, stock, varLabels, refRows, defaults] = await Promise.all([
+      loadCommandeDiversExpeditions(id),
+      diversLines.length > 0 ? diversShippedByArticle(id) : Promise.resolve(new Map<string, number>()),
+      diversStockByArticle(refIds),
+      resolveDiversVariations(diversLines.flatMap((l) => [Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0])),
+      refIds.length > 0
+        ? query<any>(`SELECT IDref_divers, designation FROM ref_divers WHERE IDref_divers IN (${refIds.join(',')})`)
+        : Promise.resolve([]),
+      diversExpeditionDefaults(id),
+    ])
+    const refFixed = await repairAliased(refRows as any[], 'ref_divers', 'IDref_divers', { designation: 'designation' })
+    const refName = new Map<number, string>()
+    for (const r of refFixed as any[]) refName.set(Number(r.IDref_divers), (r.designation ?? '').toString())
+
+    const lignes = diversLines.map((l) => {
+      const refId = Number(l.IDreference) || 0
+      const v1 = Number(l.IDVariation1) || 0
+      const v2 = Number(l.IDVariation2) || 0
+      const key = diversKey(refId, v1, v2)
+      const commandee = round2c(Number(l.quantite) || 0)
+      const expediee = round2c(shipped.get(key) ?? 0)
+      return {
+        IDligne_commande_client: Number(l.IDligne_commande_client),
+        IDref_divers: refId,
+        ref_designation: refName.get(refId) ?? '',
+        IDVariation1: v1,
+        variation1_label: v1 > 0 ? (varLabels.get(v1) ?? null) : null,
+        IDVariation2: v2,
+        variation2_label: v2 > 0 ? (varLabels.get(v2) ?? null) : null,
+        unite: Number(l.unite) || 0,
+        unite_label: uniteLabel(l.unite),
+        prix: round2c(Number(l.prix) || 0),
+        quantite_commandee: commandee,
+        quantite_expediee: expediee,
+        reste: round2c(Math.max(0, commandee - expediee)),
+        stock_disponible: stock.has(key) ? round2c(stock.get(key)!) : null,
+      }
+    })
+
+    res.json({ lignes, expeditions, defaults })
+  } catch (err) {
+    console.error('Error fetching commande divers expeditions:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Open a new grouped shipment on this order (header seeded from the order).
+commandesClientRouter.post('/:id/expeditions-divers', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
+    const expId = await createDiversExpeditionForCommande(id)
+    if (expId <= 0) { res.status(400).json({ error: 'Commande introuvable' }); return }
+    await ensureDiversCarton(expId)
+    res.status(201).json({ ok: true, IDexpedition_divers: expId })
+  } catch (err) {
+    console.error('Error creating commande divers expedition:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
