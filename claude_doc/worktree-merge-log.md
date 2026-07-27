@@ -10,6 +10,45 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-27 — feat/ref-diverses
+Divers › **Références** (`/divers/references`) — the `ref_divers` catalog, ported from the
+legacy `FI_Ref_Divers.wdw`. Divers is no longer a placeholder: the nav entry gains a
+`Références` submenu and `/divers` redirects to it. **Fiche** layout — left list with the
+`En cours` / `Archivé` segmented filter, center cards (Identification / Variations / Tarifs /
+Observations), right sidebar with `Stock` + `Commandes` tabs. Full edit mode, unsaved-changes
+guard, archive toggle, guarded delete, `+ Nouveau` with auto-edit. The WinDev sources are
+PCS-compressed, so the model was reverse-engineered from the HFSQL data (the list footer
+reproduces legacy's "123 Références" exactly). **Variation model**: `ref_divers.sTypeVariation1/2`
+name up to two *axes* (`Aucun` | `Couleur` | `Taille` | `Reference` — no accent on the stored
+`Reference`); `ref_divers_variation` holds the *values*, with `niveau` = which axis. The 294
+`niveau = 0` rows are pre-`niveau` leftovers on refs whose axes are both `Aucun` (unreachable
+in the legacy UI) and are surfaced as a read-only "valeurs héritées" note. **Price model**:
+no axis → flat `ref_divers.prix_unitaire`; with axes → `tarif_divers`, where a single
+`(0, 0)` row means "one price for every combination" (legacy's "Saisie du prix: Global") and
+rows keyed on variation ids mean per-combination pricing. The mode is **derived, not stored**.
+Switching it (`POST /:id/tarif-mode`) is destructive both ways so it goes through
+`ConfirmDialog`; seeding `detail` mode fills combinations from the previous global price but
+**skips above 200 rows** (Tissu Voltige is 19 couleurs × 29 tailles = 551) rather than firing
+hundreds of INSERTs at the shared HFSQL server — the grid then opens blank and each cell
+upserts its own row on blur, rehydrating the detail cache via `setQueryData` (§31.6). Price
+cells are deliberately **not** part of the header save. Referential guards return 409 with a
+French message rather than orphaning data: disabling a populated axis, deleting a variation
+value still used by stock / commandes / expéditions, and deleting a reference used anywhere
+("Archivez-la plutôt" — variations + tarifs cascade). New API route
+`apps/api/src/routes/references-divers.ts` (`GET ?archived=0|1`, `GET/POST/PUT/DELETE /:id`,
+`/:id/archive` + `/unarchive`, `/:id/variations[/:vid]`, `PUT /:id/tarifs`,
+`POST /:id/tarif-mode`, two lookups). **HFSQL**: `ref_divers.archivé` is accented and is never
+named in SQL — reads go through `SELECT *` + `pickKey(/^archiv/i)`, the archive flip is a named
+`UPDATE` on Windows and a delete + positional reinsert on Linux (`REF_DIVERS_PHYSICAL_COLS`),
+and the create INSERT omits the column entirely; `ligne_commande_client.TYPE` /
+`ligne_devis_etm.TYPE` are aliased; all list summaries are batched grouped queries, never
+per-row. Unit enum is the shared one but Divers labels `4` as **Pièce** (the legacy Divers
+combo), and out-of-enum legacy values (`255`) render as `—` and round-trip untouched. Verified
+end to end against the dev DB: create → variations → tarif-mode both directions → cell upsert →
+archive → unarchive → delete, with accents round-tripping (`Bleu foncé`, `Note avec accents:
+éàü`) and zero residue left behind. Docs updated in `implemented_screens.md` (full variation +
+price model), `CLAUDE.md` nav, `navigation_mapping.md`, `project_structure.md`.
+
 ## 2026-07-27 — feat/commande-client
 Clients › Commandes — **lignes de commande "Divers" become shippable**, porting the legacy
 Commandes › Expédition tab for type-3 lines and the `FEN_Expéditions_Groupées` modal. A

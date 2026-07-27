@@ -20,7 +20,7 @@ MPS_NG/
 │   │       │   ├── pricing-sst.ts        # Ennoblisseur auto-pricing (see HFSQL rules)
 │   │       │   ├── pricing-trm.ts        # Tricoteur auto-pricing — PrixDeRevientTRM port
 │   │       │   └── pdf/                  # theme.ts, MalterreDocument.tsx, CommandeFournisseurPdf, CommandeSoustraitantPdf, SoumissionLotPdf, DemandeEtudeColorisPdf, SoumissionPdf, FeuilleColorisPdf
-│   │       ├── routes/                   # entreprises, fournisseurs, references-fil, stock, stock-fini, commandes-fil, commandes-sous-traitant, sous-traitants, etudes-coloris, prospects, auth, permissions, user-emails
+│   │       ├── routes/                   # entreprises, fournisseurs, references-fil, references-ecru, references-fini, references-divers, stock, stock-fini, commandes-fil, commandes-sous-traitant, sous-traitants, etudes-coloris, prospects, auth, permissions, user-emails
 │   │       └── index.ts
 │   └── web/           # React frontend
 │       └── src/
@@ -40,7 +40,7 @@ MPS_NG/
 │           │   ├── email.ts      # Types + postEmail helper for SendEmailDialog
 │           │   ├── dates.ts      # HFSQL date helpers
 │           │   └── format.ts     # fmtNum (French formatting)
-│           ├── pages/            # Dashboard, Entreprises, FilsGestion, FilsReferences, FilsStock, FilsCommandes, SousTraitantsCommandes, SousTraitantsGestion, EtudesColoris, FinisStock, ProspectsDemandes, SettingsUtilisateurs
+│           ├── pages/            # Dashboard, Entreprises, FilsGestion, FilsReferences, FilsStock, FilsCommandes, SousTraitantsCommandes, SousTraitantsGestion, EtudesColoris, FinisReferences, FinisStock, TombeMetierReferences, TombeMetierStock, DiversReferences, ProspectsDemandes, SettingsUtilisateurs
 │           ├── main.tsx          # QueryClient → UserProvider → PermissionsProvider → UserPickerGate → RouterProvider
 │           └── router.tsx
 ├── claude_doc/                   # Detailed reference docs (load on demand)

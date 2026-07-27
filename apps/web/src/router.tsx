@@ -5,7 +5,6 @@ import { Dashboard } from '@/pages/Dashboard'
 import {
   ShoppingCart,
   FileText,
-  Box,
   FileBarChart,
   Palette,
   Euro,
@@ -37,7 +36,6 @@ const FilsPrevisionsPage = createPlaceholder('Prévisions Fournisseurs', 'Prévi
 const FinisTarifsPage = createPlaceholder('Tarifs Finis', 'Tarifs des produits finis', Euro)
 const FinisColorisTeintPage = createPlaceholder('Coloris Teint', 'Coloris teints et ennoblissement', Droplet)
 const FinisPrevisionsPage = createPlaceholder('Prévisions Finis', 'Prévisions des produits finis', TrendingUp)
-const DiversPage = createPlaceholder('Divers', 'Outils divers', Box)
 const QualiteDossiersPage = createPlaceholder('Dossiers', 'Dossiers qualité', FolderOpen)
 const QualiteActionsPage = createPlaceholder('Actions', 'Actions qualité', ClipboardCheck)
 const QualiteAnalysePage = createPlaceholder('Analyse', 'Analyse qualité', BarChart3)
@@ -69,6 +67,9 @@ import { QualiteSuiviLots } from '@/pages/QualiteSuiviLots'
 // Tombé Métier pages (real)
 import { TombeMetierReferences } from '@/pages/TombeMetierReferences'
 import { TombeMetierStock } from '@/pages/TombeMetierStock'
+
+// Divers pages (real)
+import { DiversReferences } from '@/pages/DiversReferences'
 
 // Finis pages (real)
 import { FinisReferences } from '@/pages/FinisReferences'
@@ -140,7 +141,8 @@ export const router = createBrowserRouter([
       { path: 'finis/previsions', element: <FinisPrevisionsPage /> },
 
       // Divers
-      { path: 'divers', element: <DiversPage /> },
+      { path: 'divers', element: <Navigate to="/divers/references" replace /> },
+      { path: 'divers/references', element: <DiversReferences /> },
 
       // Qualité
       { path: 'qualite', element: <Navigate to="/qualite/suivi-lots" replace /> },

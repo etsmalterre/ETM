@@ -83,3 +83,44 @@ Subcontractor management screen — a near-clone of **FilsGestion** (the fournis
 - **Pourcentage units**: `asso_fil_matiere.pourcentage` is stored as a **decimal fraction 0..1** in HFSQL (0.31 = 31%). The frontend multiplies by 100 for display and divides by 100 on write.
 - **HFSQL tables**: `ref_fil`, `colori_fil`, `asso_fil_matiere`, `matiere_premiere`, `unite_titrage`, `asso_colorisfil_frs` (read-only here — linking still lives in Fournisseurs/Gestion), `stock_fil` (aggregate read), `ref_fil_commande` (aggregate read), `commande_fil` (joined for etat filter)
 - **Out of scope for Phase 1** (see plan `effervescent-percolating-tarjan.md`): variante↔fournisseur linking drawer, `offre_fil`, full PDF print, full email send via `SendEmailDialog`. Print + Email buttons are §18 A-bis placeholders.
+
+## Divers Références (`/divers/references`)
+
+**Master catalog of miscellaneous articles** (`ref_divers`) — mirrors the legacy `FI_Ref_Divers.wdw`. Client order / devis lines point at these rows with `TYPE = 3`. **Fiche** layout (3-panel `MasterDetailLayout`):
+- **Left**: search + segmented `En cours` / `Archivé` filter (§5), card shows designation, stock total in the ref's unit, variation-axes summary (`Couleur · Taille — 48 valeurs`) and the display price (or `Tarifs détaillés`).
+- **Center header**: standard trio (`Printer` + `AtSign` placeholders §18 A-bis) + Archiver/Désarchiver icon button + **Modifier (`variant="gold"`)**. Badges under the title: unit, active variation axes, `Archivée`. Trash exposed in edit mode.
+- **Center body cards**: *Identification* (unité `PopoverSelect`; **prix unitaire only when the reference has no variation axis** — legacy hides it otherwise, and the slot becomes a read-only `Tarification` recap), *Variations*, *Tarifs*, *Observations* (hidden in view mode when empty).
+- **Right sidebar**: two tabs — `Stock` (total headline + one card per `stock_divers` row, labelled by its variation combination) and `Commandes` (utilisation KV recap + the 40 most recent `ligne_commande_client` rows with client, N°, qty × prix, date).
+
+### Variation model (reverse-engineered — the WinDev sources are PCS-compressed)
+
+- `ref_divers.sTypeVariation1` / `sTypeVariation2` name the two **axes** (`Aucun` | `Couleur` | `Taille` | `Reference` — note: no accent on `Reference` in the stored value).
+- `ref_divers_variation` holds the **values**; `niveau` = which axis (1 or 2). `niveau = 0` rows are pre-`niveau` leftovers on refs whose axes are both `Aucun` — unreachable in the legacy UI, surfaced here as a read-only "valeurs héritées" note.
+- Turning an axis back to `Aucun` while values still exist returns **409** (it would orphan the tarif / stock rows keyed on them).
+
+### Price model
+
+| Case | Where the price lives |
+|---|---|
+| No variation axis | `ref_divers.prix_unitaire` (flat field on the Identification card) |
+| Axis(es), *Global* mode | one `tarif_divers` row with `IDVariation1 = IDVariation2 = 0` |
+| Axis(es), *Par variation* mode | one `tarif_divers` row per combination |
+
+The mode is **derived**, not stored: any row with a non-zero variation id ⇒ `detail`. The Tarifs card's segmented `Saisie du prix` switch (legacy combo) calls `POST /:id/tarif-mode`, which is destructive in both directions and therefore goes through `ConfirmDialog`. Switching to `detail` seeds every combination from the previous global price, but **skips seeding above 200 rows** (Tissu Voltige is 19 couleurs × 29 tailles = 551) rather than firing hundreds of INSERTs at the shared HFSQL server — the grid then opens blank and each cell upserts on blur. Price cells are **not** part of the header save: each commits its own `PUT /:id/tarifs` on blur and the response rehydrates the detail cache via `setQueryData` (§31.6).
+
+### Endpoints (`apps/api/src/routes/references-divers.ts`)
+
+- `GET /api/references-divers?archived=0|1` — list with batched variation count / stock total / global tarif per ref
+- `GET /api/references-divers/:id` — header + `variations[]` + `tarifs[]` + `tarif_mode` / `tarif_global` + `stock[]` + `commandes[]` + `usage{}`
+- `POST /` (placeholder row) · `PUT /:id` (409 on duplicate designation, 409 when disabling a populated axis) · `DELETE /:id` (409 while stock / order / devis / expédition lines reference it — "Archivez-la plutôt"; variations + tarifs cascade)
+- `POST /:id/archive` · `POST /:id/unarchive`
+- `POST/PUT/DELETE /:id/variations[/:vid]` (delete 409 while stock / order / expédition rows use the value; its tarif rows cascade)
+- `PUT /:id/tarifs` (upsert one combination, collapses legacy duplicate rows) · `POST /:id/tarif-mode`
+- `GET /lookups/unites`, `GET /lookups/types-variation`
+
+### HFSQL notes
+
+- **`ref_divers.archivé` is accented** — never named in SQL. Reads go through `SELECT *` + `pickKey(/^archiv/i)`; the archive flip is a named `UPDATE` on Windows and a delete + positional reinsert on Linux (`REF_DIVERS_PHYSICAL_COLS`), same shape as `references-ecru.ts`. The create INSERT simply omits the column (defaults to 0 = en cours).
+- `ligne_commande_client.TYPE` / `ligne_devis_etm.TYPE` are reserved words — always aliased.
+- Unit enum is the shared one (1 Kg, 3 Ml, 4, 5 m²) but the Divers screens label `4` as **Pièce** (the legacy Divers combo) rather than the generic "unité". Values outside the enum (legacy `255`) render as `—` and round-trip untouched.
+- **HFSQL tables**: `ref_divers`, `ref_divers_variation`, `tarif_divers`, `stock_divers`, `ref_divers_expedie` (guard only), `ligne_commande_client` / `ligne_devis_etm` (usage), `commande_client` + `client` (Commandes tab)

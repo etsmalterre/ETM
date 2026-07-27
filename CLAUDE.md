@@ -59,7 +59,7 @@ Mirrors the legacy WinDev main menu (top → bottom):
 6. **Fils** (route `/fils/*`, renamed from `/fournisseurs/*`) — Références, Stock (table-centric), Commandes, Gestion, Prévisions
 7. **Tombé Métier** — placeholder, custom `TmRollIcon`
 8. **Finis** — Références, **Stock** (implemented, table-centric; edit-mode multi-select + cut-roll via `POST stock-fini/:id/cut`), **Études coloris** (implemented), Tarifs, Coloris Teint, Prévisions — custom `FiniRollIcon`
-9. **Divers** — placeholder
+9. **Divers** — **Références** (`/divers/references`, implemented; `ref_divers` catalog with two variation axes + per-combination `tarif_divers` pricing — see `claude_doc/implemented_screens.md`)
 10. **Qualité** — placeholder
 11. **Rapports** — placeholder
 12. **Réseau** — Entreprises

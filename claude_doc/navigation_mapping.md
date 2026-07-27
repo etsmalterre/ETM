@@ -160,6 +160,7 @@ Maps legacy WinDev windows to new MPS_NG routes. Use this to identify which lega
 | FEN_Gestion_des_références_de_fil.wdw | Yarn refs |
 | FI_Ref_Fini.wdw | Finished product refs |
 | FI_Ref_Article.wdw | Article refs |
+| FI_Ref_Divers.wdw | Misc refs — **implemented at `/divers/references`** |
 
 #### Coloris (`/produits/coloris`)
 | Legacy Window | Purpose |

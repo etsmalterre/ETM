@@ -147,7 +147,9 @@ export const mainNavigation: MainMenuItem[] = [
     title: 'Divers',
     icon: Box,
     href: '/divers',
-    submenus: [],
+    submenus: [
+      { title: 'Références', href: '/divers/references' },
+    ],
   },
   {
     id: 'qualite',
@@ -241,6 +243,7 @@ export const routeTitles: Record<string, string> = {
   '/finis/previsions': 'Prévisions',
   // Divers
   '/divers': 'Divers',
+  '/divers/references': 'Références',
   // Qualité
   '/qualite': 'Qualité',
   '/qualite/suivi-lots': 'Suivi lots',
