@@ -111,6 +111,11 @@ export function SendEmailDialog({
   const [suggestions, setSuggestions] = useState<EmailRecipient[]>([])
   const [manualInput, setManualInput] = useState('')
   const [cc, setCc] = useState('')
+  const [bcc, setBcc] = useState('')
+  /** Cc / Cci are hidden until asked for, so the form stays compact. Opened
+   *  automatically on hydration when the server pre-filled either of them. */
+  const [showCc, setShowCc] = useState(false)
+  const [showBcc, setShowBcc] = useState(false)
   const [subject, setSubject] = useState('')
   const [body, setBody] = useState('')
   /** Whether the server-rendered PDF is still in the attachment list. Starts
@@ -179,7 +184,12 @@ export function SendEmailDialog({
     if (!open || !defaults || hydrated) return
     setSelectedRecipients(defaults.recipients.selected)
     setSuggestions(defaults.recipients.suggestions)
-    setCc((defaults.cc ?? []).join(', '))
+    const ccDefaults = defaults.cc ?? []
+    const bccDefaults = defaults.bcc ?? []
+    setCc(ccDefaults.join(', '))
+    setBcc(bccDefaults.join(', '))
+    setShowCc(ccDefaults.length > 0)
+    setShowBcc(bccDefaults.length > 0)
     setSubject(defaults.subject)
     setBody(defaults.body)
     // Initial checked state: server default_checked wins over the prop fallback.
@@ -203,6 +213,9 @@ export function SendEmailDialog({
     setSuggestions([])
     setManualInput('')
     setCc('')
+    setBcc('')
+    setShowCc(false)
+    setShowBcc(false)
     setSubject('')
     setBody('')
     setAttachPdf(true)
@@ -337,6 +350,22 @@ export function SendEmailDialog({
     fileInputRef.current?.click()
   }, [])
 
+  /** Show/hide the Cc or Cci field. Closing it also clears its content —
+   *  a hidden field must never smuggle recipients into the send. */
+  const toggleCopyField = useCallback((field: 'cc' | 'bcc') => {
+    if (field === 'cc') {
+      setShowCc((prev) => {
+        if (prev) setCc('')
+        return !prev
+      })
+    } else {
+      setShowBcc((prev) => {
+        if (prev) setBcc('')
+        return !prev
+      })
+    }
+  }, [])
+
   // ── Send ─────────────────────────────────────────────
   const handleSend = useCallback(async () => {
     setErrorMessage(null)
@@ -352,11 +381,13 @@ export function SendEmailDialog({
       return
     }
     const ccList = parseEmailList(cc)
+    const bccList = parseEmailList(bcc)
     setIsSending(true)
     try {
       await onSend({
         to,
         cc: ccList,
+        bcc: bccList,
         subject: trimmedSubject,
         body,
         attachPdf: pdfUrl ? attachPdf : false,
@@ -372,7 +403,7 @@ export function SendEmailDialog({
     } finally {
       setIsSending(false)
     }
-  }, [selectedRecipients, subject, cc, body, attachPdf, userAttachments, pdfUrl, onSend, onClose, visibleOptional, optionalChecked])
+  }, [selectedRecipients, subject, cc, bcc, body, attachPdf, userAttachments, pdfUrl, onSend, onClose, visibleOptional, optionalChecked])
 
   // Dev-only "Faux envoi" — short-circuits to vincent@etsmalterre.com with
   // dev_skip_send=true so the backend logs envoi_email + flips sstatut
@@ -387,6 +418,7 @@ export function SendEmailDialog({
       await onSend({
         to: ['vincent@etsmalterre.com'],
         cc: [],
+        bcc: [],
         subject: trimmedSubject,
         body: body || '[Faux envoi dev — pas de corps]',
         attachPdf: false,
@@ -475,9 +507,42 @@ export function SendEmailDialog({
             ) : (
               <>
                 <div className="flex-1 min-h-0 flex flex-col p-4 gap-3">
-                  {/* À — chip picker */}
+                  {/* À — chip picker. The Cc / Cci fields hang off this row's
+                      toggles so they cost no vertical space until needed. */}
                   <div className="space-y-1 flex-shrink-0">
-                    <label className="text-xs font-medium text-muted-foreground">À</label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-medium text-muted-foreground">À</label>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => toggleCopyField('cc')}
+                          aria-pressed={showCc}
+                          title={showCc ? 'Masquer le champ Cc' : 'Ajouter des destinataires en copie'}
+                          className={cn(
+                            'px-2 py-0.5 text-[11px] rounded-md transition-colors',
+                            showCc
+                              ? 'bg-accent text-accent-foreground shadow-sm font-medium'
+                              : 'text-muted-foreground hover:bg-accent/10',
+                          )}
+                        >
+                          Cc
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleCopyField('bcc')}
+                          aria-pressed={showBcc}
+                          title={showBcc ? 'Masquer le champ Cci' : 'Ajouter des destinataires en copie cachée'}
+                          className={cn(
+                            'px-2 py-0.5 text-[11px] rounded-md transition-colors',
+                            showBcc
+                              ? 'bg-accent text-accent-foreground shadow-sm font-medium'
+                              : 'text-muted-foreground hover:bg-accent/10',
+                          )}
+                        >
+                          Cci
+                        </button>
+                      </div>
+                    </div>
                     <div className="rounded-md border border-input bg-white p-2 space-y-2">
                       {selectedRecipients.length > 0 ? (
                         <div className="flex flex-wrap gap-1.5">
@@ -551,18 +616,37 @@ export function SendEmailDialog({
                     </div>
                   </div>
 
-                  {/* Cc — comma text */}
-                  <div className="space-y-1 flex-shrink-0">
-                    <label className="text-xs font-medium text-muted-foreground">Cc (facultatif)</label>
-                    <input
-                      type="text"
-                      value={cc}
-                      onChange={(e) => setCc(e.target.value)}
-                      placeholder="copie@exemple.com"
-                      className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-                      autoComplete="off"
-                    />
-                  </div>
+                  {/* Cc — comma text, shown on demand (or when pre-filled) */}
+                  {showCc && (
+                    <div className="space-y-1 flex-shrink-0">
+                      <label className="text-xs font-medium text-muted-foreground">Cc</label>
+                      <input
+                        type="text"
+                        value={cc}
+                        onChange={(e) => setCc(e.target.value)}
+                        placeholder="copie@exemple.com"
+                        className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                        autoComplete="off"
+                      />
+                    </div>
+                  )}
+
+                  {/* Cci — comma text. Pre-filled (and therefore auto-shown) by
+                      endpoints that copy a third party silently, e.g. the
+                      sous-traitants holding the rolls of an expédition. */}
+                  {showBcc && (
+                    <div className="space-y-1 flex-shrink-0">
+                      <label className="text-xs font-medium text-muted-foreground">Cci</label>
+                      <input
+                        type="text"
+                        value={bcc}
+                        onChange={(e) => setBcc(e.target.value)}
+                        placeholder="copie.cachee@exemple.com"
+                        className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                        autoComplete="off"
+                      />
+                    </div>
+                  )}
 
                   {/* Subject */}
                   <div className="space-y-1 flex-shrink-0">

@@ -10,6 +10,32 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-27 — feat/expe
+Email — **Cci (bcc) support app-wide + auto-copy of the sous-traitants holding the shipped
+rolls.** (1) `SendEmailDialog` gains a Cci field alongside Cc, and both are now **collapsed
+by default**: two small `Cc` / `Cci` toggle pills sit at the right of the "À" label row
+(gold-active, §5 segmented-filter language) and the inputs render only when toggled on — the
+reclaimed height goes to the message textarea. Closing a toggle clears that field's value, so
+a hidden field can never smuggle recipients into a send. A field the server pre-filled opens
+**automatically** on hydration. Contract: `EmailDefaults.bcc?: string[]` +
+`SendPayload.bcc: string[]` in `lib/email.ts`; `postEmail` forwards `bcc` when non-empty.
+API side: `bcc: z.array(z.string().email()).optional()` added to all 11 email schemas and
+threaded to `sendMail` at all 13 send sites (expeditions ×2, commandes client ×2 / fil / sst
+×2, devis, factures, clients tarifs, entreprises, études coloris ×2, transferts) —
+`lib/gmail.ts` already emitted the `Bcc:` header, so the MIME builder was untouched. (2)
+Expéditions formelle (`/expeditions/formelle/:id/email-defaults`, shared by Clients ›
+Expéditions **and** the Clients › Commandes expedition tab) now returns a pre-filled `bcc`:
+the sous-traitants **physically holding the rolls being shipped**, so they know what to send
+out. Resolution is by **magasin**, not by production chain — the expedition header has no sst
+FK, so rolls are read from `stock_fini.IDligne_expedition` + `stock_ecru.IDligne_expedition_ETM`,
+their distinct `IDmagasin` (→ `sous_traitant.IDsous_traitant`; **0 = à l'usine → nothing**)
+resolved to contacts flagged `envoi_bl = 1` (visible, valid mail, deduped lowercase). New
+helpers `loadExpeditionMagasinSstIds()` + `loadSstBlEmails()` in `expeditions.ts`. Bcc
+addresses are included in the `envoi_email` audit rows alongside To/Cc. The **divers** bucket
+gets no auto-fill (no stock link ⇒ no magasin) — the field is still there for manual entry.
+Verified against the dev DB over the 15 most recent expeditions: MATEL → `mct.celine@…`,
+Société Bontemps → its two BL contacts, factory-held shipments → empty.
+
 ## 2026-07-24 — feat/transfert
 Transferts › Rouleaux + Fils — **the Transferts placeholder becomes two real screens**
 (`/transferts/rouleaux`, `/transferts/fils`), porting legacy `FEN_Bons_de_transfert` /

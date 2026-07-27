@@ -450,6 +450,7 @@ const entrepriseExtraAttachmentSchema = z.object({
 const entrepriseEmailBody = z.object({
   to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
   cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(20000),
   extra_attachments: z.array(entrepriseExtraAttachmentSchema).optional(),
@@ -506,6 +507,7 @@ entreprisesRouter.post('/:id/email', async (req: Request, res: Response) => {
       fromName,
       to: parsed.data.to,
       cc: parsed.data.cc,
+      bcc: parsed.data.bcc,
       subject: parsed.data.subject,
       body: parsed.data.body,
       attachments: attachments.length > 0 ? attachments : undefined,

@@ -1292,6 +1292,7 @@ const extraAttachmentSchema = z.object({
 const emailBody = z.object({
   to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
   cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(20000),
   attach_pdf: z.boolean().optional(),
@@ -1366,7 +1367,7 @@ devisRouter.post('/:id/email', async (req: Request, res: Response) => {
         attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
       }
       messageId = await sendMail({
-        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc,
+        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
         subject: parsed.data.subject, body: parsed.data.body,
         attachments: attachments.length > 0 ? attachments : undefined,
       })

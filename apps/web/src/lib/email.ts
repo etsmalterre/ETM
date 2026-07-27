@@ -20,6 +20,10 @@ export interface EmailDefaults {
     suggestions: EmailRecipient[]
   }
   cc?: string[]
+  /** Pre-filled blind copies. Used by the expedition BL flows to notify the
+   *  sous-traitants holding the shipped rolls without exposing their
+   *  addresses to the client. */
+  bcc?: string[]
   subject: string
   body: string
   /** Server-driven state for the dialog's optional (tickable) attachments.
@@ -33,6 +37,7 @@ export interface EmailDefaults {
 export interface SendPayload {
   to: string[]
   cc: string[]
+  bcc: string[]
   subject: string
   body: string
   /** When true, the server should include its own rendered PDF (e.g. the
@@ -101,6 +106,7 @@ export async function postEmail(
     body: payload.body,
   }
   if (payload.cc.length > 0) body.cc = payload.cc
+  if (payload.bcc.length > 0) body.bcc = payload.bcc
   if (opts?.includeAttachPdf) body.attach_pdf = payload.attachPdf
   if (payload.devSkipSend) body.dev_skip_send = true
 

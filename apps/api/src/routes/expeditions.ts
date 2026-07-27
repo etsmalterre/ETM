@@ -2199,9 +2199,49 @@ function nowHfsqlDatetime(): string {
 
 interface EmailRecipientPayload { email: string; name?: string; source: 'contact'; contactId: number }
 
+const MAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/** BL-flagged contact emails of a set of sous-traitants. `mail` is ASCII by
+ *  nature, so no encoding repair is needed. Deduped, lowercase-keyed. */
+async function loadSstBlEmails(sstIds: number[]): Promise<string[]> {
+  const ids = Array.from(new Set(sstIds.filter((x) => x > 0)))
+  if (ids.length === 0) return []
+  const rows = await query<{ IDcontact: number; mail: string | null; envoi_bl: number | null; est_visible: number | null }>(
+    `SELECT IDcontact, mail, envoi_bl, est_visible FROM contact WHERE IDsous_traitant IN (${ids.join(',')})`,
+  )
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const c of rows) {
+    if (Number(c.envoi_bl) !== 1) continue
+    if (Number(c.est_visible ?? 1) === 0) continue
+    const raw = (c.mail ?? '').toString().trim()
+    if (!raw || !MAIL_RE.test(raw)) continue
+    const key = raw.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(raw)
+  }
+  return out
+}
+
+/** Sous-traitants physically holding the rolls of an expedition — the rolls'
+ *  magasin (stock_*.IDmagasin → sous_traitant.IDsous_traitant; 0 = à l'usine).
+ *  They get the BL in Cci so they know what to ship and where it goes. */
+async function loadExpeditionMagasinSstIds(ligneIds: number[]): Promise<number[]> {
+  const ids = Array.from(new Set(ligneIds.filter((x) => x > 0)))
+  if (ids.length === 0) return []
+  const inLe = ids.join(',')
+  const [fini, ecru] = await Promise.all([
+    query<{ IDmagasin: number | null }>(`SELECT IDmagasin FROM stock_fini WHERE IDligne_expedition IN (${inLe})`),
+    query<{ IDmagasin: number | null }>(`SELECT IDmagasin FROM stock_ecru WHERE IDligne_expedition_ETM IN (${inLe})`),
+  ])
+  return Array.from(new Set([...fini, ...ecru].map((r) => Number(r.IDmagasin) || 0).filter((x) => x > 0)))
+}
+
 async function buildBlEmailDefaults(id: number): Promise<{
   recipients: { selected: EmailRecipientPayload[]; suggestions: EmailRecipientPayload[] }
   subject: string; body: string; clientNom: string
+  bcc: string[]
   optional_attachments: Array<{ id: string; default_checked: boolean }>
 } | null> {
   const rows = await query<{ IDcommande_client: number; inclureRapportQualite: number | null }>(
@@ -2252,6 +2292,11 @@ async function buildBlEmailDefaults(id: number): Promise<{
   const clientNom = clientNames.get(IDclient) ?? ''
   const fixedContacts = await fixEncoding(contactRows, 'contact', 'IDcontact', ['nom', 'prenom', 'mail'])
 
+  // Cci: the sous-traitants whose magasin holds the shipped rolls — they need
+  // the BL to know what to send out. Never in Cc: the client must not see them.
+  const sstIds = await loadExpeditionMagasinSstIds((leRows as any[]).map((l) => Number(l.IDligne_expedition) || 0))
+  const bcc = await loadSstBlEmails(sstIds)
+
   const selected: EmailRecipientPayload[] = []
   const suggestions: EmailRecipientPayload[] = []
   const seen = new Set<string>()
@@ -2276,7 +2321,7 @@ async function buildBlEmailDefaults(id: number): Promise<{
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
     `Cordialement,\n` +
     `ETS Malterre`
-  return { recipients: { selected, suggestions }, subject, body, clientNom, optional_attachments }
+  return { recipients: { selected, suggestions }, subject, body, clientNom, bcc, optional_attachments }
 }
 
 expeditionsRouter.get('/formelle/:id/email-defaults', async (req: Request, res: Response) => {
@@ -2300,6 +2345,7 @@ const extraAttachmentSchema = z.object({
 const emailBody = z.object({
   to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
   cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(20000),
   attach_pdf: z.boolean().optional(),
@@ -2394,13 +2440,13 @@ expeditionsRouter.post('/formelle/:id/email', async (req: Request, res: Response
         attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
       }
       messageId = await sendMail({
-        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc,
+        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
         subject: parsed.data.subject, body: parsed.data.body,
         attachments: attachments.length > 0 ? attachments : undefined,
       })
     }
 
-    const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? [])]
+    const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? []), ...(parsed.data.bcc ?? [])]
     let societe = ''
     try {
       const er = await query<{ IDcommande_client: number }>(`SELECT IDcommande_client FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`)
@@ -2622,13 +2668,13 @@ expeditionsRouter.post('/divers/:id/email', async (req: Request, res: Response) 
         attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
       }
       messageId = await sendMail({
-        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc,
+        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
         subject: parsed.data.subject, body: parsed.data.body,
         attachments: attachments.length > 0 ? attachments : undefined,
       })
     }
 
-    const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? [])]
+    const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? []), ...(parsed.data.bcc ?? [])]
     let societe = ''
     try {
       const er = await query<{ IDclient: number; ref_client: string | null }>(
