@@ -12,6 +12,7 @@ import { useUser, canSwitchUser } from '@/contexts/UserContext'
 import { ProfileModal, userPhotoUrl, type UserProfileMe } from '@/components/profile/ProfileModal'
 import { TicketModal } from '@/components/tickets/TicketModal'
 import { useTicketNotifications } from '@/components/tickets/useTicketNotifications'
+import { useSubmenuFilter } from '@/hooks/useSubmenuFilter'
 
 interface HeaderProps {
   onMenuClick: () => void
@@ -21,6 +22,7 @@ interface HeaderProps {
 export function Header({ onMenuClick }: HeaderProps) {
   const location = useLocation()
   const activeMenu = getActiveMenu(location.pathname)
+  const filterSubmenus = useSubmenuFilter()
   const [isFullscreen, setIsFullscreen] = useState(false)
   const { user, logout } = useUser()
   const allowSwitch = canSwitchUser(user)
@@ -156,9 +158,9 @@ export function Header({ onMenuClick }: HeaderProps) {
       </Button>
 
       {/* Submenu tabs */}
-      {activeMenu && activeMenu.submenus.length > 0 && (
+      {activeMenu && filterSubmenus(activeMenu.submenus).length > 0 && (
         <nav className="flex gap-1 overflow-x-auto">
-          {activeMenu.submenus.map((submenu) => (
+          {filterSubmenus(activeMenu.submenus).map((submenu) => (
             <NavLink
               key={submenu.href}
               to={submenu.href}

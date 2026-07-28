@@ -10,6 +10,55 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/rapport-finance
+**Rapports › Finance** (`/rapports/finance`) - new read-only balance comptable, porting the
+legacy `FI_Analyse_Finance.wdw` tab (Analyse › Finance). Unlike its three siblings in the
+Rapports menu it is not a line-level tracking table: it is the accountant's balance, one row
+per compte comptable, with a Charges fixes / Charges variables toggle and an N vs N-1
+comparison.
+
+Investigation first, because the .wdw is PCS-compressed and yielded no readable source. The
+model is three tables: `upload_compta` (the accountant's weekly balance file, per société,
+carrying the produits / charges / frais_fixe / frais_variable / provisions aggregates),
+`compte_compta` (chart of accounts partitioned by `id_societe`, with `frais_variable` 0=fixe
+1=variable and a free-text `Description` the user maintains), and `releve_compta` (debit /
+credit per account per upload date). **The rule recovered: montant(compte, année) = debit -
+credit at the LAST upload falling inside that calendar year.** Not the sum, because each
+upload is a cumulative year-to-date balance; and not January's upload, which carries the
+prior exercise's final figures (2026-01-05 holds the definitive 2025 numbers, yet legacy
+reports 2025 as of 2025-12-22). `pourcentage` = round(montant / montant N-1 x 100), 0 when
+N-1 is empty.
+
+Two scope rules had to be deduced rather than read: **class-7 accounts (numero >= 700000) are
+produits and are excluded**, and accounts absent from both reference balances are hidden.
+Both are proven by reconciliation - summing each bucket reproduces `upload_compta.frais_fixe`
+/ `frais_variable` to the cent (111 604,54 EUR and 610 431,35 EUR at 2026-03-23), and the
+totals only balance once the 7xxxxx rows are dropped. Verified screen against screen with the
+legacy app: 67 rows in fixes, 15 in variables, same amounts, same percentages. Probe kept at
+`apps/api/src/scripts/inspect-finance-compta.ts`.
+
+API - three endpoints added to `apps/api/src/routes/rapports.ts`: `GET /rapports/finance`
+(4 bounded set-based queries per call, independent of row count),
+`GET /rapports/finance/comptes/:id/historique`, and `PATCH /rapports/finance/comptes/:id` for
+the description. Accent repair goes through the batched `repairAliased` so an empty
+`Description` never enters a CONVERT; the description write uses a Latin-1 hex literal
+(`sqlText`) because the iODBC bridge corrupts multi-byte UTF-8 embedded in a SQL line. Scope
+is société 1 (ETM) only, matching legacy.
+
+Screen - `apps/web/src/pages/RapportFinance.tsx`, Tableau layout (§27) with the mobile card
+list (§40) and the unsaved-changes guard (§28). Beyond legacy: a year picker, search, Excel
+export, and a drawer showing the écart, the editable description and the account's yearly
+history.
+
+**Permission-gated, and it is the first screen that is.** The balance names payroll accounts
+("Salaires Isa, Pierrot, Laetitia, Eloise"), so the screen is closed by default behind
+`view_rapport_finance` (child: `edit_compte_description`). This introduced
+`SubMenuItem.permission` plus the shared `useSubmenuFilter` hook, now applied to all three nav
+surfaces (sidebar context menu, header tabs, mobile nav) so a hidden entry cannot leak through
+one of them. **If you add a permission-gated submenu, use that hook - do not filter in one
+surface only.**
+
+
 ## 2026-07-28 — feat/rapport-fil
 **Rapports › Commandes fils** (`/rapports/commandes-fils`) — new read-only line-level report,
 the yarn-purchasing twin of Rapports › Commandes sst, porting legacy `FI_Rapport_fil.wdw`.

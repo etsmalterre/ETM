@@ -253,6 +253,25 @@ export const PERMISSION_KEYS = [
     description: 'Autorise la découpe d’un rouleau en plusieurs dans Tombé Métier > Stock.',
     category: 'Tombé Métier',
   },
+  // Rapports — the finance report exposes the full accounting balance
+  // (including payroll accounts), so it is gated rather than open to every
+  // user like the other rapports. Without the key the submenu entry is
+  // hidden, the route redirects, and the API answers 403.
+  {
+    key: 'view_rapport_finance',
+    label: 'Consulter le rapport finance',
+    description:
+      'Affiche l’entrée « Finance » dans le menu Rapports et autorise la consultation de la balance comptable (charges fixes et variables, montants annuels et comparaison N-1). Ces données incluent les comptes de personnel.',
+    category: 'Rapports',
+  },
+  {
+    key: 'edit_compte_description',
+    label: 'Annoter les comptes',
+    description:
+      'Autorise la modification de la description libre d’un compte comptable depuis le tiroir de Rapports > Finance.',
+    category: 'Rapports',
+    parent: 'view_rapport_finance',
+  },
   {
     key: 'create_stock_divers',
     label: 'Créer une ligne de stock divers',

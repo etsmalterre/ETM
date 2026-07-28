@@ -28,6 +28,25 @@ export interface SubMenuItem {
    *  Filtered out of the sidebar render when !user.isAdmin. The page itself
    *  also enforces the same check, so direct URL access is blocked. */
   adminOnly?: boolean
+  /** When set, the entry is only shown to users holding this permission key.
+   *  Filtered out of every nav surface via `visibleSubmenus`. The page and the
+   *  API enforce the same check, so hiding it here is convenience, not the
+   *  security boundary. */
+  permission?: string
+}
+
+/** Filter a submenu list for the current viewer. Used by every nav surface
+ *  (sidebar context menu, header tabs, mobile nav) so an entry the user
+ *  cannot open never appears in one of them and not the others. */
+export function visibleSubmenus(
+  submenus: SubMenuItem[],
+  opts: { isEffectiveAdmin: boolean; has: (key: string) => boolean },
+): SubMenuItem[] {
+  return submenus.filter((s) => {
+    if (s.adminOnly && !opts.isEffectiveAdmin) return false
+    if (s.permission && !opts.has(s.permission)) return false
+    return true
+  })
 }
 
 export interface MainMenuItem {
@@ -173,6 +192,7 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Commandes clients', href: '/rapports/commandes-clients' },
       { title: 'Commandes sst', href: '/rapports/commandes-sst' },
       { title: 'Commandes fils', href: '/rapports/commandes-fils' },
+      { title: 'Finance', href: '/rapports/finance', permission: 'view_rapport_finance' },
     ],
   },
   {
@@ -257,6 +277,7 @@ export const routeTitles: Record<string, string> = {
   '/rapports/commandes-clients': 'Commandes clients',
   '/rapports/commandes-sst': 'Commandes sst',
   '/rapports/commandes-fils': 'Commandes fils',
+  '/rapports/finance': 'Finance',
   // Réseau
   '/reseau': 'Réseau',
   '/reseau/entreprises': 'Entreprises',

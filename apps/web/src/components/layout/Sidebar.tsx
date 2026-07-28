@@ -8,6 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { ContextMenu, type ContextMenuItem } from '@/components/ui/context-menu'
 import { useUser } from '@/contexts/UserContext'
 import { usePermissions } from '@/contexts/PermissionsContext'
+import { useSubmenuFilter } from '@/hooks/useSubmenuFilter'
 
 interface SidebarProps {
   collapsed: boolean
@@ -88,6 +89,7 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
   const navigate = useNavigate()
   useUser() // ensures the sidebar re-renders when the user context updates
   const { isEffectiveAdmin } = usePermissions()
+  const filterSubmenus = useSubmenuFilter()
 
   const handleNavigate = (href: string) => {
     navigate(href)
@@ -104,6 +106,13 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
     if (visible.length === 0) return null
     return { ...settingsItem, submenus: visible }
   }, [isEffectiveAdmin])
+
+  // Same treatment for the main items: an entry the user cannot open must not
+  // appear in the right-click context menu (nor be the item's landing target).
+  const visibleMain = useMemo<MainMenuItem[]>(
+    () => mainNavigation.map((item) => ({ ...item, submenus: filterSubmenus(item.submenus) })),
+    [filterSubmenus],
+  )
 
   return (
     <aside
@@ -140,7 +149,7 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
           <div className="my-2 border-t border-white/10" />
 
           {/* Main navigation */}
-          {mainNavigation.map((item) => (
+          {visibleMain.map((item) => (
             <NavItem
               key={item.id}
               item={item}

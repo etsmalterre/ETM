@@ -6,6 +6,7 @@ import { mainNavigation, dashboardItem, settingsItem, type MainMenuItem } from '
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { useSubmenuFilter } from '@/hooks/useSubmenuFilter'
 
 interface MobileNavProps {
   open: boolean
@@ -13,6 +14,7 @@ interface MobileNavProps {
 }
 
 export function MobileNav({ open, onOpenChange }: MobileNavProps) {
+  const filterSubmenus = useSubmenuFilter()
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="left" className="w-80 p-0 bg-gradient-to-b from-primary via-primary/95 to-primary/90 border-r-0">
@@ -39,7 +41,7 @@ export function MobileNav({ open, onOpenChange }: MobileNavProps) {
             {mainNavigation.map((item) => (
               <MobileNavItem
                 key={item.id}
-                item={item}
+                item={{ ...item, submenus: filterSubmenus(item.submenus) }}
                 onNavigate={() => onOpenChange(false)}
               />
             ))}

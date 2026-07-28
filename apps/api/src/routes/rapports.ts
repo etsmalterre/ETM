@@ -36,7 +36,9 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { repairAliased } from './stock-fini.js'
 import { stripRtf } from '../lib/rtf-utils.js'
-import { n, dateDigits, addWorkingDays, isLineDone, lineStatutRank } from '../lib/sst-shared.js'
+import { n, dateDigits, addWorkingDays, isLineDone, lineStatutRank, esc } from '../lib/sst-shared.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 
 export const rapportsRouter: RouterType = Router()
 
@@ -1395,6 +1397,341 @@ rapportsRouter.get('/commandes-fil', async (req: Request, res: Response) => {
     res.json(out)
   } catch (err) {
     console.error('[rapports/commandes-fil]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Finance — ports the legacy WinDev "Analyse › Finance" tab.
+//
+// DATA MODEL (reverse-engineered from the live DB, 2026-07-28)
+//
+//   upload_compta   One row per accountant balance upload, per société.
+//                   `DATE` (YYYYMMDD) + the pre-computed aggregates
+//                   produits / charges / frais_fixe / frais_variable /
+//                   provisions. Uploads land roughly weekly and each one is
+//                   a CUMULATIVE year-to-date balance, not a delta.
+//   compte_compta   Chart of accounts, partitioned by `id_societe`.
+//                   `numero` (6-digit PCG account), `libelle`,
+//                   `frais_variable` (0 = charge fixe, 1 = charge variable)
+//                   and `Description` — a free-text annotation the user
+//                   maintains ("Salaires Isa, Pierrot, Laetitia, Eloise").
+//                   The same `numero` exists once per société.
+//   releve_compta   One row per (account, upload date) with debit / credit.
+//
+// THE RULE (verified to the cent against the legacy screen)
+//
+//   montant(compte, année) = debit − credit of the releve_compta row at the
+//   LAST upload date falling inside that CALENDAR year.
+//
+//   The "last upload of the year" — not the sum, because balances are
+//   cumulative; and not the January upload that closes the prior exercise
+//   (2026-01-05 carries the final 2025 figures, yet legacy reports 2025 as
+//   of 2025-12-22, its last in-year upload).
+//
+//   pourcentage = round(montant / montant_precedent × 100), 0 when N-1 is 0.
+//
+// SCOPE
+//
+//   • Société 1 (ETM) only — this is the ETM app; TRM has its own.
+//   • Class-7 accounts (numero >= 700000) are produits, not charges, and are
+//     excluded. Proof: summing the class-6 accounts of each frais_variable
+//     bucket reproduces upload_compta.frais_fixe / .frais_variable exactly
+//     (111 604,54 € / 610 431,35 € at 2026-03-23) — they balance only once
+//     the 7xxxxx rows are dropped.
+//   • Accounts with no releve row at either reference date are hidden, which
+//     is what makes the legacy variable list 15 rows long rather than the 18
+//     rows compte_compta holds.
+//
+// HFSQL discipline: `DATE` is a reserved word but survives in both the
+// SELECT list and the WHERE clause (verified); flat set-based queries only
+// (4 per request, independent of row count); accent repair is batched via
+// repairAliased so empty `Description` values never enter a CONVERT.
+
+/** The only société this app reports on. See CLAUDE.md §IDsociete. */
+const SOCIETE_ETM = 1
+/** Accounts at or above this number are produits (PCG class 7), not charges. */
+const CLASS_7 = 700000
+
+/** SQL literal for a user-supplied text value. Pure ASCII → quoted literal;
+ *  anything with accents → Latin-1 hex literal (the Linux iODBC bridge
+ *  corrupts raw multi-byte UTF-8 embedded in a SQL line). */
+function sqlText(value: string | null | undefined): string {
+  const v = (value ?? '').toString()
+  if (v === '') return "''"
+  if (/^[\x09\x0A\x0D\x20-\x7E]*$/.test(v)) return `'${esc(v)}'`
+  const ascii = v
+    .replace(/[‘’‚′]/g, "'")
+    .replace(/[“”„″]/g, '"')
+    .replace(/[–—−]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/ /g, ' ')
+  const bytes = Buffer.from(
+    Array.from(ascii, (ch) => {
+      const c = ch.codePointAt(0) ?? 0x3f
+      return c <= 0xff ? c : 0x3f
+    }),
+  )
+  return `x'${bytes.toString('hex')}'`
+}
+
+interface UploadRow {
+  DATE: string | null
+  produits: number | null
+  charges: number | null
+  frais_fixe: number | null
+  frais_variable: number | null
+  provisions: number | null
+}
+
+interface YearAnchor {
+  /** YYYYMMDD of the last upload inside the calendar year. */
+  date: string
+  produits: number
+  charges: number
+  frais_fixe: number
+  frais_variable: number
+  provisions: number
+}
+
+/** Last upload of each calendar year for the ETM société, keyed by year. */
+async function loadYearAnchors(): Promise<Map<number, YearAnchor>> {
+  const rows = await query<UploadRow>(
+    `SELECT DATE, produits, charges, frais_fixe, frais_variable, provisions
+     FROM upload_compta WHERE id_societe = ${SOCIETE_ETM}`,
+  )
+  const byYear = new Map<number, YearAnchor>()
+  for (const r of rows) {
+    const d = dateDigits(r.DATE)
+    if (!/^\d{8}$/.test(d)) continue
+    const year = Number(d.slice(0, 4))
+    const prev = byYear.get(year)
+    if (prev && prev.date >= d) continue
+    byYear.set(year, {
+      date: d,
+      produits: n(r.produits),
+      charges: n(r.charges),
+      frais_fixe: n(r.frais_fixe),
+      frais_variable: n(r.frais_variable),
+      provisions: n(r.provisions),
+    })
+  }
+  return byYear
+}
+
+/** debit − credit per account at one upload date. Empty map for a null date. */
+async function loadBalanceAt(date: string | null): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  if (!date || !/^\d{8}$/.test(date)) return out
+  const rows = await query<{ IDcompte_compta: number; debit: number | null; credit: number | null }>(
+    `SELECT IDcompte_compta, debit, credit FROM releve_compta WHERE DATE = '${date}'`,
+  )
+  for (const r of rows) {
+    const id = n(r.IDcompte_compta)
+    if (id <= 0) continue
+    out.set(id, n(r.debit) - n(r.credit))
+  }
+  return out
+}
+
+interface CompteRow {
+  IDcompte_compta: number
+  numero: number | null
+  libelle: string | null
+  frais_variable: number | null
+  description: string | null
+}
+
+/** Chart of accounts for ETM, accents repaired, class-7 rows dropped. */
+async function loadComptes(): Promise<CompteRow[]> {
+  const rows = await query<CompteRow>(
+    `SELECT IDcompte_compta, numero, libelle, frais_variable, Description AS description
+     FROM compte_compta WHERE id_societe = ${SOCIETE_ETM}`,
+  )
+  const fixed = await repairAliased(
+    rows as unknown as Record<string, unknown>[],
+    'compte_compta',
+    'IDcompte_compta',
+    { libelle: 'libelle', description: 'Description' },
+  )
+  return (fixed as unknown as CompteRow[]).filter((c) => {
+    const num = n(c.numero)
+    return num > 0 && num < CLASS_7
+  })
+}
+
+/** round(cur / prev × 100), 0 when there is nothing to compare against. */
+function pourcentage(cur: number, prev: number): number {
+  if (!prev) return 0
+  return Math.round((cur / prev) * 100)
+}
+
+// GET /api/rapports/finance?annee=YYYY
+//   annee omitted → the most recent year holding an upload.
+rapportsRouter.get('/finance', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'view_rapport_finance')
+    if (!allowed) {
+      res.status(403).json({ error: 'forbidden', message: 'Accès au rapport finance non autorisé.' })
+      return
+    }
+
+    const anchors = await loadYearAnchors()
+    const annees = Array.from(anchors.keys()).sort((a, b) => b - a)
+    if (annees.length === 0) {
+      res.json({ annees: [], annee: null, annee_precedente: null, lignes: [], totaux: null })
+      return
+    }
+
+    const asked = Number.parseInt(String(req.query.annee ?? ''), 10)
+    const annee = anchors.has(asked) ? asked : annees[0]
+    const anneePrec = annee - 1
+
+    const cur = anchors.get(annee)!
+    // Strictly N-1: with a gap year the comparison column is simply empty,
+    // which is honest — silently comparing against N-2 under a "N-1" header
+    // would be worse than showing nothing.
+    const prev = anchors.get(anneePrec) ?? null
+
+    const [comptes, balCur, balPrev] = await Promise.all([
+      loadComptes(),
+      loadBalanceAt(cur.date),
+      loadBalanceAt(prev?.date ?? null),
+    ])
+
+    const lignes = comptes
+      // Legacy hides accounts absent from both reference balances.
+      .filter((c) => balCur.has(n(c.IDcompte_compta)) || balPrev.has(n(c.IDcompte_compta)))
+      .map((c) => {
+        const id = n(c.IDcompte_compta)
+        const montant = balCur.get(id) ?? 0
+        const montantPrec = balPrev.get(id) ?? 0
+        return {
+          IDcompte_compta: id,
+          numero: n(c.numero),
+          libelle: (c.libelle ?? '').toString().trim(),
+          description: (c.description ?? '').toString().trim(),
+          variable: n(c.frais_variable) === 1 ? 1 : 0,
+          montant,
+          montant_precedent: montantPrec,
+          ecart: montant - montantPrec,
+          pourcentage: pourcentage(montant, montantPrec),
+        }
+      })
+      .sort((a, b) => a.numero - b.numero)
+
+    res.json({
+      annees,
+      annee,
+      annee_precedente: prev ? anneePrec : null,
+      date_arrete: cur.date,
+      date_arrete_precedente: prev?.date ?? null,
+      totaux: {
+        produits: cur.produits,
+        charges: cur.charges,
+        frais_fixe: cur.frais_fixe,
+        frais_variable: cur.frais_variable,
+        provisions: cur.provisions,
+        produits_precedent: prev?.produits ?? 0,
+        charges_precedent: prev?.charges ?? 0,
+        frais_fixe_precedent: prev?.frais_fixe ?? 0,
+        frais_variable_precedent: prev?.frais_variable ?? 0,
+        provisions_precedent: prev?.provisions ?? 0,
+      },
+      lignes,
+    })
+  } catch (err) {
+    console.error('[rapports/finance]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// GET /api/rapports/finance/comptes/:id/historique
+//   Year-end value of one account across every year holding an upload.
+rapportsRouter.get('/finance/comptes/:id/historique', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'view_rapport_finance')
+    if (!allowed) { res.status(403).json({ error: 'forbidden' }); return }
+
+    const id = Number.parseInt(req.params.id, 10)
+    if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: 'invalid id' }); return }
+
+    const anchors = await loadYearAnchors()
+    // date → year, so one flat read over the account's own rows folds into
+    // the year series without a query per year.
+    const yearByDate = new Map<string, number>()
+    for (const [year, a] of anchors) yearByDate.set(a.date, year)
+
+    const rows = await query<{ DATE: string | null; debit: number | null; credit: number | null }>(
+      `SELECT DATE, debit, credit FROM releve_compta WHERE IDcompte_compta = ${id}`,
+    )
+    const byYear = new Map<number, number>()
+    for (const r of rows) {
+      const year = yearByDate.get(dateDigits(r.DATE))
+      if (year === undefined) continue
+      byYear.set(year, n(r.debit) - n(r.credit))
+    }
+
+    res.json(
+      Array.from(anchors.keys())
+        .sort((a, b) => a - b)
+        .map((annee) => ({ annee, montant: byYear.get(annee) ?? 0 })),
+    )
+  } catch (err) {
+    console.error('[rapports/finance/historique]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// PATCH /api/rapports/finance/comptes/:id  { description }
+//   The free-text annotation shown in the "description" column. Scoped to
+//   the ETM société so an id from another partition can't be written.
+rapportsRouter.patch('/finance/comptes/:id', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const admin = isEffectiveAdmin(req)
+    const canView = await userHasPermission(req.userId, admin, 'view_rapport_finance')
+    const canEdit = await userHasPermission(req.userId, admin, 'edit_compte_description')
+    if (!canView || !canEdit) {
+      res.status(403).json({ error: 'forbidden', message: 'Modification des comptes non autorisée.' })
+      return
+    }
+
+    const id = Number.parseInt(req.params.id, 10)
+    if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: 'invalid id' }); return }
+
+    const raw = req.body?.description
+    if (raw != null && typeof raw !== 'string') {
+      res.status(400).json({ error: 'description must be a string' }); return
+    }
+    const description = (raw ?? '').toString().slice(0, 255)
+
+    const scope = await query<{ IDcompte_compta: number }>(
+      `SELECT IDcompte_compta FROM compte_compta
+       WHERE IDcompte_compta = ${id} AND id_societe = ${SOCIETE_ETM}`,
+    )
+    if (scope.length === 0) { res.status(404).json({ error: 'Compte not found' }); return }
+
+    await query(`UPDATE compte_compta SET Description = ${sqlText(description)} WHERE IDcompte_compta = ${id}`)
+
+    // HFSQL has no RETURNING — read back so the client hydrates the repaired value.
+    const after = await query<{ IDcompte_compta: number; description: string | null }>(
+      `SELECT IDcompte_compta, Description AS description FROM compte_compta WHERE IDcompte_compta = ${id}`,
+    )
+    const fixed = await repairAliased(
+      after as unknown as Record<string, unknown>[],
+      'compte_compta',
+      'IDcompte_compta',
+      { description: 'Description' },
+    )
+    res.json({
+      IDcompte_compta: id,
+      description: ((fixed[0]?.description ?? '') as string).toString().trim(),
+    })
+  } catch (err) {
+    console.error('[rapports/finance PATCH]', err)
     res.status(500).json({ error: (err as Error).message })
   }
 })
