@@ -3,7 +3,6 @@ import { AppShell } from '@/components/layout/AppShell'
 import { PagePlaceholder } from '@/components/shared/PagePlaceholder'
 import { Dashboard } from '@/pages/Dashboard'
 import {
-  ShoppingCart,
   FileText,
   FileBarChart,
   Palette,
@@ -37,7 +36,6 @@ const FinisColorisTeintPage = createPlaceholder('Coloris Teint', 'Coloris teints
 const FinisPrevisionsPage = createPlaceholder('Prévisions Finis', 'Prévisions des produits finis', TrendingUp)
 const QualiteActionsPage = createPlaceholder('Actions', 'Actions qualité', ClipboardCheck)
 const QualiteAnalysePage = createPlaceholder('Analyse', 'Analyse qualité', BarChart3)
-const RapportsCommandesClientsPage = createPlaceholder('Commandes clients', 'Rapports sur les commandes clients', ShoppingCart)
 const RapportsCommandesFilsPage = createPlaceholder('Commandes fils', 'Rapports sur les commandes de fils', FileBarChart)
 
 // Fils pages (real)
@@ -81,6 +79,7 @@ import { ProspectsDemandes } from '@/pages/ProspectsDemandes'
 
 // Rapports pages (real)
 import { RapportCommandesSst } from '@/pages/RapportCommandesSst'
+import { RapportCommandesClients } from '@/pages/RapportCommandesClients'
 
 // Réseau pages
 import { Entreprises } from '@/pages/Entreprises'
@@ -154,7 +153,7 @@ export const router = createBrowserRouter([
 
       // Rapports
       { path: 'rapports', element: <Navigate to="/rapports/commandes-clients" replace /> },
-      { path: 'rapports/commandes-clients', element: <RapportsCommandesClientsPage /> },
+      { path: 'rapports/commandes-clients', element: <RapportCommandesClients /> },
       { path: 'rapports/commandes-sst', element: <RapportCommandesSst /> },
       { path: 'rapports/commandes-fils', element: <RapportsCommandesFilsPage /> },
 

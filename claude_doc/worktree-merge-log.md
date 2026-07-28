@@ -10,6 +10,52 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/rapport-cmd-client
+**Rapports › Commandes clients** — port of the legacy WinDev
+`FEN_Rapport_commandes_clients.wdw`, the client-side mirror of the existing Commandes sst
+report. New read-only endpoint `GET /api/rapports/commandes-clients?soldees=0|1` in
+`routes/rapports.ts` + new screen `pages/RapportCommandesClients.tsx` (Tableau layout, no page
+title, search + "Voir les commandes soldées" + Excel export with the per-user column picker,
+20 sortable columns, red/amber deadline row tints, totalizer with line count / **total HT non
+facturé** / late+watch counts). The placeholder route in `router.tsx` is replaced; the nav entry
+already existed.
+
+The legacy `.wdw` is PCS-compressed, so every column was reverse-engineered from live data and
+verified figure-for-figure against commandes 3616 / 3617 / 3643 — the harness that does it is
+committed as `scripts/verify-rapport-cmd-client.ts` (drives the real handler in-process, 21
+assertions). The non-obvious finding is that the four quantity columns are a **decomposition of
+the supply pipeline**, not four independent gauges: `Qté expédiée` = rolls shipped (fini état 4
+or on a `ligne_expedition`; écru via `IDligne_expedition_ETM`); `Affecté` = rolls reserved to the
+line and still on site; `En SST` = écru reserved to the line but still out at an ennoblisseur
+(`IDref_commande_affectation > 0`) and not yet dyed back, converted `poids × rendement` because
+écru rolls carry `metrage = 0` (331,90 kg × 2,6420891 = 876,91 Ml, matching the legacy cell
+exactly); `Qté stock` = **free** stock of the same ref+coloris (reserved to no line, on no
+expedition, not état Expédié). Écru already dyed into a `stock_fini` is skipped everywhere — the
+fini roll represents it and counting both double-counts the line. `Total HT non facturé` =
+`quantité × prix − Σ(ligne_facture)` reached via `ligne_commande_client → ligne_expedition →
+ligne_facture`, definitive invoices only (proformas are drafts); negatives are correct and mean
+more was shipped+invoiced than ordered. `Désignation` is `ref_fini.designation`, **not**
+`designation_client` (which just repeats the reference). All three line types are handled —
+fini, écru, and divers (which carry no rolls and read the `expedition_divers` ledger +
+`stock_divers` keyed on the ref+variation1+variation2 triple).
+
+One deliberate divergence from the Commandes clients affectation gauge: `affectation_cmd_tricotage`
+(yarn *planned* for knitting) is NOT counted here. It is a planning allocation rather than physical
+stock and the legacy report has no column for it — the verified rows confirm legacy excludes it —
+so this report's Affecté can read lower than the gauge on Clients › Commandes for a line whose yarn
+is allocated but not yet knitted.
+
+Two HFSQL performance/safety issues were found while profiling the full-history scope and fixed in
+the new endpoint (both are storm-shaped risks on the shared Linux bridge, not just slowness):
+`fixEncoding` is a per-row-per-field `CONVERT` N+1, so the new code uses a local `repairText()`
+wrapper over the batched `repairAliased` with CHUNK-sized id slicing (one `CONVERT … WHERE id IN
+(…)` per column per chunk); and the dyed-écru lookup was chunking `WHERE IDstock_ecru IN (…)` over
+20 k+ ids at 5,9 s across 54 round trips, replaced by a single unfiltered
+`SELECT IDstock_ecru FROM stock_fini WHERE IDstock_ecru > 0` (~45 k single-column rows, ~180 ms).
+Default scope 855 ms / 202 lines; the soldées opt-in 12,4 s / 4 845 lines (was 18,9 s). **The
+sibling `/commandes-sst` endpoint still uses the per-row `fixEncoding`** — same N+1 shape, left
+untouched as out of scope, worth the same treatment next time it is opened.
+
 ## 2026-07-28 — feat/stock-divers
 **Divers › Stock** (`/divers/stock`) — nouvel écran, portage de `FEN_Stock_Divers.wdw` +
 `FEN_Gestion_Stock_Divers.wdw`. Layout **Tableau** (mps_designer §27, même moule que
