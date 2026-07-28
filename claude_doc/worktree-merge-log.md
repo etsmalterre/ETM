@@ -10,6 +10,53 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/transfert
+Transferts (Rouleaux + Fils) — **permission gating, and the stock picker reworked into an
+"Éditer le bon de transfert" modal that both adds and retires pièces.**
+
+(1) **Two permissions, one per kind**: `gestion_transfert_rouleaux` and `gestion_transfert_fils`,
+each in its own catalog category so Rouleaux and Fils are grantable independently (a user may
+move rolls without touching yarn). One key covers the whole écran — création, modification de
+l'en-tête, ajout / retrait des pièces, suppression du bon. Without it the screen is read-only:
+"Nouveau" and "Modifier" disappear and no piece affordance renders. Enforced server-side by
+`ensurePermission(req, res, kind)` in `routes/transferts.ts` on all five writes (`POST /:kind`,
+`PUT /:kind/:id`, `DELETE /:kind/:id`, `PUT /:kind/:id/pieces`, `DELETE /:kind/:id/pieces/:pieceId`),
+401 when unauthenticated / 403 otherwise. **Existing non-admins lose piece editing until the
+keys are granted** in Paramètres > Utilisateurs.
+
+(2) **Piece mutation moved into edit mode.** It used to be the inverse (pieces editable in view
+mode, frozen while editing the header). Adding or retiring a pièce moves stock between magasins
+immediately, so it now sits behind the same deliberate gate as the rest of the bon:
+`canMutatePieces = isEditing && canManage`. The empty state tells a permitted user in view mode
+to "Passez en mode édition pour en ajouter."
+
+(3) **Picker drawer → modal.** The bottom drawer became a `Dialog` titled "Éditer le bon de
+transfert" (`<Pencil>`), mounted only while open so search + selection reset each time. It now
+lists the pièces **already on the bon** — ticked, at the top, badged "Sur le bon" — above the
+stock still available at the source; unticking one retires it (returns it to the source magasin),
+ticking an available one queues it, and **Valider** applies the queue and closes. On-bon rows
+come from the detail payload (they sit at the *destination*, so `/available` never returns them)
+and are filtered client-side with an accent-insensitive match so they narrow with the same query.
+Partial applies keep the dialog open with a per-piece explanation instead of a terse count.
+Selection is now cleared **on tab change** — `type` is read from the active tab at Valider time
+and ids collide across `stock_ecru`/`stock_fini`/`stock_fil`, so a carried-over selection could
+transfer the wrong roll rather than merely fail.
+
+(4) **Dirty header flushed before the picker opens.** Pieces land in the bon's *persisted*
+destination, so opening the picker with an unsaved en-tête draft would move stock to the magasin
+the user no longer sees selected. `saveHeaderMut` gained a `{ keepEditing }` option: the header
+saves and the draft snapshot re-baselines, without kicking the user out of edit mode.
+
+(5) **`mps_designer` §7.1 — the row-add button on a single-list center panel.** New section
+codifying what the five reference screens already do: exactly two renderings (centered outline
+button in the empty state, full-width dashed ghost button as the last child of the scroll
+container when non-empty), fixed classes, same label and icon in both, edit-mode gated, and
+never in the totals footer — the failure it prevents is the button appearing to vanish once the
+first row lands. Also: name the manager + use `<Pencil>` when the dialog also removes. Transferts
+was migrated onto it (the footer "Ajouter" button is gone), and the per-row remove button is now
+always visible in edit mode rather than hover-revealed — hover is unreachable on the factory
+touchscreen.
+
 ## 2026-07-28 — feat/ref-fini
 Finis > Références — **per-coloris fiche tarifs, the OEKO-TEX certificate on the fiche
 technique, and an app-wide fix to left-list auto-selection.**

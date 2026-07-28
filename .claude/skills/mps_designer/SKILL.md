@@ -513,6 +513,51 @@ The detail body hosts one of two layouts. Pick before writing code — they are 
 
 For the single-list shape, **do not** wrap the rows in a `<Card>` with a "Section Title" + chevron + count-badge header. That pattern belongs to §23 (multi-section). The étude's title is already one screen-row above — a second "Soumissions" title would just duplicate it, eat vertical space, and invite the user to collapse the only thing on the screen. Render the row list as the flex-sibling body from §31.1, with the drawer as a second flex sibling below. Reference: `LignesSection` in `FilsCommandes.tsx`, `SoumissionsSection` in `EtudesColoris.tsx`.
 
+### 7.1 The row-add button on a single-list center panel
+
+References: `FilsCommandes.tsx`, `ClientsCommandes.tsx`, `ClientsDevis.tsx`, `ClientsFacturation.tsx`, `SousTraitantsCommandes.tsx` — all five render this identically.
+
+The affordance that adds a row to a single-list center panel (a ligne, a pièce, a soumission…) has **exactly two renderings, and both live inside the scrollable rows container** — never in the totals footer, never in the detail header.
+
+**1. Empty list** — a small outline button centered under the empty-state icon + message:
+
+```tsx
+<div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+  <Layers className="h-12 w-12 mb-3 opacity-40" />
+  <p className="text-sm">Aucune ligne</p>
+  {isEditing && !linesLocked && (
+    <Button variant="outline" size="sm" className="mt-3" onClick={startAddLine}>
+      <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter une ligne
+    </Button>
+  )}
+</div>
+```
+
+**2. Non-empty list** — a full-width dashed ghost button as the **last child of the scroll container**, after the row cards, so it scrolls with them and always sits directly under the last row:
+
+```tsx
+{isEditing && !linesLocked && rows.length > 0 && (
+  <Button
+    variant="ghost"
+    size="sm"
+    onClick={startAddLine}
+    className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
+  >
+    <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter une ligne
+  </Button>
+)}
+```
+
+Rules — do not deviate:
+
+- **Classes are copy-paste fixed** for both states. The dashed border (`border border-dashed border-border/60`) + muted text is what makes the row read as "a slot waiting to be filled" rather than a competing CTA against Enregistrer.
+- **Both renderings carry the same label and the same leading icon at `h-3.5 w-3.5 mr-1.5`.** The label describes what the click produces (`Ajouter une ligne`, `Ajouter un coloris`) with a `<Plus>` icon. When the click opens a manager that both adds *and* removes, name the manager (`Éditer le bon de transfert`) and pair it with `<Pencil>` — a `+` on a control that also deletes misreads the action. Never let the label or the icon differ between the empty and non-empty states, and give the dialog it opens the same title and icon (§18.A).
+- **Never move the button between the two states.** Empty → centered in the empty state; non-empty → bottom of the list. Those are the only two positions, and both are inside the same scroll container, so the eye tracks it. Putting the non-empty variant in the totals footer (or anywhere outside the scroll container) makes it appear to vanish the moment the first row lands — the user looks where it was and finds nothing. This is the specific failure this rule exists to prevent.
+- **Edit-mode gated** — both renderings hang off `isEditing` (plus whatever per-screen lock applies: `linesLocked`, permissions, `!showLineForm`, `editingLineId === null`). In view mode neither exists.
+- When an inline `InlineForm` is open for a new/edited row, hide the button (`!showLineForm && editingLineId === null`) so there aren't two competing entry points.
+
+The mirror rule for the **left list** is §5's "+ Nouveau" (view mode only, list footer). Don't confuse the two: §5 creates a whole record, §7.1 adds a row to the record already open.
+
 ### Cards (`.card-premium`)
 
 ```tsx

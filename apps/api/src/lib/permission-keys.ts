@@ -156,6 +156,26 @@ export const PERMISSION_KEYS = [
       'Autorise la sélection de pièces expédiées et leur remise en stock, avec observation de récupération, dans l’onglet « Marchandise expédiée » de Clients > Gestion.',
     category: 'Gestion client',
   },
+  // Transferts — one key per kind (Rouleaux / Fils) so a user can be allowed
+  // to move rolls without touching yarn, and vice-versa. Each key covers the
+  // whole écran: création, modification de l'en-tête, ajout / retrait des
+  // pièces et suppression du bon. Kept right before "Fournisseurs" so both
+  // sections render above it in Paramètres > Utilisateurs (sections follow
+  // catalog insertion order).
+  {
+    key: 'gestion_transfert_rouleaux',
+    label: 'Gestion des bons de transfert',
+    description:
+      'Autorise la création, la modification, la suppression des bons de transfert ainsi que l’ajout et le retrait des rouleaux dans Transferts > Rouleaux : boutons « Nouveau », « Modifier », « Supprimer » et « Ajouter depuis le stock ». Sans ce droit, l’écran est en lecture seule.',
+    category: 'Transferts rouleaux',
+  },
+  {
+    key: 'gestion_transfert_fils',
+    label: 'Gestion des bons de transfert',
+    description:
+      'Autorise la création, la modification, la suppression des bons de transfert ainsi que l’ajout et le retrait des lots de fil dans Transferts > Fils : boutons « Nouveau », « Modifier », « Supprimer » et « Ajouter depuis le stock ». Sans ce droit, l’écran est en lecture seule.',
+    category: 'Transferts fils',
+  },
   {
     key: 'create_stock_fil',
     label: 'Créer un lot de fil',

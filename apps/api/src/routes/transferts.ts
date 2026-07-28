@@ -43,6 +43,9 @@ import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
 import { BonTransfertPdf, type BonTransfertPdfData, type BtArticle, type BtPiece, type BtFilRow } from '../lib/pdf/BonTransfertPdf.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import type { PermissionKey } from '../lib/permission-keys.js'
 
 export const transfertsRouter: RouterType = Router()
 
@@ -54,6 +57,30 @@ const TYPE_MATIERE: Record<Kind, number> = { rouleaux: 1, fils: 2 }
 
 function parseKind(raw: string | undefined): Kind | null {
   return raw === 'rouleaux' ? 'rouleaux' : raw === 'fils' ? 'fils' : null
+}
+
+// ── Permission gate ──────────────────────────────────────
+// One key per kind (see lib/permission-keys.ts), covering every write on the
+// screen: create / update header / add-remove pieces / delete.
+
+const PERM_KEY: Record<Kind, PermissionKey> = {
+  rouleaux: 'gestion_transfert_rouleaux',
+  fils: 'gestion_transfert_fils',
+}
+
+/** Returns true when the caller may write to `kind`. Writes the 401/403
+ *  response itself, so callers just `return` on false. */
+async function ensurePermission(req: Request, res: Response, kind: Kind): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const key = PERM_KEY[kind]
+  if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), key))) {
+    res.status(403).json({ error: `permission denied: ${key}` })
+    return false
+  }
+  return true
 }
 
 /** Display label for magasin id 0 — the company itself has no sous_traitant row. */
@@ -581,6 +608,7 @@ transfertsRouter.post('/:kind', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
+    if (!(await ensurePermission(req, res, kind))) return
     const parsed = createBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
@@ -630,6 +658,7 @@ transfertsRouter.put('/:kind/:id', async (req: Request, res: Response) => {
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await ensurePermission(req, res, kind))) return
     const h = await loadBonHead(kind, id)
     if (!h) { res.status(404).json({ error: 'Bon de transfert introuvable' }); return }
     const parsed = updateBody.safeParse(req.body)
@@ -692,6 +721,7 @@ transfertsRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await ensurePermission(req, res, kind))) return
     const h = await loadBonHead(kind, id)
     if (!h) { res.status(404).json({ error: 'Bon de transfert introuvable' }); return }
 
@@ -866,6 +896,7 @@ transfertsRouter.put('/:kind/:id/pieces', async (req: Request, res: Response) =>
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await ensurePermission(req, res, kind))) return
     const parsed = addPiecesBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const { type, stockIds } = parsed.data
@@ -928,6 +959,7 @@ transfertsRouter.delete('/:kind/:id/pieces/:pieceId', async (req: Request, res: 
     const id = parseInt(req.params.id, 10)
     const pieceId = parseInt(req.params.pieceId, 10)
     if (isNaN(id) || isNaN(pieceId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await ensurePermission(req, res, kind))) return
     const h = await loadBonHead(kind, id)
     if (!h) { res.status(404).json({ error: 'Bon de transfert introuvable' }); return }
 

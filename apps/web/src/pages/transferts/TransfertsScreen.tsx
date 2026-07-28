@@ -39,7 +39,7 @@ import { Badge } from '@/components/ui/badge'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { PopoverSelect } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
@@ -49,6 +49,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
+import { useHasPermission } from '@/contexts/PermissionsContext'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -161,10 +162,19 @@ const editSectionClass = 'border-l-4 border-l-accent/70 bg-accent/[0.03]'
 
 const ETS_MALTERRE: MagasinLite = { id: 0, nom: 'Ets Malterre' }
 
+/** Label of the §7.1 row-add affordance. The dialog it opens both adds pieces
+ *  from the source stock and retires pieces already on the bon, so it names the
+ *  manager rather than a single action. Same string in both render states. */
+const EDIT_BON_LABEL = 'Éditer le bon de transfert'
+
 // ── Main Page ──────────────────────────────────────────
 
 export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
   const queryClient = useQueryClient()
+  // One permission per kind — Rouleaux and Fils are granted independently.
+  // Covers création, modification, ajout / retrait des pièces et suppression;
+  // without it the screen is read-only.
+  const canManage = useHasPermission(`gestion_transfert_${kind}`)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
@@ -242,11 +252,11 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
     setEditDate(snapshot.date as string)
     setEditCommentaire(snapshot.commentaire as string)
     originalDraftRef.current = snapshot
-    setPickerOpen(false) // edit mode hides the picker drawer (§31.3)
+    setPickerOpen(false) // the picker always starts closed on a fresh edit
     setIsEditing(true)
   }, [detail])
 
-  const cancelEdit = useCallback(() => setIsEditing(false), [])
+  const cancelEdit = useCallback(() => { setPickerOpen(false); setIsEditing(false) }, [])
 
   const isDirty = useMemo(() => {
     if (!isEditing) return false
@@ -262,7 +272,10 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
   }, [isEditing, editIDSource, editIDDestination, editIDAdresse, editIDTransporteur, editDate, editCommentaire])
 
   const saveHeaderMut = useMutation({
-    mutationFn: () => apiFetch(`/transferts/${kind}/${selectedId}`, {
+    // `keepEditing` is used by the picker: adding pieces moves stock to the
+    // bon's PERSISTED destination, so an unsaved header draft has to be
+    // flushed first — but without kicking the user out of edit mode.
+    mutationFn: (_opts?: { keepEditing?: boolean }) => apiFetch(`/transferts/${kind}/${selectedId}`, {
       method: 'PUT',
       body: JSON.stringify({
         IDmagasin_source: editIDSource,
@@ -273,8 +286,35 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
         commentaire: editCommentaire,
       }),
     }),
-    onSuccess: () => { invalidateAll(); setIsEditing(false) },
+    onSuccess: (_data, opts) => {
+      invalidateAll()
+      if (opts?.keepEditing) {
+        // Re-baseline the snapshot so the unsaved-changes guard sees a clean form.
+        originalDraftRef.current = {
+          IDsource: editIDSource,
+          IDdestination: editIDDestination,
+          IDadresse: editIDAdresse,
+          IDtransporteur: editIDTransporteur,
+          date: editDate,
+          commentaire: editCommentaire,
+        }
+      } else {
+        setPickerOpen(false)
+        setIsEditing(false)
+      }
+    },
   })
+
+  /** Open the stock picker, flushing a dirty header draft first so the pieces
+   *  land in the magasin the user actually sees selected. */
+  const handlePickerOpenChange = useCallback((open: boolean) => {
+    if (!open) { setPickerOpen(false); return }
+    if (!isDirty) { setPickerOpen(true); return }
+    saveHeaderMut.mutateAsync({ keepEditing: true }).then(
+      () => setPickerOpen(true),
+      () => { /* save failed — stay put, the header is still dirty */ },
+    )
+  }, [isDirty, saveHeaderMut])
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => apiFetch(`/transferts/${kind}/${id}`, { method: 'DELETE' }),
@@ -299,8 +339,8 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
 
   const guard = useUnsavedGuard({
     isDirty,
-    save: async () => { await saveHeaderMut.mutateAsync() },
-    onDiscard: () => { setIsEditing(false) },
+    save: async () => { await saveHeaderMut.mutateAsync(undefined) },
+    onDiscard: () => { setPickerOpen(false); setIsEditing(false) },
   })
 
   const handleSelect = useCallback((id: number) => {
@@ -334,6 +374,7 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onNew={() => setCreateOpen(true)}
+            canManage={canManage}
             isEditing={isEditing}
             hasMore={!!hasNextPage}
             onLoadMore={() => fetchNextPage()}
@@ -345,9 +386,10 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
             transfert={detail ?? null}
             isLoading={detailLoading && selectedId !== null}
             isEditing={isEditing}
+            canManage={canManage}
             onStartEdit={startEdit}
             onCancelEdit={cancelEdit}
-            onSave={() => saveHeaderMut.mutate()}
+            onSave={() => saveHeaderMut.mutate(undefined)}
             isSaving={saveHeaderMut.isPending}
             onDelete={() => setDeleteConfirmOpen(true)}
             onPrintClick={() => {
@@ -363,8 +405,9 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
             isLoading={detailLoading && selectedId !== null}
             hasSelection={selectedId !== null}
             isEditing={isEditing}
+            canManage={canManage}
             pickerOpen={pickerOpen}
-            onPickerOpenChange={setPickerOpen}
+            onPickerOpenChange={handlePickerOpenChange}
             onMutationSuccess={invalidateAll}
           />
         }
@@ -433,7 +476,7 @@ function TransfertListPanel({
   kind, rows, isLoading, isError, error,
   selectedId, onSelect,
   searchQuery, onSearchChange,
-  onNew, isEditing,
+  onNew, canManage, isEditing,
   hasMore, onLoadMore, isLoadingMore,
 }: {
   kind: TransfertKind
@@ -446,6 +489,7 @@ function TransfertListPanel({
   searchQuery: string
   onSearchChange: (q: string) => void
   onNew: () => void
+  canManage: boolean
   isEditing: boolean
   hasMore: boolean
   onLoadMore: () => void
@@ -528,7 +572,7 @@ function TransfertListPanel({
 
       <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
         <span>{rows.length} transfert{rows.length > 1 ? 's' : ''}</span>
-        {!isEditing && (
+        {!isEditing && canManage && (
           <Button size="sm" variant="ghost" className="text-accent hover:text-accent hover:bg-accent/10" onClick={onNew}>
             <Plus className="h-3.5 w-3.5 mr-1" />Nouveau
           </Button>
@@ -541,13 +585,14 @@ function TransfertListPanel({
 // ── Detail Header ──────────────────────────────────────
 
 function DetailHeader({
-  transfert, isLoading, isEditing,
+  transfert, isLoading, isEditing, canManage,
   onStartEdit, onCancelEdit, onSave, isSaving,
   onDelete, onPrintClick, onEmailClick,
 }: {
   transfert: TransfertDetail | null
   isLoading: boolean
   isEditing: boolean
+  canManage: boolean
   onStartEdit: () => void
   onCancelEdit: () => void
   onSave: () => void
@@ -603,9 +648,11 @@ function DetailHeader({
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmailClick}>
                   <AtSign className="h-4 w-4" />
                 </Button>
-                <Button variant="gold" size="sm" onClick={onStartEdit}>
-                  <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
-                </Button>
+                {canManage && (
+                  <Button variant="gold" size="sm" onClick={onStartEdit}>
+                    <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -619,7 +666,7 @@ function DetailHeader({
 // ── Center: pieces list + picker drawer (§31) ──────────
 
 function DetailMain({
-  kind, transfert, isLoading, hasSelection, isEditing,
+  kind, transfert, isLoading, hasSelection, isEditing, canManage,
   pickerOpen, onPickerOpenChange, onMutationSuccess,
 }: {
   kind: TransfertKind
@@ -627,6 +674,7 @@ function DetailMain({
   isLoading: boolean
   hasSelection: boolean
   isEditing: boolean
+  canManage: boolean
   pickerOpen: boolean
   onPickerOpenChange: (open: boolean) => void
   onMutationSuccess: () => void
@@ -647,6 +695,7 @@ function DetailMain({
       kind={kind}
       transfert={transfert}
       isEditing={isEditing}
+      canManage={canManage}
       pickerOpen={pickerOpen}
       onPickerOpenChange={onPickerOpenChange}
       onMutationSuccess={onMutationSuccess}
@@ -655,17 +704,21 @@ function DetailMain({
 }
 
 function LinesSection({
-  kind, transfert, isEditing, pickerOpen, onPickerOpenChange, onMutationSuccess,
+  kind, transfert, isEditing, canManage, pickerOpen, onPickerOpenChange, onMutationSuccess,
 }: {
   kind: TransfertKind
   transfert: TransfertDetail
   isEditing: boolean
+  canManage: boolean
   pickerOpen: boolean
   onPickerOpenChange: (open: boolean) => void
   onMutationSuccess: () => void
 }) {
   const queryClient = useQueryClient()
-  const drawerOpen = pickerOpen && !isEditing
+  // Pieces are only mutable in edit mode — adding or retiring one moves stock
+  // between magasins immediately, so it stays behind the same deliberate gate
+  // as the rest of the bon.
+  const canMutatePieces = isEditing && canManage
   const lines = transfert.lines
 
   const removeMut = useMutation({
@@ -685,16 +738,18 @@ function LinesSection({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* Rows list: shrinks when the picker drawer is open (§31.1) */}
-      <div className={cn('overflow-auto space-y-2 p-1 scrollbar-transparent', drawerOpen ? 'flex-shrink-0 max-h-[40%]' : 'flex-1 min-h-0')}>
+      <div className="flex-1 min-h-0 overflow-auto space-y-2 p-1 scrollbar-transparent">
         {lines.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
             {kind === 'rouleaux' ? <FiniRollIcon className="h-12 w-12 mb-3 opacity-40" /> : <BobineIcon className="h-12 w-12 mb-3 opacity-40" />}
             <p className="text-sm">{kind === 'rouleaux' ? 'Aucune pièce sur ce bon' : 'Aucun lot de fil sur ce bon'}</p>
-            {!isEditing && !drawerOpen && (
-              <Button size="sm" variant="outline" className="mt-3" onClick={() => onPickerOpenChange(true)}>
-                <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter depuis le stock
+            {canMutatePieces && (
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => onPickerOpenChange(true)}>
+                <Pencil className="h-3.5 w-3.5 mr-1.5" />{EDIT_BON_LABEL}
               </Button>
+            )}
+            {!canMutatePieces && canManage && (
+              <p className="text-xs mt-1">Passez en mode édition pour en ajouter.</p>
             )}
           </div>
         ) : (
@@ -702,24 +757,38 @@ function LinesSection({
             <LineCard
               key={line.IDpiece_transfert}
               line={line}
-              canRemove={!isEditing}
+              canRemove={canMutatePieces}
               onRemove={() => removeMut.mutate(line.IDpiece_transfert)}
               isRemoving={removeMut.isPending}
             />
           ))
         )}
+
+        {/* Row-add affordance, §7.1: last child of the scroll container so it
+            always sits right under the last row. */}
+        {canMutatePieces && lines.length > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onPickerOpenChange(true)}
+            className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
+          >
+            <Pencil className="h-3.5 w-3.5 mr-1.5" />{EDIT_BON_LABEL}
+          </Button>
+        )}
       </div>
 
-      {/* Picker drawer — available stock at the source magasin */}
-      {drawerOpen && (
-        <div className="flex-1 min-h-0 flex flex-col mt-3 rounded-lg border border-border/60 overflow-hidden bg-zinc-50/80 animate-in slide-in-from-bottom-4 fade-in-0 duration-200">
-          <PickerDrawer
-            kind={kind}
-            transfert={transfert}
-            onClose={() => onPickerOpenChange(false)}
-            onMutationSuccess={onMutationSuccess}
-          />
-        </div>
+      {/* Picker — available stock at the source magasin, in a modal.
+          Mounted only while open so the search and selection reset each time. */}
+      {pickerOpen && canMutatePieces && (
+        <PickerDialog
+          kind={kind}
+          transfert={transfert}
+          onClose={() => onPickerOpenChange(false)}
+          onMutationSuccess={onMutationSuccess}
+          onRemovePiece={(pieceId) => removeMut.mutate(pieceId)}
+          isRemovingPiece={removeMut.isPending}
+        />
       )}
 
       {/* Totals footer pinned at the bottom */}
@@ -730,11 +799,6 @@ function LinesSection({
         <span className="text-sm font-semibold tabular-nums">{fmtNum(totals.poids, 1)} kg</span>
         {kind === 'rouleaux' && (
           <span className="text-sm font-semibold tabular-nums">{fmtNum(totals.metrage, 1)} Ml</span>
-        )}
-        {!isEditing && !drawerOpen && lines.length > 0 && (
-          <Button size="sm" variant="outline" className="ml-auto" onClick={() => onPickerOpenChange(true)}>
-            <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter
-          </Button>
         )}
       </div>
     </div>
@@ -773,17 +837,16 @@ function LineCard({
           {!isFil && !!(line as RouleauxLine).second_choix && (
             <Badge variant="outline" className="text-[10px] py-0">2e choix</Badge>
           )}
-          {!isFil && (
-            <Badge variant="secondary" className="text-[10px] py-0">{line.type === 'tm' ? 'TM' : 'Fini'}</Badge>
-          )}
           <span className="text-sm font-semibold tabular-nums">{fmtNum(line.poids, 1)} kg</span>
           {!isFil && (Number((line as RouleauxLine).metrage) || 0) > 0 && (
             <span className="text-xs text-muted-foreground tabular-nums">{fmtNum((line as RouleauxLine).metrage, 1)} Ml</span>
           )}
+          {/* Always visible in edit mode: it's the only way to retire a piece,
+              and a hover-reveal action is unreachable on the factory touchscreen. */}
           {canRemove && (
             <Button
               variant="ghost" size="icon"
-              className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+              className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
               title="Retirer du bon (retourne au magasin source)"
               disabled={isRemoving}
               onClick={(e) => { e.stopPropagation(); onRemove() }}
@@ -803,17 +866,40 @@ function LineCard({
   )
 }
 
-// ── Picker drawer content ──────────────────────────────
+// ── Picker dialog ──────────────────────────────────────
 
 type PickerTab = 'ecru' | 'fini' | 'fil'
 
-function PickerDrawer({
-  kind, transfert, onClose, onMutationSuccess,
+/** A row of the picker list: either stock still available at the source, or a
+ *  piece already on the bon (rendered ticked — unticking retires it). */
+interface PickerRow {
+  stockId: number
+  onBon: boolean
+  /** piece_transfert id, present only when `onBon` — that's what DELETE takes. */
+  pieceId: number
+  title: string
+  subtitle: string
+  poids: number
+  secondChoix: boolean
+}
+
+/** Accent-insensitive contains match, so the on-bon rows narrow with the same
+ *  query the API applies to the available ones. */
+function matchesQuery(row: PickerRow, query: string): boolean {
+  if (!query) return true
+  const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  return norm(`${row.title} ${row.subtitle}`).includes(norm(query))
+}
+
+function PickerDialog({
+  kind, transfert, onClose, onMutationSuccess, onRemovePiece, isRemovingPiece,
 }: {
   kind: TransfertKind
   transfert: TransfertDetail
   onClose: () => void
   onMutationSuccess: () => void
+  onRemovePiece: (pieceId: number) => void
+  isRemovingPiece: boolean
 }) {
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<PickerTab>(kind === 'rouleaux' ? 'ecru' : 'fil')
@@ -827,6 +913,16 @@ function PickerDrawer({
     return () => clearTimeout(t)
   }, [q])
 
+  // Selection is per-tab. Each tab's ids come from a different stock table
+  // (stock_ecru / stock_fini / stock_fil) but `type` is read from the ACTIVE
+  // tab when Valider fires — carrying a selection across tabs would post e.g.
+  // stock_ecru ids as 'fini'. Ids collide across those tables, so that can
+  // transfer the wrong roll rather than merely failing.
+  useEffect(() => {
+    setSelected(new Set())
+    setAddError(null)
+  }, [activeTab])
+
   const { data: available, isLoading } = useQuery<AvailablePayload>({
     queryKey: ['transfert-available', kind, transfert.id, debouncedQ],
     queryFn: () => apiFetch(`/transferts/${kind}/${transfert.id}/available?q=${encodeURIComponent(debouncedQ)}`),
@@ -837,6 +933,51 @@ function PickerDrawer({
     if (kind === 'fils') return available.fil ?? []
     return activeTab === 'ecru' ? (available.ecru ?? []) : (available.fini ?? [])
   }, [available, kind, activeTab])
+
+  // Pieces already on the bon for the active tab. They sit at the DESTINATION
+  // magasin, so the /available endpoint never returns them — they're merged in
+  // from the detail payload and rendered ticked at the top of the list.
+  const onBonRows: PickerRow[] = useMemo(() => {
+    const wanted = activeTab === 'ecru' ? 'tm' : activeTab === 'fini' ? 'fini' : 'fil'
+    return transfert.lines
+      .filter((l) => l.type === wanted)
+      .map((l) => {
+        const isFil = l.type === 'fil'
+        const roll = l as RouleauxLine
+        return {
+          stockId: l.stock_id,
+          onBon: true,
+          pieceId: l.IDpiece_transfert,
+          title: [l.reference, l.coloris_reference].filter(Boolean).join(' · ') || '—',
+          subtitle: isFil
+            ? [`Lot ${l.lot || '—'}`, (l as FilLine).fournisseur_nom].filter(Boolean).join(' · ')
+            : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
+          poids: Number(l.poids) || 0,
+          secondChoix: !isFil && !!roll.second_choix,
+        }
+      })
+      .filter((r) => matchesQuery(r, debouncedQ))
+  }, [transfert.lines, activeTab, debouncedQ])
+
+  const availableRows: PickerRow[] = useMemo(() => candidates.map((c) => {
+    const isFil = kind === 'fils'
+    const roll = c as AvailableRoll
+    const filLot = c as AvailableFilLot
+    return {
+      stockId: c.stock_id,
+      onBon: false,
+      pieceId: 0,
+      title: [c.reference, c.coloris_reference].filter(Boolean).join(' · ') || '—',
+      subtitle: isFil
+        ? [`Lot ${filLot.lot || '—'}`, filLot.fournisseur_nom].filter(Boolean).join(' · ')
+        : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
+      poids: Number(c.poids) || 0,
+      secondChoix: !isFil && !!roll.second_choix,
+    }
+  }), [candidates, kind])
+
+  // On-bon first: they're the bon's current content, the rest is what can join it.
+  const rows: PickerRow[] = useMemo(() => [...onBonRows, ...availableRows], [onBonRows, availableRows])
 
   // Weight lookup across every candidate ever loaded this session — the
   // selection survives a search narrowing, so the summary must too.
@@ -853,8 +994,19 @@ function PickerDrawer({
       queryClient.invalidateQueries({ queryKey: ['transferts'] })
       queryClient.invalidateQueries({ queryKey: ['transfert-available', kind, transfert.id] })
       setSelected(new Set())
-      setAddError(payload.skipped > 0 ? `${payload.skipped} pièce${payload.skipped > 1 ? 's' : ''} non disponible${payload.skipped > 1 ? 's' : ''} (déjà déplacée(s))` : null)
       onMutationSuccess()
+      // Valider closes the dialog — unless some pieces couldn't be applied, in
+      // which case we stay open so the warning is actually read.
+      if (payload.skipped > 0) {
+        const p = payload.skipped > 1 ? 's' : ''
+        setAddError(
+          `${payload.added} ajoutée${payload.added > 1 ? 's' : ''}. ${payload.skipped} ignorée${p} : ` +
+          `plus au magasin ${transfert.source_nom || 'source'} au moment de la validation (déplacée${p} entre-temps).`,
+        )
+      } else {
+        setAddError(null)
+        onClose()
+      }
     },
     onError: (e: unknown) => setAddError(e instanceof Error ? e.message : 'Erreur'),
   })
@@ -892,120 +1044,141 @@ function PickerDrawer({
   const capped = candidates.length >= (available?.cap ?? Infinity)
 
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden bg-zinc-100/80">
-      {/* Top strip: tabs + search + close (§31.4) */}
-      <div className="flex-shrink-0 flex items-center border-b bg-zinc-200/50 p-1 gap-1">
-        {tabs.map((t) => {
-          const active = activeTab === t.key
-          const TabIcon = t.key === 'ecru' ? TmRollIcon : t.key === 'fini' ? FiniRollIcon : BobineIcon
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setActiveTab(t.key)}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer',
-                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
-              )}
-            >
-              <TabIcon className="h-3.5 w-3.5" />
-              <span>{t.label}</span>
-            </button>
-          )
-        })}
-        <div className="ml-auto flex items-center gap-1 pr-1">
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="N°, lot, référence…"
-              autoComplete="off"
-              className="h-7 w-44 pl-7 pr-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-          <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7" title="Fermer">
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
+    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-3xl h-[80vh] flex flex-col" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Pencil className="h-5 w-5 text-accent" />
+            {EDIT_BON_LABEL}
+          </DialogTitle>
+          <DialogDescription>
+            Ajouts et retraits déplacent le stock immédiatement entre {transfert.source_nom || '—'} et {transfert.destination_nom || '—'}.
+          </DialogDescription>
+        </DialogHeader>
 
-      {/* Candidate list */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-transparent">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-accent" /></div>
-        ) : candidates.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-            <Search className="h-8 w-8 mb-2 opacity-40" />
-            <p className="text-xs">Aucun stock disponible chez {transfert.source_nom || '—'}</p>
-          </div>
-        ) : (<>
-          {candidates.map((c) => {
-            const isChecked = selected.has(c.stock_id)
-            const isFil = kind === 'fils'
-            const roll = c as AvailableRoll
-            const filLot = c as AvailableFilLot
-            const title = [c.reference, c.coloris_reference].filter(Boolean).join(' · ') || '—'
-            const subtitle = isFil
-              ? [`Lot ${filLot.lot || '—'}`, filLot.fournisseur_nom].filter(Boolean).join(' · ')
-              : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · ')
-            return (
-              <div
-                key={c.stock_id}
-                onClick={() => toggle(c.stock_id)}
-                className={cn(
-                  'flex items-center gap-2.5 px-2.5 py-2 rounded-lg border bg-card shadow-sm cursor-pointer transition-colors',
-                  isChecked ? 'border-accent ring-1 ring-accent bg-accent/[0.04]' : 'border-border/60 hover:border-accent/40',
-                )}
-              >
+        <div className="mt-4 flex-1 min-h-0 flex flex-col rounded-lg border border-border/60 overflow-hidden bg-zinc-100/80">
+          {/* Top strip: tabs + search */}
+          <div className="flex-shrink-0 flex items-center border-b bg-zinc-200/50 p-1 gap-1">
+            {tabs.map((t) => {
+              const active = activeTab === t.key
+              const TabIcon = t.key === 'ecru' ? TmRollIcon : t.key === 'fini' ? FiniRollIcon : BobineIcon
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setActiveTab(t.key)}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer',
+                    active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
+                  )}
+                >
+                  <TabIcon className="h-3.5 w-3.5" />
+                  <span>{t.label}</span>
+                </button>
+              )
+            })}
+            <div className="ml-auto flex items-center pr-1">
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <input
-                  type="checkbox"
-                  checked={isChecked}
-                  onChange={() => toggle(c.stock_id)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer flex-shrink-0"
+                  type="text"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="N°, lot, référence…"
+                  autoComplete="off"
+                  className="h-7 w-44 pl-7 pr-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
                 />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium truncate">{title}</p>
-                  <p className="text-[11px] text-muted-foreground truncate">{subtitle}</p>
-                </div>
-                {!isFil && !!roll.second_choix && (
-                  <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">2e choix</Badge>
-                )}
-                <span className="text-sm tabular-nums flex-shrink-0">{fmtNum(c.poids, 1)} kg</span>
               </div>
-            )
-          })}
-          {capped && (
-            <p className="text-[11px] text-muted-foreground text-center py-1.5">
-              Les {available?.cap} plus récents sont affichés — affinez la recherche pour en voir d'autres.
-            </p>
-          )}
-        </>)}
-      </div>
+            </div>
+          </div>
 
-      {/* Footer strip: select-all + summary + add */}
-      <div className="flex-shrink-0 border-t bg-zinc-200/50 px-2.5 py-2 flex items-center gap-2">
-        <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={selectAllVisible}>
-          <CheckSquare className="h-3.5 w-3.5 mr-1.5" />Tout sélectionner
-        </Button>
-        {addError && (
-          <span className="text-[11px] text-destructive truncate">{addError}</span>
-        )}
-        <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-          {selected.size} sélectionnée{selected.size > 1 ? 's' : ''} · {fmtNum(selectedPoids, 1)} kg
-        </span>
-        <Button
-          size="sm"
-          disabled={selected.size === 0 || addMut.isPending}
-          onClick={() => addMut.mutate({ type: activeTab, stockIds: Array.from(selected) })}
-        >
-          {addMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Plus className="h-3.5 w-3.5 mr-1.5" />}
-          Ajouter
-        </Button>
-      </div>
-    </div>
+          {/* Rows: what's already on the bon (ticked, at the top) then what can
+              still be added from the source magasin. */}
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-transparent">
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-accent" /></div>
+            ) : rows.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                <Search className="h-8 w-8 mb-2 opacity-40" />
+                <p className="text-xs">Aucun stock disponible chez {transfert.source_nom || '—'}</p>
+              </div>
+            ) : (<>
+              {rows.map((r) => {
+                // Ticked means "on the bon" for existing pieces, "queued for the
+                // Ajouter button" for available ones.
+                const isChecked = r.onBon || selected.has(r.stockId)
+                const busy = r.onBon && isRemovingPiece
+                return (
+                  <div
+                    key={r.onBon ? `bon-${r.pieceId}` : `stock-${r.stockId}`}
+                    onClick={() => { if (r.onBon) onRemovePiece(r.pieceId); else toggle(r.stockId) }}
+                    title={r.onBon ? 'Sur le bon — décochez pour le retirer (retour au magasin source)' : undefined}
+                    className={cn(
+                      'flex items-center gap-2.5 px-2.5 py-2 rounded-lg border bg-card shadow-sm cursor-pointer transition-colors',
+                      isChecked ? 'border-accent ring-1 ring-accent bg-accent/[0.04]' : 'border-border/60 hover:border-accent/40',
+                      busy && 'opacity-60 pointer-events-none',
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => { if (r.onBon) onRemovePiece(r.pieceId); else toggle(r.stockId) }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer flex-shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium truncate">{r.title}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">{r.subtitle}</p>
+                    </div>
+                    {r.onBon && (
+                      <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 border-accent/40 text-accent">Sur le bon</Badge>
+                    )}
+                    {r.secondChoix && (
+                      <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">2e choix</Badge>
+                    )}
+                    <span className="text-sm tabular-nums flex-shrink-0">{fmtNum(r.poids, 1)} kg</span>
+                  </div>
+                )
+              })}
+              {capped && (
+                <p className="text-[11px] text-muted-foreground text-center py-1.5">
+                  Les {available?.cap} plus récents sont affichés — affinez la recherche pour en voir d'autres.
+                </p>
+              )}
+            </>)}
+          </div>
+
+          {/* Bottom strip: select-all over the addable rows + queued summary */}
+          <div className="flex-shrink-0 border-t bg-zinc-200/50 px-2.5 py-2 flex items-center gap-2">
+            <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={selectAllVisible}>
+              <CheckSquare className="h-3.5 w-3.5 mr-1.5" />Tout sélectionner
+            </Button>
+            <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+              {onBonRows.length} sur le bon · {selected.size} à ajouter ({fmtNum(selectedPoids, 1)} kg)
+            </span>
+          </div>
+        </div>
+
+        <DialogFooter className="mt-4 items-center gap-2 sm:justify-between sm:space-x-0">
+          <span className="text-xs text-destructive truncate">{addError}</span>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Button variant="outline" onClick={onClose}>Fermer</Button>
+            <Button
+              disabled={addMut.isPending}
+              onClick={() => {
+                // Nothing queued (or only untick-removals, which already applied)
+                // — Valider is just a confirm-and-close in that case.
+                if (selected.size === 0) { onClose(); return }
+                addMut.mutate({ type: activeTab, stockIds: Array.from(selected) })
+              }}
+            >
+              {addMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
+              Valider
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
