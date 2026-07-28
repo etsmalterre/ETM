@@ -32,6 +32,8 @@ import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { CommandeClientPdf, type CommandeClientPdfData } from '../lib/pdf/CommandeClientPdf.js'
 import { FacturePdf, type FacturePdfData } from '../lib/pdf/FacturePdf.js'
 import { CgvPdf } from '../lib/pdf/CgvPdf.js'
+import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
+import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
 import { calcLignePriceClient } from '../lib/pricing-ligne-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
 import { sendMail } from '../lib/gmail.js'
@@ -4470,6 +4472,63 @@ commandesClientRouter.get('/:id/proforma/pdf', async (req: Request, res: Respons
 })
 
 // ════════════════════════════════════════════════════════
+//  CALCUL DE LA VALEUR  (donation orders only)
+// ════════════════════════════════════════════════════════
+//
+// Cost valuation of the stock pieces attached to a donation commande — the
+// legacy ETAT_ValeurDonation report. Only offered on donation orders (a normal
+// order carries lignes, not attached pieces). The figures are built by
+// buildDonationValeurData; see that module for the cost model.
+
+const DONATION_VALEUR_NOTES = 'donation-valeur'
+
+async function renderDonationValeurBuffer(data: DonationValeurPdfData): Promise<Buffer> {
+  return renderToBuffer(
+    React.createElement(ValeurDonationPdf, { data }) as unknown as React.ReactElement<
+      import('@react-pdf/renderer').DocumentProps
+    >,
+  )
+}
+
+function donationValeurFilename(numero: string): string {
+  return `calcul-valeur-donation-${numero}.pdf`
+}
+
+/** Loads the valuation and rejects non-donation orders. Responds itself and
+ *  returns null when the caller must stop. */
+async function loadDonationValeur(id: number, res: Response): Promise<DonationValeurPdfData | null> {
+  const data = await buildDonationValeurData(id)
+  if (!data) { res.status(404).json({ error: 'Commande not found' }); return null }
+  if (!data.isDonation) {
+    res.status(400).json({
+      error: 'not_a_donation',
+      message: "Le calcul de la valeur n'existe que sur les commandes de type donation.",
+    })
+    return null
+  }
+  return data
+}
+
+commandesClientRouter.get('/:id/donation-valeur/pdf', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const data = await loadDonationValeur(id, res)
+    if (!data) return
+    const buffer = await renderDonationValeurBuffer(data)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${donationValeurFilename(data.numero)}"`)
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.send(buffer)
+  } catch (err) {
+    console.error('Error rendering donation valeur PDF:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
 //  EMAIL  (bon de commande client → Gmail)
 // ════════════════════════════════════════════════════════
 
@@ -4482,7 +4541,10 @@ interface EmailDefaultsPayload {
   numero: string
 }
 
-async function buildEmailDefaults(id: number, variant: 'confirmation' | 'proforma' = 'confirmation'): Promise<EmailDefaultsPayload | null> {
+async function buildEmailDefaults(
+  id: number,
+  variant: 'confirmation' | 'proforma' | 'donation-valeur' = 'confirmation',
+): Promise<EmailDefaultsPayload | null> {
   const rows = await query<{ IDclient: number; numero: number | null }>(
     `SELECT IDclient, numero FROM commande_client WHERE IDcommande_client = ${id}`,
   )
@@ -4514,6 +4576,17 @@ async function buildEmailDefaults(id: number, variant: 'confirmation' | 'proform
     if (displayName) recipient.name = displayName
     if (c.envoi_commande === 1) selected.push(recipient)
     else suggestions.push(recipient)
+  }
+
+  if (variant === 'donation-valeur') {
+    const subject = `Calcul de la valeur - Donation N°${numero} - ETS Malterre`
+    const body =
+      `Bonjour,\n\n` +
+      `Veuillez trouver ci-joint le calcul de la valeur des pièces de la donation N°${numero}.\n\n` +
+      `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
+      `Cordialement,\n` +
+      `ETS Malterre`
+    return { recipients: { selected, suggestions }, subject, body, clientNom, numero }
   }
 
   if (variant === 'proforma') {
@@ -4581,6 +4654,19 @@ commandesClientRouter.get('/:id/proforma/email-defaults', async (req: Request, r
     res.json(defaults)
   } catch (err) {
     console.error('Error building proforma email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesClientRouter.get('/:id/donation-valeur/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const defaults = await buildEmailDefaults(id, 'donation-valeur')
+    if (!defaults) { res.status(404).json({ error: 'Commande not found' }); return }
+    res.json(defaults)
+  } catch (err) {
+    console.error('Error building donation valeur email defaults:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -4764,6 +4850,72 @@ commandesClientRouter.post('/:id/proforma/email', async (req: Request, res: Resp
   }
 })
 
+// Donation "calcul de la valeur" variant: attaches the valuation PDF, no CGV,
+// and logs with notes='donation-valeur' so the historique tab labels it.
+commandesClientRouter.post('/:id/donation-valeur/email', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const parsed = emailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
+
+    let messageId: string
+    if (devSkip) {
+      messageId = `dev-skip-${Date.now()}`
+      console.log(`[dev-skip-send] commande_client #${id} donation valeur — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const senderEmail = await getUserEmail(req.userId)
+      if (!senderEmail) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const userRows = await query<{ prenom: string | null; nom: string | null }>(
+        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+      )
+      const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
+      const u = (fixedUser[0] as any) ?? null
+      const displayName = u ? [u.prenom, u.nom].filter((s: string | null) => s && s.trim()).map((s: string) => s.trim()).join(' ') : ''
+      const fromName = displayName ? `${displayName} - ETS Malterre` : 'ETS Malterre'
+
+      const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
+      if (parsed.data.attach_pdf !== false) {
+        const data = await loadDonationValeur(id, res)
+        if (!data) return
+        const buffer = await renderDonationValeurBuffer(data)
+        attachments.push({ filename: donationValeurFilename(data.numero), content: buffer, contentType: 'application/pdf' })
+      }
+      for (const a of parsed.data.extra_attachments ?? []) {
+        attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
+      }
+      messageId = await sendMail({
+        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
+        subject: parsed.data.subject, body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+
+    const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? [])]
+    let societe = ''
+    try {
+      const cr = await query<{ IDclient: number }>(`SELECT IDclient FROM commande_client WHERE IDcommande_client = ${id}`)
+      const names = await resolveClientNames([Number(cr[0]?.IDclient) || 0])
+      societe = names.get(Number(cr[0]?.IDclient) || 0) ?? ''
+    } catch { /* informational */ }
+    await logEnvoiEmails(TYPE_DOC_COMMANDE_CLIENT, id, allRecipients, societe, DONATION_VALEUR_NOTES)
+
+    res.json({ ok: true, messageId })
+  } catch (err) {
+    console.error('Error sending donation valeur email:', err)
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    res.status(500).json({ error: 'send_failed', message })
+  }
+})
+
 // ════════════════════════════════════════════════════════
 //  HISTORIQUE  (envoi_email timeline for this commande)
 // ════════════════════════════════════════════════════════
@@ -4787,21 +4939,31 @@ commandesClientRouter.get('/:id/historique', async (req: Request, res: Response)
     )
     const legacySent = ccRows.length > 0 && Number(pickKey(ccRows[0], /^envoy/i)) === 1
     // Group by send timestamp + document kind (one event, possibly multiple
-    // recipients). notes='proforma' marks commande-based proforma sends —
-    // they share IDtype_doc=7 with confirmations.
-    const byDate = new Map<string, { DATE: string; proforma: boolean; recipients: string[] }>()
+    // recipients). Every document sent from this screen shares IDtype_doc=7, so
+    // `notes` is what distinguishes them: '' = confirmation, 'proforma',
+    // 'donation-valeur'.
+    const NOTES_LABELS: Record<string, string> = {
+      proforma: 'Facture proforma',
+      [DONATION_VALEUR_NOTES]: 'Calcul de la valeur',
+    }
+    const byDate = new Map<string, { DATE: string; notes: string; recipients: string[] }>()
     for (const r of rows as any[]) {
       const dt = (r.DATE ?? '').toString()
-      const proforma = (r.notes ?? '').toString().trim() === 'proforma'
-      const key = `${dt}|${proforma ? 'p' : 'c'}`
-      const acc = byDate.get(key) ?? { DATE: dt, proforma, recipients: [] as string[] }
+      const notes = (r.notes ?? '').toString().trim()
+      const key = `${dt}|${notes}`
+      const acc = byDate.get(key) ?? { DATE: dt, notes, recipients: [] as string[] }
       const addr = (r.adresse ?? '').toString().trim()
       if (addr) acc.recipients.push(addr)
       byDate.set(key, acc)
     }
     const events: Array<{ kind: 'email' | 'legacy'; type_label: string; recipients: string[]; DATE: string }> =
       Array.from(byDate.values())
-        .map((e) => ({ kind: 'email' as const, type_label: e.proforma ? 'Facture proforma' : 'Confirmation de commande', recipients: e.recipients, DATE: e.DATE }))
+        .map((e) => ({
+          kind: 'email' as const,
+          type_label: NOTES_LABELS[e.notes] ?? 'Confirmation de commande',
+          recipients: e.recipients,
+          DATE: e.DATE,
+        }))
         .sort((a, b) => (a.DATE < b.DATE ? 1 : -1))
     // Legacy flag carries no date/recipient — only surface it when no MPS_NG
     // confirmation send is already in the timeline, appended last (undated).

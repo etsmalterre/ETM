@@ -10,6 +10,73 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 - feat/donation
+**Clients › Commandes** - nouveau document **« Calcul de la valeur »** sur les commandes de
+type donation, portage de l'état legacy `ETAT_ValeurDonation` (imprimé en `DON<numero>.pdf`).
+Il apparaît comme entrée supplémentaire des menus contextuels **Imprimer** et **Envoyer un
+email** (mps_designer §42 `DocMenuButton`), uniquement quand `commande_client.donation = 1` :
+une commande donation n'a pas de proforma, elle a donc désormais deux entrées au lieu d'une
+seule. Les commandes normales sont inchangées.
+
+**Modèle de coût** (reconstitué depuis les données de la donation 3693 - les sources WinDev
+sont compressées PCS, illisibles). Pour chaque pièce rattachée par `IDcommande_donation`
+(rouleau écru ou fini) :
+
+```
+€/kg = Σ(% composition × prix d'achat du lot de fil)   ← ref_fil_commande.prix_unitaire
+     + ref_ecru.prix                                    ← tricotage
+     + teinture + Σ traitements                         ← tranche_tarif_ennoblissement, sst 0
+valeur = €/kg × le poids de la pièce
+```
+
+Points non évidents, tous vérifiés à l'euro près : le prix du fil est le prix **d'achat du
+lot** (`ref_fil_commande.prix_unitaire` via `stock_fil.IDref_fil_commande`), **pas**
+`ref_fil.prix_kg` ; le libellé d'une ligne fil suit le coloris **du lot**, qui peut différer de
+celui de la composition (l'OF 988 tricote la réf 003 « ecru » avec un lot *noir*) ; une ligne
+de `composition_ecru` sans lot affecté s'imprime « ? » et rend la pièce non chiffrable, exclue
+du total (comportement legacy) ; les lignes de coût se calculent sur le poids **écru**
+(`stock_ecru.poids` source pour un fini, avant variation de poids à l'ennoblissement) alors
+que la valeur utilise le poids de la pièce ; l'ennoblissement est tarifé sur la **grille
+interne** (`IDsous_traitant = 0`) à un poids de référence fixe de 200 kg, pas au prix
+réellement payé au sous-traitant ; les traitements s'impriment dans l'ordre
+`IDtraitement_ref_fini` (ordre de rattachement), teinture juste après le tricotage ;
+l'arrondi est un demi-cent vers le haut sur la valeur décimale exacte (`roundEuro` :
+20,5 × 2,07 = 42,44 et non 42,43 comme le donnerait `Math.round`).
+
+**Bug legacy corrigé.** L'état legacy lit la teinture dans `ref_fini_colori` d'après
+`stock_fini.IDColoris` **sans** passer par `ref_fini.avec_teinture`, et les deux espaces d'ids
+se recouvrent (l'id 895 existe dans `colori_ecru` *et* dans `ref_fini_colori`). Sur la donation
+3693, la pièce 2381/10 (réf 007A, `avec_teinture = 0`, donc lavage) hérite ainsi de la teinture
+d'une référence sans rapport : 17,38 €/kg au lieu de 11,21, +94 € sur une valorisation de
+569 €. La liste des lignes du même état n'imprime pas cette ligne de teinture, ce qui a révélé
+l'incohérence. On ne garde le terme teinture que si la ligne `ref_fini_colori` appartient bien
+à la référence de la pièce ; le drapeau `LEGACY_TEINTURE_COLLISION` permet de reproduire les
+chiffres legacy à l'identique pour comparaison. Décision utilisateur : version corrigée
+(3693 → 474,57 € au lieu de 568,97 €).
+
+**Fichiers.** `apps/api/src/lib/donation-valeur.ts` (le calcul, requêtes plates + `fixEncoding`,
+colonnes ASCII uniquement, `stock_fil` sans le bloc `certif_*`),
+`apps/api/src/lib/pdf/ValeurDonationPdf.tsx` (rendu dans le cadre `MalterreDocument` : bandeau
+par pièce avec Poids / Prix /kg / Prix total, lignes de coût dessous, récap « Valeur Total »),
+trois endpoints sur `commandes-client.ts` (`/donation-valeur/pdf`, `/donation-valeur/email-defaults`,
+`POST /donation-valeur/email` - 400 `not_a_donation` hors donation, pas de CGV en pièce jointe,
+journalisé `notes='donation-valeur'`). Le libellé de l'onglet Historique passe d'un booléen
+`proforma` à une table `notes → libellé`, extensible au prochain document du même
+`IDtype_doc = 7`. Côté web, les URLs des trois documents passent par un `DOC_PATH` au lieu de
+ternaires imbriquées.
+
+**Icônes PDF.** Les pièces portent les icônes standard de l'app (`TmRollIcon` rouleau détouré
+pour l'écru, `FiniRollIcon` rouleau plein pour le fini), copiées de `apps/web/public/icons/`
+en versions 64 px dans `apps/api/src/assets/icons/`. Deux pièges `@react-pdf` : un **chemin de
+fichier** en `src` ne rend **rien**, silencieusement (200, emplacement vide) ; et un `Buffer`
+réembarque l'image à **chaque** `<Image>` - d'où des **data URIs**, dont l'identité de chaîne
+stable fait que chaque icône n'est embarquée qu'une fois quel que soit le nombre de pièces.
+
+**Vérification.** `apps/api/src/scripts/verify-donation-valeur.ts` rejoue la donation 3693
+ligne par ligne contre le PDF legacy (lots, commandes fil, poids, €/kg, totaux, propagation des
+« ? ») : tout passe, seul l'écart de teinture documenté ci-dessus subsiste.
+`apps/api/src/scripts/dump-donation-valeur-pdf.ts [out.pdf] [--cmd <id>]` rend le PDF pour
+inspection (données synthétiques sans `--cmd`).
 ## 2026-07-28 — feat/rapport-finance
 **Rapports › Finance** (`/rapports/finance`) - new read-only balance comptable, porting the
 legacy `FI_Analyse_Finance.wdw` tab (Analyse › Finance). Unlike its three siblings in the

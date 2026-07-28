@@ -29,6 +29,7 @@ import {
   FileText,
   FileCheck2,
   ReceiptText,
+  Calculator,
   Upload,
   Layers,
   Box,
@@ -66,8 +67,18 @@ import { EtatPill } from '@/lib/etat-stock-fini'
 
 type ClientPhase = 'a_affecter' | 'partielle' | 'terminee'
 
-/** Which printable/emailable document the header menus target. */
-type CommandeDocKind = 'confirmation' | 'proforma'
+/** Which printable/emailable document the header menus target.
+ *  'donation-valeur' (the "Calcul de la valeur" of the attached pieces) only
+ *  exists on donation orders. */
+type CommandeDocKind = 'confirmation' | 'proforma' | 'donation-valeur'
+
+/** API path segment per document — '' is the confirmation de commande, which
+ *  hangs directly off /commandes-client/:id. */
+const DOC_PATH: Record<CommandeDocKind, string> = {
+  confirmation: '',
+  proforma: '/proforma',
+  'donation-valeur': '/donation-valeur',
+}
 
 interface CommandeListRow {
   IDcommande_client: number
@@ -618,7 +629,7 @@ export function ClientsCommandes() {
             onDelete={() => setDeleteCommandeConfirmOpen(true)}
             onPrintDoc={(doc) => {
               if (selectedId === null) return
-              window.open(`${API_URL}/commandes-client/${selectedId}${doc === 'proforma' ? '/proforma/pdf' : '/pdf'}`, '_blank')
+              window.open(`${API_URL}/commandes-client/${selectedId}${DOC_PATH[doc]}/pdf`, '_blank')
             }}
             onEmailDoc={setEmailDoc}
             onOpenExpeditionGroupee={() => setExpGroupeeOpen(true)}
@@ -700,18 +711,22 @@ export function ClientsCommandes() {
           onClose={() => setEmailDoc(null)}
           contextLabel={detail?.client_nom ?? undefined}
           queryKey={['commande-client-email-defaults', selectedId, emailDoc ?? 'confirmation']}
-          loadDefaults={() => apiFetch(`/commandes-client/${selectedId}${emailDoc === 'proforma' ? '/proforma' : ''}/email-defaults`)}
-          pdfUrl={`${API_URL}/commandes-client/${selectedId}${emailDoc === 'proforma' ? '/proforma' : ''}/pdf`}
+          loadDefaults={() => apiFetch(`/commandes-client/${selectedId}${DOC_PATH[emailDoc ?? 'confirmation']}/email-defaults`)}
+          pdfUrl={`${API_URL}/commandes-client/${selectedId}${DOC_PATH[emailDoc ?? 'confirmation']}/pdf`}
           pdfAttachmentLabel={emailDoc === 'proforma'
             // 1_000_000 offset mirrors PROFORMA_NUMERO_OFFSET in the API —
             // the proforma numero that can't collide with facturation's.
             ? `proforma-${detail?.numero ? 1_000_000 + Number(detail.numero) : selectedId}.pdf`
-            : `confirmation-commande-${selectedId}.pdf`}
-          extraServerAttachments={emailDoc === 'proforma' ? undefined : [
+            : emailDoc === 'donation-valeur'
+              ? `calcul-valeur-donation-${detail?.numero ?? selectedId}.pdf`
+              : `confirmation-commande-${selectedId}.pdf`}
+          // CGV ride along on the confirmation only — the proforma and the
+          // donation valuation are standalone documents.
+          extraServerAttachments={emailDoc === 'confirmation' ? [
             { id: 'cgv', label: 'CGV - ETS Malterre.pdf', url: `${API_URL}/commandes-client/cgv/pdf` },
-          ]}
+          ] : undefined}
           onSend={async (p) => {
-            await postEmail(`${API_URL}/commandes-client/${selectedId}${emailDoc === 'proforma' ? '/proforma' : ''}/email`, p, { includeAttachPdf: true })
+            await postEmail(`${API_URL}/commandes-client/${selectedId}${DOC_PATH[emailDoc ?? 'confirmation']}/email`, p, { includeAttachPdf: true })
             // Both sends log an envoi_email row server-side — refresh the
             // historique tab without a manual reload.
             queryClient.invalidateQueries({ queryKey: ['commande-client-historique', selectedId] })
@@ -966,9 +981,13 @@ function DetailHeader({
   // for users without the proforma permission: they keep the confirmation
   // only, and DocMenuButton then fires it directly instead of opening a menu.
   const showProforma = canProforma && commande?.donation !== 1
+  // Donation orders get the "Calcul de la valeur" of their attached pieces
+  // instead — the legacy ETAT_ValeurDonation report.
+  const showDonationValeur = commande?.donation === 1
   const docItems: Array<{ key: CommandeDocKind; label: string; icon: ComponentType<{ className?: string }> }> = [
     { key: 'confirmation', label: 'Confirmation de commande', icon: FileCheck2 },
     ...(showProforma ? [{ key: 'proforma' as const, label: 'Facture proforma', icon: ReceiptText }] : []),
+    ...(showDonationValeur ? [{ key: 'donation-valeur' as const, label: 'Calcul de la valeur', icon: Calculator }] : []),
   ]
   // Divers lines ship through the expedition_divers ledger, which is organised
   // per carton across the whole order — hence a dedicated grouped-shipment
