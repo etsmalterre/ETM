@@ -19,6 +19,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAllUserEmails } from './user-emails.js'
+import { getDefaultSignatureFields } from './signature-defaults.js'
 import {
   hasSignatureContent,
   renderSignatureHtml,
@@ -210,6 +211,29 @@ export async function getAllUserProfiles(): Promise<Record<number, UserProfile>>
   return out
 }
 
+export interface EffectiveSignature {
+  /** Rendered template fields — null when the signature is legacy pasted HTML. */
+  fields: SignatureFields | null
+  /** Legacy pasted HTML, when that is what the user has. */
+  legacyHtml: string | null
+  /** True when nothing was stored for this user and the fields were derived
+   *  from their identity (see lib/signature-defaults.ts). */
+  isDefault: boolean
+}
+
+/** The signature that actually goes out for a user, in precedence order:
+ *  stored fields → legacy pasted HTML → fields derived from their identity.
+ *  Returns null only when even the derived fallback has nothing to say
+ *  (no name on the utilisateur row and no email address configured). */
+export async function getEffectiveSignature(userId: number): Promise<EffectiveSignature | null> {
+  const profile = await getUserProfile(userId)
+  if (profile.signature) return { fields: profile.signature, legacyHtml: null, isDefault: false }
+  if (profile.legacySignatureHtml) return { fields: null, legacyHtml: profile.legacySignatureHtml, isDefault: false }
+  const fallback = await getDefaultSignatureFields(userId)
+  if (!fallback) return null
+  return { fields: fallback, legacyHtml: null, isDefault: true }
+}
+
 export interface ResolvedSignature {
   html: string
   /** Images referenced from `html` via cid: — embedded by gmail.ts as a
@@ -228,17 +252,15 @@ export async function getSignatureForEmail(email: string): Promise<ResolvedSigna
   const allEmails = await getAllUserEmails()
   for (const [idStr, addr] of Object.entries(allEmails)) {
     if (addr.trim().toLowerCase() === target) {
-      const profile = await getUserProfile(Number(idStr))
-      if (profile.signature) {
+      const effective = await getEffectiveSignature(Number(idStr))
+      if (!effective) return null
+      if (effective.fields) {
         return {
-          html: renderSignatureHtml(profile.signature, `cid:${SIGNATURE_LOGO_CID}`),
+          html: renderSignatureHtml(effective.fields, `cid:${SIGNATURE_LOGO_CID}`),
           inlineImages: [signatureLogoInlineImage()],
         }
       }
-      if (profile.legacySignatureHtml) {
-        return { html: profile.legacySignatureHtml, inlineImages: [] }
-      }
-      return null
+      return { html: effective.legacyHtml ?? '', inlineImages: [] }
     }
   }
   return null

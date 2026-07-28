@@ -27,6 +27,7 @@ import {
   clearUserPhoto,
   getUserPhotoPath,
   getAllUserProfiles,
+  getEffectiveSignature,
   type PhotoExt,
   type UserProfile,
 } from '../lib/user-profiles.js'
@@ -98,13 +99,29 @@ function profilePayload(p: UserProfile) {
 }
 
 // ── GET /api/user-profiles/me ──────────────────────────
+// `signatureHtml` here is the EFFECTIVE signature — the one gmail.ts appends
+// at send time, including the identity-derived fallback when nothing is
+// stored. The send dialogs preview this, so what the user sees is what the
+// recipient gets. `signature` / `hasLegacySignature` still describe what is
+// actually stored, so the profile modal can tell "configured" from "default".
 userProfilesRouter.get('/me', async (req: Request, res: Response) => {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return
   }
   const profile = await getUserProfile(req.userId)
-  res.json({ IDutilisateur: req.userId, ...profilePayload(profile) })
+  const effective = await getEffectiveSignature(req.userId)
+  const signatureHtml = effective
+    ? effective.fields
+      ? renderSignatureHtml(effective.fields, signatureLogoDataUri())
+      : effective.legacyHtml
+    : null
+  res.json({
+    IDutilisateur: req.userId,
+    ...profilePayload(profile),
+    signatureHtml,
+    signatureIsDefault: effective?.isDefault ?? false,
+  })
 })
 
 // ── GET /api/user-profiles/users ───────────────────────

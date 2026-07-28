@@ -905,7 +905,16 @@ function PickerDialog({
   const [activeTab, setActiveTab] = useState<PickerTab>(kind === 'rouleaux' ? 'ecru' : 'fil')
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  // Selection is kept PER TAB and survives tab switches — a bon commonly mixes
+  // tombé de métier and fini pieces, so ticking rolls on both tabs then hitting
+  // Valider once must add them all. The ids can't share one Set: each tab reads
+  // a different stock table (stock_ecru / stock_fini / stock_fil) and ids
+  // collide across them, so a flat set would post e.g. a stock_ecru id as
+  // 'fini' and transfer the wrong roll. Valider posts one group per tab.
+  const [selectedByTab, setSelectedByTab] = useState<Record<PickerTab, Set<number>>>(
+    () => ({ ecru: new Set(), fini: new Set(), fil: new Set() }),
+  )
+  const selected = selectedByTab[activeTab]
   const [addError, setAddError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -913,15 +922,7 @@ function PickerDialog({
     return () => clearTimeout(t)
   }, [q])
 
-  // Selection is per-tab. Each tab's ids come from a different stock table
-  // (stock_ecru / stock_fini / stock_fil) but `type` is read from the ACTIVE
-  // tab when Valider fires — carrying a selection across tabs would post e.g.
-  // stock_ecru ids as 'fini'. Ids collide across those tables, so that can
-  // transfer the wrong roll rather than merely failing.
-  useEffect(() => {
-    setSelected(new Set())
-    setAddError(null)
-  }, [activeTab])
+  useEffect(() => { setAddError(null) }, [activeTab])
 
   const { data: available, isLoading } = useQuery<AvailablePayload>({
     queryKey: ['transfert-available', kind, transfert.id, debouncedQ],
@@ -980,20 +981,44 @@ function PickerDialog({
   const rows: PickerRow[] = useMemo(() => [...onBonRows, ...availableRows], [onBonRows, availableRows])
 
   // Weight lookup across every candidate ever loaded this session — the
-  // selection survives a search narrowing, so the summary must too.
-  const poidsByIdRef = useRef(new Map<number, number>())
+  // selection survives a search narrowing and a tab switch, so the summary must
+  // too. Keyed `tab:stockId` because ids collide across the stock tables.
+  const poidsByIdRef = useRef(new Map<string, number>())
   useEffect(() => {
-    for (const c of candidates) poidsByIdRef.current.set(c.stock_id, Number(c.poids) || 0)
-  }, [candidates])
+    for (const c of candidates) poidsByIdRef.current.set(`${activeTab}:${c.stock_id}`, Number(c.poids) || 0)
+  }, [candidates, activeTab])
 
   const addMut = useMutation({
-    mutationFn: (payload: { type: PickerTab; stockIds: number[] }) =>
-      apiFetch(`/transferts/${kind}/${transfert.id}/pieces`, { method: 'PUT', body: JSON.stringify(payload) }),
+    // One PUT per tab: the endpoint takes a single `type`, and each tab's ids
+    // belong to a different stock table. Sequential, so the second group sees
+    // the stock already moved by the first.
+    mutationFn: async (groups: Array<{ type: PickerTab; stockIds: number[] }>) => {
+      let lines: TransfertLine[] | null = null
+      let added = 0
+      let skipped = 0
+      let lastError: string | null = null
+      for (const g of groups) {
+        try {
+          const r: { lines: TransfertLine[]; added: number; skipped: number } =
+            await apiFetch(`/transferts/${kind}/${transfert.id}/pieces`, { method: 'PUT', body: JSON.stringify(g) })
+          lines = r.lines
+          added += r.added
+          skipped += r.skipped
+        } catch (e) {
+          // A group whose pieces all left the source magasin meanwhile answers
+          // 409 — count it as skipped instead of aborting the other group.
+          skipped += g.stockIds.length
+          lastError = e instanceof Error ? e.message : 'Erreur'
+        }
+      }
+      if (lines === null) throw new Error(lastError ?? 'Erreur')
+      return { lines, added, skipped }
+    },
     onSuccess: (payload: { lines: TransfertLine[]; added: number; skipped: number }) => {
       queryClient.setQueryData<TransfertDetail>(['transfert', kind, transfert.id], (old) => old ? { ...old, lines: payload.lines } : old)
       queryClient.invalidateQueries({ queryKey: ['transferts'] })
       queryClient.invalidateQueries({ queryKey: ['transfert-available', kind, transfert.id] })
-      setSelected(new Set())
+      setSelectedByTab({ ecru: new Set(), fini: new Set(), fil: new Set() })
       onMutationSuccess()
       // Valider closes the dialog — unless some pieces couldn't be applied, in
       // which case we stay open so the warning is actually read.
@@ -1012,30 +1037,38 @@ function PickerDialog({
   })
 
   const toggle = useCallback((id: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
+    setSelectedByTab((prev) => {
+      const next = new Set(prev[activeTab])
       if (next.has(id)) next.delete(id)
       else next.add(id)
-      return next
+      return { ...prev, [activeTab]: next }
     })
-  }, [])
+  }, [activeTab])
 
   const selectAllVisible = useCallback(() => {
-    setSelected((prev) => {
-      const next = new Set(prev)
+    setSelectedByTab((prev) => {
+      const next = new Set(prev[activeTab])
       const allSelected = candidates.length > 0 && candidates.every((c) => next.has(c.stock_id))
       if (allSelected) candidates.forEach((c) => next.delete(c.stock_id))
       else candidates.forEach((c) => next.add(c.stock_id))
-      return next
+      return { ...prev, [activeTab]: next }
     })
-  }, [candidates])
+  }, [candidates, activeTab])
 
-  const selectedPoids = useMemo(() => {
-    let s = 0
-    for (const id of selected) s += poidsByIdRef.current.get(id) ?? 0
-    return s
+  // Queued totals span every tab — the footer has to account for rolls ticked
+  // on the tab the user isn't looking at, or Valider looks like a no-op.
+  const selectedTotal = useMemo(() => {
+    let count = 0
+    let poids = 0
+    for (const tab of Object.keys(selectedByTab) as PickerTab[]) {
+      for (const id of selectedByTab[tab]) {
+        count += 1
+        poids += poidsByIdRef.current.get(`${tab}:${id}`) ?? 0
+      }
+    }
+    return { count, poids }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, candidates])
+  }, [selectedByTab, candidates])
 
   const tabs: { key: PickerTab; label: string }[] = kind === 'rouleaux'
     ? [{ key: 'ecru', label: 'Tombé de métier' }, { key: 'fini', label: 'Fini' }]
@@ -1154,7 +1187,7 @@ function PickerDialog({
               <CheckSquare className="h-3.5 w-3.5 mr-1.5" />Tout sélectionner
             </Button>
             <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-              {onBonRows.length} sur le bon · {selected.size} à ajouter ({fmtNum(selectedPoids, 1)} kg)
+              {onBonRows.length} sur le bon · {selectedTotal.count} à ajouter ({fmtNum(selectedTotal.poids, 1)} kg)
             </span>
           </div>
         </div>
@@ -1168,8 +1201,11 @@ function PickerDialog({
               onClick={() => {
                 // Nothing queued (or only untick-removals, which already applied)
                 // — Valider is just a confirm-and-close in that case.
-                if (selected.size === 0) { onClose(); return }
-                addMut.mutate({ type: activeTab, stockIds: Array.from(selected) })
+                const groups = (Object.keys(selectedByTab) as PickerTab[])
+                  .filter((t) => selectedByTab[t].size > 0)
+                  .map((t) => ({ type: t, stockIds: Array.from(selectedByTab[t]) }))
+                if (groups.length === 0) { onClose(); return }
+                addMut.mutate(groups)
               }}
             >
               {addMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}

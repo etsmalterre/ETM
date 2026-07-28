@@ -15,6 +15,9 @@ import { SignaturePreview } from '@/components/ui/signature-preview'
 export interface UserProfileMe {
   IDutilisateur: number
   signatureHtml: string | null
+  /** True when signatureHtml was derived from the user's identity because
+   *  no signature is stored for them (see api lib/signature-defaults.ts). */
+  signatureIsDefault?: boolean
   hasPhoto: boolean
   photoVersion: number | null
 }
@@ -87,7 +90,15 @@ export function ProfileModal({ open, onClose }: { open: boolean; onClose: () => 
               <div className="space-y-2">
                 <p className="text-xs font-bold text-primary uppercase tracking-wide">Signature email</p>
                 {profile?.signatureHtml ? (
-                  <SignaturePreview html={profile.signatureHtml} className="min-h-[140px]" />
+                  <>
+                    <SignaturePreview html={profile.signatureHtml} className="min-h-[140px]" />
+                    {profile.signatureIsDefault && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Signature automatique, générée à partir de votre nom et de votre adresse email.
+                        Pour l'enrichir (fonction, téléphone), contactez un administrateur.
+                      </p>
+                    )}
+                  </>
                 ) : (
                   <p className="text-sm text-muted-foreground italic">
                     Aucune signature définie — contactez un administrateur.

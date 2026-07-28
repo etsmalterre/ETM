@@ -156,13 +156,17 @@ export function SendEmailDialog({
   // read-only so the user knows what the recipient will see. Keyed by
   // IDutilisateur so a user switch on a shared PC never previews the
   // previous user's cached signature.
+  // When nothing is configured, the API derives a default from the user's
+  // identity so every mail still goes out signed — flagged so the preview can
+  // point at where to customise it.
   const { user } = useUser()
-  const { data: profileMe } = useQuery<{ signatureHtml: string | null }>({
+  const { data: profileMe } = useQuery<{ signatureHtml: string | null; signatureIsDefault?: boolean }>({
     queryKey: ['user-profile-me', user?.IDutilisateur],
-    queryFn: () => apiFetch<{ signatureHtml: string | null }>('/user-profiles/me'),
+    queryFn: () => apiFetch<{ signatureHtml: string | null; signatureIsDefault?: boolean }>('/user-profiles/me'),
     enabled: open,
   })
   const signatureHtml = profileMe?.signatureHtml ?? null
+  const signatureIsDefault = profileMe?.signatureIsDefault === true
 
   // Visible optional attachments: when the defaults fetch returns
   // optional_attachments, it is authoritative — only ids it lists are shown
@@ -674,7 +678,9 @@ export function SendEmailDialog({
                     {signatureHtml && (
                       <div className="flex-shrink-0 space-y-1">
                         <p className="text-[10px] text-muted-foreground">
-                          Signature — ajoutée automatiquement à l'envoi
+                          {signatureIsDefault
+                            ? "Signature automatique - ajoutée à l'envoi. Personnalisez-la dans Paramètres › Utilisateurs."
+                            : "Signature - ajoutée automatiquement à l'envoi"}
                         </p>
                         <SignaturePreview html={signatureHtml} className="min-h-0 h-28" />
                       </div>

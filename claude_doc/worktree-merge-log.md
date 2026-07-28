@@ -10,6 +10,41 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/transfert (2e lot)
+Transferts picker: **cross-tab selection fixed**, plus a **user signature on every outgoing
+mail, app-wide**.
+
+(1) **Picker selection now survives a tab switch.** In "Éditer le bon de transfert" (Rouleaux),
+ticking a rouleau on *Tombé de métier*, switching to *Fini*, ticking one there and validating
+only added the fini one: a `useEffect` wiped the selection on every `activeTab` change, and
+Valider posted a single `{type: activeTab, stockIds}` group. That reset was not gratuitous, and
+the fix keeps what it protected: the tabs read different stock tables (`stock_ecru` /
+`stock_fini` / `stock_fil`) whose ids collide, so one flat Set could post an écru id as `'fini'`
+and move the wrong roll. Selection is now `Record<PickerTab, Set<number>>`, so ids stay bound to
+the table they came from, and Valider builds one group per non-empty tab and PUTs them
+sequentially to `/pieces`, aggregating `added` / `skipped`. A group that 409s (all its pieces
+left the source magasin meanwhile) counts as skipped instead of aborting the other group, so the
+existing "X ignorée(s)" warning still surfaces and the dialog stays open. The footer counter and
+weight sum across tabs (weight map re-keyed `tab:stockId`, since raw stock ids collide), so
+"N à ajouter" reflects both tabs. Frontend only, no API change.
+
+(2) **Every mail now goes out signed.** The signature mechanism was already central and already
+covered every send dialog: `sendMail()` (`lib/gmail.ts`) resolves the sender's signature from the
+`from` address and appends it to both MIME parts, and every send route relies on that default
+(only `lib/notify.ts` opts out with `signatureHtml: null`, correctly, for system notifications).
+The gap was that it only fired once an admin had filled the signature fields for that user, so
+users with nothing stored sent unsigned mail. New `lib/signature-defaults.ts` derives a fallback
+from identity alone: `displayName` from `utilisateur.prenom/nom` (selecting `IDutilisateur` so
+`fixEncoding` never builds `WHERE id = NaN`) and `email` from the per-user Gmail address; never an
+invented fonction or téléphone, and a failed lookup degrades to email-only rather than failing the
+send. `getEffectiveSignature(userId)` in `lib/user-profiles.ts` applies the precedence stored
+fields → legacy pasted HTML → derived, and `getSignatureForEmail()` routes through it, so the
+fallback reaches every send route through the one central path. `GET /user-profiles/me` now
+returns the *effective* signature plus `signatureIsDefault` (stored-only fields stay in the
+payload, so the admin editor still tells "configured" from "default"), and `SendEmailDialog` /
+`ProfileModal` caption the default case and point at Paramètres › Utilisateurs. Anything an admin
+saves supersedes the fallback, and the dialog previews exactly what the recipient gets.
+
 ## 2026-07-28 — feat/tickets
 Widget de tickets LIVA — **deux corrections de périmètre** (feature version 1.1.0 → 1.1.1).
 
