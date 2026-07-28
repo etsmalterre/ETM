@@ -10,6 +10,39 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/tickets
+Widget de tickets LIVA — **deux corrections de périmètre** (feature version 1.1.0 → 1.1.1).
+
+(1) **`resolu` n'est plus un statut clôturé.** Le tiroir "Tickets clôturés" ne garde que
+`ferme` et `ne_sera_pas_corrige`. `resolu` veut dire "corrigé, rattaché à une version qui
+n'est pas encore publiée" — le rapporteur attend encore la livraison, c'est précisément le
+moment où le ticket doit rester visible dans la liste ouverte avec ses pastilles
+"Résolu · v0.1.5". Le tracker bascule lui-même les tickets liés à une release de `resolu`
+vers `ferme` (avec `closed_at`) au moment de la publication — `release_service._close_linked_bugs`
+— donc le widget n'a plus qu'à cesser d'anticiper cette transition. Aucun changement d'UI :
+le split liste ouverte / tiroir et l'auto-ouverture sur non-lus sont inchangés.
+
+(2) **Toutes les lectures sont cadrées sur le produit.** La clé API du tracker est
+*company*-scoped, pas product-scoped : un `GET /bugs?reporter_email=…` renvoyait les tickets
+de la personne **sur tous les produits ETS Malterre**, donc Isabelle voyait ses tickets MFProd
+dans MPS_NG. Le proxy envoie désormais `product_slug` (= `ISSUE_TRACKER_PRODUCT_SLUG`) sur la
+liste, et `belongsToProduct()` rejette en 404 un ticket d'un autre produit sur le détail et sur
+l'upload de pièces jointes — même traitement que le contrôle `reporter_email` existant. Les
+lignes renvoyées sont en plus filtrées côté serveur, ce qui rend le déploiement de l'app sûr
+même si le tracker n'a pas encore la nouvelle version.
+
+**Dépendance côté tracker** (dépôt `C:\dev\liva\issue-tracker`, à déployer séparément) : le
+filtre `product_slug` a dû être ajouté à `GET /bugs`, l'API n'acceptait que `product_id` et
+n'expose aucune résolution slug → id (pas d'endpoint `/products`) alors que les apps intégrées
+ne connaissent que leur slug. Les objets bug exposent maintenant `product_slug`. Un slug inconnu
+ne matche rien plutôt que de retomber sur toute la société. Tant que le tracker n'est pas
+déployé, le paramètre est ignoré et seul le filtre défensif côté proxy s'applique.
+
+Spec canonique mise à jour dans le skill `issue_tracker_integration` (CONTRACT.md § Product
+scoping + note sur l'enum de statuts, changelog 1.1.1, proxys de référence express/flask) —
+les deux règles valent pour toutes les intégrations, MFProd compris (qui a les deux bugs en
+miroir et n'a pas été touché ici).
+
 ## 2026-07-28 — feat/transfert
 Transferts (Rouleaux + Fils) — **permission gating, and the stock picker reworked into an
 "Éditer le bon de transfert" modal that both adds and retires pièces.**

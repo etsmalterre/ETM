@@ -5,7 +5,7 @@
 // initialScreenshot, exposed as an "include screenshot" attachment button
 // that shows a spinner while capturingScreenshot is true.
 //
-// LIVA ticket widget — feature version 1.1.0 (see the
+// LIVA ticket widget — feature version 1.1.1 (see the
 // issue_tracker_integration skill; bump both together).
 
 import { useState, useEffect, useRef } from 'react'

@@ -9,6 +9,10 @@
 //     feature uses; users without a mapped email get the same French 400
 //     directing them to Paramètres › Utilisateurs)
 //
+// Reads are scoped to ISSUE_TRACKER_PRODUCT_SLUG as well: the tracker key is
+// company-scoped, so without it a reporter who also files tickets in MFProd
+// would see them listed here (see belongsToProduct).
+//
 // Routes:
 //   POST   /api/tickets                  — create a ticket
 //   GET    /api/tickets                  — list the session user's tickets
@@ -135,6 +139,20 @@ function forward(res: Response, status: number, data: unknown): void {
 
 const TICKET_ID_RE = /^[0-9a-fA-F-]{10,64}$/
 
+/** The tracker API key is *company*-scoped, not product-scoped: ETS Malterre
+ *  owns both "etm-erp" (this app) and MFProd, so a user who reports in both
+ *  apps under the same email gets the other product's tickets back unless the
+ *  product is named explicitly. Every read is therefore scoped to
+ *  ISSUE_TRACKER_PRODUCT_SLUG — as a query filter for the list, and as an
+ *  ownership check on detail/attachments. */
+function belongsToProduct(data: unknown): boolean {
+  const slug = (data as { product_slug?: string } | null)?.product_slug
+  // Trackers older than the product_slug filter omit the field; don't 404 the
+  // whole widget against them — the reporter_email check still applies.
+  if (typeof slug !== 'string') return true
+  return slug === productSlug()
+}
+
 const submitBody = z.object({
   title: z.string().trim().min(1).max(500),
   description: z.string().trim().min(1).max(20000),
@@ -172,18 +190,34 @@ ticketsRouter.post('/', async (req: Request, res: Response) => {
   }
 })
 
-// ── GET /api/tickets — list, scoped to the session user ───
+// ── GET /api/tickets — list, scoped to user + product ─────
 ticketsRouter.get('/', async (req: Request, res: Response) => {
   if (!ensureConfigured(res)) return
   try {
     const reporter = await resolveReporter(req, res)
     if (!reporter) return
-    const params = new URLSearchParams({ reporter_email: reporter.email })
+    const params = new URLSearchParams({
+      reporter_email: reporter.email,
+      product_slug: productSlug(),
+    })
     for (const key of ['severity', 'category', 'status', 'page', 'per_page'] as const) {
       const v = req.query[key]
       if (typeof v === 'string' && v) params.set(key, v)
     }
     const { status, data } = await trackerJson(`/bugs?${params}`, { headers: trackerHeaders() })
+    if (status === 200 && Array.isArray((data as { items?: unknown[] })?.items)) {
+      // Second line of defence behind the product_slug filter above: drop any
+      // foreign-product row the tracker still returned (older tracker build).
+      const body = data as { items: unknown[]; total?: number }
+      const items = body.items.filter(belongsToProduct)
+      const dropped = body.items.length - items.length
+      forward(res, status, {
+        ...body,
+        items,
+        total: dropped > 0 ? items.length : body.total,
+      })
+      return
+    }
     forward(res, status, data)
   } catch (err) {
     sendTrackerError(res, err, 'GET /bugs')
@@ -205,7 +239,11 @@ ticketsRouter.get('/:id', async (req: Request, res: Response) => {
     })
     if (status === 200) {
       const owner = (data as { reporter_email?: string })?.reporter_email
-      if (!owner || owner.toLowerCase() !== reporter.email.toLowerCase()) {
+      if (
+        !owner ||
+        owner.toLowerCase() !== reporter.email.toLowerCase() ||
+        !belongsToProduct(data)
+      ) {
         res.status(404).json({ error: 'Ticket introuvable' })
         return
       }
@@ -237,7 +275,12 @@ ticketsRouter.post('/:id/attachments', async (req: Request, res: Response) => {
       return
     }
     const owner = (data as { reporter_email?: string })?.reporter_email
-    if (status !== 200 || !owner || owner.toLowerCase() !== reporter.email.toLowerCase()) {
+    if (
+      status !== 200 ||
+      !owner ||
+      owner.toLowerCase() !== reporter.email.toLowerCase() ||
+      !belongsToProduct(data)
+    ) {
       res.status(404).json({ error: 'Ticket introuvable' })
       return
     }

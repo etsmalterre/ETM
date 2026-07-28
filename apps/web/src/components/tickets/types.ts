@@ -104,8 +104,15 @@ export const featureSeverities: TicketSeverity[] = ['basse', 'moyenne', 'haute']
 
 /** Statuses that take a ticket out of the user's working set. Those are
  *  collapsed into the "Tickets clôturés" drawer of the "Mes tickets" list so
- *  only what's still moving stays on screen. */
-export const closedStatuses: TicketStatus[] = ['resolu', 'ferme', 'ne_sera_pas_corrige']
+ *  only what's still moving stays on screen.
+ *
+ *  `resolu` is deliberately NOT here: it means "fixed and scheduled for a
+ *  release" (the fix version is set), not "delivered". The reporter still has
+ *  something to wait for — the release being published — and that is exactly
+ *  when they most want the ticket visible. The tracker flips resolved tickets
+ *  to `ferme` automatically when their release is published; that is the
+ *  moment they belong in the drawer. */
+export const closedStatuses: TicketStatus[] = ['ferme', 'ne_sera_pas_corrige']
 
 export function isClosedStatus(status: TicketStatus): boolean {
   return closedStatuses.includes(status)
