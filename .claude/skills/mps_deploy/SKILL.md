@@ -263,11 +263,31 @@ of every deploy — see the deploy steps). The check:
    ```bash
    tar czf /tmp/mps_web_dist.tar.gz -C apps/web/dist .
    "$SCP" -i "$KEY" -o IdentitiesOnly=yes /tmp/mps_web_dist.tar.gz debian@10.10.2.165:/home/debian/   # win transport
-   "$SSH" $OPTS debian@10.10.2.165 'rm -rf /home/debian/mps_erp/dist/* && tar xzf /home/debian/mps_web_dist.tar.gz -C /home/debian/mps_erp/dist/'
+   # Extract OVER the existing dist — do NOT wipe it first (see below), then age out
+   # hashed assets untouched by a deploy for 14 days.
+   "$SSH" $OPTS debian@10.10.2.165 'tar xzf /home/debian/mps_web_dist.tar.gz -C /home/debian/mps_erp/dist/ && find /home/debian/mps_erp/dist/assets -type f -mtime +14 -delete'
    ```
 
+   **Never `rm -rf dist/*` before extracting.** The shell files (`index.html`, `sw.js`,
+   `registerSW.js`, `manifest.webmanifest`) are overwritten in place by the extract, and the
+   new build's assets are hash-named, so a plain extract-over is already a complete deploy.
+   Wiping first deletes the *previous* build's hashed chunks, which breaks any browser tab a
+   user left open across the deploy: that tab runs the old bundle, whose lazy `import()` URLs
+   (`assets/xlsx-<oldhash>.js`, `html-to-image`) point at files that no longer exist. Once the
+   new service worker activates and claims the tab (it is built with `clientsClaim`), those
+   chunks aren't in its precache either, so the request hits nginx, 404s into the SPA fallback,
+   and the dynamic import rejects — the user clicks "Exporter Excel" and nothing happens.
+   Keeping the old assets for 14 days makes that tab keep working until it is reloaded.
+
+   The `-mtime +14` sweep is what stops `dist/assets` growing without bound: `tar` restores
+   each file's build-time mtime, so a redeployed file looks fresh and only genuinely superseded
+   chunks age out. The web app also carries a client-side backstop for the residual case
+   (`apps/web/src/lib/chunk-error.ts` + `components/shared/StaleBundleReload.tsx`), which
+   offers the user a reload when a chunk does go missing — but that is the safety net, not the
+   fix. Keep both.
+
 3. **Stamp the deployed commit** — write it to `/home/debian/mps_erp/DEPLOYED_SHA`, which is the
-   PARENT of `dist/` so it survives the `rm -rf dist/*` above (and isn't served publicly):
+   PARENT of `dist/` so it is never served publicly (and survives any dist-level cleanup):
    ```bash
    SHA=$(cd /c/dev/etsmalterre/MPS_NG && git rev-parse origin/master)
    wsl bash -c "ssh $WOPTS debian@10.10.2.165 'echo $SHA > /home/debian/mps_erp/DEPLOYED_SHA'"

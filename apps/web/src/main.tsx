@@ -7,6 +7,7 @@ import { installAutofillBlocker } from './lib/disable-autofill'
 import { UserProvider } from './contexts/UserContext'
 import { PermissionsProvider } from './contexts/PermissionsContext'
 import { UserPickerGate } from './components/auth/UserPickerGate'
+import { StaleBundleReload } from './components/shared/StaleBundleReload'
 import './index.css'
 
 // Clean up design carousel artifacts from localStorage
@@ -38,6 +39,9 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
+      {/* Outside the auth gate: a stale chunk can fail on any screen, including
+          the user picker. */}
+      <StaleBundleReload />
       <UserProvider>
         <PermissionsProvider>
           <UserPickerGate>
