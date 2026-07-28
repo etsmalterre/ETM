@@ -588,6 +588,54 @@ commandesClientRouter.get('/urgency-counts', async (_req: Request, res: Response
 //  LIST
 // ════════════════════════════════════════════════════════
 
+/** Commandes carrying at least one line whose article reference matches `q`.
+ *  Matches the very labels the line cards show: ref_fini.reference (type 2),
+ *  ref_ecru.reference (type 1) and ref_divers.designation (type 3). Two steps —
+ *  LIKE over the catalogs, then one IN over the lines — because the line table
+ *  only stores the polymorphic IDreference.
+ *
+ *  Skipped for non-ASCII input: a raw accented literal in a SQL line corrupts
+ *  the Linux ODBC bridge, and article references are ASCII codes anyway.
+ *  ref_divers carries an accented `archivé` column — never named here. */
+const REF_SEARCH_CATALOG_CAP = 500
+const REF_SEARCH_COMMANDE_CAP = 500
+
+async function findCommandeIdsByRefLabel(q: string): Promise<number[]> {
+  if (!/^[\x20-\x7E]+$/.test(q)) return []
+  const e = esc(q)
+  const [finiRows, ecruRows, diversRows] = await Promise.all([
+    query<{ IDref_fini: number }>(
+      `SELECT TOP ${REF_SEARCH_CATALOG_CAP} IDref_fini FROM ref_fini WHERE reference LIKE '%${e}%'`,
+    ),
+    query<{ IDref_ecru: number }>(
+      `SELECT TOP ${REF_SEARCH_CATALOG_CAP} IDref_ecru FROM ref_ecru WHERE reference LIKE '%${e}%'`,
+    ),
+    query<{ IDref_divers: number }>(
+      `SELECT TOP ${REF_SEARCH_CATALOG_CAP} IDref_divers FROM ref_divers WHERE designation LIKE '%${e}%'`,
+    ),
+  ])
+  const ids = (rows: any[], key: string): number[] =>
+    Array.from(new Set(rows.map((r) => Number(r[key]) || 0).filter((x) => x > 0)))
+  const finiIds = ids(finiRows, 'IDref_fini')
+  const ecruIds = ids(ecruRows, 'IDref_ecru')
+  const diversIds = ids(diversRows, 'IDref_divers')
+
+  // Type-scoped, because IDreference is polymorphic: the same numeric id can
+  // exist in all three catalogs and would otherwise cross-match.
+  const orParts: string[] = []
+  if (finiIds.length > 0) orParts.push(`(TYPE = 2 AND IDreference IN (${finiIds.join(',')}))`)
+  if (ecruIds.length > 0) orParts.push(`(TYPE = 1 AND IDreference IN (${ecruIds.join(',')}))`)
+  if (diversIds.length > 0) orParts.push(`(TYPE = 3 AND IDreference IN (${diversIds.join(',')}))`)
+  if (orParts.length === 0) return []
+
+  const lignes = await query<{ IDcommande_client: number }>(
+    `SELECT IDcommande_client FROM ligne_commande_client WHERE ${orParts.join(' OR ')}`,
+  )
+  return Array.from(new Set(lignes.map((l) => Number(l.IDcommande_client) || 0).filter((x) => x > 0)))
+    .sort((a, b) => b - a)
+    .slice(0, REF_SEARCH_COMMANDE_CAP)
+}
+
 commandesClientRouter.get('/', async (req: Request, res: Response) => {
   try {
     const q = String(req.query.q ?? '').trim()
@@ -608,9 +656,12 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
     if (isSearching) {
       const orParts: string[] = []
       if (/^\d+$/.test(q)) orParts.push(`cc.numero = ${parseInt(q, 10)}`)
-      const clientRows = await query<{ IDclient: number; nom: string | null }>(
-        `SELECT IDclient, nom FROM client WHERE est_visible = 1`,
-      )
+      const [clientRows, refCommandeIds] = await Promise.all([
+        query<{ IDclient: number; nom: string | null }>(
+          `SELECT IDclient, nom FROM client WHERE est_visible = 1`,
+        ),
+        findCommandeIdsByRefLabel(q),
+      ])
       const fixedClients = await fixEncoding(clientRows, 'client', 'IDclient', ['nom'])
       const nq = norm(q)
       const matchIds = fixedClients
@@ -618,6 +669,8 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
         .map((c) => Number(c.IDclient))
         .filter((x) => x > 0)
       if (matchIds.length > 0) orParts.push(`cc.IDclient IN (${matchIds.join(',')})`)
+      // Article reference: commandes with at least one matching line.
+      if (refCommandeIds.length > 0) orParts.push(`cc.IDcommande_client IN (${refCommandeIds.join(',')})`)
       if (orParts.length === 0) { res.json([]); return }
       whereParts.push(`(${orParts.join(' OR ')})`)
     }
@@ -4380,10 +4433,27 @@ async function renderProformaPdfBuffer(data: FacturePdfData): Promise<Buffer> {
   )
 }
 
+/** The proforma (print + email) is permission-gated: users without the right
+ *  only ever get the confirmation de commande. Responds 401/403 itself and
+ *  returns false when the caller must stop. */
+async function requireProformaPermission(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'proforma_commande_client')
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: proforma_commande_client' })
+    return false
+  }
+  return true
+}
+
 commandesClientRouter.get('/:id/proforma/pdf', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await requireProformaPermission(req, res))) return
     const data = await buildProformaPdfData(id)
     if (!data) { res.status(404).json({ error: 'Commande not found' }); return }
     const buffer = await renderProformaPdfBuffer(data)
@@ -4505,6 +4575,7 @@ commandesClientRouter.get('/:id/proforma/email-defaults', async (req: Request, r
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await requireProformaPermission(req, res))) return
     const defaults = await buildEmailDefaults(id, 'proforma')
     if (!defaults) { res.status(404).json({ error: 'Commande not found' }); return }
     res.json(defaults)
@@ -4631,6 +4702,7 @@ commandesClientRouter.post('/:id/proforma/email', async (req: Request, res: Resp
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    if (!(await requireProformaPermission(req, res))) return
     const parsed = emailBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND

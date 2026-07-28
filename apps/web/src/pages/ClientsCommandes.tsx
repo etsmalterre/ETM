@@ -375,6 +375,9 @@ export function ClientsCommandes() {
   // Create / edit / delete commandes + lignes. Without it, no "Nouvelle" and
   // no "Modifier" — the screen is read-only (view-mode workflows stay open).
   const canEditCommandes = useHasPermission('edit_commandes_client')
+  // Print / email the facture proforma. Without it the doc menus collapse to
+  // their single remaining entry (confirmation de commande) and act directly.
+  const canProforma = useHasPermission('proforma_commande_client')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
@@ -608,6 +611,7 @@ export function ClientsCommandes() {
             isLoading={detailLoading && selectedId !== null}
             isEditing={isEditing}
             canEdit={canEditCommandes}
+            canProforma={canProforma}
             onStartEdit={startEdit}
             onCancelEdit={cancelEdit}
             onSave={() => saveHeaderMut.mutate()}
@@ -756,7 +760,7 @@ function CommandeList({
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <input
               type="text"
-              placeholder="Rechercher (n°, client...)"
+              placeholder="Rechercher (n°, client, réf...)"
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
               autoComplete="off"
@@ -876,6 +880,8 @@ function CommandeList({
 
 /** Icon button opening a small popover menu — the print/email header buttons
  *  use it to pick which document (confirmation vs proforma) to act on.
+ *  With a single document left (donation order, or no proforma permission) it
+ *  drops the menu and fires that document directly — mps_designer §42.3.
  *  Pattern: PrintMenuButton in ClientsExpeditions.tsx. */
 function DocMenuButton({ icon: TriggerIcon, title, items, onSelect }: {
   icon: ComponentType<{ className?: string }>
@@ -895,6 +901,20 @@ function DocMenuButton({ icon: TriggerIcon, title, items, onSelect }: {
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [menuOpen])
+
+  // Single document → plain direct-action button, no chooser.
+  if (items.length === 1) {
+    const only = items[0]
+    return (
+      <Button
+        variant="outline" size="icon" className="h-9 w-9"
+        title={`${title} : ${only.label}`}
+        onClick={() => onSelect(only.key)}
+      >
+        <TriggerIcon className="h-4 w-4" />
+      </Button>
+    )
+  }
 
   return (
     <div ref={rootRef} className="relative">
@@ -924,7 +944,7 @@ function DocMenuButton({ icon: TriggerIcon, title, items, onSelect }: {
 }
 
 function DetailHeader({
-  commande, isLoading, isEditing, canEdit,
+  commande, isLoading, isEditing, canEdit, canProforma,
   onStartEdit, onCancelEdit, onSave, isSaving,
   onDelete, onPrintDoc, onEmailDoc, onOpenExpeditionGroupee,
 }: {
@@ -932,6 +952,7 @@ function DetailHeader({
   isLoading: boolean
   isEditing: boolean
   canEdit: boolean
+  canProforma: boolean
   onStartEdit: () => void
   onCancelEdit: () => void
   onSave: () => void
@@ -942,10 +963,13 @@ function DetailHeader({
   onOpenExpeditionGroupee: () => void
 }) {
   if (!commande && !isLoading) return null
-  // Donation orders never produce an invoice — no proforma menu entry.
+  // Donation orders never produce an invoice — no proforma menu entry. Same
+  // for users without the proforma permission: they keep the confirmation
+  // only, and DocMenuButton then fires it directly instead of opening a menu.
+  const showProforma = canProforma && commande?.donation !== 1
   const docItems: Array<{ key: CommandeDocKind; label: string; icon: ComponentType<{ className?: string }> }> = [
     { key: 'confirmation', label: 'Confirmation de commande', icon: FileCheck2 },
-    ...(commande?.donation === 1 ? [] : [{ key: 'proforma' as const, label: 'Facture proforma', icon: ReceiptText }]),
+    ...(showProforma ? [{ key: 'proforma' as const, label: 'Facture proforma', icon: ReceiptText }] : []),
   ]
   // Divers lines ship through the expedition_divers ledger, which is organised
   // per carton across the whole order — hence a dedicated grouped-shipment
@@ -2659,18 +2683,26 @@ function ExpeditionTab({
               render: (r) => (
                 <span className="inline-flex items-center gap-0.5">
                   <Button
-                    variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent"
+                    variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
                     title="Imprimer"
                     onClick={(e) => { e.stopPropagation(); window.open(`${API_URL}/expeditions/formelle/${r.IDexpedition}/pdf`, '_blank') }}
                   >
                     <Printer className="h-3.5 w-3.5" />
                   </Button>
                   <Button
-                    variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent"
+                    variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
                     title="Envoyer un email"
                     onClick={(e) => { e.stopPropagation(); setEmailExpId(r.IDexpedition) }}
                   >
                     <AtSign className="h-3.5 w-3.5" />
+                  </Button>
+                  {/* Fiche de transport — internal pickup request for the carrier. */}
+                  <Button
+                    variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
+                    title="Imprimer la demande de transport"
+                    onClick={(e) => { e.stopPropagation(); window.open(`${API_URL}/expeditions/formelle/${r.IDexpedition}/demande-transport/pdf`, '_blank') }}
+                  >
+                    <Truck className="h-3.5 w-3.5" />
                   </Button>
                 </span>
               ),
@@ -3001,14 +3033,14 @@ function DiversLineDrawer({
                                 {ci === 0 && (
                                   <span className="inline-flex items-center gap-0.5">
                                     <Button
-                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent"
+                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
                                       title="Imprimer le bon de livraison"
                                       onClick={() => window.open(`${API_URL}/expeditions/divers/${e.IDexpedition_divers}/pdf`, '_blank')}
                                     >
                                       <Printer className="h-3.5 w-3.5" />
                                     </Button>
                                     <Button
-                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent"
+                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
                                       title="Envoyer un email"
                                       onClick={() => setEmailExpId(e.IDexpedition_divers)}
                                     >

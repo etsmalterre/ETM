@@ -64,6 +64,8 @@ import { BonLivraisonPdf, type BonLivraisonPdfData, type BlArticle, type BlLot, 
 import { BonLivraisonDiversPdf, type BonLivraisonDiversPdfData, type BlDiversCarton } from '../lib/pdf/BonLivraisonDiversPdf.js'
 import { RapportControlePdf, type RapportControlePdfData, type RcArticle, type RcLot, type RcRow } from '../lib/pdf/RapportControlePdf.js'
 import { InfoMatieresPdf, type InfoMatieresPdfData, type ImArticle, type ImEntry } from '../lib/pdf/InfoMatieresPdf.js'
+import { DemandeTransportPdf, type DemandeTransportPdfData } from '../lib/pdf/DemandeTransportPdf.js'
+import { company } from '../lib/pdf/theme.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 
@@ -2252,6 +2254,142 @@ expeditionsRouter.get('/formelle/:id/info-matieres/pdf', async (req: Request, re
     res.send(buffer)
   } catch (err) {
     console.error('Error rendering info matières PDF:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  DEMANDE DE TRANSPORT (formelle only)
+// ════════════════════════════════════════════════════════
+// Port of the legacy "Demande_transport_<id>" sheet: the pickup request sent
+// to a carrier. Internal-process document — printed/faxed, never emailed by
+// the app, so there is no email-defaults counterpart.
+//
+// Pickup is always ETS Malterre (the legacy sheet hardcodes the factory as
+// the pickup point, even when rolls physically sit at a sous-traitant), and
+// the delivery block is the expedition's own adresse — same one the BL uses.
+
+/** "Prénom - Ets Malterre" for the acting user (legacy sender line). */
+async function loadExpediteurLabel(userId: number | undefined): Promise<string> {
+  const fallback = 'Ets Malterre'
+  if (userId === undefined) return fallback
+  try {
+    // IDutilisateur must be selected — fixEncoding keys its repair on it.
+    const rows = await query<Record<string, unknown>>(
+      `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${userId}`,
+    )
+    const fixed = await fixEncoding(rows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
+    const prenom = (fixed[0]?.prenom ?? '').toString().trim()
+    return prenom ? `${prenom} - Ets Malterre` : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/** Total shipped weight + roll count across every line of the expedition. */
+async function loadExpeditionRollTotals(ligneIds: number[]): Promise<{ poids: number; nb: number }> {
+  const ids = Array.from(new Set(ligneIds.filter((x) => x > 0)))
+  if (ids.length === 0) return { poids: 0, nb: 0 }
+  const inLe = ids.join(',')
+  const [fini, ecru] = await Promise.all([
+    query<{ poids: unknown }>(`SELECT IDstock_fini, poids FROM stock_fini WHERE IDligne_expedition IN (${inLe})`),
+    query<{ poids: unknown }>(`SELECT IDstock_ecru, poids FROM stock_ecru WHERE IDligne_expedition_ETM IN (${inLe})`),
+  ])
+  const rolls = [...fini, ...ecru]
+  return { poids: rolls.reduce((s, r) => s + numOf(r.poids), 0), nb: rolls.length }
+}
+
+export async function buildDemandeTransportPdfData(
+  id: number,
+  userId: number | undefined,
+): Promise<DemandeTransportPdfData | null> {
+  const rows = await query<any>(
+    `SELECT IDexpedition, IDcommande_client, IDadresse, IDtransporteur, DATE AS dexp ` +
+      `FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`,
+  )
+  if (rows.length === 0) return null
+  const h = rows[0]
+  const cmdId = Number(h.IDcommande_client) || 0
+
+  const cmdRows = cmdId > 0
+    ? await query<any>(`SELECT IDcommande_client, numero, IDclient FROM commande_client WHERE IDcommande_client = ${cmdId}`)
+    : []
+  const cmd = cmdRows[0] as any
+  const IDclient = Number(cmd?.IDclient) || 0
+
+  const leRows = await query<any>(
+    `SELECT IDligne_expedition FROM ligne_expedition WHERE IDexpedition = ${id}`,
+  )
+  const [clientNames, transNames, adr, totals, expediteur] = await Promise.all([
+    resolveClientNames([IDclient]),
+    resolveTransporteurNames([Number(h.IDtransporteur)]),
+    loadAdresse(Number(h.IDadresse) || 0),
+    loadExpeditionRollTotals((leRows as any[]).map((l) => Number(l.IDligne_expedition) || 0)),
+    loadExpediteurLabel(userId),
+  ])
+
+  const now = new Date()
+  const pad = (x: number) => String(x).padStart(2, '0')
+  const dateCourte = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`
+  const dateLong = `${now.getDate()} ${FRENCH_MONTHS[now.getMonth()]} ${now.getFullYear()}`
+
+  const a = adr as any
+  return {
+    numero: id,
+    dateLong,
+    dateCourte,
+    expediteur,
+    transporteurNom: transNames.get(Number(h.IDtransporteur)) || null,
+    clientNom: clientNames.get(IDclient) || null,
+    commandeNumero: cmd?.numero != null ? Number(cmd.numero) : null,
+    poids: totals.poids,
+    nbRouleaux: totals.nb,
+    enlevement: {
+      nom: company.legalName,
+      adresse1: company.address1,
+      adresse2: company.address2 || null,
+      adresse3: null,
+      cp: company.zip,
+      ville: company.city,
+      pays: company.country,
+    },
+    livraison: a
+      ? {
+          nom: (a.nom ?? null) as string | null,
+          adresse1: (a.adresse1 ?? null) as string | null,
+          adresse2: (a.adresse2 ?? null) as string | null,
+          adresse3: (a.adresse3 ?? null) as string | null,
+          cp: (a.cp ?? null) as string | null,
+          ville: (a.ville ?? null) as string | null,
+          pays: (a.pays ?? null) as string | null,
+        }
+      : null,
+  }
+}
+
+async function renderDemandeTransportBuffer(data: DemandeTransportPdfData): Promise<Buffer> {
+  return renderToBuffer(
+    React.createElement(DemandeTransportPdf, { data }) as unknown as React.ReactElement<
+      import('@react-pdf/renderer').DocumentProps
+    >,
+  )
+}
+
+expeditionsRouter.get('/formelle/:id/demande-transport/pdf', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const data = await buildDemandeTransportPdfData(id, req.userId)
+    if (!data) { res.status(404).json({ error: 'Expédition not found' }); return }
+    const buffer = await renderDemandeTransportBuffer(data)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="Demande-transport-${id}.pdf"`)
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.send(buffer)
+  } catch (err) {
+    console.error('Error rendering demande de transport PDF:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

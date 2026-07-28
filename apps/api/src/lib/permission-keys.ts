@@ -62,6 +62,13 @@ export const PERMISSION_KEYS = [
     category: 'Commandes client',
   },
   {
+    key: 'proforma_commande_client',
+    label: 'Facture proforma',
+    description:
+      'Affiche l’entrée « Facture proforma » dans les menus « Imprimer » et « Envoyer un email » de Clients > Commandes et autorise l’impression et l’envoi de la proforma. Sans ce droit, les deux boutons agissent directement sur la confirmation de commande.',
+    category: 'Commandes client',
+  },
+  {
     key: 'edit_observations_rouleaux',
     label: 'Modifier les observations des rouleaux',
     description:

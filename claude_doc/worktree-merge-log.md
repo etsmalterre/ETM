@@ -10,6 +10,54 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/commande-client
+Clients > Commandes — **demande de transport PDF, proforma behind a permission, search by
+article reference**, plus a hover-state fix on the expédition tables.
+
+(1) **Demande de transport** (`lib/pdf/DemandeTransportPdf.tsx` + `GET
+/expeditions/formelle/:id/demande-transport/pdf`). Port of the legacy WinDev
+"Demande_transport_<id>" sheet: the pickup request sent to a carrier, printed from a new truck
+button in the per-line "Expéditions de la ligne" table (right of print + email). Rebuilt on the
+`MalterreDocument` frame per the `malterre_doc` brand pack, so it carries the gold band,
+tricolore footer and cream gold-edged cards: DESTINATAIRE + Informations cards, centered
+"DEMANDE D'ENLÈVEMENT MESSAGERIE" heading, the "Merci d'enlever +/- X kg, en N rouleaux"
+payload box, Enlèvement / Livraison address cards, dashed fill-in rows, the confirmation
+callout with matin / après-midi checkboxes, and a salutation signed with the sender. Builder
+sums weight + roll count over `stock_fini` (`IDligne_expedition`) and `stock_ecru`
+(`IDligne_expedition_ETM`), reads the expedition's own adresse (same one the BL uses), the
+transporteur, the client/commande, and the acting user's `prenom` for the "Prénom - Ets
+Malterre" sender line (`IDutilisateur` is in the SELECT, so `fixEncoding` can't hit the NaN
+storm). Pickup is always ETS Malterre, as in legacy, even when the rolls sit at a
+sous-traitant magasin. Divers expeditions are deliberately not covered (cartons, not rolls).
+Visual check: `scripts/dump-demande-transport-pdf.ts` renders both variants from synthetic
+data, no DB.
+
+(2) **`proforma_commande_client`** — new permission gating the facture proforma. Server side,
+`requireProformaPermission` guards all three routes (`/:id/proforma/pdf`,
+`/:id/proforma/email-defaults`, `POST /:id/proforma/email`), so a denied user can't reach the
+PDF by URL either. UI side the key drops the "Facture proforma" row from the shared `docItems`
+array feeding both header menus, and `DocMenuButton` now short-circuits on a single item to a
+plain direct-action button (tooltip "Imprimer : Confirmation de commande") per mps_designer
+§42.3 - which also fixes the pre-existing one-row menu on donation orders. **Default closed**:
+existing non-admins lose the proforma until granted in Paramètres > Utilisateurs.
+
+(3) **Search by article reference** in the left list. `findCommandeIdsByRefLabel(q)` runs
+alongside the client-name resolution and OR's into the same WHERE. Two steps, because
+`ligne_commande_client.IDreference` is polymorphic: LIKE over `ref_fini.reference` (type 2),
+`ref_ecru.reference` (type 1) and `ref_divers.designation` (type 3) - the labels the line cards
+show - then one type-scoped IN over the lines (the type predicate matters: the same numeric id
+exists in all three catalogs). Non-ASCII input skips the ref pass (a raw accented literal
+corrupts the Linux bridge; references are ASCII codes), `archivé` on `ref_divers` is never
+named, and hits are capped at 500 per catalog / 500 commandes so a one-character query can't
+build a runaway IN list. Probed live: "040A" → 8 commandes, "254" matches écru 254 + finis
+254A/254B → 83, "0" → 2293 capped to 500; LIKE is case-insensitive here.
+`scripts/probe-commande-ref-search.ts` reproduces it.
+
+(4) **Hover fix** on the expédition tables: the shadcn `ghost` variant ships
+`hover:bg-accent`, which is the vivid gold - combined with the row's `hover:text-accent` the
+icons turned into solid gold squares with invisible glyphs. The four action buttons now pass
+`hover:bg-accent/10`, matching the subtle tint used everywhere else.
+
 ## 2026-07-27 — feat/gestion-client
 Clients > Gestion — **permission granularity, an add-a-coloris path for users who can't touch
 tarifs, and the first email-notification subsystem.**
