@@ -254,6 +254,20 @@ export const PERMISSION_KEYS = [
     category: 'Tombé Métier',
   },
   {
+    key: 'create_stock_divers',
+    label: 'Créer une ligne de stock divers',
+    description:
+      'Affiche le bouton « Nouveau » et autorise la création de lignes de stock dans Divers > Stock.',
+    category: 'Divers',
+  },
+  {
+    key: 'edit_stock_divers',
+    label: 'Modifier / supprimer une ligne de stock divers',
+    description:
+      'Affiche le bouton « Modifier » du panneau de détail et autorise la modification de la quantité ainsi que la suppression d’une ligne dans Divers > Stock.',
+    category: 'Divers',
+  },
+  {
     key: 'responsable_qualite',
     label: 'Responsable qualité',
     description:

@@ -69,6 +69,7 @@ import { TombeMetierStock } from '@/pages/TombeMetierStock'
 
 // Divers pages (real)
 import { DiversReferences } from '@/pages/DiversReferences'
+import { DiversStock } from '@/pages/DiversStock'
 
 // Finis pages (real)
 import { FinisReferences } from '@/pages/FinisReferences'
@@ -142,6 +143,7 @@ export const router = createBrowserRouter([
       // Divers
       { path: 'divers', element: <Navigate to="/divers/references" replace /> },
       { path: 'divers/references', element: <DiversReferences /> },
+      { path: 'divers/stock', element: <DiversStock /> },
 
       // Qualité
       { path: 'qualite', element: <Navigate to="/qualite/suivi-lots" replace /> },

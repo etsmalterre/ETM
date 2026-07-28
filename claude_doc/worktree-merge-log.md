@@ -10,6 +10,63 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/stock-divers
+**Divers › Stock** (`/divers/stock`) — nouvel écran, portage de `FEN_Stock_Divers.wdw` +
+`FEN_Gestion_Stock_Divers.wdw`. Layout **Tableau** (mps_designer §27, même moule que
+`FilsStock` / `TombeMetierStock`) : table triable sur `stock_divers`, tiroir latéral droit,
+liste en cartes sous `md`, garde de modifications non enregistrées, `ConfirmDialog` pour la
+suppression.
+
+**Modèle.** `stock_divers` = la quantité en stock d'une référence diverse, **une ligne par
+COMBINAISON de variations** (`IDref_divers` + `IDVariation1` + `IDVariation2`, toutes colonnes
+ASCII, aucun accent). Tout le vocabulaire (les deux axes de variation, le modèle de prix
+`tarif_divers`, la gestion de `ref_divers.archivé` accentué) était déjà modélisé dans
+`references-divers.ts` : les helpers `money` / `qty` / `pickKey` / `uniteLabel` /
+`normalizeVariationType` / `batchRepair` / `VARIATION_TYPES` y sont désormais **exportés** et
+importés par la nouvelle route, plutôt que redérivés — les deux écrans Divers ne peuvent pas
+diverger.
+
+**API** `apps/api/src/routes/stock-divers.ts` → `/api/stock-divers` : liste (batchée — une
+requête pour toutes les références, une pour tous les libellés de variation, une pour tous les
+tarifs, jamais par ligne), détail (+ contexte référence : stock total, nombre de combinaisons,
+observations), création, PATCH quantité, suppression, et `lookups/references` qui alimente la
+modale de création (123 références actives avec leurs axes et leurs valeurs). Deux nouvelles
+permissions `create_stock_divers` / `edit_stock_divers` (catégorie **Divers**), contrôlées côté
+serveur comme côté UI.
+
+**Parité legacy + apports.** La modale legacy verrouille la référence et les deux variations dès
+que la ligne existe et ne laisse passer que la quantité : le tiroir reproduit exactement ça
+(déplacer du stock vers une autre combinaison = suppression + création, pas une édition). Les
+combos de la modale de création sont nommés d'après les axes réels de la référence
+(« Couleur » / « Taille »), et disparaissent quand l'axe vaut `Aucun` — comme en legacy.
+En plus du legacy : colonnes **Prix unitaire / Valeur** et barre de **valorisation**
+(15 511,70 € sur les 273 lignes), résolues via le même modèle de prix à trois cas que l'écran
+Références (pas d'axe → `ref_divers.prix_unitaire` ; avec axes → ligne `tarif_divers` de la
+combinaison, sinon la ligne globale `(0, 0)`) ; filtre par référence qui **renomme les en-têtes
+génériques « Variation 1 / 2 » en les axes réels** de la référence filtrée ; case « Masquer les
+quantités nulles » (211 des 273 lignes sont à 0) ; garde **anti-doublon de combinaison** à la
+création (une combinaison en double fausserait les totaux de l'écran Références, qui les somme).
+
+**Deux constats sur les données.** (1) Le « 8M / 8M » visible dans la fiche legacy de *119 PVC*
+est un **artefact WinDev, pas une donnée** : les deux `IDVariation` de cette ligne valent `0`, et
+la combo legacy résout l'id 0 sur la première ligne de `ref_divers_variation` (qui se trouve être
+« 8M »). Le nouvel écran affiche `—`. (2) Il existe **un doublon de combinaison préexistant** dans
+les données (`IDref_divers 535`, variation 558) ; il est laissé tel quel, la garde n'empêche que
+les nouveaux.
+
+**Note transverse (non corrigée ici).** `apiFetch` (`apps/web/src/lib/api.ts`) ne lit jamais le
+corps de la réponse : les messages d'erreur français renvoyés par l'API remontent en « API 409 »
+sur **tous** les écrans. Cet écran contourne le problème avec un `apiMutate` local (une seule
+requête, message serveur porté sur l'`Error`) plutôt que de modifier le helper partagé. Le
+correctif global vaut le coup d'être fait à part — rien dans `apps/web` ne dépend de la chaîne
+`API <status>`.
+
+**Vérifié en base** (copie locale, revenue à son état initial : 273 lignes, 15 511,70 €) :
+création avec auto-sélection de la nouvelle ligne, édition de quantité avec indicateur de delta,
+chemin « enregistrer puis basculer » de la garde, 409 de doublon, suppression. Rendu contrôlé à
+1600 / 768 / 345 px (pas de débordement horizontal). `apps/api/src/scripts/inspect-stock-divers.ts`
+et `test-stock-divers-route.ts` restent comme sonde rejouable du modèle de données.
+
 ## 2026-07-28 — feat/transfert (2e lot)
 Transferts picker: **cross-tab selection fixed**, plus a **user signature on every outgoing
 mail, app-wide**.

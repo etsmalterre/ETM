@@ -13,6 +13,7 @@ import { referencesFilRouter } from './routes/references-fil.js'
 import { referencesFiniRouter } from './routes/references-fini.js'
 import { referencesEcruRouter } from './routes/references-ecru.js'
 import { referencesDiversRouter } from './routes/references-divers.js'
+import { stockDiversRouter } from './routes/stock-divers.js'
 import { commandesFilRouter } from './routes/commandes-fil.js'
 import { commandesSousTraitantRouter } from './routes/commandes-sous-traitant.js'
 import { commandesClientRouter } from './routes/commandes-client.js'
@@ -104,6 +105,7 @@ app.use('/api/references-fil', referencesFilRouter)
 app.use('/api/references-fini', referencesFiniRouter)
 app.use('/api/references-ecru', referencesEcruRouter)
 app.use('/api/references-divers', referencesDiversRouter)
+app.use('/api/stock-divers', stockDiversRouter)
 app.use('/api/commandes-fil', commandesFilRouter)
 app.use('/api/commandes-sous-traitant', commandesSousTraitantRouter)
 app.use('/api/commandes-client', commandesClientRouter)

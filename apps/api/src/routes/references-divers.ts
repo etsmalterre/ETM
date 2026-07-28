@@ -76,13 +76,13 @@ function toNumOrNull(v: unknown): number | null {
 
 /** Round to 2 decimals — HFSQL stores prices as 4-byte reals, so 29.30 reads
  *  back as 29.299999237060547. */
-function money(v: unknown): number | null {
+export function money(v: unknown): number | null {
   const n = toNumOrNull(v)
   if (n == null) return null
   return Math.round(n * 100) / 100
 }
 
-function qty(v: unknown): number {
+export function qty(v: unknown): number {
   const n = toNumOrNull(v)
   if (n == null) return 0
   return Math.round(n * 1000) / 1000
@@ -90,17 +90,17 @@ function qty(v: unknown): number {
 
 /** Value of the first row key matching `re`. Accented identifiers come back
  *  truncated on the Linux bridge (archivé → archiv), so resolve dynamically. */
-function pickKey(row: Record<string, unknown>, re: RegExp): unknown {
+export function pickKey(row: Record<string, unknown>, re: RegExp): unknown {
   const k = Object.keys(row).find((key) => re.test(key))
   return k === undefined ? undefined : row[k]
 }
 
 /** Variation-axis type. Legacy stores the French label verbatim (no accent on
  *  "Reference"); anything unrecognised is normalised to "Aucun". */
-const VARIATION_TYPES = ['Aucun', 'Couleur', 'Taille', 'Reference'] as const
-type VariationType = (typeof VARIATION_TYPES)[number]
+export const VARIATION_TYPES = ['Aucun', 'Couleur', 'Taille', 'Reference'] as const
+export type VariationType = (typeof VARIATION_TYPES)[number]
 
-function normalizeVariationType(v: unknown): VariationType {
+export function normalizeVariationType(v: unknown): VariationType {
   const s = String(v ?? '').trim()
   const hit = VARIATION_TYPES.find((t) => t.toLowerCase() === s.toLowerCase())
   return hit ?? 'Aucun'
@@ -108,7 +108,7 @@ function normalizeVariationType(v: unknown): VariationType {
 
 /** Unit enum shared with ligne_commande_client. The Divers screens label 4 as
  *  "Pièce" (the legacy Divers combo) rather than the generic "unité". */
-function uniteLabel(u: unknown): string {
+export function uniteLabel(u: unknown): string {
   switch (Number(u)) {
     case 1: return 'Kg'
     case 3: return 'Ml'
@@ -141,7 +141,7 @@ function isArchive(row: Record<string, unknown>): boolean {
 /** Batched accent repair for a flat list: one CONVERT(...) WHERE pk IN (...) per
  *  source column, only for the ids whose value actually contains U+FFFD.
  *  Mirrors batchRepair() in references-ecru.ts / references-fini.ts. */
-async function batchRepair<T extends Record<string, unknown>>(
+export async function batchRepair<T extends Record<string, unknown>>(
   rows: T[],
   table: string,
   idField: string,
