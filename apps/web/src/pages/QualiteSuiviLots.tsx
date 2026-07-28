@@ -407,7 +407,6 @@ export function QualiteSuiviLots() {
     selectedId,
     getId: (l) => l.IDsuivilot,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing,
   })
 

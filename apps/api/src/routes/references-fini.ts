@@ -622,11 +622,16 @@ function formatDateShortFr(d: Date): string {
   return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`
 }
 
-/** Build the fiche tarifs data for one ref_fini. */
+/** Build the fiche tarifs data for one ref_fini.
+ *
+ *  `colorisIds` restricts the sheet to the picked coloris (ids are polymorphic
+ *  by `avec_teinture` — ref_fini_colori for dyed refs, colori_ecru for washed
+ *  ones, same as the detail endpoint). Pass null/empty for the whole catalog. */
 export async function buildFicheTarifsPdfData(
   id: number,
   include15: boolean,
   include30: boolean,
+  colorisIds: number[] | null = null,
 ): Promise<TarifsClientPdfData | null> {
   const rows = await query<Record<string, unknown>>(`SELECT * FROM ref_fini WHERE IDref_fini = ${id}`)
   if (rows.length === 0) return null
@@ -670,7 +675,14 @@ export async function buildFicheTarifsPdfData(
     const crFixed = (await fixEncoding(cr, 'colori_ecru', 'IDcolori_ecru', ['reference'])) as any[]
     coloris = crFixed.map((c) => ({ id: Number(c.IDcolori_ecru), label: String(c.reference ?? '').trim() }))
   }
-  coloris = coloris.filter((c) => c.id > 0 && c.label.length > 0).slice(0, 60)
+  coloris = coloris.filter((c) => c.id > 0 && c.label.length > 0)
+  // Narrow to the user's picks before the 60-coloris cap, so a selection is
+  // never silently truncated by coloris the user explicitly left out.
+  if (colorisIds && colorisIds.length > 0) {
+    const wanted = new Set(colorisIds)
+    coloris = coloris.filter((c) => wanted.has(c.id))
+  }
+  coloris = coloris.slice(0, 60)
 
   const trancheIdx = [
     ...TARIF_TRANCHE_IDX_DEFAULT,
@@ -750,18 +762,28 @@ export async function renderFicheTarifsPdfBuffer(data: TarifsClientPdfData): Pro
   )
 }
 
-// GET /api/references-fini/:id/tarifs/pdf?rlx15=1&rlx30=1 — fiche tarifs, inline.
+// GET /api/references-fini/:id/tarifs/pdf?rlx15=1&rlx30=1&coloris=1,2,3
+// Fiche tarifs, inline. `coloris` is an optional CSV of coloris ids limiting
+// the sheet to those colours; omitted means the whole catalog.
 referencesFiniRouter.get('/:id/tarifs/pdf', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const include15 = String(req.query.rlx15 ?? '') === '1'
     const include30 = String(req.query.rlx30 ?? '') === '1'
+    const colorisIds = String(req.query.coloris ?? '')
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isInteger(n) && n > 0)
 
-    const data = await buildFicheTarifsPdfData(id, include15, include30)
+    const data = await buildFicheTarifsPdfData(id, include15, include30, colorisIds)
     if (!data) { res.status(404).json({ error: 'Ref fini not found' }); return }
     if (data.sections.length === 0) {
-      res.status(404).json({ error: 'Aucun tarif calculable pour cette référence.' })
+      res.status(404).json({
+        error: colorisIds.length > 0
+          ? 'Aucun tarif calculable pour les coloris sélectionnés.'
+          : 'Aucun tarif calculable pour cette référence.',
+      })
       return
     }
     const buffer = await renderFicheTarifsPdfBuffer(data)

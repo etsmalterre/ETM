@@ -524,7 +524,6 @@ export function EtudesColoris() {
     selectedId,
     getId: (e) => e.IDetude_col,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing,
   })
 

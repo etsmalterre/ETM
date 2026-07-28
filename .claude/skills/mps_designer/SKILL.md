@@ -273,19 +273,44 @@ All panels (left list, right sidebar) and section item cards use **Zinc** backgr
 </div>
 ```
 
-**Auto-select the first visible row** — the auto-select effect must run against the **filtered** (search + status-narrowed) list, not the raw list, and must re-select whenever the current selection drops out of the visible set. This means typing in the search bar until one row remains auto-selects it (the legacy WinDev behaviour users expect). Do NOT gate the effect on `selectedId === null` — that only fires on first load and leaves a narrowed search unselected. Canonical effect (`FilsCommandes.tsx`, `EtudesColoris.tsx`):
+**Auto-select the first visible row** — mandatory on every master-detail screen, via the shared hook **`apps/web/src/hooks/useAutoSelectFirst.ts`**. Never hand-roll the effect.
 
 ```tsx
-// Keep the selection valid against the (possibly search-filtered) list: when
-// the selected row isn't among the current results, select the one at the top.
-// Covers both the initial load and search narrowing the list. Skip while
-// editing so we never discard unsaved changes out from under the user.
-useEffect(() => {
-  if (isEditing || filtered.length === 0) return
-  const stillVisible = selectedId !== null && filtered.some((r) => r.id === selectedId)
-  if (!stillVisible) setSelectedId(filtered[0].id)
-}, [filtered, selectedId, isEditing])
+import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
+
+// Declare the filtered memo immediately above the hook so `rows` is the array
+// the left list actually renders.
+const filtered = useMemo(() => {
+  if (!refs) return []
+  const q = searchQuery.trim().toLowerCase()
+  if (!q) return refs
+  return refs.filter((r) => r.reference.toLowerCase().includes(q))
+}, [refs, searchQuery])
+
+// Keep the selection valid against the search-filtered list: narrowing the
+// search re-targets the top row instead of leaving the previous one on screen.
+useAutoSelectFirst({
+  rows: filtered,
+  selectedId,
+  getId: (r) => r.IDref_fini,
+  select: setSelectedId,
+  suspended: isEditing || autoEditForId !== null,
+})
 ```
+
+The contract:
+
+- **`rows` MUST be the filtered array** (search + status-narrowed), never the raw query result. Passing the raw list is the single most common way to break this: the list narrows to one search hit while the detail panel keeps showing the previously selected record — confusing, and the exact bug fixed app-wide in July 2026 (Finis › Références, Fils › Références, Fils › Gestion, Entreprises, Sous-traitants › Gestion, Paramètres › Utilisateurs all shipped with the raw list). If your `filtered` memo currently sits *below* the hook call, move the memo up rather than passing the raw list.
+- **Do NOT gate on `selectedId === null`.** That only fires on first load and leaves a narrowed search unselected. The hook re-targets whenever the selection leaves the visible set, and clears the selection to `null` when the list settles empty (so the placeholder shows instead of a stale detail).
+- **`suspended` is how you avoid clobbering**, and there are exactly three reasons to pass it:
+  - `isEditing` — never discard unsaved changes out from under the user. Always include it on screens with an edit mode.
+  - `autoEditForId !== null` — the §25.1 create flow sets `setSelectedId(newId)` before the list refetch settles, so the stale filtered array wouldn't contain the new row yet and the hook would steal the selection back. Include it wherever `autoEditForId` exists.
+  - `isFetching` — same race, on screens whose list query is **server**-filtered (search/status go to the API) so the row set genuinely empties between fetches. Client-filtered screens don't need it.
+  - Screens whose create flow flips `setIsEditing(true)` synchronously in the mutation's `onSuccess` (the inline-create gestion screens) are already covered by `isEditing` alone.
+- **Stacked (phone) mode is handled inside the hook** — there a null selection IS the list view, so it never auto-picks a row and falls back to `null` instead of jumping to another record's detail. Don't special-case this at the call site.
+- The hook intentionally runs **with no dep array** (its `getId`/`select` are inline closures whose identity changes every render, and `select()` with the current value is a no-op).
+
+References: every master-detail screen — `FinisReferences.tsx`, `DiversReferences.tsx`, `ClientsCommandes.tsx` (server-filtered, `isFetching`), `SousTraitantsGestion.tsx` (search + status filter).
 
 ### Left-list filter button group (segmented filter under the search bar)
 

@@ -453,13 +453,24 @@ export function FinisReferences() {
   const { data: detail, isLoading: detailLoading } = useRefFiniDetail(selectedId)
   const { data: ecruOptions } = useEcruLookup(isEditing)
 
-  // Auto-select first on initial load (desktop only — stacked mode lands on the list)
+  const filtered = useMemo(() => {
+    if (!refs) return []
+    if (!searchQuery.trim()) return refs
+    const terms = searchQuery.toLowerCase().split(/\s+/).filter(Boolean)
+    return refs.filter((r) => {
+      const haystack = `${r.reference ?? ''} ${r.designation ?? ''}`.toLowerCase()
+      return terms.every((t) => haystack.includes(t))
+    })
+  }, [refs, searchQuery])
+
+  // Keep the selection valid against the search-filtered list: narrowing the
+  // search re-targets the top row instead of leaving the previous ref on screen.
   useAutoSelectFirst({
-    rows: refs,
+    rows: filtered,
     selectedId,
     getId: (r) => r.IDref_fini,
     select: setSelectedId,
-    behavior: 'fill',
+    suspended: isEditing || autoEditForId !== null,
   })
 
   const startEdit = useCallback(() => {
@@ -580,16 +591,6 @@ export function FinisReferences() {
     [guard],
   )
 
-  const filtered = useMemo(() => {
-    if (!refs) return []
-    if (!searchQuery.trim()) return refs
-    const terms = searchQuery.toLowerCase().split(/\s+/).filter(Boolean)
-    return refs.filter((r) => {
-      const haystack = `${r.reference ?? ''} ${r.designation ?? ''}`.toLowerCase()
-      return terms.every((t) => haystack.includes(t))
-    })
-  }, [refs, searchQuery])
-
   return (
     <>
       <MasterDetailLayout
@@ -668,6 +669,7 @@ export function FinisReferences() {
         open={tarifsDialogOpen}
         onClose={() => setTarifsDialogOpen(false)}
         refId={selectedId}
+        coloris={detail?.coloris ?? []}
       />
       <UnsavedChangesDialog open={guard.showDialog} onAction={guard.handleAction} isSaving={guard.isSaving} />
       <ConfirmDialog
@@ -1026,48 +1028,119 @@ function TrancheToggleRow({
   )
 }
 
-/** Pre-generation options for the fiche tarifs: the 15 and 30 rouleaux
- *  tranches are each opt-in on top of the standard grid (up to 10 rouleaux). */
+/** Pre-generation options for the fiche tarifs: which coloris to print, plus
+ *  the 15 and 30 rouleaux tranches (each opt-in on top of the standard grid,
+ *  which goes up to 10 rouleaux). */
 function TarifsPrintDialog({
   open,
   onClose,
   refId,
+  coloris,
 }: {
   open: boolean
   onClose: () => void
   refId: number | null
+  coloris: Coloris[]
 }) {
   const [include15, setInclude15] = useState(false)
   const [include30, setInclude30] = useState(false)
+  const [selectedColoris, setSelectedColoris] = useState<Set<number>>(new Set())
 
-  // Reset the toggles every time the dialog opens.
+  // Reset the options every time the dialog opens. Coloris default to all
+  // selected, so the plain "open → Générer" path prints what it always did.
   useEffect(() => {
     if (open) {
       setInclude15(false)
       setInclude30(false)
+      setSelectedColoris(new Set(coloris.map((c) => c.id)))
     }
-  }, [open])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, refId])
 
   if (refId === null) return null
 
+  const allSelected = coloris.length > 0 && selectedColoris.size === coloris.length
+  const noneSelected = selectedColoris.size === 0
+
+  const toggleColoris = (id: number) => {
+    setSelectedColoris((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const openFicheTarifs = () => {
-    window.open(
-      `${API_URL}/references-fini/${refId}/tarifs/pdf?rlx15=${include15 ? 1 : 0}&rlx30=${include30 ? 1 : 0}`,
-      '_blank',
-    )
+    const params = new URLSearchParams({
+      rlx15: include15 ? '1' : '0',
+      rlx30: include30 ? '1' : '0',
+    })
+    // Omit the param when everything is picked so the default request stays
+    // identical to the pre-selection behaviour.
+    if (!allSelected) params.set('coloris', [...selectedColoris].join(','))
+    window.open(`${API_URL}/references-fini/${refId}/tarifs/pdf?${params.toString()}`, '_blank')
     onClose()
   }
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-md" onClose={onClose}>
+      <DialogContent className="max-w-md max-h-[90dvh] overflow-y-auto" onClose={onClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <BadgeEuro className="h-5 w-5 text-accent" />
             Fiche tarifs
           </DialogTitle>
         </DialogHeader>
+
         <div className="mt-4 space-y-2">
+          <div className="rounded-lg border border-border/60 bg-white shadow-sm overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-3 py-2.5 border-b border-border/60">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-xs font-semibold">
+                  <Palette className="h-3.5 w-3.5 text-accent" />
+                  <span>Coloris à imprimer</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {coloris.length === 0
+                    ? 'Aucun coloris sur cette référence'
+                    : noneSelected
+                      ? 'Sélectionnez au moins un coloris'
+                      : `${selectedColoris.size} / ${coloris.length} coloris sélectionné${selectedColoris.size > 1 ? 's' : ''}`}
+                </p>
+              </div>
+              {coloris.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedColoris(allSelected ? new Set() : new Set(coloris.map((c) => c.id)))
+                  }
+                  className="flex-shrink-0 text-xs font-medium text-accent hover:underline"
+                >
+                  {allSelected ? 'Tout désélectionner' : 'Tout sélectionner'}
+                </button>
+              )}
+            </div>
+            {coloris.length > 0 && (
+              <div className="max-h-56 overflow-y-auto scrollbar-transparent p-1.5 space-y-0.5">
+                {coloris.map((c) => (
+                  <label
+                    key={c.id}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm cursor-pointer select-none hover:bg-accent/5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedColoris.has(c.id)}
+                      onChange={() => toggleColoris(c.id)}
+                      className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer flex-shrink-0"
+                    />
+                    <span className="truncate">{c.reference || `#${c.id}`}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
           <TrancheToggleRow
             label="Inclure la tranche 15 rouleaux"
             hint={include15 ? 'La ligne 15 rouleaux sera imprimée' : 'Ligne 15 rouleaux masquée'}
@@ -1081,11 +1154,16 @@ function TarifsPrintDialog({
             onChange={setInclude30}
           />
         </div>
+
         <DialogFooter className="mt-4">
           <Button variant="outline" onClick={onClose}>
             Annuler
           </Button>
-          <Button onClick={openFicheTarifs}>
+          <Button
+            onClick={openFicheTarifs}
+            disabled={coloris.length > 0 && noneSelected}
+            title={coloris.length > 0 && noneSelected ? 'Sélectionnez au moins un coloris' : undefined}
+          >
             <Printer className="h-3.5 w-3.5 mr-1.5" />
             Générer
           </Button>

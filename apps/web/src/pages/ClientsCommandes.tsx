@@ -578,7 +578,6 @@ export function ClientsCommandes() {
     selectedId,
     getId: (c) => c.IDcommande_client,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing || isFetching,
   })
 

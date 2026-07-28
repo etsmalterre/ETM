@@ -357,7 +357,6 @@ export function ClientsDevis() {
     selectedId,
     getId: (c) => c.IDDevis_etm,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing || isFetching,
   })
 

@@ -174,12 +174,21 @@ export function FilsGestion() {
   const { data: fournisseurs, isLoading, isError, error } = useFournisseurs()
   const { data: detail, isLoading: detailLoading } = useFournisseurDetail(selectedId)
 
+  const filtered = useMemo(() => {
+    if (!fournisseurs) return []
+    if (!searchQuery.trim()) return fournisseurs
+    const q = searchQuery.toLowerCase()
+    return fournisseurs.filter((f) => f.nom.toLowerCase().includes(q))
+  }, [fournisseurs, searchQuery])
+
+  // Keep the selection valid against the search-filtered list: narrowing the
+  // search re-targets the top row instead of leaving the previous one on screen.
   useAutoSelectFirst({
-    rows: fournisseurs,
+    rows: filtered,
     selectedId,
     getId: (f) => f.IDfournisseur,
     select: setSelectedId,
-    behavior: 'fill',
+    suspended: isEditing,
   })
 
   const startEdit = useCallback(() => {
@@ -234,13 +243,6 @@ export function FilsGestion() {
       setSelectedId(id)
     })
   }, [guard])
-
-  const filtered = useMemo(() => {
-    if (!fournisseurs) return []
-    if (!searchQuery.trim()) return fournisseurs
-    const q = searchQuery.toLowerCase()
-    return fournisseurs.filter((f) => f.nom.toLowerCase().includes(q))
-  }, [fournisseurs, searchQuery])
 
   return (
     <>

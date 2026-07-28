@@ -382,7 +382,6 @@ export function ClientsExpeditions() {
     selectedId,
     getId: (r) => r.id,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing || isFetching,
   })
 

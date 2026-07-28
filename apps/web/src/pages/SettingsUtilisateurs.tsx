@@ -214,13 +214,20 @@ export function SettingsUtilisateurs() {
     },
   })
 
-  // Auto-select first user once loaded (desktop only — stacked mode lands on the list)
+  const filtered = useMemo(() => {
+    if (!users) return []
+    if (!searchQuery.trim()) return users
+    const q = searchQuery.toLowerCase()
+    return users.filter((u) => displayName(u).toLowerCase().includes(q))
+  }, [users, searchQuery])
+
+  // Keep the selection valid against the search-filtered list: narrowing the
+  // search re-targets the top row instead of leaving the previous user on screen.
   useAutoSelectFirst({
-    rows: users,
+    rows: filtered,
     selectedId,
     getId: (u) => u.IDutilisateur,
     select: setSelectedId,
-    behavior: 'fill',
   })
 
   // ── Mutation: toggle a permission key ─────────
@@ -234,13 +241,6 @@ export function SettingsUtilisateurs() {
       queryClient.invalidateQueries({ queryKey: ['perm-users'] })
     },
   })
-
-  const filtered = useMemo(() => {
-    if (!users) return []
-    if (!searchQuery.trim()) return users
-    const q = searchQuery.toLowerCase()
-    return users.filter((u) => displayName(u).toLowerCase().includes(q))
-  }, [users, searchQuery])
 
   const selected = useMemo(() => {
     if (!users || selectedId === null) return null

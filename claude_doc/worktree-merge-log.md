@@ -10,6 +10,60 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/ref-fini
+Finis > Références — **per-coloris fiche tarifs, the OEKO-TEX certificate on the fiche
+technique, and an app-wide fix to left-list auto-selection.**
+
+(1) **Search no longer strands a stale detail (app-wide).** Typing in a master-detail left
+list narrowed the list but left the previously selected record on screen. `useAutoSelectFirst`
+had two modes and the broken one was in wide use: **6 screens** ran `behavior: 'fill'`, and 5
+of those also passed the **raw** query result instead of the `filtered` array the list actually
+renders — so narrowing never re-targeted (`FinisReferences`, `FilsReferences`, `FilsGestion`,
+`Entreprises`, `SettingsUtilisateurs`; `SousTraitantsGestion` passed `filtered` but still with
+`fill`). Each already *had* a `filtered` memo — it was just declared below the hook call and
+only fed to the list component. Moved the memos above the call, switched all six to sync
+behaviour, and added the right `suspended` guard per screen (`isEditing`, plus
+`autoEditForId !== null` on the two Références screens whose §25.1 create flow selects a row
+before the refetch settles). With `'fill'` then dead across all 19 call sites, the `behavior`
+prop was **removed entirely** — from the interface, its branch, and every call site — so the
+broken variant can no longer be picked and new screens get correct behaviour by default.
+`mps_designer` §5 rewritten accordingly: it documented a hand-rolled `useEffect` that no screen
+uses, and now documents the hook, the "`rows` must be the filtered array" rule, and the three
+legitimate reasons to pass `suspended`.
+
+(2) **Fiche tarifs: pick which coloris to print.** The sheet always included every coloris.
+The existing §42 pre-generation dialog (15/30 rouleaux toggles) gained a coloris checkbox list
+with select-all, a live count, and Générer disabled when nothing is ticked — checkboxes per
+§35, which reserves the pill toggle for single booleans. All coloris start selected, so the
+habitual "open → Générer" prints exactly what it did before, and the `coloris` param is
+**omitted** when everything is picked so the default request is unchanged.
+`buildFicheTarifsPdfData` takes an optional `colorisIds`, applied **before** the 60-coloris cap
+so a selection is never silently truncated. Verified against the dev DB on both halves of the
+`avec_teinture` polymorphism — dyed (`ref_fini_colori`) and washed (`colori_ecru`).
+
+(3) **Fiche technique: OEKO-TEX STANDARD 100 mark.** ETS Malterre's own certificate
+(CQ 1357/1, IFTH) now prints bottom-left, opposite the fiche dates. Official green-on-white
+artwork, bundled at `apps/api/src/assets/` (the API ships `src/` via tsx, so no build step).
+The certificate number is in the artwork, so there's no caption. The layout trap: the closing
+block is `wrap={false}` at the very end of the flow, so the mark's height is paid out of the
+page's leftover space — naively adding it at 48pt pushed **7 of the 30 most text-heavy
+references** onto a second, near-empty page. Space was reclaimed deliberately to fund it: a new
+opt-in `contentPaddingTop` prop on `MalterreDocument` (set to 0 here — the fiche has no top
+address/metadata cards, so that gap was dead space; **no other document is affected**), the
+footnotes' 8pt bottom margin, and section `marginBottom` 10 → 7 (~21pt over ~7 sections,
+imperceptible between cream cards). That budget puts the mark at **74pt**; 80pt regresses.
+The footnotes also moved back under Code entretien, flush with the section's left edge. The
+legacy "** Tous nos sous-traitants sont certifiés OEKOTEX" line was dropped so the page doesn't
+mix two different certification claims — neither note was ever keyed to a marker in the body.
+New guard `apps/api/src/scripts/check-fiche-page-counts.ts` renders the most text-heavy
+references and asserts each fits one page; **re-run it after any change to that closing block**,
+since the size ceiling is otherwise invisible. Page counts are back to baseline (the single
+pre-existing `Duo01` spill).
+
+**Open**: the OEKO-TEX mark prints on *every* fiche technique — there is no per-reference
+certification flag in the schema, so it follows the document's other static blocks (customs
+code, provenance, care symbols). If CQ 1357/1 does not cover the whole range, this needs gating.
+
 ## 2026-07-28 — feat/commande-client
 Clients > Commandes — **demande de transport PDF, proforma behind a permission, search by
 article reference**, plus a hover-state fix on the expédition tables.

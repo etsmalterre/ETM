@@ -323,7 +323,6 @@ export function DiversReferences() {
     selectedId,
     getId: (r) => r.IDref_divers,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing || autoEditForId !== null,
   })
 

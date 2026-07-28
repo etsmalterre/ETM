@@ -131,12 +131,21 @@ export function Entreprises() {
   const { data: entreprises, isLoading, isError, error } = useEntreprises()
   const { data: detail, isLoading: detailLoading } = useEntrepriseDetail(selectedId)
 
+  const filtered = useMemo(() => {
+    if (!entreprises) return []
+    if (!searchQuery.trim()) return entreprises
+    const q = searchQuery.toLowerCase()
+    return entreprises.filter((e) => e.nom.toLowerCase().includes(q) || (e.commentaire && e.commentaire.toLowerCase().includes(q)))
+  }, [entreprises, searchQuery])
+
+  // Keep the selection valid against the search-filtered list: narrowing the
+  // search re-targets the top row instead of leaving the previous one on screen.
   useAutoSelectFirst({
-    rows: entreprises,
+    rows: filtered,
     selectedId,
     getId: (e) => e.IDentreprise,
     select: setSelectedId,
-    behavior: 'fill',
+    suspended: isEditing,
   })
 
   const startEdit = useCallback(() => {
@@ -191,13 +200,6 @@ export function Entreprises() {
       setSelectedId(id)
     })
   }, [guard])
-
-  const filtered = useMemo(() => {
-    if (!entreprises) return []
-    if (!searchQuery.trim()) return entreprises
-    const q = searchQuery.toLowerCase()
-    return entreprises.filter((e) => e.nom.toLowerCase().includes(q) || (e.commentaire && e.commentaire.toLowerCase().includes(q)))
-  }, [entreprises, searchQuery])
 
   return (
     <>

@@ -388,13 +388,25 @@ export function FilsReferences() {
     return true
   }, [compositionOk, compositionTotalPct])
 
-  // Auto-select first on initial load (desktop only — stacked mode lands on the list)
+  const filtered = useMemo(() => {
+    if (!refs) return []
+    if (!searchQuery.trim()) return refs
+    const q = searchQuery.toLowerCase()
+    return refs.filter(
+      (r) =>
+        r.reference.toLowerCase().includes(q) ||
+        (r.commentaire ?? '').toLowerCase().includes(q),
+    )
+  }, [refs, searchQuery])
+
+  // Keep the selection valid against the search-filtered list: narrowing the
+  // search re-targets the top row instead of leaving the previous ref on screen.
   useAutoSelectFirst({
-    rows: refs,
+    rows: filtered,
     selectedId,
     getId: (r) => r.IDref_fil,
     select: setSelectedId,
-    behavior: 'fill',
+    suspended: isEditing || autoEditForId !== null,
   })
 
   const startEdit = useCallback(() => {
@@ -533,17 +545,6 @@ export function FilsReferences() {
     },
     [guard],
   )
-
-  const filtered = useMemo(() => {
-    if (!refs) return []
-    if (!searchQuery.trim()) return refs
-    const q = searchQuery.toLowerCase()
-    return refs.filter(
-      (r) =>
-        r.reference.toLowerCase().includes(q) ||
-        (r.commentaire ?? '').toLowerCase().includes(q),
-    )
-  }, [refs, searchQuery])
 
   return (
     <>

@@ -417,7 +417,6 @@ export function FilsCommandes() {
     selectedId,
     getId: (c) => c.IDcommande_fil,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing,
   })
 

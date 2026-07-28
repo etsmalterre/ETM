@@ -2,19 +2,16 @@ import { useEffect } from 'react'
 import { useResponsiveLayout } from './useResponsiveLayout'
 
 interface AutoSelectFirstOptions<T> {
-  /** The list the selection must stay valid against (pass the filtered list when the screen filters). */
+  /**
+   * The list the selection must stay valid against. **Always pass the
+   * search/status-filtered array the left list actually renders**, never the
+   * raw query result — passing the raw list is what leaves a stale detail on
+   * screen while the list shows a single search hit.
+   */
   rows: readonly T[] | undefined
   selectedId: number | null
   getId: (row: T) => number
   select: (id: number | null) => void
-  /**
-   * 'fill' — only fills a null selection with the first row; never clears or
-   * moves an existing selection (screens without a search-narrowing reselect).
-   * 'sync' — additionally clears the selection when the list is empty and
-   * re-targets the first row when the selection left the visible rows
-   * (the §5 mps_designer canonical effect).
-   */
-  behavior: 'fill' | 'sync'
   /** Pause entirely — edit in progress, list refetching, pending auto-edit… */
   suspended?: boolean
 }
@@ -35,7 +32,6 @@ export function useAutoSelectFirst<T>({
   selectedId,
   getId,
   select,
-  behavior,
   suspended = false,
 }: AutoSelectFirstOptions<T>) {
   const { isStacked } = useResponsiveLayout()
@@ -46,13 +42,6 @@ export function useAutoSelectFirst<T>({
   // and always up to date.
   useEffect(() => {
     if (suspended || rows === undefined) return
-
-    if (behavior === 'fill') {
-      if (!isStacked && selectedId === null && rows.length > 0) {
-        select(getId(rows[0]))
-      }
-      return
-    }
 
     if (rows.length === 0) {
       // List settled empty (search with no hits, or the last row left the

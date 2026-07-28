@@ -218,12 +218,14 @@ export function SousTraitantsGestion() {
     return rows
   }, [sousTraitants, searchQuery, statusFilter])
 
+  // Keep the selection valid against the search/status-filtered list: narrowing
+  // re-targets the top row instead of leaving the previous one on screen.
   useAutoSelectFirst({
     rows: filtered,
     selectedId,
     getId: (s) => s.IDsous_traitant,
     select: setSelectedId,
-    behavior: 'fill',
+    suspended: isEditing,
   })
 
   const startEdit = useCallback(() => {

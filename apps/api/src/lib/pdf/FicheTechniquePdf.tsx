@@ -8,9 +8,25 @@
 // identical here.
 
 import React from 'react'
-import { View, Text, StyleSheet, Svg, Path, Rect, Circle, Line } from '@react-pdf/renderer'
+import * as fs from 'fs'
+import * as path from 'path'
+import { fileURLToPath } from 'url'
+import { View, Text, StyleSheet, Image, Svg, Path, Rect, Circle, Line } from '@react-pdf/renderer'
 import { MalterreDocument } from './MalterreDocument.js'
 import { colors, sizes } from './theme.js'
+
+// ── Asset loading ────────────────────────────────────────
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const ASSETS = path.resolve(__dirname, '../../assets')
+
+// STANDARD 100 by OEKO-TEX® certification mark — ETS Malterre's own certificate
+// (CQ 1357/1, issued by IFTH). The official green-on-white variant from the
+// OEKO-TEX press kit; the certificate number is baked into the artwork, so no
+// caption is needed next to it. The PNG has no alpha channel (its background is
+// opaque white), which is why it sits on the white page background rather than
+// inside one of the cream `Section` cards.
+const OEKOTEX_BUFFER: Buffer = fs.readFileSync(path.join(ASSETS, 'oekotex-standard100-cq1357.png'))
 
 export interface MinMoyMax {
   min: number | null
@@ -168,7 +184,11 @@ const styles = StyleSheet.create({
     borderLeftStyle: 'solid',
     borderRadius: 6,
     padding: 10,
-    marginBottom: 10,
+    // 7 rather than 10: across the fiche's ~7 sections that frees ~21pt, which
+    // is what funds the OEKO-TEX mark at the bottom (see `oekotexMark`). The
+    // 3pt tightening is imperceptible between cream cards; the mark it buys is
+    // not. Re-run scripts/check-fiche-page-counts if you restore it to 10.
+    marginBottom: 7,
   },
   sectionTitle: {
     fontSize: sizes.fontXs,
@@ -252,20 +272,45 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
 
-  // Footnotes
-  footNotes: { marginTop: 2, marginBottom: 8 },
+  // Footnotes — sit directly under the last section (Code entretien), flush
+  // with the section's left edge (both are direct children of the content
+  // wrapper, so neither carries a horizontal inset).
+  footNotes: { marginTop: 2 },
   footNote: { fontSize: sizes.fontXs, color: colors.muted, lineHeight: 1.4 },
 
-  // Dates block — pushed to the bottom-right corner of the content area via
-  // the auto top margin (the content wrapper is a flex column that stretches
-  // down to the page's bottom padding, just above the footer band).
-  validationRow: {
+  // Closing block: OEKO-TEX mark bottom-left, fiche dates bottom-right, pushed
+  // to the bottom of the content area by the auto top margin.
+  //
+  // This block is wrap={false} at the very end of the flow, so every point of
+  // height here eats the slack before the whole block spills onto a second,
+  // near-empty page. The budget for the mark comes from `contentPaddingTop`
+  // being tightened on this document (see the MalterreDocument call below) —
+  // do not grow the mark without re-running scripts/check-fiche-page-counts.
+  bottomBlock: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     alignItems: 'flex-end',
     gap: 16,
     marginTop: 'auto',
   },
+
+  // Near-square artwork (536×520), so the height keeps that ratio.
+  //
+  // 74pt is at the measured ceiling, and the ceiling is the whole story here:
+  // the closing block is wrap={false} at the end of the flow, so the mark's
+  // height is paid for out of the page's leftover space. The budget was
+  // assembled deliberately — contentPaddingTop 20 → 0, the footnotes' 8pt
+  // bottom margin, and section marginBottom 10 → 7 (~21pt over 7 sections).
+  // Without the section tightening the ceiling is only ~57pt.
+  //
+  // Verified against the 30 most text-heavy references: 74 holds the baseline
+  // (1 pre-existing spill, Duo01), 80 regresses. ALWAYS re-run
+  // scripts/check-fiche-page-counts after touching this.
+  oekotexMark: { width: 74, height: 71.8, flexShrink: 0 },
+
+  // Dates — bottom-right of the block above (the content wrapper is a flex
+  // column that stretches down to the page's bottom padding, just above the
+  // footer band).
   validationDates: { flexDirection: 'column', alignItems: 'flex-end' },
   validationDateLine: { fontSize: sizes.fontBase, color: colors.text, lineHeight: 1.45 },
 })
@@ -337,6 +382,11 @@ export function FicheTechniquePdf({ data }: { data: FicheTechniquePdfData }) {
       reference={data.reference}
       documentDate=""
       title={`Fiche technique ${data.reference}`}
+      // Tighter than the shared default (20). The fiche carries no top address
+      // /metadata cards, so the band-to-first-section gap was pure dead space —
+      // reclaiming it funds the OEKO-TEX mark at the bottom without pushing
+      // content-heavy references onto a second page.
+      contentPaddingTop={0}
     >
       {/* Caractéristiques */}
       <Section title="CARACTÉRISTIQUES">
@@ -422,17 +472,24 @@ export function FicheTechniquePdf({ data }: { data: FicheTechniquePdfData }) {
         </View>
       </Section>
 
-      {/* Footnotes — static legal/quality texts from the legacy report */}
+      {/* Footnote — static legal/quality text from the legacy report. Kept
+          immediately under the Code entretien section, not pushed to the page
+          bottom, so it reads as that section's annotation.
+          The legacy report had a second line here ("** Tous nos sous-traitants
+          sont certifiés OEKOTEX"); it was dropped once the OEKO-TEX mark below
+          started carrying ETS Malterre's own certificate (CQ 1357/1), so the
+          page no longer mixes two different certification claims. Neither note
+          was ever keyed to a marker in the body, so nothing dangles. */}
       <View style={styles.footNotes} wrap={false}>
         <Text style={styles.footNote}>
           * Ces spécifications ont été élaborées conformément aux normes NF et en particulier à celles
           contenues dans la charte qualité de France Tissu Maille
         </Text>
-        <Text style={styles.footNote}>** Tous nos sous-traitants sont certifiés OEKOTEX</Text>
       </View>
 
-      {/* Dates */}
-      <View style={styles.validationRow} wrap={false}>
+      {/* Closing block: OEKO-TEX mark (left) + fiche dates (right) */}
+      <View style={styles.bottomBlock} wrap={false}>
+        <Image src={OEKOTEX_BUFFER} style={styles.oekotexMark} />
         <View style={styles.validationDates}>
           {data.dateCreation ? (
             <Text style={styles.validationDateLine}>

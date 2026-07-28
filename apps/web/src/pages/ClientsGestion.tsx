@@ -282,7 +282,6 @@ export function ClientsGestion() {
     selectedId,
     getId: (c) => c.IDclient,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing,
   })
 

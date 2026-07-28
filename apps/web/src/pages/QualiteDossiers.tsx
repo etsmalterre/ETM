@@ -455,7 +455,6 @@ export function QualiteDossiers() {
     selectedId,
     getId: (r) => r.IDdossier_qualite,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing,
   })
 

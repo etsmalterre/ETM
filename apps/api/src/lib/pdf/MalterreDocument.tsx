@@ -536,6 +536,12 @@ export interface MalterreDocumentProps {
   /** Page orientation — defaults to portrait. Landscape is used by wide
    *  grid documents (e.g. the atelier weekly planning). */
   orientation?: 'portrait' | 'landscape'
+  /** Override the gap between the yellow header band and the first body
+   *  section (default `styles.content.paddingTop` = 20). Opt-in per document:
+   *  the fiche technique tightens it to reclaim bottom-of-page space for its
+   *  wrap={false} closing block. Only ever reduces a document's own top gap —
+   *  leave it unset to keep the shared spacing. */
+  contentPaddingTop?: number
   /** Body sections — table, totals, etc. */
   children: React.ReactNode
   /** Optional second logical <Page> appended after the primary one. Has no
@@ -680,6 +686,7 @@ export function MalterreDocument({
   topRightInfo,
   title,
   orientation = 'portrait',
+  contentPaddingTop,
   children,
   secondPage,
 }: MalterreDocumentProps) {
@@ -706,7 +713,13 @@ export function MalterreDocument({
         />
 
         {/* Content body */}
-        <View style={styles.content}>
+        <View
+          style={
+            contentPaddingTop != null
+              ? [styles.content, { paddingTop: contentPaddingTop }]
+              : styles.content
+          }
+        >
           {/* Top row — stock 2-card layout (address + metadata). Rendered
               only when either card is supplied; otherwise the body gets
               the full content area (documents with a custom top layout

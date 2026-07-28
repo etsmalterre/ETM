@@ -452,7 +452,6 @@ export function ClientsFacturation() {
     selectedId,
     getId: (f) => f.id,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing || isFetching,
   })
 

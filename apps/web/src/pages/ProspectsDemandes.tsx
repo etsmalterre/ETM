@@ -338,7 +338,6 @@ export function ProspectsDemandes() {
     selectedId,
     getId: (d) => d.IDprospect,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing,
   })
 

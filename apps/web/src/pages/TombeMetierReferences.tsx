@@ -555,7 +555,6 @@ export function TombeMetierReferences() {
     selectedId,
     getId: (r) => r.IDref_ecru,
     select: setSelectedId,
-    behavior: 'sync',
     suspended: isEditing || autoEditForId !== null,
   })
 
