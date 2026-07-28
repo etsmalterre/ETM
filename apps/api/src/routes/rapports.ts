@@ -14,6 +14,12 @@
 // split (expédiée / affectée / en sst / stock libre), the money left to
 // invoice, the deadline and the three comment levels.
 //
+// `/commandes-fil` is the yarn-purchasing twin (legacy `FI_Rapport_fil.wdw`,
+// Rapports › "Commandes de fils"): one row per `ref_fil_commande` line with
+// the fournisseur, ref/coloris, quantities (ordered / received / remaining),
+// the delivery date, the relance ("délai notification") date and the
+// resulting overdue day count.
+//
 // It is READ-ONLY and intentionally denormalised: it reuses the same
 // domain primitives as `commandes-sous-traitant.ts` (status state machine,
 // ref/coloris polymorphism, the stock_ecru/stock_fini ↔ line links, the
@@ -1101,6 +1107,294 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
     res.json(out)
   } catch (err) {
     console.error('[rapports/commandes-clients]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Rapport › Commandes de fils  (legacy `FI_Rapport_fil.wdw`)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// One row per `ref_fil_commande` line. The legacy screen scopes on OPEN
+// lines of OPEN commandes (`commande_fil.etat = 0 AND ref_fil_commande.etat
+// = 0`) — a line that has been fully received closes itself (etat=1) and
+// drops out even while its parent commande is still open. `terminees=1`
+// lifts both filters so the full purchasing history can be exported.
+//
+// Computed phase (there is no `sstatut` on a yarn line, only etat 0/1).
+// Reception is tested FIRST: once lots have landed, "waiting for a délai" is
+// no longer what the line is about, even if `date_livraison` was never set
+// (which is the common case — legacy users close the line instead).
+//   terminee      etat = 1 (line or its commande)
+//   recue         open + received ≥ ordered → delivered, just not closed yet
+//   partielle     open + some stock_fil lots linked, still short
+//   attente_delai open + nothing received + no `date_livraison` → still
+//                 waiting for the supplier to announce a delivery date; the
+//                 deadline that matters is `date_notif` (the relance date)
+//   en_cours      open + delivery date announced, nothing received yet
+//
+// Urgency mirrors the SST report (§30 language — red = due/overdue/missing,
+// amber = within 3 days / next working day). The anchor date follows the
+// phase: `date_notif` while waiting for a délai, `date_livraison` otherwise
+// (falling back to `date_notif` on a partial line that never got a date).
+// `recue` and `terminee` lines carry no urgency — nothing is pending.
+
+interface RapportFilRow {
+  IDref_fil_commande: number
+  IDcommande_fil: number
+  phase: 'terminee' | 'recue' | 'partielle' | 'attente_delai' | 'en_cours'
+  fournisseur_nom: string
+  reference: string
+  coloris: string
+  qte_commandee: number
+  qte_recue: number
+  qte_restante: number
+  nb_lots: number
+  prix_unitaire: number
+  montant: number
+  date_commande: string | null
+  date_livraison: string | null
+  date_notif: string | null
+  retard_jours: number | null
+  commentaire: string
+  journal: string
+  urgency: 'late' | 'soon' | null
+  etat_ligne: number
+  etat_commande: number
+}
+
+// GET /api/rapports/commandes-fil?terminees=0|1
+//   terminees=0 (default) → open lines of open commandes (legacy scope)
+//   terminees=1           → every line, including received / closed ones
+rapportsRouter.get('/commandes-fil', async (req: Request, res: Response) => {
+  try {
+    const includeTerminees = String(req.query.terminees ?? '0') === '1'
+
+    // ── 1) Commande headers (the scope). Most recent first; capped.
+    const headerRows = await query<{
+      IDcommande_fil: number
+      IDfournisseur: number
+      date_commande: string | null
+      etat: number | null
+      commentaire: string | null
+      journal: string | null
+    }>(
+      `SELECT TOP ${MAX_COMMANDES}
+              IDcommande_fil, IDfournisseur, date_commande, etat, commentaire, journal
+       FROM commande_fil
+       ${includeTerminees ? '' : 'WHERE etat = 0'}
+       ORDER BY IDcommande_fil DESC`,
+    )
+    if (headerRows.length === 0) { res.json([]); return }
+
+    const fixedHeaders = (await fixEncoding(
+      headerRows as any[],
+      'commande_fil',
+      'IDcommande_fil',
+      ['commentaire', 'journal'],
+    )) as any[]
+
+    interface Hdr {
+      IDfournisseur: number
+      date_commande: string
+      etat: number
+      commentaire: string
+      journal: string
+    }
+    const hdrById = new Map<number, Hdr>()
+    for (const h of fixedHeaders) {
+      hdrById.set(n(h.IDcommande_fil), {
+        IDfournisseur: n(h.IDfournisseur),
+        date_commande: dateDigits(h.date_commande),
+        etat: n(h.etat),
+        // Yarn-order commentaire/journal are plain text, but legacy RTF rows
+        // may survive in old records — strip defensively (no-op on plain).
+        commentaire: stripRtf((h.commentaire ?? '').toString()).trim(),
+        journal: stripRtf((h.journal ?? '').toString()).trim(),
+      })
+    }
+    const cmdIds = Array.from(hdrById.keys()).filter((x) => x > 0)
+
+    // ── 2) Fournisseur names (accent-repaired).
+    const frsIds = Array.from(new Set(Array.from(hdrById.values()).map((h) => h.IDfournisseur).filter((x) => x > 0)))
+    const frsNomById = new Map<number, string>()
+    if (frsIds.length > 0) {
+      const rows = await inChunks(frsIds, (chunk) =>
+        query<{ IDfournisseur: number; nom: string | null }>(
+          `SELECT IDfournisseur, nom FROM fournisseur WHERE IDfournisseur IN (${chunk})`,
+        ),
+      )
+      for (const r of await fixEncoding(rows as any[], 'fournisseur', 'IDfournisseur', ['nom']))
+        frsNomById.set(n((r as any).IDfournisseur), ((r as any).nom ?? '').toString().trim())
+    }
+
+    // ── 3) Lines (the report rows).
+    const lineRows = await inChunks(cmdIds, (chunk) =>
+      query<{
+        IDref_fil_commande: number
+        IDcommande_fil: number
+        IDref_fil: number | null
+        IDcolori_fil: number | null
+        quantite: number | null
+        prix_unitaire: number | null
+        date_livraison: string | null
+        date_notif: string | null
+        etat: number | null
+      }>(
+        `SELECT rfc.IDref_fil_commande, rfc.IDcommande_fil, rfc.IDref_fil, rfc.IDcolori_fil,
+                rfc.quantite, rfc.prix_unitaire, rfc.date_livraison, rfc.date_notif, rfc.etat
+         FROM ref_fil_commande rfc
+         WHERE rfc.IDcommande_fil IN (${chunk})${includeTerminees ? '' : ' AND rfc.etat = 0'}`,
+      ),
+    )
+    if (lineRows.length === 0) { res.json([]); return }
+
+    const lineIds = lineRows.map((l) => n(l.IDref_fil_commande)).filter((x) => x > 0)
+
+    // ── 4) Ref + coloris labels (accent-repaired, one query per catalog).
+    const refIds = Array.from(new Set(lineRows.map((l) => n(l.IDref_fil)).filter((x) => x > 0)))
+    const coloriIds = Array.from(new Set(lineRows.map((l) => n(l.IDcolori_fil)).filter((x) => x > 0)))
+
+    const refMap = new Map<number, string>()
+    if (refIds.length > 0) {
+      const rows = await inChunks(refIds, (c) =>
+        query<{ IDref_fil: number; reference: string | null }>(
+          `SELECT IDref_fil, reference FROM ref_fil WHERE IDref_fil IN (${c})`,
+        ),
+      )
+      for (const r of await fixEncoding(rows as any[], 'ref_fil', 'IDref_fil', ['reference']))
+        refMap.set(n((r as any).IDref_fil), ((r as any).reference ?? '').toString().trim())
+    }
+
+    const coloriMap = new Map<number, string>()
+    if (coloriIds.length > 0) {
+      const rows = await inChunks(coloriIds, (c) =>
+        query<{ IDcolori_fil: number; reference: string | null }>(
+          `SELECT IDcolori_fil, reference FROM colori_fil WHERE IDcolori_fil IN (${c})`,
+        ),
+      )
+      for (const r of await fixEncoding(rows as any[], 'colori_fil', 'IDcolori_fil', ['reference']))
+        coloriMap.set(n((r as any).IDcolori_fil), ((r as any).reference ?? '').toString().trim())
+    }
+
+    // ── 5) Received quantities: every stock_fil lot pointing at the line.
+    //      `stock_initial` is the weight as received (`stock` is what's left
+    //      after consumption, which is not what "réceptionné" means here).
+    const recuByLine = new Map<number, { kg: number; lots: number }>()
+    {
+      const rows = await inChunks(lineIds, (c) =>
+        query<{ IDref_fil_commande: number; stock_initial: number | null }>(
+          `SELECT IDref_fil_commande, stock_initial FROM stock_fil WHERE IDref_fil_commande IN (${c})`,
+        ),
+      )
+      for (const r of rows) {
+        const lid = n(r.IDref_fil_commande)
+        if (lid === 0) continue
+        const acc = recuByLine.get(lid) ?? { kg: 0, lots: 0 }
+        acc.kg += n(r.stock_initial)
+        acc.lots += 1
+        recuByLine.set(lid, acc)
+      }
+    }
+
+    // ── 6) Assemble one row per line.
+    const today0 = new Date(); today0.setHours(0, 0, 0, 0)
+    const nextWorkingDay = addWorkingDays(today0, 1)
+
+    const out: RapportFilRow[] = lineRows.map((l) => {
+      const lineId = n(l.IDref_fil_commande)
+      const cmdId = n(l.IDcommande_fil)
+      const hdr = hdrById.get(cmdId)
+      const etatLigne = n(l.etat)
+      const etatCommande = hdr?.etat ?? 0
+      const done = etatLigne === 1 || etatCommande === 1
+
+      const dateLivraison = dateDigits(l.date_livraison) || null
+      const dateNotif = dateDigits(l.date_notif) || null
+      const recu = recuByLine.get(lineId) ?? { kg: 0, lots: 0 }
+      const qteCommandee = n(l.quantite)
+      const prix = n(l.prix_unitaire)
+
+      // Phase — see the header comment for the decision table.
+      let phase: RapportFilRow['phase']
+      if (done) phase = 'terminee'
+      else if (qteCommandee > 0 && recu.kg >= qteCommandee) phase = 'recue'
+      else if (recu.kg > 0) phase = 'partielle'
+      else if (!dateLivraison) phase = 'attente_delai'
+      else phase = 'en_cours'
+
+      // Nothing is pending on a fully-received or closed line — no deadline
+      // to miss, so no retard and no urgency tint.
+      const settled = done || phase === 'recue'
+
+      // Retard = positive overdue days against the deadline that matters for
+      // the phase (relance while waiting for a délai, delivery date after).
+      const anchor = phase === 'attente_delai' ? dateNotif : (dateLivraison ?? dateNotif)
+      let retard: number | null = null
+      if (!settled && anchor) {
+        const d = daysFromToday(anchor)
+        if (d !== null && d < 0) retard = -d
+      }
+
+      // Urgency tint (§30 language: red late / amber soon / none).
+      let urgency: 'late' | 'soon' | null = null
+      if (!settled) {
+        if (!anchor) {
+          // No deadline at all on an open line is a data-quality problem the
+          // user should see as red (same rule as `deliveryUrgency`).
+          urgency = 'late'
+        } else {
+          const target = new Date(
+            Number(anchor.slice(0, 4)), Number(anchor.slice(4, 6)) - 1, Number(anchor.slice(6, 8)),
+          )
+          target.setHours(0, 0, 0, 0)
+          if (target.getTime() <= today0.getTime()) urgency = 'late'
+          else if (
+            phase === 'attente_delai'
+              ? target.getTime() <= nextWorkingDay.getTime()
+              : (target.getTime() - today0.getTime()) / 86_400_000 <= 3
+          ) urgency = 'soon'
+        }
+      }
+
+      return {
+        IDref_fil_commande: lineId,
+        IDcommande_fil: cmdId,
+        phase,
+        fournisseur_nom: frsNomById.get(hdr?.IDfournisseur ?? 0) ?? '',
+        reference: refMap.get(n(l.IDref_fil)) ?? '',
+        coloris: coloriMap.get(n(l.IDcolori_fil)) ?? '',
+        qte_commandee: qteCommandee,
+        qte_recue: recu.kg,
+        // "Reste à recevoir" answers *what am I still waiting for* — a closed
+        // or fully-received line is waiting for nothing, even when legacy
+        // never linked its stock lots (which would otherwise leave the whole
+        // ordered quantity showing as outstanding on every historical line).
+        qte_restante: settled ? 0 : Math.max(0, qteCommandee - recu.kg),
+        nb_lots: recu.lots,
+        prix_unitaire: prix,
+        montant: qteCommandee * prix,
+        date_commande: hdr?.date_commande || null,
+        date_livraison: dateLivraison,
+        date_notif: dateNotif,
+        retard_jours: retard,
+        commentaire: hdr?.commentaire || '',
+        journal: hdr?.journal || '',
+        urgency,
+        etat_ligne: etatLigne,
+        etat_commande: etatCommande,
+      }
+    })
+
+    // Default order: most recent commande first, then line id.
+    out.sort((a, b) =>
+      b.IDcommande_fil - a.IDcommande_fil ||
+      a.IDref_fil_commande - b.IDref_fil_commande,
+    )
+
+    res.json(out)
+  } catch (err) {
+    console.error('[rapports/commandes-fil]', err)
     res.status(500).json({ error: (err as Error).message })
   }
 })

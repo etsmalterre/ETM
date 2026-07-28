@@ -10,6 +10,50 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/rapport-fil
+**Rapports › Commandes fils** (`/rapports/commandes-fils`) — new read-only line-level report,
+the yarn-purchasing twin of Rapports › Commandes sst, porting legacy `FI_Rapport_fil.wdw`.
+
+Investigation first: the legacy grid is one row per `ref_fil_commande`, and its scope is
+**open lines of open commandes** (`commande_fil.etat = 0 AND ref_fil_commande.etat = 0`) —
+verified by reproducing its exact 8-row result set against the local HFSQL copy (line 951 is
+`etat=0` but its commande 674 is closed, which is why legacy shows 8 rows and not 9). The
+key semantic recovered is that **`ref_fil_commande.date_notif` ("Délai Notification") is the
+relance date**: legacy sets it ~2–3 working days after the order and leaves `date_livraison`
+empty until the supplier announces one — the same `attente_delai` shape as the SST orders.
+Probe kept at `apps/api/src/scripts/probe-rapport-fil.ts`.
+
+API — `GET /api/rapports/commandes-fil?terminees=0|1` added to `apps/api/src/routes/rapports.ts`
+next to its SST twin. Same HFSQL discipline: a bounded, constant number of set-based queries
+regardless of row count (7 chunked `IN` queries), batched `fixEncoding` for the accented
+fournisseur / ref / coloris labels, no accented identifiers named in SQL, `stripRtf` applied
+defensively to the header commentaire/journal. Full history (867 lines) returns in ~0.75 s.
+A yarn line only carries `etat` 0/1, so the endpoint derives a phase — **reception is tested
+first**, because once lots have landed "waiting for a délai" is no longer what the line is
+about: `terminee` (etat=1) → `recue` (received ≥ ordered, just not clôturée) → `partielle`
+(some `stock_fil` lots linked, still short) → `attente_delai` (nothing received, no
+`date_livraison`) → `en_cours`. Urgency follows the phase's anchor date — `date_notif` while
+waiting for a délai, `date_livraison` afterwards — in the app's §30 language (red =
+due/overdue/missing, amber = within 3 days / next working day); `recue` and `terminee` lines
+carry none. `qte_restante` is forced to 0 on settled lines: most historical lines never had
+their stock lots linked, so raw arithmetic would show the full ordered quantity as
+outstanding on nearly every closed line.
+
+Screen — `RapportCommandesFil.tsx`, a deliberate line-for-line sibling of
+`RapportCommandesSst.tsx` so the two reports read identically: same toolbar (search / "Voir
+les lignes terminées" / Exporter Excel), sticky-header sortable wide table with red/amber row
+tint, totalizer footer, and the per-user localStorage Excel column picker (key
+`mps:rapport-fil:export-columns`, dates exported as real `Date` cells so Excel sorts them
+chronologically). 16 columns: the legacy 8 plus Qté reçue, Reste, Prix €/Kg, Montant, Retard,
+Commentaire and Journal. Route swapped from placeholder to real in `router.tsx`; CLAUDE.md
+§Navigation item 11 updated.
+
+Two deliberate divergences from legacy, both flagged to the user: (1) legacy paints commande
+651 orange despite a Jan-2027 delivery date, whereas the app's §30 rule leaves it neutral —
+all 6 red rows match, that one differs; (2) the §40 responsive card list below `md` is NOT
+implemented here, because the SST report hasn't been ported either and keeping the two
+siblings identical beat diverging one of them. Worth doing as a pair later.
+
 ## 2026-07-28 — feat/rapport-cmd-client
 **Rapports › Commandes clients** — port of the legacy WinDev
 `FEN_Rapport_commandes_clients.wdw`, the client-side mirror of the existing Commandes sst

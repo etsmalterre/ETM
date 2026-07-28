@@ -61,7 +61,7 @@ Mirrors the legacy WinDev main menu (top → bottom):
 8. **Finis** — Références, **Stock** (implemented, table-centric; edit-mode multi-select + cut-roll via `POST stock-fini/:id/cut`), **Études coloris** (implemented), Tarifs, Coloris Teint, Prévisions — custom `FiniRollIcon`
 9. **Divers** — **Références** (`/divers/references`, implemented; `ref_divers` catalog with two variation axes + per-combination `tarif_divers` pricing — see `claude_doc/implemented_screens.md`)
 10. **Qualité** — **Suivi lots** (implemented), **Dossiers** (`/qualite/dossiers`, implemented; non-conformity dossiers over `dossier_qualite` + FNC round-trip + piece traceability — route `apps/api/src/routes/dossiers-qualite.ts`), Actions, Analyse (placeholders)
-11. **Rapports** — placeholder
+11. **Rapports** — **Commandes clients**, **Commandes sst**, **Commandes fils** (all three implemented). Flat read-only line-level tables sharing one shape (Tableau layout, no page title, sticky sortable header, row tint red=late / amber=soon, Excel export with a per-user localStorage column picker), all served by `apps/api/src/routes/rapports.ts`. `commandes-fil` scopes like legacy `FI_Rapport_fil.wdw` (open lines of open commandes) and derives a phase per line — attente délai / en cours / réception partielle / reçue / terminée — measuring urgency against `ref_fil_commande.date_notif` while waiting for a délai and `date_livraison` afterwards
 12. **Réseau** — Entreprises
 13. **Paramètres** — Utilisateurs (**admin-only**: per-user permissions + per-user email for Gmail impersonation)
 
