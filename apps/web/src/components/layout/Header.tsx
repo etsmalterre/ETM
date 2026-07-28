@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { updateServiceWorkerAndWait } from '@/lib/sw-refresh'
 import { useUser, canSwitchUser } from '@/contexts/UserContext'
+import { useHeaderActionsSlot } from '@/contexts/HeaderActionsContext'
 import { ProfileModal, userPhotoUrl, type UserProfileMe } from '@/components/profile/ProfileModal'
 import { TicketModal } from '@/components/tickets/TicketModal'
 import { useTicketNotifications } from '@/components/tickets/useTicketNotifications'
@@ -23,6 +24,7 @@ export function Header({ onMenuClick }: HeaderProps) {
   const location = useLocation()
   const activeMenu = getActiveMenu(location.pathname)
   const filterSubmenus = useSubmenuFilter()
+  const headerActionsSlot = useHeaderActionsSlot()
   const [isFullscreen, setIsFullscreen] = useState(false)
   const { user, logout } = useUser()
   const allowSwitch = canSwitchUser(user)
@@ -184,6 +186,16 @@ export function Header({ onMenuClick }: HeaderProps) {
 
       {/* Actions */}
       <div className="flex items-center gap-2">
+        {/* Screen-level actions slot — the current screen portals its own
+            controls here (see HeaderActionsContext). Right-aligned, just left
+            of the global actions: that keeps it clear of the submenu tabs on
+            the left, so it stays put if a screen later gains tabs (e.g. when
+            there are several dashboards to switch between).
+            The divider only renders when a screen actually fills the slot. */}
+        <div
+          ref={headerActionsSlot}
+          className="flex items-center gap-2 min-w-0 [&:not(:empty)]:mr-1 [&:not(:empty)]:border-r [&:not(:empty)]:border-gold/30 [&:not(:empty)]:pr-3"
+        />
         {/* Ticket report — red count badge when tickets have news */}
         <div className="relative">
           <Button

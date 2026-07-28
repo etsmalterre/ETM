@@ -37,12 +37,55 @@ const PHOTOS_DIR = path.join(DATA_DIR, 'user-photos')
 
 export type PhotoExt = 'jpg' | 'png' | 'webp' | 'gif'
 
+/** One widget on a user's tableau de bord — a real grid position plus a size.
+ *  `x` is the column start and `width` the span on the 12-column desktop grid
+ *  (below `lg` every widget is full width regardless); `y` is in the grid's
+ *  row units; `heightPx` is the dragged pixel height. `x`/`y` are optional so
+ *  layouts saved before the positional model keep loading — the frontend
+ *  backfills them. Hidden widgets keep their entry (size and position) so
+ *  re-showing one restores what the user had. */
+export interface DashboardWidgetPref {
+  key: string
+  width: number
+  heightPx?: number
+  x?: number
+  y?: number
+  visible: boolean
+}
+
+export const DASHBOARD_MIN_WIDTH = 1
+export const DASHBOARD_MAX_WIDTH = 12
+/** Sanity bounds — not design constraints, just guards against stored values
+ *  that would make a widget unusable or the grid absurd. */
+export const DASHBOARD_MIN_HEIGHT_PX = 120
+export const DASHBOARD_MAX_HEIGHT_PX = 4000
+export const DASHBOARD_MAX_Y = 100000
+/** Storage guard rails — the widget catalog itself lives in the frontend
+ *  registry, so this layer validates shape and size, not the keys. Unknown
+ *  keys are simply ignored when the dashboard merges its registry. */
+export const DASHBOARD_MAX_WIDGETS = 50
+export const DASHBOARD_MAX_KEY_LENGTH = 64
+
 interface UserProfileEntry {
   /** Structured signature fields (current format) */
   signature?: SignatureFields
   /** Legacy pasted HTML — honored only while no structured fields exist */
   signatureHtml?: string
   photo?: { ext: PhotoExt; updatedAt: number }
+  /** Personal tableau de bord layout — order, widths, visibility. */
+  dashboard?: DashboardWidgetPref[]
+}
+
+/** True when nothing is left worth storing for this user, so the entry can be
+ *  pruned. Every optional field of UserProfileEntry MUST be listed here —
+ *  forgetting one silently deletes it when another is cleared. */
+function isEmptyEntry(entry: UserProfileEntry): boolean {
+  return (
+    entry.signature === undefined &&
+    entry.signatureHtml === undefined &&
+    entry.photo === undefined &&
+    entry.dashboard === undefined
+  )
 }
 
 interface UserProfilesFile {
@@ -136,7 +179,38 @@ export async function setUserSignature(userId: number, fields: SignatureFields):
   } else {
     delete entry.signature
   }
-  if (entry.signature === undefined && entry.photo === undefined) {
+  if (isEmptyEntry(entry)) {
+    delete nextUsers[key]
+  } else {
+    nextUsers[key] = entry
+  }
+  await saveUserProfiles({ ...file, users: nextUsers })
+}
+
+/** Read a user's saved tableau de bord layout, or null when they've never
+ *  customised it (the dashboard then falls back to the registry defaults). */
+export async function getUserDashboard(userId: number): Promise<DashboardWidgetPref[] | null> {
+  const file = await loadUserProfiles()
+  const stored = file.users[String(userId)]?.dashboard
+  return stored && stored.length > 0 ? stored : null
+}
+
+/** Overwrite a user's tableau de bord layout. Passing null resets them to the
+ *  registry defaults by dropping the stored layout entirely. */
+export async function setUserDashboard(
+  userId: number,
+  layout: DashboardWidgetPref[] | null,
+): Promise<void> {
+  const file = await loadUserProfiles()
+  const key = String(userId)
+  const nextUsers = { ...file.users }
+  const entry: UserProfileEntry = { ...nextUsers[key] }
+  if (layout && layout.length > 0) {
+    entry.dashboard = layout
+  } else {
+    delete entry.dashboard
+  }
+  if (isEmptyEntry(entry)) {
     delete nextUsers[key]
   } else {
     nextUsers[key] = entry
@@ -179,7 +253,7 @@ export async function clearUserPhoto(userId: number): Promise<void> {
   const nextUsers = { ...file.users }
   const entry: UserProfileEntry = { ...nextUsers[key] }
   delete entry.photo
-  if (entry.signature === undefined && entry.signatureHtml === undefined) {
+  if (isEmptyEntry(entry)) {
     delete nextUsers[key]
   } else {
     nextUsers[key] = entry

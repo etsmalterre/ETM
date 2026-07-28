@@ -13,6 +13,11 @@ const rootPkg = JSON.parse(
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(rootPkg.version),
+    // react-draggable (inside react-grid-layout) gates its debug logging on
+    // process.env.DRAGGABLE_DEBUG — Vite only substitutes NODE_ENV in deps, so
+    // without this define the browser throws "process is not defined" the
+    // moment a dashboard widget is dragged.
+    'process.env.DRAGGABLE_DEBUG': 'undefined',
   },
   plugins: [
     react(),

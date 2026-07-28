@@ -178,7 +178,32 @@ className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b border-gold/3
 - **Height**: 56px (`h-14`)
 - **Background**: Gold gradient left-to-right (darker left → transparent right)
 - **Border bottom**: `border-gold/30`
-- **Content** (left to right): Mobile menu button | Submenu tabs | Spacer | Fullscreen toggle | User avatar
+- **Content** (left to right): Mobile menu button | Submenu tabs | Spacer | **Screen-actions slot** | Ticket | Fullscreen toggle | User avatar
+
+#### Screen-actions slot (`HeaderActionsContext`)
+
+A screen can portal its own **screen-level** controls into the header, right-aligned just left of the global actions (ticket / fullscreen / avatar), separated by a gold divider that only renders when the slot is filled (`[&:not(:empty)]:border-r`).
+
+```tsx
+import { HeaderActions } from '@/contexts/HeaderActionsContext'
+
+<HeaderActions>
+  <Button variant="gold" size="sm" title="Personnaliser le tableau de bord" onClick={startEdit}>
+    <LayoutGrid className="h-3.5 w-3.5 sm:mr-1.5" />
+    <span className="hidden sm:inline">Personnaliser</span>
+  </Button>
+</HeaderActions>
+```
+
+Rules:
+
+- **This is for actions on the SCREEN AS A WHOLE**, not on a selected record. A record's actions belong in the detail header (§6.1 Print / Email / Modifier) — never up here. The reference consumer is the tableau de bord's "Personnaliser" + its edit-mode Réinitialiser / Annuler / Enregistrer.
+- **Right-aligned, deliberately** — not next to the submenu tabs on the left. The tabs region belongs to navigation and can fill up later (e.g. if a screen gains sub-pages), and a control that moves once users have learned its position is worse than one that never had the left-hand space.
+- **Use it when the action must survive scrolling.** The header is `sticky top-0` while page bodies scroll independently, so edit-mode Enregistrer / Annuler stay reachable at the bottom of a long page. An in-page toolbar row scrolls away — that's the bug this slot was introduced to fix on the dashboard.
+- **Collapse labels below `sm`** per §40.5: `<span className="hidden sm:inline">`, icon margin `sm:mr-1.5`, and a `title` on every button (it becomes the accessible name once the label is hidden).
+- **Embed mode has no header**, so `<HeaderActions>` renders nothing there. A screen must stay usable without its slot content — never put the only path to something in it.
+- Implementation is a **DOM portal**, not a ReactNode in context state: the header hands out the slot element once via a callback ref and screens `createPortal` into it. Storing JSX in state would need a re-publish on every render (JSX identity changes each time) — a render loop waiting to happen.
+- **Gotcha — portal events bubble through the REACT tree, not the DOM tree.** A click or context-menu event on slot content propagates to the *screen's* handlers, not the header's. Any `onContextMenu` / `onClick` on a screen's root wrapper must therefore verify the event target is physically inside its own subtree (`rootRef.current?.contains(target)`) before acting. This bit the dashboard's right-click menu, which opened when right-clicking the header buttons.
 
 #### Submenu Tabs (in header)
 
@@ -1102,7 +1127,10 @@ Follow that shape when adding other domain dropdowns (e.g. N° devis, N° factur
 |---------|------|---------------------|-------|
 | Right-panel KV row, edit mode | `size="sm"` | `h-7` | `w-[220px]` right-aligned |
 | Nouveau dialog / centered form | default | `h-9` | `w-full` |
+| Short value in a crowded row (a year, a code) | `size="sm"` + `widthClass` | `h-7` | whatever you pass, e.g. `w-[104px]` |
 | Popover itself (both sizes) | — | `max-h-64 overflow-y-auto` | `max(triggerWidth, 240–260px)` so options stay readable even from a narrow trigger |
+
+**`widthClass` (PopoverSelect only)** overrides the trigger width. Reach for it when 220px would crowd the row — the dashboard's CA widget puts a year picker next to a "Détail" button in the header band. **Do NOT wrap the component in a narrower `<div>` instead**: `size="sm"` sets `w-[220px]` on its own root, so an outer `w-[110px]` doesn't constrain it — the trigger overflows and silently pushes its neighbours out of the card (exactly the bug this prop was added to fix). The popover list still gets its own 240px minimum, so a 104px trigger stays perfectly readable.
 
 ### Anti-patterns
 
@@ -4145,3 +4173,40 @@ Usage in the §6.1 view-mode button row:
 | 2+ documents from the same trigger | **§42 `DocMenuButton`** |
 | Document needs pre-generation options | §42 menu row → small §18.A options Dialog → generate |
 | Action is a user-controlled state change | §29 status footer, not a header menu |
+
+---
+
+## 43. Dashboard widget header (`WidgetFrame`) — navy band, gold tile, white title
+
+Reference: **`apps/web/src/components/dashboard/WidgetFrame.tsx`**. Every tableau de bord widget renders through it, so the whole dashboard shares one header treatment.
+
+```tsx
+<div className="flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5 flex-shrink-0">
+  <div className={cn(
+    'h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm transition-colors',
+    isEditing ? 'bg-white text-primary' : 'bg-gold text-gold-foreground',
+  )}>
+    <Icon className="h-[18px] w-[18px]" />
+  </div>
+  <h2 className="min-w-0 flex-1 text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+    {title}
+  </h2>
+  {isEditing ? /* hand affordance + hide button */ : actions}
+</div>
+```
+
+Conventions — do not deviate:
+
+- **Navy band (`bg-primary`), white title, solid gold icon tile.** This is the sidebar's pairing (navy surface + white text + gold accent) restated on a card, which is what makes a dashboard of several widgets read as part of the app rather than as a stack of foreign panels.
+- **Gold hairline underneath** (`border-b-2 border-gold`) — the same accent-rule idea as the gold line under every detail header (§6).
+- **Single line, no subtitle.** The band is `py-2.5` and the title is `text-base`; a widget's explanation belongs in its body, not in chrome that repeats on every card.
+- **Edit mode flips the icon tile to `bg-white text-primary`** — §9's "header icon box changes" signal, restated for a dark band (a `bg-accent/15` tint is invisible on navy). Header controls on the band go white-on-navy (`text-white/70 hover:bg-white/15`), never `text-muted-foreground`.
+
+**Two treatments that were tried and rejected — do not reintroduce:**
+
+| Tried | Why it failed |
+|---|---|
+| Gold band (`bg-gold/25`) + `icon-box-gold` | Gold-on-gold: the icon tile disappeared into the band, and a row of gold bands competed with the gold app header directly above them. |
+| Zinc band (`bg-zinc-200/50`) + `icon-box-gold` (the §27.5 drawer header) | Technically the app's panel-header pattern, but on a dashboard of large white cards it read as grey and lifeless — user-rejected in favour of the navy treatment. |
+
+The §27.5 zinc drawer header remains correct **for drawers and sidebars**, where the band caps a zinc panel. This section is the rule for dashboard widget cards specifically.

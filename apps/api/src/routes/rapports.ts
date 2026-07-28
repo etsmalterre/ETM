@@ -1735,3 +1735,227 @@ rapportsRouter.patch('/finance/comptes/:id', async (req: Request, res: Response)
     res.status(500).json({ error: (err as Error).message })
   }
 })
+
+// ── Chiffre d'affaires par client ─────────────────────────────────────────
+// Ports the legacy "Comparatif CA" dashboard block and its "Rapport CA/Client"
+// monthly detail window (FI_Comparatif_CA.wdw / FEN_Rapport_CA_Client.wdw).
+//
+// The revenue formula was reverse-engineered from the legacy screen (its
+// WinDev queries are PCS-compressed and unreadable) and reproduces its figures
+// to the centime on the 2025 and 2026 books:
+//
+//   CA(client, période) = Σ round2(ligne_facture.quantite × ligne_facture.prix)
+//
+// over every `facture` with IDsociete = 1 whose DATE falls in the period, with
+// `facture.TYPE = 2` (avoir / credit note) counted NEGATIVE. The rounding is
+// applied PER LINE — summing the raw floats drifts by a few centimes a year
+// and stops matching the legacy totals (2025: 2 684 442,74 € vs 2 684 442,81 €).
+//
+// HFSQL discipline: `DATE` and `TYPE` are reserved words on `facture` and come
+// back uppercased unless aliased; client names are read by a separate flat
+// query (no inline CONVERT inside the JOIN — that collapses result sets) and
+// repaired with a batched fixEncoding.
+
+const CA_SOCIETE = 1
+/** facture.TYPE for an avoir (credit note) — subtracted from revenue. */
+const FACTURE_TYPE_AVOIR = 2
+
+interface CaLineRow {
+  idc: number
+  t: number
+  d: string
+  q: number
+  p: number
+}
+
+/** Per-client revenue for one year: yearly total + the 12 monthly buckets. */
+interface CaClientAgg {
+  total: number
+  months: number[]
+}
+
+/** Round a monetary amount to the centime (legacy rounds each invoice line). */
+function euro(v: number): number {
+  return Math.round(v * 100) / 100
+}
+
+/** Sum euro amounts without float drift (accumulates in integer centimes). */
+function sumEuros(values: number[]): number {
+  return values.reduce((s, v) => s + Math.round(v * 100), 0) / 100
+}
+
+/** Aggregate `ligne_facture` revenue per client for one calendar year.
+ *
+ *  Amounts are accumulated in INTEGER CENTIMES and only converted back to
+ *  euros at the end: adding thousands of already-rounded float centimes drifts
+ *  by a centime here and there, which is enough to make a monthly bucket
+ *  disagree with the legacy report. */
+async function caForYear(year: number): Promise<Map<number, CaClientAgg>> {
+  const rows = await query<CaLineRow>(
+    `SELECT f.IDclient AS idc, f.TYPE AS t, f.DATE AS d, lf.quantite AS q, lf.prix AS p
+       FROM facture f
+       JOIN ligne_facture lf ON lf.IDfacture = f.IDfacture
+      WHERE f.IDsociete = ${CA_SOCIETE}
+        AND f.DATE >= '${year}0101' AND f.DATE <= '${year}1231'`,
+  )
+  const cents = new Map<number, { total: number; months: number[] }>()
+  for (const r of rows) {
+    const idc = Number(r.idc)
+    if (!Number.isInteger(idc) || idc <= 0) continue
+    const month = Number(String(r.d ?? '').slice(4, 6)) - 1
+    if (month < 0 || month > 11) continue
+    let amount = Math.round(n(r.q) * n(r.p) * 100)
+    if (Number(r.t) === FACTURE_TYPE_AVOIR) amount = -amount
+    let agg = cents.get(idc)
+    if (!agg) {
+      agg = { total: 0, months: new Array<number>(12).fill(0) }
+      cents.set(idc, agg)
+    }
+    agg.total += amount
+    agg.months[month] += amount
+  }
+  const out = new Map<number, CaClientAgg>()
+  for (const [idc, agg] of cents) {
+    out.set(idc, { total: agg.total / 100, months: agg.months.map((c) => c / 100) })
+  }
+  return out
+}
+
+/** Every year carrying at least one ETM invoice, most recent first. */
+async function caAvailableYears(): Promise<number[]> {
+  const rows = await query<{ mn: string | null; mx: string | null }>(
+    `SELECT MIN(DATE) AS mn, MAX(DATE) AS mx FROM facture WHERE IDsociete = ${CA_SOCIETE}`,
+  )
+  const min = Number(String(rows[0]?.mn ?? '').slice(0, 4))
+  const max = Number(String(rows[0]?.mx ?? '').slice(0, 4))
+  const now = new Date().getFullYear()
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min < 1990 || max < min) return [now]
+  const years: number[] = []
+  for (let y = Math.max(max, now); y >= min; y--) years.push(y)
+  return years
+}
+
+/** Resolve client display names for a set of ids (batched + accent-repaired). */
+async function caClientNames(ids: number[]): Promise<Map<number, string>> {
+  const map = new Map<number, string>()
+  if (ids.length === 0) return map
+  const rows = await inChunks(ids, (chunk) =>
+    query<{ IDclient: number; nom: string | null }>(
+      `SELECT IDclient, nom FROM client WHERE IDclient IN (${chunk})`,
+    ),
+  )
+  const fixed = await fixEncoding(rows, 'client', 'IDclient', ['nom'])
+  for (const r of fixed) map.set(Number(r.IDclient), (r.nom ?? '').trim())
+  return map
+}
+
+/** Parse + clamp the `year` query param, defaulting to the current year. */
+function parseYear(raw: unknown): number {
+  const y = parseInt(String(raw ?? ''), 10)
+  const now = new Date().getFullYear()
+  if (!Number.isInteger(y) || y < 1990 || y > now + 5) return now
+  return y
+}
+
+/** Guard both CA endpoints behind `dashboard_ca` — revenue per client is the
+ *  most sensitive data the app exposes, so the API refuses it outright rather
+ *  than relying on the widget being hidden. */
+async function requireCaPermission(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'dashboard_ca')
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: dashboard_ca' })
+    return false
+  }
+  return true
+}
+
+// GET /api/rapports/ca-clients?year=YYYY
+// Comparatif CA: every client ranked by revenue for `year`, carrying the
+// previous year's revenue and rank so the UI can show the rank delta.
+rapportsRouter.get('/ca-clients', async (req: Request, res: Response) => {
+  if (!(await requireCaPermission(req, res))) return
+  try {
+    const year = parseYear(req.query.year)
+    const prevYear = year - 1
+    const [years, cur, prev] = await Promise.all([
+      caAvailableYears(),
+      caForYear(year),
+      caForYear(prevYear),
+    ])
+
+    const ids = [...new Set([...cur.keys(), ...prev.keys()])]
+    const names = await caClientNames(ids)
+
+    // Previous-year ranking is computed over the clients that actually billed
+    // something that year — a client with no CA has no rank, not rank #last.
+    const prevRank = new Map<number, number>()
+    ;[...prev.entries()]
+      .filter(([, a]) => a.total !== 0)
+      .sort((a, b) => b[1].total - a[1].total)
+      .forEach(([idc], i) => prevRank.set(idc, i + 1))
+
+    const rows = ids
+      .map((idc) => ({
+        IDclient: idc,
+        nom: names.get(idc) || `#${idc}`,
+        ca: cur.get(idc)?.total ?? 0,
+        ca_prev: prev.get(idc)?.total ?? 0,
+      }))
+      .filter((r) => r.ca !== 0 || r.ca_prev !== 0)
+      .sort((a, b) => b.ca - a.ca || a.nom.localeCompare(b.nom, 'fr'))
+      .map((r, i) => ({ ...r, rang: i + 1, rang_prev: prevRank.get(r.IDclient) ?? null }))
+
+    res.json({
+      year,
+      previous_year: prevYear,
+      years,
+      rows,
+      total: sumEuros(rows.map((r) => r.ca)),
+      total_prev: sumEuros(rows.map((r) => r.ca_prev)),
+    })
+  } catch (err) {
+    console.error('[rapports/ca-clients]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// GET /api/rapports/ca-mensuel?year=YYYY
+// Monthly CA matrix — the legacy "Rapport CA/Client" window: one row per
+// client, one column per month, plus per-month and grand totals.
+rapportsRouter.get('/ca-mensuel', async (req: Request, res: Response) => {
+  if (!(await requireCaPermission(req, res))) return
+  try {
+    const year = parseYear(req.query.year)
+    const [years, cur] = await Promise.all([caAvailableYears(), caForYear(year)])
+    const names = await caClientNames([...cur.keys()])
+
+    const rows = [...cur.entries()]
+      .map(([idc, agg]) => ({
+        IDclient: idc,
+        nom: names.get(idc) || `#${idc}`,
+        months: agg.months,
+        total: agg.total,
+      }))
+      .filter((r) => r.total !== 0 || r.months.some((m) => m !== 0))
+      .sort((a, b) => a.nom.localeCompare(b.nom, 'fr'))
+
+    const monthlyTotals = Array.from({ length: 12 }, (_, i) =>
+      sumEuros(rows.map((r) => r.months[i])),
+    )
+
+    res.json({
+      year,
+      years,
+      rows,
+      monthly_totals: monthlyTotals,
+      total: sumEuros(rows.map((r) => r.total)),
+    })
+  } catch (err) {
+    console.error('[rapports/ca-mensuel]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})

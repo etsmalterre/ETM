@@ -10,6 +10,67 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-28 — feat/widget
+**Tableau de bord : widget Chiffre d'affaires + tableau de bord personnalisable.**
+
+(1) **Widget `Chiffre d'affaires`** (permission `dashboard_ca`, catégorie Tableau de bord).
+Porte le bloc légacy *Comparatif CA* : chaque client classé par CA de l'année choisie, avec le
+CA de l'année précédente, l'écart de rang et l'évolution en %. La formule a été rétro-conçue
+depuis les données (les sources WinDev sont compressées PCS) et reproduit le légacy **au
+centime** : `CA = Σ round2(ligne_facture.quantite × prix)` sur `facture` avec `IDsociete = 1`,
+**`facture.TYPE = 2` (avoir) compté en négatif**, cumulé en centimes entiers. L'arrondi est
+appliqué **par ligne** : sommer les flottants bruts dérive de quelques centimes par an et ne
+colle plus au légacy (2025 : 2 684 442,74 € vs 2 684 442,81 €). Routes
+`GET /api/rapports/ca-clients` et `/ca-mensuel` (`routes/rapports.ts`), **gardées côté API**
+par `dashboard_ca` — la donnée est confidentielle, l'API refuse même à qui devinerait l'URL.
+Contrôle de non-régression : `apps/api/src/scripts/check-ca-legacy-parity.ts`. Écart connu et
+assumé : la cellule mars 2026 du légacy affiche 220 144,84, ce qui fait que ses colonnes
+mensuelles totalisent un centime de moins que sa propre ligne TOTAL — on garde la somme exacte
+(220 144,85).
+
+(2) **Tableau de bord personnalisable.** *La permission décide de la disponibilité, la
+disposition de l'utilisateur décide de l'affichage.* « Personnaliser » ouvre un mode édition
+**sans panneau de contrôle par widget** : la carte entière est la poignée de déplacement, les
+bords la redimensionnent. Moteur : **react-grid-layout v2** avec compaction verticale — chaque
+widget a une **position (x, y)** réelle, un fantôme doré suit le curseur et la gravité tasse
+tout vers le haut. C'est ce qui permet de poser un widget dans la colonne de droite sous un
+voisin court pendant qu'un grand occupe la gauche ; le modèle de flux ordonné essayé d'abord
+ne pouvait pas l'exprimer (ne pas y revenir). Sous `lg` la grille est court-circuitée :
+colonne unique triée par (y, x), hauteurs **définies** (avec `auto` le corps scrollable ne
+s'enclenche jamais et la carte s'étire à tout son contenu). Ajouter un widget = **une entrée**
+dans `components/dashboard/registry.tsx` ; un widget que la disposition enregistrée ne
+mentionne pas est ajouté **visible**, donc une disposition périmée ne peut jamais masquer un
+widget qu'un admin vient d'accorder. Persistance par utilisateur dans `data/user-profiles.json`
+(`GET`/`PUT /api/user-profiles/me/dashboard`) : la disposition suit la personne d'un poste à
+l'autre, et une disposition égale aux défauts est stockée `null` (« je n'ai pas d'avis »)
+plutôt qu'en copie figée. ⚠️ `isEmptyEntry()` dans `lib/user-profiles.ts` doit lister **tous**
+les champs optionnels — sans ça, effacer une signature supprimait la disposition.
+
+(3) **Emplacement des actions d'écran.** Nouveau `contexts/HeaderActionsContext.tsx` : un écran
+publie ses propres boutons dans l'en-tête de l'app, à droite, juste avant les actions globales.
+Zéro place perdue en vertical, et l'en-tête étant `sticky`, Enregistrer reste atteignable en bas
+d'un tableau de bord long — le bandeau in-page qu'il remplace défilait hors écran. Piège
+documenté (`mps_designer §3`) : **les événements d'un portail remontent l'arbre REACT**, donc un
+clic dans l'en-tête atteignait le gestionnaire de l'écran — d'où le garde
+`rootRef.contains(target)` du menu contextuel. Le clic droit sur le fond du tableau de bord est
+un raccourci secondaire (jamais le seul chemin : introuvable et inexistant au tactile).
+
+(4) **Design.** Nouveau `WidgetFrame` : bandeau **navy, pastille dorée, titre blanc**, filet doré
+dessous — le couple de la sidebar transposé sur une carte (`mps_designer §43`, avec les deux
+traitements essayés et rejetés). Sous-titres supprimés, bandeau ramené de 76 à 54 px.
+`PopoverSelect` gagne `widthClass` : `size="sm"` impose `w-[220px]` sur sa propre racine, donc
+l'envelopper dans un div plus étroit ne le contraint pas — il déborde et pousse ses voisins hors
+de la carte (`§11bis`).
+
+⚠️ **Gotcha Vite** : react-draggable (dans react-grid-layout) lit `process.env.DRAGGABLE_DEBUG`
+— `vite.config.ts` le définit, sinon le navigateur lève « process is not defined » au premier
+glisser.
+
+Retiré au passage : le dialogue *Rapport CA/Client* (matrice mensuelle + export Excel), devenu
+inatteignable après la suppression demandée du bouton « Détail ». L'endpoint
+`/api/rapports/ca-mensuel` reste en place — le rapport est à re-héberger sous **Rapports** quand
+on le voudra.
+
 ## 2026-07-28 - feat/donation
 **Clients › Commandes** - nouveau document **« Calcul de la valeur »** sur les commandes de
 type donation, portage de l'état legacy `ETAT_ValeurDonation` (imprimé en `DON<numero>.pdf`).
@@ -307,7 +368,6 @@ returns the *effective* signature plus `signatureIsDefault` (stored-only fields 
 payload, so the admin editor still tells "configured" from "default"), and `SendEmailDialog` /
 `ProfileModal` caption the default case and point at Paramètres › Utilisateurs. Anything an admin
 saves supersedes the fallback, and the dialog previews exactly what the recipient gets.
-
 ## 2026-07-28 — feat/tickets
 Widget de tickets LIVA — **deux corrections de périmètre** (feature version 1.1.0 → 1.1.1).
 

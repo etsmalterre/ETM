@@ -3,6 +3,7 @@ import { Outlet, useSearchParams } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
 import { MobileNav } from './MobileNav'
+import { HeaderActionsProvider } from '@/contexts/HeaderActionsContext'
 
 interface AppShellProps {
   children?: ReactNode
@@ -25,6 +26,7 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   return (
+    <HeaderActionsProvider>
     <div className="h-screen bg-background flex overflow-hidden">
       {/* Desktop Sidebar */}
       <Sidebar
@@ -52,5 +54,6 @@ export function AppShell({ children }: AppShellProps) {
         </main>
       </div>
     </div>
+    </HeaderActionsProvider>
   )
 }

@@ -31,6 +31,13 @@ export const PERMISSION_KEYS = [
     description: 'Affiche le widget « Stock La Gentle » (export Excel) sur le tableau de bord.',
     category: 'Tableau de bord',
   },
+  {
+    key: 'dashboard_ca',
+    label: 'Chiffre d’affaires',
+    description:
+      'Affiche le widget « Chiffre d’affaires » sur le tableau de bord : comparatif du CA par client entre deux années, classement, et détail mensuel. Donnée confidentielle — l’API refuse les chiffres sans ce droit, même à un utilisateur qui devinerait l’adresse.',
+    category: 'Tableau de bord',
+  },
   // Commandes client — kept right after the dashboard keys so the section
   // renders directly below "Tableau de bord" in Paramètres > Utilisateurs.
   {

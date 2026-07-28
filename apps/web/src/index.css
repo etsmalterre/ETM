@@ -439,3 +439,95 @@
     transform: translateX(0);
   }
 }
+
+/* ── Tableau de bord grid (react-grid-layout) ─────────────────────────────
+   Overrides for the library's default chrome: gold dashed drop placeholder,
+   hover-revealed gold resize handles, grab cursor on the whole card in edit
+   mode. The library's own styles.css provides item positioning/transitions. */
+
+.dashboard-grid .react-grid-item.react-grid-placeholder {
+  background: hsl(var(--accent) / 0.08);
+  border: 2px dashed hsl(var(--accent) / 0.6);
+  border-radius: 0.75rem;
+  opacity: 1;
+  transition-duration: 100ms;
+}
+
+.dashboard-grid--editing .react-grid-item:not(.react-grid-placeholder) {
+  cursor: grab;
+}
+.dashboard-grid--editing .react-grid-item.react-draggable-dragging {
+  cursor: grabbing;
+  z-index: 30;
+  opacity: 0.9;
+}
+.dashboard-grid--editing .react-grid-item.resizing {
+  z-index: 30;
+}
+
+/* Resize handles: strip the library's corner-arrow sprite, draw our own gold
+   bars, and only reveal them while the widget is hovered. */
+.dashboard-grid .react-grid-item > .react-resizable-handle {
+  background-image: none;
+  opacity: 0;
+  transition: opacity 150ms;
+  z-index: 10;
+}
+.dashboard-grid .react-grid-item:hover > .react-resizable-handle,
+.dashboard-grid .react-grid-item.resizing > .react-resizable-handle {
+  opacity: 1;
+}
+.dashboard-grid .react-grid-item > .react-resizable-handle::after {
+  content: '';
+  position: absolute;
+  border: none;
+  background: hsl(var(--accent) / 0.7);
+}
+.dashboard-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-e {
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  margin: 0;
+  width: 10px;
+  height: 56px;
+  cursor: col-resize;
+}
+.dashboard-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-e::after {
+  top: 8px;
+  bottom: 8px;
+  right: 2px;
+  left: auto;
+  width: 4px;
+  border-radius: 9999px;
+}
+.dashboard-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-s {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  height: 10px;
+  width: 56px;
+  cursor: row-resize;
+}
+.dashboard-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-s::after {
+  left: 8px;
+  right: 8px;
+  bottom: 2px;
+  top: auto;
+  height: 4px;
+  border-radius: 9999px;
+}
+.dashboard-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-se {
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+.dashboard-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-se::after {
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}

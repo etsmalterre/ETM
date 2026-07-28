@@ -28,6 +28,15 @@ import {
   getUserPhotoPath,
   getAllUserProfiles,
   getEffectiveSignature,
+  getUserDashboard,
+  setUserDashboard,
+  DASHBOARD_MAX_WIDGETS,
+  DASHBOARD_MAX_KEY_LENGTH,
+  DASHBOARD_MIN_WIDTH,
+  DASHBOARD_MAX_WIDTH,
+  DASHBOARD_MIN_HEIGHT_PX,
+  DASHBOARD_MAX_HEIGHT_PX,
+  DASHBOARD_MAX_Y,
   type PhotoExt,
   type UserProfile,
 } from '../lib/user-profiles.js'
@@ -122,6 +131,65 @@ userProfilesRouter.get('/me', async (req: Request, res: Response) => {
     signatureHtml,
     signatureIsDefault: effective?.isDefault ?? false,
   })
+})
+
+// ── Tableau de bord layout (self-service, not admin-gated) ──────────────
+// Personal preference, so every user manages their own — unlike the signature
+// and photo above, which an admin sets on their behalf.
+//
+// The widget catalog lives in the frontend registry
+// (apps/web/src/components/dashboard/registry.tsx); this layer only validates
+// shape and size. Keys it doesn't recognise are stored verbatim and dropped by
+// the dashboard when it merges the registry, so a widget can be renamed or
+// retired without a migration here.
+
+const dashboardBody = z.object({
+  layout: z
+    .array(
+      z.object({
+        key: z.string().min(1).max(DASHBOARD_MAX_KEY_LENGTH),
+        width: z.number().int().min(DASHBOARD_MIN_WIDTH).max(DASHBOARD_MAX_WIDTH),
+        heightPx: z.number().int()
+          .min(DASHBOARD_MIN_HEIGHT_PX).max(DASHBOARD_MAX_HEIGHT_PX)
+          .optional(),
+        x: z.number().int().min(0).max(DASHBOARD_MAX_WIDTH - 1).optional(),
+        y: z.number().int().min(0).max(DASHBOARD_MAX_Y).optional(),
+        visible: z.boolean(),
+      }),
+    )
+    .max(DASHBOARD_MAX_WIDGETS)
+    // null = "reset me to the defaults"
+    .nullable(),
+})
+
+// GET /api/user-profiles/me/dashboard
+userProfilesRouter.get('/me/dashboard', async (req: Request, res: Response) => {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return
+  }
+  res.json({ layout: await getUserDashboard(req.userId) })
+})
+
+// PUT /api/user-profiles/me/dashboard
+userProfilesRouter.put('/me/dashboard', async (req: Request, res: Response) => {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return
+  }
+  const parsed = dashboardBody.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues })
+    return
+  }
+  // Last write wins per key — a duplicated key would otherwise render the
+  // same widget twice and make drag-and-drop ambiguous.
+  const layout = parsed.data.layout
+  const deduped = layout
+    ? [...new Map(layout.map((w) => [w.key, w])).values()]
+    : null
+  await setUserDashboard(req.userId, deduped)
+  res.json({ layout: await getUserDashboard(req.userId) })
 })
 
 // ── GET /api/user-profiles/users ───────────────────────

@@ -40,6 +40,7 @@ export function PopoverSelect({
   disabled,
   disabledTitle,
   size = 'default',
+  widthClass,
 }: {
   options: PopoverSelectOption[]
   value: number
@@ -54,6 +55,11 @@ export function PopoverSelect({
   disabled?: boolean
   disabledTitle?: string
   size?: 'default' | 'sm'
+  /** Override the trigger width (default: `w-[220px]` at size="sm", `w-full`
+   *  otherwise). For short values — a year, a code — where 220px would crowd
+   *  the row. The popover itself stays at least 240px wide regardless, so the
+   *  options remain readable from a narrow trigger. */
+  widthClass?: string
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -103,7 +109,7 @@ export function PopoverSelect({
 
   const isSm = size === 'sm'
   return (
-    <div className={cn('relative inline-block align-middle', isSm ? 'w-[220px]' : 'w-full')}>
+    <div className={cn('relative inline-block align-middle', widthClass ?? (isSm ? 'w-[220px]' : 'w-full'))}>
       <button
         ref={buttonRef}
         type="button"
