@@ -7,6 +7,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { getActiveMenu } from '@/config/navigation'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
+import { updateServiceWorkerAndWait } from '@/lib/sw-refresh'
 import { useUser, canSwitchUser } from '@/contexts/UserContext'
 import { ProfileModal, userPhotoUrl, type UserProfileMe } from '@/components/profile/ProfileModal'
 import { TicketModal } from '@/components/tickets/TicketModal'
@@ -28,17 +29,16 @@ export function Header({ onMenuClick }: HeaderProps) {
   const [refreshing, setRefreshing] = useState(false)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
 
-  // Force-refresh the app: ask the service worker to fetch the latest build
-  // (registerType 'autoUpdate' activates it immediately), then reload so the
-  // new assets are served. Users on the PWA can pick up a deploy without
-  // closing the app.
+  // Force-refresh the app: ask the service worker to fetch the latest build and
+  // WAIT until that new worker has taken over before reloading - the SW answers
+  // navigations from its own precache, so reloading while the old worker is
+  // still active just re-serves the old build (that was the "click twice to get
+  // the new version" bug). See lib/sw-refresh.ts. Users on the PWA can pick up a
+  // deploy without closing the app.
   const refreshApp = useCallback(async () => {
     setRefreshing(true)
     try {
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations()
-        await Promise.all(regs.map((r) => r.update()))
-      }
+      await updateServiceWorkerAndWait()
     } catch {
       // SW update failure must not block the reload.
     }
