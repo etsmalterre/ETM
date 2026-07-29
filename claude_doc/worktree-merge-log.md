@@ -10,6 +10,51 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/rapport-finance
+**Rapports › Finance : tiroir enrichi (nature de la charge éditable) + le bandeau bleu marine
+des widgets adopté par TOUS les tiroirs latéraux de l'app.**
+
+Côté **Rapports › Finance** :
+
+- **Le bouton « Modifier » remonte dans l'en-tête du tiroir**, en haut à droite, comme sur tous
+  les écrans de détail de l'app (`mps_designer §6.1`). La carte Description perd son pied de
+  boutons : un seul mode édition couvre désormais les deux champs, avec Annuler / Enregistrer
+  dans le même bandeau.
+- **La nature de la charge devient éditable.** Nouvelle carte « Nature de la charge », placée en
+  **première** position du corps (elle qualifie tous les chiffres en dessous) : lecture seule en
+  vue, sélecteur segmenté Charges fixes / Charges variables en édition. `PATCH
+  /rapports/finance/comptes/:id` accepte maintenant `description` **et/ou** `variable`
+  (`compte_compta.frais_variable`), chaque champ optionnel — un champ non touché n'est jamais
+  réécrit, et éditer la seule note ne peut pas reclasser le compte par effet de bord. Même clé de
+  permission que l'annotation (`edit_compte_description`, dont le libellé est mis à jour).
+  Reclasser un compte **bascule le tableau sur l'autre onglet en gardant la ligne sélectionnée** :
+  le cache React Query est patché *avant* l'invalidate, sinon la ligne quitte la liste fraîchement
+  changée pendant un rendu et le tiroir se referme d'un clignotement.
+- **Historique annuel trié à l'envers** : l'année la plus récente en haut, la plus ancienne en bas.
+
+Côté **design system** — le nouveau bandeau a plu, il devient le standard :
+
+- **`mps_designer §27.5bis`** (nouveau) décrit le bandeau « widget » des tiroirs latéraux :
+  surface bleu marine `bg-primary`, filet or `border-b-2 border-gold`, tuile or plate `h-8 w-8`
+  (qui passe en blanc en mode édition), titre blanc, sous-titre `text-white/70`, plus un tableau
+  des rôles de boutons (Modifier or / Enregistrer **or** et non bleu — invisible sur bleu —
+  / Annuler ghost blanc / actions icône ghost blanches). §27.5 et la checklist §27.7 pointent
+  dessus ; §43 précise que le bandeau zinc ne survit que là où il coiffe un panneau zinc *de la
+  page* (barre d'onglets §8, tiroir intégré §31), jamais un calque.
+- **Appliqué aux 5 tiroirs latéraux de l'app** (les seuls `fixed right-0 … translate-x-full`) :
+  Rapports › Finance, **Fils › Stock**, **Finis › Stock**, **Tombé Métier › Stock**,
+  **Divers › Stock**. Les puces pastel porteuses de sens (Bio, Recyclé, 2ᵉ choix, Don, Expédiée)
+  sont conservées telles quelles — elles se lisent très bien sur le marine et la couleur EST
+  l'information ; seule une puce sans fond (« Archivée » de Divers, invisible sur marine) passe
+  en puce neutre `bg-white/15`.
+
+**Note pour la suite** : la campagne de captures Playwright (`§40.7`) est rouge sur ce poste,
+**y compris avant ce changement** — vérifié en remisant le travail : diffs identiques (648 /
+1635 / 570 px) sur des tests sans tiroir (`cards-default`, `mobile-sort`). Les baselines ont
+donc dérivé indépendamment (moteur de rendu). Elles n'ont **pas** été re-bénies ici, pour ne pas
+mélanger le changement de design volontaire avec cette dérive préexistante : à faire dans un
+commit dédié, sur la machine qui les a bénies.
+
 ## 2026-07-29 — feat/cmd-client
 **Clients › Commandes — dialogue « Nouvelle commande » ennoblisseur : plus de présélection, rouleaux triés.**
 

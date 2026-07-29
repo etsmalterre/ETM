@@ -1689,9 +1689,12 @@ rapportsRouter.get('/finance/comptes/:id/historique', async (req: Request, res: 
   }
 })
 
-// PATCH /api/rapports/finance/comptes/:id  { description }
-//   The free-text annotation shown in the "description" column. Scoped to
-//   the ETM société so an id from another partition can't be written.
+// PATCH /api/rapports/finance/comptes/:id  { description?, variable? }
+//   The free-text annotation shown in the "description" column, and the
+//   fixe/variable classification (`frais_variable`) that decides which of the
+//   two lists the compte belongs to. Both fields are optional — the drawer
+//   sends whichever the user changed. Scoped to the ETM société so an id from
+//   another partition can't be written.
 rapportsRouter.patch('/finance/comptes/:id', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
@@ -1710,7 +1713,17 @@ rapportsRouter.patch('/finance/comptes/:id', async (req: Request, res: Response)
     if (raw != null && typeof raw !== 'string') {
       res.status(400).json({ error: 'description must be a string' }); return
     }
-    const description = (raw ?? '').toString().slice(0, 255)
+    // `variable` is the fixe/variable bucket: 1 = charge variable, 0 = charge
+    // fixe. Absent means "leave it alone" — a caller editing only the note must
+    // not silently reclassify the compte.
+    const rawVariable = req.body?.variable
+    let variable: 0 | 1 | null = null
+    if (rawVariable != null) {
+      const v = Number(rawVariable)
+      if (v !== 0 && v !== 1) { res.status(400).json({ error: 'variable must be 0 or 1' }); return }
+      variable = v as 0 | 1
+    }
+    if (raw == null && variable === null) { res.status(400).json({ error: 'nothing to update' }); return }
 
     const scope = await query<{ IDcompte_compta: number }>(
       `SELECT IDcompte_compta FROM compte_compta
@@ -1718,11 +1731,15 @@ rapportsRouter.patch('/finance/comptes/:id', async (req: Request, res: Response)
     )
     if (scope.length === 0) { res.status(404).json({ error: 'Compte not found' }); return }
 
-    await query(`UPDATE compte_compta SET Description = ${sqlText(description)} WHERE IDcompte_compta = ${id}`)
+    const sets: string[] = []
+    if (raw != null) sets.push(`Description = ${sqlText(raw.toString().slice(0, 255))}`)
+    if (variable !== null) sets.push(`frais_variable = ${variable}`)
+    await query(`UPDATE compte_compta SET ${sets.join(', ')} WHERE IDcompte_compta = ${id}`)
 
     // HFSQL has no RETURNING — read back so the client hydrates the repaired value.
-    const after = await query<{ IDcompte_compta: number; description: string | null }>(
-      `SELECT IDcompte_compta, Description AS description FROM compte_compta WHERE IDcompte_compta = ${id}`,
+    const after = await query<{ IDcompte_compta: number; description: string | null; frais_variable: number | null }>(
+      `SELECT IDcompte_compta, Description AS description, frais_variable
+       FROM compte_compta WHERE IDcompte_compta = ${id}`,
     )
     const fixed = await repairAliased(
       after as unknown as Record<string, unknown>[],
@@ -1733,6 +1750,7 @@ rapportsRouter.patch('/finance/comptes/:id', async (req: Request, res: Response)
     res.json({
       IDcompte_compta: id,
       description: ((fixed[0]?.description ?? '') as string).toString().trim(),
+      variable: n(after[0]?.frais_variable) === 1 ? 1 : 0,
     })
   } catch (err) {
     console.error('[rapports/finance PATCH]', err)

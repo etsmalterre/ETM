@@ -2046,15 +2046,15 @@ const embed = searchParams.get('embed') === 'true'
 
 `top-14` is the height of the standard app header. When `?embed=true` is set the AppShell hides the header, so the drawer must pin to `top-0` or it leaves an empty band at the top of the embed iframe.
 
-#### Three-tone background composition
+#### Background composition — white root, zinc body, **navy header band**
 
-The drawer must match the FilsGestion right panel exactly: an opaque white root, an inner zinc-100/80 layer, and a zinc-200/50 top band. These need to be **nested** divs, not stacked classes — `bg-zinc-100/80` is semi-transparent and only blends correctly when there is an opaque base behind it.
+The drawer body must match the FilsGestion right panel: an opaque white root with an inner zinc-100/80 layer. These need to be **nested** divs, not stacked classes — `bg-zinc-100/80` is semi-transparent and only blends correctly when there is an opaque base behind it. The header band on top of it is **navy** (§27.5bis).
 
 ```tsx
 <div className="fixed ... bg-white ...">                          {/* opaque base */}
   <div className="flex-1 min-h-0 flex flex-col bg-zinc-100/80">  {/* inner panel */}
-    <div className="flex-shrink-0 px-4 pt-4 pb-3 border-b border-border/60 bg-zinc-200/50">
-      {/* Header band */}
+    <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
+      {/* Header band — §27.5bis */}
     </div>
     <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 scrollbar-transparent">
       {/* Body — inherits zinc-100/80 from parent */}
@@ -2067,17 +2067,58 @@ The drawer must match the FilsGestion right panel exactly: an opaque white root,
 |---|---|---|
 | Drawer root | `bg-white` | opaque base — drawer overlays the table, so the root must hide it |
 | Inner panel | `bg-zinc-100/80` | the lighter gray, blended over white |
-| Top band (header) | `bg-zinc-200/50` | the darker gray, blended over the inner zinc-100/80 |
+| Top band (header) | `bg-primary` + `border-b-2 border-gold` | the navy identity band — see §27.5bis |
 | DrawerCards inside body | `bg-card` | white cards |
 
-**Do not** put `bg-zinc-100/80` directly on the drawer root or `bg-zinc-200/50` directly over white — the colors will not match the FilsGestion panel.
+**Do not** put `bg-zinc-100/80` directly on the drawer root — the body colors will not match the FilsGestion panel.
 
-#### Header content
+#### 27.5bis Header band — the widget treatment (navy / gold tile / white title)
 
-- **Icon** (`h-10 w-10` rounded square, `icon-box-gold` class normally / `bg-accent/15` when editing) containing a **`BobineIcon`** at `h-[25px] w-[25px]`. Always use `BobineIcon` for yarn-related screens (matches the inline icon used in `FilsGestion.tsx` "Références de fil" section). Other domains get their domain-specific icon at the same frame size.
-- **Title row**: `<h2 className="text-base font-heading font-bold tracking-tight truncate">` followed by inline `Badge`s (Bio, Recyclé) — use the same green/blue badge palette as elsewhere.
-- **Subtitle**: `text-xs text-muted-foreground mt-0.5` — secondary identifier line (e.g. "coloris • Lot N").
-- **Action buttons** (right-aligned, `flex-shrink-0 -mt-0.5`): `outline` Modifier in view mode, `outline` Annuler + default Enregistrer in edit mode. Save button shows a `Loader2` spinner when `mutation.isPending`.
+**Every fixed side drawer wears the dashboard widget header of §43.** One band, one look, whether you are reading a roll in Finis › Stock or a compte in Rapports › Finance. Reference: `RapportFinance.tsx` → `CompteDrawer` (where it was designed), then propagated to `FilsStock`, `FinisStock`, `TombeMetierStock`, `DiversStock`.
+
+```tsx
+<div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
+  {/* Icon tile — flips to white in edit mode (§9), because a bg-accent/15
+      tint is invisible on navy. */}
+  <div className={cn(
+    'h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm transition-colors',
+    isEditing ? 'bg-white text-primary' : 'bg-gold text-gold-foreground',
+  )}>
+    <DomainIcon className="h-[18px] w-[18px]" />
+  </div>
+
+  <div className="min-w-0 flex-1">
+    <div className="flex items-center gap-2 flex-wrap">
+      <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+        {title}
+      </h2>
+      {/* status chips — see the badge rule below */}
+    </div>
+    <p className="text-xs text-white/70 truncate">{subtitle}</p>
+  </div>
+
+  <div className="flex items-center gap-1.5 flex-shrink-0">
+    {/* actions, then the mobile-only close */}
+  </div>
+</div>
+```
+
+Rules — do not deviate:
+
+- **Band**: `bg-primary` + `border-b-2 border-gold`, `px-4 py-2.5`, `items-center` (NOT `items-start` — the band is one compact row now, not a two-line block). The old `px-4 pt-4 pb-3 border-b border-border/60 bg-zinc-200/50` band is gone from side drawers; it survives only in the §31 in-screen drawer and the §8 sidebar tab strip, where the band caps a zinc panel.
+- **Icon tile**: `h-8 w-8 rounded-lg shadow-sm`, `bg-gold text-gold-foreground` in view mode, `bg-white text-primary` while editing. The glyph is `h-[18px] w-[18px]` — including custom icons (`BobineIcon`, `FiniRollIcon`, `FabricRollIcon`), which previously ran at `h-[25px]` inside a `h-10` tile. **Do not keep `icon-box-gold`**: its gradient is tuned for light surfaces and goes muddy on navy; the flat gold fill is what makes the tile pop.
+- **Title**: `text-primary-foreground` (white). **Subtitle**: `text-white/70`. Never `text-muted-foreground` — it disappears into the navy.
+- **Badges keep their meaning-carrying colours.** The pastel status chips (Bio green, Recyclé blue, 2ᵉ choix red, Don amber, Expédiée zinc) are light-background chips and read fine on navy — leave them exactly as they are, the colour IS the information. Only a chip with **no fill** must be restyled: `variant="outline" text-muted-foreground` is invisible on navy, so use the neutral navy chip instead — `rounded-full border border-white/25 bg-white/15 px-1.5 py-0 text-[10px] font-medium text-white`.
+- **Action buttons** (right-aligned, in a `flex items-center gap-1.5 flex-shrink-0` wrapper — drop the old `-mt-0.5`, the band is centered now):
+  | Role | Button |
+  |---|---|
+  | Modifier (view mode) | `variant="gold" size="sm"` — canonical, §6.1 |
+  | Enregistrer (edit mode) | `variant="gold" size="sm"` + `Loader2` while pending. **NOT the default variant** — primary blue on a primary-blue band is invisible. The two never coexist, so gold still marks exactly one primary action. |
+  | Annuler (edit mode) | `variant="ghost" size="sm" className="px-2 text-white/80 hover:bg-white/15 hover:text-white"` — NOT `outline`, whose white fill fights the gold CTA next to it |
+  | Secondary icon action (Imprimer…) | `variant="ghost" size="icon" className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white"` |
+  | Mobile close (§40.4) | same ghost-white icon button, plus `md:hidden`, last in the row |
+- **Collapse button labels below `sm`** (§40.5): `<span className="hidden sm:inline">`, icon margin `sm:mr-1.5`, `title` on every button. The band is only 440px wide and Annuler + Enregistrer + close must fit next to a truncating title.
+- **Inline error banners stay inside the band** (`FinisStock`'s save error) but go light-on-navy: `text-red-200`, not `text-destructive`.
 
 #### Body cards
 
@@ -2166,8 +2207,9 @@ When building a new screen of this type, the result must have:
 - [ ] Sortable headers via `SortHeader`, active column gets `text-accent` + arrow icon
 - [ ] Row toggle selection on click (same row → close), `data-stock-row` marker, `bg-accent/10` selection / `hover:bg-accent/5` hover
 - [ ] Right slide-in drawer with `embed`-aware top offset
-- [ ] Three-tone background: `bg-white` root → `bg-zinc-100/80` inner → `bg-zinc-200/50` header
-- [ ] `BobineIcon` (or domain icon) at `h-[25px] w-[25px]` in the gold icon frame
+- [ ] Background: `bg-white` root → `bg-zinc-100/80` inner body → **navy** `bg-primary` + `border-b-2 border-gold` header band (§27.5bis)
+- [ ] `BobineIcon` (or domain icon) at `h-[18px] w-[18px]` in the `h-8 w-8` flat-gold tile, white tile while editing
+- [ ] Header title `text-primary-foreground`, subtitle `text-white/70`, gold Modifier / gold Enregistrer / ghost-white Annuler + close
 - [ ] All drawer rows use `KV` (label left / value right)
 - [ ] `highlight={isEditing}` on every section card, even read-only ones
 - [ ] FK columns rendered via joined display name, never `#${id}`
@@ -4207,9 +4249,11 @@ Conventions — do not deviate:
 | Tried | Why it failed |
 |---|---|
 | Gold band (`bg-gold/25`) + `icon-box-gold` | Gold-on-gold: the icon tile disappeared into the band, and a row of gold bands competed with the gold app header directly above them. |
-| Zinc band (`bg-zinc-200/50`) + `icon-box-gold` (the §27.5 drawer header) | Technically the app's panel-header pattern, but on a dashboard of large white cards it read as grey and lifeless — user-rejected in favour of the navy treatment. |
+| Zinc band (`bg-zinc-200/50`) + `icon-box-gold` (the old §27.5 drawer header) | Technically the app's panel-header pattern, but on a dashboard of large white cards it read as grey and lifeless — user-rejected in favour of the navy treatment. |
 
-The §27.5 zinc drawer header remains correct **for drawers and sidebars**, where the band caps a zinc panel. This section is the rule for dashboard widget cards specifically.
+**This band is now the app's standard header for any card-like surface that opens over the content.** It was born here, and in July 2026 it replaced the zinc band on **every fixed side drawer** (§27.5bis) — same navy, same gold tile, same white title. Keep the two in sync: a change to one is a change to both.
+
+The zinc `bg-zinc-200/50` band survives only where it caps a **zinc panel that is part of the page** — the §8 right-sidebar tab strip and the §31 in-screen drawer's top strip. Those are not overlays and must not be converted.
 
 ---
 

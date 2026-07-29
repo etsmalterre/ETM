@@ -282,7 +282,7 @@ export const PERMISSION_KEYS = [
     key: 'edit_compte_description',
     label: 'Annoter les comptes',
     description:
-      'Autorise la modification de la description libre d’un compte comptable depuis le tiroir de Rapports > Finance.',
+      'Autorise la modification de la description libre d’un compte comptable et de sa nature (charge fixe ou variable) depuis le tiroir de Rapports > Finance.',
     category: 'Rapports',
     parent: 'view_rapport_finance',
   },

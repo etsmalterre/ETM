@@ -16,9 +16,9 @@ import {
   TrendingUp,
   History,
   StickyNote,
+  Scale,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { PopoverSelect } from '@/components/ui/popover-select'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -289,10 +289,30 @@ export function RapportFinance() {
   }, [guard])
 
   // Switching bucket or year would otherwise leave the drawer on a row that
-  // is no longer in the table.
+  // is no longer in the table. The one exception is the drawer reclassifying
+  // its own compte: it moves the table to the other bucket precisely so the
+  // user keeps looking at the row they just edited.
+  const keepSelectionRef = useRef(false)
   useEffect(() => {
+    if (keepSelectionRef.current) {
+      keepSelectionRef.current = false
+      return
+    }
     setSelectedId(null)
   }, [bucket, anneeAffichee])
+
+  // Called by the drawer once a fixe/variable change is persisted.
+  const handleCompteMoved = useCallback(
+    (variable: number) => {
+      const next: Bucket = variable === 1 ? 'variable' : 'fixe'
+      setBucket((prev) => {
+        if (prev === next) return prev
+        keepSelectionRef.current = true
+        return next
+      })
+    },
+    [],
+  )
 
   // ── Excel export of the visible (filtered + sorted) rows.
   const handleExport = useCallback(async () => {
@@ -598,6 +618,7 @@ export function RapportFinance() {
         canEdit={canEdit}
         embed={embed}
         onClose={handleDrawerClose}
+        onCompteMoved={handleCompteMoved}
         onDirtyChange={setDrawerDirty}
         saveRef={drawerSaveRef}
         discardRef={drawerDiscardRef}
@@ -681,9 +702,24 @@ interface CompteDrawerProps {
   canEdit: boolean
   embed: boolean
   onClose: () => void
+  /** Fired after a persisted fixe/variable change so the table can follow the
+   *  compte into its new bucket instead of dropping it out of view. */
+  onCompteMoved: (variable: number) => void
   onDirtyChange: (dirty: boolean) => void
   saveRef: React.MutableRefObject<() => Promise<void>>
   discardRef: React.MutableRefObject<() => void>
+}
+
+/** What the drawer edits: the free-text note and the fixe/variable bucket. */
+interface CompteDraft {
+  description: string
+  variable: number
+}
+
+interface ComptePatchResult {
+  IDcompte_compta: number
+  description: string
+  variable: number
 }
 
 function CompteDrawer({
@@ -693,6 +729,7 @@ function CompteDrawer({
   canEdit,
   embed,
   onClose,
+  onCompteMoved,
   onDirtyChange,
   saveRef,
   discardRef,
@@ -700,8 +737,8 @@ function CompteDrawer({
   const queryClient = useQueryClient()
   const drawerRef = useRef<HTMLDivElement>(null)
   const [isEditing, setIsEditing] = useState(false)
-  const [draft, setDraft] = useState('')
-  const originalRef = useRef<string>('')
+  const [draft, setDraft] = useState<CompteDraft>({ description: '', variable: 0 })
+  const originalRef = useRef<CompteDraft>({ description: '', variable: 0 })
   const id = compte?.IDcompte_compta ?? null
 
   // Keep the last selected account on screen while the panel slides out, so
@@ -721,14 +758,30 @@ function CompteDrawer({
   })
 
   const saveMut = useMutation({
-    mutationFn: (description: string) =>
-      apiFetch(`/rapports/finance/comptes/${id}`, {
+    mutationFn: (patch: Partial<CompteDraft>) =>
+      apiFetch<ComptePatchResult>(`/rapports/finance/comptes/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ description }),
+        body: JSON.stringify(patch),
       }),
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      // Patch the cached row before invalidating: a reclassification switches
+      // the table to the other bucket immediately, and a stale cache would
+      // filter the row out for one render — the drawer would blink shut.
+      queryClient.setQueriesData<FinancePayload>({ queryKey: ['rapport-finance'] }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              lignes: prev.lignes.map((l) =>
+                l.IDcompte_compta === updated.IDcompte_compta
+                  ? { ...l, description: updated.description, variable: updated.variable }
+                  : l,
+              ),
+            }
+          : prev,
+      )
       queryClient.invalidateQueries({ queryKey: ['rapport-finance'] })
       setIsEditing(false)
+      if (updated.variable !== originalRef.current.variable) onCompteMoved(updated.variable)
     },
   })
 
@@ -739,7 +792,10 @@ function CompteDrawer({
   }, [id])
 
   const startEdit = useCallback(() => {
-    const snapshot = compte?.description ?? ''
+    const snapshot: CompteDraft = {
+      description: compte?.description ?? '',
+      variable: compte?.variable === 1 ? 1 : 0,
+    }
     originalRef.current = snapshot
     setDraft(snapshot)
     setIsEditing(true)
@@ -750,7 +806,23 @@ function CompteDrawer({
     setDraft(originalRef.current)
   }, [])
 
-  const isDirty = isEditing && draft !== originalRef.current
+  const isDirty =
+    isEditing &&
+    (draft.description !== originalRef.current.description || draft.variable !== originalRef.current.variable)
+
+  /** Sends only what actually changed — an untouched field must never be
+   *  rewritten (and `variable` in particular must not be reasserted). */
+  const commit = useCallback(async () => {
+    const o = originalRef.current
+    const patch: Partial<CompteDraft> = {}
+    if (draft.description !== o.description) patch.description = draft.description
+    if (draft.variable !== o.variable) patch.variable = draft.variable
+    if (Object.keys(patch).length === 0) {
+      setIsEditing(false)
+      return
+    }
+    await saveMut.mutateAsync(patch)
+  }, [draft, saveMut])
 
   useEffect(() => {
     onDirtyChange(isDirty)
@@ -761,7 +833,7 @@ function CompteDrawer({
   // the current closure (§28.3.c).
   useEffect(() => {
     saveRef.current = async () => {
-      if (isDirty) await saveMut.mutateAsync(draft)
+      if (isDirty) await commit()
     }
   })
   useEffect(() => {
@@ -785,6 +857,16 @@ function CompteDrawer({
   const open = compte !== null
   // The largest absolute year value sets the bar scale.
   const histMax = Math.max(1, ...(historique ?? []).map((p) => Math.abs(p.montant)))
+  // Most recent year on top — the user reads the current exercice first and
+  // scans backwards, the same direction as the année picker in the toolbar.
+  const histRows = useMemo(
+    () => [...(historique ?? [])].sort((a, b) => b.annee - a.annee),
+    [historique],
+  )
+
+  // The badge and the Nature card follow the pending choice while editing, so
+  // the header never contradicts the selector two cards below it.
+  const shownVariable = isEditing ? draft.variable : (shown?.variable ?? 0)
 
   return (
     <div
@@ -797,35 +879,76 @@ function CompteDrawer({
     >
       {shown && (
         <div className="flex-1 min-h-0 flex flex-col bg-zinc-100/80">
-          {/* Header band */}
-          <div className="flex-shrink-0 px-4 pt-4 pb-3 border-b border-border/60 bg-zinc-200/50">
-            <div className="flex items-start gap-3">
-              <div
-                className={cn(
-                  'h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0',
-                  isEditing ? 'bg-accent/15' : 'icon-box-gold',
-                )}
-              >
-                <Landmark className="h-5 w-5" />
+          {/* Header band — the dashboard widget treatment (mps_designer §43):
+              navy surface, gold icon tile, white title, gold hairline under.
+              The record's actions live here, top-right, like every other
+              detail header in the app (§6.1). */}
+          <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
+            {/* §9/§43: the tile flips to white in edit mode — the tint used on
+                light headers is invisible on navy. */}
+            <div
+              className={cn(
+                'h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm transition-colors',
+                isEditing ? 'bg-white text-primary' : 'bg-gold text-gold-foreground',
+              )}
+            >
+              <Landmark className="h-[18px] w-[18px]" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-heading font-bold tracking-tight tabular-nums truncate text-primary-foreground">
+                  {shown.numero}
+                </h2>
+                <span className="flex-shrink-0 rounded-full border border-white/25 bg-white/15 px-1.5 py-0 text-[10px] font-medium text-white">
+                  {shownVariable === 1 ? 'Variable' : 'Fixe'}
+                </span>
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-base font-heading font-bold tracking-tight tabular-nums truncate">
-                    {shown.numero}
-                  </h2>
-                  <Badge variant="secondary" className="text-[10px] py-0 flex-shrink-0">
-                    {shown.variable === 1 ? 'Variable' : 'Fixe'}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground mt-0.5 truncate" title={libelleOf(shown)}>
-                  {libelleOf(shown)}
-                </p>
-              </div>
+              <p className="text-xs text-white/70 truncate" title={libelleOf(shown)}>
+                {libelleOf(shown)}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {canEdit &&
+                (isEditing ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="px-2 text-white/80 hover:bg-white/15 hover:text-white"
+                      onClick={cancelEdit}
+                      disabled={saveMut.isPending}
+                      title="Annuler"
+                    >
+                      <X className="h-3.5 w-3.5 sm:mr-1.5" />
+                      <span className="hidden sm:inline">Annuler</span>
+                    </Button>
+                    <Button
+                      variant="gold"
+                      size="sm"
+                      onClick={() => void commit()}
+                      disabled={saveMut.isPending}
+                      title="Enregistrer"
+                    >
+                      {saveMut.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 sm:mr-1.5 animate-spin" />
+                      ) : (
+                        <Save className="h-3.5 w-3.5 sm:mr-1.5" />
+                      )}
+                      <span className="hidden sm:inline">Enregistrer</span>
+                    </Button>
+                  </>
+                ) : (
+                  <Button variant="gold" size="sm" onClick={startEdit} title="Modifier">
+                    <Pencil className="h-3.5 w-3.5 sm:mr-1.5" />
+                    <span className="hidden sm:inline">Modifier</span>
+                  </Button>
+                ))}
               {/* Full-width below md means there is no "outside" to click (§40.4) */}
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 md:hidden flex-shrink-0"
+                className="h-8 w-8 md:hidden flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white"
                 onClick={onClose}
                 title="Fermer"
               >
@@ -836,6 +959,46 @@ function CompteDrawer({
 
           {/* Body */}
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 scrollbar-transparent">
+            {/* Which of the two lists the compte belongs to — the classification
+                the accountant's export gets wrong often enough that the user
+                has to be able to correct it here. First card: it qualifies
+                every figure below it. */}
+            <DrawerCard
+              icon={<Scale className="h-3.5 w-3.5 text-accent" />}
+              title="Nature de la charge"
+              highlight={isEditing}
+            >
+              {isEditing ? (
+                <div className="space-y-2">
+                  <div className="flex gap-1">
+                    {BUCKETS.map((b) => {
+                      const active = (draft.variable === 1 ? 'variable' : 'fixe') === b.key
+                      return (
+                        <button
+                          key={b.key}
+                          type="button"
+                          onClick={() => setDraft((prev) => ({ ...prev, variable: b.key === 'variable' ? 1 : 0 }))}
+                          className={cn(
+                            'flex-1 px-2 py-1.5 text-xs rounded-md transition-colors',
+                            active
+                              ? 'bg-accent text-accent-foreground shadow-sm font-medium'
+                              : 'text-muted-foreground hover:bg-accent/10',
+                          )}
+                        >
+                          {b.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Le compte change de liste et bascule d’un total à l’autre.
+                  </p>
+                </div>
+              ) : (
+                <KV label="Catégorie" value={shown.variable === 1 ? 'Charge variable' : 'Charge fixe'} />
+              )}
+            </DrawerCard>
+
             <DrawerCard
               icon={<Wallet className="h-3.5 w-3.5 text-accent" />}
               title="Montants"
@@ -882,9 +1045,9 @@ function CompteDrawer({
                 <div className="space-y-2">
                   <textarea
                     rows={3}
-                    value={draft}
+                    value={draft.description}
                     maxLength={255}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, description: e.target.value }))}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
                     placeholder="Annotation libre (ex. « Salaires Isa, Pierrot »)"
                   />
@@ -893,37 +1056,11 @@ function CompteDrawer({
                       {(saveMut.error as Error)?.message || 'Enregistrement impossible'}
                     </p>
                   )}
-                  <div className="flex justify-end gap-2">
-                    <Button variant="outline" size="sm" onClick={cancelEdit} disabled={saveMut.isPending}>
-                      <X className="h-3.5 w-3.5 mr-1.5" />
-                      Annuler
-                    </Button>
-                    <Button size="sm" onClick={() => saveMut.mutate(draft)} disabled={saveMut.isPending}>
-                      {saveMut.isPending ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                      ) : (
-                        <Save className="h-3.5 w-3.5 mr-1.5" />
-                      )}
-                      Enregistrer
-                    </Button>
-                  </div>
                 </div>
+              ) : shown.description ? (
+                <p className="text-sm text-muted-foreground whitespace-pre-line">{shown.description}</p>
               ) : (
-                <div className="space-y-2">
-                  {shown.description ? (
-                    <p className="text-sm text-muted-foreground whitespace-pre-line">{shown.description}</p>
-                  ) : (
-                    <p className="text-sm text-muted-foreground italic">Aucune description</p>
-                  )}
-                  {canEdit && (
-                    <div className="flex justify-end">
-                      <Button variant="gold" size="sm" onClick={startEdit}>
-                        <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                        Modifier
-                      </Button>
-                    </div>
-                  )}
-                </div>
+                <p className="text-sm text-muted-foreground italic">Aucune description</p>
               )}
             </DrawerCard>
 
@@ -939,7 +1076,7 @@ function CompteDrawer({
                 // horizontal bars, one hue, recessive baseline. No legend —
                 // the card title names the series.
                 <div className="space-y-2">
-                  {historique.map((p) => {
+                  {histRows.map((p) => {
                     const width = Math.max(2, (Math.abs(p.montant) / histMax) * 100)
                     return (
                       <div key={p.annee} className="flex items-center gap-2">

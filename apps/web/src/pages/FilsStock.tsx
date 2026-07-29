@@ -623,73 +623,85 @@ function StockDetailDrawer({ id, onClose, onMutationSuccess, onDirtyChange, save
       {/* Inner bg layer — matches the Fournisseurs right panel composition:
           zinc-100/80 over white; header gets an additional zinc-200/50 overlay. */}
       <div className="flex-1 min-h-0 flex flex-col bg-zinc-100/80">
-      {/* Header */}
-      <div className="flex-shrink-0 px-4 pt-4 pb-3 border-b border-border/60 bg-zinc-200/50">
-        <div className="flex items-start gap-3">
-          <div
-            className={cn(
-              'h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0',
-              isEditing ? 'bg-accent/15' : 'icon-box-gold'
-            )}
-          >
-            <BobineIcon className="h-[25px] w-[25px]" />
-          </div>
-          <div className="min-w-0 flex-1">
-            {isLoading || !detail ? (
-              <div className="h-5 w-40 bg-muted animate-pulse rounded" />
-            ) : (
-              <>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-base font-heading font-bold tracking-tight truncate">{detail.ref_fil ?? '—'}</h2>
-                  {!!detail.bio && (
-                    <Badge className="bg-green-100 text-green-700 border-green-200 gap-1 text-[10px] py-0">
-                      <Leaf className="h-2.5 w-2.5" />
-                      Bio
-                    </Badge>
-                  )}
-                  {!!detail.recycle && (
-                    <Badge className="bg-blue-100 text-blue-700 border-blue-200 gap-1 text-[10px] py-0">
-                      <Recycle className="h-2.5 w-2.5" />
-                      Recyclé
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {detail.colori_reference ?? '—'} • Lot {detail.lot ?? '—'}
-                </p>
-              </>
-            )}
-          </div>
-          {detail && (
-            <div className="flex items-center gap-2 flex-shrink-0 -mt-0.5">
-              {isEditing ? (
-                <>
-                  <Button variant="outline" size="sm" onClick={() => setIsEditing(false)}>
-                    <X className="h-3.5 w-3.5 mr-1.5" />
-                    Annuler
-                  </Button>
-                  <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
-                    {saveMutation.isPending ? (
-                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                    ) : (
-                      <Save className="h-3.5 w-3.5 mr-1.5" />
-                    )}
-                    Enregistrer
-                  </Button>
-                </>
-              ) : (
-                <Button variant="gold" size="sm" onClick={startEdit}>
-                  <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                  Modifier
-                </Button>
-              )}
-            </div>
+      {/* Header band — the widget treatment (mps_designer §27.5bis / §43):
+          navy surface, flat gold tile, white title, gold hairline under. */}
+      <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
+        <div
+          className={cn(
+            'h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm transition-colors',
+            isEditing ? 'bg-white text-primary' : 'bg-gold text-gold-foreground'
           )}
+        >
+          <BobineIcon className="h-[18px] w-[18px]" />
+        </div>
+        <div className="min-w-0 flex-1">
+          {isLoading || !detail ? (
+            <div className="h-5 w-40 bg-white/20 animate-pulse rounded" />
+          ) : (
+            <>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+                  {detail.ref_fil ?? '—'}
+                </h2>
+                {!!detail.bio && (
+                  <Badge className="bg-green-100 text-green-700 border-green-200 gap-1 text-[10px] py-0">
+                    <Leaf className="h-2.5 w-2.5" />
+                    Bio
+                  </Badge>
+                )}
+                {!!detail.recycle && (
+                  <Badge className="bg-blue-100 text-blue-700 border-blue-200 gap-1 text-[10px] py-0">
+                    <Recycle className="h-2.5 w-2.5" />
+                    Recyclé
+                  </Badge>
+                )}
+              </div>
+              <p className="text-xs text-white/70 truncate">
+                {detail.colori_reference ?? '—'} • Lot {detail.lot ?? '—'}
+              </p>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {detail &&
+            (isEditing ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="px-2 text-white/80 hover:bg-white/15 hover:text-white"
+                  onClick={() => setIsEditing(false)}
+                  title="Annuler"
+                >
+                  <X className="h-3.5 w-3.5 sm:mr-1.5" />
+                  <span className="hidden sm:inline">Annuler</span>
+                </Button>
+                <Button
+                  variant="gold"
+                  size="sm"
+                  onClick={() => saveMutation.mutate()}
+                  disabled={saveMutation.isPending}
+                  title="Enregistrer"
+                >
+                  {saveMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 sm:mr-1.5 animate-spin" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5 sm:mr-1.5" />
+                  )}
+                  <span className="hidden sm:inline">Enregistrer</span>
+                </Button>
+              </>
+            ) : (
+              <Button variant="gold" size="sm" onClick={startEdit} title="Modifier">
+                <Pencil className="h-3.5 w-3.5 sm:mr-1.5" />
+                <span className="hidden sm:inline">Modifier</span>
+              </Button>
+            ))}
           {/* Mobile-only close — at full drawer width there is no "outside" left to tap */}
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 flex-shrink-0 -mt-0.5 md:hidden"
+            className="h-8 w-8 flex-shrink-0 md:hidden text-white/80 hover:bg-white/15 hover:text-white"
             onClick={onClose}
             title="Fermer"
           >
