@@ -35,6 +35,9 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { notify } from '../lib/notify.js'
 import { subscribersOf } from '../lib/notifications.js'
+import {
+  generateCompteClient, loadTakenComptes, pickCompte, normalizeCompte, isValidCompte,
+} from '../lib/compte-client.js'
 
 export const clientsRouter: RouterType = Router()
 
@@ -285,6 +288,39 @@ clientsRouter.get('/lookups/codes-comptables', async (_req: Request, res: Respon
   }
 })
 
+// GET /api/clients/compte-suggestion?nom=…&exclude=…
+// Proposes a free "411XXX" compte for a customer name. Used by the création
+// dialog (live, as the user types the name) and by the detail screen when it
+// finds an existing client whose compte was never filled in.
+// Literal path — must stay registered before /:id.
+clientsRouter.get('/compte-suggestion', async (req: Request, res: Response) => {
+  try {
+    const nom = typeof req.query.nom === 'string' ? req.query.nom.trim() : ''
+    if (!nom) { res.status(400).json({ error: 'nom is required' }); return }
+    const excludeRaw = parseInt(String(req.query.exclude ?? ''), 10)
+    const exclude = Number.isFinite(excludeRaw) && excludeRaw > 0 ? excludeRaw : undefined
+    res.json({ compte: await generateCompteClient(nom, exclude) })
+  } catch (err) {
+    console.error('Error generating compte client:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/clients/comptes — every compte currently in use, normalized.
+// Lets the screens flag a duplicate as the user types instead of only when the
+// write is rejected. The server still checks on POST/PUT (this list can go
+// stale if someone else creates a client meanwhile) — this is the fast path,
+// not the authority.
+// Literal path — must stay registered before /:id.
+clientsRouter.get('/comptes', async (_req: Request, res: Response) => {
+  try {
+    res.json({ comptes: [...await loadTakenComptes()] })
+  } catch (err) {
+    console.error('Error listing comptes clients:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ════════════════════════════════════════════════════════
 //  DETAIL  — GET /api/clients/:id
 // ════════════════════════════════════════════════════════
@@ -363,17 +399,60 @@ const flag = (v: unknown): number => (v === true || v === 1 || v === '1' ? 1 : 0
 const intOf = (v: unknown): number => { const x = parseInt(String(v ?? ''), 10); return Number.isFinite(x) ? x : 0 }
 const floatOf = (v: unknown): number => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
 
-// POST /api/clients — create a bare client (ETM scope), name only.
+const createClientBody = z.object({
+  nom: z.string().trim().min(1).max(100),
+  IDsecteur_activite: z.number().int().optional(),
+  IDactivite: z.number().int().optional(),
+  /** Optional override of the auto-generated code. */
+  compte: z.string().optional(),
+})
+
+// POST /api/clients — create a client from the "Nouveau client" dialog.
+// `nom` is mandatory (the dialog asks for it up front, which is what stopped
+// the old flow from littering the table with "Nouveau client" placeholders),
+// and the compte client is generated here — never left empty.
 clientsRouter.post('/', async (req: Request, res: Response) => {
   try {
-    const nom = typeof req.body?.nom === 'string' && req.body.nom.trim() ? req.body.nom.trim() : 'Nouveau client'
+    const parsed = createClientBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    const b = parsed.data
+    const nom = b.nom
+
+    // Resolve the compte in the same request that inserts, so the uniqueness
+    // check can't be invalidated by a concurrent create in between.
+    const taken = await loadTakenComptes()
+    let compte: string
+    if (b.compte !== undefined && b.compte.trim() !== '') {
+      compte = normalizeCompte(b.compte)
+      if (!isValidCompte(compte)) {
+        res.status(400).json({
+          error: 'compte_invalide',
+          message: 'Le compte client doit commencer par 411 puis 3 lettres ou chiffres.',
+        })
+        return
+      }
+      if (taken.has(compte)) {
+        res.status(409).json({
+          error: 'compte_duplique',
+          message: `Le compte client ${compte} est déjà attribué à un autre client.`,
+        })
+        return
+      }
+    } else {
+      compte = pickCompte(nom, taken)
+    }
+
     await query(
-      `INSERT INTO client (nom, est_visible, client_interne, IDsociete, date_creation) ` +
-        `VALUES (${sqlText(nom)}, 1, 0, 1, '${todayDigits()}')`,
+      `INSERT INTO client (nom, compte, IDsecteur_activite, IDactivite, est_visible, client_interne, IDsociete, date_creation) ` +
+        `VALUES (${sqlText(nom)}, '${esc(compte)}', ${intOf(b.IDsecteur_activite)}, ${intOf(b.IDactivite)}, ` +
+        `1, 0, 1, '${todayDigits()}')`,
     )
     const rows = await query<{ IDclient: number }>(`SELECT IDclient FROM client ORDER BY IDclient DESC`)
     const newId = rows.length > 0 ? Number(rows[0].IDclient) : 0
-    res.status(201).json({ IDclient: newId, nom })
+    res.status(201).json({ IDclient: newId, nom, compte })
   } catch (err) {
     console.error('Error creating client:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -404,6 +483,39 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
       userHasPermission(req.userId, admin, 'edit_client_commercial'),
     ])
 
+    // Compte client — only reachable through the Info scope, so it is only
+    // validated when the caller actually writes it.
+    //
+    // Format is enforced on every save (a client must never be stored without
+    // a well-formed compte), but UNIQUENESS is only checked when the value
+    // changes: the legacy data already contains 10 duplicate codes, and
+    // re-blocking those clients on an unrelated edit would be a regression.
+    let compte = ''
+    if (canInfo) {
+      compte = normalizeCompte(b.compte)
+      if (!isValidCompte(compte)) {
+        res.status(400).json({
+          error: 'compte_invalide',
+          message: 'Le compte client doit commencer par 411 puis 3 lettres ou chiffres.',
+        })
+        return
+      }
+      const current = await query<{ compte: unknown }>(
+        `SELECT compte FROM client WHERE IDclient = ${id}`,
+      )
+      if (current.length === 0) { res.status(404).json({ error: 'Client not found' }); return }
+      if (normalizeCompte(current[0].compte == null ? '' : String(current[0].compte)) !== compte) {
+        const taken = await loadTakenComptes(id)
+        if (taken.has(compte)) {
+          res.status(409).json({
+            error: 'compte_duplique',
+            message: `Le compte client ${compte} est déjà attribué à un autre client.`,
+          })
+          return
+        }
+      }
+    }
+
     // `nom` lives in the detail header, not in a permission-scoped tab.
     const sets = [`nom = ${sqlText(b.nom)}`]
     if (canInfo) {
@@ -411,7 +523,7 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
         `tel = ${sqlText(b.tel)}`,
         `fax = ${sqlText(b.fax)}`,
         `num_tva = ${sqlText(b.num_tva)}`,
-        `compte = ${sqlText(b.compte)}`,
+        `compte = '${esc(compte)}'`,
         `commentaire = ${sqlText(b.commentaire)}`,
         `pct_remise = ${floatOf(b.pct_remise)}`,
         `pct_ajeol = ${floatOf(b.pct_ajeol)}`,

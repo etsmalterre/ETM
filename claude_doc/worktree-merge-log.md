@@ -10,6 +10,53 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/gestion-client
+**Clients › Gestion : le compte client (`client.compte`) devient obligatoire, généré
+automatiquement à partir du nom, et la création passe par une boîte de dialogue.**
+
+- **« + Nouveau » ouvre désormais un dialogue** (nom obligatoire, secteur, activité) au lieu
+  d'insérer une ligne « Nouveau client ». C'est ce qui met fin aux doublons de placeholders
+  — la table en contenait 3 au moment du développement — et surtout, **connaître le nom avant
+  l'INSERT est ce qui permet d'en dériver le compte**. Après création : sélection de la
+  nouvelle fiche + passage en édition automatique (`mps_designer §25.1`).
+- **Génération du code** — `apps/api/src/lib/compte-client.ts` (`pickCompte`), doublé côté
+  navigateur par `apps/web/src/lib/compte-client.ts` pour la validation en direct. Le
+  mnémonique vient des mots significatifs du nom, en écartant les formes juridiques
+  (SARL/SAS/SOCIETE…) et les mots génériques du métier (BONNETERIE/TRANSPORTS/ATELIER…)
+  exactement comme le faisait le comptable : « Bonneterie Gautier » → `411GAU`. En cas de
+  collision on descend une liste de candidats (compression des consonnes, initiales, puis
+  variantes numérotées `411SO2` — la forme que le legacy utilisait déjà pour séparer SIGVARIS
+  de SIGVARIS SAS), avec un balayage base-36 exhaustif en dernier recours : la génération ne
+  peut pas échouer.
+- **Génère 3 caractères, valide 3 ou plus.** Mesuré sur les 649 clients qui portent un compte :
+  **388 suffixes de 4 caractères**, 225 de 3, 36 d'autres formes. Le produit standardise les
+  nouveaux codes sur 3, mais la validation accepte 3+, sinon les 388 fiches historiques
+  deviendraient impossibles à enregistrer.
+- **Unicité vérifiée uniquement sur les valeurs qui changent**, et **non cloisonnée par
+  `IDsociete`** (le code identifie l'entreprise dans le grand livre). 10 doublons existent déjà
+  dans le legacy (`411SOFI`, `411HERM`…) : les bloquer sur une modification sans rapport aurait
+  été une régression.
+- **Le doublon est signalé pendant la frappe**, pas au clic. `GET /clients/comptes` renvoie
+  tous les codes en usage et `useComptesPris()` les met en cache sous une seule clé React Query
+  (l'appel de l'InfoTab est dédupliqué, zéro requête supplémentaire) : Créer / Enregistrer
+  restent grisés tant que le code est invalide ou déjà pris. Le serveur revalide sur POST/PUT
+  et reste l'autorité — le cache peut vieillir si quelqu'un d'autre crée un client entre-temps.
+- **Aucune fiche ne peut plus être enregistrée sans compte valide** : format contrôlé côté API
+  sur POST **et** PUT, et côté écran l'enregistrement *et* la sortie du mode édition sont
+  bloqués via `shouldBlockExit` / `onExitBlocked` (`mps_designer §28.5b`). Entrer en édition sur
+  une fiche au compte vide ou malformé pré-remplit une suggestion (l'instantané est mis à jour
+  en même temps, donc le pré-remplissage seul ne rend pas le formulaire « sale »). La validation
+  est conditionnée à `edit_client_info` : un utilisateur qui ne peut pas éditer le champ n'est
+  jamais bloqué par lui.
+- **Garde-fou** : `apps/api/src/scripts/check-compte-client.ts` rejoue la génération sur les
+  654 clients — 0 code invalide, 0 collision, et le mnémonique du comptable est reproduit sur
+  60 % des fiches (167/240 en correspondance exacte sur le sous-ensemble comparable à 3
+  caractères). Il montre aussi ce qui serait généré pour les fiches sans compte et vérifie que
+  les collisions en cascade convergent.
+
+Les fiches existantes ne sont **pas** rétro-remplies : les deux clients sans compte (OMELA,
+MAPOESIE) recevront une suggestion à la première ouverture en édition.
+
 ## 2026-07-29 — feat/expedition
 
 **Clients › Expéditions — demande de transport groupée : une seule demande d'enlèvement pour

@@ -40,6 +40,10 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  AlertDialog, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
@@ -49,7 +53,29 @@ import { cn } from '@/lib/utils'
 import { hfsqlDateToInput, inputDateToHfsql, formatHfsqlDate } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
+import { compteError, normalizeCompte } from '@/lib/compte-client'
 import { useHasPermission } from '@/contexts/PermissionsContext'
+
+/** POST/PUT helper that surfaces the API's French `message` field — `apiFetch`
+ *  only reports the status code, and the compte-client conflicts (409
+ *  `compte_duplique`, 400 `compte_invalide`) need to be readable by the user.
+ *  Same raw-fetch approach as `postEmail` in lib/email.ts. */
+async function apiSend<T = any>(path: string, options: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) {
+    const err: Error & { status?: number } = new Error(
+      json?.message || json?.error || `Erreur HTTP ${res.status}`,
+    )
+    err.status = res.status
+    throw err
+  }
+  return json as T
+}
 
 // ── Types ──────────────────────────────────────────────
 
@@ -130,6 +156,19 @@ function useClientDetail(id: number | null) {
 function useLookup(path: string, key: string, map: (r: any) => LookupLabel) {
   const { data } = useQuery<any[]>({ queryKey: ['client-lookup', key], queryFn: () => apiFetch(`/clients/lookups/${path}`), staleTime: 5 * 60_000 })
   return useMemo(() => (data ?? []).map(map), [data, map])
+}
+
+/** Every compte client already in use, so a duplicate is flagged while the user
+ *  types rather than only when the write comes back rejected. The API re-checks
+ *  on save — this set can go stale if someone else creates a client meanwhile. */
+function useComptesPris() {
+  const { data, isLoading } = useQuery<{ comptes: string[] }>({
+    queryKey: ['client-comptes'],
+    queryFn: () => apiFetch('/clients/comptes'),
+    staleTime: 30_000,
+  })
+  const taken = useMemo(() => new Set(data?.comptes ?? []), [data])
+  return { taken, isLoading }
 }
 
 // ── Shared styling ─────────────────────────────────────
@@ -220,6 +259,11 @@ export function ClientsGestion() {
   const [subFormsDirty, setSubFormsDirty] = useState(false)
   const [autoEditForId, setAutoEditForId] = useState<number | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  // Non-null while a save is refused because the compte client is empty or
+  // malformed — holds the French explanation shown in the blocking alert.
+  const [saveBlockedReason, setSaveBlockedReason] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   // Tarifs selector modal — opened by both the Print and Email header buttons;
   // the mode drives its title and which footer action is primary.
   const [tarifsSelector, setTarifsSelector] = useState<'print' | 'email' | null>(null)
@@ -264,6 +308,7 @@ export function ClientsGestion() {
   const echeances = useLookup('echeances', 'echeances', (r) => ({ id: r.IDecheance, label: r.libelle }))
   const tvas = useLookup('tva', 'tva', (r) => ({ id: r.IDtva, label: r.libelle }))
   const codesComptables = useLookup('codes-comptables', 'codes-comptables', (r) => ({ id: r.IDcode_comptable, label: r.libelle }))
+  const { taken: comptesPris } = useComptesPris()
 
   const filtered = useMemo(() => {
     if (!clients) return []
@@ -291,9 +336,31 @@ export function ClientsGestion() {
     setDraft(snap)
     originalDraftRef.current = snap
     setIsEditing(true)
-  }, [detail])
+    // Rows predating the mandatory compte have an empty one, and a handful of
+    // legacy rows hold a malformed value ("411", "9999"…). Either way, pull a
+    // suggestion straight away so the user is handed a fix instead of just
+    // being stopped by a validation error on a field they never touched.
+    // The snapshot is updated too, so the pre-fill alone doesn't make the form
+    // look dirty — leaving without saving still changes nothing.
+    const nom = (detail.nom ?? '').trim()
+    if (canEditInfo && nom && compteError(detail.compte) !== null) {
+      apiFetch<{ compte: string }>(`/clients/compte-suggestion?nom=${encodeURIComponent(nom)}&exclude=${detail.IDclient}`)
+        .then(({ compte }) => {
+          // Only apply if the user hasn't already typed a valid one meanwhile.
+          setDraft((d) => (d && compteError(d.compte) !== null ? { ...d, compte } : d))
+          if (originalDraftRef.current && compteError(originalDraftRef.current.compte) !== null) {
+            originalDraftRef.current = { ...originalDraftRef.current, compte }
+          }
+        })
+        .catch(() => { /* the user can still type one — validation will ask */ })
+    }
+  }, [detail, canEditInfo])
 
-  const cancelEdit = useCallback(() => { setIsEditing(false); setDraft(null) }, [])
+  const cancelEdit = useCallback(() => {
+    setIsEditing(false)
+    setDraft(null)
+    setSaveError(null)
+  }, [])
 
   const isDirty = useMemo(() => {
     if (!isEditing || !draft) return false
@@ -304,22 +371,31 @@ export function ClientsGestion() {
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['clients'] })
     queryClient.invalidateQueries({ queryKey: ['client', selectedId] })
+    // A save may have changed a compte — refresh the set the live duplicate
+    // check reads from.
+    queryClient.invalidateQueries({ queryKey: ['client-comptes'] })
   }, [queryClient, selectedId])
 
   const saveMutation = useMutation({
-    mutationFn: () => apiFetch(`/clients/${selectedId}`, { method: 'PUT', body: JSON.stringify(draftToBody(draft!)) }),
-    onSuccess: () => { invalidateAll(); setIsEditing(false); setDraft(null) },
+    mutationFn: () => apiSend(`/clients/${selectedId}`, { method: 'PUT', body: JSON.stringify(draftToBody(draft!)) }),
+    onSuccess: () => { invalidateAll(); setIsEditing(false); setDraft(null); setSaveError(null) },
+    onError: (e: Error) => setSaveError(e.message),
   })
 
-  const createMutation = useMutation({
-    mutationFn: () => apiFetch('/clients', { method: 'POST', body: JSON.stringify({ nom: 'Nouveau client' }) }),
-    onSuccess: (data: { IDclient: number }) => {
-      queryClient.invalidateQueries({ queryKey: ['clients'] })
-      setArchiveFilter('encours')
-      setSelectedId(data.IDclient)
-      setAutoEditForId(data.IDclient)
-    },
-  })
+  // The compte client is mandatory, format-checked (411 + 3 alphanumerics) and
+  // unique. Only the Info scope writes it, so a user without that permission is
+  // never held responsible for a field they cannot edit.
+  const compteIssue = useMemo(
+    () => (isEditing && canEditInfo && draft
+      ? compteError(draft.compte, { taken: comptesPris, ownCompte: detail?.compte })
+      : null),
+    [isEditing, canEditInfo, draft, comptesPris, detail?.compte],
+  )
+
+  const attemptSave = useCallback(() => {
+    if (compteIssue) { setSaveBlockedReason(compteIssue); return }
+    saveMutation.mutate()
+  }, [compteIssue, saveMutation])
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiFetch(`/clients/${id}`, { method: 'DELETE' }),
@@ -363,7 +439,12 @@ export function ClientsGestion() {
   const guard = useUnsavedGuard({
     isDirty,
     save: async () => { await saveMutation.mutateAsync() },
-    onDiscard: () => { setIsEditing(false); setDraft(null) },
+    onDiscard: () => { setIsEditing(false); setDraft(null); setSaveError(null) },
+    // Leaving edit mode with an invalid compte would let the client be saved
+    // (via the guard's « Enregistrer ») without one. Block the exit and
+    // explain instead; « Annuler » is still a way out, it just discards.
+    shouldBlockExit: compteIssue !== null,
+    onExitBlocked: () => setSaveBlockedReason(compteIssue),
   })
 
   const handleSelect = useCallback((id: number) => {
@@ -378,10 +459,10 @@ export function ClientsGestion() {
         list={<ClientList clients={filtered} total={clients?.length ?? 0} isLoading={isLoading} isError={isError} error={error as Error | null}
           selectedId={selectedId} onSelect={handleSelect} searchQuery={searchQuery} onSearchChange={setSearchQuery}
           archiveFilter={archiveFilter} onArchiveFilterChange={setArchiveFilter}
-          onNew={() => createMutation.mutate()} isCreating={createMutation.isPending} isEditing={isEditing} />}
+          onNew={() => setCreateOpen(true)} isEditing={isEditing} />}
         detailHeader={<DetailHeader client={detail ?? null} isLoading={detailLoading && selectedId !== null}
           isEditing={isEditing} draft={draft} onPatch={patch}
-          onStartEdit={startEdit} onCancelEdit={cancelEdit} onSave={() => saveMutation.mutate()} isSaving={saveMutation.isPending}
+          onStartEdit={startEdit} onCancelEdit={cancelEdit} onSave={attemptSave} isSaving={saveMutation.isPending}
           canDelete={canDelete} deletable={deletability?.deletable}
           onDelete={() => setDeleteConfirm(true)}
           onUnarchive={() => { if (selectedId !== null) unarchiveMutation.mutate(selectedId) }}
@@ -401,6 +482,50 @@ export function ClientsGestion() {
         onBack={() => guard.guardAction(() => { setIsEditing(false); setDraft(null); setSelectedId(null) })}
       />
       <UnsavedChangesDialog open={guard.showDialog} onAction={guard.handleAction} isSaving={guard.isSaving} />
+      <CreateClientDialog
+        open={createOpen}
+        secteurs={secteurs}
+        activites={activites}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(newId) => {
+          setCreateOpen(false)
+          queryClient.invalidateQueries({ queryKey: ['clients'] })
+          queryClient.invalidateQueries({ queryKey: ['client-comptes'] })
+          setArchiveFilter('encours')
+          setSelectedId(newId)
+          setAutoEditForId(newId)
+        }}
+      />
+      <AlertDialog open={saveBlockedReason !== null} onOpenChange={(o) => { if (!o) setSaveBlockedReason(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              Compte client requis
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {saveBlockedReason} Il figure dans l'onglet Info, rubrique Facturation.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-2 mt-4">
+            <Button onClick={() => setSaveBlockedReason(null)}>OK</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={saveError !== null} onOpenChange={(o) => { if (!o) setSaveError(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              Enregistrement impossible
+            </AlertDialogTitle>
+            <AlertDialogDescription>{saveError}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-2 mt-4">
+            <Button onClick={() => setSaveError(null)}>OK</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <DeleteOrArchiveDialog
         open={deleteConfirm}
         clientId={selectedId}
@@ -666,11 +791,11 @@ const ARCHIVE_FILTERS: { key: ArchiveFilter; label: string }[] = [
   { key: 'tous', label: 'Tous' },
 ]
 
-function ClientList({ clients, total, isLoading, isError, error, selectedId, onSelect, searchQuery, onSearchChange, archiveFilter, onArchiveFilterChange, onNew, isCreating, isEditing }: {
+function ClientList({ clients, total, isLoading, isError, error, selectedId, onSelect, searchQuery, onSearchChange, archiveFilter, onArchiveFilterChange, onNew, isEditing }: {
   clients: ClientListRow[]; total: number; isLoading: boolean; isError: boolean; error: Error | null
   selectedId: number | null; onSelect: (id: number) => void; searchQuery: string; onSearchChange: (q: string) => void
   archiveFilter: ArchiveFilter; onArchiveFilterChange: (f: ArchiveFilter) => void
-  onNew: () => void; isCreating: boolean; isEditing: boolean
+  onNew: () => void; isEditing: boolean
 }) {
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
@@ -709,12 +834,141 @@ function ClientList({ clients, total, isLoading, isError, error, selectedId, onS
       <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
         <span>{clients.length} / {total} client{total !== 1 ? 's' : ''}</span>
         {!isEditing && (
-          <Button size="sm" variant="ghost" onClick={onNew} disabled={isCreating} className="text-accent hover:text-accent hover:bg-accent/10">
+          <Button size="sm" variant="ghost" onClick={onNew} className="text-accent hover:text-accent hover:bg-accent/10">
             <Plus className="h-3.5 w-3.5 mr-1" />Nouveau
           </Button>
         )}
       </div>
     </div>
+  )
+}
+
+// ── "Nouveau client" dialog ────────────────────────────
+//
+// Asks for the identity fields up front instead of dropping a "Nouveau client"
+// placeholder row (the old flow left 3 of those in the table). Knowing the name
+// before the INSERT is also what lets the compte client be derived from it.
+
+function CreateClientDialog({ open, secteurs, activites, onClose, onCreated }: {
+  open: boolean
+  secteurs: LookupLabel[]
+  activites: LookupLabel[]
+  onClose: () => void
+  onCreated: (id: number) => void
+}) {
+  const [nom, setNom] = useState('')
+  const [IDsecteur, setIDsecteur] = useState(0)
+  const [IDactivite, setIDactivite] = useState(0)
+  const [compte, setCompte] = useState('')
+  /** True once the user edits the compte by hand — stops the name-driven
+   *  suggestion from overwriting their choice on the next keystroke. */
+  const [compteTouched, setCompteTouched] = useState(false)
+  const [suggesting, setSuggesting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const { taken, isLoading: takenLoading } = useComptesPris()
+
+  // Reset every time the dialog opens.
+  useEffect(() => {
+    if (!open) return
+    setNom(''); setIDsecteur(0); setIDactivite(0)
+    setCompte(''); setCompteTouched(false); setError(null)
+  }, [open])
+
+  // Debounced suggestion: the code is derived from the name, so it follows
+  // whatever the user types until they take the field over.
+  const trimmedNom = nom.trim()
+  useEffect(() => {
+    if (!open || compteTouched || !trimmedNom) {
+      if (!trimmedNom && !compteTouched) setCompte('')
+      return
+    }
+    let cancelled = false
+    setSuggesting(true)
+    const t = setTimeout(() => {
+      apiFetch<{ compte: string }>(`/clients/compte-suggestion?nom=${encodeURIComponent(trimmedNom)}`)
+        .then(({ compte: c }) => { if (!cancelled) setCompte(c) })
+        .catch(() => { /* the field stays editable; validation will ask */ })
+        .finally(() => { if (!cancelled) setSuggesting(false) })
+    }, 350)
+    return () => { cancelled = true; clearTimeout(t); setSuggesting(false) }
+  }, [open, trimmedNom, compteTouched])
+
+  const compteIssue = compteError(compte, { taken })
+  const canSubmit = trimmedNom.length > 0 && compteIssue === null && !suggesting && !takenLoading
+
+  const createMut = useMutation({
+    mutationFn: () => apiSend<{ IDclient: number }>('/clients', {
+      method: 'POST',
+      body: JSON.stringify({
+        nom: trimmedNom,
+        IDsecteur_activite: IDsecteur,
+        IDactivite: IDactivite,
+        compte: normalizeCompte(compte),
+      }),
+    }),
+    onSuccess: (data) => onCreated(data.IDclient),
+    onError: (e: Error) => setError(e.message),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-md max-h-[90dvh] overflow-y-auto" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Users className="h-5 w-5 text-accent" />
+            Nouveau client
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Nom <span className="text-destructive">*</span></label>
+            <input value={nom} onChange={(e) => setNom(e.target.value)} autoFocus autoComplete="off"
+              placeholder="Raison sociale du client"
+              className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Secteur</label>
+            <SearchableCombobox options={secteurs} value={IDsecteur} onChange={setIDsecteur}
+              getId={(o) => o.id} getPrimary={(o) => o.label} placeholder="Rechercher un secteur" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Activité</label>
+            <SearchableCombobox options={activites} value={IDactivite} onChange={setIDactivite}
+              getId={(o) => o.id} getPrimary={(o) => o.label} placeholder="Rechercher une activité" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              Compte client <span className="text-destructive">*</span>
+              {suggesting && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
+            </label>
+            <input value={compte}
+              onChange={(e) => { setCompteTouched(true); setCompte(normalizeCompte(e.target.value)) }}
+              autoComplete="off" spellCheck={false} maxLength={12}
+              className={cn(
+                'w-full h-9 px-2.5 text-sm font-mono tracking-wider rounded-md border bg-white focus:outline-none focus:ring-2 focus:ring-ring',
+                compte && compteIssue ? 'border-destructive' : 'border-input',
+              )} />
+            <p className={cn('text-[11px]', compte && compteIssue ? 'text-destructive' : 'text-muted-foreground')}>
+              {compte && compteIssue
+                ? compteIssue
+                : 'Proposé d’après le nom — 411 suivi de 3 lettres ou chiffres, unique par client.'}
+            </p>
+          </div>
+          {error && (
+            <p className="text-xs text-destructive flex items-start gap-1.5 mt-3">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />{error}
+            </p>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose} disabled={createMut.isPending}>Annuler</Button>
+          <Button onClick={() => { setError(null); createMut.mutate() }} disabled={!canSubmit || createMut.isPending}>
+            {createMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Plus className="h-3.5 w-3.5 mr-1.5" />}
+            Créer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -983,17 +1237,21 @@ function KVRow({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function KVText({ label, value, edit, onChange, type = 'text' }: {
+function KVText({ label, value, edit, onChange, type = 'text', invalid, mono, maxLength }: {
   label: string; value: string; edit: boolean; onChange: (v: string) => void; type?: string
+  /** Red border while the value fails validation (compte client). */
+  invalid?: boolean; mono?: boolean; maxLength?: number
 }) {
   return (
     <KVRow label={label}>
       {edit ? (
         // w-[220px] matches PopoverSelect / SearchableCombobox size="sm"
         // (mps_designer §11bis) so text inputs and dropdowns share one KV column.
-        <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} maxLength={maxLength}
           autoComplete="off" data-form-type="other" data-lpignore="true"
-          className="h-7 w-[220px] px-2 text-sm text-right rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+          className={cn('h-7 w-[220px] px-2 text-sm text-right rounded-md border bg-white focus:outline-none focus:ring-2 focus:ring-ring',
+            invalid ? 'border-destructive' : 'border-input',
+            mono && 'font-mono tracking-wider')} />
       ) : (
         <span className="block truncate">{value?.trim() ? value : <span className="text-muted-foreground">—</span>}</span>
       )}
@@ -1030,6 +1288,10 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
 }) {
   const ed = isEditing && draft !== null
   const edRapport = canEditRapportQualite && draft !== null
+  // Same query key as the page, so React Query dedupes this to zero extra
+  // requests rather than threading the set down through DetailSidebar.
+  const { taken: comptesPris } = useComptesPris()
+  const compteIssue = ed ? compteError(draft!.compte, { taken: comptesPris, ownCompte: client.compte }) : null
   // tel / fax / pct_ajeol are still carried by the draft (so a save round-trips
   // the stored values untouched) — they're just no longer surfaced here.
   const v = {
@@ -1065,7 +1327,15 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
         <KVSelect label="TVA" value={v.IDtva} edit={ed} options={tvas} onChange={(id) => onPatch({ IDtva: id })} />
         <KVText label="N° TVA" value={v.num_tva} edit={ed} onChange={(x) => onPatch({ num_tva: x })} />
         <KVSelect label="Code comptable" value={v.IDcode_comptable} edit={ed} options={codesComptables} onChange={(id) => onPatch({ IDcode_comptable: id })} searchable />
-        <KVText label="Compte client" value={v.compte} edit={ed} onChange={(x) => onPatch({ compte: x })} />
+        {/* Compte client is mandatory and format-checked (411 + 3 alphanumerics).
+            It is generated at creation; here it stays editable but a save is
+            refused while it is empty or malformed. */}
+        <KVText label="Compte client" value={v.compte} edit={ed} mono maxLength={12}
+          invalid={ed && compteIssue !== null}
+          onChange={(x) => onPatch({ compte: normalizeCompte(x) })} />
+        {ed && compteIssue !== null && (
+          <p className="text-[11px] text-destructive text-right">{compteIssue}</p>
+        )}
       </InfoCard>
 
       <InfoCard icon={<FileText className="h-4 w-4 text-accent" />} title="Commentaire" isEditing={ed}>
