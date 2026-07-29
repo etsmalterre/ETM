@@ -39,6 +39,7 @@ import {
   Factory,
   MessageSquare,
   LineChart,
+  type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -249,7 +250,7 @@ export function QualiteSuiviLots() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [isEditing, setIsEditing] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'defauts' | 'client'>('controles')
+  const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'defauts' | 'actions'>('controles')
   const [edit, setEdit] = useState<EditState | null>(null)
   const originalRef = useRef<EditState | null>(null)
 
@@ -1168,21 +1169,54 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
           <ClipboardCheck className="h-4 w-4 text-accent" />
           <h2 className="text-sm font-semibold">Récapitulatif de la commande</h2>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
-          <RecapField label="Date commande" value={detail.date_commande ? formatHfsqlDate(detail.date_commande) : '—'} />
-          <RecapField label="Commande N°" value={detail.IDcommande_sous_traitant ? String(detail.IDcommande_sous_traitant) : '—'} />
-          <RecapField label="Référence" value={detail.reference || '—'} />
-          <RecapField label="Coloris" value={detail.coloris || '—'} />
-          <RecapField label="Numéro de lot" value={detail.lot || '—'} />
-          {!!detail.client?.nom && <RecapField label="Client final" value={detail.client.nom} />}
+        {/* Two orders meet on a lot: the sous-traitant order we placed, and the
+            client order it serves. They carry same-named fields (both have a
+            "Commande N°"), so each gets its own bounded panel rather than being
+            interleaved in one flat list — the panel header disambiguates, which
+            also lets every field keep its short, natural label.
+
+            Deliberately NOT repeated here: `lot` and `reference`. They are the
+            detail header's H1 and subtitle two lines above; listing them again
+            was pure duplication and it left the client column short by two
+            rows. Dropping them balances the panels at 3 rows each. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <RecapGroup icon={Factory} title="Commande sous-traitant">
+            <RecapField label="Date commande" value={detail.date_commande ? formatHfsqlDate(detail.date_commande) : '—'} />
+            <RecapField label="Commande N°" value={detail.IDcommande_sous_traitant ? String(detail.IDcommande_sous_traitant) : '—'} mono />
+            <RecapField label="Coloris" value={detail.coloris || '—'} />
+          </RecapGroup>
+
+          {/* Absorbed from the former "Client" sidebar tab (removed — it only
+              duplicated the client name already shown here). */}
+          <RecapGroup icon={Building2} title="Commande client">
+            {detail.client ? (
+              <>
+                <RecapField label="Client final" value={detail.client.nom || '—'} />
+                <RecapField label="Commande N°" value={detail.client.numero || '—'} mono />
+                <RecapField label="Réf. client" value={detail.client.ref_client || '—'} />
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground italic">Aucune commande client rattachée</p>
+            )}
+          </RecapGroup>
         </div>
+        {/* commande_sous_traitant.commentaire — the note on the order WE placed,
+            nothing client-side. Full width because comments are multi-line and
+            would be cramped inside a half-width panel, so the label has to name
+            its owner itself (the panel grouping above can't). */}
         {!!detail.commentaire?.trim() && (
-          <div className="mt-3 pt-3 border-t border-border/50">
-            <p className="text-xs text-muted-foreground mb-1">Commentaire</p>
-            <p className="text-sm whitespace-pre-line">{detail.commentaire}</p>
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-border/50 bg-zinc-50/70 p-3">
+            <MessageSquare className="h-3.5 w-3.5 text-muted-foreground/60 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+                Commentaire · commande sous-traitant
+              </p>
+              <p className="text-sm whitespace-pre-line mt-0.5">{detail.commentaire}</p>
+            </div>
           </div>
         )}
-        {/* Spec banner */}
+        {/* Spec banner — the lot's target values, so it keeps a divider above:
+            it belongs to the lot, not to either order panel. */}
         <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-2 sm:grid-cols-6 gap-2">
           <SpecStat label="Laize" value={fmtNum(detail.laize_demandee)} />
           <SpecStat label="Poids" value={fmtNum(detail.poids_demande)} />
@@ -1286,11 +1320,41 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
   )
 }
 
-function RecapField({ label, value }: { label: string; value: string }) {
+/** One of the récapitulatif's two order panels. Bounding each order in its own
+ *  surface is what makes the two "Commande N°" rows unambiguous at a glance —
+ *  a bare divider between columns wasn't enough. */
+function RecapGroup({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: LucideIcon
+  title: string
+  children: React.ReactNode
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-2 border-b border-border/30 py-1">
+    <div className="rounded-lg border border-border/50 bg-zinc-50/70 p-3">
+      <div className="flex items-center gap-1.5 pb-2 mb-2 border-b border-border/40">
+        <Icon className="h-3.5 w-3.5 text-muted-foreground/70 flex-shrink-0" />
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold truncate">
+          {title}
+        </p>
+      </div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  )
+}
+
+/** Label left / value right. No per-row rule: inside a bounded panel the
+ *  ledger lines just added noise, and the panel border already does the
+ *  containing. `mono` gives ids tabular figures so they align. */
+function RecapField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
       <span className="text-xs text-muted-foreground flex-shrink-0">{label}</span>
-      <span className="text-sm text-right truncate" title={value}>{value}</span>
+      <span className={cn('text-sm text-right truncate font-medium', mono && 'tabular-nums')} title={value}>
+        {value}
+      </span>
     </div>
   )
 }
@@ -1335,8 +1399,8 @@ function LotSidebar({
   edit: EditState | null
   canManage: boolean
   onEditField: <K extends keyof EditState>(key: K, value: string) => void
-  activeTab: 'controles' | 'documents' | 'defauts' | 'client'
-  onTabChange: (t: 'controles' | 'documents' | 'defauts' | 'client') => void
+  activeTab: 'controles' | 'documents' | 'defauts' | 'actions'
+  onTabChange: (t: 'controles' | 'documents' | 'defauts' | 'actions') => void
   onEtatChange: (e: Etat) => void
   etatChanging: boolean
 }) {
@@ -1344,8 +1408,14 @@ function LotSidebar({
     { key: 'controles' as const, label: 'Contrôles', icon: Ruler },
     { key: 'documents' as const, label: 'Documents', icon: FileText },
     { key: 'defauts' as const, label: 'Défauts', icon: AlertTriangle },
-    { key: 'client' as const, label: 'Client', icon: Building2 },
+    // Conformité vs the standing quality instructions attached to this lot's
+    // sst line in Qualité › Actions.
+    { key: 'actions' as const, label: 'Actions', icon: ClipboardCheck },
   ]
+  // NB: there is deliberately no "Client" tab. It only ever held the client
+  // name (already in the récapitulatif), the client order N° and the réf.
+  // client — all three now live in the récapitulatif. Four tabs is also the
+  // most that fits the w-96 sidebar; adding a fifth overflowed it.
   const currentEtat = etatOf(detail.IDetatLot)
 
   return (
@@ -1360,13 +1430,18 @@ function LotSidebar({
                 key={t.key}
                 type="button"
                 onClick={() => onTabChange(t.key)}
+                title={t.label}
                 className={cn(
-                  'flex-1 flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-medium rounded-md transition-colors',
+                  // min-w-0 lets a tab shrink below its label width and the
+                  // label truncate instead of pushing the row past the w-96
+                  // panel (what happened when a 5th tab was added). The icon
+                  // stays flex-shrink-0 so a squeezed tab is still identifiable.
+                  'flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-medium rounded-md transition-colors',
                   active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
                 )}
               >
-                <Icon className="h-3.5 w-3.5" />
-                {t.label}
+                <Icon className="h-3.5 w-3.5 flex-shrink-0" />
+                <span className="truncate">{t.label}</span>
               </button>
             )
           })}
@@ -1375,7 +1450,7 @@ function LotSidebar({
           {activeTab === 'controles' && <ControlesTab detail={detail} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
           {activeTab === 'documents' && <DocumentsTab commandeId={detail.IDcommande_sous_traitant} />}
           {activeTab === 'defauts' && <DefautsTab lotId={detail.IDsuivilot} />}
-          {activeTab === 'client' && <ClientTab detail={detail} />}
+          {activeTab === 'actions' && <ActionsQualiteTab lotId={detail.IDsuivilot} canManage={canManage} />}
         </div>
       </div>
 
@@ -1389,6 +1464,157 @@ function LotSidebar({
         />
       )}
     </div>
+  )
+}
+
+// ── Actions qualité tab ──────────────────────────────────
+//
+// The mentions (automatic sst-order comments) from Qualité › Actions that apply
+// to this lot's ligne_commande_sous_traitant, each with its conformité verdict.
+// Verdicts write immediately — they're standalone judgements, not part of the
+// Contrôles form, so they follow the lot-état precedent rather than edit mode.
+
+type LotConformite = 'non_controle' | 'conforme' | 'non_conforme' | 'aucun'
+
+interface LotActionRow {
+  IDmention_qualite: number
+  IDaction_qualite: number
+  action_titre: string
+  action_description: string
+  action_termine: 0 | 1
+  mention: string
+  conformite: LotConformite
+  /** false ⇒ listed only because a verdict already exists (action closed since,
+   *  or the line no longer matches). Read-only history, not a live instruction. */
+  applicable: boolean
+}
+
+const LOT_CONFORMITE_CHOICES: { key: LotConformite; label: string; active: string }[] = [
+  { key: 'conforme', label: 'Conforme', active: 'bg-emerald-600 text-white border-emerald-600' },
+  { key: 'non_conforme', label: 'Non conforme', active: 'bg-red-600 text-white border-red-600' },
+  { key: 'non_controle', label: 'Non contrôlé', active: 'bg-zinc-500 text-white border-zinc-500' },
+]
+
+function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boolean }) {
+  const queryClient = useQueryClient()
+  const queryKey = ['suivi-lot-actions', lotId]
+
+  const { data, isLoading, isError } = useQuery<LotActionRow[]>({
+    queryKey,
+    queryFn: () => apiFetch(`/suivi-lots/${lotId}/actions`),
+  })
+
+  const [pendingId, setPendingId] = useState<number | null>(null)
+
+  const setMut = useMutation({
+    mutationFn: ({ mentionId, conformite }: { mentionId: number; conformite: LotConformite }) =>
+      apiFetch(`/suivi-lots/${lotId}/actions/${mentionId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ conformite }),
+      }),
+    onMutate: ({ mentionId }) => setPendingId(mentionId),
+    onSettled: () => setPendingId(null),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey })
+      // The Actions screen shows these verdicts aggregated — keep it honest.
+      queryClient.invalidateQueries({ queryKey: ['actions-qualite'] })
+      queryClient.invalidateQueries({ queryKey: ['action-qualite'] })
+    },
+  })
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-10">
+        <Loader2 className="h-5 w-5 animate-spin text-accent" />
+      </div>
+    )
+  }
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-destructive">
+        <AlertCircle className="h-8 w-8 mb-2" />
+        <p className="text-sm">Erreur de chargement</p>
+      </div>
+    )
+  }
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+        <ClipboardCheck className="h-12 w-12 mb-3 opacity-40" />
+        <p className="text-sm">Aucune action qualité</p>
+        <p className="text-xs mt-1 text-center px-4">
+          Aucune mention de Qualité › Actions ne correspond à cette commande.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {data.map((row) => {
+        const busy = pendingId === row.IDmention_qualite && setMut.isPending
+        return (
+          <div
+            key={row.IDmention_qualite}
+            className={cn(
+              'p-3 rounded-lg border bg-card shadow-sm',
+              !row.applicable && 'opacity-70',
+            )}
+          >
+            <div className="flex items-start gap-2">
+              <ClipboardCheck className="h-3.5 w-3.5 text-accent flex-shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold truncate">
+                  {row.action_titre.trim() || `Action N° ${row.IDaction_qualite}`}
+                </p>
+                {!row.applicable && (
+                  <p className="text-[10px] text-muted-foreground italic mt-0.5">
+                    {row.action_termine === 1
+                      ? 'Action terminée — contrôle conservé pour historique'
+                      : 'Ne correspond plus à cette commande — historique'}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {!!row.mention.trim() && (
+              <div className="flex items-start gap-1.5 mt-2">
+                <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+                <p className="text-[11px] text-muted-foreground italic whitespace-pre-line">
+                  {row.mention.trim()}
+                </p>
+              </div>
+            )}
+
+            <div className="flex gap-1 mt-2.5">
+              {LOT_CONFORMITE_CHOICES.map((c) => {
+                const active = row.conformite === c.key
+                return (
+                  <button
+                    key={c.key}
+                    type="button"
+                    disabled={!canManage || busy}
+                    onClick={() => {
+                      if (active) return
+                      setMut.mutate({ mentionId: row.IDmention_qualite, conformite: c.key })
+                    }}
+                    className={cn(
+                      'flex-1 px-2 py-1 text-[11px] rounded-md border transition-colors',
+                      active
+                        ? `${c.active} font-medium shadow-sm`
+                        : 'border-input text-muted-foreground hover:bg-accent/10',
+                      (!canManage || busy) && 'opacity-60 cursor-not-allowed',
+                    )}
+                  >
+                    {busy && active ? '…' : c.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+    </>
   )
 }
 
@@ -1849,25 +2075,6 @@ function DefautsTab({ lotId }: { lotId: number }) {
 }
 
 // ── Client tab ───────────────────────────────────────────
-
-function ClientTab({ detail }: { detail: SuiviLotDetail }) {
-  if (!detail.client) {
-    return <p className="text-sm text-muted-foreground italic">Aucun client associé</p>
-  }
-  const c = detail.client
-  return (
-    <div className="p-3 rounded-lg border bg-card shadow-sm">
-      <div className="flex items-center gap-2 mb-2">
-        <Building2 className="h-4 w-4 text-accent" />
-        <h3 className="text-sm font-semibold truncate">{c.nom || `Client #${c.IDclient}`}</h3>
-      </div>
-      <div className="space-y-1.5">
-        <KV label="N° commande" value={c.numero || '—'} />
-        <KV label="Réf. client" value={c.ref_client || '—'} />
-      </div>
-    </div>
-  )
-}
 
 // ── Status footer (multi-state état pill) ────────────────
 

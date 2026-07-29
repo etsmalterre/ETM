@@ -10,6 +10,69 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/qualite
+**Qualité : écran Actions + conformité par lot + mentions automatiques sur les commandes sous-traitant.**
+
+Porte le légacy `FI_Action_Qualité.wdw`. Une **action qualité** (`action_qualite`) est un sujet
+qualité suivi (Titre + Description) qui porte des **mentions** (`mention_qualite`) : des
+commentaires automatiques qui s'impriment sur chaque bon de commande sous-traitant
+correspondant. Chaque mention accumule des verdicts de **conformité** (`conformite_action`,
+un par couple (ligne de commande sst, mention) : `Non_Contrôlé` / `Conforme` / `Non_Conforme`
+/ `Aucun`), saisis depuis Qualité › Suivi lots.
+
+**Règle de correspondance** (rétro-conçue depuis les données — les sources WinDev sont
+compressées PCS — et validée : elle reproduit **les 248 lignes `conformite_action` du légacy**) :
+une mention s'applique à une `ligne_commande_sous_traitant` quand `lcs.type = IDtype_sst` ET
+`lcs.IDreference = mention.IDreference` ET (`mention.IDsous_traitant = 0` OU = le sst de la
+commande) ET (`mention.IDColoris = 0` OU = `lcs.IDColoris`). Ici `0` est le **joker « tous »**
+du légacy, pas une donnée manquante. Les `IDreference`/`IDColoris` de la mention sont
+polymorphes exactement comme ceux de la ligne (type 1 → `ref_ecru`/`colori_ecru` ; type 2 →
+`ref_fini` + la règle `avec_teinture`) — cf. mention 21, un fini `avec_teinture=0` qui pointe
+sur `colori_ecru`.
+
+**Les mentions ne sont jamais persistées sur la commande** — le légacy ne le faisait pas non
+plus (aucun `commentaire`/`journal` de commande ne contient le texte d'une mention). Elles sont
+résolues à la volée, donc modifier une action met à jour tous les futurs bons de commande.
+Source unique : `GET /commandes-sous-traitant/:id/mentions-qualite`, consommée à la fois par
+l'écran et par le PDF, pour qu'ils ne puissent pas diverger.
+
+**Écrans.** `/qualite/actions` (layout Fiche) : liste filtrée En cours / Terminées / Toutes,
+sections Description + Mentions + Conformité des commandes, dialogue de mention calqué sur la
+popup légacy Tricoteurs/Ennoblisseurs, sidebar Suivi/Infos, pied de statut binaire.
+**Suivi lots** gagne un onglet **Actions** (verdicts Conforme / Non conforme / Non contrôlé,
+écriture immédiate) ; un verdict saisi sous une action ensuite clôturée reste visible en
+historique. **Sous-traitants › Commandes** affiche une carte rouge *Mentions qualité* en
+lecture seule, et le bon de commande PDF un bloc `MENTIONS QUALITÉ`.
+
+**Archivage manuel, par décision produit explicite.** L'*objectif de conformités* (stocké dans
+`data/action-qualite-targets.json`, hors HFSQL, car le WinDev lit encore `action_qualite`)
+n'allume qu'un indicateur « objectif atteint » — il ne clôture **jamais** une action tout seul.
+Ne pas « améliorer » ça en auto-clôture plus tard.
+
+**Pièges HFSQL (détaillés dans `apps/api/src/lib/actions-qualite.ts`).** `mention_qualite` a une
+**PK accentuée ET une FK parent accentuée** (`IDmention_qualité`, `IDaction_qualité`) : aucun
+identifiant ASCII ne permet un `WHERE`. Les écritures Linux réécrivent donc tout le **bucket
+`IDreference`** (DELETE par la colonne ASCII `IDreference`, puis INSERT positionnels en
+préservant PK et action parente). La PK de `conformite_action` est ASCII grâce à la coquille
+légacy **`IDconfomite_action`** (conf-**o**-mite, sans `r`) — mal lire ce nom fait parser toutes
+les PK à `0`, donc `max+1` vaut 1 et l'écriture suivante **écrase silencieusement la vraie ligne
+1** (c'est arrivé pendant le développement, sur la base de dev, réparé). `assertPk()` garde
+désormais chaque calcul de PK.
+
+**Nettoyages.** L'onglet *Client* de Suivi lots est supprimé (il ne portait que le nom client —
+déjà dans le récapitulatif — le n° de commande client et la réf. client, tous deux déplacés dans
+le récapitulatif) ; ça ramène la barre à 4 onglets, qui débordait à 5. Le récapitulatif est
+regroupé en deux panneaux *Commande sous-traitant* / *Commande client* (les deux ont un
+« Commande N° »), sans les lignes `Numéro de lot` et `Référence` qui dupliquaient le H1 et le
+sous-titre de l'en-tête.
+
+**Vérification.** `apps/api/src/scripts/check-actions-qualite.ts` (`--write` pour l'aller-retour
+d'écriture) ; son option `--linux` **refuse de tourner hors Linux** (`queryB64Text` y est un
+passe-plat, donc simuler le bridge sous Windows lit du texte mangé et le réécrit sur les lignes
+voisines — ça a corrompu deux mentions en développement, restaurées depuis).
+`find-actions-qualite-demo-data.ts` liste les enregistrements de dev qui exercent la
+fonctionnalité. Build + 52 tests verts.
+
 ## 2026-07-29 - feat/widget
 **Tableau de bord : widget Analyse financière, plusieurs tableaux de bord, et enrichissement du widget Chiffre d'affaires.**
 

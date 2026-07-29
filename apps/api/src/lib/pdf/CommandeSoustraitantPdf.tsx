@@ -7,7 +7,7 @@
 //     rescheduled (date_delai differs from date_livraison)
 
 import React from 'react'
-import { View, Text, StyleSheet } from '@react-pdf/renderer'
+import { View, Text, StyleSheet, Svg, Path } from '@react-pdf/renderer'
 import {
   MalterreDocument,
   AddressCard,
@@ -49,6 +49,11 @@ export interface CommandeSoustraitantPdfData {
   /** Earliest delivery date across all open lines (long-form French) */
   delaiLivraison: string | null
   commentaire: string | null
+  /** Automatic quality comments from Qualité › Actions that apply to this
+   *  order's lines (deduped, order-level). Rendered in their own boxed block so
+   *  the sst can't mistake a standing quality instruction for the order's
+   *  one-off comment. Empty/absent ⇒ the block is not drawn at all. */
+  mentionsQualite?: string[]
   lignes: Array<{
     ref_label: string | null
     colori_reference: string | null
@@ -525,7 +530,55 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   commentaireText: { fontSize: sizes.fontBase, color: colors.text, lineHeight: 1.45 },
+
+  // ── Mentions qualité ───────────────────────────────────
+  // Same box language as the commentaire so the page keeps one visual system,
+  // but flagged red on the left edge: these are standing quality instructions
+  // from Qualité › Actions, not this order's one-off note, and the sst must not
+  // read them as interchangeable.
+  mentionsBox: {
+    flexShrink: 0,
+    marginTop: 12,
+    padding: 14,
+    backgroundColor: colors.bgCream,
+    borderWidth: 0.75,
+    borderColor: colors.borderStrong,
+    borderStyle: 'solid',
+    borderLeftWidth: 2,
+    borderLeftColor: colors.flagRed,
+    borderLeftStyle: 'solid',
+    borderRadius: 6,
+  },
+  mentionsTitle: {
+    fontSize: sizes.fontXs,
+    color: colors.flagRed,
+    fontWeight: 900,
+    letterSpacing: 0.5,
+    // Tight lineHeight so the title centres against its icon (§38.1) — the
+    // inherited 1.45 would drop the glyphs below the SVG's box.
+    lineHeight: 1,
+  },
+  mentionRow: { flexDirection: 'row', gap: 6, marginTop: 4 },
+  mentionBullet: { fontSize: sizes.fontBase, color: colors.flagRed, lineHeight: 1.45 },
+  mentionText: { flex: 1, fontSize: sizes.fontBase, color: colors.text, lineHeight: 1.45 },
 })
+
+/** Lucide-style "alert triangle" — local to this document since it's the only
+ *  one that flags standing quality instructions. */
+function AlertTriangleIcon({ size = 11, color = colors.flagRed, strokeWidth = 1.8 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path
+        d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        fill="none"
+      />
+      <Path d="M12 9v4" stroke={color} strokeWidth={strokeWidth} fill="none" />
+      <Path d="M12 17h.01" stroke={color} strokeWidth={strokeWidth} fill="none" />
+    </Svg>
+  )
+}
 
 function buildSousTraitantAddress(data: CommandeSoustraitantPdfData): AddressBlockData {
   const a = data.sousTraitantAdresse
@@ -766,6 +819,32 @@ export function CommandeSoustraitantPdf({
             <Text style={styles.commentaireTitle}>COMMENTAIRE</Text>
           </View>
           <Text style={styles.commentaireText}>{data.commentaire.trim()}</Text>
+        </View>
+      )}
+
+      {/* Standing quality instructions (Qualité › Actions). Its own box below
+          the commentaire — never merged into it, so the sst can tell a recurring
+          requirement from this order's one-off note. `commentaireBottom` only
+          when there is no commentaire above, since that box already spaced it. */}
+      {(data.mentionsQualite ?? []).length > 0 && (
+        <View
+          style={
+            data.commentaire && data.commentaire.trim()
+              ? styles.mentionsBox
+              : [styles.mentionsBox, styles.commentaireBottom]
+          }
+          wrap={false}
+        >
+          <View style={styles.commentaireHeaderRow}>
+            <AlertTriangleIcon />
+            <Text style={styles.mentionsTitle}>MENTIONS QUALITÉ</Text>
+          </View>
+          {(data.mentionsQualite ?? []).map((m, i) => (
+            <View key={i} style={styles.mentionRow}>
+              <Text style={styles.mentionBullet}>•</Text>
+              <Text style={styles.mentionText}>{m.trim()}</Text>
+            </View>
+          ))}
         </View>
       )}
 

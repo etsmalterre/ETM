@@ -43,6 +43,12 @@ import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
 import {
+  loadActions,
+  loadLineKeysForCommande,
+  mentionTextsForCommande,
+  mentionsByLine,
+} from '../lib/actions-qualite.js'
+import {
   IS_WINDOWS,
   esc,
   n,
@@ -2090,6 +2096,12 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
     adresseLivraison: cleanAddress(fixedAdresseLiv[0] as any),
     delaiLivraison: earliestDelivery ? formatHfsqlDateLongFr(earliestDelivery) : null,
     commentaire: (header.commentaire ?? null) as string | null,
+    // Automatic quality comments (Qualité › Actions). Resolved live rather than
+    // copied into commande_sous_traitant.commentaire — legacy never persisted
+    // them either (no order comment in the DB contains a mention's text), and
+    // keeping them dynamic means editing an action updates every future bon de
+    // commande instead of only the ones printed after the edit.
+    mentionsQualite: await mentionTextsForCommande(id),
     lignes: fixedLignes.map((l) => {
       const refId = Number(l.IDreference) || 0
       const colId = Number(l.IDColoris) || 0
@@ -6142,6 +6154,49 @@ commandesSousTraitantRouter.get(
 // client commande in the chain (e.g. ged#9292 for sst-cmd 7925 also has
 // IDcommande_client = 6351). Adding the zero filter silently hides
 // those shared docs — see the CLAUDE.md polymorphic-ged rule.
+
+// ── Mentions qualité (read-only, derived) ────────────────
+//
+// GET /commandes-sous-traitant/:id/mentions-qualite
+//
+// The automatic comments Qualité › Actions attaches to this order's lines. Pure
+// projection — nothing is stored on the commande, so this endpoint is the single
+// place the screen and the bon de commande PDF agree on what the sst is told.
+// Grouped per line because a mixed order (tricotage + ennoblissement) can carry
+// different instructions per line; `texts` is the deduped order-level list the
+// PDF prints.
+commandesSousTraitantRouter.get('/:id/mentions-qualite', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+    const lines = await loadLineKeysForCommande(id)
+    const byLine = await mentionsByLine(lines)
+    const actions = await loadActions()
+    const actionById = new Map(actions.map((a) => [a.IDaction_qualite, a]))
+
+    const seen = new Set<string>()
+    const texts: string[] = []
+    const lignes = lines.map((l) => {
+      const mentions = (byLine.get(l.IDligne_commande_sous_traitant) ?? []).map((m) => {
+        const text = m.mention.trim()
+        if (text && !seen.has(text)) { seen.add(text); texts.push(text) }
+        return {
+          IDmention_qualite: m.IDmention_qualite,
+          IDaction_qualite: m.IDaction_qualite,
+          action_titre: actionById.get(m.IDaction_qualite)?.titre ?? '',
+          mention: m.mention,
+        }
+      })
+      return { IDligne_commande_sous_traitant: l.IDligne_commande_sous_traitant, mentions }
+    })
+
+    res.json({ texts, lignes: lignes.filter((l) => l.mentions.length > 0) })
+  } catch (err) {
+    console.error('Error loading mentions qualité for commande sst:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
 const COMMANDE_SST_DOC_TYPES = '1, 2, 3, 4, 5, 6, 15'
 

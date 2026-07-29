@@ -31,6 +31,7 @@ import { stockFiniRouter } from './routes/stock-fini.js'
 import { stockEcruRouter } from './routes/stock-ecru.js'
 import { suiviLotsRouter } from './routes/suivi-lots.js'
 import { dossiersQualiteRouter } from './routes/dossiers-qualite.js'
+import { actionsQualiteRouter } from './routes/actions-qualite.js'
 import { rapportsRouter } from './routes/rapports.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { authRouter } from './routes/auth.js'
@@ -124,6 +125,7 @@ app.use('/api/stock', stockFiniRouter)
 app.use('/api/stock', stockEcruRouter)
 app.use('/api/suivi-lots', suiviLotsRouter)
 app.use('/api/dossiers-qualite', dossiersQualiteRouter)
+app.use('/api/actions-qualite', actionsQualiteRouter)
 app.use('/api/rapports', rapportsRouter)
 // TRM atelier planning — consumed by the MPS-TRM web app (C:\dev\etsmalterre\MPS-TRM)
 app.use('/api/planning-atelier', planningAtelierRouter)

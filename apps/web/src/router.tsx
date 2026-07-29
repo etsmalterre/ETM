@@ -25,7 +25,7 @@ function createPlaceholder(title: string, description: string, Icon: LucideIcon)
 const FilsPrevisionsPage = createPlaceholder('Prévisions Fournisseurs', 'Prévisions d\'approvisionnement fournisseurs', FileText)
 
 // Références Finis / Études coloris / Tarifs — real screens (not placeholders anymore)
-const QualiteActionsPage = createPlaceholder('Actions', 'Actions qualité', ClipboardCheck)
+// Actions qualité — real screen (not a placeholder anymore)
 const QualiteAnalysePage = createPlaceholder('Analyse', 'Analyse qualité', BarChart3)
 // Commandes clients — real screen (not a placeholder anymore)
 // Commandes fils — real screen (not a placeholder anymore)
@@ -52,6 +52,7 @@ import { TransfertsFils } from '@/pages/TransfertsFils'
 // Qualité pages (real)
 import { QualiteSuiviLots } from '@/pages/QualiteSuiviLots'
 import { QualiteDossiers } from '@/pages/QualiteDossiers'
+import { QualiteActions } from '@/pages/QualiteActions'
 
 // Tombé Métier pages (real)
 import { TombeMetierReferences } from '@/pages/TombeMetierReferences'
@@ -143,7 +144,7 @@ export const router = createBrowserRouter([
       { path: 'qualite', element: <Navigate to="/qualite/suivi-lots" replace /> },
       { path: 'qualite/suivi-lots', element: <QualiteSuiviLots /> },
       { path: 'qualite/dossiers', element: <QualiteDossiers /> },
-      { path: 'qualite/actions', element: <QualiteActionsPage /> },
+      { path: 'qualite/actions', element: <QualiteActions /> },
       { path: 'qualite/analyse', element: <QualiteAnalysePage /> },
 
       // Rapports

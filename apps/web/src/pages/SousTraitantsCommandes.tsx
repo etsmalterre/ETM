@@ -5477,6 +5477,73 @@ function TrmMirrorCard({ mirror }: { mirror: TrmMirror }) {
   )
 }
 
+/**
+ * Standing quality instructions that apply to this order's lines, owned by
+ * Qualité › Actions. Purely derived — nothing is stored on the commande — so
+ * the card is read-only here and renders nothing when there's no match.
+ * The same endpoint feeds the MENTIONS QUALITÉ block on the bon de commande
+ * PDF, so screen and print can't drift.
+ */
+function MentionsQualiteCard({ commandeId }: { commandeId: number }) {
+  const { data } = useQuery<{
+    texts: string[]
+    lignes: Array<{
+      IDligne_commande_sous_traitant: number
+      mentions: Array<{
+        IDmention_qualite: number
+        IDaction_qualite: number
+        action_titre: string
+        mention: string
+      }>
+    }>
+  }>({
+    queryKey: ['commande-sst-mentions-qualite', commandeId],
+    queryFn: () => apiFetch(`/commandes-sous-traitant/${commandeId}/mentions-qualite`),
+    enabled: commandeId > 0,
+  })
+
+  // Dedupe to the order level: several lines routinely match the same mention
+  // and repeating it would just be noise.
+  const rows = useMemo(() => {
+    const seen = new Set<number>()
+    const out: Array<{ id: number; action_titre: string; mention: string }> = []
+    for (const l of data?.lignes ?? []) {
+      for (const m of l.mentions) {
+        if (seen.has(m.IDmention_qualite)) continue
+        seen.add(m.IDmention_qualite)
+        out.push({ id: m.IDmention_qualite, action_titre: m.action_titre, mention: m.mention })
+      }
+    }
+    return out
+  }, [data])
+
+  if (rows.length === 0) return null
+
+  return (
+    <div className="p-3 rounded-lg border bg-card shadow-sm border-l-4 border-l-red-500/60">
+      <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+        <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
+        Mentions qualité
+      </p>
+      <p className="text-[10px] text-muted-foreground mb-2 italic">
+        Ajoutées automatiquement au bon de commande. Se modifient dans Qualité › Actions.
+      </p>
+      <div className="space-y-2">
+        {rows.map((r) => (
+          <div key={r.id} className="rounded-md bg-red-50 border border-red-200 p-2">
+            {!!r.action_titre.trim() && (
+              <p className="text-[10px] font-semibold text-red-800 uppercase tracking-wide">
+                {r.action_titre.trim()}
+              </p>
+            )}
+            <p className="text-xs text-foreground whitespace-pre-line mt-0.5">{r.mention.trim()}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function InfoTab({
   commande, isEditing,
   editDateCommande, onEditDateCommandeChange,
@@ -5561,6 +5628,13 @@ function InfoTab({
           <p className="text-sm text-muted-foreground italic">Aucun commentaire</p>
         )}
       </div>
+
+      {/* Mentions qualité — read-only, derived from Qualité › Actions. Sits
+          right under the commentaire because both answer "what does the sst
+          get told?", but stays a separate card: the commentaire is this
+          order's one-off note, these are standing quality instructions that
+          also print on the bon de commande. */}
+      <MentionsQualiteCard commandeId={commande.IDcommande_sous_traitant} />
 
       {/* Journal — moved here from its own tab. Same content as the legacy
           `JournalTab` rendered inline so commentaire and journal sit side
