@@ -503,7 +503,7 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
     if (kind === 'formelle') {
       const beforeSql = beforeId !== null ? ` AND IDexpedition < ${beforeId}` : ''
       const heads = await query<any>(
-        `SELECT TOP ${fetchCap} IDexpedition, IDcommande_client, IDtransporteur, DATE AS dexp, est_facture, donation ` +
+        `SELECT TOP ${fetchCap} IDexpedition, IDcommande_client, IDadresse, IDtransporteur, DATE AS dexp, est_facture, donation ` +
           `FROM expedition WHERE IDsociete = 1${stateSql}${beforeSql} ORDER BY IDexpedition DESC`,
       )
       const cmdIds = heads.map((h: any) => Number(h.IDcommande_client)).filter(Boolean)
@@ -524,6 +524,9 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
         const agg = aggs.get(id) ?? { nb_rolls: 0, poids: 0, metrage: 0 }
         return {
           id, kind, IDcommande_client: Number(h.IDcommande_client) || 0,
+          // IDadresse drives the grouped demande-de-transport picker: one sheet
+          // has one "Pour livraison chez" block, so mixed addresses can't group.
+          IDadresse: Number(h.IDadresse) || 0,
           commande_numero: cmd.numero, IDclient: cmd.IDclient,
           client_nom: clientNames.get(cmd.IDclient) ?? '',
           transporteur_nom: transNames.get(Number(h.IDtransporteur)) ?? '',
@@ -2299,31 +2302,82 @@ async function loadExpeditionRollTotals(ligneIds: number[]): Promise<{ poids: nu
   return { poids: rolls.reduce((s, r) => s + numOf(r.poids), 0), nb: rolls.length }
 }
 
-export async function buildDemandeTransportPdfData(
-  id: number,
-  userId: number | undefined,
-): Promise<DemandeTransportPdfData | null> {
-  const rows = await query<any>(
-    `SELECT IDexpedition, IDcommande_client, IDadresse, IDtransporteur, DATE AS dexp ` +
-      `FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`,
-  )
-  if (rows.length === 0) return null
-  const h = rows[0]
-  const cmdId = Number(h.IDcommande_client) || 0
+/** Build failure the caller turns into an HTTP status + French message. */
+type TransportBuildError = { status: number; error: string; message: string }
 
-  const cmdRows = cmdId > 0
-    ? await query<any>(`SELECT IDcommande_client, numero, IDclient FROM commande_client WHERE IDcommande_client = ${cmdId}`)
+/** Data for ONE pickup request covering `ids` (one expedition, or a grouped
+ *  selection — legacy's right-click "Transport" on a multi-row selection).
+ *
+ *  Grouping rules, ported from the legacy screen + what the sheet can express:
+ *   - every expedition must belong to the SAME client (legacy refuses the
+ *     selection otherwise: "Toutes les lignes sélectionnées ne sont pas liées
+ *     au même client"),
+ *   - the sheet has exactly one "Pour livraison chez" block, so the delivery
+ *     addresses must agree too. Expeditions with no address set (IDadresse = 0)
+ *     don't count as a disagreement — they just inherit the one that is set,
+ *   - the carrier is only printed when all of them name the same one; otherwise
+ *     the Destinataire block stays blank for the operator to fill in (it is a
+ *     fill-in field on the legacy sheet anyway),
+ *   - rolls are CUMULATED: the weight/count line is the total across every
+ *     line of every selected expedition. */
+export async function buildDemandeTransportPdfData(
+  ids: number[],
+  userId: number | undefined,
+): Promise<{ data: DemandeTransportPdfData } | { err: TransportBuildError }> {
+  const wanted = Array.from(new Set(ids.filter((x) => Number.isInteger(x) && x > 0)))
+  if (wanted.length === 0) return { err: { status: 400, error: 'Invalid ID', message: 'Aucune expédition sélectionnée.' } }
+
+  const heads = await query<any>(
+    `SELECT IDexpedition, IDcommande_client, IDadresse, IDtransporteur, DATE AS dexp ` +
+      `FROM expedition WHERE IDexpedition IN (${wanted.join(',')}) AND IDsociete = 1 ORDER BY IDexpedition`,
+  )
+  if (heads.length === 0) {
+    return { err: { status: 404, error: 'Expédition not found', message: 'Expédition introuvable.' } }
+  }
+  const expIds = heads.map((h: any) => Number(h.IDexpedition))
+
+  // Commandes → client. Distinct clients = the legacy refusal.
+  const cmdIds = Array.from(new Set(heads.map((h: any) => Number(h.IDcommande_client) || 0).filter((x: number) => x > 0)))
+  const cmdRows = cmdIds.length > 0
+    ? await query<any>(`SELECT IDcommande_client, numero, IDclient FROM commande_client WHERE IDcommande_client IN (${cmdIds.join(',')})`)
     : []
-  const cmd = cmdRows[0] as any
-  const IDclient = Number(cmd?.IDclient) || 0
+  const cmdMap = new Map<number, { numero: number | null; IDclient: number }>(
+    cmdRows.map((c: any) => [Number(c.IDcommande_client), { numero: c.numero != null ? Number(c.numero) : null, IDclient: Number(c.IDclient) || 0 }]),
+  )
+  const clientIds = Array.from(new Set(heads.map((h: any) => cmdMap.get(Number(h.IDcommande_client) || 0)?.IDclient ?? 0)))
+  if (clientIds.length > 1) {
+    return {
+      err: {
+        status: 400,
+        error: 'multiple_clients',
+        message: 'Toutes les expéditions sélectionnées ne sont pas liées au même client.',
+      },
+    }
+  }
+  const IDclient = clientIds[0] ?? 0
+
+  // One delivery block → one address. Unset (0) expeditions inherit.
+  const adrIds = Array.from(new Set(heads.map((h: any) => Number(h.IDadresse) || 0).filter((x: number) => x > 0)))
+  if (adrIds.length > 1) {
+    return {
+      err: {
+        status: 400,
+        error: 'multiple_adresses',
+        message: 'Les expéditions sélectionnées n\'ont pas la même adresse de livraison.',
+      },
+    }
+  }
+  // Blank when the carriers disagree — it is a fill-in field on the sheet.
+  const transIds = Array.from(new Set(heads.map((h: any) => Number(h.IDtransporteur) || 0).filter((x: number) => x > 0)))
+  const IDtransporteur = transIds.length === 1 ? transIds[0] : 0
 
   const leRows = await query<any>(
-    `SELECT IDligne_expedition FROM ligne_expedition WHERE IDexpedition = ${id}`,
+    `SELECT IDligne_expedition FROM ligne_expedition WHERE IDexpedition IN (${expIds.join(',')})`,
   )
   const [clientNames, transNames, adr, totals, expediteur] = await Promise.all([
     resolveClientNames([IDclient]),
-    resolveTransporteurNames([Number(h.IDtransporteur)]),
-    loadAdresse(Number(h.IDadresse) || 0),
+    resolveTransporteurNames([IDtransporteur]),
+    loadAdresse(adrIds[0] ?? 0),
     loadExpeditionRollTotals((leRows as any[]).map((l) => Number(l.IDligne_expedition) || 0)),
     loadExpediteurLabel(userId),
   ])
@@ -2333,37 +2387,49 @@ export async function buildDemandeTransportPdfData(
   const dateCourte = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`
   const dateLong = `${now.getDate()} ${FRENCH_MONTHS[now.getMonth()]} ${now.getFullYear()}`
 
+  const commandeNumeros = Array.from(
+    new Set(
+      heads
+        .map((h: any) => cmdMap.get(Number(h.IDcommande_client) || 0)?.numero ?? null)
+        .filter((x: number | null): x is number => x != null),
+    ),
+  ).sort((a, b) => a - b)
+
   const a = adr as any
   return {
-    numero: id,
-    dateLong,
-    dateCourte,
-    expediteur,
-    transporteurNom: transNames.get(Number(h.IDtransporteur)) || null,
-    clientNom: clientNames.get(IDclient) || null,
-    commandeNumero: cmd?.numero != null ? Number(cmd.numero) : null,
-    poids: totals.poids,
-    nbRouleaux: totals.nb,
-    enlevement: {
-      nom: company.legalName,
-      adresse1: company.address1,
-      adresse2: company.address2 || null,
-      adresse3: null,
-      cp: company.zip,
-      ville: company.city,
-      pays: company.country,
+    data: {
+      numero: expIds[0],
+      expeditionIds: expIds,
+      dateLong,
+      dateCourte,
+      expediteur,
+      transporteurNom: transNames.get(IDtransporteur) || null,
+      clientNom: clientNames.get(IDclient) || null,
+      commandeNumero: commandeNumeros.length > 0 ? commandeNumeros[0] : null,
+      commandeNumeros,
+      poids: totals.poids,
+      nbRouleaux: totals.nb,
+      enlevement: {
+        nom: company.legalName,
+        adresse1: company.address1,
+        adresse2: company.address2 || null,
+        adresse3: null,
+        cp: company.zip,
+        ville: company.city,
+        pays: company.country,
+      },
+      livraison: a
+        ? {
+            nom: (a.nom ?? null) as string | null,
+            adresse1: (a.adresse1 ?? null) as string | null,
+            adresse2: (a.adresse2 ?? null) as string | null,
+            adresse3: (a.adresse3 ?? null) as string | null,
+            cp: (a.cp ?? null) as string | null,
+            ville: (a.ville ?? null) as string | null,
+            pays: (a.pays ?? null) as string | null,
+          }
+        : null,
     },
-    livraison: a
-      ? {
-          nom: (a.nom ?? null) as string | null,
-          adresse1: (a.adresse1 ?? null) as string | null,
-          adresse2: (a.adresse2 ?? null) as string | null,
-          adresse3: (a.adresse3 ?? null) as string | null,
-          cp: (a.cp ?? null) as string | null,
-          ville: (a.ville ?? null) as string | null,
-          pays: (a.pays ?? null) as string | null,
-        }
-      : null,
   }
 }
 
@@ -2375,19 +2441,47 @@ async function renderDemandeTransportBuffer(data: DemandeTransportPdfData): Prom
   )
 }
 
+function sendTransportPdf(res: Response, buffer: Buffer, filenameSuffix: string): void {
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `inline; filename="Demande-transport-${filenameSuffix}.pdf"`)
+  res.removeHeader('X-Frame-Options')
+  res.removeHeader('Content-Security-Policy')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  res.send(buffer)
+}
+
+/** Grouped pickup request — ONE sheet cumulating the rolls of several
+ *  expeditions (legacy right-click → Transport on a multi-row selection).
+ *
+ *  MUST stay registered BEFORE `/formelle/:id/demande-transport/pdf`: both
+ *  patterns are 4 segments, so Express would otherwise match this URL with
+ *  id = 'groupee' and 400 on the parseInt. */
+expeditionsRouter.get('/formelle/groupee/demande-transport/pdf', async (req: Request, res: Response) => {
+  try {
+    const ids = String(req.query.ids ?? '')
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((x) => !isNaN(x) && x > 0)
+    if (ids.length === 0) { res.status(400).json({ error: 'Invalid ID', message: 'Aucune expédition sélectionnée.' }); return }
+    if (ids.length > 100) { res.status(400).json({ error: 'Too many', message: 'Trop d\'expéditions sélectionnées (100 maximum).' }); return }
+    const built = await buildDemandeTransportPdfData(ids, req.userId)
+    if ('err' in built) { res.status(built.err.status).json({ error: built.err.error, message: built.err.message }); return }
+    const buffer = await renderDemandeTransportBuffer(built.data)
+    sendTransportPdf(res, buffer, (built.data.expeditionIds ?? [built.data.numero]).join('-'))
+  } catch (err) {
+    console.error('Error rendering grouped demande de transport PDF:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 expeditionsRouter.get('/formelle/:id/demande-transport/pdf', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const data = await buildDemandeTransportPdfData(id, req.userId)
-    if (!data) { res.status(404).json({ error: 'Expédition not found' }); return }
-    const buffer = await renderDemandeTransportBuffer(data)
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="Demande-transport-${id}.pdf"`)
-    res.removeHeader('X-Frame-Options')
-    res.removeHeader('Content-Security-Policy')
-    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-    res.send(buffer)
+    const built = await buildDemandeTransportPdfData([id], req.userId)
+    if ('err' in built) { res.status(built.err.status).json({ error: built.err.error, message: built.err.message }); return }
+    const buffer = await renderDemandeTransportBuffer(built.data)
+    sendTransportPdf(res, buffer, String(id))
   } catch (err) {
     console.error('Error rendering demande de transport PDF:', err)
     res.status(500).json({ error: 'Internal server error' })

@@ -56,6 +56,9 @@ interface ExpeditionListRow {
   IDcommande_client?: number
   commande_numero?: number | null
   IDclient: number
+  /** Delivery address (formelle) — 0 when none is set. Drives the grouped
+   *  demande-de-transport picker: one sheet, one delivery block. */
+  IDadresse?: number
   client_nom: string
   ref_client?: string
   transporteur_nom: string
@@ -213,6 +216,7 @@ export function ClientsExpeditions() {
   const [autoEditForId, setAutoEditForId] = useState<number | null>(null)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
+  const [transportPickOpen, setTransportPickOpen] = useState(false)
 
   // Formelle roll drawer (page-level so startEdit can close it — mps_designer §31.2).
   const [rollDrawerLcc, setRollDrawerLcc] = useState<number | null>(null)
@@ -403,6 +407,7 @@ export function ClientsExpeditions() {
             stateFilter={stateFilter}
             onStateFilterChange={handleStateFilterChange}
             onNew={() => setCreateOpen(true)}
+            onTransportGroupe={() => setTransportPickOpen(true)}
             isEditing={isEditing}
             hasMore={!!hasNextPage}
             onLoadMore={() => fetchNextPage()}
@@ -476,6 +481,16 @@ export function ClientsExpeditions() {
         }}
       />
 
+      <TransportPickDialog
+        open={transportPickOpen}
+        rows={list}
+        onClose={() => setTransportPickOpen(false)}
+        onConfirm={(ids) => {
+          window.open(`${API_URL}/expeditions/formelle/groupee/demande-transport/pdf?ids=${ids.join(',')}`, '_blank')
+          setTransportPickOpen(false)
+        }}
+      />
+
       <ConfirmDialog
         open={deleteConfirmOpen}
         title="Supprimer l'expédition"
@@ -528,7 +543,7 @@ function ExpeditionListPanel({
   searchQuery, onSearchChange,
   bucket, onBucketChange,
   stateFilter, onStateFilterChange,
-  onNew, isEditing,
+  onNew, onTransportGroupe, isEditing,
   hasMore, onLoadMore, isLoadingMore,
 }: {
   rows: ExpeditionListRow[]
@@ -544,6 +559,7 @@ function ExpeditionListPanel({
   stateFilter: 'nonfacture' | 'facture'
   onStateFilterChange: (s: 'nonfacture' | 'facture') => void
   onNew: () => void
+  onTransportGroupe: () => void
   isEditing: boolean
   hasMore: boolean
   onLoadMore: () => void
@@ -666,6 +682,18 @@ function ExpeditionListPanel({
         </>)}
       </div>
 
+      {/* Grouped pickup request — formelle only (the sheet has no divers
+          counterpart). Pinned above the footer so it stays visible however
+          long the list is. Disabled during edit mode like every other batch
+          affordance: printing mid-edit prints pre-save figures. */}
+      {bucket === 'formelle' && (
+        <div className="flex-shrink-0 p-3 border-t bg-zinc-200/50">
+          <Button size="sm" variant="outline" className="w-full" onClick={onTransportGroupe} disabled={isEditing}>
+            <Truck className="h-3.5 w-3.5 mr-1.5" />Demande de transport
+          </Button>
+        </div>
+      )}
+
       <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
         <span>{rows.length} expédition{rows.length !== 1 ? 's' : ''}{hasMore ? '+' : ''}</span>
         {!isEditing && (
@@ -687,6 +715,219 @@ function StatePill({ facturee, className }: { facturee: boolean; className?: str
       {facturee ? <Receipt className="h-2.5 w-2.5" /> : <Clock className="h-2.5 w-2.5" />}
       {facturee ? 'Facturée' : 'Non facturée'}
     </Badge>
+  )
+}
+
+// ── Grouped demande de transport picker ────────────────
+
+/** Picks several expeditions and prints ONE pickup request cumulating their
+ *  rolls — the legacy right-click "Transport" on a multi-row selection.
+ *
+ *  Picks from the expeditions currently listed (search + Textile/Non facturées
+ *  filters apply), so narrowing the left list narrows the picker.
+ *
+ *  The sheet carries one client and one delivery block, so the first pick locks
+ *  the list down to that client and that delivery address — the rows that can
+ *  no longer join disappear rather than sit there disabled (legacy refused the
+ *  mixed selection with an error dialog after the fact). Expeditions with no
+ *  address set stay pickable: they inherit the one that is set. Emptying the
+ *  selection brings the whole list back. The API re-checks both rules. */
+function TransportPickDialog({
+  open, rows, onClose, onConfirm,
+}: {
+  open: boolean
+  rows: ExpeditionListRow[]
+  onClose: () => void
+  onConfirm: (ids: number[]) => void
+}) {
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  // Shift+click range anchor (mps_designer §44) — a ref so widening then
+  // narrowing a range keeps the same origin.
+  const lastSelectedIdRef = useRef<number | null>(null)
+
+  const formelleRows = useMemo(() => rows.filter((r) => r.kind === 'formelle'), [rows])
+
+  // Fresh selection every time the dialog opens.
+  useEffect(() => {
+    if (open) { setSelected(new Set()); lastSelectedIdRef.current = null }
+  }, [open])
+
+  // The first pick locks the client, and the first picked address locks the
+  // delivery block. Both unlock when the selection empties.
+  const { lockClient, lockAdresse } = useMemo(() => {
+    const picked = formelleRows.filter((r) => selected.has(r.id))
+    return {
+      lockClient: picked.length > 0 ? picked[0].IDclient : null,
+      lockAdresse: picked.find((r) => (r.IDadresse ?? 0) > 0)?.IDadresse ?? null,
+    }
+  }, [formelleRows, selected])
+
+  // The rows still eligible under the current lock — this IS the rendered list.
+  const pickable = useMemo(() => formelleRows.filter((r) => {
+    if (lockClient !== null && r.IDclient !== lockClient) return false
+    if (lockAdresse !== null && (r.IDadresse ?? 0) > 0 && r.IDadresse !== lockAdresse) return false
+    return true
+  }), [formelleRows, lockClient, lockAdresse])
+
+  const handleSelect = useCallback((id: number, shiftKey: boolean) => {
+    // Range runs over the rendered order, restricted to the rows the current
+    // lock still allows — never silently crossing an unselectable row.
+    const ids = pickable.map((r) => r.id)
+    const anchor = lastSelectedIdRef.current
+    if (shiftKey && anchor !== null && anchor !== id) {
+      const a = ids.indexOf(anchor)
+      const b = ids.indexOf(id)
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a]
+        setSelected((prev) => {
+          const next = new Set(prev)
+          const deselect = prev.has(id)
+          for (let i = lo; i <= hi; i++) {
+            if (deselect) next.delete(ids[i]); else next.add(ids[i])
+          }
+          return next
+        })
+        return // anchor intentionally stays put
+      }
+    }
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+    lastSelectedIdRef.current = id
+  }, [pickable])
+
+  const allPicked = pickable.length > 0 && pickable.every((r) => selected.has(r.id))
+  const toggleAll = () => {
+    if (allPicked) {
+      setSelected(new Set())
+      lastSelectedIdRef.current = null
+    } else {
+      // With nothing selected yet the lock is open, so "tout sélectionner"
+      // would span clients — anchor it on the first row's client instead.
+      const anchorClient = selected.size > 0 ? lockClient : formelleRows[0]?.IDclient ?? null
+      const anchorAdresse = selected.size > 0
+        ? lockAdresse
+        : formelleRows.find((r) => r.IDclient === anchorClient && (r.IDadresse ?? 0) > 0)?.IDadresse ?? null
+      const take = formelleRows.filter((r) =>
+        r.IDclient === anchorClient
+        && (anchorAdresse === null || (r.IDadresse ?? 0) === 0 || r.IDadresse === anchorAdresse))
+      setSelected(new Set(take.map((r) => r.id)))
+      lastSelectedIdRef.current = take.length > 0 ? take[take.length - 1].id : null
+    }
+  }
+
+  const totals = useMemo(() => formelleRows.reduce(
+    (acc, r) => selected.has(r.id)
+      ? { nb: acc.nb + (r.nb_rolls ?? 0), poids: acc.poids + (r.total_poids ?? 0) }
+      : acc,
+    { nb: 0, poids: 0 },
+  ), [formelleRows, selected])
+
+  const checkboxClass = 'h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer'
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-lg" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Truck className="h-5 w-5 text-accent" />Demande de transport groupée
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4">
+          {formelleRows.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground text-center">
+              <Truck className="h-12 w-12 mb-3 opacity-40" />
+              <p className="text-sm font-medium">Aucune expédition à regrouper</p>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Sélectionnez les expéditions à enlever : une seule demande sera imprimée, cumulant tous
+                leurs rouleaux. Après la première sélection, la liste se limite aux expéditions du même
+                client.
+              </p>
+              <label className="flex items-center gap-2 mt-3 px-2 py-1.5 text-sm font-medium cursor-pointer select-none rounded-md hover:bg-accent/5">
+                <input
+                  type="checkbox"
+                  checked={allPicked}
+                  ref={(el) => { if (el) el.indeterminate = selected.size > 0 && !allPicked }}
+                  onChange={toggleAll}
+                  className={checkboxClass}
+                />
+                Tout sélectionner
+                <span className="ml-auto text-xs font-normal text-muted-foreground tabular-nums">
+                  {selected.size}/{pickable.length}
+                </span>
+              </label>
+              <div className="mt-1.5 space-y-1.5 max-h-72 overflow-y-auto scrollbar-transparent p-0.5">
+                {pickable.map((row) => {
+                  const isChecked = selected.has(row.id)
+                  return (
+                    // The ROW is the control, not a <label>: Shift+click has to
+                    // reach our handler, and cancelling a label's default
+                    // activation desyncs React's input value tracker (the box
+                    // then renders unchecked while the state says selected).
+                    <div
+                      key={row.id}
+                      role="checkbox"
+                      aria-checked={isChecked}
+                      tabIndex={0}
+                      onClick={(e) => handleSelect(row.id, e.shiftKey)}
+                      onKeyDown={(e) => {
+                        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); handleSelect(row.id, e.shiftKey) }
+                      }}
+                      className={cn(
+                        'flex items-center gap-2.5 p-2 rounded-md border text-sm select-none transition-colors cursor-pointer',
+                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        isChecked
+                          ? 'border-accent/50 bg-accent/[0.06]'
+                          : 'border-border/60 bg-zinc-100/80 hover:border-accent/40',
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        readOnly
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        className={cn(checkboxClass, 'flex-shrink-0 pointer-events-none')}
+                      />
+                      <Truck className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                      <span className="font-medium flex-shrink-0">N° {row.id}</span>
+                      <span className="text-muted-foreground truncate flex-1">{row.client_nom || '—'}</span>
+                      {row.date && (
+                        <span className="text-xs text-muted-foreground flex-shrink-0">{formatHfsqlDate(row.date)}</span>
+                      )}
+                      <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">
+                        {row.nb_rolls ?? 0} rlx · {fmtNum(row.total_poids ?? 0, 0)} kg
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+              {selected.size > 0 && (
+                <p className="mt-3 text-xs text-muted-foreground tabular-nums">
+                  Total à enlever : <span className="font-semibold text-foreground">{fmtNum(totals.poids, 1)} kg</span>
+                  {' '}en <span className="font-semibold text-foreground">{totals.nb}</span> rouleau{totals.nb > 1 ? 'x' : ''}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose}>Annuler</Button>
+          <Button
+            disabled={selected.size === 0}
+            onClick={() => onConfirm(formelleRows.filter((r) => selected.has(r.id)).map((r) => r.id))}
+          >
+            <Printer className="h-3.5 w-3.5 mr-1.5" />
+            Imprimer{selected.size > 0 ? ` (${selected.size})` : ''}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

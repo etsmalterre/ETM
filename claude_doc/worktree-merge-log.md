@@ -10,6 +10,51 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/expedition
+
+**Clients › Expéditions — demande de transport groupée : une seule demande d'enlèvement pour
+plusieurs expéditions, cumulant tous leurs rouleaux.**
+
+Port de la sélection multiple + clic droit → « Transport » de l'écran legacy *Expéditions*.
+
+- **Bouton « Demande de transport » en bas de la liste de gauche** (barre épinglée au-dessus du
+  pied, comme les actions par lot de Clients › Facturation). **Bucket Textile uniquement** — la
+  fiche n'a pas d'équivalent Diverses — et désactivé en mode édition, comme toute action par lot
+  (imprimer en cours d'édition imprimerait des chiffres d'avant enregistrement).
+- **Dialogue de sélection** alimenté par les expéditions **actuellement affichées** : la
+  recherche et les filtres Textile / Non facturées de la liste de gauche restreignent donc aussi
+  le sélecteur. Chaque ligne affiche n° · client · date · `rlx · kg`, avec un total vivant
+  « Total à enlever : X kg en N rouleaux » — le chiffre imprimé est visible **avant** de cliquer.
+  Sélection par plage **MAJ + clic** (`mps_designer §44`) et « Tout sélectionner ».
+- **Une fiche = un client et une adresse de livraison.** Le premier choix **filtre la liste** sur
+  ce client et cette adresse : les expéditions qui ne peuvent plus rejoindre le lot disparaissent
+  au lieu de rester grisées (le legacy, lui, refusait la sélection *après coup* avec « Toutes les
+  lignes sélectionnées ne sont pas liées au même client »). Les expéditions sans adresse restent
+  éligibles : elles héritent de celle qui est renseignée. Vider la sélection rend toute la liste.
+- **API** : `GET /expeditions/formelle/groupee/demande-transport/pdf?ids=…`, **déclarée avant**
+  `/formelle/:id/demande-transport/pdf` — les deux motifs font 4 segments, sinon Express prendrait
+  `groupee` pour un id. `buildDemandeTransportPdfData` prend désormais un **tableau** d'ids, si
+  bien que la route unitaire et la route groupée partagent un seul chemin de code, et les deux
+  règles (même client / même adresse) sont **revérifiées côté serveur** (400 + message français).
+  Le transporteur n'est imprimé que si toutes les expéditions désignent le même, sinon le bloc
+  Destinataire reste vierge — c'est un champ à remplir à la main sur la fiche legacy.
+  `GET /expeditions` expose en plus `IDadresse` (c'est lui qui pilote le verrou d'adresse côté
+  écran).
+- **PDF** : la référence de l'en-tête liste les numéros (`N°A + N°B + N°C`) et se replie en
+  « N expéditions » au-delà de 3, sinon elle déborderait sur la date ; la ligne « Commandes » de
+  la carte Informations se replie en « N commandes » au-delà de 2, pour la même raison (la carte
+  est une colonne de largeur fixe dont la valeur, alignée à droite sur une seule ligne, repasse
+  **par-dessus son propre libellé** quand elle est trop longue). Les listes complètes sont
+  imprimées sous l'encadré de poids, en texte courant, où elles peuvent revenir à la ligne :
+  *« Regroupement de 6 expéditions : … »* + *« Commandes : … »*. La fiche mono-expédition est
+  inchangée au pixel près. Aperçu sans base : `apps/api/src/scripts/dump-demande-transport-pdf.ts`
+  (une 3ᵉ variante groupée a été ajoutée).
+
+**Limite connue, laissée en l'état** : le débordement de valeur longue est latent dans
+`MetadataCard` (`MalterreDocument.tsx`) pour **tous** les documents, pas seulement celui-ci — un
+`flexShrink: 1` sur `metaValue` le ferait revenir à la ligne, mais cela touche la mise en page de
+tous les PDF de l'app et méritait un commit dédié plutôt qu'un effet de bord de celui-ci.
+
 ## 2026-07-29 — feat/rapport-finance
 **Rapports › Finance : tiroir enrichi (nature de la charge éditable) + le bandeau bleu marine
 des widgets adopté par TOUS les tiroirs latéraux de l'app.**

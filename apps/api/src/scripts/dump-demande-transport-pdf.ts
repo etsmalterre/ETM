@@ -41,6 +41,23 @@ async function main() {
   const buf2 = await renderToBuffer(React.createElement(DemandeTransportPdf, { data: withCarrier }) as any)
   fs.writeFileSync(out2, buf2)
   console.log('wrote', out2, buf2.length, 'bytes')
+
+  // Grouped variant — several expeditions of the same client cumulated onto
+  // one sheet (legacy right-click → Transport on a multi-row selection).
+  const grouped: DemandeTransportPdfData = {
+    ...data,
+    numero: 11649,
+    expeditionIds: [11649, 11651, 11655],
+    transporteurNom: 'GEODIS Amiens',
+    commandeNumero: 3678,
+    commandeNumeros: [3678, 3680],
+    poids: 341.2,
+    nbRouleaux: 17,
+  }
+  const out3 = path.join(path.dirname(out), path.basename(out, '.pdf') + '-groupee.pdf')
+  const buf3 = await renderToBuffer(React.createElement(DemandeTransportPdf, { data: grouped }) as any)
+  fs.writeFileSync(out3, buf3)
+  console.log('wrote', out3, buf3.length, 'bytes')
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1) })
