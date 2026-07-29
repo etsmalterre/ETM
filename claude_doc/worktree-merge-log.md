@@ -10,6 +10,24 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/cmd-client
+**Clients › Commandes — dialogue « Nouvelle commande » ennoblisseur : plus de présélection, rouleaux triés.**
+
+Deux corrections d'usage sur `CreateEnnoblisseurOrderDialog` (`ClientsCommandes.tsx`), le
+dialogue ouvert depuis l'onglet Ennoblissement d'une ligne de commande client, bouton
+« Nouvelle commande » d'une ligne d'emplacement :
+
+- **Aucun rouleau sélectionné par défaut.** L'effet de montage qui présélectionnait tout
+  l'écru disponible chez l'emplacement (et le `initRef` qui le gardait) est supprimé. Le
+  dialogue s'ouvre sur « Aucun rouleau sélectionné », la jauge n'affiche que l'affecté déjà
+  en place, et « Créer la commande » reste désactivé tant que l'utilisateur n'a rien coché.
+  L'intention « tout confier au teinturier » reste à un clic via le raccourci **Tout**.
+- **Tri croissant par numéro de rouleau.** La liste est triée sur `numero` avec un
+  comparateur numérique (`localeCompare(…, { numeric: true })`), donc `3377/1, 3377/2, …
+  3377/16, 3377/1001` se lit de haut en bas dans l'ordre réel et non lexical (où `1001`
+  passait avant `16`). `Tout` / `Aucun` et les plages Maj+clic suivent le même ordre affiché,
+  puisque `orderedIds` dérive de la liste triée.
+
 ## 2026-07-29 — feat/qualite
 **Qualité : écran Actions + conformité par lot + mentions automatiques sur les commandes sous-traitant.**
 

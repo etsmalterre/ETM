@@ -4254,7 +4254,7 @@ function AffecteGauge({
 
 // Create a new ennoblisseur order from the écru held at ONE location (the row's
 // sous-traitant = the dyer). Scoped roll list ("disponible chez X"), multi-
-// select (all pre-selected), then POST creates the order + affects the rolls.
+// select (nothing pre-selected), then POST creates the order + affects the rolls.
 function CreateEnnoblisseurOrderDialog({
   commandeId, ligne, location, clientNom, reserved, target, dim, uniteLabel, onClose, onSuccess,
 }: {
@@ -4277,24 +4277,21 @@ function CreateEnnoblisseurOrderDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastSelectedRef = useRef<number | null>(null)
-  const initRef = useRef(false)
 
   const { data, isLoading, isError } = useQuery<AvailableRollsPayload>({
     queryKey: ['commande-client-enno-available', commandeId, ligneId, location.IDsous_traitant],
     queryFn: () => apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/supply/ennoblissement/available-rolls?magasin=${location.IDsous_traitant}`),
   })
 
-  const rolls = useMemo(() => data?.rolls ?? [], [data])
+  // Ascending by roll number (3377/1, 3377/2, … 3377/1001) — numeric-aware so
+  // the suffix sorts as a number, not lexically.
+  const rolls = useMemo(
+    () => [...(data?.rolls ?? [])].sort((a, b) =>
+      (a.numero ?? '').localeCompare(b.numero ?? '', 'fr', { numeric: true, sensitivity: 'base' })),
+    [data],
+  )
   const rendement = data?.rendement ?? 0
-  // Pre-select everything available at this location on first load (the common
-  // intent is "commission the dyer for all the écru it holds").
-  useEffect(() => {
-    if (!initRef.current && rolls.length > 0) {
-      setSelected(new Set(rolls.map((r) => r.id)))
-      lastSelectedRef.current = rolls[rolls.length - 1]?.id ?? null
-      initRef.current = true
-    }
-  }, [rolls])
+  // Nothing is pre-selected: the user picks the rolls to commission.
 
   const orderedIds = rolls.map((r) => r.id)
   const selectedKg = rolls.filter((r) => selected.has(r.id)).reduce((s, r) => s + (Number(r.poids) || 0), 0)
