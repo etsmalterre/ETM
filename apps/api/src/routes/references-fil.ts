@@ -473,6 +473,152 @@ function buildRefFilSets(body: z.infer<typeof refFilBody>): string[] {
   return sets
 }
 
+// ── GET /api/references-fil/:id/utilisation?colori=<id> ──────────────
+// "Utilisation fil" — port of the legacy FI_Utilisation_fil.wdw dashboard
+// panel: which écru references are knitted from this yarn?
+//
+// The link is `composition_ecru` (IDref_ecru × IDcolori_ecru × IDref_fil ×
+// IDcolori_fil × pourcentage). Two things about its shape drive this endpoint:
+//
+//  • A reference's composition is stored once per écru coloris, PLUS a base row
+//    at `IDcolori_ecru = 0`. Those base rows generally carry `IDcolori_fil = 0`
+//    ("this ref uses this yarn, no particular yarn coloris"). So filtering by a
+//    yarn coloris legitimately returns FEWER refs than the unfiltered list —
+//    verified against the legacy screen: 28 refs for 1/28 COTON PEIGNE BIO Z,
+//    23 once "ecru" is picked.
+//  • `colori_fil` re-uses the same name across many rows — that one yarn has
+//    NINE coloris called "ecru", of which only one is referenced by any
+//    composition. Picking by id would silently return nothing, so the coloris
+//    list is grouped BY NAME and the filter expands the chosen name back to
+//    every id carrying it. `colori` takes the group's representative id.
+//
+// Archived références are included, exactly as legacy does (its list shows
+// archived 181/183), but flagged so the caller can mark them.
+referencesFilRouter.get('/:id/utilisation', async (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10)
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'invalid id' }); return
+  }
+  const coloriParam = parseInt(String(req.query.colori ?? ''), 10)
+  const wantColori = Number.isInteger(coloriParam) && coloriParam > 0 ? coloriParam : null
+
+  try {
+    const filRows = await query<{ IDref_fil: number; reference: string | null }>(
+      `SELECT IDref_fil, reference FROM ref_fil WHERE IDref_fil = ${id}`,
+    )
+    if (filRows.length === 0) { res.status(404).json({ error: 'ref_fil not found' }); return }
+    const filFixed = (await fixEncoding(filRows as any[], 'ref_fil', 'IDref_fil', ['reference'])) as any[]
+
+    // Flat queries + merge in JS: a JOIN carrying CONVERT() collapses the
+    // result set on the bridge (see CLAUDE.md HFSQL rules).
+    const comps = await query<{
+      IDref_ecru: number; IDcolori_fil: number; pourcentage: number | null
+    }>(
+      `SELECT IDref_ecru, IDcolori_fil, pourcentage FROM composition_ecru WHERE IDref_fil = ${id}`,
+    )
+
+    // ── Coloris groups, by NAME ──
+    const coloriIds = Array.from(new Set(comps.map((c) => Number(c.IDcolori_fil)).filter((x) => x > 0)))
+    const coloriName = new Map<number, string>()
+    if (coloriIds.length > 0) {
+      const cRows = await query<{ IDcolori_fil: number; reference: string | null }>(
+        `SELECT IDcolori_fil, reference FROM colori_fil WHERE IDcolori_fil IN (${coloriIds.join(',')})`,
+      )
+      for (const c of await fixEncoding(cRows as any[], 'colori_fil', 'IDcolori_fil', ['reference'])) {
+        coloriName.set(Number((c as any).IDcolori_fil), ((c as any).reference ?? '').toString().trim())
+      }
+    }
+    // name → { ids, distinct ref_ecru count }. A coloris row that no longer
+    // exists in colori_fil (deleted) has no name and is not offered.
+    const groups = new Map<string, { ids: number[]; refs: Set<number> }>()
+    for (const c of comps) {
+      const cid = Number(c.IDcolori_fil)
+      const nom = coloriName.get(cid)
+      if (!nom) continue
+      const g = groups.get(nom) ?? { ids: [], refs: new Set<number>() }
+      if (!g.ids.includes(cid)) g.ids.push(cid)
+      g.refs.add(Number(c.IDref_ecru))
+      groups.set(nom, g)
+    }
+    const coloris = [...groups]
+      .map(([nom, g]) => ({ id: Math.min(...g.ids), nom, ids: g.ids, refs: g.refs.size }))
+      .sort((a, b) => a.nom.localeCompare(b.nom, 'fr', { numeric: true, sensitivity: 'base' }))
+
+    // ── Apply the coloris filter (expanded to every id sharing the name) ──
+    let selected: { id: number; nom: string } | null = null
+    let scoped = comps
+    if (wantColori !== null) {
+      const group = coloris.find((g) => g.ids.includes(wantColori))
+      if (group) {
+        selected = { id: group.id, nom: group.nom }
+        const idSet = new Set(group.ids)
+        scoped = comps.filter((c) => idSet.has(Number(c.IDcolori_fil)))
+      }
+    }
+
+    // ── Resolve the écru references ──
+    const ecruIds = Array.from(new Set(scoped.map((c) => Number(c.IDref_ecru)).filter((x) => x > 0)))
+    let rows: Array<{
+      IDref_ecru: number; reference: string; designation: string
+      archived: boolean; pourcentage: number | null
+    }> = []
+    if (ecruIds.length > 0) {
+      // SELECT * rather than naming `archivé`: the column is accented, and
+      // naming it storms the Linux bridge. The key comes back truncated there,
+      // so read it tolerantly.
+      const eRows = await query<Record<string, unknown>>(
+        `SELECT * FROM ref_ecru WHERE IDref_ecru IN (${ecruIds.join(',')})`,
+      )
+      const shaped = eRows.map((r) => ({
+        IDref_ecru: Number(r.IDref_ecru) || 0,
+        reference: ((r.reference ?? '') as string) || '',
+        designation: ((r.designation ?? '') as string) || '',
+        archived: Number(r['archivé'] ?? (r as Record<string, unknown>).archiv ?? 0) === 1,
+      }))
+      const eFixed = (await fixEncoding(
+        shaped, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'],
+      )) as any[]
+
+      // Highest percentage across this ref's rows for the yarn — a ref can name
+      // the same yarn on several of its coloris at different shares.
+      const pctByRef = new Map<number, number>()
+      for (const c of scoped) {
+        const p = c.pourcentage == null ? null : Number(c.pourcentage)
+        if (p == null || !Number.isFinite(p) || p <= 0) continue
+        const k = Number(c.IDref_ecru)
+        pctByRef.set(k, Math.max(pctByRef.get(k) ?? 0, p))
+      }
+
+      rows = eFixed
+        .map((r) => ({
+          IDref_ecru: Number(r.IDref_ecru),
+          reference: (r.reference ?? '').toString().trim(),
+          designation: (r.designation ?? '').toString().trim(),
+          archived: !!r.archived,
+          pourcentage: pctByRef.get(Number(r.IDref_ecru)) ?? null,
+        }))
+        .filter((r) => r.reference.length > 0)
+        .sort((a, b) => a.reference.localeCompare(b.reference, 'fr', { numeric: true }))
+    }
+
+    res.json({
+      ref_fil: {
+        IDref_fil: Number(filFixed[0].IDref_fil),
+        reference: ((filFixed[0].reference ?? '') as string).toString().trim(),
+      },
+      coloris,
+      selected_coloris: selected,
+      /** Distinct refs ignoring the coloris filter — lets the UI say what the
+       *  filter is hiding instead of the count silently shrinking. */
+      total_refs: new Set(comps.map((c) => Number(c.IDref_ecru))).size,
+      rows,
+    })
+  } catch (err) {
+    console.error('Error computing utilisation fil:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // POST /api/references-fil
 referencesFilRouter.post('/', async (req: Request, res: Response) => {
   try {

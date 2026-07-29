@@ -9,12 +9,20 @@
 // (it degrades gracefully: the widget reappears at the end with its defaults).
 
 import type { ComponentType } from 'react'
-import { TrendingUp, FileSpreadsheet, LineChart } from 'lucide-react'
+import { TrendingUp, FileSpreadsheet, LineChart, ShoppingCart, Wallet } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
+import { TmRollIcon } from '@/components/icons/TmRollIcon'
+import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { AnalyseFinanciereWidget } from './AnalyseFinanciereWidget'
 import { ChiffreAffairesWidget } from './ChiffreAffairesWidget'
 import { FilStockEtatWidget } from './FilStockEtatWidget'
 import { LaGentleExportWidget } from './LaGentleExportWidget'
+import { NotificationsWidget } from './NotificationsWidget'
+import { UtilisationFilWidget } from './UtilisationFilWidget'
+import { SuiviPieceWidget } from './SuiviPieceWidget'
+import { CommandesDuJourWidget } from './CommandesDuJourWidget'
+import { ChargesWidget } from './ChargesWidget'
+import { EvolutionCaWidget } from './EvolutionCaWidget'
 import type { DashboardWidth } from './types'
 
 export interface WidgetDef {
@@ -54,6 +62,19 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
     Component: ChiffreAffairesWidget,
   },
   {
+    key: 'evolution_ca',
+    // Same confidential figure as the CA table, so the same right — and the
+    // endpoint enforces it too.
+    permission: 'dashboard_ca',
+    title: 'Évolution du CA',
+    icon: TrendingUp,
+    defaultWidth: 6,
+    // Twelve month labels need the width; below 4 columns they collide.
+    minWidth: 4,
+    defaultHeightPx: 420,
+    Component: EvolutionCaWidget,
+  },
+  {
     key: 'finance_analyse',
     permission: 'dashboard_finance',
     title: 'Analyse financière',
@@ -63,6 +84,70 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
     minWidth: 4,
     defaultHeightPx: 460,
     Component: AnalyseFinanciereWidget,
+  },
+  {
+    key: 'commandes_jour',
+    permission: 'dashboard_commandes_jour',
+    title: 'Commandes du jour',
+    icon: ShoppingCart,
+    defaultWidth: 6,
+    // The CA figure and the order count share the top band; below 3 columns
+    // they stop fitting on one row.
+    minWidth: 3,
+    defaultHeightPx: 460,
+    Component: CommandesDuJourWidget,
+  },
+  {
+    key: 'charges',
+    // Reuses the report's own right rather than minting a dashboard key: the
+    // endpoint enforces view_rapport_finance, so a separate key could only
+    // create a state where the widget shows and the data 403s.
+    permission: 'view_rapport_finance',
+    title: 'Charges',
+    icon: Wallet,
+    defaultWidth: 4,
+    // Two stacked amount blocks — they hold up narrow.
+    minWidth: 3,
+    defaultHeightPx: 340,
+    Component: ChargesWidget,
+  },
+  {
+    key: 'notifications',
+    permission: 'dashboard_notifications',
+    title: 'Notifications',
+    // Tricobot, not a bell — he's who the alerts come from, and the tray chip
+    // should be recognisable as the same thing the widget header shows.
+    icon: TricobotMascot,
+    defaultWidth: 6,
+    // The cards are a two-line title/description stack, so they survive being
+    // narrow; below 3 columns the type filter and the count stop sharing a row.
+    minWidth: 3,
+    defaultHeightPx: 500,
+    Component: NotificationsWidget,
+  },
+  {
+    key: 'utilisation_fil',
+    permission: 'dashboard_utilisation_fil',
+    title: 'Utilisation fil',
+    icon: BobineIcon,
+    defaultWidth: 6,
+    // Two stacked pickers with a label column, then a list — below 3 columns
+    // the combobox and its label stop sharing a row.
+    minWidth: 3,
+    defaultHeightPx: 500,
+    Component: UtilisationFilWidget,
+  },
+  {
+    key: 'suivi_piece',
+    permission: 'dashboard_suivi_piece',
+    title: 'Suivi pièce',
+    icon: TmRollIcon,
+    defaultWidth: 6,
+    // The timeline cards are label/value pairs in a 2-column grid — they hold
+    // up narrow; the search row is what needs the width.
+    minWidth: 3,
+    defaultHeightPx: 520,
+    Component: SuiviPieceWidget,
   },
   {
     key: 'fil_etat',

@@ -10,6 +10,62 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/widget
+**Six widgets de tableau de bord — Notifications, Utilisation fil, Suivi pièce, Commandes
+du jour, Charges, Évolution du CA — dont quatre portent des écrans legacy `FI_*.wdw`.**
+
+- **Notifications** (`dashboard_notifications`) — port de `FI_Notifications.wdw` +
+  `FEN_Abonnement.wdw`. Le catalogue et les abonnements sont **partagés** avec l'appli WinDev
+  (`abonnement_notif` / `abonnement_user` : s'abonner ici s'abonne là-bas), mais la liste
+  d'alertes est **recalculée à chaque lecture** au lieu d'être écrite dans `notifutilisateur` :
+  le `hash` legacy est un SHA-1 dont la formule n'a pas pu être retrouvée, donc toute ligne
+  insérée s'afficherait en double côté WinDev — et la routine WinDev reconstruit cette table
+  de toute façon. `visible = 0` n'a donc plus de ligne où vivre : le masquage est **par
+  utilisateur** (`data/notification-hidden.json`), ce qui corrige un défaut legacy où masquer
+  une carte la masquait pour toute l'entreprise. 8 détecteurs dans `lib/abonnements.ts`.
+  ⚠️ **Un abonnement hors catalogue (société 2) est préservé à l'écriture** — sans ça,
+  enregistrer désabonnait silencieusement l'utilisateur côté WinDev.
+- **Utilisation fil** (`dashboard_utilisation_fil`) — port de `FI_Utilisation_fil.wdw` :
+  pour un fil (+ coloris optionnel), les références écru qui l'utilisent, via
+  `composition_ecru`. Le filtre coloris renvoie légitimement **moins** de refs (les lignes de
+  base portent `IDcolori_fil = 0`), donc l'écart est affiché plutôt que subi ; les coloris
+  sont groupés **par nom** parce que `colori_fil` réutilise les noms (ce fil a neuf « ecru »,
+  un seul référencé).
+- **Suivi pièce** (`dashboard_suivi_piece`) — port de `FI_Suivi_pièce.wdw`, en frise
+  **antéchronologique** séparant les objets (tombé de métier / rouleau fini) des événements
+  (transferts, expéditions, commandes). Enrichi au-delà du legacy : fils consommés avec leurs
+  commandes d'achat et dates, OF, expéditions, emplacement courant.
+  ⚠️ `stock_ecru.IDref_commande_source` contient un id de **ligne**, pas de commande.
+- **Commandes du jour** (`dashboard_commandes_jour`) — commandes clients du jour + CA
+  (`Σ quantite × prix`, scope ETM `IDsociete = 1 AND IDcommande_ETM = 0`). Les dons sont
+  listés mais **hors CA**. Rafraîchi à chaque arrivée sur le tableau de bord.
+- **Charges** (`view_rapport_finance`) — charges fixes / variables face à N-1 avec le ratio
+  en pastille. **Ni endpoint ni permission supplémentaires** : appelle `/rapports/finance` sur
+  la **même clé React Query** que le rapport et somme ses lignes comme le bandeau de totaux.
+- **Évolution du CA** (`dashboard_ca`) — CA mensuel, une courbe par année, 5 années en
+  pastilles activables, + mode « Annuel » en barres. Endpoint dédié `/rapports/ca-evolution`.
+
+**Transverse — trois points qui touchent du code partagé :**
+
+- **`useElementSize` renvoie désormais une ref CALLBACK.** Avec `useRef` + `useEffect([])`
+  l'observer ne s'attache **jamais** à une cible rendue conditionnellement (`{data && <div
+  ref={…}>}`) : la taille reste `{0,0}` et un graphe qui teste `w > 0 && h > 0` ne s'affiche
+  jamais. Les deux graphes existants ont été revérifiés après le changement.
+- **`lib/depassement.tsx`** (pastille N/N-1 + règle de couleur) extrait de
+  `RapportFinance.tsx`, **`lib/chart-scale.ts`** (`niceScale`) extrait
+  d'`AnalyseFinanciereWidget` — une seule règle, deux consommateurs.
+- **`WidgetFrame` gagne `iconBleed`** pour une icône qui est une image (Tricobot).
+
+**Pièges de données documentés dans `CLAUDE.md` (chacun vérifié sur les données) :**
+`defaut_qualite.reference` sous `Type_Reference = 2` est **ambigu** entre écru et fini (881
+des 900 refs échantillonnées sont des ids écru valides *et* 810 des ids fini) ;
+`caAvailableYears()` énumère **à rebours** ; sur l'année en cours les mois non facturés sont
+`null` et non `0`, sinon la courbe s'effondre sur l'axe.
+
+Garde-fous : `check-abonnements` (+ `--write`), `check-utilisation-fil`, `check-suivi-piece`,
+`check-commandes-du-jour` — tous épinglés sur les captures de l'écran legacy.
+
+
 ## 2026-07-29 — feat/gestion-client
 **Clients › Gestion : le compte client (`client.compte`) devient obligatoire, généré
 automatiquement à partir du nom, et la création passe par une boîte de dialogue.**

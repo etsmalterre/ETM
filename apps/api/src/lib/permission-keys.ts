@@ -26,6 +26,34 @@ export const PERMISSION_KEYS = [
     category: 'Tableau de bord',
   },
   {
+    key: 'dashboard_notifications',
+    label: 'Notifications',
+    description:
+      'Affiche le widget « Notifications » sur le tableau de bord : les alertes des abonnements auxquels l’utilisateur a souscrit (dossiers qualité à échéance, commandes de fil, stock mini, lots et pièces non affectés, certificats expirés). L’API refuse le flux sans ce droit — les alertes nomment des commandes clients et des niveaux de stock.',
+    category: 'Tableau de bord',
+  },
+  {
+    key: 'dashboard_utilisation_fil',
+    label: 'Utilisation fil',
+    description:
+      'Affiche le widget « Utilisation fil » sur le tableau de bord : pour une référence de fil (et éventuellement un de ses coloris), la liste des références écru qui l’utilisent dans leur composition.',
+    category: 'Tableau de bord',
+  },
+  {
+    key: 'dashboard_commandes_jour',
+    label: 'Commandes du jour',
+    description:
+      'Affiche le widget « Commandes du jour » sur le tableau de bord : les commandes clients saisies dans la journée et le chiffre d’affaires qu’elles représentent. Donnée confidentielle — l’API refuse les montants sans ce droit, même à un utilisateur qui devinerait l’adresse.',
+    category: 'Tableau de bord',
+  },
+  {
+    key: 'dashboard_suivi_piece',
+    label: 'Suivi pièce',
+    description:
+      'Affiche le widget « Suivi pièce » sur le tableau de bord : à partir d’un numéro de pièce (écru ou fini), retrace son parcours — pièce écru, commandes source et affectée, transferts entre magasins, puis les rouleaux finis qui en sont issus.',
+    category: 'Tableau de bord',
+  },
+  {
     key: 'dashboard_la_gentle',
     label: 'Stock La Gentle',
     description: 'Affiche le widget « Stock La Gentle » (export Excel) sur le tableau de bord.',

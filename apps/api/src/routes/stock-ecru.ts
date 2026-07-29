@@ -325,6 +325,639 @@ stockEcruRouter.get('/ecru/lookups/magasins', async (_req: Request, res: Respons
 //   entry. Column set mirrors the reception INSERT (commandes-sous-traitant.ts)
 //   plus visiteur — every named column is known to exist (naming a phantom
 //   column storms the Linux bridge). Empty text → '' (never NULL).
+// ── GET /api/stock/ecru/suivi?numero=3397/30 ─────────────────────────
+// "Suivi Pièce" — port of the legacy FI_Suivi_pièce.wdw dashboard panel: type a
+// piece number and get its life story, écru → transferts → fini.
+//
+// MUST stay declared before '/ecru/:id' or "suivi" is captured as an id.
+//
+// Field mapping validated against the legacy screen for piece 3397/30:
+//  • `stock_ecru.IDref_commande_source` / `IDref_commande_affectation` hold a
+//    ligne_commande_sous_traitant id, NOT a commande id. Legacy prints the
+//    parent commande ("Commande source : 8461 - Tricotage Malterre" — the piece
+//    stores ligne 8437, whose commande is 8461), so both are resolved up.
+//  • Transfers come from `piece_transfert` (IDpiece_ecru / IDpiece_fini) joined
+//    to `bon_transfert`; legacy's "Transfert n° 4165 le 03/03/2026" is the bon's
+//    own id and its DATE (a reserved word — always alias it).
+//
+// A numero is NOT unique in stock_ecru (dev data has 903 rows numbered
+// "fictif"), and fini rolls carry their own numero — including the `-1`/`-2`
+// suffixes a cut roll gets. So the search covers both tables and returns every
+// match rather than pretending there is exactly one.
+const SUIVI_MAX_PIECES = 20
+
+interface SuiviCommandeRef {
+  commande: number
+  sous_traitant: string | null
+  date_commande: string | null
+}
+
+/** Resolve ligne_commande_sous_traitant ids → their commande, sous-traitant
+ *  and order date. */
+async function resolveSstCommandes(lineIds: number[]): Promise<Map<number, SuiviCommandeRef>> {
+  const out = new Map<number, SuiviCommandeRef>()
+  const ids = Array.from(new Set(lineIds.filter((x) => Number.isInteger(x) && x > 0)))
+  if (ids.length === 0) return out
+  const lignes = await query<{ IDligne_commande_sous_traitant: number; IDcommande_sous_traitant: number }>(
+    `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant
+     FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant IN (${ids.join(',')})`,
+  )
+  const cmdIds = Array.from(new Set(lignes.map((l) => Number(l.IDcommande_sous_traitant)).filter((x) => x > 0)))
+  const cmdSst = new Map<number, number>()
+  const cmdDate = new Map<number, string | null>()
+  if (cmdIds.length > 0) {
+    const cmds = await query<{
+      IDcommande_sous_traitant: number; IDsous_traitant: number; date_commande: string | null
+    }>(
+      `SELECT IDcommande_sous_traitant, IDsous_traitant, date_commande FROM commande_sous_traitant
+       WHERE IDcommande_sous_traitant IN (${cmdIds.join(',')})`,
+    )
+    for (const c of cmds) {
+      cmdSst.set(Number(c.IDcommande_sous_traitant), Number(c.IDsous_traitant) || 0)
+      cmdDate.set(Number(c.IDcommande_sous_traitant), (c.date_commande ?? null) as string | null)
+    }
+  }
+  const names = await resolveSstNames([...cmdSst.values()])
+  for (const l of lignes) {
+    const cmd = Number(l.IDcommande_sous_traitant) || 0
+    out.set(Number(l.IDligne_commande_sous_traitant), {
+      commande: cmd,
+      sous_traitant: cmd ? (names.get(cmdSst.get(cmd) ?? 0) ?? null) : null,
+      date_commande: cmd ? (cmdDate.get(cmd) ?? null) : null,
+    })
+  }
+  return out
+}
+
+/** sous_traitant names, batched. Flat query + fixEncoding — a JOIN carrying
+ *  CONVERT() collapses the result set on the bridge (CLAUDE.md HFSQL rules). */
+async function resolveSstNames(ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  const u = Array.from(new Set(ids.filter((x) => Number.isInteger(x) && x > 0)))
+  if (u.length === 0) return out
+  const rows = await query<{ IDsous_traitant: number; nom: string | null }>(
+    `SELECT IDsous_traitant, nom FROM sous_traitant WHERE IDsous_traitant IN (${u.join(',')})`,
+  )
+  for (const r of await fixEncoding(rows as any[], 'sous_traitant', 'IDsous_traitant', ['nom'])) {
+    out.set(Number((r as any).IDsous_traitant), ((r as any).nom ?? '').toString().trim())
+  }
+  return out
+}
+
+/** Magasin 0 is the company's own stock — it has no sous_traitant row.
+ *  Labelled as the Transferts screen labels it (routes/transferts.ts), which is
+ *  deliberately NOT what the legacy Suivi Pièce printed there ("Tricotage
+ *  Malterre"): one label for magasin 0 across MPS_NG beats reproducing a
+ *  per-screen inconsistency. */
+const SUIVI_MAGASIN_ZERO = 'Ets Malterre'
+function suiviMagasin(id: number, names: Map<number, string>): string {
+  return id === 0 ? SUIVI_MAGASIN_ZERO : (names.get(id) || `Magasin #${id}`)
+}
+
+export interface SuiviExpedition {
+  IDexpedition: number
+  date: string | null
+  /** Who shipped it — derived from `expedition.IDsociete`. An écru piece
+   *  knitted by the sister company ships TRM → ETM, and reading only the
+   *  recipient ("Ets Malterre") makes that leg look like it went nowhere. */
+  expediteur: string
+  /** Who received it: the client of the expédition's commande. */
+  client: string | null
+  commande_numero: number | null
+  IDsociete: number
+}
+
+/** The three companies sharing the base, keyed by IDsociete (CLAUDE.md
+ *  §IDsociete partitioning). Used to name the sender of an expédition. */
+const SOCIETE_NOMS: Record<number, string> = {
+  1: 'Ets Malterre',
+  2: 'Tricotage Malterre',
+  3: 'Confection',
+}
+
+/** ligne_expedition ids → their expédition, with the client it went to.
+ *  `expedition.DATE` is a reserved word (alias it) and `envoyé_client` /
+ *  `envoyé_sst` are accented — never name them; select the ASCII columns only. */
+async function resolveExpeditions(ligneIds: number[]): Promise<Map<number, SuiviExpedition>> {
+  const out = new Map<number, SuiviExpedition>()
+  const ids = Array.from(new Set(ligneIds.filter((x) => Number.isInteger(x) && x > 0)))
+  if (ids.length === 0) return out
+
+  const lignes = await query<{ IDligne_expedition: number; IDexpedition: number }>(
+    `SELECT IDligne_expedition, IDexpedition FROM ligne_expedition
+     WHERE IDligne_expedition IN (${ids.join(',')})`,
+  )
+  const expIds = Array.from(new Set(lignes.map((l) => Number(l.IDexpedition)).filter((x) => x > 0)))
+  if (expIds.length === 0) return out
+
+  const exps = await query<{
+    IDexpedition: number; IDcommande_client: number; dexp: string | null; IDsociete: number
+  }>(
+    `SELECT IDexpedition, IDcommande_client, DATE AS dexp, IDsociete FROM expedition
+     WHERE IDexpedition IN (${expIds.join(',')})`,
+  )
+  const cmdIds = Array.from(new Set(exps.map((e) => Number(e.IDcommande_client)).filter((x) => x > 0)))
+  const cmdInfo = new Map<number, { numero: number | null; IDclient: number }>()
+  if (cmdIds.length > 0) {
+    // commande_client carries accented columns (archivé, expedié, envoyé_client)
+    // — name only the ASCII ones.
+    const cmds = await query<{ IDcommande_client: number; IDclient: number; numero: number | null }>(
+      `SELECT IDcommande_client, IDclient, numero FROM commande_client
+       WHERE IDcommande_client IN (${cmdIds.join(',')})`,
+    )
+    for (const c of cmds) {
+      cmdInfo.set(Number(c.IDcommande_client), {
+        numero: c.numero == null ? null : Number(c.numero),
+        IDclient: Number(c.IDclient) || 0,
+      })
+    }
+  }
+  const clientNames = new Map<number, string>()
+  const clientIds = Array.from(new Set([...cmdInfo.values()].map((c) => c.IDclient).filter((x) => x > 0)))
+  if (clientIds.length > 0) {
+    const rows = await query<{ IDclient: number; nom: string | null }>(
+      `SELECT IDclient, nom FROM client WHERE IDclient IN (${clientIds.join(',')})`,
+    )
+    for (const r of await fixEncoding(rows as any[], 'client', 'IDclient', ['nom'])) {
+      clientNames.set(Number((r as any).IDclient), ((r as any).nom ?? '').toString().trim())
+    }
+  }
+
+  const byExp = new Map<number, SuiviExpedition>()
+  for (const e of exps) {
+    const info = cmdInfo.get(Number(e.IDcommande_client))
+    const societe = Number(e.IDsociete) || 0
+    byExp.set(Number(e.IDexpedition), {
+      IDexpedition: Number(e.IDexpedition),
+      date: (e.dexp ?? null) as string | null,
+      expediteur: SOCIETE_NOMS[societe] ?? SOCIETE_NOMS[1],
+      client: info ? (clientNames.get(info.IDclient) ?? null) : null,
+      commande_numero: info?.numero ?? null,
+      IDsociete: societe,
+    })
+  }
+  for (const l of lignes) {
+    const exp = byExp.get(Number(l.IDexpedition))
+    if (exp) out.set(Number(l.IDligne_expedition), exp)
+  }
+  return out
+}
+
+export interface SuiviFil {
+  reference: string
+  coloris: string
+  pourcentage: number | null
+  lot: string
+  fournisseur: string | null
+  /** The purchase order this lot arrived on — absent on older stock. */
+  commande_fil: number | null
+  date_commande: string | null
+  date_livraison: string | null
+}
+
+/** The yarns an écru piece was knitted from.
+ *
+ *  The link is the ORDRE DE FABRICATION (`asso_fil_of`), not the tricoteur
+ *  order line: `asso_fil_lignecmdsst` is about what was *sent* to a knitter and
+ *  is empty for in-house production, whereas `asso_fil_of` records what the
+ *  machine actually consumed — including the percentage of each yarn. */
+async function resolveFilsForOf(ofId: number): Promise<SuiviFil[]> {
+  if (!Number.isInteger(ofId) || ofId <= 0) return []
+  const asso = await query<{
+    IDref_fil: number; IDcolori_fil: number; IDstock_fil: number; pourcentage: number | null
+  }>(
+    `SELECT IDref_fil, IDcolori_fil, IDstock_fil, pourcentage FROM asso_fil_of
+     WHERE IDordre_fabrication = ${ofId}`,
+  )
+  if (asso.length === 0) return []
+
+  // stock_fil must never be read with SELECT * nor with certif_bio in the list —
+  // both silently return 0 rows on Windows (project-stock-fil-poisoned-select).
+  const stockIds = Array.from(new Set(asso.map((a) => Number(a.IDstock_fil)).filter((x) => x > 0)))
+  const lots = new Map<number, { lot: string; IDfournisseur: number; IDref_fil_commande: number }>()
+  if (stockIds.length > 0) {
+    const rows = await query<{
+      IDstock_fil: number; lot: string | null; IDfournisseur: number; IDref_fil_commande: number
+    }>(
+      `SELECT IDstock_fil, lot, IDfournisseur, IDref_fil_commande FROM stock_fil
+       WHERE IDstock_fil IN (${stockIds.join(',')})`,
+    )
+    for (const r of await fixEncoding(rows as any[], 'stock_fil', 'IDstock_fil', ['lot'])) {
+      lots.set(Number((r as any).IDstock_fil), {
+        lot: ((r as any).lot ?? '').toString().trim(),
+        IDfournisseur: Number((r as any).IDfournisseur) || 0,
+        IDref_fil_commande: Number((r as any).IDref_fil_commande) || 0,
+      })
+    }
+  }
+
+  // Purchase order behind each lot: ref_fil_commande → commande_fil.
+  const lineIds = Array.from(new Set([...lots.values()].map((l) => l.IDref_fil_commande).filter((x) => x > 0)))
+  const orderByLine = new Map<number, { cmd: number; date_livraison: string | null }>()
+  const cmdDate = new Map<number, string | null>()
+  if (lineIds.length > 0) {
+    const rfc = await query<{ IDref_fil_commande: number; IDcommande_fil: number; date_livraison: string | null }>(
+      `SELECT IDref_fil_commande, IDcommande_fil, date_livraison FROM ref_fil_commande
+       WHERE IDref_fil_commande IN (${lineIds.join(',')})`,
+    )
+    for (const r of rfc) {
+      orderByLine.set(Number(r.IDref_fil_commande), {
+        cmd: Number(r.IDcommande_fil) || 0,
+        date_livraison: (r.date_livraison ?? null) as string | null,
+      })
+    }
+    const cmdIds = Array.from(new Set([...orderByLine.values()].map((o) => o.cmd).filter((x) => x > 0)))
+    if (cmdIds.length > 0) {
+      const cf = await query<{ IDcommande_fil: number; date_commande: string | null }>(
+        `SELECT IDcommande_fil, date_commande FROM commande_fil WHERE IDcommande_fil IN (${cmdIds.join(',')})`,
+      )
+      for (const c of cf) cmdDate.set(Number(c.IDcommande_fil), (c.date_commande ?? null) as string | null)
+    }
+  }
+
+  // Labels
+  const refNames = new Map<number, string>()
+  const refIds = Array.from(new Set(asso.map((a) => Number(a.IDref_fil)).filter((x) => x > 0)))
+  if (refIds.length > 0) {
+    const rows = await query<any>(`SELECT IDref_fil, reference FROM ref_fil WHERE IDref_fil IN (${refIds.join(',')})`)
+    for (const r of await fixEncoding(rows, 'ref_fil', 'IDref_fil', ['reference'])) {
+      refNames.set(Number((r as any).IDref_fil), ((r as any).reference ?? '').toString().trim())
+    }
+  }
+  const coloriNames = new Map<number, string>()
+  const coloriIds = Array.from(new Set(asso.map((a) => Number(a.IDcolori_fil)).filter((x) => x > 0)))
+  if (coloriIds.length > 0) {
+    const rows = await query<any>(
+      `SELECT IDcolori_fil, reference FROM colori_fil WHERE IDcolori_fil IN (${coloriIds.join(',')})`)
+    for (const r of await fixEncoding(rows, 'colori_fil', 'IDcolori_fil', ['reference'])) {
+      coloriNames.set(Number((r as any).IDcolori_fil), ((r as any).reference ?? '').toString().trim())
+    }
+  }
+  const frsNames = new Map<number, string>()
+  const frsIds = Array.from(new Set([...lots.values()].map((l) => l.IDfournisseur).filter((x) => x > 0)))
+  if (frsIds.length > 0) {
+    const rows = await query<any>(
+      `SELECT IDfournisseur, nom FROM fournisseur WHERE IDfournisseur IN (${frsIds.join(',')})`)
+    for (const r of await fixEncoding(rows, 'fournisseur', 'IDfournisseur', ['nom'])) {
+      frsNames.set(Number((r as any).IDfournisseur), ((r as any).nom ?? '').toString().trim())
+    }
+  }
+
+  return asso
+    .map((a) => {
+      const lot = lots.get(Number(a.IDstock_fil))
+      const order = lot ? orderByLine.get(lot.IDref_fil_commande) : undefined
+      return {
+        reference: refNames.get(Number(a.IDref_fil)) ?? '',
+        coloris: coloriNames.get(Number(a.IDcolori_fil)) ?? '',
+        pourcentage: a.pourcentage == null ? null : Number(a.pourcentage),
+        lot: lot?.lot ?? '',
+        fournisseur: lot ? (frsNames.get(lot.IDfournisseur) ?? null) : null,
+        commande_fil: order?.cmd || null,
+        date_commande: order ? (cmdDate.get(order.cmd) ?? null) : null,
+        date_livraison: order?.date_livraison ?? null,
+      }
+    })
+    .sort((a, b) => (b.pourcentage ?? 0) - (a.pourcentage ?? 0))
+}
+
+stockEcruRouter.get('/ecru/suivi', async (req: Request, res: Response) => {
+  const numero = String(req.query.numero ?? '').trim()
+  if (numero === '') { res.status(400).json({ error: 'numero query parameter required' }); return }
+
+  try {
+    const q = esc(numero)
+
+    // ── 1. Écru pieces carrying this number ──
+    const ecruRows = await query<Record<string, unknown>>(
+      `SELECT TOP ${SUIVI_MAX_PIECES} IDstock_ecru, numero, lot, poids, metrage, IDref_ecru, IDcolori_ecru,
+              IDmagasin, IDref_commande_source, IDref_commande_affectation, IDligne_commande_client,
+              IDordre_fabrication, IDligne_expedition_ETM, IDligne_expedition_TRM,
+              observations, second_choix, IDsociete, date_saisie
+       FROM stock_ecru WHERE numero = '${q}' ORDER BY IDstock_ecru DESC`,
+    )
+
+    // ── 2. Fini rolls carrying it, so a cut roll ("3417/57-2") finds its écru ──
+    const finiByNumero = await query<Record<string, unknown>>(
+      `SELECT TOP ${SUIVI_MAX_PIECES} IDstock_fini, IDstock_ecru FROM stock_fini
+       WHERE numero = '${q}' ORDER BY IDstock_fini DESC`,
+    )
+    const ecruIds = ecruRows.map((r) => Number(r.IDstock_ecru))
+    const extraEcruIds = Array.from(new Set(
+      finiByNumero.map((r) => Number(r.IDstock_ecru)).filter((x) => x > 0 && !ecruIds.includes(x)),
+    ))
+    if (extraEcruIds.length > 0) {
+      const more = await query<Record<string, unknown>>(
+        `SELECT IDstock_ecru, numero, lot, poids, metrage, IDref_ecru, IDcolori_ecru,
+                IDmagasin, IDref_commande_source, IDref_commande_affectation, IDligne_commande_client,
+                IDordre_fabrication, IDligne_expedition_ETM, IDligne_expedition_TRM,
+                observations, second_choix, IDsociete, date_saisie
+         FROM stock_ecru WHERE IDstock_ecru IN (${extraEcruIds.join(',')})`,
+      )
+      ecruRows.push(...more)
+    }
+
+    if (ecruRows.length === 0) {
+      res.json({ numero, pieces: [], truncated: false })
+      return
+    }
+    const allEcruIds = ecruRows.map((r) => Number(r.IDstock_ecru))
+
+    // ── 3. Fini rolls born from those écru pieces ──
+    const finiRows = await query<Record<string, unknown>>(
+      `SELECT IDstock_fini, IDstock_ecru, IDref_fini, IDColoris, lot, numero, poids, metrage,
+              IDmagasin, IDref_commande_source, IDetat_stock_fini,
+              IDligne_expedition, IDligne_commande_client,
+              observations, observation_sst, second_choix
+       FROM stock_fini WHERE IDstock_ecru IN (${allEcruIds.join(',')}) ORDER BY IDstock_fini`,
+    )
+    const finiIds = finiRows.map((r) => Number(r.IDstock_fini))
+
+    // ── 4. Transfers touching either stage ──
+    const ptWhere = [`IDpiece_ecru IN (${allEcruIds.join(',')})`]
+    if (finiIds.length > 0) ptWhere.push(`IDpiece_fini IN (${finiIds.join(',')})`)
+    const pieceTransferts = await query<{
+      IDbon_transfert: number; IDpiece_ecru: number; IDpiece_fini: number
+    }>(
+      `SELECT IDbon_transfert, IDpiece_ecru, IDpiece_fini FROM piece_transfert WHERE ${ptWhere.join(' OR ')}`,
+    )
+    const bonIds = Array.from(new Set(pieceTransferts.map((p) => Number(p.IDbon_transfert)).filter((x) => x > 0)))
+    const bons = new Map<number, { date: string | null; source: number; dest: number; valide: boolean }>()
+    if (bonIds.length > 0) {
+      // DATE is a reserved word — always alias it (it comes back uppercased).
+      const bonRows = await query<{
+        IDbon_transfert: number; IDmagasin_source: number; IDmagasin_destination: number
+        dtransfert: string | null; est_valide: number
+      }>(
+        `SELECT IDbon_transfert, IDmagasin_source, IDmagasin_destination, DATE AS dtransfert, est_valide
+         FROM bon_transfert WHERE IDbon_transfert IN (${bonIds.join(',')})`,
+      )
+      for (const b of bonRows) {
+        bons.set(Number(b.IDbon_transfert), {
+          date: (b.dtransfert ?? null) as string | null,
+          source: Number(b.IDmagasin_source) || 0,
+          dest: Number(b.IDmagasin_destination) || 0,
+          valide: Number(b.est_valide) === 1,
+        })
+      }
+    }
+
+    // ── 5. Labels ──
+    const refEcruIds = ecruRows.map((r) => Number(r.IDref_ecru))
+    const refEcru = new Map<number, { reference: string; designation: string }>()
+    if (refEcruIds.some((x) => x > 0)) {
+      const rows = await query<any>(
+        `SELECT IDref_ecru, reference, designation FROM ref_ecru
+         WHERE IDref_ecru IN (${Array.from(new Set(refEcruIds.filter((x) => x > 0))).join(',')})`,
+      )
+      for (const r of await fixEncoding(rows, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'])) {
+        refEcru.set(Number((r as any).IDref_ecru), {
+          reference: ((r as any).reference ?? '').toString().trim(),
+          designation: ((r as any).designation ?? '').toString().trim(),
+        })
+      }
+    }
+
+    const refFiniIds = Array.from(new Set(finiRows.map((r) => Number(r.IDref_fini)).filter((x) => x > 0)))
+    const refFini = new Map<number, { reference: string; designation: string; avec_teinture: number }>()
+    if (refFiniIds.length > 0) {
+      const rows = await query<any>(
+        `SELECT IDref_fini, reference, designation, avec_teinture FROM ref_fini
+         WHERE IDref_fini IN (${refFiniIds.join(',')})`,
+      )
+      for (const r of await fixEncoding(rows, 'ref_fini', 'IDref_fini', ['reference', 'designation'])) {
+        refFini.set(Number((r as any).IDref_fini), {
+          reference: ((r as any).reference ?? '').toString().trim(),
+          designation: ((r as any).designation ?? '').toString().trim(),
+          avec_teinture: Number((r as any).avec_teinture) || 0,
+        })
+      }
+    }
+
+    // Fini coloris is polymorphic and the two id spaces collide numerically, so
+    // fetch BOTH candidate labels and pick per avec_teinture — the same rule
+    // stock-fini.ts applies (memory project_avec_teinture_coloris_rule).
+    const coloriCandidates = Array.from(new Set([
+      ...finiRows.map((r) => Number(r.IDColoris)),
+      ...ecruRows.map((r) => Number(r.IDcolori_ecru)),
+    ].filter((x) => x > 0)))
+    const coloriWash = new Map<number, string>()
+    const coloriDyed = new Map<number, string>()
+    if (coloriCandidates.length > 0) {
+      const inList = coloriCandidates.join(',')
+      const w = await query<any>(
+        `SELECT IDcolori_ecru, reference FROM colori_ecru WHERE IDcolori_ecru IN (${inList})`)
+      for (const r of await fixEncoding(w, 'colori_ecru', 'IDcolori_ecru', ['reference'])) {
+        coloriWash.set(Number((r as any).IDcolori_ecru), ((r as any).reference ?? '').toString().trim())
+      }
+      const d = await query<any>(
+        `SELECT IDref_fini_colori, reference FROM ref_fini_colori WHERE IDref_fini_colori IN (${inList})`)
+      for (const r of await fixEncoding(d, 'ref_fini_colori', 'IDref_fini_colori', ['reference'])) {
+        coloriDyed.set(Number((r as any).IDref_fini_colori), ((r as any).reference ?? '').toString().trim())
+      }
+    }
+
+    const etatIds = Array.from(new Set(finiRows.map((r) => Number(r.IDetat_stock_fini)).filter((x) => x > 0)))
+    const etats = new Map<number, string>()
+    if (etatIds.length > 0) {
+      const rows = await query<any>(
+        `SELECT IDetat_stock_fini, libelle FROM etat_stock_fini WHERE IDetat_stock_fini IN (${etatIds.join(',')})`)
+      for (const r of await fixEncoding(rows, 'etat_stock_fini', 'IDetat_stock_fini', ['libelle'])) {
+        etats.set(Number((r as any).IDetat_stock_fini), ((r as any).libelle ?? '').toString().trim())
+      }
+    }
+
+    const magasinNames = await resolveSstNames([
+      ...ecruRows.map((r) => Number(r.IDmagasin)),
+      ...finiRows.map((r) => Number(r.IDmagasin)),
+      ...[...bons.values()].flatMap((b) => [b.source, b.dest]),
+    ])
+    const cmdRefs = await resolveSstCommandes([
+      ...ecruRows.map((r) => Number(r.IDref_commande_source)),
+      ...ecruRows.map((r) => Number(r.IDref_commande_affectation)),
+      ...finiRows.map((r) => Number(r.IDref_commande_source)),
+    ])
+
+    // Expéditions — the fini roll's shipment to the client, and the écru's own
+    // (a TRM-knitted piece ships to ETM before dyeing, which is why the écru
+    // side has its own ligne_expedition columns).
+    const expeditions = await resolveExpeditions([
+      ...finiRows.map((r) => Number(r.IDligne_expedition)),
+      ...ecruRows.map((r) => Number(r.IDligne_expedition_ETM)),
+      ...ecruRows.map((r) => Number(r.IDligne_expedition_TRM)),
+    ])
+
+    // Ordre de fabrication — when and on which machine the piece was knitted.
+    // `productivité*` and friends are accented; name only ASCII columns.
+    const ofIds = Array.from(new Set(ecruRows.map((r) => Number(r.IDordre_fabrication)).filter((x) => x > 0)))
+    const fabrications = new Map<number, { IDordre_fabrication: number; date_creation: string | null; machine: string | null }>()
+    if (ofIds.length > 0) {
+      const ofRows = await query<{ IDordre_fabrication: number; date_creation: string | null; IDmachine: number }>(
+        `SELECT IDordre_fabrication, date_creation, IDmachine FROM ordre_fabrication
+         WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+      )
+      const machineIds = Array.from(new Set(ofRows.map((o) => Number(o.IDmachine)).filter((x) => x > 0)))
+      const machines = new Map<number, string>()
+      if (machineIds.length > 0) {
+        // machine.connecté / archivé / diamètre are accented — ASCII only.
+        const mRows = await query<any>(
+          `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`)
+        for (const m of await fixEncoding(mRows, 'machine', 'IDmachine', ['nom'])) {
+          machines.set(Number((m as any).IDmachine), ((m as any).nom ?? '').toString().trim())
+        }
+      }
+      for (const o of ofRows) {
+        fabrications.set(Number(o.IDordre_fabrication), {
+          IDordre_fabrication: Number(o.IDordre_fabrication),
+          date_creation: (o.date_creation ?? null) as string | null,
+          machine: machines.get(Number(o.IDmachine)) ?? null,
+        })
+      }
+    }
+
+    // The yarns each piece was knitted from, keyed by its OF.
+    const filsByOf = new Map<number, SuiviFil[]>()
+    for (const ofId of ofIds) filsByOf.set(ofId, await resolveFilsForOf(ofId))
+
+    // Structured quality defects, via the same polymorphic lookup the Tombé
+    // Métier stock screen uses (defaut_qualite Type_Reference = 2).
+    const defectsByEcru = await fetchDefectsByEcru(allEcruIds)
+
+    // Free-text observations are accent-bearing VALUES (the column name is
+    // ASCII), so they only need the usual encoding repair.
+    const ecruTextFixed = (await fixEncoding(
+      ecruRows.map((r) => ({
+        IDstock_ecru: Number(r.IDstock_ecru),
+        observations: ((r.observations ?? '') as string) || '',
+      })),
+      'stock_ecru', 'IDstock_ecru', ['observations'],
+    )) as any[]
+    const observationsByEcru = new Map<number, string>(
+      ecruTextFixed.map((r) => [Number(r.IDstock_ecru), ((r.observations ?? '') as string).toString().trim()]),
+    )
+
+    // A fini roll's notes come from its OWN columns — `observations` (free text)
+    // and `observation_sst` (the ennoblisseur's defect report) — exactly as the
+    // Finis > Stock screens read them.
+    //
+    // ⚠️ Deliberately NOT from `defaut_qualite`: under `Type_Reference = 2` its
+    // `reference` holds a bare id that is ambiguous between stock_ecru and
+    // stock_fini — of 900 sampled refs, 881 are valid écru ids AND 810 are valid
+    // fini ids. Joining it to a roll would happily attribute another roll's
+    // defect. (That ambiguity is why the écru side reads it through the shared
+    // fetchDefectsByEcru, which is scoped to écru ids the caller already has.)
+    const finiTextFixed = (await fixEncoding(
+      finiRows.map((r) => ({
+        IDstock_fini: Number(r.IDstock_fini),
+        observations: ((r.observations ?? '') as string) || '',
+        observation_sst: ((r.observation_sst ?? '') as string) || '',
+      })),
+      'stock_fini', 'IDstock_fini', ['observations', 'observation_sst'],
+    )) as any[]
+    const finiNotes = new Map<number, { observations: string; defauts: string }>(
+      finiTextFixed.map((r) => [Number(r.IDstock_fini), {
+        observations: ((r.observations ?? '') as string).toString().trim(),
+        defauts: ((r.observation_sst ?? '') as string).toString().trim(),
+      }]),
+    )
+
+    // ── 6. Assemble one chain per écru piece ──
+    const transfertsFor = (ecruId: number, finiId: number) => pieceTransferts
+      .filter((p) => (ecruId > 0 && Number(p.IDpiece_ecru) === ecruId)
+        || (finiId > 0 && Number(p.IDpiece_fini) === finiId))
+      .map((p) => {
+        const b = bons.get(Number(p.IDbon_transfert))
+        if (!b) return null
+        return {
+          IDbon_transfert: Number(p.IDbon_transfert),
+          date: b.date,
+          de: suiviMagasin(b.source, magasinNames),
+          vers: suiviMagasin(b.dest, magasinNames),
+          valide: b.valide,
+        }
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '') || a.IDbon_transfert - b.IDbon_transfert)
+
+    const pieces = ecruRows.map((e) => {
+      const ecruId = Number(e.IDstock_ecru)
+      const re = refEcru.get(Number(e.IDref_ecru))
+      const finis = finiRows
+        .filter((f) => Number(f.IDstock_ecru) === ecruId)
+        .map((f) => {
+          const rf = refFini.get(Number(f.IDref_fini))
+          const cid = Number(f.IDColoris)
+          // Unknown ref → treat as dyed, matching stock-fini.ts's fallback.
+          const dyed = (rf?.avec_teinture ?? 1) !== 0
+          const coloris = (dyed ? coloriDyed.get(cid) : coloriWash.get(cid))
+            // The stored id can miss its catalog (real case: a dyed roll whose
+            // IDColoris is an écru-coloris id). Fall back to the other space
+            // rather than showing nothing.
+            ?? (dyed ? coloriWash.get(cid) : coloriDyed.get(cid)) ?? ''
+          return {
+            IDstock_fini: Number(f.IDstock_fini),
+            numero: ((f.numero ?? '') as string).toString().trim(),
+            reference: rf?.reference ?? '',
+            designation: rf?.designation ?? '',
+            coloris,
+            lot: ((f.lot ?? '') as string).toString().trim(),
+            poids: Number(f.poids) || 0,
+            metrage: Number(f.metrage) || 0,
+            magasin: suiviMagasin(Number(f.IDmagasin) || 0, magasinNames),
+            etat: etats.get(Number(f.IDetat_stock_fini)) ?? '',
+            commande_source: cmdRefs.get(Number(f.IDref_commande_source)) ?? null,
+            expedition: expeditions.get(Number(f.IDligne_expedition)) ?? null,
+            observations: finiNotes.get(Number(f.IDstock_fini))?.observations ?? '',
+            defauts: finiNotes.get(Number(f.IDstock_fini))?.defauts ?? '',
+            second_choix: Number(f.second_choix) > 0,
+            transferts: transfertsFor(0, Number(f.IDstock_fini)),
+          }
+        })
+      return {
+        ecru: {
+          IDstock_ecru: ecruId,
+          numero: ((e.numero ?? '') as string).toString().trim(),
+          reference: re?.reference ?? '',
+          designation: re?.designation ?? '',
+          coloris: coloriWash.get(Number(e.IDcolori_ecru)) ?? '',
+          lot: ((e.lot ?? '') as string).toString().trim(),
+          poids: Number(e.poids) || 0,
+          metrage: Number(e.metrage) || 0,
+          magasin: suiviMagasin(Number(e.IDmagasin) || 0, magasinNames),
+          date_saisie: (e.date_saisie ?? null) as string | null,
+          IDsociete: Number(e.IDsociete) || 0,
+          observations: observationsByEcru.get(ecruId) ?? '',
+          second_choix: Number(e.second_choix) > 0,
+          defauts: defautSummary(defectsByEcru.get(ecruId) ?? []),
+        },
+        commande_source: cmdRefs.get(Number(e.IDref_commande_source)) ?? null,
+        commande_affectee: cmdRefs.get(Number(e.IDref_commande_affectation)) ?? null,
+        fabrication: fabrications.get(Number(e.IDordre_fabrication)) ?? null,
+        fils: filsByOf.get(Number(e.IDordre_fabrication)) ?? [],
+        // The écru's own shipment (TRM → ETM). ETM takes precedence when both
+        // are set; TRM is the usual one for a piece knitted by the sister company.
+        expedition_ecru:
+          expeditions.get(Number(e.IDligne_expedition_ETM))
+          ?? expeditions.get(Number(e.IDligne_expedition_TRM))
+          ?? null,
+        transferts: transfertsFor(ecruId, 0),
+        finis,
+      }
+    })
+
+    res.json({
+      numero,
+      pieces,
+      /** More pieces share this number than we returned — the UI says so
+       *  instead of quietly showing a slice. */
+      truncated: ecruRows.length >= SUIVI_MAX_PIECES,
+    })
+  } catch (err) {
+    console.error('Error tracing piece:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 stockEcruRouter.post('/ecru', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) {

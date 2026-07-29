@@ -2056,6 +2056,64 @@ rapportsRouter.get('/ca-clients', async (req: Request, res: Response) => {
   }
 })
 
+// GET /api/rapports/ca-evolution?years=N
+// CA per month for the last N calendar years — one series per year, for the
+// "Évolution du CA" widget's monthly lines and annual bars.
+//
+// A dedicated endpoint rather than N calls to /ca-mensuel: that one returns the
+// full per-client matrix (one row per client per year), and the widget needs
+// only the twelve monthly totals. Same `caForYear` aggregation underneath, so
+// the figures agree with the CA table to the centime.
+const CA_EVOLUTION_MAX_YEARS = 10
+const CA_EVOLUTION_DEFAULT_YEARS = 5
+
+rapportsRouter.get('/ca-evolution', async (req: Request, res: Response) => {
+  if (!(await requireCaPermission(req, res))) return
+  try {
+    const asked = parseInt(String(req.query.years ?? ''), 10)
+    const wanted = Number.isInteger(asked) && asked > 0
+      ? Math.min(asked, CA_EVOLUTION_MAX_YEARS)
+      : CA_EVOLUTION_DEFAULT_YEARS
+
+    // Sort explicitly rather than trusting the helper's order — it happens to
+    // count DOWN from the newest year, and assuming ascending silently served
+    // the five OLDEST years instead of the five most recent.
+    const available = [...(await caAvailableYears())].sort((a, b) => b - a)
+    const years = available.slice(0, wanted).sort((a, b) => a - b)
+
+    // Sequential, not Promise.all: each year is a full-year scan of `facture`
+    // against the shared HFSQL server, and firing five at once is exactly the
+    // kind of burst that makes the bridge unhappy for everyone.
+    const nowYear = new Date().getFullYear()
+    const series: { year: number; months: (number | null)[]; total: number }[] = []
+    for (const year of years) {
+      const agg = await caForYear(year)
+      const months: (number | null)[] = Array.from({ length: 12 }, (_, i) =>
+        sumEuros([...agg.values()].map((a) => a.months[i])),
+      )
+      const total = sumEuros(months.map((m) => m ?? 0))
+
+      // For the CURRENT year, months after the last invoiced one are UNKNOWN,
+      // not zero — emitting 0 would draw the line crashing to the axis for the
+      // rest of the calendar. Past years keep their real zeros: a month with no
+      // invoices genuinely earned nothing, and 2020's empty first nine months
+      // are a fact worth seeing.
+      if (year === nowYear) {
+        let last = -1
+        for (let i = 0; i < 12; i++) if ((months[i] ?? 0) !== 0) last = i
+        for (let i = last + 1; i < 12; i++) months[i] = null
+      }
+
+      series.push({ year, months, total })
+    }
+
+    res.json({ years, series })
+  } catch (err) {
+    console.error('[rapports/ca-evolution]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
 // GET /api/rapports/ca-mensuel?year=YYYY
 // Monthly CA matrix — the legacy "Rapport CA/Client" window: one row per
 // client, one column per month, plus per-month and grand totals.

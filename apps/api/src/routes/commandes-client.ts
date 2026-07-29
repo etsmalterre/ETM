@@ -576,6 +576,123 @@ async function computeUrgencyBuckets(): Promise<{ late: Set<number>; soon: Set<n
   return { late, soon }
 }
 
+// ── GET /api/commandes-client/du-jour?date=YYYYMMDD ──────────────────
+// "Commandes du jour" dashboard widget: the client orders taken on a given day
+// (today by default) and what they represent in chiffre d'affaires.
+//
+// MUST stay declared before '/:id' or "du-jour" is captured as an id.
+//
+// Money, so it is permission-gated on the API too (like /rapports/ca-*): the
+// widget being hidden is not a control, and this endpoint exposes per-client
+// order values.
+//
+// An order's value is Σ(quantite × prix) over its lines — the same plain
+// product `commandes-client.ts` already uses for a line's `montant`. (The
+// caveat that bites sst ennoblisseur lines, where quantite is Ml and prix is
+// €/Kg, does NOT apply here: client lines price their own unit.)
+const DU_JOUR_MAX = 100
+
+commandesClientRouter.get('/du-jour', async (req: Request, res: Response) => {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' }); return
+  }
+  const allowed = await userHasPermission(
+    req.userId, isEffectiveAdmin(req), 'dashboard_commandes_jour',
+  )
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: dashboard_commandes_jour' }); return
+  }
+
+  // `?date=` exists so the day is testable and so a future "hier" control is a
+  // query change, not an endpoint change. Anything malformed falls back to today.
+  const raw = String(req.query.date ?? '').replace(/\D/g, '')
+  const now = new Date()
+  const today = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+  const date = raw.length === 8 ? raw : today
+
+  try {
+    // commande_client carries accented columns (archivé, expedié, envoyé_client)
+    // — name only the ASCII ones.
+    const cmds = await query<{
+      IDcommande_client: number; IDclient: number; numero: number | null
+      donation: number; est_soldee: number
+    }>(
+      `SELECT TOP ${DU_JOUR_MAX} IDcommande_client, IDclient, numero, donation, est_soldee
+       FROM commande_client
+       WHERE date_commande = '${esc(date)}' AND IDsociete = 1 AND IDcommande_ETM = 0
+       ORDER BY IDcommande_client DESC`,
+    )
+
+    // When there's nothing today, say when the last order actually was rather
+    // than leaving the user wondering whether the widget is broken.
+    let lastOrderDate: string | null = null
+    if (cmds.length === 0) {
+      const last = await query<{ date_commande: string | null }>(
+        `SELECT TOP 1 date_commande FROM commande_client
+         WHERE IDsociete = 1 AND IDcommande_ETM = 0 AND date_commande <> '' AND date_commande < '${esc(date)}'
+         ORDER BY date_commande DESC`,
+      )
+      lastOrderDate = (last[0]?.date_commande ?? null) as string | null
+    }
+
+    const ids = cmds.map((c) => Number(c.IDcommande_client)).filter((x) => x > 0)
+    const montantByCmd = new Map<number, number>()
+    if (ids.length > 0) {
+      const lignes = await query<{ IDcommande_client: number; quantite: number | null; prix: number | null }>(
+        `SELECT IDcommande_client, quantite, prix FROM ligne_commande_client
+         WHERE IDcommande_client IN (${ids.join(',')})`,
+      )
+      for (const l of lignes) {
+        const k = Number(l.IDcommande_client)
+        montantByCmd.set(k, (montantByCmd.get(k) ?? 0) + (Number(l.quantite) || 0) * (Number(l.prix) || 0))
+      }
+    }
+
+    const clientNames = new Map<number, string>()
+    const clientIds = Array.from(new Set(cmds.map((c) => Number(c.IDclient)).filter((x) => x > 0)))
+    if (clientIds.length > 0) {
+      const rows = await query<{ IDclient: number; nom: string | null }>(
+        `SELECT IDclient, nom FROM client WHERE IDclient IN (${clientIds.join(',')})`,
+      )
+      for (const r of await fixEncoding(rows as any[], 'client', 'IDclient', ['nom'])) {
+        clientNames.set(Number((r as any).IDclient), ((r as any).nom ?? '').toString().trim())
+      }
+    }
+    const commandes = cmds.map((c) => {
+      const id = Number(c.IDcommande_client)
+      return {
+        IDcommande_client: id,
+        numero: c.numero == null ? null : Number(c.numero),
+        client: clientNames.get(Number(c.IDclient)) || '—',
+        montant: montantByCmd.get(id) ?? 0,
+        donation: Number(c.donation) === 1,
+        est_soldee: Number(c.est_soldee) === 1,
+      }
+    })
+
+    // Donations are orders but not revenue, so they're listed and flagged yet
+    // kept out of the CA. (In practice they carry no priced lines, so this
+    // changes nothing today — it just stops a priced donation from ever
+    // inflating the figure.)
+    const total_ht = commandes
+      .filter((c) => !c.donation)
+      .reduce((s, c) => s + c.montant, 0)
+
+    res.json({
+      date,
+      count: commandes.length,
+      total_ht,
+      donation_count: commandes.filter((c) => c.donation).length,
+      last_order_date: lastOrderDate,
+      truncated: commandes.length >= DU_JOUR_MAX,
+      commandes,
+    })
+  } catch (err) {
+    console.error('Error fetching commandes du jour:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 commandesClientRouter.get('/urgency-counts', async (_req: Request, res: Response) => {
   try {
     const { late, soon } = await computeUrgencyBuckets()

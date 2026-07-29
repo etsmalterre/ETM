@@ -38,10 +38,15 @@ export function useWidgetChrome(): WidgetChrome | null {
 }
 
 export function WidgetFrame({
-  icon: Icon, title, actions, children,
+  icon: Icon, title, iconBleed = false, actions, children,
 }: {
   icon: ComponentType<{ className?: string }>
   title: string
+  /** Let the icon fill the whole 32px tile instead of sitting as an 18px glyph
+   *  on the gold square. For widgets whose "icon" is really a picture — the
+   *  Notifications widget puts Tricobot's face there, and a photo shrunk to
+   *  18px inside a gold box reads as a smudge rather than a mascot. */
+  iconBleed?: boolean
   /** View-mode controls rendered at the right of the navy band. Hidden while
    *  customising — the widget body is inert there, so its controls would lie. */
   actions?: ReactNode
@@ -69,14 +74,23 @@ export function WidgetFrame({
         {/* §9: the icon tile flips to white in edit mode — the same
             "this header is live" signal every edit-aware header in the app
             uses, restated for a dark band. */}
-        <div
-          className={cn(
-            'h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm transition-colors',
-            isEditing ? 'bg-white text-primary' : 'bg-gold text-gold-foreground',
-          )}
-        >
-          <Icon className="h-[18px] w-[18px]" />
-        </div>
+        {iconBleed ? (
+          // The picture IS the tile — no gold plate, no frame, and no edit-mode
+          // colour swap to make (an image can't recolour). This is for icons
+          // that are background-free artwork and stand on the navy by
+          // themselves; anything still carrying its own backdrop needs a
+          // container instead, and should not use `iconBleed`.
+          <Icon className="h-8 w-8 flex-shrink-0" />
+        ) : (
+          <div
+            className={cn(
+              'h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm transition-colors',
+              isEditing ? 'bg-white text-primary' : 'bg-gold text-gold-foreground',
+            )}
+          >
+            <Icon className="h-[18px] w-[18px]" />
+          </div>
+        )}
         <h2 className="min-w-0 flex-1 text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
           {title}
         </h2>
