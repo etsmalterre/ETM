@@ -157,8 +157,6 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Stock', href: '/finis/stock' },
       { title: 'Études coloris', href: '/finis/etudes-coloris' },
       { title: 'Tarifs', href: '/finis/tarifs' },
-      { title: 'Coloris Teint', href: '/finis/coloris-teint' },
-      { title: 'Prévisions', href: '/finis/previsions' },
     ],
   },
   {
@@ -260,8 +258,6 @@ export const routeTitles: Record<string, string> = {
   '/finis/stock': 'Stock',
   '/finis/etudes-coloris': 'Études coloris',
   '/finis/tarifs': 'Tarifs',
-  '/finis/coloris-teint': 'Coloris Teint',
-  '/finis/previsions': 'Prévisions',
   // Divers
   '/divers': 'Divers',
   '/divers/references': 'Références',

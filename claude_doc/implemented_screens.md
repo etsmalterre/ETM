@@ -124,3 +124,55 @@ The mode is **derived**, not stored: any row with a non-zero variation id ⇒ `d
 - `ligne_commande_client.TYPE` / `ligne_devis_etm.TYPE` are reserved words — always aliased.
 - Unit enum is the shared one (1 Kg, 3 Ml, 4, 5 m²) but the Divers screens label `4` as **Pièce** (the legacy Divers combo) rather than the generic "unité". Values outside the enum (legacy `255`) render as `—` and round-trip untouched.
 - **HFSQL tables**: `ref_divers`, `ref_divers_variation`, `tarif_divers`, `stock_divers`, `ref_divers_expedie` (guard only), `ligne_commande_client` / `ligne_devis_etm` (usage), `commande_client` + `client` (Commandes tab)
+
+## Finis Tarifs (`/finis/tarifs`)
+
+**Price simulator** (`ref_tarif`) — ports the legacy `FI_Tarifs.wdw`. A simulation is a costing *sandbox*, not a catalog entry: the user types every physical parameter, picks a yarn composition and a treatment list, and reads the resulting sale price across nine order-quantity tranches. Nothing here feeds the real catalog, which is why every input — including each yarn's €/Kg — is editable. **Fiche** layout (3-panel `MasterDetailLayout`):
+
+- **Left**: search + segmented `En cours` / `Archivées` / `Toutes` filter (§5). Card shows the name, a hue-per-level teinture chip (`Sans teinture` stone / `Simple` sky / `Double` violet), and `poids g/m² · laize cm · N fils`.
+- **Center header**: Trash (destructive icon) + **Modifier (`variant="gold"`)**. Badges: teinture chip, `rendement Ml/Kg`, `Archivée`. No Print/Email — the legacy screen has none either.
+- **Center body cards**: *Composition* (table Référence / Coloris / Prix / %, a green-or-amber total-% badge, a `Coût matière €/Kg` footer, row click → inline edit, §7.1 dashed "Ajouter un fil"), *Paramètres* (prix de tricotage, poids rouleau, rendement, laize, poids, freinte + a `Pourcentage` / `Au Kg` port switch), *Ennoblissement* (Sans / Simple / Double + Blanc / Tous Coloris segmented, multiplicateur, treatment chips with add/remove), *Commentaire*.
+- **Right sidebar**: two tabs — `Tarif` (the 9-tranche table, click a row to see its full cost breakdown in the shared gold `CostSection` rendering) and `Simulation` (free simulation at any weight). Below them, the §29 status pill `En cours` / `Archivée`.
+
+### Live preview
+
+`POST /tarifs-fini/:id/preview` prices **unsaved** parameters, so the right panel recalculates while the user is still typing — that is the point of the screen. The query key is the serialised parameter set, debounced 400 ms in edit mode (0 in view mode) and the request body is parsed back out of that same key, so a cache entry can never disagree with the parameters it priced. Composition and treatment edits persist immediately (same model as the FilsGestion sub-forms) and only invalidate the detail + calc queries.
+
+### Pricing model (`apps/api/src/lib/pricing-ref-tarif.ts`)
+
+Shares the catalog pricer's maths — `COEFFICIENT_V2` margin bands, `poids = rolls × poids_rouleau + 1` band lookup, +5 % packaging, −5 %/−10 % knitting rebates at 15/30 rolls, 3 % shipping on the 30-roll tranche — with **two deliberate differences**, both reverse-engineered from the live data:
+
+1. The ennoblissement uplift is the manual `ref_tarif.multiplicateur`, **not** `multiplicateurMatel(rendement)`. Simulation 522 has rendement 3,78 (MATEL would say ×1,03) yet prints `X1` and its nine prices only reproduce with ×1.
+2. The knitting price is the typed `prix_tricotage`; there is no `ref_ecru` behind a simulation.
+
+`apps/api/src/scripts/check-ref-tarif-parity.ts` pins both against the legacy screen (46/46 exact on simulations 522 and 514, all 18 tranche prices plus the tranche-0 breakdowns).
+
+The free simulation inverts the same formula: give it a coefficient and it returns the price; give it a target €/Ml and it solves the coefficient (clamped at 0 below cost).
+
+### Data model
+
+| Table | Role |
+|---|---|
+| `ref_tarif` | one row per simulation. `ok_tarif = 1` ⇒ archivée. `IDteinture` drives the dye mode (0 = sans; `teinture.simple_teinture` splits simple/double, `designation_interne` splits Blanc / Tous Coloris) — **`avec_teinture` on this table is a vestigial copy of the source ref and is not read**. Port mode is *derived*: `port_pct > 0` ⇒ percentage, else the flat `port_fixe` €/Kg; saving zeroes the unused column so the mode round-trips. |
+| `asso_fil_tarif` | composition. `prix` is a per-simulation **snapshot** the user overrides — never a live read of `ref_fil.prix_kg`. Importing from a ref_fini snapshots the catalog price at import time, which is why an old "Copie de 081A" keeps pricing its 2026 yarn. |
+| `asso_traitement_tarif` | applied treatments, one row per application — the same treatment may repeat (simulation 514 carries Chardonnage ×4). Its `metrage` / `coeff` / `pv_*` columns are legacy leftovers, always 0. Ordered by `traitement.ordre` for display. |
+
+### Creation modes (`POST /api/tarifs-fini`)
+
+- `from_fini` — seeds geometry + freinte + rendement from `ref_fini`, knitting price + roll weight from its `ref_ecru`, the écru's composition (prices snapshotted, coloris price preferred over the ref's), and `traitement_ref_fini`. `avec_teinture` 1/2 maps onto the "Tous Coloris" dye of that level (7 / 5). This is how every "Copie de …" row in the legacy data was made.
+- `duplicate` — copies an existing simulation whole.
+- `blank` — poids rouleau 20 Kg, port 5 %, freinte 10 %, sans teinture.
+
+### Endpoints (`apps/api/src/routes/tarifs-fini.ts`)
+
+- `GET /api/tarifs-fini` — list with batched composition-line count and resolved dye mode/shade
+- `GET /:id` · `PUT /:id` · `PATCH /:id/archive` · `DELETE /:id` (children cascade)
+- `GET /:id/tarif?poids=&coefficient=&prix_cible_ml=` (saved params) · `POST /:id/preview` (draft params)
+- `POST/PUT/DELETE /:id/fils[/:lineId]` · `POST/DELETE /:id/traitements[/:lineId]` — all scope-guarded on the parent id, all returning the refreshed child list
+- `GET /lookups/fils` (ref_fil + its coloris + prices), `/lookups/traitements`, `/lookups/teintures`, `/lookups/refs-finies` — **declared before `/:id`** so Express doesn't swallow them
+
+### HFSQL notes
+
+- `ref_tarif.reference` / `.commentaire` hold accented text under **ASCII column names** — safe to name in SQL, but reads need `fixEncoding()` and writes need `sqlText()` (Latin-1 hex literal). Round-trip verified including `«  »` guillemets.
+- Composition labels come from flat queries + a JS merge, never a JOIN + `CONVERT` (which collapses the result set on the Linux bridge).
+- **HFSQL tables**: `ref_tarif`, `asso_fil_tarif`, `asso_traitement_tarif`, `tranche_tarif_ennoblissement` (`IDsous_traitant = 0`), `traitement`, `teinture`, `ref_fil`, `colori_fil`, `ref_fini` + `ref_ecru` + `composition_ecru` + `traitement_ref_fini` (import only)

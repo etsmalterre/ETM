@@ -10,6 +10,78 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/finis
+**Finis › Tarifs : simulateur de prix + nettoyage du menu Finis.**
+
+(1) **Menu Finis** : les sous-menus `Coloris Teint` et `Prévisions` sont retirés (entrées de
+navigation, table des titres de page, routes et composants placeholder). Finis se limite
+désormais à Références · Stock · Études coloris · Tarifs.
+
+(2) **Écran `Finis › Tarifs`** (`/finis/tarifs`), portage du légacy `FI_Tarifs.wdw`. Une
+simulation (`ref_tarif`) est un **bac à sable de chiffrage**, pas une fiche catalogue : tous
+les paramètres physiques sont saisis à la main, y compris le **€/Kg de chaque fil**. Layout
+Fiche : à gauche la liste avec filtre segmenté `En cours` / `Archivées` / `Toutes` ; au centre
+*Composition* (table Référence / Coloris / Prix / %, badge de total % vert-ou-ambre, pied
+`Coût matière`, édition en ligne au clic, bouton pointillé `Ajouter un fil`), *Paramètres*
+(prix de tricotage, poids rouleau, rendement, laize, poids, freinte + bascule de port
+`Pourcentage` / `Au Kg`), *Ennoblissement* (Sans / Simple / Double × Blanc / Tous Coloris,
+multiplicateur, puces de traitements) et *Commentaire* ; à droite deux onglets — `Tarif`
+(les 9 tranches + le détail de coût dans le rendu doré `CostSection` partagé avec Finis ›
+Références) et `Simulation` (chiffrage libre) — surmontant la pastille d'état §29
+`En cours` / `Archivée`.
+
+(3) **Aperçu en direct.** `POST /api/tarifs-fini/:id/preview` chiffre les paramètres **non
+enregistrés** : le panneau droit se recalcule pendant la saisie, ce qui est tout l'intérêt de
+l'écran. La clé de requête est l'ensemble des paramètres sérialisé, débouncé à 400 ms en
+édition (0 en consultation), et le corps de la requête est reparsé **depuis cette même clé** —
+une entrée de cache ne peut donc jamais diverger des paramètres qu'elle a chiffrés. La
+composition et les traitements, eux, sont persistés immédiatement (même modèle que les
+sous-formulaires de FilsGestion).
+
+(4) **Moteur de prix** (`apps/api/src/lib/pricing-ref-tarif.ts`). Il partage les maths du
+chiffreur catalogue — bandes de marge `COEFFICIENT_V2`, recherche de tranche tarifaire sur
+`poids = rouleaux × poids_rouleau + 1`, majoration conditionnement +5 %, remises tricotage
+−5 %/−10 % à 15/30 rouleaux, port à 3 % sur la tranche 30 — avec **deux différences
+délibérées**, toutes deux rétro-conçues depuis les données (sources WinDev compressées PCS) :
+la majoration d'ennoblissement est le champ manuel `ref_tarif.multiplicateur` et **non**
+`multiplicateurMatel(rendement)` (la simulation 522 a un rendement de 3,78 — MATEL donnerait
+×1,03 — mais affiche `X1` et ses neuf prix ne se reproduisent qu'avec ×1) ; et le prix de
+tricotage est le `prix_tricotage` saisi, puisqu'il n'y a pas de `ref_ecru` derrière une
+simulation. Contrôle de non-régression : `apps/api/src/scripts/check-ref-tarif-parity.ts`,
+**46/46 exact** sur les simulations 522 et 514 (les 18 prix de tranche + les détails de la
+tranche 0). Le chiffrage libre inverse la même formule : donnez-lui un coefficient il rend le
+prix, donnez-lui un prix cible en €/Ml il résout le coefficient (borné à 0 sous le coût).
+
+(5) **Modèle de données.** `ref_tarif` : `ok_tarif = 1` ⇒ archivée ; le mode de teinture vient
+de `IDteinture` (0 = sans ; `teinture.simple_teinture` sépare simple/double,
+`designation_interne` sépare Blanc / Tous Coloris) — **`avec_teinture` sur cette table est une
+copie vestigiale de la référence source et n'est pas lue** ; le mode de port est *dérivé*
+(`port_pct > 0` ⇒ pourcentage, sinon `port_fixe` €/Kg forfaitaire), l'enregistrement remet à
+zéro la colonne inutilisée pour que le mode fasse l'aller-retour. `asso_fil_tarif.prix` est un
+**instantané par simulation** que l'utilisateur surcharge, jamais une lecture vivante de
+`ref_fil.prix_kg` : c'est pourquoi une vieille « Copie de 081A » continue de chiffrer son fil
+de 2026. `asso_traitement_tarif` porte une ligne **par application** — un même traitement peut
+se répéter (la simulation 514 embarque Chardonnage ×4) — affiché trié par `traitement.ordre`.
+
+(6) **Création** (`POST /api/tarifs-fini`) en trois modes : `from_fini` (reprend géométrie,
+freinte et rendement de `ref_fini`, prix de tricotage et poids rouleau de son `ref_ecru`, la
+composition de l'écru avec les prix instantanés, et `traitement_ref_fini` ; `avec_teinture`
+1/2 se mappe sur la teinture « Tous Coloris » du niveau correspondant, 7 / 5 — c'est ainsi que
+toutes les lignes « Copie de … » du légacy ont été faites), `duplicate` et `blank`.
+
+Notes HFSQL : `ref_tarif.reference` / `.commentaire` portent du texte accentué sous des **noms
+de colonnes ASCII** — nommables en SQL, mais lecture via `fixEncoding()` et écriture via
+`sqlText()` (littéral hexa Latin-1) ; aller-retour vérifié guillemets compris. Les libellés de
+composition passent par des requêtes plates + fusion JS, jamais un JOIN + `CONVERT` (qui
+effondre le résultat sur le pont Linux). Les routes `/lookups/*` sont déclarées **avant
+`/:id`** pour qu'Express ne les avale pas.
+
+Point de vigilance laissé ouvert : la règle du multiplicateur n'a pas pu être confirmée sur
+une simulation à fort rendement portant un Lavage (les deux captures de référence ont un
+rendement ≤ 3,78, où MATEL vaut ×1 de toute façon). L'arithmétique est concluante sur la ligne
+de teinture ; ouvrir `228/59 test` (rendement 6,53) dans le légacy et y lire `X1` la
+confirmerait définitivement.
+
 ## 2026-07-28 — feat/widget
 **Tableau de bord : widget Chiffre d'affaires + tableau de bord personnalisable.**
 

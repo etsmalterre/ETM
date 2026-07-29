@@ -4,10 +4,6 @@ import { PagePlaceholder } from '@/components/shared/PagePlaceholder'
 import { Dashboard } from '@/pages/Dashboard'
 import {
   FileText,
-  Palette,
-  Euro,
-  Droplet,
-  TrendingUp,
   ClipboardCheck,
   BarChart3,
   type LucideIcon,
@@ -28,11 +24,7 @@ function createPlaceholder(title: string, description: string, Icon: LucideIcon)
 // Fils placeholder (prévisions only — other Fils sub-screens are real)
 const FilsPrevisionsPage = createPlaceholder('Prévisions Fournisseurs', 'Prévisions d\'approvisionnement fournisseurs', FileText)
 
-// Références Finis — real screen (not a placeholder anymore)
-// Études coloris — real screen (not a placeholder anymore)
-const FinisTarifsPage = createPlaceholder('Tarifs Finis', 'Tarifs des produits finis', Euro)
-const FinisColorisTeintPage = createPlaceholder('Coloris Teint', 'Coloris teints et ennoblissement', Droplet)
-const FinisPrevisionsPage = createPlaceholder('Prévisions Finis', 'Prévisions des produits finis', TrendingUp)
+// Références Finis / Études coloris / Tarifs — real screens (not placeholders anymore)
 const QualiteActionsPage = createPlaceholder('Actions', 'Actions qualité', ClipboardCheck)
 const QualiteAnalysePage = createPlaceholder('Analyse', 'Analyse qualité', BarChart3)
 // Commandes clients — real screen (not a placeholder anymore)
@@ -73,6 +65,7 @@ import { DiversStock } from '@/pages/DiversStock'
 import { FinisReferences } from '@/pages/FinisReferences'
 import { EtudesColoris } from '@/pages/EtudesColoris'
 import { FinisStock } from '@/pages/FinisStock'
+import { FinisTarifs } from '@/pages/FinisTarifs'
 
 // Prospects pages (real)
 import { ProspectsDemandes } from '@/pages/ProspectsDemandes'
@@ -137,9 +130,7 @@ export const router = createBrowserRouter([
       { path: 'finis/references', element: <FinisReferences /> },
       { path: 'finis/stock', element: <FinisStock /> },
       { path: 'finis/etudes-coloris', element: <EtudesColoris /> },
-      { path: 'finis/tarifs', element: <FinisTarifsPage /> },
-      { path: 'finis/coloris-teint', element: <FinisColorisTeintPage /> },
-      { path: 'finis/previsions', element: <FinisPrevisionsPage /> },
+      { path: 'finis/tarifs', element: <FinisTarifs /> },
 
       // Divers
       { path: 'divers', element: <Navigate to="/divers/references" replace /> },
