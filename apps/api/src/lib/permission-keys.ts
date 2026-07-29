@@ -67,6 +67,14 @@ export const PERMISSION_KEYS = [
     category: 'Tableau de bord',
   },
   {
+    key: 'dashboard_evolution_ca',
+    label: 'Évolution du CA',
+    description:
+      'Affiche le widget « Évolution du CA » sur le tableau de bord : le chiffre d’affaires annuel sur plusieurs exercices. Sous-droit de « Chiffre d’affaires » : même donnée confidentielle et même contrôle API, mais l’affichage du widget se règle séparément.',
+    category: 'Tableau de bord',
+    parent: 'dashboard_ca',
+  },
+  {
     key: 'dashboard_finance',
     label: 'Analyse financière',
     description:
@@ -311,6 +319,14 @@ export const PERMISSION_KEYS = [
     label: 'Annoter les comptes',
     description:
       'Autorise la modification de la description libre d’un compte comptable et de sa nature (charge fixe ou variable) depuis le tiroir de Rapports > Finance.',
+    category: 'Rapports',
+    parent: 'view_rapport_finance',
+  },
+  {
+    key: 'dashboard_charges',
+    label: 'Widget « Charges » du tableau de bord',
+    description:
+      'Affiche le widget « Charges » sur le tableau de bord : total des charges fixes et variables du dernier relevé comptable. Sous-droit de « Consulter le rapport finance » car le widget interroge le même endpoint : il ne peut donc être accordé qu’à un utilisateur qui a déjà accès au rapport.',
     category: 'Rapports',
     parent: 'view_rapport_finance',
   },

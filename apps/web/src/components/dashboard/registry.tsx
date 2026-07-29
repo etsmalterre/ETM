@@ -63,9 +63,11 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
   },
   {
     key: 'evolution_ca',
-    // Same confidential figure as the CA table, so the same right — and the
-    // endpoint enforces it too.
-    permission: 'dashboard_ca',
+    // Sub-right of dashboard_ca. The endpoint still enforces the parent, so the
+    // figure stays protected; this key only decides whether the chart shows, so
+    // an admin can grant the CA table without the chart or the reverse. A child
+    // is never held without its parent, so the widget can't render onto a 403.
+    permission: 'dashboard_evolution_ca',
     title: 'Évolution du CA',
     icon: TrendingUp,
     defaultWidth: 6,
@@ -99,10 +101,12 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
   },
   {
     key: 'charges',
-    // Reuses the report's own right rather than minting a dashboard key: the
-    // endpoint enforces view_rapport_finance, so a separate key could only
-    // create a state where the widget shows and the data 403s.
-    permission: 'view_rapport_finance',
+    // Sub-right of view_rapport_finance rather than a standalone key: the widget
+    // shares GET /rapports/finance with the report screen, so the endpoint keeps
+    // enforcing the parent (adding a child check there would 403 the report for
+    // everyone holding only the parent). Being a child means it can't be granted
+    // on its own, so the widget never shows against data that would 403.
+    permission: 'dashboard_charges',
     title: 'Charges',
     icon: Wallet,
     defaultWidth: 4,
