@@ -10,6 +10,36 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/rapport-finance (2e lot)
+**Rapports › Finance : code couleur du dépassement N vs N-1.**
+
+Le tableau signale désormais d'un coup d'œil les comptes qui coûtent plus cher que l'an
+dernier. Le ratio affiché (`montant / montant N-1`) pilote un feu tricolore : **vert** sous
+le montant N-1, **ambre** de 100 % à 120 %, **rouge** au-delà de 120 %. La classification lit
+le pourcentage **arrondi** (celui rendu à l'écran), jamais le ratio brut, pour que la couleur
+ne puisse pas contredire le nombre affiché juste à côté. Le pourcentage devient une pastille
+douce (même langage que les pastilles d'état stock fini), reprise dans le tableau desktop, la
+carte mobile, le totalisateur et le tiroir. Les lignes ne se teintent que sur les états
+d'attention (`bg-amber-50` / `bg-red-50`, mêmes teintes que Rapports › Commandes sst) — une
+ligne verte reste blanche, sinon les comptes en dépassement ne ressortent plus ; la sélection
+(`bg-accent/10`) l'emporte toujours.
+
+**Compte sans montant N-1** = compte ouvert cette année : il n'y a rien à dépasser, donc
+**aucun pourcentage n'est écrit** (l'API renvoie 0, et afficher « 0 % » se lit « n'a rien
+coûté »), ni à l'écran ni dans l'export Excel — la cellule reste vide plutôt que de fausser
+une moyenne de colonne. Ces lignes portent une **teinte grise** (`bg-zinc-100/70`) pour se
+lire « hors comparaison ». Un compte à zéro sur les deux années n'est pas « nouveau » mais
+dormant : il reste neutre (`estNouveau()` exige un montant non nul cette année). Le tiroir
+garde sa ligne « Pourcentage » avec le tiret cadratin habituel, une ligne étiquetée vide se
+lisant comme un bug d'affichage.
+
+Le totalisateur a aussi été aéré : les trois chiffres (Total N, Total N-1, ratio) s'enchaînaient
+en une seule longue suite de nombres, les libellés inline se mêlant aux montants. Chaque
+figure est maintenant un **bloc étiquette-au-dessus-valeur** (libellé `text-[10px]` majuscules
+muted), avec des séparateurs qui couvrent les deux lignes et des écarts élargis. Sous `sm`,
+les libellés d'année restent masqués et les valeurs redescendent en `text-sm` : la barre tient
+toujours sur une ligne (§40.5bis).
+
 ## 2026-07-29 — feat/finis
 **Finis › Tarifs : simulateur de prix + nettoyage du menu Finis.**
 

@@ -103,6 +103,71 @@ function libelleOf(l: FinanceLine): string {
   return l.libelle || '(sans libellé)'
 }
 
+// ── Dépassement vs N-1 ─────────────────────────────────
+//
+// What the user scans this table for: which comptes now cost more than they
+// did last year. The N/N-1 ratio drives a traffic light — under N-1 is green,
+// up to +20 % amber, beyond red. Classification reads the *rounded* percentage
+// (the one rendered on screen) so the colour can never disagree with the
+// number next to it. An empty N-1 gets no verdict — the compte is new this
+// year, so there is nothing to exceed and no percentage is rendered at all.
+
+type Depassement = 'sous' | 'proche' | 'depasse'
+
+function depassement(pourcentage: number, precedent: number): Depassement | null {
+  if (precedent <= 0) return null
+  if (pourcentage < 100) return 'sous'
+  if (pourcentage <= 120) return 'proche'
+  return 'depasse'
+}
+
+/** Soft pill palette — same intensity language as the stock-fini état pills. */
+const DEPASSEMENT_PILL: Record<Depassement, string> = {
+  sous: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  proche: 'bg-amber-100 text-amber-800 border-amber-200',
+  depasse: 'bg-red-100 text-red-700 border-red-200',
+}
+
+const DEPASSEMENT_TITLE: Record<Depassement, string> = {
+  sous: 'Sous le montant de l’année précédente',
+  proche: 'Dépassement jusqu’à +20 %',
+  depasse: 'Dépassement de plus de 20 %',
+}
+
+/** No N-1 amount but a real amount this year: the compte opened this year, so
+ *  it has no ratio at all. Tinted grey to read as "hors comparaison" rather
+ *  than as an empty cell. A compte at zero on both years is not "new" — it is
+ *  simply dormant, and stays neutral. */
+function estNouveau(montant: number, precedent: number): boolean {
+  return precedent <= 0 && montant !== 0
+}
+
+/** Only the attention states tint a row — a green row stays white so the
+ *  comptes en dépassement are the ones that pop out of the table. */
+const DEPASSEMENT_ROW: Record<Depassement, string> = {
+  sous: 'hover:bg-accent/5',
+  proche: 'bg-amber-50 hover:bg-amber-100/70',
+  depasse: 'bg-red-50 hover:bg-red-100/70',
+}
+
+function PctPill({ pourcentage, precedent }: { pourcentage: number; precedent: number }) {
+  const d = depassement(pourcentage, precedent)
+  // No N-1 amount = a compte that opened this year. The API returns 0 for the
+  // ratio, but printing "0 %" reads as "spent nothing" — render nothing.
+  if (!d) return null
+  return (
+    <span
+      title={DEPASSEMENT_TITLE[d]}
+      className={cn(
+        'inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium tabular-nums',
+        DEPASSEMENT_PILL[d],
+      )}
+    >
+      {pct(pourcentage)}
+    </span>
+  )
+}
+
 // ── Sort ───────────────────────────────────────────────
 
 type SortKey = 'numero' | 'libelle' | 'description' | 'montant' | 'montant_precedent' | 'pourcentage'
@@ -244,7 +309,9 @@ export function RapportFinance() {
           // Numbers, not formatted strings, so Excel can still sum the column.
           Math.round(l.montant * 100) / 100,
           Math.round(l.montant_precedent * 100) / 100,
-          l.pourcentage,
+          // Same rule as the on-screen column: a compte with no N-1 amount has
+          // no ratio, so the cell stays empty instead of claiming 0 %.
+          depassement(l.pourcentage, l.montant_precedent) ? l.pourcentage : '',
         ]),
       ]
       const ws = XLSX.utils.aoa_to_sheet(aoa)
@@ -385,6 +452,7 @@ export function RapportFinance() {
                 <tbody>
                   {filteredSorted.map((l) => {
                     const isSelected = selectedId === l.IDcompte_compta
+                    const d = depassement(l.pourcentage, l.montant_precedent)
                     return (
                       <tr
                         key={l.IDcompte_compta}
@@ -392,7 +460,14 @@ export function RapportFinance() {
                         onClick={() => handleRowClick(l.IDcompte_compta)}
                         className={cn(
                           'border-b border-border/40 cursor-pointer transition-colors',
-                          isSelected ? 'bg-accent/10' : 'hover:bg-accent/5',
+                          // Selection always wins over the dépassement tint.
+                          isSelected
+                            ? 'bg-accent/10'
+                            : d
+                              ? DEPASSEMENT_ROW[d]
+                              : estNouveau(l.montant, l.montant_precedent)
+                                ? 'bg-zinc-100/70 hover:bg-zinc-200/70'
+                                : 'hover:bg-accent/5',
                         )}
                       >
                         <td className="px-2.5 py-2 tabular-nums font-medium">{l.numero}</td>
@@ -406,7 +481,9 @@ export function RapportFinance() {
                         <td className="px-2.5 py-2 text-right tabular-nums text-muted-foreground">
                           {eur(l.montant_precedent)}
                         </td>
-                        <td className="px-2.5 py-2 text-right tabular-nums">{pct(l.pourcentage)}</td>
+                        <td className="px-2.5 py-2 text-right">
+                          <PctPill pourcentage={l.pourcentage} precedent={l.montant_precedent} />
+                        </td>
                       </tr>
                     )
                   })}
@@ -424,6 +501,7 @@ export function RapportFinance() {
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent p-2 space-y-2 bg-zinc-100/80">
                 {filteredSorted.map((l) => {
                   const isSelected = selectedId === l.IDcompte_compta
+                  const d = depassement(l.pourcentage, l.montant_precedent)
                   return (
                     <div
                       key={l.IDcompte_compta}
@@ -433,13 +511,19 @@ export function RapportFinance() {
                         'rounded-lg border p-3 cursor-pointer transition-colors shadow-sm',
                         isSelected
                           ? 'bg-accent/10 border-accent ring-1 ring-accent'
-                          : 'bg-white border-border/60 hover:border-accent/40',
+                          : d === 'depasse'
+                            ? 'bg-red-50 border-red-200 hover:border-red-300'
+                            : d === 'proche'
+                              ? 'bg-amber-50 border-amber-200 hover:border-amber-300'
+                              : estNouveau(l.montant, l.montant_precedent)
+                                ? 'bg-zinc-100 border-zinc-300 hover:border-zinc-400'
+                                : 'bg-white border-border/60 hover:border-accent/40',
                       )}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-sm font-medium tabular-nums truncate">{l.numero}</p>
-                        <span className="text-xs tabular-nums text-muted-foreground flex-shrink-0">
-                          {pct(l.pourcentage)}
+                        <span className="flex-shrink-0">
+                          <PctPill pourcentage={l.pourcentage} precedent={l.montant_precedent} />
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground truncate mt-0.5">{libelleOf(l)}</p>
@@ -478,18 +562,31 @@ export function RapportFinance() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-3 sm:gap-5 text-sm">
-            <div className="flex items-center gap-1.5">
-              <span className="hidden sm:inline text-muted-foreground">Total {anneeAffichee}</span>
+          {/* Three figures on one bar read as one long number string when the
+              labels sit inline with them. Stack each label over its value so
+              the words stop competing with the digits, and keep the year
+              labels desktop-only so the bar still fits one line on phones
+              (§40.5bis). */}
+          <div className="flex items-end gap-4 sm:gap-6 text-sm">
+            <div className="flex flex-col items-end leading-tight">
+              <span className="hidden sm:block text-[10px] uppercase tracking-wide text-muted-foreground">
+                Total {anneeAffichee}
+              </span>
               <span className="font-semibold tabular-nums text-sm sm:text-base">{eur(totalMontant)}</span>
             </div>
-            <div className="flex items-center gap-1.5 border-l border-border/60 pl-3 sm:pl-5">
-              <span className="hidden sm:inline text-muted-foreground">Total {anneePrec ?? 'N-1'}</span>
+            <div className="flex flex-col items-end leading-tight border-l border-border/60 pl-4 sm:pl-6">
+              <span className="hidden sm:block text-[10px] uppercase tracking-wide text-muted-foreground">
+                Total {anneePrec ?? 'N-1'}
+              </span>
               <span className="tabular-nums text-muted-foreground text-sm sm:text-base">{eur(totalPrec)}</span>
             </div>
-            <div className="flex items-center gap-1.5 border-l border-border/60 pl-3 sm:pl-5">
-              <span className="font-semibold tabular-nums text-sm sm:text-base">{pct(totalPct)}</span>
-            </div>
+            {/* Nothing to compare against = no pill, and no empty divided
+                column left hanging on the bar either. */}
+            {!!depassement(totalPct, totalPrec) && (
+              <div className="flex items-center border-l border-border/60 pl-4 sm:pl-6">
+                <PctPill pourcentage={totalPct} precedent={totalPrec} />
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -761,7 +858,18 @@ function CompteDrawer({
                   }
                   mono
                 />
-                <KV label="Pourcentage" value={pct(shown.pourcentage)} mono />
+                <KV
+                  label="Pourcentage"
+                  value={
+                    // A labeled row still needs a value, so the drawer falls
+                    // back to the app's usual em-dash rather than a blank.
+                    depassement(shown.pourcentage, shown.montant_precedent) ? (
+                      <PctPill pourcentage={shown.pourcentage} precedent={shown.montant_precedent} />
+                    ) : (
+                      '—'
+                    )
+                  }
+                />
               </div>
             </DrawerCard>
 
