@@ -57,7 +57,10 @@ export interface MainMenuItem {
   submenus: SubMenuItem[]
 }
 
-// Dashboard - standalone item at top
+// Dashboard - standalone item at top.
+// Its submenus are NOT declared here: they are the user's own dashboards, read
+// at runtime from /user-profiles/me/dashboard (Header.tsx). The primary one
+// stays at `/`; the others live under DASHBOARD_ROUTE_PREFIX.
 export const dashboardItem: MainMenuItem = {
   id: 'dashboard',
   title: 'Tableau de bord',
@@ -65,6 +68,9 @@ export const dashboardItem: MainMenuItem = {
   href: '/',
   submenus: [],
 }
+
+/** Route prefix of the non-primary dashboards. */
+export const DASHBOARD_ROUTE_PREFIX = '/tableau-de-bord'
 
 // Settings - standalone item at bottom
 export const settingsItem: MainMenuItem = {
@@ -206,8 +212,8 @@ export const mainNavigation: MainMenuItem[] = [
 
 // Helper to find active menu based on current path
 export function getActiveMenu(pathname: string): MainMenuItem | undefined {
-  // Check dashboard
-  if (pathname === dashboardItem.href) {
+  // Check dashboard — `/` plus every secondary dashboard of the current user
+  if (pathname === dashboardItem.href || pathname.startsWith(DASHBOARD_ROUTE_PREFIX)) {
     return dashboardItem
   }
   // Check settings
@@ -223,6 +229,7 @@ export function getActiveMenu(pathname: string): MainMenuItem | undefined {
 // Route titles for breadcrumbs
 export const routeTitles: Record<string, string> = {
   '/': 'Accueil',
+  '/tableau-de-bord': 'Tableau de bord',
   // Prospects
   '/prospects': 'Prospects',
   '/prospects/demandes': 'Demandes',

@@ -9,8 +9,9 @@
 // (it degrades gracefully: the widget reappears at the end with its defaults).
 
 import type { ComponentType } from 'react'
-import { TrendingUp, FileSpreadsheet } from 'lucide-react'
+import { TrendingUp, FileSpreadsheet, LineChart } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
+import { AnalyseFinanciereWidget } from './AnalyseFinanciereWidget'
 import { ChiffreAffairesWidget } from './ChiffreAffairesWidget'
 import { FilStockEtatWidget } from './FilStockEtatWidget'
 import { LaGentleExportWidget } from './LaGentleExportWidget'
@@ -51,6 +52,17 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
     minWidth: 3,
     defaultHeightPx: 720,
     Component: ChiffreAffairesWidget,
+  },
+  {
+    key: 'finance_analyse',
+    permission: 'dashboard_finance',
+    title: 'Analyse financière',
+    icon: LineChart,
+    defaultWidth: 6,
+    // Below ~4 columns the 12 month labels and the € axis start colliding.
+    minWidth: 4,
+    defaultHeightPx: 460,
+    Component: AnalyseFinanciereWidget,
   },
   {
     key: 'fil_etat',

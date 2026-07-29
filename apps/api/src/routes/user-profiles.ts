@@ -8,6 +8,8 @@
 //
 // Endpoints:
 //   GET    /api/user-profiles/me               — current user's profile
+//   GET    /api/user-profiles/me/dashboard     — the user's tableaux de bord
+//   PUT    /api/user-profiles/me/dashboard     — replace them (names + layouts)
 //   GET    /api/user-profiles/users            — admin only, every user + profile
 //   GET    /api/user-profiles/users/:id/photo  — self or admin, raw image bytes
 //   PUT    /api/user-profiles/users/:id/signature — admin only, set/clear fields
@@ -28,8 +30,8 @@ import {
   getUserPhotoPath,
   getAllUserProfiles,
   getEffectiveSignature,
-  getUserDashboard,
-  setUserDashboard,
+  getUserDashboards,
+  setUserDashboards,
   DASHBOARD_MAX_WIDGETS,
   DASHBOARD_MAX_KEY_LENGTH,
   DASHBOARD_MIN_WIDTH,
@@ -37,6 +39,12 @@ import {
   DASHBOARD_MIN_HEIGHT_PX,
   DASHBOARD_MAX_HEIGHT_PX,
   DASHBOARD_MAX_Y,
+  DASHBOARD_PRIMARY_ID,
+  DASHBOARD_PRIMARY_NAME,
+  DASHBOARD_MAX_TABS,
+  DASHBOARD_MAX_NAME_LENGTH,
+  DASHBOARD_MAX_ID_LENGTH,
+  type DashboardTab,
   type PhotoExt,
   type UserProfile,
 } from '../lib/user-profiles.js'
@@ -133,9 +141,14 @@ userProfilesRouter.get('/me', async (req: Request, res: Response) => {
   })
 })
 
-// ── Tableau de bord layout (self-service, not admin-gated) ──────────────
+// ── Tableaux de bord (self-service, not admin-gated) ────────────────────
 // Personal preference, so every user manages their own — unlike the signature
 // and photo above, which an admin sets on their behalf.
+//
+// A user has one or more NAMED dashboards, surfaced as the submenu tabs of
+// "Tableau de bord"; the first one is the primary and always exists. Widgets
+// are arranged per dashboard, which is how a user splits them across several
+// screens instead of one long one.
 //
 // The widget catalog lives in the frontend registry
 // (apps/web/src/components/dashboard/registry.tsx); this layer only validates
@@ -143,23 +156,29 @@ userProfilesRouter.get('/me', async (req: Request, res: Response) => {
 // the dashboard when it merges the registry, so a widget can be renamed or
 // retired without a migration here.
 
-const dashboardBody = z.object({
-  layout: z
+const widgetPref = z.object({
+  key: z.string().min(1).max(DASHBOARD_MAX_KEY_LENGTH),
+  width: z.number().int().min(DASHBOARD_MIN_WIDTH).max(DASHBOARD_MAX_WIDTH),
+  heightPx: z.number().int()
+    .min(DASHBOARD_MIN_HEIGHT_PX).max(DASHBOARD_MAX_HEIGHT_PX)
+    .optional(),
+  x: z.number().int().min(0).max(DASHBOARD_MAX_WIDTH - 1).optional(),
+  y: z.number().int().min(0).max(DASHBOARD_MAX_Y).optional(),
+  visible: z.boolean(),
+})
+
+const dashboardsBody = z.object({
+  dashboards: z
     .array(
       z.object({
-        key: z.string().min(1).max(DASHBOARD_MAX_KEY_LENGTH),
-        width: z.number().int().min(DASHBOARD_MIN_WIDTH).max(DASHBOARD_MAX_WIDTH),
-        heightPx: z.number().int()
-          .min(DASHBOARD_MIN_HEIGHT_PX).max(DASHBOARD_MAX_HEIGHT_PX)
-          .optional(),
-        x: z.number().int().min(0).max(DASHBOARD_MAX_WIDTH - 1).optional(),
-        y: z.number().int().min(0).max(DASHBOARD_MAX_Y).optional(),
-        visible: z.boolean(),
+        id: z.string().min(1).max(DASHBOARD_MAX_ID_LENGTH),
+        name: z.string().min(1).max(DASHBOARD_MAX_NAME_LENGTH),
+        // null = "follow the registry defaults" (primary only)
+        layout: z.array(widgetPref).max(DASHBOARD_MAX_WIDGETS).nullable(),
       }),
     )
-    .max(DASHBOARD_MAX_WIDGETS)
-    // null = "reset me to the defaults"
-    .nullable(),
+    .min(1)
+    .max(DASHBOARD_MAX_TABS),
 })
 
 // GET /api/user-profiles/me/dashboard
@@ -168,7 +187,7 @@ userProfilesRouter.get('/me/dashboard', async (req: Request, res: Response) => {
     res.status(401).json({ error: 'not authenticated' })
     return
   }
-  res.json({ layout: await getUserDashboard(req.userId) })
+  res.json({ dashboards: await getUserDashboards(req.userId) })
 })
 
 // PUT /api/user-profiles/me/dashboard
@@ -177,19 +196,32 @@ userProfilesRouter.put('/me/dashboard', async (req: Request, res: Response) => {
     res.status(401).json({ error: 'not authenticated' })
     return
   }
-  const parsed = dashboardBody.safeParse(req.body)
+  const parsed = dashboardsBody.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues })
     return
   }
-  // Last write wins per key — a duplicated key would otherwise render the
-  // same widget twice and make drag-and-drop ambiguous.
-  const layout = parsed.data.layout
-  const deduped = layout
-    ? [...new Map(layout.map((w) => [w.key, w])).values()]
-    : null
-  await setUserDashboard(req.userId, deduped)
-  res.json({ layout: await getUserDashboard(req.userId) })
+
+  const seenIds = new Set<string>()
+  const tabs: DashboardTab[] = []
+  for (const [i, tab] of parsed.data.dashboards.entries()) {
+    // The first tab IS the primary one, whatever the client called it: the app
+    // routes it at `/` and it can never be deleted, so its id has to be known.
+    const id = i === 0 ? DASHBOARD_PRIMARY_ID : tab.id
+    if (seenIds.has(id)) continue // a duplicate id would make routing ambiguous
+    seenIds.add(id)
+    const name = tab.name.trim().slice(0, DASHBOARD_MAX_NAME_LENGTH)
+    tabs.push({
+      id,
+      name: name || (i === 0 ? DASHBOARD_PRIMARY_NAME : `Tableau ${i + 1}`),
+      // Last write wins per key — a duplicated key would otherwise render the
+      // same widget twice and make drag-and-drop ambiguous.
+      layout: tab.layout ? [...new Map(tab.layout.map((w) => [w.key, w])).values()] : null,
+    })
+  }
+
+  await setUserDashboards(req.userId, tabs)
+  res.json({ dashboards: await getUserDashboards(req.userId) })
 })
 
 // ── GET /api/user-profiles/users ───────────────────────

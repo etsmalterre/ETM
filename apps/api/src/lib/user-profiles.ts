@@ -53,6 +53,25 @@ export interface DashboardWidgetPref {
   visible: boolean
 }
 
+/** One tableau de bord — a named tab holding its own widget layout. Every user
+ *  has at least the primary one; the rest are created from the dashboard's edit
+ *  mode. `layout` null means "follow the registry defaults" and is only ever
+ *  stored on the primary — a secondary dashboard starts EMPTY (every widget in
+ *  the tray), which is the point of having several. */
+export interface DashboardTab {
+  id: string
+  name: string
+  layout: DashboardWidgetPref[] | null
+}
+
+/** Id of the tab every user always has. Mirrored in the web app's
+ *  components/dashboard/types.ts — keep both in step. */
+export const DASHBOARD_PRIMARY_ID = 'principal'
+export const DASHBOARD_PRIMARY_NAME = 'Principal'
+export const DASHBOARD_MAX_TABS = 8
+export const DASHBOARD_MAX_NAME_LENGTH = 40
+export const DASHBOARD_MAX_ID_LENGTH = 64
+
 export const DASHBOARD_MIN_WIDTH = 1
 export const DASHBOARD_MAX_WIDTH = 12
 /** Sanity bounds — not design constraints, just guards against stored values
@@ -72,8 +91,11 @@ interface UserProfileEntry {
   /** Legacy pasted HTML — honored only while no structured fields exist */
   signatureHtml?: string
   photo?: { ext: PhotoExt; updatedAt: number }
-  /** Personal tableau de bord layout — order, widths, visibility. */
+  /** LEGACY single-dashboard layout, written before dashboards became tabs.
+   *  Read once and folded into the primary tab; never written again. */
   dashboard?: DashboardWidgetPref[]
+  /** Personal tableaux de bord — the first entry is the primary one. */
+  dashboards?: DashboardTab[]
 }
 
 /** True when nothing is left worth storing for this user, so the entry can be
@@ -84,7 +106,8 @@ function isEmptyEntry(entry: UserProfileEntry): boolean {
     entry.signature === undefined &&
     entry.signatureHtml === undefined &&
     entry.photo === undefined &&
-    entry.dashboard === undefined
+    entry.dashboard === undefined &&
+    entry.dashboards === undefined
   )
 }
 
@@ -187,28 +210,42 @@ export async function setUserSignature(userId: number, fields: SignatureFields):
   await saveUserProfiles({ ...file, users: nextUsers })
 }
 
-/** Read a user's saved tableau de bord layout, or null when they've never
- *  customised it (the dashboard then falls back to the registry defaults). */
-export async function getUserDashboard(userId: number): Promise<DashboardWidgetPref[] | null> {
+/** A user's tableaux de bord, always at least the primary one.
+ *
+ *  Migration is read-time and lossless: a profile written before tabs existed
+ *  carries a bare `dashboard` array, which becomes the primary tab's layout.
+ *  Nothing is rewritten until the user saves, so rolling back the app keeps
+ *  every existing arrangement intact. */
+export async function getUserDashboards(userId: number): Promise<DashboardTab[]> {
   const file = await loadUserProfiles()
-  const stored = file.users[String(userId)]?.dashboard
-  return stored && stored.length > 0 ? stored : null
+  const entry = file.users[String(userId)]
+  const tabs = entry?.dashboards
+  if (tabs && tabs.length > 0) return tabs
+  const legacy = entry?.dashboard
+  return [{
+    id: DASHBOARD_PRIMARY_ID,
+    name: DASHBOARD_PRIMARY_NAME,
+    layout: legacy && legacy.length > 0 ? legacy : null,
+  }]
 }
 
-/** Overwrite a user's tableau de bord layout. Passing null resets them to the
- *  registry defaults by dropping the stored layout entirely. */
-export async function setUserDashboard(
-  userId: number,
-  layout: DashboardWidgetPref[] | null,
-): Promise<void> {
+/** Overwrite a user's tableaux de bord. A lone primary tab with no layout is
+ *  stored as nothing at all — "I have no opinion, follow the defaults" — so a
+ *  user who resets keeps tracking future changes to the default dashboard.
+ *  The legacy single-layout field is dropped on the first save. */
+export async function setUserDashboards(userId: number, tabs: DashboardTab[]): Promise<void> {
   const file = await loadUserProfiles()
   const key = String(userId)
   const nextUsers = { ...file.users }
   const entry: UserProfileEntry = { ...nextUsers[key] }
-  if (layout && layout.length > 0) {
-    entry.dashboard = layout
+  delete entry.dashboard
+  const isPristine =
+    tabs.length === 1 && tabs[0].id === DASHBOARD_PRIMARY_ID &&
+    tabs[0].name === DASHBOARD_PRIMARY_NAME && tabs[0].layout === null
+  if (isPristine) {
+    delete entry.dashboards
   } else {
-    delete entry.dashboard
+    entry.dashboards = tabs
   }
   if (isEmptyEntry(entry)) {
     delete nextUsers[key]

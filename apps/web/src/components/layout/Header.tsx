@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Menu, Maximize2, Minimize2, LogOut, CircleUser, MessageSquarePlus, RefreshCw } from 'lucide-react'
@@ -14,6 +14,8 @@ import { ProfileModal, userPhotoUrl, type UserProfileMe } from '@/components/pro
 import { TicketModal } from '@/components/tickets/TicketModal'
 import { useTicketNotifications } from '@/components/tickets/useTicketNotifications'
 import { useSubmenuFilter } from '@/hooks/useSubmenuFilter'
+import { useDashboardTabs } from '@/components/dashboard/useDashboardLayout'
+import { dashboardHref } from '@/components/dashboard/types'
 
 interface HeaderProps {
   onMenuClick: () => void
@@ -112,6 +114,18 @@ export function Header({ onMenuClick }: HeaderProps) {
     return () => document.removeEventListener('mousedown', onClick)
   }, [userMenuOpen])
 
+  // Tabs under "Tableau de bord" = the user's dashboards ("Principal" plus any
+  // they created). Same cache entry as the dashboard screen, so creating or
+  // renaming one updates the tabs immediately.
+  const { tabs: dashboards } = useDashboardTabs()
+  const submenuTabs = useMemo(() => {
+    if (!activeMenu) return []
+    if (activeMenu.id === 'dashboard') {
+      return dashboards.map((d, i) => ({ title: d.name, href: dashboardHref(d.id, i) }))
+    }
+    return filterSubmenus(activeMenu.submenus).map((s) => ({ title: s.title, href: s.href }))
+  }, [activeMenu, dashboards, filterSubmenus])
+
   const userInitials = (() => {
     if (!user) return '?'
     const p = (user.prenom?.trim() ?? '')[0] ?? ''
@@ -159,13 +173,18 @@ export function Header({ onMenuClick }: HeaderProps) {
         <span className="sr-only">Menu</span>
       </Button>
 
-      {/* Submenu tabs */}
-      {activeMenu && filterSubmenus(activeMenu.submenus).length > 0 && (
+      {/* Submenu tabs. The dashboard's are the user's own tableaux de bord —
+          data, not config — so they come from the layout query rather than
+          from navigation.ts. Everything else is static. */}
+      {submenuTabs.length > 0 && (
         <nav className="flex gap-1 overflow-x-auto">
-          {filterSubmenus(activeMenu.submenus).map((submenu) => (
+          {submenuTabs.map((tab) => (
             <NavLink
-              key={submenu.href}
-              to={submenu.href}
+              key={tab.href}
+              to={tab.href}
+              // `/` matches every route without `end` — the primary dashboard
+              // would stay highlighted while on a secondary one.
+              end={tab.href === '/'}
               className={({ isActive }) =>
                 cn(
                   'px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap',
@@ -175,7 +194,7 @@ export function Header({ onMenuClick }: HeaderProps) {
                 )
               }
             >
-              {submenu.title}
+              {tab.title}
             </NavLink>
           ))}
         </nav>

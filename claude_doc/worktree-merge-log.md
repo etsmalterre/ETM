@@ -10,6 +10,74 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 - feat/widget
+**Tableau de bord : widget Analyse financière, plusieurs tableaux de bord, et enrichissement du widget Chiffre d'affaires.**
+
+(1) **Widget `Analyse financière`** (nouvelle permission `dashboard_finance`, catégorie Tableau
+de bord, gardée aussi côté API). Porte l'écran légacy *Analyse Financière* : courbes cumulées de
+l'année (CA, marge brute, charges fixes, charges variables) et les trois chiffres du jour (CA,
+marge brute, EBE) avec leur part du CA. Les formules sortent des agrégats pré-calculés de
+`upload_compta` : `CA = produits`, `marge brute = produits - frais_variable`,
+`EBE = marge brute - frais_fixe` (les provisions restent dehors, c'est la définition de l'EBE).
+Vérifié contre l'écran légacy du 28/07/2026 : sa marge moins son EBE vaut exactement les charges
+fixes que son aire rouge atteint en juillet. Les uploads étant des balances **cumulées** depuis
+le 1er janvier, un point de courbe est le **dernier upload du mois**, jamais une somme ; et le
+premier upload de l'année est écarté quand c'est la clôture de l'exercice précédent (début
+janvier, il écrase le suivant : 2026-01-05 porte les chiffres finaux de 2025). Route
+`GET /api/rapports/finance/analyse` ; `loadUploads()` a été extrait pour que le rapport Finance
+et cette série mensuelle ne lisent la table qu'une fois. Le graphique est un SVG écrit à la main
+(aucune librairie ajoutée) ; sa palette est validée par `validate_palette.js` de la compétence
+`dataviz` (bande de clarté, chroma, séparation daltonisme, contraste 3:1), et le seul
+avertissement restant est couvert par un second canal non coloré : **produits en trait plein,
+charges en pointillés**, dans le graphique comme dans la légende. Ne pas « simplifier » les
+pointillés.
+
+(2) **Plusieurs tableaux de bord par utilisateur.** Ce sont désormais les onglets de sous-menu de
+« Tableau de bord ». « Principal » existe toujours et reste routé sur `/` ; ceux que
+l'utilisateur crée vivent sur `/tableau-de-bord/<id>` (id aléatoire, donc renommer ne casse
+jamais un favori). Les onglets sont de la **donnée, pas de la config** : `navigation.ts` ne
+déclare rien, `Header.tsx` les lit via `useDashboardTabs()` qui partage l'entrée de cache de la
+disposition, donc créer / renommer / supprimer met la barre à jour immédiatement. La gestion est
+dans le menu « Tableaux » du mode édition (un menu plutôt que trois boutons de plus sur une
+ligne qui en portait déjà quatre) : le principal se renomme mais ne se supprime pas, et créer un
+tableau embarque le brouillon en cours dans la même écriture au lieu de le perdre. **La règle de
+fusion diffère par onglet** : un widget que la disposition ne mentionne pas est ajouté
+**visible sur le principal** (une disposition périmée ne doit jamais masquer un widget qu'un
+admin vient d'accorder) et **masqué sur les autres** (un nouveau widget ne doit pas s'inviter
+dans un tableau composé à la main), donc un nouveau tableau démarre vide, tous ses widgets dans
+le tiroir. Stockage `dashboards: [{id, name, layout}]` dans `data/user-profiles.json` ; les
+profils écrits avant les onglets portent un `dashboard` simple, migré **à la lecture** dans
+l'onglet principal et réécrit seulement à la première sauvegarde (donc un retour arrière
+retrouve l'ancienne forme intacte).
+
+(3) **Widget `Chiffre d'affaires`.** Le classement départage désormais les ex aequo sur le CA
+N-1, ce qui range les clients à 0 € cette année par leur CA de l'an dernier au lieu de l'ordre
+alphabétique. Deux contrôles nouveaux : une **période de comparaison** (`period=full|ytd`, où
+`ytd` coupe **les deux années** au jour d'aujourd'hui, sinon on compare une année partielle à
+une année pleine) et une **vue** sur le tableau (classement CA, meilleures progressions, plus
+fortes baisses, nouveaux clients, clients perdus, répartition). Progressions et baisses se
+mesurent en **mouvement de rang** et écartent chacune la catégorie qui a sa propre vue (un
+nouveau n'a pas grimpé, il n'avait pas de rang ; un perdu n'a pas glissé, il a quitté le
+classement). La vue **Répartition** remplace le tableau par un anneau : chaque client à
+10 000 € ou plus a sa part, les 5 000 - 10 000 € en partagent une et la traîne sous 5 000 € une
+autre. Les deux paniers sont gris, hors palette, pour que l'œil sépare les clients nommés de la
+traîne ; au-delà de huit clients la palette fait un second tour éclairci (encodage hue × nuance)
+plutôt qu'une neuvième teinte inventée, qu'aucun daltonien ne pourrait distinguer. Le total, ou
+le client survolé, s'affiche au centre.
+
+(4) **Corrections de structure du tableau de bord.** `CardContent` passe de `min-h-full` à
+`h-full` : avec une hauteur automatique, la boîte de classement grandissait jusqu'à ses 144
+lignes et c'était **la carte entière qui défilait**, laissant inutilisés le défilement interne
+du tableau, son en-tête collant et sa ligne de totaux. Le tableau du classement passe en
+`table-fixed` + `colgroup` (`mps_designer §27.3`) : en disposition automatique, un nom de client
+long fixait la largeur minimale du tableau et poussait les colonnes € hors de la carte. Enfin,
+les deux widgets se dimensionnent sur **leur propre largeur** (`hooks/useElementSize.ts`,
+partagé) et non sur celle de l'écran : un point d'arrêt `sm:` garde trois tuiles côte à côte
+dans une carte de 300 px sur un écran de 1920, ce qui coupait les montants en trois lignes.
+Seuils : tuiles empilées sous 470 px, colonne N-1 retirée sous 470 px, colonne Évolution sous
+350 px. L'anneau est tracé à une taille carrée explicite prise de sa boîte mesurée, jamais en
+`h-full w-auto` : un SVG 1:1 à qui on demande de remplir une carte haute et étroite ressort plus
+large que la carte et fait défiler le widget latéralement.
 ## 2026-07-29 — feat/commande-client
 **Sélection par plage (MAJ + clic) sur les listes multi-sélection + règle `mps_designer §44`.**
 

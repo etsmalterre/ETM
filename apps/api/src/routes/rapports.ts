@@ -1485,7 +1485,7 @@ interface UploadRow {
 }
 
 interface YearAnchor {
-  /** YYYYMMDD of the last upload inside the calendar year. */
+  /** YYYYMMDD of the upload. */
   date: string
   produits: number
   charges: number
@@ -1494,28 +1494,32 @@ interface YearAnchor {
   provisions: number
 }
 
-/** Last upload of each calendar year for the ETM société, keyed by year. */
-async function loadYearAnchors(): Promise<Map<number, YearAnchor>> {
+/** Every ETM balance upload, oldest first. The table holds a few dozen rows
+ *  (one per weekly upload), so it is cheaper to read it whole and slice in JS
+ *  than to run one query per year. */
+async function loadUploads(): Promise<YearAnchor[]> {
   const rows = await query<UploadRow>(
     `SELECT DATE, produits, charges, frais_fixe, frais_variable, provisions
      FROM upload_compta WHERE id_societe = ${SOCIETE_ETM}`,
   )
-  const byYear = new Map<number, YearAnchor>()
-  for (const r of rows) {
-    const d = dateDigits(r.DATE)
-    if (!/^\d{8}$/.test(d)) continue
-    const year = Number(d.slice(0, 4))
-    const prev = byYear.get(year)
-    if (prev && prev.date >= d) continue
-    byYear.set(year, {
-      date: d,
+  return rows
+    .map((r) => ({
+      date: dateDigits(r.DATE),
       produits: n(r.produits),
       charges: n(r.charges),
       frais_fixe: n(r.frais_fixe),
       frais_variable: n(r.frais_variable),
       provisions: n(r.provisions),
-    })
-  }
+    }))
+    .filter((r) => /^\d{8}$/.test(r.date))
+    .sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/** Last upload of each calendar year for the ETM société, keyed by year. */
+async function loadYearAnchors(): Promise<Map<number, YearAnchor>> {
+  const byYear = new Map<number, YearAnchor>()
+  // Ascending, so the last write per year is that year's closing anchor.
+  for (const r of await loadUploads()) byYear.set(Number(r.date.slice(0, 4)), r)
   return byYear
 }
 
@@ -1736,6 +1740,94 @@ rapportsRouter.patch('/finance/comptes/:id', async (req: Request, res: Response)
   }
 })
 
+// ── Analyse financière (tableau de bord) ──────────────────────────────────
+// Ports the legacy "Analyse Financière" chart window: the year's cumulative
+// curves plus the CA / marge brute / EBE of the day.
+//
+// Every upload is a CUMULATIVE year-to-date balance, so the month-by-month
+// series is simply the LAST upload of each month — never a sum of uploads.
+//
+// The three figures, from `upload_compta`'s pre-computed buckets:
+//
+//   CA               = produits
+//   marge brute      = produits − frais_variable
+//   EBE              = produits − frais_variable − frais_fixe
+//
+// Verified against the legacy screen (28/07/2026): CA 1 908 171 €,
+// marge brute 595 021 € (31,2 % du CA), EBE 97 841 € (5,1 %) — its marge minus
+// its EBE is exactly the charges fixes its red area reaches in July. Provisions
+// stay out, which is what EBE means (it is struck before dotations).
+
+/** The first upload of a year can be the accountant's closing balance for the
+ *  PREVIOUS exercise — 2026-01-05 carries the final 2025 figures. It is dated in
+ *  the first days of January and dwarfs the next upload, since a real
+ *  year-to-date balance is nearly empty at that point.
+ *
+ *  Only that one row is dropped. A general "keep the series non-decreasing"
+ *  filter would look tempting and would also eat a legitimate dip after an
+ *  avoir. */
+function dropExerciseClose(rows: YearAnchor[]): YearAnchor[] {
+  const [first, second] = rows
+  if (!first || !second) return rows
+  const earlyJanuary = first.date.slice(4, 8) <= '0115'
+  return earlyJanuary && first.produits > second.produits * 2 ? rows.slice(1) : rows
+}
+
+// GET /api/rapports/finance/analyse?annee=YYYY
+//   annee omitted → the most recent year holding an upload.
+rapportsRouter.get('/finance/analyse', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    // Own permission, not the rapport's: this shows company-level totals, not
+    // the account-by-account balance that names the payroll lines.
+    const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'dashboard_finance')
+    if (!allowed) {
+      res.status(403).json({ error: 'forbidden', message: 'Accès à l\'analyse financière non autorisé.' })
+      return
+    }
+
+    const uploads = await loadUploads()
+    const annees = [...new Set(uploads.map((u) => Number(u.date.slice(0, 4))))].sort((a, b) => b - a)
+    if (annees.length === 0) {
+      res.json({ annees: [], annee: null, date_arrete: null, points: [], totaux: null })
+      return
+    }
+
+    const asked = Number.parseInt(String(req.query.annee ?? ''), 10)
+    const annee = annees.includes(asked) ? asked : annees[0]
+
+    // Last upload of each month — the cumulative value reached by month's end.
+    const byMonth = new Map<number, YearAnchor>()
+    for (const u of dropExerciseClose(uploads.filter((u) => u.date.startsWith(String(annee))))) {
+      byMonth.set(Number(u.date.slice(4, 6)), u)
+    }
+
+    const points = [...byMonth.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([mois, u]) => ({
+        mois,
+        date: u.date,
+        ca: euro(u.produits),
+        charges_fixes: euro(u.frais_fixe),
+        charges_variables: euro(u.frais_variable),
+        marge_brute: euro(u.produits - u.frais_variable),
+        ebe: euro(u.produits - u.frais_variable - u.frais_fixe),
+      }))
+
+    const last = points[points.length - 1] ?? null
+    res.json({
+      annees,
+      annee,
+      date_arrete: last?.date ?? null,
+      points,
+      totaux: last ? { ca: last.ca, marge_brute: last.marge_brute, ebe: last.ebe } : null,
+    })
+  } catch (err) {
+    console.error('[rapports/finance/analyse]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
 // ── Chiffre d'affaires par client ─────────────────────────────────────────
 // Ports the legacy "Comparatif CA" dashboard block and its "Rapport CA/Client"
 // monthly detail window (FI_Comparatif_CA.wdw / FEN_Rapport_CA_Client.wdw).
@@ -1790,13 +1882,18 @@ function sumEuros(values: number[]): number {
  *  euros at the end: adding thousands of already-rounded float centimes drifts
  *  by a centime here and there, which is enough to make a monthly bucket
  *  disagree with the legacy report. */
-async function caForYear(year: number): Promise<Map<number, CaClientAgg>> {
+async function caForYear(year: number, throughMmdd?: string | null): Promise<Map<number, CaClientAgg>> {
+  // `throughMmdd` cuts the year at a day of the year (the "cumul à date"
+  // comparison). Dates are YYYYMMDD strings, so the plain string comparison is
+  // also a chronological one — including on a 29/02 cutoff against a non-leap
+  // year, where it correctly stops at 28/02.
+  const end = `${year}${throughMmdd ?? '1231'}`
   const rows = await query<CaLineRow>(
     `SELECT f.IDclient AS idc, f.TYPE AS t, f.DATE AS d, lf.quantite AS q, lf.prix AS p
        FROM facture f
        JOIN ligne_facture lf ON lf.IDfacture = f.IDfacture
       WHERE f.IDsociete = ${CA_SOCIETE}
-        AND f.DATE >= '${year}0101' AND f.DATE <= '${year}1231'`,
+        AND f.DATE >= '${year}0101' AND f.DATE <= '${end}'`,
   )
   const cents = new Map<number, { total: number; months: number[] }>()
   for (const r of rows) {
@@ -1857,6 +1954,12 @@ function parseYear(raw: unknown): number {
   return y
 }
 
+/** Today's `MMDD` — the cutoff both years share in "cumul à date" mode. */
+function todayMmdd(): string {
+  const now = new Date()
+  return `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+}
+
 /** Guard both CA endpoints behind `dashboard_ca` — revenue per client is the
  *  most sensitive data the app exposes, so the API refuses it outright rather
  *  than relying on the widget being hidden. */
@@ -1873,18 +1976,24 @@ async function requireCaPermission(req: Request, res: Response): Promise<boolean
   return true
 }
 
-// GET /api/rapports/ca-clients?year=YYYY
+// GET /api/rapports/ca-clients?year=YYYY&period=full|ytd
 // Comparatif CA: every client ranked by revenue for `year`, carrying the
 // previous year's revenue and rank so the UI can show the rank delta.
+//
+// `period=ytd` cuts BOTH years at today's day of the year, so a partial current
+// year is compared against the same partial previous year instead of a full one
+// (the default `full` keeps the legacy whole-year comparison).
 rapportsRouter.get('/ca-clients', async (req: Request, res: Response) => {
   if (!(await requireCaPermission(req, res))) return
   try {
     const year = parseYear(req.query.year)
     const prevYear = year - 1
+    const period = req.query.period === 'ytd' ? 'ytd' : 'full'
+    const through = period === 'ytd' ? todayMmdd() : null
     const [years, cur, prev] = await Promise.all([
       caAvailableYears(),
-      caForYear(year),
-      caForYear(prevYear),
+      caForYear(year, through),
+      caForYear(prevYear, through),
     ])
 
     const ids = [...new Set([...cur.keys(), ...prev.keys()])]
@@ -1906,12 +2015,18 @@ rapportsRouter.get('/ca-clients', async (req: Request, res: Response) => {
         ca_prev: prev.get(idc)?.total ?? 0,
       }))
       .filter((r) => r.ca !== 0 || r.ca_prev !== 0)
-      .sort((a, b) => b.ca - a.ca || a.nom.localeCompare(b.nom, 'fr'))
+      // Secondary sort on the previous year keeps the clients with no CA this
+      // year ordered by what they billed last year instead of alphabetically.
+      .sort(
+        (a, b) => b.ca - a.ca || b.ca_prev - a.ca_prev || a.nom.localeCompare(b.nom, 'fr'),
+      )
       .map((r, i) => ({ ...r, rang: i + 1, rang_prev: prevRank.get(r.IDclient) ?? null }))
 
     res.json({
       year,
       previous_year: prevYear,
+      period,
+      through,
       years,
       rows,
       total: sumEuros(rows.map((r) => r.ca)),

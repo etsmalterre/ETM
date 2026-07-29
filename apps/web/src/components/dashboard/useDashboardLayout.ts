@@ -1,13 +1,21 @@
-// Resolves a user's saved tableau de bord layout against the widget registry
+// Resolves a user's saved tableau de bord layouts against the widget registry
 // and their permissions, and persists changes.
+//
+// A user has one or more NAMED dashboards (the submenu tabs of "Tableau de
+// bord"). The first is the primary: always present, routed at `/`, and the one
+// that follows the registry defaults. The others are created by the user and
+// start EMPTY — every widget in the tray — because splitting widgets across
+// screens is the whole point of having more than one.
 //
 // Merge rules — these are what make the feature safe over time:
 //   • A widget the user can't see (permission revoked, or never granted) is
 //     filtered out entirely, but its saved entry is kept on disk so re-granting
 //     restores the size and position they had chosen.
 //   • A widget in the registry that the saved layout doesn't mention — newly
-//     built, or newly granted — is appended, VISIBLE, with its defaults. A
-//     stale layout can therefore never hide a widget an admin just granted.
+//     built, or newly granted — is appended VISIBLE on the primary dashboard,
+//     so a stale layout can never hide a widget an admin just granted, and
+//     HIDDEN on the others, so a new widget never gate-crashes a dashboard the
+//     user curated.
 //   • A saved key with no registry entry (widget retired or renamed) is
 //     dropped from the resolved layout and from the next save.
 //   • A saved entry with no x/y (pre-positional layouts) is shelf-packed in
@@ -22,10 +30,14 @@ import { apiFetch } from '@/lib/api'
 import { usePermissions } from '@/contexts/PermissionsContext'
 import { WIDGET_REGISTRY, type WidgetDef } from './registry'
 import {
+  DASHBOARD_MAX_TABS,
+  DASHBOARD_PRIMARY_ID,
+  DASHBOARD_PRIMARY_NAME,
   GRID_COLUMNS,
   MIN_WIDGET_HEIGHT_PX,
   clampWidth,
   heightToUnits,
+  type DashboardTab,
   type DashboardWidgetPref,
   type DashboardWidth,
 } from './types'
@@ -39,7 +51,7 @@ export interface DraftLayout {
 }
 
 interface DashboardResponse {
-  layout: DashboardWidgetPref[] | null
+  dashboards: DashboardTab[]
 }
 
 const QUERY_KEY = ['dashboard-layout'] as const
@@ -101,12 +113,30 @@ export function defaultDraft(available: readonly WidgetDef[]): DraftLayout {
   return { visible: available.map((w) => w.key), hidden: [], sizes }
 }
 
-/** Merge a saved layout with the widgets this user can actually see. */
+/** Every widget hidden — what a freshly created dashboard looks like. */
+export function emptyDraft(available: readonly WidgetDef[]): DraftLayout {
+  const sizes: DraftLayout['sizes'] = {}
+  for (const w of available) {
+    sizes[w.key] = { width: w.defaultWidth, heightPx: w.defaultHeightPx, x: 0, y: 0 }
+  }
+  return { visible: [], hidden: available.map((w) => w.key), sizes }
+}
+
+/** Merge a saved layout with the widgets this user can actually see.
+ *
+ *  `isPrimary` decides what happens to a widget the layout never mentions:
+ *  shown on the primary dashboard (a stale layout must not hide a newly granted
+ *  widget), hidden on the others (they hold what the user put there). It is
+ *  also what separates "no layout at all" — the primary's defaults — from a
+ *  secondary dashboard the user emptied on purpose. */
 export function resolveDraft(
   saved: DashboardWidgetPref[] | null,
   available: readonly WidgetDef[],
+  isPrimary = true,
 ): DraftLayout {
-  if (!saved || saved.length === 0) return defaultDraft(available)
+  if (!saved || saved.length === 0) {
+    return isPrimary ? defaultDraft(available) : emptyDraft(available)
+  }
 
   const byKey = new Map(available.map((w) => [w.key, w]))
   const draft: DraftLayout = { visible: [], hidden: [], sizes: {} }
@@ -131,11 +161,13 @@ export function resolveDraft(
     ;(pref.visible ? draft.visible : draft.hidden).push(pref.key)
   }
 
-  // Anything the saved layout never mentioned is new to this user → show it,
-  // at the bottom of the grid (compaction will snug it up).
+  // Anything the saved layout never mentioned is new to this user → show it at
+  // the bottom of the grid (compaction will snug it up) on the primary
+  // dashboard; park it in the tray on the others.
   for (const def of available) {
     if (seen.has(def.key)) continue
     draft.sizes[def.key] = { width: def.defaultWidth, heightPx: def.defaultHeightPx, x: 0, y: 0 }
+    if (!isPrimary) { draft.hidden.push(def.key); continue }
     unpositioned.push({ key: def.key, w: def.defaultWidth, h: heightToUnits(def.defaultHeightPx) })
     draft.visible.push(def.key)
   }
@@ -184,7 +216,28 @@ export function draftSignature(draft: DraftLayout): string {
   return JSON.stringify(draftToPrefs(draft))
 }
 
-export function useDashboardLayout() {
+/** The dashboards list every nav surface reads. Shares its cache entry with
+ *  `useDashboardLayout`, so the header tabs update the moment one is created,
+ *  renamed or deleted. */
+export function useDashboardTabs() {
+  const query = useQuery<DashboardResponse>({
+    queryKey: QUERY_KEY,
+    queryFn: () => apiFetch('/user-profiles/me/dashboard'),
+    staleTime: 5 * 60_000,
+  })
+  return {
+    tabs: query.data?.dashboards ?? [],
+    isLoading: query.isLoading,
+  }
+}
+
+/** Ids for user-created dashboards. Random rather than derived from the name,
+ *  so renaming one never changes its URL (or orphans a bookmark). */
+function newTabId(): string {
+  return `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+}
+
+export function useDashboardLayout(activeId: string) {
   const queryClient = useQueryClient()
   const { has, isLoading: permsLoading } = usePermissions()
 
@@ -200,37 +253,101 @@ export function useDashboardLayout() {
     staleTime: 5 * 60_000,
   })
 
+  const tabs = useMemo<DashboardTab[]>(
+    () => query.data?.dashboards ?? [],
+    [query.data],
+  )
+  // An unknown id (deleted dashboard, stale bookmark) falls back to the primary
+  // rather than rendering nothing — the caller redirects the URL.
+  const activeIndex = Math.max(0, tabs.findIndex((t) => t.id === activeId))
+  const active = tabs[activeIndex] ?? null
+  const isPrimary = activeIndex === 0
+  const activeExists = tabs.some((t) => t.id === activeId)
+
   const saved = useMemo(
-    () => resolveDraft(query.data?.layout ?? null, available),
-    [query.data, available],
+    () => resolveDraft(active?.layout ?? null, available, isPrimary),
+    [active, available, isPrimary],
   )
 
   const saveMutation = useMutation({
-    mutationFn: (layout: DashboardWidgetPref[] | null) =>
+    mutationFn: (dashboards: DashboardTab[]) =>
       apiFetch<DashboardResponse>('/user-profiles/me/dashboard', {
         method: 'PUT',
-        body: JSON.stringify({ layout }),
+        body: JSON.stringify({ dashboards }),
       }),
     onSuccess: (data) => queryClient.setQueryData(QUERY_KEY, data),
   })
 
-  // A draft that matches the registry defaults is stored as `null` — "I have no
-  // opinion, follow the defaults" — rather than as a frozen copy of today's
-  // defaults. So a user who hits Réinitialiser keeps tracking future changes to
-  // the default dashboard instead of pinning the current one forever.
-  const save = useCallback(
-    async (draft: DraftLayout) => {
-      const isDefault = draftSignature(draft) === draftSignature(defaultDraft(available))
-      await saveMutation.mutateAsync(isDefault ? null : draftToPrefs(draft))
+  /** Current tabs with the active one's layout replaced by `draft`.
+   *
+   *  On the primary, a draft matching the registry defaults is stored as `null`
+   *  — "I have no opinion, follow the defaults" — rather than as a frozen copy
+   *  of today's defaults, so a user who hits Réinitialiser keeps tracking future
+   *  changes to the default dashboard. A secondary dashboard always stores its
+   *  array: there, empty means "I emptied it", not "give me the defaults". */
+  const tabsWithDraft = useCallback(
+    (draft: DraftLayout): DashboardTab[] => {
+      const isDefault = isPrimary
+        && draftSignature(draft) === draftSignature(defaultDraft(available))
+      const layout = isDefault ? null : draftToPrefs(draft)
+      const base = tabs.length > 0
+        ? tabs
+        : [{ id: DASHBOARD_PRIMARY_ID, name: DASHBOARD_PRIMARY_NAME, layout: null }]
+      return base.map((t, i) => (i === activeIndex ? { ...t, layout } : t))
     },
-    [saveMutation, available],
+    [tabs, activeIndex, isPrimary, available],
+  )
+
+  const save = useCallback(
+    async (draft: DraftLayout) => { await saveMutation.mutateAsync(tabsWithDraft(draft)) },
+    [saveMutation, tabsWithDraft],
+  )
+
+  /** Add a dashboard and return its id. Any in-progress draft on the current
+   *  dashboard is written in the same request — the alternative is silently
+   *  dropping it while the user's attention is on the new tab. */
+  const createTab = useCallback(
+    async (name: string, draft: DraftLayout | null): Promise<string | null> => {
+      if (tabs.length >= DASHBOARD_MAX_TABS) return null
+      const id = newTabId()
+      const base = draft ? tabsWithDraft(draft) : tabs
+      await saveMutation.mutateAsync([...base, { id, name, layout: [] }])
+      return id
+    },
+    [tabs, tabsWithDraft, saveMutation],
+  )
+
+  const renameTab = useCallback(
+    async (id: string, name: string) => {
+      await saveMutation.mutateAsync(tabs.map((t) => (t.id === id ? { ...t, name } : t)))
+    },
+    [tabs, saveMutation],
+  )
+
+  /** Delete a dashboard. The primary one is never deletable — it is the route
+   *  at `/` and the fallback for every unknown id. */
+  const deleteTab = useCallback(
+    async (id: string) => {
+      if (id === tabs[0]?.id) return
+      await saveMutation.mutateAsync(tabs.filter((t) => t.id !== id))
+    },
+    [tabs, saveMutation],
   )
 
   return {
     available,
+    tabs,
+    active,
+    activeIndex,
+    activeExists,
+    isPrimary,
+    canCreate: tabs.length < DASHBOARD_MAX_TABS,
     saved,
     isLoading: permsLoading || query.isLoading,
     isSaving: saveMutation.isPending,
     save,
+    createTab,
+    renameTab,
+    deleteTab,
   }
 }

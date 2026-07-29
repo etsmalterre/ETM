@@ -87,8 +87,10 @@ export const router = createBrowserRouter([
     path: '/',
     element: <AppShell />,
     children: [
-      // Dashboard
+      // Dashboard — `/` is the primary one, the rest are the user's own
+      // tableaux de bord (see components/dashboard/useDashboardLayout.ts)
       { index: true, element: <Dashboard /> },
+      { path: 'tableau-de-bord/:dashboardId', element: <Dashboard /> },
 
       // Prospects
       { path: 'prospects', element: <Navigate to="/prospects/demandes" replace /> },

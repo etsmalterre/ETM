@@ -4,6 +4,12 @@
 // Paramètres › Utilisateurs); this screen's "Personnaliser" mode decides
 // DISPLAY: which of the available widgets are shown, where, and at what size.
 //
+// A user can keep SEVERAL dashboards, rendered as the submenu tabs of "Tableau
+// de bord" (Header.tsx). "Principal" always exists and lives at `/`; the others
+// are created here in edit mode and live at `/tableau-de-bord/<id>`. Each holds
+// its own layout, and a new one starts empty — every widget in the tray — so
+// the user fills it deliberately.
+//
 // The desktop grid is react-grid-layout with VERTICAL COMPACTION: widgets have
 // real (x, y) positions, dragging shows a live placeholder while the others
 // glide aside, and gravity pulls everything up so no holes survive. This is
@@ -16,11 +22,15 @@
 // adding one is a single entry there, not an edit to this file.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { GridLayout, verticalCompactor, type Layout, type LayoutItem } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
-import { Eye, LayoutDashboard, LayoutGrid, Loader2, Pencil, RotateCcw, Save, X } from 'lucide-react'
+import {
+  Eye, LayoutDashboard, LayoutGrid, Layers, Loader2, Pencil, Plus, RotateCcw, Save, Trash2, X,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
@@ -30,15 +40,19 @@ import { DashboardContextMenu, type ContextMenuItem } from '@/components/dashboa
 import { WidgetChromeProvider, type WidgetChrome } from '@/components/dashboard/WidgetFrame'
 import { findWidget, type WidgetDef } from '@/components/dashboard/registry'
 import {
+  DASHBOARD_MAX_NAME_LENGTH,
+  DASHBOARD_PRIMARY_ID,
   GRID_COLUMNS,
   GRID_MARGIN_PX,
   GRID_ROW_HEIGHT_PX,
   MIN_WIDGET_HEIGHT_UNITS,
+  dashboardHref,
   heightToUnits,
   unitsToHeight,
 } from '@/components/dashboard/types'
 import {
   defaultDraft,
+  emptyDraft,
   draftSignature,
   useDashboardLayout,
   type DraftLayout,
@@ -60,16 +74,37 @@ function useIsDesktop(): boolean {
 }
 
 export function Dashboard() {
-  const { available, saved, isLoading, isSaving, save } = useDashboardLayout()
+  const { dashboardId } = useParams()
+  const navigate = useNavigate()
+  const activeId = dashboardId ?? DASHBOARD_PRIMARY_ID
+  const {
+    available, tabs, active, activeIndex, activeExists, isPrimary, canCreate,
+    saved, isLoading, isSaving, save, createTab, renameTab, deleteTab,
+  } = useDashboardLayout(activeId)
   const isDesktop = useIsDesktop()
 
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState<DraftLayout | null>(null)
   const [resetConfirm, setResetConfirm] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
 
   // While customising we render the draft; otherwise the persisted layout.
   const layout = draft ?? saved
   const isDirty = isEditing && draft !== null && draftSignature(draft) !== draftSignature(saved)
+
+  // A deleted dashboard, or a URL someone kept — send them to the primary
+  // rather than showing them a phantom of the one that used to be there.
+  useEffect(() => {
+    if (!isLoading && dashboardId && !activeExists) navigate('/', { replace: true })
+  }, [isLoading, dashboardId, activeExists, navigate])
+
+  // Switching dashboards must not carry the previous one's draft over.
+  useEffect(() => {
+    setDraft(null)
+    setIsEditing(false)
+  }, [activeId])
 
   const startEdit = useCallback(() => {
     setDraft(saved)
@@ -86,6 +121,28 @@ export function Dashboard() {
     setDraft(null)
     setIsEditing(false)
   }, [draft, save])
+
+  // Creating carries the in-progress draft into the same write, then lands on
+  // the new (empty) dashboard already in edit mode so the user can fill it.
+  const handleCreate = useCallback(async (name: string) => {
+    const id = await createTab(name, draft)
+    setCreateOpen(false)
+    if (!id) return
+    setDraft(null)
+    setIsEditing(false)
+    navigate(dashboardHref(id, tabs.length))
+  }, [createTab, draft, navigate, tabs.length])
+
+  const handleDelete = useCallback(async () => {
+    if (!active || isPrimary) return
+    // Deleting is a valid exit path: drop the draft first so the unsaved guard
+    // doesn't ask about a dashboard that no longer exists (§28.5).
+    setDraft(null)
+    setIsEditing(false)
+    setDeleteConfirm(false)
+    await deleteTab(active.id)
+    navigate('/', { replace: true })
+  }, [active, isPrimary, deleteTab, navigate])
 
   const guard = useUnsavedGuard({
     isDirty,
@@ -133,12 +190,15 @@ export function Dashboard() {
     }))
   }, [mutate])
 
+  const activeName = active?.name ?? 'Principal'
+
   // Right-click accelerator. Mirrors what the header buttons already offer —
   // never the only path to any of these (see DashboardContextMenu).
   const contextItems: ContextMenuItem[] = isEditing
     ? [
         { key: 'save', label: 'Enregistrer la disposition', icon: Save, onSelect: () => void commit() },
         { key: 'reset', label: 'Réinitialiser la disposition', icon: RotateCcw, onSelect: () => setResetConfirm(true) },
+        { key: 'new', label: 'Nouveau tableau de bord', icon: Plus, onSelect: () => setCreateOpen(true) },
         { key: 'cancel', label: 'Annuler les modifications', icon: X, onSelect: cancelEdit },
       ]
     : [
@@ -191,6 +251,17 @@ export function Dashboard() {
               <Pencil className="h-3 w-3" />
               <span className="hidden sm:inline">Mode edition</span>
             </Badge>
+            {/* Managing the dashboards themselves — one menu rather than three
+                more buttons on a header row that already carries four. */}
+            <TableauxMenu
+              activeName={activeName}
+              canCreate={canCreate}
+              canDelete={!isPrimary}
+              onCreate={() => setCreateOpen(true)}
+              onRename={() => setRenameOpen(true)}
+              onDelete={() => setDeleteConfirm(true)}
+              disabled={isSaving}
+            />
             <Button
               variant="outline" size="sm" title="Réinitialiser la disposition"
               onClick={() => setResetConfirm(true)} disabled={isSaving}
@@ -247,11 +318,52 @@ export function Dashboard() {
       <ConfirmDialog
         open={resetConfirm}
         variant="default"
-        title="Réinitialiser le tableau de bord"
-        description="Tous les widgets auxquels vous avez accès seront réaffichés, dans leur disposition et leur taille d'origine. Rien n'est enregistré tant que vous n'avez pas cliqué sur « Enregistrer »."
+        title={`Réinitialiser « ${activeName} »`}
+        description={
+          isPrimary
+            ? "Tous les widgets auxquels vous avez accès seront réaffichés, dans leur disposition et leur taille d'origine. Rien n'est enregistré tant que vous n'avez pas cliqué sur « Enregistrer »."
+            : "Ce tableau sera vidé : tous ses widgets retournent dans les widgets masqués. Rien n'est enregistré tant que vous n'avez pas cliqué sur « Enregistrer »."
+        }
         confirmLabel="Réinitialiser"
         onCancel={() => setResetConfirm(false)}
-        onConfirm={() => { setDraft(defaultDraft(available)); setResetConfirm(false) }}
+        onConfirm={() => {
+          setDraft(isPrimary ? defaultDraft(available) : emptyDraft(available))
+          setResetConfirm(false)
+        }}
+      />
+
+      <DashboardNameDialog
+        open={createOpen}
+        title="Nouveau tableau de bord"
+        confirmLabel="Créer"
+        initialName={`Tableau ${tabs.length + 1}`}
+        hint={isDirty ? `Les modifications en cours sur « ${activeName} » seront enregistrées.` : undefined}
+        isSaving={isSaving}
+        onCancel={() => setCreateOpen(false)}
+        onConfirm={handleCreate}
+      />
+
+      <DashboardNameDialog
+        open={renameOpen}
+        title="Renommer le tableau de bord"
+        confirmLabel="Renommer"
+        initialName={activeName}
+        isSaving={isSaving}
+        onCancel={() => setRenameOpen(false)}
+        onConfirm={async (name) => {
+          if (active) await renameTab(active.id, name)
+          setRenameOpen(false)
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleteConfirm}
+        title={`Supprimer « ${activeName} »`}
+        description="Ce tableau de bord et sa disposition seront supprimés. Les widgets restent disponibles sur vos autres tableaux."
+        confirmLabel="Supprimer"
+        isPending={isSaving}
+        onCancel={() => setDeleteConfirm(false)}
+        onConfirm={() => void handleDelete()}
       />
 
       <UnsavedChangesDialog
@@ -260,6 +372,148 @@ export function Dashboard() {
         isSaving={guard.isSaving}
       />
     </DashboardContextMenu>
+  )
+}
+
+// ── Dashboard management (edit mode) ─────────────────────────
+
+/** Icon button opening a small popover menu — same shape as the §42 header
+ *  doc-menu, because it answers the same kind of question ("which of these
+ *  three actions?") without spending three slots on the header row. */
+function TableauxMenu({
+  activeName, canCreate, canDelete, onCreate, onRename, onDelete, disabled,
+}: {
+  activeName: string
+  canCreate: boolean
+  canDelete: boolean
+  onCreate: () => void
+  onRename: () => void
+  onDelete: () => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // Click outside to close.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const items = [
+    {
+      key: 'new',
+      label: 'Nouveau tableau de bord',
+      icon: Plus,
+      onSelect: onCreate,
+      disabled: !canCreate,
+      title: canCreate ? undefined : 'Nombre maximum de tableaux atteint',
+    },
+    { key: 'rename', label: `Renommer « ${activeName} »`, icon: Pencil, onSelect: onRename, disabled: false },
+    {
+      key: 'delete',
+      label: `Supprimer « ${activeName} »`,
+      icon: Trash2,
+      onSelect: onDelete,
+      disabled: !canDelete,
+      title: canDelete ? undefined : 'Le tableau principal ne peut pas être supprimé',
+      destructive: true,
+    },
+  ]
+
+  return (
+    <div ref={rootRef} className="relative">
+      <Button
+        variant="outline" size="sm" title="Gérer les tableaux de bord"
+        onClick={() => setOpen((o) => !o)} disabled={disabled}
+      >
+        <Layers className="h-3.5 w-3.5 sm:mr-1.5" />
+        <span className="hidden sm:inline">Tableaux</span>
+      </Button>
+      {open && (
+        <div className="absolute top-full right-0 mt-1 w-64 rounded-lg border bg-white shadow-lg overflow-hidden z-50">
+          {items.map((item) => {
+            const Icon = item.icon
+            return (
+              <button
+                key={item.key}
+                type="button"
+                disabled={item.disabled}
+                title={item.title}
+                onClick={() => { item.onSelect(); setOpen(false) }}
+                className={cn(
+                  'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
+                  'disabled:opacity-50 disabled:cursor-not-allowed',
+                  item.destructive
+                    ? 'text-destructive hover:bg-destructive/10 disabled:hover:bg-transparent'
+                    : 'hover:bg-zinc-100 disabled:hover:bg-transparent',
+                )}
+              >
+                <Icon className={cn('h-4 w-4 flex-shrink-0', !item.destructive && 'text-muted-foreground')} />
+                <span className="truncate">{item.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Create / rename dialog — one field, so the same one serves both. */
+function DashboardNameDialog({
+  open, title, confirmLabel, initialName, hint, isSaving, onCancel, onConfirm,
+}: {
+  open: boolean
+  title: string
+  confirmLabel: string
+  initialName: string
+  hint?: string
+  isSaving: boolean
+  onCancel: () => void
+  onConfirm: (name: string) => void | Promise<void>
+}) {
+  const [name, setName] = useState(initialName)
+  // Reopening with a different subject must not show the previous name.
+  useEffect(() => { if (open) setName(initialName) }, [open, initialName])
+
+  const trimmed = name.trim()
+  const submit = () => { if (trimmed) void onConfirm(trimmed) }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel() }}>
+      <DialogContent className="max-w-sm" onClose={onCancel}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <LayoutDashboard className="h-5 w-5 text-accent" />
+            {title}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-1">
+          <label className="text-xs font-medium text-muted-foreground">Nom</label>
+          <input
+            autoFocus
+            value={name}
+            maxLength={DASHBOARD_MAX_NAME_LENGTH}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+            className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          {hint && <p className="pt-1 text-[11px] text-muted-foreground">{hint}</p>}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onCancel} disabled={isSaving}>Annuler</Button>
+          <Button onClick={submit} disabled={!trimmed || isSaving}>
+            {isSaving && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
