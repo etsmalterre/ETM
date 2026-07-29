@@ -1894,7 +1894,9 @@ function AffectationDrawer({
   // Batch affect (Stock disponible): tick rolls → one "Affecter (n)" button in
   // the section header links them all in a single round-trip. All-or-nothing
   // server-side, returns the refreshed payload like the per-roll mutations.
+  // `lastLinkIdRef` is the anchor for Shift+click range selection (§44).
   const [linkSel, setLinkSel] = useState<Set<number>>(new Set())
+  const lastLinkIdRef = useRef<number | null>(null)
   const linkBatchMut = useMutation({
     mutationFn: (stockIds: number[]) =>
       apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/pieces/${kind}/affecter`, {
@@ -1903,6 +1905,7 @@ function AffectationDrawer({
       }),
     onSuccess: (payload: AffectationPayload) => {
       setLinkSel(new Set())
+      lastLinkIdRef.current = null
       queryClient.setQueryData(queryKey, payload)
       onSuccess()
     },
@@ -1960,6 +1963,7 @@ function AffectationDrawer({
   // Quick-ship (legacy Affectation tab "Expédier"): select affected rolls →
   // one new expedition carrying them, then jump to the Expédition tab.
   const [shipSel, setShipSel] = useState<Set<number>>(new Set())
+  const lastShipIdRef = useRef<number | null>(null)
   const [confirmShip, setConfirmShip] = useState(false)
   const shipMut = useMutation({
     mutationFn: (stockIds: number[]) =>
@@ -1970,6 +1974,7 @@ function AffectationDrawer({
     onSuccess: () => {
       setConfirmShip(false)
       setShipSel(new Set())
+      lastShipIdRef.current = null
       queryClient.invalidateQueries({ queryKey })
       queryClient.invalidateQueries({ queryKey: ['commande-client-line-expeditions', commandeId, ligne.IDligne_commande_client] })
       onSuccess()
@@ -2012,28 +2017,69 @@ function AffectationDrawer({
   const shipSelected = shippable.filter((r) => shipSel.has(r.id))
   const shipQty = shipSelected.reduce((s, r) => s + (dim === 'metrage' ? (Number(r.metrage) || 0) : (Number(r.poids) || 0)), 0)
   // The two selections are mutually exclusive: ticking a roll in one list
-  // clears the other list's selection, so the action bar below always maps
-  // to exactly one action (Expédier vs Affecter).
-  const toggleShip = (id: number) => {
+  // clears the other list's selection (and its anchor), so the action bar
+  // below always maps to exactly one action (Expédier vs Affecter).
+  // Shift+click extends from the anchor over the rendered order (§44).
+  const toggleShip = (id: number, shiftKey = false) => {
     setLinkSel(new Set())
+    lastLinkIdRef.current = null
+    const ids = shippable.map((r) => r.id)
+    const anchor = lastShipIdRef.current
+    if (shiftKey && anchor !== null && anchor !== id) {
+      const a = ids.indexOf(anchor)
+      const b = ids.indexOf(id)
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a]
+        setShipSel((prev) => {
+          const next = new Set(prev)
+          const deselect = prev.has(id) // clicked end already selected → clear the range
+          for (let i = lo; i <= hi; i++) {
+            if (deselect) next.delete(ids[i]); else next.add(ids[i])
+          }
+          return next
+        })
+        return
+      }
+    }
     setShipSel((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id); else next.add(id)
       return next
     })
+    lastShipIdRef.current = id
   }
 
   // Batch-affect selection, re-filtered against the live available pool so a
   // refetch can't leave stale ids (same discipline as shipSelected above).
   const linkSelected = available.filter((r) => linkSel.has(r.id))
   const linkQty = linkSelected.reduce((s, r) => s + (dim === 'metrage' ? (Number(r.metrage) || 0) : (Number(r.poids) || 0)), 0)
-  const toggleLink = (id: number) => {
+  const toggleLink = (id: number, shiftKey = false) => {
     setShipSel(new Set())
+    lastShipIdRef.current = null
+    const ids = available.map((r) => r.id)
+    const anchor = lastLinkIdRef.current
+    if (shiftKey && anchor !== null && anchor !== id) {
+      const a = ids.indexOf(anchor)
+      const b = ids.indexOf(id)
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a]
+        setLinkSel((prev) => {
+          const next = new Set(prev)
+          const deselect = prev.has(id) // clicked end already selected → clear the range
+          for (let i = lo; i <= hi; i++) {
+            if (deselect) next.delete(ids[i]); else next.add(ids[i])
+          }
+          return next
+        })
+        return
+      }
+    }
     setLinkSel((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id); else next.add(id)
       return next
     })
+    lastLinkIdRef.current = id
   }
 
   // Which list currently drives the action bar (mutual exclusion guarantees
@@ -2136,7 +2182,7 @@ function AffectationDrawer({
                       onAction={() => unlinkMut.mutate(roll.id)}
                       isBusy={unlinkMut.isPending && unlinkMut.variables === roll.id}
                       selected={!soldee && !roll.expedie && shipSel.has(roll.id)}
-                      onToggleSelect={soldee || roll.expedie ? undefined : () => toggleShip(roll.id)} />
+                      onToggleSelect={soldee || roll.expedie ? undefined : (shiftKey) => toggleShip(roll.id, shiftKey)} />
                   ))}
                 </div>
               </section>
@@ -2158,7 +2204,7 @@ function AffectationDrawer({
                       kind={kind === 'fini' ? 'fini' : 'ecru'}
                       onEditObs={obsEditMode ? () => setEditObsRoll(roll) : undefined}
                       selected={linkSel.has(roll.id)}
-                      onToggleSelect={() => toggleLink(roll.id)} />
+                      onToggleSelect={(shiftKey) => toggleLink(roll.id, shiftKey)} />
                   ))}
                 </div>
               </section>
@@ -2177,13 +2223,22 @@ function AffectationDrawer({
             <div className="flex-shrink-0 px-3 py-2 border-t bg-zinc-200/50 flex items-center gap-2">
               <div className="flex items-center gap-1">
                 <button type="button"
-                  onClick={() => selMode === 'link'
-                    ? setLinkSel(new Set(available.map((r) => r.id)))
-                    : setShipSel(new Set(shippable.map((r) => r.id)))}
+                  onClick={() => {
+                    if (selMode === 'link') {
+                      setLinkSel(new Set(available.map((r) => r.id)))
+                      lastLinkIdRef.current = available[available.length - 1]?.id ?? null
+                    } else {
+                      setShipSel(new Set(shippable.map((r) => r.id)))
+                      lastShipIdRef.current = shippable[shippable.length - 1]?.id ?? null
+                    }
+                  }}
                   disabled={selBusy || selRolls.length === selAllCount}
                   className="text-[11px] text-accent hover:underline disabled:text-muted-foreground/50 disabled:no-underline disabled:cursor-default px-1">Tout</button>
                 <span className="text-muted-foreground/40 text-[11px]">·</span>
-                <button type="button" onClick={() => { setLinkSel(new Set()); setShipSel(new Set()) }}
+                <button type="button" onClick={() => {
+                  setLinkSel(new Set()); setShipSel(new Set())
+                  lastLinkIdRef.current = null; lastShipIdRef.current = null
+                }}
                   disabled={selBusy}
                   className="text-[11px] text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 disabled:cursor-default px-1">Aucun</button>
               </div>
@@ -2473,10 +2528,11 @@ function RollRow({
   kind?: 'ecru' | 'fini'
   /** When set, a pencil opens the observations edit dialog for this roll. */
   onEditObs?: () => void
-  /** Quick-ship selection (Affectation tab): when onToggleSelect is set the
-   *  row shows a checkbox and highlights when selected. */
+  /** Batch selection (Affectation tab): when onToggleSelect is set the row
+   *  shows a checkbox and highlights when selected. `shiftKey` is forwarded
+   *  so the caller can implement Shift+click range selection (§44). */
   selected?: boolean
-  onToggleSelect?: () => void
+  onToggleSelect?: (shiftKey: boolean) => void
   /** Commande terminée: display only — no action button. */
   readOnly?: boolean
 }) {
@@ -2494,10 +2550,11 @@ function RollRow({
     <div
       // When the row is selectable, the whole card is the click target —
       // inner action buttons stop propagation so they don't also toggle.
-      onClick={onToggleSelect}
+      onClick={onToggleSelect ? (e) => onToggleSelect(e.shiftKey) : undefined}
       className={cn(
         'rounded-lg border border-border/60 bg-card shadow-sm p-3',
-        onToggleSelect && 'cursor-pointer hover:border-accent/40 transition-colors',
+        // select-none: Shift+click must extend the selection, not highlight text.
+        onToggleSelect && 'cursor-pointer select-none hover:border-accent/40 transition-colors',
         selected && 'border-accent ring-1 ring-accent bg-accent/[0.06]',
       )}
     >
@@ -2505,7 +2562,7 @@ function RollRow({
         {onToggleSelect && (
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onToggleSelect() }}
+            onClick={(e) => { e.stopPropagation(); onToggleSelect(e.shiftKey) }}
             title={selected ? 'Retirer de la sélection' : 'Sélectionner'}
             className={cn(
               'h-5 w-5 rounded flex items-center justify-center flex-shrink-0 border transition-colors',

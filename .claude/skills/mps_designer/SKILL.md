@@ -4210,3 +4210,83 @@ Conventions — do not deviate:
 | Zinc band (`bg-zinc-200/50`) + `icon-box-gold` (the §27.5 drawer header) | Technically the app's panel-header pattern, but on a dashboard of large white cards it read as grey and lifeless — user-rejected in favour of the navy treatment. |
 
 The §27.5 zinc drawer header remains correct **for drawers and sidebars**, where the band caps a zinc panel. This section is the rule for dashboard widget cards specifically.
+
+---
+
+## 44. Shift+click range selection — mandatory on every multi-select list
+
+References: **`SousTraitantsCommandes.tsx`** → `handleEcruClick` / `handleFiniClick` (the original), **`FinisStock.tsx`** → `handleSelectRoll` (the add-or-remove refinement, canonical), **`ClientsCommandes.tsx`** → `toggleLink` / `toggleShip` in `AffectationDrawer`, **`ClientsGestion.tsx`** → `handleRowClick` in the expedition lines table.
+
+**Any list where the user ticks several rows to drive a batch action MUST support Shift+click ("MAJ + clic") range selection.** This is not a nice-to-have per screen — users work through rolls, lots and lines in runs of ten or twenty, and a list that only accepts one click per row is a data-entry chore next to the sibling screen that accepts a range. Ticking twenty checkboxes one at a time is the bug this rule prevents.
+
+It applies to **every** multi-select surface, whatever its markup: roll cards in a drawer (`ClientsCommandes` Affectation — Stock disponible **and** Affecté), table rows in edit mode (`FinisStock`), pieces lists in the sst drawer, expedition-line tables (`ClientsGestion`), and any future batch-pick list. If you add a checkbox column or a selection `Set<number>`, you add this handler in the same edit.
+
+### 44.1 The handler — copy this shape
+
+Anchor-based, over the **rendered order** of the list. The anchor is a `useRef`, not state: it must not trigger a re-render, and it must survive across Shift+clicks so the user can widen and narrow a range from a fixed origin (the OS file-manager behaviour they already expect).
+
+```tsx
+const [selected, setSelected] = useState<Set<number>>(new Set())
+const lastSelectedIdRef = useRef<number | null>(null)
+
+// Plain click toggles the row and becomes the anchor; Shift+click applies the
+// inclusive range between the anchor and the clicked row, in the current
+// sort/filter order. The range operation is add-or-remove depending on the
+// clicked row's current state: Shift+clicking an already-selected row
+// deselects the whole range (so re-clicking the end of a range clears it).
+const handleSelect = useCallback((id: number, shiftKey: boolean) => {
+  const ids = rows.map((r) => r.id)          // the SAME array the list renders
+  const anchor = lastSelectedIdRef.current
+  if (shiftKey && anchor !== null && anchor !== id) {
+    const a = ids.indexOf(anchor)
+    const b = ids.indexOf(id)
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a]
+      setSelected((prev) => {
+        const next = new Set(prev)
+        const deselect = prev.has(id)        // clicked end already selected → clear the range
+        for (let i = lo; i <= hi; i++) {
+          if (deselect) next.delete(ids[i]); else next.add(ids[i])
+        }
+        return next
+      })
+      return                                  // anchor is intentionally NOT moved
+    }
+  }
+  // Plain click — toggle this row and become the new anchor.
+  setSelected((prev) => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  lastSelectedIdRef.current = id
+}, [rows])
+```
+
+Row side — forward the modifier from the event, never read it from a global:
+
+```tsx
+onClick={(e) => onSelect(row.id, e.shiftKey)}
+// and on an inner checkbox, which must not double-fire the card handler:
+onClick={(e) => { e.stopPropagation(); onSelect(row.id, e.shiftKey) }}
+```
+
+### 44.2 Rules — do not deviate
+
+- **`select-none` on the clickable row is mandatory.** Without it Shift+click paints a browser text selection across the rows instead of extending the selection — it looks broken even though the state is correct. Table rows: `group-data-[editing=true]:select-none` when selection is edit-mode-only (`FinisStock`); cards: `select-none` alongside `cursor-pointer`.
+- **The id array MUST be the rendered order** — the filtered/sorted array the list maps over, not the raw query result. A range computed over a different order selects rows the user never dragged across. When only a subset of rows is selectable (e.g. only "En reprise" rolls), build the array from **that subset** (`finiReprisableIds` in `SousTraitantsCommandes`) so the range never silently skips or includes unselectable rows.
+- **The anchor does not move on a Shift+click.** Only a plain click re-anchors. This is what lets the user widen, then narrow, a range from one origin.
+- **Shift+clicking an already-selected end clears the range** (the `deselect` branch). This is the canonical variant — `FinisStock` and `ClientsCommandes` implement it; the older `SousTraitantsCommandes` handlers are add-only and predate the refinement. Write new code with the `deselect` branch.
+- **Reset the anchor whenever the selection is reset from outside**: on the batch mutation's `onSuccess`, and on an "Aucun" / clear-selection control. A "Tout" control sets the anchor to the **last** row, so a following Shift+click narrows from the end.
+- **Mutually exclusive selections clear each other's anchor too.** `ClientsCommandes` keeps two selections in one drawer (Affecté → Expédier, Stock disponible → Affecter); ticking in one clears the other's `Set` **and** its ref, or a later Shift+click would extend from a stale origin in a list the user has since left.
+- **No UI hint is rendered for this.** MAJ+clic is a learned OS convention, and a permanent "astuce" line on every selectable list is chrome the screen doesn't need. If the range is discoverable nowhere else, that's what the `title` on the checkbox is for — do not add a banner.
+- **Ctrl/Cmd+click is NOT implemented** — plain click already toggles without clearing the rest of the selection, so Ctrl would be a no-op alias. Don't add it.
+
+### 44.3 Checklist when adding a multi-select list
+
+- [ ] `Set<number>` selection state + `lastSelectedIdRef` anchor ref
+- [ ] Handler takes `(id, shiftKey)` and follows §44.1 verbatim, `useCallback` keyed on the rendered array
+- [ ] Row `onClick` forwards `e.shiftKey`; inner checkbox does `e.stopPropagation()` **and** forwards `e.shiftKey`
+- [ ] `select-none` on the clickable row/card
+- [ ] Anchor reset on mutation success, on "Aucun", and on any sibling selection taking over
+- [ ] Range array = the filtered/sorted/selectable-subset order actually rendered

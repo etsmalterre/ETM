@@ -10,6 +10,39 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-29 — feat/commande-client
+**Sélection par plage (MAJ + clic) sur les listes multi-sélection + règle `mps_designer §44`.**
+
+Dans **Clients › Commandes**, le tiroir d'affectation d'une ligne (`AffectationDrawer`)
+n'acceptait qu'un clic par rouleau : cocher vingt rouleaux dans *Stock disponible* demandait
+vingt clics, alors que les tableaux de *Sous-traitants › Commandes* acceptent déjà MAJ + clic.
+Les deux listes du tiroir — *Stock disponible* (→ Affecter) et *Affecté à la commande*
+(→ Expédier) — passent au modèle à ancre : un clic simple bascule la ligne et devient l'ancre
+(`useRef`, pas d'état → aucun rendu supplémentaire), MAJ + clic applique la plage inclusive
+entre l'ancre et la ligne cliquée **dans l'ordre affiché**. L'ancre ne bouge pas sur un
+MAJ + clic, ce qui permet d'élargir puis de rétrécir une plage depuis une origine fixe ;
+MAJ + cliquer une extrémité déjà sélectionnée **désélectionne** toute la plage. `RollRow`
+transmet désormais `e.shiftKey` depuis la carte **et** depuis la case à cocher interne
+(qui garde son `stopPropagation`), et la carte prend `select-none` — sans quoi MAJ + clic
+peint une sélection de texte au lieu d'étendre la sélection. Les ancres sont remises à zéro
+au succès des mutations (affecter / expédier), sur *Aucun*, et quand la sélection sœur prend
+la main (les deux sélections du tiroir sont mutuellement exclusives : sans ça un MAJ + clic
+ultérieur partirait d'une origine périmée dans une liste que l'utilisateur a quittée).
+*Tout* place l'ancre sur la **dernière** ligne, pour qu'un MAJ + clic suivant rétrécisse
+depuis la fin.
+
+La règle est écrite dans **`mps_designer §44`** (« Shift+click range selection — mandatory on
+every multi-select list ») : elle était appliquée au cas par cas (`SousTraitantsCommandes`,
+`FinisStock`, `ClientsGestion`) mais n'était documentée nulle part, d'où l'oubli sur cet
+écran. §44 la rend obligatoire pour **toute** surface multi-sélection, donne le handler
+canonique à recopier et consigne les pièges : ancre en `useRef` immobile sur MAJ + clic,
+plage calculée sur l'ordre **rendu** (ou sur le sous-ensemble réellement sélectionnable),
+`select-none` obligatoire, branche `deselect`, remises à zéro de l'ancre, et pas de Ctrl+clic
+(le clic simple bascule déjà sans vider la sélection). Note au passage : les handlers de
+`SousTraitantsCommandes` sont en ajout seul (ils précèdent la branche `deselect`) — non
+modifiés ici, mais le nouveau code doit inclure la branche.
+
+Aucun changement API, aucun changement de schéma.
 ## 2026-07-29 — feat/rapport-finance (2e lot)
 **Rapports › Finance : code couleur du dépassement N vs N-1.**
 
