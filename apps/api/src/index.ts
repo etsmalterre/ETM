@@ -23,6 +23,7 @@ import { devisRouter } from './routes/devis.js'
 import { expeditionsRouter } from './routes/expeditions.js'
 import { transfertsRouter } from './routes/transferts.js'
 import { clientsRouter } from './routes/clients.js'
+import { clientsTrmRouter } from './routes/clients-trm.js'
 import { sousTraitantsRouter } from './routes/sous-traitants.js'
 import { etudesColorisRouter } from './routes/etudes-coloris.js'
 import { prospectsRouter } from './routes/prospects.js'
@@ -120,6 +121,8 @@ app.use('/api/devis', devisRouter)
 app.use('/api/expeditions', expeditionsRouter)
 app.use('/api/transferts', transfertsRouter)
 app.use('/api/clients', clientsRouter)
+// TRM ledger (IDsociete = 2) — consumed by the TRM app, see routes/clients-trm.ts
+app.use('/api/clients-trm', clientsTrmRouter)
 app.use('/api/sous-traitants', sousTraitantsRouter)
 app.use('/api/etudes-coloris', etudesColorisRouter)
 app.use('/api/prospects', prospectsRouter)

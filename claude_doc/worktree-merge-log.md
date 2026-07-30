@@ -10,6 +10,49 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/gestion-client (API du second registre `client`)
+
+**La table `client` a désormais deux registres servis par cette API.** `client` est partitionnée
+par `IDsociete` (1 ETM / 2 Tricotage Malterre / 3 Confection) : `routes/clients.ts` sert la fiche
+ETM (`/api/clients`), le nouveau `routes/clients-trm.ts` sert celle de TRM (`/api/clients-trm`,
+portage de `FI_Gestion_Client_TRM.wdw` ; l'écran vit dans le dépôt frère et n'est **pas** un écran
+partagé `@etm` — les deux fiches n'affichent pas les mêmes champs).
+
+- **`lib/clients-common.ts` (nouveau)** rassemble ce qui est identique des deux côtés : helpers
+  SQL/format (`sqlText`, `numOf`, `strOf`, `pick`…), `requirePermission`, `repairNames`,
+  `countClientActivity`, les helpers de drapeaux accentués `setClientFlag`/`readClientFlag`
+  (`archivé` **et** `bloqué`, via delete + réinsertion positionnelle sous Linux — généralisation
+  de l'ancien `setClientArchive`), et `registerContactAdresseRoutes()` : `contact`/`adresse` sont
+  polymorphes sur `IDclient` et **non** partitionnées, donc les deux montages enregistrent le même
+  CRUD. `clients.ts` a été rebasculé dessus — aucun changement de comportement (fiche ETM
+  revérifiée : 421/658 clients, les 3 onglets, la sidebar).
+- ⚠️ **L'invariant qui empêche les deux fiches de se détruire mutuellement : un routeur ne doit
+  JAMAIS NOMMER une colonne que l'autre fiche possède.** Une colonne non nommée conserve sa valeur
+  au `UPDATE` ; une colonne nommée est remise à zéro à chaque enregistrement. ETM possède
+  `client_interne`, `IDsecteur_activite`, `IDactivite`, `journal_commercial`, `dernier_contact`,
+  `inclureRapportQualite`, `pct_ajeol` ; TRM possède `rib`, `domiciliation`, `IDtransporteur` et
+  `bloqué`.
+- ⚠️ **`tva` et `code_comptable` sont partitionnées aussi.** La « Vente à façon » de TRM
+  (`IDcode_comptable = 1`, 701103) n'est pas la « VENTE FACON » d'ETM (8, 707302). Servir la liste
+  d'ETM à un écran TRM réécrirait silencieusement la TVA du client vers la ligne d'une autre
+  société au prochain enregistrement — d'où des lookups `/clients-trm/lookups/*` distincts.
+- **« Attente paiement facture » = `client.bloqué`** (colonne accentuée). Établi par les données :
+  A.E.T. / `IDclient` 627 est le seul client société 2 avec `bloqué = 1`, et le seul dont la case
+  est cochée sur la capture du legacy.
+- **Deux panneaux propres à TRM** : l'historique des commandes (société 2, **sans** exclure
+  `IDcommande_ETM > 0` — côté TRM ces 2 518 miroirs *sont* le tricotage commandé par ETM ; ajoute
+  un `TYPE = 4` que le côté ETM ne connaît pas, `type_sst` 4 = Confectionneur, 175 lignes qui se
+  résolvent sur le catalogue écru) et les stocks de fil du client (`stock_fil.IDclient` — TRM
+  tricote à façon, le fil appartient au client).
+- **Deux manques assumés**, sources `.wdw` compressées PCS donc illisibles : le radio « En
+  Attente » des stocks de fil n'est pas reproduit (`terminé` est le seul drapeau d'état ;
+  `niveau` est le niveau d'étagère, `controlé` vaut 0 sur tout lot ouvert, l'affectation OF ne
+  colle pas non plus), et la colonne « Marge Brute » de l'historique reste vide (`marge_brute:
+  null`) — toutes les valeurs observables du legacy valent 0,00 %.
+
+Détail complet : `claude_doc/implemented_screens.md` § Clients TRM.
+
+
 ## 2026-07-30 — feat/cmd-client
 **Exonération de TVA côté client, commandes sous-traitant manquantes dans le tiroir de ligne,
 et un `status.mjs` qui ne ment plus sur la santé d'un slot.**

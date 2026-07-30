@@ -24,11 +24,16 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
-import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
+import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { IS_WINDOWS, esc } from '../lib/sst-shared.js'
 import { userHasPermission } from '../lib/permissions.js'
-import type { PermissionKey } from '../lib/permission-keys.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
+// Shared with the TRM ledger (routes/clients-trm.ts) — see lib/clients-common.ts.
+import {
+  sqlText, numOf, strOf, pick, todayDigits, dateDigitsOnly, flag, intOf, floatOf,
+  requirePermission, repairNames, countClientActivity, setClientFlag,
+  registerContactAdresseRoutes,
+} from '../lib/clients-common.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
 import { sendMail } from '../lib/gmail.js'
@@ -41,59 +46,9 @@ import {
 
 export const clientsRouter: RouterType = Router()
 
-// ── Small SQL/format helpers ───────────────────────────
 
-/** SQL literal for a user-supplied text value. Pure ASCII → quoted literal;
- *  anything with accents → Latin-1 hex literal (the Linux iODBC bridge corrupts
- *  raw multi-byte UTF-8 embedded in a SQL line). Copied from commandes-client.ts. */
-function sqlText(value: string | null | undefined): string {
-  const v = (value ?? '').toString()
-  if (v === '') return "''"
-  if (/^[\x09\x0A\x0D\x20-\x7E]*$/.test(v)) return `'${esc(v)}'`
-  const ascii = v
-    .replace(/[‘’‚′]/g, "'")
-    .replace(/[“”„″]/g, '"')
-    .replace(/[–—−]/g, '-')
-    .replace(/…/g, '...')
-    .replace(/ /g, ' ')
-  const bytes = Buffer.from(
-    Array.from(ascii, (ch) => {
-      const c = ch.codePointAt(0) ?? 0x3f
-      return c <= 0xff ? c : 0x3f
-    }),
-  )
-  return `x'${bytes.toString('hex')}'`
-}
 
-const numOf = (v: unknown): number => {
-  const x = Number(v)
-  return Number.isFinite(x) ? x : 0
-}
-const strOf = (v: unknown): string | null => {
-  if (v == null) return null
-  const s = String(v)
-  return s
-}
-/** Read a value off a row by trying several candidate keys (covers the
- *  platform-specific accented-name truncation: `archivé` vs `archiv`). */
-function pick(r: Record<string, unknown>, ...keys: string[]): unknown {
-  for (const k of keys) {
-    if (k in r && r[k] != null) return r[k]
-  }
-  return undefined
-}
 
-function todayDigits(): string {
-  const d = new Date()
-  const p = (x: number) => String(x).padStart(2, '0')
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
-}
-
-/** Date input from the FE arrives as 8 digits (YYYYMMDD) or ''. Keep digits only. */
-function dateDigitsOnly(v: unknown): string {
-  const s = String(v ?? '').replace(/[^0-9]/g, '')
-  return s.length === 8 ? s : ''
-}
 
 // ── Detail column list (Windows path — no accented names) ──
 
@@ -174,29 +129,6 @@ clientsRouter.get('/', async (_req: Request, res: Response) => {
   }
 })
 
-/** Batched accent repair for the client list: one CONVERT query for all rows
- *  whose `nom` came back with U+FFFD, instead of per-row (avoids an N+1 flood
- *  of the shared Linux bridge — CLAUDE.md "batch the repair" rule). */
-async function repairNames(rows: { IDclient: number; nom: string | null }[]): Promise<void> {
-  const broken = rows
-    .filter((r) => typeof r.nom === 'string' && r.nom.includes('�'))
-    .map((r) => r.IDclient)
-    .filter((id) => Number.isInteger(id))
-  if (broken.length === 0) return
-  try {
-    const conv = await query<{ IDclient: number; nom: string | null }>(
-      `SELECT IDclient, CONVERT(nom USING 'UTF-8') AS nom FROM client WHERE IDclient IN (${broken.join(',')})`,
-    )
-    const m = new Map<number, string>()
-    for (const c of conv) if (c.nom != null) m.set(Number(c.IDclient), String(c.nom))
-    for (const r of rows) {
-      const f = m.get(r.IDclient)
-      if (f != null) r.nom = f
-    }
-  } catch {
-    // keep original (a leftover U+FFFD glyph is cosmetic)
-  }
-}
 
 // ════════════════════════════════════════════════════════
 //  LOOKUPS  (literal paths — must register before /:id)
@@ -395,9 +327,6 @@ const clientBody = z.object({
   dernier_contact: z.string().optional(),
 })
 
-const flag = (v: unknown): number => (v === true || v === 1 || v === '1' ? 1 : 0)
-const intOf = (v: unknown): number => { const x = parseInt(String(v ?? ''), 10); return Number.isFinite(x) ? x : 0 }
-const floatOf = (v: unknown): number => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
 
 const createClientBody = z.object({
   nom: z.string().trim().min(1).max(100),
@@ -553,37 +482,12 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
 
 // ── Delete / archive (permission-gated: delete_client) ──
 
-/** 401/403 guard for a permission-gated route. Returns true when the request
- *  may proceed (the response is already sent otherwise). */
-async function requirePermission(req: Request, res: Response, key: PermissionKey): Promise<boolean> {
-  if (req.userId === undefined) {
-    res.status(401).json({ error: 'not authenticated' })
-    return false
-  }
-  const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), key)
-  if (!allowed) {
-    res.status(403).json({ error: `permission denied: ${key}` })
-    return false
-  }
-  return true
-}
 
 /** 401/403 guard shared by DELETE and the archive endpoints. */
 async function requireDeleteClientPermission(req: Request, res: Response): Promise<boolean> {
   return requirePermission(req, res, 'delete_client')
 }
 
-/** A client with commandes or marchandise (client-owned finished rolls) can
- *  never be hard-deleted — only archived. Marchandise shipped to the client
- *  always hangs off a commande_client, so the two counts cover everything the
- *  Historique / Marchandise sub-views show. */
-async function countClientActivity(id: number): Promise<{ commandes: number; marchandises: number }> {
-  const [cc, sf] = await Promise.all([
-    query<{ nb: number }>(`SELECT COUNT(*) AS nb FROM commande_client WHERE IDclient = ${id}`),
-    query<{ nb: number }>(`SELECT COUNT(*) AS nb FROM stock_fini WHERE IDProprietaire = ${id}`),
-  ])
-  return { commandes: numOf(cc[0]?.nb), marchandises: numOf(sf[0]?.nb) }
-}
 
 // GET /api/clients/:id/deletability — drives the delete-vs-archive confirm dialog.
 clientsRouter.get('/:id/deletability', async (req: Request, res: Response) => {
@@ -598,57 +502,6 @@ clientsRouter.get('/:id/deletability', async (req: Request, res: Response) => {
   }
 })
 
-/** Physical text/blob columns of `client` (from ODBC column metadata). Only the
- *  Linux archive path needs this typing — the reinsert order itself comes from
- *  the runtime SELECT * key order. All text/blob columns of `client` have ASCII
- *  names; the two accented columns (archivé, bloqué) are numeric flags. */
-const CLIENT_TEXT_COLS = new Set([
-  'nom', 'tel', 'fax', 'num_tva', 'commentaire', 'compte', 'rib', 'domiciliation',
-  'login', 'mot_de_passe', 'date_creation', 'dernier_contact', 'journal_commercial',
-])
-const CLIENT_BLOB_COLS = new Set(['CleComp'])
-
-/** Flip client.archivé. Windows: named UPDATE (accented identifiers work there).
- *  Linux: the bridge rejects any accented identifier, so — same pattern as
- *  references-ecru.ts setArchive — read the row via SELECT * (values arrive in
- *  physical column order; queryB64Text keeps accented VALUES lossless as
- *  Latin-1), flip the archive slot, then delete + positional reinsert
- *  preserving the PK (FKs stay valid). Returns false when the row is missing. */
-async function setClientArchive(id: number, value: 0 | 1): Promise<boolean> {
-  if (IS_WINDOWS) {
-    const exists = await query<{ IDclient: number }>(`SELECT IDclient FROM client WHERE IDclient = ${id}`)
-    if (exists.length === 0) return false
-    await query(`UPDATE client SET archivé = ${value} WHERE IDclient = ${id}`)
-    return true
-  }
-  const rows = await queryB64Text<Record<string, unknown>>(`SELECT * FROM client WHERE IDclient = ${id}`)
-  if (rows.length === 0) return false
-  const keys = Object.keys(rows[0])
-  const vals = Object.values(rows[0])
-  const archIdx = keys.findIndex((k) => /^archiv/i.test(k))
-  if (archIdx === -1) throw new Error('client.archivé column not found — refusing positional reinsert')
-  vals[archIdx] = value
-  const literals = vals.map((v, i) => {
-    const key = keys[i]
-    if (CLIENT_BLOB_COLS.has(key)) {
-      if (v == null) return "''"
-      const buf = Buffer.isBuffer(v) ? v
-        : v instanceof ArrayBuffer ? Buffer.from(v)
-        : Buffer.from(String(v), 'latin1')
-      return buf.length > 0 ? `x'${buf.toString('hex')}'` : "''"
-    }
-    if (CLIENT_TEXT_COLS.has(key)) {
-      if (v == null) return "''"
-      const s = v instanceof ArrayBuffer ? Buffer.from(v).toString('latin1') : String(v)
-      return sqlText(s)
-    }
-    const n = Number(v)
-    return Number.isFinite(n) ? String(n) : '0'
-  })
-  await query(`DELETE FROM client WHERE IDclient = ${id}`)
-  await query(`INSERT INTO client VALUES (${literals.join(', ')})`)
-  return true
-}
 
 // POST /api/clients/:id/archive — the fallback when deletion is blocked.
 clientsRouter.post('/:id/archive', async (req: Request, res: Response) => {
@@ -656,7 +509,7 @@ clientsRouter.post('/:id/archive', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (!(await requireDeleteClientPermission(req, res))) return
-    const found = await setClientArchive(id, 1)
+    const found = await setClientFlag(id, 'archive', 1)
     if (!found) { res.status(404).json({ error: 'Client not found' }); return }
     res.json({ ok: true })
   } catch (err) {
@@ -671,7 +524,7 @@ clientsRouter.post('/:id/unarchive', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (!(await requireDeleteClientPermission(req, res))) return
-    const found = await setClientArchive(id, 0)
+    const found = await setClientFlag(id, 'archive', 0)
     if (!found) { res.status(404).json({ error: 'Client not found' }); return }
     res.json({ ok: true })
   } catch (err) {
@@ -2063,106 +1916,9 @@ clientsRouter.post('/:id/marchandise/retour-stock', async (req: Request, res: Re
   }
 })
 
-// ── Contacts CRUD (polymorphic: IDclient set, others 0) ──
+// Contacts / adresses CRUD — shared verbatim with the TRM ledger.
+registerContactAdresseRoutes(clientsRouter)
 
-clientsRouter.post('/:id/contacts', async (req: Request, res: Response) => {
-  try {
-    if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
-    const id = parseInt(req.params.id, 10)
-    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
-    await query(
-      `INSERT INTO contact (IDclient, nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission, est_defaut, est_visible) ` +
-        `VALUES (${id}, ${sqlText(nom)}, ${sqlText(prenom)}, ${sqlText(tel)}, ${sqlText(mail)}, ${flag(envoi_bl)}, ${flag(envoi_facture)}, ${flag(envoi_commande)}, ${flag(envoi_soumission)}, 0, 1)`,
-    )
-    res.status(201).json({ ok: true })
-  } catch (err) {
-    console.error('Error creating contact:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-clientsRouter.put('/:id/contacts/:cid', async (req: Request, res: Response) => {
-  try {
-    if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
-    const cid = parseInt(req.params.cid, 10)
-    if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
-    await query(
-      `UPDATE contact SET nom = ${sqlText(nom)}, prenom = ${sqlText(prenom)}, tel = ${sqlText(tel)}, mail = ${sqlText(mail)}, ` +
-        `envoi_bl = ${flag(envoi_bl)}, envoi_facture = ${flag(envoi_facture)}, envoi_commande = ${flag(envoi_commande)}, envoi_soumission = ${flag(envoi_soumission)} ` +
-        `WHERE IDcontact = ${cid}`,
-    )
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('Error updating contact:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-clientsRouter.delete('/:id/contacts/:cid', async (req: Request, res: Response) => {
-  try {
-    if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
-    const cid = parseInt(req.params.cid, 10)
-    if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    await query(`DELETE FROM contact WHERE IDcontact = ${cid}`)
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('Error deleting contact:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-// ── Adresses CRUD (polymorphic: IDclient set, others 0) ──
-
-clientsRouter.post('/:id/adresses', async (req: Request, res: Response) => {
-  try {
-    if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
-    const id = parseInt(req.params.id, 10)
-    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const { nom, adresse1, adresse2, adresse3, cp, ville, pays, commentaire, est_defaut_facturation, est_defaut_livraison } = req.body
-    await query(
-      `INSERT INTO adresse (IDclient, nom, adresse1, adresse2, adresse3, cp, ville, pays, commentaire, est_defaut, est_defaut_facturation, est_defaut_livraison, est_visible) ` +
-        `VALUES (${id}, ${sqlText(nom)}, ${sqlText(adresse1)}, ${sqlText(adresse2)}, ${sqlText(adresse3)}, ${sqlText(cp)}, ${sqlText(ville)}, ${sqlText(pays)}, ${sqlText(commentaire)}, 0, ${flag(est_defaut_facturation)}, ${flag(est_defaut_livraison)}, 1)`,
-    )
-    res.status(201).json({ ok: true })
-  } catch (err) {
-    console.error('Error creating adresse:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-clientsRouter.put('/:id/adresses/:aid', async (req: Request, res: Response) => {
-  try {
-    if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
-    const aid = parseInt(req.params.aid, 10)
-    if (isNaN(aid)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const { nom, adresse1, adresse2, adresse3, cp, ville, pays, commentaire, est_defaut_facturation, est_defaut_livraison } = req.body
-    await query(
-      `UPDATE adresse SET nom = ${sqlText(nom)}, adresse1 = ${sqlText(adresse1)}, adresse2 = ${sqlText(adresse2)}, adresse3 = ${sqlText(adresse3)}, ` +
-        `cp = ${sqlText(cp)}, ville = ${sqlText(ville)}, pays = ${sqlText(pays)}, commentaire = ${sqlText(commentaire)}, ` +
-        `est_defaut_facturation = ${flag(est_defaut_facturation)}, est_defaut_livraison = ${flag(est_defaut_livraison)} ` +
-        `WHERE IDadresse = ${aid}`,
-    )
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('Error updating adresse:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-clientsRouter.delete('/:id/adresses/:aid', async (req: Request, res: Response) => {
-  try {
-    if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
-    const aid = parseInt(req.params.aid, 10)
-    if (isNaN(aid)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    await query(`DELETE FROM adresse WHERE IDadresse = ${aid}`)
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('Error deleting adresse:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
 
 // ════════════════════════════════════════════════════════
 //  FICHE TARIFS  — selection-driven PDF + email
