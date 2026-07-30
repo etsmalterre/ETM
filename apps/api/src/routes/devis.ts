@@ -32,6 +32,7 @@ import React from 'react'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { DevisEtmPdf, type DevisEtmPdfData } from '../lib/pdf/DevisEtmPdf.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
+import { loadClientTvaRate } from '../lib/tva.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf } from '../lib/rtf-utils.js'
@@ -1096,15 +1097,6 @@ devisRouter.post('/:id/convert', async (req: Request, res: Response) => {
 //  PDF  (devis)
 // ════════════════════════════════════════════════════════
 
-async function loadTvaRate(): Promise<number> {
-  try {
-    const rows = await query<{ valeur: number | null }>(
-      `SELECT valeur FROM tva WHERE IDsociete = 1 AND est_defaut = 1`,
-    )
-    return Number(rows[0]?.valeur) || 0
-  } catch { return 0 }
-}
-
 async function loadModePaiementLabel(id: number): Promise<string | null> {
   if (!(id > 0)) return null
   const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`)
@@ -1134,7 +1126,9 @@ export async function buildDevisPdfData(id: number): Promise<DevisEtmPdfData | n
       `SELECT TYPE AS type_kind, IDreference, IDcolori, quantite, unite, prix, date_livraison
        FROM ligne_devis_etm WHERE IDDevis_etm = ${id} ORDER BY IDligne_devis_etm`,
     ),
-    loadTvaRate(),
+    // The client's own rate, NOT the ETM default — an "Exonération" client
+    // (export) must be quoted at 0 % on every document (lib/tva.ts).
+    loadClientTvaRate(IDclient),
     loadModePaiementLabel(Number(h.IDmode_paiement) || 0),
     loadEcheanceLabel(Number(h.IDecheance) || 0),
   ])

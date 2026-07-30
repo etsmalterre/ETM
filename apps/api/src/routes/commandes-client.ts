@@ -36,6 +36,7 @@ import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
 import { calcLignePriceClient } from '../lib/pricing-ligne-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
+import { loadClientTvaRate } from '../lib/tva.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
@@ -4307,16 +4308,6 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
 //  PDF  (bon de commande client)
 // ════════════════════════════════════════════════════════
 
-/** ETM TVA rate (%) — the est_defaut row for IDsociete = 1 (≈ 20). */
-async function loadTvaRate(): Promise<number> {
-  try {
-    const rows = await query<{ valeur: number | null }>(
-      `SELECT valeur FROM tva WHERE IDsociete = 1 AND est_defaut = 1`,
-    )
-    return Number(rows[0]?.valeur) || 0
-  } catch { return 0 }
-}
-
 async function loadModePaiementLabel(id: number): Promise<string | null> {
   if (!(id > 0)) return null
   const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`)
@@ -4348,7 +4339,9 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
               quantite, unite, prix, date_livraison
        FROM ligne_commande_client WHERE IDcommande_client = ${id} ORDER BY IDligne_commande_client`,
     ),
-    loadTvaRate(),
+    // The client's own rate, NOT the ETM default — an "Exonération" client
+    // (export) must be billed at 0 % on every document (lib/tva.ts).
+    loadClientTvaRate(IDclient),
     loadModePaiementLabel(Number(h.IDmode_paiement) || 0),
     loadEcheanceLabel(Number(h.IDecheance) || 0),
   ])
@@ -4498,21 +4491,16 @@ export async function buildProformaPdfData(id: number): Promise<FacturePdfData |
   const IDecheance = Number(hdr[0]?.IDecheance) || 0
 
   // Billing defaults from the client row — the same source facture creation
-  // uses (factures.ts billingDefaults): the client's VAT number and, when the
-  // client carries its own TVA rate, that rate instead of the ETM default.
+  // uses (factures.ts billingDefaults). The TVA rate already comes from the
+  // client via buildClientPdfData; only the VAT number is read here.
   let numTva: string | null = null
-  let tvaRate = base.tvaRate
+  const tvaRate = base.tvaRate
   if (IDclient > 0) {
     try {
-      const cli = await query<{ num_tva: string | null; IDtva: number | null }>(
-        `SELECT num_tva, IDtva FROM client WHERE IDclient = ${IDclient}`,
+      const cli = await query<{ num_tva: string | null }>(
+        `SELECT num_tva FROM client WHERE IDclient = ${IDclient}`,
       )
       numTva = ((cli[0]?.num_tva ?? '').toString().trim()) || null
-      const IDtva = Number(cli[0]?.IDtva) || 0
-      if (IDtva > 0) {
-        const tv = await query<{ valeur: number | null }>(`SELECT valeur FROM tva WHERE IDtva = ${IDtva}`)
-        if (tv.length > 0) tvaRate = Number(tv[0].valeur) || 0
-      }
     } catch { /* keep defaults */ }
   }
 

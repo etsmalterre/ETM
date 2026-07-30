@@ -53,6 +53,17 @@ export const company = {
   },
 } as const
 
+/** Label of the TVA row in a totals block, e.g. "TVA (20 %)" / "TVA (5,5 %)".
+ *  Only ever called with a rate > 0: a client flagged "Exonération" in
+ *  Clients › Gestion (export customers) drops the TVA and TTC rows entirely,
+ *  leaving the block at TOTAL HT — see the commande / devis / facture totals
+ *  blocks, which share this helper so they can't drift apart. */
+export function tvaRowLabel(rate: number): string {
+  const r = Number(rate) || 0
+  const decimals = r % 1 === 0 ? 0 : 1
+  return `TVA (${r.toFixed(decimals).replace('.', ',')} %)`
+}
+
 export const sizes = {
   pagePadding: 36,       // ~12mm
   headerHeight: 90,

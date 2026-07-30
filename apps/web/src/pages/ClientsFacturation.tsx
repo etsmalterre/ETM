@@ -172,7 +172,10 @@ function signed(value: number, type: number): number {
   return type === 2 ? -value : value
 }
 
+/** A 0 % rate means the client is flagged "Exonération" in Clients › Gestion
+ *  (export customers) — say so rather than print a meaningless "0 %". */
 function tvaRateLabel(rate: number): string {
+  if (!(rate > 0)) return 'Exonération'
   return `${fmtNum(rate, rate % 1 === 0 ? 0 : 1)} %`
 }
 
@@ -1443,21 +1446,29 @@ function LignesSection({
 
         {/* Totals footer */}
         <div className="flex-shrink-0 mt-3 pt-3 border-t border-border/60">
+          {/* An exonerated client (Clients › Gestion) carries no VAT, so the
+              block collapses to the HT total — same as the PDF. */}
           <div className="flex flex-col items-end gap-1 text-sm tabular-nums">
-            <div className="flex items-center gap-6">
-              <span className="text-muted-foreground text-xs uppercase tracking-wide">Total HT</span>
-              <span className="w-32 text-right font-medium">{fmtNum(facture.total_ht, 2)} €</span>
-            </div>
-            <div className="flex items-center gap-6">
-              <span className="text-muted-foreground text-xs uppercase tracking-wide">TVA ({tvaRateLabel(facture.tva_rate)})</span>
-              <span className="w-32 text-right">{fmtNum(facture.total_tva, 2)} €</span>
-            </div>
-            <div className="flex items-center gap-6 mt-0.5 pt-1.5 border-t border-border/60">
+            {!(facture.tva_rate > 0) ? null : (
+              <>
+                <div className="flex items-center gap-6">
+                  <span className="text-muted-foreground text-xs uppercase tracking-wide">Total HT</span>
+                  <span className="w-32 text-right font-medium">{fmtNum(facture.total_ht, 2)} €</span>
+                </div>
+                <div className="flex items-center gap-6">
+                  <span className="text-muted-foreground text-xs uppercase tracking-wide">TVA ({tvaRateLabel(facture.tva_rate)})</span>
+                  <span className="w-32 text-right">{fmtNum(facture.total_tva, 2)} €</span>
+                </div>
+              </>
+            )}
+            <div className={cn('flex items-center gap-6', facture.tva_rate > 0 && 'mt-0.5 pt-1.5 border-t border-border/60')}>
               <span className={cn('text-xs uppercase tracking-wide font-bold', isAvoir ? 'text-destructive' : 'text-primary')}>
-                {isAvoir ? 'Total Avoir TTC' : 'Total TTC'}
+                {facture.tva_rate > 0
+                  ? (isAvoir ? 'Total Avoir TTC' : 'Total TTC')
+                  : (isAvoir ? 'Total Avoir HT' : 'Total HT')}
               </span>
               <span className={cn('w-32 text-right text-base font-bold', isAvoir ? 'text-destructive' : 'text-accent')}>
-                {fmtNum(signed(facture.total_ttc, facture.type), 2)} €
+                {fmtNum(signed(facture.tva_rate > 0 ? facture.total_ttc : facture.total_ht, facture.type), 2)} €
               </span>
             </div>
           </div>
@@ -1816,7 +1827,12 @@ function InfoTab({
           <KV label="Date d'échéance" value={facture.date_echeance} />
         )}
         <KV label="TVA" value={isEditing ? (
-          <PopoverSelect size="sm" options={tvaOptions.map((t) => ({ id: t.IDtva, primary: tvaRateLabel(t.valeur), secondary: t.libelle }))}
+          <PopoverSelect size="sm" options={tvaOptions.map((t) => {
+            const primary = tvaRateLabel(t.valeur)
+            // Drop the libellé when it just repeats the rate label (exonération).
+            const secondary = t.libelle && t.libelle.trim().toLowerCase() !== primary.toLowerCase() ? t.libelle : undefined
+            return { id: t.IDtva, primary, secondary }
+          })}
             value={editIDTva} onChange={onEditIDTvaChange} emptyLabel="—" />
         ) : tvaDisplay} />
         <KV label="N° TVA" value={isEditing ? (

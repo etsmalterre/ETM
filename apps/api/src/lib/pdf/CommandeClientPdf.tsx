@@ -15,7 +15,7 @@ import {
   TruckIcon,
   MessageSquareIcon,
 } from './MalterreDocument.js'
-import { colors, sizes } from './theme.js'
+import { colors, sizes, tvaRowLabel } from './theme.js'
 
 interface AddrLite {
   nom: string | null
@@ -227,6 +227,8 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
   const fraisPort = Number(data.fraisPort) || 0
   const netHT = totalHT - remise + fraisPort
   const tvaRate = Number(data.tvaRate) || 0
+  // Client flagged "Exonération" in Clients › Gestion (export customers).
+  const exonere = tvaRate === 0
   const tva = netHT * (tvaRate / 100)
   const ttc = netHT + tva
 
@@ -310,10 +312,15 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
 
       <View style={styles.totalsWrapper} wrap={false}>
         <View style={styles.totals}>
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>Total HT</Text>
-            <Text style={styles.totalValue}>{`${fmtNum(totalHT, 2)} €`}</Text>
-          </View>
+          {/* Exonerated client: no VAT, so the block collapses to TOTAL HT.
+              The sub-total row is then printed only when a remise or frais de
+              port makes it differ from the grand total. */}
+          {(!exonere || remise > 0 || fraisPort > 0) && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Total HT</Text>
+              <Text style={styles.totalValue}>{`${fmtNum(totalHT, 2)} €`}</Text>
+            </View>
+          )}
           {remise > 0 && (
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Remise</Text>
@@ -326,13 +333,15 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
               <Text style={styles.totalValue}>{`${fmtNum(fraisPort, 2)} €`}</Text>
             </View>
           )}
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>{`TVA (${fmtNum(tvaRate, tvaRate % 1 === 0 ? 0 : 1)} %)`}</Text>
-            <Text style={styles.totalValue}>{`${fmtNum(tva, 2)} €`}</Text>
-          </View>
+          {!exonere && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>{tvaRowLabel(tvaRate)}</Text>
+              <Text style={styles.totalValue}>{`${fmtNum(tva, 2)} €`}</Text>
+            </View>
+          )}
           <View style={styles.grandRow}>
-            <Text style={styles.grandLabel}>TOTAL TTC</Text>
-            <Text style={styles.grandValue}>{`${fmtNum(ttc, 2)} €`}</Text>
+            <Text style={styles.grandLabel}>{exonere ? 'TOTAL HT' : 'TOTAL TTC'}</Text>
+            <Text style={styles.grandValue}>{`${fmtNum(exonere ? netHT : ttc, 2)} €`}</Text>
           </View>
         </View>
       </View>
