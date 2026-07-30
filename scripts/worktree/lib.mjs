@@ -293,6 +293,25 @@ export async function isPortInUse(port, timeoutMs = 500) {
   return v4 || v6
 }
 
+/** PID of whatever is LISTENING on a port, or null if nothing/unknown. Used to
+ *  adopt a dev server that is running but absent from the registry (an orphan from
+ *  a crashed session, or a manual `pnpm dev`) so it stays stoppable — without it,
+ *  the registry records pid null and `down` silently leaves the process running.
+ *  Windows-only (Get-NetTCPConnection); returns null elsewhere, which degrades to
+ *  the previous behaviour rather than breaking. */
+export function pidOnPort(port) {
+  if (!IS_WIN) return null
+  try {
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+      `(Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess`,
+    ], { encoding: 'utf8' }).trim()
+    const pid = Number(out)
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
 /** Lowest free slot for a project: no registry entry for that project+slot AND
  *  the project's port(s) actually free. Projects have disjoint port ranges, so
  *  an NG slot and a TRM slot with the same number don't collide. Throws if all

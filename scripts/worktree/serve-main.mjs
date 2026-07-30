@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   MAIN_SLOT, apiPort, webPort, isPortInUse, spawnDetached, killTree,
-  mainCheckout, readRegistry, updateRegistry, git, pidAlive,
+  mainCheckout, readRegistry, updateRegistry, git, pidAlive, pidOnPort,
   ensureDeps, ensureCorsOrigin, waitForDbHealth, checkCors, tailLog,
 } from './lib.mjs'
 
@@ -73,14 +73,24 @@ async function status() {
 }
 
 async function up() {
-  // Already running? Don't double-spawn — just report.
-  if ((await isPortInUse(API_PORT)) || (await isPortInUse(WEB_PORT))) {
+  // Slot 0 is routinely HALF up: one side dies (or is killed) while the other keeps
+  // its port. A plain "either port in use → bail" check reports that as "already
+  // serving" and can never repair it — which is how the API every TRM worktree
+  // depends on stayed down while :3000 looked healthy. So: bring up only the side
+  // that is actually missing, and never restart the survivor (it may belong to
+  // another session). An unregistered survivor gets adopted by its listening PID so
+  // `down` can still stop it.
+  let apiUp = await isPortInUse(API_PORT)
+  let webUp = await isPortInUse(WEB_PORT)
+  if (apiUp && webUp) {
     console.log('Master already appears to be serving on slot 0:')
     await status()
     return
   }
-  // Clear any stale registry entry from a previous crash.
-  await down({ quiet: true })
+  const partial = apiUp || webUp
+  // Clear any stale registry entry from a previous crash — but only when slot 0 is
+  // fully down: down() kills both pids, which would take the survivor with it.
+  if (!partial) await down({ quiet: true })
 
   // Preflight. The main checkout gets no `up.mjs` treatment (no install, no env
   // wiring), so on a fresh machine it is the one tree that starts broken.
@@ -88,16 +98,29 @@ async function up() {
   ensureCorsOrigin(path.join(main, 'apps/api/.env.development'))
 
   fs.mkdirSync(logDir, { recursive: true })
-  console.log(`Serving main checkout (${currentBranch()}) on slot 0 — API 8080 / web 3000 …`)
-  const apiPid = spawnDetached(main, '@mps/api', `dev:${API_PORT}`, apiLog)
-  const webPid = spawnDetached(main, '@mps/web', `dev:${WEB_PORT}`, webLog)
+  if (partial) {
+    console.log(`Slot 0 is half up (API ${apiUp ? 'UP' : 'down'} / web ${webUp ? 'UP' : 'down'}) — starting the missing side only …`)
+  } else {
+    console.log(`Serving main checkout (${currentBranch()}) on slot 0 — API 8080 / web 3000 …`)
+  }
+  const prev = readRegistry().main
+  const adopt = (port, pid) => (pidAlive(pid) ? pid : pidOnPort(port))
+  const apiPid = apiUp
+    ? adopt(API_PORT, prev?.apiPid)
+    : spawnDetached(main, '@mps/api', `dev:${API_PORT}`, apiLog)
+  const webPid = webUp
+    ? adopt(WEB_PORT, prev?.webPid)
+    : spawnDetached(main, '@mps/web', `dev:${WEB_PORT}`, webLog)
 
   updateRegistry((reg) => {
-    reg.main = { branch: currentBranch(), apiPid, webPid, api: API_PORT, web: WEB_PORT, startedAt: new Date().toISOString() }
+    reg.main = {
+      branch: currentBranch(), apiPid, webPid, api: API_PORT, web: WEB_PORT,
+      startedAt: partial ? prev?.startedAt ?? new Date().toISOString() : new Date().toISOString(),
+    }
   })
 
-  const apiUp = await waitFor(API_PORT, 'API')
-  const webUp = await waitFor(WEB_PORT, 'Web')
+  if (!apiUp) apiUp = await waitFor(API_PORT, 'API')
+  if (!webUp) webUp = await waitFor(WEB_PORT, 'Web')
   // Beyond "the port is open": can the API reach HFSQL, and will the browser's
   // origin be accepted? Both fail invisibly to a port check.
   const db = apiUp ? await waitForDbHealth(API_PORT) : null

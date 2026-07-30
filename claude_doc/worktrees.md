@@ -80,6 +80,14 @@ by `scripts/worktree/serve-main.mjs` behind the `/serve-main` + `/serve-main-dow
 lives under `reg.main` (separate from `reg.slots`, so status/allocation ignore it). Use it to
 click through the integrated app on `master` before deploying.
 
+Slot 0 is often **half up** — one side dies while the other keeps its port. `serve-main` used to
+answer "either port in use → already serving" and so could never repair it: the API stayed down
+behind a healthy-looking `:3000` while every TRM worktree (which targets `:8080`) showed
+« Impossible de charger la liste ». It now starts **only the missing side**, never restarts the
+survivor (it may be another session's), and adopts an unregistered survivor by its listening PID
+(`pidOnPort()`) so `/serve-main-down` can still stop it. `down` is only auto-called when slot 0 is
+fully down — with one side alive it would kill the survivor too.
+
 ## The skills
 
 | Skill | Run from | What it does |
@@ -88,7 +96,7 @@ click through the integrated app on `master` before deploying.
 | `/feature-checkpoint [msg]` | the feature worktree | commit → push → rebase onto `origin/master` (resolve conflicts here). **No merge.** Servers stay up; keep working. |
 | `/feature-complete` | the feature worktree | commit + note → push → rebase → typecheck gate → fast-forward merge into `master` (from the main checkout) → push → stop servers, remove worktree, delete branch, free slot. **Deploy is separate.** |
 | `/worktree-status` | anywhere | per-slot health (servers alive? web serving? ahead/behind master), free slots, stale-entry cleanup. |
-| `/serve-main` | main checkout | serve `master` on reserved slot 0 (API 8080 / web 3000) detached + health-check — verify merged work before deploying. `serve-main.mjs status` reports without starting; refuses to double-spawn. |
+| `/serve-main` | main checkout | serve `master` on reserved slot 0 (API 8080 / web 3000) detached + health-check — verify merged work before deploying. `serve-main.mjs status` reports without starting; never double-spawns a side that is already up, and repairs a half-up slot 0 by starting only the missing side. |
 | `/serve-main-down` | main checkout | stop the slot-0 master server and free 8080/3000. |
 
 ## Merge discipline (why it stays clean)
