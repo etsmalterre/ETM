@@ -1,6 +1,6 @@
 {
   "name": "etm",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "ETM - ERP Textile/Knitting for ETS Malterre",
   "scripts": {
