@@ -3,7 +3,7 @@
 //
 // The Clients › Facturation list derives est_envoye from the envoi_email audit
 // log (IDtype_doc = 19, IDreference = IDfacture). Invoices issued before the
-// MPS_NG email feature (or sent outside the app) have no log row and show the
+// ETM email feature (or sent outside the app) have no log row and show the
 // red "non envoyée" border. This script inserts ONE marker row per unsent
 // facture so they all read as sent. Idempotent — factures that already have a
 // log row (real or marker) are skipped.

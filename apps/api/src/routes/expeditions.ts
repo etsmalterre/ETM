@@ -17,7 +17,7 @@
 //   a legacy free-text override — modern rows leave it empty and display
 //   ref + variations. Prices come from the tarif_divers grid keyed on
 //   (IDref_divers, IDVariation1, IDVariation2) with (0,0) = base price;
-//   fallback ref_divers.prix_unitaire. stock_divers is NOT touched by MPS_NG
+//   fallback ref_divers.prix_unitaire. stock_divers is NOT touched by ETM
 //   (legacy stock semantics unverified — managed via FEN_Gestion_Stock_Divers).
 //   ref_divers has an ACCENTED column `archivé` → SELECT * + pickKey, never
 //   name it in SQL.
@@ -44,13 +44,13 @@
 //    (observation_bl / detail_ligne) via stripRtf (read) + wrapRtf+sqlText (write);
 //    text reads via fixEncoding.
 //  - No `numero` column on either header — the document number IS the PK.
-//  - Lock model: the legacy validé/dévalider concept is RETIRED in MPS_NG.
+//  - Lock model: the legacy validé/dévalider concept is RETIRED in ETM.
 //    An expedition is either "non facturée" (fully editable) or "facturée"
 //    (est_facture=1 OR a definitive facture references it) — then header/line/
 //    roll writes 409. Facture linkage: formelle via ligne_facture.
 //    IDligne_expedition → ligne_expedition; divers via the facture.
 //    IDexpedition_divers header back-pointer. est_valide still exists in the
-//    schema (legacy writes it) but MPS_NG ignores it everywhere.
+//    schema (legacy writes it) but ETM ignores it everywhere.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
@@ -297,7 +297,7 @@ interface FactureRef { IDfacture: number; numero: number | null; date: string | 
 /** Definitive factures attached to an expedition.
  *  formelle: ligne_facture.IDligne_expedition → this expedition's ligne_expedition rows.
  *  divers:   facture.IDexpedition_divers header back-pointer.
- *  (facture_prov.IDexpedition_divers is EXCLUDED on purpose — MPS_NG repurposed
+ *  (facture_prov.IDexpedition_divers is EXCLUDED on purpose — ETM repurposed
  *  it as the converted-proforma marker, it holds an IDfacture, not an expedition.) */
 async function attachedFactures(kind: Kind, id: number): Promise<FactureRef[]> {
   let factIds: number[] = []
@@ -1215,7 +1215,7 @@ const r4 = (v: unknown): number => Math.round((Number(v) || 0) * 10000) / 10000
  *  on the same live rows.
  *
  *  `delta` is signed: negative = shipped (take off stock), positive = restored.
- *  MPS_NG never CREATES a stock_divers row — rows are opened by the legacy
+ *  ETM never CREATES a stock_divers row — rows are opened by the legacy
  *  FEN_Gestion_Stock_Divers screen when goods are received. A combo with no
  *  row is simply untracked and the call is a no-op. */
 export async function adjustDiversStock(
@@ -2590,7 +2590,7 @@ async function buildBlEmailDefaults(id: number): Promise<{
     )
     hasFiniLines = (typeRows as any[]).some((t) => lineStockKind(Number(t.type_kind) || 0) === 'fini')
   }
-  // Default: expedition mirror OR live client flag — MPS_NG INSERTs seeded the
+  // Default: expedition mirror OR live client flag — ETM INSERTs seeded the
   // mirror to 0 before 2026-07, so the OR keeps those shipments covered.
   const clientRcFlag = Number((clientFlagRows as any[])[0]?.inclureRapportQualite) === 1
   const optional_attachments = hasFiniLines

@@ -1,6 +1,6 @@
 // PDF document for "Calcul de la valeur" — the cost valuation of the stock
 // pieces attached to a donation commande client. Ports the legacy WinDev report
-// ETAT_ValeurDonation (DON<numero>.pdf) to the MPS_NG document language:
+// ETAT_ValeurDonation (DON<numero>.pdf) to the ETM document language:
 // one block per piece (a banded header carrying the reference · coloris, the
 // piece number and its Poids / Prix /kg / Prix total, then the cost lines that
 // make up that €/kg — yarn lots first, production operations after).

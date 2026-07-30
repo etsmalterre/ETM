@@ -5,15 +5,15 @@ Reference doc for the sous-traitant commande detail screen
 
 ## Status model — computed "phase" + line sstatut state machine
 
-Legacy MPS had three layers of status. MPS_NG now writes to two of them:
+Legacy MPS had three layers of status. ETM now writes to two of them:
 
 | Layer | Field | Today |
 |---|---|---|
 | Header | `commande_sous_traitant.est_soldee` BOOLEAN | Gates writes via `refuseIfTerminee`. Drives the Clôturer / Rouvrir toggle. |
-| Line | `ligne_commande_sous_traitant.sstatut` VARCHAR (12 legacy values) | MPS_NG drives three of them as a state machine (see below). Other legacy values preserved on read, never written from the new app. |
+| Line | `ligne_commande_sous_traitant.sstatut` VARCHAR (12 legacy values) | ETM drives three of them as a state machine (see below). Other legacy values preserved on read, never written from the new app. |
 | Roll | `stock_fini.IDetat_stock_fini` SMALLINT FK → `etat_stock_fini` | Per-roll workflow state, real DB enum: **1**=En Contrôle, **2**=En Reprise, **3**=Validé, **4**=Expédié, **5**=Attente de décision. |
 
-### Line `sstatut` state machine (writes from MPS_NG)
+### Line `sstatut` state machine (writes from ETM)
 
 Three of the 12 legacy values are wired into a state machine that's
 driven entirely from server-side handlers. The four state transitions:
@@ -312,7 +312,7 @@ and a `PageFooter` helper extracted from the original single-page render.
 
 ## type_doc codes used by this screen
 
-Legacy lookup `type_doc` (29 rows). Codes touched by MPS_NG:
+Legacy lookup `type_doc` (29 rows). Codes touched by ETM:
 - `13` "commande sst" — bon de commande email to the ennoblisseur
 - `15` "soumission" — sst → client soumission. `IDreference =
   commande_sous_traitant.IDcommande_sous_traitant`, `notes = <lot>`

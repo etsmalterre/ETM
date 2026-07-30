@@ -407,7 +407,7 @@ async function resolveSstNames(ids: number[]): Promise<Map<number, string>> {
 /** Magasin 0 is the company's own stock — it has no sous_traitant row.
  *  Labelled as the Transferts screen labels it (routes/transferts.ts), which is
  *  deliberately NOT what the legacy Suivi Pièce printed there ("Tricotage
- *  Malterre"): one label for magasin 0 across MPS_NG beats reproducing a
+ *  Malterre"): one label for magasin 0 across ETM beats reproducing a
  *  per-screen inconsistency. */
 const SUIVI_MAGASIN_ZERO = 'Ets Malterre'
 function suiviMagasin(id: number, names: Map<number, string>): string {

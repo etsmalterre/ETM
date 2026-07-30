@@ -2,7 +2,7 @@
 
 ## Overview
 
-Design system for **MPS_NG**, the ERP system for **ETS Malterre** (French textile/knitting manufacturer). This document is the single source of truth for all visual patterns — follow it precisely when building new screens or modifying existing ones.
+Design system for **ETM**, the ERP system for **ETS Malterre** (French textile/knitting manufacturer). This document is the single source of truth for all visual patterns — follow it precisely when building new screens or modifying existing ones.
 
 ## Reference implementations — the three named layouts
 
@@ -2813,7 +2813,7 @@ Do NOT use the semantic `destructive` / `warning` tokens here — those vary sli
 
 ### 30.5 When this pattern applies
 
-Apply it to any list card that carries a deadline the user cares about. Candidates in MPS_NG:
+Apply it to any list card that carries a deadline the user cares about. Candidates in ETM:
 
 - Fils → Commandes (implemented) — earliest line `date_livraison`
 - Clients → Facturation — `date_echeance`
@@ -2833,7 +2833,7 @@ Reference: **`apps/web/src/pages/FilsCommandes.tsx`** → `StockLinkDrawer` + th
 
 When a user clicks a row in the center panel's main list (e.g. an order line), a drawer should slide up inside that same panel — **not** as a full-screen `Sheet` overlay. The rows shrink to make room; the drawer fills the bottom. Nothing outside the center panel is covered.
 
-This pattern already exists in **MFProd** (`C:\dev\etsmalterre\mfprod\mfprod_erp` → `src/features/commandes/components/OrderDetail.tsx` + `AffectationPanel.tsx`) and should be used in MPS_NG for the same "drill into a row without losing context" interactions. It is distinct from:
+This pattern already exists in **MFProd** (`C:\dev\etsmalterre\mfprod\mfprod_erp` → `src/features/commandes/components/OrderDetail.tsx` + `AffectationPanel.tsx`) and should be used in ETM for the same "drill into a row without losing context" interactions. It is distinct from:
 - **§27 Table-centric screens** — those use a `fixed` right-side drawer that overlays the table body
 - **§29 Sidebar status footer** — that is a pinned element, never hidden
 - **shadcn `<Sheet>`** — that is a full-screen modal with an overlay backdrop
@@ -3039,7 +3039,7 @@ The `onSuccess` callback bubbles up to the page so the parent `['commande-fil', 
 | Stock-fil style "big table with a side panel for the selected row" | **§27 fixed right-side drawer** |
 | Pinned always-visible state display | **§29 sidebar status footer** |
 
-### 31.8 Candidate screens in MPS_NG
+### 31.8 Candidate screens in ETM
 
 This pattern will recur wherever the user needs to "drill into a row to pick related items". Candidates:
 

@@ -418,7 +418,7 @@ rapportsRouter.get('/commandes-sst', async (req: Request, res: Response) => {
         if (dc !== null && da !== null) marge = dc - da
       }
 
-      // Urgency tint (MPS_NG language: red late / amber soon / none).
+      // Urgency tint (ETM language: red late / amber soon / none).
       let urgency: 'late' | 'soon' | null = null
       if (!done) {
         const rank = lineStatutRank(sstatut)

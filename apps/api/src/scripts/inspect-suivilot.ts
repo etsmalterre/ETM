@@ -7,7 +7,7 @@ import { query } from '../lib/hfsql.js'
 // suivilot: legacy lot-tracking table. We need to understand which
 // columns it has, how rows are linked to a réception (which event/object
 // creates a suivilot row), and the typical content of those rows so we
-// can port the auto-creation logic to MPS_NG's batch-reception flow.
+// can port the auto-creation logic to ETM's batch-reception flow.
 
 async function main() {
   console.log('=== suivilot — first 3 rows ===')

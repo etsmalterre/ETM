@@ -50,7 +50,7 @@ export function addWorkingDays(base: Date, n: number): Date {
 // ── `sstatut` state-machine constants ────────────────────
 //
 // Legacy `ligne_commande_sous_traitant.sstatut` has ~12 distinct values;
-// MPS_NG drives three of them as a state machine (Non_Envoye →
+// ETM drives three of them as a state machine (Non_Envoye →
 // Attente_Delai → En_Cours, plus Terminé on close). See the long comment in
 // `commandes-sous-traitant.ts` for the full census.
 export const STATUT_DONE = 'Terminé'

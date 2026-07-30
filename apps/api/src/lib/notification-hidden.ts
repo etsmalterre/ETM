@@ -9,7 +9,7 @@
 // ── Why per user, and why not in HFSQL ──
 // Legacy stored the flag on the notification row itself (`notifutilisateur.
 // visible = 0`), which is GLOBAL — one person hiding a card hid it for
-// everyone. MPS_NG computes the notification list live instead of persisting
+// everyone. ETM computes the notification list live instead of persisting
 // rows (see lib/abonnements.ts), so there is no row to carry the flag, and the
 // hiding is scoped to the user who asked for it.
 //

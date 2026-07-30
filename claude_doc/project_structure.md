@@ -3,7 +3,7 @@
 File/directory layout with per-file annotations. Load when navigating the codebase.
 
 ```
-MPS_NG/
+ETM/
 ├── apps/
 │   ├── api/           # Express API
 │   │   ├── data/      # Runtime JSON (gitignored): permissions.json, user-emails.json

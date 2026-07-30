@@ -1,6 +1,6 @@
 /**
  * Globally disable browser + password-manager autocomplete on every input,
- * textarea and select in the app. MPS_NG has no login/credential fields —
+ * textarea and select in the app. ETM has no login/credential fields —
  * all forms collect business data (stock, certificates, addresses, etc.)
  * and Dashlane/LastPass/1Password popups just get in the way.
  *

@@ -13,7 +13,7 @@
 //                     visible). Rebuilt periodically by a WinDev routine, which
 //                     deletes rows whose condition no longer holds.
 //
-// ── What MPS_NG does differently, and why ──
+// ── What ETM does differently, and why ──
 // The catalog and the subscriptions are read from (and written to) the SAME
 // HFSQL tables, so a user who subscribes here is subscribed in the WinDev app
 // too — that is the whole point of both apps sharing live data.
@@ -23,7 +23,7 @@
 // an opaque SHA-1 whose formula could not be recovered, so any row we inserted
 // would be a duplicate the WinDev app shows twice — and the WinDev routine
 // rebuilds that table anyway, so our writes would not survive. Computing live
-// also means MPS_NG needs no scheduler and can never show a stale alert.
+// also means ETM needs no scheduler and can never show a stale alert.
 //
 // The consequence is that `visible = 0` (the eye button on each card) has no
 // row to live on. It is stored per user in lib/notification-hidden.ts instead —
@@ -33,7 +33,7 @@
 import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
 import { IS_WINDOWS, n } from './sst-shared.js'
 
-/** MPS_NG serves ETS Malterre. `abonnement_notif` is partitioned by IDsociete
+/** ETM serves ETS Malterre. `abonnement_notif` is partitioned by IDsociete
  *  exactly like `client` / `commande_client`, and legacy filters the
  *  subscription list on it — an ETM user is never offered the société-2 FNC
  *  subscription. Detector 3 is implemented all the same so the shared API
@@ -42,7 +42,7 @@ export const APP_SOCIETE = 1
 
 /** How far ahead a deadline counts as "arrive à échéance". Legacy's wording
  *  ("qui arrivent a échéance") gives no number; a week is the horizon the other
- *  MPS_NG deadline surfaces use for "act on this now". Overdue always counts. */
+ *  ETM deadline surfaces use for "act on this now". Overdue always counts. */
 export const ECHEANCE_WINDOW_DAYS = 7
 
 /** Detection hits several big tables (stock_ecru alone scans ~1.5k live rolls

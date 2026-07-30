@@ -5082,7 +5082,7 @@ commandesClientRouter.get('/:id/historique', async (req: Request, res: Response)
           DATE: e.DATE,
         }))
         .sort((a, b) => (a.DATE < b.DATE ? 1 : -1))
-    // Legacy flag carries no date/recipient — only surface it when no MPS_NG
+    // Legacy flag carries no date/recipient — only surface it when no ETM
     // confirmation send is already in the timeline, appended last (undated).
     const hasConfirmation = events.some((e) => e.type_label === 'Confirmation de commande')
     if (legacySent && !hasConfirmation) {

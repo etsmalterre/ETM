@@ -1,6 +1,6 @@
 # Legacy → New Navigation Mapping
 
-Maps legacy WinDev windows to new MPS_NG routes. Use this to identify which legacy screens to reference when building each new page.
+Maps legacy WinDev windows to new ETM routes. Use this to identify which legacy screens to reference when building each new page.
 
 ## Route Mapping
 

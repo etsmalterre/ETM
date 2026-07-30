@@ -1,6 +1,6 @@
 // PDF document for the "Information matières" traceability sheet that can
 // accompany a client expedition. Ports the legacy WinDev ETAT_Info_Matiere to
-// the MPS_NG design language: for each shipped article, one block per material
+// the ETM design language: for each shipped article, one block per material
 // stage — Tissu Fini (ennoblisseur), Tombé de métier (tricoteur), Fil
 // (fournisseur) — with partner name, country, certifications (fil only) and
 // the transport documents (ged BL scans) of that stage.

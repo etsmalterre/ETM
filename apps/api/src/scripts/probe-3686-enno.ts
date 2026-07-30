@@ -1,5 +1,5 @@
 // Probe: commande client 3686 — ennoblissement tab "affecté" discrepancy.
-// Legacy shows affecté only for sst cmd 8569; MPS_NG shows values for 8558/8559 too.
+// Legacy shows affecté only for sst cmd 8569; ETM shows values for 8558/8559 too.
 import 'dotenv/config'
 import { query } from '../lib/hfsql-auto.js'
 

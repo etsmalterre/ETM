@@ -58,7 +58,7 @@ async function main() {
     const q = Number(l.q) || 0
     console.log(`\n  lcs ${lid} (cst ${l.cid}): quantite=${q}, produced rolls=${rolls.length} (${tot.toFixed(1)} kg)`)
     console.log(`    affected-to-any-line=${affAny.toFixed(1)} kg, to-line-${LIGNE}=${affThis.toFixed(1)} kg, unreserved=${unres.toFixed(1)} kg`)
-    console.log(`    MPS_NG row: affecté=${affAny.toFixed(1)} dispo=${Math.max(0, q - affAny).toFixed(1)} métrage=${(Math.max(0, q - affAny) * rendement).toFixed(1)}`)
+    console.log(`    ETM row: affecté=${affAny.toFixed(1)} dispo=${Math.max(0, q - affAny).toFixed(1)} métrage=${(Math.max(0, q - affAny) * rendement).toFixed(1)}`)
     console.log(`    legacy row: affecté=0.0 dispo=${q.toFixed(1)}? métrage=0.0`)
   }
 

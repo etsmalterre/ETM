@@ -1,6 +1,6 @@
 // PDF document for a client shipment ("Avis d'expédition" / Bon de livraison),
 // rendered inside the shared MalterreDocument frame. Ports the legacy WinDev
-// "AVIS D'EXPEDITION" report (see BL 11645 reference) to the MPS_NG design
+// "AVIS D'EXPEDITION" report (see BL 11645 reference) to the ETM design
 // language:
 //  - top row: delivery address card + shipment metadata card (client,
 //    référence client, n° commande, transporteur, contact)

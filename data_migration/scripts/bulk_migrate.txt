@@ -23,8 +23,8 @@ PROCEDURE BulkMigrate()
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
-sLogPath is string = "C:\dev\MPS_NG\data_migration\logs\migration.log"
-sSqlOutputPath is string = "C:\dev\MPS_NG\data_migration\schemas\"
+sLogPath is string = "C:\dev\ETM\data_migration\logs\migration.log"
+sSqlOutputPath is string = "C:\dev\ETM\data_migration\schemas\"
 
 // PostgreSQL connection settings
 sPgServer is string = "localhost"
@@ -293,7 +293,7 @@ FIN
 // ---------------------------------------------------------------------------
 
 // Ensure output directories exist
-fMakeDir("C:\dev\MPS_NG\data_migration\logs")
+fMakeDir("C:\dev\ETM\data_migration\logs")
 fMakeDir(sSqlOutputPath)
 
 LogMsg("========================================")

@@ -9,14 +9,14 @@
 // as the only way back up.
 //
 // <feature-name> is kebab-case; it yields branch `feat/<name>` and worktree
-// `<repo>-<name>` beside the repo (repo = MPS_NG for ng, MPS-TRM for trm).
+// `<repo>-<name>` beside the repo (repo = ETM for ng, MPS-TRM for trm).
 // Project defaults to `ng`. Idempotency is intentionally NOT assumed — if the
 // branch or dir already exists the script aborts so you don't clobber work.
 //
 // ng  → API on 808N + web on 300N (packages @mps/api + @mps/web), CORS spanning
 //       all dev ports, secrets copied.
 // trm → web only on 517N (package @mps-trm/web). TRM web has no API of its own;
-//       it targets the slot-0 master MPS_NG API (8080) by default, or the port
+//       it targets the slot-0 master ETM API (8080) by default, or the port
 //       given by --api (e.g. an NG worktree's 808N). Requires that API running.
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
@@ -29,7 +29,7 @@ import {
 } from './lib.mjs'
 
 // Default project = the repo this script is invoked from (so `up.mjs <feature>`
-// makes a TRM worktree when run from the MPS-TRM checkout, an NG one from MPS_NG),
+// makes a TRM worktree when run from the MPS-TRM checkout, an NG one from ETM),
 // overridable by the positional arg. Falls back to ng if the repo is unrecognized.
 function detectDefaultProject() {
   try {
@@ -156,7 +156,7 @@ if (isRestart) {
   api = proj.hasApi ? proj.apiPort(slot) : (apiOverride || proj.defaultApiPort)
   web = proj.webPort(slot)
   if (proj.hasApi) console.log(`Slot ${slot} → API ${api}, Web ${web}`)
-  else console.log(`Slot ${slot} → Web ${web} (targets MPS_NG API on ${api})`)
+  else console.log(`Slot ${slot} → Web ${web} (targets ETM API on ${api})`)
 
   console.log(`Creating worktree ${wt} on ${branch} …`)
   execFileSync('git', ['-C', main, 'worktree', 'add', wt, '-b', branch, 'origin/master'], {
@@ -206,7 +206,7 @@ if (isRestart) {
     console.log('Copied apps/api/secrets/.')
   }
 } else {
-  // TRM: web-only. Point VITE_API_URL at the chosen MPS_NG API and label the tab.
+  // TRM: web-only. Point VITE_API_URL at the chosen ETM API and label the tab.
   // The dev:517N scripts don't bake VITE_API_URL, so this .env value wins.
   fs.writeFileSync(
     path.join(wt, 'apps/web/.env.development.local'),
@@ -260,7 +260,7 @@ console.log(`  Branch   : ${branch}`)
 if (proj.hasApi) {
   console.log(`  API      : http://localhost:${api}   pid ${apiPid}  ${apiUp ? 'UP' : 'NOT UP (check log)'}`)
 } else {
-  console.log(`  API      : http://localhost:${api}   (MPS_NG master — ${apiUp ? 'reachable' : 'NOT reachable; run /serve-main'})`)
+  console.log(`  API      : http://localhost:${api}   (ETM master — ${apiUp ? 'reachable' : 'NOT reachable; run /serve-main'})`)
 }
 if (dbCheck) {
   const verdict = dbCheck.ok ? `OK (${dbCheck.ms}ms)`
@@ -292,6 +292,6 @@ if (dbCheck && !dbCheck.ok && !dbCheck.unsupported) {
   process.exitCode = 2
 }
 if (!proj.hasApi && !apiUp) {
-  console.log(`NOTE: the MPS_NG API on :${api} isn't reachable. TRM web will 404 its API`)
+  console.log(`NOTE: the ETM API on :${api} isn't reachable. TRM web will 404 its API`)
   console.log(`      calls until you start it (e.g. /serve-main for the master on :8080).`)
 }

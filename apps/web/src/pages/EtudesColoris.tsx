@@ -106,7 +106,7 @@ interface EnvoiEmailRow {
 
 interface EtudeDetail extends EtudeListRow {
   commentaire: string | null
-  /** Free-form action notes — MPS_NG-only field stored as plain text on
+  /** Free-form action notes — ETM-only field stored as plain text on
    *  etude_col.journal. Editable from the Info tab in edit mode. */
   journal: string | null
   ref_fini_designation: string | null

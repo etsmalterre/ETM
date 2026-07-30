@@ -94,14 +94,14 @@ export const commandesSousTraitantRouter: RouterType = Router()
 //   259, "Non_Affecté" 186, "Attente_Delai" 128, "Delai_Expiré" 46,
 //   "Non_Envoye" 18, "En_Contrôle" 15, "En_Création" 11, "A_Soumettre" 6,
 //   "En_Reprise" 2.
-// MPS_NG wires three of them into a state machine:
+// ETM wires three of them into a state machine:
 //   - Non_Envoye      → line just created, bon de commande not sent yet
 //   - Attente_Delai   → bon de commande sent (envoi_email IDtype_doc=13),
 //                       waiting on the sst to confirm a delivery date
 //   - En_Cours        → user edited date_livraison after the bon de
 //                       commande was sent (sst has confirmed)
 // Other legacy values (Notification, Non_Affecté, …) are preserved on read
-// but never written from MPS_NG; phase computation treats them as the
+// but never written from ETM; phase computation treats them as the
 // generic "open / progressed" bucket alongside En_Cours.
 
 // The `sstatut` state-machine constants (STATUT_*), `isLineDone`,
@@ -409,7 +409,7 @@ async function refreshTrmRefClient(sstId: number, mirrorId: number): Promise<voi
 
 /** Returns true (and sets a 409 JSON response) if any ordre_fabrication
  *  is linked to this cc line — meaning TRM has started production and the
- *  line cannot be safely removed from MPS_NG. */
+ *  line cannot be safely removed from ETM. */
 async function refuseIfTrmHasOFs(res: Response, ccLineId: number): Promise<boolean> {
   const r = await query<{ n: number | null }>(
     `SELECT COUNT(*) AS n FROM ordre_fabrication WHERE IDligne_commande_client = ${ccLineId}`,
@@ -435,7 +435,7 @@ async function refuseIfTrmHasOFs(res: Response, ccLineId: number): Promise<boole
 //    bon-de-commande step) + TRM commande_client mirror.
 //  - External tricoteurs: sstatut Non_Envoye (standard workflow — the bon de
 //    commande is sent from the Sous-traitants screen) and NO mirror.
-// Prix follows the MPS_NG tricoteur convention (trmLinePrix — applies to ALL
+// Prix follows the ETM tricoteur convention (trmLinePrix — applies to ALL
 // type=1 knitters) instead of legacy's sst-side 0.
 
 export interface KnitOrderResult {
@@ -514,7 +514,7 @@ export async function createKnitOrder(opts: {
     }
   }
 
-  // Tricoteur line — prix via the MPS_NG cost model (see pricing-trm.ts).
+  // Tricoteur line — prix via the ETM cost model (see pricing-trm.ts).
   const prix = await trmLinePrix(opts.ecruRefId, opts.quantiteKg)
   const statut = isTrm ? STATUT_ATTENTE_DELAI : STATUT_NON_ENVOYE
   await query(
@@ -3978,7 +3978,7 @@ commandesSousTraitantRouter.delete('/:id', async (req: Request, res: Response) =
     if ((await getTrmMirror(id)) !== null) {
       res.status(409).json({
         error: 'trm_mirror_exists',
-        message: "Cette commande ne peut pas être supprimée depuis MPS_NG. Un miroir client existe côté Tricotage Malterre — utilisez l'application legacy pour la supprimer.",
+        message: "Cette commande ne peut pas être supprimée depuis ETM. Un miroir client existe côté Tricotage Malterre — utilisez l'application legacy pour la supprimer.",
       })
       return
     }
@@ -5616,7 +5616,7 @@ commandesSousTraitantRouter.post(
       // Insert. IDsociete=1 because ownership transfers to ETM as the
       // yarn-to-écru transformation completes (legacy convention,
       // confirmed on sst 8544's 24 rolls). IDordre_fabrication=0 because
-      // MPS_NG doesn't model OFs yet — the legacy TRM workflow fills it
+      // ETM doesn't model OFs yet — the legacy TRM workflow fills it
       // when production starts; leaving 0 is harmless here.
       await query(
         `INSERT INTO stock_ecru
@@ -5887,7 +5887,7 @@ commandesSousTraitantRouter.post(
       // stored in the magasin keyed on that sst id (matches legacy: 86%
       // of legacy stock_fini rows have IDmagasin = IDsous_traitant; the
       // mismatched ones are mostly the IDmagasin=0 rows previously
-      // inserted by MPS_NG before this fix). Body-supplied IDmagasin
+      // inserted by ETM before this fix). Body-supplied IDmagasin
       // (non-zero) still wins so a user can override later.
       const cmdInfo = await query<{ IDsous_traitant: number | null }>(
         `SELECT IDsous_traitant FROM commande_sous_traitant WHERE IDcommande_sous_traitant = ${commandeId}`,

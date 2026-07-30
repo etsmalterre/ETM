@@ -2,17 +2,17 @@
 
 Work on multiple screens at once — one worktree per screen, one Claude per worktree, each with
 its own local dev stack. Driven by the worktree skills + `scripts/worktree/*.mjs`. Supports
-**two projects**: `ng` (MPS_NG — API + web, the default) and `trm` (the sibling MPS-TRM repo —
-web only). The scripts live in the MPS_NG checkout and drive both; the TRM repo is resolved as
+**two projects**: `ng` (ETM — API + web, the default) and `trm` (the sibling MPS-TRM repo —
+web only). The scripts live in the ETM checkout and drive both; the TRM repo is resolved as
 the sibling directory (`../MPS-TRM`).
 
 ## Mental model
 
-- **`C:\dev\etsmalterre\MPS_NG` is the integration tree.** It stays permanently on `master` and is
+- **`C:\dev\etsmalterre\ETM` is the integration tree.** It stays permanently on `master` and is
   where features merge in and where you deploy from. **Do not do feature work here.** (A branch can
   be checked out in only one worktree, so `master` must live in one fixed place.) MPS-TRM
   (`C:\dev\etsmalterre\MPS-TRM`) is its own integration tree with the same discipline.
-- **Each screen gets a worktree** `../MPS_NG-<feature>` (or `../MPS-TRM-<feature>`) on branch
+- **Each screen gets a worktree** `../ETM-<feature>` (or `../MPS-TRM-<feature>`) on branch
   `feat/<feature>`, created off that repo's current `origin/master`.
 - All worktrees share the **same local HFSQL** (`localhost:4900`) — do NOT fork the DB per tree.
 - All worktrees share `node_modules`? No — each worktree runs its own `pnpm install` (the pnpm
@@ -23,26 +23,26 @@ the sibling directory (`../MPS-TRM`).
 Six slots **per project**; slot **N** (1–6). The two projects have **disjoint port ranges**, so
 an NG slot and a TRM slot with the same number never collide:
 
-| | MPS_NG (`ng`) | MPS-TRM (`trm`) |
+| | ETM (`ng`) | MPS-TRM (`trm`) |
 |---|---|---|
-| API port | `8080 + N` (pnpm `@mps/api dev:808N`) | *none* — targets an MPS_NG API over HTTP |
+| API port | `8080 + N` (pnpm `@mps/api dev:808N`) | *none* — targets an ETM API over HTTP |
 | Web port | `3000 + N` (pnpm `@mps/web dev:300N`, targets API `808N`) | `5170 + N` (pnpm `@mps-trm/web dev:517N`) |
-| Worktree | `../MPS_NG-<feature>` | `../MPS-TRM-<feature>` |
+| Worktree | `../ETM-<feature>` | `../MPS-TRM-<feature>` |
 | Branch | `feat/<feature>` | `feat/<feature>` |
 | URL | `http://localhost:300N` | `http://localhost:517N` |
 
-**TRM is web-only.** Its web dev server calls an MPS_NG API cross-origin, so the TRM web ports
-(`5171–5176`) are in `DEV_WEB_ORIGINS` and in the MPS_NG API's dev CORS. By default a TRM worktree
-targets the **slot-0 master** MPS_NG API on `:8080` (start it with `/serve-main`); override with
+**TRM is web-only.** Its web dev server calls an ETM API cross-origin, so the TRM web ports
+(`5171–5176`) are in `DEV_WEB_ORIGINS` and in the ETM API's dev CORS. By default a TRM worktree
+targets the **slot-0 master** ETM API on `:8080` (start it with `/serve-main`); override with
 `up.mjs <feature> trm --api 808N` to point at a running NG worktree's API instead. The chosen
 target is written to the TRM worktree's `apps/web/.env.development.local` as `VITE_API_URL`.
 
 ## Shared-API changes (TRM features) — the paired-worktree rule
 
-The MPS_NG API serves both frontends; MPS-TRM has none of its own. The invariant:
-**API changes always flow through MPS_NG's own pipeline — NG worktree → `feat/*` branch →
+The ETM API serves both frontends; MPS-TRM has none of its own. The invariant:
+**API changes always flow through ETM's own pipeline — NG worktree → `feat/*` branch →
 NG `master` → NG `/mps_deploy` — regardless of which frontend consumes them.** Never edit
-`apps/api` in the MPS_NG main checkout (it's the integration tree, and a dirty tree blocks
+`apps/api` in the ETM main checkout (it's the integration tree, and a dirty tree blocks
 both `/feature-complete` merges and deploys).
 
 A TRM feature that needs endpoints therefore uses a **pair of worktrees** with the same name:
@@ -53,7 +53,7 @@ node scripts/worktree/up.mjs <name> trm --api 808N   # TRM worktree: the screen,
 ```
 
 - **Landing order**: NG branch first (`/feature-complete` in the NG worktree), then the TRM
-  branch. `/feature-complete` on TRM guards this: it stops if `MPS_NG/apps/api` has
+  branch. `/feature-complete` on TRM guards this: it stops if `ETM/apps/api` has
   uncommitted main-checkout edits.
 - **Deploy ownership**: NG's `/mps_deploy` ships the shared API (+ NG web) to
   `mpsng.malterre`; TRM's own `/mps_deploy` ships only the TRM web to `mpstrm.malterre`
@@ -84,7 +84,7 @@ click through the integrated app on `master` before deploying.
 
 | Skill | Run from | What it does |
 |---|---|---|
-| `/new-feature-worktree <name> [ng\|trm]` | MPS_NG main checkout | allocate slot for the project (default `ng`), create worktree off that repo's `origin/master`, `pnpm install`, wire dev env (ng: `.env.development` CORS + `secrets/`, start API+web; trm: `.env.development.local` `VITE_API_URL`, start web only), health-check, register. Then open a new Claude in the worktree. |
+| `/new-feature-worktree <name> [ng\|trm]` | ETM main checkout | allocate slot for the project (default `ng`), create worktree off that repo's `origin/master`, `pnpm install`, wire dev env (ng: `.env.development` CORS + `secrets/`, start API+web; trm: `.env.development.local` `VITE_API_URL`, start web only), health-check, register. Then open a new Claude in the worktree. |
 | `/feature-checkpoint [msg]` | the feature worktree | commit → push → rebase onto `origin/master` (resolve conflicts here). **No merge.** Servers stay up; keep working. |
 | `/feature-complete` | the feature worktree | commit + note → push → rebase → typecheck gate → fast-forward merge into `master` (from the main checkout) → push → stop servers, remove worktree, delete branch, free slot. **Deploy is separate.** |
 | `/worktree-status` | anywhere | per-slot health (servers alive? web serving? ahead/behind master), free slots, stale-entry cleanup. |

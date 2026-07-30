@@ -1,5 +1,5 @@
 // PDF document for the "Fiche Technique" of a finished-fabric reference
-// (ref_fini). Ports the legacy WinDev ETAT_Fiche_technique to the MPS_NG
+// (ref_fini). Ports the legacy WinDev ETAT_Fiche_technique to the ETM
 // design language: caractéristiques (laize / poids min-moy-max), composition
 // (matières from the écru's yarns), stabilités dimensionnelles,
 // conditionnement, observations, customs / provenance lines, care symbols

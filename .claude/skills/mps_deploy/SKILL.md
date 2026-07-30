@@ -2,15 +2,15 @@
 
 ## When to use
 
-Invoke with `/mps_deploy` to deploy the MPS_NG API and/or webapp to production.
+Invoke with `/mps_deploy` to deploy the ETM API and/or webapp to production.
 
 ## Deploy ownership — the API is shared with MPS-TRM
 
-The API deployed here serves **two frontends**: MPS_NG (`mpsng.malterre`) and the sister
+The API deployed here serves **two frontends**: ETM (`mpsng.malterre`) and the sister
 app **MPS-TRM** (`mpstrm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web
 server, its nginx site proxies `/api/` to this same `10.10.2.163:8081`).
 
-- **This skill owns**: the MPS_NG web bundle + the **shared API** (including endpoints that
+- **This skill owns**: the ETM web bundle + the **shared API** (including endpoints that
   only TRM screens use, e.g. `planning-atelier.ts` — they live in this repo and deploy from
   here).
 - **The MPS-TRM repo's own `/mps_deploy`** owns: the TRM web bundle only. Never deploy the
@@ -84,7 +84,7 @@ of every deploy — see the deploy steps). The check:
 
 1. **Sync and read what's live** (uses the transport from §SSH Access):
    ```bash
-   cd /c/dev/etsmalterre/MPS_NG && git fetch origin
+   cd /c/dev/etsmalterre/ETM && git fetch origin
    LOCAL=$(git rev-parse origin/master)
    # factory PC (wsl) form — read both servers' deployed SHA (missing file → "none"):
    API_SHA=$(wsl bash -c "ssh $WOPTS debian@10.10.2.163 'cat /home/debian/mps_api/DEPLOYED_SHA 2>/dev/null || echo none'")
@@ -175,7 +175,7 @@ of every deploy — see the deploy steps). The check:
 4. **Stamp the deployed commit** after a clean restart (this is what Step 0 reads next time).
    Compute the SHA locally (`git rev-parse origin/master`) and write it on the API server:
    ```bash
-   SHA=$(cd /c/dev/etsmalterre/MPS_NG && git rev-parse origin/master)
+   SHA=$(cd /c/dev/etsmalterre/ETM && git rev-parse origin/master)
    wsl bash -c "ssh $WOPTS debian@10.10.2.163 'echo $SHA > /home/debian/mps_api/DEPLOYED_SHA'"
    ```
 
@@ -213,7 +213,7 @@ of every deploy — see the deploy steps). The check:
    the tickets feature's dep wasn't in the main checkout). `pnpm install` is a no-op when
    already current, so always run it:
    ```powershell
-   cd C:\dev\etsmalterre\MPS_NG; pnpm install; $env:VITE_API_URL='/api'; pnpm --filter web build   # USE THIS
+   cd C:\dev\etsmalterre\ETM; pnpm install; $env:VITE_API_URL='/api'; pnpm --filter web build   # USE THIS
    ```
    ```bash
    MSYS_NO_PATHCONV=1 VITE_API_URL=/api pnpm --filter web build          # bash ONLY with the guard
@@ -289,7 +289,7 @@ of every deploy — see the deploy steps). The check:
 3. **Stamp the deployed commit** — write it to `/home/debian/mps_erp/DEPLOYED_SHA`, which is the
    PARENT of `dist/` so it is never served publicly (and survives any dist-level cleanup):
    ```bash
-   SHA=$(cd /c/dev/etsmalterre/MPS_NG && git rev-parse origin/master)
+   SHA=$(cd /c/dev/etsmalterre/ETM && git rev-parse origin/master)
    wsl bash -c "ssh $WOPTS debian@10.10.2.165 'echo $SHA > /home/debian/mps_erp/DEPLOYED_SHA'"
    ```
 
@@ -325,7 +325,7 @@ automatically. Never delete `master`.
 
 1. **List merged remote feature branches**:
    ```bash
-   cd /c/dev/etsmalterre/MPS_NG && git fetch --prune origin
+   cd /c/dev/etsmalterre/ETM && git fetch --prune origin
    for b in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/feat); do
      name=${b#origin/feat/}
      if git merge-base --is-ancestor "$b" origin/master; then echo "MERGED: $name"; fi

@@ -4,7 +4,7 @@
 
 export const colors = {
   // PDF-specific palette — chosen to match the Malterre brand HTML template
-  // the user approved. Distinct from the on-screen MPS_NG app colors.
+  // the user approved. Distinct from the on-screen ETM app colors.
   primary: '#002395',    // French Blue (used for headings + grand total)
   primaryDark: '#00174D', // Darker navy used for the bar under the header
   gold: '#EFA633',       // Malterre brand gold (header band + accents)

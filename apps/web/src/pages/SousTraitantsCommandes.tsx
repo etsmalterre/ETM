@@ -1826,7 +1826,7 @@ function LignesSection({
   const linesLocked = commande.est_soldee === 1
   const isEnnoblisseur = isEnnoblisseurType(commande.sous_traitant_type)
   const isTricoteur = (commande.sous_traitant_type ?? '').trim().toLowerCase() === TYPE_TRICOTEUR.toLowerCase()
-  // Phase 2: both ennoblisseur and tricoteur can edit lines from MPS_NG.
+  // Phase 2: both ennoblisseur and tricoteur can edit lines from ETM.
   // Other sst types (confectionneur, autre) still defer to legacy.
   const linesEditable = isEnnoblisseur || isTricoteur
 
@@ -2155,7 +2155,7 @@ function LineCard({
    *  drives the Attente_Delai urgency colour. */
   dateNotif: string | null
   /** True when the parent commande's sst supports inline line editing in
-   *  MPS_NG (ennoblisseur OR tricoteur). Drives the per-card edit/delete
+   *  ETM (ennoblisseur OR tricoteur). Drives the per-card edit/delete
    *  affordances regardless of which exact type. */
   linesEditable: boolean
   isDrawerOpen: boolean

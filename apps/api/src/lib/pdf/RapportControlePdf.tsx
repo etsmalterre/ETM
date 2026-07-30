@@ -1,6 +1,6 @@
 // PDF document for the "Rapport de contrôle" (quality control report) that
 // accompanies a client expedition. Ports the legacy WinDev ETAT_RapportQualité
-// (filename RC<expeditionId>.pdf) to the MPS_NG design language:
+// (filename RC<expeditionId>.pdf) to the ETM design language:
 //  - top row: shipment metadata card (client, n° commande, réf. client) —
 //    the avis number doubles as the RC number in the branded header
 //  - one section per shipped article: identity block (ref - coloris,

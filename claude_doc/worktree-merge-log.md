@@ -860,7 +860,7 @@ le split liste ouverte / tiroir et l'auto-ouverture sur non-lus sont inchangés.
 (2) **Toutes les lectures sont cadrées sur le produit.** La clé API du tracker est
 *company*-scoped, pas product-scoped : un `GET /bugs?reporter_email=…` renvoyait les tickets
 de la personne **sur tous les produits ETS Malterre**, donc Isabelle voyait ses tickets MFProd
-dans MPS_NG. Le proxy envoie désormais `product_slug` (= `ISSUE_TRACKER_PRODUCT_SLUG`) sur la
+dans ETM. Le proxy envoie désormais `product_slug` (= `ISSUE_TRACKER_PRODUCT_SLUG`) sur la
 liste, et `belongsToProduct()` rejette en 404 un ticket d'un autre produit sur le détail et sur
 l'upload de pièces jointes — même traitement que le contrôle `reporter_email` existant. Les
 lignes renvoyées sont en plus filtrées côté serveur, ce qui rend le déploiement de l'app sûr
@@ -1200,7 +1200,7 @@ divers line names a catalog article (`ref_divers` narrowed by up to two variatio
 `ligne_commande_client.IDVariation1/2` → `ref_divers_variation`, axis names from
 `ref_divers.sTypeVariation1/2`) instead of stock rolls, and ships through the
 `expedition_divers` ledger whose header back-points at the order
-(`expedition_divers.IDcommande_client` — previously always written 0 by MPS_NG):
+(`expedition_divers.IDcommande_client` — previously always written 0 by ETM):
 `expédition → ligne_expedition_divers` (a CARTON) `→ ref_divers_expedie` (ref + variations
 + qty + prix). **Line drawer** (`DiversLineDrawer`, click a Divers line in view mode, §31
 in-screen drawer): article card with the two variations, Commandé / Expédié / Reste, *Stock
@@ -1223,12 +1223,12 @@ prints the existing BL divers. Facturée or soldée ⇒ read-only with a lock ba
 `IDVariation1/2`, resolves their labels and computes divers `expedie` by matching
 `(IDref_divers, v1, v2)` across the order's shipments (line cards gained the Expédié stat +
 a shipped gauge; the ligne form gained the two variation pickers — without them a
-MPS_NG-created divers line could never match stock or shipment items). **`stock_divers` is
+ETM-created divers line could never match stock or shipment items). **`stock_divers` is
 now written** (user-confirmed legacy parity, since both apps share the live DB):
 `adjustDiversStock()` in `expeditions.ts` is the single owner of the ledger and is wired
 into `ref_divers_expedie` create/update/delete **and** the carton/expédition cascade
 deletes — so Clients › Expéditions keeps divers stock in sync too, which it previously did
-not. MPS_NG never *creates* a `stock_divers` row (legacy `FEN_Gestion_Stock_Divers` opens
+not. ETM never *creates* a `stock_divers` row (legacy `FEN_Gestion_Stock_Divers` opens
 them on receipt); an untracked combo is a no-op and surfaces as "non suivi". Verified live
 end-to-end on commande 3690: ship 3 → expédition + CARTON 1 created, stock 5→2; add a
 carton + 4 articles from the modal → stock 4→0; delete carton → 0→4; edit qty 3→1 → 2→4;
@@ -1392,12 +1392,12 @@ legacy WinDev app never writes `envoi_email` for commandes client; it only flips
 accented boolean `commande_client.envoyé_client` (no date, no recipient). The historique
 endpoint now also reads that flag (`SELECT *` + `pickKey(/^envoy/i)` — the accented column
 is never named in SQL, safe on Windows ODBC and the Linux bridge) and appends an undated
-`{kind:'legacy'}` event when set. If a dated MPS_NG confirmation send exists for the
+`{kind:'legacy'}` event when set. If a dated ETM confirmation send exists for the
 commande, the legacy card is suppressed (the dated card is strictly more informative).
 Frontend renders the legacy event as a muted-icon card titled "Confirmation de commande"
-with the italic sub-line "Envoyée depuis l'ancienne application"; MPS_NG sends keep their
+with the italic sub-line "Envoyée depuis l'ancienne application"; ETM sends keep their
 gold icon + timestamp + recipients. Known one-way limitation (documented, unchanged):
-sends from MPS_NG cannot set `envoyé_client` through the Linux bridge, so the legacy app
+sends from ETM cannot set `envoyé_client` through the Linux bridge, so the legacy app
 still shows those as not sent. Investigation context: the original "card missing after
 send" report was the pre-v0.1.1 stale-cache UI (fixed by the historique auto-refresh
 invalidation deployed 2026-07-23); prod writes were verified intact. Also adds the
@@ -2237,7 +2237,7 @@ an "Archivé" badge. **(2) Tarifs email**: the header "Envoyer un email" button 
 generated PDF to the shared `SendEmailDialog` pre-attached; the "En développement" placeholder was
 removed. **(3) Sidebar**: dropped the count numbers next to the Contacts/Adresses tabs. **(4) Fiche
 Tarifs PDF redesign** (`apps/api/src/lib/pdf/TarifsClientPdf.tsx`, new dev preview
-`apps/api/src/scripts/dump-tarifs-pdf.ts`) to the MPS_NG document design language shared with
+`apps/api/src/scripts/dump-tarifs-pdf.ts`) to the ETM document design language shared with
 Devis/Commande/Facture: cream gold-left **section header cards** (Tag icon + French-blue reference +
 muted contexture, with right-aligned Laize/Poids metric tiles and the BIO chip), a consolidated
 top **conditions card** (HT · €/mètre linéaire + validity — replacing the per-section repetition and
@@ -3093,7 +3093,7 @@ columns — low-confidence mapping left for follow-up).
 Rapports › Commandes sous-traitants — new read-only report screen at
 `/rapports/commandes-sst`, porting the legacy `FEN_Rapport_commandes_sous_traitants.wdw`
 (which is non-decompilable — WinDev stores WLanguage in a proprietary encrypted blob, so the
-screen was reconstructed from the production screenshot + the already-migrated MPS_NG
+screen was reconstructed from the production screenshot + the already-migrated ETM
 sous-traitant domain model). Also adds the three Rapports submenus (Commandes clients,
 Commandes sst, Commandes fils) to the nav + router; clients/fils are placeholders for now.
 The screen is a flat, table-centric grid (FilsStock pattern, no master-detail/drawer): one
@@ -3102,8 +3102,8 @@ Coloris, Qté commandée/affectée/réceptionnée, Date commande, Délai initial
 Retard, Marge, Client, Relance, Commentaire. Sortable sticky-header columns (17, horizontal
 scroll), French search across statut/n°/sous-traitant/réf/coloris/client/commentaire, a "Voir
 les commandes soldées" toggle, an "Actualiser" button, and a totalizer (line count + late/
-soon counts). Statut renders as polished MPS_NG pills (`LINE_STATUT_META`, friendly labels +
-solid colors) from the per-line `sstatut`; rows tint red (late) / amber (soon) per MPS_NG
+soon counts). Statut renders as polished ETM pills (`LINE_STATUT_META`, friendly labels +
+solid colors) from the per-line `sstatut`; rows tint red (late) / amber (soon) per ETM
 urgency language (attente_delai anchors on `date_notif`, else on `date_livraison`). Key
 column derivations (verified against local HFSQL): **Marge = Délai Client − Délai Actuel in
 DAYS** (not €); Délai Actuel = `lcs.date_livraison`, Délai Initial = frozen `lcs.date_delai`;

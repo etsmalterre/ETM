@@ -63,7 +63,7 @@ interface EtudeRow {
   date_reception_type: string | null // YYYYMMDD
   statut_col: EtudeStatut
   commentaire: string | null
-  /** Free-form text journal — added in May 2026, MPS_NG-only field used
+  /** Free-form text journal — added in May 2026, ETM-only field used
    *  by the user to record action notes on the étude. Stored as plain
    *  text (the user explicitly opted out of legacy-RTF compatibility for
    *  this column). */

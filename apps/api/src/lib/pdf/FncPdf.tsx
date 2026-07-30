@@ -1,5 +1,5 @@
 // PDF document for the "Fiche de non-conformité" (FNC) issued from a Qualité ›
-// Dossier. Ports the legacy WinDev ETAT_FNC to the MPS_NG design language:
+// Dossier. Ports the legacy WinDev ETAT_FNC to the ETM design language:
 //   - top row: recipient company card + metadata card (client, défaut, date)
 //   - "Observation du responsable qualité" framed block (the FNC message)
 //   - "Pièce(s) affectée(s)" chips, one per affected roll / yarn lot

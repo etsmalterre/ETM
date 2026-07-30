@@ -2,7 +2,7 @@
 
 ## When to use
 
-Invoke with `/serve-main` to serve the **main checkout** (`C:\dev\etsmalterre\MPS_NG`, on
+Invoke with `/serve-main` to serve the **main checkout** (`C:\dev\etsmalterre\ETM`, on
 `master`) locally so you can click through the integrated app — e.g. to verify that
 merged feature work looks right before deploying. Master runs on its own reserved
 **slot 0**: API on `8080`, web on `3000`. Slot 0 sits outside the 1–6 feature-worktree

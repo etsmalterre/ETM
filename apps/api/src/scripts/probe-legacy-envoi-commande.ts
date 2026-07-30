@@ -1,5 +1,5 @@
 // How does the LEGACY WinDev app record "confirmation de commande envoyée"?
-// The MPS_NG historique tab only reads envoi_email IDtype_doc=7, which legacy
+// The ETM historique tab only reads envoi_email IDtype_doc=7, which legacy
 // apparently never writes. Probe the local DB (prod snapshot) for the real shape.
 import { query } from '../lib/hfsql-auto.js'
 

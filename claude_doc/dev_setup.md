@@ -39,8 +39,8 @@ pnpm test         # run tests
 
 | Service | Port | Notes |
 |---------|------|-------|
-| MPS_NG API | 3002 | Set in `apps/api/.env.development` |
-| MPS_NG Web | 5175 | Vite (5173/5174 taken by MFProd) |
+| ETM API | 3002 | Set in `apps/api/.env.development` |
+| ETM Web | 5175 | Vite (5173/5174 taken by MFProd) |
 | MFProd API | 8080 | Separate project |
 | MFProd Web | 5173 | Separate project |
 

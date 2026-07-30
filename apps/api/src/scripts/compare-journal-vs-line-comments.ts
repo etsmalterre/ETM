@@ -14,7 +14,7 @@
 //                  the header journal (legacy info lost).
 //   - EXTRA      : the header journal has non-empty content but NO line
 //                  comment matches any of it (header-only data, possibly
-//                  typed manually in MPS_NG or pre-migration legacy).
+//                  typed manually in ETM or pre-migration legacy).
 //   - PARTIAL    : some line comments are present, others are missing.
 //   - EMPTY_BOTH : both sides empty — trivially in sync.
 //   - HEADER_ONLY_TRIVIAL : header has content but all line comments are

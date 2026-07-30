@@ -1,6 +1,6 @@
 // PDF document for a bon de transfert ("Bordereau de livraison N° X"),
 // rendered inside the shared MalterreDocument frame. Ports the legacy WinDev
-// report ETAT_Bon_de_transfert to the MPS_NG design language:
+// report ETAT_Bon_de_transfert to the ETM design language:
 //  - top row: destination address card + transfer metadata card (source,
 //    destination, transporteur)
 //  - rouleaux (type_matiere 1): one section per reference — identity block

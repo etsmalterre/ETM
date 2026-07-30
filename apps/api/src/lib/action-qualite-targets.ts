@@ -1,7 +1,7 @@
 // Per-action "objectif de conformités" — how many Conforme results the user
 // wants to see before considering a quality action settled.
 //
-// This is a MPS_NG addition: legacy `action_qualite` has only the manual
+// This is a ETM addition: legacy `action_qualite` has only the manual
 // `terminé` flag and no column to hold a target, and the WinDev app still reads
 // that table, so we keep the target in a JSON side-store rather than altering
 // the HFSQL analysis. Same shape and atomic-write discipline as

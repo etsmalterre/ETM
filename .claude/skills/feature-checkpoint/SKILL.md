@@ -2,7 +2,7 @@
 
 ## When to use
 
-Invoke with `/feature-checkpoint` **from inside a feature worktree** (`../MPS_NG-<name>` or
+Invoke with `/feature-checkpoint` **from inside a feature worktree** (`../ETM-<name>` or
 `../MPS-TRM-<name>`, on branch `feat/<name>`) to save progress and re-sync onto the latest
 `master` **without merging**. Use it whenever you want a clean, up-to-date base mid-feature.
 Your work stays isolated on the branch; nothing lands on `master`, and the dev servers keep
@@ -10,7 +10,7 @@ running so you can keep working immediately afterward.
 
 This is the **sync-only** counterpart to `/feature-complete` (which merges + tears down).
 
-**Project-aware:** this worktree is either MPS_NG or MPS-TRM. Detect which from the repo
+**Project-aware:** this worktree is either ETM or MPS-TRM. Detect which from the repo
 (the web package name — `@mps/web` for NG, `@mps-trm/web` for TRM) and use the matching
 package filter below. MPS-TRM has **no API package**, so skip any `@mps/api` step there.
 

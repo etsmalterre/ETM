@@ -2,7 +2,7 @@
 
 ## When to use
 
-Invoke with `/feature-complete` **from inside a feature worktree** (`../MPS_NG-<name>` or
+Invoke with `/feature-complete` **from inside a feature worktree** (`../ETM-<name>` or
 `../MPS-TRM-<name>`, on branch `feat/<name>`) when a screen is finished and ready to land.
 It commits, rebases onto `master` (resolving conflicts with this screen's context),
 fast-forward-merges into `master`, then shuts down this slot's dev servers, removes the
@@ -15,12 +15,12 @@ HERE (you have the context), so `master` only ever sees a fast-forward.
 
 ## Project-aware
 
-This worktree is either **MPS_NG** or **MPS-TRM**. Detect which from the repo (web package
+This worktree is either **ETM** or **MPS-TRM**. Detect which from the repo (web package
 name — `@mps/web` for NG, `@mps-trm/web` for TRM) and substitute throughout:
 
-| | MPS_NG | MPS-TRM |
+| | ETM | MPS-TRM |
 |---|---|---|
-| Main checkout | `C:\dev\etsmalterre\MPS_NG` | `C:\dev\etsmalterre\MPS-TRM` |
+| Main checkout | `C:\dev\etsmalterre\ETM` | `C:\dev\etsmalterre\MPS-TRM` |
 | Web package | `@mps/web` | `@mps-trm/web` |
 | API package | `@mps/api` | *(none — skip API steps)* |
 | Merge-log file | `claude_doc/worktree-merge-log.md` | *(none — skip if absent)* |
@@ -34,11 +34,11 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 - `<MAIN>` is on `master` with a clean working tree. (The `apps/api/tsconfig.tsbuildinfo`
   gitignore keeps it clean across builds — if `git -C <MAIN> status --porcelain` is
   non-empty, resolve that first; do not force past it.)
-- **TRM only — shared-API guardrail.** A TRM feature's endpoints live in the **MPS_NG API**
-  (`C:\dev\etsmalterre\MPS_NG\apps\api`), not in this repo. Before landing, check whether
+- **TRM only — shared-API guardrail.** A TRM feature's endpoints live in the **ETM API**
+  (`C:\dev\etsmalterre\ETM\apps\api`), not in this repo. Before landing, check whether
   API work for this feature is still unlanded:
   ```bash
-  git -C C:/dev/etsmalterre/MPS_NG status --porcelain -- apps/api
+  git -C C:/dev/etsmalterre/ETM status --porcelain -- apps/api
   ```
   - If this is **non-empty**, someone edited the API in the NG **main checkout** — STOP and
     tell the user. Those edits must land via a **paired NG worktree** (see "Shared-API
@@ -49,17 +49,17 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 
 ## Shared-API changes (TRM features)
 
-MPS-TRM is frontend-only; its endpoints are part of the MPS_NG API. The rule:
-**API changes always flow through MPS_NG's own pipeline — worktree → `feat/*` branch →
+MPS-TRM is frontend-only; its endpoints are part of the ETM API. The rule:
+**API changes always flow through ETM's own pipeline — worktree → `feat/*` branch →
 NG `master` → NG `/mps_deploy` — regardless of which frontend consumes them.**
 
 For a TRM feature that needs API work, the setup is a **pair of worktrees**:
-- an NG worktree (`../MPS_NG-<name>`) holding the API changes, and
+- an NG worktree (`../ETM-<name>`) holding the API changes, and
 - this TRM worktree (`../MPS-TRM-<name>`) holding the screen, spun up with
   `--api 808N` pointing at the NG worktree's API.
 
 Landing order: **NG branch first** (its API lands on NG `master`), then the TRM branch.
-Deploys are separate per repo: `/mps_deploy` from MPS_NG ships the API (+ NG web);
+Deploys are separate per repo: `/mps_deploy` from ETM ships the API (+ NG web);
 `/mps_deploy` from MPS-TRM ships the TRM web.
 
 ## Steps
@@ -120,9 +120,9 @@ Deploys are separate per repo: `/mps_deploy` from MPS_NG ships the API (+ NG web
    ```bash
    cd <MAIN> && node scripts/worktree/down.mjs <name> --remove
    ```
-   (The worktree scripts live in the **MPS_NG** checkout. For a TRM worktree, run the script
-   from MPS_NG — it resolves the TRM repo from the registry entry — i.e.
-   `cd /c/dev/etsmalterre/MPS_NG && node scripts/worktree/down.mjs <name> --remove`.)
+   (The worktree scripts live in the **ETM** checkout. For a TRM worktree, run the script
+   from ETM — it resolves the TRM repo from the registry entry — i.e.
+   `cd /c/dev/etsmalterre/ETM && node scripts/worktree/down.mjs <name> --remove`.)
    This stops the slot's API + web process trees, frees the slot, and removes the worktree +
    branch. **Expected on Windows:** because this very session (and your terminal) is still
    cwd'd inside the worktree, the OS won't let the directory be deleted — so the script

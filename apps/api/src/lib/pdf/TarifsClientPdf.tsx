@@ -1,5 +1,5 @@
-// PDF document for the "Fiche Tarifs" sent to a client — the MPS_NG port of
-// the legacy Choix_Matiere_Tarif → Fiche Tarif report, restyled to the MPS_NG
+// PDF document for the "Fiche Tarifs" sent to a client — the ETM port of
+// the legacy Choix_Matiere_Tarif → Fiche Tarif report, restyled to the ETM
 // document design language (shared with Devis / Commande / Facture): cream
 // gold-left cards, primary-blue references, icon + caps section titles, and a
 // gold-underlined table header.

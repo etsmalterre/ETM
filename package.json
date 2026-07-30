@@ -1,8 +1,8 @@
 {
-  "name": "mps-ng",
+  "name": "etm",
   "version": "0.1.8",
   "private": true,
-  "description": "MPS Next Generation - ERP Textile/Knitting for ETS Malterre",
+  "description": "ETM - ERP Textile/Knitting for ETS Malterre",
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
