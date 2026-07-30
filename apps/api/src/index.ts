@@ -18,6 +18,7 @@ import { stockDiversRouter } from './routes/stock-divers.js'
 import { commandesFilRouter } from './routes/commandes-fil.js'
 import { commandesSousTraitantRouter } from './routes/commandes-sous-traitant.js'
 import { commandesClientRouter } from './routes/commandes-client.js'
+import { commandesTrmRouter } from './routes/commandes-trm.js'
 import { facturesRouter } from './routes/factures.js'
 import { devisRouter } from './routes/devis.js'
 import { expeditionsRouter } from './routes/expeditions.js'
@@ -117,6 +118,10 @@ app.use('/api/stock-divers', stockDiversRouter)
 app.use('/api/commandes-fil', commandesFilRouter)
 app.use('/api/commandes-sous-traitant', commandesSousTraitantRouter)
 app.use('/api/commandes-client', commandesClientRouter)
+// TRM client ledger (IDsociete = 2) — served to the sister TRM app, which has
+// no API of its own. Separate router from commandes-client: same tables, other
+// partition, and a production-centric screen (see commandes-trm.ts header).
+app.use('/api/commandes-trm', commandesTrmRouter)
 app.use('/api/factures', facturesRouter)
 app.use('/api/devis', devisRouter)
 app.use('/api/expeditions', expeditionsRouter)
