@@ -8,7 +8,7 @@ It commits, rebases onto `master` (resolving conflicts with this screen's contex
 fast-forward-merges into `master`, then shuts down this slot's dev servers, removes the
 worktree, and deletes the branch.
 
-Deploy is a **separate** step — after this completes, run `/mps_deploy` if you want to ship.
+Deploy is a **separate** step — after this completes, run `/etm_deploy` or `/trm_deploy` (whichever matches this worktree) if you want to ship.
 
 The merge is always a clean fast-forward because we rebase first. Conflicts are resolved
 HERE (you have the context), so `master` only ever sees a fast-forward.
@@ -51,7 +51,7 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 
 TRM is frontend-only; its endpoints are part of the ETM API. The rule:
 **API changes always flow through ETM's own pipeline — worktree → `feat/*` branch →
-NG `master` → NG `/mps_deploy` — regardless of which frontend consumes them.**
+NG `master` → `/etm_deploy` — regardless of which frontend consumes them.**
 
 For a TRM feature that needs API work, the setup is a **pair of worktrees**:
 - an NG worktree (`../ETM-<name>`) holding the API changes, and
@@ -59,8 +59,8 @@ For a TRM feature that needs API work, the setup is a **pair of worktrees**:
   `--api 808N` pointing at the NG worktree's API.
 
 Landing order: **NG branch first** (its API lands on NG `master`), then the TRM branch.
-Deploys are separate per repo: `/mps_deploy` from ETM ships the API (+ NG web);
-`/mps_deploy` from TRM ships the TRM web.
+Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the API (+ NG web);
+`/trm_deploy` (from the TRM checkout) ships the TRM web. When a feature spans both, the API deploy runs **first**.
 
 ## Steps
 
@@ -135,4 +135,4 @@ Deploys are separate per repo: `/mps_deploy` from ETM ships the API (+ NG web);
    slot freed. State whether the worktree dir was removed now or deferred (per the script's
    output). Tell the user to **close this Claude session / terminal** — the work is on `master`,
    and any deferred dir cleans itself up on the next worktree skill. Shipping is a separate
-   `/mps_deploy` from the main checkout.
+   `/etm_deploy` (or `/trm_deploy`) from the main checkout.

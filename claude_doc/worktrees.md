@@ -41,7 +41,7 @@ target is written to the TRM worktree's `apps/web/.env.development.local` as `VI
 
 The ETM API serves both frontends; TRM has none of its own. The invariant:
 **API changes always flow through ETM's own pipeline — NG worktree → `feat/*` branch →
-NG `master` → NG `/mps_deploy` — regardless of which frontend consumes them.** Never edit
+NG `master` → `/etm_deploy` — regardless of which frontend consumes them.** Never edit
 `apps/api` in the ETM main checkout (it's the integration tree, and a dirty tree blocks
 both `/feature-complete` merges and deploys).
 
@@ -55,8 +55,8 @@ node scripts/worktree/up.mjs <name> trm --api 808N   # TRM worktree: the screen,
 - **Landing order**: NG branch first (`/feature-complete` in the NG worktree), then the TRM
   branch. `/feature-complete` on TRM guards this: it stops if `ETM/apps/api` has
   uncommitted main-checkout edits.
-- **Deploy ownership**: NG's `/mps_deploy` ships the shared API (+ NG web) to
-  `mpsng.malterre`; TRM's own `/mps_deploy` ships only the TRM web to `mpstrm.malterre`
+- **Deploy ownership**: `/etm_deploy` ships the shared API (+ NG web) to
+  `mpsng.malterre`; `/trm_deploy` ships only the TRM web to `mpstrm.malterre`
   (same servers, `/api/` proxied to the same API). One deploy Claude per repo, each on its
   own `master`.
 - Purely-web TRM features (no API change) need no pair — the default `:8080` master API
@@ -99,7 +99,7 @@ click through the integrated app on `master` before deploying.
 3. Conflicts are always resolved **in the feature worktree** (rebase), where that screen's
    Claude has context. `master` therefore only ever sees a **fast-forward** — no tangled
    merges, no second Claude untangling anything.
-4. Deploy only from `master` (the main checkout), via `/mps_deploy`.
+4. Deploy only from `master` (the main checkout), via `/etm_deploy` (or `/trm_deploy` on TRM).
 
 ### Shared "registry" files that tend to conflict (all additive — keep both sides)
 

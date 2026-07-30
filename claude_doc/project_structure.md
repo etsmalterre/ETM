@@ -46,6 +46,6 @@ ETM/
 ├── claude_doc/                   # Detailed reference docs (load on demand)
 ├── data_migration/               # Legacy PostgreSQL migration scripts (reference)
 ├── packages/                     # shared/, db/ (legacy PostgreSQL, unused)
-├── .claude/skills/               # mps_designer/, terminate_mps/, mps_deploy/ (ssh-context is user-level, ~/.claude/skills/)
+├── .claude/skills/               # mps_designer/, terminate_mps/, etm_deploy/ (ssh-context is user-level, ~/.claude/skills/)
 └── CLAUDE.md
 ```
