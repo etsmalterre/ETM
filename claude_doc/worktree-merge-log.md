@@ -10,6 +10,31 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/worktree-reap-guard
+**Un worktree vivant ne peut plus être supprimé par la file de suppression différée.**
+Pas un écran : une correction de l'outillage worktree, écrite après l'incident du jour où
+deux worktrees fraîchement créés (`cmd-client`, `divers`) ont été effacés — dossiers **et**
+branches — par un simple `/worktree-status`. Cause : `/feature-complete` ne peut pas
+supprimer son propre dossier (la session y est positionnée), donc il met le *chemin* en
+attente dans `pendingRemovals`, et le prochain script worktree le balaie. Or le chemin est
+dérivé du nom de la fonctionnalité : recréer un worktree portant le nom d'une feature déjà
+livrée redonne au balayeur un arbre vivant à détruire. Le registre `~/.claude/mps-worktrees.json`
+étant partagé par toutes les sessions Claude de la machine, deux sessions sur le même nom
+travaillent sur le même dossier. Correctifs : `reapPending()` refuse tout chemin revendiqué
+par un slot actif du registre, jette l'entrée périmée au lieu de l'appliquer et le signale
+(`Kept <name> — a live slot owns that path`) au lieu d'agir en silence ; `up.mjs` annule
+l'entrée en attente quand il recrée légitimement le chemin, et prévient quand le nom
+correspond à une branche déjà mergée. Vérifié en reproduisant la panne dans un registre
+bac-à-sable (`USERPROFILE` factice) : avant, le worktree vivant est détruit ; après, il
+survit, le vrai résidu est toujours balayé et l'entrée périmée disparaît. Au passage, deux
+pièges de docs corrigés dans `/etm_deploy` : son test « branche mergée » (ancêtre de
+`origin/master`) qualifie de MERGED une branche neuve sans commit — elle *est* master — et
+l'étape 5 affirmait à tort que les worktrees actifs en étaient exclus automatiquement, ce
+qui a failli faire démonter deux arbres vivants ; la liste soustrait désormais les features
+que le registre possède. Et l'argument de version (`/etm_deploy v0.2.1`) est enfin
+documenté : le bump du `package.json` racine doit précéder le build, sinon le bundle
+embarque l'ancien `__APP_VERSION__`.
+
 ## 2026-07-30 — feat/cmd-client
 **Le tarif d'une ligne de commande client dépend enfin du CLIENT : contrat négocié,
 coefficient fixe, blocage sur contrat expiré — et le sélecteur de coloris se limite au

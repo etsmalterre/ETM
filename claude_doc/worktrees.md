@@ -126,6 +126,30 @@ fully down — with one side alive it would kill the survivor too.
 `apps/web/src/config/navigation.ts`, `apps/web/src/router.tsx`, `pnpm-lock.yaml`,
 `claude_doc/worktree-merge-log.md`.
 
+### Reusing a feature name (the registry is shared across sessions)
+
+A worktree's path is derived from its feature name (`ETM-<name>`), and the registry at
+`~/.claude/mps-worktrees.json` is **shared by every Claude session and terminal on this
+machine**. So two sessions working on the same name are working on the same directory.
+
+`/feature-complete` usually cannot delete its own worktree (the session is cwd'd inside
+it), so it queues the *path* in `pendingRemovals`, and the next worktree skill run from
+the main checkout reaps it. That queue holds a path, not an identity — which used to mean
+that recreating a worktree with a shipped feature's name handed the reaper a live tree to
+delete. **Hit live 2026-07-30:** two freshly created worktrees, plus their branches, were
+destroyed by an unrelated `/worktree-status`.
+
+Fixed in `scripts/worktree/lib.mjs`: `reapPending()` refuses to touch any path an active
+registry slot claims, drops the stale entry instead, and reports it (`Kept <name> — a live
+slot owns that path`); `up.mjs` voids the queued entry when it legitimately recreates the
+path, and prints a NOTE when the name belongs to an already-merged branch. Regression
+repro: sandbox `USERPROFILE`, put a pending entry and a live slot on the same path, assert
+the directory survives.
+
+Still true regardless: **prefer a fresh name.** Two unrelated features sharing a branch
+name makes the merge log and `git log` ambiguous, and `origin/feat/<name>` from the first
+one lingers.
+
 ## Manual fallbacks
 
 ```bash
