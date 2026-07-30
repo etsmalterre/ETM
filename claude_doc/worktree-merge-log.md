@@ -10,6 +10,44 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/divers
+**Divers › Stock ne liste plus que le stock réellement disponible (276 lignes → 62), et
+la création de ligne devient un upsert. Au passage, la recherche à puces de Finis › Stock
+est extraite en composant partagé et remplace le filtre « Toutes les références ».**
+
+`stock_divers` n'est pas une grille de toutes les combinaisons : c'est un **journal des
+combinaisons que quelqu'un a touchées** — 1 466 combinaisons théoriques sur les 505
+références pour seulement 276 lignes stockées (à elle seule, Tissu Voltige en autorise 551
+et n'en stocke que 117). Et **214 de ces 276 lignes sont à 0**, ce qui noyait les ~62 qui
+portent du stock. La case « Masquer les quantités nulles » disparaît donc au profit d'un
+masquage inconditionnel : une ligne remise à zéro doit devenir indiscernable d'une
+combinaison jamais créée. Une quantité **négative** reste visible — c'est une anomalie de
+données, pas du stock.
+
+Le piège, et la vraie raison du changement d'API : `POST /stock-divers` refusait (409
+« modifiez la ligne existante ») dès que la combinaison existait. Avec les zéros masqués,
+cela concernait **214 lignes invisibles** — l'utilisateur se serait fait renvoyer vers une
+ligne introuvable. L'endpoint est donc un **upsert** : il remplit silencieusement une ligne
+**vide** (de son point de vue il a bien ajouté une ligne), mais une combinaison qui **porte
+déjà du stock** refuse toujours, en annonçant la quantité en place — l'écraser sans un mot
+détruirait un chiffre réel. `create_stock_divers` suffit pour ce chemin : il ne peut que
+transformer un 0 en quantité. Corollaires : le dialogue refuse la quantité 0 (la ligne
+disparaîtrait aussitôt créée) et le tiroir explique la disparition quand on remet à zéro.
+Le doublon hérité (réf 535 / variation 558, deux lignes à 0) est géré : on prend le plus
+petit `IDstock_divers`, et on refuse si l'une des lignes du doublon porte du stock.
+
+Côté recherche, la recherche à puces (champ scopé « Emplacement : BD » + popover de
+suggestions) vivait uniquement dans `FinisStock.tsx`. Elle est extraite telle quelle dans
+`components/stock/SmartSearchInput.tsx` (+ `filterRowsByChips`) et consommée par les deux
+écrans — le rendu de Finis › Stock est identique au pixel près (vérifié en stashant les
+modifications : les baselines Playwright échouent avec exactement le même diff de 1 889 px
+avant et après, dérive préexistante due aux nouveaux onglets de menu). Sur Divers › Stock
+elle remplace la combobox « Toutes les références » : une puce `Référence :` fait le même
+travail et sait chercher. Le renommage des colonnes « Variation 1 / 2 » vers les vrais axes
+(Couleur / Taille / Référence) se déduit désormais des lignes visibles au lieu du filtre
+supprimé, donc il fonctionne aussi quand on restreint en texte libre. Convention à retenir :
+`mps_designer §27.2bis`.
+
 ## 2026-07-30 — feat/facturation
 **Le ledger de facturation devient multi-société : `factures.ts` est désormais une
 factory montée deux fois (`/api/factures` = ETM, `/api/factures-trm` = TRM), pour

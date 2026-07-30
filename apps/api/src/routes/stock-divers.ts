@@ -336,7 +336,10 @@ async function variationBelongsToRef(vid: number, refId: number): Promise<boolea
   return Number(r[0]?.n ?? 0) > 0
 }
 
-// POST /api/stock-divers — legacy "Ajouter" in FEN_Stock_Divers.
+// POST /api/stock-divers — legacy "Ajouter" in FEN_Stock_Divers. An UPSERT: see
+// the combination guard below. Filling an empty row counts as creating stock, so
+// `create_stock_divers` alone gates that path — it can only ever turn a 0 into a
+// quantity, never overwrite an existing figure.
 stockDiversRouter.post('/', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) {
@@ -384,20 +387,41 @@ stockDiversRouter.post('/', async (req: Request, res: Response) => {
       }
     }
 
+    const quantite = qty(b.quantite ?? 0)
+
     // One row per combination — a duplicate would silently double the totals on
-    // the Références screen, which sums them.
-    const dup = await query<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM stock_divers
-       WHERE IDref_divers = ${b.IDref_divers} AND IDVariation1 = ${v1} AND IDVariation2 = ${v2}`,
+    // the Références screen, which sums them. So a combination that already has
+    // a row is an UPDATE, not an insert.
+    //
+    // The screen hides quantité-0 rows, and 214 of the 276 legacy rows are at 0:
+    // those are invisible, so refusing the insert would send the user to "modify
+    // the existing line" for a line they cannot find. An empty row is therefore
+    // filled in silently — from the user's side they added a line and it
+    // appeared. A row that already carries stock is a different matter: it IS
+    // visible in the list, and overwriting its quantity without a word would
+    // destroy a real figure, so that one still refuses and says what is there.
+    const existing = await query<Record<string, unknown>>(
+      `SELECT IDstock_divers, quantite FROM stock_divers
+       WHERE IDref_divers = ${b.IDref_divers} AND IDVariation1 = ${v1} AND IDVariation2 = ${v2}
+       ORDER BY IDstock_divers`,
     )
-    if (Number(dup[0]?.n ?? 0) > 0) {
-      res.status(409).json({
-        error: 'Cette combinaison est déjà en stock : modifiez la ligne existante.',
-      })
+    if (existing.length > 0) {
+      const stocked = existing.find((r) => qty(r.quantite) !== 0)
+      if (stocked) {
+        res.status(409).json({
+          error: `Cette combinaison est déjà en stock (${qty(stocked.quantite)} ${uniteLabel(ref.unite)}) : modifiez la ligne existante.`,
+          IDstock_divers: Number(stocked.IDstock_divers) || null,
+        })
+        return
+      }
+      // Every row for this combination is empty — fill the first one in.
+      const target = Number(existing[0].IDstock_divers) || 0
+      await query(`UPDATE stock_divers SET quantite = ${quantite} WHERE IDstock_divers = ${target}`)
+      res.status(200).json({ IDstock_divers: target, updated: true })
       return
     }
 
-    const quantite = qty(b.quantite ?? 0)
+
     await query(
       `INSERT INTO stock_divers (IDref_divers, quantite, unite, IDVariation1, IDVariation2)
        VALUES (${b.IDref_divers}, ${quantite}, ${ref.unite || 0}, ${v1}, ${v2})`,

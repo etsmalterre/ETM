@@ -2,7 +2,6 @@ import { useState, useMemo, useCallback, useEffect, useRef, useDeferredValue, me
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Search,
   Loader2,
   AlertCircle,
   Pencil,
@@ -31,6 +30,11 @@ import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
+import {
+  SmartSearchInput,
+  filterRowsByChips,
+  type SearchChip,
+} from '@/components/stock/SmartSearchInput'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -197,6 +201,26 @@ const COLUMN_DEFS: { key: SortKey; label: string; width: string; align?: 'left' 
   { key: 'valeur', label: 'Valeur', width: '14%', align: 'right' },
 ]
 
+// ── Field-scoped search chips ──────────────────────────
+// The toolbar search accepts field-scoped chips ("Référence : Tissu Voltige")
+// on top of the free-text multi-term search — same widget as Finis › Stock, so
+// scoping to one reference is a chip instead of a separate filter dropdown.
+// Semantics live in `SmartSearchInput`; this screen only names its columns.
+const SEARCH_FIELDS = [
+  { key: 'ref_designation', label: 'Référence' },
+  { key: 'variation1_label', label: 'Variation 1' },
+  { key: 'variation2_label', label: 'Variation 2' },
+  { key: 'unite_label', label: 'Unité' },
+] as const
+type SearchFieldKey = (typeof SEARCH_FIELDS)[number]['key']
+
+/** Lower-cased text columns of a row, for the any-column match. */
+function rowHaystacks(r: StockDiversRow): string[] {
+  return [r.ref_designation, r.variation1_label, r.variation2_label, r.unite_label]
+    .filter((f): f is string => !!f)
+    .map((f) => f.toLowerCase())
+}
+
 const ROW_COLLATOR = new Intl.Collator('fr', { numeric: true, sensitivity: 'base' })
 
 function compareRows(a: StockDiversRow, b: StockDiversRow, key: SortKey): number {
@@ -214,8 +238,8 @@ function compareRows(a: StockDiversRow, b: StockDiversRow, key: SortKey): number
 export function DiversStock() {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
-  const [refFilter, setRefFilter] = useState(0)
-  const [hideZero, setHideZero] = useState(false)
+  // Field-scoped chips (see SEARCH_FIELDS above).
+  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
   const [sort, setSort] = useState<SortState>({ key: 'ref_designation', dir: 'asc' })
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -225,38 +249,21 @@ export function DiversStock() {
   const { data: rows, isLoading, isError, error } = useStockDiversList()
   const deferredSearch = useDeferredValue(searchQuery)
 
-  // Reference filter options — only the references that actually carry stock,
-  // so the list never offers a pick that yields zero rows.
-  const refOptions = useMemo(() => {
-    const byId = new Map<number, { IDref_divers: number; designation: string; lignes: number }>()
-    for (const r of rows ?? []) {
-      const hit = byId.get(r.IDref_divers)
-      if (hit) hit.lignes += 1
-      else
-        byId.set(r.IDref_divers, {
-          IDref_divers: r.IDref_divers,
-          designation: r.ref_designation ?? `Réf #${r.IDref_divers}`,
-          lignes: 1,
-        })
-    }
-    return [...byId.values()].sort((a, b) => ROW_COLLATOR.compare(a.designation, b.designation))
-  }, [rows])
-
-  // Keep the filter honest if the picked reference disappears from the data.
-  useEffect(() => {
-    if (refFilter !== 0 && rows && !refOptions.some((o) => o.IDref_divers === refFilter)) setRefFilter(0)
-  }, [refFilter, refOptions, rows])
-
   const filteredSorted = useMemo(() => {
-    let out = rows ?? []
-    if (refFilter > 0) out = out.filter((r) => r.IDref_divers === refFilter)
-    if (hideZero) out = out.filter((r) => r.quantite !== 0)
+    // Field-scoped chips first (each chip ANDs, restricted to its column),
+    // then the free text: every term must match SOME column.
+    let out = filterRowsByChips(rows ?? [], searchChips, rowHaystacks)
+    // Empty combinations never show. stock_divers is a sparse log of every
+    // combination anyone has ever touched, and 214 of its 276 rows sit at 0 —
+    // listing them buries the ~62 lines that actually hold stock. A zeroed row
+    // is therefore indistinguishable from a combination that was never created,
+    // which is exactly what the create dialog's upsert relies on. A NEGATIVE
+    // quantity is not hidden: that is a data error the user must see.
+    out = out.filter((r) => r.quantite !== 0)
     const terms = deferredSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length > 0) {
       out = out.filter((r) => {
-        const haystacks = [r.ref_designation, r.variation1_label, r.variation2_label, r.unite_label]
-          .filter((f): f is string => !!f)
-          .map((f) => f.toLowerCase())
+        const haystacks = rowHaystacks(r)
         return terms.every((t) => haystacks.some((h) => h.includes(t)))
       })
     }
@@ -269,12 +276,16 @@ export function DiversStock() {
       if (ref !== 0) return ref
       return ROW_COLLATOR.compare(combinationLabel(a), combinationLabel(b))
     })
-  }, [rows, refFilter, hideZero, deferredSearch, sort])
+  }, [rows, searchChips, deferredSearch, sort])
 
-  // When a single reference is in view its axes are known, so the generic
-  // "Variation 1 / 2" headers can name what the column actually holds.
+  // When every visible row belongs to the same reference its axes are known, so
+  // the generic "Variation 1 / 2" headers can name what the column holds. Driven
+  // by the visible rows rather than by an explicit filter, so it works whether
+  // the user narrowed with a "Référence :" chip or with free text.
   const columns = useMemo(() => {
-    const axes = refFilter > 0 ? filteredSorted[0] : undefined
+    const first = filteredSorted[0]
+    const axes =
+      first && filteredSorted.every((r) => r.IDref_divers === first.IDref_divers) ? first : undefined
     if (!axes) return COLUMN_DEFS
     return COLUMN_DEFS.map((c) => {
       if (c.key === 'variation1_label' && axes.sTypeVariation1 !== 'Aucun')
@@ -283,7 +294,7 @@ export function DiversStock() {
         return { ...c, label: variationTypeLabel(axes.sTypeVariation2) }
       return c
     })
-  }, [refFilter, filteredSorted])
+  }, [filteredSorted])
 
   const handleSort = useCallback((key: SortKey) => {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -333,52 +344,21 @@ export function DiversStock() {
 
   return (
     <div className="h-full flex flex-col gap-3 min-h-0">
-      {/* Toolbar — below sm the reference filter + checkbox are forced onto their
-          own full-width row (sm:contents dissolves the wrapper at sm+), so the
-          "Nouveau" action always keeps the top-right corner. */}
+      {/* Toolbar — search + Nouveau. The list only ever shows combinations that
+          hold stock, so there is no filter control left to place. */}
       <div className="flex-shrink-0 flex flex-wrap items-center gap-3">
-        <div className="relative order-1 flex-1 min-w-0">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Rechercher (référence, variation, unité…)"
-            className="h-9 w-full pl-8 pr-3 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
-
-        {/* Below sm this wrapper is a full-width row of its own and its children
-            stack (a w-56 combobox + the long checkbox label overflow a 345px
-            viewport side by side). At sm+ display:contents dissolves the wrapper
-            so both rejoin the toolbar flex with their own sm:order — desktop
-            pixels unchanged. */}
-        <div className="order-4 w-full flex flex-wrap items-center gap-3 sm:contents">
-          <div className="w-full sm:w-56 flex-shrink-0 sm:order-3">
-            <SearchableCombobox<{ IDref_divers: number; designation: string; lignes: number }>
-              options={refOptions}
-              value={refFilter}
-              onChange={setRefFilter}
-              getId={(r) => r.IDref_divers}
-              getPrimary={(r) => r.designation}
-              getSecondary={(r) => `${r.lignes} ligne${r.lignes > 1 ? 's' : ''}`}
-              placeholder="Toutes les références"
-            />
-          </div>
-
-          <label className="flex items-center gap-2 text-sm cursor-pointer select-none flex-shrink-0 sm:order-4">
-            <input
-              type="checkbox"
-              checked={hideZero}
-              onChange={(e) => setHideZero(e.target.checked)}
-              className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer"
-            />
-            <span className="whitespace-nowrap">Masquer les quantités nulles</span>
-          </label>
-        </div>
+        <SmartSearchInput<SearchFieldKey>
+          className="order-1 flex-1 min-w-0"
+          value={searchQuery}
+          onValueChange={setSearchQuery}
+          chips={searchChips}
+          onChipsChange={setSearchChips}
+          fields={SEARCH_FIELDS}
+          placeholder="Rechercher (référence, variation, unité…)"
+        />
 
         {canCreate && (
-          <div className="flex items-center gap-2 flex-shrink-0 order-2 sm:order-5">
+          <div className="flex items-center gap-2 flex-shrink-0 order-2">
             <Button size="sm" onClick={() => setCreateOpen(true)} title="Nouveau">
               <Plus className="h-3.5 w-3.5 sm:mr-1" />
               <span className="hidden sm:inline">Nouveau</span>
@@ -916,6 +896,14 @@ function StockDiversDrawer({
                       {fmtNum(delta, delta % 1 === 0 ? 0 : 2)} {detail.unite_label} par rapport au stock enregistré
                     </p>
                   )}
+                  {/* The list only holds combinations that carry stock, so a row
+                      the user has just emptied is gone from the table behind the
+                      drawer. Say it, rather than letting it look like a bug. */}
+                  {detail.quantite === 0 && (
+                    <p className="text-[11px] text-muted-foreground italic">
+                      Quantité nulle : cette combinaison n’apparaît plus dans la liste.
+                    </p>
+                  )}
                 </div>
               </DrawerCard>
 
@@ -1129,12 +1117,15 @@ function CreateStockDiversDialog({
     return Number.isFinite(v) ? v : NaN
   }, [quantite])
 
+  // A quantity is mandatory and cannot be 0: the list only shows combinations
+  // that carry stock, so a zero line would vanish the instant it is created.
   const canSubmit =
     IDref_divers > 0 &&
     (axis1 === 'Aucun' || IDVariation1 > 0) &&
     (axis2 === 'Aucun' || IDVariation2 > 0) &&
     quantite.trim() !== '' &&
-    !isNaN(parsedQuantite)
+    !isNaN(parsedQuantite) &&
+    parsedQuantite !== 0
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -1218,6 +1209,11 @@ function CreateStockDiversDialog({
               onChange={(e) => setQuantite(e.target.value)}
               className={inputClass}
             />
+            {parsedQuantite === 0 && quantite.trim() !== '' && (
+              <p className="mt-1 text-[11px] text-muted-foreground italic">
+                Une quantité nulle n’apparaîtrait pas dans la liste.
+              </p>
+            )}
           </div>
         </div>
 

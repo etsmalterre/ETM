@@ -5,7 +5,6 @@ import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import {
   Boxes,
-  Search,
   Loader2,
   AlertCircle,
   Pencil,
@@ -54,6 +53,11 @@ import { useHasPermission } from '@/contexts/PermissionsContext'
 import { useUser } from '@/contexts/UserContext'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
+import {
+  SmartSearchInput,
+  filterRowsByChips,
+  type SearchChip,
+} from '@/components/stock/SmartSearchInput'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -317,11 +321,9 @@ const SELECT_COL_WIDTH = '4%' // leading selection box column, edit mode only
 
 // ── Field-scoped search chips ──────────────────────────
 // The toolbar search accepts field-scoped chips ("Emplacement : BD") on top of
-// the free-text multi-term search. A chip restricts its term to ONE column —
-// the fix for "searching BD matches location BD but also every lot containing
-// bd". While typing, a suggestion popover offers one entry per field below;
-// picking one converts the typed term into a chip. Chips AND-combine with each
-// other and with the remaining free text.
+// the free-text multi-term search. Widget + chip semantics live in the shared
+// `SmartSearchInput` (see its header comment); this screen only declares which
+// of its columns can be scoped.
 const SEARCH_FIELDS = [
   { key: 'ref_fini', label: 'Référence' },
   { key: 'coloris_reference', label: 'Coloris' },
@@ -336,16 +338,6 @@ const SEARCH_FIELDS = [
   { key: 'observations', label: 'Observations' },
 ] as const
 type SearchFieldKey = (typeof SEARCH_FIELDS)[number]['key']
-
-/** A single active search criterion. field=null → match any column. */
-interface SearchChip {
-  field: SearchFieldKey | null
-  value: string
-}
-
-function searchFieldLabel(key: SearchFieldKey): string {
-  return SEARCH_FIELDS.find((f) => f.key === key)?.label ?? key
-}
 
 /** Lower-cased text columns of a row, for the any-column match. */
 function rowHaystacks(r: StockFiniRow): string[] {
@@ -386,12 +378,8 @@ function compareRows(a: StockFiniRow, b: StockFiniRow, key: SortKey): number {
 export function FinisStock() {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
-  // Field-scoped chips + suggestion popover state (see SEARCH_FIELDS above).
-  const [searchChips, setSearchChips] = useState<SearchChip[]>([])
-  const [suggestOpen, setSuggestOpen] = useState(false)
-  const [suggestIdx, setSuggestIdx] = useState(0)
-  const searchWrapRef = useRef<HTMLDivElement>(null)
-  const searchInputRef = useRef<HTMLInputElement>(null)
+  // Field-scoped chips (see SEARCH_FIELDS above).
+  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
   const [hideShipped, setHideShipped] = useState(true)
   const [sort, setSort] = useState<SortState>({ key: 'date_saisie', dir: 'desc' })
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -429,23 +417,12 @@ export function FinisStock() {
   const deferredSearch = useDeferredValue(searchQuery)
 
   const filteredSorted = useMemo(() => {
-    let out = rows ?? []
-    // Field-scoped chips first: each chip ANDs, restricted to its column
-    // (field=null chips match any column, like a locked-in free term).
-    for (const chip of searchChips) {
-      const v = chip.value.toLowerCase()
-      out = out.filter((r) => {
-        if (chip.field) {
-          const cell = r[chip.field]
-          return typeof cell === 'string' && cell.toLowerCase().includes(v)
-        }
-        return rowHaystacks(r).some((h) => h.includes(v))
-      })
-    }
-    // Then the free text: split on whitespace and require EVERY term to match
+    // Field-scoped chips first (each chip ANDs, restricted to its column),
+    // then the free text: split on whitespace and require EVERY term to match
     // SOME column (AND across terms, OR across columns). This lets one search
     // combine criteria from different columns — e.g. "029A marine" matches a
     // row whose ref_fini is "029A" AND whose coloris is "marine".
+    let out = filterRowsByChips(rows ?? [], searchChips, rowHaystacks)
     const terms = deferredSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length > 0) {
       out = out.filter((r) => {
@@ -459,31 +436,6 @@ export function FinisStock() {
     })
     return out
   }, [rows, deferredSearch, searchChips, sort])
-
-  // Close the search suggestion popover on any outside click.
-  useEffect(() => {
-    if (!suggestOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (!searchWrapRef.current?.contains(e.target as Node)) setSuggestOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [suggestOpen])
-
-  // Convert the currently-typed term into a chip (field=null → any column).
-  const addSearchChip = useCallback((field: SearchFieldKey | null) => {
-    const value = searchQuery.trim()
-    if (!value) return
-    setSearchChips((prev) => [...prev, { field, value }])
-    setSearchQuery('')
-    setSuggestOpen(false)
-    setSuggestIdx(0)
-    searchInputRef.current?.focus()
-  }, [searchQuery])
-
-  const removeSearchChip = useCallback((idx: number) => {
-    setSearchChips((prev) => prev.filter((_, i) => i !== idx))
-  }, [])
 
   const handleSort = useCallback((key: SortKey) => {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -689,127 +641,15 @@ export function FinisStock() {
             </Badge>
           </div>
         )}
-        <div ref={searchWrapRef} className="relative order-1 sm:order-2 flex-1 min-w-0">
-          {/* top-2.5 (not top-1/2) so the icon stays on the first row when chips wrap */}
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
-          {/* The wrapper is the single focus indicator (thin ring); the inner
-              input suppresses the app-wide :focus-visible gold ring, which
-              otherwise draws a second ring inside this one. */}
-          <div
-            className="min-h-9 w-full pl-8 pr-3 py-[3px] rounded-md border border-input bg-white flex flex-wrap items-center gap-1 cursor-text focus-within:ring-1 focus-within:ring-ring"
-            onClick={() => searchInputRef.current?.focus()}
-          >
-            {searchChips.map((c, i) => (
-              <span
-                key={i}
-                className="inline-flex items-center gap-0.5 pl-2 pr-0.5 py-0.5 rounded bg-zinc-100 border border-border/60 text-xs max-w-full"
-              >
-                <span className="truncate">
-                  {c.field ? (
-                    <>
-                      <span className="text-muted-foreground">{searchFieldLabel(c.field)} : </span>
-                      <span className="font-medium text-foreground">{c.value}</span>
-                    </>
-                  ) : (
-                    <span className="font-medium text-foreground">{c.value}</span>
-                  )}
-                </span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    removeSearchChip(i)
-                  }}
-                  className="rounded-sm p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive transition-colors"
-                  title="Retirer ce critère"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value)
-                setSuggestOpen(e.target.value.trim().length > 0)
-                setSuggestIdx(0)
-              }}
-              onFocus={() => {
-                if (searchQuery.trim()) setSuggestOpen(true)
-              }}
-              onKeyDown={(e) => {
-                const count = SEARCH_FIELDS.length + 1
-                if (suggestOpen && searchQuery.trim()) {
-                  // 'Down'/'Up' are the legacy names some environments emit
-                  if (e.key === 'ArrowDown' || e.key === 'Down') {
-                    e.preventDefault()
-                    setSuggestIdx((i) => (i + 1) % count)
-                    return
-                  }
-                  if (e.key === 'ArrowUp' || e.key === 'Up') {
-                    e.preventDefault()
-                    setSuggestIdx((i) => (i - 1 + count) % count)
-                    return
-                  }
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    addSearchChip(suggestIdx === 0 ? null : SEARCH_FIELDS[suggestIdx - 1].key)
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    setSuggestOpen(false)
-                    return
-                  }
-                }
-                if (e.key === 'Backspace' && searchQuery === '' && searchChips.length > 0) {
-                  removeSearchChip(searchChips.length - 1)
-                }
-              }}
-              placeholder={
-                searchChips.length > 0
-                  ? 'Ajouter un critère…'
-                  : 'Rechercher (réf, coloris, contexture, lot, numéro, client, magasin, emplacement, observations…)'
-              }
-              className="flex-1 min-w-[140px] h-7 text-sm bg-transparent focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
-            />
-          </div>
-
-          {/* Suggestion popover — one row per scoped field, "toutes les colonnes" first */}
-          {suggestOpen && searchQuery.trim() !== '' && (
-            <div className="absolute left-0 right-0 top-full mt-1 z-40 rounded-md border border-border/60 bg-white shadow-lg overflow-hidden">
-              <div className="max-h-64 overflow-y-auto py-1 scrollbar-transparent">
-                <button
-                  type="button"
-                  onClick={() => addSearchChip(null)}
-                  onMouseEnter={() => setSuggestIdx(0)}
-                  className={cn(
-                    'w-full px-3 py-1.5 text-sm text-left transition-colors flex items-center gap-1.5',
-                    suggestIdx === 0 ? 'bg-accent/10 text-accent' : 'hover:bg-zinc-100',
-                  )}
-                >
-                  <Search className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
-                  <span className="truncate">« {searchQuery.trim()} » — toutes les colonnes</span>
-                </button>
-                {SEARCH_FIELDS.map((f, i) => (
-                  <button
-                    key={f.key}
-                    type="button"
-                    onClick={() => addSearchChip(f.key)}
-                    onMouseEnter={() => setSuggestIdx(i + 1)}
-                    className={cn(
-                      'w-full px-3 py-1.5 text-sm text-left transition-colors truncate',
-                      suggestIdx === i + 1 ? 'bg-accent/10 text-accent' : 'hover:bg-zinc-100',
-                    )}
-                  >
-                    <span className="text-muted-foreground">{f.label} :</span> {searchQuery.trim()}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <SmartSearchInput<SearchFieldKey>
+          className="order-1 sm:order-2 flex-1 min-w-0"
+          value={searchQuery}
+          onValueChange={setSearchQuery}
+          chips={searchChips}
+          onChipsChange={setSearchChips}
+          fields={SEARCH_FIELDS}
+          placeholder="Rechercher (réf, coloris, contexture, lot, numéro, client, magasin, emplacement, observations…)"
+        />
 
         <label className="flex items-center gap-2 text-sm cursor-pointer select-none flex-shrink-0 order-4 sm:order-3 w-full sm:w-auto">
           <input

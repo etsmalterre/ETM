@@ -1932,6 +1932,32 @@ A single horizontal flex row with:
 </div>
 ```
 
+#### 27.2bis Field-scoped search chips (`SmartSearchInput`)
+
+When free text over every column is too blunt — searching `BD` matches the emplacement BD *and* every lot containing "bd" — the plain input above is replaced by the shared **`apps/web/src/components/stock/SmartSearchInput.tsx`**. Typing opens a suggestion popover with one row per scoped field ("toutes les colonnes" first); picking one turns the typed term into a **chip** (`Emplacement : BD`) that restricts it to that column. Chips AND-combine with each other and with the remaining free text; ↑/↓ move the suggestion, Enter commits, Escape closes, Backspace on an empty input removes the last chip.
+
+```tsx
+const SEARCH_FIELDS = [{ key: 'lot', label: 'Lot' }, { key: 'emplacement', label: 'Emplacement' }] as const
+type SearchFieldKey = (typeof SEARCH_FIELDS)[number]['key']
+const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
+
+<SmartSearchInput<SearchFieldKey>
+  className="order-1 sm:order-2 flex-1 min-w-0"   // the toolbar slot classes live here, not inside
+  value={searchQuery} onValueChange={setSearchQuery}
+  chips={searchChips} onChipsChange={setSearchChips}
+  fields={SEARCH_FIELDS}
+  placeholder="Rechercher (réf, coloris, lot, emplacement…)"
+/>
+
+// In the filter memo — chips first, then the free terms:
+let out = filterRowsByChips(rows ?? [], searchChips, rowHaystacks)
+```
+
+Rules:
+- **Field keys must be real row keys** (`K extends Extract<keyof T, string>`), because `filterRowsByChips` reads the cell directly. `rowHaystacks(row)` supplies the lower-cased columns for the any-column match.
+- **A scoped chip replaces a filter dropdown.** Divers › Stock dropped its "Toutes les références" combobox for a `Référence :` chip — one control instead of two, and it searches. Prefer this over adding a new toolbar select whenever the filter is just "narrow to one value of a column".
+- Consumers: `FinisStock.tsx`, `DiversStock.tsx`. **Never fork the widget** — add a field to the screen's `SEARCH_FIELDS`, or a prop to the shared component.
+
 ### 27.3 Split header / body table (the alignment trick)
 
 Tables that scroll inside a fixed-height card need a non-scrolling header above a scrolling body. Use **two separate `<table>` elements** with **identical `<colgroup>` definitions** and `table-layout: fixed`. The shared `colgroup` is what keeps the columns aligned.
