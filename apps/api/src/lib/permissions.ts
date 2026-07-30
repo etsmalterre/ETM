@@ -11,6 +11,17 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isKnownPermissionKey, type PermissionKey } from './permission-keys.js'
+import { isScreenAccessKey } from './screen-keys.js'
+
+/** A key as stored: either an action key from the catalog, or a screen-access
+ *  key (menu grant / screen hide — see screen-keys.ts). Both live flat in the
+ *  same per-user array. */
+export type StoredKey = string
+
+/** Storable = in the action catalog OR a valid screen-access key. */
+function isStorableKey(k: string): boolean {
+  return isKnownPermissionKey(k) || isScreenAccessKey(k)
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -20,7 +31,7 @@ const FILE_PATH = path.join(DATA_DIR, 'permissions.json')
 interface PermissionsFile {
   version: 1
   /** keyed by IDutilisateur as a string (JSON object keys must be strings) */
-  users: Record<string, PermissionKey[]>
+  users: Record<string, StoredKey[]>
 }
 
 const EMPTY: PermissionsFile = { version: 1, users: {} }
@@ -62,7 +73,7 @@ async function savePermissions(file: PermissionsFile): Promise<void> {
 
 /** Returns the list of permission keys granted to a user (empty if none).
  *  Does NOT apply the admin bypass — call userHasPermission for that. */
-export async function getUserPermissions(userId: number): Promise<PermissionKey[]> {
+export async function getUserPermissions(userId: number): Promise<StoredKey[]> {
   const file = await loadPermissions()
   const list = file.users[String(userId)]
   return list ? [...list] : []
@@ -72,13 +83,14 @@ export async function getUserPermissions(userId: number): Promise<PermissionKey[
  *  before persisting. Empty array clears all permissions for the user. */
 export async function setUserPermissions(
   userId: number,
-  keys: readonly PermissionKey[],
+  keys: readonly StoredKey[],
 ): Promise<void> {
-  // Defence in depth: filter out any keys that aren't in the catalog.
-  const valid = keys.filter((k) => isKnownPermissionKey(k))
+  // Defence in depth: filter out any keys that are neither in the action
+  // catalog nor a valid screen-access key.
+  const valid = keys.filter((k) => isStorableKey(k))
   // Dedupe while preserving order.
   const seen = new Set<string>()
-  const cleaned: PermissionKey[] = []
+  const cleaned: StoredKey[] = []
   for (const k of valid) {
     if (seen.has(k)) continue
     seen.add(k)
@@ -105,9 +117,9 @@ export async function userHasPermission(
 }
 
 /** Read all stored permissions (used by the admin /users endpoint). */
-export async function getAllPermissions(): Promise<Record<number, PermissionKey[]>> {
+export async function getAllPermissions(): Promise<Record<number, StoredKey[]>> {
   const file = await loadPermissions()
-  const out: Record<number, PermissionKey[]> = {}
+  const out: Record<number, StoredKey[]> = {}
   for (const [k, v] of Object.entries(file.users)) {
     const id = Number(k)
     if (Number.isFinite(id)) out[id] = [...v]

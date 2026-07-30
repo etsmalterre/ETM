@@ -2,13 +2,13 @@ import { useMemo } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { mainNavigation, dashboardItem, settingsItem, type MainMenuItem } from '@/config/navigation'
+import { dashboardItem, settingsItem, type MainMenuItem } from '@/config/navigation'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ContextMenu, type ContextMenuItem } from '@/components/ui/context-menu'
 import { useUser } from '@/contexts/UserContext'
 import { usePermissions } from '@/contexts/PermissionsContext'
-import { useSubmenuFilter } from '@/hooks/useSubmenuFilter'
+import { useVisibleMainNavigation } from '@/hooks/useSubmenuFilter'
 
 interface SidebarProps {
   collapsed: boolean
@@ -89,7 +89,6 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
   const navigate = useNavigate()
   useUser() // ensures the sidebar re-renders when the user context updates
   const { isEffectiveAdmin } = usePermissions()
-  const filterSubmenus = useSubmenuFilter()
 
   const handleNavigate = (href: string) => {
     navigate(href)
@@ -107,12 +106,11 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
     return { ...settingsItem, submenus: visible }
   }, [isEffectiveAdmin])
 
-  // Same treatment for the main items: an entry the user cannot open must not
-  // appear in the right-click context menu (nor be the item's landing target).
-  const visibleMain = useMemo<MainMenuItem[]>(
-    () => mainNavigation.map((item) => ({ ...item, submenus: filterSubmenus(item.submenus) })),
-    [filterSubmenus],
-  )
+  // Same treatment for the main items: a menu the user wasn't granted, or one
+  // whose every screen is hidden, disappears entirely — and the ones that stay
+  // carry only the screens the user may open, so the right-click context menu
+  // and the item's landing target can't point at a forbidden route.
+  const visibleMain = useVisibleMainNavigation()
 
   return (
     <aside

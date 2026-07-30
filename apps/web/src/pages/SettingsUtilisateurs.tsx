@@ -6,12 +6,13 @@
 // Permissions are toggled inline (no edit mode). Each toggle immediately PUTs
 // the new grant set to /api/permissions/users/:id and refreshes the list.
 
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, Loader2, AlertCircle, Shield, Check, Mail, Save, Bell,
   Image as ImageIcon, PenLine, Trash2, User as UserIcon, ChevronDown,
+  Monitor, Copy,
 } from 'lucide-react'
 import { apiFetch, API_URL } from '@/lib/api'
 import { useUser } from '@/contexts/UserContext'
@@ -22,7 +23,10 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { SignaturePreview } from '@/components/ui/signature-preview'
+import { SearchableCombobox } from '@/components/ui/popover-select'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { userPhotoUrl } from '@/components/profile/ProfileModal'
+import { mainNavigation, menuAccessKey, screenHideKey } from '@/config/navigation'
 import { cn } from '@/lib/utils'
 
 // ── Types ──────────────────────────────────────────────
@@ -127,10 +131,11 @@ export function SettingsUtilisateurs() {
   // When an admin impersonates another user, this drops to false and the
   // route guard below redirects to /. The admin must switch back to
   // themselves first via the header avatar to regain access.
-  const { isEffectiveAdmin: viewerIsAdmin } = usePermissions()
+  const { isEffectiveAdmin: viewerIsAdmin, isLoading: permsLoading } = usePermissions()
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [copyOpen, setCopyOpen] = useState(false)
 
   // ── Data ───────────────────────────────────────
   const { data: users, isLoading, isError, error } = useQuery<PermissionUser[]>({
@@ -247,15 +252,32 @@ export function SettingsUtilisateurs() {
     return users.find((u) => u.IDutilisateur === selectedId) ?? null
   }, [users, selectedId])
 
+  // Screen access needs to add/remove several keys at once (granting a menu
+  // also clears its screens' hide keys), so it edits the whole set rather than
+  // going through the single-key `onToggle` above.
+  const applyGranted = useCallback(
+    (mutateSet: (s: Set<string>) => void) => {
+      if (!selected) return
+      const next = new Set(selected.granted)
+      mutateSet(next)
+      updateMut.mutate({ id: selected.IDutilisateur, granted: Array.from(next) })
+    },
+    [selected, updateMut],
+  )
+
   // ── Admin guard (belt-and-suspenders) ──────────
   // Sidebar already hides the link, but a direct URL hit needs page-level
-  // protection too. Wait until the user context has loaded before deciding,
-  // otherwise a brief flicker would redirect admins to /.
-  if (!user) return null
+  // protection too. Wait until BOTH the user context and the permission fetch
+  // have settled before deciding: /permissions/me resolves after /auth/me, and
+  // deciding on the intermediate state redirected the admin to / on every cold
+  // load of this URL (a bookmark, a page refresh) — the link only worked when
+  // reached by clicking through the sidebar, with permissions already in hand.
+  if (!user || permsLoading) return null
   if (!viewerIsAdmin) return <Navigate to="/" replace />
 
   // ── Render ─────────────────────────────────────
   return (
+    <>
     <MasterDetailLayout
       hasSelection={selectedId !== null}
       onBack={() => setSelectedId(null)}
@@ -312,9 +334,30 @@ export function SettingsUtilisateurs() {
             }
             updateMut.mutate({ id: selected.IDutilisateur, granted: Array.from(current) })
           }}
+          onGrantedChange={applyGranted}
+          onCopyRights={() => setCopyOpen(true)}
         />
       }
     />
+
+    {/* Copy every right from another user — the pragmatic stand-in for roles
+        on a small team: no shared object to drift, just a starting point the
+        admin then adjusts. */}
+    <CopyRightsDialog
+      open={copyOpen}
+      onClose={() => setCopyOpen(false)}
+      target={selected}
+      users={users ?? []}
+      isSaving={updateMut.isPending}
+      onConfirm={(source) => {
+        if (!selected) return
+        updateMut.mutate(
+          { id: selected.IDutilisateur, granted: [...source.granted] },
+          { onSuccess: () => setCopyOpen(false) },
+        )
+      }}
+    />
+    </>
   )
 }
 
@@ -450,8 +493,12 @@ function DetailHeader({ user }: { user: PermissionUser | null }) {
 
 // ── Center: Detail Body (Profil / Permissions master tabs) ──────────
 
+// Écrans sits before Permissions: which screens exist for this user is the
+// question you answer first — an action permission on a screen they can't open
+// is dead weight.
 const MAIN_TABS = [
   { key: 'profil', label: 'Profil', icon: UserIcon },
+  { key: 'ecrans', label: 'Écrans', icon: Monitor },
   { key: 'permissions', label: 'Permissions', icon: Shield },
   { key: 'notifications', label: 'Notifications', icon: Bell },
 ] as const
@@ -461,6 +508,7 @@ function DetailBody({
   user, profile, currentEmail, onSaveEmail, isSavingEmail, emailSaveError,
   keys, isUpdating, onToggle,
   notifKeys, subscribed, isUpdatingNotif, onToggleNotif,
+  onGrantedChange, onCopyRights,
 }: {
   user: PermissionUser | null
   profile: UserProfileRow | null
@@ -475,6 +523,8 @@ function DetailBody({
   subscribed: string[]
   isUpdatingNotif: boolean
   onToggleNotif: (key: string, nextValue: boolean) => void
+  onGrantedChange: (mutateSet: (s: Set<string>) => void) => void
+  onCopyRights: () => void
 }) {
   const [activeTab, setActiveTab] = useState<MainTab>('profil')
 
@@ -543,6 +593,21 @@ function DetailBody({
             </button>
           )
         })}
+        {/* Copies profil-independent rights (écrans + permissions) from
+            another user — applies whatever tab is open, hence its place in
+            the tab strip rather than inside one tab. */}
+        {!isVin && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            title="Copier tous les droits d’un autre utilisateur"
+            onClick={onCopyRights}
+          >
+            <Copy className="h-3.5 w-3.5 mr-1.5" />
+            Copier les droits de…
+          </Button>
+        )}
       </div>
 
       {/* px-1/pb-1 keep focus rings and hover borders clear of the overflow clip */}
@@ -565,6 +630,15 @@ function DetailBody({
               currentEmail={currentEmail}
             />
           </>
+        )}
+
+        {activeTab === 'ecrans' && (
+          <EcransTab
+            isVin={isVin}
+            isUpdating={isUpdating}
+            grantedSet={grantedSet}
+            onGrantedChange={onGrantedChange}
+          />
         )}
 
         {activeTab === 'permissions' && (
@@ -651,6 +725,251 @@ function DetailBody({
         )}
       </div>
     </div>
+  )
+}
+
+// ── Écrans tab: the navigation tree as a checkbox tree ─────────────────
+//
+// Built from `mainNavigation` itself, so it can never drift from the real nav
+// (and the menu icons come for free). Storage runs in two directions — a menu
+// is a grant, a screen is a hide — but the UI shows plain "visible" checkboxes
+// in both cases, so the admin never has to think about it. See the header
+// comment of apps/api/src/lib/screen-keys.ts for why.
+
+function EcransTab({
+  isVin, isUpdating, grantedSet, onGrantedChange,
+}: {
+  isVin: boolean
+  isUpdating: boolean
+  grantedSet: Set<string>
+  onGrantedChange: (mutateSet: (s: Set<string>) => void) => void
+}) {
+  const menuOn = (href: string) => isVin || grantedSet.has(menuAccessKey(href))
+  const screenOn = (href: string) => isVin || !grantedSet.has(screenHideKey(href))
+
+  const grantedMenus = mainNavigation.filter((m) => menuOn(m.href)).length
+
+  // Granting a menu means "the whole menu": any leftover per-screen hides are
+  // cleared, so re-granting never resurrects an invisible exclusion the admin
+  // set months ago. Revoking clears them too — inert keys just clutter the file.
+  const toggleMenu = (href: string, next: boolean) => {
+    const item = mainNavigation.find((m) => m.href === href)
+    onGrantedChange((s) => {
+      if (next) s.add(menuAccessKey(href))
+      else s.delete(menuAccessKey(href))
+      for (const sub of item?.submenus ?? []) s.delete(screenHideKey(sub.href))
+    })
+  }
+
+  const toggleScreen = (href: string, next: boolean) => {
+    onGrantedChange((s) => {
+      if (next) s.delete(screenHideKey(href))
+      else s.add(screenHideKey(href))
+    })
+  }
+
+  const setAllMenus = (next: boolean) => {
+    onGrantedChange((s) => {
+      for (const m of mainNavigation) {
+        if (next) s.add(menuAccessKey(m.href))
+        else s.delete(menuAccessKey(m.href))
+        for (const sub of m.submenus) s.delete(screenHideKey(sub.href))
+      }
+    })
+  }
+
+  return (
+    <>
+      {isVin && (
+        <div className="flex items-start gap-3 p-3 rounded-lg border border-accent/40 bg-accent/[0.06]">
+          <Shield className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-bold text-primary">Cet utilisateur est administrateur</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Les administrateurs voient tous les menus et tous les écrans, indépendamment des
+              cases ci-dessous.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk row — no card frame: it acts on the cards below rather than
+          being one of them. */}
+      <div className="flex items-center gap-2 px-1">
+        <p className="text-xs text-muted-foreground">
+          {grantedMenus} menu{grantedMenus !== 1 ? 's' : ''} sur {mainNavigation.length}
+        </p>
+        {!isVin && (
+          <div className="flex items-center gap-1 ml-auto">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs text-accent hover:text-accent hover:bg-accent/10"
+              disabled={isUpdating}
+              onClick={() => setAllMenus(true)}
+            >
+              Tout
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs text-muted-foreground"
+              disabled={isUpdating}
+              onClick={() => setAllMenus(false)}
+            >
+              Aucun
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* One card per menu, read like the permission category cards of the
+          neighbouring tab — except the disclosure IS the menu toggle: a menu
+          that isn't granted has no screens to show. */}
+      {mainNavigation.map((item) => {
+        const Icon = item.icon
+        const on = menuOn(item.href)
+        const visibleScreens = on ? item.submenus.filter((s) => screenOn(s.href)).length : 0
+        return (
+          <div key={item.id} className="rounded-lg border border-border/60 bg-white shadow-sm">
+            <label
+              className={cn(
+                'w-full flex items-center gap-3 px-4 py-2.5 bg-zinc-100/80 transition-colors',
+                on ? 'border-b border-border/60 rounded-t-lg' : 'rounded-lg',
+                isVin || isUpdating ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-zinc-200/60',
+              )}
+            >
+              <ToggleSwitch
+                checked={on}
+                disabled={isVin || isUpdating}
+                onChange={(next) => toggleMenu(item.href, next)}
+              />
+              <Icon className="h-4 w-4 text-primary flex-shrink-0" />
+              <p className="text-xs font-bold text-primary uppercase tracking-wide">{item.title}</p>
+              <Badge variant="secondary" className="text-xs ml-auto tabular-nums">
+                {visibleScreens}/{item.submenus.length}
+              </Badge>
+            </label>
+            {on && item.submenus.length > 0 && (
+              <div className="divide-y divide-border/60">
+                {item.submenus.map((sub) => (
+                  <label
+                    key={sub.href}
+                    // pl-11 sets the screen toggles in from the menu toggle
+                    // above, so the tree reads as one level of nesting.
+                    className={cn(
+                      'flex items-center gap-3 pl-11 pr-4 py-2.5 transition-colors',
+                      isVin || isUpdating ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-zinc-50',
+                    )}
+                  >
+                    <ToggleSwitch
+                      checked={screenOn(sub.href)}
+                      disabled={isVin || isUpdating}
+                      onChange={(next) => toggleScreen(sub.href, next)}
+                    />
+                    <p className="flex-1 min-w-0 text-sm font-medium text-foreground truncate">
+                      {sub.title}
+                    </p>
+                    {/* An entry with its own permission key stays gated by it
+                        even when the screen is visible here. */}
+                    {sub.permission && (
+                      <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">
+                        droit dédié
+                      </Badge>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+// ── "Copier les droits de…" dialog ────────────────────────────────────
+// Overwrites the target's whole key set with the source's. Deliberately not a
+// role: nothing links the two users afterwards, so a later change to one never
+// silently changes the other.
+
+function CopyRightsDialog({
+  open, onClose, target, users, isSaving, onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  target: PermissionUser | null
+  users: PermissionUser[]
+  isSaving: boolean
+  onConfirm: (source: PermissionUser) => void
+}) {
+  const [sourceId, setSourceId] = useState(0)
+
+  // Reset the picker each time the dialog opens or the target changes, so a
+  // previous choice can't be applied to the wrong person.
+  useEffect(() => { setSourceId(0) }, [open, target?.IDutilisateur])
+
+  const candidates = useMemo(
+    () => users.filter((u) => u.IDutilisateur !== target?.IDutilisateur && !isVincent(u)),
+    [users, target?.IDutilisateur],
+  )
+  const source = candidates.find((u) => u.IDutilisateur === sourceId) ?? null
+
+  if (!target) return null
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose() }}>
+      <DialogContent className="max-w-md" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Copy className="h-5 w-5 text-accent" />
+            Copier les droits
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Copier depuis</label>
+            <SearchableCombobox
+              options={candidates}
+              value={sourceId}
+              onChange={setSourceId}
+              getId={(u) => u.IDutilisateur}
+              getPrimary={(u) => displayName(u)}
+              getSecondary={(u) => roleLabel(u.roleHint) ?? undefined}
+              placeholder="Rechercher un utilisateur"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Les écrans, les permissions et les droits du tableau de bord de{' '}
+            {source ? <strong>{displayName(source)}</strong> : 'l’utilisateur choisi'} seront
+            recopiés sur <strong>{displayName(target)}</strong>. Les deux comptes restent
+            indépendants ensuite : modifier l’un ne modifiera pas l’autre.
+          </p>
+          <div className="flex items-start gap-2 p-2.5 rounded-md border border-amber-500/30 bg-amber-500/10">
+            <AlertCircle className="h-3.5 w-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-800">
+              Les droits actuels de {displayName(target)} seront remplacés
+              {target.granted.length > 0 ? ` (${target.granted.length} actuellement)` : ''}.
+              Le profil (email, photo, signature) et les abonnements aux notifications ne sont
+              pas concernés.
+            </p>
+          </div>
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>Annuler</Button>
+          <Button
+            onClick={() => { if (source) onConfirm(source) }}
+            disabled={!source || isSaving}
+          >
+            {isSaving ? (
+              <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Copie…</>
+            ) : (
+              <><Copy className="h-3.5 w-3.5 mr-1.5" />Copier les droits</>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

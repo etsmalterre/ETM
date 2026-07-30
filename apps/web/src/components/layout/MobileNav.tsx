@@ -2,11 +2,11 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { mainNavigation, dashboardItem, settingsItem, type MainMenuItem } from '@/config/navigation'
+import { dashboardItem, settingsItem, type MainMenuItem } from '@/config/navigation'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { useSubmenuFilter } from '@/hooks/useSubmenuFilter'
+import { useVisibleMainNavigation } from '@/hooks/useSubmenuFilter'
 
 interface MobileNavProps {
   open: boolean
@@ -14,7 +14,7 @@ interface MobileNavProps {
 }
 
 export function MobileNav({ open, onOpenChange }: MobileNavProps) {
-  const filterSubmenus = useSubmenuFilter()
+  const visibleMain = useVisibleMainNavigation()
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="left" className="w-80 p-0 bg-gradient-to-b from-primary via-primary/95 to-primary/90 border-r-0">
@@ -38,10 +38,10 @@ export function MobileNav({ open, onOpenChange }: MobileNavProps) {
             <div className="my-2 border-t border-white/10" />
 
             {/* Main navigation */}
-            {mainNavigation.map((item) => (
+            {visibleMain.map((item) => (
               <MobileNavItem
                 key={item.id}
-                item={{ ...item, submenus: filterSubmenus(item.submenus) }}
+                item={item}
                 onNavigate={() => onOpenChange(false)}
               />
             ))}

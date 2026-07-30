@@ -17,7 +17,8 @@ import {
   setUserPermissions,
   getAllPermissions,
 } from '../lib/permissions.js'
-import { PERMISSION_KEYS, isKnownPermissionKey, type PermissionKey } from '../lib/permission-keys.js'
+import { PERMISSION_KEYS, isKnownPermissionKey } from '../lib/permission-keys.js'
+import { SCREEN_MENUS, allMenuAccessKeys, isScreenAccessKey } from '../lib/screen-keys.js'
 
 export const permissionsRouter: RouterType = Router()
 
@@ -56,10 +57,24 @@ permissionsRouter.get('/me', async (req: Request, res: Response) => {
   }
   const isAdmin = req.adminId !== undefined
   const effective = isEffectiveAdmin(req)
-  const granted: PermissionKey[] = effective
-    ? PERMISSION_KEYS.map((p) => p.key)
+  // For an effective admin, report every action key plus every MENU GRANT.
+  // Screen HIDE keys are deliberately never reported: they are negative keys,
+  // so handing them to the admin would hide every screen from them. The
+  // frontend also reads hide keys through hasRaw() (no bypass) for the same
+  // reason — see PermissionsContext.
+  const granted: string[] = effective
+    ? [...PERMISSION_KEYS.map((p) => p.key), ...allMenuAccessKeys()]
     : await getUserPermissions(req.userId)
   res.json({ isAdmin, isEffectiveAdmin: effective, granted })
+})
+
+// ── GET /api/permissions/screens ───────────────────────
+// Public catalog of the navigation tree the screen-access keys are derived
+// from. The admin UI builds its tree from the web's own navigation.ts (so it
+// can never drift from the real nav); this endpoint exists so the stored keys
+// can be inspected/validated from outside the web app.
+permissionsRouter.get('/screens', (_req: Request, res: Response) => {
+  res.json(SCREEN_MENUS)
 })
 
 // ── GET /api/permissions/keys ──────────────────────────
@@ -135,8 +150,11 @@ permissionsRouter.put('/users/:id', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'invalid body', details: parsed.error.issues })
     return
   }
-  // Filter to known keys — defence in depth (the lib also filters).
-  const keys = parsed.data.granted.filter(isKnownPermissionKey)
+  // Filter to known keys — defence in depth (the lib also filters). Both
+  // axes are accepted: action keys from the catalog, and screen-access keys.
+  const keys = parsed.data.granted.filter(
+    (k) => isKnownPermissionKey(k) || isScreenAccessKey(k),
+  )
   try {
     await setUserPermissions(id, keys)
     res.json({ IDutilisateur: id, granted: await getUserPermissions(id) })

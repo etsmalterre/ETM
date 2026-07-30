@@ -10,6 +10,61 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/permissions
+**Accès par écran : chaque utilisateur ne voit que les menus et écrans dont il a besoin.**
+Deuxième axe de droits, à côté du catalogue d'actions, réglé dans le nouvel onglet **Écrans**
+de Paramètres › Utilisateurs. Demande d'origine : Laetitia n'a pas besoin de Sous-traitants,
+Transferts, Fils, Tombé de métier, Divers, Rapports ni Réseau.
+
+- **Deux directions, volontairement** — « on accorde des menus ; dans un menu accordé on peut
+  retirer des écrans ». Un **menu est un droit accordé, fermé par défaut** (`screen_<menu>`) ;
+  un **écran dans un menu accordé est un masquage** (`hide_<menu>_<écran>`). Une liste blanche
+  intégrale rendrait chaque écran livré ensuite invisible pour toute l'entreprise jusqu'à ce
+  qu'un admin le coche utilisateur par utilisateur — corvée hebdomadaire sur ce projet. Accorder
+  le menu couvre ses écrans futurs ; un écran réellement confidentiel reçoit son propre droit
+  d'action (`view_rapport_finance` est le précédent). Les clés dérivent du href, donc aucun
+  manifeste ne contient de chaîne écrite à la main.
+- **Un menu dont plus aucun écran n'est visible disparaît** — règle que le menu Paramètres
+  suivait déjà quand sa seule entrée était `adminOnly`. Accorder un menu **efface les masquages
+  de ses écrans**, pour qu'une exclusion posée des mois plus tôt ne ressuscite jamais.
+- ⚠️ **Les clés de masquage sont des clés négatives : les lire via `hasRaw()`, jamais `has()`.**
+  `has()` répond vrai pour *toute* clé quand l'utilisateur est admin effectif — lire un masquage
+  à travers lui masquerait l'application entière à l'admin. `PermissionsContext` expose
+  `hasRaw` (appartenance brute, sans bypass) exactement pour ça, `GET /permissions/me` ne
+  renvoie jamais de clé de masquage à un admin effectif, et `navigation.test.ts` fixe le
+  comportement.
+- **L'application est filtrée en un seul point pour les routes** : `AppShell` (`useScreenGuard`)
+  est le parent de toutes les pages, donc un garde y remplace 40 wrappers de routes. Il porte
+  aussi la **redirection d'index de menu** (`/clients` → le premier écran réellement ouvrable ;
+  le `<Navigate>` statique du router ne peut pas le savoir), affiche un spinner tant que
+  `/permissions/me` est en vol, et ne filtre jamais `/`, les autres tableaux de bord ni
+  `/settings`.
+- **C'est un rideau, pas un verrou** — décision produit assumée : les endpoints sont partagés
+  entre écrans (lookups clients, `/stock/ecru/suivi` qui alimente un widget…), donc les filtrer
+  par écran casserait des fonctionnalités sans rapport. La confidentialité reste portée par les
+  droits d'action vérifiés côté serveur. `/api/rapports/*` et `/api/transferts/*` sont les
+  candidats simples si on veut durcir, chacun étant une famille de routes mono-écran.
+- **Reprise de l'existant** : `seed-screen-access.ts --write` accorde à chaque utilisateur les
+  clés de menu qui lui manquent, donc personne ne perd rien le jour du déploiement.
+  **À lancer sur le serveur** (`apps/api/data/permissions.json` est gitignoré et vit à côté de
+  l'API qui tourne). Idempotent, sauvegarde le fichier d'abord, et c'est aussi la façon de
+  donner un **nouveau menu** à tout le monde d'un coup. Il traite **toutes les lignes
+  `utilisateur`, pas la liste dédupliquée** : plusieurs lignes existent par personne
+  (Laetitia #12 et #15, Vincent #1 et #18) et les droits sont stockés par `IDutilisateur`.
+- **« Copier les droits de… »** recopie l'ensemble des clés d'un autre utilisateur — écrans et
+  actions. C'est le substitut assumé aux rôles/groupes sur une petite équipe : rien ne relie
+  les deux comptes ensuite, donc aucun objet partagé ne peut dériver. Il absorbe aussi la
+  charge d'intégration créée par le « fermé par défaut », les utilisateurs arrivant de la table
+  WinDev `utilisateur` sans aucun menu.
+- **Garde-fous** : `check-screen-access.ts` diffe le manifeste API contre `navigation.ts` (un
+  menu ajouté à la nav mais pas au manifeste serait silencieusement ignoré par
+  `PUT /permissions/users/:id`) ; `navigation.test.ts` couvre 11 cas — premiers tests
+  unitaires du paquet web.
+- **Bug préexistant corrigé au passage** : ouvrir `/settings/utilisateurs` par URL ou par
+  rafraîchissement renvoyait vers `/`. La page tranchait « pas admin » avant la résolution de
+  `/permissions/me` ; elle ne marchait qu'en arrivant par la barre latérale. Règle promue dans
+  `CLAUDE.md` § React.
+
 ## 2026-07-30 — feat/cmd-divers
 **Prix unitaire et montant sur les lignes divers des commandes clients.**
 
@@ -40,6 +95,7 @@ Vérifié dans l'app : Tissu Voltige ® / Noir / 20 Mètres → 86,80 €, soit 
 (344, 328) de la grille. **Les lignes existantes à 0 ne sont pas reprises** — les rouvrir en
 édition pré-remplit le prix, un ré-enregistrement suffit ; un script de backfill reste à faire
 si le volume le justifie en production.
+
 
 ## 2026-07-29 — feat/widget
 **Six widgets de tableau de bord — Notifications, Utilisation fil, Suivi pièce, Commandes

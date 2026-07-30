@@ -138,6 +138,8 @@ Ports legacy *FI_Suivi_pièce.wdw*: type a piece number → its life story (écr
 12. **Réseau** — Entreprises
 13. **Paramètres** — Utilisateurs (**admin-only**: per-user permissions + per-user email for Gmail impersonation)
 
+**Menu / screen visibility is per user** (`claude_doc/auth_permissions.md` §Screen access). Second axis next to the action catalog, managed in the **Écrans** tab of Paramètres › Utilisateurs: a **menu is a grant, default closed** (`screen_<menu>`), a **screen inside a granted menu is a hide** (`hide_<menu>_<screen>`) — so a newly shipped screen appears for everyone who already has its menu instead of being invisible until an admin ticks it per user. A menu with no visible screen left disappears. Keys derive from the href; the API manifest `apps/api/src/lib/screen-keys.ts` mirrors `navigation.ts` and `check-screen-access.ts` diffs them. ⚠️ Hide keys are **negative** keys: read them via `hasRaw()` (no admin bypass), never `has()`, or the admin sees no menus. Enforcement is the nav surfaces + one route guard in `AppShell` — **a curtain, not a lock**: endpoints are shared across screens, so confidentiality stays with server-enforced action keys (`view_rapport_finance`, `dashboard_ca`…). Grandfathering script: `seed-screen-access.ts --write`, **run on the server** (`data/permissions.json` is gitignored and lives beside the running API), idempotent, and also the way to hand a new menu to everyone.
+
 ## Reference Documentation
 
 Load these on demand when working on the matching topic:
@@ -148,7 +150,7 @@ Load these on demand when working on the matching topic:
 | `claude_doc/dev_setup.md` | Fresh-machine setup: HFSQL server/driver, `.env.development`, dev ports |
 | `claude_doc/hfsql_odbc.md` | HFSQL connection details, driver install, bridge, platform-specific SQL, accented columns |
 | `claude_doc/implemented_screens.md` | Canonical reference screens (Entreprises, Fournisseurs, Commandes, Stock) — grep first before inventing patterns |
-| `claude_doc/auth_permissions.md` | Cookie auth picker, effective vs session admin, permission catalog, admin guard |
+| `claude_doc/auth_permissions.md` | Cookie auth picker, effective vs session admin, permission catalog, screen access (menu/screen visibility), admin guard |
 | `claude_doc/pdf_email.md` | `@react-pdf/renderer` gotchas, Gmail DWD setup, per-document email endpoint pattern |
 | `claude_doc/legacy_tables.md` | All 204 HFSQL tables with fields |
 | `claude_doc/legacy_windows.md` | All 319 windows + 49 reports |
@@ -187,6 +189,7 @@ Full details in `claude_doc/hfsql_odbc.md`. These are the non-negotiable rules f
 
 - **Hooks before early returns**: all `use*` hooks must come before any conditional `return` — violating this crashes production builds (minified React error #310).
 - **`useElementSize` returns a CALLBACK ref, deliberately.** A `useRef` + `useEffect([])` pair never attaches its ResizeObserver when the target is rendered *conditionally* (`{data && <div ref={…}>}`): the ref is null on the mount the effect runs on, the size stays `{0,0}` forever, and a chart guarding on `w > 0 && h > 0` then silently never paints. Don't "simplify" it back to a RefObject.
+- **A guard must never decide while its permission fetch is in flight.** `/auth/me` and `/permissions/me` are two round trips: a redirect computed on the intermediate state sends *everyone* away on a cold load, and it only looks fine when you reach the page by clicking (permissions already cached). Render nothing / a spinner until `usePermissions().isLoading` is false, then decide. Bit both the `AppShell` screen guard and `SettingsUtilisateurs`' admin guard (the latter silently broke every bookmark and refresh of `/settings/utilisateurs`).
 - **Shared `apiFetch`**: all fetch calls go through `apps/web/src/lib/api.ts` (sets `credentials: 'include'` for cookie auth). **Never duplicate per page** — the cookie won't be sent without `credentials: 'include'`.
 - **SW denylist for `/api/`**: the PWA SW has `navigateFallbackDenylist` for `/api/`. Never remove — without it, the SW intercepts `/api/` navigations and serves `index.html`, breaking React Router.
 - **Modifier button = `variant="gold"`**: the view-mode "Modifier" CTA on every detail screen MUST use `<Button variant="gold">`. Never `outline` or `default`. Canonical "enter edit mode" affordance.

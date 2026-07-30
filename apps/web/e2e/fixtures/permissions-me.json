@@ -24,6 +24,17 @@
     "create_stock_ecru",
     "edit_stock_ecru",
     "cut_stock_ecru",
-    "responsable_qualite"
+    "responsable_qualite",
+    "screen_prospects",
+    "screen_clients",
+    "screen_sous_traitants",
+    "screen_transferts",
+    "screen_fils",
+    "screen_tombe_metier",
+    "screen_finis",
+    "screen_divers",
+    "screen_qualite",
+    "screen_rapports",
+    "screen_reseau"
   ]
 }

@@ -27,6 +27,13 @@ interface PermissionsContextValue {
   isEffectiveAdmin: boolean
   isLoading: boolean
   has: (key: string) => boolean
+  /** Raw membership test, WITHOUT the effective-admin bypass.
+   *
+   *  Required for negative keys — the screen-access axis stores per-screen
+   *  HIDE keys (`hide_fils_stock`), and `has()` answers true for every key
+   *  when the viewer is an effective admin, which would hide every screen
+   *  from the admin. Use `has` for grants, `hasRaw` for hides. */
+  hasRaw: (key: string) => boolean
   refresh: () => Promise<void>
 }
 
@@ -80,9 +87,11 @@ export function PermissionsProvider({ children }: { children: React.ReactNode })
     [isEffectiveAdmin, granted],
   )
 
+  const hasRaw = useCallback((key: string): boolean => granted.has(key), [granted])
+
   const value = useMemo<PermissionsContextValue>(
-    () => ({ granted, isAdmin, isEffectiveAdmin, isLoading, has, refresh: fetchPermissions }),
-    [granted, isAdmin, isEffectiveAdmin, isLoading, has, fetchPermissions],
+    () => ({ granted, isAdmin, isEffectiveAdmin, isLoading, has, hasRaw, refresh: fetchPermissions }),
+    [granted, isAdmin, isEffectiveAdmin, isLoading, has, hasRaw, fetchPermissions],
   )
 
   return <PermissionsContext.Provider value={value}>{children}</PermissionsContext.Provider>
