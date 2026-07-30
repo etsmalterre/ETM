@@ -359,7 +359,21 @@ export function killTree(pid) {
  *  (reliable detach + redirection + a stable PID whose whole tree killTree()
  *  reaps via taskkill /T); a Node detached spawn here orphaned the real server
  *  behind a transient wrapper PID. */
+/** Keep one generation of a log. Windows Start-Process TRUNCATES its redirect
+ *  targets, so restarting a wedged server erases the very log that explains the
+ *  wedge — and the restart is the first thing anyone does. `<name>.prev.log`
+ *  survives it. */
+function rotateLog(file) {
+  try {
+    if (fs.existsSync(file) && fs.statSync(file).size > 0) {
+      fs.renameSync(file, file.replace(/\.log$/, '.prev.log'))
+    }
+  } catch { /* a still-open handle just means we keep the current file — never block a restart */ }
+}
+
 export function spawnDetached(cwd, pkg, script, logFile) {
+  rotateLog(logFile)
+  rotateLog(logFile.replace(/\.log$/, '.err.log'))
   if (IS_WIN) {
     const errFile = logFile.replace(/\.log$/, '.err.log')
     const pidFile = logFile.replace(/\.log$/, '.pid')
@@ -449,29 +463,39 @@ export function ensureCorsOrigin(envPath) {
  * the log — indistinguishable from a healthy start if you only probe the port,
  * and an infinite loading screen in the browser. `?db=1` runs a real query.
  */
+export async function probeDbHealth(port, timeoutMs = 10000) {
+  try {
+    const res = await fetch(`http://localhost:${port}/api/health?db=1`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (res.ok && body.db === 'ok') return { ok: true, ms: body.dbMs }
+    // An API built before ?db=1 existed answers 200 with no `db` field. That
+    // is "cannot tell", not "broken" — reporting it as UNREACHABLE would make
+    // this probe the very kind of lying health check it was added to kill.
+    if (res.ok && body.db === undefined) {
+      return { ok: false, unsupported: true, error: 'API predates ?db=1 — cannot verify' }
+    }
+    return { ok: false, error: body.error || `HTTP ${res.status}` }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.name === 'TimeoutError' ? 'timed out (connection wedged?)' : err?.message ?? String(err),
+    }
+  }
+}
+
+/** Poll probeDbHealth until it passes — for spin-up, where the API is still
+ *  booting. status.mjs asks once instead (probeDbHealth directly). */
 export async function waitForDbHealth(port, ms = 60000) {
   const t0 = Date.now()
-  let last = 'no response'
+  let last = { ok: false, error: 'no response' }
   while (Date.now() - t0 < ms) {
-    try {
-      const res = await fetch(`http://localhost:${port}/api/health?db=1`, {
-        signal: AbortSignal.timeout(10000),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (res.ok && body.db === 'ok') return { ok: true, ms: body.dbMs }
-      // An API built before ?db=1 existed answers 200 with no `db` field. That
-      // is "cannot tell", not "broken" — reporting it as UNREACHABLE would make
-      // this probe the very kind of lying health check it was added to kill.
-      if (res.ok && body.db === undefined) {
-        return { ok: false, unsupported: true, error: 'API predates ?db=1 — cannot verify' }
-      }
-      last = body.error || `HTTP ${res.status}`
-    } catch (err) {
-      last = err?.name === 'TimeoutError' ? 'timed out (connection wedged?)' : err?.message ?? String(err)
-    }
+    last = await probeDbHealth(port)
+    if (last.ok || last.unsupported) return last
     await new Promise((r) => setTimeout(r, 2000))
   }
-  return { ok: false, error: last }
+  return last
 }
 
 /**

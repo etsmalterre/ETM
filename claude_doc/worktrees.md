@@ -150,16 +150,54 @@ The plain create path deliberately aborts on an existing dir, and now points at 
 Spin-up used to accept "the port accepts connections" as proof the API worked. It isn't:
 an API whose HFSQL connection is wedged answers `/api/health` instantly while **every**
 data route hangs forever with nothing in the log — in the browser that's an infinite
-loading screen on a server that reports `UP`. `up.mjs` therefore also probes
+loading screen on a server that reports `UP`. **`up.mjs` and `status.mjs` both** probe
 `/api/health?db=1`, which runs a real query (`SELECT COUNT(*) FROM utilisateur`) and
-returns 503 `{ db: 'error' }` when HFSQL is unreachable. The summary line reads
-`HFSQL : OK (207ms)` or `HFSQL : UNREACHABLE — …`; the latter sets a non-zero exit code.
+returns 503 `{ db: 'error' }` when HFSQL is unreachable. The line reads
+`HFSQL : OK (207ms)` or `HFSQL : UNREACHABLE — …`; in `up.mjs` the latter sets a non-zero
+exit code, in `status.mjs` it downgrades the slot from `UP` to **`DEGRADED`** and prints
+the remedy. A TRM slot is probed on the ETM API it *borrows*, so a wedge there is never
+reported by nobody.
 
 Use it by hand whenever screens hang but the app loads:
 
 ```bash
 curl "http://localhost:808N/api/health?db=1"
 ```
+
+### "The browser loads forever" — the one diagnosis to run first
+
+This is the single most expensive false trail in this repo: the app is fine, the feature
+code is fine, and the API is *listening*. Before reading any application code, run
+`/worktree-status` (or `node scripts/worktree/status.mjs`) and believe the `HFSQL` line.
+
+Signature of a wedged connection, all three together:
+
+| Signal | Value |
+|---|---|
+| `/api/health` | `200`, instant |
+| any data route (`/api/clients`) | `500` after **exactly 15.0 s** — `HFSQL_CONNECT_TIMEOUT_MS` |
+| `.dev-logs/api.err.log` | `HFSQL connect timed out after 15000ms` |
+
+**Usual cause: a burst of API file edits.** Every save under `apps/api/src` restarts
+`tsx watch`, and the killed process leaves its ODBC connection dangling; ~8 restarts in
+half a minute and the fresh process can no longer get one. So this bites hardest right
+after a round of edits — i.e. exactly when you're about to ask the user to go and look at
+your change. **Batch API edits, then restart the slot yourself before handing back.**
+
+⚠ **A paired TRM worktree doubles this.** Under the §Shared-API rule the TRM feature's API
+work lands in *your* ETM checkout, so two agents can be saving into the same
+`apps/api/src` and restarting the same `tsx watch`. If the slot wedges without you having
+touched the API, check `git status` for someone else's files before concluding anything.
+
+Cure (the self-heal in `hfsql.ts` does not always win the race):
+
+```bash
+node scripts/worktree/up.mjs <feature> --restart
+```
+
+Logs survive that restart: Windows `Start-Process` truncates its redirect targets, so
+`spawnDetached` first rotates `api.log`/`api.err.log` to **`api.prev.log`/`api.err.prev.log`**.
+Read those for the failure you just restarted away.
 
 The Windows connect path (`apps/api/src/lib/hfsql.ts`) now self-heals like the Linux
 bridge does: a connect attempt is raced against `HFSQL_CONNECT_TIMEOUT_MS` (default 15s,

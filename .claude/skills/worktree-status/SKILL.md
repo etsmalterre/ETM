@@ -18,10 +18,21 @@ the shared registry at `~/.claude/mps-worktrees.json`).
    (Run an optional `git -C C:/dev/etsmalterre/ETM fetch origin -q` first if you want the
    ahead/behind counts to reflect the very latest `master`.)
 
-2. **Relay the output** to the user: the per-slot health (UP / PARTIAL / DOWN), URLs,
-   branch divergence, and the list of free slots.
+2. **Relay the output** to the user: the per-slot health (UP / DEGRADED / PARTIAL / DOWN),
+   URLs, branch divergence, and the list of free slots.
 
-3. **If it flags stale entries** (servers dead or the worktree missing on disk), check
+   `status.mjs` probes `/api/health?db=1` per slot, so `UP` means *usable*, not just
+   "port open". The `HFSQL` line is the one to read.
+
+3. **If a slot is DEGRADED** — the API is listening but HFSQL is unreachable — that IS
+   the diagnosis for "the app loads forever / every screen spins". Say so and offer the
+   printed remedy (`up.mjs <feature> --restart` for its own API; start the owning ETM
+   worktree when a TRM slot's borrowed API is down). Do **not** go looking at feature
+   code first: `/api/health` still answers 200 and nothing in the UI says "database".
+   Usual trigger is a burst of `apps/api/src` edits restarting `tsx watch` — see
+   `claude_doc/worktrees.md` § "The browser loads forever".
+
+4. **If it flags stale entries** (servers dead or the worktree missing on disk), check
    whether the worktree still exists on disk before offering to clean it:
    - **Tree still there** (servers just died — a reboot, a crash) → the work in it is
      intact, so offer to **restart it in place** rather than remove it:

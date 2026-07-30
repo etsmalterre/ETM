@@ -29,6 +29,14 @@ const CONNECT_TIMEOUT_MS = Number(process.env.HFSQL_CONNECT_TIMEOUT_MS) || 15000
 // file, which makes tsx watch restart the whole process with fresh driver
 // state. No-op outside NODE_ENV=development (prod runs the Linux bridge,
 // which has its own respawn logic).
+// ⚠ Do NOT rely on this as the cure during development. Both counters below are
+// module state, so a tsx-watch restart zeroes them — and the usual trigger for
+// the wedge is a *burst of file saves*, where each save restarts the process
+// before the counter can reach WEDGE_RESTART_AFTER. Observed 2026-07-30: the
+// API stayed wedged for minutes after an edit burst and only a manual
+// `up.mjs <feature> --restart` fixed it. `status.mjs` now reports the slot
+// DEGRADED so it is at least diagnosed in one command; see
+// claude_doc/worktrees.md § "The browser loads forever".
 const WEDGE_RESTART_AFTER = 2
 const WEDGE_RESTART_MIN_INTERVAL_MS = 60_000
 let consecutiveConnectTimeouts = 0

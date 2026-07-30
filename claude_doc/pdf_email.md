@@ -33,7 +33,20 @@ Hard-won footguns from wiring "Page X/Y" + the multi-page stock section (commits
 - **An absolute `Text` with only `right` (no `left`/width) collapses to a zero-width box** and never paints. Use both `left` + `right` + `textAlign: 'right'` (mirrors the footer).
 - **`wrap={false}` blocks spill a phantom/near-empty page when they end within ~25-30pt of the page-height boundary** — not just on true overflow. Symptoms seen: the stock-section title orphaned alone on a page with the first piece table bumped to the next; blank trailing pages after short lists; the front-page totals card on its own sparse page. Fixes: tighten content (piece-table rows use `paddingVertical: 4` + per-row `lineHeight: 1.2`, not the inherited 1.45 body leading — the biggest space lever); keep the page's bottom reserve modest (`paddingBottom: 80`, clears the ~66pt footer + page-number line); never bottom-pin a `wrap={false}` block with a `flexGrow` spacer or `marginTop: 'auto'` (let it flow). Test the boundary case: a single-line order with ~10-16 pieces.
 - **`secondPage.withHeader` continuation pages need `paddingTop = HEADER_HEIGHT + ~10`** (`HEADER_PAGE_PADDING_TOP`), else flow content butts directly against the repeated branded header on every physical overflow page.
-- **Rasterizing a PDF to verify output**: no poppler on the box. Use the pure-JS `pdf-to-img` + `sharp` from a temp dir (`npm i` outside the workspace — `workspace:*` refs break in-repo installs). Harness: `apps/api/src/scripts/dump-sst-pdf.ts <id>`.
+- **Rasterizing a PDF to verify output**: no poppler on the box (so `Read`ing a `.pdf` fails with "pdftoppm is not installed", and `pdftotext` isn't there either). Use the pure-JS `pdf-to-img` + `sharp` from a temp dir (`npm i` outside the workspace — `workspace:*` refs break in-repo installs). Harness: `apps/api/src/scripts/dump-sst-pdf.ts <id>`.
+- **Asserting on PDF content in a guard script — walk the element tree, never the rendered bytes.** The output embeds subset fonts, so the text in the content streams is glyph indices: inflating the streams and regexing for `Tj` returns mojibake, not `"TOTAL HT"` (dead end, do not retry). The PDF components are plain functions with no hooks, so **call one directly and recurse through `props.children`**, collecting strings:
+  ```ts
+  function pdfStrings(node: unknown, out: string[] = []): string[] {
+    if (node == null || node === false) return out
+    if (typeof node === 'string' || typeof node === 'number') { out.push(String(node)); return out }
+    if (Array.isArray(node)) { for (const c of node) pdfStrings(c, out); return out }
+    const el = node as { props?: { children?: unknown } }
+    if (el.props?.children !== undefined) pdfStrings(el.props.children, out)
+    return out
+  }
+  const strings = pdfStrings(CommandeClientPdf({ data }))   // no renderToBuffer needed
+  ```
+  Fast, dependency-free and deterministic — it asserts what the document *says* (rows present/absent, labels) rather than how it looks. Reference: `apps/api/src/scripts/check-tva-exoneration.ts`, which pins that an exonerated client's totals block has no TVA row and ends at `TOTAL HT`. Use rasterization (above) for layout/visual questions, this for content.
 
 ## Email send (Gmail API via domain-wide delegation)
 
