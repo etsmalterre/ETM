@@ -173,6 +173,21 @@ if (isRestart) {
   // CORS_ORIGIN written before a port existed. Both fail confusingly at runtime.
   ensureDeps(wt, { label: `${feature} worktree` })
   if (proj.hasApi) ensureCorsOrigin(path.join(wt, 'apps/api/.env.development'))
+  else {
+    // Web-only project: `--api 808N --restart` is the documented way to repoint
+    // a TRM worktree at a paired NG worktree's API (CLAUDE.md § paired-worktree
+    // rule). VITE_API_URL lives in .env.development.local, which the create
+    // branch below writes — so without this the restart printed the NEW port in
+    // its summary while the browser kept calling the OLD one, and every new
+    // endpoint 404'd with no visible clue. Rewrite it from the resolved port.
+    const envLocal = path.join(wt, 'apps/web/.env.development.local')
+    const next = `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n`
+    const prev = fs.existsSync(envLocal) ? fs.readFileSync(envLocal, 'utf8') : ''
+    if (prev !== next) {
+      fs.writeFileSync(envLocal, next)
+      console.log(`Rewrote apps/web/.env.development.local (API → :${api}).`)
+    }
+  }
 } else if (proj.hasApi) {
   // Copy gitignored dev config the new worktree needs, and force a CORS_ORIGIN
   // that allows every dev slot so cookie auth works regardless of which slot we

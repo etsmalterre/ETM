@@ -61,6 +61,17 @@ node scripts/worktree/up.mjs <name> trm --api 808N   # TRM worktree: the screen,
   own `master`.
 - Purely-web TRM features (no API change) need no pair — the default `:8080` master API
   via `/serve-main` is enough.
+- **Retro-fitting a pair onto an existing TRM worktree**: a TRM worktree created without
+  `--api` targets `:8080` (master). When the feature turns out to need endpoints, spin up
+  the NG worktree and repoint the TRM one with
+  `node scripts\worktree\up.mjs <name> trm --api 808N --restart`. Until 2026-07-30 that
+  command **lied**: the restart branch skipped the env write (it only repairs deps + CORS),
+  so `VITE_API_URL` kept the old port while the summary printed the new one. The failure is
+  near-invisible — the app loads, auth works off master's API, and only the feature's brand-new
+  endpoints 404 with nothing in the console. `up.mjs` now rewrites
+  `apps/web/.env.development.local` on restart for web-only projects and logs
+  `Rewrote apps/web/.env.development.local (API → :808N)`. If you ever see a 404 on an endpoint
+  you know exists, check which port the browser actually called before debugging the route.
 
 The registry `~/.claude/mps-worktrees.json` maps slot → project/feature/branch/ports/PIDs. NG
 entries keep bare numeric keys (`"1"`); TRM entries are namespaced (`"trm:1"`). Slot allocation

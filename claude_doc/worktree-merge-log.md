@@ -10,6 +10,39 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/stock
+**Endpoints écru côté TRM (`/api/stock/ecru-trm`) pour l'écran Tombé Métier › Stock de TRM.**
+
+Nouveau fichier `apps/api/src/routes/stock-ecru-trm.ts`, monté sous `/api/stock`, consommé
+uniquement par le frontend TRM. Deux routes en lecture seule : `GET /ecru-trm`
+(`?statut=disponible|affecte|tous`, `?second_choix=1`) et `GET /ecru-trm/:id` (qui ajoute un
+bloc `production` : l'OF, le métier, le n° de pièce et les horodatages `piece_production`).
+
+Pourquoi un fichier séparé plutôt qu'un paramètre `?societe=` sur `stock-ecru.ts` : les deux
+moitiés de `stock_ecru` sont des objets différents. Un écru ETM est acheté à un tricoteur,
+stocké dans un `IDmagasin` et affecté à un ennoblisseur (`IDref_commande_affectation`) avant
+de devenir un `stock_fini`. Un écru TRM est tricoté en interne — son origine est un
+`IDordre_fabrication` (→ `ordre_fabrication.IDmachine` → `machine.nom`, le métier) et un
+`IDpiece_production` — avec `IDmagasin = 0`, `lot` vide, `metrage = 0`, et aucune étape de
+teinture. « Encore en stock » diffère aussi : `IDligne_expedition_ETM = 0` + aucun enfant
+`stock_fini` côté ETM, `IDligne_expedition_TRM = 0` côté TRM (~1 070 lignes sur 6 707). Et
+surtout, la réservation client pend d'une colonne différente : `IDligne_commande_client` côté
+ETM, **`IDLigne_Commande_TRM`** côté TRM (le back-pointer du grand livre miroir), l'autre
+restant à 0 sur toutes les lignes TRM.
+
+Ce qui est réellement commun n'est pas dupliqué : `fetchDefectsByEcru`, `defautSummary` et
+`resolveClientReservations` sont importés de `stock-ecru.ts` — cette dernière a été **exportée**
+pour l'occasion (la chaîne `ligne_commande_client → commande_client → client` est identique,
+seul le pointeur d'entrée change). Aucune colonne accentuée n'est nommée dans les nouvelles
+requêtes, bien que les tables jointes en portent (`machine.archivé`/`diamètre`/`connecté`,
+`ordre_fabrication.productivité*`) — commenté sur place pour que personne n'ajoute un
+`SELECT *`.
+
+Corrige aussi un bug de l'outillage worktree : `up.mjs <name> trm --api 808N --restart`
+affichait le nouveau port mais ne réécrivait jamais `VITE_API_URL` (la branche restart ne
+répare que les deps et le CORS). Le navigateur continuait donc d'appeler l'ancienne API et les
+endpoints tout neufs renvoyaient 404 sans rien dans la console. Détail dans
+`claude_doc/worktrees.md` § Shared-API changes.
 ## 2026-07-30 — feat/permissions
 **Accès par écran : chaque utilisateur ne voit que les menus et écrans dont il a besoin.**
 Deuxième axe de droits, à côté du catalogue d'actions, réglé dans le nouvel onglet **Écrans**

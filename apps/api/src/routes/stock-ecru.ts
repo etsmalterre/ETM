@@ -112,7 +112,7 @@ export async function fetchDefectsByEcru(ecruIds: number[]): Promise<Map<number,
   return out
 }
 
-interface ClientReservation {
+export interface ClientReservation {
   commande_numero: string | null
   client_nom: string | null
 }
@@ -121,8 +121,13 @@ interface ClientReservation {
  *  the flat chain ligne_commande_client → commande_client → client. Flat
  *  queries only (a JOIN + CONVERT collapses the result set on the Linux bridge
  *  — see CLAUDE.md). Returns a Map keyed by IDligne_commande_client; missing /
- *  empty links are simply absent. */
-async function resolveClientReservations(lccIds: number[]): Promise<Map<number, ClientReservation>> {
+ *  empty links are simply absent.
+ *
+ *  Exported because the TRM screen (`stock-ecru-trm.ts`) walks the exact same
+ *  chain, just from a different pointer: TRM rolls carry the commande client on
+ *  `IDLigne_Commande_TRM` (the sister-ledger back-pointer) rather than on
+ *  `IDligne_commande_client`, which is 0 on every IDsociete = 2 row. */
+export async function resolveClientReservations(lccIds: number[]): Promise<Map<number, ClientReservation>> {
   const out = new Map<number, ClientReservation>()
   const ids = Array.from(new Set(lccIds.filter((x) => Number.isInteger(x) && x > 0)))
   if (ids.length === 0) return out
