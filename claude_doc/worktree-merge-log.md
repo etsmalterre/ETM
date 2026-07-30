@@ -10,6 +10,56 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/cmd-client
+**Exonération de TVA côté client, commandes sous-traitant manquantes dans le tiroir de ligne,
+et un `status.mjs` qui ne ment plus sur la santé d'un slot.**
+
+**1. TVA — le taux appartient au client.** La confirmation de commande et le devis lisaient le
+taux par défaut de la société 1 (20 %) au lieu de `client.IDtva` : un client marqué
+« Exonération » dans Clients › Gestion (export — AGAPE au Maroc) était taxé sur tous ses
+documents imprimés. Le taux se résout désormais dans `apps/api/src/lib/tva.ts`
+(`loadClientTvaRate`), avec repli sur le défaut ETM **uniquement** si le client n'a pas de
+ligne `tva` — un `valeur = 0` est une vraie valeur, pas un « non renseigné ». Un taux nul
+**réduit le bloc de totaux** : plus de ligne TVA, plus de TTC, le document se termine sur
+`TOTAL HT` (le sous-total ne subsiste que si une remise ou des frais de port l'en distinguent).
+Vaut pour la confirmation, le devis, la proforma et la facture — cette dernière conserve son
+propre `IDtva`, copié du client à la création, donc une ancienne facture garde son taux
+d'émission. Garde `check-tva-exoneration.ts` : vérifie le taux **et** le bloc de totaux rendu,
+en parcourant l'arbre React du PDF (les octets sont illisibles, polices sous-ensembles).
+
+**2. Les commandes sst créées depuis le tiroir n'apparaissaient pas.** Créer une commande
+ennoblisseur depuis l'onglet Ennoblissement d'une ligne ne la faisait pas apparaître dans le
+tableau juste au-dessus, alors qu'elle existait dans Sous-traitants › Commandes.
+`buildEnnoblissement`/`buildTricotage` filtraient sur une **liste blanche** de statuts ouverts
+(`En_Cours`, `Attente_Delai`) alors qu'une commande neuve démarre à `Non_Envoye`. Même symptôme
+pour une commande de tricotage chez un tricoteur **externe** (`createKnitOrder` ne met
+`Attente_Delai` que pour Tricotage Malterre) et pour les lignes `Notification` /
+`Soumis_Au_Client`, invisibles depuis toujours : **5 lignes vivantes cachées** sur les données
+actuelles. Le filtre devient une liste noire — tout ce qui n'est pas terminé — donc un statut
+auquel personne n'a pensé ne peut plus masquer une commande vivante.
+⚠️ Le prédicat compare le **préfixe ASCII** (`NOT LIKE 'Termin%'`) : nommer `'Terminé'` accentué
+en SQL enverrait de l'UTF-8 brut dans le pont Linux, et un filtre JS via `isLineDone()` serait
+**pire que le bug** — ODBC renvoie la valeur en `Termin?`, la comparaison échouerait et toutes
+les lignes terminées passeraient pour ouvertes. Vérifié sur données réelles : garde
+`check-supply-open-lines.ts`, rouge avant (5 échecs), verte après (75 contrôles).
+⚠️ **Découvert au passage, non corrigé** (hors périmètre) : `commandes-sous-traitant.ts:264` et
+`:860` appellent `isLineDone()` sur un `SELECT sstatut` brut, sans `fixEncoding` — leurs tests
+« toutes les lignes terminées » / « ignorer la ligne terminée » ne se déclenchent donc jamais.
+
+**3. Outillage — `status.mjs` disait `UP` pendant que l'API était inutilisable.** Deux fois dans
+la session, « ça charge à l'infini » a dû être diagnostiqué à la main : le script ne testait que
+la vivacité (pid vivant, port ouvert) alors que `/api/health` répondait en 1 ms pendant que
+chaque route data expirait à 15 s sur une connexion ODBC bloquée. `probeDbHealth()` est extrait
+de `waitForDbHealth` et appelé par slot, en parallèle : `UP` → **`DEGRADED`** avec le remède
+exact. Un slot TRM est sondé sur l'API ETM qu'il emprunte, sinon personne ne signale son
+blocage. `spawnDetached` fait aussi tourner les logs vers `<nom>.prev.log` — sur Windows
+`Start-Process` **tronque** ses redirections, donc le redémarrage effaçait le journal qui
+expliquait la panne. Cause documentée (CLAUDE.md, `worktrees.md`, skill `worktree-status`) :
+une **rafale d'éditions** sous `apps/api/src` redémarre `tsx watch` à chaque sauvegarde et
+laisse une connexion ODBC pendante — elle frappe donc juste après avoir édité, au moment où on
+demande à l'utilisateur d'aller regarder. Grouper les éditions, redémarrer soi-même avant de
+rendre la main.
+
 ## 2026-07-30 — feat/stock
 **Endpoints écru côté TRM (`/api/stock/ecru-trm`) pour l'écran Tombé Métier › Stock de TRM.**
 
