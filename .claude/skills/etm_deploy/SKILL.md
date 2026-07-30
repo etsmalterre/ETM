@@ -4,6 +4,14 @@
 
 Invoke with `/etm_deploy` to deploy the ETM API and/or webapp to production.
 
+**Optional version argument — `/etm_deploy v0.2.1`.** A version means "release this
+version", so **before** building: set `version` in the **root** `package.json` (the single
+source of truth — see CLAUDE.md §Versioning), commit it as `chore(release): X.Y.Z`, and
+push. The web build bakes it in as `__APP_VERSION__` and the header profile menu shows it,
+so bumping *after* the build ships the old number. Deploy the pushed commit, not the
+pre-bump one. With no argument, deploy `origin/master` as-is and change no version.
+Do NOT touch the per-package `apps/*/package.json` versions; they are displayed nowhere.
+
 ## Deploy ownership — the API is shared with TRM
 
 The API deployed here serves **two frontends**: ETM (`mpsng.malterre`) and the sister
@@ -319,18 +327,34 @@ longer need their worktree, local/remote branch, or detached dev servers. A merg
 after `/feature-complete` lands it, so a merged branch still lying around is leftover.
 Clean each one up; this is safe precisely because "merged" guarantees no unshipped commits.
 
-**Do NOT touch un-merged branches** — active worktrees (e.g. ones you can see in
-`/worktree-status`) are not ancestors of master, so the ancestor test excludes them
-automatically. Never delete `master`.
+⚠️ **The ancestor test alone is NOT a safety net — it flags brand-new worktrees as
+merged.** A worktree created but not yet committed in sits exactly at `origin/master`, so
+its branch **is** an ancestor of master and reads as "MERGED" while being someone's live
+workspace. (This doc previously claimed active worktrees are excluded automatically. They
+are not; that claim nearly caused two active worktrees to be torn down on 2026-07-30.)
+So the listing below **subtracts every feature the worktree registry currently owns** —
+that registry is the authority on what is live, not the commit graph. Never delete
+`master`.
 
-1. **List merged remote feature branches**:
+1. **List merged remote feature branches, minus the ones a live slot owns**:
    ```bash
    cd /c/dev/etsmalterre/ETM && git fetch --prune origin
+   # features held by an active worktree slot (any project) — never touch these
+   ACTIVE=$(node -e "const r=require(require('os').homedir()+'/.claude/mps-worktrees.json');console.log(Object.values(r.slots||{}).map(s=>s.feature).join(' '))" 2>/dev/null)
    for b in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/feat); do
      name=${b#origin/feat/}
-     if git merge-base --is-ancestor "$b" origin/master; then echo "MERGED: $name"; fi
+     git merge-base --is-ancestor "$b" origin/master || continue
+     case " $ACTIVE " in *" $name "*) echo "ACTIVE (skip): $name"; continue;; esac
+     # a branch with no commits of its own is a fresh tree, not a shipped feature
+     if [ "$(git rev-list --count origin/master..$b)" = "0" ] && \
+        [ "$(git rev-parse $b)" = "$(git rev-parse origin/master)" ]; then
+       echo "AT MASTER (skip, nothing shipped from it): $name"; continue
+     fi
+     echo "MERGED: $name"
    done
    ```
+   Cross-check anything you are about to remove against `/worktree-status` and
+   `git worktree list`. If a name appears in either, it is live — leave it.
 
 2. **For each merged feature**, tear down any leftover worktree (dir + registry entry +
    detached servers) and delete the remote branch:

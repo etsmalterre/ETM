@@ -203,21 +203,69 @@ export function addPending(entry) {
   })
 }
 
+/** Forget any queued removal for `wt` (we are legitimately recreating that path).
+ *  Returns true if an entry was dropped. */
+export function dropPending(wt) {
+  const target = path.resolve(wt)
+  return updateRegistry((reg) => {
+    const cur = Array.isArray(reg.pendingRemovals) ? reg.pendingRemovals : []
+    const keep = cur.filter((e) => path.resolve(e.worktree) !== target)
+    reg.pendingRemovals = keep
+    return keep.length !== cur.length
+  })
+}
+
+/** True if `branch` exists on origin AND is already an ancestor of origin/master
+ *  — i.e. that feature name has already shipped. Local-only (no fetch). */
+export function isMergedRemoteBranch(repo, branch) {
+  try {
+    const ref = `origin/${branch}`
+    git(['-C', repo, 'rev-parse', '--verify', '--quiet', ref], repo)
+    execFileSync('git', ['-C', repo, 'merge-base', '--is-ancestor', ref, 'origin/master'], {
+      cwd: repo, stdio: 'ignore',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Finish removing any worktrees whose directory was locked at completion time.
  *  Local-only (no network) so it's cheap to call at the start of every skill.
- *  Returns { reaped: [...], stillBlocked: [...] }. */
+ *  Returns { reaped: [...], stillBlocked: [...], resurrected: [...] }.
+ *
+ *  ⚠ A pending entry names a PATH, and worktree paths are derived from the
+ *  feature name — so reusing a feature name recreates the exact same path. If a
+ *  concurrent session queued `ETM-foo` for removal and someone then runs
+ *  `up.mjs foo`, the stale entry matches the BRAND NEW worktree and the next
+ *  worktree skill deletes live work. That happened (2026-07-30): two freshly
+ *  created worktrees were destroyed by a `status.mjs` run.
+ *  A pending entry may therefore only delete a directory that NO active registry
+ *  slot claims. A slot claiming the path means the path was legitimately
+ *  recreated, so the entry is stale — drop it without touching the disk. */
 export function reapPending() {
   const list = readPending()
-  if (list.length === 0) return { reaped: [], stillBlocked: [] }
+  if (list.length === 0) return { reaped: [], stillBlocked: [], resurrected: [] }
   // git prune/branch-delete must run in the repo the worktree belongs to. Older
   // pending entries predate the `main` field — fall back to the current repo's
   // main checkout (those are always NG, created before TRM support existed).
   const fallbackMain = mainCheckout()
+  // Paths currently owned by a live slot — never reapable (see the note above).
+  const claimed = new Set(
+    Object.values(readRegistry().slots ?? {}).map((s) => path.resolve(s.worktree))
+  )
   const reaped = []
   const stillBlocked = []
+  const resurrected = []
   for (const e of list) {
     const repo = e.main || fallbackMain
     const tryGit = (args) => { try { git(['-C', repo, ...args], repo) } catch {} }
+    if (claimed.has(path.resolve(e.worktree))) {
+      // The name was reused and the tree is live. Forget the entry; deleting it
+      // would destroy work that was never queued for removal.
+      resurrected.push(e)
+      continue
+    }
     if (fs.existsSync(e.worktree)) {
       try {
         fs.rmSync(e.worktree, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
@@ -233,14 +281,15 @@ export function reapPending() {
       stillBlocked.push(e)
     }
   }
-  // Drop only the entries we actually reaped — re-reading under the lock so a
-  // pending entry added by another session while we were reaping isn't lost.
-  const reapedWt = new Set(reaped.map((e) => e.worktree))
+  // Drop the entries we reaped AND the stale ones a live slot reclaimed —
+  // re-reading under the lock so a pending entry added by another session while
+  // we were reaping isn't lost.
+  const doneWt = new Set([...reaped, ...resurrected].map((e) => e.worktree))
   updateRegistry((reg) => {
     const cur = Array.isArray(reg.pendingRemovals) ? reg.pendingRemovals : []
-    reg.pendingRemovals = cur.filter((e) => !reapedWt.has(e.worktree))
+    reg.pendingRemovals = cur.filter((e) => !doneWt.has(e.worktree))
   })
-  return { reaped, stillBlocked }
+  return { reaped, stillBlocked, resurrected }
 }
 
 /** Absolute path of the main checkout (the worktree holding the shared .git).

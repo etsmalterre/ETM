@@ -79,6 +79,16 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
   ```
   Otherwise pick a different name, or clean up the old one with `/feature-complete`
   (if mergeable) or `node scripts/worktree/down.mjs <name> --remove`.
+- **Reusing the name of a feature that already shipped** → allowed, but the script now
+  says `NOTE: origin/feat/<name> already exists and is merged`. A worktree path is derived
+  from the feature name, so a name reused across sessions rebuilds the *same* directory —
+  which is how, on 2026-07-30, two freshly created worktrees were deleted by a later
+  `/worktree-status`: a concurrent `/feature-complete` had queued that exact path for
+  deferred removal, and the reaper matched the new tree. `reapPending()` now refuses to
+  delete any path a live registry slot claims (and `up.mjs` voids the stale entry when it
+  recreates the path), so this is fixed rather than merely documented — but if the NOTE
+  appears and you did **not** mean to continue that feature, use a fresh name anyway: two
+  unrelated features sharing a branch name makes the merge log unreadable.
 - **API "UP" but every screen hangs on a loading spinner** → the API is listening but its
   HFSQL connection is wedged. The spin-up summary now catches this itself
   (`HFSQL : UNREACHABLE — …`); check by hand with

@@ -12,6 +12,10 @@ const swept = reapPending()
 if (swept.reaped.length) {
   console.log(`Reaped leftover worktree dir(s): ${swept.reaped.map((e) => e.feature).join(', ')}\n`)
 }
+if (swept.resurrected?.length) {
+  console.log(`Kept ${swept.resurrected.map((e) => e.feature).join(', ')} — a live slot owns that path now`)
+  console.log(`(feature name reused); the stale pending removal was dropped, not applied.\n`)
+}
 
 const reg = readRegistry()
 const keys = Object.keys(reg.slots).sort()

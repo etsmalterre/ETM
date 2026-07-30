@@ -24,7 +24,7 @@ import fs from 'node:fs'
 import {
   allocateSlot, getProject, projectMainCheckout, slotKey, updateRegistry,
   spawnDetached, isPortInUse, DEV_WEB_ORIGINS, git, reapPending, PROJECTS, mainCheckout,
-  readRegistry, entryProject, parseSlotKey, pidAlive, killTree,
+  readRegistry, entryProject, parseSlotKey, pidAlive, killTree, dropPending, isMergedRemoteBranch,
   waitForDbHealth, checkCors, tailLog, ensureDeps, ensureCorsOrigin,
 } from './lib.mjs'
 
@@ -45,6 +45,9 @@ function detectDefaultProject() {
 const swept = reapPending()
 if (swept.reaped.length) {
   console.log(`Reaped leftover worktree dir(s): ${swept.reaped.map((e) => e.feature).join(', ')}`)
+}
+if (swept.resurrected?.length) {
+  console.log(`Kept ${swept.resurrected.map((e) => e.feature).join(', ')} — a live slot owns that path (feature name reused).`)
 }
 
 // ── Args: <feature> [ng|trm] [--api <port>] ─────────────────────────────────
@@ -157,6 +160,24 @@ if (isRestart) {
   web = proj.webPort(slot)
   if (proj.hasApi) console.log(`Slot ${slot} → API ${api}, Web ${web}`)
   else console.log(`Slot ${slot} → Web ${web} (targets ETM API on ${api})`)
+
+  // Reusing a feature name rebuilds the exact same path, so a pending removal
+  // queued for the OLD tree of that name would match this brand-new one and the
+  // next worktree skill would delete it (see reapPending's note). We are
+  // deliberately (re)creating this path, so that entry is void — drop it now
+  // rather than relying on the slot being registered before the next reap runs.
+  const voided = dropPending(wt)
+  if (voided) {
+    console.log(`Cleared a stale pending removal for ${wt} (feature name reused).`)
+  }
+  // A name whose branch is already merged usually means the feature shipped and
+  // this is an accidental reuse — worth saying out loud, but not fatal (picking
+  // the same name for follow-up work is legitimate).
+  if (isMergedRemoteBranch(main, branch)) {
+    console.log(`NOTE: origin/${branch} already exists and is merged into origin/master.`)
+    console.log(`      "${feature}" looks like a feature that already shipped. Continuing on a`)
+    console.log(`      fresh branch off origin/master — use a new name if that wasn't intended.`)
+  }
 
   console.log(`Creating worktree ${wt} on ${branch} …`)
   execFileSync('git', ['-C', main, 'worktree', 'add', wt, '-b', branch, 'origin/master'], {
