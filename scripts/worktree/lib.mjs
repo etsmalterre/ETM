@@ -18,7 +18,7 @@ export const IS_WIN = process.platform === 'win32'
 
 // ── Projects ────────────────────────────────────────────────────────────────
 // Worktrees can be created for either the ETM repo (API + web) or the sibling
-// MPS-TRM repo (web only — its web dev server talks to an ETM API over HTTP).
+// TRM repo (web only — its web dev server talks to an ETM API over HTTP).
 // Each project owns a disjoint port range so an NG slot and a TRM slot with the
 // same number never collide:
 //   ng  slot N → API 808N + web 300N   (packages @mps/api + @mps/web)
@@ -41,8 +41,8 @@ export const PROJECTS = {
   },
   trm: {
     key: 'trm',
-    label: 'MPS-TRM',
-    dirName: 'MPS-TRM',
+    label: 'TRM',
+    dirName: 'TRM',
     hasApi: false,
     webPkg: '@mps-trm/web',
     webPort: (n) => 5170 + n, // 5171..5176

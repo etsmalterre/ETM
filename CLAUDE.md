@@ -4,7 +4,7 @@
 
 ETM is the next-generation ERP system for **ETS Malterre**, a French textile/knitting manufacturing company (bonnetterie/tricotage). This project migrates the legacy WinDev/HFSQL application to a modern web-based solution.
 
-> **Note**: this project was called `MPS_NG` during the early migration period. It was renamed to **ETM** (the company's short code — `IDsociete` 1 = ETM, sister of **MPS-TRM** = 2) on 2026-07-30: repo, folder, and docs. Two things deliberately kept the old name because they are deployed infrastructure, not the project identity: the production hostname `mpsng.malterre` and the workspace package scope `@mps/*`.
+> **Note**: this project was called `MPS_NG` during the early migration period. It was renamed to **ETM** (the company's short code — `IDsociete` 1 = ETM, sister of **TRM** = 2) on 2026-07-30: repo, folder, and docs. Two things deliberately kept the old name because they are deployed infrastructure, not the project identity: the production hostname `mpsng.malterre` and the workspace package scope `@mps/*`.
 
 - **Company**: ETS Malterre — https://etsmalterre.fr
 - **Industry**: Textile manufacturing (bonnetterie/tricotage — knitting)
@@ -154,7 +154,7 @@ Load these on demand when working on the matching topic:
 | `claude_doc/navigation_mapping.md` | Legacy windows → ETM routes |
 | `claude_doc/business_glossary.md` | Domain vocabulary, production flow |
 | `claude_doc/sous_traitants_status_model.md` | Sst commandes computed-phase model, card urgency frames + pills, Soumission Lot Client flow, Historique tab, Reprise flow, type_doc codes |
-| `claude_doc/worktrees.md` | Parallel dev with git worktrees, **multi-project** (ETM `300N`/`808N` + MPS-TRM `517N`, disjoint slots): slot model (incl. reserved **slot 0** = serve `master` via `/serve-main`), the `/new-feature-worktree [ng\|trm]` · `/feature-checkpoint` · `/feature-complete` · `/worktree-status` skills (project auto-detected from the invoking repo; run TRM worktrees from the MPS-TRM checkout), concurrency-safe shared registry, merge discipline, **§Shared-API changes**: TRM features needing endpoints use a *paired NG worktree* (API lands via NG's pipeline; deploy ownership: NG `/mps_deploy` = shared API + NG web → `mpsng.malterre`, TRM `/mps_deploy` = TRM web only → `mpstrm.malterre`) |
+| `claude_doc/worktrees.md` | Parallel dev with git worktrees, **multi-project** (ETM `300N`/`808N` + TRM `517N`, disjoint slots): slot model (incl. reserved **slot 0** = serve `master` via `/serve-main`), the `/new-feature-worktree [ng\|trm]` · `/feature-checkpoint` · `/feature-complete` · `/worktree-status` skills (project auto-detected from the invoking repo; run TRM worktrees from the TRM checkout), concurrency-safe shared registry, merge discipline, **§Shared-API changes**: TRM features needing endpoints use a *paired NG worktree* (API lands via NG's pipeline; deploy ownership: NG `/mps_deploy` = shared API + NG web → `mpsng.malterre`, TRM `/mps_deploy` = TRM web only → `mpstrm.malterre`) |
 
 ## HFSQL rules (footguns — always apply)
 

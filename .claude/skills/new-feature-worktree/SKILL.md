@@ -5,7 +5,7 @@
 Invoke with `/new-feature-worktree <feature-name> [ng|trm]` to start work on a new
 screen/feature in an isolated git worktree with its own local dev stack on a dedicated
 port slot. Run this from the **ETM main checkout** (`C:\dev\etsmalterre\ETM`, which
-stays on `master`). The **project** defaults to `ng`; pass `trm` to spin up an MPS-TRM
+stays on `master`). The **project** defaults to `ng`; pass `trm` to spin up an TRM
 worktree instead. Up to 6 worktrees per project can run at once.
 
 `<feature-name>` is kebab-case (e.g. `clients-commandes`). It produces:
@@ -14,8 +14,8 @@ worktree instead. Up to 6 worktrees per project can run at once.
 - branch `feat/<feature-name>`, worktree dir `../ETM-<feature-name>`
 - lowest free slot N (1–6) → API on `808N`, web on `300N`
 
-**`trm` (MPS-TRM — web only):**
-- branch `feat/<feature-name>`, worktree dir `../MPS-TRM-<feature-name>`
+**`trm` (TRM — web only):**
+- branch `feat/<feature-name>`, worktree dir `../TRM-<feature-name>`
 - lowest free slot N (1–6) → web on `517N` (no API of its own)
 - The TRM web server talks to an **ETM API over HTTP**. By default it targets the
   slot-0 master API on `:8080` (start it with `/serve-main`). To point it at a different
@@ -43,7 +43,7 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
    ```bash
    node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>]
    ```
-   This fetches origin (in the target repo — MPS-TRM is resolved as the sibling checkout
+   This fetches origin (in the target repo — TRM is resolved as the sibling checkout
    for `trm`), allocates a free slot, creates the worktree off `origin/master`, installs
    deps, and:
    - **ng**: writes a CORS-correct `apps/api/.env.development`, copies `secrets/`, starts
@@ -56,7 +56,7 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
 3. **Read the script's summary** (project, slot, branch, worktree path, URLs, log paths).
    If it reports a server "NOT UP", tail the named log before declaring success:
    ```bash
-   tail -n 40 ../ETM-<feature-name>/.dev-logs/web.log      # or MPS-TRM-<name>
+   tail -n 40 ../ETM-<feature-name>/.dev-logs/web.log      # or TRM-<name>
    tail -n 40 ../ETM-<feature-name>/.dev-logs/api.log      # ng only
    ```
    For **trm**, if the summary says the ETM API isn't reachable, tell the user to run

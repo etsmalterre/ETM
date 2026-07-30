@@ -4,16 +4,16 @@
 
 Invoke with `/mps_deploy` to deploy the ETM API and/or webapp to production.
 
-## Deploy ownership — the API is shared with MPS-TRM
+## Deploy ownership — the API is shared with TRM
 
 The API deployed here serves **two frontends**: ETM (`mpsng.malterre`) and the sister
-app **MPS-TRM** (`mpstrm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web
+app **TRM** (`mpstrm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web
 server, its nginx site proxies `/api/` to this same `10.10.2.163:8081`).
 
 - **This skill owns**: the ETM web bundle + the **shared API** (including endpoints that
   only TRM screens use, e.g. `planning-atelier.ts` — they live in this repo and deploy from
   here).
-- **The MPS-TRM repo's own `/mps_deploy`** owns: the TRM web bundle only. Never deploy the
+- **The TRM repo's own `/mps_deploy`** owns: the TRM web bundle only. Never deploy the
   API from there; never deploy the TRM web bundle from here.
 - **After every API deploy, smoke-check BOTH frontends**: `https://mpsng.malterre/api/...`
   and `http://mpstrm.malterre/api/...` (same API through two proxies — if one fails, it's

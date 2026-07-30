@@ -3,7 +3,7 @@
 ## When to use
 
 Invoke with `/worktree-status` to see every active feature worktree at a glance — across
-**both** projects (ETM and MPS-TRM): which slot it's on (TRM slots show as `trm:N`),
+**both** projects (ETM and TRM): which slot it's on (TRM slots show as `trm:N`),
 its project, whether its servers are alive, whether the web port is actually serving, how
 far the branch is ahead/behind `origin/master`, and which slots are free per project
 (NG and TRM have disjoint port ranges — `300N`/`808N` vs `517N`). Run it anywhere (it reads

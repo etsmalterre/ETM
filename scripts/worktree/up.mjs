@@ -9,7 +9,7 @@
 // as the only way back up.
 //
 // <feature-name> is kebab-case; it yields branch `feat/<name>` and worktree
-// `<repo>-<name>` beside the repo (repo = ETM for ng, MPS-TRM for trm).
+// `<repo>-<name>` beside the repo (repo = ETM for ng, TRM for trm).
 // Project defaults to `ng`. Idempotency is intentionally NOT assumed — if the
 // branch or dir already exists the script aborts so you don't clobber work.
 //
@@ -29,7 +29,7 @@ import {
 } from './lib.mjs'
 
 // Default project = the repo this script is invoked from (so `up.mjs <feature>`
-// makes a TRM worktree when run from the MPS-TRM checkout, an NG one from ETM),
+// makes a TRM worktree when run from the TRM checkout, an NG one from ETM),
 // overridable by the positional arg. Falls back to ng if the repo is unrecognized.
 function detectDefaultProject() {
   try {

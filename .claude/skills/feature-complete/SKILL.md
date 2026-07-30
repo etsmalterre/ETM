@@ -3,7 +3,7 @@
 ## When to use
 
 Invoke with `/feature-complete` **from inside a feature worktree** (`../ETM-<name>` or
-`../MPS-TRM-<name>`, on branch `feat/<name>`) when a screen is finished and ready to land.
+`../TRM-<name>`, on branch `feat/<name>`) when a screen is finished and ready to land.
 It commits, rebases onto `master` (resolving conflicts with this screen's context),
 fast-forward-merges into `master`, then shuts down this slot's dev servers, removes the
 worktree, and deletes the branch.
@@ -15,12 +15,12 @@ HERE (you have the context), so `master` only ever sees a fast-forward.
 
 ## Project-aware
 
-This worktree is either **ETM** or **MPS-TRM**. Detect which from the repo (web package
+This worktree is either **ETM** or **TRM**. Detect which from the repo (web package
 name — `@mps/web` for NG, `@mps-trm/web` for TRM) and substitute throughout:
 
-| | ETM | MPS-TRM |
+| | ETM | TRM |
 |---|---|---|
-| Main checkout | `C:\dev\etsmalterre\ETM` | `C:\dev\etsmalterre\MPS-TRM` |
+| Main checkout | `C:\dev\etsmalterre\ETM` | `C:\dev\etsmalterre\TRM` |
 | Web package | `@mps/web` | `@mps-trm/web` |
 | API package | `@mps/api` | *(none — skip API steps)* |
 | Merge-log file | `claude_doc/worktree-merge-log.md` | *(none — skip if absent)* |
@@ -49,18 +49,18 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 
 ## Shared-API changes (TRM features)
 
-MPS-TRM is frontend-only; its endpoints are part of the ETM API. The rule:
+TRM is frontend-only; its endpoints are part of the ETM API. The rule:
 **API changes always flow through ETM's own pipeline — worktree → `feat/*` branch →
 NG `master` → NG `/mps_deploy` — regardless of which frontend consumes them.**
 
 For a TRM feature that needs API work, the setup is a **pair of worktrees**:
 - an NG worktree (`../ETM-<name>`) holding the API changes, and
-- this TRM worktree (`../MPS-TRM-<name>`) holding the screen, spun up with
+- this TRM worktree (`../TRM-<name>`) holding the screen, spun up with
   `--api 808N` pointing at the NG worktree's API.
 
 Landing order: **NG branch first** (its API lands on NG `master`), then the TRM branch.
 Deploys are separate per repo: `/mps_deploy` from ETM ships the API (+ NG web);
-`/mps_deploy` from MPS-TRM ships the TRM web.
+`/mps_deploy` from TRM ships the TRM web.
 
 ## Steps
 

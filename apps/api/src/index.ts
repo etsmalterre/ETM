@@ -129,7 +129,7 @@ app.use('/api/suivi-lots', suiviLotsRouter)
 app.use('/api/dossiers-qualite', dossiersQualiteRouter)
 app.use('/api/actions-qualite', actionsQualiteRouter)
 app.use('/api/rapports', rapportsRouter)
-// TRM atelier planning — consumed by the MPS-TRM web app (C:\dev\etsmalterre\MPS-TRM)
+// TRM atelier planning — consumed by the TRM web app (C:\dev\etsmalterre\TRM)
 app.use('/api/planning-atelier', planningAtelierRouter)
 
 app.listen(PORT, () => {

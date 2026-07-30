@@ -2,17 +2,17 @@
 
 Work on multiple screens at once — one worktree per screen, one Claude per worktree, each with
 its own local dev stack. Driven by the worktree skills + `scripts/worktree/*.mjs`. Supports
-**two projects**: `ng` (ETM — API + web, the default) and `trm` (the sibling MPS-TRM repo —
+**two projects**: `ng` (ETM — API + web, the default) and `trm` (the sibling TRM repo —
 web only). The scripts live in the ETM checkout and drive both; the TRM repo is resolved as
-the sibling directory (`../MPS-TRM`).
+the sibling directory (`../TRM`).
 
 ## Mental model
 
 - **`C:\dev\etsmalterre\ETM` is the integration tree.** It stays permanently on `master` and is
   where features merge in and where you deploy from. **Do not do feature work here.** (A branch can
-  be checked out in only one worktree, so `master` must live in one fixed place.) MPS-TRM
-  (`C:\dev\etsmalterre\MPS-TRM`) is its own integration tree with the same discipline.
-- **Each screen gets a worktree** `../ETM-<feature>` (or `../MPS-TRM-<feature>`) on branch
+  be checked out in only one worktree, so `master` must live in one fixed place.) TRM
+  (`C:\dev\etsmalterre\TRM`) is its own integration tree with the same discipline.
+- **Each screen gets a worktree** `../ETM-<feature>` (or `../TRM-<feature>`) on branch
   `feat/<feature>`, created off that repo's current `origin/master`.
 - All worktrees share the **same local HFSQL** (`localhost:4900`) — do NOT fork the DB per tree.
 - All worktrees share `node_modules`? No — each worktree runs its own `pnpm install` (the pnpm
@@ -23,11 +23,11 @@ the sibling directory (`../MPS-TRM`).
 Six slots **per project**; slot **N** (1–6). The two projects have **disjoint port ranges**, so
 an NG slot and a TRM slot with the same number never collide:
 
-| | ETM (`ng`) | MPS-TRM (`trm`) |
+| | ETM (`ng`) | TRM (`trm`) |
 |---|---|---|
 | API port | `8080 + N` (pnpm `@mps/api dev:808N`) | *none* — targets an ETM API over HTTP |
 | Web port | `3000 + N` (pnpm `@mps/web dev:300N`, targets API `808N`) | `5170 + N` (pnpm `@mps-trm/web dev:517N`) |
-| Worktree | `../ETM-<feature>` | `../MPS-TRM-<feature>` |
+| Worktree | `../ETM-<feature>` | `../TRM-<feature>` |
 | Branch | `feat/<feature>` | `feat/<feature>` |
 | URL | `http://localhost:300N` | `http://localhost:517N` |
 
@@ -39,7 +39,7 @@ target is written to the TRM worktree's `apps/web/.env.development.local` as `VI
 
 ## Shared-API changes (TRM features) — the paired-worktree rule
 
-The ETM API serves both frontends; MPS-TRM has none of its own. The invariant:
+The ETM API serves both frontends; TRM has none of its own. The invariant:
 **API changes always flow through ETM's own pipeline — NG worktree → `feat/*` branch →
 NG `master` → NG `/mps_deploy` — regardless of which frontend consumes them.** Never edit
 `apps/api` in the ETM main checkout (it's the integration tree, and a dirty tree blocks
