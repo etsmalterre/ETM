@@ -66,10 +66,43 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
 
 1. **Confirm the branch.** `git branch --show-current` must be `feat/<name>`. If not, STOP.
 
-2. **Write the note + final commit.** Review the full diff. Craft a thorough summary of what
-   this screen does — this is the **note**, used as the merge-commit message. If the project
-   has a merge log (`claude_doc/worktree-merge-log.md` — NG only), prepend a dated entry
-   (newest first). Commit any remaining work plus the log entry on the branch. End the commit
+2. **Promote the durable learnings, then write the note + final commit.**
+
+   **2a — update `CLAUDE.md` (the rules sheet).** Review the full diff and ask: what must a
+   *future* session know that it could not infer from reading the code? Add only that, editing
+   the `CLAUDE.md` **in this worktree**, so the rule lands with the feature instead of arriving
+   later as a stray commit on `master`. Typical entries:
+   - a new HFSQL quirk or footgun → § HFSQL rules
+   - a screen now implemented → § Navigation Structure (route, layout, tables it touches)
+   - a new API route, convention, or architecture decision
+   - a **systemic** bug fixed → record the *pattern*, so it is not repeated
+
+   Rules: durable only — the blow-by-blow of this feature belongs in the merge log, not here;
+   one or two lines per item; match the surrounding formatting; **never delete a rule the user
+   added** (those encode real incidents). Nothing durable came out of this feature? Skip 2a and
+   say so in the report — that is a normal outcome, not a failure.
+
+   **2b — keep `CLAUDE.md` lean.** It is loaded into context on *every* session, so its size is
+   a permanent tax. Measure after editing:
+   ```bash
+   wc -l CLAUDE.md && wc -c CLAUDE.md
+   ```
+   Under **20 KB** is healthy. Over it, still add your line — **never block the landing on
+   file size** — but flag the overage in step 8 and offer the extraction. The fix is nearly
+   always the same shape: a section longer than ~15 lines covering one subsystem moves to
+   `claude_doc/<topic>.md` and leaves a one-line row in the "Reference Documentation" table
+   ("load on demand when…"). Also worth hunting: the same rule stated in two places, phase
+   notes for completed phases, references to deleted files. **Propose any non-trivial
+   extraction before doing it** — never silently relocate content the user relies on.
+
+   *Known state (2026-07-30):* ETM's `CLAUDE.md` is ~53 KB and needs a dedicated extraction
+   pass; TRM's is ~11 KB and healthy. Until that pass happens, ETM will report over budget
+   every time — mention it once, don't re-litigate it.
+
+   **2c — the note + commit.** Craft a thorough summary of what this screen does — this is the
+   **note**, used as the merge-commit message. If the project has a merge log
+   (`claude_doc/worktree-merge-log.md` — NG only), prepend a dated entry (newest first). Commit
+   any remaining work plus the log entry and any `CLAUDE.md` edits on the branch. End the commit
    body with:
    ```
    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
@@ -132,7 +165,9 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    scripts/worktree/reap.mjs` there after you close this session).
 
 8. **Report.** Confirm: merged to `master` (show `git -C <MAIN> log --oneline -3`) and
-   slot freed. State whether the worktree dir was removed now or deferred (per the script's
+   slot freed. State what went into `CLAUDE.md` in step 2a (or that nothing durable came up),
+   and flag it if the file is over its size budget.
+   State whether the worktree dir was removed now or deferred (per the script's
    output). Tell the user to **close this Claude session / terminal** — the work is on `master`,
    and any deferred dir cleans itself up on the next worktree skill. Shipping is a separate
    `/etm_deploy` (or `/trm_deploy`) from the main checkout.
