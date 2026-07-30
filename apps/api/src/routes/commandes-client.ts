@@ -2211,9 +2211,41 @@ interface SupplyPayload {
 // Open (in-progress) line statuses — sent to the sous-traitant and awaiting /
 // in production. Excludes Non_Envoye (draft) and Terminé (done). ASCII literals
 // only, so no accented-identifier hazard on the Linux bridge.
-const SUPPLY_OPEN_STATUTS = "'En_Cours','Attente_Delai'"
-const SSTATUT_LABELS: Record<string, string> = {
-  En_Cours: 'En cours', Attente_Delai: 'Attente délai', Non_Envoye: 'Non envoyé',
+// Which sst lines still feed a client line: everything that is NOT finished —
+// deliberately a denylist. It used to enumerate the open statuts
+// ('En_Cours','Attente_Delai'), which silently hid every other live state: a
+// brand-new order starts `Non_Envoye` (so an order created from the drawer's
+// own "Nouvelle commande" button never showed up in the table right above it,
+// and neither did a knitting order for any external tricoteur — createKnitOrder
+// only uses Attente_Delai for Tricotage Malterre), and the legacy
+// `Notification` / `Soumis_Au_Client` lines were invisible too. `Terminé` is
+// the only finished state (isLineDone in sst-shared) and `cst.est_soldee = 0`
+// already drops settled orders.
+//
+// Matched on the ASCII prefix on purpose — the value is accented and naming
+// 'Terminé' in SQL would push raw UTF-8 through the Linux bridge (CLAUDE.md:
+// corrupts it). A JS-side isLineDone() is NOT an option either: ODBC returns
+// the value as 'Termin�', so the comparison would never match and every
+// finished line would be treated as open. Verified 2026-07-30.
+const SUPPLY_NOT_DONE = (alias: string) =>
+  `(${alias}.sstatut IS NULL OR ${alias}.sstatut NOT LIKE 'Termin%')`
+
+const SSTATUT_LABELS: Array<[prefix: string, label: string]> = [
+  ['En_Cours', 'En cours'], ['Attente_Delai', 'Attente délai'], ['Non_Envoye', 'Non envoyé'],
+  ['Notification', 'Notification'], ['Soumis_Au_Client', 'Soumis au client'],
+  ['A_Soumettre', 'À soumettre'], ['Non_Affect', 'Non affecté'], ['Delai_Expir', 'Délai expiré'],
+  ['En_Contr', 'En contrôle'], ['En_Reprise', 'En reprise'], ['En_Cr', 'En création'],
+  ['Termin', 'Terminé'],
+]
+
+/** Label for a legacy `sstatut`. Keyed on the ASCII prefix because the accented
+ *  values arrive mangled from ODBC (`Delai_Expiré` → `Delai_Expir�`), so an
+ *  exact-match map would fall through and print the mojibake to the user. */
+function sstatutLabel(raw: unknown): string {
+  const s = String(raw ?? '').trim()
+  const ascii = s.replace(/[^\x20-\x7E]/g, '')
+  for (const [prefix, label] of SSTATUT_LABELS) if (ascii.startsWith(prefix)) return label
+  return ascii || s
 }
 const round2c = (v: number) => Math.round(v * 100) / 100
 
@@ -2230,7 +2262,7 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
        FROM ligne_commande_sous_traitant lcs
        JOIN commande_sous_traitant cst ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant
       WHERE lcs.type = 1 AND lcs.IDreference = ${ecruRefId}${coloriFilter}
-        AND cst.est_soldee = 0 AND lcs.sstatut IN (${SUPPLY_OPEN_STATUTS})`,
+        AND cst.est_soldee = 0 AND ${SUPPLY_NOT_DONE('lcs')}`,
   )
   if (lines.length === 0) return []
   const lineIds = lines.map((l: any) => Number(l.lid)).filter((x: number) => x > 0)
@@ -2265,7 +2297,7 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
       date_commande: l.dc ?? null,
       sous_traitant_nom: sstNames.get(Number(l.sstid)) ?? null,
       date_livraison: l.dl ?? null,
-      etat_label: SSTATUT_LABELS[String(l.st)] ?? String(l.st ?? ''),
+      etat_label: sstatutLabel(l.st),
       poids_disponible: round2c(dispo),
       poids_affecte: round2c(aff),
       metrage_potentiel: round2c(aff * rendement),
@@ -2286,7 +2318,7 @@ async function buildEnnoblissement(finiRefId: number, rendement: number, coloriI
        JOIN commande_sous_traitant cst ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant
       WHERE lcs.type = 2 AND lcs.IDreference = ${finiRefId}
         AND (${coloriId} = 0 OR lcs.IDColoris = ${coloriId})
-        AND cst.est_soldee = 0 AND lcs.sstatut IN (${SUPPLY_OPEN_STATUTS})`,
+        AND cst.est_soldee = 0 AND ${SUPPLY_NOT_DONE('lcs')}`,
   )
   if (lines.length === 0) return []
   const lineIds = lines.map((l: any) => Number(l.lid)).filter((x: number) => x > 0)
@@ -2318,7 +2350,7 @@ async function buildEnnoblissement(finiRefId: number, rendement: number, coloriI
       date_commande: l.dc ?? null,
       sous_traitant_nom: sstNames.get(Number(l.sstid)) ?? null,
       date_livraison: l.dl ?? null,
-      etat_label: SSTATUT_LABELS[String(l.st)] ?? String(l.st ?? ''),
+      etat_label: sstatutLabel(l.st),
       qte_disponible: round2c((dispoKg.get(lid) ?? 0) * rendement),
       qte_affecte: round2c((affKg.get(lid) ?? 0) * rendement),
     }
