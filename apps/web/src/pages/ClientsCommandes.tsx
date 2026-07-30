@@ -4825,6 +4825,11 @@ function LineFormDialog({
   const canUnlockPrice = useHasPermission('deverrouiller_tarifs')
   // Debounced quantity for the auto-price query (avoid a request per keystroke).
   const [debouncedQuantite, setDebouncedQuantite] = useState('')
+  // Divers (type 3) don't go through the roll-tranche tariff: their price is a
+  // flat per-(ref, variation1, variation2) cell of the tarif_divers grid. Same
+  // resolver + free manual override as the Expéditions article dialog — no
+  // padlock, because this is a catalogue price, not a computed tariff.
+  const [diversPrixTouched, setDiversPrixTouched] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -4842,9 +4847,13 @@ function LineFormDialog({
         commentaire: line.commentaire ?? '',
       })
       setPriceLocked(false) // preserve the saved price until the user re-locks
+      // Same intent for divers, except a stored 0 is not a price worth keeping
+      // (lines created before divers were grid-priced) — let the grid fill it.
+      setDiversPrixTouched(Number(line.prix) > 0)
     } else {
       setForm(emptyLineForm)
       setPriceLocked(true)
+      setDiversPrixTouched(false)
     }
     setError(null)
   }, [open, line])
@@ -4910,6 +4919,22 @@ function LineFormDialog({
   const diversVars1 = (diversVariations ?? []).filter((v) => v.niveau <= 1)
   const diversVars2 = (diversVariations ?? []).filter((v) => v.niveau === 2)
 
+  // tarif_divers grid price for the exact (ref, v1, v2) combo — the endpoint
+  // falls back (v1,0) → (0,0) → ref_divers.prix_unitaire, and returns 0 when the
+  // reference has no tariff at all, which leaves the field free for manual entry.
+  const { data: diversPrix } = useQuery<{ prix: number }>({
+    queryKey: ['exp-divers-prix', form.IDreference, form.IDVariation1, form.IDVariation2],
+    queryFn: () => apiFetch(
+      `/expeditions/divers/lookups/prix?ref=${form.IDreference}&v1=${form.IDVariation1}&v2=${form.IDVariation2}`,
+    ),
+    enabled: open && form.type === 3 && form.IDreference > 0,
+  })
+  useEffect(() => {
+    if (!open || form.type !== 3 || diversPrixTouched || !diversPrix) return
+    const next = diversPrix.prix > 0 ? String(diversPrix.prix) : ''
+    setForm((f) => (f.prix === next ? f : { ...f, prix: next }))
+  }, [open, form.type, diversPrixTouched, diversPrix])
+
   // Coloris lookup for the selected ref (écru/fini only).
   const { data: coloriOptions } = useQuery<ColoriOption[]>({
     queryKey: ['cc-coloris', form.type, form.IDreference],
@@ -4955,6 +4980,7 @@ function LineFormDialog({
         .map((r) => ({ id: r.IDref_divers, primary: r.designation, secondary: r.unite_label || undefined }))
 
   const setType = (t: number) => {
+    setDiversPrixTouched(false)
     setForm({ ...form, type: t, IDreference: 0, IDcolori: 0, IDVariation1: 0, IDVariation2: 0, unite: t === 1 ? 1 : t === 3 ? 4 : 3 })
   }
 
@@ -4996,7 +5022,10 @@ function LineFormDialog({
             <SearchableCombobox<{ id: number; primary: string; secondary?: string }>
               options={refOptions}
               value={form.IDreference}
-              onChange={(id) => setForm({ ...form, IDreference: id, IDcolori: 0, IDVariation1: 0, IDVariation2: 0 })}
+              onChange={(id) => {
+                setDiversPrixTouched(false) // new combo → re-resolve the grid price
+                setForm({ ...form, IDreference: id, IDcolori: 0, IDVariation1: 0, IDVariation2: 0 })
+              }}
               getId={(r) => r.id}
               getPrimary={(r) => r.primary}
               getSecondary={(r) => r.secondary}
@@ -5026,7 +5055,7 @@ function LineFormDialog({
               <PopoverSelect
                 options={diversVars1.map((v) => ({ id: v.IDref_divers_variation, primary: v.designation }))}
                 value={form.IDVariation1}
-                onChange={(id) => setForm({ ...form, IDVariation1: id })}
+                onChange={(id) => { setDiversPrixTouched(false); setForm({ ...form, IDVariation1: id }) }}
                 emptyLabel="— aucune —"
               />
             </div>
@@ -5039,7 +5068,7 @@ function LineFormDialog({
               <PopoverSelect
                 options={diversVars2.map((v) => ({ id: v.IDref_divers_variation, primary: v.designation }))}
                 value={form.IDVariation2}
-                onChange={(id) => setForm({ ...form, IDVariation2: id })}
+                onChange={(id) => { setDiversPrixTouched(false); setForm({ ...form, IDVariation2: id }) }}
                 emptyLabel="— aucune —"
               />
             </div>
@@ -5064,7 +5093,10 @@ function LineFormDialog({
                 <input
                   type="number"
                   value={form.prix}
-                  onChange={(e) => setForm({ ...form, prix: e.target.value })}
+                  onChange={(e) => {
+                    if (form.type === 3) setDiversPrixTouched(true) // stop auto-filling from the grid
+                    setForm({ ...form, prix: e.target.value })
+                  }}
                   readOnly={priceReadOnly}
                   className={cn(inputClass, priceReadOnly && 'bg-zinc-100 text-muted-foreground cursor-not-allowed')}
                 />

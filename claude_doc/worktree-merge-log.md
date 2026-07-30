@@ -10,6 +10,37 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/cmd-divers
+**Prix unitaire et montant sur les lignes divers des commandes clients.**
+
+Les lignes divers (`ligne_commande_client.TYPE = 3`) s'enregistraient avec `prix = 0` : la
+boîte « Nouvelle ligne » ne calculait un tarif que pour l'écru et le fini (barème par tranches
+de rouleaux) et laissait le divers en saisie libre, que personne ne remplissait. La carte de
+ligne affiche pourtant déjà `Prix u.` et `Montant` pour tous les types — les deux stats sont
+simplement conditionnées à `prix > 0` — donc elles restaient invisibles et le total de la
+commande affichait 0,00 €.
+
+Le divers se tarife désormais sur la **grille `tarif_divers`**, via le résolveur et l'endpoint
+qui existaient déjà pour la boîte article des Expéditions
+(`GET /expeditions/divers/lookups/prix`, repli combinaison exacte → `(v1,0)` → `(0,0)` →
+`ref_divers.prix_unitaire`). Le prix se recalcule à chaque changement de référence ou d'axe de
+variation, et se fige dès que l'utilisateur saisit lui-même un montant. **Pas de cadenas ni de
+permission `deverrouiller_tarifs`** ici, contrairement à l'écru/fini : c'est un prix catalogue,
+pas un tarif calculé, et ~417 des 1 836 lignes divers existantes visent des références sans
+aucune entrée dans la grille — la saisie manuelle doit rester ouverte.
+
+⚠️ Deux faits de données à retenir : une référence à **deux axes n'a pas de ligne `(0,0)`**
+(« Tissu Voltige » = 533 cellules couleur × taille), donc le champ reste légitimement vide tant
+que les deux axes ne sont pas choisis — ce n'est pas un bug ; et une ligne enregistrée garde son
+`prix` comme instantané pris à la commande (rejouer la grille sur les lignes legacy en reproduit
+1 346 à l'identique et en écarte 59, antérieures à un changement de tarif) — on ne recalcule
+jamais le prix d'une ligne existante, seul un `0` stocké est re-rempli.
+
+Vérifié dans l'app : Tissu Voltige ® / Noir / 20 Mètres → 86,80 €, soit exactement la cellule
+(344, 328) de la grille. **Les lignes existantes à 0 ne sont pas reprises** — les rouvrir en
+édition pré-remplit le prix, un ré-enregistrement suffit ; un script de backfill reste à faire
+si le volume le justifie en production.
+
 ## 2026-07-29 — feat/widget
 **Six widgets de tableau de bord — Notifications, Utilisation fil, Suivi pièce, Commandes
 du jour, Charges, Évolution du CA — dont quatre portent des écrans legacy `FI_*.wdw`.**
