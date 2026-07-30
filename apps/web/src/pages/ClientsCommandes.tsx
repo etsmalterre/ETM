@@ -43,6 +43,8 @@ import {
   Truck,
   Gift,
   Boxes,
+  FileSignature,
+  Percent,
 } from 'lucide-react'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -285,7 +287,10 @@ interface RefDiversVariation {
   designation: string
   niveau: number
 }
-interface ColoriOption { id: number; reference: string }
+/** `hors_catalogue` = this coloris is not one the client has registered on the
+ *  reference in Clients › Gestion (only ever true for the coloris an existing
+ *  line already carries, or when the client has no catalogue on that ref). */
+interface ColoriOption { id: number; reference: string; hors_catalogue?: boolean }
 interface LinePriceInfo {
   prix: number | null
   unite: number
@@ -301,6 +306,15 @@ interface LinePriceInfo {
   nextTranchePrix: number | null
   nearNextTranche: boolean
   priceable: boolean
+  /** Which grid priced the line for THIS client on this (référence × coloris):
+   *  contrat négocié, coefficient fixe, or the standard catalogue grid. */
+  tarif_mode: 'standard' | 'coefficient' | 'contrat'
+  coefficient: number
+  /** Contract mode with no contract covering today — the line is refused. */
+  contrat_expire: boolean
+  contrat_date_expiration: string
+  blocked: boolean
+  blocked_reason: string | null
 }
 
 // ── Shared styling ─────────────────────────────────────
@@ -4869,17 +4883,35 @@ function LineFormDialog({
   // cached priceInfo) — keepPreviousData keeps the last result alive after the
   // dialog is cancelled, so without this the note lingers on a fresh empty form.
   const hasPriceInputs = priceableType && form.IDreference > 0 && Number(form.quantite) > 0
-  const { data: priceInfo } = useQuery<LinePriceInfo>({
-    queryKey: ['cc-line-price', form.type, form.IDreference, form.IDcolori, debouncedQuantite, form.unite],
+  // The client is part of the price: its tarif mode on this (référence × coloris)
+  // may be a negotiated contract or a fixed coefficient rather than the standard
+  // grid. It also decides whether the line is sellable at all — hence the query
+  // runs as soon as a reference is picked, WITHOUT waiting for a quantity, so an
+  // expired contract is announced before the user types anything.
+  const { data: priceInfo, isPlaceholderData: priceIsStale } = useQuery<LinePriceInfo>({
+    queryKey: ['cc-line-price', commande.IDclient, form.type, form.IDreference, form.IDcolori, debouncedQuantite, form.unite],
     queryFn: () => apiFetch(
       `/commandes-client/lookups/line-price?type=${form.type}&ref=${form.IDreference}&coloris=${form.IDcolori}`
-      + `&quantite=${encodeURIComponent(debouncedQuantite)}&unite=${form.unite}`,
+      + `&quantite=${encodeURIComponent(debouncedQuantite)}&unite=${form.unite}&client=${commande.IDclient}`,
     ),
-    enabled: open && priceableType && form.IDreference > 0 && Number(debouncedQuantite) > 0,
+    enabled: open && priceableType && form.IDreference > 0,
     // Keep the previous note/price visible while the next quantity recomputes, so
     // the dialog doesn't collapse-and-reflow vertically on every keystroke.
     placeholderData: keepPreviousData,
   })
+  // Never block a save (or flash the red banner) on the PREVIOUS reference's
+  // answer: keepPreviousData keeps it alive until the new one lands.
+  const contratExpire = !priceIsStale && !!priceInfo?.blocked && priceableType && form.IDreference > 0
+  // An existing line taken while the contract was still valid stays editable for
+  // its date or its comment — only a commercial change (référence, coloris,
+  // quantité, prix) is refused. Mirrors the API's own PUT guard.
+  const commercialChanged = isNew || !line
+    || form.type !== line.type
+    || form.IDreference !== line.IDreference
+    || form.IDcolori !== line.IDcolori
+    || (Number(form.quantite) || 0) !== (Number(line.quantite) || 0)
+    || Math.round((Number(form.prix) || 0) * 100) !== Math.round((Number(line.prix) || 0) * 100)
+  const contratBlocksSave = contratExpire && commercialChanged
 
   // When locked and the tariff produced a price, push it into the form.
   useEffect(() => {
@@ -4935,18 +4967,29 @@ function LineFormDialog({
     setForm((f) => (f.prix === next ? f : { ...f, prix: next }))
   }, [open, form.type, diversPrixTouched, diversPrix])
 
-  // Coloris lookup for the selected ref (écru/fini only).
+  // Coloris lookup for the selected ref (écru/fini only), narrowed to the
+  // coloris THIS client buys on that reference (Clients › Gestion). A reference
+  // can carry hundreds of coloris dyed for other customers — offering them all
+  // is how a line ends up on a colour the client never ordered. `current` keeps
+  // an existing line's coloris in the list even when it predates the catalogue.
+  const currentColori = line?.IDcolori ?? 0
   const { data: coloriOptions } = useQuery<ColoriOption[]>({
-    queryKey: ['cc-coloris', form.type, form.IDreference],
+    queryKey: ['cc-coloris', commande.IDclient, form.type, form.IDreference, currentColori],
     queryFn: async () => {
+      const scope = `&client=${commande.IDclient}&current=${currentColori}`
       if (form.type === 1) {
-        const rows = await apiFetch<{ IDcolori_ecru: number; reference: string }[]>(`/commandes-client/lookups/colori-ecru?ref_ecru=${form.IDreference}`)
-        return rows.map((r) => ({ id: r.IDcolori_ecru, reference: r.reference }))
+        const rows = await apiFetch<{ IDcolori_ecru: number; reference: string; hors_catalogue?: boolean }[]>(
+          `/commandes-client/lookups/colori-ecru?ref_ecru=${form.IDreference}${scope}`,
+        )
+        return rows.map((r) => ({ id: r.IDcolori_ecru, reference: r.reference, hors_catalogue: r.hors_catalogue }))
       }
-      return apiFetch<ColoriOption[]>(`/commandes-client/lookups/colori-fini?ref_fini=${form.IDreference}`)
+      return apiFetch<ColoriOption[]>(`/commandes-client/lookups/colori-fini?ref_fini=${form.IDreference}${scope}`)
     },
     enabled: open && form.IDreference > 0 && (form.type === 1 || form.type === 2),
   })
+  // Every option flagged = the client has no coloris registered on this ref, so
+  // the full list is shown as a fallback rather than an empty picker.
+  const coloriCatalogueVide = (coloriOptions ?? []).length > 0 && (coloriOptions ?? []).every((c) => c.hors_catalogue)
 
   const saveMut = useMutation({
     mutationFn: () => {
@@ -4967,7 +5010,18 @@ function LineFormDialog({
         : apiFetch(`/commandes-client/lignes/${line!.IDligne_commande_client}`, { method: 'PUT', body })
     },
     onSuccess,
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Erreur'),
+    onError: (e: unknown) => {
+      // 409 = the API's own contract guard (a stale form, or the contract
+      // lapsed between opening the dialog and saving). apiFetch doesn't carry
+      // the server's message, so restate it here.
+      const status = (e as { status?: number } | null)?.status
+      if (status === 409) {
+        setError(priceInfo?.blocked_reason
+          ?? 'Contrat expiré — cette référence n’est plus disponible tant qu’un nouveau contrat n’a pas été établi.')
+        return
+      }
+      setError(e instanceof Error ? e.message : 'Erreur')
+    },
   })
 
   const refOptions = form.type === 1
@@ -4984,7 +5038,9 @@ function LineFormDialog({
     setForm({ ...form, type: t, IDreference: 0, IDcolori: 0, IDVariation1: 0, IDVariation2: 0, unite: t === 1 ? 1 : t === 3 ? 4 : 3 })
   }
 
-  const canSave = form.IDreference > 0 && Number(form.quantite) > 0
+  // An expired contract makes the reference unsellable — same rule as the fiche
+  // client, enforced again on the API (409 contrat_expire).
+  const canSave = form.IDreference > 0 && Number(form.quantite) > 0 && !contratBlocksSave
 
   if (!open) return null
 
@@ -5036,13 +5092,51 @@ function LineFormDialog({
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Coloris</label>
               <PopoverSelect
-                options={(coloriOptions ?? []).map((c) => ({ id: c.id, primary: c.reference }))}
+                options={(coloriOptions ?? []).map((c) => ({
+                  id: c.id,
+                  primary: c.reference,
+                  secondary: c.hors_catalogue && !coloriCatalogueVide ? 'hors catalogue' : undefined,
+                }))}
                 value={form.IDcolori}
                 onChange={(id) => setForm({ ...form, IDcolori: id })}
                 disabled={!form.IDreference}
                 emptyLabel="— Choisir —"
               />
+              {coloriCatalogueVide && (
+                <p className="text-[11px] text-muted-foreground italic">
+                  Aucun coloris enregistré pour ce client sur cette référence — liste complète affichée.
+                </p>
+              )}
             </div>
+          )}
+          {/* Expired contract: the negotiated prices are gone and the reference
+              is not sellable until a new contract is signed. Never a silent
+              fall back to the standard grid — that is exactly how an order left
+              at the catalogue price a month after the contract lapsed. */}
+          {contratExpire && (
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-red-500/25 bg-red-500/10 text-red-700 text-xs font-medium">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>
+                {priceInfo?.blocked_reason}
+                {!isNew && !commercialChanged && (
+                  <> La ligne existante reste modifiable pour sa date et son commentaire.</>
+                )}
+              </span>
+            </div>
+          )}
+          {/* Which grid priced this line — silence for the standard one, since
+              that is the default the user already assumes. */}
+          {!contratExpire && !priceIsStale && priceInfo?.tarif_mode === 'contrat' && (
+            <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+              <FileSignature className="h-3.5 w-3.5 flex-shrink-0" />
+              Prix contrat client{priceInfo.contrat_date_expiration ? ` — jusqu’au ${formatHfsqlDate(priceInfo.contrat_date_expiration)}` : ''}
+            </p>
+          )}
+          {!contratExpire && !priceIsStale && priceInfo?.tarif_mode === 'coefficient' && priceInfo.coefficient > 0 && (
+            <p className="flex items-center gap-1.5 text-xs font-medium text-sky-700">
+              <Percent className="h-3.5 w-3.5 flex-shrink-0" />
+              Tarif client — coefficient {priceInfo.coefficient} %
+            </p>
           )}
           {/* Divers: the two variation axes narrow the catalog ref down to the
               exact article shipped — they key both the stock ledger and the

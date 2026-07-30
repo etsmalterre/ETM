@@ -35,6 +35,9 @@ import {
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
+import {
+  NB_RLX_TO_TRANCHE_IDX, DEFAULT_TRANCHE_IDX, parseLstTrancheIdx, fetchTarifModes,
+} from '../lib/tarif-client.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
@@ -678,125 +681,9 @@ clientsRouter.get('/:id/historique', async (req: Request, res: Response) => {
 })
 
 // ── Client tarif modes (standard / coefficient fixe / contrat) ──
-// Legacy model, per ref_client_colori (référence client × coloris):
-//   • standard     — nothing stored; PrixDeVenteV4 with the degressive
-//                    per-tranche margins (COEFFICIENT_V2).
-//   • coefficient  — one tranche_tarifaire row (IDref_client_colori set,
-//                    IDcontrat_tarif = 0) whose `coefficient` (%, e.g. 20)
-//                    replaces the degressive margin on every tranche.
-//   • contrat      — ref_client_colori.contrat = 1 + contrat_tarif rows
-//                    (date_debut / date_expiration; renewals pile up as
-//                    history) + tranche_tarifaire rows carrying the
-//                    negotiated prix_saisi (€/Ml) per nb_rouleaux, linked
-//                    via IDcontrat_tarif.
-// tranche_tarifaire's qtéMin/qtéMax and contrat_tarif's archivé are accented —
-// never named in any SELECT/INSERT below (explicit ASCII column lists only).
-
-/** nb_rouleaux (0 = métrage "<1") → tranche index in the 9-tranche array. */
-const NB_RLX_TO_TRANCHE_IDX: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 10: 6, 15: 7, 30: 8 }
-
-/** Default visible tranches: up to 10 rouleaux (indices 0..6). The 15/30
- *  rouleaux rows (7/8) are only shown once negotiated per client. */
-const DEFAULT_TRANCHE_IDX = [0, 1, 2, 3, 4, 5, 6]
-
-/** Parse ref_client_colori.lst_tranche ("0,1,2,3,4,5,6" = indices into the
- *  9-tranche array <1,1,2,3,4,5,10,15,30 rlx) — empty falls back to the
- *  up-to-10-rouleaux default, matching the legacy Fiche Tarifs behavior. */
-function parseLstTrancheIdx(raw: string | null | undefined): number[] {
-  const idx = [...new Set(
-    String(raw ?? '')
-      .split(',')
-      .map((s) => parseInt(s.trim(), 10))
-      .filter((n) => Number.isInteger(n) && n >= 0 && n <= 8),
-  )].sort((a, b) => a - b)
-  return idx.length === 0 ? [...DEFAULT_TRANCHE_IDX] : idx
-}
-
-interface ContratTarifInfo {
-  IDcontrat_tarif: number
-  date_debut: string
-  date_expiration: string
-  tranches: { nb_rouleaux: number; prix: number }[]
-}
-
-interface TarifModeInfo {
-  tarif_mode: 'standard' | 'coefficient' | 'contrat'
-  coefficient: number
-  contrats: ContratTarifInfo[]
-  contrat_actif: ContratTarifInfo | null
-  contrat_expire: boolean
-}
-
-/** Batched tarif-mode resolution for a set of ref_client_colori rows
- *  (two flat queries total — never per-row). `contrat` is the flag off the
- *  rcc row itself. */
-async function fetchTarifModes(rccs: { id: number; contrat: number }[]): Promise<Map<number, TarifModeInfo>> {
-  const out = new Map<number, TarifModeInfo>()
-  const ids = [...new Set(rccs.map((r) => r.id).filter((n) => Number.isInteger(n) && n > 0))]
-  if (ids.length === 0) return out
-
-  const [ttRows, ctRows] = await Promise.all([
-    query<Record<string, unknown>>(
-      `SELECT IDtranche_tarifaire, IDref_client_colori, nb_rouleaux, coefficient, prix_saisi, IDcontrat_tarif ` +
-        `FROM tranche_tarifaire WHERE IDref_client_colori IN (${ids.join(',')})`,
-    ),
-    query<Record<string, unknown>>(
-      `SELECT IDcontrat_tarif, IDref_client_colori, date_debut, date_expiration ` +
-        `FROM contrat_tarif WHERE IDref_client_colori IN (${ids.join(',')})`,
-    ),
-  ])
-
-  const coefByRcc = new Map<number, number>()
-  const tranchesByContrat = new Map<number, { nb_rouleaux: number; prix: number }[]>()
-  for (const t of ttRows) {
-    const cid = numOf(t.IDcontrat_tarif)
-    if (cid > 0) {
-      const arr = tranchesByContrat.get(cid) ?? []
-      arr.push({ nb_rouleaux: numOf(t.nb_rouleaux), prix: numOf(t.prix_saisi) })
-      tranchesByContrat.set(cid, arr)
-    } else if (numOf(t.coefficient) > 0) {
-      coefByRcc.set(numOf(t.IDref_client_colori), numOf(t.coefficient))
-    }
-  }
-
-  const contratsByRcc = new Map<number, ContratTarifInfo[]>()
-  for (const c of ctRows) {
-    const rid = numOf(c.IDref_client_colori)
-    const info: ContratTarifInfo = {
-      IDcontrat_tarif: numOf(c.IDcontrat_tarif),
-      date_debut: strOf(c.date_debut) ?? '',
-      date_expiration: strOf(c.date_expiration) ?? '',
-      tranches: (tranchesByContrat.get(numOf(c.IDcontrat_tarif)) ?? []).sort(
-        (a, b) => (NB_RLX_TO_TRANCHE_IDX[a.nb_rouleaux] ?? 99) - (NB_RLX_TO_TRANCHE_IDX[b.nb_rouleaux] ?? 99),
-      ),
-    }
-    const arr = contratsByRcc.get(rid) ?? []
-    arr.push(info)
-    contratsByRcc.set(rid, arr)
-  }
-  for (const arr of contratsByRcc.values()) {
-    // Newest first — YYYYMMDD strings compare lexicographically.
-    arr.sort((a, b) => (a.date_debut === b.date_debut ? b.IDcontrat_tarif - a.IDcontrat_tarif : b.date_debut.localeCompare(a.date_debut)))
-  }
-
-  const today = todayDigits()
-  for (const r of rccs) {
-    const contrats = contratsByRcc.get(r.id) ?? []
-    const actif = contrats.find(
-      (c) => c.date_debut.length === 8 && c.date_expiration.length === 8 && c.date_debut <= today && today <= c.date_expiration,
-    ) ?? null
-    const coefficient = coefByRcc.get(r.id) ?? 0
-    const tarif_mode: TarifModeInfo['tarif_mode'] = r.contrat === 1 ? 'contrat' : coefficient > 0 ? 'coefficient' : 'standard'
-    out.set(r.id, {
-      tarif_mode,
-      coefficient,
-      contrats,
-      contrat_actif: actif,
-      contrat_expire: tarif_mode === 'contrat' && actif === null,
-    })
-  }
-  return out
-}
+// The model and its resolution live in lib/tarif-client.ts — shared with the
+// order path (Clients › Commandes prices its lines off the same modes), so the
+// fiche and the commande can never disagree about what a client pays.
 
 // GET /api/clients/:id/references — client product catalogue
 // (Ref client = designation, Ref interne = ref_fini/ref_ecru, Coloris = ref_client_colori).

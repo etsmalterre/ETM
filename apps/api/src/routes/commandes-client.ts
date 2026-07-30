@@ -34,7 +34,8 @@ import { FacturePdf, type FacturePdfData } from '../lib/pdf/FacturePdf.js'
 import { CgvPdf } from '../lib/pdf/CgvPdf.js'
 import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
-import { calcLignePriceClient } from '../lib/pricing-ligne-client.js'
+import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-ligne-client.js'
+import { resolveLigneTarifMode } from '../lib/tarif-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
 import { loadClientTvaRate } from '../lib/tva.js'
 import { sendMail } from '../lib/gmail.js'
@@ -371,6 +372,76 @@ async function assignedRefIds(clientId: number, col: 'IDref_fini' | 'IDref_ecru'
   return [...ids]
 }
 
+/** The coloris a client buys on a reference — its `ref_client_colori` rows under
+ *  the (non archived, non caché) designation_client entries for that ref.
+ *
+ *  Returns BOTH coloris columns because which one holds the id depends on the
+ *  ref (project_avec_teinture_coloris_rule: dyed refs use `IDref_fini_colori`,
+ *  washed ones `IDcolori_ecru`) and legacy rows do not always follow the rule.
+ *  The caller decides by intersecting with the list it is actually showing —
+ *  see `scopeColoris`. */
+async function clientColorisIds(
+  clientId: number, kind: 1 | 2, refId: number,
+): Promise<{ expected: Set<number>; other: Set<number> }> {
+  const expectedIds = new Set<number>()
+  const otherIds = new Set<number>()
+  if (!(clientId > 0) || !(refId > 0)) return { expected: expectedIds, other: otherIds }
+  const refCol = kind === 1 ? 'IDref_ecru' : 'IDref_fini'
+  const dRows = await query<Record<string, unknown>>(
+    `SELECT * FROM designation_client WHERE IDclient = ${clientId} AND ${refCol} = ${refId}`,
+  )
+  const dIds = dRows
+    .filter((r) => Number(pickKey(r, /^archiv/i)) !== 1 && Number(pickKey(r, /^cach/i)) !== 1)
+    .map((r) => Number(r.IDdesignation_client))
+    .filter((n) => n > 0)
+  if (dIds.length === 0) return { expected: expectedIds, other: otherIds }
+
+  const rccRows = await query<Record<string, unknown>>(
+    `SELECT * FROM ref_client_colori WHERE IDdesignation_client IN (${dIds.join(',')})`,
+  )
+  const active = rccRows.filter((r) => Number(pickKey(r, /^archiv/i)) !== 1)
+  let expectedCol: 'IDref_fini_colori' | 'IDcolori_ecru' = 'IDcolori_ecru'
+  if (kind === 2) {
+    const fRows = await query<{ avec_teinture: number | null }>(
+      `SELECT avec_teinture FROM ref_fini WHERE IDref_fini = ${refId}`,
+    )
+    expectedCol = (Number(fRows[0]?.avec_teinture) || 0) !== 0 ? 'IDref_fini_colori' : 'IDcolori_ecru'
+  }
+  const otherCol = expectedCol === 'IDref_fini_colori' ? 'IDcolori_ecru' : 'IDref_fini_colori'
+  for (const r of active) {
+    const a = Number(r[expectedCol]) || 0; if (a > 0) expectedIds.add(a)
+    const b = Number(r[otherCol]) || 0; if (b > 0) otherIds.add(b)
+  }
+  return { expected: expectedIds, other: otherIds }
+}
+
+/** Narrow a coloris list to the client's catalogue.
+ *
+ *  Three states, and the last two both fall back to the full list rather than
+ *  handing the user an empty picker — a catalogue gap must never make a
+ *  reference unorderable:
+ *   • catalogue usable        → only its coloris, plus `current` if outside it;
+ *   • no catalogue at all     → everything, every row flagged (13 of the 2 025
+ *                               live fini entries have no ref_client_colori);
+ *   • catalogue that matches   → same fallback. Real case: client 202 / ref 1426
+ *     nothing on this list       registers écru coloris of a ref_ecru the fini
+ *                                no longer points at, so the two id sets are
+ *                                disjoint and strict filtering emptied the list.
+ *
+ *  `current` (the coloris an existing line already carries) is always kept and
+ *  flagged, so editing an old line never blanks its coloris — 381 of the 7 062
+ *  legacy lines sit outside the catalogue they were entered from. */
+function scopeColoris<T extends { id: number }>(
+  rows: T[], sets: { expected: Set<number>; other: Set<number> }, current: number,
+): (T & { hors_catalogue: boolean })[] {
+  const hits = (s: Set<number>) => rows.filter((r) => s.has(r.id)).length
+  const allowed = hits(sets.expected) > 0 ? sets.expected : hits(sets.other) > 0 ? sets.other : null
+  if (!allowed) return rows.map((r) => ({ ...r, hors_catalogue: true }))
+  return rows
+    .filter((r) => allowed.has(r.id) || (current > 0 && r.id === current))
+    .map((r) => ({ ...r, hors_catalogue: !allowed.has(r.id) }))
+}
+
 // Écru references (type-1 lines). When `client` is given, restrict to the refs
 // assigned to that client in designation_client (the buyable catalogue).
 commandesClientRouter.get('/lookups/refs-ecru', async (req: Request, res: Response) => {
@@ -393,16 +464,32 @@ commandesClientRouter.get('/lookups/refs-ecru', async (req: Request, res: Respon
   }
 })
 
+// Coloris of an écru ref. With `client`, the list is narrowed to the coloris
+// that client buys on it (Clients › Gestion), because a reference can carry
+// hundreds of coloris made for OTHER customers — picking one of those is how a
+// line ends up ordering a colour this client never bought.
+// Without `client` the full list is returned, which is what Clients › Gestion
+// itself needs (it is the screen where the catalogue is built).
 commandesClientRouter.get('/lookups/colori-ecru', async (req: Request, res: Response) => {
   try {
     const refEcru = parseInt(String(req.query.ref_ecru ?? ''), 10)
+    const cid = parseInt(String(req.query.client ?? ''), 10) || 0
+    const current = parseInt(String(req.query.current ?? ''), 10) || 0
     // colori_ecru fails on SELECT *; explicit columns. Filter by ref when given.
     const where = !isNaN(refEcru) && refEcru > 0 ? `WHERE IDref_ecru = ${refEcru}` : ''
     const rows = await query<{ IDcolori_ecru: number; reference: string | null }>(
       `SELECT IDcolori_ecru, reference FROM colori_ecru ${where} ORDER BY reference`,
     )
     const fixed = await fixEncoding(rows, 'colori_ecru', 'IDcolori_ecru', ['reference'])
-    res.json(fixed.map((r) => ({ IDcolori_ecru: Number(r.IDcolori_ecru), reference: r.reference ?? '' })))
+    const mapped = fixed.map((r) => ({ id: Number(r.IDcolori_ecru), reference: r.reference ?? '' }))
+    if (cid > 0 && refEcru > 0) {
+      const allowed = await clientColorisIds(cid, 1, refEcru)
+      res.json(scopeColoris(mapped, allowed, current).map((r) => ({
+        IDcolori_ecru: r.id, reference: r.reference, hors_catalogue: r.hors_catalogue,
+      })))
+      return
+    }
+    res.json(mapped.map((r) => ({ IDcolori_ecru: r.id, reference: r.reference })))
   } catch (err) {
     console.error('Error fetching colori-ecru lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -444,28 +531,39 @@ commandesClientRouter.get('/lookups/refs-fini', async (req: Request, res: Respon
 
 // Coloris for a ref_fini — branch on avec_teinture (0 = colori_ecru of the
 // ref's IDref_ecru, 1/2 = ref_fini_colori). Returned id goes into IDcolori.
+// `client` narrows the list to that client's catalogue, `current` keeps an
+// existing line's coloris visible — see /lookups/colori-ecru above.
 commandesClientRouter.get('/lookups/colori-fini', async (req: Request, res: Response) => {
   try {
     const refFini = parseInt(String(req.query.ref_fini ?? ''), 10)
     if (isNaN(refFini) || refFini <= 0) { res.status(400).json({ error: 'ref_fini query parameter required' }); return }
+    const cid = parseInt(String(req.query.client ?? ''), 10) || 0
+    const current = parseInt(String(req.query.current ?? ''), 10) || 0
     const refRows = await query<{ avec_teinture: number | null; IDref_ecru: number | null }>(
       `SELECT avec_teinture, IDref_ecru FROM ref_fini WHERE IDref_fini = ${refFini}`,
     )
     const avecTeinture = Number(refRows[0]?.avec_teinture) || 0
+    let mapped: { id: number; reference: string }[]
     if (avecTeinture === 0) {
       const idEcru = Number(refRows[0]?.IDref_ecru) || 0
       const rows = await query<{ IDcolori_ecru: number; reference: string | null }>(
         `SELECT IDcolori_ecru, reference FROM colori_ecru WHERE IDref_ecru = ${idEcru} ORDER BY reference`,
       )
       const fixed = await fixEncoding(rows, 'colori_ecru', 'IDcolori_ecru', ['reference'])
-      res.json(fixed.map((r) => ({ id: Number(r.IDcolori_ecru), reference: r.reference ?? '' })))
+      mapped = fixed.map((r) => ({ id: Number(r.IDcolori_ecru), reference: r.reference ?? '' }))
     } else {
       const rows = await query<{ IDref_fini_colori: number; reference: string | null }>(
         `SELECT IDref_fini_colori, reference FROM ref_fini_colori WHERE IDref_fini = ${refFini} ORDER BY reference`,
       )
       const fixed = await fixEncoding(rows, 'ref_fini_colori', 'IDref_fini_colori', ['reference'])
-      res.json(fixed.map((r) => ({ id: Number(r.IDref_fini_colori), reference: r.reference ?? '' })))
+      mapped = fixed.map((r) => ({ id: Number(r.IDref_fini_colori), reference: r.reference ?? '' }))
     }
+    if (cid > 0) {
+      const allowed = await clientColorisIds(cid, 2, refFini)
+      res.json(scopeColoris(mapped, allowed, current))
+      return
+    }
+    res.json(mapped)
   } catch (err) {
     console.error('Error fetching colori-fini lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -520,6 +618,12 @@ commandesClientRouter.get('/lookups/echeances', async (_req: Request, res: Respo
 // Returns the suggested unit price and the roll geometry so the form can show the
 // "N Rouleaux (X Ml)" indicator. Never throws — unpriceable inputs come back with
 // priceable=false so the UI just falls back to manual entry.
+//
+// `client` is REQUIRED in practice: the price a client pays depends on its tarif
+// mode for that (référence × coloris) — contrat négocié, coefficient fixe, or the
+// standard grid — and an expired contract comes back `blocked` so the form can
+// refuse the line. Omitting it prices standard, which is what a client with no
+// negotiated tarif pays anyway.
 commandesClientRouter.get('/lookups/line-price', async (req: Request, res: Response) => {
   try {
     const type = parseInt(String(req.query.type ?? ''), 10) || 0
@@ -527,7 +631,8 @@ commandesClientRouter.get('/lookups/line-price', async (req: Request, res: Respo
     const IDcolori = parseInt(String(req.query.coloris ?? ''), 10) || 0
     const quantite = Number(req.query.quantite ?? 0) || 0
     const unite = parseInt(String(req.query.unite ?? ''), 10) || 0
-    const result = await calcLignePriceClient({ type, IDreference, IDcolori, quantite, unite })
+    const IDclient = parseInt(String(req.query.client ?? ''), 10) || 0
+    const result = await calcLignePriceClient({ type, IDreference, IDcolori, quantite, unite, IDclient })
     res.json({ ...result, unite_label: uniteLabel(unite) })
   } catch (err) {
     console.error('Error computing line price:', err)
@@ -1826,6 +1931,29 @@ commandesClientRouter.put('/:id/donation-pieces', async (req: Request, res: Resp
 //  LINE CRUD
 // ════════════════════════════════════════════════════════
 
+/** A reference whose client contract has lapsed is not sellable — refuse the
+ *  write, don't let it through on the standard grid. The UI blocks first; this
+ *  is the authority (and covers a stale form or a direct API call).
+ *  Returns true when it has answered 409. */
+async function refuseIfContratExpire(
+  res: Response,
+  commandeId: number,
+  line: { type: number; IDreference: number; IDcolori: number },
+): Promise<boolean> {
+  if (line.type !== 1 && line.type !== 2) return false
+  const rows = await query<{ IDclient: number | null }>(
+    `SELECT IDclient FROM commande_client WHERE IDcommande_client = ${commandeId}`,
+  )
+  const IDclient = Number(rows[0]?.IDclient) || 0
+  if (!(IDclient > 0)) return false
+  const mode = await resolveLigneTarifMode({
+    IDclient, type: line.type, IDreference: line.IDreference, IDcolori: line.IDcolori,
+  })
+  if (!mode?.contrat_expire) return false
+  res.status(409).json({ error: 'contrat_expire', message: expiredContractMessage(mode) })
+  return true
+}
+
 commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditCommandes(req, res))) return
@@ -1848,6 +1976,9 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
     const typeKind = Number(d.type) || 0
+    if (await refuseIfContratExpire(res, id, {
+      type: typeKind, IDreference: d.IDreference ?? 0, IDcolori: d.IDcolori ?? 0,
+    })) return
     // TYPE written uppercase (reserved word); IDcolori lowercase; commentaire
     // accent-safe via sqlText. Accented line columns are never named.
     await query(
@@ -1884,6 +2015,33 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+
+    // Contract guard on update. The body is partial, so the check runs on the
+    // line as it WOULD be, and only when the payload actually changes something
+    // commercial (référence, coloris, quantité, prix). A line taken while the
+    // contract was still valid stays editable for its date or its comment —
+    // blocking those would punish the user for a lapse they can't fix here.
+    {
+      const cur = await query<Record<string, unknown>>(
+        `SELECT TYPE, IDreference, IDcolori, quantite, prix FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+      )
+      const row = cur[0] ?? {}
+      // TYPE is a reserved word — ODBC hands the key back uppercased.
+      const curType = Number(row.TYPE ?? (row as { type?: unknown }).type) || 0
+      const next = {
+        type: d.type ?? curType,
+        IDreference: d.IDreference ?? (Number(row.IDreference) || 0),
+        IDcolori: d.IDcolori ?? (Number(row.IDcolori) || 0),
+      }
+      const commercialChange =
+        next.type !== curType ||
+        next.IDreference !== (Number(row.IDreference) || 0) ||
+        next.IDcolori !== (Number(row.IDcolori) || 0) ||
+        (d.quantite !== undefined && Number(d.quantite) !== (Number(row.quantite) || 0)) ||
+        // `prix` is a 4-byte REAL: compare at the centime, never raw floats.
+        (d.prix !== undefined && Math.round(Number(d.prix) * 100) !== Math.round((Number(row.prix) || 0) * 100))
+      if (commercialChange && await refuseIfContratExpire(res, commandeId, next)) return
+    }
 
     const sets: string[] = []
     if (d.type !== undefined) sets.push(`TYPE = ${Number(d.type) || 0}`)

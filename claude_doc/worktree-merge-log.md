@@ -10,6 +10,54 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/cmd-client
+**Le tarif d'une ligne de commande client dépend enfin du CLIENT : contrat négocié,
+coefficient fixe, blocage sur contrat expiré — et le sélecteur de coloris se limite au
+catalogue du client.** Deux bugs remontés le même jour par les utilisateurs, tous deux
+causés par la même chose : l'écran Commandes connaissait la *référence* mais pas le
+*client*, alors que Clients › Gestion tient un catalogue par client (`designation_client`
+→ `ref_client_colori`) avec ses coloris et ses tarifs.
+
+**1. Tarification.** `calcLignePriceClient` ne recevait ni `IDclient` ni quoi que ce soit
+du catalogue : toute ligne était cotée sur la grille standard `PrixDeVenteV4`. Le modèle
+de modes tarifaires (standard / coefficient fixe / contrat) a donc été sorti de
+`routes/clients.ts` vers **`lib/tarif-client.ts`**, partagé par la fiche et la commande,
+avec en plus `resolveLigneTarifMode()` (paire référence × coloris → `ref_client_colori`,
+règle `avec_teinture` + colonne de repli, entrées archivées ignorées) et
+`contratPrixForTrancheIdx()`. Le pricer applique maintenant le `prix_saisi` négocié
+(€/Ml, converti en €/Kg par le rendement pour une ligne Kg) et restreint le nudge Tricobot
+aux tranches que ce contrat cote réellement — un contrat mono-bande ne propose donc plus
+une tranche du catalogue que le client n'a jamais signée. ⚠️ **Un contrat expiré ne
+retombe PAS sur la grille standard** : la référence n'est plus vendable tant qu'un nouveau
+contrat n'est pas établi (règle déjà appliquée par la fiche client). L'endpoint renvoie
+`blocked` + `blocked_reason` dès le choix du coloris, le dialogue affiche un bandeau rouge
+et grise Enregistrer, et POST/PUT `/lignes` répondent **409 `contrat_expire`**. Le PUT ne
+bloque que sur un changement **commercial** (référence, coloris, quantité, prix) : une
+ligne prise quand le contrat était valide reste modifiable pour sa date et son
+commentaire — sinon on punirait l'utilisateur pour une expiration qu'il ne peut pas
+corriger depuis cet écran. Incident d'origine : le contrat C2TEC sur E1731 a expiré le
+30/06/2026 et une commande est passée le 30/07 sans que rien ne le signale ; à l'inverse
+un client sous contrat actif était coté **12,00 €/Ml au lieu des 3,81 €/Ml négociés**.
+Garde `check-contrat-tarif-ligne.ts` : le cas C2TEC épinglé + rejeu de toute la base
+(12/12 contrats actifs et 11/11 coefficients conformes).
+
+**2. Coloris.** `/lookups/colori-ecru|colori-fini` filtraient par référence seulement, si
+bien qu'une référence teinte pour des dizaines de clients proposait **389 coloris là où le
+client en achète 71**. Elles acceptent désormais `client` (+ `current`) et se limitent aux
+`ref_client_colori` de la paire. Trois états, et les deux derniers **retombent sur la liste
+complète** — un sélecteur vide rendrait la référence non commandable — chaque ligne portant
+alors `hors_catalogue: true` pour que l'UI le dise : catalogue exploitable → liste
+restreinte ; aucun `ref_client_colori` (13 des 2 025 entrées fini actives) → repli ;
+**catalogue disjoint de la liste affichée** → repli aussi (cas réel client 202 / ref 1426,
+dont les rcc pointent des `colori_ecru` d'un `ref_ecru` que le fini ne référence plus).
+`current` conserve et marque le coloris d'une ligne existante : **381 des 7 062 lignes
+historiques sont hors catalogue** et perdraient sinon leur coloris à l'ouverture du
+dialogue. ⚠️ Sans `client`, la liste reste complète — c'est ce dont Clients › Gestion a
+besoin, puisque c'est l'écran où le catalogue se construit. Garde
+`check-coloris-client-scope.ts` (balayage de 150 paires : 104 réduites, 0 vide).
+
+Le même angle mort tarif/coloris subsiste sur **Devis** (`/devis/lookups/colori-*` et son
+`/pricing/suggest`, tous deux client-blind) : périmètre volontairement limité aux commandes.
 ## 2026-07-30 — feat/divers
 **Divers › Stock ne liste plus que le stock réellement disponible (276 lignes → 62), et
 la création de ligne devient un upsert. Au passage, la recherche à puces de Finis › Stock
