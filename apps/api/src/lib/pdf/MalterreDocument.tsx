@@ -15,7 +15,7 @@ import { Document, Page, View, Text, Image, StyleSheet, Font, Svg, Path } from '
 import * as path from 'path'
 import * as fs from 'fs'
 import { fileURLToPath } from 'url'
-import { colors, company, sizes } from './theme.js'
+import { colors, company, sizes, type CompanyInfo } from './theme.js'
 
 // ── Inline icon components (lucide-style line SVGs) ─────
 // Reusable from any specific document via the named exports below.
@@ -559,6 +559,12 @@ export interface MalterreDocumentProps {
     withHeader?: boolean
     children: React.ReactNode
   }
+  /** Legal entity issuing the document — drives the footer block (SIRET / TVA /
+   *  capital) and the PDF author. Defaults to ETS Malterre; pass `companyTrm`
+   *  for documents Tricotage Malterre signs (its avis d'expédition). The logo
+   *  is NOT switched here: there is only one artwork file today (see the TRM
+   *  repo's CLAUDE.md — `logo-*.png` are still ETM placeholders). */
+  issuer?: CompanyInfo
 }
 
 // ── Reusable card components (exported) ────────────────
@@ -652,7 +658,7 @@ function PageNumber() {
 // as its own component so each <Page> in the Document can render its own
 // copy (each Page needs its own `fixed` footer node to appear on every
 // physical page within that logical page).
-function PageFooter() {
+function PageFooter({ issuer }: { issuer: CompanyInfo }) {
   return (
     <View style={styles.footer} fixed>
       <View style={styles.footerStripe}>
@@ -662,15 +668,15 @@ function PageFooter() {
       </View>
       <View style={styles.footerInner}>
         <Text style={styles.footerLine}>
-          {company.address1} - {company.zip} {company.city}
+          {issuer.address1} - {issuer.zip} {issuer.city}
         </Text>
         <Text style={styles.footerContact}>
-          Tél: {company.phone}   ·   Mail: {company.email}
+          Tél: {issuer.phone}   ·   Mail: {issuer.email}
         </Text>
         <Text style={styles.footerLegal}>
-          SIRET: {company.siret} - Code NAF: {company.naf} - N° TVA: {company.vat} - Capital: {company.capital}
+          SIRET: {issuer.siret} - Code NAF: {issuer.naf} - N° TVA: {issuer.vat} - Capital: {issuer.capital}
         </Text>
-        <Text style={styles.footerJurisdiction}>{company.legalJurisdiction}</Text>
+        <Text style={styles.footerJurisdiction}>{issuer.legalJurisdiction}</Text>
       </View>
     </View>
   )
@@ -689,11 +695,12 @@ export function MalterreDocument({
   contentPaddingTop,
   children,
   secondPage,
+  issuer = company,
 }: MalterreDocumentProps) {
   return (
     <Document
       title={title ?? `${documentType} ${reference}`}
-      author={company.legalName}
+      author={issuer.legalName}
     >
       {/* paddingTop reserves the branded header's height so the now-`fixed`
           header (repeated on every physical overflow page) doesn't overlap the
@@ -740,7 +747,7 @@ export function MalterreDocument({
         </View>
 
         <PageNumber />
-        <PageFooter />
+        <PageFooter issuer={issuer} />
       </Page>
 
       {/* Optional second logical Page. When `withHeader`, the branded header
@@ -772,7 +779,7 @@ export function MalterreDocument({
             {secondPage.children}
           </View>
           <PageNumber />
-          <PageFooter />
+          <PageFooter issuer={issuer} />
         </Page>
       )}
     </Document>

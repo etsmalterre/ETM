@@ -11,6 +11,12 @@
 //    (pièce · poids · métrage · observations) with a per-lot totals row,
 //    a per-article totals line, and a gold grand-total box for the whole avis.
 // The Observations column follows expedition.affiche_observations, like legacy.
+//
+// Serves BOTH companies' avis via `data.variant` (see VARIANTS): 'etm' is the
+// original document, 'trm' ports the legacy `ETAT_Expédition_TRM` (Tricotage
+// Malterre's own footer, a Défauts column, no Métrage, and lots identified by
+// métier + yarn lots). Adding a variant must never change the other one's
+// output — every difference goes through that one table.
 
 import React from 'react'
 import { View, Text, StyleSheet } from '@react-pdf/renderer'
@@ -23,7 +29,7 @@ import {
   TruckIcon,
   type AddressBlockData,
 } from './MalterreDocument.js'
-import { colors, sizes } from './theme.js'
+import { colors, company, companyTrm, sizes, type CompanyInfo } from './theme.js'
 
 interface AddrLite {
   nom: string | null
@@ -40,11 +46,20 @@ export interface BlPiece {
   poids: number
   metrage: number
   observations: string | null
+  /** Structured quality defects, one per line ("Démaillage x1"). TRM only —
+   *  rendered in its own column when `showDefauts` is set. */
+  defauts?: string[] | null
 }
 
 export interface BlLot {
   lot: string
   pieces: BlPiece[]
+  /** TRM only — the knitting machine the lot came off ("1F"). Legacy prints it
+   *  in the lot header line: `Métier: 1F  Lots Malterre: 10556  Lots
+   *  Fournisseur: CPRAUT025BLA001`. */
+  metier?: string | null
+  /** TRM only — supplier lot codes of the yarns the lot was knitted from. */
+  lotsFournisseur?: string | null
 }
 
 export interface BlArticle {
@@ -75,6 +90,41 @@ export interface BonLivraisonPdfData {
   observationBl: string | null
   adresseLivraison: AddrLite | null
   articles: BlArticle[]
+  /** Which company's avis d'expédition this is. Defaults to `'etm'`, which is
+   *  the document this component was originally written for — leaving it unset
+   *  reproduces it exactly. `'trm'` switches to the legacy
+   *  `ETAT_Expédition_TRM` shape (see VARIANTS below). */
+  variant?: BlVariant
+}
+
+export type BlVariant = 'etm' | 'trm'
+
+/** Everything that differs between the two companies' avis d'expédition, in one
+ *  table so the JSX below reads as one document with switched details rather
+ *  than two interleaved ones.
+ *
+ *  Why TRM differs at all:
+ *  - `issuer` — the BL is a legal document; Tricotage Malterre's must carry its
+ *    own SIRET / TVA / capital, not ETS Malterre's.
+ *  - `metrage: false` — TRM sells tombé de métier by weight. `stock_ecru.metrage`
+ *    is 0 on every TRM row, so the column would be a wall of "0,00".
+ *  - `defauts: true` — the visitage findings travel WITH the TRM delivery note
+ *    (the customer, usually ETM, needs them before dyeing). ETM ships that data
+ *    as a separate rapport de contrôle instead.
+ *  - `lotHeader: 'production'` — a TRM lot is identified by how it was made
+ *    (`Métier : 1F · Lots Malterre : 10556 · Lots fournisseur : …`), not by a
+ *    single lot code: `stock_ecru.lot` is empty on TRM rows.
+ *  - `charteNotice: false` — the legacy TRM report prints only the ATTENTION
+ *    notice; the "charte france tissus maille" line is ETM's own commitment. */
+const VARIANTS: Record<BlVariant, {
+  issuer: CompanyInfo
+  metrage: boolean
+  defauts: boolean
+  lotHeader: 'lot' | 'production'
+  charteNotice: boolean
+}> = {
+  etm: { issuer: company, metrage: true, defauts: false, lotHeader: 'lot', charteNotice: true },
+  trm: { issuer: companyTrm, metrage: false, defauts: true, lotHeader: 'production', charteNotice: false },
 }
 
 // Fixed legacy notice texts — printed verbatim on every avis d'expédition.
@@ -174,8 +224,9 @@ const styles = StyleSheet.create({
   colPiece: { width: 110, paddingRight: 6 },
   colNum: { width: 70, textAlign: 'right', paddingHorizontal: 4 },
   colObs: { flex: 1, paddingLeft: 10 },
-  // Widths when the Observations column is hidden — piece takes the slack.
+  // Widths when neither Observations nor Défauts is shown — piece takes the slack.
   colPieceWide: { flex: 1, paddingRight: 6 },
+  colDefauts: { flex: 1, paddingLeft: 10 },
 
   // Per-lot totals row (inside the table frame)
   lotTotalRow: {
@@ -259,8 +310,28 @@ function lotAgg(lot: BlLot): { nb: number; poids: number; metrage: number } {
   }
 }
 
+/** The legacy TRM lot header: `Métier: 1F  Lots Malterre: 10556  Lots
+ *  Fournisseur: CPRAUT025BLA001`. Each part is dropped when unknown, so a lot
+ *  whose yarn lots were never recorded degrades to `Métier : 1F` rather than
+ *  printing empty labels. */
+function productionLotLabel(lot: BlLot): string {
+  const parts: string[] = []
+  const metier = (lot.metier ?? '').trim()
+  const malterre = (lot.lot ?? '').trim()
+  const frs = (lot.lotsFournisseur ?? '').trim()
+  if (metier) parts.push(`Métier : ${metier}`)
+  if (malterre) parts.push(`Lots Malterre : ${malterre}`)
+  if (frs) parts.push(`Lots fournisseur : ${frs}`)
+  return parts.join('   ·   ')
+}
+
 export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
+  const v = VARIANTS[data.variant ?? 'etm']
   const showObs = data.showObservations
+  const showDefauts = v.defauts
+  const showMetrage = v.metrage
+  // The pièce column only takes the slack when NO flexible column follows it.
+  const pieceCol = showObs || showDefauts ? styles.colPiece : styles.colPieceWide
   const deliveryAddress = buildDeliveryAddress(data)
 
   const grand = data.articles
@@ -280,6 +351,7 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
       reference={`N°${data.numero}`}
       documentDate={data.dateLong || ''}
       title={`Avis d'expédition ${data.numero}`}
+      issuer={v.issuer}
     >
       {/* Top row: delivery address + shipment metadata */}
       <View style={styles.topRow}>
@@ -312,7 +384,7 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
       {/* Fixed legacy quality notices + free-text BL observation */}
       <View style={styles.notices}>
         <Text style={styles.noticeAttention}>{NOTICE_ATTENTION}</Text>
-        <Text style={styles.noticeCharte}>{NOTICE_CHARTE}</Text>
+        {v.charteNotice ? <Text style={styles.noticeCharte}>{NOTICE_CHARTE}</Text> : null}
         {data.observationBl?.trim() ? (
           <Text style={styles.noticeObs}>{data.observationBl.trim()}</Text>
         ) : null}
@@ -345,11 +417,15 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
               const t = lotAgg(lot)
               const pieceRow = (p: BlPiece, pi: number) => (
                 <View key={pi} style={styles.tableRow}>
-                  <Text style={[styles.cellBase, showObs ? styles.colPiece : styles.colPieceWide]}>{p.numero || '—'}</Text>
+                  <Text style={[styles.cellBase, pieceCol]}>{p.numero || '—'}</Text>
                   <Text style={[styles.cellBase, styles.colNum]}>{fmtNum(p.poids)}</Text>
-                  <Text style={[styles.cellBase, styles.colNum]}>{fmtNum(p.metrage)}</Text>
+                  {showMetrage ? <Text style={[styles.cellBase, styles.colNum]}>{fmtNum(p.metrage)}</Text> : null}
                   {showObs ? (
                     <Text style={[styles.cellBase, styles.colObs]}>{p.observations?.trim() || ''}</Text>
+                  ) : null}
+                  {showDefauts ? (
+                    // One defect per line, like the legacy report's stacked cell.
+                    <Text style={[styles.cellBase, styles.colDefauts]}>{(p.defauts ?? []).join('\n')}</Text>
                   ) : null}
                 </View>
               )
@@ -360,13 +436,18 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
                 // out page bottoms whenever a lot fit snugly (BL 12112). On the
                 // label it just keeps "Lot : …" glued to the header + ~2 rows.
                 <View key={li} style={styles.lotBlock}>
-                  <Text style={styles.lotLabel} minPresenceAhead={70}>{`Lot : ${lot.lot || '—'}`}</Text>
+                  <Text style={styles.lotLabel} minPresenceAhead={70}>
+                    {v.lotHeader === 'production'
+                      ? (productionLotLabel(lot) || '—')
+                      : `Lot : ${lot.lot || '—'}`}
+                  </Text>
                   <View style={styles.table}>
                     <View style={styles.tableHeader} fixed>
-                      <Text style={[styles.tableHeaderCell, showObs ? styles.colPiece : styles.colPieceWide]}>PIÈCE</Text>
+                      <Text style={[styles.tableHeaderCell, pieceCol]}>PIÈCE</Text>
                       <Text style={[styles.tableHeaderCell, styles.colNum]}>POIDS (KG)</Text>
-                      <Text style={[styles.tableHeaderCell, styles.colNum]}>MÉTRAGE (ML)</Text>
+                      {showMetrage ? <Text style={[styles.tableHeaderCell, styles.colNum]}>MÉTRAGE (ML)</Text> : null}
                       {showObs ? <Text style={[styles.tableHeaderCell, styles.colObs]}>OBSERVATIONS</Text> : null}
+                      {showDefauts ? <Text style={[styles.tableHeaderCell, styles.colDefauts]}>DÉFAUTS</Text> : null}
                     </View>
                     {lot.pieces.slice(0, -1).map(pieceRow)}
                     {/* Last piece row + totals row are glued together so a page
@@ -375,12 +456,13 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
                     <View wrap={false}>
                       {lot.pieces.length > 0 ? pieceRow(lot.pieces[lot.pieces.length - 1], lot.pieces.length - 1) : null}
                       <View style={styles.lotTotalRow}>
-                        <Text style={[styles.lotTotalLabel, showObs ? styles.colPiece : styles.colPieceWide]}>
+                        <Text style={[styles.lotTotalLabel, pieceCol]}>
                           {`Total lot - ${t.nb} pièce${t.nb > 1 ? 's' : ''}`}
                         </Text>
                         <Text style={[styles.lotTotalCell, styles.colNum]}>{fmtNum(t.poids)}</Text>
-                        <Text style={[styles.lotTotalCell, styles.colNum]}>{fmtNum(t.metrage)}</Text>
+                        {showMetrage ? <Text style={[styles.lotTotalCell, styles.colNum]}>{fmtNum(t.metrage)}</Text> : null}
                         {showObs ? <Text style={styles.colObs} /> : null}
+                        {showDefauts ? <Text style={styles.colDefauts} /> : null}
                       </View>
                     </View>
                   </View>
@@ -393,7 +475,9 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
                 <Text style={styles.articleTotalLabel}>Total article</Text>
                 <Text style={styles.articleTotalValue}>{`${articleTotal.nb} pièce${articleTotal.nb > 1 ? 's' : ''}`}</Text>
                 <Text style={styles.articleTotalValue}>{`${fmtNum(articleTotal.poids)} Kg`}</Text>
-                <Text style={styles.articleTotalValue}>{`${fmtNum(articleTotal.metrage)} Ml`}</Text>
+                {showMetrage ? (
+                  <Text style={styles.articleTotalValue}>{`${fmtNum(articleTotal.metrage)} Ml`}</Text>
+                ) : null}
               </View>
             ) : null}
           </View>
@@ -405,7 +489,11 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
         <View style={styles.grand}>
           <View style={styles.grandRow}>
             <Text style={styles.grandLabel}>{`TOTAL AVIS - ${grand.nb} PIÈCE${grand.nb > 1 ? 'S' : ''}`}</Text>
-            <Text style={styles.grandValue}>{`${fmtNum(grand.poids)} Kg   ·   ${fmtNum(grand.metrage)} Ml`}</Text>
+            <Text style={styles.grandValue}>
+              {showMetrage
+                ? `${fmtNum(grand.poids)} Kg   ·   ${fmtNum(grand.metrage)} Ml`
+                : `${fmtNum(grand.poids)} Kg`}
+            </Text>
           </View>
         </View>
       </View>

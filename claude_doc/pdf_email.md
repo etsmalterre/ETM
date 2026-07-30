@@ -25,6 +25,22 @@ Server-side PDF rendering for documents (`Bon de commande` shipped, `Devis` / `F
 - **`<Page paddingBottom>` is respected by the wrap engine; inner `<View paddingBottom>` is not** — for absolute footers, set padding on the Page so flow content stops before the footer area.
 - **`textTransform` accent stripping affects every label** — the canonical pattern is to pre-uppercase strings + drop the `textTransform` style. See `MalterreDocument.tsx`.
 
+### Documents issued by a company OTHER than ETS Malterre
+
+`MalterreDocument` takes an optional **`issuer: CompanyInfo`** (defaults to `company` in
+`lib/pdf/theme.ts`), which drives the footer identity block (SIRET / NAF / TVA / capital) and
+the PDF author. **Pass `companyTrm` on anything Tricotage Malterre signs** — its avis
+d'expédition — because printing ETS Malterre's SIRET on another legal entity's delivery note
+is wrong, not cosmetic. The *logo* is deliberately NOT switched: there is one artwork file
+(`assets/logo-malterre-wide.png`) and no TRM version yet.
+
+When one document serves both companies, put every difference in **one variant table**, never
+in scattered booleans threaded through the JSX. Canonical: `BonLivraisonPdf.tsx`'s
+`VARIANTS: Record<'etm' | 'trm', …>` — issuer, métrage column on/off, défauts column on/off,
+lot-header wording, charte notice on/off. `data.variant` defaults to `'etm'`, so an untouched
+call site reproduces the original document byte-for-byte; adding a variant must never change
+the other one's output (verify by rendering one of each and diffing the extracted text).
+
 ### Pagination & page numbers (`MalterreDocument` `secondPage` / sst stock section)
 
 Hard-won footguns from wiring "Page X/Y" + the multi-page stock section (commits `3ac2c3d`, `ce74df6`). See memory `project_reactpdf_pagenumber_lineheight.md`.

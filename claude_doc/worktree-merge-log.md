@@ -10,6 +10,71 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/expe
+**Endpoints expédition côté TRM (`/api/expeditions-trm`) + variante TRM du bon de livraison PDF.**
+
+Nouveau fichier `apps/api/src/routes/expeditions-trm.ts`, monté sous `/api/expeditions-trm`,
+consommé uniquement par le frontend TRM (écran Clients › Expéditions, port du couple WinDev
+`FEN_Expéditions` / `FEN_Gestion_expédition` en mode Tricotage Malterre). Liste paginée
+(`?q=&state=facture|nonfacture&before=`), détail, création / modification / suppression,
+sélection des pièces par ligne de commande, lookups (transporteurs, commandes TRM, adresses,
+contacts), avis d'expédition PDF et envoi mail.
+
+Pourquoi un fichier séparé plutôt qu'un `?societe=` sur `expeditions.ts` : les tables sont bien
+partagées (`expedition` / `ligne_expedition`, partitionnées par `expedition.IDsociete`), mais la
+marchandise diffère à chaque requête. Une expédition ETM porte des rouleaux finis
+(`stock_fini.IDligne_expedition`) ou de l'écru acheté (`stock_ecru.IDligne_expedition_ETM`), et
+c'est le `TYPE` de la ligne de commande qui tranche. Une expédition TRM ne porte que du tombé de
+métier tricoté en interne : `stock_ecru.IDligne_expedition_TRM`, dont le vivier de pièces libres
+pend de **`IDLigne_Commande_TRM`** (et non `IDligne_commande_client`, à 0 sur toutes les lignes
+TRM). Les pièces n'ont ni lot, ni métrage, ni magasin, mais un métier (`ordre_fabrication` →
+`machine.nom`) et des défauts de visitage. `expedition_divers` n'a pas de colonne `IDsociete` :
+les expéditions diverses restent ETM-only, d'où l'absence de bascule Textile/Diverses côté TRM.
+
+⚠️ **Le piège du transfert de propriété.** Quand TRM livre Ets Malterre — le cas courant — la
+réception ETM prend possession de la pièce : le flux legacy bascule `stock_ecru.IDsociete` de 2 à
+1 et estampille `lot = 'trm<IDexpedition>'`, en gardant `IDligne_expedition_TRM` comme lien de
+provenance. Les pièces d'un avis livré sont donc des lignes société 1. Les lectures ne filtrent
+donc **jamais** sur `IDsociete` (sinon tout avis livré afficherait « 0 pièce ») ; les écritures
+exigent **`IDsociete = 2`** et renvoient 409 sur toute tentative de retirer une pièce
+réceptionnée d'un avis, ou de supprimer un avis qui en contient une. Mesuré sur les 120
+dernières expéditions TRM : livraisons à Ets Malterre → 100 % société 1, livraison à un client
+tiers (Bonneterie Gautier) → 100 % société 2.
+
+Comme côté ETM, le concept legacy **validé / dévalider** reste retiré : une expédition est « non
+facturée » (modifiable) ou « facturée » (`est_facture = 1`, ou une facture définitive référence
+une de ses `ligne_expedition`) et toute écriture renvoie alors 409. `est_valide` est écrit une
+fois à l'INSERT (0) puis ignoré. Les colonnes accentuées `envoyé_client` / `envoyé_sst` (les deux
+cases à cocher de la liste legacy) ne sont jamais nommées en SQL — ça noierait le bridge Linux —
+donc pas exposées.
+
+**PDF** : `BonLivraisonPdf` porte désormais un discriminant `variant: 'etm' | 'trm'` et une seule
+table `VARIANTS` qui concentre toutes les différences (émetteur, colonne Métrage, colonne
+Défauts, libellé de lot, mention charte). `'etm'` est le défaut, donc les appels existants sont
+inchangés — vérifié en rendant un avis de chaque et en comparant le texte extrait. La variante
+`'trm'` porte le legacy `ETAT_Expédition_TRM` : pas de métrage (le tombé de métier se vend au
+poids, `metrage` = 0 partout), une colonne Défauts (le visitage voyage AVEC le BL côté TRM, alors
+qu'ETM l'envoie en rapport de contrôle séparé), et des lots identifiés par *métier + lots Malterre
++ lots fournisseur* plutôt que par un code lot (`stock_ecru.lot` est vide côté TRM). Le
+regroupement se fait par `ordre_fabrication` : toutes les pièces d'un OF partagent la machine et
+les lots de fil (`asso_fil_of` → `stock_fil.lot` / `lot_frs`), ce qui est exactement cette ligne
+d'en-tête.
+
+`MalterreDocument` accepte une prop `issuer` (défaut : `company`) qui pilote le bloc légal du
+pied de page et l'auteur du PDF ; `theme.ts` exporte `companyTrm` (Tricotage Malterre SARL,
+SIRET 332 604 727 00021, NAF 1391Z, TVA FR 25 332 604 727, capital 46 500 €, transcrits du pied
+de page du rapport legacy). Un BL signé Tricotage Malterre ne peut pas porter le SIRET d'Ets
+Malterre. Le logo n'est pas basculé : il n'existe qu'une seule image et pas encore de version TRM.
+
+Autres changements : `stock-ecru.ts` expose `defaut_qualite.nombre` sur `DefautQualite` (un
+défaut est *soit* mesuré `taille_cm` → « Maille 25 cm », *soit* compté `nombre` → « Trou x1» ;
+`defautSummary` ne rend que la taille, donc l'avis TRM formate la paire lui-même) ; une vingtaine
+de helpers d'`expeditions.ts` passent en `export` pour être réutilisés au lieu d'être dupliqués
+(`resolveClientNames`, `loadAdresse`, `attachedFactures`, `newIdAfterInsert`, `logEnvoiEmails`,
+`pieceCollator`, …) — aucun changement de logique, uniquement des mots-clés `export`.
+
+L'export **CSV TAD** de l'écran legacy n'est volontairement pas porté.
+
 ## 2026-07-30 — feat/gestion-client (API du second registre `client`)
 
 **La table `client` a désormais deux registres servis par cette API.** `client` est partitionnée
@@ -102,7 +167,6 @@ une **rafale d'éditions** sous `apps/api/src` redémarre `tsx watch` à chaque 
 laisse une connexion ODBC pendante — elle frappe donc juste après avoir édité, au moment où on
 demande à l'utilisateur d'aller regarder. Grouper les éditions, redémarrer soi-même avant de
 rendre la main.
-
 ## 2026-07-30 — feat/stock
 **Endpoints écru côté TRM (`/api/stock/ecru-trm`) pour l'écran Tombé Métier › Stock de TRM.**
 

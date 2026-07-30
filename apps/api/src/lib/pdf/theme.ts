@@ -64,6 +64,57 @@ export function tvaRowLabel(rate: number): string {
   return `TVA (${r.toFixed(decimals).replace('.', ',')} %)`
 }
 
+/** Shape of a company identity block — `company` is the canonical instance and
+ *  the default everywhere; `companyTrm` is the sister company's. Documents that
+ *  are issued BY Tricotage Malterre (its avis d'expédition) must pass it to
+ *  `MalterreDocument`, otherwise the footer would print ETS Malterre's SIRET /
+ *  TVA on a legal document TRM signed. */
+export interface CompanyInfo {
+  legalName: string
+  tradeName: string
+  tagline: string
+  address1: string
+  address2: string
+  zip: string
+  city: string
+  country: string
+  phone: string
+  email: string
+  website: string
+  capital: string
+  rcs: string
+  siret: string
+  vat: string
+  naf: string
+  legalJurisdiction: string
+  bank: { holder: string; iban: string; bic: string }
+}
+
+/** Tricotage Malterre SARL — the knitting company (IDsociete = 2).
+ *  Same site and switchboard as ETS Malterre, different legal entity. Values
+ *  transcribed from the legacy `ETAT_Expédition_TRM` report footer (see
+ *  BL 12211): SIRET 332 604 727 00021, NAF 1391Z (fabrication d'étoffes à
+ *  maille), TVA FR 25 332 604 727, capital 46 500 €. `rcs` is deliberately
+ *  the empty string — the legacy report prints no RCS for TRM and inventing
+ *  one on a delivery note is not an option; the footer already skips it. */
+export const companyTrm: CompanyInfo = {
+  ...company,
+  legalName: 'TRICOTAGE MALTERRE SARL',
+  tradeName: 'Tricotage Malterre',
+  tagline: 'TRICOTAGE',
+  phone: '03.22.35.36.66',
+  capital: '46 500 €',
+  rcs: '',
+  siret: '332 604 727 00021',
+  vat: 'FR 25 332 604 727',
+  naf: '1391Z',
+  bank: {
+    holder: 'TRICOTAGE MALTERRE SARL',
+    iban: '',
+    bic: '',
+  },
+} as const
+
 export const sizes = {
   pagePadding: 36,       // ~12mm
   headerHeight: 90,

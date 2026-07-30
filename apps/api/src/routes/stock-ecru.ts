@@ -59,6 +59,10 @@ export interface DefautQualite {
   description: string | null
   type_defaut: string | null
   taille_cm: number | null
+  /** Occurrence count for countable defects (Trou, Démaillage…). 0 on the
+   *  measured ones, which carry `taille_cm` instead. The legacy TRM avis
+   *  d'expédition prints "Trou x1" / "Maille 25 cm" off exactly this pair. */
+  nombre: number | null
 }
 
 /** Build the per-roll défauts summary string shown in the table column:
@@ -91,8 +95,9 @@ export async function fetchDefectsByEcru(ecruIds: number[]): Promise<Map<number,
     description: string | null
     type_defaut: string | null
     taille_cm: number | null
+    nombre: number | null
   }>(
-    `SELECT IDdefaut_qualite, reference, description, type_defaut, taille_cm
+    `SELECT IDdefaut_qualite, reference, description, type_defaut, taille_cm, nombre
      FROM defaut_qualite
      WHERE Type_Reference = 2 AND reference IN (${inList})`,
   )
@@ -106,6 +111,7 @@ export async function fetchDefectsByEcru(ecruIds: number[]): Promise<Map<number,
       description: d.description ?? null,
       type_defaut: d.type_defaut ?? null,
       taille_cm: d.taille_cm == null ? null : Number(d.taille_cm),
+      nombre: d.nombre == null ? null : Number(d.nombre),
     })
     out.set(ecruId, arr)
   }

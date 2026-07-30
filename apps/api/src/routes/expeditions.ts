@@ -73,7 +73,7 @@ export const expeditionsRouter: RouterType = Router()
 
 // ── Bucket model ─────────────────────────────────────────
 
-type Kind = 'formelle' | 'divers'
+export type Kind = 'formelle' | 'divers'
 
 const TBL: Record<Kind, { head: string; line: string; pk: string; linePk: string; lineFk: string }> = {
   formelle: { head: 'expedition',        line: 'ligne_expedition',        pk: 'IDexpedition',        linePk: 'IDligne_expedition',        lineFk: 'IDexpedition' },
@@ -90,7 +90,7 @@ const FACTURE_LOCK = { error: 'expedition_facturee', message: 'Expédition factu
 
 /** SQL literal for user text. ASCII → quoted literal; accents → Latin-1 hex
  *  literal (the Linux iODBC bridge corrupts raw multi-byte UTF-8 in a SQL line). */
-function sqlText(value: string | null | undefined): string {
+export function sqlText(value: string | null | undefined): string {
   const v = (value ?? '').toString()
   if (v === '') return "''"
   if (/^[\x09\x0A\x0D\x20-\x7E]*$/.test(v)) return `'${esc(v)}'`
@@ -116,18 +116,18 @@ function decode(v: unknown): string | null {
 }
 
 /** Accent-insensitive contains-matching (search). */
-function norm(s: string): string {
+export function norm(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
 }
 
-function todayDigits(): string {
+export function todayDigits(): string {
   const t = new Date()
   return `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}`
 }
 
 // ── Line unit + dimension semantics (mirror commandes-client.ts) ──
 
-function uniteLabel(u: number | null | undefined): string {
+export function uniteLabel(u: number | null | undefined): string {
   switch (Number(u)) {
     case 1: return 'Kg'
     case 3: return 'Ml'
@@ -136,11 +136,11 @@ function uniteLabel(u: number | null | undefined): string {
     default: return ''
   }
 }
-function lineDim(unite: number | null | undefined): 'metrage' | 'poids' {
+export function lineDim(unite: number | null | undefined): 'metrage' | 'poids' {
   return Number(unite) === 3 ? 'metrage' : 'poids'
 }
 /** Roll kind a line ships: type 1 → écru, type 2 → fini, else none. */
-function lineStockKind(typeKind: number): 'ecru' | 'fini' | 'none' {
+export function lineStockKind(typeKind: number): 'ecru' | 'fini' | 'none' {
   if (typeKind === 1) return 'ecru'
   if (typeKind === 2) return 'fini'
   return 'none'
@@ -148,7 +148,7 @@ function lineStockKind(typeKind: number): 'ecru' | 'fini' | 'none' {
 
 // ── Reference-data resolvers (batched, flat — never SELECT * on client) ──
 
-async function resolveClientNames(clientIds: number[]): Promise<Map<number, string>> {
+export async function resolveClientNames(clientIds: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const ids = Array.from(new Set(clientIds.filter((x) => x > 0)))
   if (ids.length === 0) return out
@@ -160,7 +160,7 @@ async function resolveClientNames(clientIds: number[]): Promise<Map<number, stri
   return out
 }
 
-async function resolveTransporteurNames(ids: number[]): Promise<Map<number, string>> {
+export async function resolveTransporteurNames(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const u = Array.from(new Set(ids.filter((x) => x > 0)))
   if (u.length === 0) return out
@@ -172,7 +172,7 @@ async function resolveTransporteurNames(ids: number[]): Promise<Map<number, stri
   return out
 }
 
-async function loadAdresse(id: number): Promise<Record<string, unknown> | null> {
+export async function loadAdresse(id: number): Promise<Record<string, unknown> | null> {
   if (!(id > 0)) return null
   const rows = await query(
     `SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${id}`,
@@ -181,7 +181,7 @@ async function loadAdresse(id: number): Promise<Record<string, unknown> | null> 
   return (fixed[0] as Record<string, unknown>) ?? null
 }
 
-async function loadContactName(id: number): Promise<string | null> {
+export async function loadContactName(id: number): Promise<string | null> {
   if (!(id > 0)) return null
   // IDcontact must be in the SELECT — fixEncoding keys its CONVERT repair on it.
   const rows = await query<{ IDcontact: number; nom: string | null; prenom: string | null }>(
@@ -272,7 +272,7 @@ const ETAT_FINI_LABELS: Record<number, string> = {
   1: 'En Contrôle', 2: 'En Reprise', 3: 'Validé', 4: 'Expédié', 5: 'Attente décision',
 }
 
-async function resolveEcruColoris(coloriIds: number[]): Promise<Map<number, string>> {
+export async function resolveEcruColoris(coloriIds: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const u = Array.from(new Set(coloriIds.filter((x) => x > 0)))
   if (u.length === 0) return out
@@ -292,14 +292,14 @@ async function resolveFiniColoris(coloriIds: number[], avecTeinture: number): Pr
 
 // ── Facture linkage + lock helper ────────────────────────
 
-interface FactureRef { IDfacture: number; numero: number | null; date: string | null; type: number }
+export interface FactureRef { IDfacture: number; numero: number | null; date: string | null; type: number }
 
 /** Definitive factures attached to an expedition.
  *  formelle: ligne_facture.IDligne_expedition → this expedition's ligne_expedition rows.
  *  divers:   facture.IDexpedition_divers header back-pointer.
  *  (facture_prov.IDexpedition_divers is EXCLUDED on purpose — ETM repurposed
  *  it as the converted-proforma marker, it holds an IDfacture, not an expedition.) */
-async function attachedFactures(kind: Kind, id: number): Promise<FactureRef[]> {
+export async function attachedFactures(kind: Kind, id: number): Promise<FactureRef[]> {
   let factIds: number[] = []
   if (kind === 'formelle') {
     const leRows = await query<{ IDligne_expedition: number }>(
@@ -342,11 +342,11 @@ async function isLocked(kind: Kind, id: number): Promise<boolean> {
 
 /** Allocate the new PK after an INSERT (no numero column). Capture MAX before,
  *  select the highest row above it after — robust against a concurrent legacy insert. */
-async function newIdAfterInsert(head: string, pk: string, before: number): Promise<number> {
+export async function newIdAfterInsert(head: string, pk: string, before: number): Promise<number> {
   const rows = await query<{ id: number }>(`SELECT TOP 1 ${pk} AS id FROM ${head} WHERE ${pk} > ${before} ORDER BY ${pk} DESC`)
   return Number(rows[0]?.id) || 0
 }
-async function maxId(head: string, pk: string): Promise<number> {
+export async function maxId(head: string, pk: string): Promise<number> {
   const rows = await query<{ m: number | null }>(`SELECT MAX(${pk}) AS m FROM ${head}`)
   return Number(rows[0]?.m) || 0
 }
@@ -1539,7 +1539,7 @@ expeditionsRouter.get('/divers/lookups/prix', async (req: Request, res: Response
 
 const FRENCH_MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
 
-function formatHfsqlDateLongFr(raw: string | null | undefined): string {
+export function formatHfsqlDateLongFr(raw: string | null | undefined): string {
   if (!raw) return ''
   const s = String(raw)
   if (!/^\d{8}$/.test(s)) return ''
@@ -1561,7 +1561,7 @@ const FINITION_LABELS: Record<number, string> = {
 /** Group shipped pieces (already ORDER BY lot, numero) into per-lot buckets —
  *  Map preserves the SQL lot ordering. Pieces are re-sorted naturally in JS:
  *  numero is a string column, so SQL sorts "3386/100" before "3386/87". */
-const pieceCollator = new Intl.Collator('fr', { numeric: true, sensitivity: 'base' })
+export const pieceCollator = new Intl.Collator('fr', { numeric: true, sensitivity: 'base' })
 function groupByLot(rows: any[]): BlLot[] {
   const byLot = new Map<string, BlPiece[]>()
   for (const p of rows) {
@@ -2494,7 +2494,7 @@ expeditionsRouter.get('/formelle/:id/demande-transport/pdf', async (req: Request
 
 // type_doc 14 = "avis expedition" — envoi_email audit rows for formelle BLs.
 // type_doc 16 = "avis expedition diver" — same, for the divers flow.
-const TYPE_DOC_AVIS_EXPEDITION = 14
+export const TYPE_DOC_AVIS_EXPEDITION = 14
 const TYPE_DOC_AVIS_EXPEDITION_DIVERS = 16
 
 function nowHfsqlDatetime(): string {
@@ -2507,7 +2507,7 @@ function nowHfsqlDatetime(): string {
   )
 }
 
-interface EmailRecipientPayload { email: string; name?: string; source: 'contact'; contactId: number }
+export interface EmailRecipientPayload { email: string; name?: string; source: 'contact'; contactId: number }
 
 const MAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -2667,7 +2667,7 @@ const emailBody = z.object({
 })
 const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
 
-async function logEnvoiEmails(idReference: number, recipients: string[], societe: string, typeDoc: number, notes = ''): Promise<void> {
+export async function logEnvoiEmails(idReference: number, recipients: string[], societe: string, typeDoc: number, notes = ''): Promise<void> {
   if (recipients.length === 0) return
   const ts = nowHfsqlDatetime()
   for (const raw of recipients) {

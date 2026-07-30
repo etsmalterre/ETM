@@ -21,6 +21,7 @@ import { commandesClientRouter } from './routes/commandes-client.js'
 import { facturesRouter } from './routes/factures.js'
 import { devisRouter } from './routes/devis.js'
 import { expeditionsRouter } from './routes/expeditions.js'
+import { expeditionsTrmRouter } from './routes/expeditions-trm.js'
 import { transfertsRouter } from './routes/transferts.js'
 import { clientsRouter } from './routes/clients.js'
 import { clientsTrmRouter } from './routes/clients-trm.js'
@@ -119,6 +120,9 @@ app.use('/api/commandes-client', commandesClientRouter)
 app.use('/api/factures', facturesRouter)
 app.use('/api/devis', devisRouter)
 app.use('/api/expeditions', expeditionsRouter)
+// Tricotage Malterre's own shipments (expedition.IDsociete = 2) — consumed by
+// the TRM frontend. Separate mount so the ETM routes stay société-1 only.
+app.use('/api/expeditions-trm', expeditionsTrmRouter)
 app.use('/api/transferts', transfertsRouter)
 app.use('/api/clients', clientsRouter)
 // TRM ledger (IDsociete = 2) — consumed by the TRM app, see routes/clients-trm.ts
