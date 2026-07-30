@@ -19,7 +19,7 @@ import { commandesFilRouter } from './routes/commandes-fil.js'
 import { commandesSousTraitantRouter } from './routes/commandes-sous-traitant.js'
 import { commandesClientRouter } from './routes/commandes-client.js'
 import { commandesTrmRouter } from './routes/commandes-trm.js'
-import { facturesRouter } from './routes/factures.js'
+import { facturesRouter, facturesTrmRouter } from './routes/factures.js'
 import { devisRouter } from './routes/devis.js'
 import { expeditionsRouter } from './routes/expeditions.js'
 import { expeditionsTrmRouter } from './routes/expeditions-trm.js'
@@ -123,6 +123,8 @@ app.use('/api/commandes-client', commandesClientRouter)
 // partition, and a production-centric screen (see commandes-trm.ts header).
 app.use('/api/commandes-trm', commandesTrmRouter)
 app.use('/api/factures', facturesRouter)
+// Same router, IDsociete = 2 — the Tricotage Malterre ledger (TRM web app).
+app.use('/api/factures-trm', facturesTrmRouter)
 app.use('/api/devis', devisRouter)
 app.use('/api/expeditions', expeditionsRouter)
 // Tricotage Malterre's own shipments (expedition.IDsociete = 2) — consumed by

@@ -96,7 +96,14 @@ export interface CompanyInfo {
  *  BL 12211): SIRET 332 604 727 00021, NAF 1391Z (fabrication d'étoffes à
  *  maille), TVA FR 25 332 604 727, capital 46 500 €. `rcs` is deliberately
  *  the empty string — the legacy report prints no RCS for TRM and inventing
- *  one on a delivery note is not an option; the footer already skips it. */
+ *  one on a delivery note is not an option; the footer already skips it.
+ *
+ *  The bank block was empty while only the avis d'expédition used this profile
+ *  (a delivery note shows no coordonnées bancaires). The facture does — it is
+ *  the account the client is told to pay — so it is filled in from a
+ *  legacy-generated TRM invoice (FC85218.pdf). Note it is a DIFFERENT account
+ *  from ETS Malterre's: paying an ETM IBAN against a TRM invoice is a real
+ *  reconciliation problem, not a cosmetic one. */
 export const companyTrm: CompanyInfo = {
   ...company,
   legalName: 'TRICOTAGE MALTERRE SARL',
@@ -110,8 +117,8 @@ export const companyTrm: CompanyInfo = {
   naf: '1391Z',
   bank: {
     holder: 'TRICOTAGE MALTERRE SARL',
-    iban: '',
-    bic: '',
+    iban: 'FR76 3000 3035 8100 0200 1609 813',
+    bic: 'SOGEFRPP',
   },
 } as const
 

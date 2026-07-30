@@ -20,7 +20,7 @@ import {
   TagIcon,
   type AddressBlockData,
 } from './MalterreDocument.js'
-import { colors, company, sizes, tvaRowLabel } from './theme.js'
+import { colors, company, sizes, tvaRowLabel, type CompanyInfo } from './theme.js'
 
 interface AddrLite {
   nom: string | null
@@ -62,6 +62,11 @@ export interface FacturePdfData {
    *  shown as an "N° commande" meta row so the client can link the proforma
    *  back to their order despite the offset proforma numero. */
   refCommande?: string
+  /** Issuing société's legal identity (footer + bank card). Defaults to ETS
+   *  Malterre; Tricotage Malterre invoices pass `companyTrm`. An invoice is a
+   *  legal document — this is not branding, it is whose SIRET and IBAN the
+   *  client is told to pay. */
+  company?: CompanyInfo
   lignes: Array<{
     designation: string
     quantite: number
@@ -223,16 +228,21 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
   const baseWord = isAvoir ? 'Avoir' : 'Facture'
   const docWord = isProforma ? `${baseWord} proforma` : baseWord
   const clientAddress = buildClientAddress(data)
+  const issuer = data.company ?? company
 
-  const totalHT = data.lignes.reduce((s, l) => s + (Number(l.montant) || 0), 0)
+  // Round every step to the centime: the client adds up the printed lines and
+  // must land on the printed total. `montant` already arrives rounded from the
+  // API (see `lineMontant` in routes/factures.ts) — this settles the sums.
+  const r2 = (v: number) => Math.round(v * 100) / 100
+  const totalHT = r2(data.lignes.reduce((s, l) => s + (Number(l.montant) || 0), 0))
   const remise = Number(data.remise) || 0
   const fraisPort = Number(data.fraisPort) || 0
-  const netHT = totalHT - remise + fraisPort
+  const netHT = r2(totalHT - remise + fraisPort)
   const tvaRate = Number(data.tvaRate) || 0
   // Client flagged "Exonération" in Clients › Gestion (export customers).
   const exonere = tvaRate === 0
-  const tva = netHT * (tvaRate / 100)
-  const ttc = netHT + tva
+  const tva = r2(netHT * (tvaRate / 100))
+  const ttc = r2(netHT + tva)
 
   return (
     <MalterreDocument
@@ -240,6 +250,7 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
       reference={`N°${data.numero}`}
       documentDate={data.dateFacture || ''}
       title={`${docWord} ${data.numero}`}
+      issuer={issuer}
     >
       <View style={styles.topRow}>
         <View style={styles.topRowSlot}>
@@ -366,15 +377,15 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
         </View>
         <View style={styles.bankRow}>
           <Text style={styles.bankLabel}>Titulaire du compte</Text>
-          <Text style={styles.bankValue}>{company.bank.holder}</Text>
+          <Text style={styles.bankValue}>{issuer.bank.holder}</Text>
         </View>
         <View style={styles.bankRow}>
           <Text style={styles.bankLabel}>IBAN</Text>
-          <Text style={styles.bankValue}>{company.bank.iban}</Text>
+          <Text style={styles.bankValue}>{issuer.bank.iban}</Text>
         </View>
         <View style={styles.bankRow}>
           <Text style={styles.bankLabel}>BIC</Text>
-          <Text style={styles.bankValue}>{company.bank.bic}</Text>
+          <Text style={styles.bankValue}>{issuer.bank.bic}</Text>
         </View>
       </View>
     </MalterreDocument>

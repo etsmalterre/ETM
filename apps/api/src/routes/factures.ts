@@ -21,10 +21,23 @@
 // ligne_facture_prov.IDligne_expedition, and expedition.est_facture carries
 // the "already invoiced" state both apps read.
 //
+// TWO SOCIÉTÉS, ONE ROUTER — `facture` / `facture_prov` are shared tables
+// partitioned by IDsociete (1 = ETS Malterre, 2 = Tricotage Malterre). Unlike
+// `stock_ecru`, whose two halves are genuinely different objects (hence the
+// separate `stock-ecru-trm.ts`), the two invoice ledgers are the SAME object:
+// identical columns, identical lifecycle, identical screen. So this file is a
+// factory — `createFacturesRouter(scope)` — mounted twice (`/api/factures` for
+// ETM, `/api/factures-trm` for TRM) instead of being forked. Everything that
+// differs between the companies lives in the `FacturesScope` record below and
+// nowhere else; if you find yourself writing a literal `1` for IDsociete again,
+// it belongs in the scope.
+//
 // Hard rules baked in (verified against live data + the XDD + CLAUDE.md):
-//  - ETM scope: every read/write is IDsociete = 1 (IDsociete=2 rows are TRM).
-//  - numero allocator: MAX(numero)+1 per table WHERE IDsociete=1, retry loop.
-//    facture and facture_prov keep INDEPENDENT numero sequences.
+//  - Société scope: every read/write is IDsociete = scope.societe.
+//  - numero allocator: MAX(numero)+1 per table WHERE IDsociete=scope, retry loop.
+//    facture and facture_prov keep INDEPENDENT numero sequences, and each
+//    société has its own (live: ETM ~9 100, TRM ~85 200 — far apart, but they
+//    are only kept apart BY the per-société MAX, so never drop that predicate).
 //  - Neither header table has accented columns; `date` and `type` are reserved
 //    words → SELECT/INSERT/UPDATE them as uppercase DATE / TYPE (same trick as
 //    envoi_email.DATE and ligne_commande_client.TYPE). SELECT * is safe here.
@@ -57,8 +70,41 @@ import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { buildXImportFile, type XImportEntry } from '../lib/ximport.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
+import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
 
-export const facturesRouter: RouterType = Router()
+// ── Société scope ────────────────────────────────────────
+//
+// The complete list of what differs between the ETM and TRM invoice ledgers.
+// Anything not in here is identical for both companies by construction.
+interface FacturesScope {
+  /** `facture.IDsociete` / `facture_prov.IDsociete` partition key. */
+  societe: 1 | 2
+  /** `stock_ecru` column linking a roll to a shipment line of THIS company.
+   *  ETM ships écru it bought (`IDligne_expedition_ETM`); TRM ships écru it
+   *  knitted (`IDligne_expedition_TRM`). The same physical roll can carry both
+   *  over its life — TRM knits it and ships it to ETM, which later ships it on
+   *  — so the generator MUST read its own column or it invoices the wrong
+   *  shipment's weight. */
+  ecruShipmentFk: 'IDligne_expedition_ETM' | 'IDligne_expedition_TRM'
+  /** Legal identity on the PDF (footer + bank card). */
+  company: CompanyInfo
+  /** Trade name used in the email subject and the "from" display name. */
+  brand: string
+}
+
+const SCOPE_ETM: FacturesScope = {
+  societe: 1,
+  ecruShipmentFk: 'IDligne_expedition_ETM',
+  company: companyEtm,
+  brand: 'ETS Malterre',
+}
+
+const SCOPE_TRM: FacturesScope = {
+  societe: 2,
+  ecruShipmentFk: 'IDligne_expedition_TRM',
+  company: companyTrm,
+  brand: 'Tricotage Malterre',
+}
 
 /** Guard for every invoice write path: create, header edit, delete, line
  *  CRUD, generate, batch-delete and convert (edit_factures permission).
@@ -104,6 +150,28 @@ async function provLineParent(lineId: number): Promise<number> {
   const rows = await query<any>(`SELECT IDfacture_prov FROM ligne_facture_prov WHERE IDligne_facture_prov = ${lineId}`)
   return rows.length > 0 ? Number(rows[0].IDfacture_prov) || 0 : 0
 }
+
+/** Does this facture / facture_prov row belong to the calling router's société?
+ *
+ *  MANDATORY on every id-addressed route. `facture` and `facture_prov` PKs are
+ *  a single sequence shared by all three sociétés, so an id from ETM's ledger
+ *  is a perfectly valid id in TRM's URL space: without this check
+ *  `GET /api/factures-trm/def/5332` happily returns ETM's facture N°9099, and
+ *  `PUT /api/factures-trm/prov/<etm id>` would rewrite an ETM proforma's TVA
+ *  with a TRM tva row. Harmless while a single router existed — a real
+ *  cross-ledger hole the moment the second one is mounted. */
+async function inScope(scope: FacturesScope, kind: Kind, id: number): Promise<boolean> {
+  const t = TBL[kind]
+  const rows = await query<{ IDsociete: number }>(
+    `SELECT IDsociete FROM ${t.table} WHERE ${t.pk} = ${id}`,
+  )
+  return rows.length > 0 && Number(rows[0].IDsociete) === scope.societe
+}
+
+/** 404 (not 403) when the id belongs to the other société: from this router's
+ *  point of view the document genuinely does not exist, and saying otherwise
+ *  would leak that an invoice with that id exists elsewhere. */
+const NOT_FOUND = { error: 'Facture not found' }
 
 // ── Small SQL/format helpers (same as commandes-client.ts) ──
 
@@ -185,12 +253,12 @@ function displayNumero(kind: Kind, id: number, numero: unknown): number | null {
   return numero != null ? Number(numero) : null
 }
 
-/** Next numero for the given ledger (IDsociete=1). MAX+1 matches the legacy
- *  allocator; concurrent POSTs retry on collision. facture and facture_prov
- *  keep separate sequences. */
-async function nextNumero(kind: Kind): Promise<number> {
+/** Next numero for the given ledger, within this société. MAX+1 matches the
+ *  legacy allocator; concurrent POSTs retry on collision. facture and
+ *  facture_prov keep separate sequences, and so does each société. */
+async function nextNumero(scope: FacturesScope, kind: Kind): Promise<number> {
   const r = await query<{ m: number | null }>(
-    `SELECT MAX(numero) AS m FROM ${TBL[kind].table} WHERE IDsociete = 1`,
+    `SELECT MAX(numero) AS m FROM ${TBL[kind].table} WHERE IDsociete = ${scope.societe}`,
   )
   return (Number(r[0]?.m) || 0) + 1
 }
@@ -223,9 +291,24 @@ async function loadTvaMap(): Promise<Map<number, { valeur: number; libelle: stri
   return out
 }
 
+// Both label loaders MUST project their PK: fixEncoding re-reads the corrupted
+// field with `WHERE <idField> = <row[idField]>`, so a projection without the id
+// silently skips the repair (that is how "Vente à façon" first came back as
+// "Vente � fa�on").
+async function loadCodeComptableLabel(id: number): Promise<string | null> {
+  if (!(id > 0)) return null
+  const rows = await query<{ IDcode_comptable: number; libelle: string | null }>(
+    `SELECT IDcode_comptable, libelle FROM code_comptable WHERE IDcode_comptable = ${id}`,
+  )
+  const fixed = await fixEncoding(rows, 'code_comptable', 'IDcode_comptable', ['libelle'])
+  return (fixed[0]?.libelle ?? null) as string | null
+}
+
 async function loadModePaiementLabel(id: number): Promise<string | null> {
   if (!(id > 0)) return null
-  const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`)
+  const rows = await query<{ IDmode_paiement: number; libelle: string | null }>(
+    `SELECT IDmode_paiement, libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`,
+  )
   const fixed = await fixEncoding(rows, 'mode_paiement', 'IDmode_paiement', ['libelle'])
   return (fixed[0]?.libelle ?? null) as string | null
 }
@@ -285,7 +368,33 @@ async function loadAdresse(id: number): Promise<Record<string, unknown> | null> 
   return (fixed[0] as Record<string, unknown>) ?? null
 }
 
-/** Per-facture line totals (Σ qty×prix, count). Batched over a set of ids. */
+/** Money rounding — 2 decimals, half away from zero (all amounts here are
+ *  positive, so this is plain half-up, the same as WinDev's `Arrondi`). */
+function round2(v: number): number {
+  return Math.round(v * 100) / 100
+}
+
+/** Amount of one invoice line — THE invoice arithmetic, used by every total
+ *  (list, detail, PDF, XImport) so they can never disagree.
+ *
+ *  `ligne_facture.prix` is a 4-byte REAL and, when the price came out of the
+ *  tarif engine rather than being typed by hand, it carries full float noise
+ *  (2.100738048553467, 4.677432060241699…). The invoice PRINTS the unit price
+ *  at 2 decimals, and the client checks qty × printed price = printed line
+ *  total = printed invoice total — so the arithmetic has to close at the
+ *  precision the document shows. The legacy WinDev app does exactly that:
+ *  round the unit price to the centime, multiply, round the line.
+ *
+ *  Verified against the 14 TRM invoices legible in the legacy Factures screen:
+ *  this formula reproduces 13 (the 14th, N°85200, is off by one centime on a
+ *  half-cent tie). Summing raw `quantite * prix` — what this file did before —
+ *  reproduced only 4, and was wrong by up to €6.71 on a single invoice, which
+ *  the XImport export then posted straight into the accounting system. */
+function lineMontant(quantite: unknown, prix: unknown): number {
+  return round2((Number(quantite) || 0) * round2(Number(prix) || 0))
+}
+
+/** Per-facture line totals (Σ line montants, count). Batched over a set of ids. */
 async function lineTotals(kind: Kind, factureIds: number[]): Promise<Map<number, { total_ht: number; nb_lignes: number }>> {
   const out = new Map<number, { total_ht: number; nb_lignes: number }>()
   const ids = factureIds.filter((x) => x > 0)
@@ -297,18 +406,36 @@ async function lineTotals(kind: Kind, factureIds: number[]): Promise<Map<number,
   for (const r of rows) {
     const id = Number(r.pid)
     const acc = out.get(id) ?? { total_ht: 0, nb_lignes: 0 }
-    acc.total_ht += (Number(r.quantite) || 0) * (Number(r.prix) || 0)
+    acc.total_ht += lineMontant(r.quantite, r.prix)
     acc.nb_lignes += 1
     out.set(id, acc)
   }
+  // Σ of already-rounded centimes still drifts in binary float — settle it.
+  for (const acc of out.values()) acc.total_ht = round2(acc.total_ht)
   return out
 }
 
 /** Legacy auto-fill: billing defaults from the client row (num_tva, IDtva,
  *  IDmode_paiement, IDecheance, IDcode_comptable + the est_defaut_facturation
  *  address), with the société-wide TVA / code comptable rows as backstop.
- *  Shared by the manual POST and the batch generator. */
-async function clientBillingDefaults(IDclient: number): Promise<{
+ *  Shared by the manual POST and the batch generator.
+ *
+ *  `tva` and `code_comptable` are partitioned by IDsociete, but `client` has a
+ *  SINGLE IDtva / IDcode_comptable column shared by all three companies —
+ *  live data: 627 clients point at ETM rows, 27 at TRM rows, 4 at Confection.
+ *  Copying that id verbatim would book a TRM invoice on an ETM TVA account the
+ *  moment a client is shared between the two (SOFILETA, Bonneterie Gautier…),
+ *  and the XImport export posts whatever we store here straight into the
+ *  accounting system. So both ids are re-homed into THIS société:
+ *    - TVA by RATE — the rate is the business fact (0 % exonération vs 20 %),
+ *      the row id is just where that rate lives for a given company;
+ *    - code comptable by keeping the client's only if it is already ours,
+ *      else this société's default (there is no cross-société equivalence to
+ *      match on, and the default is what the legacy app writes anyway).
+ *  Every existing invoice in the live ledger already satisfies this (facture
+ *  société always equals its tva/code société, 5 297/5 297 rows), so for ETM
+ *  this is a no-op guard, not a behaviour change. */
+async function clientBillingDefaults(scope: FacturesScope, IDclient: number): Promise<{
   idAdresse: number; idTva: number; idMode: number; idEcheance: number; idCode: number; numTva: string
 }> {
   const clientRows = await query<{
@@ -318,23 +445,39 @@ async function clientBillingDefaults(IDclient: number): Promise<{
     `SELECT num_tva, IDtva, IDmode_paiement, IDecheance, IDcode_comptable FROM client WHERE IDclient = ${IDclient}`,
   )
   const c = clientRows[0] ?? {}
-  const adrRows = await query<{ IDadresse: number }>(
-    `SELECT IDadresse FROM adresse
-     WHERE IDclient = ${IDclient} AND (est_visible IS NULL OR est_visible = 1)
-     ORDER BY est_defaut_facturation DESC, est_defaut DESC, IDadresse`,
-  )
-  const tvaDefaultRows = await query<{ IDtva: number }>(
-    `SELECT IDtva FROM tva WHERE IDsociete = 1 AND est_defaut = 1`,
-  )
-  const codeDefaultRows = await query<{ IDcode_comptable: number }>(
-    `SELECT IDcode_comptable FROM code_comptable WHERE IDsociete = 1 AND est_defaut = 1`,
-  )
+  const [adrRows, tvaRows, codeRows] = await Promise.all([
+    query<{ IDadresse: number }>(
+      `SELECT IDadresse FROM adresse
+       WHERE IDclient = ${IDclient} AND (est_visible IS NULL OR est_visible = 1)
+       ORDER BY est_defaut_facturation DESC, est_defaut DESC, IDadresse`,
+    ),
+    query<{ IDtva: number; IDsociete: number; valeur: number | null; est_defaut: number | null }>(
+      `SELECT IDtva, IDsociete, valeur, est_defaut FROM tva`,
+    ),
+    query<{ IDcode_comptable: number; IDsociete: number; est_defaut: number | null }>(
+      `SELECT IDcode_comptable, IDsociete, est_defaut FROM code_comptable`,
+    ),
+  ])
+
+  const ourTva = tvaRows.filter((t) => Number(t.IDsociete) === scope.societe)
+  const clientTva = tvaRows.find((t) => Number(t.IDtva) === (Number(c.IDtva) || 0))
+  const idTva =
+    (clientTva && Number(clientTva.IDsociete) === scope.societe ? Number(clientTva.IDtva) : 0) ||
+    (clientTva ? Number(ourTva.find((t) => Number(t.valeur) === Number(clientTva.valeur))?.IDtva) || 0 : 0) ||
+    Number(ourTva.find((t) => Number(t.est_defaut) === 1)?.IDtva) || 0
+
+  const ourCodes = codeRows.filter((x) => Number(x.IDsociete) === scope.societe)
+  const clientCode = Number(c.IDcode_comptable) || 0
+  const idCode =
+    (ourCodes.some((x) => Number(x.IDcode_comptable) === clientCode) ? clientCode : 0) ||
+    Number(ourCodes.find((x) => Number(x.est_defaut) === 1)?.IDcode_comptable) || 0
+
   return {
     idAdresse: Number(adrRows[0]?.IDadresse) || 0,
-    idTva: Number(c.IDtva) || Number(tvaDefaultRows[0]?.IDtva) || 0,
+    idTva,
     idMode: Number(c.IDmode_paiement) || 0,
     idEcheance: Number(c.IDecheance) || 0,
-    idCode: Number(c.IDcode_comptable) || Number(codeDefaultRows[0]?.IDcode_comptable) || 0,
+    idCode,
     numTva: (c.num_tva ?? '').toString(),
   }
 }
@@ -367,6 +510,7 @@ const factureBody = z.object({
   IDmode_paiement: z.number().int().nonnegative().optional(),
   IDecheance: z.number().int().nonnegative().optional(),
   IDtva: z.number().int().nonnegative().optional(),
+  IDcode_comptable: z.number().int().nonnegative().optional(),
   num_tva: z.string().optional(),
 })
 
@@ -377,11 +521,37 @@ const ligneBody = z.object({
   prix: z.number().optional(),
 })
 
+const batchIdsBody = z.object({ ids: z.array(z.number().int().positive()).min(1).max(500) })
+
+const extraAttachmentSchema = z.object({
+  filename: z.string().min(1).max(255),
+  content_base64: z.string().min(1),
+  content_type: z.string().min(1).max(100),
+})
+const emailBody = z.object({
+  to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(20000),
+  attach_pdf: z.boolean().optional(),
+  extra_attachments: z.array(extraAttachmentSchema).optional(),
+  dev_skip_send: z.boolean().optional(),
+})
+const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
+
+// ════════════════════════════════════════════════════════
+//  ROUTER FACTORY  (one instance per société — see the file header)
+// ════════════════════════════════════════════════════════
+
+function createFacturesRouter(scope: FacturesScope): RouterType {
+  const router: RouterType = Router()
+
 // ════════════════════════════════════════════════════════
 //  LOOKUPS  (literal paths — must register before /:kind/*)
 // ════════════════════════════════════════════════════════
 
-facturesRouter.get('/lookups/clients', async (_req: Request, res: Response) => {
+router.get('/lookups/clients', async (_req: Request, res: Response) => {
   try {
     const rows = await query<{ IDclient: number; nom: string | null }>(
       `SELECT IDclient, nom FROM client WHERE est_visible = 1 ORDER BY nom`,
@@ -394,7 +564,7 @@ facturesRouter.get('/lookups/clients', async (_req: Request, res: Response) => {
   }
 })
 
-facturesRouter.get('/lookups/adresses', async (req: Request, res: Response) => {
+router.get('/lookups/adresses', async (req: Request, res: Response) => {
   try {
     const cid = parseInt(String(req.query.client ?? ''), 10)
     if (isNaN(cid)) { res.status(400).json({ error: 'client query parameter required' }); return }
@@ -413,7 +583,7 @@ facturesRouter.get('/lookups/adresses', async (req: Request, res: Response) => {
   }
 })
 
-facturesRouter.get('/lookups/modes-paiement', async (_req: Request, res: Response) => {
+router.get('/lookups/modes-paiement', async (_req: Request, res: Response) => {
   try {
     const rows = await query<{ IDmode_paiement: number; libelle: string | null }>(
       `SELECT IDmode_paiement, libelle FROM mode_paiement WHERE est_visible = 1 ORDER BY libelle`,
@@ -426,7 +596,7 @@ facturesRouter.get('/lookups/modes-paiement', async (_req: Request, res: Respons
   }
 })
 
-facturesRouter.get('/lookups/echeances', async (_req: Request, res: Response) => {
+router.get('/lookups/echeances', async (_req: Request, res: Response) => {
   try {
     const rows = await query<{ IDecheance: number; libelle: string | null }>(
       `SELECT IDecheance, libelle FROM echeance WHERE est_visible = 1 ORDER BY IDecheance`,
@@ -441,15 +611,37 @@ facturesRouter.get('/lookups/echeances', async (_req: Request, res: Response) =>
 
 // TVA options for the ETM société (the detail dropdown). Returns the rate so
 // the FE can label them "20 %", "0 % (Exonération)", "5,5 %".
-facturesRouter.get('/lookups/tva', async (_req: Request, res: Response) => {
+router.get('/lookups/tva', async (_req: Request, res: Response) => {
   try {
     const rows = await query<{ IDtva: number; valeur: number | null; libelle_compte: string | null }>(
-      `SELECT IDtva, valeur, libelle_compte FROM tva WHERE IDsociete = 1 AND est_visible = 1 ORDER BY valeur DESC`,
+      `SELECT IDtva, valeur, libelle_compte FROM tva WHERE IDsociete = ${scope.societe} AND est_visible = 1 ORDER BY valeur DESC`,
     )
     const fixed = await fixEncoding(rows, 'tva', 'IDtva', ['libelle_compte'])
     res.json(fixed.map((r) => ({ IDtva: Number(r.IDtva), valeur: Number(r.valeur) || 0, libelle: r.libelle_compte ?? '' })))
   } catch (err) {
     console.error('Error fetching tva lookup:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Sales accounts for this société — the "Code comptable" the legacy TRM
+// facture screen exposes as a dropdown, and what XImport posts the HT half of
+// each invoice to. Partitioned by IDsociete (TRM: "Vente à façon", "Vente à
+// façon internationale", "Vente article fini"…).
+router.get('/lookups/codes-comptables', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query<{ IDcode_comptable: number; numero: string | null; libelle: string | null }>(
+      `SELECT IDcode_comptable, numero, libelle FROM code_comptable
+       WHERE IDsociete = ${scope.societe} AND est_visible = 1 ORDER BY IDcode_comptable`,
+    )
+    const fixed = await fixEncoding(rows, 'code_comptable', 'IDcode_comptable', ['libelle'])
+    res.json(fixed.map((r) => ({
+      IDcode_comptable: Number(r.IDcode_comptable),
+      numero: (r.numero ?? '').toString(),
+      libelle: (r.libelle ?? '').toString(),
+    })))
+  } catch (err) {
+    console.error('Error fetching codes-comptables lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -463,7 +655,7 @@ facturesRouter.get('/lookups/tva', async (_req: Request, res: Response) => {
 async function loadXImportEntries(date: string): Promise<XImportEntry[]> {
   // DATE/TYPE are reserved words → uppercase keys. SELECT * is safe here.
   const factures = await query<any>(
-    `SELECT * FROM facture WHERE IDsociete = 1 AND DATE = '${date}' ORDER BY numero`,
+    `SELECT * FROM facture WHERE IDsociete = ${scope.societe} AND DATE = '${date}' ORDER BY numero`,
   )
   if (factures.length === 0) return []
 
@@ -500,7 +692,6 @@ async function loadXImportEntries(date: string): Promise<XImportEntry[]> {
     await Promise.all(echeanceIds.map(async (id) => [id, await loadEcheanceRule(id)] as const)),
   )
 
-  const round2 = (v: number) => Math.round(v * 100) / 100
 
   return factures.map((f: any) => {
     const id = Number(f.IDfacture)
@@ -544,7 +735,7 @@ function parseExportDate(raw: unknown): string | null {
 }
 
 // Pre-flight for the export dialog: how many invoices would the file contain?
-facturesRouter.get('/ximport/summary', async (req: Request, res: Response) => {
+router.get('/ximport/summary', async (req: Request, res: Response) => {
   try {
     const date = parseExportDate(req.query.date)
     if (!date) { res.status(400).json({ error: 'invalid_date' }); return }
@@ -564,7 +755,7 @@ facturesRouter.get('/ximport/summary', async (req: Request, res: Response) => {
 
 // The file itself. Opened via window.open() from the browser, so it must be a
 // plain GET that triggers a download (no JSON envelope).
-facturesRouter.get('/ximport', async (req: Request, res: Response) => {
+router.get('/ximport', async (req: Request, res: Response) => {
   try {
     const date = parseExportDate(req.query.date)
     if (!date) { res.status(400).json({ error: 'invalid_date' }); return }
@@ -584,7 +775,7 @@ facturesRouter.get('/ximport', async (req: Request, res: Response) => {
 //  LIST  (one bucket per call: ?status=prov|def)
 // ════════════════════════════════════════════════════════
 
-facturesRouter.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(String(req.query.status ?? 'def')) ?? 'def'
     const t = TBL[kind]
@@ -594,7 +785,7 @@ facturesRouter.get('/', async (req: Request, res: Response) => {
     const limit = isNaN(limitRaw) ? 200 : Math.min(Math.max(limitRaw, 1), 500)
     const isSearching = q.length > 0
 
-    const whereParts: string[] = ['f.IDsociete = 1']
+    const whereParts: string[] = [`f.IDsociete = ${scope.societe}`]
     if (typeFilter === 'facture') whereParts.push('f.TYPE = 1')
     else if (typeFilter === 'avoir') whereParts.push('f.TYPE = 2')
 
@@ -646,7 +837,7 @@ facturesRouter.get('/', async (req: Request, res: Response) => {
       const id = Number(f[t.pk])
       const totals = totalsMap.get(id) ?? { total_ht: 0, nb_lignes: 0 }
       const tva = tvaMap.get(Number(f.IDtva)) ?? { valeur: 0, libelle: '' }
-      const tvaAmount = totals.total_ht * (tva.valeur / 100)
+      const tvaAmount = round2(totals.total_ht * (tva.valeur / 100))
       return {
         id,
         kind,
@@ -658,7 +849,7 @@ facturesRouter.get('/', async (req: Request, res: Response) => {
         tva_rate: tva.valeur,
         total_ht: totals.total_ht,
         total_tva: tvaAmount,
-        total_ttc: totals.total_ht + tvaAmount,
+        total_ttc: round2(totals.total_ht + tvaAmount),
         nb_lignes: totals.nb_lignes,
         est_envoye: kind === 'def' ? (envoyeIds.has(id) ? 1 : 0) : 1,
       }
@@ -699,8 +890,11 @@ async function resolveLineStockKinds(leIds: number[]): Promise<Map<number, LineS
       `SELECT IDligne_commande_client, TYPE AS type_kind FROM ligne_commande_client WHERE IDligne_commande_client IN (${chunk.join(',')})`,
     )
     for (const r of rows) {
+      // TYPE 4 appears only on TRM orders (175 lines live, none ever shipped)
+      // and points at the same ref_ecru / colori_ecru catalog as TYPE 1 — it is
+      // écru counted per piece rather than per Kg. Same glyph.
       const tk = Number(r.type_kind) || 0
-      lccKind.set(Number(r.IDligne_commande_client), tk === 1 ? 'ecru' : tk === 2 ? 'fini' : 'divers')
+      lccKind.set(Number(r.IDligne_commande_client), tk === 1 || tk === 4 ? 'ecru' : tk === 2 ? 'fini' : 'divers')
     }
   }
   for (const [le, lcc] of leToLcc) out.set(le, lccKind.get(lcc) ?? 'divers')
@@ -729,14 +923,16 @@ async function loadFactureLines(kind: Kind, id: number): Promise<Array<{
       designation: r.designation ?? null,
       quantite: qty,
       unite: (r.unite ?? '').toString(),
+      // `prix` stays raw so the proforma edit dialog round-trips the stored
+      // value untouched; only the montant is computed at invoice precision.
       prix,
-      montant: qty * prix,
+      montant: lineMontant(qty, prix),
       stock_kind: kinds.get(leId) ?? 'divers',
     }
   })
 }
 
-facturesRouter.get('/:kind/:id', async (req: Request, res: Response) => {
+router.get('/:kind/:id', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
@@ -744,22 +940,25 @@ facturesRouter.get('/:kind/:id', async (req: Request, res: Response) => {
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const t = TBL[kind]
     const rows = await query<any>(`SELECT * FROM ${t.table} WHERE ${t.pk} = ${id}`)
-    if (rows.length === 0) { res.status(404).json({ error: 'Facture not found' }); return }
+    if (rows.length === 0) { res.status(404).json(NOT_FOUND); return }
     const h = rows[0]
+    // Cross-ledger guard — the PK space is shared by all sociétés (see inScope).
+    if (Number(h.IDsociete) !== scope.societe) { res.status(404).json(NOT_FOUND); return }
     const IDclient = Number(h.IDclient) || 0
 
-    const [clientNames, adr, lignes, tvaMap, modePaiement, echeance] = await Promise.all([
+    const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, codeComptable] = await Promise.all([
       resolveClientNames([IDclient]),
       loadAdresse(Number(h.IDadresse) || 0),
       loadFactureLines(kind, id),
       loadTvaMap(),
       loadModePaiementLabel(Number(h.IDmode_paiement) || 0),
       loadEcheanceRule(Number(h.IDecheance) || 0),
+      loadCodeComptableLabel(Number(h.IDcode_comptable) || 0),
     ])
 
     const tva = tvaMap.get(Number(h.IDtva)) ?? { valeur: 0, libelle: '' }
-    const totalHt = lignes.reduce((s, l) => s + l.montant, 0)
-    const tvaAmount = totalHt * (tva.valeur / 100)
+    const totalHt = round2(lignes.reduce((s, l) => s + l.montant, 0))
+    const tvaAmount = round2(totalHt * (tva.valeur / 100))
 
     res.json({
       id,
@@ -782,11 +981,12 @@ facturesRouter.get('/:kind/:id', async (req: Request, res: Response) => {
       tva_label: tva.libelle,
       num_tva: (h.num_tva ?? '').toString(),
       IDcode_comptable: Number(h.IDcode_comptable) || 0,
+      code_comptable_label: codeComptable,
       adresse_facturation: adr,
       lignes,
       total_ht: totalHt,
       total_tva: tvaAmount,
-      total_ttc: totalHt + tvaAmount,
+      total_ttc: round2(totalHt + tvaAmount),
     })
   } catch (err) {
     console.error('Error fetching facture detail:', err)
@@ -807,13 +1007,13 @@ facturesRouter.get('/:kind/:id', async (req: Request, res: Response) => {
  *  Skipped: clients internes (client.client_interne = 1), donations
  *  (expedition.donation = 1 OR commande_client.donation = 1), and expeditions
  *  with no shipped rolls (left unmarked so a later run picks them up). */
-facturesRouter.post('/prov/generate', async (req: Request, res: Response) => {
+router.post('/prov/generate', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     // 1. Candidate expeditions (formelle, ETM, not yet invoiced).
     const expRows = await query<any>(
       `SELECT IDexpedition, IDcommande_client, donation FROM expedition
-       WHERE IDsociete = 1 AND (est_facture IS NULL OR est_facture = 0)`,
+       WHERE IDsociete = ${scope.societe} AND (est_facture IS NULL OR est_facture = 0)`,
     )
     let skippedDonation = 0
     let skippedInterne = 0
@@ -893,8 +1093,14 @@ facturesRouter.post('/prov/generate', async (req: Request, res: Response) => {
       )
       if (lccRows.length === 0) return null
       const lcc = lccRows[0]
+      // TYPE 4 is a TRM-only variant of the écru line (same ref_ecru /
+      // colori_ecru catalog, counted per piece instead of per Kg). No TYPE-4
+      // line has ever reached a ligne_expedition, so this branch is currently
+      // unexercised — it is here so that if one ever ships it is invoiced
+      // rather than silently dropped (a dropped line leaves the expedition
+      // un-marked and the client under-billed).
       const typeKind = Number(lcc.type_kind) || 0
-      const kind = typeKind === 1 ? 'ecru' : typeKind === 2 ? 'fini' : 'none'
+      const kind = typeKind === 1 || typeKind === 4 ? 'ecru' : typeKind === 2 ? 'fini' : 'none'
       if (kind === 'none') return null
       const refId = Number(lcc.IDreference) || 0
       const colId = Number(lcc.IDcolori) || 0
@@ -903,7 +1109,7 @@ facturesRouter.post('/prov/generate', async (req: Request, res: Response) => {
       const dim = Number(lcc.unite) === 3 ? 'metrage' : 'poids'
       const rollRows = kind === 'fini'
         ? await query<any>(`SELECT poids, metrage FROM stock_fini WHERE IDligne_expedition = ${leId}`)
-        : await query<any>(`SELECT poids, metrage FROM stock_ecru WHERE IDligne_expedition_ETM = ${leId}`)
+        : await query<any>(`SELECT poids, metrage FROM stock_ecru WHERE ${scope.ecruShipmentFk} = ${leId}`)
       if (rollRows.length === 0) return null
       const qty = Math.round(rollRows.reduce((s: number, r: any) => s + (Number(r[dim]) || 0), 0) * 100) / 100
 
@@ -1007,20 +1213,20 @@ facturesRouter.post('/prov/generate', async (req: Request, res: Response) => {
         }
       }
 
-      const bd = await clientBillingDefaults(clientId)
+      const bd = await clientBillingDefaults(scope, clientId)
       const date = todayDigits()
       let newNumero = 0
       let inserted = false
       let lastErr: unknown = null
       for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
-        newNumero = await nextNumero('prov')
+        newNumero = await nextNumero(scope, 'prov')
         try {
           await query(
             `INSERT INTO facture_prov
                (IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
                 DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers)
              VALUES
-               (1, ${newNumero}, ${clientId}, ${bd.idAdresse}, ${bd.idMode}, ${bd.idEcheance},
+               (${scope.societe}, ${newNumero}, ${clientId}, ${bd.idAdresse}, ${bd.idMode}, ${bd.idEcheance},
                 '${date}', ${bd.idTva}, ${sqlText(bd.numTva)}, 1, ${bd.idCode}, 0)`,
           )
           inserted = true
@@ -1028,7 +1234,7 @@ facturesRouter.post('/prov/generate', async (req: Request, res: Response) => {
       }
       if (!inserted) throw lastErr ?? new Error('insert failed after 3 attempts')
       const newRows = await query<any>(
-        `SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = 1 AND numero = ${newNumero} ORDER BY IDfacture_prov DESC`,
+        `SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = ${scope.societe} AND numero = ${newNumero} ORDER BY IDfacture_prov DESC`,
       )
       const newId = Number(newRows[0]?.IDfacture_prov) || 0
       if (!newId) throw new Error('could not resolve new facture_prov id')
@@ -1129,10 +1335,10 @@ async function wipeOpenProformas(targetIds: number[]): Promise<{ deleted: number
  *  referenced by the deleted proformas get est_facture reset to 0 so the next
  *  generation run picks them up again. Must register BEFORE the generic
  *  /:kind/:id delete. */
-facturesRouter.delete('/prov/all', async (req: Request, res: Response) => {
+router.delete('/prov/all', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
-    const heads = await query<any>(`SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = 1`)
+    const heads = await query<any>(`SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = ${scope.societe}`)
     const ids = heads.map((h: any) => Number(h.IDfacture_prov))
     const r = await wipeOpenProformas(ids)
     res.json({ deleted: r.deleted, expeditions_reouvertes: r.expeditions_reouvertes })
@@ -1147,8 +1353,7 @@ facturesRouter.delete('/prov/all', async (req: Request, res: Response) => {
  *  picked from may be stale. Registered near the other /prov/* batch routes;
  *  the generic POST /:kind only matches a single path segment so there is no
  *  routing conflict. */
-const batchIdsBody = z.object({ ids: z.array(z.number().int().positive()).min(1).max(500) })
-facturesRouter.post('/prov/delete-batch', async (req: Request, res: Response) => {
+router.post('/prov/delete-batch', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const parsed = batchIdsBody.safeParse(req.body)
@@ -1157,7 +1362,7 @@ facturesRouter.post('/prov/delete-batch', async (req: Request, res: Response) =>
     const found: number[] = []
     for (const chunk of chunks(requested)) {
       const heads = await query<any>(
-        `SELECT IDfacture_prov FROM facture_prov WHERE IDfacture_prov IN (${chunk.join(',')}) AND IDsociete = 1`,
+        `SELECT IDfacture_prov FROM facture_prov WHERE IDfacture_prov IN (${chunk.join(',')}) AND IDsociete = ${scope.societe}`,
       )
       for (const h of heads) found.push(Number(h.IDfacture_prov))
     }
@@ -1173,7 +1378,7 @@ facturesRouter.post('/prov/delete-batch', async (req: Request, res: Response) =>
 //  HEADER CRUD
 // ════════════════════════════════════════════════════════
 
-facturesRouter.post('/:kind', async (req: Request, res: Response) => {
+router.post('/:kind', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const kind = parseKind(req.params.kind)
@@ -1188,12 +1393,12 @@ facturesRouter.post('/:kind', async (req: Request, res: Response) => {
 
     // Auto-fill billing defaults from the client row (explicit cols — SELECT *
     // fails on client). The société TVA/code default backstops a blank client.
-    const bd = await clientBillingDefaults(n(d.IDclient))
+    const bd = await clientBillingDefaults(scope, n(d.IDclient))
     const idAdresse = d.IDadresse ?? bd.idAdresse
     const idTva = d.IDtva ?? bd.idTva
     const idMode = d.IDmode_paiement ?? bd.idMode
     const idEcheance = d.IDecheance ?? bd.idEcheance
-    const idCode = bd.idCode
+    const idCode = d.IDcode_comptable ?? bd.idCode
     const numTva = d.num_tva ?? bd.numTva
 
     // numero allocator with collision retry. DATE / TYPE written uppercase
@@ -1203,16 +1408,16 @@ facturesRouter.post('/:kind', async (req: Request, res: Response) => {
     let inserted = false
     let lastErr: unknown = null
     for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
-      newNumero = await nextNumero(kind)
+      newNumero = await nextNumero(scope, kind)
       const cols = kind === 'def'
         ? `(IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
             DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers, IDcommande_client)`
         : `(IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
             DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers)`
       const vals = kind === 'def'
-        ? `(1, ${newNumero}, ${n(d.IDclient)}, ${n(idAdresse)}, ${n(idMode)}, ${n(idEcheance)},
+        ? `(${scope.societe}, ${newNumero}, ${n(d.IDclient)}, ${n(idAdresse)}, ${n(idMode)}, ${n(idEcheance)},
             '${date}', ${n(idTva)}, ${sqlText(numTva)}, ${type}, ${n(idCode)}, 0, 0)`
-        : `(1, ${newNumero}, ${n(d.IDclient)}, ${n(idAdresse)}, ${n(idMode)}, ${n(idEcheance)},
+        : `(${scope.societe}, ${newNumero}, ${n(d.IDclient)}, ${n(idAdresse)}, ${n(idMode)}, ${n(idEcheance)},
             '${date}', ${n(idTva)}, ${sqlText(numTva)}, ${type}, ${n(idCode)}, 0)`
       try {
         await query(`INSERT INTO ${t.table} ${cols} VALUES ${vals}`)
@@ -1222,7 +1427,7 @@ facturesRouter.post('/:kind', async (req: Request, res: Response) => {
     if (!inserted) throw lastErr ?? new Error('insert failed after 3 attempts')
 
     const newRows = await query<any>(
-      `SELECT ${t.pk} FROM ${t.table} WHERE IDsociete = 1 AND numero = ${newNumero} ORDER BY ${t.pk} DESC`,
+      `SELECT ${t.pk} FROM ${t.table} WHERE IDsociete = ${scope.societe} AND numero = ${newNumero} ORDER BY ${t.pk} DESC`,
     )
     res.status(201).json({ id: Number(newRows[0]?.[t.pk]) || 0, kind })
   } catch (err) {
@@ -1231,7 +1436,7 @@ facturesRouter.post('/:kind', async (req: Request, res: Response) => {
   }
 })
 
-facturesRouter.put('/:kind/:id', async (req: Request, res: Response) => {
+router.put('/:kind/:id', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const kind = parseKind(req.params.kind)
@@ -1240,6 +1445,7 @@ facturesRouter.put('/:kind/:id', async (req: Request, res: Response) => {
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     // Lock: the definitive ledger is read-only.
     if (kind === 'def') { res.status(409).json(DEF_LOCK); return }
+    if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
 
     const parsed = factureBody.partial().safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
@@ -1252,6 +1458,7 @@ facturesRouter.put('/:kind/:id', async (req: Request, res: Response) => {
     if (d.IDmode_paiement !== undefined) sets.push(`IDmode_paiement = ${n(d.IDmode_paiement)}`)
     if (d.IDecheance !== undefined) sets.push(`IDecheance = ${n(d.IDecheance)}`)
     if (d.IDtva !== undefined) sets.push(`IDtva = ${n(d.IDtva)}`)
+    if (d.IDcode_comptable !== undefined) sets.push(`IDcode_comptable = ${n(d.IDcode_comptable)}`)
     if (d.num_tva !== undefined) sets.push(`num_tva = ${sqlText(d.num_tva)}`)
     if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
 
@@ -1263,7 +1470,7 @@ facturesRouter.put('/:kind/:id', async (req: Request, res: Response) => {
   }
 })
 
-facturesRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
+router.delete('/:kind/:id', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const kind = parseKind(req.params.kind)
@@ -1272,6 +1479,7 @@ facturesRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     // Lock: the definitive ledger can't be deleted from.
     if (kind === 'def') { res.status(409).json(DEF_LOCK); return }
+    if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
 
     const t = TBL[kind]
     await query(`DELETE FROM ${t.lineTable} WHERE ${t.lineFk} = ${id}`)
@@ -1293,7 +1501,7 @@ facturesRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
  *  now referenced by ligne_facture rows. Returns null when the proforma does
  *  not exist (stale id from a batch picker). */
 async function convertProforma(id: number): Promise<{ IDfacture: number; numero: number } | null> {
-  const provRows = await query<any>(`SELECT * FROM facture_prov WHERE IDfacture_prov = ${id} AND IDsociete = 1`)
+  const provRows = await query<any>(`SELECT * FROM facture_prov WHERE IDfacture_prov = ${id} AND IDsociete = ${scope.societe}`)
   if (provRows.length === 0) return null
   const p = provRows[0]
 
@@ -1308,14 +1516,14 @@ async function convertProforma(id: number): Promise<{ IDfacture: number; numero:
   let inserted = false
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
-    newNumero = await nextNumero('def')
+    newNumero = await nextNumero(scope, 'def')
     try {
       await query(
         `INSERT INTO facture
            (IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
             DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers, IDcommande_client)
          VALUES
-           (1, ${newNumero}, ${n(p.IDclient)}, ${n(p.IDadresse)}, ${n(p.IDmode_paiement)}, ${n(p.IDecheance)},
+           (${scope.societe}, ${newNumero}, ${n(p.IDclient)}, ${n(p.IDadresse)}, ${n(p.IDmode_paiement)}, ${n(p.IDecheance)},
             '${date}', ${n(p.IDtva)}, ${sqlText(numTva)}, ${type}, ${n(p.IDcode_comptable)}, 0, 0)`,
       )
       inserted = true
@@ -1324,7 +1532,7 @@ async function convertProforma(id: number): Promise<{ IDfacture: number; numero:
   if (!inserted) throw lastErr ?? new Error('insert failed after 3 attempts')
 
   const newRows = await query<{ IDfacture: number }>(
-    `SELECT IDfacture FROM facture WHERE IDsociete = 1 AND numero = ${newNumero} ORDER BY IDfacture DESC`,
+    `SELECT IDfacture FROM facture WHERE IDsociete = ${scope.societe} AND numero = ${newNumero} ORDER BY IDfacture DESC`,
   )
   const newId = Number(newRows[0]?.IDfacture) || 0
   if (!newId) throw new Error('could not resolve new facture id')
@@ -1344,7 +1552,7 @@ async function convertProforma(id: number): Promise<{ IDfacture: number; numero:
   return { IDfacture: newId, numero: newNumero }
 }
 
-facturesRouter.post('/prov/:id/convert', async (req: Request, res: Response) => {
+router.post('/prov/:id/convert', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const id = parseInt(req.params.id, 10)
@@ -1361,7 +1569,7 @@ facturesRouter.post('/prov/:id/convert', async (req: Request, res: Response) => 
 /** POST /prov/convert-batch — convert a user-selected set of proformas, each
  *  into its own definitive facture. Unknown ids are skipped (stale picker).
  *  Returns the created invoices with client names for the summary dialog. */
-facturesRouter.post('/prov/convert-batch', async (req: Request, res: Response) => {
+router.post('/prov/convert-batch', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const parsed = batchIdsBody.safeParse(req.body)
@@ -1372,7 +1580,7 @@ facturesRouter.post('/prov/convert-batch', async (req: Request, res: Response) =
     const clientByProv = new Map<number, number>()
     for (const chunk of chunks(requested)) {
       const heads = await query<any>(
-        `SELECT IDfacture_prov, IDclient FROM facture_prov WHERE IDfacture_prov IN (${chunk.join(',')}) AND IDsociete = 1`,
+        `SELECT IDfacture_prov, IDclient FROM facture_prov WHERE IDfacture_prov IN (${chunk.join(',')}) AND IDsociete = ${scope.societe}`,
       )
       for (const h of heads) clientByProv.set(Number(h.IDfacture_prov), Number(h.IDclient) || 0)
     }
@@ -1407,13 +1615,13 @@ facturesRouter.post('/prov/convert-batch', async (req: Request, res: Response) =
  *  (amounts stay positive — the credit sign is presentational), DATE is today.
  *  The result is a normal editable proforma: the user trims the lines to what
  *  is actually reimbursed, then converts it like any other proforma. */
-facturesRouter.post('/def/:id/avoir', async (req: Request, res: Response) => {
+router.post('/def/:id/avoir', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
-    const rows = await query<any>(`SELECT * FROM facture WHERE IDfacture = ${id} AND IDsociete = 1`)
+    const rows = await query<any>(`SELECT * FROM facture WHERE IDfacture = ${id} AND IDsociete = ${scope.societe}`)
     if (rows.length === 0) { res.status(404).json({ error: 'Facture not found' }); return }
     const f = rows[0]
     if (Number(f.TYPE) === 2) {
@@ -1429,14 +1637,14 @@ facturesRouter.post('/def/:id/avoir', async (req: Request, res: Response) => {
     let inserted = false
     let lastErr: unknown = null
     for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
-      newNumero = await nextNumero('prov')
+      newNumero = await nextNumero(scope, 'prov')
       try {
         await query(
           `INSERT INTO facture_prov
              (IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
               DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers)
            VALUES
-             (1, ${newNumero}, ${n(f.IDclient)}, ${n(f.IDadresse)}, ${n(f.IDmode_paiement)}, ${n(f.IDecheance)},
+             (${scope.societe}, ${newNumero}, ${n(f.IDclient)}, ${n(f.IDadresse)}, ${n(f.IDmode_paiement)}, ${n(f.IDecheance)},
               '${todayDigits()}', ${n(f.IDtva)}, ${sqlText(numTva)}, 2, ${n(f.IDcode_comptable)}, 0)`,
         )
         inserted = true
@@ -1445,7 +1653,7 @@ facturesRouter.post('/def/:id/avoir', async (req: Request, res: Response) => {
     if (!inserted) throw lastErr ?? new Error('insert failed after 3 attempts')
 
     const newRows = await query<{ IDfacture_prov: number }>(
-      `SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = 1 AND numero = ${newNumero} ORDER BY IDfacture_prov DESC`,
+      `SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = ${scope.societe} AND numero = ${newNumero} ORDER BY IDfacture_prov DESC`,
     )
     const newId = Number(newRows[0]?.IDfacture_prov) || 0
     if (!newId) throw new Error('could not resolve new proforma id')
@@ -1472,7 +1680,7 @@ facturesRouter.post('/def/:id/avoir', async (req: Request, res: Response) => {
 //  LINE CRUD
 // ════════════════════════════════════════════════════════
 
-facturesRouter.post('/:kind/:id/lignes', async (req: Request, res: Response) => {
+router.post('/:kind/:id/lignes', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const kind = parseKind(req.params.kind)
@@ -1480,6 +1688,7 @@ facturesRouter.post('/:kind/:id/lignes', async (req: Request, res: Response) => 
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (kind === 'def') { res.status(409).json(DEF_LOCK); return }
+    if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
 
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
@@ -1496,7 +1705,7 @@ facturesRouter.post('/:kind/:id/lignes', async (req: Request, res: Response) => 
   }
 })
 
-facturesRouter.put('/:kind/lignes/:lineId', async (req: Request, res: Response) => {
+router.put('/:kind/lignes/:lineId', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const kind = parseKind(req.params.kind)
@@ -1504,7 +1713,8 @@ facturesRouter.put('/:kind/lignes/:lineId', async (req: Request, res: Response) 
     const lineId = parseInt(req.params.lineId, 10)
     if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (kind === 'def') { res.status(409).json(DEF_LOCK); return }
-    if ((await provLineParent(lineId)) === 0) { res.status(404).json({ error: 'Line not found' }); return }
+    const parentId = await provLineParent(lineId)
+    if (parentId === 0 || !(await inScope(scope, kind, parentId))) { res.status(404).json({ error: 'Line not found' }); return }
 
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
@@ -1523,7 +1733,7 @@ facturesRouter.put('/:kind/lignes/:lineId', async (req: Request, res: Response) 
   }
 })
 
-facturesRouter.delete('/:kind/lignes/:lineId', async (req: Request, res: Response) => {
+router.delete('/:kind/lignes/:lineId', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
     const kind = parseKind(req.params.kind)
@@ -1531,7 +1741,8 @@ facturesRouter.delete('/:kind/lignes/:lineId', async (req: Request, res: Respons
     const lineId = parseInt(req.params.lineId, 10)
     if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (kind === 'def') { res.status(409).json(DEF_LOCK); return }
-    if ((await provLineParent(lineId)) === 0) { res.status(404).json({ error: 'Line not found' }); return }
+    const parentId = await provLineParent(lineId)
+    if (parentId === 0 || !(await inScope(scope, kind, parentId))) { res.status(404).json({ error: 'Line not found' }); return }
 
     await query(`DELETE FROM ${TBL[kind].lineTable} WHERE ${TBL[kind].linePk} = ${lineId}`)
     res.json({ ok: true })
@@ -1545,11 +1756,14 @@ facturesRouter.delete('/:kind/lignes/:lineId', async (req: Request, res: Respons
 //  PDF
 // ════════════════════════════════════════════════════════
 
-export async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfData | null> {
+async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfData | null> {
   const t = TBL[kind]
   const rows = await query<any>(`SELECT * FROM ${t.table} WHERE ${t.pk} = ${id}`)
   if (rows.length === 0) return null
   const h = rows[0]
+  // Cross-ledger guard: never render another société's invoice through this
+  // router (its footer/IBAN would be this société's — a forged document).
+  if (Number(h.IDsociete) !== scope.societe) return null
   const IDclient = Number(h.IDclient) || 0
 
   const [clientNames, adr, lignes, tvaMap, modePaiement, echeance] = await Promise.all([
@@ -1580,6 +1794,10 @@ export async function buildFacturePdfData(kind: Kind, id: number): Promise<Factu
     echeance: echeance?.libelle ?? null,
     echeanceDate: computeDateEcheance(h.DATE, echeance),
     tvaRate: tva.valeur,
+    // The issuing société's legal identity (footer SIRET/TVA + the IBAN the
+    // client is asked to pay). Not branding — a Tricotage Malterre invoice
+    // carrying ETM's bank details would be paid into the wrong account.
+    company: scope.company,
     lignes: lignes.map((l) => ({ designation: l.designation ?? '', quantite: l.quantite, unite: l.unite, prix: l.prix, montant: l.montant })),
   }
 }
@@ -1592,7 +1810,7 @@ async function renderFacturePdfBuffer(data: FacturePdfData): Promise<Buffer> {
   )
 }
 
-facturesRouter.get('/:kind/:id/pdf', async (req: Request, res: Response) => {
+router.get('/:kind/:id/pdf', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
@@ -1625,10 +1843,11 @@ async function buildEmailDefaults(kind: Kind, id: number): Promise<{
   subject: string; body: string; clientNom: string; numero: string
 } | null> {
   const t = TBL[kind]
-  const rows = await query<{ IDclient: number; numero: number | null; TYPE: number | null }>(
-    `SELECT IDclient, numero, TYPE FROM ${t.table} WHERE ${t.pk} = ${id}`,
+  const rows = await query<{ IDclient: number; numero: number | null; TYPE: number | null; IDsociete: number }>(
+    `SELECT IDclient, numero, TYPE, IDsociete FROM ${t.table} WHERE ${t.pk} = ${id}`,
   )
   if (rows.length === 0) return null
+  if (Number(rows[0].IDsociete) !== scope.societe) return null
   const IDclient = Number(rows[0].IDclient) || 0
   const numero = String(displayNumero(kind, id, rows[0].numero) ?? id)
   const isAvoir = Number(rows[0].TYPE) === 2
@@ -1662,7 +1881,7 @@ async function buildEmailDefaults(kind: Kind, id: number): Promise<{
   }
 
   const docCap = (isAvoir ? 'Avoir' : 'Facture') + (isProforma ? ' proforma' : '')
-  const subject = `${docCap} N°${numero} — ETS Malterre`
+  const subject = `${docCap} N°${numero} — ${scope.brand}`
   const body =
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre ${docWord} N°${numero}.\n\n` +
@@ -1671,7 +1890,7 @@ async function buildEmailDefaults(kind: Kind, id: number): Promise<{
   return { recipients: { selected, suggestions }, subject, body, clientNom, numero }
 }
 
-facturesRouter.get('/:kind/:id/email-defaults', async (req: Request, res: Response) => {
+router.get('/:kind/:id/email-defaults', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
@@ -1685,23 +1904,6 @@ facturesRouter.get('/:kind/:id/email-defaults', async (req: Request, res: Respon
     res.status(500).json({ error: 'Internal server error' })
   }
 })
-
-const extraAttachmentSchema = z.object({
-  filename: z.string().min(1).max(255),
-  content_base64: z.string().min(1),
-  content_type: z.string().min(1).max(100),
-})
-const emailBody = z.object({
-  to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
-  cc: z.array(z.string().email()).optional(),
-  bcc: z.array(z.string().email()).optional(),
-  subject: z.string().min(1).max(500),
-  body: z.string().min(1).max(20000),
-  attach_pdf: z.boolean().optional(),
-  extra_attachments: z.array(extraAttachmentSchema).optional(),
-  dev_skip_send: z.boolean().optional(),
-})
-const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
 
 async function logEnvoiEmails(idReference: number, recipients: string[], societe: string): Promise<void> {
   if (recipients.length === 0) return
@@ -1727,13 +1929,14 @@ async function logEnvoiEmails(idReference: number, recipients: string[], societe
   }
 }
 
-facturesRouter.post('/:kind/:id/email', async (req: Request, res: Response) => {
+router.post('/:kind/:id/email', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
     const parsed = emailBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
@@ -1757,7 +1960,7 @@ facturesRouter.post('/:kind/:id/email', async (req: Request, res: Response) => {
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null
       const displayName = u ? [u.prenom, u.nom].filter((s: string | null) => s && s.trim()).map((s: string) => s.trim()).join(' ') : ''
-      const fromName = displayName ? `${displayName} — ETS Malterre` : 'ETS Malterre'
+      const fromName = displayName ? `${displayName} — ${scope.brand}` : scope.brand
 
       const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
       if (parsed.data.attach_pdf !== false) {
@@ -1803,7 +2006,7 @@ facturesRouter.post('/:kind/:id/email', async (req: Request, res: Response) => {
 //  HISTORIQUE  (envoi_email timeline — definitive only)
 // ════════════════════════════════════════════════════════
 
-facturesRouter.get('/:kind/:id/historique', async (req: Request, res: Response) => {
+router.get('/:kind/:id/historique', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
@@ -1812,6 +2015,7 @@ facturesRouter.get('/:kind/:id/historique', async (req: Request, res: Response) 
     if (kind === 'prov') { res.json([]); return }
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
     const rows = await query<{ adresse: string | null; DATE: string | null }>(
       `SELECT adresse, DATE FROM envoi_email WHERE IDreference = ${id} AND IDtype_doc = ${TYPE_DOC_FACTURE}`,
     )
@@ -1832,3 +2036,12 @@ facturesRouter.get('/:kind/:id/historique', async (req: Request, res: Response) 
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+  return router
+}
+
+// ── The two mounted instances ────────────────────────────
+// `/api/factures` (ETM web) and `/api/factures-trm` (TRM web). Same surface,
+// same code path; only `FacturesScope` differs. See index.ts for the mounts.
+export const facturesRouter: RouterType = createFacturesRouter(SCOPE_ETM)
+export const facturesTrmRouter: RouterType = createFacturesRouter(SCOPE_TRM)

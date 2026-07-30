@@ -10,6 +10,63 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-30 — feat/facturation
+**Le ledger de facturation devient multi-société : `factures.ts` est désormais une
+factory montée deux fois (`/api/factures` = ETM, `/api/factures-trm` = TRM), pour
+alimenter le nouvel écran Clients › Facturation de TRM.**
+
+`facture` / `facture_prov` sont partitionnées par `IDsociete` mais les deux moitiés sont
+**le même objet** (mêmes colonnes, même cycle de vie, même écran) — contrairement à
+`stock_ecru`, qui a justement deux fichiers de routes. D'où `createFacturesRouter(scope)`
+plutôt qu'un second fichier : tout ce qui diffère est regroupé dans un unique enregistrement
+`FacturesScope` (clé de partition, colonne de rattachement des rouleaux —
+`stock_ecru.IDligne_expedition_TRM` vs `_ETM`, ce qui conditionne la génération des
+proformas —, identité légale du PDF, marque utilisée dans les emails). Aucun autre endroit
+du fichier ne connaît la société.
+
+Côté PDF, rien de nouveau à inventer : `feat/expe` avait déjà doté `MalterreDocument`
+d'un prop `issuer?: CompanyInfo` et créé `companyTrm` pour l'avis d'expédition TRM. Cette
+branche s'y branche (`FacturePdf` prend un `company` et le passe en `issuer`) et se
+contente de **compléter le bloc bancaire** de `companyTrm`, laissé vide parce qu'un bon de
+livraison n'affiche pas de coordonnées bancaires — la facture, si : c'est le compte sur
+lequel le client paie, et il diffère de celui d'ETM (IBAN
+FR76 3000 3035 8100 0200 1609 813, relevé sur FC85218.pdf). `rcs` reste volontairement
+vide, comme documenté par `feat/expe`. Le logo reste celui d'ETM, faute d'artwork TRM
+(déjà noté dans le `CLAUDE.md` de TRM).
+
+**Trois bugs corrigés au passage, dont deux touchent aussi ETM :**
+
+1. **L'arithmétique des factures était fausse.** Le code sommait `quantite * prix` brut, or
+   `prix` est un REAL 4 octets qui porte tout le bruit flottant quand il vient du moteur de
+   tarif (`2.100738048553467`), alors que la facture **imprime** le prix unitaire à 2
+   décimales. Le legacy arrondit le prix, multiplie, puis arrondit la ligne. Vérifié sur les
+   14 factures TRM lisibles dans l'écran legacy : la nouvelle formule en reproduit 13 (la
+   14e à 1 centime près, sur une égalité au demi-centime), l'ancienne seulement 4 — avec un
+   écart allant jusqu'à 6,71 € sur une facture, que l'export XImport injectait tel quel en
+   compta. Corrigé via `lineMontant()` / `round2()`, utilisés par la liste, le détail, le
+   PDF et XImport.
+2. **Accès inter-ledger**, ouvert par le second montage : les PK sont une séquence unique
+   partagée, donc `GET /api/factures-trm/def/5332` renvoyait la facture ETM n°9099 et un
+   `PUT` l'aurait réécrite avec des références TRM. Garde `inScope()` sur toutes les routes
+   adressées par id, en 404.
+3. **`client.IDtva` / `IDcode_comptable` sont des colonnes uniques** partagées par les trois
+   sociétés alors que `tva` et `code_comptable` sont partitionnées. Les recopier tel quel
+   comptabilisait une facture TRM sur un compte de TVA ETM dès qu'un client est commun.
+   `clientBillingDefaults()` les ré-héberge dans la société qui écrit (TVA par **taux**, code
+   comptable par appartenance sinon défaut société) — sans effet sur ETM, dont les 5 297
+   factures existantes respectent déjà l'invariant.
+
+Ajouts mineurs : lookup `/lookups/codes-comptables` et `IDcode_comptable` accepté au
+POST/PUT (l'écran TRM l'expose, le legacy TRM aussi) ; `TYPE = 4` des lignes de commande
+TRM traité comme de l'écru ; `loadModePaiementLabel`/`loadCodeComptableLabel` projettent
+leur PK, sans quoi `fixEncoding` ne répare rien.
+
+Vérifié en base réelle puis restauré à l'identique (génération de 26 expéditions →
+1 proforma aux désignations conformes au legacy, conversion allouant 85212 sur la séquence
+TRM sans toucher celle d'ETM restée à 9100, avoir, suppression en lot, XImport, PDF des
+deux sociétés). Non testé : l'envoi d'email, qui passe par Gmail et enverrait un vrai
+message.
+
 ## 2026-07-30 — feat/expe
 **Endpoints expédition côté TRM (`/api/expeditions-trm`) + variante TRM du bon de livraison PDF.**
 
