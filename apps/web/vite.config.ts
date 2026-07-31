@@ -31,7 +31,7 @@ export default defineConfig({
       // are small (logos < 15 KB, icons < 150 KB).
       includeAssets: ['favicon.svg', 'icons/*.png', 'logo-full.png', 'logo-small.png'],
       manifest: {
-        name: 'ETM',
+        name: 'ETM - Ets Malterre',
         short_name: 'ETM',
         lang: 'fr',
         description: 'Système ERP pour ETS Malterre - Textile/Tricotage',
