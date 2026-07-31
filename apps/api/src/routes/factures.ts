@@ -71,6 +71,7 @@ import { buildXImportFile, type XImportEntry } from '../lib/ximport.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
+import { loadDiversItems, resolveDiversPrix, type DiversItem } from './expeditions.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -492,6 +493,28 @@ function uniteLabel(u: number | null | undefined): string {
     case 5: return 'm²'
     default: return ''
   }
+}
+
+/** ref_divers_expedie.unite → the unite text a DIVERS invoice line carries.
+ *  Same enum, except 4: the invoice ledger has always printed "Pièce" there
+ *  (2 417 legacy lines vs 0 saying "unité"), while the bon de livraison says
+ *  "unité" — keep the invoice reading the way these clients have always
+ *  received it. */
+export function diversUniteLabel(u: number | null | undefined): string {
+  return Number(u) === 4 ? 'Pièce' : uniteLabel(u)
+}
+
+/** Article label of a generated divers invoice line: the item's free-text
+ *  `designation` when it has one (legacy per-shipment override, on 1 459 of
+ *  2 904 rows), else the ref_divers designation — then its variation labels.
+ *  Reproduces the legacy lines exactly ("Col R006-46 L/XL - GRIS 8985",
+ *  "Tissu Voltige ® - Blanche - 12 Mètres"). */
+export function diversArticleLabel(it: DiversItem): string {
+  const head = (it.designation ?? '').trim() || (it.ref_designation ?? '').trim()
+  return [head, it.variation1_label, it.variation2_label]
+    .map((v) => (v ?? '').trim())
+    .filter(Boolean)
+    .join(' - ')
 }
 
 function chunks<T>(arr: T[], size = 500): T[][] {
@@ -999,14 +1022,28 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
 // ════════════════════════════════════════════════════════
 
 /** POST /prov/generate — port of the legacy FI_Facturation_ETM auto-generation.
- *  For every formelle expedition not yet invoiced (est_facture = 0), grouped by
- *  client: create ONE proforma per client whose lines mirror the expedition
- *  lines (designation = article + V/ref + N°/V/commande + Avis, quantite =
- *  shipped Kg/Ml from the rolls, prix from the commande line). Contributing
- *  expeditions are marked est_facture = 1 (the flag legacy reads).
- *  Skipped: clients internes (client.client_interne = 1), donations
- *  (expedition.donation = 1 OR commande_client.donation = 1), and expeditions
- *  with no shipped rolls (left unmarked so a later run picks them up). */
+ *  Two passes over the two shipment ledgers, both marking their sources
+ *  est_facture = 1 (the flag legacy reads):
+ *
+ *  FORMELLE (`expedition`) — every not-yet-invoiced shipment, grouped BY CLIENT:
+ *  ONE proforma per client whose lines mirror the expedition lines (designation
+ *  = article + V/ref + N°/V/commande + Avis, quantite = shipped Kg/Ml from the
+ *  rolls, prix from the commande line).
+ *
+ *  DIVERS (`expedition_divers`) — ONE proforma PER SHIPMENT, not per client.
+ *  That grouping is legacy's, and it is forced by the schema: the link back to
+ *  the shipment is the header column `IDexpedition_divers`, which holds a
+ *  single id (535 legacy factures, exactly one shipment each, and never mixing
+ *  in a formelle line). Lines mirror the cartons' `ref_divers_expedie` articles
+ *  with the price frozen at ship time. `expedition_divers` has NO IDsociete
+ *  column — misc shipments are ETM-only — so this pass is skipped entirely on
+ *  the TRM mount.
+ *
+ *  Skipped in both passes: clients internes (client.client_interne = 1),
+ *  donations (expedition.donation = 1 OR commande_client.donation = 1), and
+ *  shipments with nothing on them (left unmarked so a later run picks them up).
+ *  Frais de port are charged ONCE per commande across both passes — a commande
+ *  shipped both ways in the same run must not pay them twice. */
 router.post('/prov/generate', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditFactures(req, res))) return
@@ -1178,8 +1215,52 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       }
     }
 
-    // 5. One proforma per client.
-    const created: Array<{ id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number }> = []
+    /** Insert one proforma header + its lines, return the new PK.
+     *  `expDivers` is the `expedition_divers` this proforma invoices (0 for the
+     *  formelle pass) — the same header back-pointer the definitive ledger
+     *  uses, carried over verbatim on conversion. */
+    async function insertProforma(clientId: number, lines: GenLine[], expDivers: number): Promise<number> {
+      const bd = await clientBillingDefaults(scope, clientId)
+      const date = todayDigits()
+      let newNumero = 0
+      let inserted = false
+      let lastErr: unknown = null
+      for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
+        newNumero = await nextNumero(scope, 'prov')
+        try {
+          await query(
+            `INSERT INTO facture_prov
+               (IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
+                DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers)
+             VALUES
+               (${scope.societe}, ${newNumero}, ${clientId}, ${bd.idAdresse}, ${bd.idMode}, ${bd.idEcheance},
+                '${date}', ${bd.idTva}, ${sqlText(bd.numTva)}, 1, ${bd.idCode}, ${expDivers})`,
+          )
+          inserted = true
+        } catch (e) { lastErr = e }
+      }
+      if (!inserted) throw lastErr ?? new Error('insert failed after 3 attempts')
+      const newRows = await query<any>(
+        `SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = ${scope.societe} AND numero = ${newNumero} ORDER BY IDfacture_prov DESC`,
+      )
+      const newId = Number(newRows[0]?.IDfacture_prov) || 0
+      if (!newId) throw new Error('could not resolve new facture_prov id')
+
+      for (const l of lines) {
+        await query(
+          `INSERT INTO ligne_facture_prov (IDfacture_prov, IDligne_expedition, designation, quantite, unite, prix)
+           VALUES (${newId}, ${l.leId}, ${sqlText(l.designation)}, ${l.quantite}, ${sqlText(l.unite)}, ${l.prix})`,
+        )
+      }
+      return newId
+    }
+
+    /** Commandes whose frais de port this run has already billed — a commande
+     *  shipped both formelle and divers must not be charged twice. */
+    const portBilled = new Set<number>()
+
+    // 5. One proforma per client (formelle pass).
+    const created: Array<{ id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number; divers: boolean }> = []
     for (const [clientId, group] of byClient) {
       group.sort((a, b) => a.id - b.id)
       const lines: GenLine[] = []
@@ -1208,43 +1289,13 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       // number of expeditions; verified against the live definitive ledger).
       for (const cmdId of contributingCmds) {
         const port = cmdMap.get(cmdId)?.frais_port ?? 0
-        if (port > 0) {
+        if (port > 0 && !portBilled.has(cmdId)) {
           lines.push({ leId: 0, designation: 'Frais de port', quantite: 1, unite: '', prix: port })
+          portBilled.add(cmdId)
         }
       }
 
-      const bd = await clientBillingDefaults(scope, clientId)
-      const date = todayDigits()
-      let newNumero = 0
-      let inserted = false
-      let lastErr: unknown = null
-      for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
-        newNumero = await nextNumero(scope, 'prov')
-        try {
-          await query(
-            `INSERT INTO facture_prov
-               (IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
-                DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers)
-             VALUES
-               (${scope.societe}, ${newNumero}, ${clientId}, ${bd.idAdresse}, ${bd.idMode}, ${bd.idEcheance},
-                '${date}', ${bd.idTva}, ${sqlText(bd.numTva)}, 1, ${bd.idCode}, 0)`,
-          )
-          inserted = true
-        } catch (e) { lastErr = e }
-      }
-      if (!inserted) throw lastErr ?? new Error('insert failed after 3 attempts')
-      const newRows = await query<any>(
-        `SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = ${scope.societe} AND numero = ${newNumero} ORDER BY IDfacture_prov DESC`,
-      )
-      const newId = Number(newRows[0]?.IDfacture_prov) || 0
-      if (!newId) throw new Error('could not resolve new facture_prov id')
-
-      for (const l of lines) {
-        await query(
-          `INSERT INTO ligne_facture_prov (IDfacture_prov, IDligne_expedition, designation, quantite, unite, prix)
-           VALUES (${newId}, ${l.leId}, ${sqlText(l.designation)}, ${l.quantite}, ${sqlText(l.unite)}, ${l.prix})`,
-        )
-      }
+      const newId = await insertProforma(clientId, lines, 0)
       // Mark the expeditions invoiced (the flag both apps read).
       for (const eid of contributing) {
         await query(`UPDATE expedition SET est_facture = 1 WHERE IDexpedition = ${eid}`)
@@ -1258,7 +1309,155 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
         client_nom: clientMap.get(clientId)?.nom ?? '',
         nb_lignes: lines.length,
         nb_expeditions: contributing.size,
+        divers: false,
       })
+    }
+
+    // 6. Divers pass — misc shipments (expedition_divers), ONE proforma each.
+    //    ETM-only: the table has no IDsociete column, so the TRM mount must not
+    //    read or write it at all.
+    if (scope.societe === 1) {
+      const diversRaw = await query<any>(
+        `SELECT IDexpedition_divers, IDclient, IDcommande_client, ref_client FROM expedition_divers
+         WHERE est_facture IS NULL OR est_facture = 0 ORDER BY IDexpedition_divers`,
+      )
+      const diversHeads = await fixEncoding(diversRaw, 'expedition_divers', 'IDexpedition_divers', ['ref_client'])
+
+      /** Unit price of a shipped article: the price frozen on the shipment,
+       *  falling back to the tarif_divers grid when it carries none. 375 of the
+       *  2 904 shipped articles have no price (still happening — 2 of the last
+       *  100 shipments), and invoicing those at 0 € would silently under-bill.
+       *  Same rule as the divers order line: never re-derive a real price, only
+       *  refill a stored 0. Memoised — the grid read is per (ref, v1, v2). */
+      const prixCache = new Map<string, number>()
+      async function diversPrix(it: DiversItem): Promise<number> {
+        if (it.prix > 0) return it.prix
+        if (!(it.IDref_divers > 0)) return 0
+        const key = `${it.IDref_divers}|${it.IDVariation1}|${it.IDVariation2}`
+        if (!prixCache.has(key)) {
+          prixCache.set(key, await resolveDiversPrix(it.IDref_divers, it.IDVariation1, it.IDVariation2))
+        }
+        return prixCache.get(key)!
+      }
+
+      // Top up the commande / client caches with what only this pass needs.
+      const newCmdIds = Array.from(new Set(
+        (diversHeads as any[]).map((h) => Number(h.IDcommande_client) || 0).filter((x) => x > 0 && !cmdMap.has(x)),
+      ))
+      for (const chunk of chunks(newCmdIds)) {
+        const rows = await query<any>(
+          `SELECT IDcommande_client, IDclient, numero, ref_client, donation, frais_port FROM commande_client WHERE IDcommande_client IN (${chunk.join(',')})`,
+        )
+        for (const r of await fixEncoding(rows, 'commande_client', 'IDcommande_client', ['ref_client'])) {
+          cmdMap.set(Number(r.IDcommande_client), {
+            IDclient: Number(r.IDclient) || 0,
+            numero: r.numero != null ? Number(r.numero) : null,
+            ref_client: (r.ref_client ?? '').toString().trim(),
+            donation: Number(r.donation) || 0,
+            frais_port: Number(r.frais_port) || 0,
+          })
+        }
+      }
+      const newClientIds = Array.from(new Set(
+        (diversHeads as any[])
+          .map((h) => Number(h.IDclient) || cmdMap.get(Number(h.IDcommande_client) || 0)?.IDclient || 0)
+          .filter((x) => x > 0 && !clientMap.has(x)),
+      ))
+      for (const chunk of chunks(newClientIds)) {
+        const rows = await query<any>(
+          `SELECT IDclient, nom, client_interne FROM client WHERE IDclient IN (${chunk.join(',')})`,
+        )
+        for (const r of await fixEncoding(rows, 'client', 'IDclient', ['nom'])) {
+          clientMap.set(Number(r.IDclient), { nom: (r.nom ?? '').toString().trim(), interne: Number(r.client_interne) || 0 })
+        }
+      }
+
+      for (const h of diversHeads as any[]) {
+        const expId = Number(h.IDexpedition_divers) || 0
+        if (!(expId > 0)) continue
+        const cmdId = Number(h.IDcommande_client) || 0
+        const cmd = cmdId > 0 ? cmdMap.get(cmdId) : undefined
+        // The shipment carries its own client; the commande is only a fallback
+        // (a divers shipment can exist without one).
+        const clientId = Number(h.IDclient) || cmd?.IDclient || 0
+        if (!(clientId > 0) || !clientMap.has(clientId)) { skippedVide++; continue }
+        if (cmd?.donation === 1) { skippedDonation++; continue }
+        if (clientMap.get(clientId)!.interne === 1) { skippedInterne++; continue }
+
+        const cartonRows = await query<any>(
+          `SELECT IDligne_expedition_divers FROM ligne_expedition_divers WHERE IDexpedition_divers = ${expId} ORDER BY IDligne_expedition_divers`,
+        )
+        const cartonIds = cartonRows.map((c: any) => Number(c.IDligne_expedition_divers) || 0).filter((x: number) => x > 0)
+        const itemsByCarton = await loadDiversItems(cartonIds)
+
+        // The commande line, exactly as legacy writes it: present iff the
+        // shipment is attached to a commande, and then carrying BOTH segments
+        // even when the client's reference is empty ("N/Commande : 2921
+        // V/Commande : ", facture 4000). A shipment with no commande gets no
+        // line at all — legacy does NOT fall back to expedition_divers.ref_client
+        // even when it holds something (avis 372 carries "C2968 et C2987" and
+        // its facture prints only the article + "Avis : 372").
+        const cmdLine = cmd
+          ? `N/Commande : ${cmd.numero ?? ''} V/Commande : ${cmd.ref_client}`
+          : ''
+
+        // The invoice bills ARTICLES, not cartons: the same article split over
+        // several cartons is ONE line carrying the total. Verified on the live
+        // ledger (facture 5098 bills "Col R006-46 L/XL - GRIS 8985" 320 for
+        // carton 1130's 125 + carton 1131's 195). Keyed on the printed label +
+        // unit + unit price, so two rows priced differently stay apart, and in
+        // first-appearance order.
+        const merged = new Map<string, GenLine>()
+        for (const cartonId of cartonIds) {
+          for (const it of itemsByCarton.get(cartonId) ?? []) {
+            const label = diversArticleLabel(it) || `Article ${it.IDref_divers_expedie}`
+            const unite = diversUniteLabel(it.unite)
+            const prix = await diversPrix(it)
+            const key = `${label} ${unite} ${prix}`
+            const existing = merged.get(key)
+            if (existing) {
+              existing.quantite = Math.round((existing.quantite + it.quantite) * 100) / 100
+              continue
+            }
+            const parts = [label]
+            if (cmdLine) parts.push(cmdLine)
+            parts.push(`Avis : ${expId}`)
+            merged.set(key, {
+              // No per-line FK on this ledger — the link is the header's
+              // IDexpedition_divers (legacy leaves IDligne_expedition at 0).
+              leId: 0,
+              designation: parts.join('\r\n'),
+              quantite: it.quantite,
+              unite,
+              prix, // frozen at ship time, grid only when the article carries none
+            })
+          }
+        }
+        const lines: GenLine[] = Array.from(merged.values())
+        // Empty shipment (no carton, or cartons with no article) → no proforma,
+        // and it stays open so a later run picks it up once filled.
+        if (lines.length === 0) { skippedVide++; continue }
+
+        if (cmdId > 0 && !portBilled.has(cmdId)) {
+          const port = cmd?.frais_port ?? 0
+          if (port > 0) {
+            lines.push({ leId: 0, designation: 'Frais de port', quantite: 1, unite: '', prix: port })
+            portBilled.add(cmdId)
+          }
+        }
+
+        const newId = await insertProforma(clientId, lines, expId)
+        await query(`UPDATE expedition_divers SET est_facture = 1 WHERE IDexpedition_divers = ${expId}`)
+
+        created.push({
+          id: newId,
+          numero: newId,
+          client_nom: clientMap.get(clientId)?.nom ?? '',
+          nb_lignes: lines.length,
+          nb_expeditions: 1,
+          divers: true,
+        })
+      }
     }
 
     res.json({ created, skipped: { internes: skippedInterne, donations: skippedDonation, vides: skippedVide } })
@@ -1272,7 +1471,9 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
  *  on expeditions no longer referenced by any surviving invoice line — neither
  *  a DEFINITIVE ligne_facture (e.g. via a converted proforma) nor a
  *  ligne_facture_prov belonging to a proforma outside the deleted set (matters
- *  when the caller deletes a subset). Callers must pass verified-existing ids. */
+ *  when the caller deletes a subset). Divers shipments are reopened on the same
+ *  rule, read through the header column IDexpedition_divers instead.
+ *  Callers must pass verified-existing ids. */
 async function wipeOpenProformas(targetIds: number[]): Promise<{ deleted: number; expeditions_reouvertes: number }> {
   if (targetIds.length === 0) return { deleted: 0, expeditions_reouvertes: 0 }
   const targetSet = new Set(targetIds)
@@ -1322,6 +1523,37 @@ async function wipeOpenProformas(targetIds: number[]): Promise<{ deleted: number
       await query(`UPDATE expedition SET est_facture = 0 WHERE IDexpedition IN (${chunk.join(',')})`)
     }
     reopened = toReopen.length
+  }
+
+  // Same for the divers ledger, where the link is the header column
+  // IDexpedition_divers (no per-line FK exists on that side).
+  const diversIds = new Set<number>()
+  for (const chunk of chunks(targetIds)) {
+    const rows = await query<any>(
+      `SELECT IDexpedition_divers FROM facture_prov WHERE IDfacture_prov IN (${chunk.join(',')}) AND IDexpedition_divers > 0`,
+    )
+    for (const r of rows) diversIds.add(Number(r.IDexpedition_divers))
+  }
+  if (diversIds.size > 0) {
+    const ids = Array.from(diversIds)
+    const stillLinked = new Set<number>()
+    for (const chunk of chunks(ids)) {
+      const defRows = await query<any>(
+        `SELECT IDexpedition_divers FROM facture WHERE IDexpedition_divers IN (${chunk.join(',')})`,
+      )
+      for (const r of defRows) stillLinked.add(Number(r.IDexpedition_divers))
+      const provRows = await query<any>(
+        `SELECT IDfacture_prov, IDexpedition_divers FROM facture_prov WHERE IDexpedition_divers IN (${chunk.join(',')})`,
+      )
+      for (const r of provRows) {
+        if (!targetSet.has(Number(r.IDfacture_prov))) stillLinked.add(Number(r.IDexpedition_divers))
+      }
+    }
+    const toReopen = ids.filter((e) => !stillLinked.has(e))
+    for (const chunk of chunks(toReopen)) {
+      await query(`UPDATE expedition_divers SET est_facture = 0 WHERE IDexpedition_divers IN (${chunk.join(',')})`)
+    }
+    reopened += toReopen.length
   }
 
   for (const chunk of chunks(targetIds)) {
@@ -1498,8 +1730,10 @@ router.delete('/:kind/:id', async (req: Request, res: Response) => {
 /** Move ONE proforma into the definitive ledger: copy the header (fresh
  *  definitive numero) + lines into facture/ligne_facture, then DELETE the
  *  proforma. Expeditions stay est_facture = 1 — their ligne_expedition ids are
- *  now referenced by ligne_facture rows. Returns null when the proforma does
- *  not exist (stale id from a batch picker). */
+ *  now referenced by ligne_facture rows, and a divers shipment by the copied
+ *  IDexpedition_divers header back-pointer (which is also what makes the
+ *  invoice show up in Expéditions › onglet Factures). Returns null when the
+ *  proforma does not exist (stale id from a batch picker). */
 async function convertProforma(id: number): Promise<{ IDfacture: number; numero: number } | null> {
   const provRows = await query<any>(`SELECT * FROM facture_prov WHERE IDfacture_prov = ${id} AND IDsociete = ${scope.societe}`)
   if (provRows.length === 0) return null
@@ -1524,7 +1758,7 @@ async function convertProforma(id: number): Promise<{ IDfacture: number; numero:
             DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers, IDcommande_client)
          VALUES
            (${scope.societe}, ${newNumero}, ${n(p.IDclient)}, ${n(p.IDadresse)}, ${n(p.IDmode_paiement)}, ${n(p.IDecheance)},
-            '${date}', ${n(p.IDtva)}, ${sqlText(numTva)}, ${type}, ${n(p.IDcode_comptable)}, 0, 0)`,
+            '${date}', ${n(p.IDtva)}, ${sqlText(numTva)}, ${type}, ${n(p.IDcode_comptable)}, ${n(p.IDexpedition_divers)}, 0)`,
       )
       inserted = true
     } catch (e) { lastErr = e }
@@ -1633,6 +1867,10 @@ router.post('/def/:id/avoir', async (req: Request, res: Response) => {
     const numTva = (f.num_tva ?? '').toString()
 
     // Allocate a proforma numero (vestigial internal sequence) with retry.
+    // IDexpedition_divers is deliberately NOT copied: the avoir credits an
+    // invoice, it does not invoice the shipment a second time — carrying the
+    // back-pointer over would make deleting the avoir reopen a shipment that
+    // is still invoiced, and converting it would attach two factures to it.
     let newNumero = 0
     let inserted = false
     let lastErr: unknown = null

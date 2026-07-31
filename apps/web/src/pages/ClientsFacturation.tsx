@@ -128,7 +128,9 @@ interface FactureDetail {
 }
 
 interface GenerateSummary {
-  created: Array<{ id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number }>
+  // `divers` = generated from an expédition diverse (one proforma per shipment)
+  // rather than from the client's formelle shipments (one per client).
+  created: Array<{ id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number; divers: boolean }>
   skipped: { internes: number; donations: number; vides: number }
 }
 interface DeleteAllSummary { deleted: number; expeditions_reouvertes: number }
@@ -585,7 +587,7 @@ export function ClientsFacturation() {
         open={generateConfirmOpen}
         variant="default"
         title="Générer les factures"
-        description="Un proforma sera créé par client à partir de toutes les expéditions non facturées. Les clients internes et les donations sont exclus."
+        description="Un proforma sera créé par client à partir des expéditions textiles non facturées, et un proforma par expédition diverse non facturée. Les clients internes et les donations sont exclus."
         confirmLabel="Générer"
         isPending={generateMut.isPending}
         onCancel={() => setGenerateConfirmOpen(false)}
@@ -703,6 +705,14 @@ function BatchResultDialog({ result, onClose }: { result: BatchResult | null; on
                       <Receipt className="h-4 w-4 text-amber-500 flex-shrink-0" />
                       <span className="font-medium flex-shrink-0">N° {c.numero}</span>
                       <span className="text-muted-foreground truncate flex-1">{c.client_nom || '—'}</span>
+                      {c.divers && (
+                        <span
+                          title="Généré depuis une expédition diverse"
+                          className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-stone-500/10 text-stone-700 border border-stone-500/25"
+                        >
+                          Diverse
+                        </span>
+                      )}
                       <span className="text-xs text-muted-foreground flex-shrink-0 tabular-nums">
                         {c.nb_lignes} ligne{c.nb_lignes > 1 ? 's' : ''}
                       </span>

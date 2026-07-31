@@ -297,8 +297,11 @@ export interface FactureRef { IDfacture: number; numero: number | null; date: st
 /** Definitive factures attached to an expedition.
  *  formelle: ligne_facture.IDligne_expedition → this expedition's ligne_expedition rows.
  *  divers:   facture.IDexpedition_divers header back-pointer.
- *  (facture_prov.IDexpedition_divers is EXCLUDED on purpose — ETM repurposed
- *  it as the converted-proforma marker, it holds an IDfacture, not an expedition.) */
+ *  DEFINITIVE ONLY, on purpose: a generated proforma carries the same
+ *  back-pointer (facture_prov.IDexpedition_divers, set by /factures/prov/generate
+ *  and copied over on conversion), but a draft is not an invoice — this tab
+ *  lists issued documents. The pending-proforma state is already conveyed by
+ *  est_facture = 1, which isLocked() reads first. */
 export async function attachedFactures(kind: Kind, id: number): Promise<FactureRef[]> {
   let factIds: number[] = []
   if (kind === 'formelle') {
@@ -1324,7 +1327,7 @@ export async function loadDiversItems(ligneIds: number[]): Promise<Map<number, D
 
 /** Resolve the tarif_divers grid price for a (ref, v1, v2) combo:
  *  exact combo → (v1, 0) → base (0, 0) → ref_divers.prix_unitaire. */
-async function resolveDiversPrix(refId: number, v1: number, v2: number): Promise<number> {
+export async function resolveDiversPrix(refId: number, v1: number, v2: number): Promise<number> {
   const rows = await query<any>(
     `SELECT prix, IDVariation1, IDVariation2 FROM tarif_divers WHERE IDref_divers = ${refId}`,
   )

@@ -10,6 +10,57 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-07-31 — feat/cmd-client
+**« Générer les factures » ignorait complètement les expéditions diverses.**
+`POST /factures/prov/generate` ne lisait que la table `expedition` : les expéditions
+`expedition_divers` non facturées ne produisaient aucun proforma et leur `est_facture`
+restait à 0 indéfiniment (5 en attente au moment du correctif, dont la plus ancienne
+datait du 27/02/2026). Le générateur balaie désormais les deux registres, avec **deux
+groupements différents** : formelle → un proforma **par client**, divers → un proforma
+**par expédition**. Ce second groupement n'est pas un choix : le lien retour est la
+colonne d'en-tête `IDexpedition_divers`, qui ne tient qu'un id — et c'est exactement ce
+que faisait legacy (535 factures, une expédition chacune, jamais mêlée à une ligne
+formelle). Ce back-pointer est maintenant écrit sur `facture_prov`, **recopié à la
+conversion** (donc la facture définitive apparaît dans Expéditions › onglet Factures) et
+lu par `wipeOpenProformas` pour rouvrir l'expédition quand le proforma est supprimé. Un
+commentaire de `expeditions.ts` affirmait qu'ETM avait « détourné » cette colonne en
+marqueur de conversion : c'était faux (0 ligne en base l'utilisait ainsi, et le code y
+écrivait toujours 0) — corrigé. La passe divers est **entièrement sautée sur le montage
+TRM**, `expedition_divers` n'ayant pas de colonne `IDsociete`.
+
+Les règles de ligne ont été reconstituées depuis les données puis validées contre le
+registre définitif, et deux d'entre elles sont contre-intuitives : **un même article
+réparti sur plusieurs cartons ne donne qu'UNE ligne** portant le total (la facture 5098
+facture 320 pour les 125 du carton 1130 + les 195 du carton 1131 — la première version
+émettait deux lignes, c'est la garde qui l'a attrapé), et **`unite = 4` s'imprime
+« Pièce » sur une facture** (2 417 lignes legacy) là où le bon de livraison dit
+« unité ». S'y ajoutent : libellé = `designation` libre de l'article sinon désignation
+catalogue, suivi des variations ; bloc commande présent **ssi** l'expédition est
+rattachée à une commande et portant alors **les deux segments même si la référence
+client est vide** (`N/Commande : 2921 V/Commande : `), sans repli sur
+`expedition_divers.ref_client` quand il n'y a pas de commande ; prix **figé à
+l'expédition**, la grille `tarif_divers` ne comblant qu'un `0` (375 des 2 904 articles
+n'ont pas de prix, dont 2 des 100 dernières expéditions) — même règle que la ligne divers
+d'une commande. Les frais de port sont facturés **une fois par commande pour l'ensemble
+du run**, les deux passes partageant le même garde-fou : une commande expédiée des deux
+façons ne les paie plus deux fois.
+
+Garde : `apps/api/src/scripts/check-divers-facturation.ts` rejoue le générateur sur les
+496 expéditions facturées — **355 se reproduisent** (127 à l'octet près, 21 modulo la
+troncature WinDev à 60 caractères, 133 aux mêmes chiffres sous les gabarits de
+désignation plus anciens, 74 avec en plus des lignes ajoutées à la main). Les 138
+restantes sont toutes **sous l'avis 575** et relèvent de la saisie manuelle d'époque
+(libellé tapé au lieu d'être choisi, quantité modifiée sur l'expédition après émission,
+désignation catalogue renommée depuis) ; le script échoue si une divergence apparaît
+**au-dessus** de ce seuil, c'est-à-dire si le constructeur de lignes s'écarte de ce que
+les deux applications produisent aujourd'hui. Vérification bout-en-bout sur la base de
+dev via `e2e-divers-generate.ts` (crée puis annule tout par `/prov/delete-batch`,
+refuse toute cible non-localhost) : 4 proformas divers créés avec le bon client, la bonne
+adresse de facturation et la bonne TVA, accents intacts au retour, l'avis vide 603
+correctement laissé ouvert, et rollback complet vérifié. Côté écran, le dialogue de
+confirmation décrit maintenant les deux groupements et les proformas issus d'une
+expédition diverse portent une pastille « Diverse » dans le récapitulatif.
+
 ## 2026-07-30 — feat/worktree-reap-guard
 **Un worktree vivant ne peut plus être supprimé par la file de suppression différée.**
 Pas un écran : une correction de l'outillage worktree, écrite après l'incident du jour où
