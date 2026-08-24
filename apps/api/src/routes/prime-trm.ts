@@ -120,19 +120,110 @@ function n(v: unknown): number {
 
 // ── Production sums ───────────────────────────────────────
 
-/** SUM(poids) of TRM-knitted pieces saisies in [debut, fin) (fin omitted = open
- *  ended, used by the current-week row like the legacy). */
-async function sumPoids(secondChoix: 0 | 1, debut: string, fin?: string): Promise<number> {
-  const where = [
+/** Shared predicate for TRM-knitted pieces saisies in [debut, fin] (fin
+ *  omitted = open ended, used by the current-week row like the legacy). */
+function periodWhere(secondChoix: 0 | 1, debut: string, fin?: string): string {
+  return [
     `date_saisie >= ${dtMidnight(debut)}`,
     ...(fin ? [`date_saisie <= ${dtMidnight(fin)}`] : []),
     `second_choix = ${secondChoix}`,
     `IDordre_fabrication > 0`,
-  ]
+  ].join(' AND ')
+}
+
+async function sumPoids(secondChoix: 0 | 1, debut: string, fin?: string): Promise<number> {
   const rows = await query<{ total: unknown }>(
-    `SELECT SUM(poids) AS total FROM stock_ecru WHERE ${where.join(' AND ')}`,
+    `SELECT SUM(poids) AS total FROM stock_ecru WHERE ${periodWhere(secondChoix, debut, fin)}`,
   )
   return n(rows[0]?.total)
+}
+
+// ── Déclassements analysis (2nd choix defect breakdown) ──
+
+/** The visitage defect vocabulary that gets its own slice; anything else folds
+ *  into "Autres" so the chart's colors stay stable across periods. */
+const KNOWN_DEFAUT_TYPES = ['Maille', 'Démaillage', 'Barrure Lycra', 'Autre Barrure', 'Trou', 'Grille']
+const AUTRES = 'Autres'
+const NON_RENSEIGNE = 'Non renseigné'
+
+export interface DeclassementType {
+  type: string
+  kg: number
+  pieces: number
+  /** Positive "manque à gagner" (kg × 0,20 €) — the UI renders the minus. */
+  montant: number
+  pct: number
+}
+
+export interface DeclassementsAnalyse {
+  kg: number
+  kgTotal: number
+  /** kg / kgTotal, null when nothing was produced over the window. */
+  taux: number | null
+  comparaison: { label: string; debut: string; fin: string; taux: number | null }
+  types: DeclassementType[]
+}
+
+/** Defect-type breakdown of the period's 2nd-choix pieces. A piece's weight is
+ *  split EQUALLY across its distinct defect types so the total always sums to
+ *  the true declassed weight (a piece carries ~1.6 defects on average — full
+ *  attribution would overshoot 100%). Pieces with no structured defect land in
+ *  "Non renseigné". */
+async function fetchDeclassementTypes(debut: string, fin: string): Promise<DeclassementType[]> {
+  const pieces = await query<{ IDstock_ecru: unknown; poids: unknown }>(
+    `SELECT IDstock_ecru, poids FROM stock_ecru WHERE ${periodWhere(1, debut, fin)}`,
+  )
+  if (pieces.length === 0) return []
+
+  // defaut_qualite is polymorphic: Type_Reference=2 + reference = stringified
+  // IDstock_ecru (same contract as stock-ecru.ts fetchDefectsByEcru).
+  const typesByPiece = new Map<number, Set<string>>()
+  const ids = pieces.map((p) => n(p.IDstock_ecru)).filter((x) => x > 0)
+  for (let i = 0; i < ids.length; i += 400) {
+    const inList = ids.slice(i, i + 400).map((x) => `'${x}'`).join(',')
+    const rows = await query<Record<string, unknown>>(
+      `SELECT IDdefaut_qualite, reference, type_defaut FROM defaut_qualite
+       WHERE Type_Reference = 2 AND reference IN (${inList})`,
+    )
+    const fixed = await fixEncoding(rows, 'defaut_qualite', 'IDdefaut_qualite', ['type_defaut'])
+    for (const d of fixed) {
+      const pieceId = parseInt(String(d.reference ?? ''), 10)
+      if (!Number.isInteger(pieceId)) continue
+      const raw = String(d.type_defaut ?? '').trim()
+      const type = raw === '' ? NON_RENSEIGNE : KNOWN_DEFAUT_TYPES.includes(raw) ? raw : AUTRES
+      const set = typesByPiece.get(pieceId) ?? new Set<string>()
+      set.add(type)
+      typesByPiece.set(pieceId, set)
+    }
+  }
+
+  const agg = new Map<string, { kg: number; pieces: number }>()
+  let kgTotal = 0
+  for (const p of pieces) {
+    const pieceId = n(p.IDstock_ecru)
+    const poids = n(p.poids)
+    kgTotal += poids
+    const types = typesByPiece.get(pieceId)
+    const list = types && types.size > 0 ? Array.from(types) : [NON_RENSEIGNE]
+    const share = poids / list.length
+    for (const t of list) {
+      const cur = agg.get(t) ?? { kg: 0, pieces: 0 }
+      cur.kg += share
+      cur.pieces += 1
+      agg.set(t, cur)
+    }
+  }
+
+  // Named types ranked by weight; the two pseudo-buckets always close the list.
+  const entries = Array.from(agg.entries()).map(([type, v]) => ({
+    type,
+    kg: v.kg,
+    pieces: v.pieces,
+    montant: v.kg * -TAUX_SECOND_CHOIX,
+    pct: kgTotal > 0 ? v.kg / kgTotal : 0,
+  }))
+  const rank = (t: string) => (t === NON_RENSEIGNE ? 2 : t === AUTRES ? 1 : 0)
+  return entries.sort((a, b) => rank(a.type) - rank(b.type) || b.kg - a.kg)
 }
 
 // ── Bonnetiers ────────────────────────────────────────────
@@ -265,6 +356,14 @@ export interface PrimePayload {
   }
   repartition: RepartitionEntry[]
   joursTotal: number
+  declassements: DeclassementsAnalyse
+}
+
+/** Add `days` to a 'YYYY-MM-DD' string. */
+function addDays(date: string, days: number): string {
+  const d = toUtc(date)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
 }
 
 async function buildPayload(ref: string): Promise<PrimePayload> {
@@ -275,11 +374,26 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
 
   const monday = mondayOf(today)
 
-  const [semKg1, semKg2, wkKg1, wkKg2, bonnetiers] = await Promise.all([
+  // Comparison window: the SAME number of elapsed days from the previous
+  // semester's start, so a running semester compares like-for-like ("même
+  // avancement"). A finished semester compares full-vs-full (capped at the
+  // previous period's end — semesters differ by a day or two in length).
+  const prev = datesSemestre(addMonths(ref, -6))
+  const elapsedDays = Math.max(0, dayDiff(periode.debut, today < periode.fin ? today : periode.fin))
+  const prevWindowEnd = (() => {
+    if (periode.debut !== courante.debut) return prev.fin // finished: full-vs-full
+    const e = addDays(prev.debut, elapsedDays)
+    return e < prev.fin ? e : prev.fin
+  })()
+
+  const [semKg1, semKg2, wkKg1, wkKg2, prevKg1, prevKg2, declassementTypes, bonnetiers] = await Promise.all([
     sumPoids(0, periode.debut, periode.fin),
     sumPoids(1, periode.debut, periode.fin),
     sumPoids(0, monday),
     sumPoids(1, monday),
+    sumPoids(0, prev.debut, prevWindowEnd),
+    sumPoids(1, prev.debut, prevWindowEnd),
+    fetchDeclassementTypes(periode.debut, periode.fin),
     selectBonnetiers(),
   ])
 
@@ -307,6 +421,21 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     semestre.total,
   )
 
+  const kgTotal = semKg1 + semKg2
+  const prevKgTotal = prevKg1 + prevKg2
+  const declassements: DeclassementsAnalyse = {
+    kg: semKg2,
+    kgTotal,
+    taux: kgTotal > 0 ? semKg2 / kgTotal : null,
+    comparaison: {
+      label: `${semestreLabel(prev)}${estCourante ? ' — même avancement' : ''}`,
+      debut: prev.debut,
+      fin: prevWindowEnd,
+      taux: prevKgTotal > 0 ? prevKg2 / prevKgTotal : null,
+    },
+    types: declassementTypes,
+  }
+
   return {
     periode: {
       ...periode,
@@ -324,6 +453,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     semaine,
     repartition,
     joursTotal,
+    declassements,
   }
 }
 

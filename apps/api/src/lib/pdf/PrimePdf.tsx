@@ -40,6 +40,16 @@ function fmtShortDate(date: string): string {
   return `${date.slice(8, 10)}/${date.slice(5, 7)}/${date.slice(0, 4)}`
 }
 
+function fmtPct(v: number): string {
+  return `${(v * 100).toFixed(2).replace('.', ',')} %`
+}
+
+/** kg with one decimal, for the per-type breakdown rows. */
+function fmtKg1(v: number): string {
+  const [int, dec] = Math.abs(v).toFixed(1).split('.')
+  return `${int.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')},${dec} kg`
+}
+
 // ── Styles ───────────────────────────────────────────────
 
 const styles = StyleSheet.create({
@@ -155,6 +165,16 @@ const styles = StyleSheet.create({
     fontWeight: 900,
   },
 
+  tauxLine: {
+    fontSize: sizes.fontBase,
+    color: colors.text,
+    marginBottom: 5,
+  },
+  tauxStrong: {
+    fontWeight: 900,
+    color: colors.primary,
+  },
+
   mention: {
     marginTop: 'auto',
     paddingTop: 12,
@@ -252,11 +272,55 @@ export function PrimePdf({ data }: { data: PrimePdfData }) {
       <Text style={styles.sectionTitle}>PRODUCTION DU SEMESTRE</Text>
       <ProductionTable rows={blocRows(p.semestre)} total={p.semestre.total} />
 
-      {/* Current week block */}
-      <Text style={[styles.sectionTitle, styles.sectionGap]}>
-        SEMAINE {p.semaine.numero} — DU {fmtShortDate(p.semaine.debut)} AU {fmtShortDate(p.semaine.fin)}
-      </Text>
-      <ProductionTable rows={blocRows(p.semaine)} total={p.semaine.total} />
+      {/* Déclassements 2nd choix — defect-type breakdown (mirrors the screen) */}
+      {p.declassements.kg > 0 ? (
+        <>
+          <Text style={[styles.sectionTitle, styles.sectionGap]}>DÉCLASSEMENTS 2ND CHOIX</Text>
+          <Text style={styles.tauxLine}>
+            Taux de 2nd choix :{' '}
+            <Text style={styles.tauxStrong}>
+              {p.declassements.taux !== null ? fmtPct(p.declassements.taux) : '—'}
+            </Text>{' '}
+            ({fmtKg(p.declassements.kg)} sur {fmtKg(p.declassements.kgTotal)} produits)
+            {p.declassements.comparaison.taux !== null
+              ? `   ·   ${p.declassements.comparaison.label} : ${fmtPct(p.declassements.comparaison.taux)}`
+              : ''}
+          </Text>
+          <View style={styles.table}>
+            <View style={styles.headRow}>
+              <Text style={[styles.headCell, styles.colLibelle]}>Type de défaut</Text>
+              <Text style={[styles.headCell, styles.colTaux, styles.right]}>Pièces</Text>
+              <Text style={[styles.headCell, styles.colProd, styles.right]}>Poids</Text>
+              <Text style={[styles.headCell, styles.colProd, styles.right]}>Part</Text>
+              <Text style={[styles.headCell, styles.colMontant, styles.right]}>Manque à gagner</Text>
+            </View>
+            {p.declassements.types.map((t, i) => (
+              <View key={t.type} style={i % 2 === 1 ? [styles.row, styles.rowAlt] : styles.row} wrap={false}>
+                <Text style={[styles.cell, styles.cellStrong, styles.colLibelle]}>{t.type}</Text>
+                <Text style={[styles.cell, styles.cellMuted, styles.colTaux, styles.right]}>{t.pieces}</Text>
+                <Text style={[styles.cell, styles.colProd, styles.right]}>{fmtKg1(t.kg)}</Text>
+                <Text style={[styles.cell, styles.cellMuted, styles.colProd, styles.right]}>
+                  {(t.pct * 100).toFixed(1).replace('.', ',')} %
+                </Text>
+                <Text style={[styles.cell, styles.cellStrong, styles.colMontant, styles.right, styles.negative]}>
+                  -{fmtEur(t.montant)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </>
+      ) : null}
+
+      {/* Current week block — only on the current semester (the week always
+          describes the RUNNING week, meaningless under a past period) */}
+      {p.periode.estCourante ? (
+        <>
+          <Text style={[styles.sectionTitle, styles.sectionGap]}>
+            SEMAINE {p.semaine.numero} — DU {fmtShortDate(p.semaine.debut)} AU {fmtShortDate(p.semaine.fin)}
+          </Text>
+          <ProductionTable rows={blocRows(p.semaine)} total={p.semaine.total} />
+        </>
+      ) : null}
 
       {/* Répartition */}
       <Text style={[styles.sectionTitle, styles.sectionGap]}>RÉPARTITION PAR BONNETIER</Text>
