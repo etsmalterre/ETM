@@ -45,6 +45,8 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
 import { esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { prixDeRevientTRM, trmLinePrix } from '../lib/pricing-trm.js'
+import { trmUserHasPermission } from '../lib/permissions-trm.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 
 export const commandesTrmRouter: RouterType = Router()
@@ -759,7 +761,26 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
 //  HEADER CRUD  (native TRM orders only — see refuseIfMirror)
 // ════════════════════════════════════════════════════════
 
+/** Guard for the commande write paths: create, header edit, delete, line CRUD
+ *  (TRM `edit_commandes_client` permission — effective admins bypass, an admin
+ *  impersonating someone does not). The état toggle is deliberately NOT behind
+ *  this key, mirroring ETM's split where clôture has its own permission.
+ *  Sends the 401/403 itself and returns false when the caller is not allowed. */
+async function requireEditCommandes(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const allowed = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'edit_commandes_client')
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: edit_commandes_client' })
+    return false
+  }
+  return true
+}
+
 commandesTrmRouter.post('/', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
   try {
     const parsed = commandeBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
@@ -808,6 +829,7 @@ commandesTrmRouter.post('/', async (req: Request, res: Response) => {
 })
 
 commandesTrmRouter.put('/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -855,6 +877,7 @@ commandesTrmRouter.put('/:id/etat', async (req: Request, res: Response) => {
 })
 
 commandesTrmRouter.delete('/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -913,6 +936,7 @@ commandesTrmRouter.delete('/:id', async (req: Request, res: Response) => {
 // ════════════════════════════════════════════════════════
 
 commandesTrmRouter.post('/:id/lignes', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -945,6 +969,7 @@ commandesTrmRouter.post('/:id/lignes', async (req: Request, res: Response) => {
 })
 
 commandesTrmRouter.put('/lignes/:lineId', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
   try {
     const lineId = parseInt(req.params.lineId, 10)
     if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -974,6 +999,7 @@ commandesTrmRouter.put('/lignes/:lineId', async (req: Request, res: Response) =>
 })
 
 commandesTrmRouter.delete('/lignes/:lineId', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
   try {
     const lineId = parseInt(req.params.lineId, 10)
     if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }

@@ -42,6 +42,7 @@ import { ofTrmRouter } from './routes/of-trm.js'
 import { authRouter } from './routes/auth.js'
 import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
+import { permissionsTrmRouter } from './routes/permissions-trm.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { abonnementsRouter } from './routes/abonnements.js'
 import { userEmailsRouter } from './routes/user-emails.js'
@@ -106,6 +107,10 @@ app.use('/api/tickets', ticketsRouter)
 // Same proxy, product "trm-erp" — the TRM web app's ticket widget.
 app.use('/api/tickets-trm', ticketsTrmRouter)
 app.use('/api/permissions', permissionsRouter)
+// TRM's own permission catalog + store (Paramètres > Utilisateurs of the
+// sister TRM app) — separate from /api/permissions so neither admin screen
+// can strip the other app's grants on save (see lib/permissions-trm.ts).
+app.use('/api/permissions-trm', permissionsTrmRouter)
 app.use('/api/notifications', notificationsRouter)
 app.use('/api/abonnements', abonnementsRouter)
 app.use('/api/user-emails', userEmailsRouter)

@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-24 — feat/users
+**API side of TRM's Paramètres › Utilisateurs (the screen lives in the TRM repo).**
+TRM gets its **own permission catalog and store** on the shared API: `lib/permission-keys-trm.ts`
+(catalog — first key `edit_commandes_client`), `lib/permissions-trm.ts` (JSON store
+`data/permissions-trm.json`, same shape as ETM's), and `routes/permissions-trm.ts` mounted at
+`/api/permissions-trm` (`/me`, `/keys`, `/users`, `PUT /users/:id`). Deliberately NOT ETM's
+`/api/permissions`: each admin screen saves by replacing a user's whole grant list filtered to
+its own catalog, so a shared file would have let ETM's screen silently strip TRM grants on every
+save (and vice-versa). `commandes-trm.ts` now gates create / header edit / delete / line CRUD
+behind `edit_commandes_client` (`requireEditCommandes`, effective-admin bypass); the état toggle
+stays open, mirroring ETM's split where clôture has its own key. Also adds
+`scripts/add-utilisateur-mickael-grivelet.ts` — idempotent insert of a TRM staff member missing
+from the shared `utilisateur` table (dev has him; **run on prod before the TRM deploy**).
+
 ## 2026-08-24 — feat/of-linux-fix
 **Hotfix prod : `/api/of-trm` (liste + détail des OF) renvoyait 500 sur le bridge Linux.**
 Repéré au déploiement API de la journée (gestion-of + tickets TRM) : le C bridge émettait
@@ -57,7 +71,6 @@ remplacement composition/incorporé, observation (INSERT positionnel — colonne
 de file**), activer, réordonner, suppression (409 `production_lancee` si des pièces
 existent). Cycle d'écriture complet gardé par `scripts/check-of-trm.ts` (31 assertions,
 nettoie derrière lui). Consommé par `TRM/apps/web/src/pages/ProductionOf.tsx`.
-
 
 ## 2026-07-31 — feat/cmd-client
 **« Générer les factures » ignorait complètement les expéditions diverses.**
