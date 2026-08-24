@@ -438,12 +438,16 @@ async function resolveLigneContexts(ligneIds: number[]): Promise<Map<number, Lig
 // ── OF loading + scope guard ─────────────────────────────
 
 /** The safe ASCII column list — everything except the four accented
- *  `productivité*` columns (recompute productivity, never read those). */
+ *  `productivité*` columns (recompute productivity, never read those) and
+ *  `interruption_prod`: the only HFSQL *Durée* column in the whole MPS
+ *  database. The ODBC driver types it numeric but returns it as the text
+ *  `0000000000`, which the Linux bridge then emits unquoted — invalid JSON,
+ *  every list/detail 500s in prod while Windows dev works. Nothing reads it. */
 const OF_COLUMNS =
   'IDordre_fabrication, quantite, IDligne_commande_client, poids_piece, ouvert_visiteuse, ' +
   'maille_ouverture, observations, date_creation, visitage, est_actif, est_termine, IDmachine, ' +
   'nb_tour_cpt, nb_tour_1_chute, priorite, finir_fil, nb_pieces, demarrage_prod, arret_prod, ' +
-  'interruption_prod, auto_activation, IDref_ecru, IDcolori_ecru, Nettoyage, raison_modif, ' +
+  'auto_activation, IDref_ecru, IDcolori_ecru, Nettoyage, raison_modif, ' +
   'prioritaire, planning_depart, planning_fin, vitesse, sonneter'
 
 type OfRow = Record<string, any>

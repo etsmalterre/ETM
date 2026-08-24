@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-24 — feat/of-linux-fix
+**Hotfix prod : `/api/of-trm` (liste + détail des OF) renvoyait 500 sur le bridge Linux.**
+Repéré au déploiement API de la journée (gestion-of + tickets TRM) : le C bridge émettait
+`"interruption_prod":0000000000` — `ordre_fabrication.interruption_prod` est la **seule
+colonne HFSQL de type Durée de toute l'analyse MPS** (xdd type 35), déclarée numérique par
+l'ODBC mais renvoyée en texte à zéros de tête, donc écrite sans guillemets = JSON invalide.
+Invisible en dev Windows (le driver `odbc` la renvoie en string). La colonne n'est lue nulle
+part (ni API ni écran) : retirée de `OF_COLUMNS`, requête corrigée rejouée dans le bridge
+prod et parsée OK. Règle consignée dans `CLAUDE.md` § HFSQL (bullet `ordre_fabrication`).
+
 ## 2026-08-24 — feat/issue-tracker
 **Le proxy tickets LIVA sert désormais aussi l'app TRM.** `routes/tickets.ts` est
 refactoré en factory (pattern `factures.ts`) montée deux fois : `/api/tickets`
