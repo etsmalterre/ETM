@@ -1312,7 +1312,7 @@ Two **independent** systems coexist: Tailwind breakpoints (`sm`/`md`/`lg`) drive
 
 ## 18. Dialog/Modal Pattern
 
-Three variants are used in the app — pick the one that matches your use case.
+Four variants are used in the app — pick the one that matches your use case. A, B and C are forms and viewers; **D is the banded "bilan" dialog** for figures + verdicts read before an irreversible action.
 
 > **Critical hooks rule**: Any `useState` / `useQuery` / `useEffect` inside a dialog component must be declared **before** any `if (!cert) return null` early return. Hooks after conditional returns work in dev but crash production builds with React error #310. See the React Component Rules in `CLAUDE.md`.
 
@@ -1469,6 +1469,74 @@ Key points:
 - **Form column**: `w-80 flex-shrink-0 overflow-y-auto px-1` — `px-1` is critical, otherwise input focus rings get clipped
 - **Viewer column**: `flex-1 min-w-0 flex flex-col gap-2` — fills remaining width; `min-w-0` prevents flex overflow
 - **Action buttons live at the bottom of the right column**, NOT in a `DialogFooter`. This vertically aligns Annuler/Enregistrer with the file upload controls (looks intentional and avoids a stranded footer)
+
+### D. Banded "bilan" Dialog — navy header, zinc body of cards, zinc footer
+
+Reference: **TRM `apps/web/src/pages/FilsStock.tsx` → `ArchiverDialog`** (Fils › Stock, Archivage d'un lot de fil — the port of the legacy `FEN_Archivage.wdw`). Established August 2026.
+
+**When to use.** The dialog is not a form: it is a card-like surface presenting a **bilan** — computed figures, one or more verdicts, a small table — that the user *reads* before confirming an irreversible action (archiver, valider, clôturer, solder), with at most one or two fields written along the way. Variant A (white sheet, title + inputs) was tried for exactly this and **user-rejected**: "all white, the info doesn't catch the eye". A dialog whose content is mostly *read* needs the app's panel composition, not a sheet.
+
+**When NOT to use.** Plain create / edit forms stay §18.A — on the same screen, Nouveau lot, Diviser and Contrôle de titrage are all variant A. Don't band a three-field form.
+
+```tsx
+<Dialog open={open} onOpenChange={onOpenChange}>
+  {/* p-0 overrides the primitive's p-6; NO onClose prop — the band carries the
+      close button. Escape + overlay click still dismiss through <Dialog>. */}
+  <DialogContent className="max-w-2xl p-0 overflow-hidden max-h-[90dvh] flex flex-col">
+
+    {/* 1. Header band — §43 verbatim (same as the side drawers, §27.5bis) */}
+    <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
+      <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+        <Archive className="h-[18px] w-[18px]" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Archivage — Lot {lot}</h2>
+        <p className="text-xs text-white/70 truncate">{ref} • {coloris} • {client}</p>   {/* the record's identity */}
+      </div>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        {/* secondary actions (Imprimer…) then the close — ghost white icon buttons */}
+        <Button variant="ghost" size="icon" className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white" title="Imprimer le rapport"><Printer className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white" title="Fermer" onClick={() => onOpenChange(false)}><X className="h-4 w-4" /></Button>
+      </div>
+    </div>
+
+    {/* 2. Body — zinc panel, one white card per block */}
+    <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100/80 p-4 space-y-3 scrollbar-transparent">
+      {/* written field → gold edge */}
+      <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card p-3 shadow-sm">…Quantité initiale…</div>
+      {/* verdict tiles → §7 status cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <VerdictTile icon={<TrendingDown className="h-4 w-4" />} label="Freinte de tricotage" value="7,21 %" detail="45,70 kg perdus sur 634,00 kg" tone="success" />
+        <VerdictTile … />
+      </div>
+      {/* verdict over a list → success or warning status card */}
+      {/* read-only table → DrawerCard with the §27.3 header/body table inside */}
+      {/* written field → gold edge */}
+    </div>
+
+    {/* 3. Footer strip — NOT <DialogFooter> (no strip, no background) */}
+    <div className="flex-shrink-0 flex items-center gap-3 border-t border-border/60 bg-zinc-200/50 px-4 py-3">
+      {error && <div className="flex items-center gap-2 text-sm text-destructive min-w-0"><AlertCircle className="h-4 w-4 flex-shrink-0" /><span className="truncate">{error}</span></div>}
+      <div className="ml-auto flex items-center gap-2">
+        <Button variant="outline" onClick={() => onOpenChange(false)}>Annuler</Button>
+        <Button onClick={confirm}><Archive className="h-3.5 w-3.5 mr-1.5" />Archiver</Button>
+      </div>
+    </div>
+  </DialogContent>
+</Dialog>
+```
+
+Rules — do not deviate:
+
+- **Three layers, always**: navy band → `bg-zinc-100/80` body → `bg-zinc-200/50` footer. This is the side drawer's composition (§27.5) applied to a dialog; the zinc body is what lets white cards separate visually — on a white sheet they vanish.
+- **The band is §43 verbatim** — `bg-primary` + `border-b-2 border-gold`, `h-8 w-8` flat-gold tile with the action's icon at `h-[18px]`, white `text-base font-heading` title, subtitle `text-white/70` carrying the **record identity** (what is being archived / validated). Header controls are ghost white icon buttons, close last. Keep it in sync with §43 / §27.5bis — a change to one is a change to all three.
+- **Gold left edge = "this is what you are writing."** Every field the confirm button persists sits in a card with `border-l-4 border-l-accent/70` (the §9 edit signal), so the eye separates *what you decide* from *what you read*. Read-only cards keep the plain `border-border/60` edge.
+- **Every computed verdict is a §7 status card** — `border-l-4` tone edge + tinted icon box + the figure at `text-2xl font-bold tabular-nums` in the **same tone colour** + the kg / count detail in `text-xs text-muted-foreground` under it. Tone comes from the business threshold (success / warning / danger — the thresholds are a product decision, ask). Never render a figure that has a meaning in neutral grey, and never colour just the number without the edge and icon box: the three together are what makes the card read as a verdict at a glance.
+- **A verdict over a list** (défauts, anomalies…) is the same status card: when empty, success tone with the icon in a `h-10 w-10` tinted box and a `text-base font-semibold` coloured headline ("Aucun défaut"); when not, warning tone with a count `Badge` (`variant="outline"` + explicit amber utilities — the `.badge-*` helpers lose to `bg-primary`, see CLAUDE.md) and per-row amber count pills.
+- **Read-only tables** go inside a titled white card (the drawer's `DrawerCard`), using the §27.3 header styling (`bg-zinc-200/60` thead, uppercase xs labels) and a `bg-zinc-100/80` totals `tfoot`.
+- **Footer**: `border-t border-border/60 bg-zinc-200/50 px-4 py-3`, error banner on the left, `ml-auto` Annuler (`outline`) + the confirming action (default navy variant, with its icon) on the right. The confirm is **not** gold: gold marks "enter edit mode" (§6.1); here the band is the identity surface and navy is the app's standard primary on a light footer (same as the toolbar's Nouveau).
+- **Width `max-w-2xl`**, `max-h-[90dvh]` with the body as the only scrolling region (`flex-1 min-h-0 overflow-y-auto`). §40.6 phone rules still apply — every grid is `grid-cols-1 sm:grid-cols-2`.
+- **Hooks before early returns** and the loading state (`Loader2` centred in the body) live *inside* the body layer so the band and footer never flash.
 
 ---
 
@@ -4277,7 +4345,7 @@ Conventions — do not deviate:
 | Gold band (`bg-gold/25`) + `icon-box-gold` | Gold-on-gold: the icon tile disappeared into the band, and a row of gold bands competed with the gold app header directly above them. |
 | Zinc band (`bg-zinc-200/50`) + `icon-box-gold` (the old §27.5 drawer header) | Technically the app's panel-header pattern, but on a dashboard of large white cards it read as grey and lifeless — user-rejected in favour of the navy treatment. |
 
-**This band is now the app's standard header for any card-like surface that opens over the content.** It was born here, and in July 2026 it replaced the zinc band on **every fixed side drawer** (§27.5bis) — same navy, same gold tile, same white title. Keep the two in sync: a change to one is a change to both.
+**This band is now the app's standard header for any card-like surface that opens over the content.** It was born here, in July 2026 it replaced the zinc band on **every fixed side drawer** (§27.5bis), and in August 2026 it became the header of the **banded "bilan" dialog** (§18.D — archivage / validation dialogs that present figures and verdicts). Same navy, same gold tile, same white title in all three places. Keep them in sync: a change to one is a change to all three.
 
 The zinc `bg-zinc-200/50` band survives only where it caps a **zinc panel that is part of the page** — the §8 right-sidebar tab strip and the §31 in-screen drawer's top strip. Those are not overlays and must not be converted.
 
