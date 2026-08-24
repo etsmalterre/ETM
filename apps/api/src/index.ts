@@ -33,6 +33,7 @@ import { stockRouter } from './routes/stock.js'
 import { stockFiniRouter } from './routes/stock-fini.js'
 import { stockEcruRouter } from './routes/stock-ecru.js'
 import { stockEcruTrmRouter } from './routes/stock-ecru-trm.js'
+import { stockFilTrmRouter } from './routes/stock-fil-trm.js'
 import { suiviLotsRouter } from './routes/suivi-lots.js'
 import { dossiersQualiteRouter } from './routes/dossiers-qualite.js'
 import { actionsQualiteRouter } from './routes/actions-qualite.js'
@@ -151,6 +152,7 @@ app.use('/api/stock', stockFiniRouter)
 app.use('/api/stock', stockEcruRouter)
 // TRM (IDsociete = 2) écru stock — consumed by the TRM frontend only.
 app.use('/api/stock', stockEcruTrmRouter)
+app.use('/api/stock', stockFilTrmRouter)
 app.use('/api/suivi-lots', suiviLotsRouter)
 app.use('/api/dossiers-qualite', dossiersQualiteRouter)
 app.use('/api/actions-qualite', actionsQualiteRouter)

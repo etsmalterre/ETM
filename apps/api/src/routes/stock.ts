@@ -42,21 +42,27 @@ const STOCK_JOINS = `FROM stock_fil sf LEFT JOIN ref_fil rf ON sf.IDref_fil = rf
 // fallback (`row.termin`) therefore MISSES the key in production, leaving the flag
 // at 0 for every row (this broke "Masquer les lots terminés"). Always resolve
 // these columns by case-insensitive PREFIX, never by a hardcoded name.
-function pickVal(row: Record<string, unknown>, re: RegExp): unknown {
+export function pickVal(row: Record<string, unknown>, re: RegExp): unknown {
   const k = Object.keys(row).find((key) => re.test(key))
   return k === undefined ? undefined : row[k]
 }
 /** Delete every key matching `re` from `out` — strips all mangled variants. */
-function stripKeys(out: Record<string, unknown>, re: RegExp): void {
+export function stripKeys(out: Record<string, unknown>, re: RegExp): void {
   for (const k of Object.keys(out)) if (re.test(k)) delete out[k]
 }
 
-interface RefFilFlags {
-  recycle: number
-}
+// The recycle map is a full-table SELECT * over ref_fil on every list/detail/
+// patch request — cache it briefly so the TRM screen (stock-fil-trm.ts) and
+// this router don't hammer the shared bridge. The flag changes rarely; 60s of
+// staleness is invisible to users.
+let recycleMapCache: { map: Map<number, number>; at: number } | null = null
+const RECYCLE_MAP_TTL_MS = 60_000
 
 /** Load IDref_fil → recycle map via SELECT * (cannot SELECT recyclé directly). */
-async function loadRefFilRecycleMap(): Promise<Map<number, number>> {
+export async function loadRefFilRecycleMap(): Promise<Map<number, number>> {
+  if (recycleMapCache && Date.now() - recycleMapCache.at < RECYCLE_MAP_TTL_MS) {
+    return recycleMapCache.map
+  }
   const rows = await query<Record<string, unknown>>(`SELECT * FROM ref_fil`)
   const map = new Map<number, number>()
   for (const r of rows) {
@@ -65,6 +71,7 @@ async function loadRefFilRecycleMap(): Promise<Map<number, number>> {
     const recycle = Number(pickVal(r, /^recycl/i)) || 0
     if (!Number.isNaN(id)) map.set(id, recycle)
   }
+  recycleMapCache = { map, at: Date.now() }
   return map
 }
 
@@ -75,7 +82,7 @@ async function loadRefFilRecycleMap(): Promise<Map<number, number>> {
  *   certif_recyclé / certif_recycl → certif_recycle (boolean flag, not blob)
  * Also attaches `recycle` (from ref_fil) using the provided map.
  */
-function normalizeStockRow(row: Record<string, unknown>, recycleMap: Map<number, number>): Record<string, unknown> {
+export function normalizeStockRow(row: Record<string, unknown>, recycleMap: Map<number, number>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...row }
 
   // terminé / controlé: read by prefix BEFORE stripping every mangled variant
@@ -283,7 +290,7 @@ stockRouter.get('/fil/etat', async (req: Request, res: Response) => {
 // Normalise a HFSQL date value to "YYYYMMDD". Handles both the 8-char string
 // form (stock_fil.date_entree = "20201021") and the datetime form
 // (stock_ecru.date_saisie = "2020-09-30 00:00:00.000").
-function toYmd(v: unknown): string {
+export function toYmd(v: unknown): string {
   if (v == null) return ''
   const s = String(v).trim()
   if (/^\d{8}$/.test(s)) return s
