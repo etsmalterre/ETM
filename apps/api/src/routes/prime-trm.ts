@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import React from 'react'
+import sharp from 'sharp'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, queryRaw, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
 import { PrimePdf, type PrimePdfData } from '../lib/pdf/PrimePdf.js'
@@ -355,8 +356,14 @@ primeTrmRouter.get('/', async (req: Request, res: Response) => {
   }
 })
 
-// GET /api/prime-trm/bonnetiers/:id/photo — JPEG portrait from bonnetier.photo.
-// 404 when absent/unreadable; the web falls back to an initials avatar.
+// GET /api/prime-trm/bonnetiers/:id/photo?size=96 — JPEG portrait from
+// bonnetier.photo. The stored photos are large originals (750–1300px with EXIF
+// orientation); sharp resizes them to a crisp square avatar — the browser's own
+// 1000px→44px downscale is what made them look muddy. 404 when
+// absent/unreadable; the web falls back to an initials avatar.
+const photoCache = new Map<string, Buffer>()
+const PHOTO_CACHE_MAX = 200
+
 primeTrmRouter.get('/bonnetiers/:id/photo', async (req: Request, res: Response) => {
   try {
     const id = parseInt(String(req.params.id), 10)
@@ -364,19 +371,43 @@ primeTrmRouter.get('/bonnetiers/:id/photo', async (req: Request, res: Response) 
       res.status(400).json({ error: 'Invalid id' })
       return
     }
-    const rows = await queryRaw(`SELECT photo FROM bonnetier WHERE IDbonnetier = ${id}`)
-    const v = rows[0]?.photo
-    const buf =
-      v instanceof ArrayBuffer ? Buffer.from(v) : Buffer.isBuffer(v) ? v : null
-    // JPEG magic check: anything else (empty memo, bridge text mangling) → 404.
-    if (!buf || buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) {
-      res.status(404).json({ error: 'No photo' })
-      return
+    const size = Math.min(512, Math.max(32, parseInt(String(req.query.size ?? '96'), 10) || 96))
+    const cacheKey = `${id}:${size}`
+
+    let out = photoCache.get(cacheKey)
+    if (!out) {
+      const rows = await queryRaw(`SELECT photo FROM bonnetier WHERE IDbonnetier = ${id}`)
+      const v = rows[0]?.photo
+      const buf =
+        v instanceof ArrayBuffer ? Buffer.from(v) : Buffer.isBuffer(v) ? v : null
+      // JPEG magic check: anything else (empty memo, bridge text mangling) → 404.
+      if (!buf || buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) {
+        res.status(404).json({ error: 'No photo' })
+        return
+      }
+      try {
+        // .rotate() applies the EXIF orientation before the cover-crop.
+        out = await sharp(buf)
+          .rotate()
+          .resize(size, size, { fit: 'cover', position: 'centre' })
+          .jpeg({ quality: 85 })
+          .toBuffer()
+      } catch (resizeErr) {
+        // A photo sharp cannot decode still shows — just unresized.
+        console.warn(`[prime-trm] photo resize failed for bonnetier ${id}:`, resizeErr)
+        out = buf
+      }
+      if (photoCache.size >= PHOTO_CACHE_MAX) {
+        const oldest = photoCache.keys().next().value
+        if (oldest !== undefined) photoCache.delete(oldest)
+      }
+      photoCache.set(cacheKey, out)
     }
+
     res.setHeader('Content-Type', 'image/jpeg')
-    res.setHeader('Cache-Control', 'private, max-age=3600')
+    res.setHeader('Cache-Control', 'private, max-age=86400')
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-    res.send(buf)
+    res.send(out)
   } catch (err) {
     console.error('Error fetching bonnetier photo:', err)
     res.status(500).json({ error: 'Internal server error' })
