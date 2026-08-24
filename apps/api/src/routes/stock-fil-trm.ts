@@ -12,8 +12,7 @@ import {
   dateDigitsOnly,
   requirePermission,
 } from '../lib/clients-common.js'
-import { pickVal, normalizeStockRow, loadRefFilRecycleMap } from './stock.js'
-import { repairAliased } from './stock-fini.js'
+import { pickVal, stripKeys } from './stock.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 import { StockFilLabelPdf, type StockFilLabelData } from '../lib/pdf/StockFilLabelPdf.js'
 import { RapportFreintePdf, type RapportFreinteData } from '../lib/pdf/RapportFreintePdf.js'
@@ -41,53 +40,179 @@ export const stockFilTrmRouter: RouterType = Router()
 // All writes go through sqlText() (Latin-1 hex literals), never raw UTF-8.
 
 type Row = Record<string, unknown>
+type EtatFilter = 'disponible' | 'archive' | 'tous'
 
-// Same SELECT as stock.ts plus sf.IDclient (the Windows list there omits it —
-// ETM's screen has no Client column).
-const TRM_SELECT = IS_WINDOWS
-  ? `sf.IDstock_fil, sf.IDclient, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.IDMagasin, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.dernier_mouvement, sf.dernier_pointage, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, sf.commentaire, sf.observation_freinte, rf.reference AS ref_fil, rf.titrage, rf.bio, rf.recyclé AS recycle, cf.reference AS colori_reference, f.nom AS fournisseur_nom, st.nom AS magasin_nom`
-  : `sf.*, rf.reference AS ref_fil, rf.titrage, rf.bio, cf.reference AS colori_reference, f.nom AS fournisseur_nom, st.nom AS magasin_nom`
+// ── Row fetching — shaped by profiling ───────────────────────────────────
+// Windows ODBC, 1 747 rows: the joined select of stock.ts costs ~1.4 s. Of
+// that, ~0.9 s is the two MEMO columns (`commentaire`, `observation_freinte`
+// — stored out-of-row, fetched per row) and ~0.4 s the five LEFT JOINs. The
+// same rows without memos and joins come back in ~300 ms; a WHERE on the
+// flag in 7 ms; memos for the 120 available lots in ~75 ms. Hence:
+//   1. a light select, filtered in SQL where the platform allows;
+//   2. memos fetched only for the surviving rows (chunked IN lists);
+//   3. labels resolved from cached catalogs, not joins.
+// The Linux bridge can neither name nor WHERE the accented flag, so there it
+// stays `SELECT *` (memos included) + JS filter — but still without joins and
+// without per-request catalog scans.
 
-const TRM_JOINS = `FROM stock_fil sf LEFT JOIN ref_fil rf ON sf.IDref_fil = rf.IDref_fil LEFT JOIN colori_fil cf ON sf.IDcolori_fil = cf.IDcolori_fil LEFT JOIN fournisseur f ON sf.IDfournisseur = f.IDfournisseur LEFT JOIN sous_traitant st ON sf.IDMagasin = st.IDsous_traitant`
+const LIGHT_COLS_WINDOWS =
+  'IDstock_fil, IDclient, IDfournisseur, IDref_fil, IDcolori_fil, IDref_fil_commande, IDMagasin, ' +
+  'stock, stock_initial, lot, lot_frs, emplacement, date_entree, dernier_mouvement, dernier_pointage, ' +
+  'niveau, terminé AS termine, controlé AS controle'
 
-/** Encoding repair + accent-key normalisation shared by list and detail. */
+const MEMO_CHUNK = 300
+
+/** `withObservation`: the list only shows `commentaire`; `observation_freinte`
+ *  is drawer-only, and each memo column costs ~0.4 s over the full table — so
+ *  the list skips it and the detail fetch (single row) includes it. */
+async function fetchBaseRows(etat: EtatFilter, id?: number, withObservation = false): Promise<Row[]> {
+  const idWhere = id != null ? `IDstock_fil = ${id}` : ''
+  if (IS_WINDOWS) {
+    const flagWhere = etat === 'disponible' ? 'terminé = 0' : etat === 'archive' ? 'terminé = 1' : ''
+    const where = [idWhere, flagWhere].filter(Boolean).join(' AND ')
+    const rows = await query<Row>(
+      `SELECT ${LIGHT_COLS_WINDOWS} FROM stock_fil${where ? ` WHERE ${where}` : ''} ORDER BY date_entree DESC, IDstock_fil DESC`,
+    )
+    const ids = rows.map((r) => numOf(r.IDstock_fil)).filter((x) => x > 0)
+    const memoCols = withObservation ? 'commentaire, observation_freinte' : 'commentaire'
+    const memos = new Map<number, Row>()
+    for (let i = 0; i < ids.length; i += MEMO_CHUNK) {
+      const chunk = ids.slice(i, i + MEMO_CHUNK)
+      const m = await query<Row>(
+        `SELECT IDstock_fil, ${memoCols} FROM stock_fil WHERE IDstock_fil IN (${chunk.join(',')})`,
+      )
+      for (const r of m) memos.set(numOf(r.IDstock_fil), r)
+    }
+    for (const r of rows) {
+      const m = memos.get(numOf(r.IDstock_fil))
+      r.commentaire = m?.commentaire ?? null
+      r.observation_freinte = withObservation ? (m?.observation_freinte ?? null) : null
+    }
+    return rows
+  }
+  const rows = await query<Row>(
+    `SELECT * FROM stock_fil${idWhere ? ` WHERE ${idWhere}` : ''} ORDER BY date_entree DESC, IDstock_fil DESC`,
+  )
+  if (etat === 'tous') return rows
+  const want = etat === 'archive' ? 1 : 0
+  return rows.filter((r) => (Number(pickVal(r, /^termin/i)) ? 1 : 0) === want)
+}
+
+// ── Catalogs (labels) — one cached load instead of five joins per request ──
+
+interface RefFilInfo { reference: string | null; titrage: number | null; bio: number; recycle: number }
+interface Catalogs {
+  refFil: Map<number, RefFilInfo>
+  colori: Map<number, string>
+  fournisseur: Map<number, string>
+  magasin: Map<number, string>
+  client: Map<number, string>
+}
+let catalogCache: { at: number; data: Catalogs } | null = null
+const CATALOG_TTL_MS = 60_000
+// A row pointing at an id the cache doesn't know (client / fournisseur just
+// created) forces one reload, rate-limited so a genuinely dangling FK can't
+// turn every request into a catalog scan.
+const CATALOG_MISS_RELOAD_MS = 3_000
+
+async function loadCatalogs(): Promise<Catalogs> {
+  // ref_fil: SELECT * because `recyclé` cannot be named (bridge); it has no
+  // blob column, so the Windows driver returns rows.
+  const [rfRaw, cfRaw, fRaw, stRaw, cRaw] = await Promise.all([
+    query<Row>(`SELECT * FROM ref_fil`),
+    query<Row>(`SELECT IDcolori_fil, reference FROM colori_fil`),
+    query<Row>(`SELECT IDfournisseur, nom FROM fournisseur`),
+    query<Row>(`SELECT IDsous_traitant, nom FROM sous_traitant`),
+    query<Row>(`SELECT IDclient, nom FROM client`),
+  ])
+  const [rf, cf, f, st, c] = await Promise.all([
+    fixEncoding(rfRaw, 'ref_fil', 'IDref_fil', ['reference']),
+    fixEncoding(cfRaw, 'colori_fil', 'IDcolori_fil', ['reference']),
+    fixEncoding(fRaw, 'fournisseur', 'IDfournisseur', ['nom']),
+    fixEncoding(stRaw, 'sous_traitant', 'IDsous_traitant', ['nom']),
+    fixEncoding(cRaw, 'client', 'IDclient', ['nom']),
+  ])
+  const nameMap = (rows: Row[], idKey: string, col: string): Map<number, string> => {
+    const m = new Map<number, string>()
+    for (const r of rows) m.set(numOf(r[idKey]), String(r[col] ?? '').trim())
+    return m
+  }
+  const refFil = new Map<number, RefFilInfo>()
+  for (const r of rf) {
+    refFil.set(numOf(r.IDref_fil), {
+      reference: r.reference == null ? null : String(r.reference),
+      titrage: r.titrage == null ? null : floatOf(r.titrage),
+      bio: numOf(r.bio) ? 1 : 0,
+      // recyclé → recycl/recyclt/… on the bridge, recyclé on Windows.
+      recycle: numOf(pickVal(r, /^recycl/i)) ? 1 : 0,
+    })
+  }
+  return {
+    refFil,
+    colori: nameMap(cf, 'IDcolori_fil', 'reference'),
+    fournisseur: nameMap(f, 'IDfournisseur', 'nom'),
+    magasin: nameMap(st, 'IDsous_traitant', 'nom'),
+    client: nameMap(c, 'IDclient', 'nom'),
+  }
+}
+
+async function getCatalogs(force = false): Promise<Catalogs> {
+  if (!force && catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) return catalogCache.data
+  const data = await loadCatalogs()
+  catalogCache = { at: Date.now(), data }
+  return data
+}
+
+/** Encoding repair + accent-key normalisation + label resolution, shared by
+ *  list and detail. Output keys match what the ETM list emits (ref_fil,
+ *  titrage, bio, recycle, colori_reference, fournisseur_nom, magasin_nom)
+ *  plus client_nom. */
 async function hydrateRows(rows: Row[]): Promise<Row[]> {
-  let fixed: Row[] = await fixEncoding(
+  const fixed: Row[] = await fixEncoding(
     rows,
     'stock_fil',
     'IDstock_fil',
     ['lot', 'lot_frs', 'emplacement', 'commentaire', 'observation_freinte'],
   )
-  fixed = await repairAliased(fixed, 'ref_fil', 'IDref_fil', { ref_fil: 'reference' })
-  fixed = await repairAliased(fixed, 'colori_fil', 'IDcolori_fil', { colori_reference: 'reference' })
-  fixed = await repairAliased(fixed, 'fournisseur', 'IDfournisseur', { fournisseur_nom: 'nom' })
 
-  const recycleMap = await loadRefFilRecycleMap()
-  const normalised = fixed.map((r) => normalizeStockRow(r, recycleMap))
+  let cat = await getCatalogs()
+  const missing = fixed.some((r) => {
+    const cid = numOf(r.IDclient), fid = numOf(r.IDfournisseur), rid = numOf(r.IDref_fil), col = numOf(r.IDcolori_fil)
+    return (cid > 0 && !cat.client.has(cid)) || (fid > 0 && !cat.fournisseur.has(fid))
+      || (rid > 0 && !cat.refFil.has(rid)) || (col > 0 && !cat.colori.has(col))
+  })
+  if (missing && catalogCache && Date.now() - catalogCache.at > CATALOG_MISS_RELOAD_MS) {
+    cat = await getCatalogs(true)
+  }
 
-  // Client column — flat lookup, never a JOIN + CONVERT (collapses the result
-  // set on the bridge). `client.nom` is accented on several rows.
-  const clientIds = Array.from(
-    new Set(normalised.map((r) => numOf(r.IDclient)).filter((x) => x > 0)),
-  )
-  const clientName = new Map<number, string>()
-  if (clientIds.length > 0) {
-    const cRows = await query<{ IDclient: number; nom: string | null }>(
-      `SELECT IDclient, nom FROM client WHERE IDclient IN (${clientIds.join(',')})`,
-    )
-    for (const c of await fixEncoding(cRows as Row[], 'client', 'IDclient', ['nom'])) {
-      clientName.set(numOf((c as Row).IDclient), String((c as Row).nom ?? '').trim())
-    }
-  }
-  for (const r of normalised) {
-    r.client_nom = clientName.get(numOf(r.IDclient)) ?? null
-  }
-  return normalised
+  return fixed.map((r) => {
+    const out: Row = { ...r }
+    // terminé / controlé: read by prefix BEFORE stripping every mangled
+    // variant (bridge key is non-deterministic — see stock.ts pickVal).
+    const termineVal = pickVal(out, /^termin/i)
+    const controleVal = pickVal(out, /^control/i)
+    stripKeys(out, /^termin/i)
+    stripKeys(out, /^control/i)
+    stripKeys(out, /^certif/i) // blob columns of the Linux SELECT * — never in the payload
+    out.termine = Number(termineVal) || 0
+    out.controle = Number(controleVal) || 0
+
+    const rf = cat.refFil.get(numOf(out.IDref_fil))
+    out.ref_fil = rf?.reference ?? null
+    out.titrage = rf?.titrage ?? null
+    out.bio = rf?.bio ?? 0
+    out.recycle = rf?.recycle ?? 0
+    out.colori_reference = cat.colori.get(numOf(out.IDcolori_fil)) ?? null
+    out.fournisseur_nom = cat.fournisseur.get(numOf(out.IDfournisseur)) ?? null
+    out.magasin_nom = cat.magasin.get(numOf(out.IDMagasin)) ?? null
+    out.client_nom = cat.client.get(numOf(out.IDclient)) ?? null
+    return out
+  })
 }
 
 /** One hydrated row by id, or null. */
 async function fetchRow(id: number): Promise<Row | null> {
-  const rows = await query<Row>(`SELECT ${TRM_SELECT} ${TRM_JOINS} WHERE sf.IDstock_fil = ${id}`)
+  const rows = await fetchBaseRows('tous', id, true)
   if (rows.length === 0) return null
   const hydrated = await hydrateRows(rows)
   return hydrated[0] ?? null
@@ -337,23 +462,46 @@ stockFilTrmRouter.get('/fil-trm/lookups/clients', async (_req: Request, res: Res
   }
 })
 
+// Archived lots are frozen (stock forced to 0, no further edits accepted), so
+// their ~1.6k hydrated rows are cached briefly — the Archivé view, and the
+// Archivé half of Tous, then cost nothing after the first load. Invalidated by
+// this router's archiver; a lot archived from the legacy app shows up within
+// the TTL.
+let archiveCache: { at: number; rows: Row[] } | null = null
+const ARCHIVE_TTL_MS = 60_000
+
+async function getArchivedRows(): Promise<Row[]> {
+  if (archiveCache && Date.now() - archiveCache.at < ARCHIVE_TTL_MS) return archiveCache.rows
+  const rows = await hydrateRows(await fetchBaseRows('archive'))
+  archiveCache = { at: Date.now(), rows }
+  return rows
+}
+
+/** List order: date_entree DESC, IDstock_fil DESC (what the SQL emits). */
+function byEntreeDesc(a: Row, b: Row): number {
+  const da = String(a.date_entree ?? ''), db = String(b.date_entree ?? '')
+  if (da !== db) return da < db ? 1 : -1
+  return numOf(b.IDstock_fil) - numOf(a.IDstock_fil)
+}
+
 // GET /api/stock/fil-trm?etat=disponible|archive|tous — the TRM list.
-// The terminé filter is applied in JS (accented column — see header comment).
+// The etat filter runs in SQL on Windows, in JS on the Linux bridge (accented
+// column) — either way BEFORE hydration, so the default view only repairs and
+// labels its ~120 rows.
 stockFilTrmRouter.get('/fil-trm', async (req: Request, res: Response) => {
   try {
-    const etat =
+    const etat: EtatFilter =
       req.query.etat === 'archive' ? 'archive' : req.query.etat === 'tous' ? 'tous' : 'disponible'
-
-    const rows = await query<Row>(
-      `SELECT ${TRM_SELECT} ${TRM_JOINS} ORDER BY sf.date_entree DESC, sf.IDstock_fil DESC`,
-    )
-    let normalised = await hydrateRows(rows)
-    if (etat !== 'tous') {
-      normalised = normalised.filter((r) =>
-        etat === 'archive' ? numOf(r.termine) === 1 : numOf(r.termine) !== 1,
-      )
+    if (etat === 'archive') {
+      res.json(await getArchivedRows())
+      return
     }
-    res.json(normalised)
+    const live = await hydrateRows(await fetchBaseRows('disponible'))
+    if (etat === 'disponible') {
+      res.json(live)
+      return
+    }
+    res.json([...live, ...(await getArchivedRows())].sort(byEntreeDesc))
   } catch (err) {
     console.error('Error fetching TRM stock_fil list:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -723,6 +871,7 @@ stockFilTrmRouter.post('/fil-trm/:id/archiver', async (req: Request, res: Respon
       `UPDATE stock_fil SET stock = 0, stock_initial = ${stockInitial}, observation_freinte = ${sqlText(observation)} WHERE IDstock_fil = ${id}`,
     )
     await setStockFilTermine(id, 1)
+    archiveCache = null
 
     const row = await fetchRow(id)
     res.json(row)
