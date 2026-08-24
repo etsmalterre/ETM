@@ -10,6 +10,26 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-24 — feat/stock-fil
+**API du Fils › Stock TRM** (`routes/stock-fil-trm.ts`, second routeur sur le mount
+`/api/stock`, endpoints `/fil-trm/*`) — le port de `FI_Stock_Fil_TRM.wdw`, consommé par
+l'écran `TRM/apps/web/src/pages/FilsStock.tsx`. `stock_fil` n'est **pas partitionné** :
+mêmes lignes que Fournisseurs › Stock, `IDclient` = propriétaire du fil (TRM tricote à
+façon). Liste/détail avec colonne Client, filtre Disponible/Archivé/Tous sur `terminé`,
+création (lot auto `MAX(lot)+1` en JS, `IDMagasin = 1`, dates de mouvement/pointage),
+PATCH borné, **division** d'un lot, **contrôle de titrage** (INSERT positionnel dans
+`controle_titrage` — ordre physique vérifié au runtime, le `.xdd` ment), **bilan
+d'archivage** (freinte = `stock_initial − Σ(poids pièces × asso_fil_of.pourcentage/100)`,
+verdict défauts via `defaut_qualite` Type_Reference 2) et **archivage** (`stock = 0`,
+`terminé = 1` par delete + réinsertion positionnelle sur Linux, garde
+`certificat_bloque`). PDFs : étiquette Dymo 89×36 (`StockFilLabelPdf`) et rapport de
+freinte A4 (`RapportFreintePdf`, `issuer: companyTrm`). Perf : select léger filtré en SQL
+(Windows) / JS avant hydratation (Linux), memos lus pour les seules lignes retournées,
+catalogues et lots archivés en cache 60 s — liste 1,3 s → 60 ms. `stock.ts` : helpers
+exportés + cache de la recycle map. Design : §18.D « dialogue bilan à bandeau » ajouté à
+`mps_designer`. Découverte driver : nommer une colonne memo-binaire dans un SELECT
+Windows renvoie 0 lignes (règle ajoutée à CLAUDE.md).
+
 ## 2026-08-24 — feat/dashboard
 **API + shell side of TRM's Tableau de bord (the screen and widget live in the TRM repo).**
 New `routes/dashboard-trm.ts` mounted at `/api/dashboard-trm` — one router for every TRM
