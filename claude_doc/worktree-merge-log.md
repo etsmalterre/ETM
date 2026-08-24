@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-24 — feat/issue-tracker
+**Le proxy tickets LIVA sert désormais aussi l'app TRM.** `routes/tickets.ts` est
+refactoré en factory (pattern `factures.ts`) montée deux fois : `/api/tickets`
+(produit `etm-erp`, inchangé pour ETM) et `/api/tickets-trm` (produit `trm-erp`,
+consommé par le widget de tickets du frontend TRM — v1.1.1, miroir de
+`components/tickets/`). Chaque mount scope créations ET lectures sur son propre slug —
+la clé du tracker est company-scoped, sans ça les tickets ETM et TRM se mélangeraient
+dans « Mes tickets ». Seule différence par mount : la variable d'env qui nomme le slug ;
+nouvelle variable **`ISSUE_TRACKER_PRODUCT_SLUG_TRM`** (ajoutée aux env dev/prod du
+checkout principal, requise en prod — `dev_setup.md` §4). Le produit `trm-erp` a été
+créé dans la base du tracker (schéma `admin` de livavps, propriété de liva-admin) et
+associé au client `ets-malterre` ; testé de bout en bout contre le tracker prod (ticket
+N°1084, créé puis purgé). Aucun changement côté écrans ETM.
+
 ## 2026-08-24 — feat/gestion-of (API du écran TRM Production › Gestion des OF)
 **Nouvelle famille de routes `of-trm.ts` (`/api/of-trm`) — le premier chemin d'écriture
 vers `ordre_fabrication` / `asso_fil_of` / `fil_incorpore` / `message_of`.** Portage de
@@ -33,6 +47,7 @@ remplacement composition/incorporé, observation (INSERT positionnel — colonne
 de file**), activer, réordonner, suppression (409 `production_lancee` si des pièces
 existent). Cycle d'écriture complet gardé par `scripts/check-of-trm.ts` (31 assertions,
 nettoie derrière lui). Consommé par `TRM/apps/web/src/pages/ProductionOf.tsx`.
+
 
 ## 2026-07-31 — feat/cmd-client
 **« Générer les factures » ignorait complètement les expéditions diverses.**
