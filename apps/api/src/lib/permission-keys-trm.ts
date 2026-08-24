@@ -22,6 +22,17 @@
 // the action, not a `trm_` prefix.
 
 export const TRM_PERMISSION_KEYS = [
+  // Tableau de bord — one key per widget, the same model as ETM's dashboard_*
+  // keys: granting shows the widget for that user; admins always see every
+  // widget. Kept first so the "Tableau de bord" section renders at the top of
+  // Paramètres > Utilisateurs.
+  {
+    key: 'dashboard_poids_pieces',
+    label: 'Widget « Poids des pièces »',
+    description:
+      'Affiche sur le tableau de bord le suivi du poids des pièces par métier : pour chaque OF en cours, la part des rouleaux pesés dans la tolérance (du poids de pièce à +0,7 kg) et, au clic, le graphique des pesées de l’OF.',
+    category: 'Tableau de bord',
+  },
   {
     key: 'edit_commandes_client',
     label: 'Édition des commandes client',

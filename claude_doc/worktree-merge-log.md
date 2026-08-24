@@ -10,6 +10,22 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-24 — feat/dashboard
+**API + shell side of TRM's Tableau de bord (the screen and widget live in the TRM repo).**
+New `routes/dashboard-trm.ts` mounted at `/api/dashboard-trm` — one router for every TRM
+widget, gated by TRM keys (`trmUserHasPermission`). First widget « Poids des pièces »
+(`/poids-pieces` list + `/poids-pieces/:id` chart series), a port of the legacy
+`FI_Mauvais_Compteur` / `FEN_Graphe_Compteur`: the SQL was recovered from WinDev's compile
+cache (`MPS.cpl\…\*.wcw`) and is quoted in the file header — unit is the `stock_ecru` roll,
+valid ⇔ `poids_piece ≤ poids ≤ poids_piece + 0,7` or `poids ≤ 0,65 × poids_piece`, active OFs
+with ≥ 1 roll, `machine.emplacement`, verified 6/6 against the live widget. New TRM key
+`dashboard_poids_pieces` (category « Tableau de bord »). **The dashboard layout endpoint is now
+scoped per app**: `GET/PUT /api/user-profiles/me/dashboard?app=etm|trm` (default `etm`, so every
+existing client is unchanged) stores TRM arrangements in `dashboards_trm`. To let TRM import
+`pages/Dashboard.tsx` verbatim, `WidgetDef` moved from `registry.tsx` to `types.ts`, the registry
+exports `DASHBOARD_APP`, and `useDashboardLayout.ts` imports registry/types via `@/…` so the
+sister app resolves its own registry.
+
 ## 2026-08-24 — feat/users
 **API side of TRM's Paramètres › Utilisateurs (the screen lives in the TRM repo).**
 TRM gets its **own permission catalog and store** on the shared API: `lib/permission-keys-trm.ts`

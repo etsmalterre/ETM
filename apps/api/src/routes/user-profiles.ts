@@ -44,6 +44,7 @@ import {
   DASHBOARD_MAX_TABS,
   DASHBOARD_MAX_NAME_LENGTH,
   DASHBOARD_MAX_ID_LENGTH,
+  type DashboardApp,
   type DashboardTab,
   type PhotoExt,
   type UserProfile,
@@ -181,21 +182,39 @@ const dashboardsBody = z.object({
     .max(DASHBOARD_MAX_TABS),
 })
 
-// GET /api/user-profiles/me/dashboard
+// Both apps (ETM and TRM) call these with their own `?app=` — the layouts are
+// stored per app because the widget catalogs differ. No scope = ETM, which is
+// what every pre-existing client sends.
+const appQuery = z.object({ app: z.enum(['etm', 'trm']).default('etm') })
+
+function dashboardApp(req: Request, res: Response): DashboardApp | null {
+  const parsed = appQuery.safeParse({ app: req.query.app ?? undefined })
+  if (!parsed.success) {
+    res.status(400).json({ error: 'invalid app', issues: parsed.error.issues })
+    return null
+  }
+  return parsed.data.app
+}
+
+// GET /api/user-profiles/me/dashboard?app=etm|trm
 userProfilesRouter.get('/me/dashboard', async (req: Request, res: Response) => {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return
   }
-  res.json({ dashboards: await getUserDashboards(req.userId) })
+  const app = dashboardApp(req, res)
+  if (!app) return
+  res.json({ dashboards: await getUserDashboards(req.userId, app) })
 })
 
-// PUT /api/user-profiles/me/dashboard
+// PUT /api/user-profiles/me/dashboard?app=etm|trm
 userProfilesRouter.put('/me/dashboard', async (req: Request, res: Response) => {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return
   }
+  const app = dashboardApp(req, res)
+  if (!app) return
   const parsed = dashboardsBody.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues })
@@ -220,8 +239,8 @@ userProfilesRouter.put('/me/dashboard', async (req: Request, res: Response) => {
     })
   }
 
-  await setUserDashboards(req.userId, tabs)
-  res.json({ dashboards: await getUserDashboards(req.userId) })
+  await setUserDashboards(req.userId, tabs, app)
+  res.json({ dashboards: await getUserDashboards(req.userId, app) })
 })
 
 // ── GET /api/user-profiles/users ───────────────────────

@@ -8,7 +8,6 @@
 // renaming one silently drops that widget from every layout that mentions it
 // (it degrades gracefully: the widget reappears at the end with its defaults).
 
-import type { ComponentType } from 'react'
 import { TrendingUp, FileSpreadsheet, LineChart, ShoppingCart, Wallet } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -23,28 +22,15 @@ import { SuiviPieceWidget } from './SuiviPieceWidget'
 import { CommandesDuJourWidget } from './CommandesDuJourWidget'
 import { ChargesWidget } from './ChargesWidget'
 import { EvolutionCaWidget } from './EvolutionCaWidget'
-import type { DashboardWidth } from './types'
+import type { DashboardApp, WidgetDef } from './types'
 
-export interface WidgetDef {
-  key: string
-  /** Permission key gating this widget. Users without it never see the widget,
-   *  nor its entry in the hidden-widget tray. */
-  permission: string
-  /** Shown in the tray and in the reset confirmation — the widget renders its
-   *  own title inside its frame. */
-  title: string
-  icon: ComponentType<{ className?: string }>
-  defaultWidth: DashboardWidth
-  /** Narrowest the user may drag this widget, in grid columns. Set it from the
-   *  content: a widget with a 5-column table can't live at 3 columns. */
-  minWidth: number
-  /** Starting card height in pixels. Every widget needs one: the grid packs
-   *  widgets by row units, so a short widget leaves room a later one can drop
-   *  into — which only works if heights are known rather than content-driven.
-   *  The user overrides it by dragging the bottom edge. */
-  defaultHeightPx: number
-  Component: ComponentType
-}
+export type { WidgetDef }
+
+/** This registry describes ETM's dashboards. The TRM app has its own
+ *  registry.tsx (same exports, `'trm'`) — the shared Dashboard screen and
+ *  layout hook reach whichever one `@/components/dashboard/registry` resolves
+ *  to in the app being built. */
+export const DASHBOARD_APP: DashboardApp = 'etm'
 
 /** Order here is the out-of-the-box dashboard for a user who never customised. */
 export const WIDGET_REGISTRY: readonly WidgetDef[] = [

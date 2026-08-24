@@ -28,7 +28,11 @@ import { useCallback, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { usePermissions } from '@/contexts/PermissionsContext'
-import { WIDGET_REGISTRY, type WidgetDef } from './registry'
+// `@/…` rather than `./…` on purpose: this file is shared with the TRM app
+// through its `@etm` alias, and there `@/components/dashboard/registry` is
+// TRM's own registry (its widgets, its `DASHBOARD_APP`). A relative import
+// would pin it to ETM's.
+import { DASHBOARD_APP, WIDGET_REGISTRY } from '@/components/dashboard/registry'
 import {
   DASHBOARD_MAX_TABS,
   DASHBOARD_PRIMARY_ID,
@@ -40,7 +44,11 @@ import {
   type DashboardTab,
   type DashboardWidgetPref,
   type DashboardWidth,
-} from './types'
+  type WidgetDef,
+} from '@/components/dashboard/types'
+
+/** Layout endpoint, scoped to this app (see DashboardApp). */
+const DASHBOARD_URL = `/user-profiles/me/dashboard?app=${DASHBOARD_APP}`
 
 /** Editable working copy. Sizes AND positions are always concrete after
  *  resolve — the positional grid can't place a widget without them. */
@@ -222,7 +230,7 @@ export function draftSignature(draft: DraftLayout): string {
 export function useDashboardTabs() {
   const query = useQuery<DashboardResponse>({
     queryKey: QUERY_KEY,
-    queryFn: () => apiFetch('/user-profiles/me/dashboard'),
+    queryFn: () => apiFetch(DASHBOARD_URL),
     staleTime: 5 * 60_000,
   })
   return {
@@ -249,7 +257,7 @@ export function useDashboardLayout(activeId: string) {
 
   const query = useQuery<DashboardResponse>({
     queryKey: QUERY_KEY,
-    queryFn: () => apiFetch('/user-profiles/me/dashboard'),
+    queryFn: () => apiFetch(DASHBOARD_URL),
     staleTime: 5 * 60_000,
   })
 
@@ -271,7 +279,7 @@ export function useDashboardLayout(activeId: string) {
 
   const saveMutation = useMutation({
     mutationFn: (dashboards: DashboardTab[]) =>
-      apiFetch<DashboardResponse>('/user-profiles/me/dashboard', {
+      apiFetch<DashboardResponse>(DASHBOARD_URL, {
         method: 'PUT',
         body: JSON.stringify({ dashboards }),
       }),

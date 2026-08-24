@@ -39,6 +39,7 @@ import { actionsQualiteRouter } from './routes/actions-qualite.js'
 import { rapportsRouter } from './routes/rapports.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
+import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { authRouter } from './routes/auth.js'
 import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
@@ -158,6 +159,8 @@ app.use('/api/rapports', rapportsRouter)
 app.use('/api/planning-atelier', planningAtelierRouter)
 // TRM production orders (Gestion des OF) — consumed by the TRM web app.
 app.use('/api/of-trm', ofTrmRouter)
+// TRM tableau de bord widgets (Poids des pièces, …) — consumed by the TRM web app.
+app.use('/api/dashboard-trm', dashboardTrmRouter)
 
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)

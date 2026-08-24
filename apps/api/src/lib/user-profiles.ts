@@ -96,6 +96,19 @@ interface UserProfileEntry {
   dashboard?: DashboardWidgetPref[]
   /** Personal tableaux de bord — the first entry is the primary one. */
   dashboards?: DashboardTab[]
+  /** The same, for the TRM app. The two apps share users and this store but
+   *  have different widget catalogs, so a user's arrangements are kept per
+   *  app — one ETM layout must never mention TRM widgets or vice-versa. */
+  dashboards_trm?: DashboardTab[]
+}
+
+/** Which app a dashboard preference belongs to. `etm` is the historical
+ *  default (stored under `dashboards`), so callers that never sent an app
+ *  scope keep reading and writing what they always did. */
+export type DashboardApp = 'etm' | 'trm'
+
+function dashboardsField(app: DashboardApp): 'dashboards' | 'dashboards_trm' {
+  return app === 'trm' ? 'dashboards_trm' : 'dashboards'
 }
 
 /** True when nothing is left worth storing for this user, so the entry can be
@@ -107,7 +120,8 @@ function isEmptyEntry(entry: UserProfileEntry): boolean {
     entry.signatureHtml === undefined &&
     entry.photo === undefined &&
     entry.dashboard === undefined &&
-    entry.dashboards === undefined
+    entry.dashboards === undefined &&
+    entry.dashboards_trm === undefined
   )
 }
 
@@ -215,13 +229,14 @@ export async function setUserSignature(userId: number, fields: SignatureFields):
  *  Migration is read-time and lossless: a profile written before tabs existed
  *  carries a bare `dashboard` array, which becomes the primary tab's layout.
  *  Nothing is rewritten until the user saves, so rolling back the app keeps
- *  every existing arrangement intact. */
-export async function getUserDashboards(userId: number): Promise<DashboardTab[]> {
+ *  every existing arrangement intact. The legacy field only ever belonged to
+ *  ETM — a TRM read never falls back to it. */
+export async function getUserDashboards(userId: number, app: DashboardApp = 'etm'): Promise<DashboardTab[]> {
   const file = await loadUserProfiles()
   const entry = file.users[String(userId)]
-  const tabs = entry?.dashboards
+  const tabs = entry?.[dashboardsField(app)]
   if (tabs && tabs.length > 0) return tabs
-  const legacy = entry?.dashboard
+  const legacy = app === 'etm' ? entry?.dashboard : undefined
   return [{
     id: DASHBOARD_PRIMARY_ID,
     name: DASHBOARD_PRIMARY_NAME,
@@ -233,19 +248,25 @@ export async function getUserDashboards(userId: number): Promise<DashboardTab[]>
  *  stored as nothing at all — "I have no opinion, follow the defaults" — so a
  *  user who resets keeps tracking future changes to the default dashboard.
  *  The legacy single-layout field is dropped on the first save. */
-export async function setUserDashboards(userId: number, tabs: DashboardTab[]): Promise<void> {
+export async function setUserDashboards(
+  userId: number,
+  tabs: DashboardTab[],
+  app: DashboardApp = 'etm',
+): Promise<void> {
   const file = await loadUserProfiles()
   const key = String(userId)
   const nextUsers = { ...file.users }
   const entry: UserProfileEntry = { ...nextUsers[key] }
-  delete entry.dashboard
+  const field = dashboardsField(app)
+  // The legacy single layout was ETM's; a TRM save must leave it alone.
+  if (app === 'etm') delete entry.dashboard
   const isPristine =
     tabs.length === 1 && tabs[0].id === DASHBOARD_PRIMARY_ID &&
     tabs[0].name === DASHBOARD_PRIMARY_NAME && tabs[0].layout === null
   if (isPristine) {
-    delete entry.dashboards
+    delete entry[field]
   } else {
-    entry.dashboards = tabs
+    entry[field] = tabs
   }
   if (isEmptyEntry(entry)) {
     delete nextUsers[key]

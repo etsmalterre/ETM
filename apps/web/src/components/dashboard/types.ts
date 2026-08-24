@@ -8,7 +8,39 @@
 // dropped exactly there. Below `lg` the grid is bypassed entirely — one
 // column, ordered by (y, x), definite heights.
 
+import type { ComponentType } from 'react'
+
 export type DashboardWidth = number
+
+/** One entry of the widget registry. Lives here rather than in registry.tsx
+ *  so the sister app (TRM) can type its own registry against it without
+ *  importing ETM's — a type-only import of registry.tsx would still make the
+ *  type-checker resolve every ETM widget module behind it. */
+export interface WidgetDef {
+  key: string
+  /** Permission key gating this widget. Users without it never see the widget,
+   *  nor its entry in the hidden-widget tray. */
+  permission: string
+  /** Shown in the tray and in the reset confirmation — the widget renders its
+   *  own title inside its frame. */
+  title: string
+  icon: ComponentType<{ className?: string }>
+  defaultWidth: DashboardWidth
+  /** Narrowest the user may drag this widget, in grid columns. Set it from the
+   *  content: a widget with a 5-column table can't live at 3 columns. */
+  minWidth: number
+  /** Starting card height in pixels. Every widget needs one: the grid packs
+   *  widgets by row units, so a short widget leaves room a later one can drop
+   *  into — which only works if heights are known rather than content-driven.
+   *  The user overrides it by dragging the bottom edge. */
+  defaultHeightPx: number
+  Component: ComponentType
+}
+
+/** Which app's dashboards a registry describes. Sent as `?app=` to the
+ *  layout endpoint so ETM and TRM — same users, same API, different widget
+ *  catalogs — each keep their own arrangements. */
+export type DashboardApp = 'etm' | 'trm'
 
 /** A user's dashboards are named tabs, surfaced as the submenu of "Tableau de
  *  bord". The first one always exists, is routed at `/`, and cannot be deleted;
