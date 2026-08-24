@@ -9,6 +9,64 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-24 — feat/prime (API de l'écran Prime TRM)
+
+Nouvelle route `/api/prime-trm` (+ `lib/pdf/PrimePdf.tsx`) servant l'écran Production ›
+Prime du frontend TRM — port de `FI_Prime.wdw`, dont la logique WLanguage a été récupérée
+dans le Java généré Android (`C:\Mes Projets\MPS\Android\dbg\Compile\GWDFFEN_Prime.java`),
+le .wdw étant compressé PCS et illisible. **Un seul payload alimente l'écran ET le PDF**,
+pour qu'ils ne puissent pas diverger.
+
+**Le semestre de prime pivote sur le 15/06 et le 15/12** (S1 = 15/12/(A−1) → 15/06/A,
+libellé par l'année de *fin* ; S2 = 15/06 → 15/12, libellé par l'année de *début*),
+navigation ±6 mois bloquée sur la période courante. Sommes = `SUM(stock_ecru.poids)` sur
+`date_saisie` × barème : 1er choix +0,05 €/kg, 2nd choix −0,20 €/kg. La ligne « Retour
+client » (−0,60 €/kg) est **morte dans le legacy** — codée en dur à 0, jamais calculée :
+elle reste affichée à 0 tant que l'écran Qualité › Retour client n'existe pas ; ne pas la
+« réparer » au hasard.
+
+⚠️ **Les sommes ne filtrent PAS `IDsociete`.** À la livraison une pièce TRM bascule en
+société 1 (règle du handover déjà documentée dans CLAUDE.md), donc scoper par société
+ferait disparaître l'essentiel du semestre — mesuré : 46 833 kg sur 50 091. La production
+TRM est identifiée par **`IDordre_fabrication > 0`**, ce qui écarte au passage les lignes
+manuelles ETM `lot='fictif'` que le prédicat legacy comptait à tort (~0,4 % d'un semestre).
+Second écart assumé vs legacy : la **répartition plafonne les jours à la fin de période**
+(`min(today, fin, date_sortie)`) — le legacy comptait jusqu'à *aujourd'hui* même sur un
+semestre passé, si bien qu'une répartition historique dérivait avec le temps au lieu de
+rester celle qui a été payée. Les deux écarts sont des décisions utilisateur du 2026-08-24.
+
+La **répartition** couvre les bonnetiers `regleur = 0` dont l'emploi recoupe la période —
+sans filtre `archivé`, c'est `date_sortie` qui borne l'historique — au prorata des jours.
+
+**Analyse des déclassements** (absente du legacy) : taux de 2nd choix en kg comparé au
+**semestre précédent complet** — volontairement pas à la même fenêtre écoulée, pour que la
+barre soit une cible fixe à battre — plus la ventilation par type de défaut lue dans
+`defaut_qualite` (`Type_Reference = 2`, mêmes règles que `fetchDefectsByEcru`). Le poids
+d'une pièce est **réparti à parts égales entre ses types de défauts distincts** (≈1,6 défaut
+par pièce : une attribution pleine dépasserait 100 %), les types inconnus tombent dans
+« Autres » et les pièces sans défaut structuré dans « Non renseigné » — la ventilation somme
+donc toujours exactement au poids déclassé. Tri strict par manque à gagner décroissant.
+⚠️ Des défauts existent **aussi sur des pièces de 1er choix** : cette analyse porte sur les
+*déclassements*, pas sur les défauts en général — ne pas la rebaptiser.
+
+`GET /bonnetiers/:id/photo` sert les portraits, et impose une règle HFSQL nouvelle :
+**une colonne binaire ne se lit qu'avec `queryRaw`** — `query()` fait passer chaque ligne
+par `cleanRow`, qui décode tout `ArrayBuffer` en UTF-8 et rend le JPEG en chaîne mangée qui
+ressemble à des données sans en être. Ensuite `sharp` (`.rotate()` pour l'EXIF puis crop
+carré, cache mémoire) redescend des originaux de 750–1300 px à des vignettes de ~3,5 Ko,
+contre ~300 Ko bruts. Vérification des octets magiques et 404 sinon. Nouvelle dépendance
+de l'API : **`sharp`**.
+
+PDF sur le cadre `MalterreDocument` avec **`issuer: companyTrm`** (SIRET / TVA / capital de
+Tricotage Malterre — c'est un document TRM) : production du semestre, table des
+déclassements, répartition par bonnetier. Le bloc semaine n'y figure que pour le semestre
+courant, comme à l'écran.
+
+⚠️ **Les taux sont des constantes de module** : les modifier recalculerait *tout*
+l'historique et l'écran afficherait des primes jamais versées. Une révision de barème
+(en discussion côté direction au moment où ceci est écrit) impose d'abord des **taux
+datés** — barème applicable par période.
+
 
 ## 2026-08-24 — feat/stock-fil
 **API du Fils › Stock TRM** (`routes/stock-fil-trm.ts`, second routeur sur le mount
