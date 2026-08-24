@@ -359,13 +359,6 @@ export interface PrimePayload {
   declassements: DeclassementsAnalyse
 }
 
-/** Add `days` to a 'YYYY-MM-DD' string. */
-function addDays(date: string, days: number): string {
-  const d = toUtc(date)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
 async function buildPayload(ref: string): Promise<PrimePayload> {
   const today = todayLocal()
   const periode = datesSemestre(ref)
@@ -374,17 +367,13 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
 
   const monday = mondayOf(today)
 
-  // Comparison window: the SAME number of elapsed days from the previous
-  // semester's start, so a running semester compares like-for-like ("même
-  // avancement"). A finished semester compares full-vs-full (capped at the
-  // previous period's end — semesters differ by a day or two in length).
+  // Comparison: ALWAYS the previous semester in full, including while the
+  // current one is still running. A same-elapsed-days window would be more
+  // like-for-like statistically, but it moves every day — the full previous
+  // semester is a fixed number the team can aim to beat, which is the point
+  // of showing it at all (user decision, 2026-08-24).
   const prev = datesSemestre(addMonths(ref, -6))
-  const elapsedDays = Math.max(0, dayDiff(periode.debut, today < periode.fin ? today : periode.fin))
-  const prevWindowEnd = (() => {
-    if (periode.debut !== courante.debut) return prev.fin // finished: full-vs-full
-    const e = addDays(prev.debut, elapsedDays)
-    return e < prev.fin ? e : prev.fin
-  })()
+  const prevWindowEnd = prev.fin
 
   const [semKg1, semKg2, wkKg1, wkKg2, prevKg1, prevKg2, declassementTypes, bonnetiers] = await Promise.all([
     sumPoids(0, periode.debut, periode.fin),
@@ -428,7 +417,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     kgTotal,
     taux: kgTotal > 0 ? semKg2 / kgTotal : null,
     comparaison: {
-      label: `${semestreLabel(prev)}${estCourante ? ' — même avancement' : ''}`,
+      label: semestreLabel(prev),
       debut: prev.debut,
       fin: prevWindowEnd,
       taux: prevKgTotal > 0 ? prevKg2 / prevKgTotal : null,
