@@ -40,7 +40,7 @@ import { rapportsRouter } from './routes/rapports.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
 import { authRouter } from './routes/auth.js'
-import { ticketsRouter } from './routes/tickets.js'
+import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { abonnementsRouter } from './routes/abonnements.js'
@@ -103,6 +103,8 @@ app.get('/api/health', async (req, res) => {
 app.use('/api/auth', authRouter)
 // Bug/feature ticket reporting — proxy to the LIVA issue tracker
 app.use('/api/tickets', ticketsRouter)
+// Same proxy, product "trm-erp" — the TRM web app's ticket widget.
+app.use('/api/tickets-trm', ticketsTrmRouter)
 app.use('/api/permissions', permissionsRouter)
 app.use('/api/notifications', notificationsRouter)
 app.use('/api/abonnements', abonnementsRouter)

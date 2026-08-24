@@ -1,4 +1,12 @@
-// Ticket reporting proxy — LIVA issue tracker (product "etm-erp").
+// Ticket reporting proxy — LIVA issue tracker.
+//
+// One router factory mounted twice, factures.ts-style: the ETM and TRM web
+// apps are two distinct products in the tracker (the reporter's "Mes tickets"
+// must not mix them), but everything except the product slug is identical —
+// same company API key, same session-derived reporter identity, same quirks.
+//
+//   /api/tickets      → product ISSUE_TRACKER_PRODUCT_SLUG      (ETM web app)
+//   /api/tickets-trm  → product ISSUE_TRACKER_PRODUCT_SLUG_TRM  (TRM web app)
 //
 // The browser only ever calls these same-origin routes; the tracker API key
 // and product slug live server-side in env and are injected here. Reporter
@@ -9,20 +17,21 @@
 //     feature uses; users without a mapped email get the same French 400
 //     directing them to Paramètres › Utilisateurs)
 //
-// Reads are scoped to ISSUE_TRACKER_PRODUCT_SLUG as well: the tracker key is
-// company-scoped, so without it a reporter who also files tickets in MFProd
-// would see them listed here (see belongsToProduct).
+// Reads are scoped to the mount's product slug as well: the tracker key is
+// company-scoped, so without it a reporter who also files tickets in another
+// of the company's products would see them listed here (see belongsToProduct).
 //
-// Routes:
-//   POST   /api/tickets                  — create a ticket
-//   GET    /api/tickets                  — list the session user's tickets
-//   GET    /api/tickets/:id              — detail (404 unless owned)
-//   POST   /api/tickets/:id/attachments  — multipart upload (owner only)
+// Routes (per mount):
+//   POST   /                  — create a ticket
+//   GET    /                  — list the session user's tickets
+//   GET    /:id               — detail (404 unless owned)
+//   POST   /:id/attachments   — multipart upload (owner only)
 //
 // Env (server-side only, never sent to the client):
-//   ISSUE_TRACKER_URL           — default https://liva-holding.com/issues/api/v1
-//   ISSUE_TRACKER_API_KEY       — company-scoped key
-//   ISSUE_TRACKER_PRODUCT_SLUG  — product slug in the tracker
+//   ISSUE_TRACKER_URL              — default https://liva-holding.com/issues/api/v1
+//   ISSUE_TRACKER_API_KEY          — company-scoped key (shared by both mounts)
+//   ISSUE_TRACKER_PRODUCT_SLUG     — ETM product slug in the tracker
+//   ISSUE_TRACKER_PRODUCT_SLUG_TRM — TRM product slug in the tracker
 //
 // Missing key/slug → 503 (graceful, not a crash). Tracker timeout → 504,
 // unreachable → 502. A tracker 401 (bad key) is remapped to 502 so it can
@@ -35,14 +44,11 @@ import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { getUserEmail } from '../lib/user-emails.js'
 
-export const ticketsRouter: RouterType = Router()
-
 // Read env lazily — dotenv.config() in index.ts runs after ESM imports are
 // evaluated (same reasoning as lib/auth.ts getSecret()).
 const trackerUrl = () =>
   (process.env.ISSUE_TRACKER_URL || 'https://liva-holding.com/issues/api/v1').replace(/\/+$/, '')
 const trackerKey = () => process.env.ISSUE_TRACKER_API_KEY || ''
-const productSlug = () => process.env.ISSUE_TRACKER_PRODUCT_SLUG || ''
 
 const NOT_CONFIGURED_MSG = "Le système de tickets n'est pas configuré sur le serveur."
 const UNREACHABLE_MSG = 'Impossible de contacter le serveur de tickets.'
@@ -51,14 +57,6 @@ const BAD_KEY_MSG = 'Système de tickets : clé API invalide. Contactez un admin
 const NO_EMAIL_MSG =
   "Aucune adresse email n'est associée à votre compte. " +
   'Un administrateur doit en définir une dans Paramètres › Utilisateurs.'
-
-function ensureConfigured(res: Response): boolean {
-  if (!trackerKey() || !productSlug()) {
-    res.status(503).json({ error: 'not_configured', message: NOT_CONFIGURED_MSG })
-    return false
-  }
-  return true
-}
 
 interface Reporter {
   name: string
@@ -139,20 +137,6 @@ function forward(res: Response, status: number, data: unknown): void {
 
 const TICKET_ID_RE = /^[0-9a-fA-F-]{10,64}$/
 
-/** The tracker API key is *company*-scoped, not product-scoped: ETS Malterre
- *  owns both "etm-erp" (this app) and MFProd, so a user who reports in both
- *  apps under the same email gets the other product's tickets back unless the
- *  product is named explicitly. Every read is therefore scoped to
- *  ISSUE_TRACKER_PRODUCT_SLUG — as a query filter for the list, and as an
- *  ownership check on detail/attachments. */
-function belongsToProduct(data: unknown): boolean {
-  const slug = (data as { product_slug?: string } | null)?.product_slug
-  // Trackers older than the product_slug filter omit the field; don't 404 the
-  // whole widget against them — the reporter_email check still applies.
-  if (typeof slug !== 'string') return true
-  return slug === productSlug()
-}
-
 const submitBody = z.object({
   title: z.string().trim().min(1).max(500),
   description: z.string().trim().min(1).max(20000),
@@ -162,84 +146,149 @@ const submitBody = z.object({
   environment: z.string().max(200).optional(),
 })
 
-// ── POST /api/tickets — create ────────────────────────────
-ticketsRouter.post('/', async (req: Request, res: Response) => {
-  if (!ensureConfigured(res)) return
-  const parsed = submitBody.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
-    return
-  }
-  try {
-    const reporter = await resolveReporter(req, res)
-    if (!reporter) return
-    const payload = {
-      ...parsed.data,
-      product_slug: productSlug(),
-      reporter_email: reporter.email,
-      reporter_name: reporter.name,
-    }
-    const { status, data } = await trackerJson('/bugs', {
-      method: 'POST',
-      headers: trackerHeaders(true),
-      body: JSON.stringify(payload),
-    })
-    forward(res, status, data)
-  } catch (err) {
-    sendTrackerError(res, err, 'POST /bugs')
-  }
-})
+/** Everything below is per-mount: the two apps differ only in which env var
+ *  names their product slug in the tracker. */
+function createTicketsRouter(slugEnvVar: string): RouterType {
+  const router = Router()
+  const productSlug = () => process.env[slugEnvVar] || ''
 
-// ── GET /api/tickets — list, scoped to user + product ─────
-ticketsRouter.get('/', async (req: Request, res: Response) => {
-  if (!ensureConfigured(res)) return
-  try {
-    const reporter = await resolveReporter(req, res)
-    if (!reporter) return
-    const params = new URLSearchParams({
-      reporter_email: reporter.email,
-      product_slug: productSlug(),
-    })
-    for (const key of ['severity', 'category', 'status', 'page', 'per_page'] as const) {
-      const v = req.query[key]
-      if (typeof v === 'string' && v) params.set(key, v)
+  function ensureConfigured(res: Response): boolean {
+    if (!trackerKey() || !productSlug()) {
+      res.status(503).json({ error: 'not_configured', message: NOT_CONFIGURED_MSG })
+      return false
     }
-    const { status, data } = await trackerJson(`/bugs?${params}`, { headers: trackerHeaders() })
-    if (status === 200 && Array.isArray((data as { items?: unknown[] })?.items)) {
-      // Second line of defence behind the product_slug filter above: drop any
-      // foreign-product row the tracker still returned (older tracker build).
-      const body = data as { items: unknown[]; total?: number }
-      const items = body.items.filter(belongsToProduct)
-      const dropped = body.items.length - items.length
-      forward(res, status, {
-        ...body,
-        items,
-        total: dropped > 0 ? items.length : body.total,
-      })
+    return true
+  }
+
+  /** The tracker API key is *company*-scoped, not product-scoped: ETS Malterre
+   *  owns "etm-erp", "trm-erp" and MFProd, so a user who reports in several
+   *  apps under the same email gets the other products' tickets back unless the
+   *  product is named explicitly. Every read is therefore scoped to this
+   *  mount's slug — as a query filter for the list, and as an ownership check
+   *  on detail/attachments. */
+  function belongsToProduct(data: unknown): boolean {
+    const slug = (data as { product_slug?: string } | null)?.product_slug
+    // Trackers older than the product_slug filter omit the field; don't 404 the
+    // whole widget against them — the reporter_email check still applies.
+    if (typeof slug !== 'string') return true
+    return slug === productSlug()
+  }
+
+  // ── POST / — create ───────────────────────────────────────
+  router.post('/', async (req: Request, res: Response) => {
+    if (!ensureConfigured(res)) return
+    const parsed = submitBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
       return
     }
-    forward(res, status, data)
-  } catch (err) {
-    sendTrackerError(res, err, 'GET /bugs')
-  }
-})
+    try {
+      const reporter = await resolveReporter(req, res)
+      if (!reporter) return
+      const payload = {
+        ...parsed.data,
+        product_slug: productSlug(),
+        reporter_email: reporter.email,
+        reporter_name: reporter.name,
+      }
+      const { status, data } = await trackerJson('/bugs', {
+        method: 'POST',
+        headers: trackerHeaders(true),
+        body: JSON.stringify(payload),
+      })
+      forward(res, status, data)
+    } catch (err) {
+      sendTrackerError(res, err, 'POST /bugs')
+    }
+  })
 
-// ── GET /api/tickets/:id — detail, owner only ─────────────
-ticketsRouter.get('/:id', async (req: Request, res: Response) => {
-  if (!ensureConfigured(res)) return
-  if (!TICKET_ID_RE.test(req.params.id)) {
-    res.status(404).json({ error: 'Ticket introuvable' })
-    return
-  }
-  try {
-    const reporter = await resolveReporter(req, res)
-    if (!reporter) return
-    const { status, data } = await trackerJson(`/bugs/${req.params.id}`, {
-      headers: trackerHeaders(),
-    })
-    if (status === 200) {
+  // ── GET / — list, scoped to user + product ────────────────
+  router.get('/', async (req: Request, res: Response) => {
+    if (!ensureConfigured(res)) return
+    try {
+      const reporter = await resolveReporter(req, res)
+      if (!reporter) return
+      const params = new URLSearchParams({
+        reporter_email: reporter.email,
+        product_slug: productSlug(),
+      })
+      for (const key of ['severity', 'category', 'status', 'page', 'per_page'] as const) {
+        const v = req.query[key]
+        if (typeof v === 'string' && v) params.set(key, v)
+      }
+      const { status, data } = await trackerJson(`/bugs?${params}`, { headers: trackerHeaders() })
+      if (status === 200 && Array.isArray((data as { items?: unknown[] })?.items)) {
+        // Second line of defence behind the product_slug filter above: drop any
+        // foreign-product row the tracker still returned (older tracker build).
+        const body = data as { items: unknown[]; total?: number }
+        const items = body.items.filter(belongsToProduct)
+        const dropped = body.items.length - items.length
+        forward(res, status, {
+          ...body,
+          items,
+          total: dropped > 0 ? items.length : body.total,
+        })
+        return
+      }
+      forward(res, status, data)
+    } catch (err) {
+      sendTrackerError(res, err, 'GET /bugs')
+    }
+  })
+
+  // ── GET /:id — detail, owner only ─────────────────────────
+  router.get('/:id', async (req: Request, res: Response) => {
+    if (!ensureConfigured(res)) return
+    if (!TICKET_ID_RE.test(req.params.id)) {
+      res.status(404).json({ error: 'Ticket introuvable' })
+      return
+    }
+    try {
+      const reporter = await resolveReporter(req, res)
+      if (!reporter) return
+      const { status, data } = await trackerJson(`/bugs/${req.params.id}`, {
+        headers: trackerHeaders(),
+      })
+      if (status === 200) {
+        const owner = (data as { reporter_email?: string })?.reporter_email
+        if (
+          !owner ||
+          owner.toLowerCase() !== reporter.email.toLowerCase() ||
+          !belongsToProduct(data)
+        ) {
+          res.status(404).json({ error: 'Ticket introuvable' })
+          return
+        }
+      }
+      forward(res, status, data)
+    } catch (err) {
+      sendTrackerError(res, err, 'GET /bugs/:id')
+    }
+  })
+
+  // ── POST /:id/attachments — multipart pipe ────────────────
+  // The multipart body is streamed through untouched (express.json ignores
+  // non-JSON content types, so req is still an unread stream here). Ownership
+  // is verified against the tracker before piping.
+  router.post('/:id/attachments', async (req: Request, res: Response) => {
+    if (!ensureConfigured(res)) return
+    if (!TICKET_ID_RE.test(req.params.id)) {
+      res.status(404).json({ error: 'Ticket introuvable' })
+      return
+    }
+    try {
+      const reporter = await resolveReporter(req, res)
+      if (!reporter) return
+      const { status, data } = await trackerJson(`/bugs/${req.params.id}`, {
+        headers: trackerHeaders(),
+      })
+      if (status === 401) {
+        forward(res, status, data)
+        return
+      }
       const owner = (data as { reporter_email?: string })?.reporter_email
       if (
+        status !== 200 ||
         !owner ||
         owner.toLowerCase() !== reporter.email.toLowerCase() ||
         !belongsToProduct(data)
@@ -247,83 +296,52 @@ ticketsRouter.get('/:id', async (req: Request, res: Response) => {
         res.status(404).json({ error: 'Ticket introuvable' })
         return
       }
-    }
-    forward(res, status, data)
-  } catch (err) {
-    sendTrackerError(res, err, 'GET /bugs/:id')
-  }
-})
-
-// ── POST /api/tickets/:id/attachments — multipart pipe ────
-// The multipart body is streamed through untouched (express.json ignores
-// non-JSON content types, so req is still an unread stream here). Ownership
-// is verified against the tracker before piping.
-ticketsRouter.post('/:id/attachments', async (req: Request, res: Response) => {
-  if (!ensureConfigured(res)) return
-  if (!TICKET_ID_RE.test(req.params.id)) {
-    res.status(404).json({ error: 'Ticket introuvable' })
-    return
-  }
-  try {
-    const reporter = await resolveReporter(req, res)
-    if (!reporter) return
-    const { status, data } = await trackerJson(`/bugs/${req.params.id}`, {
-      headers: trackerHeaders(),
-    })
-    if (status === 401) {
-      forward(res, status, data)
+    } catch (err) {
+      sendTrackerError(res, err, 'attachments ownership check')
       return
     }
-    const owner = (data as { reporter_email?: string })?.reporter_email
-    if (
-      status !== 200 ||
-      !owner ||
-      owner.toLowerCase() !== reporter.email.toLowerCase() ||
-      !belongsToProduct(data)
-    ) {
-      res.status(404).json({ error: 'Ticket introuvable' })
-      return
-    }
-  } catch (err) {
-    sendTrackerError(res, err, 'attachments ownership check')
-    return
-  }
 
-  const parsedUrl = new URL(`${trackerUrl()}/bugs/${req.params.id}/attachments`)
-  const lib = parsedUrl.protocol === 'https:' ? https : http
-  const proxyReq = lib.request(
-    {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-      path: parsedUrl.pathname,
-      method: 'POST',
-      headers: {
-        // Pass the browser's multipart Content-Type through verbatim — it
-        // carries the boundary. Never set it manually.
-        'Content-Type': req.headers['content-type'] || '',
-        'X-API-Key': trackerKey(),
+    const parsedUrl = new URL(`${trackerUrl()}/bugs/${req.params.id}/attachments`)
+    const lib = parsedUrl.protocol === 'https:' ? https : http
+    const proxyReq = lib.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: parsedUrl.pathname,
+        method: 'POST',
+        headers: {
+          // Pass the browser's multipart Content-Type through verbatim — it
+          // carries the boundary. Never set it manually.
+          'Content-Type': req.headers['content-type'] || '',
+          'X-API-Key': trackerKey(),
+        },
       },
-    },
-    (proxyRes) => {
-      let body = ''
-      proxyRes.on('data', (chunk) => (body += chunk))
-      proxyRes.on('end', () => {
-        const status = proxyRes.statusCode || 500
-        let data: unknown
-        try {
-          data = JSON.parse(body)
-        } catch {
-          data = { error: body }
-        }
-        forward(res, status, data)
-      })
-    },
-  )
-  proxyReq.setTimeout(30_000, () => {
-    proxyReq.destroy(new Error('tracker attachment upload timeout'))
+      (proxyRes) => {
+        let body = ''
+        proxyRes.on('data', (chunk) => (body += chunk))
+        proxyRes.on('end', () => {
+          const status = proxyRes.statusCode || 500
+          let data: unknown
+          try {
+            data = JSON.parse(body)
+          } catch {
+            data = { error: body }
+          }
+          forward(res, status, data)
+        })
+      },
+    )
+    proxyReq.setTimeout(30_000, () => {
+      proxyReq.destroy(new Error('tracker attachment upload timeout'))
+    })
+    proxyReq.on('error', (err) => {
+      if (!res.headersSent) sendTrackerError(res, err, 'POST attachments')
+    })
+    req.pipe(proxyReq)
   })
-  proxyReq.on('error', (err) => {
-    if (!res.headersSent) sendTrackerError(res, err, 'POST attachments')
-  })
-  req.pipe(proxyReq)
-})
+
+  return router
+}
+
+export const ticketsRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG')
+export const ticketsTrmRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG_TRM')
