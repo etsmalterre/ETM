@@ -214,7 +214,8 @@ async function fetchDeclassementTypes(debut: string, fin: string): Promise<Decla
     }
   }
 
-  // Named types ranked by weight; the two pseudo-buckets always close the list.
+  // Strictly ranked by lost money (descending) — pseudo-buckets included, so
+  // the biggest cost is always the first row wherever it comes from.
   const entries = Array.from(agg.entries()).map(([type, v]) => ({
     type,
     kg: v.kg,
@@ -222,8 +223,7 @@ async function fetchDeclassementTypes(debut: string, fin: string): Promise<Decla
     montant: v.kg * -TAUX_SECOND_CHOIX,
     pct: kgTotal > 0 ? v.kg / kgTotal : 0,
   }))
-  const rank = (t: string) => (t === NON_RENSEIGNE ? 2 : t === AUTRES ? 1 : 0)
-  return entries.sort((a, b) => rank(a.type) - rank(b.type) || b.kg - a.kg)
+  return entries.sort((a, b) => b.montant - a.montant)
 }
 
 // ── Bonnetiers ────────────────────────────────────────────
