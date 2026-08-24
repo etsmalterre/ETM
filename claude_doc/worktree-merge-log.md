@@ -10,6 +10,30 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-24 — feat/gestion-of (API du écran TRM Production › Gestion des OF)
+**Nouvelle famille de routes `of-trm.ts` (`/api/of-trm`) — le premier chemin d'écriture
+vers `ordre_fabrication` / `asso_fil_of` / `fil_incorpore` / `message_of`.** Portage de
+`FEN_Gestion_des_OF.wdw` (fenêtres PCS-compressées : le modèle a été reconstitué depuis
+`MPS.xdd` + sondage read-only de la base). Lectures : liste par statut (en cours / attente
+/ terminés), fiche complète (composition avec lots + stock par paire, incorporé,
+réalisable = algorithme potentiel_kg, compatibles, chaîne commande), les 5 onglets du
+panneau legacy (Observations = `message_of` ; Production = `piece_production` +
+`evenement_piece` avec % théorique estimé via `ref_ecru_machine.trs_10kg_chute` ;
+Visitage = rouleaux `stock_ecru` + défauts ; Qualité = `defaut_qualite` deux populations
+(`Type_Reference` 1 = pièce, 2 = rouleau), camembert par famille avec « Maille récupéré »
+= `récuperé` (accentué, lu via SELECT * + regex), tranches de 300 kg ; Performance =
+arrêts `evenement_machine` avec filtre faux-arrêts 120 s), lookups (métiers, lignes de
+commande ouvertes, graine de composition, paires fil/coloris en stock, lots), et un blob
+`bonnetier.photo` pour les avatars. Écritures : création (défauts depuis `ref_ecru`,
+composition depuis `composition_ecru`, `priorite = MAX+1` du métier, toujours en
+attente), mise à jour (quantité verrouillée dès qu'une pièce existe ; changement de
+métier re-classe les deux files, 409 `machine_occupee` si le métier cible est occupé),
+remplacement composition/incorporé, observation (INSERT positionnel — colonne réservée
+`date`), terminer (arret_prod + re-classement + **flip d'auto-activation du nouveau chef
+de file**), activer, réordonner, suppression (409 `production_lancee` si des pièces
+existent). Cycle d'écriture complet gardé par `scripts/check-of-trm.ts` (31 assertions,
+nettoie derrière lui). Consommé par `TRM/apps/web/src/pages/ProductionOf.tsx`.
+
 ## 2026-07-31 — feat/cmd-client
 **« Générer les factures » ignorait complètement les expéditions diverses.**
 `POST /factures/prov/generate` ne lisait que la table `expedition` : les expéditions
