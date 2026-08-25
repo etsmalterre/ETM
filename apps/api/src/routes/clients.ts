@@ -1749,12 +1749,37 @@ clientsRouter.get('/:id/marchandise', async (req: Request, res: Response) => {
 })
 
 // POST /api/clients/:id/marchandise/retour-stock — return shipped rolls to stock.
-// Body { ids: IDstock_fini[] }. Permission retour_marchandise. Unlinks each
-// roll from its expedition line (IDligne_expedition = 0 → it reappears in
-// Finis > Stock) and appends "Récupéré chez <client> le <dd/MM/yyyy>" to its
-// observations. Observations are read repaired (fixEncoding) so existing
-// accents survive the rewrite; the write goes through sqlText (Latin-1 hex).
+// Body { ids: IDstock_fini[] }. Permission retour_marchandise. Appends
+// "Récupéré chez <client> le <dd/MM/yyyy>" to the roll observations and undoes
+// what shipping did to it. Observations are read repaired (fixEncoding) so
+// existing accents survive the rewrite; the write goes through sqlText
+// (Latin-1 hex).
+//
+// ⚠️ Clearing IDligne_expedition alone is NOT enough — that was the original
+// bug (ticket #1086, "elles n'apparaissent dans aucun stock"). Finis › Stock
+// filters on TWO criteria, "IDligne_expedition = 0 AND IDetat_stock_fini <> 4"
+// (stock-fini.ts), and the legacy WinDev expedition routine stamps état 4
+// ("Expédié") on virtually every shipped roll — 42 944 of the 43 391 rolls
+// sitting on a shipment line in the dev copy. So a roll returned with état 4
+// left the Marchandise tab (no expedition line left to INNER JOIN on) without
+// ever entering Finis › Stock, and stayed out of every other order's
+// available-rolls pool as well. It appeared in no stock at all. Undo all three:
+//   IDligne_expedition      → 0   always
+//   IDetat_stock_fini       → 3   ("Validé") but ONLY when it is currently 4,
+//                                 so a roll shipped in another état keeps it
+//   IDligne_commande_client → 0   releases the client-order reservation, which
+//                                 is what actually puts the roll back in the
+//                                 free pool (commandes-client.ts requires it
+//                                 to be 0 before offering a roll to a line).
+//                                 The order line then reads as under-delivered
+//                                 again — correct, the goods came back.
+// Guard: apps/api/src/scripts/check-retour-marchandise.ts
 const retourStockBody = z.object({ ids: z.array(z.number().int().positive()).min(1).max(200) })
+
+/** État "Expédié" — stamped by the legacy expedition routine, cleared on return. */
+const ETAT_FINI_EXPEDIE = 4
+/** État "Validé" — where a roll sat just before shipping, so where it returns to. */
+const ETAT_FINI_VALIDE = 3
 
 clientsRouter.post('/:id/marchandise/retour-stock', async (req: Request, res: Response) => {
   try {
@@ -1773,7 +1798,7 @@ clientsRouter.post('/:id/marchandise/retour-stock', async (req: Request, res: Re
 
     // Scope guard: only rolls actually shipped to THIS client are eligible.
     const scoped = await query<Record<string, unknown>>(
-      `SELECT sf.IDstock_fini, sf.observations FROM stock_fini sf ` +
+      `SELECT sf.IDstock_fini, sf.observations, sf.IDetat_stock_fini FROM stock_fini sf ` +
         `INNER JOIN ligne_expedition le ON sf.IDligne_expedition = le.IDligne_expedition ` +
         `INNER JOIN expedition e ON le.IDexpedition = e.IDexpedition ` +
         `INNER JOIN commande_client cc ON e.IDcommande_client = cc.IDcommande_client ` +
@@ -1792,9 +1817,16 @@ clientsRouter.post('/:id/marchandise/retour-stock', async (req: Request, res: Re
       // Empty observations come back as a lone NUL byte — treat as empty.
       const existing = (strOf(r.observations) ?? '').replace(/\u0000/g, '').trim()
       const obs = existing ? `${existing}\r\n${line}` : line
-      await query(
-        `UPDATE stock_fini SET IDligne_expedition = 0, observations = ${sqlText(obs)} WHERE IDstock_fini = ${sid}`,
-      )
+      const sets = [
+        'IDligne_expedition = 0',
+        'IDligne_commande_client = 0',
+        `observations = ${sqlText(obs)}`,
+      ]
+      // Only demote état 4; any other état is the warehouse's own classification.
+      if (numOf(r.IDetat_stock_fini) === ETAT_FINI_EXPEDIE) {
+        sets.push(`IDetat_stock_fini = ${ETAT_FINI_VALIDE}`)
+      }
+      await query(`UPDATE stock_fini SET ${sets.join(', ')} WHERE IDstock_fini = ${sid}`)
     }
     res.json({ ok: true, returned: repaired.length, skipped: parsed.data.ids.length - repaired.length })
   } catch (err) {

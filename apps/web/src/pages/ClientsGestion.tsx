@@ -3197,7 +3197,9 @@ function MarchandiseTab({ clientId, clientNom, canRetour }: { clientId: number; 
         open={confirmOpen}
         variant="default"
         title="Remettre en stock"
-        description={`${selected.size} pièce${selected.size > 1 ? 's' : ''} sera${selected.size > 1 ? 'ont' : ''} retirée${selected.size > 1 ? 's' : ''} de la marchandise expédiée et réapparaîtra${selected.size > 1 ? 'ont' : ''} dans Finis > Stock avec l'observation « Récupéré chez ${clientNom} le ${today} ».`}
+        // The wording spells out the reservation release: the roll leaves its
+        // client-order line, so that order reads as under-delivered again.
+        description={`${selected.size} pièce${selected.size > 1 ? 's' : ''} sera${selected.size > 1 ? 'ont' : ''} retirée${selected.size > 1 ? 's' : ''} de la marchandise expédiée et de sa commande client, puis réapparaîtra${selected.size > 1 ? 'ont' : ''} dans Finis > Stock en état « Validé », avec l'observation « Récupéré chez ${clientNom} le ${today} ».`}
         confirmLabel="Remettre en stock"
         isPending={retourMut.isPending}
         onCancel={() => setConfirmOpen(false)}
