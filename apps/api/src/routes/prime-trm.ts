@@ -235,40 +235,54 @@ async function fetchDeclassementTypes(debut: string, fin: string): Promise<Decla
   return entries.sort((a, b) => b.montant - a.montant)
 }
 
-// ── Weekly defect log (all defects, both choix) ───────────
+// ── Weekly déclassement log (2nd-choix pieces only) ───────
 
-/** One `defaut_qualite` row logged by the visitage on a piece knitted during
- *  the current week. Deliberately NOT limited to 2nd choix: a defect is not a
- *  déclassement (a 1er-choix piece carries them too), and the point of this
- *  table is what the visitage actually saw this week. */
-export interface DefautSemaine {
+/** One visitage finding carried by a déclassée piece. */
+export interface DefautDeclassement {
   id: number
+  type: string
+  description: string
+  taille_cm: number
+  nombre: number
+}
+
+/** One 2nd-choix roll knitted during the current week — the unit that actually
+ *  costs money, so one row per piece and not per defect (a piece carries ~1.6).
+ *
+ *  Scope note: this used to be the whole visitage log, both choix, on the
+ *  grounds that "a defect is not a déclassement". It is now limited to the
+ *  déclassées, because the table lives inside the déclassements card and
+ *  answers "what did the week cost" (user decision, 2026-08-25). Its population
+ *  is therefore EXACTLY the one `semaine.secondChoix` sums — same `periodWhere`
+ *  predicate — so the rows always add up to the tile, defect-less pieces
+ *  included. */
+export interface DeclassementSemaine {
   IDstock_ecru: number
   /** Piece number as keyed by the visiteuse (`stock_ecru.numero`). */
   piece: string
   /** Métier the piece came off (ordre_fabrication → machine.nom). */
   machine: string
-  type: string
-  description: string
-  taille_cm: number
-  nombre: number
-  /** Weight of the PIECE, not of the defect — a piece can carry several rows. */
   poids: number
-  secondChoix: boolean
+  /** Positive "manque à gagner" (poids × 0,20 €) — the UI renders the minus.
+   *  Same basis as `DeclassementType.montant` and the 2nd-choix tile. */
+  montant: number
+  /** The visitage's findings, possibly empty: a piece can be déclassée with no
+   *  structured defect row (the donut folds those into « Non renseigné »). */
+  defauts: DefautDeclassement[]
 }
 
-/** Every defect logged on a piece saisie since `debut` (open ended, like the
- *  week sums). Cheap by construction: one week is ~50 pieces.
+/** Every 2nd-choix piece saisie since `debut` (open ended, like the week sums),
+ *  with its defects attached. Cheap by construction: one week is ~50 pieces.
  *
  *  Accented-column care: `machine` and `ordre_fabrication` both carry accented
  *  columns we must never name (see stock-ecru-trm.ts), so every projection here
  *  is explicit and ASCII; `defaut_qualite` free text goes through the
  *  queryB64Text / fixEncoding branch of of-trm.ts. */
-async function fetchDefautsSemaine(debut: string): Promise<DefautSemaine[]> {
+async function fetchDeclassementsSemaine(debut: string): Promise<DeclassementSemaine[]> {
   const pieces = await query<Record<string, unknown>>(
-    `SELECT IDstock_ecru, numero, poids, second_choix, IDordre_fabrication
+    `SELECT IDstock_ecru, numero, poids, IDordre_fabrication
      FROM stock_ecru
-     WHERE date_saisie >= ${dtMidnight(debut)} AND IDordre_fabrication > 0
+     WHERE ${periodWhere(1, debut)}
      ORDER BY date_saisie DESC, IDstock_ecru DESC`,
   )
   if (pieces.length === 0) return []
@@ -321,28 +335,26 @@ async function fetchDefautsSemaine(debut: string): Promise<DefautSemaine[]> {
   }
 
   // Emitted in piece order (newest saisie first) so the table reads as a log.
-  const out: DefautSemaine[] = []
-  for (const p of fixedPieces) {
+  // A piece with no defect row still gets a line: it was déclassée, so it cost
+  // money, and dropping it would make the column disagree with the tile.
+  return fixedPieces.map((p) => {
     const pieceId = n(p.IDstock_ecru)
-    const defauts = byPiece.get(pieceId)
-    if (!defauts || defauts.length === 0) continue
-    const machine = machineName.get(machineByOf.get(n(p.IDordre_fabrication)) ?? 0) ?? ''
-    for (const d of defauts) {
-      out.push({
+    const poids = n(p.poids)
+    return {
+      IDstock_ecru: pieceId,
+      piece: String(p.numero ?? '').trim(),
+      machine: machineName.get(machineByOf.get(n(p.IDordre_fabrication)) ?? 0) ?? '',
+      poids,
+      montant: poids * -TAUX_SECOND_CHOIX,
+      defauts: (byPiece.get(pieceId) ?? []).map((d) => ({
         id: n(d.IDdefaut_qualite),
-        IDstock_ecru: pieceId,
-        piece: String(p.numero ?? '').trim(),
-        machine,
         type: String(d.type_defaut ?? '').trim(),
         description: String(d.description ?? '').trim(),
         taille_cm: n(d.taille_cm),
         nombre: n(d.nombre),
-        poids: n(p.poids),
-        secondChoix: n(p.second_choix) === 1,
-      })
+      })),
     }
-  }
-  return out
+  })
 }
 
 // ── Bonnetiers ────────────────────────────────────────────
@@ -469,8 +481,8 @@ export interface PrimePayload {
     secondChoix: PrimeBloc
     retourClient: PrimeBloc
     total: number
-    /** Every defect logged on this week's pieces — both choix (see DefautSemaine). */
-    defauts: DefautSemaine[]
+    /** This week's déclassées rolls — the very population `secondChoix` sums. */
+    declassements: DeclassementSemaine[]
   }
   repartition: RepartitionEntry[]
   joursTotal: number
@@ -493,7 +505,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
   const prev = datesSemestre(addMonths(ref, -6))
   const prevWindowEnd = prev.fin
 
-  const [semKg1, semKg2, wkKg1, wkKg2, prevKg1, prevKg2, declassementTypes, bonnetiers, defautsSemaine] = await Promise.all([
+  const [semKg1, semKg2, wkKg1, wkKg2, prevKg1, prevKg2, declassementTypes, bonnetiers, declassementsSemaine] = await Promise.all([
     sumPoids(0, periode.debut, periode.fin),
     sumPoids(1, periode.debut, periode.fin),
     sumPoids(0, monday),
@@ -502,7 +514,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     sumPoids(1, prev.debut, prevWindowEnd),
     fetchDeclassementTypes(periode.debut, periode.fin),
     selectBonnetiers(),
-    fetchDefautsSemaine(monday),
+    fetchDeclassementsSemaine(monday),
   ])
 
   const semestre = {
@@ -519,7 +531,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     secondChoix: { kg: wkKg2, montant: wkKg2 * TAUX_SECOND_CHOIX },
     retourClient: { kg: 0, montant: 0 },
     total: wkKg1 * TAUX_PREMIER_CHOIX + wkKg2 * TAUX_SECOND_CHOIX,
-    defauts: defautsSemaine,
+    declassements: declassementsSemaine,
   }
 
   const { repartition, joursTotal } = buildRepartition(
