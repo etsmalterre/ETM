@@ -58,8 +58,29 @@ export const STATUT_OPEN = 'En_Cours'
 export const STATUT_NON_ENVOYE = 'Non_Envoye'
 export const STATUT_ATTENTE_DELAI = 'Attente_Delai'
 
+/** ASCII prefix of `STATUT_DONE` — the longest part of it the driver cannot
+ *  mangle. See `isLineDone`. */
+const STATUT_DONE_PREFIX = 'Termin'
+
+/** True for the legacy "Terminé" statut, whatever the driver did to the accent.
+ *
+ *  ⚠️ Matches the ASCII PREFIX on purpose — never `=== STATUT_DONE`. ODBC hands
+ *  the value back as `Termin�`, so an exact comparison is **false for every
+ *  genuinely finished line** unless the feeding query happened to run
+ *  `fixEncoding` first. Two call sites in `commandes-sous-traitant.ts` read a
+ *  raw `SELECT sstatut` and did exactly that, so their "toutes les lignes sont
+ *  terminées" and "skip a done line" tests never fired — silently, for years.
+ *
+ *  The prefix is unambiguous: of the 12 distinct values live in
+ *  `ligne_commande_sous_traitant.sstatut`, exactly one starts with "Termin"
+ *  (measured 2026-08-25 — and it is 4 619 of the 7 257 rows, i.e. the majority
+ *  of the table). It also stays correct for values that WERE repaired, since
+ *  "Terminé" starts with "Termin" too.
+ *
+ *  Same reasoning as `commandes-client.ts`'s `SUPPLY_NOT_DONE`, which matches
+ *  `NOT LIKE 'Termin%'` in SQL for the identical reason. */
 export function isLineDone(sstatut: string | null | undefined): boolean {
-  return (sstatut ?? '').trim() === STATUT_DONE
+  return (sstatut ?? '').trim().startsWith(STATUT_DONE_PREFIX)
 }
 
 /** Map a stored `sstatut` to a coarse progression rank.
