@@ -39,6 +39,7 @@ dotenv.config({ path: '.env' })
 
 const { query, closeConnection } = await import('../lib/hfsql-auto.js')
 const { valoriserStock } = await import('../lib/valorisation-stock.js')
+const { estimerVariationStock } = await import('../lib/variation-stock.js')
 
 const eur = (v: number) => Math.round(v).toLocaleString('fr-FR')
 const pct = (v: number | null) => (v == null ? '—' : `${(v * 100).toFixed(1)} %`)
@@ -137,6 +138,43 @@ async function main() {
   if (confie.length > 0) {
     const kgConfie = confie.reduce((t, r) => t + (Number(r.stock) || 0), 0)
     console.log(`  · ${confie.length} lots de fil confié exclus (${eur(kgConfie)} kg) — dans nos murs, pas à notre bilan`)
+  }
+
+  // 6. L'estimation de variation de stock (compte 603700)
+  const v603 = await estimerVariationStock(new Date().getFullYear())
+  console.log('')
+  if (!v603) {
+    console.log("  · aucune estimation de variation de stock — pas de clôture N-1 dans inventaire_compta")
+    console.log("    (comportement voulu : mieux vaut le vrai zéro qu'une base fausse)")
+  } else {
+    console.log(`  base ${eur(v603.base)} € au ${v603.baseDate}  →  actuel ${eur(v603.actuel)} €  =  ${eur(v603.montant)} €`)
+    check(Math.abs(v603.montant - (v603.base - v603.actuel)) < EPS,
+      'variation = base − actuel (convention 603700 : négatif quand le stock monte)')
+    // La base DOIT être une clôture d'exercice, jamais un arrêté de milieu d'année :
+    // sinon la « variation de 2026 » couvre quatorze mois et a pourtant l'air juste.
+    check(v603.baseDate.slice(4) >= '1201' && Number(v603.baseDate.slice(0, 4)) === v603.annee - 1,
+      "la base est une clôture de l'exercice précédent", v603.baseDate)
+    const mois = Object.keys(v603.parMois).map(Number).sort((x, y) => x - y)
+    check(mois.length > 0, 'au moins un mois estimé')
+    if (mois.length > 0) {
+      const dernier = v603.parMois[mois[mois.length - 1]]
+      check(Math.abs(dernier - v603.montant) < EPS,
+        'le dernier mois vaut exactement le montant réel (les deux bouts sont justes)',
+        `${eur(dernier)} vs ${eur(v603.montant)}`)
+      // Une interpolation entre deux points connus ne peut pas les dépasser — la
+      // forme brute le faisait de moitié avant le bornage.
+      const borne = Math.abs(v603.montant) + EPS
+      const hors = mois.filter((m) => Math.abs(v603.parMois[m]) > borne)
+      check(hors.length === 0, 'aucun mois ne dépasse le montant total (interpolation bornée)',
+        hors.length ? `mois ${hors.join(', ')}` : '')
+      // Le signe reste constant : on ne bascule pas de charge à produit en cours d'année.
+      const signes = new Set(mois.map((m) => Math.sign(v603.parMois[m])).filter((x) => x !== 0))
+      check(signes.size <= 1, "le signe de l'estimation est constant sur l'année")
+      // Les mois émis ne dépassent pas le mois courant d'une année en cours.
+      const moisCourant = new Date().getMonth() + 1
+      check(v603.annee !== new Date().getFullYear() || mois[mois.length - 1] <= moisCourant,
+        "aucun mois estimé au-delà du mois courant", `dernier mois ${mois[mois.length - 1]}`)
+    }
   }
 
   console.log(failures === 0 ? '\n✓ OK' : `\n✗ ${failures} échec(s)`)

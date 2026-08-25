@@ -29,6 +29,7 @@ import type { PermissionKey } from './permission-keys.js'
 import { trmUserHasPermission } from './permissions-trm.js'
 import type { TrmPermissionKey } from './permission-keys-trm.js'
 import { isEffectiveAdmin } from './auth.js'
+import { estimerVariationStock, NUMERO_VARIATION_STOCK, type VariationStockEstimee } from './variation-stock.js'
 
 // ── Scope ─────────────────────────────────────────────────────────────────
 
@@ -279,6 +280,17 @@ async function loadBalancesAt(dates: string[]): Promise<Map<string, Map<number, 
 /** `IDcompte_compta → 1 (charge variable) / 0 (charge fixe)` for this société's
  *  class-6 accounts. The lean twin of `loadComptes`: no libellé, no Description,
  *  so no accent repair — the analyse series needs the CLASSIFICATION only. */
+/** `IDcompte_compta → numero` pour la même population que `loadChargeBuckets`.
+ *  Nécessaire pour retrouver le compte de variation de stock par son numéro. */
+async function loadNumeros(societe: number): Promise<Map<number, number>> {
+  const rows = await query<{ IDcompte_compta: number; numero: number | null }>(
+    `SELECT IDcompte_compta, numero FROM compte_compta WHERE id_societe = ${societe}`,
+  )
+  const out = new Map<number, number>()
+  for (const r of rows) out.set(n(r.IDcompte_compta), n(r.numero))
+  return out
+}
+
 async function loadChargeBuckets(societe: number): Promise<Map<number, 0 | 1>> {
   const rows = await query<{ IDcompte_compta: number; numero: number | null; frais_variable: number | null }>(
     `SELECT IDcompte_compta, numero, frais_variable
@@ -359,13 +371,29 @@ async function handleFinance(scope: FinanceScope, req: Request, res: Response) {
       loadBalanceAt(prev?.date ?? null),
     ])
 
+    // Estimation de la variation de stock — ETM seulement : elle s'appuie sur
+    // `inventaire_compta` et sur la valorisation du stock, qui n'existent que
+    // pour cette société. TRM lit son compte tel qu'il est comptabilisé.
+    const variation: VariationStockEstimee | null =
+      scope.societe === 1 ? await estimerVariationStock(annee) : null
+
     const lignes = comptes
       // Legacy hides accounts absent from both reference balances.
       .filter((c) => balCur.has(n(c.IDcompte_compta)) || balPrev.has(n(c.IDcompte_compta)))
       .map((c) => {
         const id = n(c.IDcompte_compta)
-        const montant = balCur.get(id) ?? 0
+        let montant = balCur.get(id) ?? 0
         const montantPrec = balPrev.get(id) ?? 0
+        // Variation de stock : l'écriture est ANNUELLE, donc ce compte reste à
+        // zéro toute l'année et l'EBE intermédiaire porte le coût de la
+        // production encore en magasin. On y substitue une estimation — et
+        // UNIQUEMENT tant que la valeur comptabilisée est nulle, pour que la
+        // vraie écriture reprenne la main d'elle-même à la clôture.
+        let estime = false
+        if (variation && n(c.numero) === NUMERO_VARIATION_STOCK && montant === 0) {
+          montant = variation.montant
+          estime = true
+        }
         return {
           IDcompte_compta: id,
           numero: n(c.numero),
@@ -376,6 +404,7 @@ async function handleFinance(scope: FinanceScope, req: Request, res: Response) {
           montant_precedent: montantPrec,
           ecart: montant - montantPrec,
           pourcentage: pourcentage(montant, montantPrec),
+          estime,
         }
       })
       .sort((a, b) => a.numero - b.numero)
@@ -386,6 +415,9 @@ async function handleFinance(scope: FinanceScope, req: Request, res: Response) {
       annee_precedente: prev ? anneePrec : null,
       date_arrete: cur.date,
       date_arrete_precedente: prev?.date ?? null,
+      variation_stock_estimee: variation
+        ? { montant: variation.montant, base: variation.base, base_date: variation.baseDate, actuel: variation.actuel }
+        : null,
       totaux: {
         produits: cur.produits,
         charges: cur.charges,
@@ -611,10 +643,18 @@ async function handleFinanceAnalyse(scope: FinanceScope, req: Request, res: Resp
     }
 
     const anchors = [...byMonth.entries()].sort((a, b) => a[0] - b[0])
-    const [buckets, balances] = await Promise.all([
+    const [buckets, balances, variation, numeroById] = await Promise.all([
       loadChargeBuckets(scope.societe),
       loadBalancesAt(anchors.map(([, u]) => u.date)),
+      // ETM seulement : l'estimation s'appuie sur `inventaire_compta` et sur la
+      // valorisation du stock, qui n'existent que pour cette société.
+      scope.societe === 1 ? estimerVariationStock(annee) : Promise.resolve(null),
+      loadNumeros(scope.societe),
     ])
+
+    // Id du compte de variation de stock, pour savoir s'il porte deja une
+    // ecriture au mois considere.
+    const idVariation = [...buckets.keys()].find((id) => numeroById.get(id) === NUMERO_VARIATION_STOCK) ?? -1
 
     const points = anchors.map(([mois, u]) => {
       // No balance filed at that date → nothing to recompute from, so keep the
@@ -632,14 +672,23 @@ async function handleFinanceAnalyse(scope: FinanceScope, req: Request, res: Resp
           else fixe += montant
         }
       }
+      // L'écriture de variation de stock est ANNUELLE : tant qu'elle n'est pas
+      // passée, les charges portent le coût de la production restée en magasin.
+      // On applique l'estimation mois par mois — et seulement si le compte est
+      // encore à zéro dans la balance, pour que la vraie écriture reprenne la
+      // main d'elle-même à la clôture.
+      const dejaComptabilise = balance ? (balance.get(idVariation) ?? 0) !== 0 : false
+      const correction = variation && !dejaComptabilise ? variation.parMois[mois] ?? 0 : 0
+      const variableCorrige = variable + correction
       return {
         mois,
         date: u.date,
         ca: euro(u.produits),
         charges_fixes: euro(fixe),
-        charges_variables: euro(variable),
-        marge_brute: euro(u.produits - variable),
-        ebe: euro(u.produits - variable - fixe),
+        charges_variables: euro(variableCorrige),
+        marge_brute: euro(u.produits - variableCorrige),
+        ebe: euro(u.produits - variableCorrige - fixe),
+        variation_stock_estimee: correction !== 0 ? euro(correction) : null,
       }
     })
 

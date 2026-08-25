@@ -455,3 +455,25 @@ export async function valoriserStock(asOf: string = todayDigits()): Promise<Valo
     },
   }
 }
+
+// ── Cache ─────────────────────────────────────────────────────────────────
+//
+// `valoriserStock` lit une douzaine de tables en entier (stock_fini ~45 k
+// lignes, stock_ecru, composition_ecru…). C'est acceptable pour un widget qu'on
+// ouvre, pas pour deux endpoints finance appelés à chaque affichage d'écran.
+// Le stock ne bouge pas à la seconde : 5 minutes de mémoïsation suffisent, et
+// c'est le même ordre que le cache des détecteurs de notifications (60 s).
+
+const TTL_MS = 5 * 60_000
+let cache: { at: number; jour: string; data: ValorisationStock } | null = null
+
+/** `valoriserStock()` mémoïsé. Le cache est invalidé au changement de JOUR en
+ *  plus du TTL : les règles d'âge sont relatives à la date, donc un résultat
+ *  calculé hier est faux aujourd'hui même s'il a moins de 5 minutes. */
+export async function valoriserStockCache(): Promise<ValorisationStock> {
+  const jour = todayDigits()
+  if (cache && cache.jour === jour && Date.now() - cache.at < TTL_MS) return cache.data
+  const data = await valoriserStock()
+  cache = { at: Date.now(), jour, data }
+  return data
+}

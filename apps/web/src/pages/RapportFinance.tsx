@@ -63,6 +63,9 @@ interface FinanceLine {
   montant_precedent: number
   ecart: number
   pourcentage: number
+  /** Le montant n'est pas comptabilisé : c'est l'estimation de la variation de
+   *  stock, posée tant que l'écriture annuelle n'est pas passée. */
+  estime?: boolean
 }
 
 interface FinanceTotaux {
@@ -443,7 +446,17 @@ export function RapportFinance({ basePath = '/rapports/finance' }: RapportFinanc
                         <td className="px-2.5 py-2 truncate text-muted-foreground" title={l.description || undefined}>
                           {l.description}
                         </td>
-                        <td className="px-2.5 py-2 text-right tabular-nums font-medium">{eur(l.montant)}</td>
+                        <td className="px-2.5 py-2 text-right tabular-nums font-medium">
+                          {l.estime && (
+                            <span
+                              className="mr-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0 align-middle text-[10px] font-medium text-amber-700"
+                              title="Estimation — l'écriture de variation de stock est annuelle ; elle sera remplacée par le montant réel à la clôture."
+                            >
+                              estimation
+                            </span>
+                          )}
+                          {eur(l.montant)}
+                        </td>
                         <td className="px-2.5 py-2 text-right tabular-nums text-muted-foreground">
                           {eur(l.montant_precedent)}
                         </td>

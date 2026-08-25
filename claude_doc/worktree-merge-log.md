@@ -9,6 +9,24 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/valorisation-4-types (variation de stock estimée dans l'EBE)
+
+Suite de la même session. Vincent : « en regardant mon EBE trop bas et ce widget, comment tu conclus que c'est parce que j'ai augmenté mon stock ? » — question juste, le widget montrait un **niveau** quand la conclusion demandait une **variation**. Le croisement des deux méthodes a révélé que mon estimation par les flux **surestimait l'effet stock de 108 k€** (168 k€ annoncés contre 59 k€ réels) : elle valorisait au coût variable moyen au kilo *produit* des kilos encore à l'état d'écru, à ~6 €/kg et non ~14 €/kg.
+
+**Trois apports.**
+
+1. **Valorisation étendue aux quatre types** (fil, TM disponible, TM en ennoblissement, fini) à partir des sept inventaires légataires fournis. Ancrage : les quatre rapports du 27/12/2024 reproduisent EXACTEMENT `inventaire_compta` au 28/12/2024, et le total se raccorde au bilan 2025 (ERP 581 921/312 793 + escrime hors ERP 57 600/13 935 = 639 521/326 728). Le fil a son propre barème — exemption 100 % élasthanne, règle petit lot, échelle à quatre crans — et son ordre est signifiant. Le fil confié (46 lots, 8 201 kg : Hermès, La Gentle Factory…) est exclu : il est dans nos murs, pas à notre bilan.
+
+2. **Série `inventaire_compta` amorcée.** Elle s'était arrêtée le 28/06/2025. L'arrêté du 28/12/2024 était déjà en base ; celui du 31/12/2025 a été écrit depuis les rapports (`seed-inventaire-compta.ts`, contrôle bilan avant écriture, `--revert` disponible). Avec deux photos, la variation devient une soustraction : **+59 411 € au 25/08/2026**, contre −49 755 € sur l'exercice 2025.
+
+3. **L'estimation entre dans l'EBE**, sur le compte 603700 (seul compte de variation du plan ERP, et charge variable) plutôt que dans un widget de plus — choix de Vincent, plus simple et au bon endroit. Badge « estimation » sur la ligne du rapport, mention factuelle sous les tuiles de l'Analyse financière, et la correction irrigue la courbe mois par mois.
+
+**Propriété de sûreté centrale : l'estimation ne s'applique que si le compte est à zéro.** À la clôture, l'écriture réelle reprend la main d'elle-même. Rien à nettoyer.
+
+Deux pièges corrigés en route : la base doit être une **clôture d'exercice** (sinon une série arrêtée en juin fait porter à l'année suivante une variation de quatorze mois, fausse et crédible), et le dernier mois actif se lit sur les **mouvements** et non sur le cumul (qui reste non nul une fois démarré, donc renvoie toujours décembre). L'interpolation mensuelle est **bornée à ses deux extrémités** : la forme brute dépassait le point d'arrivée de moitié.
+
+Limites assumées et affichées : l'escrime reste hors périmètre (57 600 € brut fin 2025, montant connu), le métrage du type Fini est irrécupérable au 31/12/2025 donc l'arrêté amorcé est en kilos pour les quatre types, et les mois intermédiaires sont une répartition plausible — l'arrêté mensuel les rendra exacts.
+
 ## 2026-08-25 — feat/valorisation-4-types (la valorisation du stock passe aux quatre types)
 
 Le widget livré le matin ne couvrait que les rouleaux finis — moins de la moitié de l'assiette. Vincent ayant fourni les sept inventaires légataires manquants (2024 et 2025 pour fil, TM dispo, TM en ennoblissement, fini), le calcul couvre désormais **les quatre types**, avec la méthode de son expert-comptable.

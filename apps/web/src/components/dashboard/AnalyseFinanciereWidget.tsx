@@ -44,6 +44,9 @@ interface AnalysePoint {
   charges_variables: number
   marge_brute: number
   ebe: number
+  /** Correction de variation de stock appliquée à ce mois, ou null si le compte
+   *  porte déjà son écriture. Négatif = crédit, donc EBE relevé. */
+  variation_stock_estimee: number | null
 }
 interface AnalyseResponse {
   annees: number[]
@@ -124,6 +127,9 @@ export function AnalyseFinanciereWidget() {
   const data = query.data
   const points = data?.points ?? []
   const totaux = data?.totaux
+  // Correction portée par le DERNIER point : c'est celle qui correspond aux
+  // trois tuiles, qui affichent l'arrêté le plus récent.
+  const variationAppliquee = points.length > 0 ? points[points.length - 1].variation_stock_estimee : null
   const anneeOptions = (data?.annees ?? []).map((y) => ({ id: y, primary: String(y) }))
   const shownAnnee = data?.annee ?? annee ?? new Date().getFullYear()
 
@@ -174,9 +180,24 @@ export function AnalyseFinanciereWidget() {
             visible, pas une infobulle : c'est précisément l'absence de cette
             mention qui a fait lire l'EBE de juillet 2026 comme un effondrement
             alors que 146 k€ de production non vendue l'amputaient. */}
+        {/* Portée. Depuis 2026-08-25 la variation de stock est ESTIMÉE et intégrée
+            (l'écriture comptable est annuelle, donc le compte reste à zéro toute
+            l'année et l'EBE porte le coût de la production restée en magasin) ;
+            les provisions, elles, restent en dehors — elles sont sous l'EBE par
+            définition. La mention dit lequel des deux cas s'applique. */}
         <p className="-mt-2 flex items-start gap-1.5 text-[11px] leading-snug text-muted-foreground">
           <Info className="mt-px h-3 w-3 flex-shrink-0 opacity-60" />
-          <span>Hors production stockée et provisions, comptabilisées à la clôture annuelle.</span>
+          <span>
+            {variationAppliquee != null ? (
+              <>
+                Variation de stock estimée à{' '}
+                <span className="font-medium tabular-nums text-foreground">{euro0(-variationAppliquee)}</span>{' '}
+                et intégrée — l'écriture réelle la remplacera à la clôture. Hors provisions.
+              </>
+            ) : (
+              <>Hors production stockée et provisions, comptabilisées à la clôture annuelle.</>
+            )}
+          </span>
         </p>
 
         {/* Evolution */}
