@@ -46,6 +46,9 @@ export interface Ticket {
   reporter_name: string
   created_at: string
   comment: string | null
+  /** The reporter asked to be emailed on every status change of this ticket
+   *  (tracker-side flag, toggled from the detail view). */
+  follow_up: boolean
   fixed_in_version: string | null
   resolved_at: string | null
   attachments: TicketAttachment[]

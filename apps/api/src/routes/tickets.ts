@@ -25,6 +25,7 @@
 //   POST   /                  — create a ticket
 //   GET    /                  — list the session user's tickets
 //   GET    /:id               — detail (404 unless owned)
+//   PATCH  /:id/follow        — opt in/out of status-change emails (owner only)
 //   POST   /:id/attachments   — multipart upload (owner only)
 //
 // Env (server-side only, never sent to the client):
@@ -144,7 +145,12 @@ const submitBody = z.object({
   category: z.enum(['bug', 'fonctionnalite']).default('bug'),
   context: z.string().max(2000).optional(),
   environment: z.string().max(200).optional(),
+  // Reporter asked to be emailed on every status change of this ticket.
+  // Optional so an older client keeps the tracker's silent default.
+  follow_up: z.boolean().optional(),
 })
+
+const followBody = z.object({ follow_up: z.boolean() })
 
 /** Everything below is per-mount: the two apps differ only in which env var
  *  names their product slug in the tracker. */
@@ -263,6 +269,51 @@ function createTicketsRouter(slugEnvVar: string): RouterType {
       forward(res, status, data)
     } catch (err) {
       sendTrackerError(res, err, 'GET /bugs/:id')
+    }
+  })
+
+  // ── PATCH /:id/follow — opt in/out of status-change emails ─
+  // The one write a reporter may make on an existing ticket. Ownership is
+  // re-checked against the tracker first (same rule as detail/attachments):
+  // the tracker key is company-scoped, so without it any user of the company
+  // could subscribe themselves to a colleague's ticket.
+  router.patch('/:id/follow', async (req: Request, res: Response) => {
+    if (!ensureConfigured(res)) return
+    if (!TICKET_ID_RE.test(req.params.id)) {
+      res.status(404).json({ error: 'Ticket introuvable' })
+      return
+    }
+    const parsed = followBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    try {
+      const reporter = await resolveReporter(req, res)
+      if (!reporter) return
+      const owned = await trackerJson(`/bugs/${req.params.id}`, { headers: trackerHeaders() })
+      if (owned.status === 401) {
+        forward(res, owned.status, owned.data)
+        return
+      }
+      const owner = (owned.data as { reporter_email?: string })?.reporter_email
+      if (
+        owned.status !== 200 ||
+        !owner ||
+        owner.toLowerCase() !== reporter.email.toLowerCase() ||
+        !belongsToProduct(owned.data)
+      ) {
+        res.status(404).json({ error: 'Ticket introuvable' })
+        return
+      }
+      const { status, data } = await trackerJson(`/bugs/${req.params.id}/follow`, {
+        method: 'PATCH',
+        headers: trackerHeaders(true),
+        body: JSON.stringify(parsed.data),
+      })
+      forward(res, status, data)
+    } catch (err) {
+      sendTrackerError(res, err, 'PATCH /bugs/:id/follow')
     }
   })
 

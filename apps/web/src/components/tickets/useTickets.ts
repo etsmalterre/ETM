@@ -47,6 +47,7 @@ export function mapTicket(raw: Record<string, unknown>): Ticket {
     reporter_name: raw.reporter_name as string,
     created_at: raw.created_at as string,
     comment: (raw.comment as string) || null,
+    follow_up: raw.follow_up === true,
     fixed_in_version: (raw.fixed_in_version as string) || null,
     resolved_at: (raw.resolved_at as string) || null,
     attachments: (raw.attachments as TicketAttachment[]) || [],
@@ -68,6 +69,8 @@ export interface NewTicket {
   severity: TicketSeverity
   category: TicketCategory
   context: string | null
+  /** Opt-in: email me whenever this ticket's status moves. */
+  follow_up: boolean
 }
 
 export function useTickets() {
@@ -84,6 +87,7 @@ export function useTickets() {
           severity: data.severity,
           category: data.category,
           context: data.context || undefined,
+          follow_up: data.follow_up,
           environment: import.meta.env.DEV ? 'Development' : 'Production',
         }),
       })
@@ -98,6 +102,17 @@ export function useTickets() {
     return mapTicket(data)
   }, [])
 
+  /** Turn status-change emails on or off for one ticket. Returns the updated
+   *  ticket so the caller can refresh its own copy — the tracker is the source
+   *  of truth for the flag, never local state. */
+  const setFollowUp = useCallback(async (id: string, follow_up: boolean): Promise<Ticket> => {
+    const data = await ticketFetch<Record<string, unknown>>(`/${id}/follow`, {
+      method: 'PATCH',
+      body: JSON.stringify({ follow_up }),
+    })
+    return mapTicket(data)
+  }, [])
+
   const uploadAttachments = useCallback(async (ticketId: string, files: File[]): Promise<void> => {
     const formData = new FormData()
     for (const file of files) formData.append('files', file)
@@ -108,6 +123,7 @@ export function useTickets() {
     isSubmitting,
     submitTicket,
     fetchTicket,
+    setFollowUp,
     uploadAttachments,
   }
 }

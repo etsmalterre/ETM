@@ -5,7 +5,7 @@
 // initialScreenshot, exposed as an "include screenshot" attachment button
 // that shows a spinner while capturingScreenshot is true.
 //
-// LIVA ticket widget — feature version 1.1.1 (see the
+// LIVA ticket widget — feature version 1.2.0 (see the
 // issue_tracker_integration skill; bump both together).
 
 import { useState, useEffect, useRef } from 'react'
@@ -27,9 +27,11 @@ import {
   CheckCircle2,
   CheckCheck,
   Archive,
+  Bell,
 } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
 import { useTicketContext } from './useTicketContext'
 import { useTickets } from './useTickets'
@@ -186,6 +188,11 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
   const [detailError, setDetailError] = useState<string | null>(null)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
   const [closedOpen, setClosedOpen] = useState(false)
+  // Follow-up: opt-in email on every status change. Off by default — the
+  // reporter asks for it, we never subscribe them silently.
+  const [suivi, setSuivi] = useState(false)
+  const [suiviBusy, setSuiviBusy] = useState(false)
+  const [suiviError, setSuiviError] = useState<string | null>(null)
 
   const [attachments, setAttachments] = useState<File[]>([])
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
@@ -194,7 +201,8 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const contexte = useTicketContext()
-  const { isSubmitting, submitTicket, fetchTicket, uploadAttachments } = useTickets()
+  const { isSubmitting, submitTicket, fetchTicket, setFollowUp, uploadAttachments } =
+    useTickets()
   const { tickets, isLoading, listError, refresh, unreadCount, isUnread, markSeen, markAllSeen } =
     useTicketNotifications()
 
@@ -259,6 +267,7 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
     setDescription('')
     setCategorie('bug')
     setSeverite('mineur')
+    setSuivi(false)
     setSent(false)
     setSentNumber(null)
     setSendError(null)
@@ -273,6 +282,7 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
     setView('form')
     setSelectedTicket(null)
     setDetailError(null)
+    setSuiviError(null)
     setPreviewFile(null)
     onOpenChange(false)
   }
@@ -285,6 +295,7 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
   const handleOpenDetail = async (id: string) => {
     setIsLoadingDetail(true)
     setDetailError(null)
+    setSuiviError(null)
     setView('detail')
     try {
       const ticket = await fetchTicket(id)
@@ -299,6 +310,23 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
     }
   }
 
+  /** Detail view: subscribe / unsubscribe. The tracker is the source of
+   *  truth for the flag, so the row only moves once the call succeeds. */
+  const handleToggleSuivi = async () => {
+    if (!selectedTicket || suiviBusy) return
+    setSuiviBusy(true)
+    setSuiviError(null)
+    try {
+      const updated = await setFollowUp(selectedTicket.id, !selectedTicket.follow_up)
+      setSelectedTicket(updated)
+      refresh()
+    } catch (err) {
+      setSuiviError(err instanceof Error ? err.message : 'Erreur lors de la mise à jour du suivi')
+    } finally {
+      setSuiviBusy(false)
+    }
+  }
+
   const handleSend = async () => {
     if (!titre.trim() || !description.trim()) return
     setSendError(null)
@@ -310,6 +338,7 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
         severity: severite,
         category: categorie,
         context: contexte || null,
+        follow_up: suivi,
       })
       if (attachments.length > 0) {
         try {
@@ -468,6 +497,50 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
                     <span>{selectedTicket.fixed_in_version || '—'}</span>
                   </div>
                 </div>
+
+                {/* Suivi par email — §35 inline toggle pill. The reporter owns
+                    this flag; flipping it takes effect on the tracker, so the
+                    row only moves once the PATCH comes back. */}
+                <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border/60 bg-white shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold">
+                      <Bell className="h-3.5 w-3.5 text-accent" />
+                      <span>Suivi par email</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      {selectedTicket.follow_up
+                        ? 'Vous êtes averti à chaque changement de statut'
+                        : 'Aucun email envoyé pour ce ticket'}
+                    </p>
+                  </div>
+                  {suiviBusy && (
+                    <Loader2 className="h-3 w-3 animate-spin text-accent flex-shrink-0" />
+                  )}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={selectedTicket.follow_up}
+                    aria-label="Suivi par email"
+                    disabled={suiviBusy}
+                    onClick={handleToggleSuivi}
+                    className={cn(
+                      'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                      'disabled:opacity-50 disabled:cursor-not-allowed',
+                      selectedTicket.follow_up
+                        ? 'bg-accent shadow-inner'
+                        : 'bg-zinc-300 hover:bg-zinc-400/80',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
+                        selectedTicket.follow_up ? 'translate-x-[18px]' : 'translate-x-0.5',
+                      )}
+                    />
+                  </button>
+                </div>
+                {!!suiviError && <p className="text-xs text-destructive">{suiviError}</p>}
 
                 {/* Context */}
                 {!!selectedTicket.context && (
@@ -691,6 +764,28 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
                   <p className="text-sm font-medium">Contexte</p>
                   <div className="p-2.5 text-xs rounded-md bg-muted border border-input font-mono whitespace-pre-line">
                     {contexte || 'Aucun contexte'}
+                  </div>
+                </div>
+
+                {/* Follow-up opt-in. Unticked by default: the reporter asks to
+                    be notified, we never subscribe them silently. */}
+                <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-md border border-input bg-muted/40">
+                  <Checkbox
+                    checked={suivi}
+                    onCheckedChange={setSuivi}
+                    aria-label="Me tenir informé par email"
+                    className="mt-0.5"
+                  />
+                  <div
+                    className="min-w-0 cursor-pointer select-none"
+                    onClick={() => setSuivi(!suivi)}
+                  >
+                    <p className="text-sm font-medium leading-tight">
+                      Me tenir informé par email
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                      Un email à chaque changement de statut de ce ticket.
+                    </p>
                   </div>
                 </div>
 
