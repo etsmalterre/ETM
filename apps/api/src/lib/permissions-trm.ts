@@ -8,13 +8,20 @@
 // catalogs, zero cross-talk. When the JSON stores move to a real DB table,
 // merge the two behind an `app` column.
 //
-// Unlike ETM's store there is no screen-access axis here (yet) — TRM's
-// Écrans tab doesn't exist, so only catalog keys are storable.
+// Like ETM's store, two axes live flat in the same per-user array: action
+// keys from permission-keys-trm.ts, and screen-access keys (menu grant /
+// screen hide) from screen-keys-trm.ts.
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isKnownTrmPermissionKey, type TrmPermissionKey } from './permission-keys-trm.js'
+import { isTrmScreenAccessKey } from './screen-keys-trm.js'
+
+/** Storable = in the TRM action catalog OR a valid TRM screen-access key. */
+function isStorableTrmKey(k: string): boolean {
+  return isKnownTrmPermissionKey(k) || isTrmScreenAccessKey(k)
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -72,14 +79,16 @@ export async function getTrmUserPermissions(userId: number): Promise<string[]> {
   return list ? [...list] : []
 }
 
-/** Overwrite a user's TRM permission list. Validates that every key is in the
- *  TRM catalog before persisting. Empty array clears all grants for the user. */
+/** Overwrite a user's TRM permission list. Validates that every key is known
+ *  (action catalog or screen-access axis) before persisting. Empty array
+ *  clears all grants for the user. */
 export async function setTrmUserPermissions(
   userId: number,
   keys: readonly string[],
 ): Promise<void> {
-  // Defence in depth: drop keys the catalog doesn't know (the route filters too).
-  const valid = keys.filter((k) => isKnownTrmPermissionKey(k))
+  // Defence in depth: drop keys that are neither in the action catalog nor a
+  // valid screen-access key (the route filters too).
+  const valid = keys.filter((k) => isStorableTrmKey(k))
   // Dedupe while preserving order.
   const seen = new Set<string>()
   const cleaned: string[] = []
