@@ -9,6 +9,16 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/fix-sstatut-encoding (isLineDone compare le préfixe ASCII)
+
+`isLineDone()` comparait à `'Terminé'` accentué, alors qu'ODBC renvoie la valeur en `Termin�`. Toute ligne réellement terminée était donc **fausse** dès que la requête d'origine n'avait pas passé `fixEncoding` — mesuré sur la table vivante : **0 ligne reconnue sur 7 257**, alors que 4 619 portent ce statut.
+
+Le dégât réel était sur `commandes-sous-traitant.ts:860` : l'échéance « ouverte » la plus proche de chaque commande était calculée **en incluant les lignes déjà terminées**. **4 228 commandes sur 7 247** en héritaient d'une échéance qui n'existait plus, et le liseré rouge « en retard » (`mps_designer §30`) s'allumait sur **6 651 commandes au lieu de 2 423** — l'indicateur d'urgence criait au loup sur des commandes intégralement soldées.
+
+Le second site suspecté (`:264`, `maybeAutoCloseCommande`) s'avère **du code mort** : l'auto-clôture a été retirée au profit du bouton Clôturer manuel. Vérifié avant de livrer, précisément parce qu'un correctif qui « réveille » une fermeture automatique sur 4 609 commandes n'aurait pas été anodin.
+
+Le correctif est un **préfixe ASCII** (`startsWith('Termin')`) plutôt qu'un `fixEncoding` ajouté à chaque appelant : il est correct que la valeur ait été réparée ou non. Sans ambiguïté — sur les 12 valeurs distinctes en base, **une seule** commence par « Termin ». Même raisonnement que `SUPPLY_NOT_DONE` dans `commandes-client.ts`, qui filtre `NOT LIKE 'Termin%'` en SQL pour la même raison. Test unitaire `lib/sst-shared.test.ts` qui épingle les 12 valeurs **telles que le driver les renvoie**.
+
 ## 2026-08-25 — feat/finance-stock (Valorisation du stock fini + portée de l'Analyse financière)
 
 Le tableau de bord ne pouvait pas montrer la valeur du stock. `upload_compta`, que lit l'Analyse financière, **ne porte ni la production stockée ni les provisions** — vérifié sur deux exercices : en 2024 la production stockée valait 178 359 € pour un résultat d'exploitation de 180 614 €, soit **la totalité du résultat** ; en 2025, 1 509 €. Conséquence concrète : l'EBE de juillet 2026 se lisait comme un effondrement (−133 k€ sur un an) alors que **146 k€ de production non vendue** en portaient 82 % — l'entreprise produisait 15 % de plus en n'expédiant que 4 % de plus, et la clôture annuelle redresse cet écart. En parallèle, un stock passé de **37 % à 49 % de taux de provision** entre 2024 et 2025 n'apparaissait nulle part dans l'app.
