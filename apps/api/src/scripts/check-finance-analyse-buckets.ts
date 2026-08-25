@@ -28,7 +28,17 @@
  * the thing this change stopped honouring.
  */
 import crypto from 'node:crypto'
-import { query, closeConnection } from '../lib/hfsql-auto.js'
+import dotenv from 'dotenv'
+
+// Only `index.ts` loads dotenv, so a script run on its own gets whatever
+// `hfsql.ts` falls back to — `localhost:4900`, which is right on a dev box and
+// wrong everywhere else. Load it here, same order as the server, BEFORE the
+// HFSQL module is imported (its connection string is read at first use, but the
+// env has to be populated by then). Verified on the API server 2026-08-25.
+dotenv.config({ path: `.env.${process.env.NODE_ENV ?? 'development'}` })
+dotenv.config({ path: '.env' })
+
+const { query, closeConnection } = await import('../lib/hfsql-auto.js')
 
 const SECRET = process.env.AUTH_COOKIE_SECRET ?? '0374c694f2c73619437d02a53ac73efdc3b7f11c10e2eb8760e771e12681589c'
 const API = process.env.API_BASE ?? 'http://localhost:8080/api'
