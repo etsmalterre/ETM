@@ -1707,26 +1707,89 @@ clientsRouter.put('/:id/coloris/:rccId/tranches', async (req: Request, res: Resp
   }
 })
 
+// ── Marchandise expédiée — search / sort / lazy paging ─────────────────────
+// Ticket #1085: the list was a bare `TOP 400` with no search and no way to
+// reach anything older, so a piece shipped long ago could not be found (and
+// therefore not returned to stock). Measured on the dev copy: 379 clients have
+// shipped rolls, 15 of them exceed 400, and the biggest (client 231, 8 332
+// rolls) fetches UNCAPPED in ~230 ms. So the cap was never about query cost —
+// it was about payload and render size. Hence: read the client's whole
+// history, search and sort it server-side, and hand the UI one page at a time.
+// A search therefore reaches every piece the client ever received, not just
+// the slice already loaded, while the browser still renders only what it shows.
+
+/** Sortable columns of the marchandise table. */
+const MARCH_SORT_KEYS = ['expedition', 'date', 'ref', 'coloris', 'piece', 'poids', 'metrage'] as const
+type MarchSortKey = (typeof MARCH_SORT_KEYS)[number]
+
+/** Fold to a search-friendly form: lowercase, accents stripped. The coloris
+ *  labels carry accents ("écru", "délavé") and users type without them, so
+ *  both sides of the comparison go through this. */
+function searchFold(v: string): string {
+  return v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+}
+
+/** Human ordering for piece numbers: "3378/51" sorts BEFORE "3378/1007",
+ *  which a plain string compare gets backwards (it reads "1" < "5"). Digit
+ *  runs compare numerically, everything else lexically. */
+function naturalCompare(a: string, b: string): number {
+  const ra = a.match(/\d+|\D+/g) ?? []
+  const rb = b.match(/\d+|\D+/g) ?? []
+  for (let i = 0; i < Math.min(ra.length, rb.length); i++) {
+    const x = ra[i], y = rb[i]
+    if (/^\d/.test(x) && /^\d/.test(y)) {
+      const d = parseInt(x, 10) - parseInt(y, 10)
+      if (d !== 0) return d
+    } else {
+      const d = x.localeCompare(y, 'fr')
+      if (d !== 0) return d
+    }
+  }
+  return ra.length - rb.length
+}
+
 // GET /api/clients/:id/marchandise — shipped rolls (Expédié le, Expé N°, Ref, Pièce, Poids, Métrage).
+//   ?q=<terms>      — all whitespace-separated terms must match somewhere in the
+//                     row (pièce / lot / réf / coloris / n° expédition), accent-
+//                     and case-insensitive. Searches the client's WHOLE history.
+//   ?sort=&dir=     — one of MARCH_SORT_KEYS, asc|desc. Default: newest expédition
+//                     first, pieces in natural order within it (the legacy order).
+//   ?limit=&offset= — one page of the result (default 200, max 500). The UI loads
+//                     the next page as the user scrolls, so nothing is ever out
+//                     of reach and the browser never renders 8 000 rows it does
+//                     not need. Search and sort are applied BEFORE the slice, so
+//                     a page is always a page of the matching set.
 clientsRouter.get('/:id/marchandise', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    const sortRaw = typeof req.query.sort === 'string' ? req.query.sort : ''
+    const sort = (MARCH_SORT_KEYS as readonly string[]).includes(sortRaw) ? (sortRaw as MarchSortKey) : null
+    const dir = req.query.dir === 'asc' ? 'asc' : 'desc'
+    const limitRaw = parseInt(String(req.query.limit ?? ''), 10)
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 200
+    const offsetRaw = parseInt(String(req.query.offset ?? ''), 10)
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0
+
     // DATE is a reserved word (alias to dexp); never name expedition's accented
     // envoyé_client/envoyé_sst. Scope to client via commande_client, ETM only.
     const rows = await query<Record<string, unknown>>(
-      `SELECT TOP 400 e.IDexpedition, e.DATE AS dexp, sf.IDstock_fini, sf.numero AS piece, sf.poids, sf.metrage, sf.lot, sf.second_choix, sf.IDref_fini, sf.IDColoris ` +
+      `SELECT e.IDexpedition, e.DATE AS dexp, sf.IDstock_fini, sf.numero AS piece, sf.poids, sf.metrage, sf.lot, sf.second_choix, sf.IDref_fini, sf.IDColoris ` +
         `FROM expedition e ` +
         `INNER JOIN ligne_expedition le ON le.IDexpedition = e.IDexpedition ` +
         `INNER JOIN stock_fini sf ON sf.IDligne_expedition = le.IDligne_expedition ` +
         `INNER JOIN commande_client cc ON e.IDcommande_client = cc.IDcommande_client ` +
         `WHERE e.IDsociete = 1 AND cc.IDclient = ${id} ORDER BY e.IDexpedition DESC, sf.numero`,
     )
+    // Enrichment is keyed on DISTINCT ids inside these helpers, so its cost is
+    // bounded by how many refs/coloris the client buys — not by row count.
+    // That is what makes enriching the whole history before filtering cheap.
     const finiMap = await mapRefFini(rows.map((r) => numOf(r.IDref_fini)))
     const colIds = rows.map((r) => numOf(r.IDColoris))
     const ceMap = await mapSimpleRef('colori_ecru', 'IDcolori_ecru', colIds)
     const rfcMap = await mapSimpleRef('ref_fini_colori', 'IDref_fini_colori', colIds)
-    const lignes = rows.map((r) => {
+    const all = rows.map((r) => {
       const rf = finiMap.get(numOf(r.IDref_fini))
       return {
         IDexpedition: numOf(r.IDexpedition),
@@ -1741,7 +1804,49 @@ clientsRouter.get('/:id/marchandise', async (req: Request, res: Response) => {
         second_choix: numOf(r.second_choix),
       }
     })
-    res.json({ lignes, capped: rows.length >= 400 })
+
+    // Search: every term must hit the row. The ticket names pieces as
+    // "3378/51 - 180A Terracotta", so the haystack spans pièce + réf + coloris
+    // and multi-term AND lets the user paste that whole line.
+    let out = all
+    if (q) {
+      // Terms carrying no alphanumerics are dropped: users paste whole lines out
+      // of a ticket or an email, and a lone "-" as a required term would match
+      // nothing. A query that is only punctuation degrades to "no search".
+      const terms = searchFold(q).split(/\s+/).filter((t) => /[a-z0-9]/.test(t))
+      out = all.filter((l) => {
+        const hay = searchFold(`${l.piece} ${l.lot} ${l.ref} ${l.coloris} ${l.IDexpedition}`)
+        return terms.every((t) => hay.includes(t))
+      })
+    }
+
+    // Sort. Only re-sort when asked — the SQL order (newest expédition first)
+    // is the legacy default and is already what the list should open on.
+    if (sort) {
+      const mul = dir === 'asc' ? 1 : -1
+      out = [...out].sort((a, b) => {
+        let c = 0
+        switch (sort) {
+          case 'expedition': c = a.IDexpedition - b.IDexpedition; break
+          case 'date': c = (a.date ?? '').localeCompare(b.date ?? ''); break
+          case 'poids': c = a.poids - b.poids; break
+          case 'metrage': c = a.metrage - b.metrage; break
+          case 'ref': c = a.ref.localeCompare(b.ref, 'fr'); break
+          case 'coloris': c = a.coloris.localeCompare(b.coloris, 'fr'); break
+          case 'piece': c = naturalCompare(a.piece, b.piece); break
+        }
+        // Stable tie-break, or paging could repeat or skip a row between pages.
+        return c !== 0 ? c * mul : a.IDstock_fini - b.IDstock_fini
+      })
+    }
+
+    res.json({
+      lignes: out.slice(offset, offset + limit),
+      matched: out.length,   // rows the search kept — what paging runs against
+      total: all.length,     // rows the client has, all-time
+      offset,
+      limit,
+    })
   } catch (err) {
     console.error('Error fetching client marchandise:', err)
     res.status(500).json({ error: 'Internal server error' })

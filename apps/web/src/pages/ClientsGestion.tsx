@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
@@ -35,6 +35,8 @@ import {
   Send,
   Archive,
   ArchiveRestore,
+  ArrowUp,
+  ArrowDown,
   Link2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -3062,18 +3064,123 @@ function HistoriqueTab({ clientId }: { clientId: number }) {
 // ── Marchandise expédiée ───────────────────────────────
 
 interface MarchLigne { IDexpedition: number; IDstock_fini: number; date: string | null; piece: string; lot: string; ref: string; coloris: string; poids: number; metrage: number; second_choix: number }
+interface MarchPayload { lignes: MarchLigne[]; matched: number; total: number; offset: number; limit: number }
+
+type MarchSortKey = 'expedition' | 'date' | 'ref' | 'coloris' | 'piece' | 'poids' | 'metrage'
+
+/** Columns of the marchandise table — one definition drives the header cells,
+ *  their sort keys and their alignment, so a column can never be sortable in
+ *  the header but unsorted on the server. */
+const MARCH_COLUMNS: { key: MarchSortKey; label: string; align?: 'right' }[] = [
+  { key: 'date', label: 'Expédié le' },
+  { key: 'expedition', label: 'Expé N°' },
+  { key: 'ref', label: 'Référence' },
+  { key: 'coloris', label: 'Coloris' },
+  { key: 'piece', label: 'Pièce' },
+  { key: 'poids', label: 'Poids', align: 'right' },
+  { key: 'metrage', label: 'Métrage', align: 'right' },
+]
+
+/** Rows per page. The table lazy-loads the next page as the user scrolls, so
+ *  this only sets how often that happens — never what is reachable. */
+const MARCH_PAGE = 200
+
+/** Sortable header cell — §27.4: the active column goes gold and carries the
+ *  direction arrow. */
+function MarchSortTh({ col, sort, onSort }: {
+  col: { key: MarchSortKey; label: string; align?: 'right' }
+  sort: { key: MarchSortKey; dir: 'asc' | 'desc' } | null
+  onSort: (k: MarchSortKey) => void
+}) {
+  const active = sort?.key === col.key
+  return (
+    <th
+      onClick={() => onSort(col.key)}
+      className={cn('px-2 py-1.5 font-semibold cursor-pointer select-none whitespace-nowrap',
+        col.align === 'right' ? 'text-right' : 'text-left',
+        active && 'text-accent')}
+    >
+      <span className={cn('inline-flex items-center gap-1', col.align === 'right' && 'flex-row-reverse')}>
+        {col.label}
+        {active && (sort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
+      </span>
+    </th>
+  )
+}
 
 function MarchandiseTab({ clientId, clientNom, canRetour }: { clientId: number; clientNom: string; canRetour: boolean }) {
   const queryClient = useQueryClient()
-  const { data, isLoading } = useQuery<{ lignes: MarchLigne[]; capped: boolean }>({ queryKey: ['client-marchandise', clientId], queryFn: () => apiFetch(`/clients/${clientId}/marchandise`) })
+  // Search and sort run server-side over the client's WHOLE history (ticket
+  // #1085) — a piece shipped two years ago has to be findable to be returned —
+  // while the rows themselves arrive one page at a time as the user scrolls.
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<{ key: MarchSortKey; dir: 'asc' | 'desc' } | null>(null)
+  // Debounced so typing does not fire a query per keystroke: each one is a full
+  // history scan on the shared HFSQL server.
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const params = new URLSearchParams()
+  if (debouncedSearch) params.set('q', debouncedSearch)
+  if (sort) { params.set('sort', sort.key); params.set('dir', sort.dir) }
+  const qs = params.toString()
+  // Pages accumulate. A new search or sort is a new query key, so the list
+  // restarts at page 1 by itself — no manual reset to forget.
+  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery<MarchPayload>({
+    queryKey: ['client-marchandise', clientId, qs],
+    queryFn: ({ pageParam }) => apiFetch(
+      `/clients/${clientId}/marchandise?offset=${pageParam as number}&limit=${MARCH_PAGE}${qs ? `&${qs}` : ''}`,
+    ),
+    initialPageParam: 0,
+    getNextPageParam: (last, all) => {
+      const loaded = all.reduce((k, p) => k + p.lignes.length, 0)
+      return loaded < last.matched ? loaded : undefined
+    },
+  })
+
   // Return-to-stock flow (retour_marchandise permission): the table is
   // read-only until the user enters selection mode via "Reprendre des pièces";
   // checkboxes only exist in that mode, exited by Annuler or a completed return.
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [confirmOpen, setConfirmOpen] = useState(false)
-  useEffect(() => { setSelectMode(false); setSelected(new Set()); lastClick.current = null }, [clientId])
-  const lignes = data?.lignes ?? []
+  // Shift+click anchor (§44) — an IDstock_fini, never a row index: the rendered
+  // list grows and re-sorts under the user, and a stale index would extend the
+  // range across rows they never saw.
+  const lastSelectedId = useRef<number | null>(null)
+  useEffect(() => {
+    setSelectMode(false); setSelected(new Set()); lastSelectedId.current = null
+    setSearch(''); setSort(null)
+  }, [clientId])
+
+  // Every loaded page flattened — this IS the rendered list, and therefore the
+  // array the Shift+click range and "Tout sélectionner" run against.
+  const lignes = useMemo(() => data?.pages.flatMap((p) => p.lignes) ?? [], [data])
+  const matched = data?.pages[0]?.matched ?? 0
+  const total = data?.pages[0]?.total ?? 0
+
+  // Lazy loading: a sentinel at the end of the scroll container pulls the next
+  // page into view before the user reaches the bottom (rootMargin), so the list
+  // feels continuous instead of stepping. `root` is the scrolling div, not the
+  // viewport — the table scrolls internally, so a viewport-rooted observer
+  // would fire once and never again.
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const root = scrollRef.current
+    const target = sentinelRef.current
+    if (!root || !target || !hasNextPage) return
+    const io = new IntersectionObserver((entries) => {
+      // isFetchingNextPage is read from the closure, which this effect
+      // re-creates whenever it flips — so no double-fetch on one intersection.
+      if (entries.some((en) => en.isIntersecting) && !isFetchingNextPage) fetchNextPage()
+    }, { root, rootMargin: '200px' })
+    io.observe(target)
+    return () => io.disconnect()
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, lignes.length])
 
   const retourMut = useMutation({
     mutationFn: () => apiFetch(`/clients/${clientId}/marchandise/retour-stock`, { method: 'POST', body: JSON.stringify({ ids: [...selected] }) }),
@@ -3081,67 +3188,93 @@ function MarchandiseTab({ clientId, clientNom, canRetour }: { clientId: number; 
       setConfirmOpen(false)
       setSelectMode(false)
       setSelected(new Set())
+      lastSelectedId.current = null
       queryClient.invalidateQueries({ queryKey: ['client-marchandise', clientId] })
     },
   })
 
-  const exitSelectMode = () => { setSelectMode(false); setSelected(new Set()); lastClick.current = null }
-  const toggle = (id: number) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
-  // Shift-click range selection: remember the last plain click (anchor) and
-  // the state it applied; a Shift+click applies that same state to the whole
-  // range between the anchor row and the clicked row.
-  const lastClick = useRef<{ index: number; select: boolean } | null>(null)
-  const handleRowClick = (index: number, shift: boolean) => {
-    if (shift && lastClick.current !== null) {
-      const { index: anchor, select } = lastClick.current
-      const [lo, hi] = anchor < index ? [anchor, index] : [index, anchor]
-      setSelected((prev) => {
-        const n = new Set(prev)
-        for (let k = lo; k <= hi; k++) {
-          if (select) n.add(lignes[k].IDstock_fini)
-          else n.delete(lignes[k].IDstock_fini)
-        }
-        return n
-      })
-      lastClick.current = { index, select }
-    } else {
-      const willSelect = !selected.has(lignes[index].IDstock_fini)
-      toggle(lignes[index].IDstock_fini)
-      lastClick.current = { index, select: willSelect }
-    }
+  const exitSelectMode = () => { setSelectMode(false); setSelected(new Set()); lastSelectedId.current = null }
+  const handleSort = (k: MarchSortKey) => {
+    setSort((prev) => (prev?.key === k ? { key: k, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: 'asc' }))
+    lastSelectedId.current = null   // the rendered order changed — the anchor is meaningless
   }
+  // §44.1: plain click toggles and re-anchors; Shift+click applies the inclusive
+  // range in RENDERED order, adding or removing depending on the clicked row's
+  // state, and deliberately does not move the anchor.
+  const handleRowClick = useCallback((id: number, shiftKey: boolean) => {
+    const ids = lignes.map((l) => l.IDstock_fini)
+    const anchor = lastSelectedId.current
+    if (shiftKey && anchor !== null && anchor !== id) {
+      const a = ids.indexOf(anchor), b = ids.indexOf(id)
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a]
+        setSelected((prev) => {
+          const next = new Set(prev)
+          const deselect = prev.has(id)
+          for (let i = lo; i <= hi; i++) { if (deselect) next.delete(ids[i]); else next.add(ids[i]) }
+          return next
+        })
+        return
+      }
+    }
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+    lastSelectedId.current = id
+  }, [lignes])
+  // "Tout" is scoped to the pages loaded — the only rows the user can see.
   const allSelected = lignes.length > 0 && lignes.every((l) => selected.has(l.IDstock_fini))
-  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(lignes.map((l) => l.IDstock_fini)))
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(lignes.map((l) => l.IDstock_fini)))
+    lastSelectedId.current = allSelected ? null : (lignes[lignes.length - 1]?.IDstock_fini ?? null)
+  }
   const selPoids = lignes.filter((l) => selected.has(l.IDstock_fini)).reduce((s, l) => s + l.poids, 0)
+  // Pieces can be ticked, then searched away — keep the count honest.
+  const selOffscreen = selected.size - lignes.filter((l) => selected.has(l.IDstock_fini)).length
   const today = new Date().toLocaleDateString('fr-FR')
 
   return (
     <>
-      {isLoading ? <SectionSpinner /> : lignes.length === 0 ? <SectionEmpty text="Aucune expédition" /> : (
+      {/* mb-2: this tab's wrapper is a plain flex column with no gap (the table
+          pins the toolbar and scrolls internally), so the spacing is the
+          search bar's own — without it the table sits flush against it. */}
+      {(total > 0 || debouncedSearch !== '') && (
+        <div className="relative flex-shrink-0 mx-1 mb-2">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="Rechercher une pièce (n° pièce, réf, coloris, lot, n° expédition…)"
+            className="w-full h-9 pl-9 pr-9 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+          {search !== '' && (
+            <button type="button" onClick={() => setSearch('')} title="Effacer la recherche"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-zinc-100">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+      {isLoading ? <SectionSpinner /> : lignes.length === 0 ? (
+        <SectionEmpty text={debouncedSearch ? 'Aucune pièce ne correspond à la recherche' : 'Aucune expédition'} />
+      ) : (
         <>
           {/* min-h-0 + default flex-shrink: the table takes its natural height
               on short lists and scrolls internally on long ones. */}
-          <div className="min-h-0 overflow-auto rounded-lg border border-border/60 bg-card shadow-sm scrollbar-transparent">
+          <div ref={scrollRef} className="min-h-0 overflow-auto rounded-lg border border-border/60 bg-card shadow-sm scrollbar-transparent">
             <table className="w-full text-xs">
               <thead className={cn(thHead, 'sticky top-0 z-10 bg-zinc-100')}><tr>
                 {selectMode && (
                   <th className="px-2 py-1.5 w-7">
-                    <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Tout sélectionner"
+                    <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Tout sélectionner (lignes chargées)"
                       className="h-3.5 w-3.5 rounded border-input accent-accent cursor-pointer align-middle" />
                   </th>
                 )}
-                <th className="px-2 py-1.5 text-left font-semibold">Expédié le</th>
-                <th className="px-2 py-1.5 text-left font-semibold">Expé N°</th>
-                <th className="px-2 py-1.5 text-left font-semibold">Référence</th>
-                <th className="px-2 py-1.5 text-left font-semibold">Coloris</th>
-                <th className="px-2 py-1.5 text-left font-semibold">Pièce</th>
-                <th className="px-2 py-1.5 text-right font-semibold">Poids</th>
-                <th className="px-2 py-1.5 text-right font-semibold">Métrage</th>
+                {MARCH_COLUMNS.map((c) => <MarchSortTh key={c.key} col={c} sort={sort} onSort={handleSort} />)}
               </tr></thead>
               <tbody>
-                {lignes.map((l, i) => (
-                  <tr key={`${l.IDexpedition}-${l.piece}-${i}`}
-                    onClick={selectMode ? (e) => handleRowClick(i, e.shiftKey) : undefined}
+                {lignes.map((l) => (
+                  <tr key={l.IDstock_fini}
+                    onClick={selectMode ? (e) => handleRowClick(l.IDstock_fini, e.shiftKey) : undefined}
                     className={cn('border-b border-border/40 last:border-b-0',
                       // select-none: Shift+click must extend the selection, not select text
                       selectMode && 'cursor-pointer select-none',
@@ -3149,7 +3282,7 @@ function MarchandiseTab({ clientId, clientNom, canRetour }: { clientId: number; 
                     {selectMode && (
                       <td className="px-2 py-1.5">
                         <input type="checkbox" checked={selected.has(l.IDstock_fini)} onChange={() => {}}
-                          onClick={(e) => { e.stopPropagation(); handleRowClick(i, e.shiftKey) }}
+                          onClick={(e) => { e.stopPropagation(); handleRowClick(l.IDstock_fini, e.shiftKey) }}
                           className="h-3.5 w-3.5 rounded border-input accent-accent cursor-pointer align-middle" />
                       </td>
                     )}
@@ -3164,24 +3297,36 @@ function MarchandiseTab({ clientId, clientNom, canRetour }: { clientId: number; 
                 ))}
               </tbody>
             </table>
+            {/* Lazy-load sentinel — inside the scroll container, after the table,
+                so it enters view as the user nears the last row. */}
+            {hasNextPage && (
+              <div ref={sentinelRef} className="flex items-center justify-center gap-2 py-3 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                Chargement des pièces suivantes…
+              </div>
+            )}
           </div>
-          {canRetour && !selectMode && (
-            <div className="flex-shrink-0 flex items-center justify-between gap-2 mt-2">
-              <p className="text-[11px] text-muted-foreground italic">{data?.capped ? '400 pièces les plus récentes affichées.' : ''}</p>
-              <Button variant="outline" size="sm" onClick={() => setSelectMode(true)}>
+          {/* Count + the entry into selection mode. The count names the whole
+              population, so the list can never look like it holds everything
+              when it does not — the ambiguity ticket #1085 was about. */}
+          <div className="flex-shrink-0 flex items-center gap-2 mt-2">
+            <p className="text-[11px] text-muted-foreground italic">
+              {debouncedSearch
+                ? `${fmtNum(matched)} pièce${matched > 1 ? 's' : ''} trouvée${matched > 1 ? 's' : ''} sur ${fmtNum(total)}`
+                : `${fmtNum(total)} pièce${total > 1 ? 's' : ''}`}
+            </p>
+            {canRetour && !selectMode && (
+              <Button variant="outline" size="sm" className="ml-auto" onClick={() => setSelectMode(true)}>
                 <ArchiveRestore className="h-3.5 w-3.5 mr-1.5" />Reprendre des pièces
               </Button>
-            </div>
-          )}
-          {(!canRetour || selectMode) && data?.capped && (
-            <p className="flex-shrink-0 text-[11px] text-muted-foreground italic mt-2">400 pièces les plus récentes affichées.</p>
-          )}
+            )}
+          </div>
           {selectMode && (
             <div className="flex-shrink-0 mt-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-accent/30 bg-accent/10 shadow-sm">
               <span className="text-xs font-medium">
                 {selected.size === 0
-                  ? 'Sélectionnez les pièces à reprendre'
-                  : `${selected.size} pièce${selected.size > 1 ? 's' : ''} sélectionnée${selected.size > 1 ? 's' : ''} · ${fmtNum(selPoids, 2)} kg`}
+                  ? 'Sélectionnez les pièces à reprendre — MAJ + clic pour une plage'
+                  : `${selected.size} pièce${selected.size > 1 ? 's' : ''} sélectionnée${selected.size > 1 ? 's' : ''} · ${fmtNum(selPoids, 2)} kg${selOffscreen > 0 ? ` (dont ${selOffscreen} hors liste)` : ''}`}
               </span>
               <Button variant="outline" size="sm" className="ml-auto" onClick={exitSelectMode} disabled={retourMut.isPending}>
                 Annuler
