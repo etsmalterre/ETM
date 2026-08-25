@@ -9,6 +9,18 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/finance-stock (Valorisation du stock fini + portée de l'Analyse financière)
+
+Le tableau de bord ne pouvait pas montrer la valeur du stock. `upload_compta`, que lit l'Analyse financière, **ne porte ni la production stockée ni les provisions** — vérifié sur deux exercices : en 2024 la production stockée valait 178 359 € pour un résultat d'exploitation de 180 614 €, soit **la totalité du résultat** ; en 2025, 1 509 €. Conséquence concrète : l'EBE de juillet 2026 se lisait comme un effondrement (−133 k€ sur un an) alors que **146 k€ de production non vendue** en portaient 82 % — l'entreprise produisait 15 % de plus en n'expédiant que 4 % de plus, et la clôture annuelle redresse cet écart. En parallèle, un stock passé de **37 % à 49 % de taux de provision** entre 2024 et 2025 n'apparaissait nulle part dans l'app.
+
+**Analyse financière** gagne donc une mention de portée **permanente** sous ses tuiles (« Hors production stockée et provisions, comptabilisées à la clôture annuelle ») — pas une infobulle : c'est précisément son absence qui a fait mal lire le chiffre.
+
+**Nouveau widget « Valorisation du stock fini »** — valeur d'achat, valeur dépréciée, taux de provision et répartition par ancienneté. Port de la requête légataire de dévalorisation (2ᵉ choix −90 % · moins d'un an 0 % · 1-2 ans −50 % · plus de 2 ans −90 %), validé à **+1,6 %** contre l'inventaire imprimé au 31/12/2025 (20 966 kg / 287 945 € contre 21 039 kg / 283 526 €). Le coût est **fil + façon tricotage + ennoblissement**, le fil au prix réellement payé (`ref_fil_commande.prix_unitaire`) et **jamais** au catalogue `ref_fil.prix_kg` — l'erreur donnait 6,44 €/kg au lieu de 13,48 ; le poids vient de `stock_ecru.poids`, pas de `stock_fini.poids`.
+
+⚠️ **Portée assumée : rouleaux FINIS seulement**, et le widget le dit. Les règles Fil / TM dispo / TM en cours n'ont pas été retrouvées ; au 28/12/2024 le fini pesait 179 142 € sur 373 439 € de stock net. ⚠️ **Le calcul ne peut décrire que MAINTENANT** (colonnes d'état courant + dépréciation depuis `SYSDATE`), donc les 14 mois manquants d'`inventaire_compta` — le mécanisme légataire mensuel, arrêté le 28/06/2025, qui se rapprochait du bilan **à l'euro près** — ne sont pas rejouables.
+
+Piège corrigé au passage : **`stock_fini.date_saisie` est un TIMESTAMP**, donc `sst-shared.dateDigits` (`/^d{8}$/`) renvoie `''` sur **toutes** les lignes ; une chaîne vide perd toute comparaison `>` et rangeait l'intégralité du stock dans « plus de 2 ans » à 90 % de provision — un chiffre plausible, pas un plantage. Garde : `check-valorisation-stock.ts`, qui échoue si une seule tranche est peuplée.
+
 ## 2026-08-25 — feat/debug (Marchandise expédiée : recherche, tri, pagination + retour en stock réparé)
 
 Deux tickets sur **Clients › Gestion › Marchandise expédiée**.
