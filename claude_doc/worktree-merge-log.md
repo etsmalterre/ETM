@@ -9,6 +9,51 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/issue-tracker (suivi par email — widget tickets v1.2.0)
+
+Le widget de tickets passe en **1.2.0** : le rapporteur peut demander à être **notifié par
+email à chaque changement de statut** de son ticket. Une case « Me tenir informé par
+email », **décochée par défaut**, sur le formulaire ; un interrupteur §35 dans la fiche du
+ticket pour changer d'avis après coup — c'est là que le besoin apparaît, après une semaine
+sans nouvelles, pas au moment de la saisie.
+
+**Rien n'est stocké ici.** Le drapeau vit dans le tracker LIVA (`bugs.follow_up`), comme le
+ticket lui-même : une seule source de vérité pour « suis-je abonné », et zéro schéma HFSQL
+à toucher — la même contrainte dure que la pastille non-lu respecte déjà. La conséquence
+côté web : l'interrupteur **attend la réponse** avant de bouger. Un contrôle qui bascule de
+façon optimiste et revient en silence est pire qu'un contrôle qui met 200 ms.
+
+Côté API, une seule route nouvelle sur la factory `tickets.ts` (donc montée sur les deux
+mounts) : `PATCH /:id/follow`, avec **le même contrôle de propriété que le détail et les
+pièces jointes**. Ce n'est pas de la ceinture-bretelles : la clé API du tracker est
+*company*-scoped, pas *reporter*-scoped, donc sans cette vérification n'importe quel
+collègue pourrait s'abonner au ticket d'un autre. Le corps est validé par zod
+(`{follow_up: boolean}`), jamais pipé tel quel.
+
+⚠️ **`follow_up` doit rester hors de `ticketSignature()`.** S'abonner à un ticket n'est pas
+une nouvelle *sur* ce ticket : l'inclure dans la signature allumerait la pastille non-lu à
+chaque bascule de l'interrupteur, sur le ticket que l'utilisateur vient justement d'ouvrir.
+
+Le déclencheur est le **statut, et seulement le statut** — une réponse développeur ou une
+retouche interne n'envoie rien, et la réponse voyage dans l'email du changement suivant. La
+clôture automatique à la publication d'une version en fait partie, donc « votre correctif
+est en ligne » arrive gratuitement. Le mail ne contient **aucun lien vers le dashboard** :
+les rapporteurs n'y ont pas accès, il les renvoie vers « Mes tickets » dans leur propre app
+et leur dit comment se désabonner.
+
+Garde HTTP : `apps/api/src/scripts/check-tickets-follow.ts` (POST avec `follow_up`,
+aller-retour PATCH dans les deux sens, rejet d'un non-booléen, 404 sur le ticket d'autrui).
+Elle **crée un vrai ticket `[CHECK]`** sur le tracker visé — pointer l'API dev sur un
+tracker local avant de la lancer, sinon elle laisse une entrée sur le board LIVA.
+
+⚠️ **Dépendance de déploiement, dans cet ordre** : tracker LIVA (migration `follow_up`) →
+API partagée (`/etm_deploy`) → web. Le tracker a été **déployé le 2026-08-25** (repo
+`admin-liva/issue_tracker`, alembic `c3d4e5f6a7b8`), donc la dépendance est levée. Contre
+un tracker plus ancien, la case partirait avec le POST sans effet et l'interrupteur 404 —
+le widget promettrait des emails que personne n'envoie.
+
+Spec de référence mise à jour en même temps : skill `issue_tracker_integration` v1.2.0
+(CONTRACT.md § Follow-up notifications + `references/react/follow-up.tsx`).
 ## 2026-08-25 — feat/prime (la semaine de la Prime TRM ne liste plus que les déclassements)
 
 Le tableau qui remplit la colonne sous le bloc taux, dans la carte « Analyse des
