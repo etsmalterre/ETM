@@ -11,6 +11,7 @@
 import { TrendingUp, FileSpreadsheet, LineChart, ShoppingCart, Wallet } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
+import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { AnalyseFinanciereWidget } from './AnalyseFinanciereWidget'
 import { ChiffreAffairesWidget } from './ChiffreAffairesWidget'
@@ -22,6 +23,7 @@ import { SuiviPieceWidget } from './SuiviPieceWidget'
 import { CommandesDuJourWidget } from './CommandesDuJourWidget'
 import { ChargesWidget } from './ChargesWidget'
 import { EvolutionCaWidget } from './EvolutionCaWidget'
+import { ValorisationStockWidget } from './ValorisationStockWidget'
 import type { DashboardApp, WidgetDef } from './types'
 
 export type { WidgetDef }
@@ -72,6 +74,19 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
     minWidth: 4,
     defaultHeightPx: 460,
     Component: AnalyseFinanciereWidget,
+  },
+  {
+    key: 'stock_valorisation',
+    permission: 'dashboard_stock_valorisation',
+    title: 'Valorisation du stock fini',
+    icon: FiniRollIcon,
+    // 6 comme l'Analyse financiere, sa voisine : c'est la largeur a laquelle les
+    // trois tuiles tiennent sur une ligne. A 4 colonnes elles passent en pile et
+    // la carte double de hauteur pour la meme information.
+    defaultWidth: 6,
+    minWidth: 4,
+    defaultHeightPx: 420,
+    Component: ValorisationStockWidget,
   },
   {
     key: 'commandes_jour',

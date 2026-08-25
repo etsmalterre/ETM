@@ -7,12 +7,22 @@
 // upload of its month — the curves only ever climb through the year, and the
 // gap between marge brute and charges fixes IS the EBE.
 //
+// ⚠️ PORTÉE — ce que ces figures NE contiennent PAS, et pourquoi c'est affiché :
+// `upload_compta.produits` exclut la **production stockée** (vérifié sur deux
+// exercices : 2024 la portait à 178 359 € pour un résultat d'exploitation de
+// 180 614 €, soit la totalité du résultat ; 2025 à 1 509 €), et les
+// **provisions** sont sous l'EBE par définition. Un exercice où la production
+// dépasse les ventes voit donc son EBE intermédiaire amputé, et la clôture
+// annuelle le redresse. C'est ce qui a fait lire juillet 2026 comme un
+// effondrement (-133 k€) alors que 146 k€ de production non vendue en portaient
+// 82 % — d'où la mention permanente sous les tuiles, et non une infobulle.
+//
 // Gated server-side by `dashboard_finance`; the widget is only mounted when the
 // user holds it (registry.tsx → useDashboardLayout).
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LineChart, Loader2, AlertTriangle } from 'lucide-react'
+import { LineChart, Loader2, AlertTriangle, Info } from 'lucide-react'
 import { CardContent } from '@/components/ui/card'
 import { PopoverSelect } from '@/components/ui/popover-select'
 import { useElementSize } from '@/hooks/useElementSize'
@@ -159,6 +169,15 @@ export function AnalyseFinanciereWidget() {
             tight={denseTiles}
           />
         </div>
+
+        {/* Portée des figures — voir le commentaire en tête de fichier. Toujours
+            visible, pas une infobulle : c'est précisément l'absence de cette
+            mention qui a fait lire l'EBE de juillet 2026 comme un effondrement
+            alors que 146 k€ de production non vendue l'amputaient. */}
+        <p className="-mt-2 flex items-start gap-1.5 text-[11px] leading-snug text-muted-foreground">
+          <Info className="mt-px h-3 w-3 flex-shrink-0 opacity-60" />
+          <span>Hors production stockée et provisions, comptabilisées à la clôture annuelle.</span>
+        </p>
 
         {/* Evolution */}
         <div className="flex flex-1 min-h-[180px] flex-col overflow-hidden rounded-lg border border-border/60 bg-white">

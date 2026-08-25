@@ -40,6 +40,7 @@ import { n, dateDigits, addWorkingDays, isLineDone, lineStatutRank, esc } from '
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { createFinanceRouter, FINANCE_SCOPE_ETM } from '../lib/finance-common.js'
+import { valoriserStockFini } from '../lib/valorisation-stock.js'
 
 export const rapportsRouter: RouterType = Router()
 
@@ -1412,3 +1413,33 @@ rapportsRouter.get('/commandes-fil', async (req: Request, res: Response) => {
 // Registered last, which is safe because rapports.ts has no `/:param` route
 // that could swallow these literal paths.
 rapportsRouter.use('/', createFinanceRouter(FINANCE_SCOPE_ETM))
+
+
+// ── Valorisation du stock ─────────────────────────────────────────────────
+// GET /api/rapports/stock/valorisation
+//
+// Finished-roll stock at purchase cost and after the legacy devaluation rules,
+// plus the resulting provision rate — the two figures the annual bilan books as
+// production stockée / provision pour dépréciation, and which `upload_compta`
+// (hence the Analyse financière widget) structurally cannot show.
+//
+// ETM-only on purpose: `stock_fini` carries no `IDsociete`, so this is NOT part
+// of the two-société finance factory above. Gated on its own key because it
+// exposes a balance-sheet figure.
+//
+// The computation, its validation against the printed 31/12/2025 inventory, and
+// the reason it can only ever describe *now* live in lib/valorisation-stock.ts.
+rapportsRouter.get('/stock/valorisation', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'dashboard_stock_valorisation')
+    if (!allowed) {
+      res.status(403).json({ error: 'forbidden', message: 'Accès à la valorisation du stock non autorisé.' })
+      return
+    }
+    res.json(await valoriserStockFini())
+  } catch (err) {
+    console.error('[rapports/stock/valorisation]', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})

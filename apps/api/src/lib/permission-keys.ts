@@ -81,6 +81,13 @@ export const PERMISSION_KEYS = [
       'Affiche le widget « Analyse financière » sur le tableau de bord : évolution du CA, de la marge brute et des charges fixes / variables sur l’année, et CA, marge brute et EBE du dernier relevé comptable. Donnée confidentielle — l’API refuse les chiffres sans ce droit. Indépendant de « Consulter le rapport finance », qui donne le détail compte par compte.',
     category: 'Tableau de bord',
   },
+  {
+    key: 'dashboard_stock_valorisation',
+    label: 'Valorisation du stock',
+    description:
+      'Affiche le widget « Valorisation du stock » sur le tableau de bord : valeur d’achat et valeur dépréciée des rouleaux finis en stock, taux de provision et répartition par ancienneté. Donnée confidentielle (c’est un poste de bilan) — l’API refuse les chiffres sans ce droit.',
+    category: 'Tableau de bord',
+  },
   // Commandes client — kept right after the dashboard keys so the section
   // renders directly below "Tableau de bord" in Paramètres > Utilisateurs.
   {
