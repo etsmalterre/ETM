@@ -28,9 +28,18 @@ import { PrimePdf, type PrimePdfData } from '../lib/pdf/PrimePdf.js'
 //   • Répartition day counts cap at the period END (legacy counted to *today*
 //     even on a past semester, so historical splits drifted as time passed).
 //     The current semester is unaffected: min(today, fin) = today.
+//   • The régleurs take part in the prime. The legacy screen filtered them out
+//     (`regleur = 0`), which silently dropped the only two — Nicolas Antonino
+//     (16) and Mickaël Grivelet (15), both still employed — from every split.
+//     They share the SAME pot on the same per-day weight as a bonnetier, so
+//     the semester total is untouched and every other share shrinks
+//     accordingly. Applies to every browsable period, past ones included: the
+//     historical splits displayed therefore no longer match what was paid at
+//     the time (user decision, 2026-08-25).
 //
-// Répartition: bonnetiers (regleur = 0, NO archivé filter — date_sortie is what
-// scopes history) whose employment overlaps the period; each gets
+// Répartition: every atelier employee (NO regleur filter, NO archivé filter —
+// date_sortie is what scopes history) whose employment overlaps the period;
+// each gets
 // total × jours/joursTotal where jours = max(début, date_entree) →
 // min(today, fin, date_sortie). The week row always shows the CURRENT week
 // (Monday → now), whatever period is being browsed — legacy behavior.
@@ -226,6 +235,116 @@ async function fetchDeclassementTypes(debut: string, fin: string): Promise<Decla
   return entries.sort((a, b) => b.montant - a.montant)
 }
 
+// ── Weekly defect log (all defects, both choix) ───────────
+
+/** One `defaut_qualite` row logged by the visitage on a piece knitted during
+ *  the current week. Deliberately NOT limited to 2nd choix: a defect is not a
+ *  déclassement (a 1er-choix piece carries them too), and the point of this
+ *  table is what the visitage actually saw this week. */
+export interface DefautSemaine {
+  id: number
+  IDstock_ecru: number
+  /** Piece number as keyed by the visiteuse (`stock_ecru.numero`). */
+  piece: string
+  /** Métier the piece came off (ordre_fabrication → machine.nom). */
+  machine: string
+  type: string
+  description: string
+  taille_cm: number
+  nombre: number
+  /** Weight of the PIECE, not of the defect — a piece can carry several rows. */
+  poids: number
+  secondChoix: boolean
+}
+
+/** Every defect logged on a piece saisie since `debut` (open ended, like the
+ *  week sums). Cheap by construction: one week is ~50 pieces.
+ *
+ *  Accented-column care: `machine` and `ordre_fabrication` both carry accented
+ *  columns we must never name (see stock-ecru-trm.ts), so every projection here
+ *  is explicit and ASCII; `defaut_qualite` free text goes through the
+ *  queryB64Text / fixEncoding branch of of-trm.ts. */
+async function fetchDefautsSemaine(debut: string): Promise<DefautSemaine[]> {
+  const pieces = await query<Record<string, unknown>>(
+    `SELECT IDstock_ecru, numero, poids, second_choix, IDordre_fabrication
+     FROM stock_ecru
+     WHERE date_saisie >= ${dtMidnight(debut)} AND IDordre_fabrication > 0
+     ORDER BY date_saisie DESC, IDstock_ecru DESC`,
+  )
+  if (pieces.length === 0) return []
+  const fixedPieces = await fixEncoding(pieces, 'stock_ecru', 'IDstock_ecru', ['numero'])
+
+  // OF → métier name in two hops, so no accented column is ever named.
+  const ofIds = Array.from(
+    new Set(fixedPieces.map((p) => n(p.IDordre_fabrication)).filter((x) => x > 0)),
+  )
+  const machineByOf = new Map<number, number>()
+  if (ofIds.length > 0) {
+    const ofRows = await query<Record<string, unknown>>(
+      `SELECT IDordre_fabrication, IDmachine FROM ordre_fabrication
+       WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+    )
+    for (const r of ofRows) machineByOf.set(n(r.IDordre_fabrication), n(r.IDmachine))
+  }
+  const machineIds = Array.from(new Set(Array.from(machineByOf.values()).filter((x) => x > 0)))
+  const machineName = new Map<number, string>()
+  if (machineIds.length > 0) {
+    const mRows = await query<Record<string, unknown>>(
+      `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`,
+    )
+    for (const r of await fixEncoding(mRows, 'machine', 'IDmachine', ['nom'])) {
+      machineName.set(n(r.IDmachine), String(r.nom ?? '').trim())
+    }
+  }
+
+  // defaut_qualite is polymorphic: Type_Reference = 2 + reference = stringified
+  // IDstock_ecru (same contract as fetchDeclassementTypes / stock-ecru.ts).
+  const byPiece = new Map<number, Array<Record<string, unknown>>>()
+  const ids = fixedPieces.map((p) => n(p.IDstock_ecru)).filter((x) => x > 0)
+  for (let i = 0; i < ids.length; i += 400) {
+    const inList = ids.slice(i, i + 400).map((x) => `'${x}'`).join(',')
+    const sql = `SELECT IDdefaut_qualite, reference, type_defaut, description, taille_cm, nombre
+       FROM defaut_qualite WHERE Type_Reference = 2 AND reference IN (${inList})`
+    const rows = IS_WINDOWS
+      ? await fixEncoding(await query<Record<string, unknown>>(sql), 'defaut_qualite', 'IDdefaut_qualite', [
+          'type_defaut',
+          'description',
+        ])
+      : await queryB64Text<Record<string, unknown>>(sql)
+    for (const d of rows) {
+      const pieceId = parseInt(String(d.reference ?? ''), 10)
+      if (!Number.isInteger(pieceId)) continue
+      const list = byPiece.get(pieceId) ?? []
+      list.push(d)
+      byPiece.set(pieceId, list)
+    }
+  }
+
+  // Emitted in piece order (newest saisie first) so the table reads as a log.
+  const out: DefautSemaine[] = []
+  for (const p of fixedPieces) {
+    const pieceId = n(p.IDstock_ecru)
+    const defauts = byPiece.get(pieceId)
+    if (!defauts || defauts.length === 0) continue
+    const machine = machineName.get(machineByOf.get(n(p.IDordre_fabrication)) ?? 0) ?? ''
+    for (const d of defauts) {
+      out.push({
+        id: n(d.IDdefaut_qualite),
+        IDstock_ecru: pieceId,
+        piece: String(p.numero ?? '').trim(),
+        machine,
+        type: String(d.type_defaut ?? '').trim(),
+        description: String(d.description ?? '').trim(),
+        taille_cm: n(d.taille_cm),
+        nombre: n(d.nombre),
+        poids: n(p.poids),
+        secondChoix: n(p.second_choix) === 1,
+      })
+    }
+  }
+  return out
+}
+
 // ── Bonnetiers ────────────────────────────────────────────
 
 /** Fold a raw key: strip accents + lowercase (prénom → prenom). */
@@ -251,7 +370,6 @@ interface BonnetierRow {
   IDbonnetier: number
   prenom: string
   nom: string
-  regleur: number
   dateEntree: string // YYYY-MM-DD or ''
   dateSortie: string // YYYY-MM-DD or ''
 }
@@ -269,7 +387,6 @@ function normalizeBonnetier(raw: Record<string, unknown>): BonnetierRow {
     IDbonnetier: n(raw.IDbonnetier),
     prenom: bonnetierPrenom(raw),
     nom: String(raw.nom ?? ''),
-    regleur: n(raw.regleur),
     dateEntree: bonnetierDate(raw.date_entree),
     dateSortie: bonnetierDate(raw.date_sortie),
   }
@@ -307,7 +424,6 @@ function buildRepartition(
   const entries: Array<Omit<RepartitionEntry, 'montant'>> = []
   let joursTotal = 0
   for (const b of bonnetiers) {
-    if (b.regleur !== 0) continue
     // Employment overlaps the period (legacy reqBonnetier predicate).
     if (b.dateEntree !== '' && b.dateEntree >= fin) continue
     if (b.dateSortie !== '' && b.dateSortie < debut) continue
@@ -353,6 +469,8 @@ export interface PrimePayload {
     secondChoix: PrimeBloc
     retourClient: PrimeBloc
     total: number
+    /** Every defect logged on this week's pieces — both choix (see DefautSemaine). */
+    defauts: DefautSemaine[]
   }
   repartition: RepartitionEntry[]
   joursTotal: number
@@ -375,7 +493,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
   const prev = datesSemestre(addMonths(ref, -6))
   const prevWindowEnd = prev.fin
 
-  const [semKg1, semKg2, wkKg1, wkKg2, prevKg1, prevKg2, declassementTypes, bonnetiers] = await Promise.all([
+  const [semKg1, semKg2, wkKg1, wkKg2, prevKg1, prevKg2, declassementTypes, bonnetiers, defautsSemaine] = await Promise.all([
     sumPoids(0, periode.debut, periode.fin),
     sumPoids(1, periode.debut, periode.fin),
     sumPoids(0, monday),
@@ -384,6 +502,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     sumPoids(1, prev.debut, prevWindowEnd),
     fetchDeclassementTypes(periode.debut, periode.fin),
     selectBonnetiers(),
+    fetchDefautsSemaine(monday),
   ])
 
   const semestre = {
@@ -400,6 +519,7 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     secondChoix: { kg: wkKg2, montant: wkKg2 * TAUX_SECOND_CHOIX },
     retourClient: { kg: 0, montant: 0 },
     total: wkKg1 * TAUX_PREMIER_CHOIX + wkKg2 * TAUX_SECOND_CHOIX,
+    defauts: defautsSemaine,
   }
 
   const { repartition, joursTotal } = buildRepartition(

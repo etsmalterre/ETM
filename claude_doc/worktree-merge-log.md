@@ -9,6 +9,42 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/prime (défauts de la semaine + régleurs dans la répartition)
+
+Deux changements sur `/api/prime-trm`, servant la refonte de la mise en page de l'écran
+Production › Prime côté TRM.
+
+**1. Nouveau champ `semaine.defauts[]`** — chaque ligne `defaut_qualite`
+(`Type_Reference = 2`) relevée au visitage sur une pièce saisie depuis le lundi
+(fenêtre ouverte, comme les sommes de la semaine). **Les deux choix, volontairement** :
+un défaut n'est pas un déclassement, une pièce de 1er choix en porte aussi, et la table
+répond à « qu'a vu le visitage cette semaine », pas à « qu'est-ce qui a été déclassé »
+(c'est le rôle de `declassements.types`). Une semaine ≈ 50 pièces, donc le coût est
+négligeable. Le métier est résolu **en deux sauts** (`stock_ecru` → `ordre_fabrication`
+→ `machine`) avec des projections explicites : ni `machine` ni `ordre_fabrication` ne
+peuvent être lues en `SELECT *` ni voir leurs colonnes accentuées nommées.
+
+⚠️ **`defaut_qualite.taille_cm` n'est pas en centimètres** (découverte de ce lot, promue
+dans CLAUDE.md) : 25 pour « Moins de 50 cm », 1500 pour « 1m - 3m », 200 pour
+« Autre Barrure 1m - 3m ». Les unités sont propres à chaque vocabulaire et non
+reconstituables — ne jamais l'afficher ni la sommer comme une longueur. Le qualificatif
+fiable est dans `description`, préfixé par `type_defaut`, qu'il faut retirer ; les
+défauts de type comptage (Trou, Démaillage) laissent `taille_cm` à 0 et utilisent
+`nombre`.
+
+**2. Les régleurs entrent dans la répartition.** Le prédicat `regleur = 0` hérité du
+legacy écartait silencieusement les deux seuls — Nicolas Antonino (16) et Mickaël
+Grivelet (15), tous deux toujours en poste. **Même cagnotte, même poids journalier** : le
+total du semestre est inchangé, chaque part existante diminue (mesuré sur le S1 2026 :
+7 personnes, 637 jours, somme des parts = total au centime). L'entrée du 2026-08-24
+ci-dessous décrit donc l'ancien comportement — c'est celle-ci qui fait foi. Le changement
+vaut pour **toutes les périodes navigables**, y compris passées : les répartitions
+historiques affichées ne correspondent plus à ce qui a été payé à l'époque (décision
+utilisateur, 2026-08-25).
+
+Le PDF (`PrimePdf.tsx`) est inchangé : il lit le même payload, hérite donc de la nouvelle
+répartition, et n'imprime pas la table des défauts — c'est le document de paie, pas la vue
+d'exploitation.
 ## 2026-08-25 — feat/widget (API des widgets financiers TRM)
 
 Les quatre widgets financiers du tableau de bord ETM (Charges, Chiffre d'affaires, Analyse
