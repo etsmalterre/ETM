@@ -9,6 +9,40 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/rapport-finance (l'écran Rapports › Finance sert aussi TRM)
+
+L'écran ETM `Rapports › Finance` est désormais **le même fichier** dans les deux apps :
+TRM l'importe par son alias `@etm` et lui passe `basePath="/rapports-trm/finance"`. Un
+seul ajout côté web ETM — une prop `basePath` optionnelle (défaut `/rapports/finance`) qui
+préfixe les trois appels API. C'est le pendant frontend de ce que `FinanceScope` est côté
+backend, et la **seule** différence entre les deux montages : les imports `@/` d'un écran
+partagé se résolvent dans le `src` de l'app qui l'importe, donc les composants, le
+`PermissionsContext` et les clés de droits sont ceux de TRM sans rien paramétrer.
+
+Côté API, **aucune reprise des handlers** : les widgets financiers avaient déjà monté
+`createFinanceRouter(FINANCE_SCOPE_TRM)` sur `/api/rapports-trm` (c12b0e3), et l'écran lit
+exactement ces endpoints. Le landing tenait donc aux deux modifications que ce scope
+attendait — `view_rapport_finance` rejoint `financeKeys`, `editComptesKey` allume les
+routes du tiroir. `dashboard_charges` **reste** dans `financeKeys` (c'est un any-of) : l'en
+retirer viderait silencieusement la carte Charges de qui ne tient que ce droit. Deux clés
+TRM ajoutées : `view_rapport_finance` et `edit_compte_description` (sous-droit), catégorie
+« Rapports », mêmes noms que le catalogue ETM — même action, magasins séparés.
+
+⚠️ **Faille corrigée au passage** : `GET /finance/comptes/:id/historique` n'avait pas le
+contrôle d'appartenance que le PATCH voisin avait déjà. `releve_compta` ne porte pas
+d'`id_societe` — l'id du compte est le seul porteur de la partition — donc la route était
+inoffensive tant qu'ETM la montait seule, et devenait une lecture inter-société le jour où
+un second scope la montait. Règle promue dans CLAUDE.md : sur une factory partagée, **toute
+route atteinte par un `:id` d'URL vérifie la partition de cette ligne, dans chaque
+handler**. Garde HTTP : `scripts/check-finance-comptes-trm.ts` (historique + aller-retour
+PATCH + les deux 404 inter-partition).
+
+Côté TRM enfin, le menu Rapports perd ses quatre placeholders (Production, Lots de fils,
+État stock fil, Analyse) et n'a plus que Finance — d'où `screen-keys-trm.ts` mis à jour
+pour rester le miroir de `navigation.ts` (`check-screen-access-trm.ts` le vérifie). Comme
+Finance est l'unique écran du menu, l'entrée porte `permission: 'view_rapport_finance'`
+en plus du grant `screen_rapports` : sans le droit, c'est le **menu entier** qui disparaît.
+
 ## 2026-08-25 — feat/prime (défauts de la semaine + régleurs dans la répartition)
 
 Deux changements sur `/api/prime-trm`, servant la refonte de la mise en page de l'écran

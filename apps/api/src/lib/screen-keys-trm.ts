@@ -118,10 +118,7 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
     href: '/rapports',
     label: 'Rapports',
     screens: [
-      { href: '/rapports/production', label: 'Production' },
-      { href: '/rapports/lots-de-fils', label: 'Lots de fils' },
-      { href: '/rapports/etat-stock-fil', label: 'État stock fil' },
-      { href: '/rapports/analyse', label: 'Analyse' },
+      { href: '/rapports/finance', label: 'Finance' },
     ],
   },
 ] as const

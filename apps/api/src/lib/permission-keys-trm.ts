@@ -69,6 +69,31 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la création, la modification et la suppression des commandes natives et de leurs lignes dans Clients > Commandes : boutons « Nouvelle commande », « Modifier », « Supprimer » et l’édition des lignes. Les commandes miroir ETM restent en lecture seule pour tout le monde.',
     category: 'Commandes client',
   },
+  // Rapports > Finance — the accountant's balance, account by account. Gated
+  // rather than open like a production report, because the balance names the
+  // payroll lines. Same key NAMES as ETM's catalog on purpose: same action,
+  // separate store (see the header).
+  //
+  // Note the overlap with `dashboard_charges`: both open the same
+  // compte-by-compte payload (`FINANCE_SCOPE_TRM.financeKeys` is an any-of
+  // list), because the Charges widget sums the very rows this screen lists.
+  // Neither is the other's parent — a user can hold the widget without the
+  // screen, or the screen without the widget.
+  {
+    key: 'view_rapport_finance',
+    label: 'Consulter le rapport finance',
+    description:
+      'Affiche l’entrée « Finance » du menu Rapports et autorise la consultation de la balance comptable de Tricotage Malterre (charges fixes et variables, montants annuels et comparaison N-1). Ces données incluent les comptes de personnel.',
+    category: 'Rapports',
+  },
+  {
+    key: 'edit_compte_description',
+    label: 'Annoter les comptes',
+    description:
+      'Autorise la modification de la description libre d’un compte comptable et de sa nature (charge fixe ou variable) depuis le tiroir de Rapports > Finance.',
+    category: 'Rapports',
+    parent: 'view_rapport_finance',
+  },
 ] as const
 
 export type TrmPermissionKey = (typeof TRM_PERMISSION_KEYS)[number]['key']

@@ -38,8 +38,14 @@ import { useSearchParams } from 'react-router-dom'
 // The legacy screen is a flat balance table with a Charges fixes / Charges
 // variables radio, one row per compte comptable, and a N vs N-1 comparison.
 // Amounts come from the accountant's weekly balance upload; see the API
-// route (apps/api/src/routes/rapports.ts §Finance) for the exact rule that
-// turns those cumulative uploads into a per-year figure.
+// route (apps/api/src/lib/finance-common.ts) for the exact rule that turns those
+// cumulative uploads into a per-year figure.
+//
+// SHARED WITH TRM. `compte_compta` / `upload_compta` are partitioned by
+// id_societe and the two halves are the same object, so the sister app imports
+// THIS file via its `@etm` alias and passes its own `basePath`; the API is the
+// same router factory mounted twice. Never fork a TRM copy — improve this one.
+// Everything else (permission keys, `@/` component imports) resolves per app.
 //
 // Layout: "Tableau" (mps_designer §27) — toolbar, split sortable table,
 // right slide-in drawer, responsive card list below md (§40).
@@ -125,7 +131,14 @@ const BUCKETS: { key: Bucket; label: string }[] = [
 
 // ── Page ───────────────────────────────────────────────
 
-export function RapportFinance() {
+/** Where this app's finance endpoints live: `/rapports/finance` for ETM,
+ *  `/rapports-trm/finance` for TRM. The only thing that differs between the
+ *  two mounts of this screen. */
+interface RapportFinanceProps {
+  basePath?: string
+}
+
+export function RapportFinance({ basePath = '/rapports/finance' }: RapportFinanceProps = {}) {
   // Every hook runs before the permission early-return (mps_designer §28.6 —
   // hooks after a conditional return crash production builds, React #310).
   const canView = useHasPermission('view_rapport_finance')
@@ -143,7 +156,7 @@ export function RapportFinance() {
 
   const { data, isLoading, isError, error } = useQuery<FinancePayload>({
     queryKey: ['rapport-finance', annee],
-    queryFn: () => apiFetch<FinancePayload>(`/rapports/finance${annee != null ? `?annee=${annee}` : ''}`),
+    queryFn: () => apiFetch<FinancePayload>(`${basePath}${annee != null ? `?annee=${annee}` : ''}`),
     // Read-only report: always refetch on mount so the figures are live, but
     // never on window focus — the aggregate hits the shared HFSQL bridge.
     staleTime: 0,
@@ -546,6 +559,7 @@ export function RapportFinance() {
 
       <CompteDrawer
         compte={selected}
+        basePath={basePath}
         annee={anneeAffichee}
         anneePrecedente={anneePrec}
         canEdit={canEdit}
@@ -630,6 +644,8 @@ function KV({ label, value, mono }: { label: string; value: React.ReactNode; mon
 
 interface CompteDrawerProps {
   compte: FinanceLine | null
+  /** Same endpoint prefix the page was given. */
+  basePath: string
   annee: number | null
   anneePrecedente: number | null
   canEdit: boolean
@@ -657,6 +673,7 @@ interface ComptePatchResult {
 
 function CompteDrawer({
   compte,
+  basePath,
   annee,
   anneePrecedente,
   canEdit,
@@ -685,14 +702,14 @@ function CompteDrawer({
 
   const { data: historique, isLoading: histLoading } = useQuery<HistoriquePoint[]>({
     queryKey: ['rapport-finance-historique', id],
-    queryFn: () => apiFetch<HistoriquePoint[]>(`/rapports/finance/comptes/${id}/historique`),
+    queryFn: () => apiFetch<HistoriquePoint[]>(`${basePath}/comptes/${id}/historique`),
     enabled: id !== null,
     staleTime: 5 * 60 * 1000,
   })
 
   const saveMut = useMutation({
     mutationFn: (patch: Partial<CompteDraft>) =>
-      apiFetch<ComptePatchResult>(`/rapports/finance/comptes/${id}`, {
+      apiFetch<ComptePatchResult>(`${basePath}/comptes/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),

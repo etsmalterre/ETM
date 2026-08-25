@@ -67,17 +67,20 @@ export const FINANCE_SCOPE_ETM: FinanceScope = {
   editComptesKey: 'edit_compte_description' satisfies PermissionKey,
 }
 
-/** Tricotage Malterre. No Rapports › Finance screen yet, so the compte list is
- *  read-only here and gated on the Charges widget's own key; when that screen
- *  lands it adds `view_rapport_finance` to `financeKeys` and fills
- *  `editComptesKey` rather than forking this file. */
+/** Tricotage Malterre. Serves both the Charges widget and, since 2026-08-25,
+ *  TRM's own Rapports › Finance screen — which is ETM's screen file imported
+ *  through the `@etm` alias with `basePath="/rapports-trm/finance"`. Landing it
+ *  was exactly the two edits this object was left open for: `view_rapport_finance`
+ *  joined `financeKeys`, and `editComptesKey` turned the compte drawer's routes
+ *  on. The widget key STAYS in the list — it is an any-of, and dropping it would
+ *  silently blank the Charges card for anyone holding only that grant. */
 export const FINANCE_SCOPE_TRM: FinanceScope = {
   societe: 2,
   hasPermission: trmUserHasPermission,
-  financeKeys: ['dashboard_charges'] satisfies readonly TrmPermissionKey[],
+  financeKeys: ['view_rapport_finance', 'dashboard_charges'] satisfies readonly TrmPermissionKey[],
   analyseKey: 'dashboard_finance' satisfies TrmPermissionKey,
   caKey: 'dashboard_ca' satisfies TrmPermissionKey,
-  editComptesKey: '',
+  editComptesKey: 'edit_compte_description' satisfies TrmPermissionKey,
 }
 
 /** True when the user holds ANY of `keys` in this scope's store. Sequential,
@@ -373,6 +376,16 @@ async function handleCompteHistorique(scope: FinanceScope, req: Request, res: Re
 
     const id = Number.parseInt(req.params.id, 10)
     if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: 'invalid id' }); return }
+
+    // Same ownership check as the PATCH below: `releve_compta` carries no
+    // id_societe of its own, so without this a TRM caller could read an ETM
+    // payroll account's year series by guessing its id. Free while ETM was the
+    // only mount; load-bearing now that TRM registers this route too.
+    const owned = await query<{ IDcompte_compta: number }>(
+      `SELECT IDcompte_compta FROM compte_compta
+       WHERE IDcompte_compta = ${id} AND id_societe = ${scope.societe}`,
+    )
+    if (owned.length === 0) { res.status(404).json({ error: 'Compte not found' }); return }
 
     const anchors = await loadYearAnchors(scope.societe)
     // date → year, so one flat read over the account's own rows folds into

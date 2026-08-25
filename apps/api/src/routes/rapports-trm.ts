@@ -7,15 +7,19 @@
 // books. Everything société-dependent (including which permission store
 // answers) lives in `FINANCE_SCOPE_TRM`.
 //
-// Consumers today are the four tableau de bord widgets:
-//   Charges              → GET /finance          (dashboard_charges)
+// Consumers:
+//   Rapports › Finance   → GET /finance                        (view_rapport_finance)
+//                          GET /finance/comptes/:id/historique
+//                          PATCH /finance/comptes/:id          (+ edit_compte_description)
+//   Charges              → GET /finance          (dashboard_charges — same payload,
+//                                                 any-of with the screen's key)
 //   Analyse financière   → GET /finance/analyse  (dashboard_finance)
 //   Chiffre d'affaires   → GET /ca-clients       (dashboard_ca)
 //   Évolution du CA      → GET /ca-evolution     (dashboard_ca)
 //
-// `/finance/comptes/:id/*` is deliberately NOT mounted here — TRM has no
-// Rapports › Finance screen yet, so there is nothing to edit a compte from.
-// See `FINANCE_SCOPE_TRM` for what that screen will flip when it lands.
+// The screen is ETM's file, imported by the TRM web through its `@etm` alias
+// with `basePath="/rapports-trm/finance"` — the one thing that differs between
+// the two mounts on the frontend, as `FinanceScope` is on the backend.
 import type { Router as RouterType } from 'express'
 import { createFinanceRouter, FINANCE_SCOPE_TRM } from '../lib/finance-common.js'
 
