@@ -34,6 +34,35 @@ export const TRM_PERMISSION_KEYS = [
     category: 'Tableau de bord',
   },
   {
+    key: 'dashboard_ca',
+    label: 'Widget « Chiffre d’affaires »',
+    description:
+      'Affiche sur le tableau de bord le CA par client de Tricotage Malterre : classement, comparatif avec l’année précédente (année complète ou même période), progressions, nouveaux clients et répartition. Donnée confidentielle — l’API refuse les chiffres sans ce droit, même à un utilisateur qui devinerait l’adresse.',
+    category: 'Tableau de bord',
+  },
+  {
+    key: 'dashboard_evolution_ca',
+    label: 'Widget « Évolution du CA »',
+    description:
+      'Affiche sur le tableau de bord le CA mensuel et annuel de Tricotage Malterre sur les cinq derniers exercices. Sous-droit de « Chiffre d’affaires » : même donnée confidentielle et même contrôle API, mais l’affichage du widget se règle séparément.',
+    category: 'Tableau de bord',
+    parent: 'dashboard_ca',
+  },
+  {
+    key: 'dashboard_finance',
+    label: 'Widget « Analyse financière »',
+    description:
+      'Affiche sur le tableau de bord les courbes cumulées de l’exercice (CA, marge brute, charges fixes et variables) et le CA, la marge brute et l’EBE du dernier relevé comptable de Tricotage Malterre. Donnée confidentielle — l’API refuse les chiffres sans ce droit. Indépendant de « Charges », qui donne le détail compte par compte.',
+    category: 'Tableau de bord',
+  },
+  {
+    key: 'dashboard_charges',
+    label: 'Widget « Charges »',
+    description:
+      'Affiche sur le tableau de bord le total des charges fixes et variables du dernier relevé comptable de Tricotage Malterre, face à la même période de l’année précédente. Ce droit ouvre aussi le détail compte par compte servi par l’API — donnée confidentielle : il nomme les lignes de salaires.',
+    category: 'Tableau de bord',
+  },
+  {
     key: 'edit_commandes_client',
     label: 'Édition des commandes client',
     description:

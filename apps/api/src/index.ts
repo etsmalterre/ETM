@@ -38,6 +38,7 @@ import { suiviLotsRouter } from './routes/suivi-lots.js'
 import { dossiersQualiteRouter } from './routes/dossiers-qualite.js'
 import { actionsQualiteRouter } from './routes/actions-qualite.js'
 import { rapportsRouter } from './routes/rapports.js'
+import { rapportsTrmRouter } from './routes/rapports-trm.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
@@ -158,6 +159,7 @@ app.use('/api/suivi-lots', suiviLotsRouter)
 app.use('/api/dossiers-qualite', dossiersQualiteRouter)
 app.use('/api/actions-qualite', actionsQualiteRouter)
 app.use('/api/rapports', rapportsRouter)
+app.use('/api/rapports-trm', rapportsTrmRouter)
 // TRM atelier planning — consumed by the TRM web app (C:\dev\etsmalterre\TRM)
 app.use('/api/planning-atelier', planningAtelierRouter)
 // TRM production orders (Gestion des OF) — consumed by the TRM web app.

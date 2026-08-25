@@ -9,6 +9,43 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/widget (API des widgets financiers TRM)
+
+Les quatre widgets financiers du tableau de bord ETM (Charges, Chiffre d'affaires, Analyse
+financière, Évolution du CA) sont désormais servis **aussi** pour Tricotage Malterre. Aucune
+seconde agrégation : `upload_compta` / `compte_compta` (`id_societe`) et `facture`
+(`IDsociete`) sont des tables partitionnées dont les deux moitiés sont le **même objet**,
+donc c'est la forme `factures.ts` — **une router factory montée deux fois**. Le bloc
+finance + CA (756 lignes) sort de `routes/rapports.ts` vers **`lib/finance-common.ts`**
+(`createFinanceRouter(scope)`), monté sur `rapportsRouter` en `/` — **les URL ETM ne
+changent pas** — et sur **`/api/rapports-trm`** via `routes/rapports-trm.ts`.
+
+**Le `FinanceScope` porte aussi le magasin de droits** (`userHasPermission` vs
+`trmUserHasPermission`) : c'est la nouveauté par rapport à `FacturesScope`, les deux apps
+ayant des stores séparés. À recopier pour toute future factory à cheval sur les deux apps —
+avec le piège de typage documenté dans CLAUDE.md (méthode bivariante + `satisfies`, jamais
+un cast).
+
+**`view_rapport_finance` n'existe volontairement PAS côté TRM.** `GET /finance` renvoie la
+balance compte par compte (elle nomme les lignes de salaires) : elle est donc gardée par
+`dashboard_charges`, la clé du widget lui-même, plutôt que par un droit dont l'écran n'est
+pas porté. `financeKeys` est une **liste** (any-of) précisément pour que l'écran
+Rapports › Finance TRM n'ait qu'à s'y ajouter. Les routes d'écriture d'un compte ne sont
+**pas montées** sur TRM (`editComptesKey: ''`) : elles répondent 404, pas 403.
+
+Quatre clés TRM ajoutées (`dashboard_ca`, `dashboard_evolution_ca` en sous-droit,
+`dashboard_finance`, `dashboard_charges`).
+
+**Vérifié en base avant de livrer** (`scripts/probe-finance-trm.ts`, à rejouer après un
+`/etm_deploy`) : les sommes au niveau compte reproduisent **exactement** les seaux
+`frais_fixe` / `frais_variable` d'`upload_compta` sur les ancres 2025 et 2026 (46 633,56 €
+/ 10 562,04 € au 23/03/2026), et le CA `facture` × `ligne_facture` recoupe
+`upload_compta.produits` à 0,0 % sur 2026 — deux sources indépendantes du même nombre.
+L'ancre **2024 dérive d'environ 4,5 k€** parce que `compte_compta.frais_variable` est la
+classification *actuelle* et non celle en vigueur cette année-là ; ETM dérive pareil et
+l'écran legacy aussi, donc ce n'est pas corrigé. Côté ETM, contrôle de non-régression après
+l'extraction : charges fixes 111 604,54 €, CA 2025 2 684 442,74 € — inchangés.
+
 ## 2026-08-25 — feat/users (axe d'accès aux écrans côté TRM)
 
 L'onglet **Écrans** de Paramètres › Utilisateurs existait côté ETM seulement ; TRM le
@@ -40,6 +77,7 @@ se retrouve avec une navigation vide. Il est idempotent et c'est aussi la façon
 donner un menu *nouvellement livré* à tout le monde d'un coup.
 
 Docs : `claude_doc/auth_permissions.md` § Screen access gagne un point sur le miroir TRM.
+
 ## 2026-08-24 — feat/prime (API de l'écran Prime TRM)
 
 Nouvelle route `/api/prime-trm` (+ `lib/pdf/PrimePdf.tsx`) servant l'écran Production ›
