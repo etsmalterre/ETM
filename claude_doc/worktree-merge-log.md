@@ -9,6 +9,30 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/prime (la semaine de la Prime TRM ne liste plus que les déclassements)
+
+Le tableau qui remplit la colonne sous le bloc taux, dans la carte « Analyse des
+déclassements » de `Production › Prime` (TRM), listait **tous** les défauts relevés par le
+visitage sur la semaine, les deux choix — au motif qu'un défaut n'est pas un déclassement.
+Il vit pourtant dans la carte des déclassements, et ce que l'atelier veut y lire c'est ce
+que la semaine a coûté. Il est donc désormais limité aux pièces 2nd choix, **une ligne par
+rouleau** (l'unité qui coûte de l'argent) et non plus une ligne par défaut, avec son manque
+à gagner (`poids × 0,20 €`, même base que `DeclassementType.montant` et que la tuile
+Production 2nd Choix). Les défauts de la pièce descendent sur une seconde ligne, doublons
+repliés en `×N`.
+
+Côté API (`routes/prime-trm.ts`), `fetchDefautsSemaine` devient `fetchDeclassementsSemaine`
+et `semaine.defauts` devient `semaine.declassements`. Le point important est le prédicat :
+la requête passe par le `periodWhere(1, monday)` partagé, donc **exactement la population
+que `semaine.secondChoix` somme**. Les lignes totalisent toujours la tuile — y compris les
+pièces déclassées **sans** ligne `defaut_qualite`, qui gardent leur ligne (« Aucun défaut
+relevé ») au lieu d'être jetées comme avant. Un filtre « doit porter un défaut » ferait
+diverger silencieusement la colonne et la tuile ; c'est l'invariant à ne pas casser.
+
+Vérifié sur la semaine du 16/02/2026 de la base dev : 41 pièces, 227,80 kg, 45,56 € —
+réconcilie à la virgule avec `semaine.secondChoix`. Le PDF (`PrimePdf.tsx`) ne touchait pas
+ce champ et est inchangé : c'est le document de paie, pas la vue ops.
+
 ## 2026-08-25 — feat/rapport-finance (l'écran Rapports › Finance sert aussi TRM)
 
 L'écran ETM `Rapports › Finance` est désormais **le même fichier** dans les deux apps :
