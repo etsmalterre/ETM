@@ -253,6 +253,46 @@ async function loadBalanceAt(date: string | null): Promise<Map<number, number>> 
   return out
 }
 
+/** debit − credit per account at SEVERAL upload dates, in one query.
+ *  `date → (IDcompte_compta → montant)`. A date with no releve row at all gets
+ *  no entry (not an empty map) — the caller must be able to tell "balance says
+ *  zero" from "no balance was filed", which is what the fallback below needs. */
+async function loadBalancesAt(dates: string[]): Promise<Map<string, Map<number, number>>> {
+  const out = new Map<string, Map<number, number>>()
+  const wanted = [...new Set(dates.filter((d) => /^\d{8}$/.test(d)))]
+  if (wanted.length === 0) return out
+  const rows = await query<{ DATE: string | null; IDcompte_compta: number; debit: number | null; credit: number | null }>(
+    `SELECT DATE, IDcompte_compta, debit, credit FROM releve_compta
+     WHERE DATE IN (${wanted.map((d) => `'${d}'`).join(',')})`,
+  )
+  for (const r of rows) {
+    const date = dateDigits(r.DATE)
+    const id = n(r.IDcompte_compta)
+    if (id <= 0 || !wanted.includes(date)) continue
+    let m = out.get(date)
+    if (!m) { m = new Map(); out.set(date, m) }
+    m.set(id, n(r.debit) - n(r.credit))
+  }
+  return out
+}
+
+/** `IDcompte_compta → 1 (charge variable) / 0 (charge fixe)` for this société's
+ *  class-6 accounts. The lean twin of `loadComptes`: no libellé, no Description,
+ *  so no accent repair — the analyse series needs the CLASSIFICATION only. */
+async function loadChargeBuckets(societe: number): Promise<Map<number, 0 | 1>> {
+  const rows = await query<{ IDcompte_compta: number; numero: number | null; frais_variable: number | null }>(
+    `SELECT IDcompte_compta, numero, frais_variable
+     FROM compte_compta WHERE id_societe = ${societe}`,
+  )
+  const out = new Map<number, 0 | 1>()
+  for (const r of rows) {
+    const num = n(r.numero)
+    if (num <= 0 || num >= CLASS_7) continue
+    out.set(n(r.IDcompte_compta), n(r.frais_variable) === 1 ? 1 : 0)
+  }
+  return out
+}
+
 interface CompteRow {
   IDcompte_compta: number
   numero: number | null
@@ -490,11 +530,36 @@ async function handleComptePatch(scope: FinanceScope, req: Request, res: Respons
 // Every upload is a CUMULATIVE year-to-date balance, so the month-by-month
 // series is simply the LAST upload of each month — never a sum of uploads.
 //
-// The three figures, from `upload_compta`'s pre-computed buckets:
+// The three figures:
 //
-//   CA               = produits
-//   marge brute      = produits − frais_variable
-//   EBE              = produits − frais_variable − frais_fixe
+//   CA               = produits                                   (upload_compta)
+//   marge brute      = produits − charges variables
+//   EBE              = produits − charges variables − charges fixes
+//
+// ⚠️ The fixe / variable SPLIT is recomputed from `releve_compta` bucketed by
+// `compte_compta.frais_variable` — the SAME arithmetic as the Rapports › Finance
+// screen — and NOT read from `upload_compta.frais_fixe` / `.frais_variable`.
+//
+// Those two columns are a snapshot the accountant's WinDev upload routine froze
+// at write time, so they encode the classification in force THAT WEEK. Change a
+// compte from fixe to variable and the report restates every year instantly
+// while the stored buckets keep the old split for ever — which is what made the
+// widget and the report disagree (reported 2026-08-25). Worse, the disagreement
+// does not heal: the NEXT upload is written with the new classification, so the
+// curve would step mid-year — on a cumulative series, charges fixes appearing to
+// fall is arithmetically impossible and reads as a bug.
+//
+// Measured on the dev copy of the books before the change: the recompute
+// reproduces the stored buckets to the centime on 50 of ETM's 57 uploads, and on
+// every one of the 7 where it does not, the stored row carries a pure swap
+// between the two buckets (a compte reclassified since) — i.e. the recompute is
+// the half that agrees with the screen. TRM is the same story on 32 of 58.
+// Guard: `apps/api/src/scripts/check-finance-analyse-buckets.ts`.
+//
+// `produits` still comes from the upload: a reclassification only ever moves an
+// account between the two CHARGE buckets, so the CA line — the one validated
+// against the legacy screen — is untouched, and so is EBE (total charges are
+// unchanged; only their split moves).
 //
 // Verified against the legacy screen (28/07/2026): CA 1 908 171 €,
 // marge brute 595 021 € (31,2 % du CA), EBE 97 841 € (5,1 %) — its marge minus
@@ -545,17 +610,38 @@ async function handleFinanceAnalyse(scope: FinanceScope, req: Request, res: Resp
       byMonth.set(Number(u.date.slice(4, 6)), u)
     }
 
-    const points = [...byMonth.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([mois, u]) => ({
+    const anchors = [...byMonth.entries()].sort((a, b) => a[0] - b[0])
+    const [buckets, balances] = await Promise.all([
+      loadChargeBuckets(scope.societe),
+      loadBalancesAt(anchors.map(([, u]) => u.date)),
+    ])
+
+    const points = anchors.map(([mois, u]) => {
+      // No balance filed at that date → nothing to recompute from, so keep the
+      // upload's own buckets rather than plotting a false zero.
+      const balance = balances.get(u.date)
+      let fixe = u.frais_fixe
+      let variable = u.frais_variable
+      if (balance) {
+        fixe = 0
+        variable = 0
+        for (const [id, montant] of balance) {
+          const bucket = buckets.get(id)
+          if (bucket === undefined) continue // produits (classe 7) or another société
+          if (bucket === 1) variable += montant
+          else fixe += montant
+        }
+      }
+      return {
         mois,
         date: u.date,
         ca: euro(u.produits),
-        charges_fixes: euro(u.frais_fixe),
-        charges_variables: euro(u.frais_variable),
-        marge_brute: euro(u.produits - u.frais_variable),
-        ebe: euro(u.produits - u.frais_variable - u.frais_fixe),
-      }))
+        charges_fixes: euro(fixe),
+        charges_variables: euro(variable),
+        marge_brute: euro(u.produits - variable),
+        ebe: euro(u.produits - variable - fixe),
+      }
+    })
 
     const last = points[points.length - 1] ?? null
     res.json({
