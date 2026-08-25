@@ -9,6 +9,37 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/users (axe d'accès aux écrans côté TRM)
+
+L'onglet **Écrans** de Paramètres › Utilisateurs existait côté ETM seulement ; TRM le
+gagne, avec le même modèle à deux directions mais **son propre arbre et son propre
+magasin**. Cette entrée couvre la moitié API ; l'écran vit dans le repo TRM voisin.
+
+Nouveau manifeste `lib/screen-keys-trm.ts` (`TRM_SCREEN_MENUS`, `trmMenuAccessKey` /
+`trmScreenHideKey` / `isTrmScreenAccessKey`), miroir de
+`TRM/apps/web/src/config/navigation.ts` : un **menu est un grant fermé par défaut**
+(`screen_<menu>`), un **écran dans un menu accordé est un hide**
+(`hide_<menu>_<screen>`). `lib/permissions-trm.ts` rend ces clés stockables à côté des
+clés d'action (mêmes tableaux à plat, `isStorableTrmKey`), et
+`routes/permissions-trm.ts` gagne `GET /screens` (catalogue), donne à l'admin effectif
+les grants de menu sur `/me` — **jamais les hides**, qui sont des clés négatives — et
+accepte les deux axes sur `PUT /users/:id`.
+
+⚠️ **Certaines chaînes de clés coïncident avec celles d'ETM** (`screen_clients`,
+`hide_clients_facturation`). C'est sans conséquence : les deux magasins
+(`permissions.json` / `permissions-trm.json`) ne se croisent jamais et chaque PUT filtre
+sur son propre catalogue. Ne pas « dédupliquer » les deux manifestes.
+
+Deux scripts accompagnent : `check-screen-access-trm.ts` diffe le manifeste contre le
+`navigation.ts` du repo TRM voisin (`--nav <chemin absolu>` pour viser un worktree
+plutôt que `../TRM` ; un chemin relatif se résout depuis le cwd, que `pnpm --filter`
+place à la racine du repo) — 7/7 menus concordants au moment du merge. Et
+`seed-screen-access-trm.ts --write` fait le rattrapage : **à lancer sur le serveur avant
+le déploiement du web TRM**, sinon, les menus étant fermés par défaut, chaque non-admin
+se retrouve avec une navigation vide. Il est idempotent et c'est aussi la façon de
+donner un menu *nouvellement livré* à tout le monde d'un coup.
+
+Docs : `claude_doc/auth_permissions.md` § Screen access gagne un point sur le miroir TRM.
 ## 2026-08-24 — feat/prime (API de l'écran Prime TRM)
 
 Nouvelle route `/api/prime-trm` (+ `lib/pdf/PrimePdf.tsx`) servant l'écran Production ›
