@@ -40,7 +40,7 @@ import { n, dateDigits, addWorkingDays, isLineDone, lineStatutRank, esc } from '
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { createFinanceRouter, FINANCE_SCOPE_ETM } from '../lib/finance-common.js'
-import { valoriserStockFini } from '../lib/valorisation-stock.js'
+import { valoriserStock } from '../lib/valorisation-stock.js'
 
 export const rapportsRouter: RouterType = Router()
 
@@ -1437,7 +1437,7 @@ rapportsRouter.get('/stock/valorisation', async (req: Request, res: Response) =>
       res.status(403).json({ error: 'forbidden', message: 'Accès à la valorisation du stock non autorisé.' })
       return
     }
-    res.json(await valoriserStockFini())
+    res.json(await valoriserStock())
   } catch (err) {
     console.error('[rapports/stock/valorisation]', err)
     res.status(500).json({ error: (err as Error).message })

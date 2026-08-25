@@ -85,7 +85,7 @@ export const PERMISSION_KEYS = [
     key: 'dashboard_stock_valorisation',
     label: 'Valorisation du stock',
     description:
-      'Affiche le widget « Valorisation du stock » sur le tableau de bord : valeur d’achat et valeur dépréciée des rouleaux finis en stock, taux de provision et répartition par ancienneté. Donnée confidentielle (c’est un poste de bilan) — l’API refuse les chiffres sans ce droit.',
+      'Affiche le widget « Valorisation du stock » sur le tableau de bord : valeur d’achat et valeur dépréciée du stock (fil, tombé de métier disponible et en ennoblissement, rouleaux finis), taux de provision et détail par type. Donnée confidentielle (c’est un poste de bilan) — l’API refuse les chiffres sans ce droit.',
     category: 'Tableau de bord',
   },
   // Commandes client — kept right after the dashboard keys so the section

@@ -9,6 +9,22 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-25 — feat/valorisation-4-types (la valorisation du stock passe aux quatre types)
+
+Le widget livré le matin ne couvrait que les rouleaux finis — moins de la moitié de l'assiette. Vincent ayant fourni les sept inventaires légataires manquants (2024 et 2025 pour fil, TM dispo, TM en ennoblissement, fini), le calcul couvre désormais **les quatre types**, avec la méthode de son expert-comptable.
+
+**La reconstitution est ancrée, pas devinée.** Les quatre inventaires imprimés au 27/12/2024 reproduisent EXACTEMENT la ligne `inventaire_compta` du 28/12/2024 — Fil 199 090/122 891, TM dispo 56 372/27 937, TM en cours 44 236/43 469, Fini 331 978/179 142. Et la boucle se ferme jusqu'au bilan 2025 : les quatre types donnent brut 581 921 / net 312 793, l'escrime hors ERP 57 600 / 13 935, total 639 521 / 326 728 — les chiffres exacts du bilan. **L'escrime manquant est donc un montant connu, pas une inconnue**, et le widget l'affiche.
+
+**Deux barèmes, et le fil a le sien.** Fini / TM dispo / TM en cours partagent 2ᵉ choix −90 % · < 1 an 0 % · 1-2 ans −50 % · > 2 ans −90 %. Le fil ajoute une **exemption 100 % élasthanne** (qui prime sur tout), une règle **petit lot** (< 100 kg **et** > 1 an → −90 %, évaluée avant l'échelle d'âge) et une échelle à quatre crans (0 / −50 / −75 / −90). L'ordre des règles est signifiant et le code le suit littéralement.
+
+**Populations.** Fil = `stock > 0` **et `IDclient = 1`** — le fil confié (Hermès, La Gentle Factory, SIGVARIS… 46 lots / 8 201 kg) est dans nos murs mais **pas à notre bilan**. TM = écru ETM non expédié et sans enfant `stock_fini`, scindé sur **`IDref_commande_affectation`** et non sur le magasin : MATEL figure dans les deux inventaires imprimés, donc le magasin est orthogonal au critère.
+
+Trois pièges HFSQL traversés : `asso_fil_matiere` et `matiere_premiere` portent des identifiants **accentués** que le pont Linux refuse (→ `SELECT *` + `pickKey`, vérifié en exécution réelle sur le serveur de prod), `stock_fil` porte des **memos binaires** qui font renvoyer 0 ligne à `SELECT *` sur Windows (→ colonnes nommées), et `asso_fil_matiere.pourcentage` est une **fraction** (0,31 = 31 %) là où `composition_ecru.pourcentage` est en centièmes.
+
+Le widget rend le taux de provision par une **barre net/brut** plutôt qu'un feu tricolore : les seuils « bon / mauvais » sont une décision de gestion qui n'a pas été prise, et inventer un vert à 30 % dirait au lecteur une chose que personne n'a arbitrée.
+
+Garde : `check-valorisation-stock.ts` — cohérence interne, application des deux barèmes, populations recomptées en SQL, exclusion du fil confié, et refus des tranches dégénérées (la régression du parseur de dates : `date_saisie` revient en TIMESTAMP, `dateDigits` renvoie `''` partout et range tout le stock à 90 %).
+
 ## 2026-08-25 — feat/fix-sstatut-encoding (isLineDone compare le préfixe ASCII)
 
 `isLineDone()` comparait à `'Terminé'` accentué, alors qu'ODBC renvoie la valeur en `Termin�`. Toute ligne réellement terminée était donc **fausse** dès que la requête d'origine n'avait pas passé `fixEncoding` — mesuré sur la table vivante : **0 ligne reconnue sur 7 257**, alors que 4 619 portent ce statut.

@@ -61,7 +61,7 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
     defaultWidth: 6,
     // Twelve month labels need the width; below 4 columns they collide.
     minWidth: 4,
-    defaultHeightPx: 420,
+    defaultHeightPx: 460,
     Component: EvolutionCaWidget,
   },
   {
@@ -78,14 +78,16 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
   {
     key: 'stock_valorisation',
     permission: 'dashboard_stock_valorisation',
-    title: 'Valorisation du stock fini',
+    title: 'Valorisation du stock',
     icon: FiniRollIcon,
     // 6 comme l'Analyse financiere, sa voisine : c'est la largeur a laquelle les
     // trois tuiles tiennent sur une ligne. A 4 colonnes elles passent en pile et
     // la carte double de hauteur pour la meme information.
     defaultWidth: 6,
     minWidth: 4,
-    defaultHeightPx: 420,
+    // 4 types x 2 lignes + la barre de repartition : sous ~520 px le panneau
+    // se met a defiler et la barre sort du champ.
+    defaultHeightPx: 520,
     Component: ValorisationStockWidget,
   },
   {
