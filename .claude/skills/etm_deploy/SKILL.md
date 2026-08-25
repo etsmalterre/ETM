@@ -171,6 +171,8 @@ of every deploy — see the deploy steps). The check:
    cd /home/debian/mps_api
    # backup current
    tar czf ../mps_api_backup.tar.gz src/ package.json
+   # prune src/scripts BEFORE extracting — see the drift note below
+   rm -rf src/scripts
    # extract new files
    tar xzf ../tarball.tar.gz
    # install new dependencies if package.json changed
@@ -180,10 +182,30 @@ of every deploy — see the deploy steps). The check:
    sudo systemctl status mps-api
    ```
 
+   ⚠️ **`tar xzf` extracts OVER the tree and never deletes**, so anything the archive
+   no longer carries survives for ever. Measured 2026-08-25: `src/scripts/` on prod held
+   **11 files that were in no commit** — nine one-off diagnostics from a May 2026 session
+   (`inspect-*`, `verify-*`, `test-dc-*`), one probe from that day, and
+   `check-retour-marchandise.ts`, a genuine 196-line guard for ticket #1086 that had been
+   written straight onto the server and existed **nowhere else**. Deleting blind would
+   have destroyed it; it was recovered into the repo instead.
+   So: `rm -rf src/scripts` before extracting keeps the deployed tree honest, but **check
+   for orphans first** and rescue anything worth keeping —
+   `comm -23 <(ssh … 'ls -1 …/src/scripts' | sort) <(ls -1 apps/api/src/scripts | sort)`.
+   Only `src/scripts` is safe to prune this way: nothing under it is imported by the
+   running service. Never do it to `src/routes` or `src/lib`.
+
 4. **Stamp the deployed commit** after a clean restart (this is what Step 0 reads next time).
-   Compute the SHA locally (`git rev-parse origin/master`) and write it on the API server:
+   **Re-read `origin/master` at THIS moment — do not reuse the SHA from Step 0.** A deploy
+   takes long enough for someone else's `/feature-complete` to land in between, and
+   stamping the stale SHA then claims prod is current when it is a commit behind. Happened
+   2026-08-25: `feat/prime` merged mid-deploy, so `prime-trm.ts` sat undeployed under a
+   `DEPLOYED_SHA` that said otherwise. If the fetch shows master has moved, either rebuild
+   the tarball from the new tip or stamp the SHA you **actually** shipped — never the tip
+   you did not.
    ```bash
-   SHA=$(cd /c/dev/etsmalterre/ETM && git rev-parse origin/master)
+   cd /c/dev/etsmalterre/ETM && git fetch -q origin
+   SHA=$(git rev-parse origin/master)   # verify this is what the tarball was built from
    wsl bash -c "ssh $WOPTS debian@10.10.2.163 'echo $SHA > /home/debian/mps_api/DEPLOYED_SHA'"
    ```
 
