@@ -44,7 +44,7 @@ import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
 import { esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
-import { prixDeRevientTRM, trmLinePrix } from '../lib/pricing-trm.js'
+import { prixDeRevientTRM, prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
@@ -449,28 +449,42 @@ commandesTrmRouter.get('/lookups/colori-ecru', async (req: Request, res: Respons
   }
 })
 
-/** Suggested price for a line being entered. Delegates to `trmLinePrix` — the
- *  SAME function the ETM bridge uses when it creates a knit order, i.e.
- *  `max(PrixDeRevientTRM / 0.7, ref_ecru.prix)`. Using the raw cost as the
- *  floor here instead would systematically under-price a native TRM order
- *  relative to a mirrored one for the same ref and weight (the 30 % margin
- *  divisor is exactly what separates them). `cout` rides along so the form can
- *  show the underlying cost of revient in a tooltip.
- *  Never throws; an unpriceable ref comes back priceable=false and the form
- *  falls back to manual entry. */
+/** Suggested price for a line being entered — `max(PrixDeRevientTRM,
+ *  ref_ecru.prix) / 0.7`, the `'cost-floor'` rule. `ref_ecru.prix` is the safe
+ *  base: whichever of the base and the computed cost of revient is the higher
+ *  assiette gets TRM's 30 % margin, so a native client order never goes out
+ *  below base + 30 % (user decision, 2026-08-26).
+ *
+ *  ⚠️ This is NOT `trmLinePrix`, which stays on the legacy `'price-floor'`
+ *  rule (`max(cost / 0.7, base)`) because it prices the ETM → TRM
+ *  sous-traitance lines and must keep matching the WinDev app that still
+ *  writes them — the two rules differ by ~+39 % in value on recent lines. Do
+ *  not "unify" them without deciding the intercompany transfer price too.
+ *
+ *  The legacy TRM client-order window suggested neither: its COMBO_Reference
+ *  event reads `ref_ecru.prix` and stops there, which is why it proposes a
+ *  visibly lower number than this screen.
+ *
+ *  `cout` and `base` ride along so the form can say where the price came from
+ *  rather than showing a bare figure. Never throws; an unpriceable ref comes
+ *  back priceable=false and the form falls back to manual entry. */
 commandesTrmRouter.get('/lookups/line-price', async (req: Request, res: Response) => {
+  const empty = { priceable: false, prix: 0, cout: 0, base: 0, retenu: 'revient' as const }
   try {
     const refId = parseInt(String(req.query.ref ?? ''), 10) || 0
     const quantite = Number(req.query.quantite ?? 0) || 0
-    if (refId <= 0 || quantite <= 0) { res.json({ priceable: false, prix: 0, cout: 0 }); return }
-    const [prix, cout] = await Promise.all([
-      trmLinePrix(refId, quantite),
-      prixDeRevientTRM(refId, quantite),
-    ])
-    res.json({ priceable: prix > 0, prix: round2(prix), cout: round2(cout) })
+    if (refId <= 0 || quantite <= 0) { res.json(empty); return }
+    const d = await prixDeRevientTRMDetail(refId, quantite, 'cost-floor')
+    res.json({
+      priceable: d.retainedPrice > 0,
+      prix: d.retainedPrice,
+      cout: round2(d.costPerKg),
+      base: round2(d.floor),
+      retenu: d.retainedFrom,
+    })
   } catch (err) {
     console.error('Error computing TRM line price:', err)
-    res.json({ priceable: false, prix: 0, cout: 0 })
+    res.json(empty)
   }
 })
 

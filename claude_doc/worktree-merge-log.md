@@ -9,6 +9,18 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-26 — feat/cmd-client (tarif suggéré des lignes de commande client TRM)
+
+Vincent : « in clients/commandes, when i create a new line, there is a price difference between TRM pwa and the legacy app ». L'écran proposait **2,88 €** là où le WinDev en propose **2,01 €** sur la même référence (005, 100 kg).
+
+**L'enquête, parce que le rapport 0,7 entre les deux chiffres est un piège.** 2,88 × 0,7 = 2,016 : on lit « la marge de 30 % est appliquée en trop ». Faux. Le legacy **ne calcule rien** sur cette fenêtre — l'événement « sélection d'une ligne » de `COMBO_Reference` dans `FEN_Gestion_d_une_référence_de_commande_client` ne nomme que deux identifiants, `ref_ecru` et `prix`, et s'arrête là (récupéré du cache de compilation WinDev `MPS.cpl/<user>/00000000/<Window>.<hash>.wdw.wcw`, lisible même quand le `.wdw` est PCS-compressé). Le 2,01 € est donc `ref_ecru.prix` nu, et la coïncidence vient de cette référence-là : revient 2,0158 ≈ base 2,0125. Les arrondis les départagent (2,02 vs 2,01), et c'est 2,01 qui s'affiche.
+
+**La règle retenue.** `ref_ecru.prix` est la **base sûre**, un plancher sur le *coût* : le tarif suggéré devient **`max(revient ; base) / 0,7`** au lieu de `max(revient / 0,7 ; base)`, donc la plus haute des deux assiettes porte les 30 % et une commande client TRM ne sort jamais sous base + 30 %. Les deux lectures coïncidaient précisément sur la référence testée, ce qui est pourquoi le cas ne l'exposait pas : sur les 51 références utilisées par les commandes natives, elles divergent sur 40 à 100 kg (réf. 63 : 2,45 € contre 3,50 €).
+
+**Ce qui ne bouge pas, et pourquoi.** `prixDeRevientTRMDetail` prend un paramètre `TrmBaseRole` (`'price-floor'` par défaut = la règle legacy, `'cost-floor'` = la nouvelle) et expose `retainedFrom`, via un unique helper `retain()` que les deux chemins du breakdown traversent. **`trmLinePrix` reste sur le défaut** : il price les lignes de sous-traitance ETM → TRM, qui doivent continuer à coller au WinDev qui les écrit encore — vérifié 15/15 sur les miroirs récents, dont la réf. 4 @500 kg stockée à 2,07 €, la base nue sans marge. Basculer le défaut renchérirait ce prix de transfert intercompany de **~+39 %** en valeur ; d'où le refus délibéré d'unifier les deux règles, et `pricing-trm.test.ts` (10 tests purs, sans base) qui les épingle toutes les deux.
+
+**Côté API.** `/commandes-trm/lookups/line-price` renvoie `base` et `retenu` en plus de `prix`/`cout`, pour que le dialogue TRM dise d'où vient le chiffre au lieu d'afficher un prix nu. Aucun changement de comportement ETM : `trmLinePrix`, la fenêtre « Coût de tricotage » (`/references-ecru/:id/cout-tricotage`) et l'écriture des lignes sst sont inchangées — la seule différence observable côté NG est la correction de la règle dans `CLAUDE.md`, qui affirmait l'inverse.
+
 ## 2026-08-26 — feat/siren (champ SIREN sur la fiche client — ticket #1088)
 
 Isabelle : « il faudrait mettre un champ siren dans la gestion client afin que je puisse commencer à le mettre car c'est ce numéro qui sera le plus utile pour la facturation électronique. » Vincent avait déjà créé la colonne `client.siren` en base ; cette branche l'expose.
