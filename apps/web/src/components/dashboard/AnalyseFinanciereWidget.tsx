@@ -8,14 +8,23 @@
 // gap between marge brute and charges fixes IS the EBE.
 //
 // ⚠️ PORTÉE — ce que ces figures NE contiennent PAS, et pourquoi c'est affiché :
-// `upload_compta.produits` exclut la **production stockée** (vérifié sur deux
-// exercices : 2024 la portait à 178 359 € pour un résultat d'exploitation de
-// 180 614 €, soit la totalité du résultat ; 2025 à 1 509 €), et les
-// **provisions** sont sous l'EBE par définition. Un exercice où la production
-// dépasse les ventes voit donc son EBE intermédiaire amputé, et la clôture
-// annuelle le redresse. C'est ce qui a fait lire juillet 2026 comme un
-// effondrement (-133 k€) alors que 146 k€ de production non vendue en portaient
-// 82 % — d'où la mention permanente sous les tuiles, et non une infobulle.
+// les **provisions**, qui sont sous l'EBE par définition et que la clôture
+// annuelle passe d'un coup. D'où la mention permanente sous les tuiles, et non
+// une infobulle — voir §Valorisation du stock pour le chiffre manquant.
+//
+// ⚠️ La mention a longtemps parlé aussi de « production stockée ». C'était faux
+// et c'est retiré (2026-08-26) : ETM n'en a pas, la case FM du 2052 est vide en
+// 2023, 2024 ET 2025. Les 178 359 € de 2024 qu'on lui attribuait sont la case
+// FP, reprises sur amortissements et provisions. Ce qui manquait réellement à
+// l'EBE intermédiaire, c'est la variation de stock du compte 603700 — écriture
+// annuelle, donc nulle onze mois sur douze — et elle est désormais ESTIMÉE et
+// intégrée (lib/variation-stock.ts), ce que dit l'autre branche du ternaire.
+// C'est ce qui a fait lire juillet 2026 comme un effondrement.
+//
+// ⚠️ Le dernier point d'un exercice reste un solde d'AVANT clôture : les
+// écritures de l'expert-comptable ne remontent jamais dans l'ERP (32 944 €
+// d'écart avec le compte de résultat 2025). Limite acceptée, non affichée —
+// le widget estime en continu, le bilan fait foi.
 //
 // Gated server-side by `dashboard_finance`; the widget is only mounted when the
 // user holds it (registry.tsx → useDashboardLayout).
@@ -195,7 +204,7 @@ export function AnalyseFinanciereWidget() {
                 et intégrée — l'écriture réelle la remplacera à la clôture. Hors provisions.
               </>
             ) : (
-              <>Hors production stockée et provisions, comptabilisées à la clôture annuelle.</>
+              <>Hors provisions, comptabilisées à la clôture annuelle.</>
             )}
           </span>
         </p>
