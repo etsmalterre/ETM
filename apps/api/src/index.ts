@@ -43,6 +43,7 @@ import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
+import { maintenanceTrmRouter } from './routes/maintenance-trm.js'
 import { authRouter } from './routes/auth.js'
 import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
@@ -168,6 +169,8 @@ app.use('/api/of-trm', ofTrmRouter)
 app.use('/api/dashboard-trm', dashboardTrmRouter)
 // TRM production prime (Production › Prime) — consumed by the TRM web app.
 app.use('/api/prime-trm', primeTrmRouter)
+// TRM machine upkeep (Atelier > Maintenance) — consumed by the TRM web app.
+app.use('/api/maintenance-trm', maintenanceTrmRouter)
 
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)

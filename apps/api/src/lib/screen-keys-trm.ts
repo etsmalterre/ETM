@@ -86,7 +86,7 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
     href: '/production',
     label: 'Production',
     screens: [
-      { href: '/production/of', label: 'Gestion des OF' },
+      { href: '/production/of', label: 'Ordres de fabrication' },
       { href: '/production/visitage', label: 'Visitage' },
       { href: '/production/prime', label: 'Prime' },
       { href: '/production/trs', label: 'TRS' },
@@ -98,7 +98,6 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
     label: 'Atelier',
     screens: [
       { href: '/atelier/maintenance', label: 'Maintenance' },
-      { href: '/atelier/productivite', label: 'Productivité' },
       { href: '/atelier/bonnetier', label: 'Bonnetier' },
       { href: '/atelier/planning', label: 'Planning' },
     ],
