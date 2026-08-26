@@ -4,15 +4,16 @@
 
 Design system for **ETM**, the ERP system for **ETS Malterre** (French textile/knitting manufacturer). This document is the single source of truth for all visual patterns — follow it precisely when building new screens or modifying existing ones.
 
-## Reference implementations — the three named layouts
+## Reference implementations — the four named layouts
 
-There are **three** gold-standard layouts in the codebase, each with a short name. **Use these names** ("Fiche", "Tableau", "Classeur") when discussing layouts with the user. Pick the one whose layout matches the use case before writing any code; do not invent a fourth layout pattern.
+There are **four** gold-standard layouts in the codebase, each with a short name. **Use these names** ("Fiche", "Tableau", "Classeur", "Poste") when discussing layouts with the user. Pick the one whose layout matches the use case before writing any code; do not invent a fifth layout pattern.
 
 | Name | Screen | File | Use when |
 |---|---|---|---|
 | **Fiche** (3-panel master-detail) | `/fils/gestion` | `apps/web/src/pages/FilsGestion.tsx` | One entity at a time has rich nested data (contacts, addresses, sub-resources) and the user works on one record start-to-finish. Implements `MasterDetailLayout`, collapsible card sections with status-colored items, side-by-side edit dialogs with file upload + PDF preview, sidebar tabs with inline edit forms, global vs per-section edit state. **§4–§9, §18, §21–§25.** |
 | **Tableau** (table-centric + slide-in drawer) | `/fils/stock` | `apps/web/src/pages/FilsStock.tsx` | The page is fundamentally a sortable / searchable list of many flat rows; selecting a row reveals a focused detail view, but the row-set is the primary working surface. Implements toolbar (search + filters + create), split-aligned sortable table, right slide-in drawer, embed-mode top-offset, "Nouveau" creation dialog, KV-row drawer cards, mobile card list below `md`. **§27, §40.** |
 | **Classeur** (Fiche variant: master-tabbed center panel) | `/clients/gestion` | `apps/web/src/pages/ClientsGestion.tsx` | Same 3-panel shell as Fiche, but the center panel holds several independent, read-mostly datasets of which the user consults **one at a time** — a row of master tabs gives the active dataset the full panel height instead of stacked collapsible sections. **§39.** |
+| **Poste** (full-screen workshop station) | `/production/visitage` | `TRM/apps/web/src/pages/ProductionVisitage.tsx` | The screen is a **workshop station**: the hardware imposes the context (one métier → one OF → one pièce) and there is a single action that commits production. No master list, no drawer — horizontal bands stacked top to bottom, the input band taking whatever height is left, the commit button pinned top-right of that band. The context selector lives in a toolbar, not in a list. **§45.** |
 
 When in doubt about a single rule, look at the references. When in doubt about which *layout* to choose, ask the user — do NOT mix patterns into a hybrid design.
 
@@ -4428,3 +4429,126 @@ onClick={(e) => { e.stopPropagation(); onSelect(row.id, e.shiftKey) }}
 - [ ] `select-none` on the clickable row/card
 - [ ] Anchor reset on mutation success, on "Aucun", and on any sibling selection taking over
 - [ ] Range array = the filtered/sorted/selectable-subset order actually rendered
+
+---
+
+## 45. « Poste » — the full-screen workshop station
+
+Reference: `/production/visitage` (TRM) — `TRM/apps/web/src/pages/ProductionVisitage.tsx`.
+
+The fourth named layout, and the one to reach for when the screen is **not a record** but a
+**place at a machine**. Fiche, Tableau and Classeur all start from "which record?", so they
+all lead with a master list. A station has no such question: the hardware has already
+answered it. On the visitage poste the métier decides the OF, the OF decides the pièce, and
+the only thing the operator does is weigh what is in front of her and commit it.
+
+### 45.1 When to use it — and when not
+
+Use **Poste** when all three hold:
+
+1. **The context is imposed, not browsed.** One selector at the top resolves the whole
+   screen. There is nothing to search, nothing to sort, no second record on display.
+2. **There is exactly one action that commits.** Not a "Modifier / Enregistrer" cycle — a
+   single irreversible engagement (here: rolls created, defects converted, yarn decremented).
+   Everything else on screen exists to make that one press correct.
+3. **The operator stands at it all day.** Legibility across a workshop desk beats density;
+   the screen is read at arm's length, not leaned into.
+
+Do **not** use it for a screen that merely happens to be full-width. If the user has to find
+a record first, that is Fiche or Tableau. If the center holds several datasets to consult,
+that is Classeur. A hybrid — a master list *plus* a station — is the one thing this layout
+exists to prevent.
+
+### 45.2 The band stack
+
+The page is a column of full-width horizontal bands. Only ONE band flexes; every other is
+`flex-shrink-0`. That is the whole geometry.
+
+```tsx
+<div className="h-full flex flex-col gap-3 min-h-0">
+  {/* 1 · barre poste — context selector, refresh, state banner, identification */}
+  <div className="flex-shrink-0 flex items-center gap-3 rounded-lg bg-zinc-200/50 px-3 py-2">…</div>
+
+  {/* 2 · entête — what the context resolved to (§5-style title + badges + gold rule) */}
+  <div className="flex-shrink-0">…</div>
+
+  {/* 3 · contexte — gauges and the standing instruction, as cards */}
+  <div className="flex-shrink-0 grid gap-3 md:grid-cols-3">…</div>
+
+  {/* 4 · saisie — THE band: takes all remaining height, owns the commit button */}
+  <div className="flex-1 min-h-0 flex flex-col gap-2">…</div>
+
+  {/* 5 · trace — what this station already did today, one line */}
+  <div className="flex-shrink-0 border-t border-border/60 pt-2">…</div>
+</div>
+```
+
+- **Band 1 is the toolbar**, `bg-zinc-200/50` like any header strip. The context selector is
+  a `PopoverSelect` sized to its content (`widthClass="w-[78px]"` for a two-character métier
+  code) — never a full-width control, or it reads as a filter rather than as the subject.
+- **Band 2 reuses the standard detail header** (§5): `icon-box-gold`, `text-2xl font-heading`
+  title, outline badges, the 24-unit gold gradient rule. A station is still looking at a
+  record; it just did not pick it from a list.
+- **Band 4 stretches.** Its cards are `h-full` so a long child list has room instead of
+  pushing the layout; overflow is horizontal at the band, vertical inside each card.
+- **Band 5 is one line.** Keep it only if the trace is genuinely useful *at the station* —
+  on the visitage poste it is the day's weights, which is exactly what the operator compares
+  the current one against.
+
+### 45.3 The commit button
+
+Pinned **top-right of the input band**, not in the page header. It belongs to what is being
+keyed, and it must sit where the eye lands after the last field.
+
+- `<Button variant="gold">` with an icon, `Loader2` while pending.
+- Its `title` states the exact reason it is disabled, one branch per precondition (no right,
+  not identified, nothing to work on, a field still empty). A greyed button with no
+  explanation is the commonest complaint from a station.
+- **Failures render inline next to it, as text** — never a toast. At a station a toast is
+  missed, and a silent failure here means the operator believes she committed something she
+  did not. Map the status codes to plain sentences.
+
+### 45.4 Identification is a gate, not a field
+
+When what the station produces carries a person's name, ask who they are **before** letting
+them key anything, and hold the whole input band behind an empty state that says why. The
+legacy asked at commit time — after a full piece had been typed in.
+
+Keep the answer in `localStorage` per station and show a photo beside the name: at a shared
+desk the photo is the only real check that the name on tonight's output is the right one.
+
+### 45.5 The multi-action pill
+
+A station often shows small items the operator must **arbitrate** rather than edit — keep it,
+move it, mark it handled, drop it. Render each as a compact pill carrying its own icon
+buttons (`◀ ▶` to move it between cards, a toggle for its state, `✕` to drop it), sized
+`h-3.5 w-3.5` inside `text-xs`. Two rules:
+
+- **Destructive actions get an undo strip, not a confirm dialog.** A dialog per item at a
+  weighing station is unusable. Drop it immediately and offer « Annuler » in a dark strip
+  pinned to the bottom of the card until the next action.
+- **Directional buttons hide when there is nowhere to go** (no card left / right) rather than
+  rendering disabled — the operator reads the row, not the button states.
+
+### 45.6 Keyboard
+
+A poste is worked with both hands. Bind the two gestures that repeat, and document them in
+the `title` of the matching button — never as on-screen chrome:
+
+| Key | Action |
+|---|---|
+| `Ctrl+Entrée` | Commit |
+| `Ctrl+K` | Add another input card (the "cut") |
+
+The window-level listener must re-check the same preconditions as the button. A shortcut that
+fires while the button is disabled is a production write nobody authorised.
+
+### 45.7 Deliberate deviation: no §28 guard
+
+A Poste is **permanently in entry mode** — there is no "Modifier → Enregistrer" cycle for §28
+to hook into, and its third button ("Enregistrer, then continue") would commit real production
+from a navigation dialog. So the visitage poste does not plug into `useUnsavedGuard`, and that
+is on purpose: what is at stake if the operator navigates away mid-piece is a couple of weights
+to retype, against a dialog that could commit stock by misclick. **If a future Poste risks more
+than that, add the guard in a two-button form (Annuler / Abandonner) — never wire its save
+branch to the commit action.**

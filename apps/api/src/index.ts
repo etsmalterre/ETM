@@ -41,6 +41,7 @@ import { rapportsRouter } from './routes/rapports.js'
 import { rapportsTrmRouter } from './routes/rapports-trm.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
+import { visitageTrmRouter } from './routes/visitage-trm.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
 import { maintenanceTrmRouter } from './routes/maintenance-trm.js'
@@ -166,6 +167,7 @@ app.use('/api/rapports-trm', rapportsTrmRouter)
 app.use('/api/planning-atelier', planningAtelierRouter)
 // TRM production orders (Gestion des OF) — consumed by the TRM web app.
 app.use('/api/of-trm', ofTrmRouter)
+app.use('/api/visitage-trm', visitageTrmRouter)
 // TRM tableau de bord widgets (Poids des pièces, …) — consumed by the TRM web app.
 app.use('/api/dashboard-trm', dashboardTrmRouter)
 // TRM production prime (Production › Prime) — consumed by the TRM web app.

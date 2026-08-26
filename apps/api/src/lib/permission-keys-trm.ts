@@ -118,6 +118,19 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la création, la modification, la suppression et la clôture d’un retour client dans Qualité > Retour client — boutons « Nouveau », « Modifier », « Supprimer » et « Terminer / Réactiver ». La réponse et la résolution saisies ici sont renvoyées sur la fiche de non-conformité d’Ets Malterre : sans ce droit l’écran reste consultable, mais en lecture seule.',
     category: 'Qualité',
   },
+  // Production > Visitage. Gates the Valider button and the write route only —
+  // consulting the poste (which piece is waiting, which defects the bonnetier
+  // declared) stays open, like the rest of the production screens. What this
+  // key really guards is the creation of stock: a validation inserts the
+  // stock_ecru rolls, converts the piece's defects onto them, traces the event
+  // AND decrements the yarn lots. There is no undo.
+  {
+    key: 'saisie_visitage',
+    label: 'Saisir le visitage',
+    description:
+      'Autorise la validation d’une pièce dans Production > Visitage : création des rouleaux de tombé métier en stock, report des défauts relevés au métier, traçage de l’événement et décrément des lots de fil consommés. Sans ce droit l’écran reste consultable mais le bouton « Valider » est inactif.',
+    category: 'Production',
+  },
 ] as const
 
 export type TrmPermissionKey = (typeof TRM_PERMISSION_KEYS)[number]['key']
