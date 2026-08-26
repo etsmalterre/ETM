@@ -39,6 +39,7 @@ import { useHasPermission } from '@/contexts/PermissionsContext'
 import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
+import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 
 // Divers › Stock — the quantity on hand for every "référence diverse", one row
 // per VARIATION COMBINATION (legacy FEN_Stock_Divers.wdw + the little
@@ -143,6 +144,7 @@ function useStockDiversList() {
   return useQuery<StockDiversRow[]>({
     queryKey: ['stock-divers'],
     queryFn: () => apiFetch<StockDiversRow[]>('/stock-divers'),
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 
@@ -151,6 +153,7 @@ function useStockDiversDetail(id: number | null) {
     queryKey: ['stock-divers', 'detail', id],
     queryFn: () => apiFetch<StockDiversDetail>(`/stock-divers/${id}`),
     enabled: id !== null,
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 

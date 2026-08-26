@@ -49,6 +49,7 @@ import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { EtatPill } from '@/lib/etat-stock-fini'
+import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { useUser } from '@/contexts/UserContext'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
@@ -120,6 +121,7 @@ function useStockFiniList(filters: { hideShipped: boolean }) {
     queryKey: ['stock-fini', filters],
     queryFn: () => apiFetch<StockFiniRow[]>(`/stock/fini${qs ? `?${qs}` : ''}`),
     select: (rows) => rows.map(withDefaultMagasin),
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 
@@ -129,6 +131,7 @@ function useStockFiniDetail(id: number | null) {
     queryFn: () => apiFetch<StockFiniRow>(`/stock/fini/${id}`),
     enabled: id !== null,
     select: withDefaultMagasin,
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 

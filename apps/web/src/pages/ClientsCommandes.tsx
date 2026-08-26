@@ -62,6 +62,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
+import { invalidateStockCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { EtatPill } from '@/lib/etat-stock-fini'
 
@@ -1921,12 +1922,15 @@ function AffectationDrawer({
       setLinkSel(new Set())
       lastLinkIdRef.current = null
       queryClient.setQueryData(queryKey, payload)
+      // Reserving a roll to an order line takes it out of the free pool the
+      // stock screens list.
+      invalidateStockCaches(queryClient)
       onSuccess()
     },
   })
   const unlinkMut = useMutation({
     mutationFn: (stockId: number) => apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/pieces/${kind}/${stockId}`, { method: 'DELETE' }),
-    onSuccess: (payload: AffectationPayload) => { queryClient.setQueryData(queryKey, payload); onSuccess() },
+    onSuccess: (payload: AffectationPayload) => { queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
   })
 
   // Edit a roll's free-text observations. Permission-gated: the "Modifier les
@@ -3816,13 +3820,15 @@ function EnnoblissementAffectationDialog({
     queryKey,
     queryFn: () => apiFetch(base),
   })
+  // Affecting a roll writes stock_ecru.IDref_commande_affectation /
+  // IDligne_commande_client — it leaves the free pool the stock screens list.
   const linkMut = useMutation({
     mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'PUT' }),
-    onSuccess: (payload: EnnoRollsPayload) => { queryClient.setQueryData(queryKey, payload); onSuccess() },
+    onSuccess: (payload: EnnoRollsPayload) => { queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
   })
   const unlinkMut = useMutation({
     mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'DELETE' }),
-    onSuccess: (payload: EnnoRollsPayload) => { queryClient.setQueryData(queryKey, payload); onSuccess() },
+    onSuccess: (payload: EnnoRollsPayload) => { queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
   })
 
   const linked = data?.linked ?? []

@@ -33,6 +33,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
+import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
 
@@ -99,6 +100,7 @@ function useStockList(filters: { hideFinished: boolean }) {
   return useQuery<StockRow[]>({
     queryKey: ['stock-fil', filters],
     queryFn: () => apiFetch<StockRow[]>(`/stock/fil${qs ? `?${qs}` : ''}`),
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 
@@ -107,6 +109,7 @@ function useStockDetail(id: number | null) {
     queryKey: ['stock-fil', 'detail', id],
     queryFn: () => apiFetch<StockDetail>(`/stock/fil/${id}`),
     enabled: id !== null,
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 

@@ -42,6 +42,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch } from '@/lib/api'
+import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
@@ -124,6 +125,7 @@ function useStockEcruList(filters: { statut: StatutCode; secondChoix: boolean })
   return useQuery<StockEcruRow[]>({
     queryKey: ['stock-ecru', filters],
     queryFn: () => apiFetch<StockEcruRow[]>(`/stock/ecru${qs ? `?${qs}` : ''}`),
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 
@@ -132,6 +134,7 @@ function useStockEcruDetail(id: number | null) {
     queryKey: ['stock-ecru', 'detail', id],
     queryFn: () => apiFetch<StockEcruRow>(`/stock/ecru/${id}`),
     enabled: id !== null,
+    ...STOCK_QUERY_FRESHNESS,
   })
 }
 

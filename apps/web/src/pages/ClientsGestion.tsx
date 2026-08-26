@@ -55,6 +55,7 @@ import { cn } from '@/lib/utils'
 import { hfsqlDateToInput, inputDateToHfsql, formatHfsqlDate } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
+import { invalidateStockCaches } from '@/lib/cache-sync'
 import { compteError, normalizeCompte } from '@/lib/compte-client'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 
@@ -3190,6 +3191,10 @@ function MarchandiseTab({ clientId, clientNom, canRetour }: { clientId: number; 
       setSelected(new Set())
       lastSelectedId.current = null
       queryClient.invalidateQueries({ queryKey: ['client-marchandise', clientId] })
+      // A retour puts the roll back in stock (clears the expedition line,
+      // demotes état 4 → 3, releases the order line). Finis › Stock is exactly
+      // the screen the user checks next to confirm it landed.
+      invalidateStockCaches(queryClient)
     },
   })
 

@@ -76,7 +76,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
-import { invalidateLotQualityCaches } from '@/lib/cache-sync'
+import { invalidateLotQualityCaches, invalidateStockCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { sstTypeTagClasses } from '@/lib/sst-type'
 
@@ -2636,6 +2636,10 @@ function PiecesDrawer({
     onSuccess: (payload: PiecesPayload) => {
       queryClient.setQueryData(queryKey, payload)
       patchLinePrix(payload.prix)
+      // Affecting an écru piece to a dyeing order sets
+      // stock_ecru.IDref_commande_affectation — it leaves the pool Tombé
+      // Métier › Stock lists as available.
+      invalidateStockCaches(queryClient)
       onSuccess()
     },
   })
@@ -2648,6 +2652,7 @@ function PiecesDrawer({
     onSuccess: (payload: PiecesPayload) => {
       queryClient.setQueryData(queryKey, payload)
       patchLinePrix(payload.prix)
+      invalidateStockCaches(queryClient) // the piece returns to the free pool
       onSuccess()
     },
   })
@@ -2985,6 +2990,9 @@ function PiecesDrawer({
           onClose={() => setShowBatchReception(false)}
           onSuccess={(payload) => {
             queryClient.setQueryData(queryKey, payload)
+            // Réception CREATES stock_fini rows — Finis › Stock has never seen
+            // these rolls, so its cached list cannot contain them.
+            invalidateStockCaches(queryClient)
             onSuccess()
             setShowBatchReception(false)
             setSelectedEcruIds(new Set())
@@ -3001,6 +3009,7 @@ function PiecesDrawer({
           onClose={() => setShowBatchReprise(false)}
           onSuccess={(payload) => {
             queryClient.setQueryData(queryKey, payload)
+            invalidateStockCaches(queryClient) // a reprise sends rolls back out
             onSuccess()
             setShowBatchReprise(false)
             setSelectedFiniIds(new Set())
@@ -3124,6 +3133,8 @@ function TricoteurDrawer({
       if (resp?.payload) queryClient.setQueryData(queryKey, resp.payload)
       // Refresh the parent detail too (line qty may have changed in 'finir' mode).
       queryClient.invalidateQueries({ queryKey: ['commande-sst', commandeId] })
+      // Affecting yarn lots writes stock_fil.IDref_fil_commande / consumption.
+      invalidateStockCaches(queryClient)
     },
     onError: (err: any) => {
       // Server responses: { error: 'plan_invalid', messages: [...] } or
@@ -3145,6 +3156,7 @@ function TricoteurDrawer({
       setPlanError(null)
       setShowDesaffecterConfirm(false)
       if (resp?.payload) queryClient.setQueryData(queryKey, resp.payload)
+      invalidateStockCaches(queryClient) // the yarn lots go back to free stock
     },
     onError: (err: any) => {
       const body = (err && typeof err === 'object' && 'body' in err) ? (err as any).body : null
@@ -3367,6 +3379,8 @@ function TricoteurDrawer({
           onClose={() => setShowReceptionDialog(false)}
           onSuccess={(payload) => {
             queryClient.setQueryData(queryKey, payload)
+            // Tricoteur réception CREATES stock_ecru rows (tombés de métier).
+            invalidateStockCaches(queryClient)
             setShowReceptionDialog(false)
             setActiveTab('reception')
           }}

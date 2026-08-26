@@ -9,6 +9,25 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-26 — feat/bug (ticket #1089 : les écrans de stock ne se rafraîchissaient pas)
+
+Pierre-Emmanuel transfère trois pièces finies de MATEL vers Ets Malterre, va sur Finis › Stock, et les voit toujours au magasin d'origine — puis « ça s'est réparé tout seul ». Les deux moitiés du symptôme désignent la même cause : **rien n'était cassé en base, le transfert avait bien eu lieu**, c'est l'écran qui rejouait sa liste d'avant.
+
+**La cause.** Le `staleTime` global est de 5 minutes (`main.tsx`). `TransfertsScreen` n'invalidait que `['transferts']` et `['transfert-available']`, jamais `['stock-fini']` — alors que l'ajout d'une pièce à un bon déplace le stock **immédiatement** (`est_valide` ne conditionne pas le mouvement, cf. la règle legacy). Arriver sur Finis › Stock resservait donc le cache d'avant le transfert, et l'expiration au bout de cinq minutes produisait la « réparation spontanée ».
+
+**L'audit a montré que le trou était bien plus large que les transferts : seuls les quatre écrans de stock invalidaient leur propre cache.** Tous les autres écrans qui écrivent du stock le laissaient périmé — Expéditions (rouleau ↔ ligne d'avis, suppression d'avis, articles divers), Commandes client (réservation de rouleau), Gestion › Marchandise (retour stock — le flux du ticket #1086), et Sous-traitants › Commandes, où la **réception crée** des lignes `stock_ecru`/`stock_fini` que la liste en cache n'a jamais vues.
+
+**Le correctif, en deux moitiés**, dans le `lib/cache-sync.ts` existant, à côté de `invalidateLotQualityCaches` :
+
+1. **`invalidateStockCaches(queryClient)`**, câblé sur les onze points de mutation des six écrans écrivains. Appelé inconditionnellement et sur toutes les familles : `invalidateQueries` ne refetch que les requêtes ayant un observateur monté, donc nommer une famille qu'aucun écran n'affiche ne coûte rien — et un bon de rouleaux porte de l'écru **et** du fini.
+2. **`STOCK_QUERY_FRESHNESS`** (`staleTime: 0` + `refetchOnMount: 'always'`) répandu dans les requêtes liste et détail des quatre écrans de stock, pas dans leurs lookups. C'est la moitié que l'invalidation **ne peut pas** couvrir : **l'application WinDev légataire écrit ces mêmes tables en direct**, comme les sessions des autres utilisateurs, et rien dans ce navigateur ne peut le savoir.
+
+**Le coût est réel et assumé** : une requête par arrivée sur un écran de stock (mesuré sur l'API dev — fini 1,1 s / 1 Mo, écru 2,2 s, fil 1,3 s, divers 0,2 s). Mais l'écran ne se vide jamais : les quatre rendent sur `isLoading` et jamais sur `isFetching`, donc le tableau en cache s'affiche instantanément et se corrige derrière. Une requête par navigation n'est pas le motif de rafales concurrentes qui met le pont HFSQL en difficulté.
+
+Garde : `apps/web/src/lib/cache-sync.test.ts` diffe `STOCK_QUERY_ROOTS` contre toutes les clés `['stock-…']` de l'application (une future famille de stock ne peut plus échapper au helper — vérifié en retirant une racine : le test tombe), et épingle le comportement au remontage contre un vrai `QueryClient` portant le défaut de 5 minutes, en affirmant **à la fois** que l'ancienne configuration rejoue la liste périmée (1 fetch) et que la nouvelle relit (2 fetches) — le test ne peut donc pas passer à vide.
+
+Signalé sans le corriger, hors périmètre du ticket : changer le magasin de destination d'un bon **après** y avoir mis des pièces ne déplace pas ces pièces (`PUT /transferts/:kind/:id` n'écrit que l'en-tête, `transferts.ts:690`) — elles restent à l'ancienne destination. C'est une question de données, pas de cache.
+
 ## 2026-08-26 — feat/finance (l'EBE se calcule sur l'exploitation seule)
 
 Vincent, en confrontant le widget Analyse financière au bilan 2025 : « je vois un EBE de 353 466 €, ça ne colle pas avec le compte de résultat ». Le compte de résultat en porte **314 422 €**. Il avait raison, et l'écart se décompose en deux moitiés très différentes.

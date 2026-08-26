@@ -49,6 +49,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
+import { invalidateStockCaches } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 
 // ── Types ──────────────────────────────────────────────
@@ -323,6 +324,8 @@ export function TransfertsScreen({ kind }: { kind: TransfertKind }) {
       const cached = queryClient.getQueryData<{ pages: TransfertListRow[][] }>(['transferts', kind, debouncedQuery])
       const remaining = (cached?.pages ?? []).flat().filter((r) => r.id !== deletedId)
       queryClient.invalidateQueries({ queryKey: ['transferts'] })
+      // Deleting a bon sends every piece it held back to the source magasin.
+      invalidateStockCaches(queryClient)
       setIsEditing(false)
       setDeleteConfirmOpen(false)
       setSelectedId(remaining.length > 0 ? remaining[0].id : null)
@@ -727,6 +730,9 @@ function LinesSection({
       queryClient.setQueryData<TransfertDetail>(['transfert', kind, transfert.id], (old) => old ? { ...old, lines: payload.lines } : old)
       queryClient.invalidateQueries({ queryKey: ['transferts'] })
       queryClient.invalidateQueries({ queryKey: ['transfert-available', kind, transfert.id] })
+      // The piece went back to the source magasin — the stock screens are
+      // showing it at the destination until they are told otherwise.
+      invalidateStockCaches(queryClient)
     },
   })
 
@@ -1018,6 +1024,10 @@ function PickerDialog({
       queryClient.setQueryData<TransfertDetail>(['transfert', kind, transfert.id], (old) => old ? { ...old, lines: payload.lines } : old)
       queryClient.invalidateQueries({ queryKey: ['transferts'] })
       queryClient.invalidateQueries({ queryKey: ['transfert-available', kind, transfert.id] })
+      // Ticket #1089: the pieces just changed magasin, so every stock screen's
+      // cached list is now wrong. Without this the 5-minute staleTime served
+      // the pre-transfer magasin and the transfer looked like it had failed.
+      invalidateStockCaches(queryClient)
       setSelectedByTab({ ecru: new Set(), fini: new Set(), fil: new Set() })
       onMutationSuccess()
       // Valider closes the dialog — unless some pieces couldn't be applied, in

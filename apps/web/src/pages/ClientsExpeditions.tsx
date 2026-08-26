@@ -43,6 +43,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
+import { invalidateStockCaches } from '@/lib/cache-sync'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -262,9 +263,14 @@ export function ClientsExpeditions() {
   // A shipment is editable only while no definitive facture is attached.
   const editable = !!detail && !detail.locked
 
+  // Every line/item mutation on this screen funnels through here. Formelle
+  // lines move rolls in and out of stock; divers lines move stock_divers
+  // quantities — so the stock screens go stale on any of them. (Cheap on a
+  // plain header save: an invalidation with no mounted observer only marks.)
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['expeditions'] })
     queryClient.invalidateQueries({ queryKey: ['expedition', bucket, selectedId] })
+    invalidateStockCaches(queryClient)
   }, [queryClient, bucket, selectedId])
 
   const startEdit = useCallback(() => {
@@ -346,6 +352,9 @@ export function ClientsExpeditions() {
       const cached = queryClient.getQueryData<{ pages: ExpeditionListRow[][] }>(['expeditions', bucket, stateFilter, debouncedQuery])
       const remaining = (cached?.pages ?? []).flat().filter((r) => r.id !== deletedId)
       queryClient.invalidateQueries({ queryKey: ['expeditions'] })
+      // Deleting an avis releases every roll it carried back into stock, and a
+      // divers avis puts its quantities back on stock_divers.
+      invalidateStockCaches(queryClient)
       setIsEditing(false)
       setDeleteConfirmOpen(false)
       setSelectedId(remaining.length > 0 ? remaining[0].id : null)
@@ -1293,13 +1302,16 @@ function RollDrawer({
     queryFn: () => apiFetch(base),
   })
 
+  // Putting a roll on a shipment line (or taking it off) writes
+  // stock_fini.IDligne_expedition / stock_ecru.IDligne_expedition_ETM, which is
+  // half of what "shipped" means — so it changes what the stock screens list.
   const linkMut = useMutation({
     mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'PUT' }),
-    onSuccess: (payload: RollPayload) => { queryClient.setQueryData(queryKey, payload); onSuccess() },
+    onSuccess: (payload: RollPayload) => { queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
   })
   const unlinkMut = useMutation({
     mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'DELETE' }),
-    onSuccess: (payload: RollPayload) => { queryClient.setQueryData(queryKey, payload); onSuccess() },
+    onSuccess: (payload: RollPayload) => { queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
   })
 
   const onExp = data?.onExp ?? []
