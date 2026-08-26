@@ -61,7 +61,7 @@
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
-import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
+import { query, queryRaw, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
 import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
@@ -746,6 +746,442 @@ retoursClientTrmRouter.delete('/:id', async (req: Request, res: Response) => {
     res.json({ ok: true })
   } catch (err) {
     console.error('Error deleting retour client TRM:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Traçabilité ──────────────────────────────────────────
+//
+// The legacy's orange band: what the complaint is actually about. It walks the
+// affectation to the physical rolls, then shows, per roll, who made it
+// (evenement_piece), what the visiteuse found on it (defaut_qualite), and the
+// two documents that surround it — the order ETM placed with TRM and the avis
+// d'expédition TRM shipped it on.
+//
+//   '1' → stock_ecru.numero = reference                (one roll… or several)
+//   '2' → stock_fini.lot = reference → IDstock_ecru    (a whole finished lot)
+//
+// Both resolve to a LIST: `numero` is not unique, a finished lot holds 15–19
+// rolls, and 6 historical references match nothing at all (the legacy's red
+// cross next to the field). `resolved: false` is a normal answer, not an error.
+//
+// No IDsociete filter anywhere: ETM's reception flips a delivered roll from
+// société 2 to 1, and every referenced roll is already at 1.
+
+interface TracaEvent {
+  IDevenement_piece: number
+  date: string | null
+  evenement: string
+  observation: string
+  IDbonnetier: number
+  bonnetier: string
+}
+
+interface TracaDefaut {
+  IDdefaut_qualite: number
+  date: string | null
+  type_defaut: string
+  taille_cm: number
+  nombre: number
+  description: string
+  IDSpotteur: number
+  spotteur: string
+  /** Bonnetier / Visiteur / Inconnu — legacy Type_Spotteur 1 / 2 / else. */
+  role: string
+}
+
+interface TracaPiece {
+  IDstock_ecru: number
+  numero: string
+  poids: number
+  date_saisie: string | null
+  second_choix: 0 | 1
+  IDordre_fabrication: number
+  metier: string
+  events: TracaEvent[]
+  defauts: TracaDefaut[]
+}
+
+interface TracaDoc {
+  kind: 'commande_sst' | 'bon_livraison'
+  id: number
+  label: string
+  sous_titre: string
+  date: string | null
+}
+
+const EMPTY_TRACA = {
+  kind: 'none' as const,
+  resolved: false,
+  titre: null as string | null,
+  sous_titre: null as string | null,
+  pieces: [] as TracaPiece[],
+  documents: [] as TracaDoc[],
+}
+
+const spotteurRole = (t: number): string =>
+  t === 1 ? 'Bonnetier' : t === 2 ? 'Visiteur' : 'Inconnu'
+
+/** HFSQL DATETIME → the raw string, or null on empty / zero dates. Kept as
+ *  text: the web renders it with the same helper the OF timelines use. */
+function datetimeStr(v: unknown): string | null {
+  const s = trimStr(v)
+  return s === '' || s.startsWith('0000') ? null : s
+}
+
+retoursClientTrmRouter.get('/:id/tracabilite', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const row = await readRetour(id)
+    if (!row) { res.status(404).json({ error: 'Retour client not found' }); return }
+    if (row.reference === '' || (row.type_reference !== '1' && row.type_reference !== '2')) {
+      res.json(EMPTY_TRACA)
+      return
+    }
+
+    // ── Resolve the affectation to a set of écru rolls.
+    const ref = esc(row.reference)
+    const kind = row.type_reference === '1' ? ('piece' as const) : ('lot_fini' as const)
+    let ecruWhere: string
+    if (row.type_reference === '1') {
+      ecruWhere = `numero = '${ref}'`
+    } else {
+      // stock_fini.lot compares case-insensitively on HFSQL — live data stores
+      // 'Ma100602' on the retour and 'MA100602' on the lot.
+      const finis = await query<any>(`SELECT IDstock_ecru FROM stock_fini WHERE lot = '${ref}'`)
+      const ids = Array.from(new Set((finis as any[]).map((f) => n(f.IDstock_ecru)).filter((x) => x > 0)))
+      if (ids.length === 0) { res.json({ ...EMPTY_TRACA, kind }); return }
+      ecruWhere = `IDstock_ecru IN (${ids.join(',')})`
+    }
+
+    const ecruRows = await query<any>(
+      `SELECT IDstock_ecru, numero, poids, date_saisie, second_choix, IDordre_fabrication,
+              IDpiece_production, IDref_ecru, IDcolori_ecru, IDref_commande_source, IDligne_expedition_TRM
+       FROM stock_ecru WHERE ${ecruWhere} ORDER BY IDstock_ecru`,
+    )
+    if ((ecruRows as any[]).length === 0) { res.json({ ...EMPTY_TRACA, kind }); return }
+
+    const ecrus = ecruRows as any[]
+    const ecruIds = ecrus.map((e) => n(e.IDstock_ecru)).filter((x) => x > 0)
+    const pieceProdIds = ecrus.map((e) => n(e.IDpiece_production)).filter((x) => x > 0)
+    const ofIds = Array.from(new Set(ecrus.map((e) => n(e.IDordre_fabrication)).filter((x) => x > 0)))
+    const refEcruId = n(ecrus[0]?.IDref_ecru)
+    const coloriId = n(ecrus[0]?.IDcolori_ecru)
+
+    // ── Everything the rolls hang off, in parallel.
+    const [ofRows, refRows, coloRows, eventRows, defautRows] = await Promise.all([
+      ofIds.length
+        ? query<any>(
+            `SELECT IDordre_fabrication, IDmachine FROM ordre_fabrication WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+          )
+        : Promise.resolve([] as any[]),
+      refEcruId > 0
+        ? fixEncoding(
+            await query<any>(`SELECT IDref_ecru, reference, designation FROM ref_ecru WHERE IDref_ecru = ${refEcruId}`),
+            'ref_ecru', 'IDref_ecru', ['reference', 'designation'],
+          )
+        : Promise.resolve([] as any[]),
+      coloriId > 0
+        ? fixEncoding(
+            await query<any>(`SELECT IDcolori_ecru, reference FROM colori_ecru WHERE IDcolori_ecru = ${coloriId}`),
+            'colori_ecru', 'IDcolori_ecru', ['reference'],
+          )
+        : Promise.resolve([] as any[]),
+      // The legacy union: an event hangs either off the production piece
+      // (tricotage) or off the weighed roll (visitage) — never off both.
+      fixEncoding(
+        await query<any>(
+          `SELECT IDevenement_piece, IDpiece_production, IDstock_ecru, IDbonnetier,
+                  DATE AS devt, evenement, observation
+           FROM evenement_piece
+           WHERE IDstock_ecru IN (${ecruIds.length ? ecruIds.join(',') : 0})
+              OR IDpiece_production IN (${pieceProdIds.length ? pieceProdIds.join(',') : 0})
+           ORDER BY DATE DESC`,
+        ),
+        'evenement_piece', 'IDevenement_piece', ['evenement', 'observation'],
+      ),
+      // defaut_qualite.reference is TEXT holding the stringified IDstock_ecru.
+      ecruIds.length
+        ? fixEncoding(
+            await query<any>(
+              `SELECT IDdefaut_qualite, reference, type_defaut, taille_cm, nombre, description,
+                      DATE AS ddef, Type_Spotteur, IDSpotteur
+               FROM defaut_qualite
+               WHERE Type_Reference = 2 AND reference IN (${ecruIds.map((x) => `'${x}'`).join(',')})
+               ORDER BY DATE`,
+            ),
+            'defaut_qualite', 'IDdefaut_qualite', ['type_defaut', 'description'],
+          )
+        : Promise.resolve([] as any[]),
+    ])
+
+    const machineIds = Array.from(new Set((ofRows as any[]).map((o) => n(o.IDmachine)).filter((x) => x > 0)))
+    const staffIds = Array.from(
+      new Set(
+        [
+          ...(eventRows as any[]).map((e) => n(e.IDbonnetier)),
+          ...(defautRows as any[]).map((d) => n(d.IDSpotteur)),
+        ].filter((x) => x > 0),
+      ),
+    )
+    const [machineRows, staff, documents] = await Promise.all([
+      machineIds.length
+        ? fixEncoding(
+            await query<any>(`SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`),
+            'machine', 'IDmachine', ['nom'],
+          )
+        : Promise.resolve([] as any[]),
+      staffIds.length ? loadBonnetiers(staffIds) : Promise.resolve([]),
+      loadTracaDocs(ecrus),
+    ])
+    const machineName = new Map((machineRows as any[]).map((m) => [n(m.IDmachine), trimStr(m.nom)]))
+    const ofMachine = new Map((ofRows as any[]).map((o) => [n(o.IDordre_fabrication), n(o.IDmachine)]))
+    const staffName = new Map(staff.map((b) => [b.IDbonnetier, b.nom]))
+
+    // ── Fold events / defects onto their roll.
+    const eventsByEcru = new Map<number, TracaEvent[]>()
+    const eventsByPiece = new Map<number, TracaEvent[]>()
+    for (const e of eventRows as any[]) {
+      const ev: TracaEvent = {
+        IDevenement_piece: n(e.IDevenement_piece),
+        date: datetimeStr(e.devt),
+        evenement: trimStr(e.evenement),
+        observation: trimStr(e.observation),
+        IDbonnetier: n(e.IDbonnetier),
+        bonnetier: staffName.get(n(e.IDbonnetier)) ?? '',
+      }
+      const ecruKey = n(e.IDstock_ecru)
+      const pieceKey = n(e.IDpiece_production)
+      if (ecruKey > 0) eventsByEcru.set(ecruKey, [...(eventsByEcru.get(ecruKey) ?? []), ev])
+      else if (pieceKey > 0) eventsByPiece.set(pieceKey, [...(eventsByPiece.get(pieceKey) ?? []), ev])
+    }
+
+    const defautsByEcru = new Map<number, TracaDefaut[]>()
+    for (const d of defautRows as any[]) {
+      const key = parseInt(trimStr(d.reference), 10)
+      if (!Number.isInteger(key)) continue
+      const spot = n(d.IDSpotteur)
+      defautsByEcru.set(key, [
+        ...(defautsByEcru.get(key) ?? []),
+        {
+          IDdefaut_qualite: n(d.IDdefaut_qualite),
+          date: datetimeStr(d.ddef),
+          // Historical rows carry doubled spaces ("Autre Barrure  Plus de 3m").
+          type_defaut: trimStr(d.type_defaut).replace(/\s+/g, ' '),
+          taille_cm: Number(d.taille_cm) || 0,
+          nombre: Number(d.nombre) || 0,
+          description: trimStr(d.description),
+          IDSpotteur: spot,
+          spotteur: staffName.get(spot) ?? '',
+          role: spotteurRole(n(d.Type_Spotteur)),
+        },
+      ])
+    }
+
+    const pieces: TracaPiece[] = ecrus.map((e) => {
+      const ecruId = n(e.IDstock_ecru)
+      const pieceId = n(e.IDpiece_production)
+      const events = [...(eventsByEcru.get(ecruId) ?? []), ...(eventsByPiece.get(pieceId) ?? [])].sort(
+        (a, b) => (b.date ?? '').localeCompare(a.date ?? ''),
+      )
+      const ofId = n(e.IDordre_fabrication)
+      return {
+        IDstock_ecru: ecruId,
+        numero: trimStr(e.numero),
+        poids: Number(e.poids) || 0,
+        date_saisie: datetimeStr(e.date_saisie),
+        second_choix: n(e.second_choix) === 1 ? 1 : 0,
+        IDordre_fabrication: ofId,
+        metier: machineName.get(ofMachine.get(ofId) ?? 0) ?? '',
+        events,
+        defauts: defautsByEcru.get(ecruId) ?? [],
+      }
+    })
+
+    const refLabel = trimStr((refRows as any[])[0]?.reference)
+    const coloLabel = trimStr((coloRows as any[])[0]?.reference)
+    res.json({
+      kind,
+      resolved: true,
+      // « 061 - ecru » — exactly the legacy's LIB_Piece_detail.
+      titre: [refLabel, coloLabel].filter(Boolean).join(' - ') || row.reference,
+      sous_titre: trimStr((refRows as any[])[0]?.designation) || null,
+      pieces,
+      documents,
+    })
+  } catch (err) {
+    console.error('Error loading retour client TRM traçabilité:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/**
+ * The legacy TABLE_Docs — two rows, both printable, and both already served by
+ * endpoints that exist:
+ *   Bon de commande   stock_ecru.IDref_commande_source → ligne_commande_sous_traitant
+ *                     → commande_sous_traitant   (the order ETM placed with TRM)
+ *                     → GET /commandes-sous-traitant/:id/pdf
+ *   Bon de livraison  stock_ecru.IDligne_expedition_TRM → ligne_expedition
+ *                     → expedition               (the avis TRM shipped it on)
+ *                     → GET /expeditions-trm/:id/pdf
+ * A finished lot's rolls almost always share both, hence the dedupe.
+ */
+async function loadTracaDocs(ecrus: any[]): Promise<TracaDoc[]> {
+  const lcsstIds = Array.from(new Set(ecrus.map((e) => n(e.IDref_commande_source)).filter((x) => x > 0)))
+  const ligneExpIds = Array.from(new Set(ecrus.map((e) => n(e.IDligne_expedition_TRM)).filter((x) => x > 0)))
+
+  const [lcsstRows, ligneExpRows] = await Promise.all([
+    lcsstIds.length
+      ? query<any>(
+          `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant
+           FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant IN (${lcsstIds.join(',')})`,
+        )
+      : Promise.resolve([] as any[]),
+    ligneExpIds.length
+      ? query<any>(
+          `SELECT IDligne_expedition, IDexpedition FROM ligne_expedition WHERE IDligne_expedition IN (${ligneExpIds.join(',')})`,
+        )
+      : Promise.resolve([] as any[]),
+  ])
+
+  const cmdIds = Array.from(
+    new Set((lcsstRows as any[]).map((l) => n(l.IDcommande_sous_traitant)).filter((x) => x > 0)),
+  )
+  const expIds = Array.from(new Set((ligneExpRows as any[]).map((l) => n(l.IDexpedition)).filter((x) => x > 0)))
+
+  const [cmdRows, expRows] = await Promise.all([
+    cmdIds.length
+      ? query<any>(
+          `SELECT IDcommande_sous_traitant, IDsous_traitant, date_commande
+           FROM commande_sous_traitant WHERE IDcommande_sous_traitant IN (${cmdIds.join(',')})`,
+        )
+      : Promise.resolve([] as any[]),
+    // `expedition` carries accented columns (envoyé_client / envoyé_sst) that
+    // must never be named, and `DATE` is reserved — this ASCII subset is what
+    // expeditions-trm.ts reads too.
+    expIds.length
+      ? query<any>(`SELECT IDexpedition, DATE AS dexp FROM expedition WHERE IDexpedition IN (${expIds.join(',')})`)
+      : Promise.resolve([] as any[]),
+  ])
+
+  const sstIds = Array.from(new Set((cmdRows as any[]).map((c) => n(c.IDsous_traitant)).filter((x) => x > 0)))
+  const sstRows = sstIds.length
+    ? await fixEncoding(
+        await query<any>(
+          `SELECT IDsous_traitant, nom FROM sous_traitant WHERE IDsous_traitant IN (${sstIds.join(',')})`,
+        ),
+        'sous_traitant', 'IDsous_traitant', ['nom'],
+      )
+    : ([] as any[])
+  const sstName = new Map((sstRows as any[]).map((s) => [n(s.IDsous_traitant), trimStr(s.nom)]))
+
+  const docs: TracaDoc[] = []
+  for (const c of cmdRows as any[]) {
+    docs.push({
+      kind: 'commande_sst',
+      id: n(c.IDcommande_sous_traitant),
+      label: 'Bon de commande',
+      sous_titre: sstName.get(n(c.IDsous_traitant)) ?? '',
+      date: dateDigits8(c.date_commande) || null,
+    })
+  }
+  for (const e of expRows as any[]) {
+    docs.push({
+      kind: 'bon_livraison',
+      id: n(e.IDexpedition),
+      label: 'Bon de livraison',
+      sous_titre: `Avis N° ${n(e.IDexpedition)}`,
+      date: dateDigits8(e.dexp) || null,
+    })
+  }
+  return docs
+}
+
+// ── Documents (doc_qualite of the linked ETM dossier) ────
+//
+// The photos and reports ETM attached to its dossier — where the evidence for
+// the complaint actually lives. Nothing keys a doc_qualite on a retour_client,
+// so a natively created retour has none by construction.
+//
+// ⚠️ Windows-only, and not by choice: doc_qualite's PK *and* its dossier FK are
+// both accented (IDdoc_qualité, IDdossier_qualité), so the Linux bridge cannot
+// scope a query to one dossier and `SELECT *` would drag 87 MB of blobs across
+// it. The tab reports `degraded` there rather than claiming the dossier is
+// empty — same limitation and same wording as dossiers-qualite.ts. Probe §8
+// re-tests it on every run and will tell you when this can be dropped.
+
+retoursClientTrmRouter.get('/:id/documents', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const row = await readRetour(id)
+    if (!row) { res.status(404).json({ error: 'Retour client not found' }); return }
+    if (row.IDdossier_qualite === 0) { res.json({ documents: [], degraded: false }); return }
+    if (!IS_WINDOWS) { res.json({ documents: [], degraded: true }); return }
+
+    const rows = await fixEncoding(
+      await query<any>(
+        `SELECT IDdoc_qualité, nom FROM doc_qualite WHERE IDdossier_qualité = ${row.IDdossier_qualite} ORDER BY IDdoc_qualité`,
+      ),
+      'doc_qualite', 'IDdoc_qualité', ['nom'],
+    )
+    res.json({
+      documents: (rows as any[]).map((r) => ({
+        IDdoc_qualite: n(readCol(r, 'IDdoc_qualité')),
+        nom: trimStr(r.nom),
+      })),
+      degraded: false,
+    })
+  } catch (err) {
+    console.error('Error listing retour client TRM documents:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// The blob itself. Scoped through the retour's own dossier id so a caller
+// cannot read another dossier's evidence by guessing a doc id.
+retoursClientTrmRouter.get('/:id/documents/:docId/fichier', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const docId = parseInt(req.params.docId, 10)
+    if (isNaN(id) || isNaN(docId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!IS_WINDOWS) { res.status(404).json({ error: 'No file attached' }); return }
+
+    const row = await readRetour(id)
+    if (!row || row.IDdossier_qualite === 0) { res.status(404).json({ error: 'Document not found' }); return }
+
+    const rows = (await queryRaw(
+      `SELECT fichier FROM doc_qualite WHERE IDdoc_qualité = ${docId} AND IDdossier_qualité = ${row.IDdossier_qualite}`,
+    )) as any[]
+    if (rows.length === 0) { res.status(404).json({ error: 'Document not found' }); return }
+
+    const fichier = rows[0].fichier
+    let buf: Buffer | null = null
+    if (Buffer.isBuffer(fichier)) buf = fichier
+    else if (fichier instanceof ArrayBuffer) buf = Buffer.from(fichier)
+    // An empty BinMemo still passes IS NOT NULL — 404 so the viewer shows its
+    // empty state instead of an unreadable zero-byte frame.
+    if (!buf || buf.length === 0 || (buf.length === 1 && buf[0] === 0)) {
+      res.status(404).json({ error: 'No file attached' })
+      return
+    }
+
+    let contentType = 'application/octet-stream'
+    if (buf.length >= 4) {
+      const h = buf.subarray(0, 4)
+      if (h[0] === 0x25 && h[1] === 0x50 && h[2] === 0x44 && h[3] === 0x46) contentType = 'application/pdf'
+      else if (h[0] === 0x89 && h[1] === 0x50 && h[2] === 0x4e && h[3] === 0x47) contentType = 'image/png'
+      else if (h[0] === 0xff && h[1] === 0xd8) contentType = 'image/jpeg'
+    }
+    res.setHeader('Content-Type', contentType)
+    res.setHeader('Content-Disposition', 'inline')
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.end(buf)
+  } catch (err) {
+    console.error('Error serving retour client TRM document:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
