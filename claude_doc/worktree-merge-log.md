@@ -9,6 +9,22 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-26 — feat/finance (l'EBE se calcule sur l'exploitation seule)
+
+Vincent, en confrontant le widget Analyse financière au bilan 2025 : « je vois un EBE de 353 466 €, ça ne colle pas avec le compte de résultat ». Le compte de résultat en porte **314 422 €**. Il avait raison, et l'écart se décompose en deux moitiés très différentes.
+
+**Le bug (6 100 €).** Le calcul découpait le plan comptable en « classe 6 = charge / classe 7 = produit ». C'est trop large : l'EBE s'arrête **avant** le financier, l'exceptionnel et les dotations, et ces postes entraient donc dans un agrégat défini comme s'arrêtant avant eux — escomptes obtenus 8 011 €, escomptes accordés 1 562 €, dons 350 €. Le périmètre est désormais borné aux **charges d'exploitation (PCG 60-64)** et aux **produits d'exploitation (70-74)**. Le CA n'est plus `upload_compta.produits`, qui somme toute la classe 7 ; il est recalculé sur `releve_compta`, l'upload ne servant plus que de repli quand aucune balance n'est déposée à la date de l'arrêté — vérifié qu'en relâchant la borne, le recalcul reproduit `upload_compta.produits` **au centime sur les 57 arrêtés ETM et les 58 de TRM**, donc même source, seul le périmètre change.
+
+**Le calage qui prouve tout.** 2025 n'est pas comparable (voir plus bas), mais **2024 l'est** : exercice clos. L'EBE recalculé donne **269 613 €** contre **269 982 €** au compte de résultat — 369 € de résidu. Cette année-là l'erreur valait 40 040 €, le compte 768000 portant 33 896 € de produits financiers. C'est ce calage qui valide le périmètre ; toute retouche de la formule doit le refaire.
+
+**La limite acceptée (32 944 €).** Le dernier arrêté d'un exercice est celui de fin décembre (22/12/2025) ; les écritures de clôture de l'expert-comptable — cut-off, régularisations, variation de stock définitive, subventions — **ne remontent jamais dans l'ERP**, et l'upload du 05/01/2026 porte encore les mêmes chiffres d'avant clôture. Aucun code ne peut rattraper ça : l'information n'existe pas en base. Décision Vincent : le widget estime en continu, le bilan fait foi.
+
+**Le périmètre s'applique aux DEUX surfaces**, la série ET la balance de Rapports › Finance, pour tenir l'invariant « le widget suit l'écran » que le guard épingle depuis le 25/08. Quelques comptes hors exploitation quittent donc aussi le tableau du rapport (ETM 665000 / 670000 / 671200 / 671300, 1 914 € sur 2025 ; TRM 661000 / 670000 / 671200, 146 €) — arbitré explicitement plutôt que subi : l'alternative laissait les deux écrans diverger de ~1 900 € en silence.
+
+**Une erreur de doc corrigée au passage.** CLAUDE.md et le libellé du widget affirmaient qu'ETM avait 178 359 € de « production stockée » en 2024. C'est faux : la case **FM** du 2052 est vide en 2023, 2024 **et** 2025 ; ces 178 359 € sont la case **FP, reprises sur amortissements et provisions**. La mention est retirée de l'écran. Ce qui manquait réellement à l'EBE intermédiaire, c'est la variation de stock du compte de charge **603700**, déjà estimée depuis la veille.
+
+`check-finance-analyse-buckets.ts` épingle désormais le périmètre en plus de l'égalité des charges : aucune ligne hors 60-64 dans le rapport, CA de l'analyse strictement égal aux comptes 70-74 de la balance. Vert sur les deux sociétés × trois années.
+
 ## 2026-08-25 — feat/valorisation-4-types (variation de stock estimée dans l'EBE)
 
 Suite de la même session. Vincent : « en regardant mon EBE trop bas et ce widget, comment tu conclus que c'est parce que j'ai augmenté mon stock ? » — question juste, le widget montrait un **niveau** quand la conclusion demandait une **variation**. Le croisement des deux méthodes a révélé que mon estimation par les flux **surestimait l'effet stock de 108 k€** (168 k€ annoncés contre 59 k€ réels) : elle valorisait au coût variable moyen au kilo *produit* des kilos encore à l'état d'écru, à ~6 €/kg et non ~14 €/kg.
