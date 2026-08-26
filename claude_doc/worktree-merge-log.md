@@ -9,6 +9,19 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-26 — feat/siren (champ SIREN sur la fiche client — ticket #1088)
+
+Isabelle : « il faudrait mettre un champ siren dans la gestion client afin que je puisse commencer à le mettre car c'est ce numéro qui sera le plus utile pour la facturation électronique. » Vincent avait déjà créé la colonne `client.siren` en base ; cette branche l'expose.
+
+**Le champ.** Clients › Gestion → Info → carte Facturation, « N° SIREN » sous le N° TVA (les deux identifiants légaux ensemble, ordre choisi par Vincent). Lecture groupée par 3 (`552 100 554`), saisie normalisée en chiffres seuls — un collage `552.100.554` passe.
+
+**Validation calibrée sur l'usage réel : le champ est FACULTATIF.** La colonne se remplit client par client (619 clients ETM, 0 renseigné aujourd'hui), donc un champ vide est un état normal, pas une erreur. Seule une valeur non vide est contrôlée — exactement 9 chiffres, sinon bordure rouge, `Enregistrer` grisé et sortie d'édition bloquée par le même `infoIssue` que le compte 411, plus un 400 `siren_invalide` côté serveur. Un collage de SIRET est nommé pour ce qu'il est (« 14 correspond à un SIRET, gardez les 9 premiers ») plutôt que tronqué en silence.
+
+⚠️ **La clé de Luhn est un avertissement ambre, jamais un refus.** Elle attrape les transpositions de chiffres, ce qui vaut cher quand un SIREN faux = une facture rejetée par le PPF. Mais le registre a porté des identifiants qui ne la vérifient pas, et refuser une saisie légitime coûterait plus cher que la faute qu'on attrape. (En passant : l'exception « La Poste » souvent citée porte sur le **SIRET**, pas sur le SIREN — le test unitaire écrit d'abord sur cette croyance a échoué et a été corrigé.)
+
+**Portée volontairement tenue.** La colonne est nommée par la seule fiche ETM : `clients-trm.ts` ne la touche pas, donc une sauvegarde TRM la laisse intacte (l'invariant des deux fiches) — l'ajouter côté TRM sera une édition séparée. Et le SIREN **ne part sur aucun document** : la facturation électronique elle-même reste une feature à part, cette branche ne fait que rendre la donnée saisissable, ce que demandait le ticket.
+
+**Vérifications.** Colonne sondée sur la copie dev avant d'écrire quoi que ce soit : texte, ≥ 20 caractères, donc aucun risque de troncature silencieuse à 9. `check-siren.ts` audite les valeurs stockées (longueur, clé) et, en `--roundtrip`, conduit la vraie route : PUT « 552 100 554 » → stocké `552100554`, PUT « 12345 » refusé sans écraser la valeur en place, PUT « » vide le champ, valeur initiale restaurée. Test unitaire `siren.test.ts` (8 cas) sur la normalisation, la longueur et la clé.
 ## 2026-08-26 — feat/bug (ticket #1089 : les écrans de stock ne se rafraîchissaient pas)
 
 Pierre-Emmanuel transfère trois pièces finies de MATEL vers Ets Malterre, va sur Finis › Stock, et les voit toujours au magasin d'origine — puis « ça s'est réparé tout seul ». Les deux moitiés du symptôme désignent la même cause : **rien n'était cassé en base, le transfert avait bien eu lieu**, c'est l'écran qui rejouait sa liste d'avant.

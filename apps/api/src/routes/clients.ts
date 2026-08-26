@@ -46,6 +46,7 @@ import { subscribersOf } from '../lib/notifications.js'
 import {
   generateCompteClient, loadTakenComptes, pickCompte, normalizeCompte, isValidCompte,
 } from '../lib/compte-client.js'
+import { normalizeSiren, isValidSiren } from '../lib/siren.js'
 
 export const clientsRouter: RouterType = Router()
 
@@ -57,7 +58,7 @@ export const clientsRouter: RouterType = Router()
 
 const CLIENT_DETAIL_COLS = [
   'IDclient', 'nom', 'tel', 'fax', 'num_tva', 'IDtva', 'IDmode_paiement', 'IDecheance',
-  'IDtransporteur', 'compte', 'IDcode_comptable', 'pct_ajeol', 'pct_remise', 'est_visible',
+  'IDtransporteur', 'compte', 'siren', 'IDcode_comptable', 'pct_ajeol', 'pct_remise', 'est_visible',
   'IDsociete', 'date_creation', 'client_interne', 'dernier_contact', 'journal_commercial',
   'IDsecteur_activite', 'IDactivite', 'inclureRapportQualite', 'commentaire',
 ].join(', ')
@@ -72,6 +73,7 @@ function shapeClient(r: Record<string, unknown>) {
     fax: strOf(r.fax),
     num_tva: strOf(r.num_tva),
     compte: strOf(r.compte),
+    siren: normalizeSiren(strOf(r.siren)),
     commentaire: strOf(r.commentaire),
     journal_commercial: strOf(pick(r, 'journal_commercial')),
     pct_remise: numOf(r.pct_remise),
@@ -315,6 +317,7 @@ const clientBody = z.object({
   fax: z.string().optional(),
   num_tva: z.string().optional(),
   compte: z.string().optional(),
+  siren: z.string().optional(),
   commentaire: z.string().optional(),
   journal_commercial: z.string().optional(),
   pct_remise: z.number().optional(),
@@ -448,6 +451,21 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
       }
     }
 
+    // SIREN — optional (the column is being filled in client by client), but a
+    // non-empty value must be a real 9-digit one: it is the key the facturation
+    // électronique routes on. Digits only, so no sqlText/hex encoding needed.
+    let siren = ''
+    if (canInfo) {
+      siren = normalizeSiren(b.siren)
+      if (!isValidSiren(siren)) {
+        res.status(400).json({
+          error: 'siren_invalide',
+          message: 'Le SIREN doit comporter 9 chiffres.',
+        })
+        return
+      }
+    }
+
     // `nom` lives in the detail header, not in a permission-scoped tab.
     const sets = [`nom = ${sqlText(b.nom)}`]
     if (canInfo) {
@@ -456,6 +474,7 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
         `fax = ${sqlText(b.fax)}`,
         `num_tva = ${sqlText(b.num_tva)}`,
         `compte = '${esc(compte)}'`,
+        `siren = '${siren}'`,
         `commentaire = ${sqlText(b.commentaire)}`,
         `pct_remise = ${floatOf(b.pct_remise)}`,
         `pct_ajeol = ${floatOf(b.pct_ajeol)}`,

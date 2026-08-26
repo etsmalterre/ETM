@@ -57,6 +57,7 @@ import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches } from '@/lib/cache-sync'
 import { compteError, normalizeCompte } from '@/lib/compte-client'
+import { formatSiren, normalizeSiren, sirenError, sirenLuhnOk } from '@/lib/siren'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 
 /** POST/PUT helper that surfaces the API's French `message` field — `apiFetch`
@@ -126,6 +127,7 @@ interface ClientDetail {
   fax: string | null
   num_tva: string | null
   compte: string | null
+  siren: string | null
   commentaire: string | null
   journal_commercial: string | null
   pct_remise: number
@@ -187,6 +189,7 @@ interface Draft {
   fax: string
   num_tva: string
   compte: string
+  siren: string
   commentaire: string
   journal_commercial: string
   pct_remise: string
@@ -209,6 +212,7 @@ function draftFromDetail(d: ClientDetail): Draft {
     fax: d.fax ?? '',
     num_tva: d.num_tva ?? '',
     compte: d.compte ?? '',
+    siren: d.siren ?? '',
     commentaire: d.commentaire ?? '',
     journal_commercial: d.journal_commercial ?? '',
     pct_remise: d.pct_remise ? String(d.pct_remise) : '',
@@ -232,6 +236,7 @@ function draftToBody(d: Draft) {
     fax: d.fax,
     num_tva: d.num_tva,
     compte: d.compte,
+    siren: d.siren,
     commentaire: d.commentaire,
     journal_commercial: d.journal_commercial,
     pct_remise: Number(d.pct_remise.replace(',', '.')) || 0,
@@ -395,10 +400,20 @@ export function ClientsGestion() {
     [isEditing, canEditInfo, draft, comptesPris, detail?.compte],
   )
 
+  // SIREN is optional (it is being filled in client by client), so only a
+  // non-empty malformed value blocks. Same Info scope as the compte client.
+  const sirenIssue = useMemo(
+    () => (isEditing && canEditInfo && draft ? sirenError(draft.siren) : null),
+    [isEditing, canEditInfo, draft],
+  )
+  /** The Info-tab issue that refuses a save / an exit — compte first, it is the
+   *  mandatory one. */
+  const infoIssue = compteIssue ?? sirenIssue
+
   const attemptSave = useCallback(() => {
-    if (compteIssue) { setSaveBlockedReason(compteIssue); return }
+    if (infoIssue) { setSaveBlockedReason(infoIssue); return }
     saveMutation.mutate()
-  }, [compteIssue, saveMutation])
+  }, [infoIssue, saveMutation])
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiFetch(`/clients/${id}`, { method: 'DELETE' }),
@@ -444,10 +459,11 @@ export function ClientsGestion() {
     save: async () => { await saveMutation.mutateAsync() },
     onDiscard: () => { setIsEditing(false); setDraft(null); setSaveError(null) },
     // Leaving edit mode with an invalid compte would let the client be saved
-    // (via the guard's « Enregistrer ») without one. Block the exit and
-    // explain instead; « Annuler » is still a way out, it just discards.
-    shouldBlockExit: compteIssue !== null,
-    onExitBlocked: () => setSaveBlockedReason(compteIssue),
+    // (via the guard's « Enregistrer ») without one — same for a malformed
+    // SIREN. Block the exit and explain instead; « Annuler » is still a way
+    // out, it just discards.
+    shouldBlockExit: infoIssue !== null,
+    onExitBlocked: () => setSaveBlockedReason(infoIssue),
   })
 
   const handleSelect = useCallback((id: number) => {
@@ -1295,11 +1311,15 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
   // requests rather than threading the set down through DetailSidebar.
   const { taken: comptesPris } = useComptesPris()
   const compteIssue = ed ? compteError(draft!.compte, { taken: comptesPris, ownCompte: client.compte }) : null
+  const sirenIssue = ed ? sirenError(draft!.siren) : null
+  // Advisory only — the Luhn key catches typos, it is not a registry check.
+  const sirenKeyOdd = ed && sirenIssue === null && draft!.siren !== '' && !sirenLuhnOk(draft!.siren)
   // tel / fax / pct_ajeol are still carried by the draft (so a save round-trips
   // the stored values untouched) — they're just no longer surfaced here.
   const v = {
     num_tva: ed ? draft!.num_tva : client.num_tva ?? '',
     compte: ed ? draft!.compte : client.compte ?? '',
+    siren: ed ? draft!.siren : formatSiren(client.siren),
     commentaire: ed ? draft!.commentaire : client.commentaire ?? '',
     pct_remise: ed ? draft!.pct_remise : (client.pct_remise ? String(client.pct_remise) : ''),
     IDtva: ed ? draft!.IDtva : client.IDtva,
@@ -1329,6 +1349,18 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
         <KVSelect label="Échéance" value={v.IDecheance} edit={ed} options={echeances} onChange={(id) => onPatch({ IDecheance: id })} />
         <KVSelect label="TVA" value={v.IDtva} edit={ed} options={tvas} onChange={(id) => onPatch({ IDtva: id })} />
         <KVText label="N° TVA" value={v.num_tva} edit={ed} onChange={(x) => onPatch({ num_tva: x })} />
+        {/* SIREN — the identifier the facturation électronique routes on, hence
+            next to the N° TVA built from it. Optional (the column is being
+            filled in client by client) but checked as soon as it is non-empty. */}
+        <KVText label="N° SIREN" value={v.siren} edit={ed} mono
+          invalid={ed && sirenIssue !== null}
+          onChange={(x) => onPatch({ siren: normalizeSiren(x) })} />
+        {ed && sirenIssue !== null && (
+          <p className="text-[11px] text-destructive text-right">{sirenIssue}</p>
+        )}
+        {sirenKeyOdd && (
+          <p className="text-[11px] text-amber-700 text-right">Clé de contrôle inhabituelle — vérifiez la saisie.</p>
+        )}
         <KVSelect label="Code comptable" value={v.IDcode_comptable} edit={ed} options={codesComptables} onChange={(id) => onPatch({ IDcode_comptable: id })} searchable />
         {/* Compte client is mandatory and format-checked (411 + 3 alphanumerics).
             It is generated at creation; here it stays editable but a save is
