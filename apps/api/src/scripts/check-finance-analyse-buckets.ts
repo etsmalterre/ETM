@@ -1,6 +1,7 @@
 /**
  * Guard: the Analyse financière widget and the Rapports › Finance screen must
- * quote the SAME charges fixes / charges variables.
+ * quote the SAME charges fixes / charges variables, and both must stay inside
+ * the EXPLOITATION perimeter that EBE is defined on.
  *
  *   API_BASE=http://localhost:8080/api pnpm --filter @mps/api exec tsx \
  *     src/scripts/check-finance-analyse-buckets.ts
@@ -21,6 +22,16 @@
  *   summed by `variable` must equal, to the centime, the charges of the analyse
  *   series' LAST point of that year. Both are taken at the same anchor (the last
  *   upload of the calendar year), so exact equality is the correct expectation.
+ *
+ *   Since 2026-08-26 it also pins the PERIMETER (see `isChargeExploitation` /
+ *   `isProduitExploitation` in lib/finance-common.ts): no report line outside
+ *   PCG classes 60-64, and the analyse's CA exactly equal to classes 70-74 of
+ *   the balance. Splitting the plan on "class 6 = charge / class 7 = produit"
+ *   dragged the financial and exceptional accounts into an aggregate that is
+ *   defined as stopping before them, inflating ETM's 2025 EBE by 6 100 € and
+ *   its 2024 EBE by 40 040 €. Cross-checked against the accountant's own
+ *   compte de résultat on the closed 2024 exercice: 269 613 € computed vs
+ *   269 982 € filed.
  *
  * The stored `upload_compta` buckets are then compared as DIAGNOSTIC output, not
  * as an assertion: they are legitimately stale wherever a compte was reclassified
@@ -61,6 +72,27 @@ async function api(path: string): Promise<{ status: number; json: any }> {
   let json: any = null
   try { json = JSON.parse(text) } catch { json = text }
   return { status: res.status, json }
+}
+
+/** Somme des produits d'EXPLOITATION (PCG 70 à 74) d'une société à une date
+ *  d'arrêté, lue directement en base — la référence indépendante du CA que
+ *  l'analyse doit servir. Un produit est au crédit, d'où le signe inversé. */
+async function produitsExploitation(societe: number, date: string): Promise<number> {
+  const numero = new Map<number, number>()
+  for (const c of await query<Record<string, unknown>>(
+    `SELECT IDcompte_compta, numero FROM compte_compta WHERE id_societe = ${societe}`,
+  )) {
+    numero.set(n(c.IDcompte_compta), n(c.numero))
+  }
+  let total = 0
+  for (const r of await query<Record<string, unknown>>(
+    `SELECT IDcompte_compta, debit, credit FROM releve_compta WHERE DATE = '${date}'`,
+  )) {
+    const num = numero.get(n(r.IDcompte_compta))
+    if (num === undefined || num < 700000 || num >= 750000) continue
+    total -= n(r.debit) - n(r.credit)
+  }
+  return total
 }
 
 /** The two mounts of the finance router factory. */
@@ -111,7 +143,30 @@ async function checkMount(mount: (typeof MOUNTS)[number]) {
            `variables rapport ${eur(repVar)} vs widget ${eur(n(last.charges_variables))} (${eur(dv)})`)
       continue
     }
-    console.log(`  ✓ ${annee} @ ${last.date}  fixes ${eur(repFixe).padStart(14)}  variables ${eur(repVar).padStart(14)}`)
+    // ── Périmètre de l'exploitation (ajouté 2026-08-26) ────────────────────
+    // L'EBE s'arrête avant le financier, l'exceptionnel et les dotations. Le
+    // découpage « classe 6 = charge / classe 7 = produit » était trop large et
+    // gonflait l'EBE 2025 d'ETM de 6 100 € (escomptes obtenus 8 011 €,
+    // escomptes accordés 1 562 €, dons 350 €) — 40 040 € sur 2024. Deux
+    // assertions : aucune ligne hors exploitation dans le rapport, et le CA de
+    // l'analyse strictement égal aux comptes 70-74 de la balance.
+    const horsPerimetre = (rapport.json.lignes ?? []).filter(
+      (l: any) => n(l.numero) < 600000 || n(l.numero) >= 650000,
+    )
+    if (horsPerimetre.length > 0) {
+      fail(`${annee}: ${horsPerimetre.length} ligne(s) hors exploitation dans le rapport — ` +
+           horsPerimetre.map((l: any) => `${n(l.numero)} ${l.libelle} (${eur(n(l.montant))})`).join(', '))
+      continue
+    }
+
+    const attendu = await produitsExploitation(mount.societe, last.date)
+    const dp = n(last.ca) - attendu
+    if (Math.abs(dp) > EPS) {
+      fail(`${annee} @ ${last.date}: CA analyse ${eur(n(last.ca))} vs produits d'exploitation (70-74) ${eur(attendu)} (${eur(dp)})`)
+      continue
+    }
+
+    console.log(`  ✓ ${annee} @ ${last.date}  CA ${eur(attendu).padStart(14)}  fixes ${eur(repFixe).padStart(14)}  variables ${eur(repVar).padStart(14)}`)
   }
 }
 

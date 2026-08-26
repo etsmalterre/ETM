@@ -166,8 +166,58 @@ async function inChunks<T>(ids: number[], fn: (chunk: string) => Promise<T[]>): 
 // (4 per request, independent of row count); accent repair is batched via
 // repairAliased so empty `Description` values never enter a CONVERT.
 
-/** Accounts at or above this number are produits (PCG class 7), not charges. */
-const CLASS_7 = 700000
+// ── Le périmètre de l'EXPLOITATION ────────────────────────────────────────
+//
+// L'EBE se calcule sur l'exploitation SEULE : il s'arrête avant le financier,
+// avant l'exceptionnel et avant les dotations. Découper le plan comptable sur
+// « classe 6 = charge / classe 7 = produit » est donc trop large et fait entrer
+// dans le calcul des postes qui n'y ont rien à faire (constaté 2026-08-26 en
+// confrontant le widget au bilan 2025 : escomptes obtenus 8 011 €, escomptes
+// accordés 1 562 €, dons 350 € — 6 100 € d'EBE en trop, et 40 040 € sur 2024
+// où le compte 768000 portait 33 896 € de produits financiers).
+//
+// Le périmètre correct, celui des soldes intermédiaires de gestion :
+//
+//   charges d'exploitation  : classes 60 à 64   (60 achats … 64 personnel)
+//   produits d'exploitation : classes 70 à 74   (70 ventes … 74 subventions)
+//
+// Tout le reste — 65 autres charges de gestion courante, 66/76 financier,
+// 67/77 exceptionnel, 68/78 dotations et reprises — est SOUS la ligne d'EBE.
+// Les provisions ne transitent pas par ces comptes ici (aucun 68x dans le plan
+// des deux sociétés) : elles arrivent par `upload_compta.provisions` et restent
+// exclues, comme avant.
+//
+// ⚠️ Le périmètre s'applique aux DEUX surfaces — la série de l'analyse ET la
+// balance de Rapports › Finance — parce qu'elles doivent afficher les mêmes
+// charges (invariant tenu par `check-finance-analyse-buckets.ts`). Les quelques
+// comptes hors exploitation quittent donc aussi le tableau du rapport : côté
+// ETM 665000 / 670000 / 671200 / 671300, côté TRM 661000 / 670000 / 671200 —
+// 1 914 € sur 2025 pour ETM, 146 € pour TRM.
+//
+// Preuve du découpage, sur l'exercice 2024 clos et donc comparable au bilan :
+// l'EBE recalculé donne 269 613 € contre 269 982 € au compte de résultat, soit
+// 369 € de résidu. Sur 2025 il reste ~33 k€ d'écart qui ne sont PAS une erreur
+// de calcul : les écritures de clôture de l'expert-comptable ne remontent
+// jamais dans l'ERP (le dernier arrêté de l'exercice est celui du 22/12/2025,
+// et l'upload du 05/01/2026 porte encore les mêmes chiffres d'avant clôture).
+// Limite assumée — le widget estime en continu, le bilan fait foi.
+
+/** Charges d'exploitation : PCG classes 60 à 64. Borne haute EXCLUSIVE. */
+const CHARGE_MIN = 600000
+const CHARGE_MAX = 650000
+/** Produits d'exploitation : PCG classes 70 à 74. Borne haute EXCLUSIVE. */
+const PRODUIT_MIN = 700000
+const PRODUIT_MAX = 750000
+
+/** Un compte de charge d'exploitation — le seul périmètre que l'EBE connaît. */
+function isChargeExploitation(numero: number): boolean {
+  return numero >= CHARGE_MIN && numero < CHARGE_MAX
+}
+
+/** Un compte de produit d'exploitation. */
+function isProduitExploitation(numero: number): boolean {
+  return numero >= PRODUIT_MIN && numero < PRODUIT_MAX
+}
 
 /** SQL literal for a user-supplied text value. Pure ASCII → quoted literal;
  *  anything with accents → Latin-1 hex literal (the Linux iODBC bridge
@@ -299,7 +349,7 @@ async function loadChargeBuckets(societe: number): Promise<Map<number, 0 | 1>> {
   const out = new Map<number, 0 | 1>()
   for (const r of rows) {
     const num = n(r.numero)
-    if (num <= 0 || num >= CLASS_7) continue
+    if (!isChargeExploitation(num)) continue
     out.set(n(r.IDcompte_compta), n(r.frais_variable) === 1 ? 1 : 0)
   }
   return out
@@ -327,7 +377,7 @@ async function loadComptes(societe: number): Promise<CompteRow[]> {
   )
   return (fixed as unknown as CompteRow[]).filter((c) => {
     const num = n(c.numero)
-    return num > 0 && num < CLASS_7
+    return isChargeExploitation(num)
   })
 }
 
@@ -564,9 +614,16 @@ async function handleComptePatch(scope: FinanceScope, req: Request, res: Respons
 //
 // The three figures:
 //
-//   CA               = produits                                   (upload_compta)
+//   CA               = produits d'exploitation                (classes 70 à 74)
 //   marge brute      = produits − charges variables
 //   EBE              = produits − charges variables − charges fixes
+//
+// ⚠️ Les trois figures sont bornées au périmètre de l'EXPLOITATION (voir
+// `isChargeExploitation` / `isProduitExploitation` plus haut) : le financier,
+// l'exceptionnel et les dotations restent dehors, c'est la définition même de
+// l'EBE. `upload_compta.produits` n'est plus la source du CA — il somme toute
+// la classe 7 — mais reste le repli quand aucune balance n'est déposée à la
+// date de l'arrêté.
 //
 // ⚠️ The fixe / variable SPLIT is recomputed from `releve_compta` bucketed by
 // `compte_compta.frais_variable` — the SAME arithmetic as the Rapports › Finance
@@ -588,15 +645,20 @@ async function handleComptePatch(scope: FinanceScope, req: Request, res: Respons
 // the half that agrees with the screen. TRM is the same story on 32 of 58.
 // Guard: `apps/api/src/scripts/check-finance-analyse-buckets.ts`.
 //
-// `produits` still comes from the upload: a reclassification only ever moves an
-// account between the two CHARGE buckets, so the CA line — the one validated
-// against the legacy screen — is untouched, and so is EBE (total charges are
+// A reclassification only ever moves an account between the two CHARGE buckets,
+// so it leaves the CA line untouched and EBE with it (total charges are
 // unchanged; only their split moves).
 //
 // Verified against the legacy screen (28/07/2026): CA 1 908 171 €,
 // marge brute 595 021 € (31,2 % du CA), EBE 97 841 € (5,1 %) — its marge minus
 // its EBE is exactly the charges fixes its red area reaches in July. Provisions
 // stay out, which is what EBE means (it is struck before dotations).
+//
+// ⚠️ Ce contrôle-là datait d'avant le cadrage sur l'exploitation (2026-08-26) :
+// il reproduisait l'écran WinDev, qui commettait la MÊME erreur de périmètre.
+// Les figures ci-dessus sont donc l'ancienne définition, gardées comme trace du
+// portage. La référence est désormais le compte de résultat — voir le calage sur
+// l'exercice 2024 clos, en tête de fichier.
 
 /** The first upload of a year can be the accountant's closing balance for the
  *  PREVIOUS exercise — 2026-01-05 carries the final 2025 figures. It is dated in
@@ -658,16 +720,31 @@ async function handleFinanceAnalyse(scope: FinanceScope, req: Request, res: Resp
 
     const points = anchors.map(([mois, u]) => {
       // No balance filed at that date → nothing to recompute from, so keep the
-      // upload's own buckets rather than plotting a false zero.
+      // upload's own aggregates rather than plotting a false zero.
       const balance = balances.get(u.date)
       let fixe = u.frais_fixe
       let variable = u.frais_variable
+      // ⚠️ `upload_compta.produits` somme TOUTE la classe 7 — donc aussi les
+      // produits financiers (76) et exceptionnels (77), qui sont sous la ligne
+      // d'EBE. On recalcule sur les seuls produits d'exploitation. Vérifié :
+      // borne relâchée à la classe 7 entière, le recalcul reproduit
+      // `upload_compta.produits` au centime sur les 57 arrêtés ETM et les 58
+      // arrêtés TRM — la source est donc bien la même, seul le périmètre change.
+      let produits = u.produits
       if (balance) {
         fixe = 0
         variable = 0
+        produits = 0
         for (const [id, montant] of balance) {
           const bucket = buckets.get(id)
-          if (bucket === undefined) continue // produits (classe 7) or another société
+          if (bucket === undefined) {
+            // Hors du périmètre des charges d'exploitation : soit un produit,
+            // soit un compte hors exploitation, soit une autre société.
+            const numero = numeroById.get(id)
+            // Un produit est au crédit : `debit − credit` y est négatif.
+            if (numero !== undefined && isProduitExploitation(numero)) produits -= montant
+            continue
+          }
           if (bucket === 1) variable += montant
           else fixe += montant
         }
@@ -683,11 +760,11 @@ async function handleFinanceAnalyse(scope: FinanceScope, req: Request, res: Resp
       return {
         mois,
         date: u.date,
-        ca: euro(u.produits),
+        ca: euro(produits),
         charges_fixes: euro(fixe),
         charges_variables: euro(variableCorrige),
-        marge_brute: euro(u.produits - variableCorrige),
-        ebe: euro(u.produits - variableCorrige - fixe),
+        marge_brute: euro(produits - variableCorrige),
+        ebe: euro(produits - variableCorrige - fixe),
         variation_stock_estimee: correction !== 0 ? euro(correction) : null,
       }
     })
