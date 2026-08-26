@@ -10,6 +10,39 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-26 — feat/prime-bareme (les taux de la prime sont datés, et montent à 0,055 / −0,40)
+
+Vincent a tranché la révision du barème discutée avec l'atelier depuis le 2026-08-24 : 1er choix
++0,05 → **+0,055 €/Kg**, 2nd choix −0,20 → **−0,40 €/Kg**. Le chiffre était la partie facile ;
+la condition posée par `CLAUDE.md` depuis l'écriture de l'écran était l'autre moitié.
+
+**Les trois taux étaient des constantes de module appliquées à TOUTE période navigable.** Les
+réviser en place aurait recalculé l'historique entier : en rouvrant un semestre payé, l'écran
+aurait affiché une prime que personne n'a jamais touchée — et la répartition par bonnetier avec.
+`BAREMES_PRIME` (`lib/bareme-prime-trm.ts`) est donc une **table datée**, résolue par
+`baremePour(debut du semestre)` : S1 2026 et avant gardent +0,05 / −0,20, S2 2026 et après
+prennent les nouveaux. **On ne touche jamais une ligne passée** — une révision s'ajoute.
+
+⚠️ **Le `from` doit tomber sur une frontière de semestre (15/06 ou 15/12).** La prime est *une*
+somme sur toute la période × *un* taux, donc un barème démarrant en cours de semestre n'est pas
+calculable sans découper chaque somme de kg à la date de bascule — `sumPoids`, les montants de
+déclassement et le donut. Si l'atelier demande ça un jour, **c'est ce découpage le travail**,
+pas une ligne de plus dans la table. Le test l'épingle, avec la bascule au jour près et le tri
+de la table : `baremePour` sort de sa boucle au premier `from` futur, une table désordonnée
+résoudrait faux **en silence**.
+
+Deux détails qui ne se devinent pas : le **semestre** est prixé au barème de *son* `debut`, la
+**semaine** à celui d'aujourd'hui (elle décrit toujours la semaine courante, quelle que soit la
+période consultée — les deux coïncident dès que le semestre courant est affiché, seul cas où
+l'écran la rend) ; et `retourClient` reste à −0,60, la tuile étant morte depuis le legacy.
+
+La table vit dans `lib/` et pas dans `routes/prime-trm.ts` pour être testable sans charger le
+driver HFSQL, à côté de `lib/pricing-trm.ts` où vivent déjà les règles de prix TRM. **Le payload
+garde sa forme** (`taux: {premierChoix, secondChoix, retourClient}`) : l'écran et le PDF
+affichent les taux qu'on leur envoie, donc **aucun changement côté TRM** — pas de worktree
+jumeau, pas de `/trm_deploy`. Vérifié en base sur la bascule : S1 2026 rend 0,05 / −0,20 et
+2 369,91 €, S2 2026 rend 0,055 / −0,40 ; `montant = kg × taux` sur chaque période.
+
 ## 2026-08-26 — feat/cmd-client (lancement d'OF depuis la commande : ce que le régleur fait vraiment)
 
 Suite de la même branche. Vincent est allé demander à son régleur ce que font au juste les deux boutons de la fenêtre OF, et sa réponse a invalidé deux hypothèses du port — plus, en passant, deux bugs de fond.
