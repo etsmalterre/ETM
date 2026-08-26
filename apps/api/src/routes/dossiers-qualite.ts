@@ -192,6 +192,47 @@ function normalizeDossier(raw: Record<string, unknown>): DossierRow {
   }
 }
 
+/** The half of a dossier the *receiving* company needs: what was reported, when
+ *  it was sent, and by when it is expected back. Consumed by TRM's Qualité ›
+ *  Retour client, whose rows carry an `IDdossier_qualite` FK into this table.
+ *  Exported (rather than re-read there) because `echéance` / `terminé` are
+ *  accented and the Linux bridge can only reach them through `SELECT *` —
+ *  that read belongs to this file. */
+export interface FncSummary {
+  IDdossier_qualite: number
+  date: string | null
+  echeance: string | null
+  envoi_fnc: string | null
+  message_fnc: string
+  reponse_fnc: string
+  termine: 0 | 1
+  /** ETM's own end client — the one who actually complained. TRM's mirror row
+   *  names *its* client (Ets Malterre), so this is the only place the real
+   *  complainant survives. */
+  IDclient: number
+}
+
+export async function loadFncSummaries(ids: number[]): Promise<Map<number, FncSummary>> {
+  const out = new Map<number, FncSummary>()
+  const wanted = Array.from(new Set(ids.filter((x) => Number.isInteger(x) && x > 0)))
+  if (wanted.length === 0) return out
+  const rows = await selectDossierRows(`WHERE IDdossier_qualite IN (${wanted.join(',')})`)
+  for (const raw of rows) {
+    const d = normalizeDossier(raw)
+    out.set(d.IDdossier_qualite, {
+      IDdossier_qualite: d.IDdossier_qualite,
+      date: d.date,
+      echeance: d.echeance,
+      envoi_fnc: d.envoi_fnc,
+      message_fnc: d.message_fnc,
+      reponse_fnc: d.reponse_fnc,
+      termine: d.termine,
+      IDclient: d.IDclient,
+    })
+  }
+  return out
+}
+
 // ── FNC réponse split/join ───────────────────────────────
 // Legacy stores "<résolution libellé>\r\n<commentaires libres>". The libellé is
 // matched against resolution_qualite; anything unmatched stays in the comment.
@@ -221,6 +262,32 @@ function joinReponse(resolution: string, commentaire: string): string {
   const c = commentaire ?? ''
   if (!r && !c.trim()) return ''
   return `${r || ' '}\r\n${c}`
+}
+
+/**
+ * Write the FNC answer back onto a dossier — the ONLY writer of `reponseFNC`
+ * outside this file's own PUT.
+ *
+ * The responding company answers on ITS screen (TRM's Qualité › Retour client
+ * stores the same thing split across `retour_client.IDresolution_qualite` +
+ * `.reponse`), and this column is where ETM reads it back: the dossier list's
+ * `has_reponse` and the FNC PDF both come from here. Exported rather than
+ * duplicated so the "<libellé>\r\n<commentaire>" encoding has one owner —
+ * a second implementation would silently desynchronise the two screens.
+ *
+ * `reponseFNC` is ASCII-named, so a plain named UPDATE is safe on both
+ * platforms. No-ops on a non-existent dossier.
+ */
+export async function writeFncReponse(
+  dossierId: number,
+  resolution: string,
+  commentaire: string,
+): Promise<void> {
+  if (!Number.isInteger(dossierId) || dossierId <= 0) return
+  const reponse = joinReponse(resolution, commentaire)
+  await query(
+    `UPDATE dossier_qualite SET reponseFNC = ${sqlText(reponse)} WHERE IDdossier_qualite = ${dossierId}`,
+  )
 }
 
 // ── Lookups ──────────────────────────────────────────────

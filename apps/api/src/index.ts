@@ -44,6 +44,7 @@ import { ofTrmRouter } from './routes/of-trm.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
 import { maintenanceTrmRouter } from './routes/maintenance-trm.js'
+import { retoursClientTrmRouter } from './routes/retours-client-trm.js'
 import { authRouter } from './routes/auth.js'
 import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
@@ -171,6 +172,9 @@ app.use('/api/dashboard-trm', dashboardTrmRouter)
 app.use('/api/prime-trm', primeTrmRouter)
 // TRM machine upkeep (Atelier > Maintenance) — consumed by the TRM web app.
 app.use('/api/maintenance-trm', maintenanceTrmRouter)
+// TRM client returns (Qualité › Retour client) — the receiving end of an ETM
+// FNC, answered here and republished onto the dossier. Consumed by the TRM web app.
+app.use('/api/retours-client-trm', retoursClientTrmRouter)
 
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)

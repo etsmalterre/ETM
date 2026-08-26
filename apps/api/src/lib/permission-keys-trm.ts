@@ -106,6 +106,18 @@ export const TRM_PERMISSION_KEYS = [
     category: 'Rapports',
     parent: 'view_rapport_finance',
   },
+  // Qualité > Retour client. Only the WRITE side is gated: a retour client is
+  // the atelier's own quality record, not confidential data, and who sees the
+  // screen at all is already the Écrans axis's job. What this key protects is
+  // the FNC round-trip — the réponse written here is republished onto ETM's
+  // dossier, so an unintended edit speaks to the other company in TRM's name.
+  {
+    key: 'edit_retour_client',
+    label: 'Traitement des retours client',
+    description:
+      'Autorise la création, la modification, la suppression et la clôture d’un retour client dans Qualité > Retour client — boutons « Nouveau », « Modifier », « Supprimer » et « Terminer / Réactiver ». La réponse et la résolution saisies ici sont renvoyées sur la fiche de non-conformité d’Ets Malterre : sans ce droit l’écran reste consultable, mais en lecture seule.',
+    category: 'Qualité',
+  },
 ] as const
 
 export type TrmPermissionKey = (typeof TRM_PERMISSION_KEYS)[number]['key']
