@@ -4,6 +4,16 @@
 // the client + billing/delivery addresses + payment terms, a lines table
 // (ref/coloris · qté+unité · prix u. · montant · expédition), and a totals block
 // (HT, remise, frais de port, TVA, TTC).
+//
+// ── Two issuers, one template ──
+// Tricotage Malterre confirms its own client orders with this same document
+// (TRM › Clients › Commandes, `routes/commandes-trm.ts`). The two companies
+// confirm an order the same way, so this file is NOT forked — `data.company`
+// carries the issuing entity to MalterreDocument's footer, exactly like
+// FacturePdf. TRM's rows are all tombé métier priced per Kg, which is why the
+// optional per-line `designation` exists: its catalogue label ("Piqué DF coton
+// J20 30\"") is the article, and printing only the numeric ref would leave the
+// client reading "005 / ecru". ETM omits it and loses nothing.
 
 import React from 'react'
 import { View, Text, StyleSheet } from '@react-pdf/renderer'
@@ -15,7 +25,7 @@ import {
   TruckIcon,
   MessageSquareIcon,
 } from './MalterreDocument.js'
-import { colors, sizes, tvaRowLabel } from './theme.js'
+import { colors, sizes, tvaRowLabel, type CompanyInfo } from './theme.js'
 
 interface AddrLite {
   nom: string | null
@@ -44,9 +54,14 @@ export interface CommandeClientPdfData {
   fraisPort: number
   /** TVA rate as a percentage (e.g. 20). */
   tvaRate: number
+  /** Legal entity signing the confirmation — drives the footer's SIRET / TVA /
+   *  capital. Omitted = ETS Malterre; Tricotage Malterre passes `companyTrm`. */
+  company?: CompanyInfo
   lignes: Array<{
     ref_label: string | null
     colori_reference: string | null
+    /** Catalogue wording under the ref (TRM: the écru designation). */
+    designation?: string | null
     quantite: number
     unite_label: string
     prix: number
@@ -137,6 +152,7 @@ const styles = StyleSheet.create({
   cellBase: { fontSize: 11, color: colors.text },
   refMainBig: { fontSize: 13, color: colors.primary, fontWeight: 900, letterSpacing: 0.2, lineHeight: 1.2 },
   coloriProminent: { fontSize: 10.5, color: colors.text, fontWeight: 700, marginTop: 3, lineHeight: 1.3 },
+  designationLine: { fontSize: 10, color: colors.muted, marginTop: 2, lineHeight: 1.3 },
 
   totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 0 },
   totals: {
@@ -242,6 +258,7 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
       reference={`COMMANDE N°${data.numero}`}
       documentDate={data.dateCommande || ''}
       title={`Confirmation de commande ${data.numero}`}
+      issuer={data.company}
     >
       {/* Top row: client (billing) on the left; payment terms on the right.
           The delivery address lives in its own card at the bottom of the
@@ -299,6 +316,9 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
             <View style={styles.colDesc}>
               <Text style={styles.refMainBig}>{l.ref_label || '—'}</Text>
               {l.colori_reference ? <Text style={styles.coloriProminent}>{l.colori_reference}</Text> : null}
+              {l.designation && l.designation.trim()
+                ? <Text style={styles.designationLine}>{l.designation.trim()}</Text>
+                : null}
             </View>
             <Text style={[styles.cellBase, styles.colQty]}>
               {fmtNum(l.quantite, 1)}{l.unite_label ? ` ${l.unite_label}` : ''}

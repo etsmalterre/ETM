@@ -55,7 +55,10 @@ export const commandesClientRouter: RouterType = Router()
 
 // type_doc 7 = "commande client" — the bon de commande type for the
 // envoi_email audit log and the ged document allowlist (verified live).
-const TYPE_DOC_COMMANDE_CLIENT = 7
+// Exported because TRM's confirmation de commande logs into the same ledger:
+// `commande_client` is one table for both sociétés, so an id can only ever
+// belong to one of them and the two apps' rows can't collide.
+export const TYPE_DOC_COMMANDE_CLIENT = 7
 
 // ── Small SQL/format helpers (copied from commandes-sous-traitant.ts) ──
 

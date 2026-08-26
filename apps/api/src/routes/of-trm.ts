@@ -196,17 +196,30 @@ ofTrmRouter.get('/lookups/machines', async (req: Request, res: Response) => {
 
 // GET /api/of-trm/lookups/lignes-commande — open TRM order lines for the
 // création dialog, with how much existing OFs already cover.
-ofTrmRouter.get('/lookups/lignes-commande', async (_req: Request, res: Response) => {
+ofTrmRouter.get('/lookups/lignes-commande', async (req: Request, res: Response) => {
   try {
+    // `?ligne=<id>` returns just that line, whatever its commande's état. It is
+    // how the Commandes screen's "Créer un OF" seeds the dialog: there the line
+    // is imposed, not picked, and it may well sit on a commande the open-orders
+    // list below deliberately excludes.
+    const oneId = parseInt(String(req.query.ligne ?? ''), 10)
+    const single = !isNaN(oneId) && oneId > 0
+
     const cmds = await query<any>(
-      `SELECT IDcommande_client, numero, IDclient FROM commande_client
-       WHERE IDsociete = ${TRM_SOCIETE} AND est_soldee = 0`,
+      single
+        ? `SELECT IDcommande_client, numero, IDclient FROM commande_client
+           WHERE IDsociete = ${TRM_SOCIETE}
+             AND IDcommande_client = (SELECT IDcommande_client FROM ligne_commande_client
+                                      WHERE IDligne_commande_client = ${oneId})`
+        : `SELECT IDcommande_client, numero, IDclient FROM commande_client
+           WHERE IDsociete = ${TRM_SOCIETE} AND est_soldee = 0`,
     )
     const cmdIds = cmds.map((c: any) => Number(c.IDcommande_client) || 0).filter(Boolean)
     if (cmdIds.length === 0) { res.json([]); return }
     const lines = await query<any>(
       `SELECT IDligne_commande_client, IDcommande_client, quantite, IDreference, IDcolori
-       FROM ligne_commande_client WHERE IDcommande_client IN (${cmdIds.join(',')})`,
+       FROM ligne_commande_client
+       WHERE ${single ? `IDligne_commande_client = ${oneId}` : `IDcommande_client IN (${cmdIds.join(',')})`}`,
     )
     const lineIds = lines.map((l: any) => Number(l.IDligne_commande_client) || 0).filter(Boolean)
 
@@ -281,41 +294,61 @@ ofTrmRouter.get('/lookups/lignes-commande', async (_req: Request, res: Response)
 // GET /api/of-trm/lookups/composition?ligne=<id> — the création dialog's seed:
 // composition_ecru defaults for the line's (ref, coloris), each component with
 // its on-hand lots and the biggest-stock lot pre-selected.
+//
+// ⚠️ One row per composition_ecru ROW, never per (fil, coloris) PAIR. A blend
+// legitimately feeds the same yarn twice — ref 119/ecru is 71 % + 14,5 % +
+// 14,5 % of the SAME 280/48/1 PES HT, and only all three add up to the 100 %
+// the legacy window checks. Collapsing the pair (what this endpoint did until
+// 2026-08-26) declared 85,5 % of the yarn on every OF created for such a ref,
+// which then under-counts the stock movement at piece declaration and the
+// freinte at archivage (both are `poids × pourcentage/100`). 70 of the base's
+// 2 859 composition groups are doubled like this, and the OFs the legacy
+// itself writes carry the duplicate asso_fil_of row (verified 4/4 on ref 189).
 ofTrmRouter.get('/lookups/composition', async (req: Request, res: Response) => {
   try {
     const ligneId = parseInt(String(req.query.ligne ?? ''), 10)
     if (isNaN(ligneId) || ligneId <= 0) { res.status(400).json({ error: 'Invalid ligne' }); return }
     const ctx = (await resolveLigneContexts([ligneId])).get(ligneId)
     if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
-    if (ctx.IDreference <= 0) { res.json({ components: [], compatibles: [] }); return }
+    if (ctx.IDreference <= 0) { res.json({ components: [], compatibles: [], total_pourcentage: 0 }); return }
 
-    // Composition pairs — coloris-scoped first, falling back to every variant
-    // of the écru (composition data is sparse on older refs).
-    const pairQuery = (coloriIn: string) => query<{ IDref_fil: number; IDcolori_fil: number; pourcentage: number | null }>(
-      `SELECT DISTINCT IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
-       WHERE IDref_ecru = ${ctx.IDreference}${coloriIn} AND IDref_fil > 0`,
+    // Composition rows — coloris-scoped first, falling back to every variant
+    // of the écru (composition data is sparse on older refs). No DISTINCT: it
+    // would fold the duplicate feeding positions back together.
+    const rowQuery = (coloriIn: string) => query<{
+      IDcomposition_ecru: number; IDref_fil: number; IDcolori_fil: number; pourcentage: number | null
+    }>(
+      `SELECT IDcomposition_ecru, IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
+       WHERE IDref_ecru = ${ctx.IDreference}${coloriIn} AND IDref_fil > 0
+       ORDER BY IDcomposition_ecru`,
     )
-    let pairs = ctx.IDcolori > 0 ? await pairQuery(` AND IDcolori_ecru = ${ctx.IDcolori}`) : await pairQuery('')
-    if (pairs.length === 0) pairs = await pairQuery('')
+    let rows = ctx.IDcolori > 0 ? await rowQuery(` AND IDcolori_ecru = ${ctx.IDcolori}`) : await rowQuery('')
+    if (rows.length === 0) rows = await rowQuery('')
 
-    const seen = new Set<string>()
     const components: any[] = []
-    for (const p of pairs) {
+    for (const p of rows) {
       const rf = Number(p.IDref_fil) || 0
       const cf = Number(p.IDcolori_fil) || 0
       const pct = Number(p.pourcentage) || 0
       if (rf <= 0 || pct <= 0) continue
-      const k = `${rf}:${cf}`
-      if (seen.has(k)) continue
-      seen.add(k)
-      components.push({ IDref_fil: rf, IDcolori_fil: cf, pourcentage: pct })
+      // `key` is the composition row id — stable, and distinct between two
+      // rows carrying the same pair (which the dialog keys its lot picks by).
+      components.push({ key: Number(p.IDcomposition_ecru), IDref_fil: rf, IDcolori_fil: cf, pourcentage: pct })
     }
 
     const refFilNames = await resolveRefFilNames(components.map((c) => c.IDref_fil))
     const coloriFilNames = await resolveColoriFilNames(components.map((c) => c.IDcolori_fil))
+    // Lots are a property of the pair, so two rows sharing one pair share the
+    // query (and offer the same lot list).
+    const lotsByPair = new Map<string, Array<{ id: number; lot: string; stock: number }>>()
     for (const c of components) {
-      const lots = await selectStockFilByPair(c.IDref_fil, c.IDcolori_fil)
-      lots.sort((a, b) => b.stock - a.stock)
+      const pairKey = `${c.IDref_fil}:${c.IDcolori_fil}`
+      let lots = lotsByPair.get(pairKey)
+      if (!lots) {
+        lots = await selectStockFilByPair(c.IDref_fil, c.IDcolori_fil)
+        lots.sort((a, b) => b.stock - a.stock)
+        lotsByPair.set(pairKey, lots)
+      }
       c.ref_label = refFilNames.get(c.IDref_fil) ?? `#${c.IDref_fil}`
       c.coloris_label = coloriFilNames.get(c.IDcolori_fil) ?? ''
       c.lots = lots
@@ -333,9 +366,92 @@ ofTrmRouter.get('/lookups/composition', async (req: Request, res: Response) => {
       compatibles = machIds.map((id) => ({ id, nom: names.get(id) ?? '' })).filter((m) => m.nom)
     }
 
-    res.json({ components, compatibles })
+    // Knitting defaults carried by the écru sheet. The création dialog ticks
+    // its boxes with these, so what the user sees is what POST would have
+    // written implicitly (same three columns the POST handler falls back to).
+    let defaults = { poids_piece: 0, ouvert_visiteuse: 0, maille_ouverture: 0, sonneter: 0 }
+    const refRow = await query<any>(
+      `SELECT poids, ouvert_visiteuse, maille_ouverture, sonneter FROM ref_ecru
+       WHERE IDref_ecru = ${ctx.IDreference}`,
+    )
+    if (refRow.length > 0) {
+      defaults = {
+        poids_piece: round2(Number(refRow[0].poids) || 0),
+        ouvert_visiteuse: Number(refRow[0].ouvert_visiteuse) || 0,
+        maille_ouverture: Number(refRow[0].maille_ouverture) || 0,
+        sonneter: Number(refRow[0].sonneter) || 0,
+      }
+    }
+
+    // The legacy window prints "Total des pourcentages" and expects 100 %.
+    const total = components.reduce((s: number, c: any) => s + (Number(c.pourcentage) || 0), 0)
+    res.json({ components, compatibles, defaults, total_pourcentage: round2(total) })
   } catch (err) {
     console.error('Error fetching of-trm composition lookup:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/of-trm/lookups/observations?ligne=<id>&machine=<id>
+//
+// "Observations Régleur" — the standing notes carried by the ÉCRU REFERENCE
+// (`obs_ref_ecru`), not by the OF. They are written in Tombé Métier ›
+// Références (legacy tab "Obs OF") and scoped per machine and per coloris,
+// which is why they matter exactly here: at lancement the régleur must see the
+// history of this reference on this métier ("Attention risque de trous",
+// "Faire impérativement des pièces de 21 kgs minimum") and pass it on.
+//
+// The predicate is the legacy window's, recovered verbatim from the WinDev
+// compile cache (`FEN_Gestion_d_un_OF` / `FI_Gestion_OF`):
+//
+//   where obs_ref_ecru.IDref_ecru = :ref
+//     and (obs_ref_ecru.IDmachine = :machine or obs_ref_ecru.IDmachine = 0)
+//     and (obs_ref_ecru.IDcolori_ecru = :colori or obs_ref_ecru.IDcolori_ecru = 0)
+//   order by obs_ref_ecru.date desc
+//
+// 0 is the wildcard on both axes ("Toutes" / "Tout coloris"), so `machine = 0`
+// — no métier picked yet — legitimately narrows to the notes that apply to
+// every machine. The legacy JOINs for its labels; we resolve them flat (the
+// Linux bridge mangles accents across joins).
+ofTrmRouter.get('/lookups/observations', async (req: Request, res: Response) => {
+  try {
+    const ligneId = parseInt(String(req.query.ligne ?? ''), 10)
+    if (isNaN(ligneId) || ligneId <= 0) { res.status(400).json({ error: 'Invalid ligne' }); return }
+    const machineId = Math.max(0, parseInt(String(req.query.machine ?? '0'), 10) || 0)
+    const ctx = (await resolveLigneContexts([ligneId])).get(ligneId)
+    if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
+    if (ctx.IDreference <= 0) { res.json([]); return }
+
+    // `date` is reserved → alias it, like message_of does.
+    const raw = await query<any>(
+      `SELECT IDobs_ref_ecru, IDcolori_ecru, IDmachine, DATE AS date_obs, observation
+       FROM obs_ref_ecru
+       WHERE IDref_ecru = ${ctx.IDreference}
+         AND (IDmachine = ${machineId} OR IDmachine = 0)
+         AND (IDcolori_ecru = ${ctx.IDcolori} OR IDcolori_ecru = 0)
+       ORDER BY DATE DESC`,
+    )
+    const rows = await fixEncoding(raw, 'obs_ref_ecru', 'IDobs_ref_ecru', ['observation'])
+    const machineNames = await resolveMachineNames(rows.map((r: any) => Number(r.IDmachine) || 0))
+    const coloriNames = await resolveColorisEcru(rows.map((r: any) => Number(r.IDcolori_ecru) || 0))
+
+    res.json(rows.map((r: any) => {
+      const m = Number(r.IDmachine) || 0
+      const c = Number(r.IDcolori_ecru) || 0
+      return {
+        id: Number(r.IDobs_ref_ecru),
+        date: r.date_obs ?? null,
+        observation: (r.observation ?? '').toString().trim(),
+        // Scope, as the legacy prints it: the wildcard reads "Toutes" /
+        // "Tout coloris", anything else names the machine or the coloris.
+        machine: m === 0 ? 'Toutes' : (machineNames.get(m) || `#${m}`),
+        coloris: c === 0 ? 'Tout coloris' : (coloriNames.get(c) || `#${c}`),
+        cible_machine: m > 0,
+        cible_coloris: c > 0,
+      }
+    }).filter((o: any) => o.observation.length > 0))
+  } catch (err) {
+    console.error('Error fetching of-trm observations lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -562,6 +678,24 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
       pairStock.set(k, round2(lots.reduce((s, l) => s + l.stock, 0)))
     }
 
+    // « Hors réf » — the yarns this run knits that the reference's own
+    // composition_ecru does not list. A deliberate variation: the régleur burns
+    // internal stock on a run he knows the customer will not notice. The OF
+    // freezes its asso_fil_of and never re-reads composition_ecru, so the fact
+    // survives — but nothing SHOWED it, and the point of recording a variation
+    // is being able to see it later (user decision, 2026-08-26). 271 OFs of
+    // 3 175 carry one; on pre-2022 OFs a hit is often just composition drift
+    // (the reference's sheet changed since), which is why this is a neutral
+    // marker and not a warning.
+    const refCompo = refId > 0
+      ? await query<any>(
+          `SELECT IDref_fil, IDcolori_fil FROM composition_ecru WHERE IDref_ecru = ${refId}`,
+        )
+      : []
+    const refPairs = new Set(
+      refCompo.map((c: any) => `${Number(c.IDref_fil) || 0}:${Number(c.IDcolori_fil) || 0}`),
+    )
+
     const composition = assoRaw.map((a: any) => {
       const lot = lotMap.get(Number(a.IDstock_fil) || 0)
       const rf = Number(a.IDref_fil) || 0
@@ -577,6 +711,9 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
         lot: lot?.lot ?? '',
         lot_stock: lot?.stock ?? 0,
         pair_stock: pairStock.get(`${rf}:${cf}`) ?? 0,
+        // false, never null, when the reference declares no composition at all:
+        // "everything is off-sheet" would be noise, not information.
+        hors_ref: refPairs.size > 0 && !refPairs.has(`${rf}:${cf}`),
       }
     })
 
@@ -1132,12 +1269,21 @@ const compositionRow = z.object({
   pourcentage: z.number().positive().max(100),
 })
 
+const incorporeRow = z.object({
+  IDstock_fil: z.number().int().positive(),
+  poids: z.number().positive(),
+})
+
 const createBody = z.object({
   IDligne_commande_client: z.number().int().positive(),
   IDmachine: z.number().int().positive(),
   quantite: z.number().positive(),
   poids_piece: z.number().positive().optional(),
   composition: z.array(compositionRow).min(1),
+  /** "Incorporer un fil" — the legacy création window's second table. Same
+   *  rows as PUT /:id/incorpore, accepted here so the flow does not have to
+   *  create an OF and then immediately edit it. */
+  incorpore: z.array(incorporeRow).optional(),
   visitage: z.number().int().min(0).max(2).optional(),
   nettoyage: z.union([z.literal(1), z.literal(2)]).optional(),
   finir_fil: z.union([z.literal(0), z.literal(1)]).optional(),
@@ -1206,6 +1352,12 @@ ofTrmRouter.post('/', async (req: Request, res: Response) => {
       await query(
         `INSERT INTO asso_fil_of (IDordre_fabrication, IDref_fil, pourcentage, IDcolori_fil, IDstock_fil)
          VALUES (${newId}, ${c.IDref_fil}, ${c.pourcentage}, ${c.IDcolori_fil}, ${c.IDstock_fil})`,
+      )
+    }
+    for (const i of b.incorpore ?? []) {
+      await query(
+        `INSERT INTO fil_incorpore (IDordre_fabrication, IDstock_fil, poids)
+         VALUES (${newId}, ${i.IDstock_fil}, ${i.poids})`,
       )
     }
     res.status(201).json({ id: newId })

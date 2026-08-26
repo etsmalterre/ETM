@@ -41,13 +41,22 @@
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
+import React from 'react'
+import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
-import { esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
+import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
 import { prixDeRevientTRM, prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
+import { CommandeClientPdf, type CommandeClientPdfData } from '../lib/pdf/CommandeClientPdf.js'
+import { companyTrm } from '../lib/pdf/theme.js'
+import { loadClientTvaRate } from '../lib/tva.js'
+import { formatHfsqlDateLongFr, logEnvoiEmails, type EmailRecipientPayload } from './expeditions.js'
+import { TYPE_DOC_COMMANDE_CLIENT } from './commandes-client.js'
+import { sendMail } from '../lib/gmail.js'
+import { getUserEmail } from '../lib/user-emails.js'
 
 export const commandesTrmRouter: RouterType = Router()
 
@@ -1064,6 +1073,39 @@ async function loadTrmLine(commandeId: number, ligneId: number): Promise<{
   }
 }
 
+/** TRM's own warehouse — the legacy Stock de fil query's `IDMagasin = 1`. */
+const TRM_MAGASIN = 1
+
+/** Which of these lots are archived (`terminé = 1`).
+ *
+ *  Platform-split for the same reason as `stock-fil-trm.ts` § fetchBaseRows:
+ *  the Windows ODBC driver takes the accented identifier in a WHERE but
+ *  returns zero rows for `SELECT *` on a table holding memo-binary columns,
+ *  while the Linux bridge is the mirror image — `SELECT *` is fine, the
+ *  accented identifier is not. So neither form works on both, and the flag has
+ *  to be read the way the platform allows. */
+async function archivedLotIds(ids: number[]): Promise<Set<number>> {
+  const clean = Array.from(new Set(ids.filter((x) => x > 0)))
+  if (clean.length === 0) return new Set()
+  if (IS_WINDOWS) {
+    const rows = await query<{ IDstock_fil: number }>(
+      `SELECT IDstock_fil FROM stock_fil WHERE IDstock_fil IN (${clean.join(',')}) AND terminé = 1`,
+    )
+    return new Set(rows.map((r) => Number(r.IDstock_fil) || 0))
+  }
+  const rows = await query<Record<string, unknown>>(
+    `SELECT * FROM stock_fil WHERE IDstock_fil IN (${clean.join(',')})`,
+  )
+  const out = new Set<number>()
+  for (const r of rows) {
+    // The bridge's key for an accented column is not deterministic — match by
+    // prefix, exactly like stock.ts's pickVal.
+    const key = Object.keys(r).find((k) => /^termin/i.test(k))
+    if (key && Number(r[key])) out.add(Number(r.IDstock_fil) || 0)
+  }
+  return out
+}
+
 // ── Tab 1: Affectation — "Stock Affecté a la commande" ──
 // The pieces the machines dropped for this line. `expedie` marks the ones
 // already gone (IDligne_expedition_TRM > 0), which is what the legacy
@@ -1152,24 +1194,52 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/stock-fil', async (req: Request, re
 
     const refMap = await resolveEcruRefs([line.IDreference])
     const coloriMap = await resolveColorisEcru([line.IDcolori])
+    // Named in the payload so an empty tab can say WHOSE yarn is missing —
+    // with the client filter below, "aucun lot" is now most often "aucun lot
+    // *de ce client*", and a bare empty state would read as a broken screen.
+    // Two flat reads, never a JOIN: the Linux bridge mangles accents across
+    // joins, and client names carry them.
+    const cmdRow = await query<{ IDclient: number }>(
+      `SELECT IDclient FROM commande_client WHERE IDcommande_client = ${commandeId}`,
+    )
+    const IDclient = Number(cmdRow[0]?.IDclient) || 0
+    const cliRow = IDclient > 0
+      ? await query<{ IDclient: number; nom: string | null }>(
+          `SELECT IDclient, nom FROM client WHERE IDclient = ${IDclient}`,
+        )
+      : []
+    const clientNom = String(
+      ((await fixEncoding(cliRow as any, 'client', 'IDclient', ['nom']))[0] as any)?.nom ?? '',
+    ).trim()
     const base = {
       lots: [] as unknown[],
       potentiel_kg: 0,
       ecru_ref_label: refMap.get(line.IDreference)?.reference ?? '',
       ecru_coloris_label: coloriMap.get(line.IDcolori) ?? '',
+      client_nom: clientNom,
+      composants: [] as unknown[],
     }
     if (line.IDreference <= 0) { res.json(base); return }
 
-    // Composition pairs — coloris-scoped first, falling back to every variant
+    // Composition rows — coloris-scoped first, falling back to every variant
     // of the écru (composition data is sparse on older refs).
-    const pairQuery = (coloriIn: string) => query<{ IDref_fil: number; IDcolori_fil: number; pourcentage: number | null }>(
-      `SELECT DISTINCT IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
+    //
+    // ⚠️ No DISTINCT, and the shares are SUMMED per pair: a blend may feed the
+    // same yarn from two positions (ref 119/ecru = 71 % + 14,5 % + 14,5 %, the
+    // last two being one and the same 280/48/1 PES HT). Keeping only the first
+    // row would say this lot covers 14,5 % of the blend when it covers 29 —
+    // overstating the potentiel and mislabelling the % column. Same finding as
+    // `of-trm.ts` § lookups/composition.
+    const rowQuery = (coloriIn: string) => query<{
+      IDcomposition_ecru: number; IDref_fil: number; IDcolori_fil: number; pourcentage: number | null
+    }>(
+      `SELECT IDcomposition_ecru, IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
        WHERE IDref_ecru = ${line.IDreference}${coloriIn} AND IDref_fil > 0`,
     )
     let pairRows = line.IDcolori > 0
-      ? await pairQuery(` AND IDcolori_ecru = ${line.IDcolori}`)
-      : await pairQuery('')
-    if (pairRows.length === 0) pairRows = await pairQuery('')
+      ? await rowQuery(` AND IDcolori_ecru = ${line.IDcolori}`)
+      : await rowQuery('')
+    if (pairRows.length === 0) pairRows = await rowQuery('')
 
     const pctByPair = new Map<string, number>()
     for (const p of pairRows) {
@@ -1178,12 +1248,28 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/stock-fil', async (req: Request, re
       const pct = Number(p.pourcentage) || 0
       if (rf <= 0 || pct <= 0) continue
       const k = `${rf}:${cf}`
-      if (!pctByPair.has(k)) pctByPair.set(k, pct)
+      pctByPair.set(k, (pctByPair.get(k) ?? 0) + pct)
     }
     if (pctByPair.size === 0) { res.json(base); return }
 
     // On-hand lots. stock_fil has an accented `terminé` column, so SELECT *
     // returns nothing on this driver — name every column explicitly.
+    //
+    // ⚠️ Scoped to the ORDER'S CLIENT (`IDclient`), like the legacy query. TRM
+    // knits à façon: the client supplies the yarn, so an order can only be run
+    // off lots that client owns. Without it the tab offered Ets Malterre's lot
+    // 10131 on Bonneterie Gautier's commande 2799 — which is how an OF gets
+    // created that eats another customer's stock. `stock_fil` is not
+    // partitioned by société; `IDclient` is the only thing that says whose
+    // yarn a lot is (user-reported, 2026-08-26). Barely visible in practice
+    // because Ets Malterre places 2 469 of the ~2 600 TRM orders and owns 77
+    // of the 123 lots in stock — it only bites on the small clients, which is
+    // exactly where it matters.
+    //
+    // The other two legacy filters, same rationale: `IDMagasin = 1` is TRM's
+    // own warehouse (122 of 123 lots), and `terminé = 0` excludes archived
+    // lots — `stock > 0` is NOT equivalent, 3 lots are archived with stock
+    // still on them.
     const pairClause = Array.from(pctByPair.keys())
       .map((k) => { const [rf, cf] = k.split(':'); return `(IDref_fil = ${rf} AND IDcolori_fil = ${cf})` })
       .join(' OR ')
@@ -1191,14 +1277,25 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/stock-fil', async (req: Request, re
       `SELECT IDstock_fil, IDref_fil, IDcolori_fil, lot, stock, stock_initial,
               IDMagasin, IDfournisseur, IDclient, emplacement
        FROM stock_fil WHERE (${pairClause}) AND stock > 0
+             AND IDclient = ${IDclient} AND IDMagasin = ${TRM_MAGASIN}
        ORDER BY lot`,
     )
-    const lotsFixed = await fixEncoding(lotsRaw, 'stock_fil', 'IDstock_fil', ['lot', 'emplacement'])
+    const archived = await archivedLotIds(lotsRaw.map((l: any) => Number(l.IDstock_fil) || 0))
+    const lotsOpen = lotsRaw.filter((l: any) => !archived.has(Number(l.IDstock_fil) || 0))
+    const lotsFixed = await fixEncoding(lotsOpen, 'stock_fil', 'IDstock_fil', ['lot', 'emplacement'])
 
     // Display names — flat batched lookups (no JOIN + CONVERT; the bridge
     // mangles accents across joins).
-    const refFilIds = Array.from(new Set(lotsFixed.map((l: any) => Number(l.IDref_fil) || 0).filter(Boolean)))
-    const coloriFilIds = Array.from(new Set(lotsFixed.map((l: any) => Number(l.IDcolori_fil) || 0).filter(Boolean)))
+    // Names are resolved for every composition pair, not only the ones that
+    // have a lot: `composants` below has to name a yarn the client has none of.
+    const refFilIds = Array.from(new Set([
+      ...lotsFixed.map((l: any) => Number(l.IDref_fil) || 0),
+      ...Array.from(pctByPair.keys()).map((k) => Number(k.split(':')[0]) || 0),
+    ].filter(Boolean)))
+    const coloriFilIds = Array.from(new Set([
+      ...lotsFixed.map((l: any) => Number(l.IDcolori_fil) || 0),
+      ...Array.from(pctByPair.keys()).map((k) => Number(k.split(':')[1]) || 0),
+    ].filter(Boolean)))
     const frsIds = Array.from(new Set(lotsFixed.map((l: any) => Number(l.IDfournisseur) || 0).filter(Boolean)))
     const cliIds = Array.from(new Set(lotsFixed.map((l: any) => Number(l.IDclient) || 0).filter(Boolean)))
 
@@ -1244,6 +1341,10 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/stock-fil', async (req: Request, re
       const cf = Number(l.IDcolori_fil) || 0
       return {
         id: Number(l.IDstock_fil),
+        // The pair identifies which composition component this lot can feed —
+        // the "Créer un OF" flow maps the user's selection onto the seed with it.
+        IDref_fil: rf,
+        IDcolori_fil: cf,
         lot: (l.lot ?? '') || null,
         reference: refFilNames.get(rf) ?? `#${rf}`,
         coloris: coloriFilNames.get(cf) ?? '',
@@ -1274,8 +1375,28 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/stock-fil', async (req: Request, re
     }
     if (!isFinite(potentiel)) potentiel = 0
 
+    // Every (fil, coloris) the reference's composition declares — including
+    // the ones this client holds no lot of, which is exactly the case `lots`
+    // cannot express. « Créer un OF » is offered only once each of these has a
+    // ticked lot: a run missing one of its yarns is not knittable, and the
+    // dialog would open with a component that has no lot behind it. Shares are
+    // summed per pair, like `pctByPair` itself — a blend can feed one yarn from
+    // two positions, and the tab is a per-yarn view.
+    const composants = Array.from(pctByPair.entries()).map(([k, pct]) => {
+      const [rf, cf] = k.split(':').map(Number)
+      return {
+        IDref_fil: rf,
+        IDcolori_fil: cf,
+        pourcentage: round2(pct),
+        ref_label: refFilNames.get(rf) ?? `#${rf}`,
+        coloris_label: coloriFilNames.get(cf) ?? '',
+      }
+    })
+
     res.json({
       lots,
+      composants,
+      client_nom: base.client_nom,
       potentiel_kg: round2(potentiel),
       ecru_ref_label: base.ecru_ref_label,
       ecru_coloris_label: base.ecru_coloris_label,
@@ -1546,5 +1667,348 @@ commandesTrmRouter.get('/:id/expeditions', async (req: Request, res: Response) =
   } catch (err) {
     console.error('Error fetching commande-trm expeditions:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  CONFIRMATION DE COMMANDE  (PDF + email)
+// ════════════════════════════════════════════════════════
+//
+// Port of the legacy TRM commande print. The document itself is NOT a
+// TRM-specific template: ETS Malterre and Tricotage Malterre confirm an order
+// the same way, so this renders the shared `CommandeClientPdf` with
+// `company: companyTrm` — TRM signs a commercial document, so the footer must
+// carry its own SIRET / TVA / capital (same legal reason as the avis
+// d'expédition, see BonLivraisonPdf's `issuer`).
+//
+// Deltas from the legacy print (deliberate — both are the ETM document's
+// behaviour): the lines table carries a montant column and a totals block
+// (HT · remise · TVA · TTC) the legacy omits, and the écru designation prints
+// under the reference instead of the legacy's "V/ref" line.
+//
+// Available on MIRRORED orders too. The mirror rule is about writes: reading
+// what ETM ordered from TRM and confirming it back is exactly what a
+// sous-traitance confirmation is, and the legacy prints those as well.
+
+const SENDER_LABEL = 'Tricotage Malterre'
+
+/** HFSQL YYYYMMDD → dd/mm/yyyy (the lines table's livraison column). */
+function dateFr(raw: string | null | undefined): string {
+  const s = (raw ?? '').toString()
+  if (!/^\d{8}$/.test(s) || s === '00000000') return ''
+  return `${s.slice(6, 8)}/${s.slice(4, 6)}/${s.slice(0, 4)}`
+}
+
+/** Blank-ish HFSQL text (' ') must not print as an empty address line. */
+function addrField(s: string | null | undefined): string | null {
+  const t = (s ?? '').toString().trim()
+  return t.length > 0 ? t : null
+}
+
+async function loadLibelle(
+  table: 'mode_paiement' | 'echeance',
+  pk: 'IDmode_paiement' | 'IDecheance',
+  id: number,
+): Promise<string | null> {
+  if (!(id > 0)) return null
+  const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM ${table} WHERE ${pk} = ${id}`)
+  const fixed = await fixEncoding(rows, table, pk, ['libelle'])
+  const v = (fixed[0]?.libelle ?? '').toString().trim()
+  return v.length > 0 ? v : null
+}
+
+export async function buildTrmConfirmationPdfData(id: number): Promise<CommandeClientPdfData | null> {
+  const rows = await query<any>(`SELECT * FROM commande_client WHERE IDcommande_client = ${id}`)
+  if (rows.length === 0) return null
+  if (Number(rows[0].IDsociete) !== TRM_SOCIETE) return null
+
+  const fixedHeader = await fixEncoding(rows, 'commande_client', 'IDcommande_client', ['ref_client', 'commentaire'])
+  const h = fixedHeader[0] as any
+  const commentaire = stripRtf(h.commentaire) || null
+  const IDclient = Number(h.IDclient) || 0
+
+  const adrCols = 'IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays'
+  const [clientNames, adrFacRows, adrLivRows, lignesRaw, tvaRate, modePaiement, echeance] = await Promise.all([
+    resolveClientNames([IDclient]),
+    h.IDadresse_facturation
+      ? query<any>(`SELECT ${adrCols} FROM adresse WHERE IDadresse = ${n(h.IDadresse_facturation)}`)
+      : Promise.resolve([]),
+    h.IDadresse_livraison
+      ? query<any>(`SELECT ${adrCols} FROM adresse WHERE IDadresse = ${n(h.IDadresse_livraison)}`)
+      : Promise.resolve([]),
+    query<any>(
+      `SELECT IDligne_commande_client, IDreference, IDcolori, quantite, prix, date_livraison
+       FROM ligne_commande_client
+       WHERE IDcommande_client = ${id}
+       ORDER BY IDligne_commande_client`,
+    ),
+    // The client's own rate — an export client sits at 0 % (exonération) and
+    // must be confirmed at 0 % on every document.
+    loadClientTvaRate(IDclient),
+    loadLibelle('mode_paiement', 'IDmode_paiement', Number(h.IDmode_paiement) || 0),
+    loadLibelle('echeance', 'IDecheance', Number(h.IDecheance) || 0),
+  ])
+
+  const adrFields = ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']
+  const adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', adrFields))[0] ?? null
+  const adrLiv = (await fixEncoding(adrLivRows, 'adresse', 'IDadresse', adrFields))[0] ?? null
+  const cleanAddr = (a: any | null) => a
+    ? {
+        nom: addrField(a.nom), adresse1: addrField(a.adresse1), adresse2: addrField(a.adresse2),
+        adresse3: addrField(a.adresse3), cp: addrField(a.cp), ville: addrField(a.ville), pays: addrField(a.pays),
+      }
+    : null
+
+  const lignesFixed = lignesRaw as any[]
+  const [refMap, coloriMap] = await Promise.all([
+    resolveEcruRefs(lignesFixed.map((l) => Number(l.IDreference) || 0)),
+    resolveColorisEcru(lignesFixed.map((l) => Number(l.IDcolori) || 0)),
+  ])
+
+  const lignes = lignesFixed.map((l) => {
+    const info = refMap.get(Number(l.IDreference) || 0)
+    const qty = Number(l.quantite) || 0
+    const prix = Number(l.prix) || 0
+    return {
+      ref_label: info?.reference || null,
+      colori_reference: coloriMap.get(Number(l.IDcolori) || 0) || null,
+      designation: info?.designation || null,
+      quantite: qty,
+      // TRM knits by weight — every line of the partition is a type-1 écru
+      // priced per Kg, so the unit is never read from `unite`.
+      unite_label: 'Kgs',
+      prix,
+      montant: round2(qty * prix),
+      date_livraison: dateFr(l.date_livraison),
+    }
+  })
+
+  return {
+    numero: String(h.numero ?? id),
+    dateCommande: formatHfsqlDateLongFr(h.date_commande),
+    clientNom: clientNames.get(IDclient) ?? '',
+    refClient: ((h.ref_client ?? '').toString().trim()) || null,
+    adresseFacturation: cleanAddr(adrFac),
+    adresseLivraison: cleanAddr(adrLiv),
+    modePaiement,
+    echeance,
+    commentaire,
+    remise: Number(h.remise) || 0,
+    fraisPort: Number(h.frais_port) || 0,
+    tvaRate,
+    company: companyTrm,
+    lignes,
+  }
+}
+
+async function renderTrmConfirmationPdf(data: CommandeClientPdfData): Promise<Buffer> {
+  return renderToBuffer(
+    React.createElement(CommandeClientPdf, { data }) as unknown as React.ReactElement<
+      import('@react-pdf/renderer').DocumentProps
+    >,
+  )
+}
+
+function pdfFilename(numero: string): string {
+  return `confirmation-commande-${numero}.pdf`
+}
+
+commandesTrmRouter.get('/:id/pdf', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const data = await buildTrmConfirmationPdfData(id)
+    if (!data) { res.status(404).json({ error: 'Commande not found' }); return }
+    const buffer = await renderTrmConfirmationPdf(data)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${pdfFilename(data.numero)}"`)
+    // Previewed in an iframe by the send-email dialog — the API's default
+    // framing headers would blank it.
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.send(buffer)
+  } catch (err) {
+    console.error('Error rendering TRM commande PDF:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesTrmRouter.get('/:id/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const rows = await query<{ IDclient: number; numero: number | null; IDsociete: number }>(
+      `SELECT IDclient, numero, IDsociete FROM commande_client WHERE IDcommande_client = ${id}`,
+    )
+    if (rows.length === 0 || Number(rows[0].IDsociete) !== TRM_SOCIETE) {
+      res.status(404).json({ error: 'Commande not found' }); return
+    }
+    const IDclient = Number(rows[0].IDclient) || 0
+    const numero = String(rows[0].numero ?? id)
+
+    const [clientNames, contactRows] = await Promise.all([
+      resolveClientNames([IDclient]),
+      IDclient > 0
+        ? query<{ IDcontact: number; nom: string | null; prenom: string | null; mail: string | null; envoi_commande: number | null; est_visible: number | null }>(
+            `SELECT IDcontact, nom, prenom, mail, envoi_commande, est_visible FROM contact WHERE IDclient = ${IDclient}`,
+          )
+        : Promise.resolve([]),
+    ])
+    const fixedContacts = await fixEncoding(contactRows, 'contact', 'IDcontact', ['nom', 'prenom', 'mail'])
+
+    // Same rule as every other send dialog: contacts flagged for this document
+    // land in "À", the rest are offered as suggestions.
+    const selected: EmailRecipientPayload[] = []
+    const suggestions: EmailRecipientPayload[] = []
+    const seen = new Set<string>()
+    for (const c of fixedContacts as any[]) {
+      if (c.est_visible === 0) continue
+      const raw = (c.mail ?? '').toString().trim()
+      if (!raw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) continue
+      const key = raw.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      const displayName = [c.prenom, c.nom]
+        .map((s: string | null) => (s ?? '').toString().trim())
+        .filter((s: string) => s.length > 0).join(' ')
+      const recipient: EmailRecipientPayload = { email: raw, source: 'contact', contactId: Number(c.IDcontact) }
+      if (displayName) recipient.name = displayName
+      if (c.envoi_commande === 1) selected.push(recipient)
+      else suggestions.push(recipient)
+    }
+
+    // Recap in the body itself so the terms are checkable without opening the
+    // attachment. Built from the PDF payload so the two can never disagree.
+    let recap = ''
+    try {
+      const data = await buildTrmConfirmationPdfData(id)
+      if (data && data.lignes.length > 0) {
+        const items = data.lignes.map((l) => {
+          const ref = [l.ref_label, l.colori_reference].filter((s) => s && s.trim()).join(' - ')
+          const qty = `${l.quantite.toLocaleString('fr-FR').replace(/[  ]/g, ' ')} ${l.unite_label}`.trim()
+          const liv = l.date_livraison ? ` - livraison ${l.date_livraison}` : ''
+          return `  •  ${ref || 'Ligne'} : ${qty}${liv}`
+        })
+        recap = `Récapitulatif :\n${items.join('\n')}\n\n`
+      }
+    } catch (e) {
+      // Best-effort: the attached PDF stays the reference document.
+      console.error('TRM commande email recap failed:', (e as Error).message)
+    }
+
+    res.json({
+      recipients: { selected, suggestions },
+      subject: `Confirmation de commande N°${numero} - ${SENDER_LABEL}`,
+      body:
+        `Bonjour,\n\n` +
+        `Veuillez trouver ci-joint la confirmation de votre commande N°${numero}.\n\n` +
+        recap +
+        `Nous vous remercions de vérifier les références, quantités et délais indiqués et de nous signaler toute anomalie.\n\n` +
+        `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
+        `Cordialement,\n` +
+        SENDER_LABEL,
+      clientNom: clientNames.get(IDclient) ?? '',
+      // No Cci: unlike the ETM avis there is no holding warehouse to copy in.
+      bcc: [],
+      optional_attachments: [],
+    })
+  } catch (err) {
+    console.error('Error building TRM commande email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const extraAttachmentSchema = z.object({
+  filename: z.string().min(1).max(255),
+  content_base64: z.string().min(1),
+  content_type: z.string().min(1).max(100),
+})
+const emailBody = z.object({
+  to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(20000),
+  attach_pdf: z.boolean().optional(),
+  extra_attachments: z.array(extraAttachmentSchema).optional(),
+  dev_skip_send: z.boolean().optional(),
+})
+const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
+
+commandesTrmRouter.post('/:id/email', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const scoped = await query<{ IDsociete: number }>(
+      `SELECT IDsociete FROM commande_client WHERE IDcommande_client = ${id}`,
+    )
+    if (scoped.length === 0 || Number(scoped[0].IDsociete) !== TRM_SOCIETE) {
+      res.status(404).json({ error: 'Commande not found' }); return
+    }
+    const parsed = emailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
+
+    let messageId: string
+    if (devSkip) {
+      messageId = `dev-skip-${Date.now()}`
+      console.log(`[dev-skip-send] commande TRM #${id} — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const senderEmail = await getUserEmail(req.userId)
+      if (!senderEmail) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const userRows = await query<{ prenom: string | null; nom: string | null }>(
+        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+      )
+      const u = (await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom']))[0] as any
+      const displayName = u
+        ? [u.prenom, u.nom].filter((s: string | null) => s && s.trim()).map((s: string) => s.trim()).join(' ')
+        : ''
+      const fromName = displayName ? `${displayName} - ${SENDER_LABEL}` : SENDER_LABEL
+
+      const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
+      if (parsed.data.attach_pdf !== false) {
+        const data = await buildTrmConfirmationPdfData(id)
+        if (!data) { res.status(404).json({ error: 'Commande not found' }); return }
+        attachments.push({
+          filename: pdfFilename(data.numero),
+          content: await renderTrmConfirmationPdf(data),
+          contentType: 'application/pdf',
+        })
+      }
+      for (const a of parsed.data.extra_attachments ?? []) {
+        attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
+      }
+      messageId = await sendMail({
+        from: senderEmail, fromName, to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
+        subject: parsed.data.subject, body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+
+    // Audit into the shared envoi_email ledger, IDtype_doc = 7 like ETM's
+    // confirmation. `notes` stays '' — that is what ETM's historique reads as
+    // "confirmation de commande", and the id spaces cannot collide (one table).
+    const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? []), ...(parsed.data.bcc ?? [])]
+    let societe = ''
+    try {
+      const cr = await query<{ IDclient: number }>(`SELECT IDclient FROM commande_client WHERE IDcommande_client = ${id}`)
+      const names = await resolveClientNames([Number(cr[0]?.IDclient) || 0])
+      societe = names.get(Number(cr[0]?.IDclient) || 0) ?? ''
+    } catch { /* informational */ }
+    await logEnvoiEmails(id, allRecipients, societe, TYPE_DOC_COMMANDE_CLIENT, '')
+
+    res.json({ ok: true, messageId })
+  } catch (err) {
+    console.error('Error sending TRM commande email:', err)
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    res.status(500).json({ error: 'send_failed', message })
   }
 })

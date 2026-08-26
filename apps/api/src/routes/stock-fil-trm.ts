@@ -323,12 +323,38 @@ interface BilanOf {
   second_choix: number
 }
 
+/** A lot dumped into a run through the OF window's "Incorporer un fil": a
+ *  leftover fed in so it stops sitting in stock. `fil_incorpore` carries no
+ *  percentage — the weight is declared in Kg, once, for the whole OF. */
+interface BilanIncorpore {
+  of: number
+  ref_ecru: string
+  poids: number
+}
+
 interface Bilan {
   ofs: BilanOf[]
   /** Weighted yarn consumption: Σ over OFs [Σ(pieces poids) × pourcentage/100].
    *  The weighting is load-bearing on blended yarns — verified against the
    *  legacy annotations (e.g. the "90kg de freinte négative" lot). */
   produit: number
+  /** Incorporations of THIS lot, and their total. Consumption too — it is why
+   *  the lot is short — but it never rides `asso_fil_of`, so `produit` cannot
+   *  see it. Counting it as freinte inflates the loss by exactly the declared
+   *  weight: on ~10 of the 32 incorporated lots the computed freinte WAS the
+   *  incorporated weight to the kilo (lot 9479: 50,5 vs 50; lot 10065: 20,6 vs
+   *  20), and the median freinte across them falls 3,76 % → 1,00 % once it is
+   *  taken out. User decision, 2026-08-26. Probes:
+   *  `scripts/probe-fil-incorpore-trm{,2,3,4}.ts`.
+   *
+   *  Kept as its OWN line rather than folded into `produit`, because the
+   *  weight is DECLARED, not measured: the consigne often reads "incorporer le
+   *  lot X si possible", and a handful of rows do not reconcile at all (lot
+   *  10106 declares 8 Kg incorporated on an 8 Kg lot that already knitted
+   *  6,6 Kg). The archivist has to see the figure to judge it — and can still
+   *  correct Quantité initiale, which is what the dialog is for. */
+  incorpore: BilanIncorpore[]
+  incorpore_total: number
   poids_total: number
   poids_second: number
   second_choix_pct: number | null
@@ -345,14 +371,22 @@ async function computeBilan(id: number): Promise<Bilan> {
   const assos = await query<{ IDordre_fabrication: number; pourcentage: number | null }>(
     `SELECT IDordre_fabrication, pourcentage FROM asso_fil_of WHERE IDstock_fil = ${id}`,
   )
+  const incs = await query<{ IDordre_fabrication: number; poids: number | null }>(
+    `SELECT IDordre_fabrication, poids FROM fil_incorpore WHERE IDstock_fil = ${id} ORDER BY IDfil_incorpore`,
+  )
   const ofIds = Array.from(
     new Set(assos.map((a) => numOf(a.IDordre_fabrication)).filter((x) => x > 0)),
   )
+  // An incorporation lands on an OF this lot may not knit at all — 31 of the
+  // 34 in the ledger are exactly that — so its OF still needs a ref_ecru label.
+  const labelledOfIds = Array.from(
+    new Set([...ofIds, ...incs.map((i) => numOf(i.IDordre_fabrication)).filter((x) => x > 0)]),
+  )
 
   const refEcruByOf = new Map<number, number>()
-  if (ofIds.length > 0) {
+  if (labelledOfIds.length > 0) {
     const ofRows = await query<{ IDordre_fabrication: number; IDref_ecru: number }>(
-      `SELECT IDordre_fabrication, IDref_ecru FROM ordre_fabrication WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+      `SELECT IDordre_fabrication, IDref_ecru FROM ordre_fabrication WHERE IDordre_fabrication IN (${labelledOfIds.join(',')})`,
     )
     for (const o of ofRows) refEcruByOf.set(numOf(o.IDordre_fabrication), numOf(o.IDref_ecru))
   }
@@ -417,9 +451,18 @@ async function computeBilan(id: number): Promise<Bilan> {
     .map(([label, nombre]) => ({ label, nombre }))
     .sort((a, b) => b.nombre - a.nombre)
 
+  const incorpore: BilanIncorpore[] = incs.map((i) => ({
+    of: numOf(i.IDordre_fabrication),
+    ref_ecru: refEcruLabel.get(refEcruByOf.get(numOf(i.IDordre_fabrication)) ?? 0) ?? '',
+    poids: floatOf(i.poids),
+  }))
+  const incorporeTotal = incorpore.reduce((s, i) => s + i.poids, 0)
+
   return {
     ofs,
     produit,
+    incorpore,
+    incorpore_total: incorporeTotal,
     poids_total: poidsTotal,
     poids_second: poidsSecond,
     second_choix_pct: poidsTotal > 0 ? (poidsSecond / poidsTotal) * 100 : null,
@@ -812,7 +855,9 @@ stockFilTrmRouter.get('/fil-trm/:id/bilan', async (req: Request, res: Response) 
 
     const bilan = await computeBilan(id)
     const stockInitial = floatOf(row.stock_initial)
-    const freinteKg = stockInitial - bilan.produit
+    // Consommé = tricoté + incorporé. See Bilan.incorpore for why the two
+    // stay separate figures rather than one merged `produit`.
+    const freinteKg = stockInitial - bilan.produit - bilan.incorpore_total
     res.json({
       IDstock_fil: id,
       lot: row.lot,
@@ -821,6 +866,9 @@ stockFilTrmRouter.get('/fil-trm/:id/bilan', async (req: Request, res: Response) 
       observation_freinte: row.observation_freinte ?? '',
       ofs: bilan.ofs,
       produit: bilan.produit,
+      incorpore: bilan.incorpore,
+      incorpore_total: bilan.incorpore_total,
+      consomme: bilan.produit + bilan.incorpore_total,
       freinte_kg: freinteKg,
       freinte_pct: stockInitial > 0 ? (freinteKg / stockInitial) * 100 : null,
       poids_total: bilan.poids_total,
@@ -934,7 +982,7 @@ stockFilTrmRouter.get('/fil-trm/:id/rapport-freinte', async (req: Request, res: 
     const overrideInitial = req.query.stock_initial != null ? floatOf(req.query.stock_initial) : null
     const stockInitial =
       overrideInitial != null && overrideInitial > 0 ? overrideInitial : floatOf(row.stock_initial)
-    const freinteKg = stockInitial - bilan.produit
+    const freinteKg = stockInitial - bilan.produit - bilan.incorpore_total
 
     const data: RapportFreinteData = {
       lot: String(row.lot ?? '').trim(),
@@ -953,6 +1001,8 @@ stockFilTrmRouter.get('/fil-trm/:id/rapport-freinte', async (req: Request, res: 
         second_choix: o.second_choix,
       })),
       produit: bilan.produit,
+      incorpore: bilan.incorpore,
+      incorpore_total: bilan.incorpore_total,
       freinte_kg: freinteKg,
       freinte_pct: stockInitial > 0 ? (freinteKg / stockInitial) * 100 : null,
       second_choix_pct: bilan.second_choix_pct,

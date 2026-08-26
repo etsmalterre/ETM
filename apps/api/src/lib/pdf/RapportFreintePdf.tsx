@@ -25,6 +25,12 @@ export interface RapportFreinteOfRow {
   second_choix: number
 }
 
+export interface RapportFreinteIncorporeRow {
+  of: number
+  ref_ecru: string
+  poids: number
+}
+
 export interface RapportFreinteData {
   lot: string
   ref_fil: string
@@ -37,6 +43,13 @@ export interface RapportFreinteData {
   stock_initial: number
   ofs: RapportFreinteOfRow[]
   produit: number
+  /** Lots of THIS fil dumped into a run through "Incorporer un fil". Declared
+   *  in Kg on the OF, never shared as a percentage, so `produit` cannot see
+   *  them — but they are consumption, and leaving them out reported the whole
+   *  weight as freinte. Printed as their own table, and `freinte_kg` is net of
+   *  them. */
+  incorpore: RapportFreinteIncorporeRow[]
+  incorpore_total: number
   freinte_kg: number
   freinte_pct: number | null
   second_choix_pct: number | null
@@ -236,6 +249,39 @@ export function RapportFreintePdf({ data }: { data: RapportFreinteData }) {
             <Text style={[styles.totalCellNum, styles.colKg]}>{fmtKg(totalPremier + totalSecond)}</Text>
           </View>
         </View>
+      )}
+
+      {/* Incorporations — printed only when there are any, since 33 lots out
+          of ~1.7k carry one. The weight is declared by the régleur on the OF,
+          not weighed, so it gets its own table and its own caption rather than
+          being merged into the OF consumption above. */}
+      {data.incorpore.length > 0 && (
+        <>
+          <Text style={styles.sectionTitle}>Fil incorporé</Text>
+          <View style={styles.table}>
+            <View style={styles.tableHeader}>
+              <Text style={[styles.th, styles.colOf]}>OF</Text>
+              <Text style={[styles.th, styles.colRef]}>Référence écru</Text>
+              <Text style={[styles.th, styles.colKg, { textAlign: 'right' }]}>Poids</Text>
+            </View>
+            {data.incorpore.map((i, idx) => (
+              <View key={`${i.of}-${idx}`} style={styles.tableRow}>
+                <Text style={[styles.td, styles.colOf]}>{i.of}</Text>
+                <Text style={[styles.td, styles.colRef]}>{i.ref_ecru || '—'}</Text>
+                <Text style={[styles.tdNum, styles.colKg]}>{fmtKg(i.poids)}</Text>
+              </View>
+            ))}
+            <View style={styles.totalRow}>
+              <Text style={[styles.totalCell, styles.colOf]}>Somme</Text>
+              <Text style={[styles.totalCell, styles.colRef]}></Text>
+              <Text style={[styles.totalCellNum, styles.colKg]}>{fmtKg(data.incorpore_total)}</Text>
+            </View>
+          </View>
+          <Text style={[styles.statDetail, { marginBottom: 14 }]}>
+            Poids déclaré au lancement de l'OF, compté comme consommé : la freinte
+            ci-dessous en est déduite.
+          </Text>
+        </>
       )}
 
       {/* Freinte + second choix stats */}
