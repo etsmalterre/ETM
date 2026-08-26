@@ -118,6 +118,21 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la création, la modification, la suppression et la clôture d’un retour client dans Qualité > Retour client — boutons « Nouveau », « Modifier », « Supprimer » et « Terminer / Réactiver ». La réponse et la résolution saisies ici sont renvoyées sur la fiche de non-conformité d’Ets Malterre : sans ce droit l’écran reste consultable, mais en lecture seule.',
     category: 'Qualité',
   },
+  // Production > Gestion des OF. Read stays open to anyone holding the
+  // Production menu — a bonnetier or a visiteuse needs to see the consigne,
+  // the queue and the pieces already declared. What this gates is the nine
+  // write routes of /of-trm: creating an OF, editing it, its composition and
+  // fil incorporé, posting an observation, activating, terminating,
+  // re-ranking the queue and deleting. Terminating is in the same key as the
+  // rest on purpose: it re-ranks the métier and can flip the next OF active,
+  // which is the most consequential button on the screen, not a lesser one.
+  {
+    key: 'edit_of',
+    label: 'Édition des ordres de fabrication',
+    description:
+      'Autorise la création, la modification, la suppression d’un ordre de fabrication dans Production > Ordres de fabrication, ainsi que « Passer en cours », « Terminer l’OF », la réorganisation de la file d’un métier et l’ajout d’observations. Sans ce droit l’écran reste entièrement consultable, mais en lecture seule.',
+    category: 'Production',
+  },
   // Production > Visitage. Gates the Valider button and the write route only —
   // consulting the poste (which piece is waiting, which defects the bonnetier
   // declared) stays open, like the rest of the production screens. What this

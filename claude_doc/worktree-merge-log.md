@@ -9,6 +9,20 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-26 — feat/of-lecture (`edit_of` : les OF passent en lecture seule, et neuf routes cessent d'être anonymes)
+
+Vincent voulait que le PC de visitage voie **Tableau de bord + Production › Visitage / Prime / Ordres de fabrication, ces derniers en lecture seule**. Les deux premiers tiers se réglaient déjà sans code (l'axe Écrans : un menu est un droit fermé par défaut, un écran dans un menu accordé est un `hide_*`). Le troisième, non.
+
+**Ce que la revue a trouvé.** `/api/of-trm` porte **neuf routes d'écriture** — création, modification, composition, fil incorporé, observation, activer, terminer, réordonner, supprimer — et **aucune n'avait de garde**. Pas seulement pas de droit : **pas d'authentification du tout.** `attachUser()` est best-effort et il n'existe aucun middleware d'auth global, donc n'importe quel appelant capable de joindre l'API pouvait terminer un OF ou vider la file d'un métier sans cookie. `check-of-trm.ts` en est la preuve fossile : il faisait tourner tout le cycle d'écriture **sans jamais envoyer de cookie**, et passait. Il en envoie un maintenant, et vérifie les deux refus (401 anonyme, 403 sans la clé) avant le cycle.
+
+**La clé.** `edit_of`, sur le patron exact d'`edit_commandes_client` : un `requireEditOf` en tête des neuf handlers, et côté écran un `useHasPermission('edit_of')` descendu en prop qui retire Modifier, Nouveau, Supprimer, les flèches ▲▼ de la file, les transitions de la pastille §29 et la zone d'ajout d'observation. **La lecture reste ouverte** à qui détient le menu Production — la file, la consigne et les pièces déclarées sont ce que l'atelier consulte toute la journée, et le poste de visitage d'à côté en a besoin. `Terminer` est dans la même clé que le reste volontairement : il re-classe le métier et peut activer l'OF suivant, c'est le bouton le plus conséquent de l'écran, pas un moindre.
+
+⚠️ **`edit_of` est fermé par défaut comme toute clé TRM, donc au déploiement l'atelier perdrait l'écriture d'un coup.** `seed-edit-of-trm.ts` (idempotent, `--write` pour appliquer) accorde la clé à toutes les personnes qui l'avaient de fait — c'est-à-dire tout le monde — et **saute les trois comptes-postes** (`Visitage` 10, `Regleur` 14, `eloise` 16) : un PC d'atelier partagé est précisément ce que la clé existe pour tenir en lecture seule. **À lancer sur l'hôte de prod avant le déploiement web TRM**, comme `seed-screen-access-trm.ts`.
+
+Côté TRM le compte-poste **`Visitage`** rejoint `TRM_STAFF` — il existait en base depuis le legacy mais l'allowlist de Paramètres › Utilisateurs ne listait que des personnes physiques, donc aucun admin ne pouvait atteindre ses droits et `saisie_visitage` ne pouvait pas lui être accordé. Sa clé finit par un `|` nu (pas de nom de famille) ; ce n'est pas une coquille.
+
+Vérifié en bout de chaîne, connecté comme le compte Visitage : navigation réduite à Tableau de bord + Production, sous-menu Ordres de fabrication / Visitage / Prime (TRS masqué), et l'écran OF entièrement lisible sans un seul bouton d'écriture.
+
 ## 2026-08-26 — feat/visitage (poste de visitage TRM — API, layout « Poste » du design system)
 
 La moitié API d'un écran TRM : **Production › Visitage**, le poste où la visiteuse pèse le tombé métier qui sort du métier, le coupe éventuellement en plusieurs rouleaux, arbitre les défauts déclarés au terminal par le bonnetier, et valide. C'est le point d'entrée du stock écru TRM : jusqu'ici l'ERP web le lisait partout (Tombé Métier › Stock, Expéditions, Prime, le widget « Poids des pièces ») sans jamais pouvoir le créer.

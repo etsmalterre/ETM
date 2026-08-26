@@ -48,6 +48,8 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
+import { trmUserHasPermission } from '../lib/permissions-trm.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 import { n } from '../lib/sst-shared.js'
 import { newIdAfterInsert, maxId } from './expeditions.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
@@ -713,10 +715,37 @@ ofTrmRouter.get('/:id/observations', async (req: Request, res: Response) => {
 
 const observationBody = z.object({ observation: z.string().min(1).max(2000) })
 
+// ════════════════════════════════════════════════════════
+//  WRITES — all behind edit_of
+// ════════════════════════════════════════════════════════
+
+/** Guard for every write path of this router (TRM `edit_of` permission —
+ *  effective admins bypass, an admin impersonating someone does not).
+ *
+ *  Reading an OF is deliberately NOT behind it: the queue, the consigne and
+ *  the declared pieces are what the atelier consults all day, and the poste de
+ *  visitage next door needs them read-only. Sends the 401/403 itself and
+ *  returns false when the caller is not allowed. */
+async function requireEditOf(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const allowed = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'edit_of')
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: edit_of' })
+    return false
+  }
+  return true
+}
+
+
 // POST /api/of-trm/:id/observations — positional INSERT (reserved `date` col).
 // Physical order: IDmessage_of, observation, IDordre_fabrication, IDbonnetier, date.
 // IDbonnetier = 0 marks a saisie bureau (web) as opposed to a workshop terminal.
+
 ofTrmRouter.post('/:id/observations', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -1123,6 +1152,7 @@ const createBody = z.object({
 // attente (est_actif = 0) at the back of the métier's queue — activation is a
 // distinct act, matching the legacy flow.
 ofTrmRouter.post('/', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const parsed = createBody.safeParse(req.body)
     if (!parsed.success) {
@@ -1204,6 +1234,7 @@ const updateBody = z.object({
 // PUT /api/of-trm/:id — form update. Quantité is locked once production
 // started (legacy greys it); poids_piece stays editable throughout.
 ofTrmRouter.put('/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -1294,6 +1325,7 @@ ofTrmRouter.put('/:id', async (req: Request, res: Response) => {
 // PUT /api/of-trm/:id/composition — full replace of the Tricoter rows.
 // Allowed during production (lot swaps mid-OF are normal legacy practice).
 ofTrmRouter.put('/:id/composition', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -1324,6 +1356,7 @@ ofTrmRouter.put('/:id/composition', async (req: Request, res: Response) => {
 
 // PUT /api/of-trm/:id/incorpore — full replace of the Incorporer rows.
 ofTrmRouter.put('/:id/incorpore', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -1360,6 +1393,7 @@ ofTrmRouter.put('/:id/incorpore', async (req: Request, res: Response) => {
 // POST /api/of-trm/:id/terminer — close the OF and hand the métier to the next
 // queued OF when it asked for auto-activation.
 ofTrmRouter.post('/:id/terminer', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -1394,6 +1428,7 @@ ofTrmRouter.post('/:id/terminer', async (req: Request, res: Response) => {
 // POST /api/of-trm/:id/activer — manual start of a waiting OF (one active OF
 // per métier, like the legacy screen).
 ofTrmRouter.post('/:id/activer', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -1427,6 +1462,7 @@ ofTrmRouter.post('/:id/activer', async (req: Request, res: Response) => {
 // POST /api/of-trm/:id/reorder {direction: 'up'|'down'} — move a WAITING OF
 // within its métier's queue (the active OF is pinned at the front).
 ofTrmRouter.post('/:id/reorder', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -1462,6 +1498,7 @@ ofTrmRouter.post('/:id/reorder', async (req: Request, res: Response) => {
 
 // DELETE /api/of-trm/:id — hard delete, refused once anything was produced.
 ofTrmRouter.delete('/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }

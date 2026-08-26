@@ -11,11 +11,24 @@
  * auto-activation handoff → delete both. Leaves the database as it found it
  * (the scratch OFs are deleted; the terminé one never produced anything).
  *
+ * Also guards the `edit_of` gate the write routes sit behind: anonymous → 401,
+ * a signed-in user without the key → 403, and reading stays open to them. Until
+ * that key existed these nine routes took **no cookie at all** — this script
+ * used to pass without sending one, which is how that was noticed.
+ *
  * The dev database is a stale copy of prod — safe for scratch writes, same
  * assumption as every other check script here.
  */
+import crypto from 'node:crypto'
+import { getAllTrmPermissions } from '../lib/permissions-trm.js'
 
 const BASE = process.env.API_BASE ?? 'http://localhost:8083/api'
+
+const SECRET = process.env.AUTH_COOKIE_SECRET ?? '0374c694f2c73619437d02a53ac73efdc3b7f11c10e2eb8760e771e12681589c'
+const b64url = (b: Buffer) => b.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
+const sign = (id: number) => `${id}.${b64url(crypto.createHmac('sha256', SECRET).update(String(id)).digest())}`
+/** The write cycle below runs as the effective admin, who bypasses edit_of. */
+const ADMIN = `mps_uid=${sign(1)}; mps_uid_admin=${sign(1)}`
 
 let failures = 0
 function check(label: string, ok: boolean, detail?: unknown) {
@@ -26,10 +39,14 @@ function check(label: string, ok: boolean, detail?: unknown) {
   }
 }
 
-async function api<T = any>(path: string, init?: RequestInit): Promise<{ status: number; body: T }> {
+async function api<T = any>(
+  path: string,
+  init?: RequestInit,
+  cookie: string = ADMIN,
+): Promise<{ status: number; body: T }> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: { 'Content-Type': 'application/json', Cookie: cookie, ...(init?.headers ?? {}) },
   })
   let body: any = null
   try { body = await res.json() } catch { /* empty body */ }
@@ -38,6 +55,34 @@ async function api<T = any>(path: string, init?: RequestInit): Promise<{ status:
 
 async function main() {
   console.log(`Gestion des OF write-cycle check against ${BASE}\n`)
+
+  // ── The edit_of gate ────────────────────────────────
+  // Reading an OF is open to whoever holds the Production menu; the nine write
+  // routes are not. Asserted before the write cycle so a broken gate is the
+  // first thing reported, not a casualty of a failed scratch write.
+  const anon = await fetch(`${BASE}/of-trm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ IDligne_commande_client: 1, IDmachine: 1, quantite: 1 }),
+  })
+  check('POST / unauthenticated → 401', anon.status === 401, anon.status)
+
+  const perms = await getAllTrmPermissions()
+  const outsider = Object.keys(perms).length >= 0
+    ? [2, 4, 11, 12, 21].find((id) => !(perms[id] ?? []).includes('edit_of'))
+    : undefined
+  if (outsider === undefined) {
+    console.log('  SKIP edit_of gate — every candidate user holds the key')
+  } else {
+    const cookie = `mps_uid=${sign(outsider)}`
+    const denied = await api('/of-trm', {
+      method: 'POST',
+      body: JSON.stringify({ IDligne_commande_client: 1, IDmachine: 1, quantite: 1 }),
+    }, cookie)
+    check(`POST / without edit_of → 403 (user ${outsider})`, denied.status === 403, denied.body)
+    const list = await api('/of-trm', {}, cookie)
+    check('reading the OF list stays open without edit_of', list.status === 200, list.status)
+  }
 
   // ── Pick a scratch stage: an open line with a seedable composition, and an
   //    idle métier (no open OF at all so we can activer/terminer freely).
