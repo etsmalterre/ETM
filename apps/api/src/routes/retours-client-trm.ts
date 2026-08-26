@@ -66,6 +66,10 @@ import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { loadFncSummaries, writeFncReponse, type FncSummary } from './dossiers-qualite.js'
+import { renderRetourClientPdfBuffer, type RetourClientPdfData } from '../lib/pdf/RetourClientPdf.js'
+import { type EmailRecipientPayload } from './expeditions.js'
+import { sendMail } from '../lib/gmail.js'
+import { getUserEmail } from '../lib/user-emails.js'
 
 export const retoursClientTrmRouter: RouterType = Router()
 
@@ -829,6 +833,36 @@ function datetimeStr(v: unknown): string | null {
   return s === '' || s.startsWith('0000') ? null : s
 }
 
+/**
+ * Affectation → the physical écru rolls it names. Shared by the Traçabilité tab
+ * and the printed sheet, so the two can never disagree about which rolls the
+ * complaint is about. Returns [] for an unresolvable reference — 6 historical
+ * rows are in that state and it is not an error.
+ */
+async function resolveEcruRolls(row: RetourRow): Promise<any[]> {
+  if (row.reference === '') return []
+  const ref = esc(row.reference)
+  let ecruWhere: string
+  if (row.type_reference === '1') {
+    ecruWhere = `numero = '${ref}'`
+  } else if (row.type_reference === '2') {
+    // stock_fini.lot compares case-insensitively on HFSQL — live data stores
+    // 'Ma100602' on the retour and 'MA100602' on the lot.
+    const finis = await query<any>(`SELECT IDstock_ecru FROM stock_fini WHERE lot = '${ref}'`)
+    const ids = Array.from(new Set((finis as any[]).map((f) => n(f.IDstock_ecru)).filter((x) => x > 0)))
+    if (ids.length === 0) return []
+    ecruWhere = `IDstock_ecru IN (${ids.join(',')})`
+  } else {
+    return []
+  }
+  const rows = await query<any>(
+    `SELECT IDstock_ecru, numero, poids, date_saisie, second_choix, IDordre_fabrication,
+            IDpiece_production, IDref_ecru, IDcolori_ecru, IDref_commande_source, IDligne_expedition_TRM
+     FROM stock_ecru WHERE ${ecruWhere} ORDER BY IDstock_ecru`,
+  )
+  return rows as any[]
+}
+
 retoursClientTrmRouter.get('/:id/tracabilite', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -841,28 +875,10 @@ retoursClientTrmRouter.get('/:id/tracabilite', async (req: Request, res: Respons
     }
 
     // ── Resolve the affectation to a set of écru rolls.
-    const ref = esc(row.reference)
     const kind = row.type_reference === '1' ? ('piece' as const) : ('lot_fini' as const)
-    let ecruWhere: string
-    if (row.type_reference === '1') {
-      ecruWhere = `numero = '${ref}'`
-    } else {
-      // stock_fini.lot compares case-insensitively on HFSQL — live data stores
-      // 'Ma100602' on the retour and 'MA100602' on the lot.
-      const finis = await query<any>(`SELECT IDstock_ecru FROM stock_fini WHERE lot = '${ref}'`)
-      const ids = Array.from(new Set((finis as any[]).map((f) => n(f.IDstock_ecru)).filter((x) => x > 0)))
-      if (ids.length === 0) { res.json({ ...EMPTY_TRACA, kind }); return }
-      ecruWhere = `IDstock_ecru IN (${ids.join(',')})`
-    }
+    const ecrus = await resolveEcruRolls(row)
+    if (ecrus.length === 0) { res.json({ ...EMPTY_TRACA, kind }); return }
 
-    const ecruRows = await query<any>(
-      `SELECT IDstock_ecru, numero, poids, date_saisie, second_choix, IDordre_fabrication,
-              IDpiece_production, IDref_ecru, IDcolori_ecru, IDref_commande_source, IDligne_expedition_TRM
-       FROM stock_ecru WHERE ${ecruWhere} ORDER BY IDstock_ecru`,
-    )
-    if ((ecruRows as any[]).length === 0) { res.json({ ...EMPTY_TRACA, kind }); return }
-
-    const ecrus = ecruRows as any[]
     const ecruIds = ecrus.map((e) => n(e.IDstock_ecru)).filter((x) => x > 0)
     const pieceProdIds = ecrus.map((e) => n(e.IDpiece_production)).filter((x) => x > 0)
     const ofIds = Array.from(new Set(ecrus.map((e) => n(e.IDordre_fabrication)).filter((x) => x > 0)))
@@ -1183,5 +1199,272 @@ retoursClientTrmRouter.get('/:id/documents/:docId/fichier', async (req: Request,
   } catch (err) {
     console.error('Error serving retour client TRM document:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Fiche imprimée ───────────────────────────────────────
+//
+// The legacy ETAT_Retour_Client sheet, issued by Tricotage Malterre. The
+// affected pieces come from the SAME resolver the Traçabilité tab uses, so the
+// printed page and the screen can never name different rolls.
+
+function frDate(d: string | null | undefined): string {
+  const s = dateDigits8(d)
+  return s ? `${s.slice(6, 8)}/${s.slice(4, 6)}/${s.slice(0, 4)}` : ''
+}
+
+/** '2026-01-22 14:04:38.808' → '22/01/2026'. */
+function frDateTime(v: unknown): string {
+  const s = trimStr(v)
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : frDate(s)
+}
+
+const AFFECTATION_LABEL: Record<string, string> = {
+  '1': 'Pièce',
+  '2': 'Lot',
+}
+
+export async function buildRetourClientPdfData(id: number): Promise<RetourClientPdfData | null> {
+  const row = await readRetour(id)
+  if (!row) return null
+
+  const [labels, fncs, ecrus] = await Promise.all([
+    loadLabels([row]),
+    loadFncSummaries([row.IDdossier_qualite]),
+    resolveEcruRolls(row),
+  ])
+  const fnc = fncs.get(row.IDdossier_qualite)
+
+  const ofIds = Array.from(new Set(ecrus.map((e) => n(e.IDordre_fabrication)).filter((x) => x > 0)))
+  const ofRows = ofIds.length
+    ? await query<any>(
+        `SELECT IDordre_fabrication, IDmachine FROM ordre_fabrication WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+      )
+    : ([] as any[])
+  const machineIds = Array.from(new Set((ofRows as any[]).map((o) => n(o.IDmachine)).filter((x) => x > 0)))
+  const machineRows = machineIds.length
+    ? await fixEncoding(
+        await query<any>(`SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`),
+        'machine', 'IDmachine', ['nom'],
+      )
+    : ([] as any[])
+  const machineName = new Map((machineRows as any[]).map((m) => [n(m.IDmachine), trimStr(m.nom)]))
+  const ofMachine = new Map((ofRows as any[]).map((o) => [n(o.IDordre_fabrication), n(o.IDmachine)]))
+
+  let clientEtm = ''
+  if (fnc && fnc.IDclient > 0) {
+    const etmRows = await fixEncoding(
+      await query<any>(`SELECT IDclient, nom FROM client WHERE IDclient = ${fnc.IDclient}`),
+      'client', 'IDclient', ['nom'],
+    )
+    clientEtm = trimStr((etmRows as any[])[0]?.nom)
+  }
+
+  return {
+    numero: row.IDretour_client,
+    date: frDate(row.date),
+    clientNom: labels.clientNom.get(row.IDclient) ?? '',
+    clientEtm,
+    defautNom: labels.defautNom.get(row.IDdefaut_textile) || row.defaut_legacy,
+    affectationLabel: AFFECTATION_LABEL[row.type_reference] ?? 'Affectation',
+    reference: row.reference,
+    observationClient: row.message_client,
+    observationAtelier: row.message_resp_atelier,
+    resolution: labels.resolutionLibelle.get(row.IDresolution_qualite) ?? '',
+    reponse: row.reponse,
+    impactPrime: row.impact_prime,
+    pieces: ecrus.map((e) => {
+      const ofId = n(e.IDordre_fabrication)
+      return {
+        numero: trimStr(e.numero),
+        date: frDateTime(e.date_saisie),
+        metier: machineName.get(ofMachine.get(ofId) ?? 0) ?? '',
+        poids: Number(e.poids) || 0,
+        second_choix: n(e.second_choix) === 1,
+      }
+    }),
+    fncNumero: fnc ? fnc.IDdossier_qualite : null,
+  }
+}
+
+retoursClientTrmRouter.get('/:id/pdf', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const data = await buildRetourClientPdfData(id)
+    if (!data) { res.status(404).json({ error: 'Retour client not found' }); return }
+
+    const buffer = await renderRetourClientPdfBuffer(data)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="Retour-client-${id}.pdf"`)
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.end(buffer)
+  } catch (err) {
+    console.error('Error rendering retour client TRM pdf:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Envoi par email (§32) ────────────────────────────────
+//
+// The legacy IMG_email button mailed the client's contact a one-liner —
+// "Le dossier N°%1 a été crée auprès de notre service qualité", signed
+// « Ets Malterre - Service Qualité ». That text is a copy-paste from the ETM
+// dossier window and makes no sense leaving TRM: the recipient here IS Ets
+// Malterre, and the useful thing to send is the sheet with the atelier's
+// answer on it. So the button sends the Retour client PDF instead.
+//
+// Recipient bucketing follows the §32.2 fallback: `contact` has no
+// envoi_retour_client flag, so `est_defaut = 1` pre-checks a chip and every
+// other valid address becomes a suggestion.
+//
+// Deliberately NOT logged in `envoi_email`: that ledger is keyed by
+// (IDreference, IDtype_doc) and `type_doc` has no "retour client" row. Filing
+// it under 2 = « autre » would put a quality sheet in the client's document
+// dispatch history next to its invoices. Add a real type_doc first if the
+// history ever needs it.
+
+const SENDER_LABEL_TRM = 'Tricotage Malterre'
+
+retoursClientTrmRouter.get('/:id/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const row = await readRetour(id)
+    if (!row) { res.status(404).json({ error: 'Retour client not found' }); return }
+
+    const [labels, contactRows] = await Promise.all([
+      loadLabels([row]),
+      row.IDclient > 0
+        ? query<any>(
+            `SELECT IDcontact, nom, prenom, mail, est_defaut, est_visible FROM contact WHERE IDclient = ${row.IDclient}`,
+          )
+        : Promise.resolve([] as any[]),
+    ])
+    const contacts = await fixEncoding(contactRows as any[], 'contact', 'IDcontact', ['nom', 'prenom', 'mail'])
+
+    const selected: EmailRecipientPayload[] = []
+    const suggestions: EmailRecipientPayload[] = []
+    const seen = new Set<string>()
+    for (const c of contacts as any[]) {
+      if (n(c.est_visible) === 0) continue
+      const raw = trimStr(c.mail)
+      if (!raw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) continue
+      const key = raw.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      const displayName = [c.prenom, c.nom].map((s: unknown) => trimStr(s)).filter(Boolean).join(' ')
+      const recipient: EmailRecipientPayload = { email: raw, source: 'contact', contactId: n(c.IDcontact) }
+      if (displayName) recipient.name = displayName
+      if (n(c.est_defaut) === 1) selected.push(recipient)
+      else suggestions.push(recipient)
+    }
+
+    const defaut = labels.defautNom.get(row.IDdefaut_textile) || row.defaut_legacy
+    res.json({
+      recipients: { selected, suggestions },
+      subject: `Retour client N°${id} - ${SENDER_LABEL_TRM}`,
+      body:
+        `Bonjour,\n\n` +
+        `Veuillez trouver ci-joint notre fiche de retour client N°${id}` +
+        `${defaut ? ` (${defaut})` : ''}, avec le traitement apporté par l'atelier.\n\n` +
+        `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
+        `Cordialement,\n` +
+        SENDER_LABEL_TRM,
+      clientNom: labels.clientNom.get(row.IDclient) ?? '',
+      bcc: [],
+      optional_attachments: [],
+    })
+  } catch (err) {
+    console.error('Error building retour client TRM email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const rcExtraAttachment = z.object({
+  filename: z.string().min(1).max(255),
+  content_base64: z.string().min(1),
+  content_type: z.string().min(1).max(100),
+})
+const rcEmailBody = z.object({
+  to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(20000),
+  attach_pdf: z.boolean().optional(),
+  extra_attachments: z.array(rcExtraAttachment).optional(),
+  dev_skip_send: z.boolean().optional(),
+})
+const RC_ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
+
+retoursClientTrmRouter.post('/:id/email', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const parsed = rcEmailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+
+    if (parsed.data.dev_skip_send === true && RC_ALLOW_DEV_SKIP_SEND) {
+      console.log(`[dev-skip-send] retour client TRM #${id} — fake send to ${parsed.data.to.join(', ')}`)
+      res.json({ ok: true, messageId: `dev-skip-${Date.now()}` })
+      return
+    }
+
+    const senderEmail = await getUserEmail(req.userId)
+    if (!senderEmail) {
+      res.status(400).json({
+        error: 'no_sender_email',
+        message:
+          "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+      })
+      return
+    }
+    const userRows = await fixEncoding(
+      await query<any>(`SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`),
+      'utilisateur', 'IDutilisateur', ['prenom', 'nom'],
+    )
+    const u = (userRows as any[])[0]
+    const displayName = u ? [u.prenom, u.nom].map((s: unknown) => trimStr(s)).filter(Boolean).join(' ') : ''
+    const fromName = displayName ? `${displayName} - ${SENDER_LABEL_TRM}` : SENDER_LABEL_TRM
+
+    const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
+    if (parsed.data.attach_pdf !== false) {
+      // Same builder as GET /:id/pdf, so the attachment is byte-identical to
+      // what the Imprimer button shows (§32.2).
+      const data = await buildRetourClientPdfData(id)
+      if (!data) { res.status(404).json({ error: 'Retour client not found' }); return }
+      attachments.push({
+        filename: `Retour-client-${id}.pdf`,
+        content: await renderRetourClientPdfBuffer(data),
+        contentType: 'application/pdf',
+      })
+    }
+    for (const a of parsed.data.extra_attachments ?? []) {
+      attachments.push({
+        filename: a.filename,
+        content: Buffer.from(a.content_base64, 'base64'),
+        contentType: a.content_type,
+      })
+    }
+
+    const messageId = await sendMail({
+      from: senderEmail,
+      fromName,
+      to: parsed.data.to,
+      cc: parsed.data.cc,
+      bcc: parsed.data.bcc,
+      subject: parsed.data.subject,
+      body: parsed.data.body,
+      attachments: attachments.length > 0 ? attachments : undefined,
+    })
+    res.json({ ok: true, messageId })
+  } catch (err) {
+    console.error('Error sending retour client TRM email:', err)
+    res.status(500).json({ error: 'send_failed', message: (err as Error).message })
   }
 })
