@@ -50,9 +50,11 @@ interface CaClientsResponse {
 
 // ── Comparison period ─────────────────────────────────────────
 // "Année complète" is the legacy comparison (whole year vs whole year, so the
-// running year is compared against 12 months it hasn't lived yet). "Cumul au
-// JJ/MM" cuts both years at today's day of the year, which is the only honest
-// read of an evolution mid-year.
+// running year is compared against 12 months it hasn't lived yet). "Même
+// période" cuts both years at today's day of the year, which is the only honest
+// read of an evolution mid-year — and is therefore the DEFAULT since
+// 2026-08-26 (user request). The legacy read stays one click away; it is the
+// right one on a closed exercise, where the two modes coincide anyway.
 
 type PeriodKey = 'full' | 'ytd'
 
@@ -129,7 +131,7 @@ export function ChiffreAffairesWidget() {
   const today = new Date()
   const currentYear = today.getFullYear()
   const [year, setYear] = useState(currentYear)
-  const [period, setPeriod] = useState<PeriodKey>('full')
+  const [period, setPeriod] = useState<PeriodKey>('ytd')
   const [view, setView] = useState<ViewKey>('rank')
 
   const caQuery = useQuery<CaClientsResponse>({

@@ -7,19 +7,20 @@
 // upload of its month — the curves only ever climb through the year, and the
 // gap between marge brute and charges fixes IS the EBE.
 //
-// ⚠️ PORTÉE — ce que ces figures NE contiennent PAS, et pourquoi c'est affiché :
-// les **provisions**, qui sont sous l'EBE par définition et que la clôture
-// annuelle passe d'un coup. D'où la mention permanente sous les tuiles, et non
-// une infobulle — voir §Valorisation du stock pour le chiffre manquant.
+// ⚠️ PORTÉE — ce que ces figures NE contiennent PAS : les **provisions**, qui
+// sont sous l'EBE par définition et que la clôture annuelle passe d'un coup.
+// La variation de stock, elle, EST dedans : son écriture comptable est annuelle
+// (le compte 603700 reste nul onze mois sur douze, et l'EBE intermédiaire
+// portait donc le coût de la production restée en magasin), alors elle est
+// ESTIMÉE et intégrée par `lib/variation-stock.ts` tant que le compte vaut
+// zéro — c'est ce qui a fait lire juillet 2026 comme un effondrement.
 //
-// ⚠️ La mention a longtemps parlé aussi de « production stockée ». C'était faux
-// et c'est retiré (2026-08-26) : ETM n'en a pas, la case FM du 2052 est vide en
-// 2023, 2024 ET 2025. Les 178 359 € de 2024 qu'on lui attribuait sont la case
-// FP, reprises sur amortissements et provisions. Ce qui manquait réellement à
-// l'EBE intermédiaire, c'est la variation de stock du compte 603700 — écriture
-// annuelle, donc nulle onze mois sur douze — et elle est désormais ESTIMÉE et
-// intégrée (lib/variation-stock.ts), ce que dit l'autre branche du ternaire.
-// C'est ce qui a fait lire juillet 2026 comme un effondrement.
+// ⚠️ Cette portée n'est PLUS écrite sous les tuiles. La mention permanente a
+// vécu du 2026-08-25 au 2026-08-26 ; l'utilisateur l'a fait retirer. Elle
+// annonçait un chiffre (« variation de stock estimée à 57 622 € et intégrée »)
+// que rien d'autre sur la carte ne permettait de recouper, et elle coûtait une
+// ligne sur un widget déjà dense. Ne pas la réintroduire telle quelle : le
+// calcul, lui, est intact et continue de porter l'EBE affiché.
 //
 // ⚠️ Le dernier point d'un exercice reste un solde d'AVANT clôture : les
 // écritures de l'expert-comptable ne remontent jamais dans l'ERP (32 944 €
@@ -31,7 +32,7 @@
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LineChart, Loader2, AlertTriangle, Info } from 'lucide-react'
+import { LineChart, Loader2, AlertTriangle } from 'lucide-react'
 import { CardContent } from '@/components/ui/card'
 import { PopoverSelect } from '@/components/ui/popover-select'
 import { useElementSize } from '@/hooks/useElementSize'
@@ -136,9 +137,6 @@ export function AnalyseFinanciereWidget() {
   const data = query.data
   const points = data?.points ?? []
   const totaux = data?.totaux
-  // Correction portée par le DERNIER point : c'est celle qui correspond aux
-  // trois tuiles, qui affichent l'arrêté le plus récent.
-  const variationAppliquee = points.length > 0 ? points[points.length - 1].variation_stock_estimee : null
   const anneeOptions = (data?.annees ?? []).map((y) => ({ id: y, primary: String(y) }))
   const shownAnnee = data?.annee ?? annee ?? new Date().getFullYear()
 
@@ -184,30 +182,6 @@ export function AnalyseFinanciereWidget() {
             tight={denseTiles}
           />
         </div>
-
-        {/* Portée des figures — voir le commentaire en tête de fichier. Toujours
-            visible, pas une infobulle : c'est précisément l'absence de cette
-            mention qui a fait lire l'EBE de juillet 2026 comme un effondrement
-            alors que 146 k€ de production non vendue l'amputaient. */}
-        {/* Portée. Depuis 2026-08-25 la variation de stock est ESTIMÉE et intégrée
-            (l'écriture comptable est annuelle, donc le compte reste à zéro toute
-            l'année et l'EBE porte le coût de la production restée en magasin) ;
-            les provisions, elles, restent en dehors — elles sont sous l'EBE par
-            définition. La mention dit lequel des deux cas s'applique. */}
-        <p className="-mt-2 flex items-start gap-1.5 text-[11px] leading-snug text-muted-foreground">
-          <Info className="mt-px h-3 w-3 flex-shrink-0 opacity-60" />
-          <span>
-            {variationAppliquee != null ? (
-              <>
-                Variation de stock estimée à{' '}
-                <span className="font-medium tabular-nums text-foreground">{euro0(-variationAppliquee)}</span>{' '}
-                et intégrée — l'écriture réelle la remplacera à la clôture. Hors provisions.
-              </>
-            ) : (
-              <>Hors provisions, comptabilisées à la clôture annuelle.</>
-            )}
-          </span>
-        </p>
 
         {/* Evolution */}
         <div className="flex flex-1 min-h-[180px] flex-col overflow-hidden rounded-lg border border-border/60 bg-white">

@@ -9,8 +9,13 @@
 // Annuel  = magnitude comparison across a handful of categories → bars.
 //
 // ── Colour (steps 2–3) ──
-// Categorical by YEAR (identity), assigned in fixed order and never cycled, so
-// a year keeps its colour no matter which others are toggled on.
+// Categorical by YEAR (identity), assigned by RECENCY and never cycled, so a
+// year keeps its colour no matter which others are toggled on. The NEWEST year
+// takes style 0 — solid accent blue — and is drawn at nearly double the stroke
+// width, the older ones receding behind it: the running exercise is what the
+// reader looks for first, and until 2026-08-26 it was whichever style the
+// ascending list happened to leave over (a dashed violet, the least legible of
+// the five). Emphasis is width + opacity + solidity, never colour alone.
 // Palette VALIDATED, not eyeballed:
 //   node scripts/validate_palette.js "#3B7DC9,#C2410C,#17915B,#B8860B,#7C3AED" \
 //     --mode light --pairs all
@@ -18,9 +23,16 @@
 //     the 6–8 band the skill allows ONLY with secondary encoding. Four
 //     alternative palettes were validated and all scored worse (they broke the
 //     normal-vision floor), so the WARN is answered rather than dodged: every
-//     year also carries a distinct DASH pattern, and the legend names each year
-//     with its total — identity is never colour-alone. Same second channel, for
-//     the same reason, as AnalyseFinanciereWidget.
+//     year also carries a distinct DASH pattern, and the year PILLS above the
+//     chart name each year next to its colour — identity is never colour-alone.
+//
+// ── The legend is gone; a tooltip replaced it (2026-08-26, user request) ──
+// The legend under the chart restated what the pills already say and cost a
+// whole row on a 420 px card. Hovering a month now opens a card listing every
+// visible year's CA for that month, ranked — the read becomes « ce mois-ci, qui
+// fait quoi » instead of « voici les couleurs ». The pills stay the colour key.
+// "Annuel" has no pills, so each bar carries its total above it (the number the
+// legend used to hold) and hovering gives the exact centime.
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -62,6 +74,12 @@ function styleFor(index: number) {
   return SERIES_STYLE[index % SERIES_STYLE.length]
 }
 
+/** Stroke widths for the lead year and the ones behind it. The gap is
+ *  deliberately wide: at 2 vs 2.5 the emphasis reads as a rendering artefact
+ *  rather than as a ranking. */
+const STROKE_LEAD = 3.25
+const STROKE_BACK = 1.75
+
 /** Compact euro for axis ticks — full precision lives in the tooltip. */
 function eurShort(v: number): string {
   if (Math.abs(v) >= 1_000_000) return `${fmtNum(v / 1_000_000, 1)} M€`
@@ -97,13 +115,23 @@ export function EvolutionCaWidget() {
     [series, hidden],
   )
 
-  // Colour is keyed on the year's position in the FULL list, so toggling one
-  // off never repaints the survivors.
+  // Colour is keyed on the year's RECENCY inside the FULL list — newest first,
+  // so the running year always takes style 0 — and never on its rank among the
+  // VISIBLE ones, so toggling a year off never repaints the survivors.
   const styleByYear = useMemo(() => {
     const m = new Map<number, { color: string; dash?: string }>()
-    series.forEach((s, i) => m.set(s.year, styleFor(i)))
+    series.forEach((s, i) => m.set(s.year, styleFor(series.length - 1 - i)))
     return m
   }, [series])
+
+  /** The most recent year the endpoint returned — the running exercise, drawn
+   *  thick and solid. Read off the DATA, not off the clock: in early January
+   *  the books can still hold nothing for the new year, and the chart must then
+   *  lead with the year it actually draws. */
+  const leadYear = useMemo(
+    () => (series.length ? Math.max(...series.map((s) => s.year)) : null),
+    [series],
+  )
 
   const [plotRef, plot] = useElementSize<HTMLDivElement>()
   const W = plot.w
@@ -123,6 +151,63 @@ export function EvolutionCaWidget() {
   const span = scale.hi - scale.lo || 1
   const xMonth = (i: number) => PAD.left + (innerW * i) / 11
   const y = (v: number) => PAD.top + innerH - (innerH * (v - scale.lo)) / span
+
+  // ── Tooltip ────────────────────────────────────────────────────────────
+  // Replaces the legend that used to sit under the chart. Positioned in the
+  // plot's OWN pixel space — the SVG is drawn at the container's real size
+  // rather than through a viewBox, so SVG units are CSS pixels and there is no
+  // scaling to undo. The card hangs off the crosshair and flips to its other
+  // side past the middle, so it never leaves the widget; vertically it centres
+  // on the band of hovered points, then clamps inside the plot.
+  const tooltip = useMemo(() => {
+    if (W === 0 || H === 0) return null
+    type Row = { key: number; label: string; value: number; color: string }
+    let title: string
+    let rows: Row[]
+    let anchorX: number
+    let ys: number[]
+
+    if (mode === 'mensuel') {
+      if (hoverMonth == null) return null
+      // Ranked, not chronological: the question a hovered month answers is
+      // "who is ahead this month", and the order is the answer.
+      rows = visible
+        .map((s) => ({
+          key: s.year,
+          label: String(s.year),
+          value: s.months[hoverMonth],
+          color: styleByYear.get(s.year)!.color,
+        }))
+        .filter((r): r is Row => r.value != null)
+        .sort((a, b) => b.value - a.value)
+      // A month the running year has not reached yet, with every other year
+      // hidden: nothing to say, so no empty card.
+      if (rows.length === 0) return null
+      title = MOIS[hoverMonth]
+      anchorX = xMonth(hoverMonth)
+      ys = rows.map((r) => y(r.value))
+    } else {
+      if (hoverYear == null) return null
+      const i = series.findIndex((s) => s.year === hoverYear)
+      if (i < 0) return null
+      const s = series[i]
+      rows = [{ key: s.year, label: 'CA facturé', value: s.total, color: styleByYear.get(s.year)!.color }]
+      title = String(s.year)
+      anchorX = PAD.left + (innerW * (i + 0.5)) / series.length
+      ys = [y(s.total)]
+    }
+
+    // Card height from its content: ~22px of chrome + 15px per row.
+    const half = (22 + rows.length * 15) / 2
+    const mid = (Math.min(...ys) + Math.max(...ys)) / 2
+    return {
+      title,
+      rows,
+      x: anchorX,
+      y: Math.min(Math.max(mid, half + 2), Math.max(half + 2, H - half - 2)),
+      flip: anchorX > W / 2,
+    }
+  }, [mode, hoverMonth, hoverYear, visible, series, styleByYear, W, H, innerW, innerH, scale])
 
   function toggleYear(year: number) {
     setHidden((prev) => {
@@ -201,7 +286,7 @@ export function EvolutionCaWidget() {
               </div>
             )}
 
-            <div ref={plotRef} className="min-h-0 flex-1">
+            <div ref={plotRef} className="relative min-h-0 flex-1">
               {W > 0 && H > 0 && (
               <svg
                 width={W} height={H} className="block"
@@ -250,6 +335,9 @@ export function EvolutionCaWidget() {
 
                     {visible.map((s) => {
                       const st = styleByYear.get(s.year)!
+                      // The running year is drawn thick, solid and at full
+                      // opacity — and last, so it sits on top of the others.
+                      const lead = s.year === leadYear
                       // A null month breaks the path rather than dropping the
                       // line to zero.
                       const d = s.months
@@ -262,7 +350,10 @@ export function EvolutionCaWidget() {
                       return (
                         <path
                           key={s.year} d={d} fill="none"
-                          stroke={st.color} strokeWidth={2} strokeDasharray={st.dash}
+                          stroke={st.color}
+                          strokeWidth={lead ? STROKE_LEAD : STROKE_BACK}
+                          strokeDasharray={st.dash}
+                          opacity={lead ? 1 : 0.72}
                           strokeLinecap="round" strokeLinejoin="round"
                         />
                       )
@@ -276,7 +367,7 @@ export function EvolutionCaWidget() {
                       const st = styleByYear.get(s.year)!
                       return (
                         <circle
-                          key={s.year} cx={xMonth(hoverMonth)} cy={y(v)} r={4}
+                          key={s.year} cx={xMonth(hoverMonth)} cy={y(v)} r={s.year === leadYear ? 5 : 4}
                           fill={st.color} stroke="#fff" strokeWidth={2}
                         />
                       )
@@ -309,12 +400,32 @@ export function EvolutionCaWidget() {
                             opacity={hoverYear == null || hoverYear === s.year ? 1 : 0.5}
                             onMouseEnter={() => setHoverYear(s.year)}
                           />
+                          {/* The total the removed legend used to carry. */}
+                          <text
+                            x={cx} y={Math.max(top - 5, 9)} textAnchor="middle"
+                            className="fill-muted-foreground text-[9px] tabular-nums"
+                          >
+                            {eurShort(s.total)}
+                          </text>
                           <text
                             x={cx} y={H - 8} textAnchor="middle"
-                            className="fill-muted-foreground text-[9px] tabular-nums"
+                            className={cn(
+                              'text-[9px] tabular-nums',
+                              s.year === leadYear
+                                ? 'fill-foreground font-semibold'
+                                : 'fill-muted-foreground',
+                            )}
                           >
                             {s.year}
                           </text>
+                          {/* Hit target over the whole column, not just the
+                              bar: a short bar is a 10px-tall target otherwise. */}
+                          <rect
+                            x={PAD.left + (innerW * i) / series.length} y={PAD.top}
+                            width={innerW / series.length} height={innerH}
+                            fill="transparent"
+                            onMouseEnter={() => setHoverYear(s.year)}
+                          />
                         </g>
                       )
                     })}
@@ -322,43 +433,53 @@ export function EvolutionCaWidget() {
                 )}
               </svg>
               )}
+
+              {/* Tooltip — the legend's replacement. Absolutely positioned in
+                  the plot box, never clipped by it: `flip` swaps the side past
+                  the middle and the y is clamped, so it stays inside the card
+                  at every width the user drags it to. */}
+              {tooltip && (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute z-10 rounded-md border border-border bg-white/95 px-2.5 py-1.5 shadow-md"
+                  style={{
+                    left: tooltip.x,
+                    top: tooltip.y,
+                    transform: `translate(${tooltip.flip ? 'calc(-100% - 12px)' : '12px'}, -50%)`,
+                  }}
+                >
+                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {tooltip.title}
+                  </p>
+                  <div className="flex flex-col gap-0.5">
+                    {tooltip.rows.map((r) => (
+                      <div key={r.key} className="flex items-center gap-3 whitespace-nowrap text-[11px]">
+                        <span
+                          className="h-2 w-2 flex-shrink-0 rounded-full"
+                          style={{ backgroundColor: r.color }}
+                        />
+                        <span
+                          className={cn(
+                            'text-muted-foreground',
+                            r.key === leadYear && 'font-semibold text-foreground',
+                          )}
+                        >
+                          {r.label}
+                        </span>
+                        <span className="ml-auto font-medium tabular-nums">{eur(r.value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Legend — always present for ≥2 series, so identity is never
-                colour-alone. Doubles as the read-out for the hovered month. */}
-            <div className="flex flex-shrink-0 flex-wrap gap-x-3 gap-y-0.5">
-              {(mode === 'mensuel' ? visible : series).map((s) => {
-                const st = styleByYear.get(s.year)!
-                const value = mode === 'mensuel' && hoverMonth != null
-                  ? s.months[hoverMonth]
-                  : s.total
-                return (
-                  <span
-                    key={s.year}
-                    className={cn(
-                      'flex items-center gap-1 text-[11px]',
-                      hoverYear === s.year && 'font-semibold',
-                    )}
-                  >
-                    <span
-                      className="h-2 w-2 flex-shrink-0 rounded-full"
-                      style={{ backgroundColor: st.color }}
-                      aria-hidden
-                    />
-                    <span className="text-muted-foreground">{s.year}</span>
-                    <span className="font-medium tabular-nums">
-                      {value == null ? '—' : eur(value)}
-                    </span>
-                  </span>
-                )
-              })}
-            </div>
+            {/* One hint line where the legend used to be — the year pills above
+                are the colour key, and the tooltip carries the figures. */}
             <p className="flex-shrink-0 text-[10px] text-muted-foreground">
               {mode === 'mensuel'
-                ? (hoverMonth != null
-                  ? `CA de ${MOIS[hoverMonth]}`
-                  : 'Total de l’année · survolez un mois pour le détail')
-                : 'Total par année'}
+                ? 'CA facturé par mois · survolez le graphique pour le détail'
+                : 'CA facturé par année · survolez une barre pour le détail'}
             </p>
           </>
         )}
