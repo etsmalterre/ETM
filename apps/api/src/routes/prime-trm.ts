@@ -4,6 +4,7 @@ import sharp from 'sharp'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, queryRaw, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
 import { PrimePdf, type PrimePdfData } from '../lib/pdf/PrimePdf.js'
+import { baremePour } from '../lib/bareme-prime-trm.js'
 
 // Production prime (TRM knitting mill) — semester bonus on knitted weight.
 // Legacy: FI_Prime.wdw / FEN_Prime (logic recovered from the generated
@@ -13,10 +14,12 @@ import { PrimePdf, type PrimePdfData } from '../lib/pdf/PrimePdf.js'
 //   S1 = 15/12/(Y-1) → 15/06/Y   labelled "1er Semestre {year of fin}"
 //   S2 = 15/06/Y     → 15/12/Y   labelled "2ème Semestre {year of début}"
 //
-// Rates (€/Kg) applied to SUM(stock_ecru.poids) over date_saisie (DATETIME):
-//   1er choix  (second_choix = 0)  +0.05
-//   2nd choix  (second_choix = 1)  −0.20
-//   Retour client                  −0.60 — displayed but NEVER computed by the
+// Rates (€/Kg) applied to SUM(stock_ecru.poids) over date_saisie (DATETIME) —
+// DATE-EFFECTIVE, see BAREMES_PRIME below. A semester is priced with the barème
+// in force at its `debut`:
+//   up to S1 2026   1er choix +0.05   ·  2nd choix −0.20
+//   from S2 2026    1er choix +0.055  ·  2nd choix −0.40  (2026-08-26 revision)
+//   Retour client   −0.60 throughout — displayed but NEVER computed by the
 //   legacy screen (both blocks are hardcoded to 0); kept at 0 here on purpose.
 //
 // Two deliberate deltas from the legacy, both user-approved (2026-08-24):
@@ -48,9 +51,6 @@ export const primeTrmRouter: RouterType = Router()
 
 const IS_WINDOWS = process.platform === 'win32'
 
-export const TAUX_PREMIER_CHOIX = 0.05
-export const TAUX_SECOND_CHOIX = -0.2
-export const TAUX_RETOUR_CLIENT = -0.6
 
 // ── Date helpers (plain YYYY-MM-DD strings, no TZ arithmetic) ─────────────
 
@@ -178,7 +178,7 @@ export interface DeclassementsAnalyse {
  *  the true declassed weight (a piece carries ~1.6 defects on average — full
  *  attribution would overshoot 100%). Pieces with no structured defect land in
  *  "Non renseigné". */
-async function fetchDeclassementTypes(debut: string, fin: string): Promise<DeclassementType[]> {
+async function fetchDeclassementTypes(debut: string, fin: string, tauxSecondChoix: number): Promise<DeclassementType[]> {
   const pieces = await query<{ IDstock_ecru: unknown; poids: unknown }>(
     `SELECT IDstock_ecru, poids FROM stock_ecru WHERE ${periodWhere(1, debut, fin)}`,
   )
@@ -229,7 +229,7 @@ async function fetchDeclassementTypes(debut: string, fin: string): Promise<Decla
     type,
     kg: v.kg,
     pieces: v.pieces,
-    montant: v.kg * -TAUX_SECOND_CHOIX,
+    montant: v.kg * -tauxSecondChoix,
     pct: kgTotal > 0 ? v.kg / kgTotal : 0,
   }))
   return entries.sort((a, b) => b.montant - a.montant)
@@ -278,7 +278,7 @@ export interface DeclassementSemaine {
  *  columns we must never name (see stock-ecru-trm.ts), so every projection here
  *  is explicit and ASCII; `defaut_qualite` free text goes through the
  *  queryB64Text / fixEncoding branch of of-trm.ts. */
-async function fetchDeclassementsSemaine(debut: string): Promise<DeclassementSemaine[]> {
+async function fetchDeclassementsSemaine(debut: string, tauxSecondChoix: number): Promise<DeclassementSemaine[]> {
   const pieces = await query<Record<string, unknown>>(
     `SELECT IDstock_ecru, numero, poids, IDordre_fabrication
      FROM stock_ecru
@@ -345,7 +345,7 @@ async function fetchDeclassementsSemaine(debut: string): Promise<DeclassementSem
       piece: String(p.numero ?? '').trim(),
       machine: machineName.get(machineByOf.get(n(p.IDordre_fabrication)) ?? 0) ?? '',
       poids,
-      montant: poids * -TAUX_SECOND_CHOIX,
+      montant: poids * -tauxSecondChoix,
       defauts: (byPiece.get(pieceId) ?? []).map((d) => ({
         id: n(d.IDdefaut_qualite),
         type: String(d.type_defaut ?? '').trim(),
@@ -497,6 +497,13 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
 
   const monday = mondayOf(today)
 
+  // The barème of the period being BROWSED prices the semester; the barème in
+  // force TODAY prices the week, because the week always describes the current
+  // week whatever period is displayed. They coincide whenever the current
+  // semester is shown, which is the only time the screen renders the week.
+  const bareme = baremePour(periode.debut)
+  const baremeSemaine = baremePour(courante.debut)
+
   // Comparison: ALWAYS the previous semester in full, including while the
   // current one is still running. A same-elapsed-days window would be more
   // like-for-like statistically, but it moves every day — the full previous
@@ -512,25 +519,25 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
     sumPoids(1, monday),
     sumPoids(0, prev.debut, prevWindowEnd),
     sumPoids(1, prev.debut, prevWindowEnd),
-    fetchDeclassementTypes(periode.debut, periode.fin),
+    fetchDeclassementTypes(periode.debut, periode.fin, bareme.secondChoix),
     selectBonnetiers(),
-    fetchDeclassementsSemaine(monday),
+    fetchDeclassementsSemaine(monday, baremeSemaine.secondChoix),
   ])
 
   const semestre = {
-    premierChoix: { kg: semKg1, montant: semKg1 * TAUX_PREMIER_CHOIX },
-    secondChoix: { kg: semKg2, montant: semKg2 * TAUX_SECOND_CHOIX },
+    premierChoix: { kg: semKg1, montant: semKg1 * bareme.premierChoix },
+    secondChoix: { kg: semKg2, montant: semKg2 * bareme.secondChoix },
     retourClient: { kg: 0, montant: 0 },
-    total: semKg1 * TAUX_PREMIER_CHOIX + semKg2 * TAUX_SECOND_CHOIX,
+    total: semKg1 * bareme.premierChoix + semKg2 * bareme.secondChoix,
   }
   const semaine = {
     numero: isoWeekNumber(monday),
     debut: monday,
     fin: saturdayOf(monday),
-    premierChoix: { kg: wkKg1, montant: wkKg1 * TAUX_PREMIER_CHOIX },
-    secondChoix: { kg: wkKg2, montant: wkKg2 * TAUX_SECOND_CHOIX },
+    premierChoix: { kg: wkKg1, montant: wkKg1 * baremeSemaine.premierChoix },
+    secondChoix: { kg: wkKg2, montant: wkKg2 * baremeSemaine.secondChoix },
     retourClient: { kg: 0, montant: 0 },
-    total: wkKg1 * TAUX_PREMIER_CHOIX + wkKg2 * TAUX_SECOND_CHOIX,
+    total: wkKg1 * baremeSemaine.premierChoix + wkKg2 * baremeSemaine.secondChoix,
     declassements: declassementsSemaine,
   }
 
@@ -566,9 +573,9 @@ async function buildPayload(ref: string): Promise<PrimePayload> {
       suivantRef: estCourante ? null : addMonths(ref, 6),
     },
     taux: {
-      premierChoix: TAUX_PREMIER_CHOIX,
-      secondChoix: TAUX_SECOND_CHOIX,
-      retourClient: TAUX_RETOUR_CLIENT,
+      premierChoix: bareme.premierChoix,
+      secondChoix: bareme.secondChoix,
+      retourClient: bareme.retourClient,
     },
     semestre,
     semaine,
