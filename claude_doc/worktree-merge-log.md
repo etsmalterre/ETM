@@ -9,6 +9,30 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-26 — feat/retour-client (l'envoi de la FNC ouvre vraiment le dossier chez TRM)
+
+Moitié NG d'une paire de worktrees : la branche TRM porte l'écran Qualité › Retour client (port de `FI_Retour_ClientTRM.wdw`), celle-ci porte son API — et referme la boucle FNC, qui était ouverte depuis le portage de Qualité › Dossiers.
+
+**Le trou.** MPS-NG savait imprimer une FNC et dater son envoi, mais le bouton « Envoyer la FNC » était un dialogue « En developpement ». Une FNC envoyée depuis cet écran n'atteignait donc personne : côté TRM, `retour_client` ne contenait que les 91 lignes créées par WinDev. Le legacy, lui, demandait « Voulez-vous envoyer cette FNC a TRM ? » puis créait la ligne et ouvrait la fenêtre de mail. C'est ce passage de témoin qui manquait.
+
+**Ce qui traverse, et ce qui ne traverse jamais.** À l'aller, `POST /dossiers-qualite/:id/fnc/envoi` (ou `…/fnc/email`, qui fait le même geste une fois le mail parti) date `envoiFNC` et crée la ligne, en recopiant `messageFNC`, `IDdefaut_textile`, `Type_Reference` et `reference`. Au retour, **seule la réponse** remonte : `retour_client.IDresolution_qualite` + `.reponse` → `dossier_qualite.reponseFNC`, dans la forme `"<libellé>\r\n<commentaire>"` que cet écran relit pour son `has_reponse` et pour la FNC imprimée. L'encodage garde un seul propriétaire, **`writeFncReponse()`**, exporté plutôt que dupliqué.
+
+Ne remontent **jamais** : la clôture (ETM ferme son dossier quand la réponse le satisfait — autre décision) et surtout **l'affectation**, qui diverge sur **13 dossiers sur 91**. L'atelier repointe la référence sur le rouleau qu'il a réellement trouvé, ou réduit un lot d'ETM à une pièce (dossier 105 : `2:Ma101079` → `1:2323/12`). Elle est donc amorcée à la création puis appartient à TRM.
+
+⚠️ **L'asymétrie qui coûterait cher.** `dossier_qualite.IDclient` nomme le client **final d'ETM** (LEMAHIEU, Cocorico, Le Slip Français) ; `retour_client.IDclient` nomme le client **de TRM**, c'est-à-dire Ets Malterre. Le client TRM est donc résolu **par le nom de la société émettrice**, et `resolveTrmClientForSociete()` **lève** si elle ne le trouve pas : un repli silencieux classerait la réclamation sous le client qui a le hasard d'être l'`IDclient` 1. Bénéfice de bord : l'écran TRM peut afficher le vrai plaignant, que le legacy réduisait à « Ref client : 183 ».
+
+**Garde-fous du geste.** Idempotent — un second envoi ne rouvre pas de dossier en double pour l'atelier. Exécuté **après** le départ du mail, pour qu'un envoi raté n'ouvre pas chez TRM un dossier dont personne n'a été prévenu ; s'il échoue une fois le mail parti, la réponse le dit (`handover: 'failed'`) au lieu d'un 500 qui inviterait à renvoyer. Et seule `IDSociétéFNC = 1` (Tricotage Malterre) se transmet : le `retour_client_confection` de Malterre Confection est une autre table, d'une autre forme, sans écran qui la lise — une FNC visant Confection part quand même par mail et le dit (`unsupported_societe`).
+
+**Où vivent les primitives.** `lib/retour-client-trm.ts` — ordre physique des colonnes, encodage, lectures, écriture du booléen accentué `archivé`, passage de témoin. En `lib/` et non dans l'un des deux routeurs parce que **les deux écrivent la table**, et que c'est ce qui les empêche de s'importer mutuellement en cycle. `RC_COLUMNS` — dont dépend la réécriture positionnelle sur Linux — n'existe donc qu'à un seul endroit ; c'est l'ordre du `SELECT *` **runtime**, qui diffère du `MPS.xdd` (même piège que `controle_titrage`) et que la sonde revérifie à chaque passage.
+
+**Le reste de l'API TRM** (`/api/retours-client-trm`, 1 262 lignes) : lookups, liste, fiche, écritures, clôture, suppression, traçabilité (rouleaux résolus + `evenement_piece` + `defaut_qualite` + les deux documents, qui réutilisent des endpoints PDF existants), pièces jointes du dossier ETM, `RetourClientPdf` émis par `companyTrm`, et les deux endpoints d'email du §32. Droit `edit_retour_client` : seule l'écriture est gardée — la donnée qualité n'est pas confidentielle, ce que la clé protège c'est la boucle FNC, puisqu'une réponse écrite ici parle à ETM au nom de TRM.
+
+**Vérifications.** `probe-retour-client-trm.ts` (lecture seule, rejouable en prod) établit le miroir colonne par colonne et les pièges ; `check-retour-client-trm.ts` conduit les routes sur un dossier jetable qu'il supprime — **30 contrôles**, dont l'idempotence, la republication de la réponse, le fait que la réécriture positionnelle de la clôture ne perd ni la réponse ni le lien FNC, le refus du blob d'un autre dossier (404) et les en-têtes §21 sur le PDF. Boucle complète rejouée de bout en bout : création → envoi → la ligne apparaît « En cours » côté TRM → second envoi idempotent → TRM répond → l'écran ETM affiche « Personnel Informé » et `has_reponse: 1`.
+
+⚠️ **L'onglet Documents reste dégradé sur Linux**, et pas par choix : `doc_qualite` porte sa PK *et* sa FK accentuées, donc le pont ne sait pas cadrer sur un dossier et un `SELECT *` traînerait 87 Mo de blobs. L'API répond `degraded: true` plutôt que de faire croire le dossier vide — même limite et même formulation que l'écran ETM. Le §8 de la sonde reteste la question à chaque passage et dira quand ce chemin pourra disparaître.
+
+**Déploiement :** `/etm_deploy` doit précéder `/trm_deploy` — l'écran TRM 404 sans ces routes.
+
 ## 2026-08-26 — feat/maintenance (Atelier › Maintenance TRM : API + droit `edit_maintenance`)
 
 Port de `FI_Maintenance.wdw` (mode Tricotage Malterre) côté API : `routes/maintenance-trm.ts` monté `/api/maintenance-trm`, plus la clé `edit_maintenance` dans `permission-keys-trm.ts`. Deux tables neuves pour nous, `machine` et `operation_maintenance`, ni l'une ni l'autre partitionnée — les métiers *sont* Tricotage Malterre, comme `ordre_fabrication`.
