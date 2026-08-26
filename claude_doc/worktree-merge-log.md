@@ -9,6 +9,22 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-08-26 — feat/maintenance (Atelier › Maintenance TRM : API + droit `edit_maintenance`)
+
+Port de `FI_Maintenance.wdw` (mode Tricotage Malterre) côté API : `routes/maintenance-trm.ts` monté `/api/maintenance-trm`, plus la clé `edit_maintenance` dans `permission-keys-trm.ts`. Deux tables neuves pour nous, `machine` et `operation_maintenance`, ni l'une ni l'autre partitionnée — les métiers *sont* Tricotage Malterre, comme `ordre_fabrication`.
+
+**La récupération du legacy a changé de route, et c'est la leçon durable.** `FI_Maintenance.wdw` est PCS-compressée et, contrairement à `FI_Prime`, n'a **aucun** jumeau Java Android : le chemin qui avait sauvé la prime n'est pas universel. Tout est sorti du **cache de compilation WinDev** — `MPS.cpl/<user>/00000000/FI_Maintenance.4C33DFB6.wdw.{wcw,wbw}`. Le `.wcw` donne les littéraux chaîne et le SQL embarqué (la procédure `PoidsRestantRouloir` en entier) ; le `.wbw`, moins connu, donne **l'inventaire complet des champs** — les six couples `SAI_nett_*` / `SAI_Comm_*`, `SEL_Fonture`, `JAUGE_Ventilateur` / `JAUGE_Couronne` / `JAUGE_FuiteAir`, `BTN_Mise_a_Zéro` — soit la spec du formulaire. À essayer **avant** l'Android pour tout futur portage.
+
+**Le seuil de 15 000 Kg est une mesure, pas une lecture.** Les littéraux entiers ne survivent à aucune des deux routes. Il a donc été résolu en reconstituant depuis la base les quatorze valeurs « Rouloir dans N Kgs » lisibles sur une capture du legacy fournie par Vincent : **14/14, écart maximal 0 Kg** (3H → 610,09 pour 610 affiché ; 3F → 3 494,94 pour 3 495 ; 2I → 7 770,25 pour 7 770). `scripts/probe-maintenance-trm.ts` rejoue cette réconciliation avec les valeurs de la capture **en dur**, pour que le test ne puisse pas devenir circulaire. La frontière amber/vert (10 000 Kg) reste, elle, **non prouvée** : la capture ne la contraint qu'à l'intervalle `]4 650 ; 5 170]`.
+
+**Deux pièges de schéma, notés dans `CLAUDE.md`.** Le champ « Description » de l'écran est `machine.commentaire` et **pas** `machine.nom` (métier 2E : `nom` = '2E', `commentaire` = 'Terrot') — l'erreur inverse est tentante et silencieuse. Et deux fautes de frappe sont les vrais noms de colonnes : `observation_maintenace` et `comm_pulsonque`.
+
+**Côté HFSQL, `machine` est un contre-exemple utile.** Elle porte trois colonnes accentuées (`connecté`, `archivé`, `diamètre`), donc lecture par `SELECT *` + pliage de clés et filtre `archivé = 0` en JS — mais **`SELECT *` y passe aussi sur Windows**, faute de colonne mémo-binaire : le quirk des zéro lignes est bien par table, pas général. Les écritures sont la moitié facile (tout est ASCII → `UPDATE` nommé classique, pas de réinsertion positionnelle), à une réserve près : le `SET` ne nomme **que** les colonnes de maintenance, parce que `nom`, `Jauge`, `nb_chutes*`, `vitesse` appartiennent à `FEN_Gestion_des_machines` (non porté) et que non-nommé conserve, nommé écraserait.
+
+**Gardes.** `probe-maintenance-trm.ts` (lecture seule — **à rejouer après `/etm_deploy`**, c'est le seul test du chemin Linux) et `check-maintenance-trm.ts` (aller-retour PUT avec accents, 409 sur métier archivé, 403 sans le droit, vérification que les colonnes de `FEN_Gestion_des_machines` et les accentuées n'ont pas bougé, reset d'opération, tout restauré). 33/33 au vert.
+
+**Aucun changement de comportement ETM** : nouveau routeur, nouvelle clé de droit, aucun fichier ETM existant touché hormis le montage dans `index.ts` et le manifeste `screen-keys-trm.ts` (renommage du libellé « Gestion des OF » → « Ordres de fabrication » et retrait de l'écran Atelier › Productivité, tous deux côté TRM).
+
 ## 2026-08-26 — feat/finance (les quatre widgets financiers relus, et le constat BFR)
 
 Vincent, sur le tableau de bord financier : « in "Charges" what i really want is to quickly compare the charges of this year to the ones from last year. basically if charges fixes are at 50% at half the year then we're good, if less it's even better and if more there is a problem to investigate. the same goes for the charges variables but here more will typically mean that we worked more so it's not a bad thing. » Plus trois réglages sur les trois autres cartes. Tout est fait **ici** et re-copié dans TRM (branche jumelle `TRM-finance`), les widgets étant des miroirs verbatim.
