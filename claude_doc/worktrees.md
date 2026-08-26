@@ -56,7 +56,7 @@ node scripts/worktree/up.mjs <name> trm --api 808N   # TRM worktree: the screen,
   branch. `/feature-complete` on TRM guards this: it stops if `ETM/apps/api` has
   uncommitted main-checkout edits.
 - **Deploy ownership**: `/etm_deploy` ships the shared API (+ NG web) to
-  `mpsng.malterre`; `/trm_deploy` ships only the TRM web to `mpstrm.malterre`
+  `mpsng.malterre`; `/trm_deploy` ships only the TRM web to `trm.malterre`
   (same servers, `/api/` proxied to the same API). One deploy Claude per repo, each on its
   own `master`.
 - Purely-web TRM features (no API change) need no pair — the default `:8080` master API

@@ -15,7 +15,7 @@ Do NOT touch the per-package `apps/*/package.json` versions; they are displayed 
 ## Deploy ownership — the API is shared with TRM
 
 The API deployed here serves **two frontends**: ETM (`mpsng.malterre`) and the sister
-app **TRM** (`mpstrm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web
+app **TRM** (`trm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web
 server, its nginx site proxies `/api/` to this same `10.10.2.163:8081`).
 
 - **This skill owns**: the ETM web bundle + the **shared API** (including endpoints that
@@ -24,7 +24,7 @@ server, its nginx site proxies `/api/` to this same `10.10.2.163:8081`).
 - **The TRM repo's own `/trm_deploy`** owns: the TRM web bundle only. Never deploy the
   API from there; never deploy the TRM web bundle from here.
 - **After every API deploy, smoke-check BOTH frontends**: `https://mpsng.malterre/api/...`
-  and `http://mpstrm.malterre/api/...` (same API through two proxies — if one fails, it's
+  and `http://trm.malterre/api/...` (same API through two proxies — if one fails, it's
   nginx-side, not the API).
 - Shared-API changes for TRM features land on this repo's `master` via a **paired NG
   worktree** (see `claude_doc/worktrees.md` §"Shared-API changes") — so deploying `master`
@@ -119,7 +119,7 @@ of every deploy — see the deploy steps). The check:
    **Exception — `apps/api/src/scripts/**`-only changes have no runtime effect.** One-off
    backfill/migration scripts under `src/scripts/` are never imported by the running service,
    so if the API diff touches **only** those, do NOT redeploy/restart the shared API (a restart
-   blips both `mpsng` and `mpstrm` for nothing). Confirm with
+   blips both `mpsng` and `trm` for nothing). Confirm with
    `git diff --name-only ${API_SHA}..origin/master -- apps/api | grep -v '^apps/api/src/scripts/'`
    — empty output → skip the API side. (Seen 2026-07-23: `backfill-factures-envoyees.ts` was
    the only API delta; web-only deploy shipped.) Run the script itself on the server by hand if

@@ -1,6 +1,6 @@
 // Shared plumbing for the two "Gestion client" ledgers served by this API:
 // `routes/clients.ts`   → ETM  (IDsociete = 1, consumed by mpsng)
-// `routes/clients-trm.ts` → TRM (IDsociete = 2, consumed by mpstrm)
+// `routes/clients-trm.ts` → TRM (IDsociete = 2, consumed by TRM (trm.malterre))
 //
 // The `client` table is partitioned by IDsociete but its footguns are not — the
 // accented columns, the Windows/Linux SELECT split and the polymorphic
