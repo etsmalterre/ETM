@@ -1,4 +1,17 @@
-// ── Valorisation du stock widget ──────────────────────────────────────────
+// ── Valorisation du stock widget — EN SOMMEIL ─────────────────────────────
+//
+// ⚠️ CE COMPOSANT N'EST PLUS MONTÉ. Son entrée a été retirée de
+// `registry.tsx` le 2026-08-26 : il répondait à « combien vaut mon stock »,
+// une question de bilan à cadence annuelle, et affichait un taux de provision
+// sans point de comparaison — donc ininterprétable au quotidien. Décision
+// Vincent : « j'attends que le besoin s'exprime vraiment ». Le fichier est
+// gardé volontairement, pas oublié : le rétablir est UNE entrée dans
+// `registry.tsx` (le commentaire là-bas porte le mode d'emploi et la piste
+// « falaise » à retenir si le besoin revient).
+//
+// ⚠️ Ne pas en déduire que la chaîne serveur est morte : `valorisation-stock.ts`
+// alimente l'estimation de variation de stock de l'EBE via `variation-stock.ts`.
+//
 // Valeur d'achat et valeur dépréciée du stock, le taux de provision qui en
 // résulte, et le détail par type — fil, tombé de métier disponible, tombé de
 // métier en ennoblissement, rouleaux finis.

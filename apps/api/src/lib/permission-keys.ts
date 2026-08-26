@@ -82,10 +82,15 @@ export const PERMISSION_KEYS = [
     category: 'Tableau de bord',
   },
   {
+    // ⚠️ Le widget a été retiré du tableau de bord le 2026-08-26 (voir le
+    // commentaire dans `components/dashboard/registry.tsx`). La clé RESTE : elle
+    // garde toujours l'endpoint `GET /rapports/stock/valorisation`, qui sert un
+    // poste de bilan. Le libellé dit explicitement qu'il n'y a rien à afficher,
+    // sinon un admin coche la case et se demande pourquoi rien n'apparaît.
     key: 'dashboard_stock_valorisation',
-    label: 'Valorisation du stock',
+    label: 'Valorisation du stock (widget retiré)',
     description:
-      'Affiche le widget « Valorisation du stock » sur le tableau de bord : valeur d’achat et valeur dépréciée du stock (fil, tombé de métier disponible et en ennoblissement, rouleaux finis), taux de provision et détail par type. Donnée confidentielle (c’est un poste de bilan) — l’API refuse les chiffres sans ce droit.',
+      'Le widget « Valorisation du stock » n’est plus affiché sur le tableau de bord depuis le 26/08/2026 — cocher ce droit ne fait donc apparaître aucune carte. Il donne encore accès à l’endpoint de valorisation (valeur d’achat et valeur dépréciée du stock, taux de provision, détail par type), donnée confidentielle car c’est un poste de bilan. À rétablir le jour où le widget revient.',
     category: 'Tableau de bord',
   },
   // Commandes client — kept right after the dashboard keys so the section

@@ -3,8 +3,19 @@
 // Port des quatre états d'inventaire WinDev (`ETAT_InventaireFil.wde`,
 // `ETAT_InventaireTM.wde`, `ETAT_InventaireFini.wde`) qui alimentaient
 // `inventaire_compta`. Ils produisent les deux chiffres que le bilan porte
-// ensuite en *production stockée* et *provision pour dépréciation des stocks* —
-// les deux que `upload_compta`, donc l'Analyse financière, ne voit pas.
+// ensuite en *variation de stock* (compte 603700) et *provision pour
+// dépréciation des stocks*. (Une version antérieure de ce commentaire disait
+// « production stockée » : ETM n'en a pas — la case FM du 2052 est vide en
+// 2023, 2024 et 2025. Corrigé le 2026-08-26.)
+//
+// ⚠️ CE MODULE EST LOAD-BEARING, MÊME SANS ÉCRAN. Le widget « Valorisation du
+// stock » a été retiré du tableau de bord le 2026-08-26, mais
+// `variation-stock.ts` appelle toujours `valoriserStockCache()` pour estimer la
+// variation de stock injectée dans l'EBE — de l'Analyse financière ET du
+// rapport Finance. Supprimer ce fichier comme « code mort » casserait les deux
+// écrans en silence : l'estimation retomberait à zéro sans erreur, et l'EBE
+// intermédiaire redeviendrait faux de plusieurs dizaines de milliers d'euros.
+// Le guard `check-valorisation-stock.ts` reste la référence.
 //
 // POURQUOI C'EST ICI
 //

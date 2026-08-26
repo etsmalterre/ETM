@@ -11,7 +11,6 @@
 import { TrendingUp, FileSpreadsheet, LineChart, ShoppingCart, Wallet } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
-import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { AnalyseFinanciereWidget } from './AnalyseFinanciereWidget'
 import { ChiffreAffairesWidget } from './ChiffreAffairesWidget'
@@ -23,7 +22,6 @@ import { SuiviPieceWidget } from './SuiviPieceWidget'
 import { CommandesDuJourWidget } from './CommandesDuJourWidget'
 import { ChargesWidget } from './ChargesWidget'
 import { EvolutionCaWidget } from './EvolutionCaWidget'
-import { ValorisationStockWidget } from './ValorisationStockWidget'
 import type { DashboardApp, WidgetDef } from './types'
 
 export type { WidgetDef }
@@ -75,21 +73,27 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
     defaultHeightPx: 460,
     Component: AnalyseFinanciereWidget,
   },
-  {
-    key: 'stock_valorisation',
-    permission: 'dashboard_stock_valorisation',
-    title: 'Valorisation du stock',
-    icon: FiniRollIcon,
-    // 6 comme l'Analyse financiere, sa voisine : c'est la largeur a laquelle les
-    // trois tuiles tiennent sur une ligne. A 4 colonnes elles passent en pile et
-    // la carte double de hauteur pour la meme information.
-    defaultWidth: 6,
-    minWidth: 4,
-    // 4 types x 2 lignes + la barre de repartition : sous ~520 px le panneau
-    // se met a defiler et la barre sort du champ.
-    defaultHeightPx: 520,
-    Component: ValorisationStockWidget,
-  },
+  // ⚠️ « Valorisation du stock » a été RETIRÉ du tableau de bord le 2026-08-26,
+  // sans rien supprimer d'autre. Il répondait à « combien vaut mon stock » — une
+  // question de bilan, à cadence annuelle — et affichait un taux de provision
+  // sans point de comparaison, donc ininterprétable au quotidien (décision
+  // Vincent : « j'attends que le besoin s'exprime vraiment »).
+  //
+  // Le remettre = RÉTABLIR CETTE SEULE ENTRÉE. Tout le reste est intact et
+  // testé : `ValorisationStockWidget.tsx`, l'endpoint
+  // `GET /rapports/stock/valorisation`, la permission `dashboard_stock_valorisation`
+  // et le guard `check-valorisation-stock.ts`.
+  //
+  // ⚠️ Et surtout : `apps/api/src/lib/valorisation-stock.ts` N'EST PAS DU CODE
+  // MORT. `variation-stock.ts` l'appelle (`valoriserStockCache()`) pour estimer
+  // la variation de stock injectée dans l'EBE de l'Analyse financière et du
+  // rapport Finance. Le supprimer casserait ces deux écrans en silence.
+  //
+  // Si le besoin revient, la piste chiffrée est la « falaise » plutôt que le
+  // niveau : `valoriserStock(asOf)` accepte une date et vieillit le stock
+  // courant, donc « à périmètre constant » se calcule sans requête nouvelle —
+  // mesuré au 26/08/2026 : −108 597 € de valeur nette à 6 mois, −182 103 € à
+  // 12 mois si rien ne bouge. Ça, c'est une liste de priorités de vente.
   {
     key: 'commandes_jour',
     permission: 'dashboard_commandes_jour',
