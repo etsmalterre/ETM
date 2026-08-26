@@ -40,17 +40,17 @@
 // possibly empty.
 //
 // ── HFSQL rules ──────────────────────────────────────────
-//  - `archivé` is the only accented column, and it is the En cours / Terminé
-//    flag. Reads fold it via readCol(); the write goes through patchArchive():
-//    named SET on Windows, full positional row rewrite on Linux (the bridge
-//    cannot name it at all). RC_COLUMNS below is the RUNTIME `SELECT *` order,
-//    which differs from the MPS.xdd listing — the same trap that bit
-//    controle_titrage. The probe re-asserts it on every run.
+// The `retour_client` primitives — physical column order, text encoding, the
+// SELECT * reads and the accented `archivé` write — live in
+// **lib/retour-client-trm.ts**, with the rules that govern them. They are there
+// rather than here because ETM's dossiers-qualite.ts writes this table too when
+// it hands a FNC over, and a shared lib is what keeps the two route files from
+// importing each other in a cycle.
+//
+// What this file still has to respect:
 //  - `DATE` is a reserved word: it comes back uppercased and is written as
-//    `DATE` everywhere (SELECT alias, SET, positional INSERT).
+//    `DATE` in every named statement.
 //  - The four memo columns carry accents → sqlText() Latin-1 hex literals.
-//  - No memo-BINARY column here, so `SELECT *` is safe on the Windows ODBC
-//    driver too (unlike `client` / `stock_fil`).
 //  - Reads of stock_ecru NEVER filter IDsociete: the ETM reception flips a
 //    delivered roll from 2 to 1, and every referenced roll is already at 1.
 //
@@ -63,6 +63,19 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { query, queryRaw, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
 import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
+import {
+  TRM_SOCIETE,
+  insertRetour,
+  normalizeRetour,
+  patchArchive,
+  readRetour,
+  rcDateDigits8 as dateDigits8,
+  rcReadCol as readCol,
+  rcSqlText as sqlText,
+  rcTrim as trimStr,
+  selectRetourRows,
+  type RetourRow,
+} from '../lib/retour-client-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { loadFncSummaries, writeFncReponse, type FncSummary } from './dossiers-qualite.js'
@@ -73,158 +86,11 @@ import { getUserEmail } from '../lib/user-emails.js'
 
 export const retoursClientTrmRouter: RouterType = Router()
 
-const TRM_SOCIETE = 2
 
-// ── SQL / format helpers ─────────────────────────────────
-
-/** SQL literal for user text. Pure ASCII → quoted; accented → Latin-1 hex
- *  literal (raw multi-byte UTF-8 in a SQL line corrupts the Linux bridge). */
-function sqlText(value: string | null | undefined): string {
-  const v = (value ?? '').toString()
-  if (v === '') return "''"
-  if (/^[\x09\x0A\x0D\x20-\x7E]*$/.test(v)) return `'${esc(v)}'`
-  const ascii = v
-    .replace(/[‘’‚′]/g, "'")
-    .replace(/[“”„″]/g, '"')
-    .replace(/[–—−]/g, '-')
-    .replace(/…/g, '...')
-    .replace(/ | /g, ' ')
-  const bytes = Buffer.from(
-    Array.from(ascii, (ch) => {
-      const c = ch.codePointAt(0) ?? 0x3f
-      return c <= 0xff ? c : 0x3f
-    }),
-  )
-  return `x'${bytes.toString('hex')}'`
-}
-
-/** '20260220' | '' — HFSQL stores dates as 8-char strings. */
-function dateDigits8(value: unknown): string {
-  const s = (value ?? '').toString().replace(/\D/g, '')
-  return s.length === 8 ? s : ''
-}
-
-function trimStr(v: unknown): string {
-  return (v ?? '').toString().trim()
-}
-
-function todayDigits8(): string {
-  const d = new Date()
-  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
-}
-
-/** `archivé` → `archiv` — the Linux driver truncates an accented column name
- *  at its first non-ASCII char, in the returned key as well as in SQL text. */
-function accentTrunc(name: string): string {
-  const m = name.match(/[^\x00-\x7F]/)
-  return m && m.index !== undefined ? name.slice(0, m.index) : name
-}
-
-/** Read a column by its real name, its accent-truncated twin, or a
- *  case-insensitive match (reserved words like DATE come back uppercased). */
-function readCol(row: Record<string, unknown>, name: string): unknown {
-  if (name in row) return row[name]
-  const t = accentTrunc(name)
-  if (t !== name && t in row) return row[t]
-  const lower = name.toLowerCase()
-  const tLower = t.toLowerCase()
-  for (const k of Object.keys(row)) {
-    const kl = k.toLowerCase()
-    if (kl === lower || kl === tLower) return row[k]
-  }
-  return undefined
-}
-
-// ── retour_client physical column order ──────────────────
-// RUNTIME `SELECT *` order — the positional rewrite on Linux depends on it.
-// Re-asserted by probe-retour-client-trm.ts §2 on every run.
-const RC_COLUMNS = [
-  'IDretour_client',
-  'message_client',
-  'reponse',
-  'impact_prime',
-  'IDclient',
-  'DATE',
-  'Type_Reference',
-  'reference',
-  'archivé',
-  'defaut',
-  'IDdossier_qualite',
-  'IDdefaut_textile',
-  'journal',
-  'message_resp_atelier',
-  'IDresolution_qualite',
-  'IDbonnetier',
-  'IDmachine',
-] as const
-
-/** Columns emitted as SQL text literals; everything else is numeric. */
-const RC_TEXT_COLUMNS = new Set<string>([
-  'message_client', 'reponse', 'DATE', 'Type_Reference', 'reference',
-  'defaut', 'journal', 'message_resp_atelier',
-])
-
-const RC_TEXT_FIELDS_FOR_REPAIR = [
-  'message_client', 'reponse', 'Type_Reference', 'reference', 'defaut',
-  'journal', 'message_resp_atelier',
-]
-
-/** SELECT * with clean text on both platforms. */
-async function selectRetourRows(tail: string): Promise<Record<string, unknown>[]> {
-  const sql = `SELECT * FROM retour_client ${tail}`
-  if (IS_WINDOWS) {
-    const rows = await query<Record<string, unknown>>(sql)
-    return fixEncoding(rows, 'retour_client', 'IDretour_client', RC_TEXT_FIELDS_FOR_REPAIR)
-  }
-  return queryB64Text<Record<string, unknown>>(sql)
-}
-
-// ── Row shape ────────────────────────────────────────────
-
-interface RetourRow {
-  IDretour_client: number
-  IDclient: number
-  date: string | null
-  IDdefaut_textile: number
-  /** Legacy free-text copy of the defect label — dead (empty on 90/91). */
-  defaut_legacy: string
-  message_client: string
-  message_resp_atelier: string
-  reponse: string
-  type_reference: string
-  reference: string
-  /** Dead — 0 on every row, no input in the legacy window. Printed anyway. */
-  impact_prime: number
-  archive: 0 | 1
-  IDdossier_qualite: number
-  journal: string
-  IDresolution_qualite: number
-  IDbonnetier: number
-  IDmachine: number
-}
-
-function normalizeRetour(raw: Record<string, unknown>): RetourRow {
-  const d = dateDigits8(readCol(raw, 'DATE'))
-  return {
-    IDretour_client: n(readCol(raw, 'IDretour_client')),
-    IDclient: n(readCol(raw, 'IDclient')),
-    date: d || null,
-    IDdefaut_textile: n(readCol(raw, 'IDdefaut_textile')),
-    defaut_legacy: trimStr(readCol(raw, 'defaut')),
-    message_client: (readCol(raw, 'message_client') ?? '').toString(),
-    message_resp_atelier: (readCol(raw, 'message_resp_atelier') ?? '').toString(),
-    reponse: (readCol(raw, 'reponse') ?? '').toString(),
-    type_reference: trimStr(readCol(raw, 'Type_Reference')),
-    reference: trimStr(readCol(raw, 'reference')),
-    impact_prime: Number(readCol(raw, 'impact_prime')) || 0,
-    archive: n(readCol(raw, 'archivé')) === 1 ? 1 : 0,
-    IDdossier_qualite: n(readCol(raw, 'IDdossier_qualite')),
-    journal: (readCol(raw, 'journal') ?? '').toString(),
-    IDresolution_qualite: n(readCol(raw, 'IDresolution_qualite')),
-    IDbonnetier: n(readCol(raw, 'IDbonnetier')),
-    IDmachine: n(readCol(raw, 'IDmachine')),
-  }
-}
+// The table primitives — column order, encoding, reads, the accented-archivé
+// write, and the FNC handover — live in lib/retour-client-trm.ts: ETM
+// dossiers-qualite.ts writes this table too, and a lib is what keeps the two
+// route files from importing each other in a cycle.
 
 // ── Lookups ──────────────────────────────────────────────
 
@@ -448,11 +314,6 @@ retoursClientTrmRouter.get('/', async (req: Request, res: Response) => {
 
 // ── GET /:id — detail ────────────────────────────────────
 
-async function readRetour(id: number): Promise<RetourRow | null> {
-  const rows = await selectRetourRows(`WHERE IDretour_client = ${id}`)
-  return rows[0] ? normalizeRetour(rows[0]) : null
-}
-
 retoursClientTrmRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -535,50 +396,6 @@ async function requireEdit(req: Request, res: Response): Promise<boolean> {
 }
 
 // ── Writes ───────────────────────────────────────────────
-
-/** Emit one positional value for a retour_client column. */
-function rcLiteral(column: string, value: unknown): string {
-  if (RC_TEXT_COLUMNS.has(column)) return sqlText(value == null ? '' : value.toString())
-  if (column === 'impact_prime') return String(Number(value) || 0)
-  return String(n(value))
-}
-
-/**
- * Write the accented `archivé` flag. Windows names it directly; the Linux
- * bridge cannot, so the whole row is re-inserted positionally under the same
- * PK. Best-effort restore if the re-insert fails, so an interrupted toggle
- * cannot lose a dossier. (Same shape as patchAccented() in dossiers-qualite.ts,
- * which has to do it for four columns — here there is exactly one.)
- */
-async function patchArchive(id: number, archive: 0 | 1): Promise<void> {
-  if (IS_WINDOWS) {
-    await query(`UPDATE retour_client SET archivé = ${archive} WHERE IDretour_client = ${id}`)
-    return
-  }
-  const rows = await selectRetourRows(`WHERE IDretour_client = ${id}`)
-  const original = rows[0]
-  if (!original) throw new Error(`retour_client ${id} disappeared before rewrite`)
-
-  const values: Record<string, unknown> = {}
-  for (const col of RC_COLUMNS) values[col] = readCol(original, col)
-  values['archivé'] = archive
-
-  const literals = RC_COLUMNS.map((c) => rcLiteral(c, values[c]))
-  const restore = RC_COLUMNS.map((c) => rcLiteral(c, readCol(original, c)))
-
-  await query(`DELETE FROM retour_client WHERE IDretour_client = ${id}`)
-  try {
-    await query(`INSERT INTO retour_client VALUES (${literals.join(', ')})`)
-  } catch (err) {
-    try {
-      await query(`DELETE FROM retour_client WHERE IDretour_client = ${id}`)
-      await query(`INSERT INTO retour_client VALUES (${restore.join(', ')})`)
-    } catch {
-      console.error(`[retours-client-trm] FAILED to restore retour ${id} after rewrite error`)
-    }
-    throw err
-  }
-}
 
 const updateBody = z.object({
   IDclient: z.number().int().nonnegative().optional(),
@@ -695,40 +512,15 @@ retoursClientTrmRouter.post('/', async (req: Request, res: Response) => {
       return
     }
     const b = parsed.data
-    const maxRows = await query<{ id: number }>(`SELECT MAX(IDretour_client) AS id FROM retour_client`)
-    const newId = n(maxRows[0]?.id) + 1
-
-    const seed: Record<string, unknown> = {
-      IDretour_client: newId,
-      message_client: b.message_client,
-      reponse: '',
-      impact_prime: 0,
+    // IDdossier_qualite stays 0 — this complaint did not come through an FNC,
+    // so there is nothing on ETM's side to answer back to.
+    const IDretour_client = await insertRetour({
       IDclient: b.IDclient,
-      DATE: dateDigits8(b.date) || todayDigits8(),
-      Type_Reference: '',
-      reference: '',
-      'archivé': 0,
-      defaut: '',
-      IDdossier_qualite: 0,
       IDdefaut_textile: b.IDdefaut_textile,
-      journal: '',
-      message_resp_atelier: '',
-      IDresolution_qualite: 0,
-      IDbonnetier: 0,
-      IDmachine: 0,
-    }
-    const literals = RC_COLUMNS.map((c) => rcLiteral(c, seed[c])).join(', ')
-
-    if (IS_WINDOWS) {
-      await query(
-        `INSERT INTO retour_client (${RC_COLUMNS.join(', ')}) VALUES (${literals})`,
-      )
-    } else {
-      // Positional: neither `archivé` nor the reserved `DATE` can be named here.
-      await query(`INSERT INTO retour_client VALUES (${literals})`)
-    }
-
-    res.status(201).json({ IDretour_client: newId })
+      date: b.date ?? '',
+      message_client: b.message_client,
+    })
+    res.status(201).json({ IDretour_client })
   } catch (err) {
     console.error('Error creating retour client TRM:', err)
     res.status(500).json({ error: 'Internal server error' })

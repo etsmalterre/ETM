@@ -34,6 +34,10 @@ import { z } from 'zod'
 import { query, queryRaw, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
 import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
 import { renderFncPdfBuffer, type FncPdfData } from '../lib/pdf/FncPdf.js'
+import { createRetourFromFnc } from '../lib/retour-client-trm.js'
+import { type EmailRecipientPayload } from './expeditions.js'
+import { sendMail } from '../lib/gmail.js'
+import { getUserEmail } from '../lib/user-emails.js'
 
 export const dossiersQualiteRouter: RouterType = Router()
 
@@ -1148,5 +1152,279 @@ dossiersQualiteRouter.get('/:id/fnc/pdf', async (req: Request, res: Response) =>
   } catch (err) {
     console.error('Error rendering FNC pdf:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Envoi de la FNC — le passage de témoin vers la société destinataire ──
+//
+// The legacy asked « Voulez-vous envoyer cette FNC a TRM ? » and, on yes,
+// created the `retour_client` row that opens the dossier on Tricotage
+// Malterre's side, then opened the mail window with the FNC PDF attached.
+// MPS-NG had the PDF and the `envoiFNC` date field but never the handover, so
+// until now a FNC sent from here reached nobody: TRM's Qualité › Retour client
+// only ever showed the 91 rows WinDev had created.
+//
+// The handover is idempotent — re-sending the mail does not open a second
+// dossier — and it is the only thing that crosses. Afterwards only the ANSWER
+// comes back, through `writeFncReponse()`.
+//
+// `IDSociétéFNC` is a 1-based index into the non-ETM sociétés: 1 → Tricotage
+// Malterre, 2 → Malterre Confection. Only 1 can be handed over: Confection's
+// `retour_client_confection` is a different table with a different shape
+// (IDref_article / version / tailles) and no screen consuming it yet. A FNC
+// aimed at Confection still gets its date stamped and its mail sent — it just
+// says so in `handover: 'unsupported_societe'` rather than failing.
+
+const FNC_SOCIETE_TRM = 1
+
+interface FncEnvoiResult {
+  envoi_fnc: string
+  handover: 'created' | 'already_open' | 'unsupported_societe'
+  IDretour_client: number | null
+}
+
+/** Stamp the send date (once) and open the receiving company's dossier. */
+async function performFncEnvoi(dossier: DossierRow): Promise<FncEnvoiResult> {
+  // The date is what the legacy list reads as "Envoyé le …"; keep the first one
+  // so a re-send does not rewrite the history.
+  const envoi = dossier.envoi_fnc ?? todayDigits8()
+  if (!dossier.envoi_fnc) {
+    await query(
+      `UPDATE dossier_qualite SET envoiFNC = '${envoi}' WHERE IDdossier_qualite = ${dossier.IDdossier_qualite}`,
+    )
+  }
+
+  if (dossier.IDsociete_fnc !== FNC_SOCIETE_TRM) {
+    return { envoi_fnc: envoi, handover: 'unsupported_societe', IDretour_client: null }
+  }
+
+  const { IDretour_client, created } = await createRetourFromFnc({
+    IDdossier_qualite: dossier.IDdossier_qualite,
+    // Legacy copies the FNC message, falling back to the dossier description —
+    // the two are seeded identically at creation but the message is editable.
+    message_fnc: dossier.message_fnc || dossier.description,
+    IDdefaut_textile: dossier.IDdefaut_textile,
+    type_reference: dossier.type_reference,
+    reference: dossier.reference,
+    date: envoi,
+    // The FNC is issued BY Ets Malterre — société 1 — which is who the retour
+    // names as its client on TRM's side.
+    IDsociete_emettrice: 1,
+  })
+  return {
+    envoi_fnc: envoi,
+    handover: created ? 'created' : 'already_open',
+    IDretour_client,
+  }
+}
+
+function todayDigits8(): string {
+  const d = new Date()
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+}
+
+dossiersQualiteRouter.post('/:id/fnc/envoi', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const raw = await readRawDossier(id)
+    if (!raw) { res.status(404).json({ error: 'Dossier not found' }); return }
+    const dossier = normalizeDossier(raw)
+
+    const result = await performFncEnvoi(dossier)
+    res.json({ ok: true, ...result })
+  } catch (err) {
+    console.error('Error handing over FNC:', err)
+    res.status(500).json({ error: 'handover_failed', message: (err as Error).message })
+  }
+})
+
+// ── Envoi de la FNC par email (§32) ──────────────────────
+//
+// Recipients are the contacts of the *sous-traitant* matching the destination
+// société — Tricotage Malterre is `sous_traitant` 1 — which is where the legacy
+// read them too (`contact` / `IDsous_traitant`). `contact` has no
+// envoi_fnc flag, so the §32.2 fallback applies: `est_defaut = 1` pre-checks a
+// chip, everything else valid becomes a suggestion.
+
+/** The sous_traitant row standing for a destination société, by name. */
+async function resolveFncSousTraitant(societeNom: string): Promise<number> {
+  if (societeNom.trim() === '') return 0
+  const rows = await fixEncoding(
+    await query<any>(`SELECT IDsous_traitant, nom FROM sous_traitant`),
+    'sous_traitant', 'IDsous_traitant', ['nom'],
+  )
+  const wanted = societeNom.trim().toLowerCase()
+  const hit = (rows as any[]).find((s) => trimStr(s.nom).toLowerCase() === wanted)
+  return n(hit?.IDsous_traitant)
+}
+
+async function fncSocieteNom(idSocieteFnc: number): Promise<string> {
+  const rows = await fixEncoding(
+    await query<any>(`SELECT IDsociete, nom FROM societe ORDER BY IDsociete`),
+    'societe', 'IDsociete', ['nom'],
+  )
+  const sisters = (rows as any[]).filter((s) => n(s.IDsociete) !== 1)
+  return trimStr(sisters[idSocieteFnc - 1]?.nom)
+}
+
+dossiersQualiteRouter.get('/:id/fnc/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const raw = await readRawDossier(id)
+    if (!raw) { res.status(404).json({ error: 'Dossier not found' }); return }
+    const dossier = normalizeDossier(raw)
+
+    const societeNom = await fncSocieteNom(dossier.IDsociete_fnc)
+    const sstId = await resolveFncSousTraitant(societeNom)
+    const contactRows = sstId > 0
+      ? await fixEncoding(
+          await query<any>(
+            `SELECT IDcontact, nom, prenom, mail, est_defaut, est_visible FROM contact WHERE IDsous_traitant = ${sstId}`,
+          ),
+          'contact', 'IDcontact', ['nom', 'prenom', 'mail'],
+        )
+      : ([] as any[])
+
+    const selected: EmailRecipientPayload[] = []
+    const suggestions: EmailRecipientPayload[] = []
+    const seen = new Set<string>()
+    for (const c of contactRows as any[]) {
+      if (n(c.est_visible) === 0) continue
+      const mail = trimStr(c.mail)
+      if (!mail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) continue
+      const key = mail.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      const displayName = [c.prenom, c.nom].map((v: unknown) => trimStr(v)).filter(Boolean).join(' ')
+      const recipient: EmailRecipientPayload = { email: mail, source: 'contact', contactId: n(c.IDcontact) }
+      if (displayName) recipient.name = displayName
+      if (n(c.est_defaut) === 1) selected.push(recipient)
+      else suggestions.push(recipient)
+    }
+
+    const labels = await loadLabels([dossier])
+    const defautNom = labels.defautNom.get(dossier.IDdefaut_textile) || dossier.defaut_legacy
+
+    res.json({
+      recipients: { selected, suggestions },
+      subject: `Fiche de non-conformité N°${id} - Ets Malterre`,
+      body:
+        `Bonjour,\n\n` +
+        `Veuillez trouver ci-joint notre fiche de non-conformité N°${id}` +
+        `${defautNom ? ` (${defautNom})` : ''}.\n\n` +
+        `Merci de nous faire part de votre analyse et des mesures prises.\n\n` +
+        `Cordialement,\n` +
+        `Ets Malterre - Service Qualité`,
+      societeNom,
+      clientNom: labels.clientNom.get(dossier.IDclient) ?? '',
+      bcc: [],
+      optional_attachments: [],
+    })
+  } catch (err) {
+    console.error('Error building FNC email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const fncExtraAttachment = z.object({
+  filename: z.string().min(1).max(255),
+  content_base64: z.string().min(1),
+  content_type: z.string().min(1).max(100),
+})
+const fncEmailBody = z.object({
+  to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(20000),
+  attach_pdf: z.boolean().optional(),
+  extra_attachments: z.array(fncExtraAttachment).optional(),
+  dev_skip_send: z.boolean().optional(),
+})
+const FNC_ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
+
+dossiersQualiteRouter.post('/:id/fnc/email', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const parsed = fncEmailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+
+    const raw = await readRawDossier(id)
+    if (!raw) { res.status(404).json({ error: 'Dossier not found' }); return }
+    const dossier = normalizeDossier(raw)
+
+    let messageId: string
+    if (parsed.data.dev_skip_send === true && FNC_ALLOW_DEV_SKIP_SEND) {
+      messageId = `dev-skip-${Date.now()}`
+      console.log(`[dev-skip-send] FNC #${id} — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const senderEmail = await getUserEmail(req.userId)
+      if (!senderEmail) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message:
+            "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const userRows = await fixEncoding(
+        await query<any>(`SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`),
+        'utilisateur', 'IDutilisateur', ['prenom', 'nom'],
+      )
+      const u = (userRows as any[])[0]
+      const displayName = u ? [u.prenom, u.nom].map((v: unknown) => trimStr(v)).filter(Boolean).join(' ') : ''
+      const fromName = displayName ? `${displayName} - Ets Malterre` : 'Ets Malterre'
+
+      const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
+      if (parsed.data.attach_pdf !== false) {
+        const data = await buildFncPdfData(id)
+        if (!data) { res.status(404).json({ error: 'Dossier not found' }); return }
+        attachments.push({
+          filename: `FNC-${id}.pdf`,
+          content: await renderFncPdfBuffer(data),
+          contentType: 'application/pdf',
+        })
+      }
+      for (const a of parsed.data.extra_attachments ?? []) {
+        attachments.push({
+          filename: a.filename,
+          content: Buffer.from(a.content_base64, 'base64'),
+          contentType: a.content_type,
+        })
+      }
+
+      messageId = await sendMail({
+        from: senderEmail,
+        fromName,
+        to: parsed.data.to,
+        cc: parsed.data.cc,
+        bcc: parsed.data.bcc,
+        subject: parsed.data.subject,
+        body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+
+    // Sending IS the handover, exactly as in the legacy — but it runs after the
+    // mail has actually left, so a failed send never opens a dossier at TRM
+    // that nobody was told about. Idempotent, so a second send is harmless.
+    let handover: FncEnvoiResult
+    try {
+      handover = await performFncEnvoi(dossier)
+    } catch (err) {
+      // The mail is gone; report the partial outcome rather than a 500 that
+      // would invite the user to send again.
+      console.error('FNC sent but handover failed:', err)
+      res.json({ ok: true, messageId, handover: 'failed', handover_error: (err as Error).message })
+      return
+    }
+    res.json({ ok: true, messageId, ...handover })
+  } catch (err) {
+    console.error('Error sending FNC email:', err)
+    res.status(500).json({ error: 'send_failed', message: (err as Error).message })
   }
 })

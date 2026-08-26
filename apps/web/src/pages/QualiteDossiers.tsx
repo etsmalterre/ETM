@@ -31,7 +31,6 @@ import {
   Trash2,
   Printer,
   AtSign,
-  Mail,
   Clock,
   CheckCircle2,
   ClipboardList,
@@ -65,6 +64,8 @@ import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import { apiFetch, API_URL } from '@/lib/api'
+import { SendEmailDialog } from '@/components/email/SendEmailDialog'
+import { postEmail } from '@/lib/email'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
@@ -283,6 +284,7 @@ export function QualiteDossiers() {
   const [autoEditForId, setAutoEditForId] = useState<number | null>(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
+  const [handoverOpen, setHandoverOpen] = useState(false)
 
   // ── Queries ────────────────────────────────────────────
   const { data: lookups } = useQuery({
@@ -368,6 +370,18 @@ export function QualiteDossiers() {
         body: JSON.stringify({ termine }),
       }),
     onSuccess: () => invalidateAll(),
+  })
+
+  /** Transmettre sans email — stamps the send date and opens the dossier on the
+   *  destination company's side (Tricotage Malterre reads it as a retour
+   *  client). The email path does the same thing after the mail leaves; both
+   *  are idempotent, so using one then the other never duplicates anything. */
+  const handoverMut = useMutation({
+    mutationFn: () => apiFetch(`/dossiers-qualite/${selectedId}/fnc/envoi`, { method: 'POST', body: '{}' }),
+    onSuccess: () => {
+      setHandoverOpen(false)
+      invalidateAll()
+    },
   })
 
   const deleteMut = useMutation({
@@ -542,6 +556,9 @@ export function QualiteDossiers() {
               canManage={canManage}
               onToggleTermine={() => termineMut.mutate(detail.termine === 1 ? 0 : 1)}
               isToggling={termineMut.isPending}
+              onSendFnc={() => setEmailOpen(true)}
+              onHandoverFnc={() => setHandoverOpen(true)}
+              isHandingOver={handoverMut.isPending}
             />
           ) : null
         }
@@ -579,21 +596,42 @@ export function QualiteDossiers() {
         }}
       />
 
-      <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AtSign className="h-5 w-5 text-accent" />
-              Envoyer la FNC
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-            <Mail className="h-12 w-12 mb-3 opacity-40" />
-            <p className="text-sm font-medium">En developpement</p>
-            <p className="text-xs mt-1">Cette fonctionnalite sera disponible prochainement.</p>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={handoverOpen}
+        title="Transmettre la FNC"
+        description={
+          detail
+            ? `La fiche de non-conformité N° ${detail.IDdossier_qualite} sera datée d'aujourd'hui et le dossier ouvert côté destinataire, qui la verra dans son écran Retour client. Aucun email ne part.`
+            : undefined
+        }
+        confirmLabel="Transmettre"
+        variant="default"
+        isPending={handoverMut.isPending}
+        onCancel={() => setHandoverOpen(false)}
+        onConfirm={() => handoverMut.mutate()}
+      />
+
+      {/* Envoyer la FNC — this is the handover, not just a mail: on success the
+          server stamps envoiFNC and opens the dossier on the destination
+          company's side (a retour_client for Tricotage Malterre). Idempotent,
+          so re-sending never duplicates it. */}
+      {selectedId !== null && (
+        <SendEmailDialog
+          open={emailOpen}
+          onClose={() => {
+            setEmailOpen(false)
+            queryClient.invalidateQueries({ queryKey: ['dossiers-qualite'] })
+          }}
+          contextLabel={detail?.client_nom ?? undefined}
+          queryKey={['dossier-qualite-fnc-email-defaults', selectedId]}
+          loadDefaults={() => apiFetch(`/dossiers-qualite/${selectedId}/fnc/email-defaults`)}
+          pdfUrl={`${API_URL}/dossiers-qualite/${selectedId}/fnc/pdf`}
+          pdfAttachmentLabel={`FNC-${selectedId}.pdf`}
+          onSend={(p) =>
+            postEmail(`${API_URL}/dossiers-qualite/${selectedId}/fnc/email`, p, { includeAttachPdf: true })
+          }
+        />
+      )}
     </>
   )
 }
@@ -1419,6 +1457,9 @@ function DossierSidebar({
   canManage,
   onToggleTermine,
   isToggling,
+  onSendFnc,
+  onHandoverFnc,
+  isHandingOver,
 }: {
   detail: DossierDetail
   lookups: Lookups | undefined
@@ -1430,6 +1471,9 @@ function DossierSidebar({
   canManage: boolean
   onToggleTermine: () => void
   isToggling: boolean
+  onSendFnc: () => void
+  onHandoverFnc: () => void
+  isHandingOver: boolean
 }) {
   return (
     <div className="w-96 flex-shrink-0 flex flex-col gap-3 min-h-0">
@@ -1469,6 +1513,10 @@ function DossierSidebar({
               isEditing={isEditing}
               edit={edit}
               onField={onField}
+              canManage={canManage}
+              onSendEmail={onSendFnc}
+              onHandover={onHandoverFnc}
+              isHandingOver={isHandingOver}
             />
           )}
         </div>
@@ -1706,12 +1754,20 @@ function FncTab({
   isEditing,
   edit,
   onField,
+  canManage,
+  onSendEmail,
+  onHandover,
+  isHandingOver,
 }: {
   detail: DossierDetail
   lookups: Lookups | undefined
   isEditing: boolean
   edit: EditState | null
   onField: <K extends keyof EditState>(key: K, value: EditState[K]) => void
+  canManage: boolean
+  onSendEmail: () => void
+  onHandover: () => void
+  isHandingOver: boolean
 }) {
   const societes = lookups?.societes_fnc ?? []
   const societeLabel =
@@ -1762,6 +1818,26 @@ function FncTab({
             <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
             {societeLabel}
           </p>
+        )}
+
+        {/* Envoyer = the handover. Both routes stamp the send date and open the
+            dossier on the destination company's side; the second exists because
+            the atelier is in the same building and is often told in person. */}
+        {!isEditing && !detail.envoi_fnc && canManage && (
+          <div className="mt-3 space-y-1.5">
+            <Button variant="gold" size="sm" className="w-full" onClick={onSendEmail}>
+              <AtSign className="h-3.5 w-3.5 mr-1.5" />
+              Envoyer la FNC
+            </Button>
+            <button
+              type="button"
+              onClick={onHandover}
+              disabled={isHandingOver}
+              className="w-full text-xs text-muted-foreground hover:text-accent transition-colors disabled:opacity-50"
+            >
+              {isHandingOver ? 'Transmission…' : `Transmettre à ${societeLabel} sans email`}
+            </button>
+          </div>
         )}
       </div>
 
