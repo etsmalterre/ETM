@@ -587,6 +587,95 @@ ofTrmRouter.get('/bonnetiers/:id/photo', async (req: Request, res: Response) => 
 //  LIST + DETAIL
 // ════════════════════════════════════════════════════════
 
+/** Fold accents and case so « Gautier » matches « gautier » and « écru »
+ *  matches « ecru » — a shop-floor search box is typed without accents. */
+function foldSearch(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+}
+
+/**
+ * Finished OFs matching a TEXT query, newest first, capped at `limit`.
+ *
+ * Matching happens in JS over narrow projections rather than in SQL, for two
+ * reasons: HFSQL's LIKE does not fold accents (the labels carry them, the
+ * search box does not), and the client axis would otherwise need an IN list of
+ * every ligne_commande_client of Ets Malterre — thousands of ids in one
+ * statement. Each table below is small and read with an explicit column list
+ * (never `SELECT *` on `client`, which returns zero rows on the Windows
+ * driver — see CLAUDE.md § memo-binary).
+ *
+ * Axes, all OR'd — the same ones the live buckets filter on client-side, so
+ * the box behaves identically in all three tabs: référence écru (reference +
+ * designation), coloris écru, nom du client, numéro de commande, métier.
+ */
+async function searchTermineIds(q: string, limit: number): Promise<number[]> {
+  const needle = foldSearch(q)
+  if (needle === '') return []
+  const hit = (v: unknown) => foldSearch(String(v ?? '')).includes(needle)
+
+  const [refs, coloris, clients, cmds, machines] = await Promise.all([
+    query<any>('SELECT IDref_ecru, reference, designation FROM ref_ecru'),
+    query<any>('SELECT IDcolori_ecru, reference FROM colori_ecru'),
+    query<any>('SELECT IDclient, nom FROM client'),
+    query<any>(`SELECT IDcommande_client, numero, IDclient FROM commande_client WHERE IDsociete = ${TRM_SOCIETE}`),
+    selectMachines(),
+  ])
+  const machineIds = new Set(machines.filter((m) => hit(m.nom)).map((m) => m.id))
+
+  const refIds = new Set<number>()
+  for (const r of await fixEncoding(refs, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'])) {
+    if (hit(r.reference) || hit(r.designation)) refIds.add(Number(r.IDref_ecru))
+  }
+  const coloriIds = new Set<number>()
+  for (const c of await fixEncoding(coloris, 'colori_ecru', 'IDcolori_ecru', ['reference'])) {
+    if (hit(c.reference)) coloriIds.add(Number(c.IDcolori_ecru))
+  }
+  const clientIds = new Set<number>()
+  for (const c of await fixEncoding(clients, 'client', 'IDclient', ['nom'])) {
+    if (hit(c.nom)) clientIds.add(Number(c.IDclient))
+  }
+
+  const cmdIds = new Set<number>()
+  for (const c of cmds) {
+    if (clientIds.has(Number(c.IDclient)) || hit(c.numero)) cmdIds.add(Number(c.IDcommande_client))
+  }
+  // Only now do we need the lines — and only the ones of the matched
+  // commandes, so the id list stays proportional to the query, not to the
+  // ledger. Empty set → skip the read entirely.
+  const ligneIds = new Set<number>()
+  if (cmdIds.size > 0) {
+    const lignes = await query<any>('SELECT IDligne_commande_client, IDcommande_client FROM ligne_commande_client')
+    for (const l of lignes) {
+      if (cmdIds.has(Number(l.IDcommande_client))) ligneIds.add(Number(l.IDligne_commande_client))
+    }
+  }
+
+  const ofs = await query<any>(
+    `SELECT IDordre_fabrication, IDref_ecru, IDcolori_ecru, IDligne_commande_client, IDmachine
+     FROM ordre_fabrication WHERE est_termine = 1 ORDER BY IDordre_fabrication DESC`,
+  )
+  // ⚠️ A number is BOTH an OF number and a plausible reference: 249, 027, 161
+  // are real écru labels. So a numeric query never short-cuts the label scan —
+  // it just puts its exact OF first, then the label matches newest-first.
+  const exactId = /^\d+$/.test(needle) ? parseInt(needle, 10) : 0
+  const out: number[] = []
+  let exactHit = 0
+  for (const o of ofs) {
+    const id = Number(o.IDordre_fabrication)
+    if (id === exactId) { exactHit = id; continue }
+    if (
+      refIds.has(Number(o.IDref_ecru)) ||
+      coloriIds.has(Number(o.IDcolori_ecru)) ||
+      ligneIds.has(Number(o.IDligne_commande_client)) ||
+      machineIds.has(Number(o.IDmachine))
+    ) {
+      out.push(id)
+      if (out.length >= limit) break
+    }
+  }
+  return exactHit > 0 ? [exactHit, ...out.slice(0, limit - 1)] : out
+}
+
 // GET /api/of-trm?statut=encours|attente|termine&q=
 ofTrmRouter.get('/', async (req: Request, res: Response) => {
   try {
@@ -596,13 +685,27 @@ ofTrmRouter.get('/', async (req: Request, res: Response) => {
     let where: string
     let order: string
     let top = ''
+    /** Result order imposed by the search, when one ran (see searchTermineIds). */
+    let rank: Map<number, number> | null = null
     if (statut === 'termine') {
       where = 'est_termine = 1'
       order = 'IDordre_fabrication DESC'
       top = 'TOP 200 '
-      // Terminés are searched by OF number only (label search would need
-      // resolving 3k+ rows first) — deliberate limitation.
-      if (/^\d+$/.test(q)) where += ` AND IDordre_fabrication = ${parseInt(q, 10)}`
+      if (q.length > 0) {
+        // Search over ~3 160 finished OFs, on the same axes the live buckets
+        // filter on. This used to be refused ("n° OF only") on the assumption
+        // that resolving 3k rows of labels first would be too slow; measured on
+        // the live driver the whole thing is ~0,6 s worst case, for a list the
+        // user only reaches by typing. The TOP 200 stays — it now caps the
+        // MATCHES, not the corpus, so a search reads the whole ledger.
+        const ids = await searchTermineIds(q, 200)
+        if (ids.length === 0) { res.json([]); return }
+        where += ` AND IDordre_fabrication IN (${ids.join(',')})`
+        top = ''
+        // searchTermineIds puts an exact OF number first; `ORDER BY id DESC`
+        // would lose that, so its order is re-applied after the fetch.
+        rank = new Map(ids.map((id, i) => [id, i]))
+      }
     } else if (statut === 'attente') {
       where = 'est_actif = 0 AND est_termine = 0'
       order = 'IDmachine ASC, priorite ASC, IDordre_fabrication ASC'
@@ -665,6 +768,8 @@ ofTrmRouter.get('/', async (req: Request, res: Response) => {
     if (statut !== 'termine') {
       rows.sort((a: any, b: any) =>
         a.machine.localeCompare(b.machine, 'fr') || a.priorite - b.priorite || a.id - b.id)
+    } else if (rank) {
+      rows.sort((a: any, b: any) => (rank!.get(a.id) ?? 0) - (rank!.get(b.id) ?? 0))
     }
     res.json(rows)
   } catch (err) {
