@@ -76,6 +76,73 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la création, la modification et la suppression des commandes natives et de leurs lignes dans Clients > Commandes : boutons « Nouvelle commande », « Modifier », « Supprimer » et l’édition des lignes. Les commandes miroir ETM restent en lecture seule pour tout le monde.',
     category: 'Commandes client',
   },
+  // ── Écrans dont la clé existait dans le code mais PAS dans ce catalogue ──
+  //
+  // Clients > Facturation, Clients > Gestion et Fils > Stock ont toujours
+  // appelé useHasPermission('edit_factures' | 'edit_client_info' | …) côté
+  // web et requirePermission(…) côté API, avec les noms du catalogue d'ETM.
+  // Les six clés ci-dessous n'étaient déclarées QUE dans permission-keys.ts,
+  // donc :
+  //   • Paramètres > Utilisateurs ne rendait aucun interrupteur pour elles ;
+  //   • setTrmUserPermissions les filtrait comme inconnues à l'enregistrement ;
+  //   • /permissions-trm/me ne les renvoyait jamais.
+  // Résultat : les boutons correspondants étaient invisibles pour TOUT
+  // utilisateur non-admin, sans recours — c'est ce qui empêchait le poste de
+  // visitage de créer un lot de fil. Côté API le garde interrogeait le store
+  // d'ETM (voir PermissionScope dans lib/clients-common.ts), donc un droit
+  // accordé dans ETM ouvrait la route TRM et réciproquement.
+  //
+  // Les libellés reprennent ceux d'ETM quand l'action est la même, et en
+  // divergent là où la fiche TRM diffère (l'onglet Info de TRM n'a pas de
+  // carte Général, et le lot de fil se crée depuis Fils > Stock, pas
+  // Fournisseurs > Stock).
+  {
+    key: 'edit_factures',
+    label: 'Édition des factures',
+    description:
+      'Autorise la création et la modification des factures dans Clients > Facturation : boutons « Nouveau », « Modifier », « Générer les factures », « Supprimer des factures » et « Convertir en facture », ainsi que le code comptable de la proforma. La consultation et l’impression restent ouvertes à tous.',
+    category: 'Facturation',
+  },
+  {
+    key: 'edit_client_info',
+    label: 'Modifier la fiche client',
+    description:
+      'Autorise la modification des champs de l’onglet « Info » de Clients > Gestion — facturation (TVA, code comptable, RIB, domiciliation, transporteur), « Attente paiement facture » et commentaire. Sans ce droit, l’onglet reste en lecture seule même en mode édition.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'delete_client',
+    label: 'Supprimer / archiver un client',
+    description:
+      'Affiche l’icône corbeille ou archive en mode édition et autorise la suppression d’un client — ou son archivage lorsqu’il a des commandes ou de la marchandise — dans Clients > Gestion.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'crud_client_contacts',
+    label: 'Gestion des contacts',
+    description:
+      'Autorise la création, la modification et la suppression des contacts dans l’onglet « Contacts » de Clients > Gestion.',
+    category: 'Gestion client',
+  },
+  {
+    key: 'crud_client_adresses',
+    label: 'Gestion des adresses',
+    description:
+      'Autorise la création, la modification et la suppression des adresses dans l’onglet « Adresses » de Clients > Gestion.',
+    category: 'Gestion client',
+  },
+  // Fils > Stock. Une seule clé pour les trois écritures du grand livre du
+  // fil — créer un lot, le diviser, l'archiver avec son bilan de freinte —
+  // parce que c'est la même personne qui reçoit le fil et qui solde le lot.
+  // Le contrôle de titrage n'en fait PAS partie : il n'écrit que dans
+  // controle_titrage et ne touche pas au stock.
+  {
+    key: 'create_stock_fil',
+    label: 'Gérer les lots de fil',
+    description:
+      'Autorise la création d’un lot dans Fils > Stock (« Nouveau lot »), sa division et son archivage avec le rapport de freinte. Sans ce droit l’écran reste consultable et le contrôle de titrage reste possible, mais le stock ne peut pas être modifié.',
+    category: 'Fils',
+  },
   // Atelier > Maintenance — the métier upkeep fiche and the workshop-wide
   // entretien gauges. Read stays open to anyone holding the Atelier menu (the
   // bonnetier needs to see when the rouloir is due); only the writes are gated.

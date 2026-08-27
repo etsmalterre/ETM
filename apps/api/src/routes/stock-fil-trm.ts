@@ -10,7 +10,7 @@ import {
   floatOf,
   todayDigits,
   dateDigitsOnly,
-  requirePermission,
+  requirePermission, TRM_PERMISSIONS,
 } from '../lib/clients-common.js'
 import { pickVal, stripKeys } from './stock.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
@@ -634,7 +634,7 @@ stockFilTrmRouter.get('/fil-trm/:id', async (req: Request, res: Response) => {
 // Malterre), terminé = controlé = 0 (Windows-only column list; HFSQL defaults
 // them to 0 on the Linux path).
 stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
-  if (!(await requirePermission(req, res, 'create_stock_fil'))) return
+  if (!(await requirePermission(req, res, 'create_stock_fil', TRM_PERMISSIONS))) return
   try {
     const body = req.body ?? {}
     const IDclient = intOf(body.IDclient)
@@ -747,7 +747,7 @@ stockFilTrmRouter.patch('/fil-trm/:id', async (req: Request, res: Response) => {
 // lot number, stock = stock_initial = X; the source loses X on both columns.
 // No ledger row exists for this in the legacy schema.
 stockFilTrmRouter.post('/fil-trm/:id/diviser', async (req: Request, res: Response) => {
-  if (!(await requirePermission(req, res, 'create_stock_fil'))) return
+  if (!(await requirePermission(req, res, 'create_stock_fil', TRM_PERMISSIONS))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -887,7 +887,7 @@ stockFilTrmRouter.get('/fil-trm/:id/bilan', async (req: Request, res: Response) 
 // then sets terminé = 1 (platform-split — see setStockFilTermine). Plain
 // UPDATE runs FIRST: the Linux flag path re-reads the row it reinserts.
 stockFilTrmRouter.post('/fil-trm/:id/archiver', async (req: Request, res: Response) => {
-  if (!(await requirePermission(req, res, 'create_stock_fil'))) return
+  if (!(await requirePermission(req, res, 'create_stock_fil', TRM_PERMISSIONS))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }

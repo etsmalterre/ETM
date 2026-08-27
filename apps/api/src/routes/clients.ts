@@ -31,7 +31,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 // Shared with the TRM ledger (routes/clients-trm.ts) — see lib/clients-common.ts.
 import {
   sqlText, numOf, strOf, pick, todayDigits, dateDigitsOnly, flag, intOf, floatOf,
-  requirePermission, repairNames, countClientActivity, setClientFlag,
+  requirePermission, ETM_PERMISSIONS, repairNames, countClientActivity, setClientFlag,
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
@@ -507,7 +507,7 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
 
 /** 401/403 guard shared by DELETE and the archive endpoints. */
 async function requireDeleteClientPermission(req: Request, res: Response): Promise<boolean> {
-  return requirePermission(req, res, 'delete_client')
+  return requirePermission(req, res, 'delete_client', ETM_PERMISSIONS)
 }
 
 
@@ -1960,7 +1960,7 @@ clientsRouter.post('/:id/marchandise/retour-stock', async (req: Request, res: Re
 })
 
 // Contacts / adresses CRUD — shared verbatim with the TRM ledger.
-registerContactAdresseRoutes(clientsRouter)
+registerContactAdresseRoutes(clientsRouter, ETM_PERMISSIONS)
 
 
 // ════════════════════════════════════════════════════════

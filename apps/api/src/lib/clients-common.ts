@@ -19,6 +19,8 @@ import { query, queryB64Text } from './hfsql-auto.js'
 import { IS_WINDOWS, esc } from './sst-shared.js'
 import { userHasPermission } from './permissions.js'
 import type { PermissionKey } from './permission-keys.js'
+import { trmUserHasPermission } from './permissions-trm.js'
+import type { TrmPermissionKey } from './permission-keys-trm.js'
 import { isEffectiveAdmin } from './auth.js'
 
 // ── Small SQL/format helpers ───────────────────────────
@@ -81,15 +83,58 @@ export const intOf = (v: unknown): number => { const x = parseInt(String(v ?? ''
 export const floatOf = (v: unknown): number => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
 
 // ── Permission guard ───────────────────────────────────
+//
+// ⚠️ The store is an EXPLICIT argument, never a default.
+//
+// This guard used to hardcode `userHasPermission` — ETM's store. It is
+// imported by `routes/clients.ts` (ETM) AND by `routes/clients-trm.ts` /
+// `routes/stock-fil-trm.ts` (TRM), so every TRM route it guarded was in fact
+// asking ETM's `permissions.json` whether a TRM user could write. Grants made
+// in TRM's Paramètres > Utilisateurs did nothing, and a grant made in ETM's
+// opened the TRM route. The same mistake is impossible to make silently now:
+// there is no default, so a new call site has to name its app.
+//
+// Same idea as `FinanceScope.hasPermission` in lib/finance-common.ts, kept
+// smaller because a guard only needs the checker. `hasPermission` takes a
+// plain `string` (as FinanceScope does) so one scope object serves both
+// catalogs; `requirePermission` narrows it back to the UNION of the two
+// catalogs, which catches a typo but NOT a key belonging to the other app.
+// Nothing in the type system can catch that last case — which is exactly the
+// bug this commit fixes — so it is checked at runtime instead, over the whole
+// TRM web app, by src/scripts/check-permission-keys-trm.ts.
+
+export interface PermissionScope {
+  /** Which app's Paramètres > Utilisateurs screen grants these keys. */
+  readonly app: 'ETM' | 'TRM'
+  /** Store lookup. Effective admins bypass inside the implementation. */
+  hasPermission(userId: number, admin: boolean, key: string): Promise<boolean>
+}
+
+/** ETM's store — data/permissions.json, catalog permission-keys.ts. */
+export const ETM_PERMISSIONS: PermissionScope = {
+  app: 'ETM',
+  hasPermission: userHasPermission,
+}
+
+/** TRM's store — data/permissions-trm.json, catalog permission-keys-trm.ts. */
+export const TRM_PERMISSIONS: PermissionScope = {
+  app: 'TRM',
+  hasPermission: trmUserHasPermission,
+}
 
 /** 401/403 guard for a permission-gated route. Returns true when the request
  *  may proceed (the response is already sent otherwise). */
-export async function requirePermission(req: Request, res: Response, key: PermissionKey): Promise<boolean> {
+export async function requirePermission(
+  req: Request,
+  res: Response,
+  key: PermissionKey | TrmPermissionKey,
+  scope: PermissionScope,
+): Promise<boolean> {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return false
   }
-  const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), key)
+  const allowed = await scope.hasPermission(req.userId, isEffectiveAdmin(req), key)
   if (!allowed) {
     res.status(403).json({ error: `permission denied: ${key}` })
     return false
@@ -226,11 +271,16 @@ export async function readClientFlag(id: number, which: ClientFlag, linuxRow?: R
 // `contact` and `adresse` carry IDclient / IDsous_traitant / IDfournisseur /
 // IDentreprise discriminators and are NOT partitioned by société — so both
 // ledgers register the exact same handlers under their own mount point.
+//
+// The handlers are shared but the GRANTS are not: each mount passes the store
+// its own app manages, so `crud_client_contacts` on /api/clients reads ETM's
+// permissions.json and the same key on /api/clients-trm reads TRM's
+// permissions-trm.json. Both catalogs declare the two keys.
 
-export function registerContactAdresseRoutes(router: RouterType): void {
+export function registerContactAdresseRoutes(router: RouterType, scope: PermissionScope): void {
   router.post('/:id/contacts', async (req: Request, res: Response) => {
     try {
-      if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
+      if (!(await requirePermission(req, res, 'crud_client_contacts', scope))) return
       const id = parseInt(req.params.id, 10)
       if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
       const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
@@ -247,7 +297,7 @@ export function registerContactAdresseRoutes(router: RouterType): void {
 
   router.put('/:id/contacts/:cid', async (req: Request, res: Response) => {
     try {
-      if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
+      if (!(await requirePermission(req, res, 'crud_client_contacts', scope))) return
       const cid = parseInt(req.params.cid, 10)
       if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
       const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
@@ -265,7 +315,7 @@ export function registerContactAdresseRoutes(router: RouterType): void {
 
   router.delete('/:id/contacts/:cid', async (req: Request, res: Response) => {
     try {
-      if (!(await requirePermission(req, res, 'crud_client_contacts'))) return
+      if (!(await requirePermission(req, res, 'crud_client_contacts', scope))) return
       const cid = parseInt(req.params.cid, 10)
       if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
       await query(`DELETE FROM contact WHERE IDcontact = ${cid}`)
@@ -278,7 +328,7 @@ export function registerContactAdresseRoutes(router: RouterType): void {
 
   router.post('/:id/adresses', async (req: Request, res: Response) => {
     try {
-      if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
+      if (!(await requirePermission(req, res, 'crud_client_adresses', scope))) return
       const id = parseInt(req.params.id, 10)
       if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
       const { nom, adresse1, adresse2, adresse3, cp, ville, pays, commentaire, est_defaut_facturation, est_defaut_livraison } = req.body
@@ -295,7 +345,7 @@ export function registerContactAdresseRoutes(router: RouterType): void {
 
   router.put('/:id/adresses/:aid', async (req: Request, res: Response) => {
     try {
-      if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
+      if (!(await requirePermission(req, res, 'crud_client_adresses', scope))) return
       const aid = parseInt(req.params.aid, 10)
       if (isNaN(aid)) { res.status(400).json({ error: 'Invalid ID' }); return }
       const { nom, adresse1, adresse2, adresse3, cp, ville, pays, commentaire, est_defaut_facturation, est_defaut_livraison } = req.body
@@ -314,7 +364,7 @@ export function registerContactAdresseRoutes(router: RouterType): void {
 
   router.delete('/:id/adresses/:aid', async (req: Request, res: Response) => {
     try {
-      if (!(await requirePermission(req, res, 'crud_client_adresses'))) return
+      if (!(await requirePermission(req, res, 'crud_client_adresses', scope))) return
       const aid = parseInt(req.params.aid, 10)
       if (isNaN(aid)) { res.status(400).json({ error: 'Invalid ID' }); return }
       await query(`DELETE FROM adresse WHERE IDadresse = ${aid}`)

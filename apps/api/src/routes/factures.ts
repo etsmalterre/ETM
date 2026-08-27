@@ -68,8 +68,7 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { buildXImportFile, type XImportEntry } from '../lib/ximport.js'
-import { userHasPermission } from '../lib/permissions.js'
-import { isEffectiveAdmin } from '../lib/auth.js'
+import { requirePermission, ETM_PERMISSIONS, TRM_PERMISSIONS, type PermissionScope } from '../lib/clients-common.js'
 import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
 import { loadDiversItems, resolveDiversPrix, type DiversItem } from './expeditions.js'
 
@@ -91,6 +90,12 @@ interface FacturesScope {
   company: CompanyInfo
   /** Trade name used in the email subject and the "from" display name. */
   brand: string
+  /** Which app's Paramètres > Utilisateurs grants `edit_factures`. The two
+   *  stores are separate (see PermissionScope in lib/clients-common.ts), so
+   *  this has to be part of the scope: the guard used to hardcode ETM's, which
+   *  made the TRM screen's toggle unreachable and let an ETM grant open the
+   *  TRM write routes. Same reason FinanceScope carries `hasPermission`. */
+  permissions: PermissionScope
 }
 
 const SCOPE_ETM: FacturesScope = {
@@ -98,6 +103,7 @@ const SCOPE_ETM: FacturesScope = {
   ecruShipmentFk: 'IDligne_expedition_ETM',
   company: companyEtm,
   brand: 'ETS Malterre',
+  permissions: ETM_PERMISSIONS,
 }
 
 const SCOPE_TRM: FacturesScope = {
@@ -105,23 +111,15 @@ const SCOPE_TRM: FacturesScope = {
   ecruShipmentFk: 'IDligne_expedition_TRM',
   company: companyTrm,
   brand: 'Tricotage Malterre',
+  permissions: TRM_PERMISSIONS,
 }
 
 /** Guard for every invoice write path: create, header edit, delete, line
  *  CRUD, generate, batch-delete and convert (edit_factures permission).
  *  Reads (list / detail / pdf / email) stay open to everyone.
  *  Sends the 401/403 itself and returns false when the caller is not allowed. */
-async function requireEditFactures(req: Request, res: Response): Promise<boolean> {
-  if (req.userId === undefined) {
-    res.status(401).json({ error: 'not authenticated' })
-    return false
-  }
-  const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'edit_factures')
-  if (!allowed) {
-    res.status(403).json({ error: 'permission denied: edit_factures' })
-    return false
-  }
-  return true
+async function requireEditFactures(scope: FacturesScope, req: Request, res: Response): Promise<boolean> {
+  return requirePermission(req, res, 'edit_factures', scope.permissions)
 }
 
 // type_doc 19 = "facture definitve" (sic — validated invoice). Used for the
@@ -1046,7 +1044,7 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
  *  shipped both ways in the same run must not pay them twice. */
 router.post('/prov/generate', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     // 1. Candidate expeditions (formelle, ETM, not yet invoiced).
     const expRows = await query<any>(
       `SELECT IDexpedition, IDcommande_client, donation FROM expedition
@@ -1569,7 +1567,7 @@ async function wipeOpenProformas(targetIds: number[]): Promise<{ deleted: number
  *  /:kind/:id delete. */
 router.delete('/prov/all', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const heads = await query<any>(`SELECT IDfacture_prov FROM facture_prov WHERE IDsociete = ${scope.societe}`)
     const ids = heads.map((h: any) => Number(h.IDfacture_prov))
     const r = await wipeOpenProformas(ids)
@@ -1587,7 +1585,7 @@ router.delete('/prov/all', async (req: Request, res: Response) => {
  *  routing conflict. */
 router.post('/prov/delete-batch', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const parsed = batchIdsBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const requested = Array.from(new Set(parsed.data.ids))
@@ -1612,7 +1610,7 @@ router.post('/prov/delete-batch', async (req: Request, res: Response) => {
 
 router.post('/:kind', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const t = TBL[kind]
@@ -1670,7 +1668,7 @@ router.post('/:kind', async (req: Request, res: Response) => {
 
 router.put('/:kind/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const id = parseInt(req.params.id, 10)
@@ -1704,7 +1702,7 @@ router.put('/:kind/:id', async (req: Request, res: Response) => {
 
 router.delete('/:kind/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const id = parseInt(req.params.id, 10)
@@ -1788,7 +1786,7 @@ async function convertProforma(id: number): Promise<{ IDfacture: number; numero:
 
 router.post('/prov/:id/convert', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const r = await convertProforma(id)
@@ -1805,7 +1803,7 @@ router.post('/prov/:id/convert', async (req: Request, res: Response) => {
  *  Returns the created invoices with client names for the summary dialog. */
 router.post('/prov/convert-batch', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const parsed = batchIdsBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const requested = Array.from(new Set(parsed.data.ids))
@@ -1851,7 +1849,7 @@ router.post('/prov/convert-batch', async (req: Request, res: Response) => {
  *  is actually reimbursed, then converts it like any other proforma. */
 router.post('/def/:id/avoir', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -1920,7 +1918,7 @@ router.post('/def/:id/avoir', async (req: Request, res: Response) => {
 
 router.post('/:kind/:id/lignes', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const id = parseInt(req.params.id, 10)
@@ -1945,7 +1943,7 @@ router.post('/:kind/:id/lignes', async (req: Request, res: Response) => {
 
 router.put('/:kind/lignes/:lineId', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const lineId = parseInt(req.params.lineId, 10)
@@ -1973,7 +1971,7 @@ router.put('/:kind/lignes/:lineId', async (req: Request, res: Response) => {
 
 router.delete('/:kind/lignes/:lineId', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditFactures(req, res))) return
+    if (!(await requireEditFactures(scope, req, res))) return
     const kind = parseKind(req.params.kind)
     if (!kind) { res.status(404).json({ error: 'Not found' }); return }
     const lineId = parseInt(req.params.lineId, 10)

@@ -27,10 +27,9 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { IS_WINDOWS, esc } from '../lib/sst-shared.js'
 import {
   sqlText, numOf, strOf, pick, todayDigits, flag, intOf, floatOf,
-  requirePermission, repairNames, countClientActivity, setClientFlag, readClientFlag,
+  requirePermission, TRM_PERMISSIONS, repairNames, countClientActivity, setClientFlag, readClientFlag,
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
-import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { loadTakenComptes, pickCompte, normalizeCompte, isValidCompte } from '../lib/compte-client.js'
 
@@ -373,7 +372,7 @@ clientsTrmRouter.put('/:id', async (req: Request, res: Response) => {
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const b = parsed.data
 
-    const canInfo = await userHasPermission(req.userId, isEffectiveAdmin(req), 'edit_client_info')
+    const canInfo = await TRM_PERMISSIONS.hasPermission(req.userId, isEffectiveAdmin(req), 'edit_client_info')
 
     // Compte client — only reachable through the Info scope, so it is only
     // validated when the caller actually writes it. Format is enforced on every
@@ -455,7 +454,7 @@ clientsTrmRouter.post('/:id/archive', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!(await requirePermission(req, res, 'delete_client'))) return
+    if (!(await requirePermission(req, res, 'delete_client', TRM_PERMISSIONS))) return
     if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
     await setClientFlag(id, 'archive', 1)
     res.json({ ok: true })
@@ -469,7 +468,7 @@ clientsTrmRouter.post('/:id/unarchive', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!(await requirePermission(req, res, 'delete_client'))) return
+    if (!(await requirePermission(req, res, 'delete_client', TRM_PERMISSIONS))) return
     if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
     await setClientFlag(id, 'archive', 0)
     res.json({ ok: true })
@@ -487,7 +486,7 @@ clientsTrmRouter.delete('/:id', async (req: Request, res: Response) => {
     // IDclient = 0 for rows belonging to other parents — the cleanup below
     // would wipe them all.
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!(await requirePermission(req, res, 'delete_client'))) return
+    if (!(await requirePermission(req, res, 'delete_client', TRM_PERMISSIONS))) return
     if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
     const activity = await countClientActivity(id)
     if (activity.commandes > 0 || activity.marchandises > 0) {
@@ -686,4 +685,4 @@ clientsTrmRouter.get('/:id/stock-fil', async (req: Request, res: Response) => {
 
 // Contacts / adresses CRUD — shared verbatim with the ETM ledger
 // (both tables are polymorphic on IDclient, not partitioned by société).
-registerContactAdresseRoutes(clientsTrmRouter)
+registerContactAdresseRoutes(clientsTrmRouter, TRM_PERMISSIONS)
