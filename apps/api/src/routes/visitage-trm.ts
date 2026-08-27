@@ -66,6 +66,8 @@
 //  - Never `SELECT *` on stock_fil / colori_ecru / client: memo-binary columns
 //    make the Windows driver return zero rows silently.
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
+import React from 'react'
+import { renderToBuffer } from '@react-pdf/renderer'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -79,6 +81,7 @@ import {
   awaitingPieces,
   type DefautRow, type WaitingPieceRow,
 } from '../lib/production-trm.js'
+import { EtiquetteEcruPdf, type EtiquetteEcruData } from '../lib/pdf/EtiquetteEcruPdf.js'
 
 export const visitageTrmRouter: RouterType = Router()
 
@@ -672,6 +675,127 @@ visitageTrmRouter.get('/historique', async (req: Request, res: Response) => {
     res.json(today.map((r) => ({ ...r, nb_defauts: byRoll.get(r.id) ?? 0 })))
   } catch (err) {
     console.error('visitage-trm historique:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  ÉTIQUETTES
+// ════════════════════════════════════════════════════════
+
+/** PDF response boilerplate — same three header tweaks as the other label
+ *  endpoints, so the browser can embed the PDF cross-origin in dev. */
+function sendPdf(res: Response, buffer: Buffer, filename: string): void {
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`)
+  res.removeHeader('X-Frame-Options')
+  res.removeHeader('Content-Security-Policy')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  res.send(buffer)
+}
+
+/** Sample labels for the temporary print-test buttons. The only machine that
+ *  can exercise the real Dymo is the production poste, so the shape has to be
+ *  printable without creating a roll: these carry plausible values (and the
+ *  third is a déclassé, the one variant that changes the layout). */
+function demoEtiquettes(count: number): EtiquetteEcruData[] {
+  const now = Date.now()
+  return Array.from({ length: count }, (_, i) => ({
+    numero: `3417/${71 + i}`,
+    poids: [19.8, 20.15, 12.4, 20.05, 19.95][i % 5],
+    metier: '3E',
+    ref: '029',
+    coloris: 'ecru',
+    date_ms: now - i * 47 * 60 * 1000,
+    second_choix: (i === 2 ? 1 : 0) as 0 | 1,
+  }))
+}
+
+/**
+ * GET /api/visitage-trm/etiquettes?ids=41231,41232
+ *
+ * The Dymo tags for rolls this poste created — ONE PDF PAGE PER ROLL, so a cut
+ * piece spools its whole set in a single print job rather than one dialog per
+ * label. The screen calls this with the ids POST /valider just returned.
+ *
+ * `?demo=N` renders N sample labels and reads nothing — see demoEtiquettes.
+ *
+ * No saisie_visitage gate: this only re-renders what is already printed on the
+ * roll's own tag, which is exactly as sensitive as consulting the poste.
+ *
+ * ⚠️ No IDsociete filter — ETM's reception flips a delivered roll to société 1,
+ * and a tag must stay reprintable afterwards (the same rule the rest of this
+ * file and Tombé Métier › Stock follow). The partition guard is
+ * `IDordre_fabrication > 0`: only TRM knitting has an OF, which is how Prime
+ * scopes TRM production too.
+ */
+visitageTrmRouter.get('/etiquettes', async (req: Request, res: Response) => {
+  try {
+    const demo = parseInt(String(req.query.demo ?? ''), 10)
+    if (Number.isFinite(demo) && demo > 0) {
+      const buffer = await renderToBuffer(
+        React.createElement(EtiquetteEcruPdf, { data: demoEtiquettes(Math.min(10, demo)) }) as React.ReactElement,
+      )
+      sendPdf(res, buffer, `etiquettes-test-${Math.min(10, demo)}.pdf`)
+      return
+    }
+
+    const ids = String(req.query.ids ?? '')
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((x) => Number.isFinite(x) && x > 0)
+      .slice(0, 20)
+    if (ids.length === 0) { res.status(400).json({ error: 'ids manquants' }); return }
+
+    const rows = await query<any>(
+      `SELECT IDstock_ecru, numero, poids, second_choix, date_saisie,
+              IDordre_fabrication, IDref_ecru, IDcolori_ecru
+       FROM stock_ecru WHERE IDstock_ecru IN (${ids.join(',')})`,
+    )
+    const fixed = (await fixEncoding(rows, 'stock_ecru', 'IDstock_ecru', ['numero'])) as any[]
+    const rolls = fixed.filter((r) => (Number(r.IDordre_fabrication) || 0) > 0)
+    if (rolls.length === 0) { res.status(404).json({ error: 'rouleaux_introuvables' }); return }
+
+    // OF → métier. machine is read through selectMachines (accented `archivé` /
+    // `diamètre` → SELECT * + key folding), never joined in SQL.
+    const ofIds = Array.from(new Set(rolls.map((r) => Number(r.IDordre_fabrication) || 0)))
+    const ofRows = await query<{ IDordre_fabrication: number; IDmachine: number }>(
+      `SELECT IDordre_fabrication, IDmachine FROM ordre_fabrication
+       WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+    )
+    const machineByOf = new Map<number, number>()
+    for (const o of ofRows) machineByOf.set(Number(o.IDordre_fabrication), Number(o.IDmachine) || 0)
+    const machines = new Map((await selectMachines()).map((m) => [m.id, m]))
+
+    const refs = await resolveEcruRefs(rolls.map((r) => Number(r.IDref_ecru) || 0))
+    const coloris = await resolveColorisEcru(rolls.map((r) => Number(r.IDcolori_ecru) || 0))
+
+    const byId = new Map<number, EtiquetteEcruData>()
+    for (const r of rolls) {
+      const m = machines.get(machineByOf.get(Number(r.IDordre_fabrication) || 0) ?? 0)
+      byId.set(Number(r.IDstock_ecru), {
+        numero: (r.numero ?? '').toString().trim(),
+        poids: round2(Number(r.poids) || 0),
+        // The poste and the "Poids des pièces" widget both name a métier by its
+        // emplacement; `nom` is the fallback for the handful of rows where the
+        // emplacement is blank.
+        metier: (m?.emplacement || m?.nom || '').trim(),
+        ref: refs.get(Number(r.IDref_ecru) || 0)?.reference ?? '',
+        coloris: coloris.get(Number(r.IDcolori_ecru) || 0) ?? '',
+        date_ms: parseDtMs(r.date_saisie),
+        second_choix: (Number(r.second_choix) === 1 ? 1 : 0) as 0 | 1,
+      })
+    }
+
+    // Requested order, not the driver's — the labels come off the Dymo in the
+    // order the cut produced them.
+    const data = ids.map((id) => byId.get(id)).filter((d): d is EtiquetteEcruData => d !== undefined)
+    const buffer = await renderToBuffer(
+      React.createElement(EtiquetteEcruPdf, { data }) as React.ReactElement,
+    )
+    sendPdf(res, buffer, `etiquettes-${data.length === 1 ? data[0].numero.replace('/', '-') : `x${data.length}`}.pdf`)
+  } catch (err) {
+    console.error('visitage-trm etiquettes:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

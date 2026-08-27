@@ -64,8 +64,66 @@ async function anyBonnetier(): Promise<number> {
   return n(rows[0]?.IDbonnetier)
 }
 
+/** Étiquettes (Dymo) — read-only, so this runs before the worklist gate and
+ *  is safe against any environment, prod included (which is the one place the
+ *  real printer lives). */
+async function checkEtiquettes(): Promise<void> {
+  const raw = async (path: string, cookie?: string) => {
+    const res = await fetch(`${API}${path}`, cookie === undefined ? {} : { headers: { Cookie: cookie } })
+    const buf = Buffer.from(await res.arrayBuffer())
+    return { status: res.status, type: res.headers.get('content-type') ?? '', buf }
+  }
+  /** Pages in a react-pdf document: object dictionaries stay uncompressed, so
+   *  `/Type /Page` (never `/Type /Pages`) counts them. Returns -1 if the
+   *  shape ever changes, which the caller treats as "cannot tell". */
+  const pageCount = (buf: Buffer) => {
+    const m = buf.toString('latin1').match(/\/Type\s*\/Page(?![s])/g)
+    return m === null ? -1 : m.length
+  }
+
+  const demo = await raw('/visitage-trm/etiquettes?demo=3')
+  check('etiquettes?demo=3 → 200 application/pdf',
+    demo.status === 200 && demo.type.includes('application/pdf') && demo.buf.subarray(0, 4).toString() === '%PDF',
+    { status: demo.status, type: demo.type })
+  const n3 = pageCount(demo.buf)
+  if (n3 < 0) skip('etiquettes?demo=3 → 3 pages', 'page dictionaries not readable in this PDF')
+  else check('etiquettes?demo=3 → 3 pages (one label per roll)', n3 === 3, n3)
+
+  check('etiquettes without ids → 400', (await raw('/visitage-trm/etiquettes')).status === 400)
+  check('etiquettes with unknown ids → 404', (await raw('/visitage-trm/etiquettes?ids=999999999')).status === 404)
+
+  // Real TRM rolls. No IDsociete filter on purpose (a delivered roll is
+  // société 1 and must stay reprintable) — the partition guard is the OF.
+  const trmRolls = await query<any>(
+    'SELECT IDstock_ecru FROM stock_ecru WHERE IDordre_fabrication > 0 ORDER BY IDstock_ecru DESC LIMIT 2',
+  )
+  const ids = trmRolls.map((r: any) => n(r.IDstock_ecru)).filter((x: number) => x > 0)
+  if (ids.length < 2) skip('etiquettes for real rolls', 'fewer than two knitted rolls in this base')
+  else {
+    const real = await raw(`/visitage-trm/etiquettes?ids=${ids.join(',')}`)
+    check('etiquettes for two real rolls → 200 PDF',
+      real.status === 200 && real.buf.subarray(0, 4).toString() === '%PDF', real.status)
+    const n2 = pageCount(real.buf)
+    if (n2 >= 0) check('…and exactly two pages', n2 === 2, n2)
+    // Reading a tag is as open as consulting the poste.
+    check('etiquettes without a cookie → 200', (await raw(`/visitage-trm/etiquettes?ids=${ids[0]}`, undefined)).status === 200)
+  }
+
+  // An ETM roll has no OF — it was bought, not knitted — so it is out of this
+  // router's perimeter and must 404 rather than print a TRM tag.
+  const etmRolls = await query<any>(
+    'SELECT IDstock_ecru FROM stock_ecru WHERE IDordre_fabrication = 0 ORDER BY IDstock_ecru DESC LIMIT 1',
+  )
+  const etmId = n(etmRolls[0]?.IDstock_ecru)
+  if (etmId <= 0) skip('etiquettes on an ETM roll → 404', 'no roll without an OF in this base')
+  else check('etiquettes on an ETM roll (no OF) → 404',
+    (await raw(`/visitage-trm/etiquettes?ids=${etmId}`)).status === 404)
+}
+
 async function main(): Promise<void> {
   console.log(`TRM visitage routes against ${API}\n`)
+
+  await checkEtiquettes()
 
   // ── The worklist ────────────────────────────────────
   const metiers = await api('/visitage-trm/lookups/metiers')
