@@ -24,6 +24,16 @@ Server-side PDF rendering for documents (`Bon de commande` shipped, `Devis` / `F
 - **Stacking `<Text>` with very different font sizes overlaps** — wrap each in its own `<View>` with `width: '100%'` to force clean stacking.
 - **`<Page paddingBottom>` is respected by the wrap engine; inner `<View paddingBottom>` is not** — for absolute footers, set padding on the Page so flow content stops before the footer area.
 - **`textTransform` accent stripping affects every label** — the canonical pattern is to pre-uppercase strings + drop the `textTransform` style. See `MalterreDocument.tsx`.
+- **An absolutely positioned `<Text>` collapses to a few points wide** — it shrink-wraps to
+  nothing instead of to its content, so a filled pill printed as a black smudge in the corner.
+  Put `position: absolute` on a wrapping `<View>` **with an explicit `width`** and leave the
+  `<Text>` in normal flow inside it. (Found on the visitage Dymo tag, 2026-08-27; that badge
+  has since moved back into the flow, but the trap is general.)
+- **Which logo file at label scale**: `logo-malterre-wide.png` is the wide wordmark and needs
+  ~2.5:1 of room; on a Dymo 89 × 36 the left band is tall and narrow, so it shrinks to fit the
+  width and leaves the band half empty. Reach for the square badge **`logo-m-email.png`** there
+  — it also survives a thermal screen better, the script strokes being the first thing to break
+  up. Canonical: `EtiquetteEcruPdf.tsx`.
 
 ### Documents issued by a company OTHER than ETS Malterre
 

@@ -10,6 +10,53 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-27 — feat/visitage (l'étiquette du rouleau s'imprime à la validation)
+
+Le poste de visitage TRM crée des rouleaux depuis le 2026-08-26, mais il ne collait rien
+dessus : dans le legacy, valider une pièce envoie une étiquette par rouleau sur la Dymo du
+poste. Cette branche porte l'étiquette et la route qui la sert.
+
+**La source n'était pas là où on la cherchait.** `FI_Visitage.wdw` ne contient aucune
+impression — j'en ai extrait toutes les chaînes du cache de compilation, il n'y a ni état ni
+littéral d'étiquette. Le tirage vit dans une **procédure globale**, `ImprimeEtiquetteTM`
+(collection `Utilitaire`), repérée par son nom dans `Utilitaire.AF726741.wdg.wbg` puis lue
+dans le `.wcg` du même cache. Ses littéraux donnent l'étiquette en toutes lettres : `TRM.jpg`,
+`Arial`, le métier via `ordre_fabrication` → `machine`, `"N° : "`, `"Poids : " %5,2f " Kg"`,
+`"Réf. : "` via `ref_ecru` → `colori_ecru`, `"Date : "` en `JJ/MM/AAAA HH:mm:SS`. **Les champs
+du PDF sont donc ceux du legacy, verbatim et dans son ordre** ; seule la présentation change.
+À noter pour les portages TRM à venir : le cache WinDev garde aussi les procédures des
+collections, pas seulement les fenêtres — et `ImprimeEtiquetteEchantillon` y est juste à côté,
+pour le jour où l'écran Échantillons sera porté.
+
+`GET /visitage-trm/etiquettes?ids=…` rend **une page par rouleau** (`EtiquetteEcruPdf.tsx`,
+Dymo 99012 89 × 36 comme `StockFiniLabelPdf` / `StockFilLabelPdf`), pour qu'une pièce coupée
+sorte tout son jeu en un seul travail d'impression. Deux deltas assumés avec le legacy : le
+vieux logo pyramide `TRM.jpg` devient le **badge M carré** (décision de Vincent — la bande
+gauche d'une 89 × 36 est haute et étroite, le mot-symbole large doit y rétrécir et la laisse
+à moitié vide), et un rouleau déclassé porte un **pavé noir « DÉCLASSÉ »** que le legacy
+n'imprime pas, alors que c'est précisément ce que l'étiquette d'un rouleau devrait dire.
+
+Pas de garde `saisie_visitage` : réimprimer une étiquette déjà collée sur le rouleau est
+aussi sensible que consulter le poste. Le garde-fou de partition est **`IDordre_fabrication
+> 0`** — seul le tricotage TRM a un OF — et surtout **jamais `IDsociete`** : la réception ETM
+bascule le rouleau en société 1, une étiquette filtrée sur la société cesserait d'être
+réimprimable dès la livraison.
+
+⚠️ **`?demo=N` est temporaire.** La seule machine capable d'exercer la vraie Dymo est le poste
+de production, donc la route sert aussi N étiquettes d'exemple, sans rien lire ni écrire, pour
+les deux boutons « Test Dymo » du côté TRM. À retirer des deux côtés une fois le rendu validé
+sur le poste, avec les deux vérifications `demo=3` de `check-visitage-trm.ts`.
+
+`check-visitage-trm.ts` gagne huit vérifications, en **lecture seule** et placées **avant** la
+porte du worklist (qui coupe le script sur une base de dev périmée) : elles sont donc
+rejouables partout, y compris en prod.
+
+Piège react-pdf trouvé en chemin, noté dans `claude_doc/pdf_email.md` : un `<Text>` en
+`position: absolute` ne se dimensionne pas sur son contenu, il s'effondre — le pavé « DÉCLASSÉ »
+s'imprimait en tache noire de quelques points. La position va sur un `<View>` englobant, avec
+une largeur explicite.
+
+
 ## 2026-08-27 — feat/widget (API du widget « Pièces à visiter » + lecteur de pièces partagé)
 
 Moitié API du port de `FI_PiecesAVisiter.wdw`, le widget du tableau de bord TRM qui liste le
