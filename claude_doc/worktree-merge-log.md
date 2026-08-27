@@ -10,6 +10,23 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-27 — feat/etiquette-band (l'étiquette du rouleau : une seule colonne à gauche)
+
+Suite du 2026-08-27 (`feat/visitage`), retour de Vincent sur le rendu : le badge M et le
+cadre du métier n'avaient pas la même largeur, et la bande gauche se lisait comme deux
+objets flottants au lieu d'un tampon. Les deux passent à **50 pt** (badge 46 → 50, cadre
+62 → 50, hauteur 44 → 40, métier 24 → 21 pt), et la bande passe de 68 à 56.
+
+Le commentaire du style **affirmait déjà** cette égalité (« same width as the métier box
+below it ») : elle était vraie au premier jet, puis a dérivé quand l'étiquette a été
+agrandie pour remplir le tag et que les deux ont grandi séparément. C'est donc le code qui
+rattrape ce qu'il disait faire, et l'invariant est maintenant écrit en ⚠️ au-dessus de
+`band` — changer l'un, changer les trois.
+
+Effet de bord voulu : les 12 pt libérés vont au corps, donc les numéros longs
+(« 3415/1003 ») ne serrent plus le bord droit.
+
+
 ## 2026-08-27 — feat/visitage (l'étiquette du rouleau s'imprime à la validation)
 
 Le poste de visitage TRM crée des rouleaux depuis le 2026-08-26, mais il ne collait rien

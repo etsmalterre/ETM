@@ -98,26 +98,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
   },
 
-  // Left column — brand above, métier below. Both centred on the same axis so
-  // the block reads as one stamp.
+  // Left column — brand above, métier below.
+  //
+  // ⚠️ INVARIANT: `logo.width` and `metierBox.width` must stay EQUAL, and the
+  // band is those 50pt plus the 6pt gutter. Two marks stacked at different
+  // widths read as two floating objects instead of one stamp — which is what
+  // happened when the label was scaled up to fill the tag and the two were
+  // grown independently (fixed 2026-08-27). Change one, change all three.
   band: {
-    width: 68,
+    width: 56,
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingRight: 6,
   },
-  // Square badge — same width as the métier box below it so the left band
-  // reads as one stacked stamp rather than two floating marks.
+  // Square badge. Width tied to metierBox — see the band invariant above.
   logo: {
-    width: 46,
-    height: 46,
+    width: 50,
+    height: 50,
   },
   // The legacy's boxed métier code, kept — it is what the operator matches
-  // against the machine she is standing at.
+  // against the machine she is standing at. Height and font are what give:
+  // the width is fixed by the band invariant above.
   metierBox: {
-    width: 62,
-    height: 44,
+    width: 50,
+    height: 40,
     borderWidth: 1.6,
     borderColor: '#000000',
     borderRadius: 3,
@@ -126,7 +131,7 @@ const styles = StyleSheet.create({
   },
   metier: {
     fontFamily: 'Helvetica-Bold',
-    fontSize: 24,
+    fontSize: 21,
     letterSpacing: 0.5,
   },
 
