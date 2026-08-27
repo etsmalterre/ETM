@@ -10,6 +10,46 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-27 — feat/visitage (la zone imprimable de l'étiquette, la quantité d'un défaut, la précision du taux)
+
+Trois retours de Vincent sur le poste de visitage, plus un sur Prime. Côté API :
+
+**1 · La tête d'impression ne va pas jusqu'au bout de l'étiquette.** Le pavé DÉCLASSÉ est
+sorti tranché en plein mot (« DÉCLASS ») sur un tirage du poste. Photogrammétrie sur le
+cliché, calée sur le cadre du métier dont on connaît les coordonnées au point près : le bord
+gauche tombe **exactement** là où le PDF le met — donc rien n'est décalé ni mis à l'échelle —
+mais l'impression s'arrête à **~234 pt**, soit ~82,5 mm des 89 mm. Les ~6,5 mm de droite ne
+sont pas imprimables. D'où `SAFE_RIGHT = 26` pt : ce n'est pas une marge mais une **zone
+sûre**, volontairement bien plus large que les 5 pt de gauche, et tout ce qui est calé à
+droite s'aligne dessus. Vérifié en rendant le PDF et en relisant les coordonnées du flux de
+contenu : le pavé va maintenant de 167,9 à **226,3 pt**, 7,7 pt sous la limite mesurée. Sur
+l'étiquette physique ça se lit centré, parce que c'est centré dans la bande *imprimable* —
+ne jamais « rééquilibrer » ce padding contre celui de gauche. Les étiquettes sœurs ne
+l'avaient jamais rencontré parce que tout y est calé à gauche : leur `paddingRight: 8`
+n'était pas un précédent.
+
+**2 · La quantité d'un défaut devient corrigible au poste.** Au terminal le bonnetier saisit
+une approximation — **999 pour « plus de 3 m »** — et c'est à la visiteuse de mesurer et de
+rectifier. Ce n'est pas une extension : la requête de la fenêtre legacy, récupérée verbatim
+dans le cache de compilation, ne lit **que** `IDdefaut_qualite, type_defaut, taille_cm,
+nombre FROM defaut_qualite WHERE Type_Reference = 1 AND reference = ?`, avec les masques
+`9 999 cm` / `x9 999` — la colonne était liée et éditable. `POST /valider` écrit donc la
+quantité en convertissant le défaut, avec deux garde-fous : **seule la colonne de l'unité du
+type** vient du payload (l'autre garde ce que le terminal a écrit, pour qu'un client ne
+puisse pas la vider), et `description` n'est pas touchée — le legacy ne la lit même pas ici,
+et c'est la phrase du bonnetier que Prime rend verbatim. Les colonnes écrites sont ASCII,
+donc `UPDATE` nommé classique ; c'est `récuperé` seul qui force encore la réécriture
+positionnelle, qui porte désormais la quantité aussi.
+
+**3 · Le taux de la prime s'affiche à sa vraie précision.** `fmtTaux` était figé à deux
+décimales et sortait « +0,06 €/Kg » depuis la révision du barème — un taux que personne ne
+touche, imprimé sur le document qui paie la prime, à côté d'un total calculé sur le vrai
+0,055. La troisième décimale n'apparaît que si elle porte quelque chose (-0,40 et -0,60 se
+lisent toujours à deux). **Le calcul, lui, n'a jamais arrondi** : `kg × bareme.premierChoix`
+est exact depuis le barème daté. Au passage, la mention « Retour client » du PDF codait
+`-0,60 €/Kg` en dur au lieu de lire le barème.
+
+
 ## 2026-08-27 — feat/etiquette-band (l'étiquette du rouleau : une seule colonne à gauche)
 
 Suite du 2026-08-27 (`feat/visitage`), retour de Vincent sur le rendu : le badge M et le

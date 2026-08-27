@@ -840,20 +840,27 @@ async function requireSaisieVisitage(req: Request, res: Response): Promise<boole
   return true
 }
 
-/** Rewrite one defect row so its accented `récuperé` changes value.
+/** Rewrite one defect row so its accented `récuperé` changes value — and,
+ *  in the same pass, the quantity the visiteuse corrected.
  *
  *  The Linux bridge rejects an accented identifier in a named SET, so the flag
  *  can only be written positionally — delete the row and reinsert it under the
  *  SAME id, in physical column order (the setClientFlag pattern from
  *  clients-common.ts). Everything that identifies the defect's origin is
  *  carried over untouched: its DATE, Type_Spotteur, IDSpotteur and description.
+ *  `taille_cm` / `nombre` are the only values that may differ from `src`.
  *
  *  Physical order, taken from the runtime `SELECT *` key order and NOT from the
  *  .xdd listing (they disagree, and that already bit controle_titrage):
  *    IDdefaut_qualite, reference, description, DATE, Type_Spotteur, IDSpotteur,
  *    Type_Reference, type_defaut, traité, taille_cm, récuperé, nombre
  */
-async function rewriteDefautWithRecupere(src: DefautRow, rollId: number, recupere: 0 | 1): Promise<void> {
+async function rewriteDefautWithRecupere(
+  src: DefautRow,
+  rollId: number,
+  recupere: 0 | 1,
+  qte: { taille_cm: number; nombre: number },
+): Promise<void> {
   const dt = src.date_ms === null ? nowDt() : (() => {
     const d = new Date(src.date_ms as number)
     const p = (x: number) => String(x).padStart(2, '0')
@@ -864,7 +871,7 @@ async function rewriteDefautWithRecupere(src: DefautRow, rollId: number, recuper
     `INSERT INTO defaut_qualite VALUES (${src.id}, '${rollId}', ` +
     `${src.description === '' ? 'NULL' : sqlText(src.description)}, '${dt}', ` +
     `${src.type_spotteur}, ${src.id_spotteur}, 2, ${sqlText(src.type_defaut)}, ` +
-    `${src.traite}, ${src.taille_cm}, ${recupere}, ${src.nombre})`,
+    `${src.traite}, ${qte.taille_cm}, ${recupere}, ${qte.nombre})`,
   )
 }
 
@@ -880,9 +887,10 @@ async function rewriteDefautWithRecupere(src: DefautRow, rollId: number, recuper
  *      which is accented).
  *   2. defaut_qualite — the piece's Type_Reference = 1 rows are CONVERTED in
  *      place to Type_Reference = 2 pointing at the new roll, preserving DATE /
- *      Type_Spotteur / IDSpotteur / description. Defects the visiteuse added
- *      are fresh positional INSERTs with Type_Spotteur = 2 and a NULL
- *      description. Defects she dropped are DELETEd.
+ *      Type_Spotteur / IDSpotteur / description — but taking the quantity from
+ *      the payload, which is the visiteuse correcting the terminal's guess.
+ *      Defects the visiteuse added are fresh positional INSERTs with
+ *      Type_Spotteur = 2 and a NULL description. Defects she dropped are DELETEd.
  *   3. evenement_piece — one positional INSERT per roll, "Visitage tombé
  *      métier" or "Pesage tombé métier".
  *   4. stock_fil — each asso_fil_of lot loses Σ(poids) × pourcentage / 100 and
@@ -1044,13 +1052,29 @@ visitageTrmRouter.post('/valider', async (req: Request, res: Response) => {
           // common path a plain UPDATE.
           const src = pieceDefauts.find((x) => x.id === d.id)
           if (!src) continue
+          // The bonnetier keys an approximation at the terminal (999 stands for
+          // "plus de 3 m"); measuring it properly is the visiteuse's job, so the
+          // quantity travels back and is written here. Only the column the type's
+          // unit actually uses is taken from the payload — the other keeps what
+          // the terminal stored, so a client can never blank it. Everything else
+          // about the row (DATE, Type_Spotteur, IDSpotteur, description) is left
+          // alone: the legacy's own SELECT on this window reads type_defaut,
+          // taille_cm and nombre and nothing more.
+          const unite = uniteForType(src.type_defaut)
+          const qte = {
+            taille_cm: unite === 'cm' ? d.taille_cm : src.taille_cm,
+            nombre: unite === 'nb' ? d.nombre : src.nombre,
+          }
           if (Number(src.recupere) === Number(d.recupere)) {
+            // Every column named here is ASCII, so a plain SET works on both
+            // bridges; `récuperé` is the one that forces the rewrite below.
             await query(
-              `UPDATE defaut_qualite SET Type_Reference = 2, reference = '${rollId}'
+              `UPDATE defaut_qualite SET Type_Reference = 2, reference = '${rollId}',
+                      taille_cm = ${qte.taille_cm}, nombre = ${qte.nombre}
                WHERE IDdefaut_qualite = ${d.id}`,
             )
           } else {
-            await rewriteDefautWithRecupere(src, rollId, d.recupere)
+            await rewriteDefautWithRecupere(src, rollId, d.recupere, qte)
           }
         } else {
           // Entered here. Type_Spotteur = 2 + description NULL is the visitage

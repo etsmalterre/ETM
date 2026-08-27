@@ -31,8 +31,18 @@ function fmtEur(v: number): string {
   return `${v < 0 ? '-' : ''}${grouped},${dec} €`
 }
 
+/** A barème rate, €/Kg.
+ *
+ * ⚠️ Two decimals are NOT enough. The barème runs to a tenth of a centime since
+ * S2 2026 (+0,055 €/Kg on the 1er choix), so a fixed toFixed(2) printed
+ * « +0,06 €/Kg » — a rate nobody is paid, on the document that pays it. The
+ * third decimal appears only when it carries something: -0,40 and -0,60 still
+ * read with two.
+ */
 function fmtTaux(v: number): string {
-  const s = Math.abs(v).toFixed(2).replace('.', ',')
+  const cents = v * 100
+  const decimals = Math.abs(cents - Math.round(cents)) < 1e-9 ? 2 : 3
+  const s = Math.abs(v).toFixed(decimals).replace('.', ',')
   return `${v >= 0 ? '+' : '-'}${s} €/Kg`
 }
 
@@ -372,7 +382,7 @@ export function PrimePdf({ data }: { data: PrimePdfData }) {
       </View>
 
       <Text style={styles.mention}>
-        Retour client : -0,60 €/Kg — aucun retour comptabilisé sur la période
+        Retour client : {fmtTaux(p.taux.retourClient)} — aucun retour comptabilisé sur la période
       </Text>
     </MalterreDocument>
   )

@@ -37,6 +37,21 @@ import { fileURLToPath } from 'url'
 const PAGE_WIDTH = 89 * 2.834646 // ≈ 252.3
 const PAGE_HEIGHT = 36 * 2.834646 // ≈ 102.05
 
+// ⚠️ The LabelWriter's head does NOT reach the end of the label. Measured off a
+// printed tag (2026-08-27 — the DÉCLASSÉ pill came out sliced mid-word, "DÉCLASS"):
+// the left edge prints exactly where the PDF puts it (so nothing is offset or
+// scaled), but printing simply stops ~234 pt in, i.e. ~82,5 mm of the 89 mm label.
+// The last ~6,5 mm are unprintable.
+//
+// So this is a SAFE AREA, not a margin: it is deliberately far larger than the 5 pt
+// on the left, and everything flush-right (the rule, the DÉCLASSÉ pill) aligns on
+// it. On the physical tag the result reads centred, because it is centred in the
+// PRINTABLE band. Do not "balance" it back against the left padding.
+//
+// The sister labels (StockFiniLabelPdf / StockFilLabelPdf) never hit this because
+// every line they print is left-aligned — their paddingRight: 8 is not a precedent.
+const SAFE_RIGHT = 26
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const ASSETS = path.resolve(__dirname, '../../assets')
@@ -95,7 +110,8 @@ const styles = StyleSheet.create({
     fontFamily: 'Helvetica',
     color: '#000000',
     paddingVertical: 4,
-    paddingHorizontal: 5,
+    paddingLeft: 5,
+    paddingRight: SAFE_RIGHT,
   },
 
   // Left column — brand above, métier below.
@@ -191,6 +207,8 @@ const styles = StyleSheet.create({
   // It sat absolutely positioned top-right until the type was scaled up to
   // fill the label; at 22pt a nine-character numéro ("3417/1001") reaches into
   // that corner, so the pill would eventually have printed over it.
+  //
+  // "Right" here means the SAFE_RIGHT edge, not the page edge — see the constant.
   footRow: {
     flexDirection: 'row',
     alignItems: 'center',
