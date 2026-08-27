@@ -142,6 +142,8 @@ export interface ObsOfEditorProps {
   refId: number
   refLabel: string
   rows: ObsOfRow[]
+  /** The screen's edit mode — an injected editor only writes inside it (§8). */
+  isEditing: boolean
   /** Refetch the reference detail (the rows above ride in its payload). */
   onChanged: () => void
 }
@@ -2030,7 +2032,7 @@ function TechnicalTabs({
             reportDirty={reportDirty}
           />
         )}
-        {tab === 'obs' && <ObsOfTab detail={detail} onMutationSuccess={onMutationSuccess} />}
+        {tab === 'obs' && <ObsOfTab detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />}
         {tab === 'liage' && <SchemaLiageTab detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />}
       </CardContent>
     </Card>
@@ -2399,7 +2401,7 @@ function MachineFormDialog({
 // Read-only here; TRM injects an editable panel through `ObsOfEditorContext`
 // (see the comment on that context). The two never render at once.
 
-function ObsOfTab({ detail, onMutationSuccess }: { detail: RefEcruDetail; onMutationSuccess: () => void }) {
+function ObsOfTab({ detail, isEditing, onMutationSuccess }: { detail: RefEcruDetail; isEditing: boolean; onMutationSuccess: () => void }) {
   const Editor = useContext(ObsOfEditorContext)
   if (Editor) {
     return (
@@ -2407,6 +2409,7 @@ function ObsOfTab({ detail, onMutationSuccess }: { detail: RefEcruDetail; onMuta
         refId={detail.IDref_ecru}
         refLabel={detail.reference ?? ''}
         rows={detail.obs_of}
+        isEditing={isEditing}
         onChanged={onMutationSuccess}
       />
     )
