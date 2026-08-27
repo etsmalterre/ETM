@@ -17,8 +17,12 @@ export const webPort = (n) => 3000 + n
 export const IS_WIN = process.platform === 'win32'
 
 // ── Projects ────────────────────────────────────────────────────────────────
-// Worktrees can be created for either the ETM repo (API + web) or the sibling
-// TRM repo (web only — its web dev server talks to an ETM API over HTTP).
+// Worktrees can be created for either the ETM repo (the MPS API + the ETM web
+// app) or the sibling TRM repo (web only — its dev server talks to the MPS API
+// over HTTP). The dir/label name the REPO, not the work: the API lives in the ETM
+// checkout for historical reasons, so an `ETM-<feature>` worktree is often pure
+// MPS API work. Neither repo can be labelled "MPS" — MPS is the platform BOTH are
+// clients of. See CLAUDE.md §"MPS — the platform".
 // Each project owns a disjoint port range so an NG slot and a TRM slot with the
 // same number never collide:
 //   ng  slot N → API 808N + web 300N   (packages @mps/api + @mps/web)
@@ -48,7 +52,7 @@ export const PROJECTS = {
     webPort: (n) => 5170 + n, // 5171..5176
     webScript: (n) => `dev:${5170 + n}`,
     // TRM web has no API of its own — by default it targets the slot-0 master
-    // ETM API (served via /serve-main). Overridable per worktree (up --api).
+    // MPS API (served via /serve-main). Overridable per worktree (up --api).
     defaultApiPort: 8080,
   },
 }
@@ -68,7 +72,7 @@ export const MAIN_SLOT = 0
 // Every dev web origin that must be allowed by the API's CORS_ORIGIN so cookie
 // auth works from any slot — NG web ports (slot-0 master + 1..6), the two legacy
 // defaults, and the TRM web ports (5171..6) since a TRM worktree's web server
-// calls an ETM API cross-origin. Deduped (5175 == trm slot 5).
+// calls the MPS API cross-origin. Deduped (5175 == trm slot 5).
 export const DEV_WEB_ORIGINS = [
   ...new Set([
     5174,
