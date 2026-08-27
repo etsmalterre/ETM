@@ -10,6 +10,30 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-27 — feat/permissions
+Les écrans TRM lisent enfin le magasin de droits de TRM. Six clés — `create_stock_fil`
+(Fils › Stock), `edit_factures` (Clients › Facturation) et les quatre de Clients › Gestion
+(`edit_client_info`, `delete_client`, `crud_client_contacts`, `crud_client_adresses`) —
+étaient nommées par les écrans TRM et par leurs routes, mais déclarées **uniquement dans le
+catalogue d'ETM**. L'échec était silencieux et sans recours : Paramètres › Utilisateurs ne
+rendait aucun interrupteur (l'onglet se construit depuis `GET /permissions-trm/keys`),
+`setTrmUserPermissions` les jetait comme inconnues, `/permissions-trm/me` ne les renvoyait
+jamais — donc le bouton restait invisible pour tout non-admin, et ça se lisait comme une
+restriction voulue plutôt que comme un bug (symptôme signalé : le poste de visitage ne
+pouvait pas créer un lot de fil). Côté API le défaut était symétrique : `requirePermission()`
+de `lib/clients-common.ts` appelait `userHasPermission` en dur alors qu'il est importé par
+`clients.ts` (ETM) autant que par `clients-trm.ts` et `stock-fil-trm.ts` (TRM) — un droit
+accordé dans TRM ne faisait rien, un droit accordé dans ETM ouvrait la route TRM. Le garde
+prend désormais un **`PermissionScope`** explicite (`ETM_PERMISSIONS` / `TRM_PERMISSIONS`)
+**sans valeur par défaut**, troisième instance de la forme `FinanceScope` / `FacturesScope` ;
+`FacturesScope` gagne `permissions` pour la même raison. Vérifié sur l'API de dev en
+non-admin : 403 sans droit, 403 avec le droit accordé côté ETM seul, 400 (garde franchie)
+avec le droit accordé côté TRM. Garde permanente : `check-permission-keys-trm.ts --web <chemin
+absolu vers TRM/apps/web/src>`, le miroir de `check-screen-access-trm.ts`. Aucun code web ne
+change des deux côtés — les écrans nommaient déjà les bonnes clés. Reste ouvert et documenté :
+`expeditions-trm.ts` (6 routes d'écriture) et `planning-atelier.ts` (7) n'ont toujours aucune
+garde.
+
 ## 2026-08-27 — feat/visitage (la zone imprimable de l'étiquette, la quantité d'un défaut, la précision du taux)
 
 Trois retours de Vincent sur le poste de visitage, plus un sur Prime. Côté API :
