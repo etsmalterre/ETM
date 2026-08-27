@@ -4486,6 +4486,22 @@ The page is a column of full-width horizontal bands. Only ONE band flexes; every
 - **Band 1 is the toolbar**, `bg-zinc-200/50` like any header strip. The context selector is
   a `PopoverSelect` sized to its content (`widthClass="w-[78px]"` for a two-character métier
   code) — never a full-width control, or it reads as a filter rather than as the subject.
+- **A mode the operator can flip lives in band 1 as a §29.3 status pill that IS the button**,
+  centered between the context selector and the identification badge — not as a word plus a
+  « changer » link. On the visitage poste it is « Pièce à visiter » (`bg-destructive`) /
+  « Pesée simple » (`bg-primary`), and it decides which event the commit writes, so it is
+  user-controlled state in the §29 sense even though it never touches a status column. Three
+  poste-specific adjustments to §29.3:
+  - **No split.** §29.3's right half names the *target* state, which works for a verb pair
+    (Clôturer / Rouvrir) but not for two named modes: it just prints both modes side by side
+    and leaves the operator to work out which is which. One click on the pill flips it.
+  - `rounded-full h-11` rather than `rounded-xl`, so it reads as a sibling of the
+    identification badge at the other end of the strip; the state label goes `text-base`
+    instead of `text-sm` — a station is read at arm's length (§45.1).
+  - A trailing `ArrowLeftRight` at `h-4 w-4 text-white/60`, brightening on hover, is what
+    says the pill is clickable. Without it a filled pill reads as a frozen status — the
+    exact failure the « changer » link was there to patch. Not `ChevronsUpDown`: there is no
+    list to open.
 - **Band 2 reuses the standard detail header** (§5): `icon-box-gold`, `text-2xl font-heading`
   title, outline badges, the 24-unit gold gradient rule. A station is still looking at a
   record; it just did not pick it from a list.
@@ -4552,3 +4568,73 @@ is on purpose: what is at stake if the operator navigates away mid-piece is a co
 to retype, against a dialog that could commit stock by misclick. **If a future Poste risks more
 than that, add the guard in a two-button form (Annuler / Abandonner) — never wire its save
 branch to the commit action.**
+
+---
+
+## 46. « Consigne » — the standing-instruction callout (red, one component)
+
+Reference: **`TRM/apps/web/src/components/of/ConsigneCallout.tsx`**, used by
+`ProductionVisitage.tsx` (poste, bande 3) and `ProductionOf.tsx` (fiche, `ConsigneCard`).
+
+A **consigne** is not a comment. It is an order one human wrote for another about the work in
+front of them — « Max 1 maille jusqu'à la fin de la pièce. Réparer à chaque nouvelle pièce » —
+and the person who opens the record has to obey it. It therefore gets **one look, everywhere it
+appears**, and that look is a red callout. The bug this rule exists to prevent is the ordinary
+one: the same column rendered as an alert on the station screen and as a quiet field on the
+fiche, which teaches the reader that the alert is decoration.
+
+### 46.1 The markup — never re-roll it, import the component
+
+```tsx
+<Card className="p-3 flex items-start gap-2.5 border-destructive/30 bg-destructive/5">
+  <AlertTriangle className="h-5 w-5 text-destructive flex-shrink-0 mt-0.5" />
+  <div className="min-w-0">
+    <div className="text-xs font-semibold uppercase tracking-wide text-destructive">Consigne</div>
+    <p className="text-sm mt-0.5 whitespace-pre-wrap">{consigne}</p>
+  </div>
+</Card>
+```
+
+- **Only the frame, the icon and the label are red.** The sentence itself stays foreground text:
+  a paragraph of red body copy reads as an error message and is measurably harder to read at
+  the arm's length a poste is worked from.
+- **The label is the word, uppercase** — it names what kind of thing this is, so the callout
+  needs no card header. Do not stack a `CardHeader` titled « Consigne » above it.
+- `whitespace-pre-wrap` — these are typed with line breaks and lists.
+- `className` passes through, so the caller matches its neighbours (the OF fiche passes
+  `card-premium` to sit beside the other fiche cards). `cn` is `twMerge`, so the destructive
+  background and border win over whatever the base card sets.
+
+### 46.2 Where it applies — and where it must not
+
+| State | Rendering |
+|---|---|
+| A consigne exists, read mode | The callout, wherever the record is displayed |
+| No consigne | **Nothing** on a dense surface (poste); the plain card with « Aucune consigne » where a slot must stay (fiche) |
+| Being written (edit mode / creation dialog) | The **plain** field, neutral — see below |
+
+- **An input is never dressed as an alert.** In edit mode the consigne is being *written*, not
+  obeyed; a red frame around a textarea reads as a validation error, and §9's gold edit border
+  needs the frame anyway.
+- **Trim before deciding** (§24): HFSQL stores `" "` for empty. The component does it, and any
+  layout that reacts to presence — a grid that grows a third column for it — must ask the same
+  question or it leaves a dead column.
+- **Red here is a deliberate stretch of §41, decided by the user (2026-08-27), not a free
+  application of it.** Measured on the live TRM queue the day the rule was written: **6 of the
+  10 running OFs carried a consigne, 0 of the 5 waiting ones**, and four of the six were the
+  same boilerplate sentence (« Max 1 maille jusqu'à la fin de la pièce… »). That is not the
+  rare-signal profile §41 asks for. It ships red anyway because of what the field *is* — an
+  order that changes what the operator's hands do, read at a station — and because the poste
+  already showed it that way; the failure being fixed is the **inconsistency**, which taught
+  the reader the red one was decoration. Watch it: if the boilerplate spreads until nearly
+  every record carries one, the colour has stopped discriminating and the honest move is to
+  demote the fiche's copy to §24 grey and keep the red for the poste alone. Do not extend the
+  colour to a *new* field on this precedent without re-running the §41 count — a field 80 % of
+  rows carry is a comment.
+
+### 46.3 Adding a new one
+
+Any screen displaying a human-written standing instruction on a production record imports
+`ConsigneCallout` — it does not copy the markup. If a second app needs the same object, move
+the component beside the other shared ones rather than forking it: this pattern's whole value
+is that the thing looks identical on every screen that shows it.
