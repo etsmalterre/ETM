@@ -10,6 +10,72 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-27 — feat/atelier (l'API de la PWA atelier : lecture + chemin d'écriture)
+
+**Ce que c'est.** Le premier routeur de la PWA bonnetier/régleur (`apps/atelier` côté TRM,
+hôte `atelier.malterre`), monté `/api/atelier`. Un **deuxième client TRM** de l'API MPS,
+distinct de l'ERP. Lectures : la grille de visages (`bonnetier`, scopée par `regleur`), la
+liste des métiers avec leur OF actif, et le contexte complet d'un OF pour le poste.
+Écriture : `POST /of/:id/evenement`, les huit actions de `BTN_Valider`, sous le nouveau
+droit **`saisie_atelier`** (catégorie Production, fermé par défaut).
+
+**Le legacy n'est PAS PCS-compressé** — inédit pour un portage TRM.
+`C:\Mes Projets\MPS\Android\dbg\Compile\` contient les 45 fichiers Java générés, WLanguage
+en commentaires et SQL en clair. Chaque requête du routeur cite son original verbatim.
+⚠️ **Mais c'est un instantané du 24/03/2026** : son `info.build` liste 12 fenêtres et l'app
+qui tourne en a au moins une de plus (un écran Production/Visitage atteint par une 4ᵉ icône
+ronde, introuvable sous ce nom dans le projet). Autorité sur ce qu'il contient, pas sur
+l'inventaire — et pour tout ce qui compte, revérifier dans le cache de compilation, qui
+lui est à jour.
+
+**La structure des huit branches vient du FLUX DE CONTRÔLE du Java, pas des commentaires** :
+le générateur WinDev ne commente que la première ligne de chaque branche, donc les `sinon`
+n'y sont pas. Reconstitué depuis la chaîne if/else, puis recoupé avec le cache du
+25/08/2026. Trois pièges que ça a mis au jour :
+
+- **Le libellé n'est pas la chaîne stockée.** La combo dit « Fin de pièce » et écrit
+  `Fin du tricotage` ; « Interrompre OF » écrit `Interruption OF`. Tout l'historique de
+  `evenement_piece` est clé là-dessus — ne jamais dériver l'un de l'autre.
+- **« Interrompre OF » et « Relancer OF » sont TOUS DEUX compilés**, choisis à l'exécution
+  selon `arret_prod`. Le Java de mars ne montrait que le second, d'où une hypothèse qui a
+  tenu jusqu'à la vérification dans le cache.
+- **La combo des défauts de l'atelier est la sienne** (8 entrées, ordre propre), et **pas**
+  l'ordre de `TYPES_DEFAUT`, qui est le vocabulaire du *visitage* classé par fréquence. Le
+  test cm/nb du legacy est **positionnel** (`si COMBO_Défaut.Select() dans (1,3,4,5)`) et
+  tombe sur Maille / Barrure Lycra / Autre Barrure / Plis Marchand — exactement ce que
+  `uniteForType()` appelle déjà `'cm'`. Les deux listes s'accordent sur le sens, pas sur
+  l'ordre : on clé sur le nom du type.
+
+**L'origine des 453 lignes « Autre Barrure » sales est trouvée** : la fenêtre legacy stocke
+le libellé **avec un espace final** (`setContenuInitial("… Autre Barrure \r\n…")`). C'est
+ce que `normaliseTypeDefaut()` replie à la lecture et ce qui avait mordu l'écran Prime.
+La PWA écrit l'orthographe propre, donc le tas cesse de grossir.
+
+**Le piège qui aurait fait des dégâts** : l'ordre physique de `piece_production` au runtime
+n'est **pas** celui du `.xdd` (`numero` est en dernier, pas en troisième). Un INSERT
+positionnel bâti sur le `.xdd` aurait écrit le numéro de pièce dans `bonnetier_debut` et
+une date dans `date_controle`, en silence, sur de vraies lignes de production. D'où
+l'INSERT **nommé** pour cette table — elle n'a ni mot réservé ni accent, rien ne force le
+positionnel — et une règle ajoutée au § HFSQL de `CLAUDE.md`.
+`scripts/probe-atelier-trm.ts` (lecture seule) imprime l'ordre runtime des trois tables
+écrites, plus les derniers événements et défauts.
+
+**Deux écarts assumés avec le legacy.** `interruption_prod` n'est pas écrit : c'est la
+seule colonne *Durée* de la base, `OF_COLUMNS` l'exclut parce que la LIRE rend du JSON
+invalide sur le pont Linux, et rien ne la consomme — écrire un encodage deviné dans une
+colonne qu'on ne peut pas relire pour vérifier est pire que laisser la valeur du legacy.
+Et il n'y a **pas encore d'annulation**, alors que le legacy en a une (`IMG_Annuler` sur la
+dernière action) : sans elle une mauvaise « Terminer OF » n'est pas rattrapable depuis le
+téléphone, puisqu'elle arrête l'OF et passe le métier au suivant via `AutoActivation()`.
+
+**La liste des actions offertes est recalculée au serveur.** Le client décide de ce qu'il
+affiche, la route décide de ce qui peut arriver ; une action non proposée rend 409, pas une
+écriture. Vérifié : un bonnetier ne peut pas interrompre un OF même en forgeant la requête.
+⚠️ Le téléphone porte le cookie d'un **compte-poste** (le modèle du PC de visitage) et
+*qui* travaille voyage dans `IDbonnetier` — l'identité bonnetier de la PWA est une grille
+de visages en `localStorage`, jamais une authentification. Le compte-poste n'existe pas
+encore et personne ne détient `saisie_atelier`.
+
 ## 2026-08-27 — feat/of (les observations régleur, et la recherche des OF terminés)
 
 **Le bug d'origine.** Vincent signale que l'OF 1741 porte une observation dans le legacy
