@@ -220,6 +220,13 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la validation d’une pièce dans Production > Visitage : création des rouleaux de tombé métier en stock, report des défauts relevés au métier, traçage de l’événement et décrément des lots de fil consommés. Sans ce droit l’écran reste consultable mais le bouton « Valider » est inactif.',
     category: 'Production',
   },
+  {
+    key: 'saisie_atelier',
+    label: 'Saisir au poste de l’atelier',
+    description:
+      'Autorise l’enregistrement des actions du bonnetier depuis la PWA Atelier (atelier.malterre) : lancement d’un OF, nettoyage, fin de pièce, dernière pièce, fin d’OF, déclaration d’un défaut, interruption et relance. Ces actions écrivent la production réelle — pièces, événements, défauts et l’activation de l’OF suivant sur le métier. Sans ce droit l’app reste consultable mais rien ne s’enregistre.',
+    category: 'Production',
+  },
 ] as const
 
 export type TrmPermissionKey = (typeof TRM_PERMISSION_KEYS)[number]['key']
