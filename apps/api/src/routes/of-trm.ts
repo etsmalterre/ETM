@@ -421,37 +421,69 @@ ofTrmRouter.get('/lookups/observations', async (req: Request, res: Response) => 
     const ctx = (await resolveLigneContexts([ligneId])).get(ligneId)
     if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
     if (ctx.IDreference <= 0) { res.json([]); return }
-
-    // `date` is reserved → alias it, like message_of does.
-    const raw = await query<any>(
-      `SELECT IDobs_ref_ecru, IDcolori_ecru, IDmachine, DATE AS date_obs, observation
-       FROM obs_ref_ecru
-       WHERE IDref_ecru = ${ctx.IDreference}
-         AND (IDmachine = ${machineId} OR IDmachine = 0)
-         AND (IDcolori_ecru = ${ctx.IDcolori} OR IDcolori_ecru = 0)
-       ORDER BY DATE DESC`,
-    )
-    const rows = await fixEncoding(raw, 'obs_ref_ecru', 'IDobs_ref_ecru', ['observation'])
-    const machineNames = await resolveMachineNames(rows.map((r: any) => Number(r.IDmachine) || 0))
-    const coloriNames = await resolveColorisEcru(rows.map((r: any) => Number(r.IDcolori_ecru) || 0))
-
-    res.json(rows.map((r: any) => {
-      const m = Number(r.IDmachine) || 0
-      const c = Number(r.IDcolori_ecru) || 0
-      return {
-        id: Number(r.IDobs_ref_ecru),
-        date: r.date_obs ?? null,
-        observation: (r.observation ?? '').toString().trim(),
-        // Scope, as the legacy prints it: the wildcard reads "Toutes" /
-        // "Tout coloris", anything else names the machine or the coloris.
-        machine: m === 0 ? 'Toutes' : (machineNames.get(m) || `#${m}`),
-        coloris: c === 0 ? 'Tout coloris' : (coloriNames.get(c) || `#${c}`),
-        cible_machine: m > 0,
-        cible_coloris: c > 0,
-      }
-    }).filter((o: any) => o.observation.length > 0))
+    res.json(await selectObsRefEcru(ctx.IDreference, machineId, ctx.IDcolori))
   } catch (err) {
     console.error('Error fetching of-trm observations lookup:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** The legacy predicate above, run for one (ref, machine, coloris) triplet.
+ *  Shared by the création dialog's lookup and by the OF fiche's own tab —
+ *  `FI_Gestion_OF` and `FEN_Lancement_OF` ask the exact same question. */
+async function selectObsRefEcru(refId: number, machineId: number, coloriId: number) {
+  // `date` is reserved → alias it, like message_of does.
+  const raw = await query<any>(
+    `SELECT IDobs_ref_ecru, IDcolori_ecru, IDmachine, DATE AS date_obs, observation
+     FROM obs_ref_ecru
+     WHERE IDref_ecru = ${refId}
+       AND (IDmachine = ${machineId} OR IDmachine = 0)
+       AND (IDcolori_ecru = ${coloriId} OR IDcolori_ecru = 0)
+     ORDER BY DATE DESC`,
+  )
+  const rows = await fixEncoding(raw, 'obs_ref_ecru', 'IDobs_ref_ecru', ['observation'])
+  const machineNames = await resolveMachineNames(rows.map((r: any) => Number(r.IDmachine) || 0))
+  const coloriNames = await resolveColorisEcru(rows.map((r: any) => Number(r.IDcolori_ecru) || 0))
+
+  return rows.map((r: any) => {
+    const m = Number(r.IDmachine) || 0
+    const c = Number(r.IDcolori_ecru) || 0
+    return {
+      id: Number(r.IDobs_ref_ecru),
+      date: r.date_obs ?? null,
+      observation: (r.observation ?? '').toString().trim(),
+      IDmachine: m,
+      IDcolori_ecru: c,
+      // Scope, as the legacy prints it: the wildcard reads "Toutes" /
+      // "Tout coloris", anything else names the machine or the coloris.
+      machine: m === 0 ? 'Toutes' : (machineNames.get(m) || `#${m}`),
+      coloris: c === 0 ? 'Tout coloris' : (coloriNames.get(c) || `#${c}`),
+      cible_machine: m > 0,
+      cible_coloris: c > 0,
+    }
+  }).filter((o: any) => o.observation.length > 0)
+}
+
+// GET /api/of-trm/lookups/coloris-ecru?ref=<IDref_ecru> — the Coloris picker of
+// the observation dialog. Scoped to the reference, like the legacy combo
+// (`FEN_Editer_Observation_4$Requ`, parameterised on ParamIDref_ecru): an
+// observation targets a coloris OF THIS REFERENCE or none at all.
+ofTrmRouter.get('/lookups/coloris-ecru', async (req: Request, res: Response) => {
+  try {
+    const refId = parseInt(String(req.query.ref ?? ''), 10)
+    if (isNaN(refId) || refId <= 0) { res.status(400).json({ error: 'Invalid ref' }); return }
+    const rows = await query<{ IDcolori_ecru: number; reference: string | null }>(
+      `SELECT IDcolori_ecru, reference FROM colori_ecru WHERE IDref_ecru = ${refId}`,
+    )
+    const fixed = await fixEncoding(rows, 'colori_ecru', 'IDcolori_ecru', ['reference'])
+    res.json(
+      fixed
+        .map((r) => ({ id: Number(r.IDcolori_ecru) || 0, reference: (r.reference ?? '').toString().trim() }))
+        .filter((c) => c.id > 0)
+        .sort((a, b) => a.reference.localeCompare(b.reference, 'fr')),
+    )
+  } catch (err) {
+    console.error('Error fetching of-trm coloris lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -900,6 +932,157 @@ ofTrmRouter.post('/:id/observations', async (req: Request, res: Response) => {
     res.status(201).json({ id: newId })
   } catch (err) {
     console.error('Error creating of-trm observation:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  OBSERVATIONS RÉGLEUR  (obs_ref_ecru)
+// ════════════════════════════════════════════════════════
+//
+// The standing notes the régleur leaves on an ÉCRU REFERENCE, scoped per métier
+// and per coloris — NOT the `message_of` thread above, which is the bonnetier's
+// shop-floor chatter and lives only in the Android terminal (`FEN_Consigne`).
+// The legacy desktop shows obs_ref_ecru in TWO windows, with the same table,
+// the same delete confirmation and the same editor dialog
+// (`FEN_Editer_Observation`):
+//   - FI_Gestion_OF       → the OF fiche, filtered by the legacy predicate
+//   - FI_Ref_TombéMetier  → Tombé Métier › Références, the whole reference
+//
+// So the CRUD lives here once and both screens call it. Write rules:
+//   - `date` is reserved → positional INSERT. Physical order verified on the
+//     runtime SELECT *: IDobs_ref_ecru, IDref_ecru, IDmachine, IDcolori_ecru,
+//     observation, DATE. Every other column is ASCII → named UPDATE.
+//   - An edit does NOT restamp the date: it is the date the note was written,
+//     and both tables order by it — a typo fix must not jump the queue.
+//   - 0 is the wildcard on both axes; a non-zero coloris must belong to the
+//     reference (the legacy combo is parameterised on it).
+
+const obsRefBody = z.object({
+  IDmachine: z.number().int().min(0).default(0),
+  IDcolori_ecru: z.number().int().min(0).default(0),
+  observation: z.string().min(1).max(2000),
+})
+
+/** Validate the (ref, machine, coloris) triplet of a write. Sends the 4xx
+ *  itself and returns false when the payload does not hold up. */
+async function checkObsTarget(
+  res: Response,
+  refId: number,
+  machineId: number,
+  coloriId: number,
+): Promise<boolean> {
+  const ref = await query<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM ref_ecru WHERE IDref_ecru = ${refId}`,
+  )
+  if ((Number(ref[0]?.c) || 0) === 0) { res.status(404).json({ error: 'Référence introuvable' }); return false }
+  if (machineId > 0) {
+    const machines = await selectMachines()
+    if (!machines.some((m) => m.id === machineId)) {
+      res.status(400).json({ error: 'Métier inconnu' }); return false
+    }
+  }
+  if (coloriId > 0) {
+    const col = await query<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM colori_ecru WHERE IDcolori_ecru = ${coloriId} AND IDref_ecru = ${refId}`,
+    )
+    if ((Number(col[0]?.c) || 0) === 0) {
+      res.status(400).json({ error: 'Coloris hors de cette référence' }); return false
+    }
+  }
+  return true
+}
+
+/** The reference an existing observation hangs on (0 when the row is gone). */
+async function obsRefOf(obsId: number): Promise<number> {
+  const rows = await query<{ IDref_ecru: number }>(
+    `SELECT IDref_ecru FROM obs_ref_ecru WHERE IDobs_ref_ecru = ${obsId}`,
+  )
+  return Number(rows[0]?.IDref_ecru) || 0
+}
+
+// GET /api/of-trm/:id/observations-ref — the OF fiche's « Observations régleur »
+// table: this OF's reference, filtered by its métier and its coloris.
+ofTrmRouter.get('/:id/observations-ref', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const loaded = await loadOf(id)
+    if (!loaded) { res.status(404).json({ error: 'Not found' }); return }
+    const { of } = loaded
+    // The OF's OWN ref/coloris, not its order line's: they disagree on 848 of
+    // 3 178 rows and the fiche header shows the OF's (see GET /:id).
+    const refId = Number(of.IDref_ecru) || 0
+    if (refId <= 0) { res.json([]); return }
+    res.json(await selectObsRefEcru(refId, Number(of.IDmachine) || 0, Number(of.IDcolori_ecru) || 0))
+  } catch (err) {
+    console.error('Error fetching of-trm observations-ref:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/of-trm/references/:refId/observations-ref — create.
+ofTrmRouter.post('/references/:refId/observations-ref', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
+  try {
+    const refId = parseInt(req.params.refId, 10)
+    if (isNaN(refId) || refId <= 0) { res.status(400).json({ error: 'Invalid ref' }); return }
+    const parsed = obsRefBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return
+    }
+    const { IDmachine, IDcolori_ecru, observation } = parsed.data
+    if (!(await checkObsTarget(res, refId, IDmachine, IDcolori_ecru))) return
+
+    const newId = (await maxId('obs_ref_ecru', 'IDobs_ref_ecru')) + 1
+    await query(
+      `INSERT INTO obs_ref_ecru VALUES (${newId}, ${refId}, ${IDmachine}, ${IDcolori_ecru}, ` +
+      `${sqlText(observation.trim())}, '${todayHfsql()}')`,
+    )
+    res.status(201).json({ id: newId })
+  } catch (err) {
+    console.error('Error creating obs_ref_ecru:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/of-trm/observations-ref/:obsId — retarget and/or reword. Keeps the date.
+ofTrmRouter.put('/observations-ref/:obsId', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
+  try {
+    const obsId = parseInt(req.params.obsId, 10)
+    if (isNaN(obsId) || obsId <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = obsRefBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return
+    }
+    const refId = await obsRefOf(obsId)
+    if (refId === 0) { res.status(404).json({ error: 'Not found' }); return }
+    const { IDmachine, IDcolori_ecru, observation } = parsed.data
+    if (!(await checkObsTarget(res, refId, IDmachine, IDcolori_ecru))) return
+
+    await query(
+      `UPDATE obs_ref_ecru SET IDmachine = ${IDmachine}, IDcolori_ecru = ${IDcolori_ecru}, ` +
+      `observation = ${sqlText(observation.trim())} WHERE IDobs_ref_ecru = ${obsId}`,
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error updating obs_ref_ecru:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/of-trm/observations-ref/:obsId
+ofTrmRouter.delete('/observations-ref/:obsId', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
+  try {
+    const obsId = parseInt(req.params.obsId, 10)
+    if (isNaN(obsId) || obsId <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if ((await obsRefOf(obsId)) === 0) { res.status(404).json({ error: 'Not found' }); return }
+    await query(`DELETE FROM obs_ref_ecru WHERE IDobs_ref_ecru = ${obsId}`)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error deleting obs_ref_ecru:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

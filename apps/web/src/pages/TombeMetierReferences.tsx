@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef, useContext, createContext, type ComponentType } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -127,7 +127,7 @@ interface SymboleRow {
   icone: string | null
 }
 
-interface ObsOfRow {
+export interface ObsOfRow {
   IDobs_ref_ecru: number
   IDmachine: number
   machine_nom: string | null
@@ -136,6 +136,22 @@ interface ObsOfRow {
   observation: string | null
   date: string | null
 }
+
+/** Props of the injectable « Obs OF » editor — see `ObsOfEditorContext`. */
+export interface ObsOfEditorProps {
+  refId: number
+  refLabel: string
+  rows: ObsOfRow[]
+  /** Refetch the reference detail (the rows above ride in its payload). */
+  onChanged: () => void
+}
+
+// `obs_ref_ecru` rows are the régleur's standing knitting notes, scoped per
+// métier and per coloris. ETM shows them read-only — it buys its écru, it has
+// no métiers of its own — while TRM writes them from two screens. Rather than
+// fork this file (or hardcode a TRM endpoint in it), TRM injects its whole
+// editable panel; without it the tab stays exactly as it was.
+const ObsOfEditorContext = createContext<ComponentType<ObsOfEditorProps> | null>(null)
 
 interface RefEcruDetail {
   IDref_ecru: number
@@ -488,7 +504,7 @@ function draftToBody(d: HeaderDraft) {
 
 // ── Page ───────────────────────────────────────────────
 
-export function TombeMetierReferences() {
+export function TombeMetierReferences({ obsOfEditor }: { obsOfEditor?: ComponentType<ObsOfEditorProps> } = {}) {
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -744,7 +760,7 @@ export function TombeMetierReferences() {
   )
 
   return (
-    <>
+    <ObsOfEditorContext.Provider value={obsOfEditor ?? null}>
       <MasterDetailLayout
         list={
           <RefEcruList
@@ -873,7 +889,7 @@ export function TombeMetierReferences() {
         refId={selectedId}
         refLabel={detail?.reference ?? null}
       />
-    </>
+    </ObsOfEditorContext.Provider>
   )
 }
 
@@ -2014,7 +2030,7 @@ function TechnicalTabs({
             reportDirty={reportDirty}
           />
         )}
-        {tab === 'obs' && <ObsOfTab detail={detail} />}
+        {tab === 'obs' && <ObsOfTab detail={detail} onMutationSuccess={onMutationSuccess} />}
         {tab === 'liage' && <SchemaLiageTab detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />}
       </CardContent>
     </Card>
@@ -2378,9 +2394,23 @@ function MachineFormDialog({
   )
 }
 
-// ── Obs OF tab (read-only) ─────────────────────────────
+// ── Obs OF tab ─────────────────────────────────────────
+//
+// Read-only here; TRM injects an editable panel through `ObsOfEditorContext`
+// (see the comment on that context). The two never render at once.
 
-function ObsOfTab({ detail }: { detail: RefEcruDetail }) {
+function ObsOfTab({ detail, onMutationSuccess }: { detail: RefEcruDetail; onMutationSuccess: () => void }) {
+  const Editor = useContext(ObsOfEditorContext)
+  if (Editor) {
+    return (
+      <Editor
+        refId={detail.IDref_ecru}
+        refLabel={detail.reference ?? ''}
+        rows={detail.obs_of}
+        onChanged={onMutationSuccess}
+      />
+    )
+  }
   if (detail.obs_of.length === 0) {
     return <p className="text-sm text-muted-foreground italic">Aucune observation OF</p>
   }
