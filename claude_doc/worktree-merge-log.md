@@ -10,6 +10,54 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-27 — feat/of (les observations régleur, et la recherche des OF terminés)
+
+**Le bug d'origine.** Vincent signale que l'OF 1741 porte une observation dans le legacy
+(« ouverture sur tube », 17/04/2024) et que la PWA TRM affiche « Aucune observation ».
+L'onglet Obs. de la fiche OF lisait **`message_of`** ; le legacy bureau y montre
+**`obs_ref_ecru`** — les consignes durables portées par la RÉFÉRENCE écru, ciblées par
+métier et par coloris. Requête récupérée verbatim dans le cache de compilation WinDev
+(`FI_Gestion_OF.wcw`), prédicat `IDref_ecru = :ref AND (IDmachine = :machine OR
+IDmachine = 0) AND (IDcolori_ecru = :colori OR IDcolori_ecru = 0) ORDER BY date DESC`.
+Un OF de 2022 qui affiche une note de 2024, c'est exactement ce qui trahissait l'erreur :
+la note appartient à la référence, pas à la série. `message_of`, lui, n'apparaît **nulle
+part** dans le legacy desktop — grep sur tout `C:\Mes Projets\MPS` : il ne vit que dans
+l'app Android du poste (`FEN_Consigne`), 113 messages toujours alimentés.
+
+**CRUD `obs_ref_ecru`** dans `routes/of-trm.ts`, derrière `edit_of` (pas de nouvelle clé :
+ces notes existent pour être lues au lancement, c'est le même acte). `GET /:id/observations-ref`
+applique le prédicat legacy ; `POST /references/:refId/observations-ref`,
+`PUT|DELETE /observations-ref/:obsId` écrivent ; `GET /lookups/coloris-ecru?ref=` alimente
+le sélecteur du dialogue. Le scope se lit sur l'OF, pas sur sa ligne de commande :
+`ordre_fabrication` porte ses propres `IDref_ecru` / `IDcolori_ecru` et ils **divergent de
+la ligne sur 848 OF sur 3 178**. `DATE` est réservé → INSERT positionnel (ordre physique
+vérifié sur le `SELECT *` runtime), UPDATE nommé pour le reste, et **une modification ne
+re-date pas la ligne** (les deux tables trient par `date`). Garde
+`check-obs-ref-ecru-trm.ts`, verte, qui épingle ces deux faits que rien d'autre
+n'attraperait.
+
+**L'écran partagé Tombé Métier › Références gagne une prop, pas un fork.** `obs_ref_ecru`
+n'a pas de sens côté ETM (qui achète son écru et n'a pas de métiers), et son onglet
+« Obs OF » y reste en lecture seule. Plutôt que forker le fichier ou y coder en dur une URL
+TRM, il expose **`obsOfEditor` — un COMPOSANT** que TRM injecte via un contexte local.
+`ObsOfEditorProps` porte aussi `isEditing`, pour qu'un éditeur injecté suive la règle §8 de
+l'écran hôte (« Add button, edit mode only »). Troisième précédent de la doctrine « une
+différence par app est une prop » après `RapportFinance basePath` et
+`createFinanceRouter(scope)`.
+
+**Recherche des OF terminés.** `?q=` ne répondait qu'à un numéro d'OF exact — limitation
+assumée au premier port, sur l'hypothèse que résoudre les libellés de 3 100 OF avant de
+filtrer serait trop lent. Mesuré sur le pilote : ~0,6 s au pire, pour une liste qu'on
+n'atteint qu'en tapant. `searchTermineIds` rapproche **en JS sur des projections étroites**
+— le LIKE de HFSQL ne replie pas les accents (les libellés en portent, la boîte non), et
+l'axe client demanderait sinon un `IN` de tous les `IDligne_commande_client` d'Ets Malterre ;
+les lignes ne sont lues que si des commandes ont matché. Axes : référence (reference +
+designation), coloris, client, n° de commande, métier — les mêmes que les onglets vivants
+filtrent côté web. Le `TOP 200` borne désormais les **résultats** et non le corpus.
+⚠️ **Un nombre est à la fois un n° d'OF et une référence plausible** (249, 027, 161 sont de
+vraies étiquettes écru) : une requête numérique ne court-circuite plus le balayage, elle
+place son OF exact en tête puis les libellés.
+
 ## 2026-08-27 — feat/permissions
 Les écrans TRM lisent enfin le magasin de droits de TRM. Six clés — `create_stock_fil`
 (Fils › Stock), `edit_factures` (Clients › Facturation) et les quatre de Clients › Gestion
