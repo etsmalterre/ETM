@@ -231,7 +231,9 @@ export function isMergedRemoteBranch(repo, branch) {
 }
 
 /** Finish removing any worktrees whose directory was locked at completion time.
- *  Local-only (no network) so it's cheap to call at the start of every skill.
+ *  Cheap to call at the start of every skill: it returns immediately when the queue
+ *  is empty, and touches the network only on the rare run that actually reaps
+ *  something (to delete the merged remote branch — see below).
  *  Returns { reaped: [...], stillBlocked: [...], resurrected: [...] }.
  *
  *  ⚠ A pending entry names a PATH, and worktree paths are derived from the
@@ -279,6 +281,17 @@ export function reapPending() {
     if (!fs.existsSync(e.worktree)) {
       tryGit(['worktree', 'prune'])
       tryGit(['branch', '-D', e.branch]) // already merged by /feature-complete
+      // ...and the remote one. down.mjs deletes origin/<branch> only on its happy path;
+      // on Windows the DEFERRED path is the normal case (the feature session's own
+      // terminal is cwd'd inside the worktree), so without this every completed feature
+      // left its remote branch behind for ever. Measured 2026-08-27: 13 dead
+      // origin/feat/* branches on TRM — which is why reusing a feature name made up.mjs
+      // warn that it 'already exists and is merged into origin/master', a warning that
+      // reads like a mistake and is really just this leak.
+      // Safe against name reuse: an entry whose path a live slot claims is treated as
+      // resurrected above and never reaches here, so this can only delete the branch of
+      // a worktree that is genuinely gone.
+      tryGit(['push', 'origin', '--delete', e.branch])
       reaped.push(e)
     } else {
       stillBlocked.push(e)

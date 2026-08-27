@@ -11,6 +11,35 @@ ETM is the next-generation ERP system for **ETS Malterre**, a French textile/kni
 - **Owner**: Vincent Malterre
 - **Legacy system**: `C:\Mes Projets\MPS\` — WinDev (PCSoft) + HFSQL, French UI, 204 tables, 318 windows
 
+## MPS — the platform, and why the API is not "ETM's"
+
+**MPS = Malterre Productive System**: the shared platform every Malterre app runs on —
+the HFSQL `MPS` database and the **MPS API** (`mps-api.service`, `/home/debian/mps_api`,
+package `@mps/api`, `/api/health` answers `"app": "MPS API"`). The code has always called
+it that; only the prose used to call it "the ETM API", and that one word did real damage —
+see the ⚠️ in `etm_deploy` §Deploy ownership and in TRM's `trm_deploy` §Scope.
+
+- **ETM and TRM are two *clients* of the platform, not owner and guest.** They are peers:
+  ETM is `IDsociete` 1, TRM is 2, and the MPS API serves both from the same tables.
+- **Planned clients**: the régleur mobile app, the bonnetier mobile app, the pointeuse, and
+  the atelier display screens. Each is another consumer of the same API — so any sentence
+  of the form "the API belongs to <app>" will age badly. Write "the MPS API" and say which
+  *repo* it lives in if that's what you mean.
+- ⚠️ **`apps/api` lives in this repo for historical reasons — that is a file location, not
+  ownership.** ETM was `MPS_NG`, the first client, so the platform API was built inside it
+  and never moved. Consequences that are easy to get wrong:
+  - A change needed by a TRM screen (or, later, a mobile app) is a **normal change to this
+    repo**, landed through an NG worktree like any other. It is not a favour to another team.
+  - Deploying the MPS API from `/etm_deploy` deploys it **for every client at once** — it
+    restarts one service that `mpsng.malterre`, `trm.malterre` and every future app share.
+    Smoke-check more than the app you happen to be standing in.
+  - Whoever is asked to ship an app is responsible for the platform half that app needs.
+    "That's the other repo's job" is never the answer; walk over and deploy it.
+- **If the platform ever outgrows this arrangement**, the move is to extract `apps/api` into
+  its own `MPS` repo with its own deploy, leaving ETM and TRM as pure frontends. Not done —
+  the pair is small enough that one deploy is simpler than two. Revisit when a third client
+  ships, because that is the point where "which repo do I branch from?" stops being obvious.
+
 ## Branding
 
 | Color | Hex | Usage |

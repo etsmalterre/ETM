@@ -17,9 +17,9 @@ worktree instead. Up to 6 worktrees per project can run at once.
 **`trm` (TRM — web only):**
 - branch `feat/<feature-name>`, worktree dir `../TRM-<feature-name>`
 - lowest free slot N (1–6) → web on `517N` (no API of its own)
-- The TRM web server talks to an **ETM API over HTTP**. By default it targets the
+- The TRM web server talks to an **MPS API over HTTP**. By default it targets the
   slot-0 master API on `:8080` (start it with `/serve-main`). To point it at a different
-  ETM API (e.g. a running NG worktree's `808N`), pass `--api <port>`.
+  MPS API (e.g. a running NG worktree's `808N`), pass `--api <port>`.
 
 The two projects have **disjoint port ranges**, so an NG slot and a TRM slot with the
 same number never collide (NG `300N`/`808N`, TRM `517N`).
@@ -59,7 +59,7 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
    tail -n 40 ../ETM-<feature-name>/.dev-logs/web.log      # or TRM-<name>
    tail -n 40 ../ETM-<feature-name>/.dev-logs/api.log      # ng only
    ```
-   For **trm**, if the summary says the ETM API isn't reachable, tell the user to run
+   For **trm**, if the summary says the MPS API isn't reachable, tell the user to run
    `/serve-main` (master on `:8080`) — the TRM web will 404 its API calls until then.
 
 4. **Report to the user** the project, worktree path, the web URL (`http://localhost:300N`
@@ -95,7 +95,7 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
   `curl "http://localhost:808N/api/health?db=1"`, and recover with `--restart`.
 - The dev servers are **detached** — they keep running after this Claude session ends,
   which is the point. They are stopped by `/feature-complete` or `/feature-down`.
-- **TRM worktrees need an ETM API running** (master via `/serve-main`, or an NG worktree
+- **TRM worktrees need an MPS API running** (master via `/serve-main`, or an NG worktree
   via `--api 808N`). They have no API of their own.
 - **TRM feature needing shared-API changes** → spin up a **paired NG worktree** with the
   same feature name for the API work, and pass `--api 808N` to the TRM worktree so it talks

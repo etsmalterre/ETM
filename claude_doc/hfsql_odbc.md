@@ -1,6 +1,6 @@
 # HFSQL ODBC Reference
 
-Deep-dive reference for the HFSQL ODBC connection used by the ETM API. The *footguns* (rules you must follow) are summarised in `CLAUDE.md § HFSQL rules`; this file has the full explanation + platform-specific details.
+Deep-dive reference for the HFSQL ODBC connection used by the MPS API. The *footguns* (rules you must follow) are summarised in `CLAUDE.md § HFSQL rules`; this file has the full explanation + platform-specific details.
 
 ## Connection
 

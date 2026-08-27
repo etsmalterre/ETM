@@ -57,7 +57,7 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 - `<MAIN>` is on `master` with a clean working tree. (The `apps/api/tsconfig.tsbuildinfo`
   gitignore keeps it clean across builds — if `git -C <MAIN> status --porcelain` is
   non-empty, that is one of the few genuine stops — see "Run it end to end". Never force past it.)
-- **TRM only — shared-API guardrail.** A TRM feature's endpoints live in the **ETM API**
+- **TRM only — shared-API guardrail.** A TRM feature's endpoints live in the **MPS API**
   (`C:\dev\etsmalterre\ETM\apps\api`), not in this repo. Before landing, check whether
   API work for this feature is still unlanded:
   ```bash
@@ -99,7 +99,7 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 
 ## Shared-API changes (TRM features)
 
-TRM is frontend-only; its endpoints are part of the ETM API. The rule:
+TRM is frontend-only; its endpoints are part of the MPS API. The rule:
 **API changes always flow through ETM's own pipeline — worktree → `feat/*` branch →
 NG `master` → `/etm_deploy` — regardless of which frontend consumes them.**
 

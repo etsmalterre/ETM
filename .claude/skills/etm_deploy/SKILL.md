@@ -2,7 +2,7 @@
 
 ## When to use
 
-Invoke with `/etm_deploy` to deploy the ETM API and/or webapp to production.
+Invoke with `/etm_deploy` to deploy the MPS API and/or webapp to production.
 
 **Optional version argument — `/etm_deploy v0.2.1`.** A version means "release this
 version", so **before** building: set `version` in the **root** `package.json` (the single
@@ -12,11 +12,18 @@ so bumping *after* the build ships the old number. Deploy the pushed commit, not
 pre-bump one. With no argument, deploy `origin/master` as-is and change no version.
 Do NOT touch the per-package `apps/*/package.json` versions; they are displayed nowhere.
 
-## Deploy ownership — the API is shared with TRM
+## Deploy ownership — you are deploying the MPS platform, not just ETM
 
-The API deployed here serves **two frontends**: ETM (`mpsng.malterre`) and the sister
-app **TRM** (`trm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web
-server, its nginx site proxies `/api/` to this same `10.10.2.163:8081`).
+The API deployed here is the **MPS API** — the Malterre Productive System platform backend
+(`mps-api.service`, `/home/debian/mps_api`, package `@mps/api`). It lives in this repo for
+historical reasons (ETM was `MPS_NG`, the first client) — **that is a file location, not
+ownership.** See `CLAUDE.md` §"MPS — the platform".
+
+It currently serves **two frontends**: ETM (`mpsng.malterre`) and the sister app **TRM**
+(`trm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web server, its nginx site
+proxies `/api/` to this same `10.10.2.163:8081`) — with the régleur / bonnetier mobile apps,
+the pointeuse and the atelier display screens planned. **One restart blips every one of them**,
+so smoke-check more than the app you happen to be standing in.
 
 - **This skill owns**: the ETM web bundle + the **shared API** (including endpoints that
   only TRM screens use, e.g. `planning-atelier.ts` — they live in this repo and deploy from
@@ -83,6 +90,18 @@ in each call (or just inline the WSL form on the factory PC — that's the commo
 
 ## Step 0 — What needs deploying (ALWAYS run first)
 
+**One command answers the whole question, for both tiers and both repos:**
+
+```bash
+node scripts/deploy/preflight.mjs        # read-only; exit 1 = blockers
+```
+
+It prints what is live on each tier, what is behind (splitting runtime `apps/api/**` from
+`src/scripts/**`), whether each main checkout is **clean and on master**, and whether a landed
+feature still owes a seed on the prod host. It **fails closed**: unreachable servers exit 2
+rather than waving the deploy through. The prose below explains what it checks and why —
+read it when the script reports something you do not expect, not instead of running it.
+
 Do this before building anything. It answers "is there an undeployed merge, and does it touch
 the API, the web, or both?" deterministically — so a bare "deploy" never needs you to ask the
 user what merged, and you never eyeball `git show --stat` to pick API-vs-web by hand.
@@ -124,6 +143,16 @@ of every deploy — see the deploy steps). The check:
    — empty output → skip the API side. (Seen 2026-07-23: `backfill-factures-envoyees.ts` was
    the only API delta; web-only deploy shipped.) Run the script itself on the server by hand if
    the migration hasn't been applied yet — that's separate from a service deploy.
+
+   ⚠️ **A seed that writes `data/*.json` must be followed by a RESTART, in that order.**
+   `lib/permissions-trm.ts` (and its ETM twin) is a *module-load cache*: the running API
+   holds the whole file in memory and rewrites all of it on any single admin save. A seed
+   run by a separate process therefore lands on disk but is invisible to the API — and the
+   next save in Paramètres › Utilisateurs writes the stale in-memory copy back over it,
+   wiping every seeded grant at once, silently. Measured 2026-08-27: `seed-edit-of-trm.ts
+   --write` put 10 `edit_of` grants on disk at 10:35; an admin save at 10:44 reverted all
+   ten, and nothing logged it. **Seed, then `systemctl restart mps-api`, then re-`grep` the
+   file.** `preflight.mjs` checks the grants exist, which is how this was caught at all.
 
 4. **Report the plan to the user before proceeding**: e.g. *"prod API at `9b208bc`, origin/master
    at `f4c26c9` (1 ahead: facturation) — touches apps/api + apps/web → deploying both."*

@@ -25,21 +25,21 @@ an NG slot and a TRM slot with the same number never collide:
 
 | | ETM (`ng`) | TRM (`trm`) |
 |---|---|---|
-| API port | `8080 + N` (pnpm `@mps/api dev:808N`) | *none* — targets an ETM API over HTTP |
+| API port | `8080 + N` (pnpm `@mps/api dev:808N`) | *none* — targets an MPS API over HTTP |
 | Web port | `3000 + N` (pnpm `@mps/web dev:300N`, targets API `808N`) | `5170 + N` (pnpm `@mps-trm/web dev:517N`) |
 | Worktree | `../ETM-<feature>` | `../TRM-<feature>` |
 | Branch | `feat/<feature>` | `feat/<feature>` |
 | URL | `http://localhost:300N` | `http://localhost:517N` |
 
-**TRM is web-only.** Its web dev server calls an ETM API cross-origin, so the TRM web ports
-(`5171–5176`) are in `DEV_WEB_ORIGINS` and in the ETM API's dev CORS. By default a TRM worktree
-targets the **slot-0 master** ETM API on `:8080` (start it with `/serve-main`); override with
+**TRM is web-only.** Its web dev server calls an MPS API cross-origin, so the TRM web ports
+(`5171–5176`) are in `DEV_WEB_ORIGINS` and in the MPS API's dev CORS. By default a TRM worktree
+targets the **slot-0 master** MPS API on `:8080` (start it with `/serve-main`); override with
 `up.mjs <feature> trm --api 808N` to point at a running NG worktree's API instead. The chosen
 target is written to the TRM worktree's `apps/web/.env.development.local` as `VITE_API_URL`.
 
 ## Shared-API changes (TRM features) — the paired-worktree rule
 
-The ETM API serves both frontends; TRM has none of its own. The invariant:
+The MPS API serves both frontends; TRM has none of its own. The invariant:
 **API changes always flow through ETM's own pipeline — NG worktree → `feat/*` branch →
 NG `master` → `/etm_deploy` — regardless of which frontend consumes them.** Never edit
 `apps/api` in the ETM main checkout (it's the integration tree, and a dirty tree blocks
@@ -179,7 +179,7 @@ loading screen on a server that reports `UP`. **`up.mjs` and `status.mjs` both**
 returns 503 `{ db: 'error' }` when HFSQL is unreachable. The line reads
 `HFSQL : OK (207ms)` or `HFSQL : UNREACHABLE — …`; in `up.mjs` the latter sets a non-zero
 exit code, in `status.mjs` it downgrades the slot from `UP` to **`DEGRADED`** and prints
-the remedy. A TRM slot is probed on the ETM API it *borrows*, so a wedge there is never
+the remedy. A TRM slot is probed on the MPS API it *borrows*, so a wedge there is never
 reported by nobody.
 
 Use it by hand whenever screens hang but the app loads:
