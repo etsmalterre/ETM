@@ -11,7 +11,8 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import {
-  killTree, mainCheckout, readRegistry, updateRegistry, addPending, reapPending, entryProject,
+  killTree, killProcessesUnder, pidsUnder, mainCheckout, readRegistry, updateRegistry,
+  addPending, reapPending, entryProject,
 } from './lib.mjs'
 
 /** Synchronous sleep (no async in this short script). */
@@ -68,6 +69,13 @@ if (remove) {
     }
   }
   console.log(`Removing worktree ${entry.worktree} …`)
+  // Kill anything else still running from inside the worktree — a manual
+  // `pnpm dev`, or a survivor of the killTree above. The registry only knows the
+  // pids IT started, and any stray one holds the dir open forever (see pidsUnder).
+  const strays = killProcessesUnder(entry.worktree)
+  if (strays.length) {
+    console.log(`Killed ${strays.length} stray process(es) running from the worktree: ${strays.join(', ')}`)
+  }
   // Let the OS release the just-killed processes' handles, then try to delete
   // the directory (Node's rmSync retries EBUSY/ENOTEMPTY on Windows).
   sleepSync(1500)
@@ -93,7 +101,8 @@ if (remove) {
       project: entryProject(entry, slotKey), main,
     })
     console.log(`Slot ${slotKey} freed. Servers stopped and merge is done.`)
-    console.log(`NOTE: ${entry.worktree} is still open in a terminal, so it can't be deleted yet.`)
+    console.log(`NOTE: ${entry.worktree} can't be deleted yet — this session (or a`)
+    console.log(`      terminal) is cwd'd inside it. Nothing is left running.`)
     console.log(`      It will be removed automatically the next time you run any worktree`)
     console.log(`      skill from ${main} (or run: node scripts/worktree/reap.mjs there).`)
   }

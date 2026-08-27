@@ -12,7 +12,8 @@ if (resurrected?.length) {
   console.log(`Kept (feature name reused, a live slot owns the path now): ${resurrected.map((e) => e.feature).join(', ')}`)
 }
 if (stillBlocked.length) {
-  console.log('Still locked (a terminal is cwd\'d inside — close/cd out, then re-run):')
+  console.log("Still locked (a terminal is cwd'd inside — close it / cd out, then re-run.")
+  console.log('Processes running from the dir are killed automatically, so those are never the cause):')
   for (const e of stillBlocked) console.log(`  ${e.worktree}`)
 }
 if (!reaped.length && !stillBlocked.length) console.log('Nothing pending.')

@@ -267,8 +267,11 @@ export function reapPending() {
       continue
     }
     if (fs.existsSync(e.worktree)) {
+      // A dev server still running from inside the dir holds an open handle on
+      // it, so the delete can NEVER succeed until it is killed (see pidsUnder).
+      killProcessesUnder(e.worktree)
       try {
-        fs.rmSync(e.worktree, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+        fs.rmSync(e.worktree, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
       } catch {
         // still locked (a terminal is cwd'd inside) — try again next time
       }
@@ -387,6 +390,55 @@ export function pidAlive(pid) {
   } catch (e) {
     return e.code === 'EPERM' // exists but not ours
   }
+}
+
+/** PIDs of every process launched from inside `dir` (matched on the command
+ *  line, which is what a dev server started in a worktree always carries).
+ *  Windows-only; returns [] elsewhere.
+ *
+ *  ⚠ Why this exists: `down.mjs` and `reapPending()` kill the pids the REGISTRY
+ *  knows about. A dev server started outside the registry — a manual `pnpm dev`
+ *  in the worktree, or a survivor of a killTree that lost its tree — has its CWD
+ *  inside the worktree, and Windows refuses (EPERM) to delete a directory that is
+ *  any process's cwd. So `rmSync` fails forever while both scripts blame "a
+ *  terminal is cwd'd inside" — a diagnosis the user cannot act on, because no
+ *  terminal is involved.
+ *
+ *  Cwd is the lock, but the command line is what we can actually query cheaply on
+ *  Windows — and it is a good proxy: a dev server launched in a worktree always
+ *  carries that path (turbo → cross-env → vite are all resolved under it). What
+ *  this does NOT catch is a process launched from elsewhere that merely chdir'd
+ *  in — a shell, an editor. Those stay the genuine "close the terminal" case. Happened to TRM-visitage (2026-08-27), where
+ *  three orphan node processes (turbo → cross-env → vite on 5175) held the dir
+ *  after /feature-complete, so `status.mjs` listed it "pending removal" forever
+ *  and showed slot 5 free while its port was busy.
+ *  Matching includes the trailing separator so `TRM-of` never matches
+ *  `TRM-of-something`. Excludes both our own pid and the probe's own powershell
+ *  (whose command line carries the very path we search for). */
+export function pidsUnder(dir) {
+  if (!IS_WIN) return []
+  const withSep = path.resolve(dir) + path.sep
+  const esc = (v) => v.replace(/'/g, "''")
+  const back = esc(withSep)
+  const fwd = esc(withSep.split(path.sep).join('/'))
+  try {
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+      `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and ($_.CommandLine -like '*${back}*' -or $_.CommandLine -like '*${fwd}*') } | Select-Object -ExpandProperty ProcessId`,
+    ], { encoding: 'utf8' })
+    return out.split(/\r?\n/)
+      .map((l) => Number(l.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid)
+  } catch {
+    return []
+  }
+}
+
+/** Kill every process rooted in `dir` so the directory can actually be deleted.
+ *  Returns the pids it killed. Safe to call when there are none. */
+export function killProcessesUnder(dir) {
+  const pids = pidsUnder(dir)
+  for (const pid of pids) killTree(pid)
+  return pids
 }
 
 /** Kill a detached dev server and its child tree (pnpm → node → vite/tsx). */

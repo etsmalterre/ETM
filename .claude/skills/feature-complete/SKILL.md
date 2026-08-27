@@ -13,6 +13,29 @@ Deploy is a **separate** step — after this completes, run `/etm_deploy` or `/t
 The merge is always a clean fast-forward because we rebase first. Conflicts are resolved
 HERE (you have the context), so `master` only ever sees a fast-forward.
 
+## Run it end to end — no process questions
+
+`/feature-complete` is a **finish** command. What the user is buying is: branch merged into
+`master`, dev servers stopped, worktree and branch gone, nothing left to decide. Run the
+whole sequence and report once, at the end. Stopping mid-run to ask which option they prefer
+costs them the exact thing the command exists to buy — and the rules below already hold the
+answer.
+
+**Decide it yourself and keep going** for: untracked or unrelated files that can't affect
+this feature, whether anything durable goes into `CLAUDE.md`, a `CLAUDE.md` over budget, a
+typecheck error you can fix, a rebase conflict (you have this screen's context — resolve it),
+a worktree dir Windows won't delete yet (defer it, it self-reaps).
+
+**Stop only when continuing could lose work or ship something broken** — and then say exactly
+what you need, in one message:
+- not in a worktree / not on a `feat/*` branch — wrong place, there is nothing to land;
+- `<MAIN>` holds uncommitted work that isn't yours — merging could clobber it;
+- unlanded API **endpoint** code this feature needs that the recipe below can't land for you;
+- a typecheck failure you can't fix without a decision about how the feature should behave.
+
+Deploy is never part of this — `/feature-complete` lands, `/etm_deploy` and `/trm_deploy` ship.
+
+
 ## Project-aware
 
 This worktree is either **ETM** or **TRM**. Detect which from the repo (web package
@@ -33,19 +56,46 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 - You are in a feature worktree on a `feat/*` branch (NOT the main checkout / `master`).
 - `<MAIN>` is on `master` with a clean working tree. (The `apps/api/tsconfig.tsbuildinfo`
   gitignore keeps it clean across builds — if `git -C <MAIN> status --porcelain` is
-  non-empty, resolve that first; do not force past it.)
+  non-empty, that is one of the few genuine stops — see "Run it end to end". Never force past it.)
 - **TRM only — shared-API guardrail.** A TRM feature's endpoints live in the **ETM API**
   (`C:\dev\etsmalterre\ETM\apps\api`), not in this repo. Before landing, check whether
   API work for this feature is still unlanded:
   ```bash
   git -C C:/dev/etsmalterre/ETM status --porcelain -- apps/api
   ```
-  - If this is **non-empty**, someone edited the API in the NG **main checkout** — STOP and
-    tell the user. Those edits must land via a **paired NG worktree** (see "Shared-API
-    changes" below), never as loose edits in the integration tree. Landing the TRM web
-    branch while its API is uncommitted would strand the feature half-shipped.
-  - If the feature's API changes live in a **paired NG worktree**, land that one FIRST
-    (run `/feature-complete` there), then land this TRM branch.
+  **Non-empty is not by itself a reason to stop — classify what it prints.** The only thing
+  that can strand a half-shipped feature is code the running server serves:
+
+  | Path | Verdict |
+  |---|---|
+  | `src/routes/`, `src/lib/`, `src/index.ts`, `src/middleware*`, `apps/api/package.json`, `apps/api/data/` | **Blocking** — the screen may call an endpoint that isn't landed |
+  | `src/scripts/**` | **Not blocking** — dev-only probes/seeds/checks. Never imported by the server, never called by the web, so they cannot strand anything. Leave them alone; one line in the final report. |
+  | build output, `*.tsbuildinfo`, `.env*`, `.dev-logs/` | **Not blocking** — ignore silently |
+
+  *(2026-08-27: a run halted to ask what to do about an untracked
+  `src/scripts/seed-visitage-pieces.ts` — a dev-only seed that could not have stranded
+  anything. Classify and proceed; don't re-litigate this case.)*
+
+  If the feature's API changes live in a **paired NG worktree**, land that one FIRST — drive
+  its landing from here by path (steps 3–6 against `../ETM-<name>`), then land this TRM branch.
+
+  **Blocking entries in the ETM main checkout — land them, don't ask.** Loose edits in the
+  integration tree still have to reach `master` through ETM's own pipeline, so move them into
+  a paired NG worktree and land that first:
+  ```bash
+  # 1. capture (the stash is recoverable, and stays the only copy until step 5)
+  git -C C:/dev/etsmalterre/ETM stash push -u -m "api for <name>" -- apps/api
+  # 2. paired NG worktree  → ../ETM-<name>-api on feat/<name>-api
+  node C:/dev/etsmalterre/ETM/scripts/worktree/up.mjs <name>-api ng
+  # 3. worktrees share refs/stash, so the stash applies straight into it
+  git -C C:/dev/etsmalterre/ETM-<name>-api stash apply stash@{0}
+  # 4. commit there, then run steps 3–6 below against that worktree (land on ETM master)
+  # 5. ONLY once it is merged:
+  git -C C:/dev/etsmalterre/ETM stash drop
+  ```
+  **Never drop the stash before the changes are committed on the NG branch** — it is the only
+  copy. Then land this TRM branch as usual, and note in the report that the API must deploy
+  **before or with** the TRM web (`/etm_deploy` first, then `/trm_deploy`).
 
 ## Shared-API changes (TRM features)
 
@@ -92,8 +142,8 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    always the same shape: a section longer than ~15 lines covering one subsystem moves to
    `claude_doc/<topic>.md` and leaves a one-line row in the "Reference Documentation" table
    ("load on demand when…"). Also worth hunting: the same rule stated in two places, phase
-   notes for completed phases, references to deleted files. **Propose any non-trivial
-   extraction before doing it** — never silently relocate content the user relies on.
+   notes for completed phases, references to deleted files. **Never relocate content mid-landing** — finish the
+   merge, then offer the extraction in the step-8 report.
 
    *Known state (2026-07-30):* ETM's `CLAUDE.md` is ~53 KB and needs a dedicated extraction
    pass; TRM's is ~11 KB and healthy. Until that pass happens, ETM will report over budget
