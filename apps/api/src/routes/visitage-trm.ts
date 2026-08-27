@@ -76,7 +76,8 @@ import {
   selectMachines, selectBonnetiers, selectDefauts, bonnetierDisplayName, bonnetierDirectory,
   resolveEcruRefs, resolveColorisEcru, selectStockFilByIds, loadOf, realiseByOf,
   TYPES_DEFAUT, normaliseTypeDefaut, uniteForType,
-  type DefautRow,
+  awaitingPieces,
+  type DefautRow, type WaitingPieceRow,
 } from '../lib/production-trm.js'
 
 export const visitageTrmRouter: RouterType = Router()
@@ -98,20 +99,10 @@ const EVT_PESAGE = 'Pesage tombé métier'
 
 // ── Small readers ────────────────────────────────────────
 
-interface PieceRow {
-  id: number
-  numero: number
-  date_fin_ms: number | null
-  IDordre_fabrication: number
-  IDmachine: number
-}
-
-/** How far back the "pieces awaiting visitage" scan reaches, in
- *  piece_production ids. Live base: 37 421 pieces since 2020, so ~20/day →
- *  3 000 ids ≈ five months. An unvisited piece older than that is not
- *  actionable on the floor (the fabric is long gone); scanning the whole table
- *  on every poll would be, and would still surface nothing useful. */
-const PIECE_SCAN_DEPTH = 3000
+/** The scan itself lives in lib/production-trm.ts (awaitingPieces) — the
+ *  « Pièces à visiter » dashboard widget asks the same question over a
+ *  24-hour window. This file owns only what to OFFER out of it. */
+type PieceRow = WaitingPieceRow
 
 /** A piece stops being offered once it is this old.
  *
@@ -167,59 +158,23 @@ function offeredPieces(waiting: PieceRow[], headId: number): PieceRow[] {
   )
 }
 
-/** Finished pieces carrying no roll yet, across every OF, grouped by métier.
+/** Finished pieces carrying no roll yet, grouped by métier and windowed to
+ *  the last pieceMaxAgeDays().
  *
- *  The legacy asks this one OF at a time (COMBO_Piece_prod, verbatim):
- *    select piece_production.IDpiece_production, piece_production.numero
- *    from piece_production
- *    left join stock_ecru on stock_ecru.IDpiece_production = piece_production.IDpiece_production
- *    where piece_production.IDordre_fabrication = {pIDOF}
- *      and stock_ecru.IDstock_ecru is null and piece_production.date_fin <> ''
- *    order by piece_production.IDpiece_production asc
- *
- *  ⚠️ Asking per-OF is precisely how the legacy LOSES pieces: it only ever
- *  passes the OF at the head of the métier's queue, so a piece finished on an
- *  OF that has since been terminé becomes invisible forever. Verified on live
- *  data 2026-08-26 — pieces 37303 (OF 3364, métier 2A, finished the 20th),
- *  37379 + 37388 (OF 3431, 2F) and 37378 (OF 3423, 3G) are all stranded on
- *  est_termine = 1 OFs. So we scan by MACHINE instead and hand the strays back
- *  as autres_pieces.
- *
- *  `date_fin <> ''` vs IS NULL behaves differently on the two drivers, so the
- *  finished-ness test runs in JS on a flat read. Two queries for the whole
- *  workshop — cheaper than the per-métier loop it replaced. */
+ *  The scan (and the driver discipline behind it — the JS anti-join, the
+ *  workshop-wide sweep that the legacy's per-OF query cannot do) lives in
+ *  lib/production-trm.ts's awaitingPieces, shared with the « Pièces à visiter »
+ *  dashboard widget. What is local here is the OFFER window: a piece older than
+ *  the window is a deliberate skip, not a task, so the poste stays quiet about
+ *  it. Nothing is deleted — the rows stay in piece_production and
+ *  probe-visitage-trm.ts §5 still counts the backlog. */
 async function awaitingByMachine(): Promise<Map<number, PieceRow[]>> {
   const out = new Map<number, PieceRow[]>()
-  const top = await query<{ m: number | null }>('SELECT MAX(IDpiece_production) AS m FROM piece_production')
-  const floor = Math.max(0, (Number(top[0]?.m) || 0) - PIECE_SCAN_DEPTH)
-
-  const pieces = await query<any>(
-    `SELECT pp.IDpiece_production, pp.IDordre_fabrication, pp.numero, pp.date_fin, orf.IDmachine
-     FROM piece_production pp
-     INNER JOIN ordre_fabrication orf ON orf.IDordre_fabrication = pp.IDordre_fabrication
-     WHERE pp.IDpiece_production >= ${floor}
-     ORDER BY pp.IDpiece_production ASC`,
-  )
-  if (pieces.length === 0) return out
-
-  const taken = new Set<number>()
-  const rolls = await query<{ IDpiece_production: number }>(
-    `SELECT IDpiece_production FROM stock_ecru WHERE IDpiece_production >= ${floor}`,
-  )
-  for (const r of rolls) taken.add(Number(r.IDpiece_production) || 0)
-
-  for (const p of pieces) {
-    const id = Number(p.IDpiece_production) || 0
-    if (id <= 0 || taken.has(id)) continue
-    const ms = parseDtMs(p.date_fin)
-    if (ms === null) continue // still on the machine
-    // Older than the window → deliberately skipped, not offered (see
-    // PIECE_MAX_AGE_DAYS). The row is left alone in the database.
-    if ((ageJours(ms) ?? 0) > pieceMaxAgeDays()) continue
-    const mid = Number(p.IDmachine) || 0
-    const arr = out.get(mid) ?? []
-    arr.push({ id, numero: Number(p.numero) || 0, date_fin_ms: ms, IDordre_fabrication: Number(p.IDordre_fabrication) || 0, IDmachine: mid })
-    out.set(mid, arr)
+  for (const p of await awaitingPieces()) {
+    if ((ageJours(p.date_fin_ms) ?? 0) > pieceMaxAgeDays()) continue
+    const arr = out.get(p.IDmachine) ?? []
+    arr.push(p)
+    out.set(p.IDmachine, arr)
   }
   return out
 }

@@ -43,12 +43,62 @@
 // [poids_piece, poids_piece + 0.7]; the Y axis spans poids_piece ± 2 (the
 // integer literals did not survive the compile cache — inferred from the
 // screenshot). Title « <emplacement> - OF N° <id> ».
+//
+// ── « Pièces à visiter » (legacy FI_PiecesAVisiter.wdw)
+//
+// The pieces that came off a métier and that nobody has weighed yet — the
+// visiteuse's to-do list, and the régleur's proof that tombé métier is piling
+// up somewhere. Recovered the same way (MPS.cpl…FI_PiecesAVisiter.*.wcw for
+// the query, the WLanguage of the "row colour" loop supplied by the user).
+// Query verbatim:
+//
+//   SELECT machine.emplacement, piece_production.numero, piece_production.date_fin,
+//     (CASE WHEN CAST(SUBSTR(piece_production.date_fin,9,2) AS INT) >= 5
+//            AND CAST(SUBSTR(piece_production.date_fin,9,2) AS INT) < 13 THEN 'Matin'
+//           WHEN CAST(SUBSTR(piece_production.date_fin,9,2) AS INT) >= 13
+//            AND CAST(SUBSTR(piece_production.date_fin,9,2) AS INT) < 21 THEN 'Après-Midi'
+//           ELSE 'Nuit' END) AS equipe
+//   FROM piece_production
+//   LEFT JOIN ordre_fabrication ON ordre_fabrication.IDordre_fabrication = piece_production.IDordre_fabrication
+//   LEFT JOIN machine ON machine.IDmachine = ordre_fabrication.IDmachine
+//   LEFT JOIN stock_ecru ON stock_ecru.IDpiece_production = piece_production.IDpiece_production
+//   WHERE stock_ecru.date_saisie IS NULL
+//     AND piece_production.date_fin > DATEADD(DAY,-1,SYSDATE)
+//   ORDER BY piece_production.date_fin ASC
+//
+// and the colour loop that fills the table, verbatim:
+//
+//   dhDateRouge  = DateHeureSys() ; dhDateRouge.Heure  -= 3
+//   dhDateOrange = DateHeureSys() ; dhDateOrange.Heure -= 2
+//   si date_fin < dhDateRouge     → RougePastel
+//   sinon si date_fin < dhDateOrange → OrangePastel
+//   sinon → VertPastel
+//
+// So: a 24-hour window, oldest first, and one signal — how long the piece has
+// been waiting (3 h rouge / 2 h orange / vert). Both thresholds are evaluated
+// in the BROWSER against its own clock, as the legacy evaluates them against
+// the workstation's: the endpoint returns date_fin as epoch ms and nothing
+// else, so the colours stay true as the morning wears on rather than freezing
+// at the moment of the fetch.
+//
+// ⚠️ The 24-hour cutoff is applied to date_fin, NOT to the scan: awaitingPieces
+// sweeps the last PIECE_SCAN_DEPTH ids workshop-wide (lib/production-trm.ts)
+// and the window is a JS filter on top. Reproducing the legacy's LEFT JOIN
+// anti-join in SQL is what that helper exists to avoid — see its header.
+//
+// One deliberate delta, the same one the Visitage poste makes: the legacy's
+// SUBSTR(date_fin, 9, 2) reads the hour out of the driver's own DATETIME
+// rendering, which differs between the Windows ODBC driver and the Linux
+// bridge (parseDtMs handles both). The équipe is therefore derived from the
+// parsed local hour, with the legacy's own boundaries: 5–13 Matin, 13–21
+// Après-Midi, else Nuit.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { n } from '../lib/sst-shared.js'
+import { awaitingPieces } from '../lib/production-trm.js'
 
 export const dashboardTrmRouter: RouterType = Router()
 
@@ -206,6 +256,80 @@ dashboardTrmRouter.get('/poids-pieces/:id', async (req: Request, res: Response) 
     })
   } catch (err) {
     console.error('Error fetching poids-pieces detail:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── « Pièces à visiter » ─────────────────────────────────
+
+/** The legacy window (`date_fin > DATEADD(DAY,-1,SYSDATE)`): only pieces
+ *  finished in the last 24 h are listed. Anything older has stopped being
+ *  today's work — the backlog is the Visitage poste's business, over its own
+ *  7-day offer window, not this widget's.
+ *
+ *  Overridable so the stale dev copy stays usable: the dev database is a
+ *  snapshot months behind, where a literal 24 h shows an empty workshop and
+ *  the widget cannot be worked on at all. Set PIECES_A_VISITER_WINDOW_HOURS in
+ *  apps/api/.env.development ONLY — prod keeps the 24 h. Same knob, same
+ *  reason, as VISITAGE_PIECE_MAX_AGE_DAYS in routes/visitage-trm.ts.
+ *
+ *  ⚠️ Read lazily, NOT into a module-level const: ESM evaluates an imported
+ *  module before the importing one's body, so index.ts's dotenv.config() has
+ *  not run when this file is first evaluated and a top-level process.env read
+ *  here is always undefined. */
+function windowMs(): number {
+  const h = Number(process.env.PIECES_A_VISITER_WINDOW_HOURS ?? '24') || 24
+  return h * 60 * 60 * 1000
+}
+
+export type Equipe = 'Matin' | 'Après-Midi' | 'Nuit'
+
+/** The legacy CASE, on the parsed local hour rather than on SUBSTR of the
+ *  driver's own rendering: 5–13 Matin, 13–21 Après-Midi, else Nuit. */
+export function equipeAt(ms: number): Equipe {
+  const h = new Date(ms).getHours()
+  if (h >= 5 && h < 13) return 'Matin'
+  if (h >= 13 && h < 21) return 'Après-Midi'
+  return 'Nuit'
+}
+
+async function requirePiecesAVisiter(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const ok = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'dashboard_pieces_a_visiter')
+  if (!ok) res.status(403).json({ error: 'permission denied: dashboard_pieces_a_visiter' })
+  return ok
+}
+
+// ── GET /api/dashboard-trm/pieces-a-visiter ──
+// One row per finished piece with no roll yet, of the last 24 h, oldest first.
+dashboardTrmRouter.get('/pieces-a-visiter', async (req: Request, res: Response) => {
+  if (!(await requirePiecesAVisiter(req, res))) return
+  try {
+    const since = Date.now() - windowMs()
+    const waiting = (await awaitingPieces())
+      .filter((p) => (p.date_fin_ms ?? 0) > since)
+      .sort((a, b) => (a.date_fin_ms ?? 0) - (b.date_fin_ms ?? 0))
+    if (waiting.length === 0) { res.json([]); return }
+
+    const names = await machineNames([...new Set(waiting.map((p) => p.IDmachine))])
+    res.json(
+      waiting.map((p) => {
+        const ms = p.date_fin_ms as number
+        return {
+          IDpiece_production: p.id,
+          IDordre_fabrication: p.IDordre_fabrication,
+          machine: names.get(p.IDmachine) ?? `#${p.IDmachine}`,
+          numero: p.numero,
+          date_fin_ms: ms,
+          equipe: equipeAt(ms),
+        }
+      }),
+    )
+  } catch (err) {
+    console.error('Error fetching pieces-a-visiter:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

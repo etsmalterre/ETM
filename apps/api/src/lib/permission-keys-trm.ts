@@ -34,6 +34,13 @@ export const TRM_PERMISSION_KEYS = [
     category: 'Tableau de bord',
   },
   {
+    key: 'dashboard_pieces_a_visiter',
+    label: 'Widget « Pièces à visiter »',
+    description:
+      'Affiche sur le tableau de bord les pièces sorties d’un métier dans les 24 dernières heures et que personne n’a encore pesées : métier, numéro de pièce, fin du tricotage et équipe, la plus ancienne en tête, avec une alerte de couleur au-delà de 2 h puis de 3 h d’attente. Widget de consultation — le visitage lui-même se saisit dans Production > Visitage.',
+    category: 'Tableau de bord',
+  },
+  {
     key: 'dashboard_ca',
     label: 'Widget « Chiffre d’affaires »',
     description:

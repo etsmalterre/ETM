@@ -10,6 +10,46 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-27 — feat/widget (API du widget « Pièces à visiter » + lecteur de pièces partagé)
+
+Moitié API du port de `FI_PiecesAVisiter.wdw`, le widget du tableau de bord TRM qui liste le
+tombé métier sorti d'un métier et que personne n'a encore pesé. Le web est dans la branche
+jumelle `feat/widget` du dépôt TRM ; cette branche-ci porte les endpoints, le droit et la sonde.
+
+**`GET /api/dashboard-trm/pieces-a-visiter`** — pièce `piece_production` terminée, sans
+`stock_ecru`, `date_fin` dans les 24 h, la plus ancienne en tête. Nouveau droit
+`dashboard_pieces_a_visiter` (catégorie « Tableau de bord »). Fenêtre élargissable en dev par
+`PIECES_A_VISITER_WINDOW_HOURS` — la base locale est un instantané de mars, donc 0 ligne à 24 h ;
+même knob et même raison que `VISITAGE_PIECE_MAX_AGE_DAYS`. La prod garde 24 h.
+
+**Le lecteur de pièces en attente est sorti de `routes/visitage-trm.ts` vers
+`lib/production-trm.ts` (`awaitingPieces`).** Le poste de Visitage et le widget posent la même
+question et ce qu'elle encode est de la discipline de pilote, pas de la règle métier : l'anti-
+jointure est résolue en JS (`date_fin <> ''` et `IS NULL` ne se comportent pas pareil des deux
+côtés) et le balayage se fait **par machine**, pas par OF comme le legacy — c'est précisément
+ainsi que le legacy perd les pièces dont l'OF a été terminé entre-temps. Une deuxième copie
+aurait été un deuxième endroit où se tromper. Chaque appelant garde sa propre fenêtre :
+7 jours pour le poste (`awaitingByMachine` n'est plus qu'un group-by par-dessus), 24 h pour le
+widget. Les deux routes du poste ont été refumées après coup (7 métiers / 11 pièces en fenêtre
+élargie).
+
+**Deux règles durables dans `CLAUDE.md`.** La première est un footgun HFSQL neuf : *la forme
+TEXTE d'un DATETIME dépend du pilote*. Windows ODBC rend `'2025-11-24 19:58:40.412'`, le pont
+Linux `'20251124195840'`. Le `SUBSTR(date_fin,9,2)` du legacy — qui lit bien l'heure sur le
+`AAAAMMJJHHMMSS` de WinDev — y lit donc le **quantième** sous ODBC, sans la moindre erreur :
+mesuré 0/8. D'où l'« équipe » du widget dérivée de l'heure **parsée**, bornes legacy conservées
+(5–13 Matin, 13–21 Après-Midi, sinon Nuit). La seconde amende la règle de récupération d'une
+fenêtre PCS-compressée : les littéraux entiers ne survivent pas au cache de compilation, et
+avant de *mesurer* un seuil contre une capture d'écran (ce qu'avait coûté le rouloir de
+Maintenance), **il faut demander à l'utilisateur** — il a le projet WinDev ouvert. C'est ainsi
+que le barème de couleur du widget (rouge ≥ 3 h, orange ≥ 2 h) a été récupéré en un tour.
+
+**Sonde `scripts/probe-pieces-a-visiter-trm.ts`** (lecture seule, rejouable en prod après un
+`/etm_deploy`) : elle fait tourner le SQL legacy et le helper côte à côte — **56 vs 56** dans la
+profondeur de scan —, vérifie que l'anti-jointure n'a pas de trou (aucun `stock_ecru` sans
+`date_saisie`) et enregistre la forme de DATETIME que parle le pilote. `PROBE_WINDOW_DAYS`
+élargit la fenêtre pour que l'instantané de dev ait des lignes à comparer.
+
 ## 2026-08-26 — feat/prime-bareme (les taux de la prime sont datés, et montent à 0,055 / −0,40)
 
 Vincent a tranché la révision du barème discutée avec l'atelier depuis le 2026-08-24 : 1er choix

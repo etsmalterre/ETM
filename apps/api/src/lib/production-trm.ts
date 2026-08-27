@@ -512,3 +512,89 @@ export function uniteForType(raw: string | null | undefined): 'cm' | 'nb' {
   const t = normaliseTypeDefaut(raw)
   return TYPES_DEFAUT.find((d) => d.type === t)?.unite ?? 'nb'
 }
+
+// ── Pièces en attente de visitage ────────────────────────
+//
+// One reader, two consumers: the Visitage poste (routes/visitage-trm.ts, which
+// groups the result per métier and applies its own 7-day offer window) and the
+// « Pièces à visiter » dashboard widget (routes/dashboard-trm.ts, 24-hour
+// window). It lived in visitage-trm.ts until the widget needed it; extracted
+// here rather than copied, because what it encodes is driver discipline, not
+// business rules — a second copy is a second place to get the anti-join wrong.
+//
+// The legacy asks the same question one OF at a time (COMBO_Piece_prod of
+// FI_Visitage, verbatim from the WinDev compile cache):
+//   select piece_production.IDpiece_production, piece_production.numero
+//   from piece_production
+//   left join stock_ecru on stock_ecru.IDpiece_production = piece_production.IDpiece_production
+//   where piece_production.IDordre_fabrication = {pIDOF}
+//     and stock_ecru.IDstock_ecru is null and piece_production.date_fin <> ''
+//   order by piece_production.IDpiece_production asc
+//
+// ⚠️ Two things are deliberately NOT done the legacy way:
+//  - the anti-join is resolved in JS, not as `stock_ecru.… IS NULL` in the
+//    WHERE. `date_fin <> ''` vs IS NULL behaves differently on the Windows ODBC
+//    driver and the Linux bridge, so the finished-ness test runs on a flat
+//    read too. Two queries for the whole workshop, no LEFT JOIN either side.
+//  - no per-OF filter. Asking per-OF is exactly how the legacy LOSES pieces:
+//    it only ever passes the OF at the head of the métier's queue, so a piece
+//    finished on an OF since terminé becomes invisible forever (56 such pieces
+//    over five months on the live base, 2026-08-26).
+
+export interface WaitingPieceRow {
+  id: number
+  numero: number
+  /** `piece_production.date_fin` — the end of knitting, epoch ms. Never null
+   *  here: a piece with no parseable date_fin is still on the machine and is
+   *  filtered out. */
+  date_fin_ms: number | null
+  IDordre_fabrication: number
+  IDmachine: number
+}
+
+/** How far back the scan reaches, in piece_production ids. Live base: 37 421
+ *  pieces since 2020, so ~20/day → 3 000 ids ≈ five months. An unvisited piece
+ *  older than that is not actionable on the floor (the fabric is long gone);
+ *  scanning the whole table on every poll would be, and would still surface
+ *  nothing useful. Both consumers window much tighter than this on top. */
+export const PIECE_SCAN_DEPTH = 3000
+
+/** Every finished piece carrying no roll yet, oldest id first, workshop-wide.
+ *
+ *  No age window is applied — each caller has its own (Visitage offers the last
+ *  7 days, the widget the last 24 h), and they are not the same question. */
+export async function awaitingPieces(): Promise<WaitingPieceRow[]> {
+  const top = await query<{ m: number | null }>('SELECT MAX(IDpiece_production) AS m FROM piece_production')
+  const floor = Math.max(0, (Number(top[0]?.m) || 0) - PIECE_SCAN_DEPTH)
+
+  const pieces = await query<Record<string, unknown>>(
+    `SELECT pp.IDpiece_production, pp.IDordre_fabrication, pp.numero, pp.date_fin, orf.IDmachine
+     FROM piece_production pp
+     INNER JOIN ordre_fabrication orf ON orf.IDordre_fabrication = pp.IDordre_fabrication
+     WHERE pp.IDpiece_production >= ${floor}
+     ORDER BY pp.IDpiece_production ASC`,
+  )
+  if (pieces.length === 0) return []
+
+  const taken = new Set<number>()
+  const rolls = await query<{ IDpiece_production: number }>(
+    `SELECT IDpiece_production FROM stock_ecru WHERE IDpiece_production >= ${floor}`,
+  )
+  for (const r of rolls) taken.add(n(r.IDpiece_production))
+
+  const out: WaitingPieceRow[] = []
+  for (const p of pieces) {
+    const id = n(p.IDpiece_production)
+    if (id <= 0 || taken.has(id)) continue
+    const ms = parseDtMs(p.date_fin)
+    if (ms === null) continue // still on the machine
+    out.push({
+      id,
+      numero: n(p.numero),
+      date_fin_ms: ms,
+      IDordre_fabrication: n(p.IDordre_fabrication),
+      IDmachine: n(p.IDmachine),
+    })
+  }
+  return out
+}
