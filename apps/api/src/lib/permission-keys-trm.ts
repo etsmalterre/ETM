@@ -220,6 +220,19 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la validation d’une pièce dans Production > Visitage : création des rouleaux de tombé métier en stock, report des défauts relevés au métier, traçage de l’événement et décrément des lots de fil consommés. Sans ce droit l’écran reste consultable mais le bouton « Valider » est inactif.',
     category: 'Production',
   },
+  // Production > TRS. The shift dashboard of the workshop — per-métier
+  // timeline and TRS, the four production KPIs, the bonnetiers clocked in and
+  // their hours. Read-only, but it names people and their hours, so it is
+  // closed by default and granted by hand (user decision, 2026-08-28); the
+  // menu entry disappears without it (SubMenuItem.permission). The wall
+  // tablet's /api/trs/atelier stays open: it carries no identity.
+  {
+    key: 'view_trs',
+    label: 'Consulter le TRS de l’atelier',
+    description:
+      'Affiche l’entrée « TRS » du menu Production et autorise la lecture du tableau de bord d’équipe : timeline et TRS de chaque métier, pièces produites, visitées et déclassées, bonnetiers pointés et leurs heures. Lecture seule ; fermé par défaut.',
+    category: 'Production',
+  },
   {
     key: 'saisie_atelier',
     label: 'Saisir au poste de l’atelier',

@@ -38,7 +38,7 @@ console.table(
     'P': dur(m.tempsProdS),
     marche: dur(m.tempsMarcheS),
     déduct: `${Math.round(m.deductibleS / 60)} min`,
-    arrêts: m.arrets,
+    'arrêts / pièce': m.arretsParPiece,
     'arr/h': m.arretsParHeure,
     TRS: pct(m.trs),
   })),

@@ -1,89 +1,51 @@
-// TRS — the workshop tablet's read API (TRM/apps/trs, host trs.malterre).
+// TRS — the two read APIs of the workshop's TRS:
 //
-// One endpoint, polled every few seconds by a wall screen: the state of every
-// live métier over the CURRENT shift — running / stopped and since when, the
-// measured speed, the shift TRS, the arrêt count — laid on the floor plan by
-// the client. Port of the legacy WinDev `Appli_TRS` (FEN_Main_App_TRS.wdw,
-// PCS-compressed: only its procedure names survive — MappingAdresseAutomate,
-// NombreArrets, TRSEquipeEnCours, MAJAffichage). The formula comes from the
-// FI_TRS timeline procedure the user supplied; it lives in lib/trs-trm.ts
-// with its tests, and this file only feeds it rows.
+//   GET /api/trs/atelier   the wall tablet (TRM/apps/trs, host trs.malterre):
+//                          the state of every live métier over the CURRENT
+//                          shift — running / stopped and since when, the
+//                          measured speed, the shift TRS, the arrêts par
+//                          pièce — laid on the floor plan by the client.
+//                          Polled every few seconds. Port of the legacy
+//                          `Appli_TRS` (FEN_Main_App_TRS.wdw).
+//   GET /api/trs/equipe    the ERP screen Production › TRS (TRM/apps/web):
+//                          ANY shift — the per-métier timeline, the four KPI
+//                          cards, the piece lists with their event cards and
+//                          the bonnetiers clocked in. Port of the legacy
+//                          `FI_TRS.wdw`, recovered from its compile cache.
+//
+// The formula is the FI_TRS timeline procedure (lib/trs-trm.ts, tested); the
+// loading is shared (lib/trs-equipe-trm.ts) so the tablet and the ERP can
+// never disagree on a métier's TRS.
 //
 // Reads ONLY. `evenement_machine` has exactly one writer (the recorder —
-// routes/recorder.ts) and this screen never touches it. No permission guard
-// either: a passive read-only wall display with no per-person identity, on
-// the same footing as consulting the visitage poste. The tables involved
+// routes/recorder.ts) and neither screen touches it. The tables involved
 // carry no IDsociete (the métiers ARE Tricotage Malterre).
 //
-// Driver discipline, all inherited from the sibling routes:
-//   - `DATE` is reserved on evenement_machine / evenement_piece → always
-//     `DATE AS date_evt`, literals as 'YYYYMMDDHHMMSS'.
-//   - `machine.archivé` is accented → selectMachines() + filter in JS.
-//   - `asso_fil_matiere.IDMatière` is accented → SELECT * on the (small)
-//     table and fold keys with rawGet(), never name it in a WHERE.
-//   - `arret_prod` reads NULL on Windows and may read '' on the bridge →
-//     parseDtMs() decides, not the SQL.
-//   - « Début du tricotage » carries an accent → `LIKE 'D%but du tricotage'`
-//     so the literal never has to match the driver's encoding.
+// Permissions: /atelier has NO guard — a passive read-only wall display with
+// no per-person identity, on the same footing as consulting the visitage
+// poste. /equipe is behind `view_trs` (permission-keys-trm.ts): it names
+// people and their hours, and the user chose to grant it by hand.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query } from '../lib/hfsql-auto.js'
-import {
-  selectMachines,
-  parseDtMs,
-  rawGet,
-  resolveEcruRefs,
-  resolveColorisEcru,
-} from '../lib/production-trm.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import { trmUserHasPermission } from '../lib/permissions-trm.js'
+import { parseDtMs, resolveColorisEcru, resolveEcruRefs } from '../lib/production-trm.js'
 import {
   ARRETS_PIECES,
   arretsParPiece,
   calculerTrs,
   equipeCourante,
+  equipeDepuisLiteral,
   etatCourant,
   toHfsqlDt,
   type ArretsParPiece,
-  type EvenementMachine,
-  type EvenementPiece,
-  type Fenetre,
 } from '../lib/trs-trm.js'
+import { chargerBase, chargerEquipe, type OfRow, type TrsEquipePayload } from '../lib/trs-equipe-trm.js'
 
 export const trsRouter: RouterType = Router()
 
 const n = (v: unknown): number => Number(v) || 0
-
-// ── The state before the shift, cached per shift ──────────
-//
-// The walk needs to know whether each métier was running at 05:00 (or 13:00,
-// 21:00). That is the last event BEFORE the shift — one indexed `TOP 1` per
-// métier, 30 small queries — and it cannot change once the shift has begun,
-// so it is fetched once per shift and kept. Without the cache a 10 s poll
-// would re-issue those 30 queries every time for an answer that is constant.
-
-interface EtatInitial { etat: 0 | 1; atMs: number | null }
-let cacheEtatsInitiaux: { debutMs: number; etats: Map<number, EtatInitial | null> } | null = null
-
-async function etatsInitiaux(machineIds: number[], debutMs: number): Promise<Map<number, EtatInitial | null>> {
-  if (cacheEtatsInitiaux && cacheEtatsInitiaux.debutMs === debutMs) {
-    const missing = machineIds.filter((id) => !cacheEtatsInitiaux!.etats.has(id))
-    if (missing.length === 0) return cacheEtatsInitiaux.etats
-  }
-  const etats = cacheEtatsInitiaux?.debutMs === debutMs ? cacheEtatsInitiaux.etats : new Map<number, EtatInitial | null>()
-  const lit = toHfsqlDt(debutMs)
-  for (const id of machineIds) {
-    if (etats.has(id)) continue
-    const rows = await query<{ etat: number; date_evt: unknown }>(
-      `SELECT TOP 1 etat, DATE AS date_evt FROM evenement_machine
-       WHERE IDmachine = ${id} AND DATE < '${lit}' ORDER BY DATE DESC`,
-    )
-    etats.set(
-      id,
-      rows.length > 0 ? { etat: n(rows[0].etat) === 1 ? 1 : 0, atMs: parseDtMs(rows[0].date_evt) } : null,
-    )
-  }
-  cacheEtatsInitiaux = { debutMs, etats }
-  return etats
-}
 
 // ── GET /api/trs/atelier ──────────────────────────────────
 
@@ -129,139 +91,34 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
   try {
     const nowMs = Date.now()
     const equipe = equipeCourante(nowMs)
-    const debutLit = toHfsqlDt(equipe.debutMs)
+    const base = await chargerBase(equipe, nowMs)
 
-    const machines = (await selectMachines()).filter((m) => m.archive === 0)
-    const machineIds = machines.map((m) => m.id)
-
-    const [evRows, ofRows, pieceEvRows, initiaux] = await Promise.all([
-      query<{ IDmachine: number; date_evt: unknown; etat: number }>(
-        `SELECT IDmachine, DATE AS date_evt, etat FROM evenement_machine
-         WHERE DATE >= '${debutLit}' ORDER BY DATE ASC`,
-      ),
-      // Every OF that can have a window inside the shift: still open (running
-      // or interrupted), or closed after the shift began. `demarrage_prod`
-      // is not bounded on purpose — a running OF may have started in January.
-      query<Record<string, unknown>>(
-        `SELECT IDordre_fabrication, IDmachine, est_actif, demarrage_prod, arret_prod,
-                vitesse, IDref_ecru, IDcolori_ecru
-         FROM ordre_fabrication
-         WHERE est_termine = 0 OR arret_prod >= '${debutLit}'`,
-      ),
-      query<{ IDevenement_piece: number; evenement: string; date_evt: unknown; IDpiece_production: number }>(
-        `SELECT IDevenement_piece, evenement, DATE AS date_evt, IDpiece_production
-         FROM evenement_piece
-         WHERE DATE >= '${debutLit}'
-           AND (evenement = 'Nettoyage' OR evenement LIKE 'D%but du tricotage')`,
-      ),
-      etatsInitiaux(machineIds, equipe.debutMs),
-    ])
-
-    // Machine events, grouped.
-    const evParMachine = new Map<number, EvenementMachine[]>()
-    let dernierEvenementMs: number | null = null
-    for (const r of evRows) {
-      const atMs = parseDtMs(r.date_evt)
-      if (atMs === null) continue
-      const id = n(r.IDmachine)
-      if (!evParMachine.has(id)) evParMachine.set(id, [])
-      evParMachine.get(id)!.push({ atMs, etat: n(r.etat) === 1 ? 1 : 0 })
-      if (dernierEvenementMs === null || atMs > dernierEvenementMs) dernierEvenementMs = atMs
-    }
-    if (dernierEvenementMs === null) {
-      for (const e of initiaux.values()) {
-        if (e?.atMs !== null && e?.atMs !== undefined && (dernierEvenementMs === null || e.atMs > dernierEvenementMs)) {
-          dernierEvenementMs = e.atMs
-        }
-      }
-    }
-
-    // OF windows per machine, and the active OF per machine for the label.
-    const fenetresParMachine = new Map<number, Fenetre[]>()
-    const machineParOf = new Map<number, number>()
-    const ofActifParMachine = new Map<number, Record<string, unknown>>()
-    for (const o of ofRows) {
-      const ofId = n(o.IDordre_fabrication)
-      const mid = n(o.IDmachine)
-      machineParOf.set(ofId, mid)
-      const debutMs = parseDtMs(o.demarrage_prod)
-      if (debutMs !== null) {
-        if (!fenetresParMachine.has(mid)) fenetresParMachine.set(mid, [])
-        fenetresParMachine.get(mid)!.push({ debutMs, finMs: parseDtMs(o.arret_prod) })
-      }
-      if (n(o.est_actif) === 1) ofActifParMachine.set(mid, o)
-    }
-
-    // Piece events → their OF (through piece_production) → machine, plus the
-    // lycra flag of each OF concerned.
-    const pieceIds = Array.from(new Set(pieceEvRows.map((r) => n(r.IDpiece_production)).filter((x) => x > 0)))
-    const pieces = new Map<number, { numero: number; ofId: number }>()
-    if (pieceIds.length > 0) {
-      const rows = await query<{ IDpiece_production: number; numero: number; IDordre_fabrication: number }>(
-        `SELECT IDpiece_production, numero, IDordre_fabrication FROM piece_production
-         WHERE IDpiece_production IN (${pieceIds.join(',')})`,
-      )
-      for (const r of rows) pieces.set(n(r.IDpiece_production), { numero: n(r.numero), ofId: n(r.IDordre_fabrication) })
-    }
-    const ofIdsPieces = Array.from(new Set(Array.from(pieces.values()).map((p) => p.ofId).filter((x) => x > 0)))
-    // An OF that ended before the shift but whose piece event is dated inside
-    // it cannot exist, but an OF terminated inside the shift is already in
-    // ofRows; anything still unknown gets its machine resolved here.
-    const inconnus = ofIdsPieces.filter((id) => !machineParOf.has(id))
-    if (inconnus.length > 0) {
-      const rows = await query<{ IDordre_fabrication: number; IDmachine: number }>(
-        `SELECT IDordre_fabrication, IDmachine FROM ordre_fabrication
-         WHERE IDordre_fabrication IN (${inconnus.join(',')})`,
-      )
-      for (const r of rows) machineParOf.set(n(r.IDordre_fabrication), n(r.IDmachine))
-    }
-    const [lycraParOf, arretsParMachine] = await Promise.all([
-      ofsAvecLycra(ofIdsPieces),
-      arretsDesOfsActifs(ofActifParMachine),
-    ])
-
-    const pieceEvParMachine = new Map<number, EvenementPiece[]>()
-    for (const r of pieceEvRows) {
-      const atMs = parseDtMs(r.date_evt)
-      const piece = pieces.get(n(r.IDpiece_production))
-      if (atMs === null || !piece) continue
-      const mid = machineParOf.get(piece.ofId)
-      if (!mid) continue
-      if (!pieceEvParMachine.has(mid)) pieceEvParMachine.set(mid, [])
-      pieceEvParMachine.get(mid)!.push({
-        atMs,
-        type: String(r.evenement).trim() === 'Nettoyage' ? 'nettoyage' : 'debut_piece',
-        numero: piece.numero,
-        lycra: lycraParOf.has(piece.ofId),
-      })
-    }
-
-    // Labels of the active OFs.
-    const actifs = Array.from(ofActifParMachine.values())
-    const [refs, coloris] = await Promise.all([
-      resolveEcruRefs(actifs.map((o) => n(o.IDref_ecru))),
-      resolveColorisEcru(actifs.map((o) => n(o.IDcolori_ecru))),
+    const actifs = Array.from(base.ofActifParMachine.values())
+    const [refs, coloris, arretsParMachine] = await Promise.all([
+      resolveEcruRefs(actifs.map((o) => o.refId)),
+      resolveColorisEcru(actifs.map((o) => o.coloriId)),
+      arretsDesOfsActifs(base.ofActifParMachine),
     ])
 
     let sommeMarcheS = 0
     let sommeProdMaxS = 0
-    const payload: TrsMachine[] = machines.map((m) => {
-      const evenements = evParMachine.get(m.id) ?? []
-      const initial = initiaux.get(m.id) ?? null
+    const payload: TrsMachine[] = base.machines.map((m) => {
+      const evenements = base.evParMachine.get(m.id) ?? []
+      const initial = base.initiaux.get(m.id) ?? null
       const r = calculerTrs({
         equipe,
         nowMs,
         etatInitial: initial ? initial.etat : null,
         evenements,
-        fenetres: fenetresParMachine.get(m.id) ?? [],
-        evenementsPiece: pieceEvParMachine.get(m.id) ?? [],
+        fenetres: base.fenetresParMachine.get(m.id) ?? [],
+        evenementsPiece: base.pieceEvParMachine.get(m.id) ?? [],
       })
       if (r.trs !== null) {
         sommeMarcheS += r.tempsMarcheS
         sommeProdMaxS += r.tempsProdS - r.deductibleS
       }
       const courant = etatCourant(evenements, initial)
-      const o = ofActifParMachine.get(m.id)
+      const o = base.ofActifParMachine.get(m.id)
       const a = arretsParMachine.get(m.id) ?? { moyenne: null, pieces: 0 }
       return {
         id: m.id,
@@ -272,11 +129,11 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
         enProduction: r.enProduction,
         of: o
           ? {
-              id: n(o.IDordre_fabrication),
-              reference: refs.get(n(o.IDref_ecru))?.reference ?? '',
-              coloris: coloris.get(n(o.IDcolori_ecru)) ?? '',
-              vitesse: n(o.vitesse),
-              vitesseCible: refs.get(n(o.IDref_ecru))?.vitesse_cible ?? 0,
+              id: o.id,
+              reference: refs.get(o.refId)?.reference ?? '',
+              coloris: coloris.get(o.coloriId) ?? '',
+              vitesse: o.vitesse,
+              vitesseCible: refs.get(o.refId)?.vitesse_cible ?? 0,
             }
           : null,
         trs: r.trs,
@@ -300,7 +157,7 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
       /** Age of the newest transition in the whole parc — the only signal that
        *  the recorder is still writing (TRS/docs/recorder.md: nobody watches
        *  its heartbeat, and a silent PLC looks exactly like an idle workshop). */
-      dernierEvenement: dernierEvenementMs === null ? null : new Date(dernierEvenementMs).toISOString(),
+      dernierEvenement: base.dernierEvenementMs === null ? null : new Date(base.dernierEvenementMs).toISOString(),
       parc: {
         /** Time-weighted shift TRS of the métiers in production. */
         trs: sommeProdMaxS > 0 ? sommeMarcheS / sommeProdMaxS : null,
@@ -316,7 +173,64 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
   }
 })
 
-// ── Arrêts par pièce of the active OFs, cached per OF ──────
+// ── GET /api/trs/equipe?debut=YYYYMMDDHHMMSS ──────────────
+//
+// The ERP shift dashboard. `debut` names the shift (a 05 / 13 / 21 h
+// boundary, local time); absent → the current shift. A shift that is over
+// no longer moves — except for a late weighing changing « Visitée le » —
+// so past shifts are served from a short cache; the current shift is
+// always recomputed (its initial states are cached underneath anyway).
+
+async function requireViewTrs(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const ok = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'view_trs')
+  if (!ok) res.status(403).json({ error: 'permission denied: view_trs' })
+  return ok
+}
+
+const CACHE_EQUIPE_TTL_MS = 10 * 60_000
+const CACHE_EQUIPE_MAX = 12
+const cacheEquipes = new Map<string, { atMs: number; payload: TrsEquipePayload }>()
+
+trsRouter.get('/equipe', async (req: Request, res: Response) => {
+  if (!(await requireViewTrs(req, res))) return
+  try {
+    const nowMs = Date.now()
+    const debut = req.query.debut === undefined ? '' : String(req.query.debut)
+    const equipe = debut === '' ? equipeCourante(nowMs) : equipeDepuisLiteral(debut)
+    if (!equipe) {
+      res.status(400).json({ error: 'debut must be a shift start (YYYYMMDDHHMMSS at 05, 13 or 21 h)' })
+      return
+    }
+    if (equipe.debutMs > nowMs) {
+      res.status(400).json({ error: 'debut is in the future' })
+      return
+    }
+    const passee = equipe.finMs <= nowMs
+    const cle = toHfsqlDt(equipe.debutMs)
+    if (passee) {
+      const hit = cacheEquipes.get(cle)
+      if (hit && nowMs - hit.atMs < CACHE_EQUIPE_TTL_MS) {
+        res.json(hit.payload)
+        return
+      }
+    }
+    const payload = await chargerEquipe(equipe, nowMs)
+    if (passee) {
+      cacheEquipes.set(cle, { atMs: nowMs, payload })
+      while (cacheEquipes.size > CACHE_EQUIPE_MAX) cacheEquipes.delete(cacheEquipes.keys().next().value!)
+    }
+    res.json(payload)
+  } catch (err) {
+    console.error('[trs] equipe failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Arrêts par pièce of the active OFs, cached per OF (tablet only) ──
 //
 // The mean is over FINISHED pieces, so it can only change when a piece
 // ends: keyed on (OF, ids of its last finished pieces) it is computed once
@@ -334,12 +248,10 @@ interface PieceRow {
 }
 const cacheArretsParOf = new Map<number, { cle: string; resultat: ArretsParPiece }>()
 
-async function arretsDesOfsActifs(
-  ofActifParMachine: Map<number, Record<string, unknown>>,
-): Promise<Map<number, ArretsParPiece>> {
+async function arretsDesOfsActifs(ofActifParMachine: Map<number, OfRow>): Promise<Map<number, ArretsParPiece>> {
   const out = new Map<number, ArretsParPiece>()
   const ofIds = Array.from(ofActifParMachine.values())
-    .map((o) => n(o.IDordre_fabrication))
+    .map((o) => o.id)
     .filter((x) => x > 0)
   if (ofIds.length === 0) {
     cacheArretsParOf.clear()
@@ -361,7 +273,7 @@ async function arretsDesOfsActifs(
   for (const id of Array.from(cacheArretsParOf.keys())) if (!ofIds.includes(id)) cacheArretsParOf.delete(id)
 
   for (const [mid, o] of ofActifParMachine) {
-    const ofId = n(o.IDordre_fabrication)
+    const ofId = o.id
     const dernieres = (finiesParOf.get(ofId) ?? []).sort((a, b) => b.id - a.id).slice(0, ARRETS_PIECES)
     const cle = dernieres.map((p) => p.id).join(',')
     const hit = cacheArretsParOf.get(ofId)
@@ -399,28 +311,5 @@ async function arretsDesOfsActifs(
     cacheArretsParOf.set(ofId, { cle, resultat })
     out.set(mid, resultat)
   }
-  return out
-}
-
-/** OF ids whose composition carries élasthanne — the legacy's
- *  `asso_fil_matiere.IDMatière IN (4, 13)` over `asso_fil_of.IDref_fil`. The
- *  matière column is accented, so the (small) table is read whole and folded. */
-async function ofsAvecLycra(ofIds: number[]): Promise<Set<number>> {
-  const out = new Set<number>()
-  if (ofIds.length === 0) return out
-  const compo = await query<{ IDordre_fabrication: number; IDref_fil: number }>(
-    `SELECT IDordre_fabrication, IDref_fil FROM asso_fil_of
-     WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
-  )
-  const refFils = new Set(compo.map((c) => n(c.IDref_fil)))
-  if (refFils.size === 0) return out
-  const matieres = await query<Record<string, unknown>>('SELECT * FROM asso_fil_matiere')
-  const filsLycra = new Set<number>()
-  for (const r of matieres) {
-    const mat = n(rawGet(r, /^IDmati/i))
-    const fil = n(rawGet(r, /^IDref_fil$/i))
-    if ((mat === 4 || mat === 13) && refFils.has(fil)) filsLycra.add(fil)
-  }
-  for (const c of compo) if (filsLycra.has(n(c.IDref_fil))) out.add(n(c.IDordre_fabrication))
   return out
 }
