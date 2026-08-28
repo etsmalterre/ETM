@@ -25,6 +25,13 @@ see the ⚠️ in `etm_deploy` §Deploy ownership and in TRM's `trm_deploy` §Sc
   the atelier display screens. Each is another consumer of the same API — so any sentence
   of the form "the API belongs to <app>" will age badly. Write "the MPS API" and say which
   *repo* it lives in if that's what you mean.
+- **Clients already served beyond the two ERPs**: the atelier phones (`TRM/apps/atelier`,
+  `/api/atelier`), the TRS collector (`/api/recorder`, the only writer of
+  `evenement_machine`) and the **TRS wall tablet** (`TRM/apps/trs`, host `trs.malterre`,
+  `GET /api/trs/atelier` — read-only, no identity; the shift-TRS formula and its tests are
+  in `lib/trs-trm.ts`, the legacy code it ports is quoted in
+  `~/.claude/plans/trs-atelier.md`). Dev CORS for the two PWAs (5176/5177) comes from
+  `TRM_PWA_PORTS` in `scripts/worktree/lib.mjs`.
 - ⚠️ **`apps/api` lives in this repo for historical reasons — that is a file location, not
   ownership.** ETM was `MPS_NG`, the first client, so the platform API was built inside it
   and never moved. Consequences that are easy to get wrong:

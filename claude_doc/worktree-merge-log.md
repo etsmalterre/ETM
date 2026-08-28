@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/trs
+L'API de la tablette murale TRS de l'atelier (`TRM/apps/trs`, hôte `trs.malterre`) :
+`GET /api/trs/atelier` rend l'état de chaque métier vivant sur l'équipe en cours — marche/arrêt et
+depuis quand, la vitesse mesurée, le TRS de l'équipe, les arrêts — plus le TRS du parc et l'âge du
+dernier événement. Le calcul est la procédure timeline de `FI_TRS` (fournie verbatim par Vincent),
+pur et testé dans `lib/trs-trm.ts` (18 tests) : temps en marche / (temps de production − arrêts
+déductibles), avec trois deltas assumés (union des fenêtres d'OF, état initial pris avant l'équipe,
+tout arrêt compté). Lecture seule, sans garde ni identité. Sonde `scripts/probe-trs-trm.ts`.
+`TRM_PWA_PORTS` (5176/5177) rejoint le CORS dev des worktrees.
+
 ## 2026-08-28 — feat/debug
 Tickets #1098 et #1099 (Clients › Commandes, modale « Expédition groupée » des commandes divers).
 **#1098 « il manque la ligne de bleu / 20 mètres » n'était pas une ligne manquante** : `SearchableCombobox`
