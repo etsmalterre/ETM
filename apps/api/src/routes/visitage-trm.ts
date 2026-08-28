@@ -82,8 +82,25 @@ import {
   type DefautRow, type WaitingPieceRow,
 } from '../lib/production-trm.js'
 import { EtiquetteEcruPdf, type EtiquetteEcruData } from '../lib/pdf/EtiquetteEcruPdf.js'
+import { createSerialLock } from '../lib/serial-lock.js'
 
 export const visitageTrmRouter: RouterType = Router()
+
+/** POST /valider runs one request at a time, process-wide.
+ *
+ *  Its "piece already visited" guard is a COUNT that both of two concurrent
+ *  requests pass before either has inserted, its roll numbers are a MAX+1 that
+ *  both agree on, and evenement_piece / defaut_qualite PKs are MAX+1 too — with
+ *  no unique index behind any of them. On 2026-08-28 14:35:38 two identical
+ *  POSTs from the poste (a double trigger inside the one macrotask where the
+ *  web's `isPending` still read false) both got 201: piece 40751 became four
+ *  rolls instead of two, and evenement_piece got two rows per PK. The web now
+ *  latches its own trigger; this lock is the guarantee that does not depend on
+ *  the client — the second request queues, then meets the first one's rows and
+ *  409s like a piece another poste took. One lock, not one per piece: the
+ *  MAX+1 keys are shared across pieces, so two DIFFERENT pieces validated at
+ *  once would still collide on them. */
+const validerLock = createSerialLock()
 
 /** Rolls without a "Visitage" event allowed between two visited ones before
  *  the next piece is due a full inspection. The legacy label of
@@ -900,6 +917,9 @@ async function rewriteDefautWithRecupere(
  * checked BEFORE the first write (piece still free, defect ownership, weights,
  * rights), and on a mid-sequence failure the response reports the rolls that
  * did get created rather than a bare 500 — an honest partial beats a lie.
+ *
+ * And it is SERIALISED (validerLock): the pre-flight is only authoritative if
+ * nothing else is writing between it and the INSERTs.
  */
 visitageTrmRouter.post('/valider', async (req: Request, res: Response) => {
   if (!(await requireSaisieVisitage(req, res))) return
@@ -910,7 +930,12 @@ visitageTrmRouter.post('/valider', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
     return
   }
-  const body = parsed.data
+  await validerLock.run(() => valider(parsed.data, dryRun, res))
+})
+
+type ValiderBody = z.infer<typeof validerBody>
+
+async function valider(body: ValiderBody, dryRun: boolean, res: Response): Promise<void> {
   const created: { id: number; numero: string; num_piece_OF: number; second_choix: number; poids: number }[] = []
 
   try {
@@ -1125,4 +1150,4 @@ visitageTrmRouter.post('/valider', async (req: Request, res: Response) => {
     // nothing did.
     res.status(500).json({ error: 'ecriture_partielle', rouleaux_crees: created })
   }
-})
+}

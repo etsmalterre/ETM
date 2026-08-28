@@ -195,6 +195,19 @@ async function main(): Promise<void> {
   // ── The plan itself ─────────────────────────────────
   const dry = await plan()
   check('POST /valider?dry_run=1 → 200', dry.status === 200, dry.json ?? dry.status)
+
+  // ── The lock ────────────────────────────────────────
+  // /valider is serialised process-wide (validerLock) since the 2026-08-28
+  // double POST. What can go wrong with a mutex is that it never releases —
+  // and then every poste de visitage hangs on its next validation. Three
+  // concurrent plans must all come back, and agree (nothing was written
+  // between them, so they see the same numbering).
+  const burst = await Promise.all([plan(), plan(), plan()])
+  check('3 concurrent /valider?dry_run=1 all answer 200 (lock releases)',
+    burst.every((r) => r.status === 200), burst.map((r) => r.status))
+  check('…and agree on the numbering',
+    new Set(burst.map((r) => JSON.stringify((r.json?.rouleaux ?? []).map((x: any) => x.numero)))).size === 1,
+    burst.map((r) => r.json?.rouleaux?.map((x: any) => x.numero)))
   if (dry.status === 200) {
     const p = dry.json
     check('dry run writes nothing (dry_run echoed)', p.dry_run === true)
