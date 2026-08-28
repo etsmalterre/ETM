@@ -73,10 +73,15 @@ export const MAIN_SLOT = 0
 // auth works from any slot — NG web ports (slot-0 master + 1..6), the two legacy
 // defaults, and the TRM web ports (5171..6) since a TRM worktree's web server
 // calls the MPS API cross-origin. Deduped (5175 == trm slot 5).
+// Dev ports of the TRM monorepo's PWAs — apps/atelier (5176, also TRM slot 6)
+// and apps/trs (5177) — so every MPS API worktree answers them.
+export const TRM_PWA_PORTS = [5176, 5177]
+
 export const DEV_WEB_ORIGINS = [
   ...new Set([
     5174,
     5175,
+    ...TRM_PWA_PORTS,
     webPort(MAIN_SLOT),
     ...SLOTS.map(webPort),
     ...SLOTS.map(PROJECTS.trm.webPort),
