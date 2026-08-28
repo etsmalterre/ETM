@@ -127,6 +127,11 @@ interface RefFilDetail extends RefFilListRow {
   stock_per_variante: StockPerVariante[]
   commande_total_kg: number
   commande_lignes: number
+  /** Still expected from suppliers: open lines of open commandes, minus what
+   *  already landed. NOT commande_total_kg, which is the whole purchase history
+   *  (×28 too big across the catalog — ticket #1090). */
+  commande_reste_kg: number
+  commande_lignes_ouvertes: number
   commande_history: CommandeHistoryRow[]
   offres: OffreFilRow[]
   fournisseurs: FournisseurRef[]
@@ -2405,7 +2410,18 @@ function DetailSidebar({
             />
             <KV
               label="En commande"
-              value={<span className="tabular-nums">{fmtNum(detail.commande_total_kg, 1)} kg</span>}
+              value={
+                <span className="tabular-nums">
+                  {fmtNum(detail.commande_reste_kg ?? 0, 1)} kg
+                  {(detail.commande_lignes_ouvertes ?? 0) > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      {' · '}
+                      {detail.commande_lignes_ouvertes} ligne
+                      {detail.commande_lignes_ouvertes !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                </span>
+              }
             />
           </div>
         )}

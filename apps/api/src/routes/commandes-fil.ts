@@ -4,6 +4,7 @@ import multer from 'multer'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
+import { pickVal, stripKeys } from './stock.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 import { CommandeFournisseurPdf, type CommandeFournisseurPdfData } from '../lib/pdf/CommandeFournisseurPdf.js'
@@ -127,19 +128,27 @@ const STOCK_LOT_SELECT = IS_WINDOWS
 const STOCK_LOT_JOINS = `FROM stock_fil sf LEFT JOIN ref_fil rf ON sf.IDref_fil = rf.IDref_fil LEFT JOIN colori_fil cf ON sf.IDcolori_fil = cf.IDcolori_fil LEFT JOIN fournisseur f ON sf.IDfournisseur = f.IDfournisseur`
 
 /** Map the two platform-specific row shapes to stable ASCII keys, and drop
- *  binary blobs so JSON serialization doesn't crash. */
+ *  binary blobs so JSON serialization doesn't crash.
+ *
+ *  ⚠ The accented columns come back from the Linux bridge truncated at the accent
+ *  AND with a non-deterministic garbage trailing byte (termin / termint / termini
+ *  … depending on server load), so a hardcoded `.termin` fallback misses the key
+ *  in production and leaves the flag at 0 for EVERY row — which offered finished
+ *  lots as available stock here. Always resolve by prefix (stock.ts pickVal), and
+ *  strip by prefix too, or the mangled key leaks into the payload. Same defect,
+ *  same root cause as ticket #1090 on the référence fil card. */
 function normStockLot(row: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...row }
-  out.termine = (row as any).termine ?? (row as any)['terminé'] ?? (row as any).termin ?? 0
-  delete out['terminé']
-  delete out.termin
-  out.controle = (row as any).controle ?? (row as any)['controlé'] ?? (row as any).control ?? 0
-  delete out['controlé']
-  delete out.control
+  // Read by prefix BEFORE stripping every mangled variant.
+  const termineVal = (row as any).termine ?? pickVal(row, /^termin/i)
+  const controleVal = (row as any).controle ?? pickVal(row, /^control/i)
+  stripKeys(out, /^termin/i)
+  stripKeys(out, /^control/i)
+  out.termine = Number(termineVal) || 0
+  out.controle = Number(controleVal) || 0
   // stock_fil carries certificate blobs we never want in this response
   delete out.certif_bio
-  delete out['certif_recyclé']
-  delete out.certif_recycl
+  stripKeys(out, /^certif_recycl/i)
   delete out.commentaire
   delete out.observation_freinte
   return out

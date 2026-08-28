@@ -297,6 +297,18 @@ export const PERMISSION_KEYS = [
       'Autorise la surteinture : supprime des rouleaux finis et renvoie leurs tombés de métier en teinture dans Finis > Stock.',
     category: 'Finis',
   },
+  // Études coloris — ONE key covering every write on the screen (étude,
+  // statut, soumissions, réponse du sous-traitant, envois email). Ticket #1092.
+  // The screen had no write gate at all before this, so the key is closed by
+  // default and nobody edits until an admin grants it — deliberate: no
+  // grandfathering script was run (user decision, 2026-08-28).
+  {
+    key: 'edit_etudes_coloris',
+    label: 'Édition des études coloris',
+    description:
+      'Autorise la création, la modification et la suppression des études et de leurs soumissions dans Finis > Études coloris, le changement de statut, l’enregistrement de la réponse du sous-traitant (Accepter / Refuser) et l’envoi par email. Sans ce droit, l’écran est en lecture seule — l’impression et le téléchargement des PDF restent accessibles à tous.',
+    category: 'Finis',
+  },
   {
     key: 'create_stock_ecru',
     label: 'Créer un rouleau écru',

@@ -25,6 +25,7 @@ import {
   Boxes,
   ArrowUp,
   ArrowDown,
+  ArrowLeftRight,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -97,6 +98,8 @@ interface Contact {
   commentaire: string | null
   est_defaut: boolean
   envoi_bl: boolean
+  /** Bon de transfert — its own flag, NOT envoi_bl (ticket #1097). */
+  envoi_bt: boolean
   envoi_facture: boolean
   envoi_commande: boolean
   envoi_soumission: boolean
@@ -1007,9 +1010,15 @@ function InfoTab({ sousTraitant, isEditing, editTypeSst, onEditTypeSstChange, ed
 
 // ── Sidebar Tab: Contacts ──────────────────────────────
 
+// Which documents this contact is meant to receive by email. Each flag is a
+// column on `contact`; the send dialogs preselect the contacts carrying the
+// matching one. `envoi_bt` (bon de transfert) is its own flag — the people a
+// sous-traitant wants on a bon de transfert are not the ones on a bon de
+// livraison, and until #1097 the transfert email reused envoi_bl.
 const ENVOI_FLAGS = [
   { key: 'envoi_commande' as const, label: 'Commande', icon: ShoppingCart },
-  { key: 'envoi_bl' as const, label: 'BL', icon: FileText },
+  { key: 'envoi_bl' as const, label: 'Bon de livraison', icon: FileText },
+  { key: 'envoi_bt' as const, label: 'Bon de transfert', icon: ArrowLeftRight },
   { key: 'envoi_facture' as const, label: 'Facture', icon: FileText },
   { key: 'envoi_soumission' as const, label: 'Soumission', icon: Send },
 ]
@@ -1019,7 +1028,7 @@ function ContactsTab({ contacts, isEditing, sousTraitantId, onMutationSuccess, o
   onDirtyChange: (dirty: boolean) => void
 }) {
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [form, setForm] = useState({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false })
+  const [form, setForm] = useState({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_bt: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false })
   const [showForm, setShowForm] = useState(false)
 
   const onDirtyChangeRef = useRef(onDirtyChange)
@@ -1042,11 +1051,11 @@ function ContactsTab({ contacts, isEditing, sousTraitantId, onMutationSuccess, o
     onSuccess: onMutationSuccess,
   })
 
-  const resetForm = () => { setForm({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false }); setShowForm(false) }
+  const resetForm = () => { setForm({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_bt: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false }); setShowForm(false) }
 
   const startEditContact = (c: Contact) => {
     setEditingId(c.IDcontact)
-    setForm({ nom: c.nom ?? '', prenom: c.prenom ?? '', tel: c.tel ?? '', mail: c.mail ?? '', envoi_bl: !!c.envoi_bl, envoi_facture: !!c.envoi_facture, envoi_commande: !!c.envoi_commande, envoi_soumission: !!c.envoi_soumission })
+    setForm({ nom: c.nom ?? '', prenom: c.prenom ?? '', tel: c.tel ?? '', mail: c.mail ?? '', envoi_bl: !!c.envoi_bl, envoi_bt: !!c.envoi_bt, envoi_facture: !!c.envoi_facture, envoi_commande: !!c.envoi_commande, envoi_soumission: !!c.envoi_soumission })
   }
 
   const contactForm = (

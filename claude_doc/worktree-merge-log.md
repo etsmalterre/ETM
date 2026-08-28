@@ -10,6 +10,59 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/issues (tickets #1090, #1092, #1097)
+
+Trois tickets remontés par les utilisateurs, sans lien entre eux sauf d'être des corrections
+sur des écrans en service.
+
+**#1090 — Fils › Références affichait deux chiffres faux, et aucun ne pouvait échouer en
+local.** « Stock actuel » sommait tous les lots depuis 2020, épuisés et négatifs compris :
+113 des 130 références stockées étaient fausses et 4 affichaient un stock **négatif**.
+Cause : `terminé` revient du pont Linux tronqué à l'accent **et avec un octet-poubelle non
+déterministe** (`termin` / `termint` / `termini` … selon la charge serveur), donc le repli
+codé en dur `row.termin` lisait juste sous Windows et **manquait la clé en production** —
+un drapeau à 0 sur toutes les lignes, chiffre faux et jamais d'erreur. Et si personne ne
+l'avait vu en dev, c'est que `SELECT *` sur `stock_fil` renvoie **zéro ligne** sur le pilote
+Windows (la table porte des memos binaires) : l'écran de dev montrait un stock vide.
+`pickVal` / `stripKeys` sortent donc dans **`lib/accented-keys.ts`** (`routes/stock.ts` les
+ré-exporte, c'est leur adresse historique) et la lecture par préfixe est appliquée partout
+où le même défaut dormait : le badge recyclé de la carte référence et les lots proposés à
+l'affectation d'une ligne de commande fil. L'ordre compte — **lire, PUIS purger, PUIS
+assigner** : `/^recycl/i` matche aussi la clé canonique `recycle` qu'on vient d'écrire.
+
+Deuxième chiffre : **« En commande » n'était pas ce qui reste attendu mais tout l'historique
+d'achat**, ×28 trop sur le catalogue. Refait sur la règle `qte_restante` de Rapports ›
+Commandes fils (lignes ouvertes de commandes ouvertes, moins le reçu), le reçu venant de
+`Σ stock_fil.stock_initial` — le poids **à la réception**, `stock` étant ce qu'il en reste —
+et clé **sur la ligne, pas sur la référence** (12 lots vivants pendent d'une ligne dont le
+`ref_fil` diffère). Les deux agrégats sont maintenant des fonctions pures
+(`lib/references-fil-agg.ts`) : `references-fil-agg.test.ts` épingle les cas limites sans
+base, et `check-references-fil-agg.ts` prouve sur données vivantes ce que seule la prod peut
+prouver — son test #4 est la parité ligne à ligne avec le rapport.
+
+**#1092 — Finis › Études coloris n'avait AUCUNE garde en écriture.** `attachUser()` est
+best-effort et il n'y a pas de middleware d'auth global : les 9 routes d'écriture (étude,
+soumissions, statut, réponse du sous-traitant, envois email) étaient joignables
+**anonymement**. Un droit unique `edit_etudes_coloris`, un `ensureCanEdit()` en tête des
+neuf, et un seul `canEdit` fileté dans l'écran (liste, en-tête, cartes de soumission,
+tiroir, pilule de statut). Les lectures restent ouvertes, **les deux PDF compris** — un
+utilisateur en lecture seule doit pouvoir imprimer. Sans le droit, la pilule de statut §29
+perd sa moitié « Changer » et redevient un afficheur. ⚠️ Clé **fermée par défaut, aucun
+script de rattrapage** (décision Vincent) : l'écran est en lecture seule pour tout le monde
+tant qu'un admin ne l'accorde pas.
+
+**#1097 — le destinataire d'un bon de transfert se lisait sur `envoi_bl`.** Vincent a ajouté
+`contact.envoi_bt` en base ; `buildTransfertEmailDefaults()` s'y branche, et la case « Bon de
+transfert » se coche dans Sous-traitants › Gestion › Contacts — **là seulement**, puisque la
+destination d'un transfert est toujours un `sous_traitant` (ou `0` = Ets Malterre, sans
+contact externe). Les cases portent le nom complet du document, pas les sigles. ⚠️ La colonne
+est neuve et vaut 0 partout : tant que personne n'a coché, un bon de transfert ne
+présélectionne **aucun** destinataire — les contacts restent proposés en un clic, rien n'est
+injoignable. **14 contacts chez 13 sous-traitants** étaient présélectionnés par l'ancienne
+règle ; c'est la liste à recocher si l'on veut la continuité. Vérifié de bout en bout sur le
+bon rouleaux #3611 (contact passé de `selected` à `suggestions`, puis retour après coche),
+écritures de test restaurées.
+
 ## 2026-08-28 — feat/bug2 (recherche multi-critères du picker de transfert — ticket #1093)
 
 **Ce que c'est.** Le champ de recherche du dialogue « Éditer le bon de transfert »

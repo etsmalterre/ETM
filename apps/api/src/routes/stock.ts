@@ -40,16 +40,15 @@ const STOCK_JOINS = `FROM stock_fil sf LEFT JOIN ref_fil rf ON sf.IDref_fil = rf
 // non-deterministic garbage trailing byte from a reused buffer: `terminé` arrives
 // as `termin`, `termint`, `termini`, … depending on server load. A hardcoded
 // fallback (`row.termin`) therefore MISSES the key in production, leaving the flag
-// at 0 for every row (this broke "Masquer les lots terminés"). Always resolve
-// these columns by case-insensitive PREFIX, never by a hardcoded name.
-export function pickVal(row: Record<string, unknown>, re: RegExp): unknown {
-  const k = Object.keys(row).find((key) => re.test(key))
-  return k === undefined ? undefined : row[k]
-}
-/** Delete every key matching `re` from `out` — strips all mangled variants. */
-export function stripKeys(out: Record<string, unknown>, re: RegExp): void {
-  for (const k of Object.keys(out)) if (re.test(k)) delete out[k]
-}
+// at 0 for every row (this broke "Masquer les lots terminés", then the stock total
+// of the Fils › Références card — ticket #1090). Always resolve these columns by
+// case-insensitive PREFIX, never by a hardcoded name.
+//
+// They live in lib/accented-keys.ts (no express import, so pure helpers and their
+// tests can reach them without pulling a router in) and are re-exported here
+// because this module has been their address since the bridge quirk was found.
+import { pickVal, stripKeys } from '../lib/accented-keys.js'
+export { pickVal, stripKeys }
 
 // The recycle map is a full-table SELECT * over ref_fil on every list/detail/
 // patch request — cache it briefly so the TRM screen (stock-fil-trm.ts) and

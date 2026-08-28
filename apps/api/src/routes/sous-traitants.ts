@@ -776,9 +776,9 @@ sousTraitantsRouter.post('/:id/contacts', async (req: Request, res: Response) =>
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
+    const { nom, prenom, tel, mail, envoi_bl, envoi_bt, envoi_facture, envoi_commande, envoi_soumission } = req.body
     await query(
-      `INSERT INTO contact (IDsous_traitant, nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission, est_defaut, est_visible) VALUES (${id}, ${sqlText(nom ?? '')}, ${sqlText(prenom ?? '')}, ${sqlText(tel ?? '')}, ${sqlText(mail ?? '')}, ${envoi_bl ? 1 : 0}, ${envoi_facture ? 1 : 0}, ${envoi_commande ? 1 : 0}, ${envoi_soumission ? 1 : 0}, 0, 1)`,
+      `INSERT INTO contact (IDsous_traitant, nom, prenom, tel, mail, envoi_bl, envoi_bt, envoi_facture, envoi_commande, envoi_soumission, est_defaut, est_visible) VALUES (${id}, ${sqlText(nom ?? '')}, ${sqlText(prenom ?? '')}, ${sqlText(tel ?? '')}, ${sqlText(mail ?? '')}, ${envoi_bl ? 1 : 0}, ${envoi_bt ? 1 : 0}, ${envoi_facture ? 1 : 0}, ${envoi_commande ? 1 : 0}, ${envoi_soumission ? 1 : 0}, 0, 1)`,
     )
     res.status(201).json({ ok: true })
   } catch (err) {
@@ -791,9 +791,9 @@ sousTraitantsRouter.put('/:id/contacts/:cid', async (req: Request, res: Response
   try {
     const cid = parseInt(req.params.cid, 10)
     if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
+    const { nom, prenom, tel, mail, envoi_bl, envoi_bt, envoi_facture, envoi_commande, envoi_soumission } = req.body
     await query(
-      `UPDATE contact SET nom = ${sqlText(nom ?? '')}, prenom = ${sqlText(prenom ?? '')}, tel = ${sqlText(tel ?? '')}, mail = ${sqlText(mail ?? '')}, envoi_bl = ${envoi_bl ? 1 : 0}, envoi_facture = ${envoi_facture ? 1 : 0}, envoi_commande = ${envoi_commande ? 1 : 0}, envoi_soumission = ${envoi_soumission ? 1 : 0} WHERE IDcontact = ${cid}`,
+      `UPDATE contact SET nom = ${sqlText(nom ?? '')}, prenom = ${sqlText(prenom ?? '')}, tel = ${sqlText(tel ?? '')}, mail = ${sqlText(mail ?? '')}, envoi_bl = ${envoi_bl ? 1 : 0}, envoi_bt = ${envoi_bt ? 1 : 0}, envoi_facture = ${envoi_facture ? 1 : 0}, envoi_commande = ${envoi_commande ? 1 : 0}, envoi_soumission = ${envoi_soumission ? 1 : 0} WHERE IDcontact = ${cid}`,
     )
     res.json({ ok: true })
   } catch (err) {

@@ -51,6 +51,7 @@ import {
 } from '@/components/ui/dialog'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
+import { useHasPermission } from '@/contexts/PermissionsContext'
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -243,6 +244,12 @@ function soumissionStatut(s: Soumission): 'pending' | 'accepted' | 'refused' {
 
 export function EtudesColoris() {
   const queryClient = useQueryClient()
+  // ONE key gates every write on this screen — the mirror of the single
+  // `ensureCanEdit` guard in routes/etudes-coloris.ts (ticket #1092). Without
+  // it the affordances would still be there and every click would 403.
+  // Reading stays open for everyone, INCLUDING the two PDFs: a read-only user
+  // must still be able to print and download.
+  const canEdit = useHasPermission('edit_etudes_coloris')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatutFilter>('attente_labo')
@@ -323,6 +330,7 @@ export function EtudesColoris() {
 
   const startEdit = useCallback(() => {
     if (!detail) return
+    if (!canEdit) return // no affordance renders it, but the create flow calls it too
     const snap = {
       libelle: detail.libelle ?? '',
       numCommande: detail.num_commande ?? '',
@@ -348,7 +356,7 @@ export function EtudesColoris() {
     originalDraftRef.current = snap
     setOpenSoumissionId(null) // §31.3 — edit mode closes the drawer
     setIsEditing(true)
-  }, [detail])
+  }, [detail, canEdit])
 
   const cancelEdit = useCallback(() => {
     setIsEditing(false)
@@ -544,6 +552,7 @@ export function EtudesColoris() {
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilter}
             isEditing={isEditing}
+            canEdit={canEdit}
             onNewClick={handleOpenCreate}
             totalCount={etudes?.length ?? 0}
           />
@@ -553,6 +562,7 @@ export function EtudesColoris() {
             <EtudeDetailHeader
               detail={detail}
               isEditing={isEditing}
+              canEdit={canEdit}
               editLibelle={editLibelle}
               onLibelleChange={setEditLibelle}
               onStartEdit={startEdit}
@@ -578,6 +588,7 @@ export function EtudesColoris() {
             <SoumissionsSection
               detail={detail}
               isEditing={isEditing}
+              canEdit={canEdit}
               openSoumissionId={openSoumissionId}
               onOpenSoumission={setOpenSoumissionId}
               onDeleteSoumission={setDeleteSoumissionId}
@@ -598,6 +609,7 @@ export function EtudesColoris() {
             <EtudeDetailSidebar
               detail={detail}
               isEditing={isEditing}
+              canEdit={canEdit}
               editNumCommande={editNumCommande}
               editDesigClient={editDesigClient}
               editCommentaire={editCommentaire}
@@ -756,7 +768,7 @@ function EtudeList({
   etudes, isLoading, isError, selectedId, onSelect,
   searchQuery, onSearchChange,
   statusFilter, onStatusFilterChange,
-  isEditing, onNewClick, totalCount,
+  isEditing, canEdit, onNewClick, totalCount,
 }: {
   etudes: EtudeListRow[]
   isLoading: boolean
@@ -768,6 +780,7 @@ function EtudeList({
   statusFilter: StatutFilter
   onStatusFilterChange: (f: StatutFilter) => void
   isEditing: boolean
+  canEdit: boolean
   onNewClick: () => void
   totalCount: number
 }) {
@@ -840,7 +853,7 @@ function EtudeList({
         <span>
           {etudes.length} / {totalCount} étude{totalCount !== 1 ? 's' : ''}
         </span>
-        {!isEditing && (
+        {!isEditing && canEdit && (
           <Button
             size="sm"
             variant="ghost"
@@ -917,7 +930,7 @@ function EtudeListCard({
 // ── Center: detail header ────────────────────────────────
 
 function EtudeDetailHeader({
-  detail, isEditing,
+  detail, isEditing, canEdit,
   editLibelle,
   onLibelleChange,
   onStartEdit, onCancelEdit, onSaveEdit, onDeleteClick, onPrintClick, onEmailClick,
@@ -925,6 +938,7 @@ function EtudeDetailHeader({
 }: {
   detail: EtudeDetail
   isEditing: boolean
+  canEdit: boolean
   editLibelle: string
   onLibelleChange: (s: string) => void
   onStartEdit: () => void
@@ -997,20 +1011,25 @@ function EtudeDetailHeader({
             </>
           ) : (
             <>
+              {/* Printing is open to everyone — only the writes are gated. */}
               <PrintMenuButton onPrint={onPrintClick} />
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-9 w-9"
-                title="Envoyer un email"
-                onClick={onEmailClick}
-              >
-                <AtSign className="h-4 w-4" />
-              </Button>
-              <Button variant="gold" size="sm" onClick={onStartEdit}>
-                <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                Modifier
-              </Button>
+              {canEdit && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9"
+                    title="Envoyer un email"
+                    onClick={onEmailClick}
+                  >
+                    <AtSign className="h-4 w-4" />
+                  </Button>
+                  <Button variant="gold" size="sm" onClick={onStartEdit}>
+                    <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                    Modifier
+                  </Button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -1091,10 +1110,11 @@ function PrintMenuButton({
 // the étude header above. Matches the `LignesSection` shape in `FilsCommandes.tsx`.
 
 function SoumissionsSection({
-  detail, isEditing, openSoumissionId, onOpenSoumission, onDeleteSoumission, onEmailSoumission, onMutationSuccess, reportDirty,
+  detail, isEditing, canEdit, openSoumissionId, onOpenSoumission, onDeleteSoumission, onEmailSoumission, onMutationSuccess, reportDirty,
 }: {
   detail: EtudeDetail
   isEditing: boolean
+  canEdit: boolean
   openSoumissionId: number | null
   onOpenSoumission: (id: number | null) => void
   onDeleteSoumission: (id: number) => void
@@ -1169,6 +1189,7 @@ function SoumissionsSection({
                   key={s.IDsoum_col}
                   soumission={s}
                   isEditing={isEditing}
+                  canEdit={canEdit}
                   isDrawerOpen={openSoumissionId === s.IDsoum_col && !isEditing}
                   onOpenDrawer={() =>
                     onOpenSoumission(openSoumissionId === s.IDsoum_col ? null : s.IDsoum_col)
@@ -1215,6 +1236,7 @@ function SoumissionsSection({
           <SoumissionDrawer
             etudeId={detail.IDetude_col}
             soumission={drawerSoumission}
+            canEdit={canEdit}
             onClose={() => onOpenSoumission(null)}
             onMutationSuccess={onMutationSuccess}
           />
@@ -1227,10 +1249,11 @@ function SoumissionsSection({
 // ── Soumission card ──────────────────────────────────────
 
 function SoumissionCard({
-  soumission, isEditing, isDrawerOpen, onOpenDrawer, onEdit, onDelete, onEmail,
+  soumission, isEditing, canEdit, isDrawerOpen, onOpenDrawer, onEdit, onDelete, onEmail,
 }: {
   soumission: Soumission
   isEditing: boolean
+  canEdit: boolean
   isDrawerOpen: boolean
   onOpenDrawer: () => void
   onEdit: () => void
@@ -1318,7 +1341,7 @@ function SoumissionCard({
               <Trash2 className="h-3 w-3" />
             </Button>
           </div>
-        ) : (
+        ) : canEdit ? (
           <div className="flex-shrink-0">
             <Button
               variant="ghost"
@@ -1330,7 +1353,7 @@ function SoumissionCard({
               <AtSign className="h-3.5 w-3.5" />
             </Button>
           </div>
-        )}
+        ) : null}
       </div>
       {soumission.observation?.trim() && !isDrawerOpen && (
         <div className="flex items-start gap-1.5 mt-2 ml-9">
@@ -1410,10 +1433,11 @@ function SoumissionInlineForm({
 // ── Soumission drawer (§31) ──────────────────────────────
 
 function SoumissionDrawer({
-  etudeId, soumission, onClose, onMutationSuccess,
+  etudeId, soumission, canEdit, onClose, onMutationSuccess,
 }: {
   etudeId: number
   soumission: Soumission
+  canEdit: boolean
   onClose: () => void
   onMutationSuccess: () => void
 }) {
@@ -1523,44 +1547,48 @@ function SoumissionDrawer({
           )}
         </div>
       </div>
-      <div className="flex-shrink-0 px-4 py-3 border-t bg-zinc-200/50 flex flex-wrap items-center gap-2">
-        {s === 'pending' ? (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-destructive/40 text-destructive hover:bg-destructive/10"
-              onClick={() => respondMut.mutate({ accepte: 2 })}
-              disabled={pending}
-            >
-              <XCircle className="h-3.5 w-3.5 mr-1.5" />
-              Refuser
-            </Button>
-            <Button
-              size="sm"
-              className="bg-success hover:bg-success/90 text-white"
-              onClick={() => setAcceptDialogOpen(true)}
-              disabled={pending}
-            >
-              <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />
-              Accepter
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => respondMut.mutate({ accepte: 0 })}
-              disabled={pending}
-            >
-              <X className="h-3.5 w-3.5 mr-1.5" />
-              Annuler la réponse
-            </Button>
-          </>
-        )}
-        {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent ml-auto" />}
-      </div>
+      {/* Recording the client's answer is a write — without the right, the
+          drawer stays a read-only view of the soumission and its envois. */}
+      {canEdit && (
+        <div className="flex-shrink-0 px-4 py-3 border-t bg-zinc-200/50 flex flex-wrap items-center gap-2">
+          {s === 'pending' ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                onClick={() => respondMut.mutate({ accepte: 2 })}
+                disabled={pending}
+              >
+                <XCircle className="h-3.5 w-3.5 mr-1.5" />
+                Refuser
+              </Button>
+              <Button
+                size="sm"
+                className="bg-success hover:bg-success/90 text-white"
+                onClick={() => setAcceptDialogOpen(true)}
+                disabled={pending}
+              >
+                <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />
+                Accepter
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => respondMut.mutate({ accepte: 0 })}
+                disabled={pending}
+              >
+                <X className="h-3.5 w-3.5 mr-1.5" />
+                Annuler la réponse
+              </Button>
+            </>
+          )}
+          {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent ml-auto" />}
+        </div>
+      )}
 
       <AcceptSoumissionDialog
         open={acceptDialogOpen}
@@ -1679,7 +1707,7 @@ interface AdresseLite {
 }
 
 function EtudeDetailSidebar({
-  detail, isEditing,
+  detail, isEditing, canEdit,
   editNumCommande, editDesigClient, editCommentaire, editJournal, editDateRecep,
   editIDClient, editIDRefFini, editIDSousTraitant,
   onNumCommandeChange, onDesigClientChange, onCommentaireChange, onJournalChange, onDateRecepChange,
@@ -1688,6 +1716,7 @@ function EtudeDetailSidebar({
 }: {
   detail: EtudeDetail
   isEditing: boolean
+  canEdit: boolean
   editNumCommande: string
   editDesigClient: string
   editCommentaire: string
@@ -1832,6 +1861,7 @@ function EtudeDetailSidebar({
         onChange={onChangeStatut}
         isChanging={isChangingStatut}
         disabled={isEditing}
+        canChange={canEdit}
       />
     </div>
   )
@@ -2213,12 +2243,16 @@ function AdresseReadOnlyCard({
 // ── Status footer (multi-state pill + menu) — §29.4 ──────
 
 function EtudeStatutFooter({
-  current, onChange, isChanging, disabled,
+  current, onChange, isChanging, disabled, canChange,
 }: {
   current: EtudeStatut
   onChange: (next: EtudeStatut) => void
   isChanging: boolean
   disabled: boolean
+  /** Without the write right the pill keeps displaying the statut but loses
+   *  its « Changer » half — §29's pill is display AND control, and a user who
+   *  cannot write should read the state, not be offered a 403. */
+  canChange: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -2261,24 +2295,26 @@ function EtudeStatutFooter({
             {meta.label}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => setMenuOpen((v) => !v)}
-          disabled={disabled || isChanging}
-          title="Changer le statut"
-          className="px-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 disabled:bg-white/5 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold border-l border-white/25 flex items-center gap-1.5 transition-colors"
-        >
-          {isChanging ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <ChevronUp
-              className={cn('h-3.5 w-3.5 transition-transform', menuOpen && 'rotate-180')}
-            />
-          )}
-          Changer
-        </button>
+        {canChange && (
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            disabled={disabled || isChanging}
+            title="Changer le statut"
+            className="px-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 disabled:bg-white/5 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold border-l border-white/25 flex items-center gap-1.5 transition-colors"
+          >
+            {isChanging ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ChevronUp
+                className={cn('h-3.5 w-3.5 transition-transform', menuOpen && 'rotate-180')}
+              />
+            )}
+            Changer
+          </button>
+        )}
       </div>
-      {menuOpen && (
+      {menuOpen && canChange && (
         <div className="absolute bottom-full right-0 mb-1 w-full min-w-[220px] rounded-lg border bg-white shadow-lg overflow-hidden z-50">
           {STATUT_ORDER.map((s) => {
             const m = STATUT_META[s]

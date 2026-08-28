@@ -1198,13 +1198,20 @@ async function buildTransfertEmailDefaults(kind: Kind, id: number): Promise<{
   const sstNames = await resolveSstNames([h.IDmagasin_destination])
   const destNom = magasinNom(h.IDmagasin_destination, sstNames)
 
-  // Recipients: contacts of the destination sous-traitant (envoi_bl → selected).
+  // Recipients: contacts of the destination sous-traitant (envoi_bt → selected).
   // Destination 0 = Ets Malterre — no external contacts to preselect.
+  //
+  // ⚠ The flag is `envoi_bt`, NOT `envoi_bl` (ticket #1097). A bon de transfert
+  // and a bon de livraison do not go to the same people at a sous-traitant, and
+  // until the column existed this reused envoi_bl and mailed the wrong ones.
+  // The column is new and starts at 0 everywhere, so a sous-traitant nobody has
+  // ticked yet preselects NOBODY — its contacts still show as one-click
+  // suggestions in the dialog, so nothing is unreachable, it just isn't assumed.
   const selected: EmailRecipientPayload[] = []
   const suggestions: EmailRecipientPayload[] = []
   if (h.IDmagasin_destination > 0) {
     const contactRows = await query<any>(
-      `SELECT IDcontact, nom, prenom, mail, envoi_bl, est_visible FROM contact WHERE IDsous_traitant = ${h.IDmagasin_destination}`,
+      `SELECT IDcontact, nom, prenom, mail, envoi_bt, est_visible FROM contact WHERE IDsous_traitant = ${h.IDmagasin_destination}`,
     )
     const fixed = await fixEncoding(contactRows, 'contact', 'IDcontact', ['nom', 'prenom', 'mail'])
     const seen = new Set<string>()
@@ -1218,7 +1225,7 @@ async function buildTransfertEmailDefaults(kind: Kind, id: number): Promise<{
       const displayName = [c.prenom, c.nom].map((s: string | null) => (s ?? '').toString().trim()).filter((s: string) => s.length > 0).join(' ')
       const recipient: EmailRecipientPayload = { email: raw, source: 'contact', contactId: Number(c.IDcontact) }
       if (displayName) recipient.name = displayName
-      if (c.envoi_bl === 1) selected.push(recipient)
+      if (Number(c.envoi_bt) === 1) selected.push(recipient)
       else suggestions.push(recipient)
     }
   }

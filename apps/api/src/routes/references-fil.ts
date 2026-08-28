@@ -1,6 +1,8 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { pickVal, stripKeys } from './stock.js'
+import { aggregateStockFilRows, resteALivrer } from '../lib/references-fil-agg.js'
 
 export const referencesFilRouter: RouterType = Router()
 
@@ -49,12 +51,17 @@ function toNumOrNull(v: unknown): number | null {
 /** Normalise a ref_fil row: map recyclé (any shape) → recycle. */
 function normalizeRefFilRow(row: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...row }
-  if (out.recycle === undefined) {
-    out.recycle = (row as any)['recyclé'] ?? (row as any).recycl ?? 0
-  }
-  delete out['recyclé']
-  delete out.recycl
-  out.recycle = Number(out.recycle) || 0
+  // `recyclé` comes back from the Linux bridge truncated at the accent AND with a
+  // non-deterministic garbage trailing byte (recycl / recyclt / recycli …), so the
+  // hardcoded `.recycl` fallback MISSED the key in production and every reference
+  // read as not-recycled. Resolve by prefix — see lib/accented-keys.ts.
+  //
+  // Order matters: read, THEN strip, THEN assign. `/^recycl/i` also matches the
+  // canonical `recycle` we are about to write, so stripping after the assignment
+  // deletes the answer.
+  const recycleVal = out.recycle ?? pickVal(row, /^recycl/i)
+  stripKeys(out, /^recycl/i)
+  out.recycle = Number(recycleVal) || 0
   out.bio = Number(out.bio) || 0
   return out
 }
@@ -305,30 +312,25 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
     }))
 
     // Aggregated stock (kg) across all variants, in-progress lots only.
-    // stock_fil.terminé is accented — we SELECT all stock rows for this
-    // ref_fil and filter termine in JS (same approach as stock.ts list).
     // Always query, even when there are no variantes — stock_fil rows can
     // exist with IDcolori_fil = 0 or pointing at a since-deleted coloris,
     // and the aggregate total/lot count must include them.
-    let stockTotalKg = 0
-    let stockLots = 0
-    const stockPerVariante = new Map<number, { total_kg: number; lots: number }>()
-    const stockRows = await query(`SELECT * FROM stock_fil WHERE IDref_fil = ${id}`)
-    for (const sr of stockRows) {
-      const r = sr as any
-      const termine = Number(r['terminé'] ?? r.termin ?? 0)
-      if (termine !== 0) continue
-      const coloriId = Number(r.IDcolori_fil)
-      const kg = Number(r.stock) || 0
-      stockTotalKg += kg
-      stockLots += 1
-      if (coloriId > 0) {
-        const cur = stockPerVariante.get(coloriId) ?? { total_kg: 0, lots: 0 }
-        cur.total_kg += kg
-        cur.lots += 1
-        stockPerVariante.set(coloriId, cur)
-      }
-    }
+    //
+    // Two platform traps, both silent (see CLAUDE.md §HFSQL rules):
+    //  • `SELECT *` on stock_fil returns ZERO rows on the Windows driver (the
+    //    table carries certif_bio / certif_recyclé memo blobs), so dev always
+    //    showed an empty stock — which is why this never surfaced locally.
+    //    Windows therefore names its columns; Linux cannot name `terminé` at all.
+    //  • The `terminé` flag must be read by PREFIX — the bridge mangles the key.
+    //    Both traps are handled inside aggregateStockFilRows(); the unit test
+    //    lib/references-fil-agg.test.ts pins them.
+    const stockRows = await query<Record<string, unknown>>(
+      IS_WINDOWS
+        ? `SELECT IDstock_fil, IDcolori_fil, IDref_fil_commande, stock, stock_initial, terminé AS termine FROM stock_fil WHERE IDref_fil = ${id}`
+        : `SELECT * FROM stock_fil WHERE IDref_fil = ${id}`,
+    )
+    const { totalKg: stockTotalKg, lots: stockLots, perVariante: stockPerVariante } =
+      aggregateStockFilRows(stockRows)
 
     // Commande history: every ref_fil_commande line for this ref, joined to
     // its parent commande_fil (no etat filter — both en cours and terminée
@@ -342,11 +344,12 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
       IDcolori_fil: number
       colori_reference: string | null
       date_commande: string | null
+      etat_ligne: number
       etat_cmd: number
       IDfournisseur: number
       fournisseur_nom: string | null
     }>(
-      `SELECT rfc.IDref_fil_commande, rfc.IDcommande_fil, rfc.quantite, rfc.prix_unitaire, rfc.IDcolori_fil, col.reference AS colori_reference, cmd.date_commande, cmd.etat AS etat_cmd, cmd.IDfournisseur, f.nom AS fournisseur_nom
+      `SELECT rfc.IDref_fil_commande, rfc.IDcommande_fil, rfc.quantite, rfc.prix_unitaire, rfc.IDcolori_fil, rfc.etat AS etat_ligne, col.reference AS colori_reference, cmd.date_commande, cmd.etat AS etat_cmd, cmd.IDfournisseur, f.nom AS fournisseur_nom
        FROM ref_fil_commande rfc
        JOIN commande_fil cmd ON rfc.IDcommande_fil = cmd.IDcommande_fil
        LEFT JOIN fournisseur f ON cmd.IDfournisseur = f.IDfournisseur
@@ -365,11 +368,41 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
       colori_reference: r.colori_reference ?? null,
       date_commande: r.date_commande ?? null,
       etat: Number(r.etat_cmd) || 0,
+      etat_ligne: Number(r.etat_ligne) || 0,
       IDfournisseur: Number(r.IDfournisseur) || 0,
       fournisseur_nom: r.fournisseur_nom ?? null,
     }))
+    // Historic total — what the «Historique commandes» card shows. Every line
+    // ever ordered, closed ones included; that is what that card is about.
     const commandeTotalKg = commandeHistory.reduce((sum, r) => sum + r.quantite, 0)
     const commandeLignes = commandeHistory.length
+
+    // «En commande» — what is still EXPECTED from suppliers, which is a different
+    // question and used to be answered with the historic total above (×28 too big
+    // across the catalog; ticket #1090). Same rule as Rapports › Commandes fils
+    // (`qte_restante`): open lines of open commandes, minus what already landed.
+    // Reception is Σ stock_fil.stock_initial (the weight AS RECEIVED — `stock` is
+    // what is left after consumption, which is not the same question), keyed on
+    // the LINE and not on this ref: 12 live lots hang off a line whose ref_fil
+    // differs, and scoping by ref would under-count their reception.
+    const openLineIds = commandeHistory
+      .filter((r) => r.etat_ligne !== 1 && r.etat !== 1)
+      .map((r) => r.IDref_fil_commande)
+    const recuByLine = new Map<number, number>()
+    if (openLineIds.length > 0) {
+      const recuRows = await query<{ IDref_fil_commande: number; stock_initial: number | null }>(
+        `SELECT IDref_fil_commande, stock_initial FROM stock_fil WHERE IDref_fil_commande IN (${openLineIds.join(',')})`,
+      )
+      for (const r of recuRows) {
+        const lid = Number(r.IDref_fil_commande) || 0
+        if (lid === 0) continue
+        recuByLine.set(lid, (recuByLine.get(lid) ?? 0) + (Number(r.stock_initial) || 0))
+      }
+    }
+    const { kg: commandeResteKg, lignes: commandeLignesOuvertes } = resteALivrer(
+      commandeHistory,
+      recuByLine,
+    )
 
     // Distinct fournisseurs across all variants (read-only list for sidebar)
     let fournisseurs: Array<{ IDfournisseur: number; nom: string | null }> = []
@@ -432,6 +465,8 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
       stock_per_variante: stockPerVarianteArr,
       commande_total_kg: commandeTotalKg,
       commande_lignes: commandeLignes,
+      commande_reste_kg: commandeResteKg,
+      commande_lignes_ouvertes: commandeLignesOuvertes,
       commande_history: commandeHistory,
       offres,
       fournisseurs,

@@ -18,8 +18,36 @@ import {
 } from '../lib/pdf/FeuilleColorisPdf.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 
 export const etudesColorisRouter: RouterType = Router()
+
+// ── Permission gate ─────────────────────────────────────
+// ONE key covering every write on the screen — same shape as transferts.ts.
+// Until ticket #1092 this router had no gate at all: whoever could open the
+// screen could create, edit, delete, answer a soumission and mail a
+// sous-traitant. Reads stay open, INCLUDING the three PDF endpoints: a
+// read-only user must still be able to print and download.
+//
+// ⚠ `attachUser()` is best-effort and there is no global auth middleware, so a
+// write route WITHOUT this call is reachable anonymously. Any new write here
+// starts with it.
+const EDIT_KEY = 'edit_etudes_coloris' as const
+
+/** True when the caller may write. Writes the 401/403 itself, so callers
+ *  just `return` on false. */
+async function ensureCanEdit(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), EDIT_KEY))) {
+    res.status(403).json({ error: `permission denied: ${EDIT_KEY}` })
+    return false
+  }
+  return true
+}
 
 // HFSQL footgun: the Linux iODBC bridge rejects any accented identifier
 // token in the SQL text (e.g. `archivé`), so WHERE / ORDER BY referencing
@@ -845,6 +873,7 @@ const emailBodySchema = z.object({
 
 etudesColorisRouter.post('/:id/email', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(String(req.params.id), 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -1082,6 +1111,7 @@ etudesColorisRouter.get('/:id/history', async (req: Request, res: Response) => {
 
 etudesColorisRouter.post('/', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const parsed = etudeBody.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
@@ -1122,6 +1152,7 @@ etudesColorisRouter.post('/', async (req: Request, res: Response) => {
 
 etudesColorisRouter.put('/:id', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(String(req.params.id), 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -1167,6 +1198,7 @@ etudesColorisRouter.put('/:id', async (req: Request, res: Response) => {
 
 etudesColorisRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(String(req.params.id), 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     await query(`DELETE FROM soum_col WHERE IDetude_col = ${id}`)
@@ -1182,6 +1214,7 @@ etudesColorisRouter.delete('/:id', async (req: Request, res: Response) => {
 
 etudesColorisRouter.post('/:id/soumissions', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(String(req.params.id), 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -1232,6 +1265,7 @@ etudesColorisRouter.post('/:id/soumissions', async (req: Request, res: Response)
 
 etudesColorisRouter.put('/soumissions/:soumId', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const soumId = parseInt(String(req.params.soumId), 10)
     if (isNaN(soumId)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -1270,6 +1304,7 @@ etudesColorisRouter.put('/soumissions/:soumId', async (req: Request, res: Respon
 
 etudesColorisRouter.delete('/soumissions/:soumId', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const soumId = parseInt(String(req.params.soumId), 10)
     if (isNaN(soumId)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -1294,6 +1329,7 @@ etudesColorisRouter.delete('/soumissions/:soumId', async (req: Request, res: Res
 
 etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const soumId = parseInt(String(req.params.soumId), 10)
     if (isNaN(soumId)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -1714,6 +1750,7 @@ async function logEnvoiEmails(
 
 etudesColorisRouter.post('/soumissions/:soumId/email', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const soumId = parseInt(String(req.params.soumId), 10)
     if (isNaN(soumId)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
