@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/trs-erp (API de Production › TRS, l'écran ERP de FI_TRS)
+`GET /api/trs/equipe?debut=YYYYMMDDHHMMSS` (guard `view_trs`, nouvelle clé Production fermée par
+défaut) rend une équipe complète, n'importe laquelle : les quatre KPI de `MAJAffichageAtelier`
+(pièces finies au poids nominal, rouleaux pesés, second choix en %, non visitées à la fin
+d'équipe), la timeline par métier (segments de la même marche que `calculerTrs`, événements
+pièce, lancement / fin d'OF, `detail` des déductibles pour le ⓘ), les quatre listes de pièces
+avec les cartes d'événements de toutes (`evenement_piece` ∪ `defaut_qualite` en « Défaut », deux
+requêtes batchées) et les bonnetiers pointés (`pointage`, pas le planning — régleurs compris).
+Chargeurs partagés avec `/atelier` dans `lib/trs-equipe-trm.ts` : états initiaux lus en une
+requête (48 h avant l'équipe) puis cache LRU par équipe, OF et événements bornés à l'équipe, IN
+chunkés ; équipes passées cachées 10 min. Spec récupérée dans le cache de compilation de
+`FI_TRS` (20 requêtes, libellés, contrôles) + `HorairesEquipeEnCours` verbatim. Lib : 38 tests ;
+sonde `probe-trs-equipe-trm.ts` (à rejouer sur la prod contre la capture du 28/08 13 h).
+
 ## 2026-08-28 — feat/trs (API half of the TRS tablet's « arrêts / pièce »)
 `GET /api/trs/atelier` now returns `arretsParPiece` / `arretsPieces` per métier: the legacy
 tablet's own `NombreArrets` (recovered from the WinDev compile cache — per piece, machine
