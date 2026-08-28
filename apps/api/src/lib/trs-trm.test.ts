@@ -7,6 +7,8 @@ import {
   toHfsqlDt,
   type Equipe,
   type TrsEntree,
+  arretsParPiece,
+  ARRETS_PIECES,
 } from './trs-trm.js'
 
 // A Matin shift on a fixed day, everything expressed as minutes past 05:00.
@@ -245,5 +247,46 @@ describe('etatCourant', () => {
     ).toEqual({ etat: 1, depuisMs: min(20) })
     expect(etatCourant([], { etat: 0, atMs: min(-100) })).toEqual({ etat: 0, depuisMs: min(-100) })
     expect(etatCourant([], null)).toEqual({ etat: null, depuisMs: null })
+  })
+})
+
+describe('arretsParPiece — the tablet’s NombreArrets, averaged over the last finished pieces', () => {
+  const H = 3_600_000
+  const piece = (id: number, debutH: number, finH: number, evenementsNormaux = 0) => ({
+    id,
+    debutMs: T0 + debutH * H,
+    finMs: T0 + finH * H,
+    evenementsNormaux,
+  })
+  const at = (h: number) => T0 + h * H
+
+  it('is null with no finished piece', () => {
+    expect(arretsParPiece([], [at(1)])).toEqual({ moyenne: null, pieces: 0 })
+  })
+
+  it('counts the stops strictly inside each piece, minus its declared events, floored at 0', () => {
+    const pieces = [piece(1, 0, 4, 1), piece(2, 4, 8, 3)]
+    // piece 1: stops at 1 h, 2 h; 4 h is the boundary, excluded → 2 − 1 = 1
+    // piece 2: stop at 5 h → 1 − 3 → 0
+    const stops = [at(1), at(2), at(4), at(5)]
+    expect(arretsParPiece(pieces, stops)).toEqual({ moyenne: 0.5, pieces: 2 })
+  })
+
+  it('keeps the last ARRETS_PIECES pieces by id, whatever the input order', () => {
+    expect(ARRETS_PIECES).toBe(3)
+    const pieces = [piece(4, 12, 16), piece(1, 0, 4), piece(3, 8, 12), piece(2, 4, 8)]
+    // piece 1 carries 10 stops and must be dropped; pieces 2, 3, 4 carry 1, 2, 3.
+    const stops = [
+      ...Array.from({ length: 10 }, (_, i) => at(0.1 * (i + 1))),
+      at(5),
+      at(9), at(10),
+      at(13), at(14), at(15),
+    ]
+    expect(arretsParPiece(pieces, stops)).toEqual({ moyenne: 2, pieces: 3 })
+  })
+
+  it('rounds the mean to one decimal', () => {
+    const pieces = [piece(1, 0, 4), piece(2, 4, 8), piece(3, 8, 12)]
+    expect(arretsParPiece(pieces, [at(1), at(5)])).toEqual({ moyenne: 0.7, pieces: 3 })
   })
 })

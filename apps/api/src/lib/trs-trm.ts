@@ -234,3 +234,54 @@ export function etatCourant(
   if (initial) return { etat: initial.etat, depuisMs: initial.atMs }
   return { etat: null, depuisMs: null }
 }
+
+// ── Arrêts par pièce — the tablet's own `NombreArrets` ───────
+//
+// The tile's « arrêts » pill is NOT `TrsResultat.arrets` (that is FI_TRS's
+// shift count, kept above because the deductibles ride the same walk). The
+// tablet's procedure survives in the WinDev compile cache
+// (FEN_Main_App_TRS.CB86C13A.wdw.wcw, read 2026-08-28) as three queries:
+//   reqDernierePiece   : the OF's pieces, ORDER BY IDpiece_production DESC LIMIT 2
+//   reqNombreArretTotal: COUNT evenement_machine etat = 0
+//                        WHERE date_debut < DATE < date_fin of the piece
+//   reqNbArretNormal   : COUNT evenement_piece of the piece
+//                        WHERE evenement <> 'Début du tricotage'
+//   NbArretDéfauts     = total − normal
+// i.e. per PIECE, the machine stops not explained by a declared event. The
+// WLanguage around them is compressed, so sum-vs-average over the 2 pieces is
+// unknown. Decision (user, 2026-08-28): the AVERAGE per piece over the last
+// ARRETS_PIECES = 3 FINISHED pieces of the active OF — a frequency, the same
+// number on a métier doing 2 pieces a shift and one doing 5; finished pieces
+// only, because an open piece has fewer stops for the sole reason that it is
+// not over; inside the OF, like the legacy, because a new OF is a legitimate
+// reset. No faux-arrêts filter: the tablet had none.
+
+export const ARRETS_PIECES = 3
+
+export interface PieceFinie {
+  id: number
+  debutMs: number
+  finMs: number
+  /** evenement_piece rows on the piece other than « Début du tricotage ». */
+  evenementsNormaux: number
+}
+
+export interface ArretsParPiece {
+  /** Mean « défaut » stops per piece, one decimal; null without a finished piece. */
+  moyenne: number | null
+  /** How many pieces the mean covers (0 … ARRETS_PIECES). */
+  pieces: number
+}
+
+/** `pieces` in any order (the last ARRETS_PIECES by id are kept);
+ *  `arretsMs` = the machine's stop instants (etat 0 transitions). */
+export function arretsParPiece(pieces: PieceFinie[], arretsMs: number[]): ArretsParPiece {
+  const dernieres = [...pieces].sort((a, b) => b.id - a.id).slice(0, ARRETS_PIECES)
+  if (dernieres.length === 0) return { moyenne: null, pieces: 0 }
+  let total = 0
+  for (const p of dernieres) {
+    const stops = arretsMs.filter((t) => t > p.debutMs && t < p.finMs).length
+    total += Math.max(0, stops - p.evenementsNormaux)
+  }
+  return { moyenne: Math.round((total / dernieres.length) * 10) / 10, pieces: dernieres.length }
+}

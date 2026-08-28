@@ -30,7 +30,10 @@ see the ⚠️ in `etm_deploy` §Deploy ownership and in TRM's `trm_deploy` §Sc
   `evenement_machine`) and the **TRS wall tablet** (`TRM/apps/trs`, host `trs.malterre`,
   `GET /api/trs/atelier` — read-only, no identity; the shift-TRS formula and its tests are
   in `lib/trs-trm.ts`, the legacy code it ports is quoted in
-  `~/.claude/plans/trs-atelier.md`). Dev CORS for the two PWAs (5176/5177) comes from
+  `~/.claude/plans/trs-atelier.md`; ⚠️ the tile's « arrêts » pill is `arretsParPiece`, the
+  legacy tablet's per-PIECE `NombreArrets` averaged over the last 3 finished pieces of the
+  active OF, NOT the shift count `calculerTrs.arrets`, which only feeds the deductibles).
+  Dev CORS for the two PWAs (5176/5177) comes from
   `TRM_PWA_PORTS` in `scripts/worktree/lib.mjs`.
 - ⚠️ **`apps/api` lives in this repo for historical reasons — that is a file location, not
   ownership.** ETM was `MPS_NG`, the first client, so the platform API was built inside it

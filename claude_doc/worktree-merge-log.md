@@ -10,6 +10,15 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/trs (API half of the TRS tablet's « arrêts / pièce »)
+`GET /api/trs/atelier` now returns `arretsParPiece` / `arretsPieces` per métier: the legacy
+tablet's own `NombreArrets` (recovered from the WinDev compile cache — per piece, machine
+stops inside the piece minus the events declared on it), averaged over the last 3 finished
+pieces of the active OF (`ARRETS_PIECES`, `lib/trs-trm.ts` § Arrêts par pièce, 4 tests).
+Computed once per finished piece (cached per OF on the ids of its last pieces), one narrow
+`piece_production` read per poll. The FI_TRS shift count the pill used to show survives as
+`arretsEquipe` (not displayed). No faux-arrêts filter, like the tablet.
+
 ## 2026-08-28 — feat/visitage (verrou de POST /valider)
 Correctif de l'incident du 2026-08-28 14:35:38 : deux `POST /visitage-trm/valider` identiques
 partis du poste dans la même seconde ont tous deux passé la garde « pièce déjà visitée » (un

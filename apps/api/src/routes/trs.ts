@@ -36,10 +36,13 @@ import {
   resolveColorisEcru,
 } from '../lib/production-trm.js'
 import {
+  ARRETS_PIECES,
+  arretsParPiece,
   calculerTrs,
   equipeCourante,
   etatCourant,
   toHfsqlDt,
+  type ArretsParPiece,
   type EvenementMachine,
   type EvenementPiece,
   type Fenetre,
@@ -107,7 +110,15 @@ export interface TrsMachine {
   } | null
   /** Shift TRS as a ratio (1 = 100 %), null when nothing to measure. */
   trs: number | null
-  arrets: number
+  /** The tile's « arrêts » pill: mean « défaut » stops per piece over the
+   *  last ARRETS_PIECES finished pieces of the active OF (lib/trs-trm.ts
+   *  § Arrêts par pièce). Null until the OF has a finished piece. */
+  arretsParPiece: number | null
+  /** How many finished pieces that mean covers (0 … ARRETS_PIECES). */
+  arretsPieces: number
+  /** FI_TRS's shift count (stops net of piece events) — the figure the pill
+   *  showed until 2026-08-28, kept for the record; not displayed. */
+  arretsEquipe: number
   arretsParHeure: number
   tempsProdS: number
   tempsMarcheS: number
@@ -204,7 +215,10 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
       )
       for (const r of rows) machineParOf.set(n(r.IDordre_fabrication), n(r.IDmachine))
     }
-    const lycraParOf = await ofsAvecLycra(ofIdsPieces)
+    const [lycraParOf, arretsParMachine] = await Promise.all([
+      ofsAvecLycra(ofIdsPieces),
+      arretsDesOfsActifs(ofActifParMachine),
+    ])
 
     const pieceEvParMachine = new Map<number, EvenementPiece[]>()
     for (const r of pieceEvRows) {
@@ -248,6 +262,7 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
       }
       const courant = etatCourant(evenements, initial)
       const o = ofActifParMachine.get(m.id)
+      const a = arretsParMachine.get(m.id) ?? { moyenne: null, pieces: 0 }
       return {
         id: m.id,
         emplacement: m.emplacement || m.nom,
@@ -265,7 +280,9 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
             }
           : null,
         trs: r.trs,
-        arrets: r.arrets,
+        arretsParPiece: a.moyenne,
+        arretsPieces: a.pieces,
+        arretsEquipe: r.arrets,
         arretsParHeure: r.arretsParHeure,
         tempsProdS: r.tempsProdS,
         tempsMarcheS: r.tempsMarcheS,
@@ -298,6 +315,92 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+// ── Arrêts par pièce of the active OFs, cached per OF ──────
+//
+// The mean is over FINISHED pieces, so it can only change when a piece
+// ends: keyed on (OF, ids of its last finished pieces) it is computed once
+// per piece, not once per 10 s poll. Only the piece list is re-read each
+// poll — one narrow query over the active OFs — and `date_fin` is judged by
+// parseDtMs(), never in SQL (`<> ''` vs IS NULL differ across the drivers,
+// see production-trm.ts awaitingPieces). The stop query is bounded to the
+// span of those pieces and to the OF's machine, as the legacy joined it.
+
+interface PieceRow {
+  IDpiece_production: number
+  IDordre_fabrication: number
+  date_debut: unknown
+  date_fin: unknown
+}
+const cacheArretsParOf = new Map<number, { cle: string; resultat: ArretsParPiece }>()
+
+async function arretsDesOfsActifs(
+  ofActifParMachine: Map<number, Record<string, unknown>>,
+): Promise<Map<number, ArretsParPiece>> {
+  const out = new Map<number, ArretsParPiece>()
+  const ofIds = Array.from(ofActifParMachine.values())
+    .map((o) => n(o.IDordre_fabrication))
+    .filter((x) => x > 0)
+  if (ofIds.length === 0) {
+    cacheArretsParOf.clear()
+    return out
+  }
+  const rows = await query<PieceRow>(
+    `SELECT IDpiece_production, IDordre_fabrication, date_debut, date_fin
+     FROM piece_production WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+  )
+  const finiesParOf = new Map<number, { id: number; debutMs: number; finMs: number }[]>()
+  for (const r of rows) {
+    const debutMs = parseDtMs(r.date_debut)
+    const finMs = parseDtMs(r.date_fin)
+    if (debutMs === null || finMs === null || finMs <= debutMs) continue
+    const ofId = n(r.IDordre_fabrication)
+    if (!finiesParOf.has(ofId)) finiesParOf.set(ofId, [])
+    finiesParOf.get(ofId)!.push({ id: n(r.IDpiece_production), debutMs, finMs })
+  }
+  for (const id of Array.from(cacheArretsParOf.keys())) if (!ofIds.includes(id)) cacheArretsParOf.delete(id)
+
+  for (const [mid, o] of ofActifParMachine) {
+    const ofId = n(o.IDordre_fabrication)
+    const dernieres = (finiesParOf.get(ofId) ?? []).sort((a, b) => b.id - a.id).slice(0, ARRETS_PIECES)
+    const cle = dernieres.map((p) => p.id).join(',')
+    const hit = cacheArretsParOf.get(ofId)
+    if (hit && hit.cle === cle) {
+      out.set(mid, hit.resultat)
+      continue
+    }
+    let resultat: ArretsParPiece = { moyenne: null, pieces: 0 }
+    if (dernieres.length > 0) {
+      const debutLit = toHfsqlDt(Math.min(...dernieres.map((p) => p.debutMs)))
+      const finLit = toHfsqlDt(Math.max(...dernieres.map((p) => p.finMs)))
+      const [stops, evts] = await Promise.all([
+        query<{ date_evt: unknown }>(
+          `SELECT DATE AS date_evt FROM evenement_machine
+           WHERE IDmachine = ${mid} AND etat = 0 AND DATE > '${debutLit}' AND DATE < '${finLit}'`,
+        ),
+        query<{ IDpiece_production: number; evenement: string }>(
+          `SELECT IDpiece_production, evenement FROM evenement_piece
+           WHERE IDpiece_production IN (${dernieres.map((p) => p.id).join(',')})`,
+        ),
+      ])
+      // « Début du tricotage » is the one event that is not a stop; its accent
+      // may arrive mangled, hence the tolerant match.
+      const normaux = new Map<number, number>()
+      for (const e of evts) {
+        if (/^d.{1,2}but du tricotage/i.test(String(e.evenement).trim())) continue
+        const pid = n(e.IDpiece_production)
+        normaux.set(pid, (normaux.get(pid) ?? 0) + 1)
+      }
+      resultat = arretsParPiece(
+        dernieres.map((p) => ({ ...p, evenementsNormaux: normaux.get(p.id) ?? 0 })),
+        stops.map((s) => parseDtMs(s.date_evt)).filter((x): x is number => x !== null),
+      )
+    }
+    cacheArretsParOf.set(ofId, { cle, resultat })
+    out.set(mid, resultat)
+  }
+  return out
+}
 
 /** OF ids whose composition carries élasthanne — the legacy's
  *  `asso_fil_matiere.IDMatière IN (4, 13)` over `asso_fil_of.IDref_fil`. The
