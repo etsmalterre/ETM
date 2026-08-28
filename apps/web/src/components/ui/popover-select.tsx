@@ -16,6 +16,56 @@ import { createPortal } from 'react-dom'
 import { Loader2, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+// ── Viewport-aware placement (shared by both components) ─────
+//
+// The list is `position: fixed`, so nothing clips it — which also means
+// nothing STOPS it: anchored below a trigger near the bottom of the screen it
+// used to render straight off the viewport, and the options down there were
+// simply unreachable. That is ticket #1098 ("il manque la ligne de bleu /
+// 20 mètres"): the option existed, it was just painted below the fold.
+// So: flip above the trigger when there is more room there, and always clamp
+// the height to the space actually available. Applies app-wide — any dropdown
+// opened low on the page was exposed to this.
+
+/** Preferred list height (the old fixed `max-h-64`), used when it fits. */
+const POPOVER_MAX_H = 256
+/** Breathing room kept between the list and the viewport edge. */
+const VIEWPORT_MARGIN = 8
+/** Gap between the trigger and the list. */
+const TRIGGER_GAP = 6
+/** Below this the list is too short to be usable — flip instead of squeezing. */
+const POPOVER_MIN_H = 140
+
+interface PopoverPos {
+  left: number
+  /** Set when the list opens downward. */
+  top?: number
+  /** Set when it flips upward (distance from the viewport bottom). */
+  bottom?: number
+  width: number
+  maxHeight: number
+}
+
+/** Place the list under the trigger, or above it when that leaves more room,
+ *  clamped to the viewport on both axes. */
+function placePopover(rect: DOMRect, minWidth: number): PopoverPos {
+  const width = Math.max(rect.width, minWidth)
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  // Keep the list on screen horizontally too — a right-aligned trigger with a
+  // wider list (minWidth) would otherwise spill past the edge.
+  const left = Math.max(VIEWPORT_MARGIN, Math.min(rect.left, vw - width - VIEWPORT_MARGIN))
+
+  const below = vh - rect.bottom - TRIGGER_GAP - VIEWPORT_MARGIN
+  const above = rect.top - TRIGGER_GAP - VIEWPORT_MARGIN
+  // Prefer opening downward — that is where the eye goes. Flip only when down
+  // is genuinely cramped AND up is roomier.
+  const flip = below < Math.min(POPOVER_MAX_H, POPOVER_MIN_H) && above > below
+  return flip
+    ? { left, bottom: vh - rect.top + TRIGGER_GAP, width, maxHeight: Math.max(POPOVER_MIN_H, Math.min(POPOVER_MAX_H, above)) }
+    : { left, top: rect.bottom + TRIGGER_GAP, width, maxHeight: Math.max(POPOVER_MIN_H, Math.min(POPOVER_MAX_H, below)) }
+}
+
 // ── PopoverSelect (generic styled ID-keyed dropdown) ─────
 
 export interface PopoverSelectOption {
@@ -64,13 +114,12 @@ export function PopoverSelect({
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
+  const [pos, setPos] = useState<PopoverPos | null>(null)
 
   const reposition = useCallback(() => {
     const el = buttonRef.current
     if (!el) return
-    const r = el.getBoundingClientRect()
-    setPos({ left: r.left, top: r.bottom, width: r.width })
+    setPos(placePopover(el.getBoundingClientRect(), 240))
   }, [])
 
   useEffect(() => {
@@ -139,10 +188,12 @@ export function PopoverSelect({
           style={{
             position: 'fixed',
             left: pos.left,
-            top: pos.top + 6,
-            width: Math.max(pos.width, 240),
+            top: pos.top,
+            bottom: pos.bottom,
+            width: pos.width,
+            maxHeight: pos.maxHeight,
           }}
-          className="z-[100] rounded-lg border bg-white shadow-lg py-1 max-h-64 overflow-y-auto scrollbar-transparent"
+          className="z-[100] rounded-lg border bg-white shadow-lg py-1 overflow-y-auto scrollbar-transparent"
         >
           {!hideEmpty && (
             <>
@@ -220,7 +271,7 @@ export function SearchableCombobox<T>({
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
+  const [pos, setPos] = useState<PopoverPos | null>(null)
 
   const selectedLabel = useMemo(() => {
     const sel = options.find((o) => getId(o) === value)
@@ -243,8 +294,7 @@ export function SearchableCombobox<T>({
   const reposition = useCallback(() => {
     const el = inputRef.current
     if (!el) return
-    const r = el.getBoundingClientRect()
-    setPos({ left: r.left, top: r.bottom, width: r.width })
+    setPos(placePopover(el.getBoundingClientRect(), 260))
   }, [])
   useEffect(() => {
     if (!open) return
@@ -307,10 +357,12 @@ export function SearchableCombobox<T>({
           style={{
             position: 'fixed',
             left: pos.left,
-            top: pos.top + 6,
-            width: Math.max(pos.width, 260),
+            top: pos.top,
+            bottom: pos.bottom,
+            width: pos.width,
+            maxHeight: pos.maxHeight,
           }}
-          className="z-[100] max-h-64 overflow-y-auto rounded-lg border bg-white shadow-lg scrollbar-transparent"
+          className="z-[100] overflow-y-auto rounded-lg border bg-white shadow-lg scrollbar-transparent"
         >
           {loading ? (
             <div className="px-3 py-2 text-xs text-muted-foreground flex items-center gap-2">

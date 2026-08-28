@@ -1139,6 +1139,7 @@ Follow that shape when adding other domain dropdowns (e.g. N° devis, N° factur
 - **Do not absolute-position a popover as a DOM child of the trigger in a scrollable panel** — you'll reinvent the clipping bug. Portal.
 - **Do not re-implement the portal positioning per call site.** If you need a third variant, either extend `PopoverSelect` with new props or write a wrapper (like `CommandeSelect`) — don't copy the `getBoundingClientRect` / scroll-listener block again.
 - **Do not forget to close on scroll.** All our detail panels and dialogs are scrollable; leaving an open portal popover attached to an off-screen trigger looks broken. The existing components already wire this — don't strip it when you copy them.
+- ⚠️ **The list is `position: fixed`, so nothing clips it — which also means nothing STOPS it.** Both components run every open through **`placePopover()`**, which flips the list *above* the trigger when there is more room there and clamps `maxHeight` to the space actually available (and clamps `left` horizontally). Anchoring blindly to `top: trigger.bottom` with a static `max-h-64`, as they did until August 2026, paints the options **off the bottom of the screen** whenever the trigger sits low on the page — they are rendered, they are simply unreachable. That was ticket **#1098**, reported as "il manque la ligne de bleu / 20 mètres" on a 15-line order: the option existed, it was below the fold. It was never screen-specific — **every** dropdown in the app was exposed. Never reintroduce a fixed `max-h-*` on the popover or bypass `placePopover`.
 - **But do NOT close when the scroll target is inside the popover itself.** The close-on-scroll listener uses `window.addEventListener('scroll', ..., true)` with `capture: true` (needed because `scroll` doesn't bubble), which means scrolls *inside* the popover's own option list also fire it. Always guard: `if (popoverRef.current?.contains(e.target as Node)) return` before closing. Without this, the user can't scroll past the first screen of options — the popover snaps shut on the first wheel tick.
 
 ### Bridging legacy `number | ''` state
@@ -1481,9 +1482,10 @@ Reference: **TRM `apps/web/src/pages/FilsStock.tsx` → `ArchiverDialog`** (Fils
 
 ```tsx
 <Dialog open={open} onOpenChange={onOpenChange}>
-  {/* p-0 overrides the primitive's p-6; NO onClose prop — the band carries the
-      close button. Escape + overlay click still dismiss through <Dialog>. */}
-  <DialogContent className="max-w-2xl p-0 overflow-hidden max-h-[90dvh] flex flex-col">
+  {/* p-0 overrides the primitive's p-6; border-0 kills its default light border
+      (see the rule below); NO onClose prop — the band carries the close button.
+      Escape + overlay click still dismiss through <Dialog>. */}
+  <DialogContent className="max-w-2xl p-0 border-0 overflow-hidden max-h-[90dvh] flex flex-col">
 
     {/* 1. Header band — §43 verbatim (same as the side drawers, §27.5bis) */}
     <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
@@ -1530,6 +1532,19 @@ Reference: **TRM `apps/web/src/pages/FilsStock.tsx` → `ArchiverDialog`** (Fils
 Rules — do not deviate:
 
 - **Three layers, always**: navy band → `bg-zinc-100/80` body → `bg-zinc-200/50` footer. This is the side drawer's composition (§27.5) applied to a dialog; the zinc body is what lets white cards separate visually — on a white sheet they vanish.
+- ⚠️ **No white edge, anywhere. The `DialogContent` is `p-0 border-0 bg-primary overflow-hidden`, the band gets `rounded-t-lg`, the footer `rounded-b-lg`, and the body + footer must be OPAQUE (`bg-zinc-100` / `bg-zinc-200`, not `/80` and `/50`).** This was reported three times running on the first banded dialog in this repo — "a thin white line all around the modal", then "still a bit of white in the corners", then still. Each part kills a different artefact; ship all of them:
+  | Part | What it kills |
+  |---|---|
+  | `border-0` | The primitive's default hairline `border`, meant to lift a *white* sheet off the overlay. Against a band bled to the edges it draws a thin white ring around the whole modal. |
+  | **`bg-primary` on the `DialogContent`** | The real corner leak. `overflow-hidden` + `rounded-lg` clips the band, but the parent's own background is painted along the same arc and the two rasterise a hairline apart — so the parent's colour fringes the corner. Painting the parent the **band's** navy makes that fringe navy-on-navy and invisible. `bg-zinc-100` is NOT enough: zinc against navy still reads as white. |
+  | Opaque body + footer | Consequence of the above — `bg-zinc-100/80` and `bg-zinc-200/50` are translucent, so over a navy parent they go muddy. Opaque `bg-zinc-100` / `bg-zinc-200` land within ~1/255 of how the translucent versions looked over white. |
+  | `rounded-t-lg` / `rounded-b-lg` on the band and footer | Their square corners against the parent's `rounded-lg`. |
+  | `overflow-hidden` | Everything else overflowing the radius. Never drop it to "fix" a corner. |
+
+  **How to actually see a corner artefact** (both matter — the first is a trap):
+  - ❌ **Do NOT magnify with `transform: scale()`.** Chrome computes the `overflow` clip pre-transform and scales it, while backgrounds are painted post-transform, so a scaled dialog invents a corner gap that does not exist at 1×. Half an hour was lost to that.
+  - ✅ **Temporarily raise the radius instead** (`borderRadius = '48px'` on the content *and* the band, in devtools). Same render path, longer arc, so a real fringe becomes obvious and a clean corner stays visibly clean.
+  - ✅ **Paint the `DialogContent` background `red`** to see every pixel of the dialog's own surface not covered by a child, including what bleeds through translucent layers.
 - **The band is §43 verbatim** — `bg-primary` + `border-b-2 border-gold`, `h-8 w-8` flat-gold tile with the action's icon at `h-[18px]`, white `text-base font-heading` title, subtitle `text-white/70` carrying the **record identity** (what is being archived / validated). Header controls are ghost white icon buttons, close last. Keep it in sync with §43 / §27.5bis — a change to one is a change to all three.
 - **Gold left edge = "this is what you are writing."** Every field the confirm button persists sits in a card with `border-l-4 border-l-accent/70` (the §9 edit signal), so the eye separates *what you decide* from *what you read*. Read-only cards keep the plain `border-border/60` edge.
 - **Every computed verdict is a §7 status card** — `border-l-4` tone edge + tinted icon box + the figure at `text-2xl font-bold tabular-nums` in the **same tone colour** + the kg / count detail in `text-xs text-muted-foreground` under it. Tone comes from the business threshold (success / warning / danger — the thresholds are a product decision, ask). Never render a figure that has a meaning in neutral grey, and never colour just the number without the edge and icon box: the three together are what makes the card read as a verdict at a glance.

@@ -67,6 +67,14 @@ export default defineConfig({
         // The small pngs we DO want offline (logos, icons) are precached
         // explicitly via `includeAssets` above instead.
         globPatterns: ['**/*.{js,css,html,ico,svg}'],
+        // The app ships as one JS chunk and it crossed workbox's 2 MiB default
+        // in August 2026 (2 096.94 kB on the commit before, i.e. 0.2 kB of
+        // headroom — the next feature of any size was going to fail the build).
+        // Raising the cap keeps the main bundle precached and offline-capable;
+        // the alternative, letting it fall out of the precache, would silently
+        // cost offline start-up. Revisit with route-level code splitting rather
+        // than by nudging this number again.
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {

@@ -1464,6 +1464,129 @@ expeditionsRouter.delete('/divers/items/:itemId', async (req: Request, res: Resp
   }
 })
 
+// ── Divers: set a carton's whole content in one call ──
+
+const diversContenuBody = z.object({
+  items: z.array(z.object({
+    IDref_divers: z.number().int().positive(),
+    IDVariation1: z.number().int().nonnegative().default(0),
+    IDVariation2: z.number().int().nonnegative().default(0),
+    /** Target quantity for the combo in this carton. `0` removes it. */
+    quantite: z.number().nonnegative(),
+    prix: z.number().nonnegative().optional(),
+  })).max(500),
+})
+
+/** Replace a carton's content with the quantities the user typed in the
+ *  grouped-shipment editor: one PUT for the whole carton instead of an
+ *  add/update/delete round trip per article.
+ *
+ *  The payload is keyed on the **(ref, variation1, variation2) combo**, not on
+ *  `IDref_divers_expedie`, because the editor shows one row per combo — that is
+ *  what the user reads, and what the invoice groups on. Consequences:
+ *  - A combo the payload does NOT name is left completely alone. The editor
+ *    lists the order's lines UNION the carton's own items, so anything it can't
+ *    see it also can't touch (61 of 1 589 live items in order-linked cartons
+ *    carry a combo that no longer matches an order line).
+ *  - One carton in the live data holds two rows for the same combo (carton 890,
+ *    5 + 1). An unchanged total writes nothing at all, so those rows survive
+ *    untouched; a changed one collapses onto the lowest `IDref_divers_expedie`
+ *    and deletes the extras — the invoice already sums them into one line.
+ *
+ *  Stock goes through `adjustDiversStock` on every mutation exactly as the
+ *  per-item routes do, so the ledger stays in step with the WinDev app. */
+export interface DiversContenuItem {
+  IDref_divers: number
+  IDVariation1: number
+  IDVariation2: number
+  quantite: number
+  prix?: number
+}
+
+/** Applies the diff. Exported so `check-divers-carton-contenu.ts` exercises
+ *  this code rather than a copy of it that can drift. Throws a plain `Error`
+ *  on a bad payload; the route maps that to a 400. */
+export async function setDiversCartonContenu(
+  lineId: number, items: DiversContenuItem[],
+): Promise<{ created: number; updated: number; removed: number }> {
+  const key = (ref: number, v1: number, v2: number) => `${ref}|${v1}|${v2}`
+
+  // Reject a payload naming the same combo twice — the last one would silently
+  // win, and the editor never produces one.
+  const wanted = new Map<string, { ref: number; v1: number; v2: number; qty: number; prix?: number }>()
+  for (const it of items) {
+    const k = key(it.IDref_divers, it.IDVariation1, it.IDVariation2)
+    if (wanted.has(k)) throw new Error('Article en double dans la demande')
+    wanted.set(k, { ref: it.IDref_divers, v1: it.IDVariation1, v2: it.IDVariation2, qty: r4(it.quantite), prix: it.prix })
+  }
+
+  // Existing rows of this carton, grouped by combo (lowest id first).
+  const existingRows = await query<any>(
+    `SELECT IDref_divers_expedie, IDref_divers, IDVariation1, IDVariation2, quantite ` +
+      `FROM ref_divers_expedie WHERE IDligne_expedition_divers = ${lineId} ORDER BY IDref_divers_expedie`,
+  )
+  const byCombo = new Map<string, Array<{ id: number; qty: number }>>()
+  for (const r of existingRows as any[]) {
+    const k = key(Number(r.IDref_divers) || 0, Number(r.IDVariation1) || 0, Number(r.IDVariation2) || 0)
+    const arr = byCombo.get(k) ?? []
+    arr.push({ id: Number(r.IDref_divers_expedie) || 0, qty: r4(r.quantite) })
+    byCombo.set(k, arr)
+  }
+
+  let created = 0, updated = 0, removed = 0
+  for (const [k, want] of wanted) {
+    const rows = byCombo.get(k) ?? []
+    const current = r4(rows.reduce((s, r) => s + r.qty, 0))
+    if (current === want.qty) continue // nothing to write — duplicate rows survive
+
+    if (want.qty <= 0) {
+      for (const r of rows) await query(`DELETE FROM ref_divers_expedie WHERE IDref_divers_expedie = ${r.id}`)
+      await adjustDiversStock(want.ref, want.v1, want.v2, current)
+      removed += rows.length
+      continue
+    }
+    if (rows.length === 0) {
+      const refRows = await query<any>(`SELECT IDref_divers, unite FROM ref_divers WHERE IDref_divers = ${n(want.ref)}`)
+      if (refRows.length === 0) throw new Error('Référence introuvable')
+      const prix = want.prix ?? (await resolveDiversPrix(want.ref, want.v1, want.v2))
+      await query(
+        `INSERT INTO ref_divers_expedie (IDligne_expedition_divers, designation, quantite, unite, prix, IDref_divers, IDVariation1, IDVariation2) ` +
+          `VALUES (${lineId}, ${sqlText('')}, ${want.qty}, ${Number(refRows[0].unite) || 0}, ${r4(prix)}, ${n(want.ref)}, ${n(want.v1)}, ${n(want.v2)})`,
+      )
+      created++
+    } else {
+      // Collapse onto the lowest id, drop the extras (only ever reached when
+      // the total actually changed — see the duplicate note above).
+      await query(`UPDATE ref_divers_expedie SET quantite = ${want.qty} WHERE IDref_divers_expedie = ${rows[0].id}`)
+      for (const r of rows.slice(1)) await query(`DELETE FROM ref_divers_expedie WHERE IDref_divers_expedie = ${r.id}`)
+      updated++
+    }
+    // One signed move per combo: give back what was there, take the new total.
+    await adjustDiversStock(want.ref, want.v1, want.v2, r4(current - want.qty))
+  }
+  return { created, updated, removed }
+}
+
+expeditionsRouter.put('/divers/lignes/:lineId/contenu', async (req: Request, res: Response) => {
+  try {
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parent = await diversLineParent(lineId)
+    if (parent === 0) { res.status(404).json({ error: 'Line not found' }); return }
+    if (await isLocked('divers', parent)) { res.status(409).json(FACTURE_LOCK); return }
+    const parsed = diversContenuBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    try {
+      res.json({ ok: true, ...(await setDiversCartonContenu(lineId, parsed.data.items)) })
+    } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : 'Requête invalide' })
+    }
+  } catch (err) {
+    console.error('Error setting divers carton content:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ── Divers lookups: ref catalog / variations / price ──
 
 /** Accented identifiers come back truncated on the Linux bridge (archivé →

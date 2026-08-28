@@ -3246,8 +3246,63 @@ interface DiversGroupPayload {
 }
 interface TransporteurLite { IDtransporteur: number; nom: string }
 
+/** One line of `PUT /expeditions/divers/lignes/:id/contenu` — the carton's
+ *  whole content in a single call, keyed on the article combo. */
+interface DiversContenuItem {
+  IDref_divers: number
+  IDVariation1: number
+  IDVariation2: number
+  quantite: number
+  prix: number
+}
+
+/** A row of the carton content editor: one (ref × variation1 × variation2)
+ *  combo, merging what the order asks for with what the carton already holds. */
+interface ContentRow {
+  key: string
+  IDref_divers: number
+  IDVariation1: number
+  IDVariation2: number
+  ref_designation: string
+  variation1_label: string | null
+  variation2_label: string | null
+  prix: number
+  /** Quantity on the order for this combo — 0 for an off-order carton item. */
+  commandee: number
+  /** Already shipped on this order by the OTHER cartons. */
+  ailleurs: number
+  stock: number | null
+  /** What this carton holds today, summed over duplicate rows. */
+  current: number
+  /** In the carton but not on the order — 61 such items live. */
+  horsCommande: boolean
+}
+
+const comboKey = (ref: number, v1: number, v2: number) => `${ref}|${v1}|${v2}`
+/** Kill float noise so `qty !== current` doesn't report a phantom edit. */
+const round2q = (v: number) => Math.round(v * 100) / 100
+/** Read a typed quantity; anything unparseable (or negative) counts as 0, so a
+ *  half-typed cell never sends garbage and never blocks the save. */
+const parseQty = (raw: string): number => {
+  const v = Number(raw.trim().replace(',', '.'))
+  return Number.isFinite(v) && v > 0 ? round2q(v) : 0
+}
+
 /** Whole-order divers shipment editor: pick/create the expédition, set its
- *  header, organise cartons, and drop the order's articles into them. */
+ *  header, organise cartons, and fill each carton from the order's articles.
+ *
+ *  Chrome follows `mps_designer §18.D` — navy band + zinc body of white cards
+ *  + zinc footer strip. A dialog this size is a working surface, not a form;
+ *  on a plain white sheet its panels had nothing to separate them.
+ *
+ *  Content editing is a per-carton **edit mode** (tickets #1098 / #1099), not
+ *  an "ajouter un article" combobox. The combobox listed the order's lines in
+ *  a popover that ran off the bottom of the screen, so a line that existed was
+ *  simply unreachable — and picking articles one at a time meant re-opening it
+ *  for every row. The editor shows every article of the order at once with an
+ *  editable quantity, which is also what the legacy `FEN_Expedition_Groupé`
+ *  did (`TABLE_RefExpedie` = the order's divers lines LEFT JOINed to the
+ *  selected carton's `ref_divers_expedie`). */
 function ExpeditionGroupeeDialog({
   open, commande, onClose, onMutationSuccess,
 }: {
@@ -3284,10 +3339,13 @@ function ExpeditionGroupeeDialog({
   // modal never holds unsaved work the user can lose by closing it.
   const [draftDate, setDraftDate] = useState('')
   const [draftRef, setDraftRef] = useState('')
-  const [addRefId, setAddRefId] = useState(0)
-  const [addQty, setAddQty] = useState('')
   const [deleteCarton, setDeleteCarton] = useState<DiversShipCarton | null>(null)
-  const [deleteItem, setDeleteItem] = useState<DiversShipItem | null>(null)
+  // Carton content edit mode: `draftQty` is keyed on the (ref, v1, v2) combo,
+  // and holds raw strings so a half-typed "1," is not clobbered mid-keystroke.
+  const [editingContent, setEditingContent] = useState(false)
+  const [draftQty, setDraftQty] = useState<Record<string, string>>({})
+  const [contentFilter, setContentFilter] = useState('')
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
 
   const expeditions = useMemo(() => data?.expeditions ?? [], [data])
   const selectedExp = expeditions.find((e) => e.IDexpedition_divers === expId) ?? null
@@ -3319,14 +3377,16 @@ function ExpeditionGroupeeDialog({
   }, [selectedExp?.IDexpedition_divers, selectedExp?.date, selectedExp?.ref_client])
 
   useEffect(() => {
-    if (!open) { setError(null); setAddRefId(0); setAddQty('') }
+    if (!open) { setError(null); setEditingContent(false); setDraftQty({}); setContentFilter('') }
   }, [open])
 
   const refresh = useCallback(() => {
     // Also drops the per-line drawer cache — a grouped edit changes what a
-    // line shows as expédié.
+    // line shows as expédié — and the stock caches, since shipping a divers
+    // article decrements `stock_divers` (cache-sync rule in CLAUDE.md).
     queryClient.invalidateQueries({ queryKey: ['commande-client-divers-expeditions', commandeId] })
     queryClient.invalidateQueries({ queryKey: ['commande-client-divers-line', commandeId] })
+    invalidateStockCaches(queryClient)
     onMutationSuccess()
   }, [queryClient, onMutationSuccess, commandeId])
 
@@ -3360,37 +3420,132 @@ function ExpeditionGroupeeDialog({
     onSuccess: () => { setDeleteCarton(null); setError(null); refresh() },
     onError: fail,
   })
-  const addItemMut = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      apiFetch(`/expeditions/divers/lignes/${selectedCarton!.IDligne_expedition_divers}/items`, { method: 'POST', body: JSON.stringify(body) }),
-    onSuccess: () => { setAddRefId(0); setAddQty(''); setError(null); refresh() },
-    onError: fail,
-  })
-  const updateItemMut = useMutation({
-    mutationFn: ({ id, quantite }: { id: number; quantite: number }) =>
-      apiFetch(`/expeditions/divers/items/${id}`, { method: 'PUT', body: JSON.stringify({ quantite }) }),
-    onSuccess: () => { setError(null); refresh() },
-    onError: fail,
-  })
-  const deleteItemMut = useMutation({
-    mutationFn: (id: number) => apiFetch(`/expeditions/divers/items/${id}`, { method: 'DELETE' }),
-    onSuccess: () => { setDeleteItem(null); setError(null); refresh() },
+  const saveContenuMut = useMutation({
+    mutationFn: (items: DiversContenuItem[]) =>
+      apiFetch(`/expeditions/divers/lignes/${selectedCarton!.IDligne_expedition_divers}/contenu`, {
+        method: 'PUT', body: JSON.stringify({ items }),
+      }),
+    onSuccess: () => { setEditingContent(false); setDraftQty({}); setContentFilter(''); setError(null); refresh() },
     onError: fail,
   })
 
-  const lignes = data?.lignes ?? []
-  const addLine = lignes.find((l) => l.IDligne_commande_client === addRefId) ?? null
-  const addQtyNum = Number(addQty.replace(',', '.'))
-  const canAddItem = !readOnly && !!selectedCarton && !!addLine && Number.isFinite(addQtyNum) && addQtyNum > 0
+  const lignes = useMemo(() => data?.lignes ?? [], [data])
 
-  // Prefill the quantity with the picked line's remainder (capped by stock).
-  useEffect(() => {
-    if (!addLine) { setAddQty(''); return }
-    const suggested = addLine.stock_disponible != null && addLine.stock_disponible > 0
-      ? Math.min(addLine.reste, addLine.stock_disponible)
-      : addLine.reste
-    setAddQty(suggested > 0 ? String(suggested) : '')
-  }, [addRefId])
+  // One row per (ref, variation1, variation2) combo — the unit the user reads
+  // and the unit the invoice groups on. Two sources are merged:
+  //  - the order's divers lines (7 live orders carry the same combo on two
+  //    lines, so quantities are summed rather than listed twice), and
+  //  - anything already in the carton whose combo is NOT on the order (61 of
+  //    1 589 live items), which would otherwise be invisible here and
+  //    therefore impossible to correct.
+  const contentRows = useMemo<ContentRow[]>(() => {
+    const inCarton = new Map<string, number>()
+    for (const it of selectedCarton?.items ?? []) {
+      const k = comboKey(it.IDref_divers, it.IDVariation1, it.IDVariation2)
+      inCarton.set(k, round2q((inCarton.get(k) ?? 0) + it.quantite))
+    }
+    const rows = new Map<string, ContentRow>()
+    for (const l of lignes) {
+      const k = comboKey(l.IDref_divers, l.IDVariation1, l.IDVariation2)
+      const prev = rows.get(k)
+      if (prev) { prev.commandee = round2q(prev.commandee + l.quantite_commandee); continue }
+      const current = inCarton.get(k) ?? 0
+      rows.set(k, {
+        key: k,
+        IDref_divers: l.IDref_divers,
+        IDVariation1: l.IDVariation1,
+        IDVariation2: l.IDVariation2,
+        ref_designation: l.ref_designation,
+        variation1_label: l.variation1_label,
+        variation2_label: l.variation2_label,
+        prix: l.prix,
+        commandee: l.quantite_commandee,
+        // `quantite_expediee` counts the whole order, this carton included —
+        // subtract it so the ceiling stays put while the user types.
+        ailleurs: round2q(Math.max(0, l.quantite_expediee - current)),
+        stock: l.stock_disponible,
+        current,
+        horsCommande: false,
+      })
+    }
+    for (const [k, qty] of inCarton) {
+      if (rows.has(k)) continue
+      const it = (selectedCarton?.items ?? []).find(
+        (i) => comboKey(i.IDref_divers, i.IDVariation1, i.IDVariation2) === k,
+      )
+      if (!it) continue
+      rows.set(k, {
+        key: k,
+        IDref_divers: it.IDref_divers,
+        IDVariation1: it.IDVariation1,
+        IDVariation2: it.IDVariation2,
+        ref_designation: it.designation.trim() || it.ref_designation,
+        variation1_label: it.variation1_label,
+        variation2_label: it.variation2_label,
+        prix: it.prix,
+        commandee: 0,
+        ailleurs: 0,
+        stock: null,
+        current: qty,
+        horsCommande: true,
+      })
+    }
+    return [...rows.values()]
+  }, [lignes, selectedCarton])
+
+  /** What may still go into THIS carton for a combo: the order quantity minus
+   *  what the other cartons already carry. 0 for an off-order row. */
+  const resteOf = (r: ContentRow) => round2q(Math.max(0, r.commandee - r.ailleurs))
+
+  const filteredRows = useMemo(() => {
+    const q = contentFilter.trim().toLowerCase()
+    if (!q) return contentRows
+    const terms = q.split(/\s+/)
+    return contentRows.filter((r) => {
+      const hay = `${r.ref_designation} ${r.variation1_label ?? ''} ${r.variation2_label ?? ''}`.toLowerCase()
+      return terms.every((t) => hay.includes(t))
+    })
+  }, [contentRows, contentFilter])
+
+  const qtyOf = (r: ContentRow) => (editingContent ? parseQty(draftQty[r.key] ?? '') : r.current)
+  const contentDirty = editingContent && contentRows.some((r) => qtyOf(r) !== r.current)
+  const draftTotalQty = round2q(contentRows.reduce((s, r) => s + qtyOf(r), 0))
+  const draftTotalEur = round2q(contentRows.reduce((s, r) => s + qtyOf(r) * r.prix, 0))
+
+  const startEditContent = () => {
+    const seed: Record<string, string> = {}
+    for (const r of contentRows) seed[r.key] = r.current > 0 ? String(r.current) : ''
+    setDraftQty(seed)
+    setContentFilter('')
+    setEditingContent(true)
+  }
+  const cancelEditContent = () => { setEditingContent(false); setDraftQty({}); setContentFilter('') }
+  /** Fill every VISIBLE row with what it still owes — the one-click "ce carton
+   *  emporte le reste de la commande". Scoped to the filter so it can be aimed. */
+  const fillRemaining = () => {
+    setDraftQty((prev) => {
+      const next = { ...prev }
+      for (const r of filteredRows) {
+        const reste = resteOf(r)
+        if (reste > 0) next[r.key] = String(reste)
+      }
+      return next
+    })
+  }
+  const saveContent = () => {
+    saveContenuMut.mutate(contentRows.map((r) => ({
+      IDref_divers: r.IDref_divers,
+      IDVariation1: r.IDVariation1,
+      IDVariation2: r.IDVariation2,
+      quantite: qtyOf(r),
+      prix: r.prix,
+    })))
+  }
+
+  const requestClose = () => {
+    if (contentDirty) { setConfirmDiscard(true); return }
+    onClose()
+  }
 
   if (!open) return null
 
@@ -3398,25 +3553,53 @@ function ExpeditionGroupeeDialog({
   const expTotalEur = selectedExp
     ? selectedExp.cartons.reduce((s, c) => s + c.items.reduce((is, i) => is + i.quantite * i.prix, 0), 0)
     : 0
+  const cartonCount = selectedExp?.cartons.length ?? 0
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-        <DialogContent className="max-w-5xl w-[92vw] h-[85vh] flex flex-col" onClose={onClose}>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Boxes className="h-5 w-5 text-accent" />
-              Expédition groupée
-              <span className="text-sm font-normal text-muted-foreground">
-                · N° {commande.numero ?? commande.IDcommande_client} · {commande.client_nom || '—'}
-              </span>
-            </DialogTitle>
-          </DialogHeader>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) requestClose() }}>
+        {/* Edge treatment — mps_designer §18.D. `border-0` drops the primitive's
+            hairline border, and `bg-zinc-100` replaces its near-white
+            `bg-background`: the body and footer layers are translucent zinc, so
+            whatever the dialog itself is painted in shows through them and at
+            the rounded corners. White there reads as a leftover frame. */}
+        <DialogContent className="max-w-5xl w-[92vw] h-[85vh] p-0 border-0 bg-primary overflow-hidden flex flex-col">
+          {/* Header band — mps_designer §43 / §18.D */}
+          <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
+            <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+              <Boxes className="h-[18px] w-[18px]" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+                Expédition groupée
+              </h2>
+              <p className="text-xs text-white/70 truncate">
+                N° {commande.numero ?? commande.IDcommande_client} · {commande.client_nom || '—'}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <Button
+                variant="ghost" size="icon"
+                className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white"
+                title="Bon de livraison" disabled={!selectedExp}
+                onClick={() => selectedExp && window.open(`${API_URL}/expeditions/divers/${selectedExp.IDexpedition_divers}/pdf`, '_blank')}
+              >
+                <Printer className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost" size="icon"
+                className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white"
+                title="Fermer" onClick={requestClose}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
 
           {isLoading ? (
-            <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
+            <div className="flex-1 flex items-center justify-center bg-zinc-100"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
           ) : expeditions.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
+            <div className="flex-1 flex flex-col items-center justify-center gap-3 bg-zinc-100 text-muted-foreground">
               <Truck className="h-12 w-12 opacity-40" />
               <p className="text-sm font-medium">Aucune expédition sur cette commande</p>
               {!soldee && (
@@ -3428,284 +3611,399 @@ function ExpeditionGroupeeDialog({
             </div>
           ) : (
             <>
-              {/* Header: which shipment, and its delivery details */}
-              <div className="flex-shrink-0 mt-4 grid grid-cols-2 gap-x-4 gap-y-2">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">Expédition</label>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 min-w-0">
-                      <PopoverSelect
-                        options={expeditions.map((e) => ({
-                          id: e.IDexpedition_divers,
-                          primary: `N° ${e.IDexpedition_divers}${e.date ? ` du ${formatHfsqlDate(e.date)}` : ''}`,
-                          secondary: e.est_facture ? 'facturée' : undefined,
-                        }))}
-                        value={expId ?? 0}
-                        onChange={(id) => setExpId(id || null)}
-                        hideEmpty
-                      />
-                    </div>
-                    {!soldee && (
-                      <Button variant="outline" size="icon" className="h-9 w-9 flex-shrink-0" title="Nouvelle expédition"
-                        onClick={() => createExpMut.mutate()} disabled={createExpMut.isPending}>
-                        {createExpMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">Date</label>
-                  <input
-                    type="date"
-                    value={draftDate}
-                    disabled={readOnly}
-                    onChange={(e) => setDraftDate(e.target.value)}
-                    onBlur={() => {
-                      if (readOnly || !selectedExp) return
-                      if (draftDate === hfsqlDateToInput(selectedExp.date)) return
-                      headerMut.mutate({ date: inputDateToHfsql(draftDate) })
-                    }}
-                    className={cn('w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'bg-zinc-100 text-muted-foreground')}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">Référence client</label>
-                  <input
-                    type="text"
-                    value={draftRef}
-                    disabled={readOnly}
-                    onChange={(e) => setDraftRef(e.target.value)}
-                    onBlur={() => {
-                      if (readOnly || !selectedExp) return
-                      if (draftRef === (selectedExp.ref_client ?? '')) return
-                      headerMut.mutate({ ref_client: draftRef })
-                    }}
-                    className={cn('w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'bg-zinc-100 text-muted-foreground')}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">Transporteur</label>
-                  <PopoverSelect
-                    options={(transporteurs ?? []).map((t) => ({ id: t.IDtransporteur, primary: t.nom }))}
-                    value={selectedExp?.IDtransporteur ?? 0}
-                    onChange={(id) => { if (!readOnly) headerMut.mutate({ IDtransporteur: id }) }}
-                    disabled={readOnly}
-                    emptyLabel="— aucun —"
-                  />
-                </div>
-                <div className="space-y-1 col-span-2">
-                  <label className="text-xs font-medium text-muted-foreground">Adresse de livraison</label>
-                  <PopoverSelect
-                    options={(adresses ?? []).map(adresseOption)}
-                    value={selectedExp?.IDadresse ?? 0}
-                    onChange={(id) => { if (!readOnly) headerMut.mutate({ IDadresse: id }) }}
-                    disabled={readOnly}
-                    emptyLabel="— aucune —"
-                  />
-                </div>
-              </div>
-
-              {readOnly && (
-                <div className="flex-shrink-0 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg border border-border/60 bg-zinc-200/40 text-[11px] text-muted-foreground">
-                  <Lock className="h-3.5 w-3.5 flex-shrink-0" />
-                  {soldee ? 'Commande terminée — expédition en lecture seule.' : 'Expédition facturée — non modifiable.'}
-                </div>
-              )}
-
-              {/* Cartons (left) + the selected carton's articles (right) */}
-              <div className="flex-1 min-h-0 mt-3 flex gap-3">
-                <div className="w-56 flex-shrink-0 flex flex-col rounded-lg border border-border/60 bg-zinc-100/80 overflow-hidden">
-                  <div className="flex-shrink-0 px-3 py-2 border-b bg-zinc-200/50 text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
-                    Conteneurs ({selectedExp?.cartons.length ?? 0})
-                  </div>
-                  <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5 scrollbar-transparent">
-                    {(selectedExp?.cartons ?? []).map((c) => {
-                      const active = selectedCarton?.IDligne_expedition_divers === c.IDligne_expedition_divers
-                      return (
-                        <button
-                          key={c.IDligne_expedition_divers}
-                          type="button"
-                          onClick={() => setCartonId(c.IDligne_expedition_divers)}
-                          className={cn(
-                            'w-full text-left p-2.5 rounded-lg border bg-card shadow-sm transition-colors',
-                            active ? 'border-accent ring-1 ring-accent' : 'border-border/60 hover:border-accent/40',
-                          )}
-                        >
-                          <span className="flex items-center gap-2 min-w-0">
-                            <Package className="h-4 w-4 text-amber-600 flex-shrink-0" />
-                            <span className="text-sm font-medium truncate">{c.detail_ligne || '—'}</span>
-                          </span>
-                          <span className="block mt-1 ml-6 text-[11px] text-muted-foreground tabular-nums">
-                            {c.items.length} article{c.items.length > 1 ? 's' : ''} · {fmtNum(cartonTotal(c), 1)}
-                          </span>
-                        </button>
-                      )
-                    })}
-                    {!readOnly && (
-                      <Button
-                        variant="ghost" size="sm"
-                        onClick={() => addCartonMut.mutate(`CARTON ${(selectedExp?.cartons.length ?? 0) + 1}`)}
-                        disabled={addCartonMut.isPending}
-                        className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
-                      >
-                        <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un carton
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex-1 min-w-0 flex flex-col rounded-lg border border-border/60 bg-white overflow-hidden">
-                  {selectedCarton ? (
-                    <>
-                      <div className="flex-shrink-0 px-3 py-2 border-b bg-zinc-200/50 flex items-center gap-2">
-                        <Package className="h-4 w-4 text-amber-600 flex-shrink-0" />
-                        <input
-                          key={selectedCarton.IDligne_expedition_divers}
-                          type="text"
-                          defaultValue={selectedCarton.detail_ligne}
-                          disabled={readOnly}
-                          onBlur={(e) => {
-                            const v = e.target.value
-                            if (readOnly || v === selectedCarton.detail_ligne) return
-                            renameCartonMut.mutate({ id: selectedCarton.IDligne_expedition_divers, detail_ligne: v })
-                          }}
-                          className={cn('flex-1 min-w-0 h-7 px-2 text-sm font-medium rounded-md border border-transparent bg-transparent hover:border-input focus:border-input focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'hover:border-transparent')}
+              <div className="flex-1 min-h-0 flex flex-col gap-3 bg-zinc-100 p-4">
+                {/* Shipment header. Deliberately dense — 3 columns × 2 rows of
+                    `size="sm"` controls rather than 2 × 3 of full-height ones:
+                    it is context the user sets once, and every pixel it gives
+                    back goes to the carton table underneath, which is the part
+                    that actually scrolls. */}
+                <div className="flex-shrink-0 rounded-lg border border-border/60 bg-card px-3 py-2.5 shadow-sm grid grid-cols-3 gap-x-3 gap-y-2">
+                  <div className="space-y-0.5">
+                    <label className="text-[11px] font-medium text-muted-foreground">Expédition</label>
+                    <div className="flex items-center gap-1.5">
+                      <div className="flex-1 min-w-0">
+                        <PopoverSelect
+                          options={expeditions.map((e) => ({
+                            id: e.IDexpedition_divers,
+                            primary: `N° ${e.IDexpedition_divers}${e.date ? ` du ${formatHfsqlDate(e.date)}` : ''}`,
+                            secondary: e.est_facture ? 'facturée' : undefined,
+                          }))}
+                          value={expId ?? 0}
+                          onChange={(id) => setExpId(id || null)}
+                          disabled={editingContent}
+                          disabledTitle="Terminez la saisie du carton d'abord"
+                          size="sm" widthClass="w-full"
+                          hideEmpty
                         />
-                        {!readOnly && (
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive flex-shrink-0"
-                            title="Supprimer le carton" onClick={() => setDeleteCarton(selectedCarton)}>
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
                       </div>
-
-                      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent">
-                        <table className="w-full text-xs">
-                          <thead className="bg-zinc-100 border-b border-border/60 sticky top-0">
-                            <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                              <th className="px-2.5 py-2 font-semibold text-left w-full">Référence</th>
-                              <th className="px-2.5 py-2 font-semibold text-left">Variation 1</th>
-                              <th className="px-2.5 py-2 font-semibold text-left">Variation 2</th>
-                              <th className="px-2.5 py-2 font-semibold text-right">Quantité</th>
-                              <th className="px-2.5 py-2 font-semibold text-right">Total</th>
-                              <th className="px-2.5 py-2 font-semibold text-right"></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {selectedCarton.items.length === 0 && (
-                              <tr><td colSpan={6} className="px-2.5 py-6 text-center text-muted-foreground italic">Aucun article dans ce carton</td></tr>
-                            )}
-                            {selectedCarton.items.map((it) => (
-                              <tr key={it.IDref_divers_expedie} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
-                                <td className="px-2.5 py-1.5 truncate font-medium" title={it.ref_designation}>
-                                  {it.designation.trim() || it.ref_designation || `Réf #${it.IDref_divers}`}
-                                </td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap">{it.variation1_label || '—'}</td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap">{it.variation2_label || '—'}</td>
-                                <td className="px-2.5 py-1.5 text-right">
-                                  <input
-                                    key={`${it.IDref_divers_expedie}-${it.quantite}`}
-                                    type="text"
-                                    inputMode="decimal"
-                                    defaultValue={String(it.quantite)}
-                                    disabled={readOnly}
-                                    onBlur={(e) => {
-                                      const v = Number(e.target.value.replace(',', '.'))
-                                      if (readOnly || !Number.isFinite(v) || v < 0 || v === it.quantite) return
-                                      updateItemMut.mutate({ id: it.IDref_divers_expedie, quantite: v })
-                                    }}
-                                    className={cn('h-7 w-20 px-1.5 text-xs text-right tabular-nums rounded-md border border-transparent bg-transparent hover:border-input focus:border-input focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'hover:border-transparent')}
-                                  />
-                                </td>
-                                <td className="px-2.5 py-1.5 text-right tabular-nums whitespace-nowrap">{fmtNum(it.quantite * it.prix, 2)} €</td>
-                                <td className="px-2.5 py-1.5 text-right">
-                                  {!readOnly && (
-                                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive"
-                                      title="Retirer du carton" onClick={() => setDeleteItem(it)}>
-                                      <Trash2 className="h-3 w-3" />
-                                    </Button>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      {/* Add an article — picked from the order's own divers lines */}
-                      {!readOnly && (
-                        <div className="flex-shrink-0 px-2.5 py-2 border-t bg-zinc-200/50 flex items-center gap-2">
-                          <div className="flex-1 min-w-0">
-                            <SearchableCombobox<{ id: number; primary: string; secondary?: string }>
-                              size="sm"
-                              options={lignes.map((l) => ({
-                                id: l.IDligne_commande_client,
-                                primary: diversArticleLabel(l.ref_designation, l.variation1_label, l.variation2_label),
-                                secondary: `reste ${fmtNum(l.reste, 1)}${l.stock_disponible != null ? ` · stock ${fmtNum(l.stock_disponible, 1)}` : ''}`,
-                              }))}
-                              value={addRefId}
-                              onChange={setAddRefId}
-                              getId={(o) => o.id}
-                              getPrimary={(o) => o.primary}
-                              getSecondary={(o) => o.secondary}
-                              placeholder="Ajouter un article de la commande"
-                            />
-                          </div>
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={addQty}
-                            onChange={(e) => setAddQty(e.target.value)}
-                            placeholder="Qté"
-                            className="h-7 w-20 px-2 text-xs text-right tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-                          />
-                          <Button
-                            size="sm" className="h-7 flex-shrink-0"
-                            disabled={!canAddItem || addItemMut.isPending}
-                            onClick={() => addItemMut.mutate({
-                              IDref_divers: addLine!.IDref_divers,
-                              IDVariation1: addLine!.IDVariation1,
-                              IDVariation2: addLine!.IDVariation2,
-                              quantite: addQtyNum,
-                              prix: addLine!.prix,
-                            })}
-                          >
-                            {addItemMut.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Plus className="h-3 w-3 mr-1" />}
-                            Ajouter
-                          </Button>
-                        </div>
+                      {!soldee && (
+                        <Button variant="outline" size="icon" className="h-7 w-7 flex-shrink-0" title="Nouvelle expédition"
+                          onClick={() => createExpMut.mutate()} disabled={createExpMut.isPending || editingContent}>
+                          {createExpMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                        </Button>
                       )}
-                    </>
-                  ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
-                      <Package className="h-10 w-10 opacity-40" />
-                      <p className="text-sm">Aucun carton — ajoutez-en un pour commencer</p>
                     </div>
-                  )}
+                  </div>
+                  <div className="space-y-0.5">
+                    <label className="text-[11px] font-medium text-muted-foreground">Date</label>
+                    <input
+                      type="date"
+                      value={draftDate}
+                      disabled={readOnly}
+                      onChange={(e) => setDraftDate(e.target.value)}
+                      onBlur={() => {
+                        if (readOnly || !selectedExp) return
+                        if (draftDate === hfsqlDateToInput(selectedExp.date)) return
+                        headerMut.mutate({ date: inputDateToHfsql(draftDate) })
+                      }}
+                      className={cn('w-full h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'bg-zinc-100 text-muted-foreground')}
+                    />
+                  </div>
+                  <div className="space-y-0.5">
+                    <label className="text-[11px] font-medium text-muted-foreground">Transporteur</label>
+                    <PopoverSelect
+                      options={(transporteurs ?? []).map((t) => ({ id: t.IDtransporteur, primary: t.nom }))}
+                      value={selectedExp?.IDtransporteur ?? 0}
+                      onChange={(id) => { if (!readOnly) headerMut.mutate({ IDtransporteur: id }) }}
+                      disabled={readOnly}
+                      size="sm" widthClass="w-full"
+                      emptyLabel="— aucun —"
+                    />
+                  </div>
+                  <div className="space-y-0.5">
+                    <label className="text-[11px] font-medium text-muted-foreground">Référence client</label>
+                    <input
+                      type="text"
+                      value={draftRef}
+                      disabled={readOnly}
+                      onChange={(e) => setDraftRef(e.target.value)}
+                      onBlur={() => {
+                        if (readOnly || !selectedExp) return
+                        if (draftRef === (selectedExp.ref_client ?? '')) return
+                        headerMut.mutate({ ref_client: draftRef })
+                      }}
+                      className={cn('w-full h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'bg-zinc-100 text-muted-foreground')}
+                    />
+                  </div>
+                  <div className="space-y-0.5 col-span-2">
+                    <label className="text-[11px] font-medium text-muted-foreground">Adresse de livraison</label>
+                    <PopoverSelect
+                      options={(adresses ?? []).map(adresseOption)}
+                      value={selectedExp?.IDadresse ?? 0}
+                      onChange={(id) => { if (!readOnly) headerMut.mutate({ IDadresse: id }) }}
+                      disabled={readOnly}
+                      size="sm" widthClass="w-full"
+                      emptyLabel="— aucune —"
+                    />
+                  </div>
+                </div>
+
+                {readOnly && (
+                  <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg border border-border/60 bg-zinc-200/60 text-[11px] text-muted-foreground">
+                    <Lock className="h-3.5 w-3.5 flex-shrink-0" />
+                    {soldee ? 'Commande terminée — expédition en lecture seule.' : 'Expédition facturée — non modifiable.'}
+                  </div>
+                )}
+
+                {/* Cartons (left) + the selected carton's articles (right) */}
+                <div className="flex-1 min-h-0 flex gap-3">
+                  <div className="w-56 flex-shrink-0 flex flex-col rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                    <div className="flex-shrink-0 px-3 py-2 border-b border-border/60 bg-zinc-200/50 text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+                      Conteneurs ({cartonCount})
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5 scrollbar-transparent">
+                      {(selectedExp?.cartons ?? []).map((c) => {
+                        const active = selectedCarton?.IDligne_expedition_divers === c.IDligne_expedition_divers
+                        return (
+                          <button
+                            key={c.IDligne_expedition_divers}
+                            type="button"
+                            // Switching carton mid-edit would silently drop the
+                            // draft — the edit stays pinned to one carton.
+                            disabled={editingContent && !active}
+                            title={editingContent && !active ? "Terminez la saisie du carton d'abord" : undefined}
+                            onClick={() => setCartonId(c.IDligne_expedition_divers)}
+                            className={cn(
+                              'w-full text-left p-2.5 rounded-lg border bg-card shadow-sm transition-colors',
+                              active ? 'border-accent ring-1 ring-accent' : 'border-border/60 hover:border-accent/40',
+                              editingContent && !active && 'opacity-50 cursor-not-allowed hover:border-border/60',
+                            )}
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <Package className="h-4 w-4 text-amber-600 flex-shrink-0" />
+                              <span className="text-sm font-medium truncate">{c.detail_ligne || '—'}</span>
+                            </span>
+                            <span className="block mt-1 ml-6 text-[11px] text-muted-foreground tabular-nums">
+                              {c.items.length} article{c.items.length > 1 ? 's' : ''} · {fmtNum(cartonTotal(c), 1)}
+                            </span>
+                          </button>
+                        )
+                      })}
+                      {!readOnly && !editingContent && (
+                        <Button
+                          variant="ghost" size="sm"
+                          onClick={() => addCartonMut.mutate(`CARTON ${cartonCount + 1}`)}
+                          disabled={addCartonMut.isPending}
+                          className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
+                        >
+                          <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un carton
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-w-0 flex flex-col rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                    {selectedCarton ? (
+                      <>
+                        <div className="flex-shrink-0 px-3 py-2 border-b border-border/60 bg-zinc-200/50 flex items-center gap-2">
+                          <Package className="h-4 w-4 text-amber-600 flex-shrink-0" />
+                          <input
+                            key={selectedCarton.IDligne_expedition_divers}
+                            type="text"
+                            defaultValue={selectedCarton.detail_ligne}
+                            disabled={readOnly}
+                            onBlur={(e) => {
+                              const v = e.target.value
+                              if (readOnly || v === selectedCarton.detail_ligne) return
+                              renameCartonMut.mutate({ id: selectedCarton.IDligne_expedition_divers, detail_ligne: v })
+                            }}
+                            className={cn('flex-1 min-w-0 h-7 px-2 text-sm font-medium rounded-md border border-transparent bg-transparent hover:border-input focus:border-input focus:bg-white focus:outline-none focus:ring-2 focus:ring-ring', readOnly && 'hover:border-transparent')}
+                          />
+                          {!readOnly && (editingContent ? (
+                            <>
+                              <Button variant="outline" size="sm" className="h-7 flex-shrink-0"
+                                onClick={cancelEditContent} disabled={saveContenuMut.isPending}>
+                                <X className="h-3.5 w-3.5 mr-1.5" />Annuler
+                              </Button>
+                              <Button size="sm" className="h-7 flex-shrink-0"
+                                onClick={saveContent} disabled={!contentDirty || saveContenuMut.isPending}>
+                                {saveContenuMut.isPending
+                                  ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                                  : <Save className="h-3.5 w-3.5 mr-1.5" />}
+                                Enregistrer
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button variant="gold" size="sm" className="h-7 flex-shrink-0" onClick={startEditContent}>
+                                <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier le contenu
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive flex-shrink-0"
+                                title="Supprimer le carton" onClick={() => setDeleteCarton(selectedCarton)}>
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </>
+                          ))}
+                        </div>
+
+                        {editingContent && (
+                          <div className="flex-shrink-0 px-2.5 py-2 border-b border-border/60 bg-zinc-100/80 flex items-center gap-2">
+                            <div className="relative flex-1 min-w-0">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                              <input
+                                type="text"
+                                value={contentFilter}
+                                onChange={(e) => setContentFilter(e.target.value)}
+                                placeholder="Filtrer les articles de la commande"
+                                className="h-7 w-full pl-8 pr-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                              />
+                            </div>
+                            <Button variant="outline" size="sm" className="h-7 flex-shrink-0" onClick={fillRemaining}
+                              title="Reporter, sur chaque article affiché, ce qu'il reste à expédier">
+                              Remplir
+                            </Button>
+                          </div>
+                        )}
+
+                        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent">
+                          {editingContent ? (
+                            <table className="w-full text-xs">
+                              <thead className="bg-zinc-200/60 border-b border-border/60 sticky top-0 z-10">
+                                <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  <th className="px-2.5 py-2 font-semibold text-left w-full">Référence</th>
+                                  <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">Variation 1</th>
+                                  <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">Variation 2</th>
+                                  <th className="px-2 py-2 font-semibold text-right" title="Quantité commandée">Cmdé</th>
+                                  {/* ⚠️ "Reste", not "Cmdé", is the number that fills the line.
+                                      Measured on the live base: 1 443 of 1 770 divers order-line
+                                      combos (81.5 %) are already shipped in part or in full, so
+                                      filling from the ordered quantity would double-ship the
+                                      majority of lines. Cmdé stays as context — never make it
+                                      clickable. */}
+                                  <th className="px-2 py-2 font-semibold text-right" title="Reste à expédier une fois ce carton enregistré">Reste</th>
+                                  <th className="px-2 py-2 font-semibold text-right" title="Stock disponible une fois ce carton enregistré">Stock</th>
+                                  <th className="px-2.5 py-2 font-semibold text-right whitespace-nowrap">Dans ce carton</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {filteredRows.length === 0 && (
+                                  <tr><td colSpan={7} className="px-2.5 py-6 text-center text-muted-foreground italic">
+                                    {contentRows.length === 0 ? 'Aucun article divers sur cette commande' : 'Aucun article ne correspond au filtre'}
+                                  </td></tr>
+                                )}
+                                {filteredRows.map((r) => {
+                                  const reste = resteOf(r)   // ceiling for this carton, fixed
+                                  const qty = qtyOf(r)
+                                  // Reste and Stock are shown as they WILL BE once this carton is
+                                  // saved, so both count down live as the quantity is typed —
+                                  // "what is still owed" and "what is still on the shelf".
+                                  const resteApres = round2q(reste - qty)
+                                  // ⚠️ The stored stock already has this carton's current content
+                                  // taken off it (shipping decrements `stock_divers` at write
+                                  // time). So the baseline is stock + current — empty the carton
+                                  // first, then take off what is typed. Comparing the typed
+                                  // quantity against the raw stored stock, as this did before,
+                                  // flagged an UNCHANGED row as over-stock the moment the article
+                                  // was the last of its kind: 5 in the carton, stock reads 0, and
+                                  // re-saving the same 5 lit every input amber.
+                                  const stockBase = r.stock === null ? null : round2q(r.stock + r.current)
+                                  const stockApres = stockBase === null ? null : round2q(stockBase - qty)
+                                  // Both stay warnings, never blocks: `stock_divers` is sparse
+                                  // (584 of 1 770 order-line combos have no row at all), so
+                                  // refusing would make untracked articles unshippable.
+                                  const overStock = stockApres !== null && stockApres < 0
+                                  const overReste = !r.horsCommande && resteApres < 0
+                                  return (
+                                    <tr key={r.key} className={cn(
+                                      'border-b border-border/40 last:border-0',
+                                      qty > 0 ? 'bg-accent/[0.06]' : 'hover:bg-accent/5',
+                                    )}>
+                                      <td className="px-2.5 py-1.5 truncate font-medium" title={r.ref_designation}>
+                                        {r.ref_designation || `Réf #${r.IDref_divers}`}
+                                        {r.horsCommande && (
+                                          <span className="ml-1.5 text-[10px] font-normal text-muted-foreground italic">hors commande</span>
+                                        )}
+                                      </td>
+                                      <td className="px-2.5 py-1.5 whitespace-nowrap">{r.variation1_label || '—'}</td>
+                                      <td className="px-2.5 py-1.5 whitespace-nowrap">{r.variation2_label || '—'}</td>
+                                      <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+                                        {r.commandee > 0 ? fmtNum(r.commandee, 1) : '—'}
+                                      </td>
+                                      <td
+                                        className="px-2 py-1.5 text-right tabular-nums"
+                                        // Explains the gap when Reste < Cmdé — otherwise nothing
+                                        // on the row says where the missing quantity went.
+                                        title={!r.horsCommande && r.ailleurs > 0
+                                          ? `Déjà expédié ailleurs : ${fmtNum(r.ailleurs, 1)}` : undefined}
+                                      >
+                                        {r.horsCommande ? (
+                                          <span className="text-muted-foreground">—</span>
+                                        ) : resteApres > 0 ? (
+                                          // Clickable only while something is still owed. It fills
+                                          // to the CEILING, not to the displayed figure — which is
+                                          // the same thing, since the display is the ceiling minus
+                                          // what is already typed.
+                                          <button
+                                            type="button"
+                                            onClick={() => setDraftQty((p) => ({ ...p, [r.key]: String(reste) }))}
+                                            className="rounded px-1 -mx-1 text-accent hover:bg-accent/10 transition-colors"
+                                            title="Mettre tout le reste dans ce carton"
+                                          >
+                                            {fmtNum(resteApres, 1)}
+                                          </button>
+                                        ) : (
+                                          <span className={cn(overReste ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
+                                            {fmtNum(resteApres, 1)}
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className={cn('px-2 py-1.5 text-right tabular-nums',
+                                        overStock ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
+                                        {stockApres !== null ? fmtNum(stockApres, 1) : '—'}
+                                      </td>
+                                      <td className="px-2.5 py-1.5 text-right">
+                                        <input
+                                          type="text"
+                                          inputMode="decimal"
+                                          value={draftQty[r.key] ?? ''}
+                                          // No placeholder: `0` is a LEGAL value here (it takes the
+                                          // article out of the carton), so a greyed-out "0" is
+                                          // indistinguishable from a typed one. An empty cell must
+                                          // look empty.
+                                          // Select-on-focus is the grid convention for quantity
+                                          // cells — click a filled cell and typing REPLACES it,
+                                          // instead of appending ("5" + "4" → "54").
+                                          onFocus={(e) => e.currentTarget.select()}
+                                          onChange={(e) => setDraftQty((p) => ({ ...p, [r.key]: e.target.value }))}
+                                          title={overStock ? `Dépasse le stock disponible de ${fmtNum(-stockApres!, 1)}`
+                                            : overReste ? `Dépasse le reste à expédier de ${fmtNum(-resteApres, 1)}` : undefined}
+                                          className={cn(
+                                            'h-7 w-24 px-1.5 text-xs text-right tabular-nums rounded-md border bg-white focus:outline-none focus:ring-2 focus:ring-ring',
+                                            overStock || overReste ? 'border-amber-500 text-amber-800' : 'border-input',
+                                          )}
+                                        />
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
+                          ) : (
+                            <table className="w-full text-xs">
+                              <thead className="bg-zinc-200/60 border-b border-border/60 sticky top-0 z-10">
+                                <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  <th className="px-2.5 py-2 font-semibold text-left w-full">Référence</th>
+                                  <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">Variation 1</th>
+                                  <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">Variation 2</th>
+                                  <th className="px-2.5 py-2 font-semibold text-right">Quantité</th>
+                                  <th className="px-2.5 py-2 font-semibold text-right">Total</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {/* No call-to-action here: the strip directly above already
+                                    carries "Modifier le contenu" at all times, so an empty
+                                    carton needs the message and nothing else (§7.1's centred
+                                    empty-state button is for lists whose only entry point it is). */}
+                                {selectedCarton.items.length === 0 && (
+                                  <tr><td colSpan={5} className="px-2.5 py-8 text-center text-muted-foreground italic">
+                                    Aucun article dans ce carton
+                                  </td></tr>
+                                )}
+                                {selectedCarton.items.map((it) => (
+                                  <tr key={it.IDref_divers_expedie} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
+                                    <td className="px-2.5 py-1.5 truncate font-medium" title={it.ref_designation}>
+                                      {it.designation.trim() || it.ref_designation || `Réf #${it.IDref_divers}`}
+                                    </td>
+                                    <td className="px-2.5 py-1.5 whitespace-nowrap">{it.variation1_label || '—'}</td>
+                                    <td className="px-2.5 py-1.5 whitespace-nowrap">{it.variation2_label || '—'}</td>
+                                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fmtNum(it.quantite, 1)}</td>
+                                    <td className="px-2.5 py-1.5 text-right tabular-nums whitespace-nowrap">{fmtNum(it.quantite * it.prix, 2)} €</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
+                        <Package className="h-10 w-10 opacity-40" />
+                        <p className="text-sm">Aucun carton — ajoutez-en un pour commencer</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {error && (
-                <div className="flex-shrink-0 flex items-start gap-1.5 text-xs text-destructive mt-3">
-                  <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span>{error}</span>
+              {/* Footer strip */}
+              <div className="flex-shrink-0 flex items-center gap-3 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3">
+                {error ? (
+                  <div className="flex items-center gap-2 text-sm text-destructive min-w-0">
+                    <AlertCircle className="h-4 w-4 flex-shrink-0" /><span className="truncate">{error}</span>
+                  </div>
+                ) : (
+                  // Quantities only — no money. This dialog packs cartons; the
+                  // value of what is in them belongs to the facture.
+                  <span className="text-xs text-muted-foreground tabular-nums truncate">
+                    {editingContent
+                      ? `Carton en cours : ${fmtNum(draftTotalQty, 1)}`
+                      : `${cartonCount} carton${cartonCount > 1 ? 's' : ''}`}
+                  </span>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={requestClose}>Fermer</Button>
                 </div>
-              )}
-
-              <DialogFooter className="mt-4 sm:justify-between items-center">
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  {selectedExp?.cartons.length ?? 0} carton{(selectedExp?.cartons.length ?? 0) > 1 ? 's' : ''}
-                  {expTotalEur > 0 ? ` · ${fmtNum(expTotalEur, 2)} €` : ''}
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline" size="sm" disabled={!selectedExp}
-                    onClick={() => selectedExp && window.open(`${API_URL}/expeditions/divers/${selectedExp.IDexpedition_divers}/pdf`, '_blank')}
-                  >
-                    <Printer className="h-3.5 w-3.5 mr-1.5" />Bon de livraison
-                  </Button>
-                  <Button size="sm" onClick={onClose}>Fermer</Button>
-                </div>
-              </DialogFooter>
+              </div>
             </>
           )}
         </DialogContent>
@@ -3722,15 +4020,12 @@ function ExpeditionGroupeeDialog({
       />
 
       <ConfirmDialog
-        open={deleteItem !== null}
-        title="Retirer l'article"
-        description={deleteItem
-          ? `${diversArticleLabel(deleteItem.ref_designation, deleteItem.variation1_label, deleteItem.variation2_label)} sera retiré du carton et sa quantité remise en stock.`
-          : undefined}
-        confirmLabel="Retirer"
-        isPending={deleteItemMut.isPending}
-        onCancel={() => setDeleteItem(null)}
-        onConfirm={() => { if (deleteItem) deleteItemMut.mutate(deleteItem.IDref_divers_expedie) }}
+        open={confirmDiscard}
+        title="Abandonner la saisie"
+        description="Les quantités saisies dans ce carton n'ont pas été enregistrées et seront perdues."
+        confirmLabel="Abandonner"
+        onCancel={() => setConfirmDiscard(false)}
+        onConfirm={() => { setConfirmDiscard(false); cancelEditContent(); onClose() }}
       />
     </>
   )

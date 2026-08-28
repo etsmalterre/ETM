@@ -10,6 +10,44 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/debug
+Tickets #1098 et #1099 (Clients › Commandes, modale « Expédition groupée » des commandes divers).
+**#1098 « il manque la ligne de bleu / 20 mètres » n'était pas une ligne manquante** : `SearchableCombobox`
+et `PopoverSelect` ancraient leur liste portalisée à `top: trigger.bottom` avec un `max-h-64` fixe, sans
+retournement ni bornage — une liste ouverte en bas de page se peignait donc hors écran, options rendues mais
+inatteignables. Bug **applicatif**, pas propre à cet écran : nouveau `placePopover()` partagé (retourne
+au-dessus s'il y a plus de place, borne `maxHeight` à l'espace réellement disponible, borne aussi `left`) ;
+toutes les listes déroulantes de l'app en profitent.
+**#1099** : la saisie article par article via combobox est remplacée par un **mode édition par carton** —
+bouton « Modifier le contenu », tableau de tous les articles divers de la commande avec quantité éditable,
+filtre et bouton « Remplir », enregistré en un seul `PUT /expeditions/divers/lignes/:id/contenu` (writer
+extrait en `setDiversCartonContenu()` pour que la garde exerce le vrai code plutôt qu'une copie). Forme reprise
+du legacy `FEN_Expedition_Groupé`, récupéré dans le cache de compilation WinDev (`.wcw` → le SQL de
+`TABLE_RefExpedie`, `.wbw` → l'inventaire des champs).
+Contrat clé sur le **combo** (ref × variation1 × variation2, l'unité que l'utilisateur lit et que la facture
+regroupe) : le tableau unit les lignes de commande **et** les articles déjà présents dans le carton (61 des
+1 589 articles de cartons rattachés à une commande ne correspondent à aucune ligne — invisibles et donc
+incorrigeables sans cette union) ; les combos portés par deux lignes sont sommés (7 commandes) ; un total
+inchangé n'écrit rien, ce qui protège l'unique carton détenant deux lignes pour un même combo.
+« Reste » remplit la ligne, jamais « Cmdé » : 1 443 des 1 770 combos (81,5 %) sont déjà expédiés en tout ou
+partie, donc remplir depuis la quantité commandée double-expédierait la majorité des lignes. Reste et Stock se
+recalculent pendant la frappe et affichent l'état **après** enregistrement.
+Corrigé au passage : le seuil de dépassement de stock comparait la quantité saisie au stock stocké, qui exclut
+déjà le contenu courant du carton (`stock_divers` est décrémenté à l'écriture) — un réenregistrement à
+l'identique passait toute la colonne en ambre. La base de comparaison est désormais `stock + contenu du
+carton`. Stock et Reste restent des avertissements, jamais des blocages (584 combos n'ont aucune ligne
+`stock_divers`).
+Habillage §18.D (bandeau navy + tuile or, corps zinc, pied zinc), avec la recette complète « aucun liseré
+blanc » consignée dans `mps_designer` — y compris le piège de la magnification par `transform: scale()`, qui
+invente un défaut de coin inexistant à 1×. En-tête condensé de 3 lignes à 2 pour rendre la hauteur au tableau ;
+sélection du contenu au focus sur les champs quantité (convention grille) ; plus de montant en euros dans le
+pied, une modale de colisage n'a pas à porter de prix.
+`vite.config.ts` : plafond de précache workbox relevé — le bundle était à 0,2 ko de la limite de 2 Mio **avant**
+ce travail, donc la prochaine fonctionnalité venue aurait cassé le build. Le vrai correctif reste le découpage
+par route.
+Garde : `check-divers-carton-contenu.ts` (`--roundtrip` : ajout → hausse → no-op → suppression, avec le grand
+livre de stock vérifié à chaque étape et le carton d'essai nettoyé).
+
 ## 2026-08-28 — feat/issues (tickets #1090, #1092, #1097)
 
 Trois tickets remontés par les utilisateurs, sans lien entre eux sauf d'être des corrections
