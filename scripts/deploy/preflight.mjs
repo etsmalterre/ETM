@@ -59,10 +59,25 @@ const OK    = (s) => say('  \u001b[32m\u2713\u001b[0m ' + s)
 
 for (const [name, repo] of [['ETM', ETM], ['TRM', TRM]]) git(repo, ['fetch', '-q', 'origin'])
 
+// Every web bundle the platform serves, each with its own dist dir, its own
+// stamp and its own source path. THIS TABLE IS THE WHOLE POINT: a tier missing
+// from it is invisible, and the script then reports "Everything is current"
+// while a whole app sits undeployed. Not hypothetical - apps/atelier and
+// apps/trs went live on 2026-08-28 under exactly that green, because this
+// script knew three tiers and diffed every one of them against 'apps/web'.
+// Adding an app to the monorepo means adding a row here, in the same commit.
+const WEB_TIERS = [
+  { key: 'etmWeb',  label: 'ETM web', repo: ETM, dir: 'mps_erp',     src: 'apps/web',     head: 'ETM' },
+  { key: 'trmWeb',  label: 'TRM web', repo: TRM, dir: 'mps_trm',     src: 'apps/web',     head: 'TRM' },
+  { key: 'atelier', label: 'atelier', repo: TRM, dir: 'mps_atelier', src: 'apps/atelier', head: 'TRM' },
+  { key: 'trs',     label: 'TRS',     repo: TRM, dir: 'mps_trs',     src: 'apps/trs',     head: 'TRM' },
+]
+
 const stamps = {
   api: remote(API_HOST, 'cat /home/debian/mps_api/DEPLOYED_SHA 2>/dev/null || echo none'),
-  trmWeb: remote(WEB_HOST, 'cat /home/debian/mps_trm/DEPLOYED_SHA 2>/dev/null || echo none'),
-  etmWeb: remote(WEB_HOST, 'cat /home/debian/mps_erp/DEPLOYED_SHA 2>/dev/null || echo none'),
+}
+for (const t of WEB_TIERS) {
+  stamps[t.key] = remote(WEB_HOST, `cat /home/debian/${t.dir}/DEPLOYED_SHA 2>/dev/null || echo none`)
 }
 if (Object.values(stamps).every((v) => v === null)) {
   console.error('Cannot reach the servers. Off the factory LAN/VPN, or the claude_deploy key is not enabled.')
@@ -74,9 +89,10 @@ const heads = { ETM: git(ETM, ['rev-parse', 'origin/master']), TRM: git(TRM, ['r
 const short = (s) => (s && s !== 'none' ? s.slice(0, 7) : String(s))
 
 say('\n\u2500\u2500 MPS platform \u2500 what is live \u2500\u2500')
-say(`  MPS API   ${short(stamps.api)}   (ETM master ${short(heads.ETM)})`)
-say(`  TRM web   ${short(stamps.trmWeb)}   (TRM master ${short(heads.TRM)})`)
-say(`  ETM web   ${short(stamps.etmWeb)}   (ETM master ${short(heads.ETM)})`)
+say(`  ${'MPS API'.padEnd(8)}  ${short(stamps.api)}   (ETM master ${short(heads.ETM)})`)
+for (const t of WEB_TIERS) {
+  say(`  ${t.label.padEnd(8)}  ${short(stamps[t.key])}   (${t.head} master ${short(heads[t.head])})`)
+}
 
 const rangeFiles = (repo, from, pathspec) => {
   if (!from || from === 'none') return ['<unknown stamp — treat as behind>']
@@ -100,12 +116,20 @@ else if (apiRuntime.length === 0) {
   say('         while prod serves the OLD handler. Only this SHA diff catches that.')
 }
 
-// 2. the two web bundles
-for (const [label, repo, stamp] of [['TRM web', TRM, stamps.trmWeb], ['ETM web', ETM, stamps.etmWeb]]) {
-  const f = rangeFiles(repo, stamp, 'apps/web')
-  if (f.length === 0) OK(`${label} is current (no apps/web change since its stamp)`)
-  else TODO(`${label} is BEHIND — ${f.length} file(s) under apps/web`)
+// 2. the web bundles - each diffed against ITS OWN source path. Diffing them all
+// against 'apps/web' is what produced the false green above: a change confined
+// to apps/trs left every tier reading "current".
+for (const t of WEB_TIERS) {
+  const f = rangeFiles(t.repo, stamps[t.key], t.src)
+  if (f.length === 0) OK(`${t.label} is current (no ${t.src} change since its stamp)`)
+  else {
+    TODO(`${t.label} is BEHIND - ${f.length} file(s) under ${t.src}`)
+    f.slice(0, 4).forEach((x) => say(`       ${x}`))
+  }
 }
+// Not covered: TRM's web imports shared screens from the ETM checkout via the
+// @etm alias, so an ETM apps/web change can oblige a TRM web deploy that no diff
+// of TRM's own tree can see. Pre-existing gap, called out rather than left silent.
 
 // 3. clean trees — a dist built from master PLUS an uncommitted edit ships unreviewed code
 say('\n\u2500\u2500 Working trees \u2500\u2500')
