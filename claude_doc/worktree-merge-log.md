@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/visitage (verrou de POST /valider)
+Correctif de l'incident du 2026-08-28 14:35:38 : deux `POST /visitage-trm/valider` identiques
+partis du poste dans la même seconde ont tous deux passé la garde « pièce déjà visitée » (un
+COUNT lu avant la première écriture) et produit quatre rouleaux pour une coupe en deux, plus deux
+lignes par clé primaire dans `evenement_piece` (MAX+1 sans index unique). `lib/serial-lock.ts`
+(mutex FIFO, testé) sérialise désormais le handler, globalement — les PK MAX+1 sont partagées entre
+pièces. Le second appel attend puis 409 `piece_deja_visitee`. `check-visitage-trm.ts` vérifie que
+trois plans concurrents répondent tous (un verrou qui ne se relâche pas gèlerait chaque poste).
+Données de prod réparées à la main le jour même. Le verrou côté web est dans TRM (même branche).
+
 ## 2026-08-28 — feat/trs
 L'API de la tablette murale TRS de l'atelier (`TRM/apps/trs`, hôte `trs.malterre`) :
 `GET /api/trs/atelier` rend l'état de chaque métier vivant sur l'équipe en cours — marche/arrêt et
