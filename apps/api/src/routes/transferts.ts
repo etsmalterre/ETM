@@ -747,6 +747,101 @@ transfertsRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
 
 const AVAILABLE_CAP = 200
 
+// ── Search criteria ────────────────────────────────────
+//
+// The picker search is multi-criteria: the free text splits on whitespace and
+// EVERY term must match ("029 gris" = reference 029 AND coloris gris), and a
+// term can additionally be pinned to one column as a chip ("Coloris : gris").
+// Chips arrive as repeated `c=<field>:<value>` params, free terms as `q`.
+//
+// This has to run in SQL, not in JS: each group is capped at AVAILABLE_CAP
+// most-recent rows, so filtering after the fetch would only ever search inside
+// an arbitrary 200-row window of a magasin holding 30k+ rolls.
+
+type SearchField = 'ref' | 'coloris' | 'numero' | 'lot' | 'fournisseur'
+
+const SEARCH_FIELDS: readonly SearchField[] = ['ref', 'coloris', 'numero', 'lot', 'fournisseur']
+
+export interface SearchCriteria {
+  /** Free terms — each must match at least one searchable column. */
+  terms: string[]
+  /** Field-pinned terms — each must match that column alone. */
+  chips: Array<{ field: SearchField; value: string }>
+}
+
+/** Which SQL column(s) back each searchable field, per stock type. A field with
+ *  no entry does not exist for that type (écru has no fournisseur, fil has no
+ *  numero) and a chip naming it therefore matches nothing. */
+type SearchColumns = Partial<Record<SearchField, string[]>>
+
+function parseCriteria(req: Request): SearchCriteria {
+  const terms = String(req.query.q ?? '').trim().split(/\s+/).filter(Boolean)
+  const raw = req.query.c
+  const list = Array.isArray(raw) ? raw : raw == null ? [] : [raw]
+  const chips: SearchCriteria['chips'] = []
+  for (const entry of list) {
+    const text = String(entry)
+    const sep = text.indexOf(':')
+    if (sep <= 0) continue
+    const field = text.slice(0, sep) as SearchField
+    const value = text.slice(sep + 1).trim()
+    if (!value || !SEARCH_FIELDS.includes(field)) continue
+    chips.push({ field, value })
+  }
+  return { terms, chips }
+}
+
+/** LIKE pattern for one term.
+ *  ⚠️ Every non-ASCII character becomes the single-char wildcard `_` instead of
+ *  travelling to the server. Two reasons, both load-bearing: raw multi-byte
+ *  UTF-8 inside a SQL string corrupts the Linux bridge (CLAUDE.md § HFSQL
+ *  encoding), and the wildcard makes the match accent-insensitive in the
+ *  direction users need — "ecru" and "écru" both match `%_cru%`, and coloris
+ *  values carry accents inconsistently. The widening never reaches the user:
+ *  the client re-applies the exact, accent-folded test on the rows that
+ *  come back. */
+export function likePattern(term: string): string {
+  let ascii = ''
+  for (const ch of term) ascii += ch.charCodeAt(0) < 128 ? ch : '_'
+  return `%${esc(ascii)}%`
+}
+
+/** SQL predicate for the criteria over one stock type's columns ('' when the
+ *  search is empty). Always returns a leading ' AND '. */
+function searchSql(crit: SearchCriteria, cols: SearchColumns): string {
+  const anyCols = Object.values(cols).flat()
+  const parts: string[] = []
+  for (const t of crit.terms) {
+    if (anyCols.length === 0) continue
+    const p = likePattern(t)
+    parts.push(`(${anyCols.map((c) => `${c} LIKE '${p}'`).join(' OR ')})`)
+  }
+  for (const chip of crit.chips) {
+    const chipCols = cols[chip.field]
+    // Defensive: unreachable from the UI, whose field list is per tab. Matching
+    // nothing is the honest answer — dropping the chip would silently WIDEN the
+    // result set for a criterion the user believes they applied.
+    if (!chipCols || chipCols.length === 0) return ' AND 1 = 0'
+    const p = likePattern(chip.value)
+    parts.push(`(${chipCols.map((c) => `${c} LIKE '${p}'`).join(' OR ')})`)
+  }
+  return parts.length > 0 ? ` AND ${parts.join(' AND ')}` : ''
+}
+
+// colori_ecru / ref_fini_colori are joined purely so coloris becomes
+// searchable — the DISPLAYED coloris is still resolved after the fact
+// (polymorphic on ref_fini.avec_teinture for the fini side). Both joins are on
+// the target's PK, so they can never multiply rows.
+const ECRU_SEARCH_COLS: SearchColumns = {
+  ref: ['re.reference'], coloris: ['ce.reference'], numero: ['se.numero'], lot: ['se.lot'],
+}
+const FINI_SEARCH_COLS: SearchColumns = {
+  ref: ['rf.reference'], coloris: ['rfc.reference', 'ce.reference'], numero: ['sf.numero'], lot: ['sf.lot'],
+}
+const FIL_SEARCH_COLS: SearchColumns = {
+  ref: ['rf.reference'], coloris: ['cf.reference'], lot: ['sf.lot'], fournisseur: ['f.nom'],
+}
+
 interface AvailableRoll {
   stock_id: number
   reference: string
@@ -758,12 +853,13 @@ interface AvailableRoll {
   second_choix: number
 }
 
-async function loadAvailableEcru(sourceId: number, q: string): Promise<AvailableRoll[]> {
-  const like = q ? ` AND (se.numero LIKE '%${esc(q)}%' OR se.lot LIKE '%${esc(q)}%' OR re.reference LIKE '%${esc(q)}%')` : ''
+export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria): Promise<AvailableRoll[]> {
+  const like = searchSql(crit, ECRU_SEARCH_COLS)
   const raw = await query<any>(
     `SELECT TOP ${AVAILABLE_CAP} se.IDstock_ecru, se.numero, se.lot, se.poids, se.metrage, se.second_choix, se.IDcolori_ecru, ` +
       `re.reference AS ref_label ` +
       `FROM stock_ecru se LEFT JOIN ref_ecru re ON se.IDref_ecru = re.IDref_ecru ` +
+      `LEFT JOIN colori_ecru ce ON se.IDcolori_ecru = ce.IDcolori_ecru ` +
       `WHERE se.IDmagasin = ${sourceId} AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0)${like} ` +
       `ORDER BY se.IDstock_ecru DESC`,
   )
@@ -780,12 +876,14 @@ async function loadAvailableEcru(sourceId: number, q: string): Promise<Available
   }))
 }
 
-async function loadAvailableFini(sourceId: number, q: string): Promise<AvailableRoll[]> {
-  const like = q ? ` AND (sf.numero LIKE '%${esc(q)}%' OR sf.lot LIKE '%${esc(q)}%' OR rf.reference LIKE '%${esc(q)}%')` : ''
+export async function loadAvailableFini(sourceId: number, crit: SearchCriteria): Promise<AvailableRoll[]> {
+  const like = searchSql(crit, FINI_SEARCH_COLS)
   const raw = await query<any>(
     `SELECT TOP ${AVAILABLE_CAP} sf.IDstock_fini, sf.numero, sf.lot, sf.poids, sf.metrage, sf.second_choix, sf.IDColoris, ` +
       `rf.reference AS ref_label, rf.avec_teinture ` +
       `FROM stock_fini sf LEFT JOIN ref_fini rf ON sf.IDref_fini = rf.IDref_fini ` +
+      `LEFT JOIN ref_fini_colori rfc ON sf.IDColoris = rfc.IDref_fini_colori ` +
+      `LEFT JOIN colori_ecru ce ON sf.IDColoris = ce.IDcolori_ecru ` +
       `WHERE sf.IDmagasin = ${sourceId} AND (sf.IDligne_expedition IS NULL OR sf.IDligne_expedition = 0) AND sf.destockage = 0${like} ` +
       `ORDER BY sf.IDstock_fini DESC`,
   )
@@ -822,8 +920,8 @@ interface AvailableFilLot {
   commentaire: string | null
 }
 
-async function loadAvailableFil(sourceId: number, q: string): Promise<AvailableFilLot[]> {
-  const like = q ? ` AND (sf.lot LIKE '%${esc(q)}%' OR rf.reference LIKE '%${esc(q)}%' OR f.nom LIKE '%${esc(q)}%')` : ''
+export async function loadAvailableFil(sourceId: number, crit: SearchCriteria): Promise<AvailableFilLot[]> {
+  const like = searchSql(crit, FIL_SEARCH_COLS)
   // terminé is accented — cannot be named in SQL on the Linux bridge. Windows
   // names it aliased; the bridge pulls it via sf.* and we resolve by prefix.
   const select = IS_WINDOWS
@@ -863,17 +961,17 @@ transfertsRouter.get('/:kind/:id/available', async (req: Request, res: Response)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const h = await loadBonHead(kind, id)
     if (!h) { res.status(404).json({ error: 'Bon de transfert introuvable' }); return }
-    const q = String(req.query.q ?? '').trim()
+    const crit = parseCriteria(req)
 
     if (kind === 'rouleaux') {
       const [ecru, fini] = await Promise.all([
-        loadAvailableEcru(h.IDmagasin_source, q),
-        loadAvailableFini(h.IDmagasin_source, q),
+        loadAvailableEcru(h.IDmagasin_source, crit),
+        loadAvailableFini(h.IDmagasin_source, crit),
       ])
       res.json({ ecru, fini, cap: AVAILABLE_CAP })
       return
     }
-    const fil = await loadAvailableFil(h.IDmagasin_source, q)
+    const fil = await loadAvailableFil(h.IDmagasin_source, crit)
     res.json({ fil, cap: AVAILABLE_CAP })
   } catch (err) {
     console.error('Error fetching available stock for transfert:', err)

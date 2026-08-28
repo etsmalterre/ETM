@@ -10,6 +10,58 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/bug2 (recherche multi-critères du picker de transfert — ticket #1093)
+
+**Ce que c'est.** Le champ de recherche du dialogue « Éditer le bon de transfert »
+(Transferts › Rouleaux et › Fils) devient multi-critères : le texte libre se découpe sur
+les espaces et **tous** les termes doivent matcher (« 029 gris » = référence 029 ET coloris
+gris), et un terme peut être épinglé à une seule colonne sous forme de **chip**, via le
+`SmartSearchInput` partagé des écrans de stock (mps_designer §27.2bis — on réutilise le
+widget, on ne le forke jamais). Champs proposés : Référence / Coloris / N° de pièce / Lot
+pour les rouleaux, Référence / Coloris / Lot / Fournisseur pour le fil.
+
+**Le vrai bug du ticket : le coloris n'était pas cherchable du tout.** `/available` ne
+matchait que `numero`, `lot` et `reference` — « 029 gris » et « 029 ecru » étaient donc
+strictement indiscernables, ce que Pierre-Emmanuel décrit comme « choisir une variante ».
+Les jointures `colori_ecru` (écru) et `ref_fini_colori` + `colori_ecru` (fini) ont été
+ajoutées, calquées sur `stock-ecru.ts` / `stock-fini.ts` ; le fil avait déjà sa jointure
+`colori_fil`, seule la colonne manquait aux prédicats. Les deux jointures portent sur la PK
+de leur cible, donc elles ne peuvent pas multiplier les lignes (vérifié).
+
+⚠️ **La recherche reste côté SERVEUR, et ce n'est pas un détail d'implémentation.** Chaque
+groupe est plafonné à `AVAILABLE_CAP` = 200 lignes les plus récentes parce qu'un magasin en
+porte 30 000+ ; filtrer après le fetch — comme le fait Finis › Stock, qui lui charge sa table
+entière — ne chercherait que dans une fenêtre arbitraire de 200 lignes et raterait
+silencieusement des rouleaux. Les chips voyagent donc dans l'URL (`c=<champ>:<valeur>`, texte
+libre dans `q`). Corollaire côté UI : « Tout sélectionner » porte désormais sur les lignes
+**rendues**, plus sur `candidates` — cocher une ligne que l'utilisateur ne voit pas, c'est
+un bon qui gagne une pièce que personne n'a choisie.
+
+⚠️ **Aucun octet non-ASCII n'atteint SQL** — un terme accentué dans un `LIKE` est le même
+danger pour le pont Linux qu'une écriture, et le littéral hexadécimal n'est pas utilisable
+dans un motif `LIKE`. `likePattern()` remplace donc chaque caractère non-ASCII par le joker
+un-caractère `_` : « écru » part en `%_cru%`. Effet de bord recherché — la comparaison
+devient insensible aux accents dans le sens utile, et c'est nécessaire ici parce que les
+coloris portent leurs accents de façon **incohérente** (le même coloris existe en « ecru » et
+en « écru »). Ça élargit un peu (`%_cru%` matche aussi « ancru »), donc le client
+**réapplique le test exact, accents repliés**, sur les lignes reçues : l'élargissement
+n'atteint jamais l'utilisateur. Règle reportée dans CLAUDE.md § HFSQL, avec la dette
+associée : `stock-ecru.ts`, `stock-fini.ts` et `stock.ts` interpolent toujours `esc(q)`
+brut dans leur `LIKE` de recherche — même danger latent, le jour où quelqu'un tape un accent
+dans une barre d'outils de stock.
+
+**Garde** : `check-transfert-picker-search.ts` (lecture seule). Il épingle les jointures (pas
+de collapse, pas de doublon), le ET des termes, la séparation effective de deux coloris d'une
+même référence — le scénario du ticket —, le fait qu'un chip ne déborde pas de sa colonne, et
+les deux invariants de `likePattern` (le joker accentué joue, et rien de non-ASCII ne sort).
+Vérifié en plus sur l'API qui tourne : « 029 » → 48 rouleaux mélangés, « 029 ecru » → 24
+uniquement écrus, « 029 gris » → 24 uniquement gris.
+
+**Pas fait, sciemment.** Le picker n'a toujours pas la sélection par **MAJ+clic** que
+mps_designer §44 rend obligatoire sur toute liste multi-sélection — c'est le compagnon
+naturel de ce filtrage (on réduit à « 029 gris », puis on coche vingt cases une par une), et
+c'est une modification contenue au même composant.
+
 ## 2026-08-27 — feat/atelier (l'API de la PWA atelier : lecture + chemin d'écriture)
 
 **Ce que c'est.** Le premier routeur de la PWA bonnetier/régleur (`apps/atelier` côté TRM,

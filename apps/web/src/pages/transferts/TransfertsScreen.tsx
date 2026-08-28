@@ -46,6 +46,7 @@ import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { postEmail } from '@/lib/email'
 import { cn } from '@/lib/utils'
+import { SmartSearchInput, type SearchChip } from '@/components/stock/SmartSearchInput'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -887,14 +888,60 @@ interface PickerRow {
   subtitle: string
   poids: number
   secondChoix: boolean
+  /** The searchable columns, kept apart from the composed title/subtitle so a
+   *  field-scoped chip can restrict itself to exactly one of them. */
+  fields: Record<PickerSearchField, string>
 }
 
-/** Accent-insensitive contains match, so the on-bon rows narrow with the same
- *  query the API applies to the available ones. */
-function matchesQuery(row: PickerRow, query: string): boolean {
-  if (!query) return true
-  const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
-  return norm(`${row.title} ${row.subtitle}`).includes(norm(query))
+// ── Search ─────────────────────────────────────────────
+//
+// Free text splits on whitespace and every term must match ("029 gris" =
+// reference 029 AND coloris gris); a term can also be pinned to one column as
+// a chip. Semantics and widget live in the shared `SmartSearchInput` (§27.2bis)
+// — this screen only declares which columns each tab can scope, and the server
+// does the actual narrowing (the available list is capped at 200 rows, so
+// filtering purely on the client would search inside an arbitrary window).
+
+type PickerSearchField = 'ref' | 'coloris' | 'numero' | 'lot' | 'fournisseur'
+
+const ROULEAUX_SEARCH_FIELDS = [
+  { key: 'ref', label: 'Référence' },
+  { key: 'coloris', label: 'Coloris' },
+  { key: 'numero', label: 'N° de pièce' },
+  { key: 'lot', label: 'Lot' },
+] as const satisfies readonly { key: PickerSearchField; label: string }[]
+
+const FIL_SEARCH_FIELDS = [
+  { key: 'ref', label: 'Référence' },
+  { key: 'coloris', label: 'Coloris' },
+  { key: 'lot', label: 'Lot' },
+  { key: 'fournisseur', label: 'Fournisseur' },
+] as const satisfies readonly { key: PickerSearchField; label: string }[]
+
+const EMPTY_FIELDS: Record<PickerSearchField, string> = {
+  ref: '', coloris: '', numero: '', lot: '', fournisseur: '',
+}
+
+const normalizeTerm = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
+/** Accent-insensitive AND match over the criteria. Applied to BOTH the on-bon
+ *  rows (which the API never returns — they sit at the destination magasin) and
+ *  the available ones, so the two halves of the list narrow identically. It
+ *  also re-tightens what the SQL deliberately widened: a non-ASCII character
+ *  reaches the server as the `_` wildcard, and this is where "écru" stops
+ *  matching "ancru". */
+function matchesCriteria(
+  row: PickerRow,
+  terms: string[],
+  chips: SearchChip<PickerSearchField>[],
+): boolean {
+  const anyHay = normalizeTerm(Object.values(row.fields).join(' '))
+  for (const t of terms) if (!anyHay.includes(normalizeTerm(t))) return false
+  for (const chip of chips) {
+    const hay = chip.field ? normalizeTerm(row.fields[chip.field] ?? '') : anyHay
+    if (!hay.includes(normalizeTerm(chip.value))) return false
+  }
+  return true
 }
 
 function PickerDialog({
@@ -911,6 +958,7 @@ function PickerDialog({
   const [activeTab, setActiveTab] = useState<PickerTab>(kind === 'rouleaux' ? 'ecru' : 'fil')
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
+  const [chips, setChips] = useState<SearchChip<PickerSearchField>[]>([])
   // Selection is kept PER TAB and survives tab switches — a bon commonly mixes
   // tombé de métier and fini pieces, so ticking rolls on both tabs then hitting
   // Valider once must add them all. The ids can't share one Set: each tab reads
@@ -930,9 +978,28 @@ function PickerDialog({
 
   useEffect(() => { setAddError(null) }, [activeTab])
 
+  // What goes to the server. A chip with no field is a locked free term, so it
+  // joins `q`; the exact phrase is still enforced client-side by
+  // matchesCriteria, the server just narrows a little less.
+  const searchParams = useMemo(() => {
+    const params = new URLSearchParams()
+    const free = [
+      ...debouncedQ.split(/\s+/).filter(Boolean),
+      ...chips.filter((c) => !c.field).map((c) => c.value),
+    ]
+    if (free.length > 0) params.set('q', free.join(' '))
+    for (const c of chips) if (c.field) params.append('c', `${c.field}:${c.value}`)
+    return params.toString()
+  }, [debouncedQ, chips])
+
+  // Client-side refine runs on the UNdebounced text so the visible rows narrow
+  // as the user types, ahead of the round trip.
+  const liveTerms = useMemo(() => q.trim().split(/\s+/).filter(Boolean), [q])
+  const hasCriteria = liveTerms.length > 0 || chips.length > 0
+
   const { data: available, isLoading } = useQuery<AvailablePayload>({
-    queryKey: ['transfert-available', kind, transfert.id, debouncedQ],
-    queryFn: () => apiFetch(`/transferts/${kind}/${transfert.id}/available?q=${encodeURIComponent(debouncedQ)}`),
+    queryKey: ['transfert-available', kind, transfert.id, searchParams],
+    queryFn: () => apiFetch(`/transferts/${kind}/${transfert.id}/available?${searchParams}`),
   })
 
   const candidates: Array<AvailableRoll | AvailableFilLot> = useMemo(() => {
@@ -961,10 +1028,18 @@ function PickerDialog({
             : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
           poids: Number(l.poids) || 0,
           secondChoix: !isFil && !!roll.second_choix,
+          fields: {
+            ...EMPTY_FIELDS,
+            ref: l.reference ?? '',
+            coloris: l.coloris_reference ?? '',
+            lot: l.lot ?? '',
+            numero: isFil ? '' : roll.numero ?? '',
+            fournisseur: isFil ? (l as FilLine).fournisseur_nom ?? '' : '',
+          },
         }
       })
-      .filter((r) => matchesQuery(r, debouncedQ))
-  }, [transfert.lines, activeTab, debouncedQ])
+      .filter((r) => matchesCriteria(r, liveTerms, chips))
+  }, [transfert.lines, activeTab, liveTerms, chips])
 
   const availableRows: PickerRow[] = useMemo(() => candidates.map((c) => {
     const isFil = kind === 'fils'
@@ -980,8 +1055,16 @@ function PickerDialog({
         : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
       poids: Number(c.poids) || 0,
       secondChoix: !isFil && !!roll.second_choix,
+      fields: {
+        ...EMPTY_FIELDS,
+        ref: c.reference ?? '',
+        coloris: c.coloris_reference ?? '',
+        lot: (isFil ? filLot.lot : roll.lot) ?? '',
+        numero: isFil ? '' : roll.numero ?? '',
+        fournisseur: isFil ? filLot.fournisseur_nom ?? '' : '',
+      },
     }
-  }), [candidates, kind])
+  }).filter((r) => matchesCriteria(r, liveTerms, chips)), [candidates, kind, liveTerms, chips])
 
   // On-bon first: they're the bon's current content, the rest is what can join it.
   const rows: PickerRow[] = useMemo(() => [...onBonRows, ...availableRows], [onBonRows, availableRows])
@@ -1055,15 +1138,18 @@ function PickerDialog({
     })
   }, [activeTab])
 
+  // Operates on the rows actually on screen, not on `candidates`: the
+  // client-side refine can hide rows the server let through, and ticking a row
+  // the user cannot see is how a bon gains a piece nobody chose.
   const selectAllVisible = useCallback(() => {
     setSelectedByTab((prev) => {
       const next = new Set(prev[activeTab])
-      const allSelected = candidates.length > 0 && candidates.every((c) => next.has(c.stock_id))
-      if (allSelected) candidates.forEach((c) => next.delete(c.stock_id))
-      else candidates.forEach((c) => next.add(c.stock_id))
+      const allSelected = availableRows.length > 0 && availableRows.every((r) => next.has(r.stockId))
+      if (allSelected) availableRows.forEach((r) => next.delete(r.stockId))
+      else availableRows.forEach((r) => next.add(r.stockId))
       return { ...prev, [activeTab]: next }
     })
-  }, [candidates, activeTab])
+  }, [availableRows, activeTab])
 
   // Queued totals span every tab — the footer has to account for rolls ticked
   // on the tab the user isn't looking at, or Valider looks like a no-op.
@@ -1083,6 +1169,7 @@ function PickerDialog({
   const tabs: { key: PickerTab; label: string }[] = kind === 'rouleaux'
     ? [{ key: 'ecru', label: 'Tombé de métier' }, { key: 'fini', label: 'Fini' }]
     : [{ key: 'fil', label: 'Stock fil disponible' }]
+  const searchFields = kind === 'fils' ? FIL_SEARCH_FIELDS : ROULEAUX_SEARCH_FIELDS
 
   const capped = candidates.length >= (available?.cap ?? Infinity)
 
@@ -1120,19 +1207,15 @@ function PickerDialog({
                 </button>
               )
             })}
-            <div className="ml-auto flex items-center pr-1">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                <input
-                  type="text"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="N°, lot, référence…"
-                  autoComplete="off"
-                  className="h-7 w-44 pl-7 pr-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-            </div>
+            <SmartSearchInput<PickerSearchField>
+              className="ml-auto flex-1 min-w-[180px] max-w-[420px]"
+              value={q}
+              onValueChange={setQ}
+              chips={chips}
+              onChipsChange={setChips}
+              fields={searchFields}
+              placeholder={kind === 'fils' ? 'Lot, référence, coloris, fournisseur…' : 'N°, lot, référence, coloris…'}
+            />
           </div>
 
           {/* Rows: what's already on the bon (ticked, at the top) then what can
@@ -1143,7 +1226,11 @@ function PickerDialog({
             ) : rows.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
                 <Search className="h-8 w-8 mb-2 opacity-40" />
-                <p className="text-xs">Aucun stock disponible chez {transfert.source_nom || '—'}</p>
+                <p className="text-xs">
+                  {hasCriteria
+                    ? 'Aucun résultat pour cette recherche'
+                    : `Aucun stock disponible chez ${transfert.source_nom || '—'}`}
+                </p>
               </div>
             ) : (<>
               {rows.map((r) => {
