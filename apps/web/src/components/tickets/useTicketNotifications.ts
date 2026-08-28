@@ -25,9 +25,11 @@ import type { Ticket } from './types'
 const STORAGE_PREFIX = 'mps.tickets.seen.'
 const POLL_INTERVAL_MS = 5 * 60_000
 
-/** Errors that polling cannot fix: no email mapped to the account (400), no
- *  session (401), tracker not configured on the server (503). Stop the timer
- *  instead of hammering the endpoint every 5 minutes. */
+/** Errors that polling cannot fix: no session (401), tracker not configured
+ *  on the server (503), and 400, which the list no longer returns for a
+ *  missing email since v1.3.0 (such an account reports under a synthetic
+ *  identity) but stays a contract mismatch, never a transient. Stop the
+ *  timer instead of hammering the endpoint every 5 minutes. */
 const PERMANENT_STATUSES = [400, 401, 503]
 
 type SeenMap = Record<string, string>

@@ -9,7 +9,9 @@
 // fetches, and exports the primitives the list query is built on.
 
 import { useState, useCallback } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { API_URL } from '@/lib/api'
+import { useUser } from '@/contexts/UserContext'
 import type { Ticket, TicketAttachment, TicketCategory, TicketSeverity, TicketStatus } from './types'
 
 export async function ticketFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -71,6 +73,36 @@ export interface NewTicket {
   context: string | null
   /** Opt-in: email me whenever this ticket's status moves. */
   follow_up: boolean
+  /** Who is at the keyboard of a shared station (see reporterHint.ts). The
+   *  proxy only honours it for an account without a mapped email. */
+  reporter_name: string | null
+}
+
+/** Who the session reports as. `can_follow` is false for an account with no
+ *  mapped email: its tickets go out under a synthetic identity and the
+ *  follow-up mail has nobody to reach, so the widget hides those controls. */
+export interface TicketReporter {
+  name: string
+  can_follow: boolean
+}
+
+export async function fetchTicketReporter(): Promise<TicketReporter> {
+  const data = await ticketFetch<Partial<TicketReporter>>('/reporter')
+  return { name: String(data.name ?? ''), can_follow: data.can_follow !== false }
+}
+
+/** One lookup per session, cached for good: an email mapping changes through
+ *  the admin screen, and a reload is a fine price for that. */
+export function useTicketReporter() {
+  const { user } = useUser()
+  const userId = user?.IDutilisateur ?? null
+  return useQuery({
+    queryKey: ['tickets-reporter', userId],
+    queryFn: fetchTicketReporter,
+    enabled: userId !== null,
+    staleTime: Infinity,
+    retry: false,
+  })
 }
 
 export function useTickets() {
@@ -88,6 +120,7 @@ export function useTickets() {
           category: data.category,
           context: data.context || undefined,
           follow_up: data.follow_up,
+          reporter_name: data.reporter_name || undefined,
           environment: import.meta.env.DEV ? 'Development' : 'Production',
         }),
       })

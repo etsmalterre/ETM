@@ -5,8 +5,13 @@
 // initialScreenshot, exposed as an "include screenshot" attachment button
 // that shows a spinner while capturingScreenshot is true.
 //
-// LIVA ticket widget — feature version 1.2.0 (see the
+// LIVA ticket widget — feature version 1.3.0 (see the
 // issue_tracker_integration skill; bump both together).
+//
+// 1.3.0: an account with no mapped email still reports (the proxy files it
+// under a synthetic identity) and only loses the follow-up mail, so the
+// follow-up controls render only when GET /reporter says can_follow. A host
+// page may name who is at a shared station (reporterHint.ts).
 
 import { useState, useEffect, useRef } from 'react'
 import {
@@ -34,7 +39,8 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
 import { useTicketContext } from './useTicketContext'
-import { useTickets } from './useTickets'
+import { useTickets, useTicketReporter } from './useTickets'
+import { useTicketReporterHint } from './reporterHint'
 import { useTicketNotifications } from './useTicketNotifications'
 import type { Ticket, TicketCategory, TicketSeverity } from './types'
 import {
@@ -201,8 +207,16 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const contexte = useTicketContext()
+  const reporterHint = useTicketReporterHint()
   const { isSubmitting, submitTicket, fetchTicket, setFollowUp, uploadAttachments } =
     useTickets()
+  // Can this account receive the follow-up mail at all? Unknown (not loaded
+  // yet, or the lookup failed) reads as "yes": the proxy ignores the tick for
+  // an account that cannot, so offering it is harmless; hiding it from someone
+  // who can is not. The modal is mounted with the Header, so the lookup has
+  // long returned by the time anyone opens it.
+  const reporter = useTicketReporter()
+  const canFollow = reporter.data ? reporter.data.can_follow : true
   const { tickets, isLoading, listError, refresh, unreadCount, isUnread, markSeen, markAllSeen } =
     useTicketNotifications()
 
@@ -338,7 +352,8 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
         severity: severite,
         category: categorie,
         context: contexte || null,
-        follow_up: suivi,
+        follow_up: canFollow && suivi,
+        reporter_name: reporterHint,
       })
       if (attachments.length > 0) {
         try {
@@ -500,47 +515,52 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
 
                 {/* Suivi par email — §35 inline toggle pill. The reporter owns
                     this flag; flipping it takes effect on the tracker, so the
-                    row only moves once the PATCH comes back. */}
-                <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border/60 bg-white shadow-sm">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 text-xs font-semibold">
-                      <Bell className="h-3.5 w-3.5 text-accent" />
-                      <span>Suivi par email</span>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">
-                      {selectedTicket.follow_up
-                        ? 'Vous êtes averti à chaque changement de statut'
-                        : 'Aucun email envoyé pour ce ticket'}
-                    </p>
-                  </div>
-                  {suiviBusy && (
-                    <Loader2 className="h-3 w-3 animate-spin text-accent flex-shrink-0" />
-                  )}
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={selectedTicket.follow_up}
-                    aria-label="Suivi par email"
-                    disabled={suiviBusy}
-                    onClick={handleToggleSuivi}
-                    className={cn(
-                      'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
-                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                      'disabled:opacity-50 disabled:cursor-not-allowed',
-                      selectedTicket.follow_up
-                        ? 'bg-accent shadow-inner'
-                        : 'bg-zinc-300 hover:bg-zinc-400/80',
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
-                        selectedTicket.follow_up ? 'translate-x-[18px]' : 'translate-x-0.5',
+                    row only moves once the PATCH comes back.
+                    Same rule as the form checkbox: no email, no follow-up row. */}
+                {canFollow && (
+                  <>
+                    <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border/60 bg-white shadow-sm">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold">
+                          <Bell className="h-3.5 w-3.5 text-accent" />
+                          <span>Suivi par email</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {selectedTicket.follow_up
+                            ? 'Vous êtes averti à chaque changement de statut'
+                            : 'Aucun email envoyé pour ce ticket'}
+                        </p>
+                      </div>
+                      {suiviBusy && (
+                        <Loader2 className="h-3 w-3 animate-spin text-accent flex-shrink-0" />
                       )}
-                    />
-                  </button>
-                </div>
-                {!!suiviError && <p className="text-xs text-destructive">{suiviError}</p>}
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={selectedTicket.follow_up}
+                        aria-label="Suivi par email"
+                        disabled={suiviBusy}
+                        onClick={handleToggleSuivi}
+                        className={cn(
+                          'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
+                          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                          'disabled:opacity-50 disabled:cursor-not-allowed',
+                          selectedTicket.follow_up
+                            ? 'bg-accent shadow-inner'
+                            : 'bg-zinc-300 hover:bg-zinc-400/80',
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
+                            selectedTicket.follow_up ? 'translate-x-[18px]' : 'translate-x-0.5',
+                          )}
+                        />
+                      </button>
+                    </div>
+                    {!!suiviError && <p className="text-xs text-destructive">{suiviError}</p>}
+                  </>
+                )}
 
                 {/* Context */}
                 {!!selectedTicket.context && (
@@ -768,26 +788,29 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
                 </div>
 
                 {/* Follow-up opt-in. Unticked by default: the reporter asks to
-                    be notified, we never subscribe them silently. */}
-                <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-md border border-input bg-muted/40">
-                  <Checkbox
-                    checked={suivi}
-                    onCheckedChange={setSuivi}
-                    aria-label="Me tenir informé par email"
-                    className="mt-0.5"
-                  />
-                  <div
-                    className="min-w-0 cursor-pointer select-none"
-                    onClick={() => setSuivi(!suivi)}
-                  >
-                    <p className="text-sm font-medium leading-tight">
-                      Me tenir informé par email
-                    </p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                      Un email à chaque changement de statut de ce ticket.
-                    </p>
+                    be notified, we never subscribe them silently.
+                    Absent for an account without an email: nobody would receive the mail. */}
+                {canFollow && (
+                  <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-md border border-input bg-muted/40">
+                    <Checkbox
+                      checked={suivi}
+                      onCheckedChange={setSuivi}
+                      aria-label="Me tenir informé par email"
+                      className="mt-0.5"
+                    />
+                    <div
+                      className="min-w-0 cursor-pointer select-none"
+                      onClick={() => setSuivi(!suivi)}
+                    >
+                      <p className="text-sm font-medium leading-tight">
+                        Me tenir informé par email
+                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                        Un email à chaque changement de statut de ce ticket.
+                      </p>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Error */}
                 {!!sendError && (

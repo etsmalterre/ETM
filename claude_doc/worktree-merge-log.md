@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-08-28 — feat/issue-tracker (ticket widget v1.3.0 — reporting without an email)
+The tickets proxy no longer 400s an account with no mapped email: it files under a stable
+synthetic identity `utilisateur-<id>@mps.malterre.invalid` (`lib/tickets-reporter.ts`,
+tested), forces `follow_up` off, refuses `PATCH /:id/follow`, and exposes
+`GET /reporter → { name, can_follow }` so the widget hides the follow-up checkbox and
+toggle. A shared station may send `reporter_name` (who is at the keyboard); honoured only
+for a synthetic reporter and appended to the account name. The tracker keys reporters by
+email but only *sends* to it for follow-up, so nothing else changes. Unblocks the TRM
+visitage compte-poste and Mickael Grivelet. Guard `scripts/check-tickets-follow.ts` now
+runs two sessions (22 checks). Widget mirror in `components/tickets/` + `reporterHint.ts`.
 ## 2026-08-28 — feat/trs-erp (API de Production › TRS, l'écran ERP de FI_TRS)
 `GET /api/trs/equipe?debut=YYYYMMDDHHMMSS` (guard `view_trs`, nouvelle clé Production fermée par
 défaut) rend une équipe complète, n'importe laquelle : les quatre KPI de `MAJAffichageAtelier`

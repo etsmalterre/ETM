@@ -14,8 +14,15 @@
 // cannot spoof it:
 //   - name  ← utilisateur.prenom/nom (HFSQL, fixEncoding for accents)
 //   - email ← user-emails.json (same admin-managed mapping the Gmail send
-//     feature uses; users without a mapped email get the same French 400
-//     directing them to Paramètres › Utilisateurs)
+//     feature uses). An account with NO mapped email still reports, under a
+//     stable synthetic per-account identity (lib/tickets-reporter.ts) — the
+//     tracker keys reporters by email but only *sends* to it for the opt-in
+//     follow-up mail, which is therefore the one thing such an account loses.
+//     That is the visitage PC (compte-poste) and a colleague without a
+//     company mailbox; until v1.3.0 they got a 400 and could not report at all.
+//   - name  may carry a hint from a shared station ("who is at the keyboard",
+//     e.g. the visiteuse picked on the poste) — honoured ONLY for a synthetic
+//     reporter, appended to the account name, never substituted.
 //
 // Reads are scoped to the mount's product slug as well: the tracker key is
 // company-scoped, so without it a reporter who also files tickets in another
@@ -23,6 +30,7 @@
 //
 // Routes (per mount):
 //   POST   /                  — create a ticket
+//   GET    /reporter          — who the session reports as (name, can_follow)
 //   GET    /                  — list the session user's tickets
 //   GET    /:id               — detail (404 unless owned)
 //   PATCH  /:id/follow        — opt in/out of status-change emails (owner only)
@@ -44,6 +52,7 @@ import http from 'node:http'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { getUserEmail } from '../lib/user-emails.js'
+import { composeReporterName, syntheticReporterEmail } from '../lib/tickets-reporter.js'
 
 // Read env lazily — dotenv.config() in index.ts runs after ESM imports are
 // evaluated (same reasoning as lib/auth.ts getSecret()).
@@ -55,28 +64,27 @@ const NOT_CONFIGURED_MSG = "Le système de tickets n'est pas configuré sur le s
 const UNREACHABLE_MSG = 'Impossible de contacter le serveur de tickets.'
 const TIMEOUT_MSG = 'Le serveur de tickets ne répond pas (délai dépassé).'
 const BAD_KEY_MSG = 'Système de tickets : clé API invalide. Contactez un administrateur.'
-const NO_EMAIL_MSG =
-  "Aucune adresse email n'est associée à votre compte. " +
-  'Un administrateur doit en définir une dans Paramètres › Utilisateurs.'
+const NO_FOLLOW_MSG =
+  "Le suivi par email demande une adresse associée à votre compte. " +
+  'Un administrateur peut en définir une dans Paramètres › Utilisateurs.'
 
 interface Reporter {
   name: string
   email: string
+  /** No mapped email: `email` is the synthetic per-account identity, and the
+   *  follow-up mail is off limits (nobody would receive it). */
+  synthetic: boolean
 }
 
 /** Resolve the acting user's reporter identity from the session. Writes the
- *  error response and returns null when the user is unidentified or has no
- *  mapped email. */
+ *  error response and returns null when the user is unidentified. */
 async function resolveReporter(req: Request, res: Response): Promise<Reporter | null> {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return null
   }
-  const email = await getUserEmail(req.userId)
-  if (!email) {
-    res.status(400).json({ error: 'no_reporter_email', message: NO_EMAIL_MSG })
-    return null
-  }
+  const mapped = await getUserEmail(req.userId)
+  const email = mapped ?? syntheticReporterEmail(req.userId)
   const rows = await query<{ IDutilisateur: number; prenom: string | null; nom: string | null }>(
     `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
   )
@@ -87,7 +95,7 @@ async function resolveReporter(req: Request, res: Response): Promise<Reporter | 
     const display = [u.prenom?.trim(), u.nom?.trim()].filter(Boolean).join(' ')
     if (display) name = display
   }
-  return { name, email }
+  return { name, email, synthetic: mapped === null }
 }
 
 function trackerHeaders(json = false): Record<string, string> {
@@ -148,6 +156,10 @@ const submitBody = z.object({
   // Reporter asked to be emailed on every status change of this ticket.
   // Optional so an older client keeps the tracker's silent default.
   follow_up: z.boolean().optional(),
+  // Who is at the keyboard of a shared station. Only honoured for a synthetic
+  // reporter (see composeReporterName) — for an account with a mapped email
+  // the session is the identity and this field is dropped on the floor.
+  reporter_name: z.string().trim().max(120).optional(),
 })
 
 const followBody = z.object({ follow_up: z.boolean() })
@@ -191,11 +203,15 @@ function createTicketsRouter(slugEnvVar: string): RouterType {
     try {
       const reporter = await resolveReporter(req, res)
       if (!reporter) return
+      const { reporter_name: hint, follow_up, ...fields } = parsed.data
       const payload = {
-        ...parsed.data,
+        ...fields,
         product_slug: productSlug(),
         reporter_email: reporter.email,
-        reporter_name: reporter.name,
+        reporter_name: reporter.synthetic ? composeReporterName(reporter.name, hint) : reporter.name,
+        // A synthetic address receives nothing: never let the tracker queue
+        // mail to it, whatever the client ticked.
+        follow_up: reporter.synthetic ? false : follow_up,
       }
       const { status, data } = await trackerJson('/bugs', {
         method: 'POST',
@@ -239,6 +255,23 @@ function createTicketsRouter(slugEnvVar: string): RouterType {
       forward(res, status, data)
     } catch (err) {
       sendTrackerError(res, err, 'GET /bugs')
+    }
+  })
+
+  // ── GET /reporter — who the session reports as ────────────
+  // Lets the widget hide the follow-up controls for an account that cannot
+  // receive the mail, instead of offering a checkbox the proxy then ignores.
+  // Declared before /:id (the id pattern would not match anyway, but the
+  // order makes it explicit). The email itself is never returned.
+  router.get('/reporter', async (req: Request, res: Response) => {
+    if (!ensureConfigured(res)) return
+    try {
+      const reporter = await resolveReporter(req, res)
+      if (!reporter) return
+      res.json({ name: reporter.name, can_follow: !reporter.synthetic })
+    } catch (err) {
+      console.error('Issue tracker proxy error (GET /reporter):', err)
+      res.status(500).json({ error: 'reporter_lookup_failed' })
     }
   })
 
@@ -291,6 +324,10 @@ function createTicketsRouter(slugEnvVar: string): RouterType {
     try {
       const reporter = await resolveReporter(req, res)
       if (!reporter) return
+      if (reporter.synthetic) {
+        res.status(400).json({ error: 'no_reporter_email', message: NO_FOLLOW_MSG })
+        return
+      }
       const owned = await trackerJson(`/bugs/${req.params.id}`, { headers: trackerHeaders() })
       if (owned.status === 401) {
         forward(res, owned.status, owned.data)
