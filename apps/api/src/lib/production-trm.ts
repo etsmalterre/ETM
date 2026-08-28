@@ -112,6 +112,12 @@ export interface MachineRow {
   emplacement: string
   vitesse: number
   archive: number
+  /** Modbus index on the S7-1200: register offset i = adresse_automate - 1.
+   *  0 when the machine is not wired to the PLC. This is the ONLY correct join
+   *  between a PLC register and a metier - never derive a label from the index,
+   *  since the workshop has no 1B (adresse_automate 2 is unassigned) and every
+   *  metier after it would be attributed to its neighbour. */
+  adresseAutomate: number
 }
 
 export async function selectMachines(): Promise<MachineRow[]> {
@@ -128,6 +134,7 @@ export async function selectMachines(): Promise<MachineRow[]> {
     emplacement: String(r.emplacement ?? '').trim(),
     vitesse: n(r.vitesse),
     archive: n(rawGet(r, /^archiv/i) ?? 0),
+    adresseAutomate: n(rawGet(r, /^adresse_automate$/i) ?? 0),
   }))
 }
 

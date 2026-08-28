@@ -41,6 +41,7 @@ import { rapportsRouter } from './routes/rapports.js'
 import { rapportsTrmRouter } from './routes/rapports-trm.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
+import { recorderRouter } from './routes/recorder.js'
 import { visitageTrmRouter } from './routes/visitage-trm.js'
 import { atelierRouter } from './routes/atelier.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
@@ -168,6 +169,10 @@ app.use('/api/rapports-trm', rapportsTrmRouter)
 app.use('/api/planning-atelier', planningAtelierRouter)
 // TRM production orders (Gestion des OF) — consumed by the TRM web app.
 app.use('/api/of-trm', ofTrmRouter)
+// TRS data collector (repo C:devetsmalterreTRS) - the ONLY writer of
+// evenement_machine, replacing the WinDev Data_Recorder_V2 daemon on 10.10.11.2.
+// Guarded by a shared secret (RECORDER_TOKEN), not a user session.
+app.use('/api/recorder', recorderRouter)
 app.use('/api/visitage-trm', visitageTrmRouter)
 // Atelier PWA (bonnetier + régleur, host atelier.malterre) — a SECOND TRM
 // client of this API, not part of the TRM ERP web app. Read-only for now.
