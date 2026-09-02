@@ -12,7 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import {
-  MAIN_SLOT, apiPort, webPort, isPortInUse, spawnDetached, killTree,
+  MAIN_SLOT, apiPort, webPort, isPortInUse, probeApiIdentity, spawnDetached, killTree,
   mainCheckout, readRegistry, updateRegistry, git, pidAlive, pidOnPort,
   ensureDeps, ensureCorsOrigin, waitForDbHealth, checkCors, tailLog,
 } from './lib.mjs'
@@ -82,6 +82,18 @@ async function up() {
   // `down` can still stop it.
   let apiUp = await isPortInUse(API_PORT)
   let webUp = await isPortInUse(WEB_PORT)
+  // "Port in use" is not "the MPS API is up": on 2026-09-02 :8080 was held by the
+  // MFPROD API, and this check would have adopted it as the master API.
+  if (apiUp) {
+    const id = await probeApiIdentity(API_PORT)
+    if (!id.ok && id.reason === 'foreign') {
+      console.error(`Port :${API_PORT} is held by ANOTHER app ("${id.app}"), not the MPS API — slot 0 cannot serve.`)
+      console.error(`Do not kill it. Start the master API on a free port instead, and point worktrees at it:`)
+      console.error(`  cd C:/dev/etsmalterre/ETM/apps/api && $env:PORT='8087'; pnpm dev`)
+      console.error(`  node scripts/worktree/up.mjs <feature> --api 8087 --restart   # (up.mjs also finds :8087 by itself)`)
+      process.exit(2)
+    }
+  }
   if (apiUp && webUp) {
     console.log('Master already appears to be serving on slot 0:')
     await status()

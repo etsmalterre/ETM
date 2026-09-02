@@ -25,7 +25,7 @@ import {
   allocateSlot, getProject, projectMainCheckout, slotKey, updateRegistry,
   spawnDetached, isPortInUse, DEV_WEB_ORIGINS, git, reapPending, PROJECTS, mainCheckout,
   readRegistry, entryProject, parseSlotKey, pidAlive, killTree, dropPending, isMergedRemoteBranch,
-  waitForDbHealth, checkCors, probeApiIdentity, tailLog, ensureDeps, ensureCorsOrigin,
+  waitForDbHealth, checkCors, probeApiIdentity, resolveMainApiPort, tailLog, ensureDeps, ensureCorsOrigin,
 } from './lib.mjs'
 
 // Default project = the repo this script is invoked from (so `up.mjs <feature>`
@@ -102,6 +102,19 @@ let slot
 let api
 let web
 
+// Web-only project without --api: don't assume the default port IS the MPS API.
+// Probe it, then the documented fallbacks, and take the first that answers
+// `"app": "MPS API"`. Says so when it deviates, so the summary line is no surprise.
+async function pickMainApi(preferred) {
+  const r = await resolveMainApiPort(preferred, proj.defaultApiPort)
+  if (r.port !== preferred) {
+    const first = r.tried[0].identity
+    const why = first.reason === 'foreign' ? `held by another app ("${first.app}")` : 'nothing listening'
+    console.log(`MPS API is not on :${preferred} (${why}) — using :${r.port}, where it answers.`)
+  }
+  return r.port
+}
+
 if (isRestart) {
   // Reuse the recorded slot/ports so the tree comes back exactly where it was
   // (its .env files already point at those ports, and the URL the user has open
@@ -122,6 +135,7 @@ if (isRestart) {
   const [key, entry] = hit
   slot = parseSlotKey(key).slot
   api = proj.hasApi ? proj.apiPort(slot) : (apiOverride || entry.apiTarget || proj.defaultApiPort)
+  if (!proj.hasApi && !apiOverride) api = await pickMainApi(api)
   web = proj.webPort(slot)
 
   // Kill anything still alive on the slot first, so we never end up with two
@@ -157,6 +171,7 @@ if (isRestart) {
 
   slot = await allocateSlot(projectKey)
   api = proj.hasApi ? proj.apiPort(slot) : (apiOverride || proj.defaultApiPort)
+  if (!proj.hasApi && !apiOverride) api = await pickMainApi(api)
   web = proj.webPort(slot)
   if (proj.hasApi) console.log(`Slot ${slot} → API ${api}, Web ${web}`)
   else console.log(`Slot ${slot} → Web ${web} (targets ETM API on ${api})`)

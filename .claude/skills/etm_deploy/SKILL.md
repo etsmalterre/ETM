@@ -90,7 +90,19 @@ in each call (or just inline the WSL form on the factory PC — that's the commo
 
 ## Step 0 — What needs deploying (ALWAYS run first)
 
-**One command answers the whole question, for both tiers and both repos:**
+**First, bring the main checkout to `origin/master` — the tarball and the web build read
+this tree.** Since 2026-09-02 `/feature-complete` lands by pushing the branch to
+`origin/master` and only best-effort fast-forwards the main checkout, so a checkout that is
+behind after a morning of landings is the *normal* case. Self-heal it:
+
+```bash
+cd /c/dev/etsmalterre/ETM && git fetch -q origin && git merge --ff-only origin/master
+```
+
+`Already up to date.` or a fast-forward, nothing else — a refusal (dirty overlap, diverged
+`master`) is a real stop that preflight names; never `reset` or `stash` past it.
+
+**Then one command answers the whole question, for both tiers and both repos:**
 
 ```bash
 node scripts/deploy/preflight.mjs        # read-only; exit 1 = blockers

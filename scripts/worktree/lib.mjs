@@ -646,6 +646,31 @@ export async function probeApiIdentity(port, timeoutMs = 5000) {
 }
 
 /**
+ * Where a web-only worktree may find the MPS API when the default port is not
+ * it. 8087 sits outside every worktree range (8080–8086) and is the documented
+ * manual start (`$env:PORT='8087'; pnpm dev` in ETM/apps/api) for a workstation
+ * where another project holds 8080.
+ */
+export const MAIN_API_FALLBACK_PORTS = [8087]
+
+/**
+ * Pick the port a web-only worktree should target: the first of
+ * [preferred, default, ...fallbacks] where the MPS API actually answers.
+ * Returns { port, identity, tried } — `identity.ok === false` means none did,
+ * and `port` is then the preferred one so the caller's message names it.
+ */
+export async function resolveMainApiPort(preferred, defaultPort) {
+  const candidates = [...new Set([preferred, defaultPort, ...MAIN_API_FALLBACK_PORTS].filter(Boolean))]
+  const tried = []
+  for (const port of candidates) {
+    const identity = await probeApiIdentity(port)
+    tried.push({ port, identity })
+    if (identity.ok) return { port, identity, tried }
+  }
+  return { port: preferred, identity: tried[0].identity, tried }
+}
+
+/**
  * Verify from the browser's point of view: the API must echo back the web
  * origin, or cookie-auth'd requests fail in the browser while every terminal
  * check passes.
