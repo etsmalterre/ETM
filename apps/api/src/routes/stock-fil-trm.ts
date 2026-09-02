@@ -702,7 +702,8 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
 // commentaire, lot_frs, dernier_pointage, IDclient. Archived lots refuse.
 // stock / stock_initial / dernier_mouvement / terminé / controlé are NEVER
 // writable here — the production flow and the Archivage own them (controlé is
-// a dead pre-2023 flag, do not resurrect it).
+// a dead pre-2023 flag, do not resurrect it). The one sanctioned override of
+// `stock` is PUT /fil-trm/:id/stock below, behind its own key.
 stockFilTrmRouter.patch('/fil-trm/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -738,6 +739,53 @@ stockFilTrmRouter.patch('/fil-trm/:id', async (req: Request, res: Response) => {
     res.json(row)
   } catch (err) {
     console.error('Error updating TRM stock_fil:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/stock/fil-trm/:id/stock — manual correction of `stock`, behind
+// `edit_stock_fil` (its own key, see permission-keys-trm.ts for why it is not
+// create_stock_fil). Body { stock: X }, X finite and >= 0.
+//
+// This is the ONE place the web may set `stock` directly. Everywhere else the
+// column moves through the production flow (piece declaration, fil incorporé)
+// and the Archivage. A manual value is an inventory count — the operator put
+// the lot on the scale and this is what it weighs — so `dernier_pointage` is
+// stamped today along with it: `fil_incorpore`-style ledgers do not exist for
+// stock_fil, and that date is the only trace the correction leaves.
+// `stock_initial` is NOT touched: the freinte is stock_initial − consumption,
+// and the rapport de freinte does not read `stock` at all — which is exactly
+// why a corrected lot's freinte turns approximate (LIVA #1101, stopgap until
+// the HFSQL migration lands a movement ledger).
+stockFilTrmRouter.put('/fil-trm/:id/stock', async (req: Request, res: Response) => {
+  if (!(await requirePermission(req, res, 'edit_stock_fil', TRM_PERMISSIONS))) return
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+    const raw = (req.body ?? {}).stock
+    const stock = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
+    if (!Number.isFinite(stock) || stock < 0) {
+      res.status(400).json({ error: 'stock must be a number >= 0' })
+      return
+    }
+
+    const termine = await readTermine(id)
+    if (termine === null) { res.status(404).json({ error: 'Stock fil not found' }); return }
+    if (termine === 1) { res.status(409).json({ error: 'lot_archive' }); return }
+
+    // Both columns are ASCII-named → a plain named UPDATE works on both drivers.
+    // Two decimals (user decision, 2026-09-02): `stock` is a 4-byte real, the
+    // web edits it at two decimals, and a scale does not read below 10 g.
+    const value = Math.round(stock * 100) / 100
+    await query(
+      `UPDATE stock_fil SET stock = ${value}, dernier_pointage = '${todayDigits()}' WHERE IDstock_fil = ${id}`,
+    )
+
+    const row = await fetchRow(id)
+    res.json(row)
+  } catch (err) {
+    console.error('Error correcting TRM stock_fil stock:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

@@ -163,6 +163,22 @@ export const TRM_PERMISSION_KEYS = [
       'Affiche le bouton « Modifier » dans le tiroir d’un rouleau de Tombé Métier > Stock et autorise la modification de ses observations. Le poids, le choix, la réservation et l’étiquette ne changent pas : le rouleau reste ce que le poste de visitage a pesé.',
     category: 'Tombé Métier',
   },
+  // Fils > Stock, the manual correction of `stock`. Deliberately NOT folded
+  // into create_stock_fil: that key is the ledger's normal life (a lot comes
+  // in, is split, is closed), whereas this one overrides the ledger — the
+  // column otherwise only moves through piece declaration, fil incorporé and
+  // archivage, and a hand-set value is exactly what the rapport de freinte
+  // cannot see (freinte = stock_initial − consumption, it never reads
+  // `stock`). Stopgap until the HFSQL migration lands a real movement ledger
+  // (LIVA #1101, user decision 2026-09-02): granted by hand to the few people
+  // who reweigh lots, and the field says what the correction costs.
+  {
+    key: 'edit_stock_fil',
+    label: 'Corriger le stock d’un lot de fil',
+    description:
+      'Rend le « Stock actuel » d’un lot modifiable en mode édition dans Fils > Stock. Le stock d’un lot ne bouge normalement que par la production ; une correction à la main n’est pas tracée et rend le rapport de freinte de ce lot approximatif. À réserver aux personnes qui repèsent les lots.',
+    category: 'Fils',
+  },
   // Atelier > Maintenance — the métier upkeep fiche and the workshop-wide
   // entretien gauges. Read stays open to anyone holding the Atelier menu (the
   // bonnetier needs to see when the rouloir is due); only the writes are gated.

@@ -145,6 +145,33 @@ async function main() {
   check('visitage/nettoyage/finir_fil stored', detA.visitage === 2 && detA.nettoyage === 2 && detA.finir_fil === 1, detA)
   check('accented consigne round-trips', detA.observations.includes('vérifier les accents éàç'), detA.observations)
   check('quantite editable pre-production + nb_pieces follows', detA.quantite === 12 && detA.nb_pieces === Math.ceil(12 / detA.poids_piece), detA)
+  // nb_pieces sent explicitly wins over the derivation (LIVA #1110).
+  const putNb = await api(`/of-trm/${idA}`, { method: 'PUT', body: JSON.stringify({ nb_pieces: 3 }) })
+  detA = (await api(`/of-trm/${idA}`)).body
+  check('PUT nb_pieces by hand (200) and stored as sent', putNb.status === 200 && detA.nb_pieces === 3, detA.nb_pieces)
+  const putNb0 = await api(`/of-trm/${idA}`, { method: 'PUT', body: JSON.stringify({ nb_pieces: 0 }) })
+  check('PUT nb_pieces 0 → 400', putNb0.status === 400, putNb0.status)
+
+  // ── Quantité stays editable once production started (LIVA #1110, the
+  //    legacy lock lifted on 2026-09-02): pick a live OF that has pieces,
+  //    bump its quantité, then put it back.
+  const withProd = (encours as any[]).map((o) => o.id ?? o.IDordre_fabrication)
+  let prodId = 0
+  let prodDet: any = null
+  for (const oid of withProd) {
+    const det = (await api(`/of-trm/${oid}`)).body
+    if (det?.has_production && det.est_termine === 0) { prodId = oid; prodDet = det; break }
+  }
+  check('a live OF with production exists to test the lifted lock', prodId > 0, withProd.length)
+  if (prodId > 0) {
+    const bumped = Math.round((prodDet.quantite + 1) * 100) / 100
+    const putQ = await api(`/of-trm/${prodId}`, { method: 'PUT', body: JSON.stringify({ quantite: bumped }) })
+    const afterQ = (await api(`/of-trm/${prodId}`)).body
+    check('PUT quantite on an OF with production → 200 and stored', putQ.status === 200 && afterQ.quantite === bumped, { status: putQ.status, q: afterQ.quantite })
+    await api(`/of-trm/${prodId}`, { method: 'PUT', body: JSON.stringify({ quantite: prodDet.quantite, nb_pieces: prodDet.nb_pieces }) })
+    const restoredQ = (await api(`/of-trm/${prodId}`)).body
+    check('…and restored', restoredQ.quantite === prodDet.quantite && restoredQ.nb_pieces === prodDet.nb_pieces, { q: restoredQ.quantite, nb: restoredQ.nb_pieces })
+  }
 
   // ── Composition replace + incorpore.
   const newRows = composition.map((c: any) => ({ ...c }))

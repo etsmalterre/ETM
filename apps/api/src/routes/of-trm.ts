@@ -128,7 +128,8 @@ async function selectStockFilByPair(refFil: number, coloriFil: number): Promise<
 }
 
 /** Does the OF have any production attached (pieces knitted or rolls dropped)?
- *  Gates quantite edits and deletion. */
+ *  Gates deletion, and is reported to the web as `has_production`. It no
+ *  longer gates quantité edits (LIVA #1110, see PUT /:id). */
 async function hasProduction(ofId: number): Promise<boolean> {
   const p = await query<{ c: number }>(
     `SELECT COUNT(*) AS c FROM piece_production WHERE IDordre_fabrication = ${ofId}`,
@@ -885,15 +886,25 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
       }
     })
 
-    // "Compatible sur" — machines the écru has a machine sheet for.
+    // "Compatible sur" — machines the écru has a machine sheet for. Labelled by
+    // `emplacement` (the floor position, what a régleur says: « 1G »), falling
+    // back to `nom` only when it is empty — `nom` is a brand on two métiers
+    // (1G = « Beck », 1H = « Orizio »; user decision 2026-09-02, LIVA #1102).
+    // The ids travel too, so the fiche's métier picker filters by id rather
+    // than by label.
     let compatibles: string[] = []
+    let compatibles_ids: number[] = []
     if (refId > 0) {
       const rem = await query<{ IDmachine: number }>(
         `SELECT IDmachine FROM ref_ecru_machine WHERE IDref_ecru = ${refId}`,
       )
-      const ids = Array.from(new Set(rem.map((r) => Number(r.IDmachine) || 0).filter(Boolean)))
-      compatibles = ids
-        .map((mid) => machines.find((m) => m.id === mid)?.nom ?? '')
+      compatibles_ids = Array.from(new Set(rem.map((r) => Number(r.IDmachine) || 0).filter(Boolean)))
+        .filter((mid) => machines.some((m) => m.id === mid))
+      compatibles = compatibles_ids
+        .map((mid) => {
+          const m = machines.find((x) => x.id === mid)
+          return m ? (m.emplacement || m.nom) : ''
+        })
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b, 'fr'))
     }
@@ -924,7 +935,9 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
       demarrage_prod: of.demarrage_prod ?? null,
       arret_prod: of.arret_prod ?? null,
       IDmachine: machineId,
-      machine: machine ? { id: machine.id, nom: machine.nom, jauge: machine.jauge, diametre: machine.diametre } : null,
+      machine: machine
+        ? { id: machine.id, nom: machine.nom, emplacement: machine.emplacement, jauge: machine.jauge, diametre: machine.diametre }
+        : null,
       IDref_ecru: refId,
       IDcolori_ecru: coloriId,
       ref_label: refMap.get(refId)?.reference ?? '',
@@ -934,6 +947,7 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
       composition,
       incorpore,
       compatibles,
+      compatibles_ids,
       commande: ligne
         ? {
             IDcommande_client: ligne.commandeId,
@@ -1659,6 +1673,7 @@ const updateBody = z.object({
   IDmachine: z.number().int().positive().optional(),
   quantite: z.number().positive().optional(),
   poids_piece: z.number().positive().optional(),
+  nb_pieces: z.number().int().min(1).optional(),
   visitage: z.number().int().min(0).max(2).optional(),
   nettoyage: z.union([z.literal(1), z.literal(2)]).optional(),
   finir_fil: z.union([z.literal(0), z.literal(1)]).optional(),
@@ -1671,8 +1686,17 @@ const updateBody = z.object({
   observations: z.string().max(4000).optional(),
 })
 
-// PUT /api/of-trm/:id — form update. Quantité is locked once production
-// started (legacy greys it); poids_piece stays editable throughout.
+// PUT /api/of-trm/:id — form update, under edit_of.
+//
+// Quantité and nb_pieces stay editable AFTER production started (user
+// decision 2026-09-02, LIVA #1110 — the legacy greyed the quantité and this
+// port refused it with 409 production_lancee until then). The régleur needs
+// exactly that at the end of a run: the lot ran short, the client settled for
+// 18 pieces instead of 20, and `nb_pieces` is what the atelier reads to offer
+// « Terminer OF » (routes/atelier.ts: produites + 1 >= nb_pieces) and to keep
+// the métier in the « Actives » list. nb_pieces is derived from
+// quantité / poids_piece when it is not sent, and taken as sent otherwise.
+// Only the `est_termine` guard remains: a finished OF is history.
 ofTrmRouter.put('/:id', async (req: Request, res: Response) => {
   if (!(await requireEditOf(req, res))) return
   try {
@@ -1691,15 +1715,6 @@ ofTrmRouter.put('/:id', async (req: Request, res: Response) => {
       return
     }
     const b = parsed.data
-
-    const produced = await hasProduction(id)
-    if (b.quantite !== undefined && produced && round2(b.quantite) !== round2(Number(of.quantite) || 0)) {
-      res.status(409).json({
-        error: 'production_lancee',
-        message: 'La production a démarré — la quantité ne peut plus être modifiée.',
-      })
-      return
-    }
 
     // Machine move: leave the old queue, join the back of the new one. An
     // active OF can only move to a métier that has no active OF.
@@ -1741,10 +1756,13 @@ ofTrmRouter.put('/:id', async (req: Request, res: Response) => {
     if (b.vitesse !== undefined) sets.push(`vitesse = ${b.vitesse}`)
     if (b.observations !== undefined) sets.push(`observations = ${sqlText(b.observations)}`)
 
-    // nb_pieces follows quantité/poids pièce (derived, like the legacy form).
+    // nb_pieces: as sent when the form sets it, else it follows quantité /
+    // poids pièce (derived, like the legacy form).
     const quantite = b.quantite ?? (Number(of.quantite) || 0)
     const poidsPiece = b.poids_piece ?? (Number(of.poids_piece) || 0)
-    if ((b.quantite !== undefined || b.poids_piece !== undefined) && poidsPiece > 0) {
+    if (b.nb_pieces !== undefined) {
+      sets.push(`nb_pieces = ${b.nb_pieces}`)
+    } else if ((b.quantite !== undefined || b.poids_piece !== undefined) && poidsPiece > 0) {
       sets.push(`nb_pieces = ${Math.max(1, Math.ceil(quantite / poidsPiece))}`)
     }
 
