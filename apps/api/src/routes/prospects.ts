@@ -1,8 +1,34 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 
 export const prospectsRouter: RouterType = Router()
+
+// ── Permission gate (ticket #1112) ──────────────────────
+// ONE key covering every write on the screen — same shape as etudes-coloris.ts.
+// Until #1112 this router had no gate at all: whoever could open the screen
+// could create, edit, delete and convert a prospect. Reads stay open.
+//
+// ⚠ `attachUser()` is best-effort and there is no global auth middleware, so a
+// write route WITHOUT this call is reachable anonymously. Any new write here
+// starts with it.
+const EDIT_KEY = 'edit_prospects' as const
+
+/** True when the caller may write. Writes the 401/403 itself, so callers
+ *  just `return` on false. */
+async function ensureCanEdit(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), EDIT_KEY))) {
+    res.status(403).json({ error: `permission denied: ${EDIT_KEY}` })
+    return false
+  }
+  return true
+}
 
 // The `prospect` table has accented column names: `prénom`, `société`, `traité`.
 // The Linux iODBC bridge (production) rejects accented identifier tokens
@@ -254,6 +280,56 @@ async function loadProspectDetail(id: number): Promise<Record<string, unknown> |
   return { ...p, transporteur_nom, client_nom }
 }
 
+// ── Lite loader shared with devis.ts (prospect devis, #1112) ──
+
+export interface ProspectLite {
+  IDprospect: number
+  /** Display name: société, else « Prénom Nom », else « Prospect #id ». */
+  nom: string
+  prenom: string
+  nom_personne: string
+  societe: string
+  email: string
+  telephone: string
+  adresse: string
+  code_postal: string
+  ville: string
+  pays: string
+  IDclient: number
+}
+
+export function prospectDisplayName(p: { societe: string; prenom: string; nom: string; IDprospect: number }): string {
+  return p.societe.trim() || `${p.prenom} ${p.nom}`.trim() || `Prospect #${p.IDprospect}`
+}
+
+/** Batched prospect read with clean text on both platforms. Used by devis.ts
+ *  to resolve prospect devis (name for the list/PDF, email + address for the
+ *  documents). Missing ids are simply absent from the map. */
+export async function loadProspectsLite(ids: number[]): Promise<Map<number, ProspectLite>> {
+  const out = new Map<number, ProspectLite>()
+  const wanted = Array.from(new Set(ids.filter((x) => Number.isInteger(x) && x > 0)))
+  if (wanted.length === 0) return out
+  const rows = await selectProspectRows(`WHERE IDprospect IN (${wanted.join(',')})`)
+  for (const raw of rows) {
+    const p = normalizeProspectRow(raw)
+    out.set(p.IDprospect, {
+      IDprospect: p.IDprospect,
+      nom: prospectDisplayName(p),
+      prenom: p.prenom,
+      nom_personne: p.nom,
+      societe: p.societe,
+      email: p.email,
+      telephone: p.telephone,
+      adresse: p.adresse,
+      code_postal: p.code_postal,
+      ville: p.ville,
+      pays: p.pays,
+      IDclient: p.IDclient,
+    })
+  }
+  return out
+}
+
 // ── Transporteurs lookup ─────────────────────────────────
 
 prospectsRouter.get('/lookups/transporteurs', async (_req: Request, res: Response) => {
@@ -316,6 +392,7 @@ prospectsRouter.get('/:id', async (req: Request, res: Response) => {
 
 prospectsRouter.post('/', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const parsed = prospectBody.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
@@ -376,6 +453,7 @@ prospectsRouter.post('/', async (req: Request, res: Response) => {
 
 prospectsRouter.put('/:id', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -473,6 +551,7 @@ prospectsRouter.put('/:id', async (req: Request, res: Response) => {
 
 prospectsRouter.put('/:id/status', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -499,6 +578,7 @@ prospectsRouter.put('/:id/status', async (req: Request, res: Response) => {
 
 prospectsRouter.post('/:id/convert', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
@@ -552,13 +632,40 @@ prospectsRouter.post('/:id/convert', async (req: Request, res: Response) => {
       `VALUES (${newClientId}, 0, 0, 0, ${sqlText(p.prenom)}, ${sqlText(p.nom)}, ${sqlText(tel)}, ${sqlText(p.email)}, '', 1, 1, 1, 1, 1, 0)`,
     )
 
+    // Resolve the freshly created default adresse — the re-homed devis below
+    // point at it instead of the legacy « A Définir » placeholder (795).
+    const createdAdresse = await query<{ IDadresse: number }>(
+      `SELECT IDadresse FROM adresse WHERE IDclient = ${newClientId} ORDER BY IDadresse DESC`,
+    )
+    const newAdresseId = n(createdAdresse[0]?.IDadresse)
+
+    // Re-home the prospect's OPEN devis onto the new client (#1112, user
+    // decision 2026-09-02): IDclient set + IDprospect cleared turns them into
+    // ordinary client devis — visible in the WinDev devis list too, and
+    // transformable into a commande. Soldé prospect devis stay attached to
+    // the prospect (history).
+    let devisRehomed = 0
+    const openDevis = await query<{ IDDevis_etm: number }>(
+      `SELECT IDDevis_etm FROM devis_etm WHERE IDprospect = ${id} AND est_soldee = 0`,
+    )
+    if (openDevis.length > 0) {
+      const adresseSets = newAdresseId > 0
+        ? `, IDadresse_livraison = ${newAdresseId}, IDadresse_facturation = ${newAdresseId}`
+        : ''
+      await query(
+        `UPDATE devis_etm SET IDclient = ${newClientId}, IDprospect = 0${adresseSets}
+         WHERE IDprospect = ${id} AND est_soldee = 0`,
+      )
+      devisRehomed = openDevis.length
+    }
+
     // Linking + status (3 = Terminée) use non-accented columns — safe on Linux.
     await query(
       `UPDATE prospect SET IDclient = ${newClientId}, status_catalogue = 3 WHERE IDprospect = ${id}`,
     )
 
     const detail = await loadProspectDetail(id)
-    res.json({ IDclient: newClientId, demande: detail })
+    res.json({ IDclient: newClientId, devis_rehomed: devisRehomed, demande: detail })
   } catch (err) {
     console.error('Error converting prospect:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -569,6 +676,7 @@ prospectsRouter.post('/:id/convert', async (req: Request, res: Response) => {
 
 prospectsRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
+    if (!(await ensureCanEdit(req, res))) return
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     await query(`DELETE FROM prospect WHERE IDprospect = ${id}`)

@@ -6,9 +6,12 @@
 // NEVER reserves stock, so there is no affectation drawer here.
 //
 // Hard rules baked in (verified against live data + CLAUDE.md HFSQL section):
-//  - Scope: every read/write of the client-devis list is IDprospect = 0
-//    (IDprospect > 0 rows are prospect quotes, owned by a separate screen).
-//    devis_etm has NO IDsociete column.
+//  - Scope: the list serves BOTH client devis (IDprospect = 0) and prospect
+//    devis (IDprospect > 0, IDclient = 0 — legacy FEN_devis_prospect rows,
+//    re-enabled by ticket #1112). A prospect devis resolves its identity,
+//    address and email from the `prospect` row; its writes are gated on the
+//    `devis_prospect` permission (client-devis writes stay ungated, as
+//    before). devis_etm has NO IDsociete column.
 //  - numero allocator: MAX(numero)+1 over the whole devis_etm table (the legacy
 //    sequence is global, shared with prospect devis), with a retry loop.
 //  - `date` is a reserved word → read case-insensitively (SELECT * returns it as
@@ -37,6 +40,9 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf } from '../lib/rtf-utils.js'
 import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
+import { loadProspectsLite, type ProspectLite } from './prospects.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const devisRouter: RouterType = Router()
@@ -45,6 +51,62 @@ export const devisRouter: RouterType = Router()
 // log type for client quotations (verified live; unique to devis, so it
 // disambiguates devis docs from other IDreference-keyed entities).
 const TYPE_DOC_DEVIS = 28
+
+// ── Prospect devis (#1112) ───────────────────────────────
+// Legacy FEN_devis_prospect pinned BOTH addresses of every prospect devis to
+// adresse 795 « A Définir » (verified constant across all 17 legacy rows) —
+// a prospect has no `adresse` rows of its own. We keep writing 795 so the
+// WinDev app still opens these devis, and override the DISPLAY (detail + PDF)
+// with the prospect's own address fields.
+const PROSPECT_PLACEHOLDER_ADRESSE = 795
+// Legacy defaults on every prospect devis: mode_paiement 3, échéance 11.
+const PROSPECT_DEFAULT_MODE_PAIEMENT = 3
+const PROSPECT_DEFAULT_ECHEANCE = 11
+
+const DEVIS_PROSPECT_KEY = 'devis_prospect' as const
+
+/** Gate for prospect-devis writes. Client devis (IDprospect = 0) pass
+ *  through untouched — their writes were never permission-gated. Writes the
+ *  401/403 itself, so callers just `return` on false. */
+async function ensureProspectDevisWritable(req: Request, res: Response, prospectId: number): Promise<boolean> {
+  if (!(prospectId > 0)) return true
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), DEVIS_PROSPECT_KEY))) {
+    res.status(403).json({ error: `permission denied: ${DEVIS_PROSPECT_KEY}` })
+    return false
+  }
+  return true
+}
+
+/** The devis's IDprospect (0 for a client devis), or null when not found. */
+async function loadDevisProspectId(devisId: number): Promise<number | null> {
+  const rows = await query<{ IDprospect: number | null }>(
+    `SELECT IDprospect FROM devis_etm WHERE IDDevis_etm = ${devisId}`,
+  )
+  if (rows.length === 0) return null
+  return Number(rows[0].IDprospect) || 0
+}
+
+/** Address block built from the prospect's own fields — what the detail and
+ *  the PDF show instead of the « A Définir » placeholder row. */
+function prospectAdresseLite(p: ProspectLite): {
+  IDadresse: number; nom: string | null; adresse1: string | null; adresse2: null
+  adresse3: null; cp: string | null; ville: string | null; pays: string | null
+} {
+  return {
+    IDadresse: 0,
+    nom: p.nom || null,
+    adresse1: p.adresse.trim() || null,
+    adresse2: null,
+    adresse3: null,
+    cp: p.code_postal.trim() || null,
+    ville: p.ville.trim() || null,
+    pays: p.pays.trim() || null,
+  }
+}
 
 // ── Small SQL/format helpers (shared shape with commandes-client.ts) ──
 
@@ -214,6 +276,7 @@ async function resolveClientNames(clientIds: number[]): Promise<Map<number, stri
 
 const devisBody = z.object({
   IDclient: z.number().int().positive().optional(),
+  IDprospect: z.number().int().positive().optional(),
   date: z.string().optional(),
   date_expiration: z.string().optional(),
   ref_client: z.string().optional(),
@@ -479,10 +542,10 @@ devisRouter.get('/pricing/suggest', async (req: Request, res: Response) => {
 async function computeUrgencyBuckets(): Promise<{ late: Set<number>; soon: Set<number> }> {
   const late = new Set<number>()
   const soon = new Set<number>()
-  // Open client devis only; SELECT * so the accented archivé key is ignored.
+  // Open devis, client AND prospect — both live in the same list since #1112.
   const rows = await query<any>(
     `SELECT IDDevis_etm, date_expiration, est_soldee, IDprospect FROM devis_etm
-     WHERE IDprospect = 0 AND est_soldee = 0`,
+     WHERE est_soldee = 0`,
   )
   const today = new Date(); today.setHours(0, 0, 0, 0)
   for (const r of rows) {
@@ -519,24 +582,36 @@ devisRouter.get('/', async (req: Request, res: Response) => {
     const statusFilter = String(req.query.status ?? 'all')
     const isSearching = q.length > 0
 
-    // Scope: client devis only (IDprospect = 0). Status maps to est_soldee.
-    // SELECT * so the accented archivé key comes back mangled and is ignored.
+    // Scope: client devis AND prospect devis (#1112). Status maps to
+    // est_soldee. SELECT * so the accented archivé key comes back mangled and
+    // is ignored. `?prospect=<id>` narrows to one prospect's devis (the
+    // Prospects › Demandes sidebar tab).
+    const prospectFilter = parseInt(String(req.query.prospect ?? ''), 10)
     let rows = await query<any>(
-      `SELECT * FROM devis_etm WHERE IDprospect = 0 ORDER BY numero DESC`,
+      `SELECT * FROM devis_etm ORDER BY numero DESC`,
     )
+    if (!isNaN(prospectFilter) && prospectFilter > 0) {
+      rows = rows.filter((r: any) => Number(r.IDprospect) === prospectFilter)
+    }
     if (statusFilter === 'terminee') rows = rows.filter((r: any) => Number(r.est_soldee) === 1)
     else if (statusFilter === 'open') rows = rows.filter((r: any) => Number(r.est_soldee) !== 1)
 
-    // Client-name search (resolve names then filter in JS to dodge LIKE accents).
+    // Client/prospect-name search (resolve names then filter in JS to dodge
+    // LIKE accents).
     const clientIds = rows.map((r: any) => Number(r.IDclient)).filter(Boolean)
-    const clientNames = await resolveClientNames(clientIds)
+    const prospectIds = rows.map((r: any) => Number(r.IDprospect)).filter(Boolean)
+    const [clientNames, prospects] = await Promise.all([
+      resolveClientNames(clientIds),
+      loadProspectsLite(prospectIds),
+    ])
     if (isSearching) {
       const nq = norm(q)
       const isNum = /^\d+$/.test(q)
       rows = rows.filter((r: any) => {
         const numHit = isNum && Number(r.numero) === parseInt(q, 10)
         const nameHit = norm(clientNames.get(Number(r.IDclient)) ?? '').includes(nq)
-        return numHit || nameHit
+        const prospectHit = norm(prospects.get(Number(r.IDprospect))?.nom ?? '').includes(nq)
+        return numHit || nameHit || prospectHit
       })
     }
 
@@ -579,15 +654,18 @@ devisRouter.get('/', async (req: Request, res: Response) => {
       const totals = totalsMap.get(id) ?? { total_eur: 0, total_qte: 0, nb_lignes: 0 }
       const remise = Number(r.remise) || 0
       const totalNet = totals.total_eur * (1 - remise) + (Number(r.frais_port) || 0)
+      const IDprospect = Number(r.IDprospect) || 0
       return {
         IDDevis_etm: id,
         IDclient: Number(r.IDclient) || 0,
+        IDprospect,
         numero: r.numero != null ? Number(r.numero) : null,
         date: pickDate(r),
         date_expiration: r.date_expiration ?? null,
         est_soldee: Number(r.est_soldee) || 0,
         IDcommande_ETM: Number(r.IDcommande_ETM) || 0,
         client_nom: clientNames.get(Number(r.IDclient)) ?? '',
+        prospect_nom: prospects.get(IDprospect)?.nom ?? '',
         total_eur: totalNet,
         total_qte: totals.total_qte,
         nb_lignes: totals.nb_lignes,
@@ -706,8 +784,10 @@ devisRouter.get('/:id', async (req: Request, res: Response) => {
     h.observations_facturation = stripRtf(h.observations_facturation) || null
 
     const IDclient = Number(h.IDclient) || 0
-    const [clientNames, adrLivRows, adrFacRows, lignesRaw] = await Promise.all([
+    const IDprospect = Number(h.IDprospect) || 0
+    const [clientNames, prospects, adrLivRows, adrFacRows, lignesRaw] = await Promise.all([
       resolveClientNames([IDclient]),
+      loadProspectsLite([IDprospect]),
       h.IDadresse_livraison
         ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_livraison)}`)
         : Promise.resolve([]),
@@ -726,10 +806,19 @@ devisRouter.get('/:id', async (req: Request, res: Response) => {
       ),
     ])
 
-    const adrLiv = (await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
-    const adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
+    let adrLiv = (await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
+    let adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
     const lignesFixed = (await fixEncoding(lignesRaw, 'ligne_devis_etm', 'IDligne_devis_etm', ['commentaire'])) as any[]
     for (const l of lignesFixed) l.commentaire = stripRtf(l.commentaire) || null
+
+    // Prospect devis: the stored addresses are the « A Définir » placeholder —
+    // show the prospect's own address instead.
+    const prospect = prospects.get(IDprospect) ?? null
+    if (prospect) {
+      const pAdr = prospectAdresseLite(prospect)
+      adrLiv = pAdr as any
+      adrFac = pAdr as any
+    }
 
     const maps = await resolveLineLabels(lignesFixed.map((l) => ({
       IDreference: Number(l.IDreference) || 0,
@@ -768,7 +857,10 @@ devisRouter.get('/:id', async (req: Request, res: Response) => {
     res.json({
       IDDevis_etm: id,
       IDclient,
+      IDprospect,
       client_nom: clientNames.get(IDclient) ?? '',
+      prospect_nom: prospect?.nom ?? '',
+      prospect_email: prospect?.email?.trim() || null,
       numero: h.numero != null ? Number(h.numero) : null,
       date: pickDate(h),
       date_expiration: h.date_expiration ?? null,
@@ -803,13 +895,39 @@ devisRouter.post('/', async (req: Request, res: Response) => {
     const parsed = devisBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
-    if (!d.IDclient) { res.status(400).json({ error: 'IDclient is required' }); return }
+    const prospectId = d.IDprospect ?? 0
+    if (!d.IDclient && !prospectId) { res.status(400).json({ error: 'IDclient or IDprospect is required' }); return }
+    if (d.IDclient && prospectId) { res.status(400).json({ error: 'IDclient and IDprospect are exclusive' }); return }
+
+    // Prospect devis (#1112): permission-gated, prospect must exist, and the
+    // legacy conventions apply — « A Définir » addresses, mode_paiement 3,
+    // échéance 11, expiration = date + 1 month (the shape of every legacy
+    // prospect devis; all editable afterwards).
+    let prospect: ProspectLite | null = null
+    if (prospectId > 0) {
+      if (!(await ensureProspectDevisWritable(req, res, prospectId))) return
+      prospect = (await loadProspectsLite([prospectId])).get(prospectId) ?? null
+      if (!prospect) { res.status(404).json({ error: 'Prospect not found' }); return }
+    }
 
     const dateDevis = d.date ? dateStr(d.date) : todayHfsql()
-    const dateExp = d.date_expiration ? dateStr(d.date_expiration) : ''
+    let dateExp = d.date_expiration ? dateStr(d.date_expiration) : ''
+    if (prospect && !dateExp) {
+      const base = new Date(
+        Number(dateDevis.slice(0, 4)), Number(dateDevis.slice(4, 6)) - 1, Number(dateDevis.slice(6, 8)),
+      )
+      base.setMonth(base.getMonth() + 1)
+      dateExp = `${base.getFullYear()}${String(base.getMonth() + 1).padStart(2, '0')}${String(base.getDate()).padStart(2, '0')}`
+    }
+
+    const adrLiv = prospect ? PROSPECT_PLACEHOLDER_ADRESSE : n(d.IDadresse_livraison ?? 0)
+    const adrFac = prospect ? PROSPECT_PLACEHOLDER_ADRESSE : n(d.IDadresse_facturation ?? 0)
+    const modePaiement = prospect ? (d.IDmode_paiement ?? PROSPECT_DEFAULT_MODE_PAIEMENT) : (d.IDmode_paiement ?? 0)
+    const echeance = prospect ? (d.IDecheance ?? PROSPECT_DEFAULT_ECHEANCE) : (d.IDecheance ?? 0)
 
     // numero allocator with collision retry. Accented archivé omitted (HFSQL
-    // zero-fills). IDprospect = 0 marks this as a client devis.
+    // zero-fills). The legacy numero sequence is shared by client and
+    // prospect devis.
     let newNumero = 0
     let inserted = false
     let lastErr: unknown = null
@@ -823,9 +941,9 @@ devisRouter.post('/', async (req: Request, res: Response) => {
               ref_client, commentaire, commentaire_interne, observations_facturation,
               est_soldee, remise, frais_port, IDcommande_ETM)
            VALUES
-             (${n(d.IDclient)}, 0, ${newNumero}, '${dateDevis}', '${dateExp}',
-              ${n(d.IDadresse_livraison ?? 0)}, ${n(d.IDadresse_facturation ?? 0)},
-              ${n(d.IDmode_paiement ?? 0)}, ${n(d.IDecheance ?? 0)},
+             (${n(d.IDclient ?? 0)}, ${prospectId}, ${newNumero}, '${dateDevis}', '${dateExp}',
+              ${adrLiv}, ${adrFac},
+              ${n(modePaiement)}, ${n(echeance)},
               ${sqlText(d.ref_client ?? '')}, ${sqlText(d.commentaire ?? '')}, '', '',
               0, ${Number(d.remise) || 0}, ${Number(d.frais_port) || 0}, 0)`,
         )
@@ -835,7 +953,7 @@ devisRouter.post('/', async (req: Request, res: Response) => {
     if (!inserted) throw lastErr ?? new Error('insert failed after 3 attempts')
 
     const newRows = await query<{ IDDevis_etm: number }>(
-      `SELECT IDDevis_etm FROM devis_etm WHERE IDprospect = 0 AND numero = ${newNumero} ORDER BY IDDevis_etm DESC`,
+      `SELECT IDDevis_etm FROM devis_etm WHERE IDprospect = ${prospectId} AND numero = ${newNumero} ORDER BY IDDevis_etm DESC`,
     )
     res.status(201).json({ IDDevis_etm: Number(newRows[0]?.IDDevis_etm) || 0 })
   } catch (err) {
@@ -851,6 +969,10 @@ devisRouter.put('/:id', async (req: Request, res: Response) => {
     const parsed = devisBody.partial().safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+
+    const prospectId = await loadDevisProspectId(id)
+    if (prospectId === null) { res.status(404).json({ error: 'Devis not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, prospectId))) return
 
     const sets: string[] = []
     if (d.IDclient !== undefined) sets.push(`IDclient = ${n(d.IDclient)}`)
@@ -881,6 +1003,9 @@ devisRouter.put('/:id/etat', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const prospectId = await loadDevisProspectId(id)
+    if (prospectId === null) { res.status(404).json({ error: 'Devis not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, prospectId))) return
     const est = Number(req.body?.est_soldee) === 1 ? 1 : 0
     await query(`UPDATE devis_etm SET est_soldee = ${est} WHERE IDDevis_etm = ${id}`)
     res.json({ ok: true, est_soldee: est })
@@ -894,6 +1019,9 @@ devisRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const prospectId = await loadDevisProspectId(id)
+    if (prospectId === null) { res.status(404).json({ error: 'Devis not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, prospectId))) return
     await query(`DELETE FROM ligne_devis_etm WHERE IDDevis_etm = ${id}`)
     await query(`DELETE FROM devis_etm WHERE IDDevis_etm = ${id}`)
     res.json({ ok: true })
@@ -911,6 +1039,9 @@ devisRouter.post('/:id/lignes', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const prospectId = await loadDevisProspectId(id)
+    if (prospectId === null) { res.status(404).json({ error: 'Devis not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, prospectId))) return
     if (refuseIfSoldee(res, await loadDevisSoldee(id))) return
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
@@ -944,6 +1075,7 @@ devisRouter.put('/lignes/:lineId', async (req: Request, res: Response) => {
     if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const devisId = await loadDevisIdForLine(lineId)
     if (devisId == null) { res.status(404).json({ error: 'Line not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, (await loadDevisProspectId(devisId)) ?? 0))) return
     if (refuseIfSoldee(res, await loadDevisSoldee(devisId))) return
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
@@ -986,6 +1118,7 @@ devisRouter.delete('/lignes/:lineId', async (req: Request, res: Response) => {
     if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const devisId = await loadDevisIdForLine(lineId)
     if (devisId == null) { res.status(404).json({ error: 'Line not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, (await loadDevisProspectId(devisId)) ?? 0))) return
     if (refuseIfSoldee(res, await loadDevisSoldee(devisId))) return
     await query(`DELETE FROM ligne_devis_etm WHERE IDligne_devis_etm = ${lineId}`)
     res.json({ ok: true })
@@ -1019,7 +1152,7 @@ devisRouter.post('/:id/convert', async (req: Request, res: Response) => {
     const rows = await query<any>(`SELECT * FROM devis_etm WHERE IDDevis_etm = ${id}`)
     if (rows.length === 0) { res.status(404).json({ error: 'Devis not found' }); return }
     const h = (await fixEncoding(rows, 'devis_etm', 'IDDevis_etm', ['ref_client', 'commentaire']))[0] as any
-    if (Number(h.IDprospect) > 0) { res.status(400).json({ error: 'prospect_devis', message: 'Un devis prospect ne peut pas être transformé.' }); return }
+    if (Number(h.IDprospect) > 0) { res.status(400).json({ error: 'prospect_devis', message: 'Un devis prospect ne peut pas être transformé en commande — convertissez d’abord le prospect en client (le devis suivra).' }); return }
     if (!(Number(h.IDclient) > 0)) { res.status(400).json({ error: 'no_client', message: 'Le devis doit avoir un client.' }); return }
     if (Number(h.IDcommande_ETM) > 0) {
       res.status(409).json({ error: 'already_converted', message: 'Ce devis a déjà été transformé en commande.', IDcommande_client: Number(h.IDcommande_ETM) })
@@ -1118,8 +1251,10 @@ export async function buildDevisPdfData(id: number): Promise<DevisEtmPdfData | n
   h.commentaire = stripRtf(h.commentaire) || null
 
   const IDclient = Number(h.IDclient) || 0
-  const [clientNames, adrLivRows, adrFacRows, lignesRaw, tvaRate, modePaiement, echeance] = await Promise.all([
+  const IDprospect = Number(h.IDprospect) || 0
+  const [clientNames, prospects, adrLivRows, adrFacRows, lignesRaw, tvaRate, modePaiement, echeance] = await Promise.all([
     resolveClientNames([IDclient]),
+    loadProspectsLite([IDprospect]),
     h.IDadresse_livraison ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_livraison)}`) : Promise.resolve([]),
     h.IDadresse_facturation ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_facturation)}`) : Promise.resolve([]),
     query<any>(
@@ -1133,8 +1268,15 @@ export async function buildDevisPdfData(id: number): Promise<DevisEtmPdfData | n
     loadEcheanceLabel(Number(h.IDecheance) || 0),
   ])
 
-  const adrLiv = (await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
-  const adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
+  let adrLiv = (await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
+  let adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
+  // Prospect devis: print the prospect's own address, not « A Définir ».
+  const prospect = prospects.get(IDprospect) ?? null
+  if (prospect) {
+    const pAdr = prospectAdresseLite(prospect)
+    adrLiv = pAdr as any
+    adrFac = pAdr as any
+  }
   const lignesFixed = lignesRaw as any[]
   const maps = await resolveLineLabels(lignesFixed.map((l) => ({
     IDreference: Number(l.IDreference) || 0, IDcolori: Number(l.IDcolori) || 0, type_kind: Number(l.type_kind) || 0,
@@ -1167,7 +1309,7 @@ export async function buildDevisPdfData(id: number): Promise<DevisEtmPdfData | n
     numero: String(h.numero ?? id),
     dateDevis: formatHfsqlDateLongFr(pickDate(h)),
     dateExpiration: formatHfsqlDateLongFr(h.date_expiration),
-    clientNom: clientNames.get(IDclient) ?? '',
+    clientNom: prospect?.nom ?? clientNames.get(IDclient) ?? '',
     refClient: (h.ref_client ?? null) as string | null,
     adresseFacturation: cleanAddr(adrFac),
     adresseLivraison: cleanAddr(adrLiv),
@@ -1223,11 +1365,38 @@ interface EmailDefaultsPayload {
 
 async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | null> {
   const rows = await query<any>(
-    `SELECT IDclient, numero FROM devis_etm WHERE IDDevis_etm = ${id}`,
+    `SELECT IDclient, IDprospect, numero FROM devis_etm WHERE IDDevis_etm = ${id}`,
   )
   if (rows.length === 0) return null
   const IDclient = Number(rows[0].IDclient) || 0
+  const IDprospect = Number(rows[0].IDprospect) || 0
   const numero = String(rows[0].numero ?? id)
+
+  // Prospect devis: the prospect record carries a single email — pre-select
+  // it when valid. There are no `contact` rows to suggest.
+  if (IDprospect > 0) {
+    const prospect = (await loadProspectsLite([IDprospect])).get(IDprospect) ?? null
+    const selected: EmailRecipientPayload[] = []
+    const email = prospect?.email?.trim() ?? ''
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      const recipient: EmailRecipientPayload = { email, source: 'contact', contactId: 0 }
+      const displayName = prospect ? `${prospect.prenom} ${prospect.nom_personne}`.trim() || prospect.nom : ''
+      if (displayName) recipient.name = displayName
+      selected.push(recipient)
+    }
+    return {
+      recipients: { selected, suggestions: [] },
+      subject: `Devis N°${numero} — ETS Malterre`,
+      body:
+        `Bonjour,\n\n` +
+        `Veuillez trouver ci-joint notre devis N°${numero}.\n\n` +
+        `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
+        `Cordialement,\n` +
+        `ETS Malterre`,
+      clientNom: prospect?.nom ?? '',
+      numero,
+    }
+  }
 
   const [clientNames, contactRows] = await Promise.all([
     resolveClientNames([IDclient]),
@@ -1325,6 +1494,9 @@ devisRouter.post('/:id/email', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const prospectId = await loadDevisProspectId(id)
+    if (prospectId === null) { res.status(404).json({ error: 'Devis not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, prospectId))) return
     const parsed = emailBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
@@ -1370,9 +1542,13 @@ devisRouter.post('/:id/email', async (req: Request, res: Response) => {
     const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? [])]
     let societe = ''
     try {
-      const cr = await query<{ IDclient: number }>(`SELECT IDclient FROM devis_etm WHERE IDDevis_etm = ${id}`)
-      const names = await resolveClientNames([Number(cr[0]?.IDclient) || 0])
-      societe = names.get(Number(cr[0]?.IDclient) || 0) ?? ''
+      if (prospectId > 0) {
+        societe = (await loadProspectsLite([prospectId])).get(prospectId)?.nom ?? ''
+      } else {
+        const cr = await query<{ IDclient: number }>(`SELECT IDclient FROM devis_etm WHERE IDDevis_etm = ${id}`)
+        const names = await resolveClientNames([Number(cr[0]?.IDclient) || 0])
+        societe = names.get(Number(cr[0]?.IDclient) || 0) ?? ''
+      }
     } catch { /* informational */ }
     await logEnvoiEmails(id, allRecipients, societe)
 
@@ -1479,8 +1655,9 @@ devisRouter.post('/:id/documents', upload.single('fichier'), async (req: Request
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const cf = await query(`SELECT IDDevis_etm FROM devis_etm WHERE IDDevis_etm = ${id}`)
-    if (cf.length === 0) { res.status(404).json({ error: 'Devis not found' }); return }
+    const prospectId = await loadDevisProspectId(id)
+    if (prospectId === null) { res.status(404).json({ error: 'Devis not found' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, prospectId))) return
     const nom = (req.body.nom ?? '').toString()
     const commentaire = (req.body.commentaire ?? '').toString()
     await query(
@@ -1507,6 +1684,7 @@ devisRouter.put('/:id/documents/:idged', upload.single('fichier'), async (req: R
     const id = parseInt(req.params.id, 10)
     const idged = parseInt(req.params.idged, 10)
     if (isNaN(id) || isNaN(idged)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, (await loadDevisProspectId(id)) ?? 0))) return
     const scope = await query(`SELECT IDged FROM ged WHERE ${DEVIS_DOC_SCOPE(id, idged)}`)
     if (scope.length === 0) { res.status(404).json({ error: 'Document not found' }); return }
     const sets: string[] = []
@@ -1530,6 +1708,7 @@ devisRouter.delete('/:id/documents/:idged', async (req: Request, res: Response) 
     const id = parseInt(req.params.id, 10)
     const idged = parseInt(req.params.idged, 10)
     if (isNaN(id) || isNaN(idged)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await ensureProspectDevisWritable(req, res, (await loadDevisProspectId(id)) ?? 0))) return
     const scope = await query(`SELECT IDged FROM ged WHERE ${DEVIS_DOC_SCOPE(id, idged)}`)
     if (scope.length === 0) { res.status(404).json({ error: 'Document not found' }); return }
     await query(`DELETE FROM ged WHERE IDged = ${idged}`)

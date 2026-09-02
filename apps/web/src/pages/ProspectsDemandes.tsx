@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useHasPermission } from '@/contexts/PermissionsContext'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
@@ -25,6 +27,7 @@ import {
   Clock,
   CheckCircle2,
   ChevronUp,
+  FileText,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +37,7 @@ import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
+import { fmtNum } from '@/lib/format'
 import { apiFetch } from '@/lib/api'
 
 // ── Types ──────────────────────────────────────────────
@@ -71,6 +75,17 @@ interface DemandeDetail extends Demande {
 interface TransporteurLite {
   IDtransporteur: number
   nom: string
+}
+
+/** Devis rows served by /devis?prospect=<id> (ClientsDevis list shape). */
+interface ProspectDevisRow {
+  IDDevis_etm: number
+  numero: number | null
+  date: string | null
+  date_expiration: string | null
+  est_soldee: number
+  total_eur: number
+  nb_lignes: number
 }
 
 // ── Shared styling ─────────────────────────────────────
@@ -118,6 +133,13 @@ function fmtDate(raw: string): string {
 
 export function ProspectsDemandes() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  // Two keys (ticket #1112): edit_prospects gates every write on the demande
+  // itself (create / edit / delete / statut / conversion), devis_prospect
+  // gates the devis creation. Reads stay open — without the keys the screen
+  // is read-only.
+  const canEdit = useHasPermission('edit_prospects')
+  const canDevis = useHasPermission('devis_prospect')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('nouveau')
@@ -290,6 +312,21 @@ export function ProspectsDemandes() {
     onSuccess: () => { invalidateAll(); setConvertOpen(false) },
   })
 
+  // « Créer un devis » (#1112): creates a devis attached to the prospect
+  // (identity/address/email resolved from the demande — nothing re-typed) and
+  // jumps to Clients › Devis with it selected, ready for its lines.
+  const createDevisMut = useMutation({
+    mutationFn: () => apiFetch<{ IDDevis_etm: number }>('/devis', {
+      method: 'POST',
+      body: JSON.stringify({ IDprospect: selectedId }),
+    }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['devis'] })
+      queryClient.invalidateQueries({ queryKey: ['prospect-devis', selectedId] })
+      navigate(`/clients/devis?devis=${data.IDDevis_etm}`)
+    },
+  })
+
   // Auto-enter edit mode after a new demande is created.
   useEffect(() => {
     if (autoEditForId !== null && detail?.IDprospect === autoEditForId) {
@@ -358,6 +395,7 @@ export function ProspectsDemandes() {
             onStatusFilterChange={handleStatusFilterChange}
             onNew={() => setCreateOpen(true)}
             isEditing={isEditing}
+            canEdit={canEdit}
           />
         }
         detailHeader={
@@ -365,12 +403,16 @@ export function ProspectsDemandes() {
             demande={detail ?? null}
             isLoading={detailLoading && selectedId !== null}
             isEditing={isEditing}
+            canEdit={canEdit}
+            canDevis={canDevis}
             onStartEdit={startEdit}
             onCancelEdit={cancelEdit}
             onSave={() => saveMut.mutate()}
             isSaving={saveMut.isPending}
             onDelete={() => setDeleteConfirmOpen(true)}
             onConvert={() => setConvertOpen(true)}
+            onCreateDevis={() => createDevisMut.mutate()}
+            isCreatingDevis={createDevisMut.isPending}
           />
         }
         detail={
@@ -405,6 +447,10 @@ export function ProspectsDemandes() {
             editPays={editPays} onEditPays={setEditPays}
             onChangeStatut={(s) => statusMut.mutate(s)}
             isChangingStatut={statusMut.isPending}
+            canEdit={canEdit}
+            canDevis={canDevis}
+            onCreateDevis={() => createDevisMut.mutate()}
+            isCreatingDevis={createDevisMut.isPending}
           />
         ) : null}
         sidebarTitle="Informations"
@@ -469,7 +515,7 @@ function DemandeList({
   selectedId, onSelect,
   searchQuery, onSearchChange,
   statusFilter, onStatusFilterChange,
-  onNew, isEditing,
+  onNew, isEditing, canEdit,
 }: {
   rows: Demande[]
   isLoading: boolean
@@ -483,6 +529,7 @@ function DemandeList({
   onStatusFilterChange: (s: StatusFilter) => void
   onNew: () => void
   isEditing: boolean
+  canEdit: boolean
 }) {
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
@@ -563,7 +610,7 @@ function DemandeList({
 
       <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
         <span>{rows.length} demande{rows.length !== 1 ? 's' : ''}</span>
-        {!isEditing && (
+        {!isEditing && canEdit && (
           <Button size="sm" variant="ghost" onClick={onNew} className="text-accent hover:text-accent hover:bg-accent/10">
             <Plus className="h-3.5 w-3.5 mr-1" />Nouvelle
           </Button>
@@ -576,19 +623,23 @@ function DemandeList({
 // ── Center: Detail Header ──────────────────────────────
 
 function DetailHeader({
-  demande, isLoading, isEditing,
+  demande, isLoading, isEditing, canEdit, canDevis,
   onStartEdit, onCancelEdit, onSave, isSaving,
-  onDelete, onConvert,
+  onDelete, onConvert, onCreateDevis, isCreatingDevis,
 }: {
   demande: DemandeDetail | null
   isLoading: boolean
   isEditing: boolean
+  canEdit: boolean
+  canDevis: boolean
   onStartEdit: () => void
   onCancelEdit: () => void
   onSave: () => void
   isSaving: boolean
   onDelete: () => void
   onConvert: () => void
+  onCreateDevis: () => void
+  isCreatingDevis: boolean
 }) {
   if (!demande && !isLoading) return null
   const isConverted = !!demande?.IDclient
@@ -642,22 +693,42 @@ function DetailHeader({
               </>
             ) : (
               <>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9"
-                  title={isConverted ? 'Déjà converti en client' : 'Convertir en client'}
-                  disabled={isConverted}
-                  onClick={onConvert}
-                >
-                  <UserCheck className="h-4 w-4" />
-                </Button>
-                <Button variant="outline" size="icon" className="h-9 w-9 text-destructive hover:text-destructive" title="Supprimer" onClick={onDelete}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-                <Button variant="gold" size="sm" onClick={onStartEdit}>
-                  <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
-                </Button>
+                {/* Créer un devis (#1112) — hidden once converted: the devis
+                    of a client are created from Clients › Devis. */}
+                {canDevis && !isConverted && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9"
+                    title="Créer un devis pour ce prospect"
+                    disabled={isCreatingDevis}
+                    onClick={onCreateDevis}
+                  >
+                    {isCreatingDevis ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                  </Button>
+                )}
+                {canEdit && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9"
+                    title={isConverted ? 'Déjà converti en client' : 'Convertir en client'}
+                    disabled={isConverted}
+                    onClick={onConvert}
+                  >
+                    <UserCheck className="h-4 w-4" />
+                  </Button>
+                )}
+                {canEdit && (
+                  <Button variant="outline" size="icon" className="h-9 w-9 text-destructive hover:text-destructive" title="Supprimer" onClick={onDelete}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+                {canEdit && (
+                  <Button variant="gold" size="sm" onClick={onStartEdit}>
+                    <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -807,10 +878,11 @@ function DetailMain({
 
 // ── Right: Sidebar ─────────────────────────────────────
 
-type SidebarTab = 'infos' | 'adresse'
+type SidebarTab = 'infos' | 'adresse' | 'devis'
 
 function DetailSidebar({
   demande, isLoading, isEditing, transporteurs,
+  canEdit, canDevis, onCreateDevis, isCreatingDevis,
   editDate, onEditDate,
   editExpeCatalogue, onEditExpeCatalogue,
   editTrackingNumber, onEditTrackingNumber,
@@ -839,6 +911,10 @@ function DetailSidebar({
   editPays: string; onEditPays: (v: string) => void
   onChangeStatut: (s: ProspectStatus) => void
   isChangingStatut: boolean
+  canEdit: boolean
+  canDevis: boolean
+  onCreateDevis: () => void
+  isCreatingDevis: boolean
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('infos')
 
@@ -854,6 +930,7 @@ function DetailSidebar({
   const tabs: { key: SidebarTab; label: string; icon: typeof Info }[] = [
     { key: 'infos', label: 'Infos', icon: Truck },
     { key: 'adresse', label: 'Adresse', icon: MapPin },
+    { key: 'devis', label: 'Devis', icon: FileText },
   ]
 
   return (
@@ -971,6 +1048,14 @@ function DetailSidebar({
               )}
             </div>
           )}
+          {activeTab === 'devis' && (
+            <DevisTab
+              demande={demande}
+              canDevis={canDevis}
+              onCreateDevis={onCreateDevis}
+              isCreatingDevis={isCreatingDevis}
+            />
+          )}
         </div>
       </div>
 
@@ -978,9 +1063,96 @@ function DetailSidebar({
         current={demande.status_catalogue}
         onChange={onChangeStatut}
         isChanging={isChangingStatut}
-        disabled={isEditing}
+        disabled={isEditing || !canEdit}
       />
     </div>
+  )
+}
+
+// ── Sidebar Tab: Devis (#1112) ─────────────────────────
+
+/** The prospect's devis, read from the shared devis ledger
+ *  (`/devis?prospect=<id>`). Each card opens the devis in Clients › Devis,
+ *  where the full editor (lignes, PDF, email) lives. */
+function DevisTab({
+  demande, canDevis, onCreateDevis, isCreatingDevis,
+}: {
+  demande: DemandeDetail
+  canDevis: boolean
+  onCreateDevis: () => void
+  isCreatingDevis: boolean
+}) {
+  const navigate = useNavigate()
+  const { data, isLoading, error } = useQuery<ProspectDevisRow[]>({
+    queryKey: ['prospect-devis', demande.IDprospect],
+    queryFn: () => apiFetch(`/devis?prospect=${demande.IDprospect}&status=all`),
+  })
+  const isConverted = !!demande.IDclient
+
+  return (
+    <>
+      {isLoading && <div className="flex items-center justify-center py-6"><Loader2 className="h-4 w-4 animate-spin text-accent" /></div>}
+      {!!error && (
+        <div className="flex items-center gap-1.5 py-3 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" /><span>Erreur de chargement</span></div>
+      )}
+      {!isLoading && !error && !data?.length && (
+        <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+          <FileText className="h-10 w-10 mb-3 opacity-40" />
+          <p className="text-sm font-medium">Aucun devis</p>
+          <p className="text-[11px] mt-1 text-center">
+            {isConverted
+              ? 'Ce prospect est devenu client — ses devis se créent dans Clients › Devis.'
+              : 'Les devis créés pour ce prospect apparaîtront ici.'}
+          </p>
+        </div>
+      )}
+      {!!data?.length && (
+        <div className="space-y-2">
+          {data.map((d) => (
+            <div
+              key={d.IDDevis_etm}
+              onClick={() => navigate(`/clients/devis?devis=${d.IDDevis_etm}`)}
+              className="p-3 rounded-lg border bg-card shadow-sm cursor-pointer hover:border-accent/40 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-accent/10"><FileText className="h-3.5 w-3.5 text-accent" /></div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">Devis N° {d.numero ?? d.IDDevis_etm}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {d.date && /^\d{8}$/.test(d.date) ? formatHfsqlDate(d.date) : ''}
+                    {d.nb_lignes > 0 ? ` · ${d.nb_lignes} ligne${d.nb_lignes > 1 ? 's' : ''}` : ''}
+                  </p>
+                </div>
+                <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  <Badge
+                    variant="outline"
+                    className={cn('text-[10px] py-0 gap-1 border text-white', d.est_soldee === 1 ? 'bg-success border-success' : 'bg-primary border-primary')}
+                  >
+                    {d.est_soldee === 1 ? <CheckCircle2 className="h-2.5 w-2.5" /> : <Clock className="h-2.5 w-2.5" />}
+                    {d.est_soldee === 1 ? 'Soldé' : 'En cours'}
+                  </Badge>
+                  {d.total_eur > 0 && (
+                    <span className="text-[11px] font-medium tabular-nums">{fmtNum(d.total_eur, 2)} €</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {canDevis && !isConverted && (
+        <Button
+          variant="ghost" size="sm"
+          className="w-full mt-2 text-muted-foreground hover:text-foreground"
+          onClick={onCreateDevis}
+          disabled={isCreatingDevis}
+        >
+          {isCreatingDevis ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Plus className="h-4 w-4 mr-1.5" />}
+          Créer un devis
+        </Button>
+      )}
+    </>
   )
 }
 
@@ -1209,6 +1381,14 @@ function ConvertClientDialog({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  // Open devis follow the prospect onto the new client (#1112) — say so.
+  const { data: openDevis } = useQuery<ProspectDevisRow[]>({
+    queryKey: ['prospect-devis-open', demande?.IDprospect],
+    queryFn: () => apiFetch(`/devis?prospect=${demande?.IDprospect}&status=open`),
+    enabled: open && !!demande,
+  })
+  const nbDevis = openDevis?.length ?? 0
+
   const clientNom = demande
     ? (demande.societe.trim() || `${demande.prenom} ${demande.nom}`.trim() || `Prospect #${demande.IDprospect}`)
     : ''
@@ -1225,6 +1405,9 @@ function ConvertClientDialog({
         <div className="mt-4 space-y-3">
           <p className="text-sm text-muted-foreground">
             Un nouveau client va être créé à partir de cette demande. La demande sera marquée comme terminée.
+            {nbDevis > 0 && (
+              <> {nbDevis === 1 ? 'Son devis en cours sera rattaché' : `Ses ${nbDevis} devis en cours seront rattachés`} au nouveau client et {nbDevis > 1 ? 'pourront être transformés' : 'pourra être transformé'} en commande.</>
+            )}
           </p>
           <div className="rounded-lg border bg-zinc-50 p-3">
             <p className="text-xs text-muted-foreground">Nom du client</p>

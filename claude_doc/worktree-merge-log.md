@@ -10,6 +10,23 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-02 — feat/debug-2 (devis prospect — LIVA #1112)
+Restores the legacy « devis à partir d'un prospect » (FEN_devis_prospect). Prospects ›
+Demandes gains a « Créer un devis » header button + a Devis sidebar tab; one click creates a
+`devis_etm` row with `IDprospect > 0` / `IDclient = 0`, prefilled from the demande (legacy
+conventions kept: adresse 795 « A Définir » on both FKs, mode_paiement 3, échéance 11,
+expiration +1 mois, shared numero sequence), and deep-links to Clients › Devis
+(`?devis=<id>`). That screen now serves BOTH populations — violet « Prospect » chip, detail /
+PDF / email-defaults overriding the placeholder with the prospect's own name, address and
+email; « Passer en commande » hidden (a prospect devis never converts directly). Converting
+the prospect to a client re-homes its OPEN devis (IDclient set, IDprospect cleared, addresses
+moved to the new default adresse) so they become transformable client devis; soldés stay as
+history. Two NEW permission keys, category « Prospects », both default-closed, no seed:
+`edit_prospects` (all prospects.ts writes — the router was fully ungated before) and
+`devis_prospect` (prospect-devis writes in devis.ts; client-devis writes untouched, reads +
+PDF open). Guard: `check-devis-prospect.ts` (`--roundtrip`). ⚠️ Admins must grant the keys in
+Paramètres › Utilisateurs after deploy or the Prospects screen is read-only for everyone.
+
 ## 2026-09-02 — feat/debug-3 (OF TRM : le métier est libellé par son emplacement — LIVA #1102)
 `machineLabel()` in `lib/production-trm.ts` (`emplacement`, `nom` as fallback for the archived
 machines whose emplacement is empty). `of-trm.ts`'s `resolveMachineNames` goes through it, so the

@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useHasPermission } from '@/contexts/PermissionsContext'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
@@ -45,12 +47,14 @@ import { postEmail } from '@/lib/email'
 interface DevisListRow {
   IDDevis_etm: number
   IDclient: number
+  IDprospect: number
   numero: number | null
   date: string | null
   date_expiration: string | null
   est_soldee: number
   IDcommande_ETM: number
   client_nom: string
+  prospect_nom: string
   total_eur: number
   total_qte: number
   nb_lignes: number
@@ -96,7 +100,10 @@ interface AdresseLookup extends AdresseLite {
 interface DevisDetail {
   IDDevis_etm: number
   IDclient: number
+  IDprospect: number
   client_nom: string
+  prospect_nom: string
+  prospect_email: string | null
   numero: number | null
   date: string | null
   date_expiration: string | null
@@ -147,6 +154,21 @@ function StatutPill({ soldee, className }: { soldee: number; className?: string 
   )
 }
 
+// Prospect chip — category tag (§36 style, own hue) marking a devis attached
+// to a prospect rather than a client (#1112).
+function ProspectChip({ className }: { className?: string }) {
+  return (
+    <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-500/10 text-violet-700 border border-violet-500/25', className)}>
+      Prospect
+    </span>
+  )
+}
+
+/** Display name of the devis's counterpart: the client, else the prospect. */
+function devisTiers(d: { client_nom: string; prospect_nom: string }): string {
+  return d.client_nom || d.prospect_nom || ''
+}
+
 // Line type chip — category color per écru / fini / divers (matches Commandes).
 function lineTypeChip(type: number): { label: string; classes: string } | null {
   if (type === 1) return { label: 'Écru', classes: 'bg-amber-500/15 text-amber-800 border border-amber-500/30' }
@@ -178,10 +200,19 @@ function lineCardBorder(type: number): string {
 
 export function ClientsDevis() {
   const queryClient = useQueryClient()
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Deep link from Prospects › Demandes (« Créer un devis » / the Devis tab):
+  // /clients/devis?devis=<id> arrives with the target selected. Status filter
+  // starts at 'all' so the linked devis is in the list whatever its state.
+  const linkedDevisId = (() => {
+    const raw = parseInt(searchParams.get('devis') ?? '', 10)
+    return isNaN(raw) || raw <= 0 ? null : raw
+  })()
+  const [selectedId, setSelectedId] = useState<number | null>(linkedDevisId)
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'terminee'>('open')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'terminee'>(linkedDevisId !== null ? 'all' : 'open')
+  const canEditProspectDevis = useHasPermission('devis_prospect')
   const [isEditing, setIsEditing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [emailModalOpen, setEmailModalOpen] = useState(false)
@@ -205,6 +236,17 @@ export function ClientsDevis() {
 
   const originalDraftRef = useRef<Record<string, string | number> | null>(null)
   const [linesDirty, setLinesDirty] = useState(false)
+
+  // Consume the deep-link param once — it already seeded the initial state,
+  // and leaving it in the URL would re-select on every refresh.
+  useEffect(() => {
+    if (searchParams.has('devis')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('devis')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 250)
@@ -352,6 +394,11 @@ export function ClientsDevis() {
 
   const rows = devis ?? []
 
+  // A prospect devis is writable only with the devis_prospect key; client
+  // devis writes stay open (matching the API's gating).
+  const isProspectDevis = (detail?.IDprospect ?? 0) > 0
+  const canEditCurrent = !isProspectDevis || canEditProspectDevis
+
   useAutoSelectFirst({
     rows,
     selectedId,
@@ -384,6 +431,7 @@ export function ClientsDevis() {
             devis={detail ?? null}
             isLoading={detailLoading && selectedId !== null}
             isEditing={isEditing}
+            canEdit={canEditCurrent}
             onStartEdit={startEdit}
             onCancelEdit={cancelEdit}
             onSave={() => saveHeaderMut.mutate()}
@@ -422,6 +470,7 @@ export function ClientsDevis() {
             editIDAdresseLivraison={editIDAdresseLivraison} onEditIDAdresseLivraisonChange={setEditIDAdresseLivraison}
             onToggleEtat={() => toggleEtatMut.mutate(detail?.est_soldee === 1 ? 0 : 1)}
             isTogglingEtat={toggleEtatMut.isPending}
+            canEdit={canEditCurrent}
           />
         ) : null}
         sidebarTitle="Informations"
@@ -484,7 +533,7 @@ export function ClientsDevis() {
         <SendEmailDialog
           open={emailModalOpen}
           onClose={() => setEmailModalOpen(false)}
-          contextLabel={detail?.client_nom ?? undefined}
+          contextLabel={detail ? devisTiers(detail) || undefined : undefined}
           queryKey={['devis-email-defaults', selectedId]}
           loadDefaults={() => apiFetch(`/devis/${selectedId}/email-defaults`)}
           pdfUrl={`${API_URL}/devis/${selectedId}/pdf`}
@@ -602,9 +651,10 @@ function DevisList({
                     <ArrowRight className="h-3 w-3" /><ShoppingCart className="h-3 w-3" />
                   </span>
                 )}
+                {row.IDprospect > 0 && <ProspectChip />}
                 <StatutPill soldee={row.est_soldee} className="ml-auto" />
               </div>
-              <p className="text-xs text-muted-foreground mt-1 truncate">{row.client_nom || '—'}</p>
+              <p className="text-xs text-muted-foreground mt-1 truncate">{devisTiers(row) || '—'}</p>
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                 {row.date && <span>{formatHfsqlDate(row.date)}</span>}
                 {row.date_expiration && /^\d{8}$/.test(row.date_expiration) && (
@@ -638,13 +688,14 @@ function DevisList({
 // ── Center Panel: Detail Header ──────────────────────────
 
 function DetailHeader({
-  devis, isLoading, isEditing,
+  devis, isLoading, isEditing, canEdit,
   onStartEdit, onCancelEdit, onSave, isSaving,
   onDelete, onPrintClick, onEmailClick, onConvertClick,
 }: {
   devis: DevisDetail | null
   isLoading: boolean
   isEditing: boolean
+  canEdit: boolean
   onStartEdit: () => void
   onCancelEdit: () => void
   onSave: () => void
@@ -656,6 +707,7 @@ function DetailHeader({
 }) {
   if (!devis && !isLoading) return null
   const converted = (devis?.IDcommande_ETM ?? 0) > 0
+  const isProspect = (devis?.IDprospect ?? 0) > 0
   return (
     <div className="flex-shrink-0 pt-0.5">
       <div className="flex items-center gap-3">
@@ -669,9 +721,10 @@ function DetailHeader({
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-heading font-bold tracking-tight truncate">
                 Devis N° {devis?.numero ?? devis?.IDDevis_etm}
-                <span className="text-muted-foreground font-normal"> · {devis?.client_nom || '—'}</span>
+                <span className="text-muted-foreground font-normal"> · {(devis ? devisTiers(devis) : '') || '—'}</span>
               </h1>
               <div className="flex items-center gap-2 flex-shrink-0">
+                {isProspect && <ProspectChip />}
                 {devis?.date && (
                   <Badge variant="secondary" className="text-xs">{formatHfsqlDate(devis.date)}</Badge>
                 )}
@@ -704,7 +757,9 @@ function DetailHeader({
               </>
             ) : (
               <>
-                {!converted && (
+                {/* A prospect devis can never become a commande — the prospect
+                    must be converted to a client first (the devis follows). */}
+                {!converted && !isProspect && (
                   <Button variant="outline" size="sm" onClick={onConvertClick} title="Transformer le devis en commande">
                     <ShoppingCart className="h-3.5 w-3.5 mr-1.5" />Passer en commande
                   </Button>
@@ -712,12 +767,16 @@ function DetailHeader({
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrintClick}>
                   <Printer className="h-4 w-4" />
                 </Button>
-                <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmailClick}>
-                  <AtSign className="h-4 w-4" />
-                </Button>
-                <Button variant="gold" size="sm" onClick={onStartEdit}>
-                  <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
-                </Button>
+                {canEdit && (
+                  <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmailClick}>
+                    <AtSign className="h-4 w-4" />
+                  </Button>
+                )}
+                {canEdit && (
+                  <Button variant="gold" size="sm" onClick={onStartEdit}>
+                    <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -1211,7 +1270,7 @@ function DetailSidebar({
   editFraisPort, onEditFraisPortChange,
   editIDAdresseFacturation, onEditIDAdresseFacturationChange,
   editIDAdresseLivraison, onEditIDAdresseLivraisonChange,
-  onToggleEtat, isTogglingEtat,
+  onToggleEtat, isTogglingEtat, canEdit,
 }: {
   devis: DevisDetail | null
   isLoading: boolean
@@ -1229,6 +1288,7 @@ function DetailSidebar({
   editIDAdresseLivraison: number; onEditIDAdresseLivraisonChange: (v: number) => void
   onToggleEtat: () => void
   isTogglingEtat: boolean
+  canEdit: boolean
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('info')
 
@@ -1310,7 +1370,7 @@ function DetailSidebar({
           {activeTab === 'historique' && <HistoriqueTab devisId={devis.IDDevis_etm} />}
         </div>
       </div>
-      <StatusFooter etat={devis.est_soldee} onToggle={onToggleEtat} isToggling={isTogglingEtat} disabled={isEditing} />
+      <StatusFooter etat={devis.est_soldee} onToggle={onToggleEtat} isToggling={isTogglingEtat} disabled={isEditing || !canEdit} />
     </div>
   )
 }
@@ -1375,7 +1435,12 @@ function InfoTab({
   return (
     <div className="space-y-3">
       <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
-        <KV label="Client" value={devis.client_nom || '—'} />
+        <KV
+          label={devis.IDprospect > 0 ? 'Prospect' : 'Client'}
+          value={devis.IDprospect > 0 ? (
+            <span className="inline-flex items-center gap-1.5"><ProspectChip />{devis.prospect_nom || '—'}</span>
+          ) : (devis.client_nom || '—')}
+        />
         <KV label="Date" value={isEditing ? (
           <input type="date" value={editDate} onChange={(e) => onEditDateChange(e.target.value)} className={dateInput} />
         ) : (devis.date ? formatHfsqlDate(devis.date) : '—')} />
@@ -1445,12 +1510,21 @@ function AdressesTab({
   editIDAdresseFacturation: number; onEditIDAdresseFacturationChange: (v: number) => void
   editIDAdresseLivraison: number; onEditIDAdresseLivraisonChange: (v: number) => void
 }) {
+  // Prospect devis: the address shown is the prospect's own (from the
+  // prospect record) — there are no `adresse` rows to pick from, so the
+  // « Choisir » picker is hidden. Edit the address in Prospects › Demandes.
+  const isProspect = devis.IDprospect > 0
   return (
     <div className="space-y-3">
-      <AdresseCard label="Facturation" adresse={devis.adresse_facturation} isEditing={isEditing}
+      <AdresseCard label="Facturation" adresse={devis.adresse_facturation} isEditing={isEditing && !isProspect}
         options={adresses} selectedId={editIDAdresseFacturation} onSelect={onEditIDAdresseFacturationChange} />
-      <AdresseCard label="Livraison" adresse={devis.adresse_livraison} isEditing={isEditing}
+      <AdresseCard label="Livraison" adresse={devis.adresse_livraison} isEditing={isEditing && !isProspect}
         options={adresses} selectedId={editIDAdresseLivraison} onSelect={onEditIDAdresseLivraisonChange} />
+      {isProspect && (
+        <p className="text-[11px] text-muted-foreground italic px-1">
+          Adresse reprise de la demande du prospect — modifiable dans Prospects › Demandes.
+        </p>
+      )}
     </div>
   )
 }

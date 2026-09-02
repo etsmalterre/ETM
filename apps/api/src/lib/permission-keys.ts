@@ -93,6 +93,25 @@ export const PERMISSION_KEYS = [
       'Le widget « Valorisation du stock » n’est plus affiché sur le tableau de bord depuis le 26/08/2026 — cocher ce droit ne fait donc apparaître aucune carte. Il donne encore accès à l’endpoint de valorisation (valeur d’achat et valeur dépréciée du stock, taux de provision, détail par type), donnée confidentielle car c’est un poste de bilan. À rétablir le jour où le widget revient.',
     category: 'Tableau de bord',
   },
+  // Prospects — ticket #1112. Both keys are closed by default and no
+  // grandfathering script was run (user decision, 2026-09-02): the screen is
+  // read-only for everyone until an admin grants the keys — same rollout as
+  // edit_etudes_coloris (#1092). Before #1112 the prospects router had no
+  // write gate at all.
+  {
+    key: 'edit_prospects',
+    label: 'Édition des demandes',
+    description:
+      'Autorise la création, la modification et la suppression des demandes dans Prospects > Demandes, le changement de statut et la conversion en client. Sans ce droit, l’écran est en lecture seule.',
+    category: 'Prospects',
+  },
+  {
+    key: 'devis_prospect',
+    label: 'Devis prospect',
+    description:
+      'Autorise la création d’un devis directement depuis une demande de Prospects > Demandes, ainsi que la modification, la suppression et l’envoi par email des devis prospect dans Clients > Devis. La consultation et l’impression des devis prospect restent ouvertes à tous.',
+    category: 'Prospects',
+  },
   // Commandes client — kept right after the dashboard keys so the section
   // renders directly below "Tableau de bord" in Paramètres > Utilisateurs.
   {
