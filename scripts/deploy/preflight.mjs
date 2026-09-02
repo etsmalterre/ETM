@@ -155,7 +155,7 @@ say('\n\u2500\u2500 Prod state the gates cannot see \u2500\u2500')
 const perms = remote(API_HOST, 'cat /home/debian/mps_api/data/permissions-trm.json 2>/dev/null | tr -d "\n" | head -c 200000')
 if (perms === null) say('  (could not read permissions-trm.json)')
 else {
-  for (const [key, fix] of [['edit_of', 'seed-edit-of-trm.ts --write'], ['screen_', 'seed-screen-access-trm.ts --write']]) {
+  for (const [key, fix] of [['edit_of', 'seed-edit-of-trm.ts --write'], ['edit_expeditions', 'seed-edit-expeditions-trm.ts --write'], ['screen_', 'seed-screen-access-trm.ts --write']]) {
     const n = (perms.match(new RegExp(key, 'g')) || []).length
     if (n === 0) BLOCK(`no "${key}" grant in permissions-trm.json — run ${fix} on the API host`)
     else OK(`${key} present (${n} grant${n > 1 ? 's' : ''})`)
