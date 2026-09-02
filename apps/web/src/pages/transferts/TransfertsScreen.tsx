@@ -51,6 +51,7 @@ import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches } from '@/lib/cache-sync'
+import { pruneSelection, queuedSummary } from '@/lib/transfert-picker'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 
 // ── Types ──────────────────────────────────────────────
@@ -137,6 +138,10 @@ interface AvailableRoll {
   poids: number
   metrage: number
   second_choix: number
+  /** Écru only (#1121): the dyer order the piece is affected to. */
+  affectation?: { commande: number; sst: number; sst_nom: string } | null
+  /** Écru only: affected to an order whose ennoblisseur is not this bon's destination. */
+  affectee_ailleurs?: boolean
 }
 interface AvailableFilLot {
   stock_id: number
@@ -152,6 +157,12 @@ interface AvailablePayload {
   fini?: AvailableRoll[]
   fil?: AvailableFilLot[]
   cap: number
+  /** Rouleaux only (LIVA #1119): 2nd-choix rolls matching the criteria that
+   *  the default view left out — 0 when the switch is on. */
+  hidden_second_choix?: { ecru: number; fini: number }
+  /** Rouleaux only (#1121): écru affected to another ennoblisseur than the
+   *  destination that the default view left out — 0 when the switch is on. */
+  hidden_affectees?: { ecru: number }
 }
 
 interface MagasinLite { id: number; nom: string }
@@ -888,6 +899,10 @@ interface PickerRow {
   subtitle: string
   poids: number
   secondChoix: boolean
+  /** Écru: « MATEL · cde 8989 » — the order the piece is affected to, if any. */
+  affectation: string | null
+  /** Écru: affected to an order at another ennoblisseur than the destination. */
+  affecteeAilleurs: boolean
   /** The searchable columns, kept apart from the composed title/subtitle so a
    *  field-scoped chip can restrict itself to exactly one of them. */
   fields: Record<PickerSearchField, string>
@@ -959,6 +974,16 @@ function PickerDialog({
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
   const [chips, setChips] = useState<SearchChip<PickerSearchField>[]>([])
+  // 2nd-choix rolls are hidden on every open (LIVA #1119): moving one is the
+  // exception (67 of 4 907 pieces in 2026), so the switch is not remembered.
+  // Rolls already on the bon come from the bon's lines, not from this query,
+  // so a 2e choix added earlier stays visible and removable whatever it says.
+  const [showSecondChoix, setShowSecondChoix] = useState(false)
+  // Écru affected to an order at ANOTHER ennoblisseur than the destination is
+  // hidden the same way (#1121): a return from MATEL must not offer the
+  // pieces MATEL is dyeing. Affected-to-destination pieces stay — that is the
+  // main flow (9 transferred pieces in 10 are affected).
+  const [showAffectees, setShowAffectees] = useState(false)
   // Selection is kept PER TAB and survives tab switches — a bon commonly mixes
   // tombé de métier and fini pieces, so ticking rolls on both tabs then hitting
   // Valider once must add them all. The ids can't share one Set: each tab reads
@@ -989,8 +1014,10 @@ function PickerDialog({
     ]
     if (free.length > 0) params.set('q', free.join(' '))
     for (const c of chips) if (c.field) params.append('c', `${c.field}:${c.value}`)
+    if (showSecondChoix) params.set('sc', '1')
+    if (showAffectees) params.set('aff', '1')
     return params.toString()
-  }, [debouncedQ, chips])
+  }, [debouncedQ, chips, showSecondChoix, showAffectees])
 
   // Client-side refine runs on the UNdebounced text so the visible rows narrow
   // as the user types, ahead of the round trip.
@@ -1028,6 +1055,8 @@ function PickerDialog({
             : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
           poids: Number(l.poids) || 0,
           secondChoix: !isFil && !!roll.second_choix,
+          affectation: null,
+          affecteeAilleurs: false,
           fields: {
             ...EMPTY_FIELDS,
             ref: l.reference ?? '',
@@ -1055,6 +1084,10 @@ function PickerDialog({
         : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
       poids: Number(c.poids) || 0,
       secondChoix: !isFil && !!roll.second_choix,
+      affectation: !isFil && roll.affectation
+        ? `${roll.affectation.sst_nom || 'Ets Malterre'} · cde ${roll.affectation.commande}`
+        : null,
+      affecteeAilleurs: !isFil && !!roll.affectee_ailleurs,
       fields: {
         ...EMPTY_FIELDS,
         ref: c.reference ?? '',
@@ -1151,27 +1184,73 @@ function PickerDialog({
     })
   }, [availableRows, activeTab])
 
+  // LIVA #1120 — a tab's selection is always a subset of what it displays. A
+  // change of search, chip or 2e-choix switch that hides a ticked row unticks
+  // it, so the footer and Valider can never carry pieces the user cannot see.
+  // The other tabs are untouched: their rows did not change.
+  useEffect(() => {
+    const ids = availableRows.map((r) => r.stockId)
+    setSelectedByTab((prev) => {
+      const next = pruneSelection(prev[activeTab], ids)
+      return next === prev[activeTab] ? prev : { ...prev, [activeTab]: next }
+    })
+  }, [availableRows, activeTab])
+
   // Queued totals span every tab — the footer has to account for rolls ticked
-  // on the tab the user isn't looking at, or Valider looks like a no-op.
-  const selectedTotal = useMemo(() => {
-    let count = 0
-    let poids = 0
+  // on the tab the user isn't looking at, or Valider looks like a no-op — and
+  // it NAMES that tab, so the total never reads as a mystery.
+  const selectedByTabTotals = useMemo(() => {
+    const out = {} as Record<PickerTab, { count: number; poids: number }>
     for (const tab of Object.keys(selectedByTab) as PickerTab[]) {
+      let count = 0
+      let poids = 0
       for (const id of selectedByTab[tab]) {
         count += 1
         poids += poidsByIdRef.current.get(`${tab}:${id}`) ?? 0
       }
+      out[tab] = { count, poids }
     }
-    return { count, poids }
+    return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedByTab, candidates])
 
   const tabs: { key: PickerTab; label: string }[] = kind === 'rouleaux'
     ? [{ key: 'ecru', label: 'Tombé de métier' }, { key: 'fini', label: 'Fini' }]
     : [{ key: 'fil', label: 'Stock fil disponible' }]
+  const queuedLabel = queuedSummary(
+    selectedByTabTotals[activeTab],
+    tabs.filter((t) => t.key !== activeTab).map((t) => ({ label: t.label, ...selectedByTabTotals[t.key] })),
+    (v) => fmtNum(v, 1),
+  )
   const searchFields = kind === 'fils' ? FIL_SEARCH_FIELDS : ROULEAUX_SEARCH_FIELDS
 
   const capped = candidates.length >= (available?.cap ?? Infinity)
+  // 2e choix left out by the default view for THIS tab and search — the reason
+  // a roll the user just typed the number of is "not there".
+  const hiddenSc = !showSecondChoix && (activeTab === 'ecru' || activeTab === 'fini')
+    ? (available?.hidden_second_choix?.[activeTab] ?? 0)
+    : 0
+  // Écru affected to an order at another ennoblisseur than the destination
+  // (#1121) — hidden by default, said out loud for the same reason.
+  const hiddenAff = !showAffectees && activeTab === 'ecru' ? (available?.hidden_affectees?.ecru ?? 0) : 0
+  const hiddenScNote = (hiddenSc > 0 || hiddenAff > 0) && (
+    <div className="text-[11px] text-muted-foreground text-center py-1.5 space-y-0.5">
+      {hiddenSc > 0 && (
+        <p>
+          {hiddenSc} rouleau{hiddenSc > 1 ? 'x' : ''} de 2e choix masqué{hiddenSc > 1 ? 's' : ''}
+          {' — '}
+          <button type="button" onClick={() => setShowSecondChoix(true)} className="text-accent hover:underline">Afficher</button>
+        </p>
+      )}
+      {hiddenAff > 0 && (
+        <p>
+          {hiddenAff} pièce{hiddenAff > 1 ? 's' : ''} affectée{hiddenAff > 1 ? 's' : ''} à une commande d'un autre ennoblisseur masquée{hiddenAff > 1 ? 's' : ''}
+          {' — '}
+          <button type="button" onClick={() => setShowAffectees(true)} className="text-accent hover:underline">Afficher</button>
+        </p>
+      )}
+    </div>
+  )
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
@@ -1207,8 +1286,30 @@ function PickerDialog({
                 </button>
               )
             })}
+            {kind === 'rouleaux' && (
+              <label className="ml-auto flex items-center gap-1.5 text-xs cursor-pointer select-none flex-shrink-0 px-1 text-muted-foreground hover:text-foreground">
+                <input
+                  type="checkbox"
+                  checked={showSecondChoix}
+                  onChange={(e) => setShowSecondChoix(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer"
+                />
+                <span>Afficher les 2e choix</span>
+              </label>
+            )}
+            {kind === 'rouleaux' && activeTab === 'ecru' && (
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none flex-shrink-0 px-1 text-muted-foreground hover:text-foreground">
+                <input
+                  type="checkbox"
+                  checked={showAffectees}
+                  onChange={(e) => setShowAffectees(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer"
+                />
+                <span>Affectées ailleurs</span>
+              </label>
+            )}
             <SmartSearchInput<PickerSearchField>
-              className="ml-auto flex-1 min-w-[180px] max-w-[420px]"
+              className={cn('flex-1 min-w-[180px] max-w-[420px]', kind !== 'rouleaux' && 'ml-auto')}
               value={q}
               onValueChange={setQ}
               chips={chips}
@@ -1231,6 +1332,7 @@ function PickerDialog({
                     ? 'Aucun résultat pour cette recherche'
                     : `Aucun stock disponible chez ${transfert.source_nom || '—'}`}
                 </p>
+                {hiddenScNote}
               </div>
             ) : (<>
               {rows.map((r) => {
@@ -1258,8 +1360,14 @@ function PickerDialog({
                     />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium truncate">{r.title}</p>
-                      <p className="text-[11px] text-muted-foreground truncate">{r.subtitle}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">
+                        {r.subtitle}
+                        {r.affectation && <span className="text-foreground/70"> · {r.affectation}</span>}
+                      </p>
                     </div>
+                    {r.affecteeAilleurs && (
+                      <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 border-amber-500/40 text-amber-800 bg-amber-500/10" title="Affectée à une commande d'un autre ennoblisseur que la destination">Affectée ailleurs</Badge>
+                    )}
                     {r.onBon && (
                       <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 border-accent/40 text-accent">Sur le bon</Badge>
                     )}
@@ -1275,6 +1383,7 @@ function PickerDialog({
                   Les {available?.cap} plus récents sont affichés — affinez la recherche pour en voir d'autres.
                 </p>
               )}
+              {hiddenScNote}
             </>)}
           </div>
 
@@ -1284,7 +1393,7 @@ function PickerDialog({
               <CheckSquare className="h-3.5 w-3.5 mr-1.5" />Tout sélectionner
             </Button>
             <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-              {onBonRows.length} sur le bon · {selectedTotal.count} à ajouter ({fmtNum(selectedTotal.poids, 1)} kg)
+              {onBonRows.length} sur le bon · {queuedLabel}
             </span>
           </div>
         </div>

@@ -28,6 +28,8 @@ import {
   loadAvailableEcru,
   loadAvailableFini,
   loadAvailableFil,
+  countSecondChoixHidden,
+  countAffecteesHidden,
   likePattern,
   type SearchCriteria,
 } from '../routes/transferts.js'
@@ -185,6 +187,95 @@ async function main() {
     if (!hits.some((r) => fold(r.coloris_reference) === folded)) {
       fail(`"${folded}" ne retrouve pas le coloris "${accented}"`)
     } else ok(`"${folded}" retrouve bien le coloris accentué "${accented}"`)
+  }
+
+  // ── 6. LIVA #1119 — 2e choix hidden by default, switchable, counted ────
+  // Use the magasin holding the most unshipped 2nd-choix écru (the factory in
+  // practice: 125 of 886 on the dev copy) so the case is never vacuous.
+  console.log('\n— #1119 · 2e choix —')
+  const scRows = await query<any>(
+    `SELECT IDmagasin AS m, COUNT(*) AS n FROM stock_ecru ` +
+      `WHERE second_choix = 1 AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0) GROUP BY IDmagasin`,
+  )
+  const scMag = scRows.map((r: any) => ({ m: Number(r.m) || 0, n: Number(r.n) || 0 })).sort((a: any, b: any) => b.n - a.n)[0]
+  if (!scMag || scMag.n === 0) {
+    console.log('… aucun écru 2e choix non expédié — contrôle #1119 ignoré')
+  } else {
+    const hiddenList = await loadAvailableEcru(scMag.m, NONE, false)
+    const shownList = await loadAvailableEcru(scMag.m, NONE, true)
+    const legacyList = await loadAvailableEcru(scMag.m, NONE)
+    if (hiddenList.some((r) => r.second_choix)) fail('par défaut (showSecondChoix=false) la liste contient encore du 2e choix')
+    else ok(`magasin ${scMag.m} : ${hiddenList.length} rouleaux sans 2e choix par défaut`)
+    if (legacyList.length !== shownList.length) fail('le 3e paramètre omis ne vaut pas true — les anciens appels changeraient de comportement')
+    else ok('paramètre omis = 2e choix affiché (compat des anciens appels)')
+    const hidden = await countSecondChoixHidden(scMag.m, NONE)
+    if (hidden.ecru !== scMag.n) fail(`countSecondChoixHidden.ecru = ${hidden.ecru}, COUNT direct = ${scMag.n}`)
+    else ok(`${hidden.ecru} écru 2e choix comptés masqués (= COUNT direct)`)
+    // THE case: the user types the number of a 2e choix roll.
+    const target = shownList.find((r) => r.second_choix && r.numero.trim().length > 0)
+    if (!target) {
+      console.log('… aucun 2e choix dans la fenêtre des 200 plus récents — recherche par numéro ignorée')
+    } else {
+      const crit: SearchCriteria = { terms: [], chips: [{ field: 'numero', value: target.numero }] }
+      const byNumHidden = await loadAvailableEcru(scMag.m, crit, false)
+      const byNumShown = await loadAvailableEcru(scMag.m, crit, true)
+      const byNumCount = await countSecondChoixHidden(scMag.m, crit)
+      if (byNumHidden.some((r) => r.stock_id === target.stock_id)) fail(`le 2e choix ${target.numero} apparaît alors que le switch est off`)
+      else if (byNumCount.ecru < 1) fail(`le 2e choix ${target.numero} est masqué mais non compté — l'écran dirait "aucun résultat" sans explication`)
+      else if (!byNumShown.some((r) => r.stock_id === target.stock_id)) fail(`le 2e choix ${target.numero} n'apparaît pas une fois le switch on`)
+      else ok(`n° ${target.numero} : masqué + compté (${byNumCount.ecru}) + visible avec le switch`)
+    }
+  }
+
+  // ── 7. LIVA #1121 — consumed écru gone, affectation rule, fini état 3 ──
+  console.log('\n— #1121 · affectation & écru consommé —')
+  {
+    // (a) no écru with a stock_fini child in any pool — take the busiest dyer.
+    const dyerRows = await query<any>(
+      `SELECT IDmagasin AS m, COUNT(*) AS n FROM stock_ecru WHERE IDmagasin > 0 AND IDsociete = 1 ` +
+        `AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0) GROUP BY IDmagasin`,
+    )
+    const dyer = dyerRows.map((r: any) => ({ m: Number(r.m), n: Number(r.n) })).sort((a: any, b: any) => b.n - a.n)[0]?.m ?? 0
+    const pool = await loadAvailableEcru(dyer, NONE, true, { destId: 0, showAffectees: true })
+    const ids = pool.map((r) => r.stock_id)
+    let children = 0
+    for (let i = 0; i < ids.length; i += 200) {
+      const rows = await query<any>(`SELECT COUNT(*) AS n FROM stock_fini WHERE IDstock_ecru IN (${ids.slice(i, i + 200).join(',')})`)
+      children += Number(rows[0]?.n) || 0
+    }
+    if (children > 0) fail(`magasin ${dyer} : ${children} écru déjà teints (enfant stock_fini) encore proposés`)
+    else ok(`magasin ${dyer} : ${pool.length} écru proposés, aucun n'a d'enfant stock_fini`)
+
+    // (b) the return case: dest = usine (0), pieces affected to the dyer hidden, counted, switchable.
+    const hiddenList = await loadAvailableEcru(dyer, NONE, true, { destId: 0, showAffectees: false })
+    const leak = hiddenList.filter((r) => r.affectation && r.affectation.sst !== 0)
+    if (leak.length > 0) fail(`retour vers l'usine : ${leak.length} pièces affectées à ${leak[0].affectation?.sst_nom} encore proposées`)
+    else ok(`retour vers l'usine : aucune pièce affectée à un autre ennoblisseur proposée par défaut`)
+    const hiddenN = await countAffecteesHidden(dyer, NONE, { showSecondChoix: true, destId: 0, showAffectees: false })
+    const shownAff = pool.filter((r) => r.affectee_ailleurs)
+    if (hiddenN === 0 && shownAff.length > 0) fail('des pièces affectées ailleurs existent mais le compteur dit 0')
+    else ok(`${hiddenN} pièces affectées ailleurs comptées masquées (${shownAff.length} dans la fenêtre des 200 avec le switch)`)
+    if (pool.length > 0 && !pool.some((r) => r.affectation)) console.log('… aucune affectation dans la fenêtre — libellé non vérifié')
+    else if (pool.some((r) => r.affectation && !r.affectation.sst_nom)) fail('une affectation sans nom de sous-traitant')
+    else ok('chaque pièce affectée porte sa commande et son ennoblisseur')
+
+    // (c) the outbound case: dest = the dyer itself, its affected pieces stay visible.
+    const outbound = await loadAvailableEcru(0, NONE, true, { destId: dyer, showAffectees: false })
+    const toDyer = outbound.filter((r) => r.affectation?.sst === dyer)
+    const toOther = outbound.filter((r) => r.affectee_ailleurs)
+    if (toOther.length > 0) fail(`usine → ${dyer} : ${toOther.length} pièces affectées à un AUTRE ennoblisseur proposées`)
+    else ok(`usine → magasin ${dyer} : ${toDyer.length} pièces affectées à cet ennoblisseur visibles, aucune affectée ailleurs`)
+
+    // (d) fini pool = état 3 (Validé), no donation — legacy's own predicate.
+    const finiPool = await loadAvailableFini(0, NONE)
+    const fIds = finiPool.map((r) => r.stock_id)
+    let bad = 0
+    for (let i = 0; i < fIds.length; i += 200) {
+      const rows = await query<any>(`SELECT COUNT(*) AS n FROM stock_fini WHERE IDstock_fini IN (${fIds.slice(i, i + 200).join(',')}) AND (IDetat_stock_fini <> 3 OR IDcommande_donation > 0)`)
+      bad += Number(rows[0]?.n) || 0
+    }
+    if (bad > 0) fail(`fini : ${bad} rouleaux hors état Validé ou en donation proposés`)
+    else ok(`fini : ${finiPool.length} rouleaux proposés à l'usine, tous Validé et hors donation`)
   }
 
   console.log(problems === 0 ? '\n✅ Recherche du picker de transfert conforme' : `\n❌ ${problems} problème(s)`)

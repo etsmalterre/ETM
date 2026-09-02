@@ -2415,17 +2415,57 @@ async function loadExpediteurLabel(userId: number | undefined): Promise<string> 
   }
 }
 
-/** Total shipped weight + roll count across every line of the expedition. */
-async function loadExpeditionRollTotals(ligneIds: number[]): Promise<{ poids: number; nb: number }> {
+/** Total shipped weight + roll count across every line of the expedition,
+ *  plus the distinct magasins the rolls sit in (stock_*.IDmagasin — 0 = the
+ *  company itself, >0 = a sous_traitant). The magasins drive the pickup
+ *  address of the demande de transport (ticket #1111). */
+async function loadExpeditionRollTotals(
+  ligneIds: number[],
+): Promise<{ poids: number; nb: number; magasins: number[] }> {
   const ids = Array.from(new Set(ligneIds.filter((x) => x > 0)))
-  if (ids.length === 0) return { poids: 0, nb: 0 }
+  if (ids.length === 0) return { poids: 0, nb: 0, magasins: [] }
   const inLe = ids.join(',')
   const [fini, ecru] = await Promise.all([
-    query<{ poids: unknown }>(`SELECT IDstock_fini, poids FROM stock_fini WHERE IDligne_expedition IN (${inLe})`),
-    query<{ poids: unknown }>(`SELECT IDstock_ecru, poids FROM stock_ecru WHERE IDligne_expedition_ETM IN (${inLe})`),
+    query<{ poids: unknown; IDmagasin: unknown }>(
+      `SELECT IDstock_fini, poids, IDmagasin FROM stock_fini WHERE IDligne_expedition IN (${inLe})`,
+    ),
+    query<{ poids: unknown; IDmagasin: unknown }>(
+      `SELECT IDstock_ecru, poids, IDmagasin FROM stock_ecru WHERE IDligne_expedition_ETM IN (${inLe})`,
+    ),
   ])
   const rolls = [...fini, ...ecru]
-  return { poids: rolls.reduce((s, r) => s + numOf(r.poids), 0), nb: rolls.length }
+  return {
+    poids: rolls.reduce((s, r) => s + numOf(r.poids), 0),
+    nb: rolls.length,
+    magasins: Array.from(new Set(rolls.map((r) => Number(r.IDmagasin) || 0))),
+  }
+}
+
+/** Pickup address for a magasin id > 0: the sous-traitant's default adresse
+ *  row (same source as Transferts' destination addresses). A magasin with no
+ *  adresse row (it happens — Feat Coop) still names the sous-traitant so the
+ *  operator fills the lines in, which beats printing the wrong company. */
+async function loadMagasinPickupAdresse(mid: number): Promise<DemandeTransportPdfData['enlevement']> {
+  const [names, adrRows] = await Promise.all([
+    resolveMagasinNames([mid]),
+    query<any>(
+      `SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse ` +
+        `WHERE IDsous_traitant = ${mid} AND (est_visible IS NULL OR est_visible = 1) ` +
+        `ORDER BY est_defaut DESC, IDadresse`,
+    ),
+  ])
+  const fixed = await fixEncoding(adrRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays'])
+  const a = fixed[0] as any
+  const trim = (v: unknown) => (v == null ? '' : String(v).trim())
+  return {
+    nom: trim(a?.nom) || names.get(mid) || `Magasin ${mid}`,
+    adresse1: trim(a?.adresse1) || null,
+    adresse2: trim(a?.adresse2) || null,
+    adresse3: trim(a?.adresse3) || null,
+    cp: trim(a?.cp) || null,
+    ville: trim(a?.ville) || null,
+    pays: trim(a?.pays) || null,
+  }
 }
 
 /** Build failure the caller turns into an HTTP status + French message. */
@@ -2508,6 +2548,41 @@ export async function buildDemandeTransportPdfData(
     loadExpediteurLabel(userId),
   ])
 
+  // Pickup address = where the rolls actually sit (ticket #1111: hardcoding
+  // the company address printed "Enlèvement chez Ets Malterre" while the
+  // goods were at MATEL — wrong on every direct-from-dyer shipment). One
+  // magasin ≠ 0 → that sous-traitant's address; magasin 0 (or no rolls) →
+  // the company. Several magasins = several pickup points: refuse rather
+  // than guess, the sheet has exactly one "Enlèvement chez" block.
+  const mags = totals.magasins.length > 0 ? totals.magasins : [0]
+  if (mags.length > 1) {
+    const magNames = await resolveMagasinNames(mags)
+    const labels = mags
+      .map((m) => (m === 0 ? 'Ets Malterre' : magNames.get(m) || `magasin ${m}`))
+      .sort((x, y) => x.localeCompare(y, 'fr'))
+    return {
+      err: {
+        status: 400,
+        error: 'magasins_multiples',
+        message:
+          `Les rouleaux sélectionnés sont dans plusieurs magasins (${labels.join(', ')}) : ` +
+          `faites une demande d'enlèvement par magasin.`,
+      },
+    }
+  }
+  const enlevement: DemandeTransportPdfData['enlevement'] =
+    mags[0] > 0
+      ? await loadMagasinPickupAdresse(mags[0])
+      : {
+          nom: company.legalName,
+          adresse1: company.address1,
+          adresse2: company.address2 || null,
+          adresse3: null,
+          cp: company.zip,
+          ville: company.city,
+          pays: company.country,
+        }
+
   const now = new Date()
   const pad = (x: number) => String(x).padStart(2, '0')
   const dateCourte = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`
@@ -2535,15 +2610,7 @@ export async function buildDemandeTransportPdfData(
       commandeNumeros,
       poids: totals.poids,
       nbRouleaux: totals.nb,
-      enlevement: {
-        nom: company.legalName,
-        adresse1: company.address1,
-        adresse2: company.address2 || null,
-        adresse3: null,
-        cp: company.zip,
-        ville: company.city,
-        pays: company.country,
-      },
+      enlevement,
       livraison: a
         ? {
             nom: (a.nom ?? null) as string | null,

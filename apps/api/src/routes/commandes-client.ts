@@ -4379,6 +4379,11 @@ const ennoOrderBody = z.object({
   date_commande: z.string().optional(),
   date_livraison: z.string().optional(),
   stockEcruIds: z.array(z.number().int().positive()).min(1),
+  /** Subset of stockEcruIds to ALSO reserve to this client line (LIVA #1115).
+   *  Omitted → every free selected roll is reserved (the pre-#1115 behaviour,
+   *  and legacy's default when a roll enters the dyer order). A selected roll
+   *  left out of it is dyed for stock: affected to the dyer line, no client. */
+  linkStockEcruIds: z.array(z.number().int().positive()).optional(),
 })
 
 commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', async (req: Request, res: Response) => {
@@ -4419,16 +4424,23 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     )
     if (usable.length === 0) { res.status(400).json({ error: 'No usable rolls in selection' }); return }
     const totalPoids = usable.reduce((s, r) => s + (Number(r.poids) || 0), 0)
+    // Which of the usable rolls get the client-line reservation (legacy's
+    // « lien » icon in FEN_Ennoblir, LIVA #1115). Default: all of them.
+    const linkSet = d.linkStockEcruIds ? new Set(d.linkStockEcruIds) : null
 
     // ── Create the dyer order header. Ennoblisseurs are external sous-
     //    traitants → NO TRM cross-ledger mirror (and no bridge-storm risk).
+    //    IDcommande_client / IDligne_commande_client are the provenance
+    //    back-pointers legacy's CreerCommandeEnnoblissement writes (3 830 of
+    //    4 812 dyer orders carry them); nothing in ETM reads them, the WinDev
+    //    sous-traitant screen does.
     const dateCmd = dateStr(d.date_commande ?? '')
     await query(
       `INSERT INTO commande_sous_traitant
        (IDsous_traitant, date_commande, est_soldee, commentaire, journal,
         IDadresse_sous_traitant, IDadresse_livraison, IDdossier, IDcommande_client, IDligne_commande_client)
        VALUES (${d.IDsous_traitant}, '${dateCmd}', 0, '', '',
-               0, 0, 0, 0, 0)`,
+               0, 0, 0, ${commandeId}, ${ligneId})`,
     )
     const hdr = await query<{ IDcommande_sous_traitant: number }>(
       `SELECT IDcommande_sous_traitant FROM commande_sous_traitant
@@ -4457,15 +4469,21 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     const newLineId = Number(lineRows[0]?.IDligne_commande_sous_traitant) || 0
     if (newLineId <= 0) { res.status(500).json({ error: 'Line insert lookup failed' }); return }
 
-    // ── Affect rolls to the new dyer line; auto-reserve the FREE ones to this
-    //    client line (rolls already reserved elsewhere keep their reservation).
+    // ── Affect rolls to the new dyer line; reserve the linked FREE ones to
+    //    this client line (rolls already reserved elsewhere keep their
+    //    reservation; unlinked rolls stay at IDligne_commande_client = 0 and
+    //    show as « disponible » on the Ennoblissement tab, where the
+    //    Affecter-le-stock dialog can still link them later).
+    let linked = 0
     for (const r of usable) {
       const sid = Number(r.IDstock_ecru)
       await query(`UPDATE stock_ecru SET IDref_commande_affectation = ${newLineId} WHERE IDstock_ecru = ${sid}`)
+      if (linkSet && !linkSet.has(sid)) continue
       await query(
         `UPDATE stock_ecru SET IDligne_commande_client = ${ligneId}
           WHERE IDstock_ecru = ${sid} AND (IDligne_commande_client IS NULL OR IDligne_commande_client = 0)`,
       )
+      linked++
     }
 
     // ── Auto-price (best-effort: stays 0 when the dyer has no tariff data).
@@ -4489,6 +4507,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
       IDcommande_sous_traitant: newCmdId,
       IDligne_commande_sous_traitant: newLineId,
       affected: usable.length,
+      linked,
       prix,
     })
   } catch (err) {

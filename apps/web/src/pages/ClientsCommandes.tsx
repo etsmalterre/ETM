@@ -4589,6 +4589,10 @@ function CreateEnnoblisseurOrderDialog({
   const [dateCommande, setDateCommande] = useState(() => new Date().toISOString().slice(0, 10))
   const [dateLivraison, setDateLivraison] = useState('')
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  // Selected rolls the user chose NOT to reserve to this client line (LIVA
+  // #1115 — legacy FEN_Ennoblir's per-roll « lien » icon). Default linked, so
+  // the set holds the exceptions: a roll dyed for stock.
+  const [unlinked, setUnlinked] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastSelectedRef = useRef<number | null>(null)
@@ -4612,16 +4616,30 @@ function CreateEnnoblisseurOrderDialog({
   const selectedKg = rolls.filter((r) => selected.has(r.id)).reduce((s, r) => s + (Number(r.poids) || 0), 0)
   const selectedMl = selectedKg * rendement
   const allSelected = rolls.length > 0 && rolls.every((r) => selected.has(r.id))
-  // Gauge projection: only FREE selected rolls add to the line's affecté —
-  // rolls already reserved to this line are inside `reserved`, and rolls
-  // reserved to another line keep their reservation on create.
-  const newKg = rolls
-    .filter((r) => selected.has(r.id) && !r.reserved_to_line && !r.reserved_elsewhere)
+  // A roll can carry the link only when it is free or already ours: a roll
+  // reserved to another line keeps that reservation whatever the toggle says.
+  const canLink = (r: AvailableEcruRoll) => !r.reserved_elsewhere
+  const isLinked = (r: AvailableEcruRoll) => canLink(r) && !unlinked.has(r.id)
+  const linkable = rolls.filter((r) => selected.has(r.id) && canLink(r))
+  const linkedRolls = linkable.filter(isLinked)
+  // Gauge projection: only FREE, LINKED selected rolls add to the line's
+  // affecté — rolls already reserved to this line are inside `reserved`,
+  // rolls reserved to another line keep their reservation on create, and a
+  // roll dyed for stock reserves nothing.
+  const newKg = linkedRolls
+    .filter((r) => !r.reserved_to_line)
     .reduce((s, r) => s + (Number(r.poids) || 0), 0)
   const projected = dim === 'metrage' ? reserved + newKg * rendement : reserved + newKg
 
   const selectAll = () => { setSelected(new Set(rolls.map((r) => r.id))); lastSelectedRef.current = rolls[rolls.length - 1]?.id ?? null }
-  const clearSelection = () => { setSelected(new Set()); lastSelectedRef.current = null }
+  const clearSelection = () => { setSelected(new Set()); setUnlinked(new Set()); lastSelectedRef.current = null }
+  const toggleLink = (id: number) => setUnlinked((prev) => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const linkAll = () => setUnlinked(new Set())
+  const linkNone = () => setUnlinked(new Set(linkable.map((r) => r.id)))
 
   const handleToggle = (id: number, shiftKey: boolean) => {
     const anchor = lastSelectedRef.current
@@ -4643,6 +4661,8 @@ function CreateEnnoblisseurOrderDialog({
       if (next.has(id)) next.delete(id); else next.add(id)
       return next
     })
+    // A deselected roll forgets its link choice: re-selecting it starts linked.
+    setUnlinked((prev) => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next })
     lastSelectedRef.current = id
   }
 
@@ -4659,6 +4679,7 @@ function CreateEnnoblisseurOrderDialog({
           date_commande: inputDateToHfsql(dateCommande),
           date_livraison: dateLivraison ? inputDateToHfsql(dateLivraison) : undefined,
           stockEcruIds: Array.from(selected),
+          linkStockEcruIds: linkedRolls.map((r) => r.id),
         }),
       })
       onSuccess()
@@ -4725,6 +4746,31 @@ function CreateEnnoblisseurOrderDialog({
             </div>
           )}
         </div>
+        {/* Réservation à la commande client — legacy FEN_Ennoblir's « lien »
+            column + its Tous / Aucun pair (LIVA #1115). Per roll below; here
+            the count and the two bulk controls. */}
+        {rolls.length > 0 && (
+          <div className="flex-shrink-0 px-4 py-1.5 flex items-center bg-zinc-100/80 border-b">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold flex items-center gap-1.5">
+              <Link2 className="h-3 w-3" />Réservés à la commande{clientNom ? ` de ${clientNom}` : ''}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap">
+                {selected.size === 0
+                  ? '—'
+                  : `${linkedRolls.length} / ${linkable.length} rouleau${linkable.length > 1 ? 'x' : ''}`}
+              </span>
+              <span className="text-muted-foreground/40 text-[11px]">—</span>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={linkAll} disabled={busy || unlinked.size === 0}
+                  className="text-[11px] text-accent hover:underline disabled:text-muted-foreground/50 disabled:no-underline disabled:cursor-default px-1">Lier tout</button>
+                <span className="text-muted-foreground/40 text-[11px]">·</span>
+                <button type="button" onClick={linkNone} disabled={busy || linkedRolls.length === 0}
+                  className="text-[11px] text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 disabled:cursor-default px-1">Aucun</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5 bg-zinc-100/80 scrollbar-transparent">
           {isLoading && <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-14 bg-muted animate-pulse rounded-lg" />)}</div>}
           {isError && (
@@ -4744,8 +4790,11 @@ function CreateEnnoblisseurOrderDialog({
               roll={roll}
               rendement={rendement}
               selected={selected.has(roll.id)}
+              linked={isLinked(roll)}
+              canLink={canLink(roll)}
               disabled={busy}
               onToggle={(shiftKey) => handleToggle(roll.id, shiftKey)}
+              onToggleLink={() => toggleLink(roll.id)}
             />
           ))}
         </div>
@@ -4775,24 +4824,32 @@ function CreateEnnoblisseurOrderDialog({
 }
 
 // Selectable écru roll row. Click (or Shift+click for a range) toggles
-// selection; shows poids + métrage potentiel (poids × rendement).
+// selection; shows poids + métrage potentiel (poids × rendement). A selected
+// roll also carries the « lien » toggle (legacy FEN_Ennoblir's lien_fermé /
+// lien_cassé icon): linked = reserved to the client line, broken = dyed for
+// stock. The row is a <button>, so the toggle is a role="button" span.
 function SelectableEcruRoll({
-  roll, rendement, selected, disabled, onToggle,
+  roll, rendement, selected, linked, canLink, disabled, onToggle, onToggleLink,
 }: {
   roll: AvailableEcruRoll
   rendement: number
   selected: boolean
+  linked: boolean
+  canLink: boolean
   disabled: boolean
   onToggle: (shiftKey: boolean) => void
+  onToggleLink: () => void
 }) {
   const poids = Number(roll.poids) || 0
+  const LinkIcon = linked ? Link2 : Unlink
+  const linkTitle = linked ? 'Réservé à la commande client — cliquer pour teindre pour le stock' : 'Teint pour le stock — cliquer pour réserver à la commande client'
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={(e) => onToggle(e.shiftKey)}
       className={cn(
-        'w-full text-left rounded-lg border p-2.5 flex items-center gap-3 transition-colors disabled:opacity-60',
+        'w-full text-left rounded-lg border p-2.5 flex items-center gap-3 transition-colors disabled:opacity-60 select-none',
         selected ? 'border-accent ring-1 ring-accent bg-accent/[0.06]' : 'border-border/60 bg-card hover:border-accent/40',
       )}
     >
@@ -4814,6 +4871,24 @@ function SelectableEcruRoll({
           {roll.coloris_reference && <span className="truncate">· {roll.coloris_reference}</span>}
         </div>
       </div>
+      {selected && canLink && (
+        <span
+          role="button"
+          tabIndex={disabled ? -1 : 0}
+          aria-pressed={linked}
+          title={linkTitle}
+          onClick={(e) => { e.stopPropagation(); if (!disabled) onToggleLink() }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); if (!disabled) onToggleLink() } }}
+          className={cn(
+            'h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 border transition-colors',
+            linked
+              ? 'bg-accent/15 border-accent/40 text-accent hover:bg-accent/25'
+              : 'bg-background border-input text-muted-foreground hover:text-foreground hover:border-accent/40',
+          )}
+        >
+          <LinkIcon className="h-3.5 w-3.5" />
+        </span>
+      )}
     </button>
   )
 }

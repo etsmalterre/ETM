@@ -851,40 +851,125 @@ interface AvailableRoll {
   poids: number
   metrage: number
   second_choix: number
+  /** Écru only: the dyer order the piece is affected to (null when free). */
+  affectation?: { commande: number; sst: number; sst_nom: string } | null
+  /** Écru only: affected to an order whose ennoblisseur is NOT the bon's destination. */
+  affectee_ailleurs?: boolean
 }
 
-export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria): Promise<AvailableRoll[]> {
-  const like = searchSql(crit, ECRU_SEARCH_COLS)
+// ── Second choix (LIVA #1119) ──────────────────────────
+//
+// The picker hides 2nd-choix rolls by default and offers a switch to show
+// them. Measured on the dev copy: 2e choix is 1 % of MATEL's écru pool but
+// 14 % of the factory's, and 67 of the 4 907 pieces transferred in 2026 were
+// 2e choix — rare, never zero, so a hard exclusion (what the ticket asked for)
+// would have blocked real movements. The predicate MUST be SQL-side: the list
+// is capped at AVAILABLE_CAP rows, so a JS filter would only ever hide rows
+// inside the window. The count of hidden rows travels back with the payload
+// so the UI can say why a searched roll is not there.
+
+// ── Affectation & consumed écru (LIVA #1121) ───────────
+//
+// Three facts measured on the dev copy drive the écru pool:
+//   · 30 846 of the 31 983 écru the picker offered at MATEL already had a
+//     stock_fini child — dyed, consumed, the finished roll is what travels.
+//     Same exclusion as Tombé Métier › Stock (stock-ecru.ts), NOT EXISTS.
+//   · being affected to a dyer order is the NORMAL state of a transferred
+//     piece (11 710 of 12 946 since 2025 went TO the dyer of their order), so
+//     affectation alone must never hide a piece.
+//   · what Pierrot reported is the return: a piece at MATEL, affected to a
+//     MATEL order, offered on a MATEL → usine bon. Rule: a piece affected to
+//     an order whose ennoblisseur is NOT the bon's destination is hidden by
+//     default, counted, and shown by a switch (?aff=1) — same shape as 2e choix.
+// The affectation is also returned per row so the user always sees why a
+// piece is there (« Cde MATEL n° 8989 »).
+
+const ECRU_FROM =
+  `FROM stock_ecru se LEFT JOIN ref_ecru re ON se.IDref_ecru = re.IDref_ecru ` +
+  `LEFT JOIN colori_ecru ce ON se.IDcolori_ecru = ce.IDcolori_ecru ` +
+  `LEFT JOIN ligne_commande_sous_traitant lcs ON lcs.IDligne_commande_sous_traitant = se.IDref_commande_affectation ` +
+  `LEFT JOIN commande_sous_traitant cst ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant `
+const FINI_FROM =
+  `FROM stock_fini sf LEFT JOIN ref_fini rf ON sf.IDref_fini = rf.IDref_fini ` +
+  `LEFT JOIN ref_fini_colori rfc ON sf.IDColoris = rfc.IDref_fini_colori ` +
+  `LEFT JOIN colori_ecru ce ON sf.IDColoris = ce.IDcolori_ecru `
+const ecruWhere = (sourceId: number, crit: SearchCriteria) =>
+  `WHERE se.IDmagasin = ${sourceId} AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0) ` +
+  `AND NOT EXISTS (SELECT 1 FROM stock_fini sfc WHERE sfc.IDstock_ecru = se.IDstock_ecru)${searchSql(crit, ECRU_SEARCH_COLS)}`
+// Fini: legacy FEN_Gestion_d_un_bon_de_transfert lists only état 3 (Validé)
+// and no donation roll — ported here (#1121, point 4).
+const finiWhere = (sourceId: number, crit: SearchCriteria) =>
+  `WHERE sf.IDmagasin = ${sourceId} AND (sf.IDligne_expedition IS NULL OR sf.IDligne_expedition = 0) AND sf.destockage = 0 ` +
+  `AND sf.IDetat_stock_fini = 3 AND (sf.IDcommande_donation IS NULL OR sf.IDcommande_donation = 0)${searchSql(crit, FINI_SEARCH_COLS)}`
+
+/** Écru view options. `destId` is the bon's destination magasin; without it
+ *  (older callers, the guard) no affectation rule applies. */
+export interface EcruViewOpts { showSecondChoix?: boolean; destId?: number; showAffectees?: boolean }
+const ecruSc = (o: EcruViewOpts) => (o.showSecondChoix ?? true) ? '' : ' AND se.second_choix = 0'
+/** « affected elsewhere » = affected to an order whose sous-traitant is not the destination
+ *  (a dangling affectation, line deleted, counts as elsewhere). */
+const AFF_ELSEWHERE = (destId: number) =>
+  `(se.IDref_commande_affectation > 0 AND (cst.IDsous_traitant IS NULL OR cst.IDsous_traitant <> ${destId}))`
+const ecruAff = (o: EcruViewOpts) => (o.destId === undefined || o.showAffectees) ? '' : ` AND NOT ${AFF_ELSEWHERE(o.destId)}`
+
+/** How many 2nd-choix rolls the current criteria would list if the switch
+ *  were on — what the default view hides. Same FROM/WHERE as the loaders so
+ *  the count and the list can never disagree. */
+export async function countSecondChoixHidden(sourceId: number, crit: SearchCriteria, opts: EcruViewOpts = {}): Promise<{ ecru: number; fini: number }> {
+  const [e, f] = await Promise.all([
+    query<{ n: number }>(`SELECT COUNT(*) AS n ${ECRU_FROM}${ecruWhere(sourceId, crit)}${ecruAff(opts)} AND se.second_choix = 1`),
+    query<{ n: number }>(`SELECT COUNT(*) AS n ${FINI_FROM}${finiWhere(sourceId, crit)} AND sf.second_choix = 1`),
+  ])
+  return { ecru: Number(e[0]?.n) || 0, fini: Number(f[0]?.n) || 0 }
+}
+
+/** How many écru the affectation rule hides for this destination (within the
+ *  2e-choix view in force, so the two counters never overlap). */
+export async function countAffecteesHidden(sourceId: number, crit: SearchCriteria, opts: EcruViewOpts): Promise<number> {
+  if (opts.destId === undefined) return 0
+  const rows = await query<{ n: number }>(
+    `SELECT COUNT(*) AS n ${ECRU_FROM}${ecruWhere(sourceId, crit)}${ecruSc(opts)} AND ${AFF_ELSEWHERE(opts.destId)}`,
+  )
+  return Number(rows[0]?.n) || 0
+}
+
+export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria, showSecondChoix = true, view: Omit<EcruViewOpts, 'showSecondChoix'> = {}): Promise<AvailableRoll[]> {
+  const opts: EcruViewOpts = { ...view, showSecondChoix }
   const raw = await query<any>(
     `SELECT TOP ${AVAILABLE_CAP} se.IDstock_ecru, se.numero, se.lot, se.poids, se.metrage, se.second_choix, se.IDcolori_ecru, ` +
+      `se.IDref_commande_affectation AS aff_line, cst.IDcommande_sous_traitant AS aff_cmd, cst.IDsous_traitant AS aff_sst, ` +
       `re.reference AS ref_label ` +
-      `FROM stock_ecru se LEFT JOIN ref_ecru re ON se.IDref_ecru = re.IDref_ecru ` +
-      `LEFT JOIN colori_ecru ce ON se.IDcolori_ecru = ce.IDcolori_ecru ` +
-      `WHERE se.IDmagasin = ${sourceId} AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0)${like} ` +
+      ECRU_FROM + ecruWhere(sourceId, crit) + ecruSc(opts) + ecruAff(opts) + ' ' +
       `ORDER BY se.IDstock_ecru DESC`,
   )
   let fixed = await fixEncoding(raw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot'])
   fixed = await repairAliased(fixed, 'ref_ecru', 'IDref_ecru', { ref_label: 'reference' })
   const col = await loadEcruColorisMap((fixed as any[]).map((r) => Number(r.IDcolori_ecru) || 0))
-  return (fixed as any[]).map((r) => ({
-    stock_id: Number(r.IDstock_ecru),
-    reference: (r.ref_label ?? '').toString(),
-    coloris_reference: col.get(Number(r.IDcolori_ecru)) ?? '',
-    numero: (r.numero ?? '').toString(), lot: (r.lot ?? '').toString(),
-    poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
-    second_choix: Number(r.second_choix) || 0,
-  }))
+  const sstNames = await resolveSstNames((fixed as any[]).map((r) => Number(r.aff_sst) || 0))
+  return (fixed as any[]).map((r) => {
+    const affLine = Number(r.aff_line) || 0
+    const affSst = Number(r.aff_sst) || 0
+    return {
+      stock_id: Number(r.IDstock_ecru),
+      reference: (r.ref_label ?? '').toString(),
+      coloris_reference: col.get(Number(r.IDcolori_ecru)) ?? '',
+      numero: (r.numero ?? '').toString(), lot: (r.lot ?? '').toString(),
+      poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
+      second_choix: Number(r.second_choix) || 0,
+      affectation: affLine > 0
+        ? { commande: Number(r.aff_cmd) || 0, sst: affSst, sst_nom: affSst > 0 ? (sstNames.get(affSst) ?? '') : '' }
+        : null,
+      affectee_ailleurs: affLine > 0 && view.destId !== undefined && affSst !== view.destId,
+    }
+  })
 }
 
-export async function loadAvailableFini(sourceId: number, crit: SearchCriteria): Promise<AvailableRoll[]> {
-  const like = searchSql(crit, FINI_SEARCH_COLS)
+export async function loadAvailableFini(sourceId: number, crit: SearchCriteria, showSecondChoix = true): Promise<AvailableRoll[]> {
+  const sc = showSecondChoix ? '' : ' AND sf.second_choix = 0'
   const raw = await query<any>(
     `SELECT TOP ${AVAILABLE_CAP} sf.IDstock_fini, sf.numero, sf.lot, sf.poids, sf.metrage, sf.second_choix, sf.IDColoris, ` +
       `rf.reference AS ref_label, rf.avec_teinture ` +
-      `FROM stock_fini sf LEFT JOIN ref_fini rf ON sf.IDref_fini = rf.IDref_fini ` +
-      `LEFT JOIN ref_fini_colori rfc ON sf.IDColoris = rfc.IDref_fini_colori ` +
-      `LEFT JOIN colori_ecru ce ON sf.IDColoris = ce.IDcolori_ecru ` +
-      `WHERE sf.IDmagasin = ${sourceId} AND (sf.IDligne_expedition IS NULL OR sf.IDligne_expedition = 0) AND sf.destockage = 0${like} ` +
+      FINI_FROM + finiWhere(sourceId, crit) + sc + ' ' +
       `ORDER BY sf.IDstock_fini DESC`,
   )
   let fixed = await fixEncoding(raw, 'stock_fini', 'IDstock_fini', ['numero', 'lot'])
@@ -964,11 +1049,22 @@ transfertsRouter.get('/:kind/:id/available', async (req: Request, res: Response)
     const crit = parseCriteria(req)
 
     if (kind === 'rouleaux') {
-      const [ecru, fini] = await Promise.all([
-        loadAvailableEcru(h.IDmagasin_source, crit),
-        loadAvailableFini(h.IDmagasin_source, crit),
+      // ?sc=1 shows 2nd-choix rolls, ?aff=1 shows écru affected to another
+      // ennoblisseur than the destination; both default hidden + counted.
+      const showSc = String(req.query.sc ?? '') === '1'
+      const showAff = String(req.query.aff ?? '') === '1'
+      const view: EcruViewOpts = { showSecondChoix: showSc, destId: h.IDmagasin_destination, showAffectees: showAff }
+      const [ecru, fini, hidden, hiddenAff] = await Promise.all([
+        loadAvailableEcru(h.IDmagasin_source, crit, showSc, { destId: h.IDmagasin_destination, showAffectees: showAff }),
+        loadAvailableFini(h.IDmagasin_source, crit, showSc),
+        showSc ? Promise.resolve({ ecru: 0, fini: 0 }) : countSecondChoixHidden(h.IDmagasin_source, crit, view),
+        showAff ? Promise.resolve(0) : countAffecteesHidden(h.IDmagasin_source, crit, view),
       ])
-      res.json({ ecru, fini, cap: AVAILABLE_CAP })
+      res.json({
+        ecru, fini, cap: AVAILABLE_CAP,
+        second_choix_shown: showSc, hidden_second_choix: hidden,
+        affectees_shown: showAff, hidden_affectees: { ecru: hiddenAff },
+      })
       return
     }
     const fil = await loadAvailableFil(h.IDmagasin_source, crit)
