@@ -10,6 +10,8 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-02 — feat/trm-debu-1
+TRM tickets LIVA #1100 + #1109, API half. **#1100** — a TRM mirror of an ETM sst (`IDcommande_ETM > 0`) can now be soldée from TRM: `PUT /commandes-trm/:id/etat` accepts a mirror once every OF of its lines is terminé and every roll shipped (`checkCloture()`, 409 `commande_non_terminee` with the counts; `cloture` on the detail), and the sst side reads it as a new phase **`trm_soldee` « Soldée par TRM »** (single + batch `computePhase`, list filter, keyword « soldee », teal pill + sentence in `TrmMirrorCard`) — ETM then clôtures its own order; nothing writes the other side's flag. `scripts/probe-cloture-miroir-trm.ts` counts the mirrors that drifted since go-live. **#1109** — `POST /commandes-trm/:id/lignes/:ligneId/expedier` ships ticked rolls on one new avis (the legacy Affectation « Expédier »); the handover to Ets Malterre happens THERE (`lot = 'trm<n°>'` on every shipped roll, `IDsociete 2 → 1` for client 1 — probed on the legacy, the doc said reception), via `stampShippedPieces()` / `releaseShippedPieces()` in `expeditions-trm.ts`, now also used by the piece link / unlink / avis delete. New TRM key **`edit_expeditions`** guards it and the six formerly unguarded write routes of `expeditions-trm.ts` (`seed-edit-expeditions-trm.ts --write` on the server before the TRM web deploy). Guard `check-expedier-trm.ts`.
 ## 2026-09-02 — feat/debu-4 (observations d'un rouleau TRM depuis Tombé Métier › Stock, LIVA #1108)
 `PATCH /api/stock/ecru-trm/:id` écrit `{ observations }` — et rien d'autre (`z.strict` :
 un `poids` ou un `second_choix` dans le corps fait 400, jamais ignoré). Garde

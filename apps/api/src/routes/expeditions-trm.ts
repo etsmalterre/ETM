@@ -44,12 +44,13 @@
 //    (est_facture = 1, or a definitive facture references one of its
 //    ligne_expedition rows) and then every write 409s. `est_valide` is written
 //    once at INSERT (0) and ignored everywhere else, exactly like ETM.
-//  - Handover guard: when TRM ships to ETS Malterre, ETM's reception takes
-//    OWNERSHIP of the piece — the legacy flow flips `stock_ecru.IDsociete` from
-//    2 to 1 and stamps `lot = 'trm<IDexpedition>'`. Those rows must stay
-//    visible on the avis (they are what was shipped) but must never be
-//    reassigned from here, or we would silently detach a piece ETM now owns.
-//    Reads therefore ignore IDsociete; writes require `IDsociete = 2`.
+//  - Handover: when TRM ships to ETS Malterre the piece changes OWNER at
+//    « Expédier » — `stock_ecru.IDsociete` flips from 2 to 1 and every shipped
+//    roll gets `lot = 'trm<IDexpedition>'` (see stampShippedPieces; probed on
+//    the legacy 2026-09-02). Those rows must stay visible on the avis (they are
+//    what was shipped); they come back to TRM only while ETM has not touched
+//    them (releaseShippedPieces). Reads therefore ignore IDsociete; the stamp
+//    requires `IDsociete = 2`.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
@@ -57,6 +58,8 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { n, dateDigits as dateStr } from '../lib/sst-shared.js'
+import { trmUserHasPermission } from '../lib/permissions-trm.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import {
   BonLivraisonPdf,
@@ -96,6 +99,118 @@ export const expeditionsTrmRouter: RouterType = Router()
 const SOCIETE_TRM = 2
 
 const FACTURE_LOCK = { error: 'expedition_facturee', message: 'Expédition facturée — non modifiable.' }
+
+/** Ets Malterre as a TRM client (`client.IDclient` on the société-2 partition).
+ *  Hardcoded like TRICOTAGE_MALTERRE_ID on the sst side: the legacy keys the
+ *  handover below on it, and it is the single point of update. */
+export const ETS_MALTERRE_CLIENT_ID = 1
+
+/** Write guard for everything that creates, changes or deletes an avis, here
+ *  and for « Expédier » in commandes-trm.ts — TRM key `edit_expeditions`.
+ *  Until 2026-09-02 these six routes had no guard at all (attachUser() is
+ *  best-effort, there is no global gate), so any caller reaching the API could
+ *  ship or delete an avis. Sends the 401/403 itself. */
+export async function requireEditExpeditions(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const allowed = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'edit_expeditions')
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: edit_expeditions' })
+    return false
+  }
+  return true
+}
+
+// ── Handover at « Expédier » ─────────────────────────────
+//
+// What the legacy TRM window writes on the rolls it ships — recovered by
+// probing avis 11686, created with the WinDev app on the dev base on
+// 2026-09-02 (LIVA #1109), and the third-party avis 11571 / 11374 / 11117:
+//   - every shipped roll gets `lot = 'trm<IDexpedition>'`, whatever the client;
+//   - a roll shipped to Ets Malterre flips to `IDsociete = 1` AT ONCE — the
+//     sister company owns it from the moment it leaves, not at a later
+//     reception step (the older wording of this file said the reverse). A roll
+//     shipped to a third party keeps IDsociete = 2.
+//   IDLigne_Commande_TRM, IDMagasin (0) and IDligne_commande_client (0) are
+//   untouched: ETM affects the roll to its own order later, from its screens.
+// The PWA never wrote either, so a roll shipped from Clients › Expéditions
+// stayed TRM's in ETM's stock screens. Both write paths now come through here.
+
+/** Stamp `stockIds` as shipped on `leId` of avis `expId`. Only TRM's own,
+ *  still-unshipped rolls are touched; returns how many actually were. */
+export async function stampShippedPieces(expId: number, leId: number, stockIds: number[]): Promise<number> {
+  const ids = Array.from(new Set(stockIds.filter((x) => x > 0)))
+  if (ids.length === 0) return 0
+  const exp = await query<{ IDcommande_client: number }>(
+    `SELECT IDcommande_client FROM expedition WHERE IDexpedition = ${expId} AND IDsociete = ${SOCIETE_TRM}`,
+  )
+  const cmd = await query<{ IDclient: number }>(
+    `SELECT IDclient FROM commande_client WHERE IDcommande_client = ${Number(exp[0]?.IDcommande_client) || 0}`,
+  )
+  const toEtm = Number(cmd[0]?.IDclient) === ETS_MALTERRE_CLIENT_ID
+  const sets = [`IDligne_expedition_TRM = ${leId}`, `lot = 'trm${expId}'`]
+  if (toEtm) sets.push('IDsociete = 1')
+  await query(
+    `UPDATE stock_ecru SET ${sets.join(', ')} ` +
+      `WHERE IDstock_ecru IN (${ids.join(',')}) AND IDsociete = ${SOCIETE_TRM} ` +
+      `AND (IDligne_expedition_TRM IS NULL OR IDligne_expedition_TRM = 0)`,
+  )
+  const after = await query<{ nb: number }>(
+    `SELECT COUNT(*) AS nb FROM stock_ecru WHERE IDstock_ecru IN (${ids.join(',')}) AND IDligne_expedition_TRM = ${leId}`,
+  )
+  return Number(after[0]?.nb) || 0
+}
+
+/** The reverse, for « retirer » and for deleting an avis. A roll comes back
+ *  to TRM's stock (IDsociete 2, lot cleared, unshipped) only while ETM has done
+ *  nothing with it: not affected to one of its orders, not sent to a dyer, not
+ *  shipped on, not turned into a stock_fini. Past that, releasing would orphan
+ *  ETM's own ledger — so it is all-or-nothing: one blocked roll and nothing is
+ *  released, the caller 409s naming the count. */
+export async function releaseShippedPieces(
+  leIds: number[],
+  only?: number[],
+): Promise<{ released: number[]; blocked: number[] }> {
+  const les = leIds.filter((x) => x > 0)
+  if (les.length === 0) return { released: [], blocked: [] }
+  const onlyIds = (only ?? []).filter((x) => x > 0)
+  const rows = await query<any>(
+    `SELECT IDstock_ecru, IDligne_commande_client, IDref_commande_affectation, IDMagasin, IDligne_expedition_ETM ` +
+      `FROM stock_ecru WHERE IDligne_expedition_TRM IN (${les.join(',')})` +
+      (onlyIds.length > 0 ? ` AND IDstock_ecru IN (${onlyIds.join(',')})` : ''),
+  )
+  if (rows.length === 0) return { released: [], blocked: [] }
+  const ids = rows.map((r: any) => Number(r.IDstock_ecru)).filter((x: number) => x > 0)
+  const finis = await query<{ IDstock_ecru: number }>(
+    `SELECT IDstock_ecru FROM stock_fini WHERE IDstock_ecru IN (${ids.join(',')})`,
+  )
+  const withFini = new Set(finis.map((f) => Number(f.IDstock_ecru)))
+  const released: number[] = []
+  const blocked: number[] = []
+  for (const r of rows) {
+    const id = Number(r.IDstock_ecru)
+    const touched =
+      (Number(r.IDligne_commande_client) || 0) > 0 ||
+      (Number(r.IDref_commande_affectation) || 0) > 0 ||
+      (Number(r.IDMagasin) || 0) > 0 ||
+      (Number(r.IDligne_expedition_ETM) || 0) > 0 ||
+      withFini.has(id)
+    if (touched) blocked.push(id); else released.push(id)
+  }
+  if (blocked.length > 0) return { released: [], blocked }
+  await query(
+    `UPDATE stock_ecru SET IDligne_expedition_TRM = 0, lot = '', IDsociete = ${SOCIETE_TRM} ` +
+      `WHERE IDstock_ecru IN (${released.join(',')})`,
+  )
+  return { released, blocked }
+}
+
+const PIECE_RECEPTIONNEE = {
+  error: 'piece_receptionnee',
+  message: 'Pièce déjà prise en charge par Ets Malterre (affectée, en teinture ou réexpédiée) — elle ne peut plus être retirée de l\'expédition.',
+}
 
 /** Explicit ASCII column list — `SELECT *` on `expedition` would pull the two
  *  accented `envoyé_*` columns and storm the Linux bridge. */
@@ -615,6 +730,7 @@ const createBody = z.object({
 })
 
 expeditionsTrmRouter.post('/', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
   try {
     const parsed = createBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
@@ -661,6 +777,7 @@ const updateBody = z.object({
 })
 
 expeditionsTrmRouter.put('/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -687,6 +804,7 @@ expeditionsTrmRouter.put('/:id', async (req: Request, res: Response) => {
 })
 
 expeditionsTrmRouter.delete('/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
@@ -698,24 +816,17 @@ expeditionsTrmRouter.delete('/:id', async (req: Request, res: Response) => {
     )
     const leIds = leRows.map((r) => Number(r.IDligne_expedition)).filter((x) => x > 0)
     if (leIds.length > 0) {
-      // A piece ETM has already received (IDsociete flipped to 1) must keep its
-      // provenance stamp — releasing it would orphan ETM's reception. Refuse the
-      // delete instead of half-doing it.
-      const handedOver = await query<{ nb: number }>(
-        `SELECT COUNT(*) AS nb FROM stock_ecru
-          WHERE IDligne_expedition_TRM IN (${leIds.join(',')}) AND IDsociete <> ${SOCIETE_TRM}`,
-      )
-      if (Number(handedOver[0]?.nb) > 0) {
+      // Rolls come back to TRM's stock — unless ETM has already done something
+      // with one of them, in which case nothing is released and the delete is
+      // refused rather than half-done (see releaseShippedPieces).
+      const r = await releaseShippedPieces(leIds)
+      if (r.blocked.length > 0) {
         res.status(409).json({
           error: 'expedition_receptionnee',
-          message: 'Expédition déjà réceptionnée par le client — non supprimable.',
+          message: `Expédition déjà prise en charge par Ets Malterre (${r.blocked.length} pièce${r.blocked.length > 1 ? 's' : ''} affectée${r.blocked.length > 1 ? 's' : ''}, en teinture ou réexpédiée${r.blocked.length > 1 ? 's' : ''}) — non supprimable.`,
         })
         return
       }
-      await query(
-        `UPDATE stock_ecru SET IDligne_expedition_TRM = 0 ` +
-          `WHERE IDligne_expedition_TRM IN (${leIds.join(',')}) AND IDsociete = ${SOCIETE_TRM}`,
-      )
     }
     await query(`DELETE FROM ligne_expedition WHERE IDexpedition = ${id}`)
     await query(`DELETE FROM expedition WHERE IDexpedition = ${id} AND IDsociete = ${SOCIETE_TRM}`)
@@ -795,6 +906,7 @@ expeditionsTrmRouter.get('/:id/lignes/:lccId/pieces', async (req: Request, res: 
 /** Assign a piece to the expedition: create the ligne_expedition lazily on the
  *  first piece of the line, then stamp `stock_ecru.IDligne_expedition_TRM`. */
 expeditionsTrmRouter.put('/:id/lignes/:lccId/pieces/:stockId', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     const lccId = parseInt(req.params.lccId, 10)
@@ -830,10 +942,7 @@ expeditionsTrmRouter.put('/:id/lignes/:lccId/pieces/:stockId', async (req: Reque
       leId = await newIdAfterInsert('ligne_expedition', 'IDligne_expedition', before)
       if (leId === 0) { res.status(500).json({ error: 'ligne_expedition_insert_failed' }); return }
     }
-    await query(
-      `UPDATE stock_ecru SET IDligne_expedition_TRM = ${leId} ` +
-        `WHERE IDstock_ecru = ${stockId} AND IDsociete = ${SOCIETE_TRM}`,
-    )
+    await stampShippedPieces(id, leId, [stockId])
     res.json(await buildPiecePayload(id, ctx))
   } catch (err) {
     console.error('Error assigning TRM expedition piece:', err)
@@ -844,6 +953,7 @@ expeditionsTrmRouter.put('/:id/lignes/:lccId/pieces/:stockId', async (req: Reque
 /** Unassign a piece; drop the now-empty ligne_expedition so the line falls back
  *  to "candidate" (same lazy-line semantics as ETM). */
 expeditionsTrmRouter.delete('/:id/lignes/:lccId/pieces/:stockId', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
   try {
     const id = parseInt(req.params.id, 10)
     const lccId = parseInt(req.params.lccId, 10)
@@ -857,19 +967,11 @@ expeditionsTrmRouter.delete('/:id/lignes/:lccId/pieces/:stockId', async (req: Re
     const leId = await findLigneExpedition(id, lccId)
     if (leId === 0) { res.json(await buildPiecePayload(id, ctx)); return }
 
-    const pieceRows = await query<{ IDsociete: number }>(
-      `SELECT IDsociete FROM stock_ecru WHERE IDstock_ecru = ${stockId} AND IDligne_expedition_TRM = ${leId}`,
-    )
-    if (pieceRows.length === 0) { res.status(404).json({ error: 'Pièce introuvable sur cette expédition' }); return }
-    if (Number(pieceRows[0].IDsociete) !== SOCIETE_TRM) {
-      res.status(409).json({
-        error: 'piece_receptionnee',
-        message: 'Pièce déjà réceptionnée par le client — elle ne peut plus être retirée de l\'expédition.',
-      })
-      return
+    const r = await releaseShippedPieces([leId], [stockId])
+    if (r.released.length === 0 && r.blocked.length === 0) {
+      res.status(404).json({ error: 'Pièce introuvable sur cette expédition' }); return
     }
-
-    await query(`UPDATE stock_ecru SET IDligne_expedition_TRM = 0 WHERE IDstock_ecru = ${stockId}`)
+    if (r.blocked.length > 0) { res.status(409).json(PIECE_RECEPTIONNEE); return }
     const remaining = await query<{ nb: number }>(
       `SELECT COUNT(*) AS nb FROM stock_ecru WHERE IDligne_expedition_TRM = ${leId}`,
     )

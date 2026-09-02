@@ -218,6 +218,8 @@ const PHASE_KEYWORD_ALIASES: Array<[string, SstPhase]> = [
   ['soumis', 'soumis'],
   ['terminee', 'terminee'],
   ['termine', 'terminee'],
+  ['soldee par trm', 'trm_soldee'],
+  ['soldee', 'trm_soldee'],
 ]
 
 function normalizePhaseQuery(s: string): string {
@@ -1002,7 +1004,7 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
     //   - any SstPhase → sub-phase classification within est_soldee = 0
     //                    (pre-resolved via signal sets so the SQL can
     //                    narrow to IN (...) and pagination stays stable)
-    const SUB_PHASES: SstPhase[] = ['non_envoye', 'attente_delai', 'en_cours', 'en_controle', 'soumis', 'en_reprise']
+    const SUB_PHASES: SstPhase[] = ['non_envoye', 'attente_delai', 'en_cours', 'en_controle', 'soumis', 'en_reprise', 'trm_soldee']
     if (statusFilter === 'terminee') {
       whereParts.push(`cst.est_soldee = 1`)
     } else if (statusFilter === 'open') {
@@ -1012,7 +1014,7 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
       // Resolve the three signal ID sets — scoped to open commandes for
       // efficiency. We compute the phase priority (reprise > soumis >
       // en_controle > en_cours) by set subtraction.
-      const [repriseRows, soumisRows, receptionRows] = await Promise.all([
+      const [repriseRows, soumisRows, receptionRows, trmSoldeeRows] = await Promise.all([
         query<{ IDcommande_sous_traitant: number }>(
           `SELECT DISTINCT lcs.IDcommande_sous_traitant
            FROM stock_fini sf
@@ -1069,24 +1071,43 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
              ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant
            WHERE cst.est_soldee = 0`,
         ),
+        // Soldée par TRM — the sister company closed its mirror of this
+        // still-open sst (see computePhase). Bounded by open TRM-targeted
+        // orders, so a handful of rows.
+        query<{ IDcommande_ETM: number }>(
+          `SELECT cc.IDcommande_ETM
+           FROM commande_client cc
+           JOIN commande_sous_traitant cst
+             ON cst.IDcommande_sous_traitant = cc.IDcommande_ETM
+           WHERE cc.IDcommande_ETM > 0 AND cc.est_soldee = 1 AND cst.est_soldee = 0`,
+        ),
       ])
-      const repriseSet = new Set(repriseRows.map((r) => Number(r.IDcommande_sous_traitant)))
+      const trmSoldeeSet = new Set(trmSoldeeRows.map((r) => Number(r.IDcommande_ETM)))
+      const repriseSet = new Set(
+        repriseRows.map((r) => Number(r.IDcommande_sous_traitant)).filter((id) => !trmSoldeeSet.has(id)),
+      )
       const soumisSetRaw = new Set(soumisRows.map((r) => Number(r.IDreference)))
       const receptionSetRaw = new Set(receptionRows.map((r) => Number(r.IDcommande_sous_traitant)))
       // Priority-gated sets (each phase excludes higher-priority ones).
-      const soumisSet = new Set(Array.from(soumisSetRaw).filter((id) => !repriseSet.has(id)))
+      const soumisSet = new Set(
+        Array.from(soumisSetRaw).filter((id) => !trmSoldeeSet.has(id) && !repriseSet.has(id)),
+      )
       const controleSet = new Set(
-        Array.from(receptionSetRaw).filter((id) => !repriseSet.has(id) && !soumisSet.has(id)),
+        Array.from(receptionSetRaw).filter((id) => !trmSoldeeSet.has(id) && !repriseSet.has(id) && !soumisSet.has(id)),
       )
       const excludeFromEnCours = new Set<number>([
-        ...repriseSet, ...soumisSet, ...controleSet,
+        ...trmSoldeeSet, ...repriseSet, ...soumisSet, ...controleSet,
       ])
 
       const pickSet = (s: Set<number>): string | null => {
         if (s.size === 0) return null
         return Array.from(s).join(',')
       }
-      if (statusFilter === 'en_reprise') {
+      if (statusFilter === 'trm_soldee') {
+        const list = pickSet(trmSoldeeSet)
+        if (!list) { res.json([]); return }
+        whereParts.push(`cst.IDcommande_sous_traitant IN (${list})`)
+      } else if (statusFilter === 'en_reprise') {
         const list = pickSet(repriseSet)
         if (!list) { res.json([]); return }
         whereParts.push(`cst.IDcommande_sous_traitant IN (${list})`)
@@ -2471,12 +2492,18 @@ commandesSousTraitantRouter.post('/:id/email', async (req: Request, res: Respons
 // contrôle" / "En cours" at a glance. We derive that phase on read from:
 //
 //   - `est_soldee`                   → "terminée" (overrides everything)
+//   - `commande_client.est_soldee` on the TRM mirror (IDcommande_ETM = this
+//     sst) → "soldée par TRM": Tricotage Malterre has finished the knitting
+//     (all its OFs terminés, all rolls shipped — TRM's API enforces that)
+//     and is waiting for ETM to check reception and close its own order.
+//     Decision of 2026-09-02 (LIVA #1100): the two companies each close
+//     their own ledger; nothing writes the other side's flag.
 //   - `stock_fini.IDetat_stock_fini` → "en reprise" / "en contrôle"
 //   - `envoi_email.IDtype_doc=28`    → "soumis au client"
 //
-// Priority (top-down, first match wins): terminée > en_reprise > soumis
-// > en_controle > en_cours. The phase is informational only — `est_soldee`
-// remains the sole write gate (`refuseIfTerminee` is unchanged).
+// Priority (top-down, first match wins): terminée > trm_soldee > en_reprise
+// > soumis > en_controle > en_cours. The phase is informational only —
+// `est_soldee` remains the sole write gate (`refuseIfTerminee` is unchanged).
 
 export type SstPhase =
   | 'non_envoye'
@@ -2485,6 +2512,7 @@ export type SstPhase =
   | 'en_controle'
   | 'soumis'
   | 'en_reprise'
+  | 'trm_soldee'
   | 'terminee'
 
 /** Sub-classify the open commande (est_soldee=0, no reprise/soumis/en_controle
@@ -2507,6 +2535,13 @@ async function classifyEnCoursBucket(commandeId: number): Promise<'non_envoye' |
 /** Compute the phase for a single commande. Used by the detail endpoint. */
 async function computePhase(commandeId: number, est_soldee: number): Promise<SstPhase> {
   if (est_soldee === 1) return 'terminee'
+
+  // Soldée par TRM — the sister company closed its mirror of this order.
+  const trmSoldee = await query<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM commande_client
+     WHERE IDcommande_ETM = ${commandeId} AND est_soldee = 1`,
+  )
+  if (Number(trmSoldee[0]?.n) > 0) return 'trm_soldee'
 
   // Reprise — any received roll currently flagged for redo.
   const reprise = await query<{ n: number }>(
@@ -2573,6 +2608,13 @@ async function computePhasesBatch(
   if (openIds.length === 0) return out
 
   const idList = openIds.join(',')
+
+  // 0) Soldée par TRM — mirrors of these open orders that TRM has closed.
+  const trmSoldeeRows = await query<{ IDcommande_ETM: number }>(
+    `SELECT IDcommande_ETM FROM commande_client
+     WHERE IDcommande_ETM IN (${idList}) AND est_soldee = 1`,
+  )
+  const trmSoldeeSet = new Set(trmSoldeeRows.map((r) => Number(r.IDcommande_ETM)))
 
   // 1) Reprise — group reprise rolls by commande.
   const repriseRows = await query<{ IDcommande_sous_traitant: number }>(
@@ -2644,7 +2686,8 @@ async function computePhasesBatch(
   }
 
   for (const id of openIds) {
-    if (repriseSet.has(id)) out.set(id, 'en_reprise')
+    if (trmSoldeeSet.has(id)) out.set(id, 'trm_soldee')
+    else if (repriseSet.has(id)) out.set(id, 'en_reprise')
     else if (soumisSet.has(id)) out.set(id, 'soumis')
     else if (receptionSet.has(id)) out.set(id, 'en_controle')
     else {

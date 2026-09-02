@@ -459,6 +459,7 @@ export type SstPhase =
   | 'en_controle'
   | 'soumis'
   | 'en_reprise'
+  | 'trm_soldee'
   | 'terminee'
 
 /** Filter keys accepted by the list endpoint. The toggle bar exposes only
@@ -480,6 +481,10 @@ const SST_PHASE_META: Record<SstPhase, {
   en_controle:   { label: 'En contrôle',       icon: Eye,          solid: 'bg-amber-500 border-amber-500' },
   soumis:        { label: 'Soumis au client',  icon: Send,         solid: 'bg-violet-500 border-violet-500' },
   en_reprise:    { label: 'En reprise',        icon: RotateCcw,    solid: 'bg-orange-500 border-orange-500' },
+  // Tricotage Malterre closed its mirror of this order: the knitting is done
+  // and every roll shipped. ETM checks reception + deadlines, then clôtures
+  // its own order (LIVA #1100, 2026-09-02).
+  trm_soldee:    { label: 'Soldée par TRM',    icon: Factory,      solid: 'bg-teal-600 border-teal-600' },
   terminee:      { label: 'Terminée',          icon: CheckCircle2, solid: 'bg-success border-success' },
 }
 
@@ -5435,7 +5440,8 @@ function StatusFooter({
 
   // Footer chrome: solid band coloured by the computed phase. Phase →
   // colour: en_cours=primary blue, en_controle=amber, soumis=violet,
-  // en_reprise=orange, terminée=success green. White text on top.
+  // en_reprise=orange, trm_soldee=teal, terminée=success green. White text
+  // on top.
   return (
     <div
       className={cn(
@@ -5467,7 +5473,7 @@ function StatusFooter({
 // Shown in the Info tab when the sst targets Tricotage Malterre (the sister
 // knitter). Status-only — Soldée / En cours derived from the mirrored
 // `commande_client.est_soldee` (server gates on IDsous_traitant=1).
-function TrmMirrorCard({ mirror }: { mirror: TrmMirror }) {
+function TrmMirrorCard({ mirror, sstOpen }: { mirror: TrmMirror; sstOpen: boolean }) {
   const soldée = mirror.est_soldee === 1
   return (
     <div className="p-3 rounded-lg border bg-card shadow-sm">
@@ -5487,6 +5493,16 @@ function TrmMirrorCard({ mirror }: { mirror: TrmMirror }) {
           {soldée ? 'Soldée' : 'En cours'}
         </Badge>
       </div>
+      {/* TRM solders its side only once every OF is terminé and every roll
+          shipped (its API enforces it). It never closes this order: that
+          is ETM's call, after checking what arrived. */}
+      {soldée && sstOpen && (
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Tricotage Malterre a soldé sa commande : tous ses OF sont terminés et
+          tous ses rouleaux expédiés. Vérifiez les réceptions et les délais,
+          puis clôturez cette commande.
+        </p>
+      )}
     </div>
   )
 }
@@ -5604,7 +5620,7 @@ function InfoTab({
       {/* TRM mirror — visible only when the sst targets Tricotage Malterre.
           Surfaces the sister-company commande_client's status + produced
           rolls without leaving the sst screen. */}
-      {!!commande.trm_mirror && <TrmMirrorCard mirror={commande.trm_mirror} />}
+      {!!commande.trm_mirror && <TrmMirrorCard mirror={commande.trm_mirror} sstOpen={commande.est_soldee !== 1} />}
 
       <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
         <KV label="Sous-traitant" value={commande.sous_traitant_nom || '—'} />

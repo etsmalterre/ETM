@@ -76,6 +76,13 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la création, la modification et la suppression des commandes natives et de leurs lignes dans Clients > Commandes : boutons « Nouvelle commande », « Modifier », « Supprimer » et l’édition des lignes. Les commandes miroir ETM restent en lecture seule pour tout le monde.',
     category: 'Commandes client',
   },
+  {
+    key: 'edit_expeditions',
+    label: 'Édition des expéditions',
+    description:
+      'Autorise l’expédition des pièces depuis Clients > Commandes (bouton « Expédier » de l’onglet Affectation — une pièce expédiée à Ets Malterre change de propriétaire à cet instant) ainsi que la création, la modification et la suppression des avis d’expédition dans Clients > Expéditions. La consultation, l’impression et l’envoi de l’avis restent ouverts.',
+    category: 'Commandes client',
+  },
   // ── Écrans dont la clé existait dans le code mais PAS dans ce catalogue ──
   //
   // Clients > Facturation, Clients > Gestion et Fils > Stock ont toujours

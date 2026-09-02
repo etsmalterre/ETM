@@ -35,6 +35,7 @@ The header pill priority (first match wins):
 | Phase | When | Color |
 |---|---|---|
 | **terminée** | `est_soldee = 1` | Green (`bg-success`) |
+| **trm_soldee** | the TRM mirror (`commande_client.IDcommande_ETM = commandeId`) has `est_soldee = 1` — Tricotage Malterre finished the knitting (all OFs terminés, all rolls shipped; its API enforces that) and waits for ETM to check reception and clôturer its own order (LIVA #1100, 2026-09-02) | Teal (`bg-teal-600`) |
 | **en_reprise** | any `stock_fini` row has `IDetat_stock_fini = 2` | Orange |
 | **soumis** | any `envoi_email` with `IDtype_doc = 15 AND IDreference = commandeId` | Violet |
 | **en_controle** | any `stock_fini` row exists (rolls received) | Amber |
@@ -74,7 +75,7 @@ moves to the search bar via `matchPhaseKeyword(q)`:
 
 The list endpoint also still accepts every individual sub-phase value
 (`non_envoye`, `attente_delai`, `en_cours`, `en_controle`, `soumis`,
-`en_reprise`) via `SUB_PHASES` so smart-search overrides keep working;
+`en_reprise`, `trm_soldee` — keyword « soldee ») via `SUB_PHASES` so smart-search overrides keep working;
 the `en_cours` bucket is sub-classified server-side by line-rank MAX.
 
 After a commande is created via the "+ Nouveau" dialog, the page auto-

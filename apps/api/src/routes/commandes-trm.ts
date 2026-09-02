@@ -53,7 +53,9 @@ import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 import { CommandeClientPdf, type CommandeClientPdfData } from '../lib/pdf/CommandeClientPdf.js'
 import { companyTrm } from '../lib/pdf/theme.js'
 import { loadClientTvaRate } from '../lib/tva.js'
-import { formatHfsqlDateLongFr, logEnvoiEmails, type EmailRecipientPayload } from './expeditions.js'
+import { formatHfsqlDateLongFr, logEnvoiEmails, maxId, newIdAfterInsert, todayDigits, type EmailRecipientPayload } from './expeditions.js'
+import { requireEditExpeditions, stampShippedPieces } from './expeditions-trm.js'
+import { createSerialLock } from '../lib/serial-lock.js'
 import { TYPE_DOC_COMMANDE_CLIENT } from './commandes-client.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
@@ -298,6 +300,56 @@ function refuseIfSoldee(res: Response, g: CommandeGuardInfo): boolean {
     return true
   }
   return false
+}
+
+// ── Clôture d'un miroir ──────────────────────────────────
+//
+// A mirrored order (IDcommande_ETM > 0) is ETM's content, but its état is
+// TRM's own — it says "the knitting for this order is done" (decision of
+// 2026-09-02 with the atelier, LIVA #1100). Before that, mirrors could not be
+// soldées from anywhere: TRM refused them as mirrors and ETM's clôture only
+// writes commande_sous_traitant, so every mirror stayed « En cours » forever.
+//
+// TRM may solder a mirror only once its work really is finished:
+//   - every ordre_fabrication of its lines is terminé (est_termine = 1);
+//   - every roll knitted for its lines (stock_ecru.IDLigne_Commande_TRM) has
+//     left on an avis d'expédition (IDligne_expedition_TRM > 0).
+// Rolls are read with NO IDsociete filter: ETM's reception flips delivered
+// rolls to société 1, and those are precisely the ones that count as shipped.
+//
+// Soldering here does not close ETM's sous-traitant order — ETM sees the
+// mirror's état as the « Soldée par TRM » phase and closes its own order
+// after checking reception, deadlines, etc. Two companies talking, not one
+// flag written twice. Native orders keep their free toggle: the rule was
+// asked for the ETM orders, and a native order the client cancelled after a
+// partial run must stay closable.
+
+export interface ClotureCheck {
+  possible: boolean
+  of_ouverts: number
+  rouleaux_non_expedies: number
+}
+
+export async function checkCloture(commandeId: number): Promise<ClotureCheck> {
+  const lineRows = await query<{ IDligne_commande_client: number }>(
+    `SELECT IDligne_commande_client FROM ligne_commande_client WHERE IDcommande_client = ${commandeId}`,
+  )
+  const lineIds = lineRows.map((r) => Number(r.IDligne_commande_client)).filter((x) => x > 0)
+  if (lineIds.length === 0) return { possible: true, of_ouverts: 0, rouleaux_non_expedies: 0 }
+  const inList = lineIds.join(',')
+  const [ofRows, rollRows] = await Promise.all([
+    query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM ordre_fabrication
+       WHERE IDligne_commande_client IN (${inList}) AND est_termine = 0`,
+    ),
+    query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM stock_ecru
+       WHERE IDLigne_Commande_TRM IN (${inList}) AND IDligne_expedition_TRM = 0`,
+    ),
+  ])
+  const of_ouverts = Number(ofRows[0]?.n) || 0
+  const rouleaux_non_expedies = Number(rollRows[0]?.n) || 0
+  return { possible: of_ouverts === 0 && rouleaux_non_expedies === 0, of_ouverts, rouleaux_non_expedies }
 }
 
 /** Resolve + guard a write on a commande. Sends its own error response and
@@ -750,6 +802,10 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
     })
 
     const phase = (await computePhasesBatch([{ id, est_soldee: Number(h.est_soldee) || 0 }])).get(id) ?? 'a_lancer'
+    const isMirror = (Number(h.IDcommande_ETM) || 0) > 0
+    // Only a mirror is gated on its production — see checkCloture(). Null on
+    // a native order so the screen never shows blockers it does not enforce.
+    const cloture = isMirror ? await checkCloture(id) : null
 
     res.json({
       IDcommande_client: id,
@@ -768,11 +824,12 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
       est_soldee: Number(h.est_soldee) || 0,
       remise: Number(h.remise) || 0,
       IDcommande_ETM: Number(h.IDcommande_ETM) || 0,
-      is_mirror: (Number(h.IDcommande_ETM) || 0) > 0,
+      is_mirror: isMirror,
       adresse_livraison: adrLiv,
       adresse_facturation: adrFac,
       lignes,
       phase,
+      cloture,
     })
   } catch (err) {
     console.error('Error fetching commande-trm detail:', err)
@@ -882,15 +939,28 @@ commandesTrmRouter.put('/:id', async (req: Request, res: Response) => {
   }
 })
 
-// État toggle (soldée ↔ en cours). Mirrors are excluded like every other write:
-// on a mirror, ETM's own clôture is what drives the state.
+// État toggle (soldée ↔ en cours). The one write a mirror accepts: its état
+// is TRM's, its content is ETM's (see checkCloture() for the rule). Reopening
+// is always free — it is the user's own état.
 commandesTrmRouter.put('/:id/etat', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!(await guardWrite(res, id, { allowSoldee: true }))) return
+    const g = await loadCommandeGuard(id)
+    if (!g) { res.status(404).json({ error: 'Commande not found' }); return }
     const etat = Number(req.body?.est_soldee)
     if (etat !== 0 && etat !== 1) { res.status(400).json({ error: 'est_soldee must be 0 or 1' }); return }
+    if (etat === 1 && g.IDcommande_ETM > 0) {
+      const check = await checkCloture(id)
+      if (!check.possible) {
+        res.status(409).json({
+          error: 'commande_non_terminee',
+          message: 'Commande non soldable : tous ses OF doivent être terminés et tous ses rouleaux expédiés.',
+          ...check,
+        })
+        return
+      }
+    }
     await query(`UPDATE commande_client SET est_soldee = ${etat} WHERE IDcommande_client = ${id}`)
     res.json({ ok: true })
   } catch (err) {
@@ -1174,6 +1244,95 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/pieces', async (req: Request, res: 
     })
   } catch (err) {
     console.error('Error fetching commande-trm pieces:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── « Expédier » from the Affectation tab (LIVA #1109) ───
+//
+// Port of the legacy TRM window's bottom-right button: the ticked, unshipped
+// rolls of this line leave on ONE new avis for the commande (one
+// ligne_expedition, this line). Header defaulted like the Clients › Expéditions
+// create — livraison address from the commande, carrier from the client — and
+// est_valide 0: the legacy writes 1 here, but the PWA retired that flag (see
+// expeditions-trm.ts). The rolls are stamped by stampShippedPieces(), which is
+// where the handover to Ets Malterre happens (IDsociete 2 → 1, lot 'trm<n°>').
+//
+// Mirrors ARE shippable: shipping is TRM's act, the one thing a mirrored order
+// exists for. A soldée order is not. Serialised on one lock: every id here is
+// MAX+1 (same exposure as the visitage double-POST of 2026-08-28).
+
+const expedierBody = z.object({ stockIds: z.array(z.number().int().positive()).min(1) })
+const expedierLock = createSerialLock()
+
+commandesTrmRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = expedierBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const g = await loadCommandeGuard(commandeId)
+    if (!g) { res.status(404).json({ error: 'Commande not found' }); return }
+    if (refuseIfSoldee(res, g)) return
+    const line = await loadTrmLine(commandeId, ligneId)
+    if (!line) { res.status(404).json({ error: 'Ligne not found' }); return }
+
+    await expedierLock.run(async () => {
+      // Only rolls reserved to THIS line, still TRM's, and not yet on an avis.
+      // Anything else in the selection is ignored and counted back to the
+      // caller — the screen filters the same way, so a mismatch means a stale
+      // list, not a bug to surface as an error.
+      const asked = Array.from(new Set(parsed.data.stockIds))
+      const rows = await query<{ IDstock_ecru: number }>(
+        `SELECT IDstock_ecru FROM stock_ecru
+         WHERE IDstock_ecru IN (${asked.join(',')}) AND IDLigne_Commande_TRM = ${ligneId}
+           AND IDsociete = ${TRM_SOCIETE}
+           AND (IDligne_expedition_TRM IS NULL OR IDligne_expedition_TRM = 0)`,
+      )
+      const usable = rows.map((r) => Number(r.IDstock_ecru)).filter((x) => x > 0)
+      if (usable.length === 0) {
+        res.status(400).json({
+          error: 'aucune_piece_expediable',
+          message: 'Aucune pièce expédiable dans la sélection — déjà expédiées, ou affectées à une autre ligne.',
+        })
+        return
+      }
+
+      const cmd = await query<{ IDclient: number; IDadresse_livraison: number; donation: number | null }>(
+        `SELECT IDclient, IDadresse_livraison, donation FROM commande_client WHERE IDcommande_client = ${commandeId}`,
+      )
+      const IDclient = Number(cmd[0]?.IDclient) || 0
+      const cli = await query<{ IDtransporteur: number }>(
+        `SELECT IDtransporteur FROM client WHERE IDclient = ${IDclient}`,
+      )
+      const idAdresse = Number(cmd[0]?.IDadresse_livraison) || 0
+      const idTrans = Number(cli[0]?.IDtransporteur) || 0
+      const donation = Number(cmd[0]?.donation) === 1 ? 1 : 0
+
+      // `envoyé_client` / `envoyé_sst` are accented and deliberately omitted
+      // (HFSQL zero-fills them) — same INSERT as expeditions-trm.ts.
+      const before = await maxId('expedition', 'IDexpedition')
+      await query(
+        `INSERT INTO expedition (IDsociete, IDcommande_client, IDadresse, IDtransporteur, IDcontact, DATE, donation, affiche_observations, est_valide, est_facture) ` +
+          `VALUES (${TRM_SOCIETE}, ${commandeId}, ${idAdresse}, ${idTrans}, 0, '${todayDigits()}', ${donation}, 1, 0, 0)`,
+      )
+      const expId = await newIdAfterInsert('expedition', 'IDexpedition', before)
+      if (expId <= 0) { res.status(500).json({ error: 'expedition_insert_failed' }); return }
+
+      const beforeLe = await maxId('ligne_expedition', 'IDligne_expedition')
+      await query(
+        `INSERT INTO ligne_expedition (IDexpedition, IDligne_commande_client, est_facture) VALUES (${expId}, ${ligneId}, 0)`,
+      )
+      const leId = await newIdAfterInsert('ligne_expedition', 'IDligne_expedition', beforeLe)
+      if (leId <= 0) { res.status(500).json({ error: 'ligne_expedition_insert_failed', IDexpedition: expId }); return }
+
+      const shipped = await stampShippedPieces(expId, leId, usable)
+      res.status(201).json({ ok: true, IDexpedition: expId, shipped, ignored: asked.length - usable.length })
+    })
+  } catch (err) {
+    console.error('Error shipping commande-trm pieces:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
