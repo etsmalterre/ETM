@@ -120,6 +120,16 @@ export interface MachineRow {
   adresseAutomate: number
 }
 
+/** The label the atelier uses for a métier: its floor position (`emplacement`,
+ *  "1G"), never its `nom` — two names are brands, not positions ("Beck" = 1G,
+ *  "Orizio" = 1H), and a bonnetier sent to the 1G would not recognise "Beck"
+ *  (LIVA #1102). `nom` is the fallback for the 4 archived machines whose
+ *  `emplacement` is empty, so a historical OF still names its métier. Atelier ›
+ *  Maintenance deliberately keeps `nom` (its "Description" is the brand). */
+export function machineLabel(m: { nom: string; emplacement: string }): string {
+  return m.emplacement || m.nom
+}
+
 export async function selectMachines(): Promise<MachineRow[]> {
   // No WHERE on the accented `archivé` column — filter in JS on both platforms.
   const sql = 'SELECT * FROM machine'

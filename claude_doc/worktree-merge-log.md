@@ -10,6 +10,12 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-02 — feat/debug-3 (OF TRM : le métier est libellé par son emplacement — LIVA #1102)
+`machineLabel()` in `lib/production-trm.ts` (`emplacement`, `nom` as fallback for the archived
+machines whose emplacement is empty). `of-trm.ts`'s `resolveMachineNames` goes through it, so the
+OF list, the observations and « Compatible sur » say « 1G » instead of « Beck »; `GET /of-trm/:id`
+returns `machine.label` (plus `nom` and `emplacement`), and the Terminés search matches both
+columns. No route shape removed. TRM web half lands on TRM `feat/debug-3`.
 ## 2026-09-02 — feat/debug-2 (TRM tickets #1101 / #1110 — API half)
 Two TRM routes, both landed for the paired TRM worktree of the same name. **Fils › Stock**
 (LIVA #1101): new key `edit_stock_fil` in `permission-keys-trm.ts` and

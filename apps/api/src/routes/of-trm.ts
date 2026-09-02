@@ -58,7 +58,7 @@ import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 // rather than duplicated (the clients-common.ts precedent). Improve them THERE.
 import {
   TRM_SOCIETE, sqlText, round2, todayHfsql, nowDt, parseDtMs,
-  selectMachines, bonnetierDirectory, selectDefauts, resolveEcruRefs, resolveColorisEcru,
+  selectMachines, machineLabel, bonnetierDirectory, selectDefauts, resolveEcruRefs, resolveColorisEcru,
   selectStockFilByIds, resolveLigneContexts, loadOf, realiseByOf, OF_COLUMNS,
   type DefautRow, type StockFilLot, type OfRow,
 } from '../lib/production-trm.js'
@@ -71,15 +71,21 @@ const FAUX_ARRETS_MIN_S = 120
 
 // ── Label resolvers (flat batched lookups — no JOIN + CONVERT) ──
 
+// Métier labels are the floor position (`emplacement`), `nom` as fallback —
+// see `machineLabel()`. The list, the fiche, the observations and the search
+// all go through here so they agree (LIVA #1102: "1G" showed as "beck").
 async function resolveMachineNames(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const list = Array.from(new Set(ids.filter((x) => x > 0)))
   if (list.length === 0) return out
-  const rows = await query<{ IDmachine: number; nom: string | null }>(
-    `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${list.join(',')})`,
+  const rows = await query<{ IDmachine: number; nom: string | null; emplacement: string | null }>(
+    `SELECT IDmachine, nom, emplacement FROM machine WHERE IDmachine IN (${list.join(',')})`,
   )
-  for (const r of await fixEncoding(rows, 'machine', 'IDmachine', ['nom'])) {
-    out.set(Number(r.IDmachine), (r.nom ?? '').toString().trim())
+  for (const r of await fixEncoding(rows, 'machine', 'IDmachine', ['nom', 'emplacement'])) {
+    out.set(Number(r.IDmachine), machineLabel({
+      nom: (r.nom ?? '').toString().trim(),
+      emplacement: (r.emplacement ?? '').toString().trim(),
+    }))
   }
   return out
 }
@@ -621,7 +627,7 @@ async function searchTermineIds(q: string, limit: number): Promise<number[]> {
     query<any>(`SELECT IDcommande_client, numero, IDclient FROM commande_client WHERE IDsociete = ${TRM_SOCIETE}`),
     selectMachines(),
   ])
-  const machineIds = new Set(machines.filter((m) => hit(m.nom)).map((m) => m.id))
+  const machineIds = new Set(machines.filter((m) => hit(m.nom) || hit(m.emplacement)).map((m) => m.id))
 
   const refIds = new Set<number>()
   for (const r of await fixEncoding(refs, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'])) {
@@ -901,10 +907,7 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
       compatibles_ids = Array.from(new Set(rem.map((r) => Number(r.IDmachine) || 0).filter(Boolean)))
         .filter((mid) => machines.some((m) => m.id === mid))
       compatibles = compatibles_ids
-        .map((mid) => {
-          const m = machines.find((x) => x.id === mid)
-          return m ? (m.emplacement || m.nom) : ''
-        })
+        .map((mid) => { const m = machines.find((x) => x.id === mid); return m ? machineLabel(m) : '' })
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b, 'fr'))
     }
@@ -936,7 +939,7 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
       arret_prod: of.arret_prod ?? null,
       IDmachine: machineId,
       machine: machine
-        ? { id: machine.id, nom: machine.nom, emplacement: machine.emplacement, jauge: machine.jauge, diametre: machine.diametre }
+        ? { id: machine.id, nom: machine.nom, emplacement: machine.emplacement, label: machineLabel(machine), jauge: machine.jauge, diametre: machine.diametre }
         : null,
       IDref_ecru: refId,
       IDcolori_ecru: coloriId,
