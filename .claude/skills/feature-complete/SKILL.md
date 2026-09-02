@@ -5,8 +5,10 @@
 Invoke with `/feature-complete` **from inside a feature worktree** (`../ETM-<name>` or
 `../TRM-<name>`, on branch `feat/<name>`) when a screen is finished and ready to land.
 It commits, rebases onto `master` (resolving conflicts with this screen's context),
-fast-forward-merges into `master`, then shuts down this slot's dev servers, removes the
-worktree, and deletes the branch.
+fast-forwards **`origin/master`** to the branch by a plain push, then shuts down this slot's
+dev servers, removes the worktree, and deletes the branch. **The remote is the landing
+target**; the main checkout is only caught up afterwards, so its working tree — whatever
+another session left there — can never block a landing.
 
 Deploy is a **separate** step — after this completes, run `/etm_deploy` or `/trm_deploy` (whichever matches this worktree) if you want to ship.
 
@@ -29,7 +31,8 @@ a worktree dir Windows won't delete yet (defer it, it self-reaps).
 **Stop only when continuing could lose work or ship something broken** — and then say exactly
 what you need, in one message:
 - not in a worktree / not on a `feat/*` branch — wrong place, there is nothing to land;
-- `<MAIN>` holds uncommitted work that isn't yours — merging could clobber it;
+- `<MAIN>`'s local `master` has commits that are not on `origin/master` (diverged): someone
+  committed in the integration tree without pushing — not yours to resolve;
 - unlanded API **endpoint** code this feature needs that the recipe below can't land for you;
 - a typecheck failure you can't fix without a decision about how the feature should behave.
 
@@ -54,9 +57,15 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
 ## Preconditions
 
 - You are in a feature worktree on a `feat/*` branch (NOT the main checkout / `master`).
-- `<MAIN>` is on `master` with a clean working tree. (The `apps/api/tsconfig.tsbuildinfo`
-  gitignore keeps it clean across builds — if `git -C <MAIN> status --porcelain` is
-  non-empty, that is one of the few genuine stops — see "Run it end to end". Never force past it.)
+- `<MAIN>` is on `master`. **Its working tree does NOT have to be clean.** The landing
+  target is `origin/master` (step 6 pushes the rebased branch there directly); `<MAIN>` is
+  only fast-forwarded afterwards, best effort. Uncommitted edits in `<MAIN>` — a doc
+  extraction, a skill tweak another session left behind — are that session's business and
+  must never block, stash, or be touched by a landing. (2026-09-02: a TRM landing stopped one
+  step short because this precondition used to demand a clean `<MAIN>`; the branch was
+  rebased, pushed and green, and the user had to come back to finish it. That is exactly what
+  this command exists to avoid.) The one genuine `<MAIN>` stop is a **diverged** local
+  `master` — see "Run it end to end".
 - **TRM only — shared-API guardrail.** A TRM feature's endpoints live in the **MPS API**
   (`C:\dev\etsmalterre\ETM\apps\api`), not in this repo. Before landing, check whether
   API work for this feature is still unlanded:
@@ -186,18 +195,39 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    in `Header.tsx` + `MobileNav.tsx`) — the gate passes if the only errors are those two AND
    none reference a file you changed. If anything else fails, fix it before continuing.
 
-6. **Fast-forward merge into master, from the main checkout (`<MAIN>`):**
+6. **Land on `origin/master` — the remote is the target, not the main checkout's tree.**
+   Run from the worktree:
+   ```bash
+   git fetch origin
+   git merge-base --is-ancestor origin/master HEAD || echo "NOT REBASED — redo step 4 first"
+   git push origin HEAD:master          # plain push: the server refuses anything but a fast-forward
+   git rev-parse origin/master HEAD     # the two SHAs must now be identical
+   ```
+   - If the push is rejected as `non-fast-forward`: another feature landed after your rebase —
+     re-run step 4 (`git fetch && git rebase origin/master && git push --force-with-lease`)
+     and retry. **Never add `--force` to this push**: the refusal is the guard against a
+     tangled or lost master.
+   - **This is the landing.** Once `origin/master` equals your HEAD, the work is on `master`
+     for the next deploy and nothing that happens to the main checkout afterwards can undo
+     it. The main checkout's working tree is not consulted at all, so uncommitted edits there
+     cannot block a landing.
+
+6b. **Bring the main checkout forward — best effort, never destructive:**
    ```bash
    git -C <MAIN> fetch origin
-   git -C <MAIN> status --porcelain          # must be empty — else stop & resolve
    git -C <MAIN> merge --ff-only origin/master
-   git -C <MAIN> merge --ff-only feat/<name>
-   git -C <MAIN> push origin master
    ```
-   - If `merge --ff-only feat/<name>` **fails** (another feature landed on master between your
-     rebase and now), re-run step 4 (`git fetch && git rebase origin/master && git push
-     --force-with-lease`) then retry step 6. The `--ff-only` guard is intentional — it refuses
-     to create a tangled merge.
+   - Succeeds silently in the normal case (clean `<MAIN>`, or dirty files your commits don't
+     touch).
+   - Fails with *"Your local changes to the following files would be overwritten"* when
+     someone's uncommitted edits in `<MAIN>` overlap your commits. **Do not stash, reset,
+     checkout or otherwise touch those files — they are not yours.** Leave `<MAIN>` behind,
+     keep going with step 7, and say so in the report: the deploy preflight
+     (`scripts/deploy/preflight.mjs`) blocks on a main checkout behind `origin/master` and
+     prints this same one-liner, so whoever owns those edits resolves it at deploy time.
+   - Fails with *"Not possible to fast-forward"*: `<MAIN>`'s `master` has diverged (local
+     commits not on origin). Report it as such — a genuine stop for the owner, not for you;
+     your landing is already done.
 
 7. **Tear down** — run from the main checkout dir (`<MAIN>`):
    ```bash
@@ -214,8 +244,9 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    the next time any worktree skill runs from the main checkout (or `node
    scripts/worktree/reap.mjs` there after you close this session).
 
-8. **Report.** Confirm: merged to `master` (show `git -C <MAIN> log --oneline -3`) and
-   slot freed. State what went into `CLAUDE.md` in step 2a (or that nothing durable came up),
+8. **Report.** Confirm: landed on `origin/master` (show `git log --oneline -3 origin/master`
+   — that is the proof, not `<MAIN>`'s log), whether `<MAIN>` was fast-forwarded or left
+   behind and why (6b), and slot freed. State what went into `CLAUDE.md` in step 2a (or that nothing durable came up),
    and flag it if the file is over its size budget.
    State whether the worktree dir was removed now or deferred (per the script's
    output). Tell the user to **close this Claude session / terminal** — the work is on `master`,

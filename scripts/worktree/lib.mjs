@@ -622,6 +622,30 @@ export async function waitForDbHealth(port, ms = 60000) {
 }
 
 /**
+ * Identity, not liveness. A web-only worktree (TRM) targets an API it does not
+ * start, and "the port answers" is not "the MPS API answers": on 2026-09-02
+ * :8080 was held by the MFPROD API (another project on the same workstation),
+ * whose /api/health is a 200 too. up.mjs printed « ETM master — reachable »
+ * and a CORS rejection, which read like a CORS_ORIGIN problem when the real
+ * fault was a stranger on the port. The MPS API has always answered
+ * `"app": "MPS API"` on /api/health — that field is the handshake.
+ *
+ *   { ok: true, version }                  the MPS API
+ *   { ok: false, reason: 'closed' }        nothing listening
+ *   { ok: false, reason: 'foreign', app }  something else answers (app = what it said, or '?')
+ */
+export async function probeApiIdentity(port, timeoutMs = 5000) {
+  try {
+    const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    const body = await res.json().catch(() => ({}))
+    if (res.ok && body.app === 'MPS API') return { ok: true, version: body.version }
+    return { ok: false, reason: 'foreign', app: body.app || body.name || (res.ok ? '?' : `HTTP ${res.status}`) }
+  } catch (err) {
+    return { ok: false, reason: 'closed', error: err?.message ?? String(err) }
+  }
+}
+
+/**
  * Verify from the browser's point of view: the API must echo back the web
  * origin, or cookie-auth'd requests fail in the browser while every terminal
  * check passes.

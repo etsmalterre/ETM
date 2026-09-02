@@ -134,11 +134,20 @@ for (const t of WEB_TIERS) {
 // 3. clean trees — a dist built from master PLUS an uncommitted edit ships unreviewed code
 say('\n\u2500\u2500 Working trees \u2500\u2500')
 for (const [name, repo] of [['ETM', ETM], ['TRM', TRM]]) {
+  // Since 2026-09-02 /feature-complete lands by pushing the branch to origin/master and
+  // only best-effort fast-forwards the main checkout, so a checkout BEHIND origin is a
+  // normal outcome (someone's uncommitted edit overlapped the landing). The build reads
+  // THIS tree while the stamp names origin/master: behind = stale code under a fresh SHA,
+  // the same lie as a dirty tree. Blocked here, with the one-line fix.
   const dirty = git(repo, ['status', '--porcelain'])
   const branch = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const behind = Number(git(repo, ['rev-list', '--count', 'HEAD..origin/master']) || 0)
+  const ahead = Number(git(repo, ['rev-list', '--count', 'origin/master..HEAD']) || 0)
   if (branch !== 'master') BLOCK(`${name} main checkout (${repo}) is on "${branch}", not master`)
   else if (dirty) BLOCK(`${name} tree is DIRTY (${dirty.split('\n').length} file(s)) — build would bake in uncommitted work`)
-  else OK(`${name} clean on master`)
+  else if (ahead) BLOCK(`${name} master has ${ahead} local commit(s) not on origin/master (diverged) — push or drop them first`)
+  else if (behind) BLOCK(`${name} main checkout is ${behind} commit(s) BEHIND origin/master — build would ship stale code under a fresh SHA. Fix: git -C ${repo} merge --ff-only origin/master`)
+  else OK(`${name} clean on master, at origin/master`)
 }
 
 // 4. owed one-off prod scripts (heuristic — the gates compare code, never state)

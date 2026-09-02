@@ -25,7 +25,7 @@ import {
   allocateSlot, getProject, projectMainCheckout, slotKey, updateRegistry,
   spawnDetached, isPortInUse, DEV_WEB_ORIGINS, git, reapPending, PROJECTS, mainCheckout,
   readRegistry, entryProject, parseSlotKey, pidAlive, killTree, dropPending, isMergedRemoteBranch,
-  waitForDbHealth, checkCors, tailLog, ensureDeps, ensureCorsOrigin,
+  waitForDbHealth, checkCors, probeApiIdentity, tailLog, ensureDeps, ensureCorsOrigin,
 } from './lib.mjs'
 
 // Default project = the repo this script is invoked from (so `up.mjs <feature>`
@@ -283,7 +283,11 @@ async function waitFor(port, ms = 90000) {
   }
   return false
 }
-const apiUp = proj.hasApi ? await waitFor(api) : await isPortInUse(api)
+// A web-only project targets an API it did not start: "port in use" only proves
+// SOMETHING listens there. Ask it who it is — see probeApiIdentity in lib.mjs.
+const apiIdentity = proj.hasApi ? null : await probeApiIdentity(api)
+const apiForeign = apiIdentity ? apiIdentity.reason === 'foreign' : false
+const apiUp = proj.hasApi ? await waitFor(api) : apiIdentity.ok
 const webUp = await waitFor(web)
 // Readiness beyond "port is open" — see waitForDbHealth/checkCors in lib.mjs.
 const dbCheck = proj.hasApi && apiUp ? await waitForDbHealth(api) : null
@@ -296,7 +300,10 @@ console.log(`  Branch   : ${branch}`)
 if (proj.hasApi) {
   console.log(`  API      : http://localhost:${api}   pid ${apiPid}  ${apiUp ? 'UP' : 'NOT UP (check log)'}`)
 } else {
-  console.log(`  API      : http://localhost:${api}   (ETM master — ${apiUp ? 'reachable' : 'NOT reachable; run /serve-main'})`)
+  const verdict = apiUp ? `MPS API ${apiIdentity.version ?? ''}`.trim()
+    : apiForeign ? `NOT the MPS API — port held by "${apiIdentity.app}"`
+    : 'NOT reachable; run /serve-main'
+  console.log(`  API      : http://localhost:${api}   (${verdict})`)
 }
 if (dbCheck) {
   const verdict = dbCheck.ok ? `OK (${dbCheck.ms}ms)`
@@ -327,7 +334,14 @@ if (dbCheck && !dbCheck.ok && !dbCheck.unsupported) {
   console.log(`  node scripts/worktree/up.mjs ${feature} ${projectKey} --restart`)
   process.exitCode = 2
 }
-if (!proj.hasApi && !apiUp) {
-  console.log(`NOTE: the ETM API on :${api} isn't reachable. TRM web will 404 its API`)
+if (!proj.hasApi && apiForeign) {
+  console.log(`Port :${api} is held by ANOTHER app ("${apiIdentity.app}"), not the MPS API — every`)
+  console.log(`screen will fail on cookie auth even though the port answers. Do not kill it;`)
+  console.log(`start the MPS API on a free port outside 8080–8086 and repoint this worktree:`)
+  console.log(`  cd C:/dev/etsmalterre/ETM/apps/api && $env:PORT='8087'; pnpm dev`)
+  console.log(`  node scripts/worktree/up.mjs ${feature} --api 8087 --restart`)
+  process.exitCode = 2
+} else if (!proj.hasApi && !apiUp) {
+  console.log(`NOTE: the MPS API on :${api} isn't reachable. TRM web will 404 its API`)
   console.log(`      calls until you start it (e.g. /serve-main for the master on :8080).`)
 }

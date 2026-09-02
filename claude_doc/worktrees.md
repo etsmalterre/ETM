@@ -12,6 +12,16 @@ the sibling directory (`../TRM`).
   where features merge in and where you deploy from. **Do not do feature work here.** (A branch can
   be checked out in only one worktree, so `master` must live in one fixed place.) TRM
   (`C:\dev\etsmalterre\TRM`) is its own integration tree with the same discipline.
+- **The landing target is `origin/master`, not the integration tree's working copy** (since
+  2026-09-02). `/feature-complete` rebases, then `git push origin HEAD:master` from the
+  worktree — a plain push, so the server itself refuses anything but a fast-forward — and only
+  *then* tries `git -C <MAIN> merge --ff-only origin/master`. Several worktree sessions run at
+  once and each must be able to land the moment it is done; a stray uncommitted edit in the
+  main checkout (a doc split, a skill fix another session is still writing) can therefore
+  delay the checkout catching up, never the landing. Two consequences: **anything edited
+  directly in a main checkout is committed and pushed in the same turn** (the deploy builds
+  from that tree, and `scripts/deploy/preflight.mjs` blocks on dirty *or* behind-origin); and
+  a landing never stashes, resets or touches files it does not own in `<MAIN>`.
 - **Each screen gets a worktree** `../ETM-<feature>` (or `../TRM-<feature>`) on branch
   `feat/<feature>`, created off that repo's current `origin/master`.
 - All worktrees share the **same local HFSQL** (`localhost:4900`) — do NOT fork the DB per tree.
