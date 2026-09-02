@@ -41,7 +41,10 @@ const WOPTS = '-i /home/vincent/.ssh/claude_deploy/claude_deploy -o IdentitiesOn
 function remote(host, cmd) {
   try {
     if (useWin) {
-      return sh('C:\Windows\System32\OpenSSH\ssh.exe',
+      // Escaped backslashes: '\W' / '\S' / '\O' are silently dropped by JS,
+      // which turned this into 'C:WindowsSystem32OpenSSHssh.exe' and made
+      // every laptop run report "Cannot reach the servers" (2026-09-02).
+      return sh('C:\\Windows\\System32\\OpenSSH\\ssh.exe',
         ['-F', 'none', '-i', WIN_KEY, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
          '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new', host, cmd])
     }
