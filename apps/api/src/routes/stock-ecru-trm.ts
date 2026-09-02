@@ -1,7 +1,11 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
+import { z } from 'zod'
 import { query } from '../lib/hfsql-auto.js'
 import { repairAliased } from './stock-fini.js'
 import { defautSummary, fetchDefectsByEcru, resolveClientReservations } from './stock-ecru.js'
+import { sqlText } from '../lib/production-trm.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import { trmUserHasPermission } from '../lib/permissions-trm.js'
 
 export const stockEcruTrmRouter: RouterType = Router()
 
@@ -170,6 +174,65 @@ stockEcruTrmRouter.get('/ecru-trm/:id', async (req: Request, res: Response) => {
     })
   } catch (err) {
     console.error('Error fetching TRM stock_ecru detail:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── PATCH /api/stock/ecru-trm/:id — the roll's observations ─────────────
+//
+// The ONLY write on this screen. A roll is created by the poste de visitage
+// (poids, choix, défauts, étiquette) and closed by an expédition; what a
+// person legitimately adds after the fact is a note on the roll — « ouvrir
+// dans la maille » on one already in stock (LIVA #1108). So the body is
+// `observations` alone: poids / second_choix / IDLigne_Commande_TRM keep
+// belonging to the flows that own them, and a client sending them gets 400
+// (z.strict) rather than a silent ignore.
+//
+// Gated by edit_stock_ecru — TRM's own store, same guard shape as
+// requireEditMaintenance. The partition is IDsociete = 2 on the row itself,
+// which also means a roll ETM has received (its IDsociete flipped to 1 at
+// reception) can no longer be annotated from here: it is ETM's stock now.
+// Named UPDATE: `observations` is ASCII, and its VALUE goes through sqlText
+// (Latin-1 hex literal when accented — the visiteuse's notes carry accents).
+const observationsBody = z
+  .object({ observations: z.string().max(4000) })
+  .strict()
+
+stockEcruTrmRouter.patch('/ecru-trm/:id', async (req: Request, res: Response) => {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return
+  }
+  const allowed = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'edit_stock_ecru')
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: edit_stock_ecru' })
+    return
+  }
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid id' })
+      return
+    }
+    const parsed = observationsBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    const observations = parsed.data.observations.trim()
+
+    const owned = await query<{ IDstock_ecru: number }>(
+      `SELECT IDstock_ecru FROM stock_ecru WHERE IDstock_ecru = ${id} AND IDsociete = 2`,
+    )
+    if (owned.length === 0) {
+      res.status(404).json({ error: 'Not found' })
+      return
+    }
+
+    await query(`UPDATE stock_ecru SET observations = ${sqlText(observations)} WHERE IDstock_ecru = ${id}`)
+    res.json({ IDstock_ecru: id, observations })
+  } catch (err) {
+    console.error('Error updating TRM stock_ecru observations:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

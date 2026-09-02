@@ -10,6 +10,19 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-02 — feat/debu-4 (observations d'un rouleau TRM depuis Tombé Métier › Stock, LIVA #1108)
+`PATCH /api/stock/ecru-trm/:id` écrit `{ observations }` — et rien d'autre (`z.strict` :
+un `poids` ou un `second_choix` dans le corps fait 400, jamais ignoré). Garde
+`edit_stock_ecru`, **nouvelle clé de `permission-keys-trm.ts` qui ouvre la catégorie
+« Tombé Métier »** (même nom que la clé ETM du même écran : même acte, store séparé,
+fermée par défaut — à accorder à Nicolas Antonino après déploiement). Partition
+`IDsociete = 2` sur la ligne même : un rouleau réceptionné par ETM (basculé en société 1)
+n'est plus annotable d'ici. Valeur via `sqlText` (accents intacts, tirets et apostrophes
+typographiques repliés en ASCII). Garde HTTP `scripts/check-stock-ecru-trm-observations.ts`
+(17 contrôles : 401 / 403 / 404 partition / 400 whitelist / aller-retour accentué restauré
+— écrit une valeur de sondage, jamais contre la prod). Côté TRM : le tiroir du même écran
+gagne Modifier / Annuler / Enregistrer et une textarea dans la carte Notes.
+
 ## 2026-08-28 — feat/issue-tracker (ticket widget v1.3.0 — reporting without an email)
 The tickets proxy no longer 400s an account with no mapped email: it files under a stable
 synthetic identity `utilisateur-<id>@mps.malterre.invalid` (`lib/tickets-reporter.ts`,

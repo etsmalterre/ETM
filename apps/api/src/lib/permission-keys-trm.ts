@@ -143,6 +143,19 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la création d’un lot dans Fils > Stock (« Nouveau lot »), sa division et son archivage avec le rapport de freinte. Sans ce droit l’écran reste consultable et le contrôle de titrage reste possible, mais le stock ne peut pas être modifié.',
     category: 'Fils',
   },
+  // Tombé Métier > Stock. The rolls are created and closed by the visitage /
+  // expedition flow, never from this screen — what this key opens is the ONE
+  // field a person legitimately adds after the fact: the roll's free-text
+  // observations (« ouvrir dans la maille » on a roll already in stock, LIVA
+  // #1108). Weight, choix and affectation stay read-only for everyone. Same
+  // key NAME as ETM's catalog (same action, separate store — see the header).
+  {
+    key: 'edit_stock_ecru',
+    label: 'Édition des observations d’un rouleau',
+    description:
+      'Affiche le bouton « Modifier » dans le tiroir d’un rouleau de Tombé Métier > Stock et autorise la modification de ses observations. Le poids, le choix, la réservation et l’étiquette ne changent pas : le rouleau reste ce que le poste de visitage a pesé.',
+    category: 'Tombé Métier',
+  },
   // Atelier > Maintenance — the métier upkeep fiche and the workshop-wide
   // entretien gauges. Read stays open to anyone holding the Atelier menu (the
   // bonnetier needs to see when the rouloir is due); only the writes are gated.
