@@ -14,7 +14,7 @@ ETM is the next-generation ERP system for **ETS Malterre**, a French textile/kni
 ## MPS — the platform, and why the API is not "ETM's"
 
 **MPS = Malterre Productive System**: the shared platform every Malterre app runs on —
-the HFSQL `MPS` database and the **MPS API** (`mps-api.service`, `/home/debian/mps_api`,
+the HFSQL `MPS` database and the **MPS API** (`mps-api.service`, `/home/debian/mps_api` on `10.10.2.163` — NOT the HFSQL box `10.10.20.2`,
 package `@mps/api`, `/api/health` answers `"app": "MPS API"`). The code has always called
 it that; only the prose used to call it "the ETM API", and that one word did real damage —
 see the ⚠️ in `etm_deploy` §Deploy ownership and in TRM's `trm_deploy` §Scope.
