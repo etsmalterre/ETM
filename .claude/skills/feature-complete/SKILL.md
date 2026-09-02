@@ -154,9 +154,11 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    notes for completed phases, references to deleted files. **Never relocate content mid-landing** — finish the
    merge, then offer the extraction in the step-8 report.
 
-   *Known state (2026-07-30):* ETM's `CLAUDE.md` is ~53 KB and needs a dedicated extraction
-   pass; TRM's is ~11 KB and healthy. Until that pass happens, ETM will report over budget
-   every time — mention it once, don't re-litigate it.
+   *Known state (2026-09-02):* ETM's `CLAUDE.md` is ~53 KB and still needs a dedicated
+   extraction pass — mention it once, don't re-litigate it. TRM's hit the tool's hard
+   **150 k-char limit** (157 k) that day and was split into `claude_doc/` (18 dossiers) + a
+   47 KB summary sheet; see TRM's `CLAUDE.md` § Feature dossiers for the shape to copy when
+   ETM's pass happens. The 20 KB figure above is the target, 150 k is the wall.
 
    **2c — the note + commit.** Craft a thorough summary of what this screen does — this is the
    **note**, used as the merge-commit message. If the project has a merge log
