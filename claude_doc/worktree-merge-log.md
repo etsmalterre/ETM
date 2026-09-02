@@ -10,6 +10,17 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-02 — feat/debug-3 (Facturation : un proforma par adresse de livraison — LIVA #1117)
+« Générer les factures » (formelle pass of `POST /factures/prov/generate`) now groups by client ×
+billing address of the commande × delivery address of the avis, via the pure `groupFormelle()` in
+`lib/facturation-groupes.ts`. Two avis of one client shipped to two addresses land on two proformas;
+the proforma is stamped with the commande's `IDadresse_facturation` (legacy GenererFacturesETM rule,
+3 317 / 3 331 legacy invoices) and falls back to the client default only when the commande has none.
+The result dialog names the delivery address under a client that was split. Legacy never split on
+delivery (207 mixed invoices); Isabelle only got separate invoices by generating after each avis.
+Guards: `facturation-groupes.test.ts`, `check-facturation-adresses.ts`, `e2e-formelle-generate.ts`
+(client 111 → 3 proformas on the dev copy, rollback verified). Also: CLAUDE.md names the MPS API host.
+
 ## 2026-09-02 — feat/debug-2 (devis prospect — LIVA #1112)
 Restores the legacy « devis à partir d'un prospect » (FEN_devis_prospect). Prospects ›
 Demandes gains a « Créer un devis » header button + a Devis sidebar tab; one click creates a
