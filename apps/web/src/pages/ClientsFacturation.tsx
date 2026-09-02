@@ -130,7 +130,12 @@ interface FactureDetail {
 interface GenerateSummary {
   // `divers` = generated from an expédition diverse (one proforma per shipment)
   // rather than from the client's formelle shipments (one per client).
-  created: Array<{ id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number; divers: boolean }>
+  created: Array<{
+    id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number; divers: boolean
+    /** Set when the client got several proformas this run, split by delivery
+     *  address (#1117): the destination this one covers. */
+    adresse_livraison: string | null
+  }>
   skipped: { internes: number; donations: number; vides: number }
 }
 interface DeleteAllSummary { deleted: number; expeditions_reouvertes: number }
@@ -587,7 +592,7 @@ export function ClientsFacturation() {
         open={generateConfirmOpen}
         variant="default"
         title="Générer les factures"
-        description="Un proforma sera créé par client à partir des expéditions textiles non facturées, et un proforma par expédition diverse non facturée. Les clients internes et les donations sont exclus."
+        description="Un proforma sera créé par client et par adresse de livraison à partir des expéditions textiles non facturées, et un proforma par expédition diverse non facturée. Les clients internes et les donations sont exclus."
         confirmLabel="Générer"
         isPending={generateMut.isPending}
         onCancel={() => setGenerateConfirmOpen(false)}
@@ -704,7 +709,18 @@ function BatchResultDialog({ result, onClose }: { result: BatchResult | null; on
                     <div key={c.id} className="flex items-center gap-2 p-2 rounded-md border border-border/60 bg-zinc-100/80 text-sm">
                       <Receipt className="h-4 w-4 text-amber-500 flex-shrink-0" />
                       <span className="font-medium flex-shrink-0">N° {c.numero}</span>
-                      <span className="text-muted-foreground truncate flex-1">{c.client_nom || '—'}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-muted-foreground truncate">{c.client_nom || '—'}</span>
+                        {c.adresse_livraison && (
+                          <span
+                            title="Ce client a été réparti sur plusieurs proformas, un par adresse de livraison"
+                            className="flex items-center gap-1 text-[11px] text-muted-foreground truncate"
+                          >
+                            <MapPin className="h-3 w-3 flex-shrink-0" />
+                            <span className="truncate">{c.adresse_livraison}</span>
+                          </span>
+                        )}
+                      </span>
                       {c.divers && (
                         <span
                           title="Généré depuis une expédition diverse"

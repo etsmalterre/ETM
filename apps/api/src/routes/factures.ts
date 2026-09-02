@@ -71,6 +71,7 @@ import { buildXImportFile, type XImportEntry } from '../lib/ximport.js'
 import { requirePermission, ETM_PERMISSIONS, TRM_PERMISSIONS, type PermissionScope } from '../lib/clients-common.js'
 import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
 import { loadDiversItems, resolveDiversPrix, type DiversItem } from './expeditions.js'
+import { groupFormelle, type FormelleCandidate, type FormelleCommande } from '../lib/facturation-groupes.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -1023,8 +1024,13 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
  *  Two passes over the two shipment ledgers, both marking their sources
  *  est_facture = 1 (the flag legacy reads):
  *
- *  FORMELLE (`expedition`) — every not-yet-invoiced shipment, grouped BY CLIENT:
- *  ONE proforma per client whose lines mirror the expedition lines (designation
+ *  FORMELLE (`expedition`) — every not-yet-invoiced shipment, grouped by
+ *  CLIENT × BILLING ADDRESS OF THE COMMANDE × DELIVERY ADDRESS OF THE AVIS
+ *  (`lib/facturation-groupes.ts`, LIVA #1117 — two avis of one client shipped
+ *  to two addresses must never share an invoice; the billing half is the
+ *  legacy GenererFacturesETM key, and it is what the proforma is stamped with,
+ *  falling back to the client's default only when the commande carries none).
+ *  ONE proforma per group whose lines mirror the expedition lines (designation
  *  = article + V/ref + N°/V/commande + Avis, quantite = shipped Kg/Ml from the
  *  rolls, prix from the commande line).
  *
@@ -1047,28 +1053,29 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
     if (!(await requireEditFactures(scope, req, res))) return
     // 1. Candidate expeditions (formelle, ETM, not yet invoiced).
     const expRows = await query<any>(
-      `SELECT IDexpedition, IDcommande_client, donation FROM expedition
+      `SELECT IDexpedition, IDcommande_client, IDadresse, donation FROM expedition
        WHERE IDsociete = ${scope.societe} AND (est_facture IS NULL OR est_facture = 0)`,
     )
     let skippedDonation = 0
     let skippedInterne = 0
     let skippedVide = 0
-    const candidates: Array<{ id: number; cmdId: number }> = []
+    const candidates: FormelleCandidate[] = []
     for (const e of expRows) {
       if ((Number(e.donation) || 0) === 1) { skippedDonation++; continue }
-      candidates.push({ id: Number(e.IDexpedition), cmdId: Number(e.IDcommande_client) || 0 })
+      candidates.push({ id: Number(e.IDexpedition), cmdId: Number(e.IDcommande_client) || 0, adrLivraison: Number(e.IDadresse) || 0 })
     }
 
     // 2. Their commandes (donation flag + client + the N°/V/Commande strings
     //    + frais_port for the shipping-cost line).
-    const cmdMap = new Map<number, { IDclient: number; numero: number | null; ref_client: string; donation: number; frais_port: number }>()
+    const cmdMap = new Map<number, FormelleCommande & { numero: number | null; ref_client: string; frais_port: number }>()
     for (const chunk of chunks(Array.from(new Set(candidates.map((e) => e.cmdId).filter((x) => x > 0))))) {
       const rows = await query<any>(
-        `SELECT IDcommande_client, IDclient, numero, ref_client, donation, frais_port FROM commande_client WHERE IDcommande_client IN (${chunk.join(',')})`,
+        `SELECT IDcommande_client, IDclient, IDadresse_facturation, numero, ref_client, donation, frais_port FROM commande_client WHERE IDcommande_client IN (${chunk.join(',')})`,
       )
       for (const r of await fixEncoding(rows, 'commande_client', 'IDcommande_client', ['ref_client'])) {
         cmdMap.set(Number(r.IDcommande_client), {
           IDclient: Number(r.IDclient) || 0,
+          IDadresse_facturation: Number(r.IDadresse_facturation) || 0,
           numero: r.numero != null ? Number(r.numero) : null,
           ref_client: (r.ref_client ?? '').toString().trim(),
           donation: Number(r.donation) || 0,
@@ -1088,17 +1095,12 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       }
     }
 
-    // 4. Partition: skip internes / donations, group the rest by client.
-    const byClient = new Map<number, Array<{ id: number; cmdId: number }>>()
-    for (const e of candidates) {
-      const cmd = cmdMap.get(e.cmdId)
-      if (!cmd || !(cmd.IDclient > 0) || !clientMap.has(cmd.IDclient)) { skippedVide++; continue }
-      if (cmd.donation === 1) { skippedDonation++; continue }
-      if (clientMap.get(cmd.IDclient)!.interne === 1) { skippedInterne++; continue }
-      const arr = byClient.get(cmd.IDclient) ?? []
-      arr.push(e)
-      byClient.set(cmd.IDclient, arr)
-    }
+    // 4. Partition: skip internes / donations, group the rest by
+    //    client × billing address × delivery address (#1117).
+    const grouping = groupFormelle(candidates, cmdMap, clientMap)
+    skippedVide += grouping.skippedVide
+    skippedDonation += grouping.skippedDonation
+    skippedInterne += grouping.skippedInterne
 
     // Per-request catalog caches for the designation builder.
     const refFiniCache = new Map<number, { reference: string; designation: string; avec: number }>()
@@ -1217,8 +1219,11 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
      *  `expDivers` is the `expedition_divers` this proforma invoices (0 for the
      *  formelle pass) — the same header back-pointer the definitive ledger
      *  uses, carried over verbatim on conversion. */
-    async function insertProforma(clientId: number, lines: GenLine[], expDivers: number): Promise<number> {
+    async function insertProforma(clientId: number, lines: GenLine[], expDivers: number, idAdresse = 0): Promise<number> {
       const bd = await clientBillingDefaults(scope, clientId)
+      // The commande's billing address when it has one (legacy rule: 3 317 of
+      // 3 331 legacy invoices carry it), the client's default otherwise.
+      if (idAdresse > 0) bd.idAdresse = idAdresse
       const date = todayDigits()
       let newNumero = 0
       let inserted = false
@@ -1257,10 +1262,27 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
      *  shipped both formelle and divers must not be charged twice. */
     const portBilled = new Set<number>()
 
-    // 5. One proforma per client (formelle pass).
-    const created: Array<{ id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number; divers: boolean }> = []
-    for (const [clientId, group] of byClient) {
-      group.sort((a, b) => a.id - b.id)
+    // 5. One proforma per group (formelle pass).
+    const created: Array<{
+      id: number; numero: number; client_nom: string; nb_lignes: number; nb_expeditions: number; divers: boolean
+      /** Set only when this client got several proformas this run (split by
+       *  address): the destination, so the result list says why there are two. */
+      adresse_livraison: string | null
+    }> = []
+    const adresseLabelCache = new Map<number, string>()
+    async function adresseLabel(id: number): Promise<string> {
+      if (!(id > 0)) return ''
+      if (!adresseLabelCache.has(id)) {
+        const a = await loadAdresse(id)
+        const nom = String(a?.nom ?? '').trim()
+        const ville = [String(a?.cp ?? '').trim(), String(a?.ville ?? '').trim()].filter(Boolean).join(' ')
+        adresseLabelCache.set(id, [nom, ville].filter(Boolean).join(' · '))
+      }
+      return adresseLabelCache.get(id)!
+    }
+    for (const g of grouping.groups) {
+      const clientId = g.clientId
+      const group = g.expeditions
       const lines: GenLine[] = []
       const contributing = new Set<number>()
       const contributingCmds: number[] = [] // insertion-ordered, deduped below
@@ -1293,7 +1315,7 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
         }
       }
 
-      const newId = await insertProforma(clientId, lines, 0)
+      const newId = await insertProforma(clientId, lines, 0, g.adrFacturation)
       // Mark the expeditions invoiced (the flag both apps read).
       for (const eid of contributing) {
         await query(`UPDATE expedition SET est_facture = 1 WHERE IDexpedition = ${eid}`)
@@ -1308,6 +1330,7 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
         nb_lignes: lines.length,
         nb_expeditions: contributing.size,
         divers: false,
+        adresse_livraison: grouping.multiAdresses.has(clientId) ? (await adresseLabel(g.adrLivraison)) || 'Sans adresse' : null,
       })
     }
 
@@ -1344,11 +1367,12 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       ))
       for (const chunk of chunks(newCmdIds)) {
         const rows = await query<any>(
-          `SELECT IDcommande_client, IDclient, numero, ref_client, donation, frais_port FROM commande_client WHERE IDcommande_client IN (${chunk.join(',')})`,
+          `SELECT IDcommande_client, IDclient, IDadresse_facturation, numero, ref_client, donation, frais_port FROM commande_client WHERE IDcommande_client IN (${chunk.join(',')})`,
         )
         for (const r of await fixEncoding(rows, 'commande_client', 'IDcommande_client', ['ref_client'])) {
           cmdMap.set(Number(r.IDcommande_client), {
             IDclient: Number(r.IDclient) || 0,
+            IDadresse_facturation: Number(r.IDadresse_facturation) || 0,
             numero: r.numero != null ? Number(r.numero) : null,
             ref_client: (r.ref_client ?? '').toString().trim(),
             donation: Number(r.donation) || 0,
@@ -1454,6 +1478,7 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
           nb_lignes: lines.length,
           nb_expeditions: 1,
           divers: true,
+          adresse_livraison: null,
         })
       }
     }
