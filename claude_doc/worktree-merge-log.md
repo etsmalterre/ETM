@@ -10,6 +10,17 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-07 — feat/debug-2 (clôture d OF unique + étiquette de lot — LIVA #1128, #1133)
+TRM API. **#1128** : the legacy Android bonnetier app closes an OF by flipping `est_actif` only
+(`est_termine` stays 0, `priorite` keeps its rank); the ERP read the leftover as « En attente » with
+no way out and Visitage opened the OLD OF. New `lib/of-queue-trm.ts` owns the queue: `terminerOf()`
+(est_termine, priorite 0, re-rank, auto-activation of the head) shared by `POST /of-trm/:id/terminer`
+and the PWA « Terminer OF » / « Dernière pièce »; `healHandedOverOfs()` closes the legacy leftover on
+read (GET /of-trm, visitage lookups/metiers and poste) on the unambiguous signature est_actif 0 ·
+est_termine 0 · arret_prod set · another OF active on the métier (pure `handedOverLeftovers()`, 14
+tests); Visitage head = the active OF. Probe `probe-of-handover-trm.ts`. **#1133** : the Dymo lot
+label keeps lot · réf · coloris · client only, number in 36 pt, same dress as EtiquetteEcruPdf.
+
 ## 2026-09-07 — feat/debug-1 (TRM tickets #1129 / #1123 — API half)
 Two TRM fixes, landed for the paired TRM worktree of the same name. **Visitage, « choix 2 »**
 (LIVA #1129): `POST /visitage-trm/valider` stamped `IDLigne_Commande_TRM = the OF's line` on every
@@ -28,6 +39,7 @@ same capture-once `date_delai` + `Attente_Delai → En_Cours` rules as this repo
 exposes `attente_delai` / `date_delai_initiale` per line, the list `lignes_sans_delai`. Guard
 `check-commandes-trm-delai.ts` (writes, localhost only, restores). Design doc §30.5 records that
 TRM's Clients › Commandes colours its left list on the délai, the opposite pick from ETM's.
+
 ## 2026-09-02 — feat/debug-3 (Facturation : un proforma par adresse de livraison — LIVA #1117)
 « Générer les factures » (formelle pass of `POST /factures/prov/generate`) now groups by client ×
 billing address of the commande × delivery address of the avis, via the pure `groupFormelle()` in
