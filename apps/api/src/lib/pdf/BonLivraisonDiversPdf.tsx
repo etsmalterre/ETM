@@ -6,11 +6,18 @@
 //  - top row: delivery address card + shipment metadata card (client,
 //    référence client, transporteur)
 //  - one section per carton: the free-text carton label (first line bold,
-//    following lines muted) then a framed items table
-//    (désignation · quantité [· P.U. € · total €]) with a per-carton totals row
-//  - a gold grand-total box for the whole expedition.
-// Price columns only render when at least one item has a non-zero price —
-// free-sample shipments print as a clean designation/quantity list.
+//    following lines muted) then a framed items table (désignation · quantité)
+//    with a per-carton count row
+//  - a gold grand-total box counting cartons, articles and pieces.
+// ⚠️ NO PRICE ANYWHERE, by design (LIVA #1127, Isabelle, 2026-09). An avis
+// d'expédition is a delivery document: the legacy ETAT_Expédition_diverse
+// (model: DIV632 for Unicycle) prints designation + "N Pièce" and nothing else,
+// and the client must not read a price off it. Until #1127 the columns
+// P.U. / TOTAL (€) and a euro grand total rendered whenever an item carried a
+// price — i.e. on every priced Unicycle shipment. The money lives on the
+// facture (`factures.ts`), which is where the tarif_divers price belongs; the
+// item type therefore carries no `prix` at all, so a price cannot creep back
+// in through the data builder.
 
 import React from 'react'
 import { View, Text, StyleSheet } from '@react-pdf/renderer'
@@ -43,7 +50,6 @@ export interface BlDiversItem {
   /** 4 = "unité" (pluralized when quantite > 1). */
   unite: number
   unite_label: string
-  prix: number
 }
 
 export interface BlDiversCarton {
@@ -76,9 +82,25 @@ function fmtQty(value: number): string {
   return fmtNum(value, Number.isInteger(value) ? 0 : 2)
 }
 
-function qtyLabel(it: BlDiversItem): string {
+function qtyLabel(it: Pick<BlDiversItem, 'quantite' | 'unite' | 'unite_label'>): string {
   const plural = it.unite === 4 && it.quantite > 1 ? 's' : ''
   return `${fmtQty(it.quantite)}${it.unite_label ? ` ${it.unite_label}${plural}` : ''}`
+}
+
+/** "9 unités · 2,50 Ml" — quantities summed per unit, in first-seen order.
+ *  A carton usually holds one unit kind, so this reads as a plain piece
+ *  count — the one figure the client checks against the parcel (#1127). */
+export function quantiteParUnite(items: BlDiversItem[]): string {
+  const byUnit = new Map<string, { unite: number; quantite: number }>()
+  for (const it of items) {
+    const key = it.unite_label || ''
+    const cur = byUnit.get(key) ?? { unite: it.unite, quantite: 0 }
+    cur.quantite += it.quantite
+    byUnit.set(key, cur)
+  }
+  return [...byUnit.entries()]
+    .map(([unite_label, { unite, quantite }]) => qtyLabel({ quantite, unite, unite_label }))
+    .join(' · ')
 }
 
 const styles = StyleSheet.create({
@@ -140,8 +162,7 @@ const styles = StyleSheet.create({
   cellBase: { fontSize: 10, color: colors.text, lineHeight: 1.2 },
   cellMuted: { fontSize: 10, color: colors.muted, lineHeight: 1.2 },
   colDesignation: { flex: 1, paddingRight: 6 },
-  colQty: { width: 90, textAlign: 'right', paddingHorizontal: 4 },
-  colNum: { width: 75, textAlign: 'right', paddingHorizontal: 4 },
+  colQty: { width: 110, textAlign: 'right', paddingHorizontal: 4 },
 
   // Per-carton totals row (inside the table frame)
   cartonTotalRow: {
@@ -209,11 +230,9 @@ function MetaRow({ icon, label, value }: { icon: React.ReactNode; label: string;
 export function BonLivraisonDiversPdf({ data }: { data: BonLivraisonDiversPdfData }) {
   const deliveryAddress = buildDeliveryAddress(data)
   const allItems = data.cartons.flatMap((c) => c.items)
-  // Free-sample shipments (all prices 0) print without the money columns.
-  const showPrices = allItems.some((it) => it.prix > 0)
-  const grandTotal = allItems.reduce((s, it) => s + it.quantite * it.prix, 0)
   const nbCartons = data.cartons.length
   const nbArticles = allItems.length
+  const grandQty = quantiteParUnite(allItems)
 
   return (
     <MalterreDocument
@@ -246,7 +265,6 @@ export function BonLivraisonDiversPdf({ data }: { data: BonLivraisonDiversPdfDat
         const lines = carton.detail.split(/\r?\n/).map((s) => s.trim()).filter((s) => s.length > 0)
         const titre = lines[0] || `Carton ${ci + 1}`
         const rest = lines.slice(1)
-        const total = carton.items.reduce((s, it) => s + it.quantite * it.prix, 0)
         return (
           <View key={ci} style={styles.carton}>
             {/* Keep the carton label glued to the start of its items table
@@ -265,12 +283,6 @@ export function BonLivraisonDiversPdf({ data }: { data: BonLivraisonDiversPdfDat
                 <View style={styles.tableHeader} fixed>
                   <Text style={[styles.tableHeaderCell, styles.colDesignation]}>DÉSIGNATION</Text>
                   <Text style={[styles.tableHeaderCell, styles.colQty]}>QUANTITÉ</Text>
-                  {showPrices ? (
-                    <>
-                      <Text style={[styles.tableHeaderCell, styles.colNum]}>P.U. (€)</Text>
-                      <Text style={[styles.tableHeaderCell, styles.colNum]}>TOTAL (€)</Text>
-                    </>
-                  ) : null}
                 </View>
                 {carton.items.map((it, ii) => (
                   <View key={ii} style={styles.tableRow}>
@@ -279,25 +291,13 @@ export function BonLivraisonDiversPdf({ data }: { data: BonLivraisonDiversPdfDat
                       {it.variations ? <Text style={styles.cellMuted}>{`  ·  ${it.variations}`}</Text> : null}
                     </Text>
                     <Text style={[styles.cellBase, styles.colQty]}>{qtyLabel(it)}</Text>
-                    {showPrices ? (
-                      <>
-                        <Text style={[styles.cellBase, styles.colNum]}>{fmtNum(it.prix)}</Text>
-                        <Text style={[styles.cellBase, styles.colNum]}>{fmtNum(it.quantite * it.prix)}</Text>
-                      </>
-                    ) : null}
                   </View>
                 ))}
                 <View style={styles.cartonTotalRow}>
                   <Text style={[styles.cartonTotalLabel, styles.colDesignation]}>
                     {`Total carton - ${carton.items.length} article${carton.items.length > 1 ? 's' : ''}`}
                   </Text>
-                  <Text style={[styles.cartonTotalCell, styles.colQty]} />
-                  {showPrices ? (
-                    <>
-                      <Text style={[styles.cartonTotalCell, styles.colNum]} />
-                      <Text style={[styles.cartonTotalCell, styles.colNum]}>{fmtNum(total)}</Text>
-                    </>
-                  ) : null}
+                  <Text style={[styles.cartonTotalCell, styles.colQty]}>{quantiteParUnite(carton.items)}</Text>
                 </View>
               </View>
             )}
@@ -312,7 +312,7 @@ export function BonLivraisonDiversPdf({ data }: { data: BonLivraisonDiversPdfDat
             <Text style={styles.grandLabel}>
               {`TOTAL EXPÉDITION - ${nbCartons} CARTON${nbCartons > 1 ? 'S' : ''} · ${nbArticles} ARTICLE${nbArticles > 1 ? 'S' : ''}`}
             </Text>
-            {showPrices ? <Text style={styles.grandValue}>{`${fmtNum(grandTotal)} €`}</Text> : null}
+            {grandQty ? <Text style={styles.grandValue}>{grandQty}</Text> : null}
           </View>
         </View>
       </View>

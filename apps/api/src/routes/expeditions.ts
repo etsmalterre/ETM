@@ -3014,7 +3014,7 @@ export async function buildBlDiversPdfData(id: number): Promise<BonLivraisonDive
         quantite: it.quantite,
         unite: it.unite,
         unite_label: it.unite_label,
-        prix: it.prix,
+        // No prix: the avis d'expédition is unpriced by design (LIVA #1127).
       })),
     }
   })
