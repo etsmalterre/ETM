@@ -70,6 +70,20 @@ export const TRM_PERMISSION_KEYS = [
     category: 'Tableau de bord',
   },
   {
+    key: 'dashboard_rapport_production',
+    label: 'Widget « Rapport de production »',
+    description:
+      'Affiche sur le tableau de bord la production pesée au visitage sur une période (équipe en cours, journée, semaine, mois ou dates libres) : total en kg, nombre de rouleaux, part de 2nd choix, et la répartition par métier ou par référence. L’API refuse les chiffres sans ce droit.',
+    category: 'Tableau de bord',
+  },
+  {
+    key: 'dashboard_utilisation_fil',
+    label: 'Widget « Utilisation fil »',
+    description:
+      'Affiche sur le tableau de bord le widget « Utilisation fil » : pour une référence de fil (et éventuellement un de ses coloris), la liste des références écru qui l’utilisent dans leur composition. Même catalogue que celui d’ETM — les fils et les compositions sont communs aux deux sociétés.',
+    category: 'Tableau de bord',
+  },
+  {
     key: 'edit_commandes_client',
     label: 'Édition des commandes client',
     description:

@@ -99,6 +99,10 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { n } from '../lib/sst-shared.js'
 import { awaitingPieces } from '../lib/production-trm.js'
+import {
+  RAPPORT_PRODUCTION_MAX_DAYS, aggregateRapportProduction, dtLocalToHfsql, toLignes,
+  type RapportProductionLigne, type RollRow,
+} from '../lib/rapport-production-trm.js'
 
 export const dashboardTrmRouter: RouterType = Router()
 
@@ -330,6 +334,151 @@ dashboardTrmRouter.get('/pieces-a-visiter', async (req: Request, res: Response) 
     )
   } catch (err) {
     console.error('Error fetching pieces-a-visiter:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════════════════════
+// ── « Rapport de production » (legacy FI_Rapport_de_production_période.wdw)
+//
+// LIVA #1132. The legacy panel is ONE number: the weight weighed at the
+// visitage between two date-times, optionally narrowed to one métier or one
+// écru reference. Recovered from the compile cache (the .wdw is PCS-compressed):
+// controls SAI_Du / SAI_Au / SAI_Heure_debut / SAI_Heure_fin, SEL_Type,
+// COMBO_Machine (machine.emplacement, « Toutes » prepended), COMBO_Référence
+// (ref_ecru.ref_interne), SAI_Produit — no chart, no table. The local
+// procedure calculProduction builds one of three statements, verbatim:
+//
+//   SELECT SUM(poids) AS total FROM stock_ecru
+//   WHERE date_saisie >= '<Du><HeureDebut>000' AND date_saisie <= '<Au><HeureFin>999'
+//     [AND IDordre_fabrication IN (SELECT IDordre_fabrication FROM ordre_fabrication
+//                                  WHERE IDmachine = <COMBO_Machine>)]        -- SEL_Type = métier
+//     [AND IDref_ecru = <COMBO_Référence>]                                    -- SEL_Type = référence
+//
+// So the unit is again the ROLL (`stock_ecru`, the visiteuse's weighing) and
+// the clock is `date_saisie` — production is counted when it is weighed, not
+// when it comes off the métier. The bounds are millisecond-inclusive in the
+// legacy; here they are second-inclusive (…00 / …59).
+//
+// Deliberate deltas:
+//  - `IDordre_fabrication > 0`, the same delta Production › Prime makes
+//    (2026-08-24): the bare legacy predicate also counts ETM's manual
+//    « fictif » pieces, which carry a date_saisie but were never knitted on a
+//    TRM métier — 71 rolls / 201 kg in March 2026 against 677 / 12 488 kg on
+//    OFs. No IDsociete filter (the ETM handover flips delivered rolls to 1).
+//  - One call returns the total AND its split by métier and by reference:
+//    the legacy made the user pick one métier at a time to see its share.
+//    The two filters compose (legacy: one or the other), and the splits
+//    reflect them, so a click on a métier row can show that métier's
+//    references and the reverse.
+//  - Métier label = machine.emplacement with nom as fallback (machineNames,
+//    LIVA #1102), as the legacy combo showed emplacement.
+//  - The 2nd-choix share is reported alongside: the visitage's own signal,
+//    free once the rows are read (second_choix), and what Prime deducts.
+//
+// The pure parts (date literal, aggregation, ordering) live in
+// lib/rapport-production-trm.ts with their test.
+
+async function requireRapportProduction(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  const ok = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'dashboard_rapport_production')
+  if (!ok) res.status(403).json({ error: 'permission denied: dashboard_rapport_production' })
+  return ok
+}
+
+export interface RapportProduction {
+  du: string
+  au: string
+  filtres: { machine: number; ref: number }
+  total_kg: number
+  rouleaux: number
+  second_choix_kg: number
+  second_choix_rouleaux: number
+  /** Splits of the same filtered rows, heaviest first. */
+  par_machine: RapportProductionLigne[]
+  par_reference: RapportProductionLigne[]
+}
+
+/** Reference labels by id — `reference` only: naming the accented `archivé`
+ *  is what forces SELECT * elsewhere, and it is not needed here. */
+async function referenceNames(ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  if (ids.length === 0) return out
+  const rows = await fixEncoding(
+    await query<{ IDref_ecru: number; reference: string | null }>(
+      `SELECT IDref_ecru, reference FROM ref_ecru WHERE IDref_ecru IN (${ids.join(',')})`,
+    ),
+    'ref_ecru', 'IDref_ecru', ['reference'],
+  )
+  for (const r of rows) out.set(n(r.IDref_ecru), String(r.reference ?? '').trim() || `#${n(r.IDref_ecru)}`)
+  return out
+}
+
+// ── GET /api/dashboard-trm/rapport-production?du=YYYY-MM-DDTHH:mm&au=…[&machine=<id>][&ref=<id>] ──
+dashboardTrmRouter.get('/rapport-production', async (req: Request, res: Response) => {
+  if (!(await requireRapportProduction(req, res))) return
+  const duRaw = String(req.query.du ?? '')
+  const auRaw = String(req.query.au ?? '')
+  const du = dtLocalToHfsql(duRaw, false)
+  const au = dtLocalToHfsql(auRaw, true)
+  if (!du || !au) {
+    res.status(400).json({ error: 'du and au are required (YYYY-MM-DDTHH:mm)' })
+    return
+  }
+  if (au < du) {
+    res.status(400).json({ error: 'au must not precede du' })
+    return
+  }
+  if (new Date(auRaw).getTime() - new Date(duRaw).getTime() > RAPPORT_PRODUCTION_MAX_DAYS * 86_400_000) {
+    res.status(400).json({ error: `range wider than ${RAPPORT_PRODUCTION_MAX_DAYS} days` })
+    return
+  }
+  const filtres = {
+    machine: Math.max(0, Math.trunc(Number(req.query.machine ?? 0)) || 0),
+    ref: Math.max(0, Math.trunc(Number(req.query.ref ?? 0)) || 0),
+  }
+  try {
+    const rows: RollRow[] = (await query<{ IDordre_fabrication: number; IDref_ecru: number; poids: number | null; second_choix: number | null }>(
+      `SELECT IDordre_fabrication, IDref_ecru, poids, second_choix FROM stock_ecru
+       WHERE date_saisie >= '${du}' AND date_saisie <= '${au}' AND IDordre_fabrication > 0`,
+    )).map((r) => ({
+      IDordre_fabrication: n(r.IDordre_fabrication),
+      IDref_ecru: n(r.IDref_ecru),
+      poids: Number(r.poids) || 0,
+      second_choix: n(r.second_choix),
+    }))
+
+    const ofIds = [...new Set(rows.map((r) => r.IDordre_fabrication))]
+    const machineOf = new Map<number, number>()
+    if (ofIds.length > 0) {
+      const ofs = await query<{ IDordre_fabrication: number; IDmachine: number }>(
+        `SELECT IDordre_fabrication, IDmachine FROM ordre_fabrication WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+      )
+      for (const o of ofs) machineOf.set(n(o.IDordre_fabrication), n(o.IDmachine))
+    }
+
+    const agg = aggregateRapportProduction(rows, machineOf, filtres)
+    const [machines, refNames] = await Promise.all([
+      machineNames([...agg.par_machine.keys()]),
+      referenceNames([...agg.par_reference.keys()]),
+    ])
+    const out: RapportProduction = {
+      du: duRaw,
+      au: auRaw,
+      filtres,
+      total_kg: agg.total_kg,
+      rouleaux: agg.rouleaux,
+      second_choix_kg: agg.second_choix_kg,
+      second_choix_rouleaux: agg.second_choix_rouleaux,
+      par_machine: toLignes(agg.par_machine, machines),
+      par_reference: toLignes(agg.par_reference, refNames),
+    }
+    res.json(out)
+  } catch (err) {
+    console.error('Error fetching rapport-production:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
