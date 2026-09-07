@@ -4,7 +4,7 @@
  *   pnpm --filter @mps/api exec tsx src/scripts/probe-visitage-trm.ts
  *
  * Re-run it against prod after an /etm_deploy. It writes nothing; it measures
- * the five rules the screen rests on against the whole live history and prints
+ * the six rules the screen rests on against the whole live history and prints
  * the parity so a drift is visible before the visiteuse finds it:
  *
  *   1. NUMBERING — two sequences per OF (1er choix < 1000, 2nd choix 1000+).
@@ -20,6 +20,13 @@
  *      good the approximation is. Read the number before shipping.
  *   5. ORPHANS — finished pieces that never got a roll. The legacy loses them
  *      structurally (it only ever offers the queue-head OF's pieces).
+ *   6. RESERVATION — a 1er choix roll leaves visitage reserved for the OF's
+ *      commande line (IDLigne_Commande_TRM); a DÉCLASSÉ leaves it at 0 and is
+ *      affected by hand when it ships. The poste stamped déclassés for its
+ *      first week (LIVA #1129) and they showed up on the commande's
+ *      Affectation at full weight. This section counts every déclassé the
+ *      poste has reserved since it went live — the number must stay at what
+ *      it was before the fix shipped (3 on 2026-09-07), never grow.
  *
  * HFSQL discipline: `DATE` is reserved (aliased on read); `récuperé` / `traité`
  * are accented and only ever reached through SELECT * + key folding.
@@ -28,6 +35,8 @@ import { query, closeConnection, fixEncoding } from '../lib/hfsql-auto.js'
 import { selectDefauts, parseDtMs } from '../lib/production-trm.js'
 
 const ROLLS_BETWEEN_VISITAGES = 2 // must mirror routes/visitage-trm.ts
+/** First day the poste wrote to prod (yyyymmdd). Before it, every roll is legacy. */
+const POSTE_LIVE = '20260826'
 
 function pct(a: number, b: number): string {
   return b === 0 ? 'n/a' : `${((a / b) * 100).toFixed(1)} %`
@@ -219,8 +228,49 @@ async function main() {
   console.log('    pas un travail d’atelier. Ce compteur est le seul endroit où il')
   console.log('    reste visible — c’est sa raison d’être.')
 
+  // ── 6. Reservation ────────────────────────────────────
+  // No IDsociete filter on purpose: « Expédier » hands a roll shipped to Ets
+  // Malterre over to société 1, and the first probe of LIVA #1129 missed
+  // 3554/1001 exactly that way. The partition guard is the OF.
+  head('6. RÉSERVATION — un déclassé sort du visitage sans ligne de commande')
+  const resRows = await query<any>(
+    `SELECT se.IDstock_ecru, se.numero, se.second_choix, se.IDLigne_Commande_TRM,
+            se.IDligne_expedition_TRM, se.date_saisie, orf.IDligne_commande_client AS of_ligne
+     FROM stock_ecru se
+     INNER JOIN ordre_fabrication orf ON orf.IDordre_fabrication = se.IDordre_fabrication
+     WHERE se.IDordre_fabrication > 0 AND orf.IDligne_commande_client > 0`,
+  )
+  const d8 = (v: unknown) => String(v ?? '').replace(/[^0-9]/g, '').slice(0, 8)
+  const legacy = resRows.filter((r: any) => d8(r.date_saisie) < POSTE_LIVE)
+  const legacy2 = legacy.filter((r: any) => Number(r.second_choix) === 1)
+  const legacy2Aff = legacy2.filter((r: any) => (Number(r.IDLigne_Commande_TRM) || 0) > 0)
+  const legacy2AffShipped = legacy2Aff.filter((r: any) => (Number(r.IDligne_expedition_TRM) || 0) > 0)
+  const legacy1 = legacy.filter((r: any) => Number(r.second_choix) === 0)
+  const legacy1Aff = legacy1.filter((r: any) => (Number(r.IDLigne_Commande_TRM) || 0) > 0)
+  console.log(`  legacy (avant le ${POSTE_LIVE}), OF avec ligne de commande :`)
+  console.log(`    1er choix affectés à une ligne : ${legacy1Aff.length}/${legacy1.length} (${pct(legacy1Aff.length, legacy1.length)})`)
+  console.log(`    déclassés affectés à une ligne : ${legacy2Aff.length}/${legacy2.length} (${pct(legacy2Aff.length, legacy2.length)}),` +
+    ` dont ${legacy2AffShipped.length} expédiés`)
+  console.log('    → un déclassé n\'est affecté qu\'à l\'expédition, à la main ; la règle du')
+  console.log('      poste est « second_choix = 1 ⇒ IDLigne_Commande_TRM = 0 ».')
+
+  const poste = resRows.filter((r: any) => d8(r.date_saisie) >= POSTE_LIVE)
+  const poste2 = poste.filter((r: any) => Number(r.second_choix) === 1)
+  const poste2Aff = poste2.filter((r: any) => (Number(r.IDLigne_Commande_TRM) || 0) > 0)
+  const poste2AffFree = poste2Aff.filter((r: any) => (Number(r.IDligne_expedition_TRM) || 0) === 0)
+  console.log(`\n  depuis le poste (${POSTE_LIVE}) : ${poste.length} rouleaux, ${poste2.length} déclassés`)
+  console.log(`    déclassés réservés à une ligne : ${poste2Aff.length}` +
+    ` (${poste2Aff.length - poste2AffFree.length} déjà expédiés, ${poste2AffFree.length} encore en stock)`)
+  for (const r of poste2Aff) {
+    console.log(`      ${r.numero}  ligne=${r.IDLigne_Commande_TRM}  exp=${r.IDligne_expedition_TRM}  saisie=${d8(r.date_saisie)}`)
+  }
+  console.log('    → 3 le 2026-09-07 (3564/1001, 3542/1006, 3554/1001 — tous expédiés et')
+  console.log('      facturés avant le correctif, laissés tels quels). Un chiffre qui MONTE')
+  console.log('      est une régression du poste ; un déclassé encore en stock se libère')
+  console.log('      avec fix-choix2-affectation-trm.ts --write.')
+
   // ── Defect vocabulary drift ───────────────────────────
-  head('6. VOCABULAIRE DES DÉFAUTS — dérive vs le catalogue codé en dur')
+  head('7. VOCABULAIRE DES DÉFAUTS — dérive vs le catalogue codé en dur')
   const vocab = await query<any>(
     `SELECT type_defaut, COUNT(*) AS n FROM defaut_qualite
      WHERE Type_Reference = 2 AND Type_Spotteur = 2 GROUP BY type_defaut ORDER BY n DESC`,

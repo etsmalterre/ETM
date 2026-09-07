@@ -93,3 +93,65 @@ export function lineStatutRank(sstatut: string | null | undefined): 0 | 1 | 2 {
   if (s === STATUT_ATTENTE_DELAI) return 1
   return 2
 }
+
+// ── The délai write on a sst line ─────────────────────────
+//
+// Two writers set `ligne_commande_sous_traitant.date_livraison`: ETM's own
+// `PUT /commandes-sous-traitant/lignes/:id` and, since LIVA #1123 (2026-09-07),
+// TRM's `PUT /commandes-trm/lignes/:id/delai` — the sister company announcing
+// the date it will have knitted the line, which is what the legacy
+// FI_Commande_TRMV2 window did. Both apply the same two rules, so they live
+// here once:
+//
+//   1. Capture-once: `date_delai` freezes the ORIGINAL date. It is promoted
+//      from the previous `date_livraison` on the first reschedule only (while
+//      it still equals the current date), and never touched again.
+//   2. State machine: a date given on an `Attente_Delai` line means the
+//      sous-traitant has confirmed a délai → `En_Cours`. `Non_Envoye` keeps
+//      its status (the bon de commande is not out yet, the date is
+//      hypothetical). An explicit statut in the same patch wins.
+//
+// Pure: returns the SET clauses and what they will leave on the row, so the
+// caller can echo the new state without re-reading.
+
+export interface SstDelaiCurrent {
+  date_livraison: string | null | undefined
+  date_delai: string | null | undefined
+  sstatut: string | null | undefined
+}
+
+export interface SstDelaiResult {
+  /** SQL SET clauses (no leading `SET`), ready to join with ', '. */
+  sets: string[]
+  /** `date_livraison` after the write (8 digits, or '' when cleared). */
+  date_livraison: string
+  /** `date_delai` after the write — the frozen original, or the row's current one. */
+  date_delai: string
+  /** `sstatut` after the write. */
+  sstatut: string
+}
+
+/** Compute the UPDATE of a délai on a `ligne_commande_sous_traitant` row.
+ *  `next` is anything `dateDigits` accepts ('' clears the date). */
+export function sstDelaiSets(cur: SstDelaiCurrent, next: unknown, explicitStatut?: string): SstDelaiResult {
+  const nextLiv = dateDigits(next)
+  const prevLiv = typeof cur.date_livraison === 'string' ? cur.date_livraison : ''
+  const prevDelai = typeof cur.date_delai === 'string' ? cur.date_delai : ''
+  const curStatut = (cur.sstatut ?? '').trim()
+  const sets: string[] = []
+  let dateDelai = prevDelai
+  let statut = curStatut
+  if (nextLiv !== prevLiv && prevDelai === prevLiv && prevLiv) {
+    sets.push(`date_delai = '${prevLiv}'`)
+    dateDelai = prevLiv
+  }
+  sets.push(`date_livraison = '${nextLiv}'`)
+  if (explicitStatut !== undefined) {
+    sets.push(`sstatut = '${esc(explicitStatut)}'`)
+    statut = explicitStatut
+  } else if (curStatut === STATUT_ATTENTE_DELAI) {
+    sets.push(`sstatut = '${STATUT_OPEN}'`)
+    statut = STATUT_OPEN
+  }
+  return { sets, date_livraison: nextLiv, date_delai: dateDelai, sstatut: statut }
+}

@@ -10,6 +10,24 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-07 — feat/debug-1 (TRM tickets #1129 / #1123 — API half)
+Two TRM fixes, landed for the paired TRM worktree of the same name. **Visitage, « choix 2 »**
+(LIVA #1129): `POST /visitage-trm/valider` stamped `IDLigne_Commande_TRM = the OF's line` on every
+roll it created, déclassés included — the legacy leaves a 2nd choice at 0 (« Disponible » in Tombé
+Métier › Stock, affected by hand at shipping: 547/1 588 legacy déclassés carry a line, 546 of them
+shipped). The plan of `valider()` now decides the line per roll (0 when `second_choix = 1`) and
+exposes it in `?dry_run=1`; `check-visitage-trm.ts` asserts both cases, `probe-visitage-trm.ts`
+§6 counts the déclassés the poste reserved since 2026-08-26 (3 on prod, all shipped and invoiced,
+left alone), and `fix-choix2-affectation-trm.ts --write` frees any déclassé still in stock — run
+it on the host right after the deploy. **Commandes, « délai »** (LIVA #1123): the second write a
+mirrored commande accepts from TRM. `PUT /commandes-trm/lignes/:id/delai` writes
+`ligne_commande_client.date_livraison` AND, through `IDligne_commande_ETM`, the sst line with the
+same capture-once `date_delai` + `Attente_Delai → En_Cours` rules as this repo's own
+`PUT /commandes-sous-traitant/lignes/:id` — both now call `sstDelaiSets()` in `lib/sst-shared.ts`
+(pure, tested; the ETM route was refactored onto it without behaviour change). The TRM detail
+exposes `attente_delai` / `date_delai_initiale` per line, the list `lignes_sans_delai`. Guard
+`check-commandes-trm-delai.ts` (writes, localhost only, restores). Design doc §30.5 records that
+TRM's Clients › Commandes colours its left list on the délai, the opposite pick from ETM's.
 ## 2026-09-02 — feat/debug-3 (Facturation : un proforma par adresse de livraison — LIVA #1117)
 « Générer les factures » (formelle pass of `POST /factures/prov/generate`) now groups by client ×
 billing address of the commande × delivery address of the avis, via the pure `groupFormelle()` in

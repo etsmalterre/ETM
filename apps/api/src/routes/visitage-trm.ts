@@ -50,9 +50,18 @@
 //    1 344 of its 1 345 live rows sit on Type_Spotteur = 1, which matches.
 //  - Defects move between the rolls of a cut piece: 240 terminal-declared
 //    defects sit on a roll other than the first of their piece.
-//  - IDLigne_Commande_TRM on a new roll = ordre_fabrication
+//  - IDLigne_Commande_TRM on a new 1er choix roll = ordre_fabrication
 //    .IDligne_commande_client (12/12 on recent rolls). IDligne_commande_client
 //    stays 0 — it is ETM's column.
+//    ⚠️ A DÉCLASSÉ roll is NOT reserved: it leaves visitage with
+//    IDLigne_Commande_TRM = 0 and sits in Tombé Métier › Stock as
+//    « Disponible » until someone affects it by hand at shipping time
+//    (LIVA #1129, measured 2026-09-07 on prod: 547 of the 1 588 legacy
+//    déclassés carry a line and 546 of those are shipped — a line on a
+//    déclassé is the trace of a shipment, not of the visitage; the last
+//    legacy déclassé, 3541/1006, sits at 0). The
+//    12/12 sample above was all 1st choice, which is how the poste stamped
+//    déclassés for its first week — probe-visitage-trm.ts §6 watches it.
 //  - IDmagasin = 0 and IDsociete = 2 (6 662 / 6 663 société-2 rows).
 //
 // ── HFSQL discipline ────────────────────────────────────
@@ -989,9 +998,16 @@ async function valider(body: ValiderBody, dryRun: boolean, res: Response): Promi
     const nums = await nextNumeros(ofId)
     let nextFirst = nums.premier_choix
     let nextSecond = nums.second_choix
+    // Reservation: a 1er choix roll is reserved for the OF's commande line, a
+    // déclassé is not (line 0 → « Disponible » in Tombé Métier › Stock, to be
+    // affected by hand when it ships). Stamping the line on a déclassé put it
+    // on the commande's Affectation at full weight — LIVA #1129, see the
+    // header. Decided here so the dry run shows it and the guard can assert it.
+    const ligneOf = Number(of.IDligne_commande_client) || 0
     const plan = body.rouleaux.map((r) => ({
       ...r,
       num_piece_OF: r.second_choix === 1 ? nextSecond++ : nextFirst++,
+      IDLigne_Commande_TRM: r.second_choix === 1 ? 0 : ligneOf,
     }))
 
     // Yarn: every roll consumes, déclassés included — 43 of 75 open lots
@@ -1030,6 +1046,7 @@ async function valider(body: ValiderBody, dryRun: boolean, res: Response): Promi
           num_piece_OF: r.num_piece_OF,
           second_choix: r.second_choix,
           poids: r.poids,
+          IDLigne_Commande_TRM: r.IDLigne_Commande_TRM,
           defauts_reportes: r.defauts.filter((d) => d.id > 0).map((d) => d.id),
           defauts_ajoutes: r.defauts.filter((d) => d.id === 0).length,
         })),
@@ -1042,7 +1059,8 @@ async function valider(body: ValiderBody, dryRun: boolean, res: Response): Promi
     // ── 3. Writes ───────────────────────────────────────
     for (const r of plan) {
       // stock_ecru. IDsociete = 2, IDmagasin = 0, IDligne_commande_client = 0
-      // (that one is ETM's), IDLigne_Commande_TRM = the OF's line. lot/metrage
+      // (that one is ETM's), IDLigne_Commande_TRM = the OF's line on a 1er
+      // choix roll and 0 on a déclassé (decided in the plan above). lot/metrage
       // stay empty on TRM rows. IDPropriétaire is accented → never named.
       // newIdAfterInsert needs the pre-insert high-water mark: HFSQL hands
       // out the PK itself, so the new row is the first id above it.
@@ -1058,7 +1076,7 @@ async function valider(body: ValiderBody, dryRun: boolean, res: Response): Promi
                  ${r.second_choix}, ${sqlText(visiteurNom)}, ${sqlText(r.observations)},
                  '${nowDt()}', 0, ${TRM_SOCIETE}, ${ofId}, ${Number(of.IDref_ecru) || 0},
                  ${Number(of.IDcolori_ecru) || 0}, ${body.IDpiece_production},
-                 ${Number(of.IDligne_commande_client) || 0}, 0, 0, 0, 0, 0, 0)`,
+                 ${r.IDLigne_Commande_TRM}, 0, 0, 0, 0, 0, 0)`,
       )
       const rollId = await newIdAfterInsert('stock_ecru', 'IDstock_ecru', beforeId)
       created.push({

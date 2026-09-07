@@ -2931,7 +2931,7 @@ Apply it to any list card that carries a deadline the user cares about. Candidat
 - Production → Tricotage / Teinture / Confection — `date_prevue`
 - Transport → Expéditions / Livraisons — `date_expedition` / `date_livraison`
 
-**Exception — Clients → Commandes**: its left-list cards are neutral-by-default and color only on workflow state (amber = non affectée), NOT on delivery deadlines — see §41. Deadline urgency on that screen survives only at the line-card level inside the detail panel. When a screen's every card would end up red/amber under the deadline rule (long-running orders), prefer the §41 workflow-state model for the left list.
+**Exception — Clients → Commandes**: its left-list cards are neutral-by-default and color only on workflow state (amber = non affectée), NOT on delivery deadlines — see §41. Deadline urgency on that screen survives only at the line-card level inside the detail panel. When a screen's every card would end up red/amber under the deadline rule (long-running orders), prefer the §41 workflow-state model for the left list. **TRM's Clients → Commandes went the other way** (LIVA #1123, 2026-09-07): there the commande lives by its délai, so the liseré follows this §30 rule (red = something to do on our side: no délai on any line, or past; amber = act before it turns red), the §41 counter pill counts the reds, and the phase pill alone carries the workflow state. Same visual language, opposite pick — the test is "what does the user do first when a card is red?"
 
 The three-day window can be tuned per domain, but the visual language (red = late/missing, amber = soon, no decoration = normal) stays constant across the whole app so users don't have to re-learn it per screen.
 

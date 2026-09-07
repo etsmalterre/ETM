@@ -235,6 +235,21 @@ async function main(): Promise<void> {
       { got: second?.num_piece_OF, expected: maxSecond + 1 })
     check('numéro is OF/num', first?.numero === `${of.id}/${first?.num_piece_OF}`, first?.numero)
 
+    // Reservation (LIVA #1129): the 1er choix roll is reserved for the OF's
+    // commande line, the déclassé is NOT — it must land in Tombé Métier › Stock
+    // as « Disponible », to be affected by hand when it ships. The poste
+    // stamped déclassés for its first week and they showed on the commande's
+    // Affectation at full weight. The line is a plan field precisely so this
+    // can be asserted without a write.
+    const ligneOf = n(of.IDligne_commande_client)
+    if (ligneOf === 0) skip('1er choix reserved for the OF line', 'this OF has no commande line')
+    else check('1er choix is reserved for the OF\'s commande line',
+      n(first?.IDLigne_Commande_TRM) === ligneOf, { got: first?.IDLigne_Commande_TRM, expected: ligneOf })
+    // Strict on purpose: a plan that omits the field (the pre-fix API) must
+    // fail here, not slide through as "0".
+    check('déclassé is NOT reserved (IDLigne_Commande_TRM = 0)',
+      second?.IDLigne_Commande_TRM === 0, second?.IDLigne_Commande_TRM)
+
     // Yarn: every roll consumes, déclassés included, weighted by pourcentage.
     // This is the riskiest write of the feature — a wrong basis drifts the
     // ledger silently, and nothing downstream would ever flag it.

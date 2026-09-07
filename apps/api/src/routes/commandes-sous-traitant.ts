@@ -59,6 +59,7 @@ import {
   STATUT_ATTENTE_DELAI,
   isLineDone,
   lineStatutRank,
+  sstDelaiSets,
 } from '../lib/sst-shared.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -4201,26 +4202,15 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     if (d.unite !== undefined) sets.push(`unite = ${d.unite}`)
     if (d.prix !== undefined) sets.push(`prix = ${n(d.prix)}`)
     if (d.commentaire !== undefined) sets.push(`commentaire = '${esc(d.commentaire)}'`)
-    if (d.sstatut !== undefined) sets.push(`sstatut = '${esc(d.sstatut)}'`)
     if (d.date_livraison !== undefined) {
-      const nextLiv = dateStr(d.date_livraison)
-      const prevLiv = typeof cur.date_livraison === 'string' ? cur.date_livraison : ''
-      const prevDelai = typeof cur.date_delai === 'string' ? cur.date_delai : ''
-      // Capture-once rule: only promote prevLiv into date_delai if the line
-      // has never been rescheduled before (date_delai still equals
-      // date_livraison) AND this update actually changes date_livraison.
-      if (nextLiv !== prevLiv && prevDelai === prevLiv && prevLiv) {
-        sets.push(`date_delai = '${prevLiv}'`)
-      }
-      sets.push(`date_livraison = '${nextLiv}'`)
-      // State machine: editing date_livraison on an Attente_Delai line
-      // means the sst has confirmed a délai → flip to En_Cours. Lines in
-      // Non_Envoye keep their status (the bon de commande hasn't been
-      // sent yet, the date is hypothetical). An explicit d.sstatut in the
-      // patch wins over this auto-flip.
-      if (d.sstatut === undefined && (cur.sstatut ?? '').trim() === STATUT_ATTENTE_DELAI) {
-        sets.push(`sstatut = '${STATUT_OPEN}'`)
-      }
+      // Capture-once rule for date_delai + the Attente_Delai → En_Cours flip.
+      // Shared with TRM's `PUT /commandes-trm/lignes/:id/delai` (the sister
+      // company announcing its knitting date) — the rules live in
+      // lib/sst-shared.ts, the sstatut clause comes with them when the patch
+      // carries one.
+      sets.push(...sstDelaiSets(cur, d.date_livraison, d.sstatut).sets)
+    } else if (d.sstatut !== undefined) {
+      sets.push(`sstatut = '${esc(d.sstatut)}'`)
     }
 
     // Tricoteur prix recompute: when IDreference or quantite changes on a

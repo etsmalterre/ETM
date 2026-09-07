@@ -45,7 +45,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
-import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
+import { esc, n, dateDigits as dateStr, IS_WINDOWS, sstDelaiSets, STATUT_ATTENTE_DELAI } from '../lib/sst-shared.js'
 import { prixDeRevientTRM, prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -628,10 +628,13 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
     ])
 
     // Line aggregates + the production gauge, in two flat passes.
+    // `lignes_sans_delai` feeds the left list's urgency liseré (LIVA #1123):
+    // a commande with any undated line is "something to do on our side".
     const totalsMap = new Map<number, {
       total_eur: number; total_qte: number; nb_lignes: number
-      earliest_delivery: string | null; produit: number
+      earliest_delivery: string | null; produit: number; lignes_sans_delai: number
     }>()
+    const emptyTotals = () => ({ total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0, lignes_sans_delai: 0 })
     if (ids.length > 0) {
       const lignes = await query<any>(
         `SELECT IDligne_commande_client, IDcommande_client, quantite, prix, date_livraison
@@ -642,15 +645,17 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
       )
       for (const l of lignes) {
         const id = Number(l.IDcommande_client)
-        const acc = totalsMap.get(id) ?? { total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0 }
+        const acc = totalsMap.get(id) ?? emptyTotals()
         const qty = Number(l.quantite) || 0
         acc.total_qte += qty
         acc.total_eur += qty * (Number(l.prix) || 0)
         acc.nb_lignes += 1
         acc.produit += prodMap.get(Number(l.IDligne_commande_client))?.produit ?? 0
         const dl = typeof l.date_livraison === 'string' ? l.date_livraison : ''
-        if (/^\d{8}$/.test(dl) && (acc.earliest_delivery === null || dl < acc.earliest_delivery)) {
-          acc.earliest_delivery = dl
+        if (/^\d{8}$/.test(dl)) {
+          if (acc.earliest_delivery === null || dl < acc.earliest_delivery) acc.earliest_delivery = dl
+        } else {
+          acc.lignes_sans_delai += 1
         }
         totalsMap.set(id, acc)
       }
@@ -658,7 +663,7 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
 
     res.json(fixedCommandes.map((c: any) => {
       const cid = Number(c.IDcommande_client)
-      const t = totalsMap.get(cid) ?? { total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0 }
+      const t = totalsMap.get(cid) ?? emptyTotals()
       return {
         IDcommande_client: cid,
         IDclient: Number(c.IDclient) || 0,
@@ -676,6 +681,7 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
         produit: round2(t.produit),
         nb_lignes: t.nb_lignes,
         earliest_delivery: t.earliest_delivery,
+        lignes_sans_delai: t.lignes_sans_delai,
       }
     }))
   } catch (err) {
@@ -766,6 +772,26 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
       }
     }))
 
+    // The ETM sst line behind each mirrored line — the délai's other half
+    // (LIVA #1123): whether ETM is still waiting for a date (Attente_Delai)
+    // and the original date it froze on the first reschedule (date_delai).
+    // Read through the back-pointer; ASCII columns only.
+    const sstIds = lignesFixed.map((l) => Number(l.IDligne_commande_ETM) || 0).filter((x) => x > 0)
+    const sstMap = new Map<number, { sstatut: string; date_livraison: string; date_delai: string }>()
+    if (sstIds.length > 0) {
+      const sstRows = await query<any>(
+        `SELECT IDligne_commande_sous_traitant, sstatut, date_livraison, date_delai
+         FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant IN (${sstIds.join(',')})`,
+      )
+      for (const r of sstRows) {
+        sstMap.set(Number(r.IDligne_commande_sous_traitant), {
+          sstatut: String(r.sstatut ?? '').trim(),
+          date_livraison: typeof r.date_livraison === 'string' ? r.date_livraison : '',
+          date_delai: typeof r.date_delai === 'string' ? r.date_delai : '',
+        })
+      }
+    }
+
     const lignes = lignesFixed.map((l, i) => {
       const refId = Number(l.IDreference) || 0
       const info = refMap.get(refId)
@@ -773,6 +799,11 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
       const prix = Number(l.prix) || 0
       const prod = prodMap.get(Number(l.IDligne_commande_client)) ?? { nb_pieces: 0, produit: 0, expedie: 0 }
       const m = marges[i]
+      const sst = sstMap.get(Number(l.IDligne_commande_ETM) || 0)
+      // The frozen original only means something once it differs from the
+      // current date — same test as ETM's line card.
+      const delaiInitial = sst && sst.date_delai && sst.date_livraison && sst.date_delai !== sst.date_livraison
+        ? sst.date_delai : null
       return {
         IDligne_commande_client: Number(l.IDligne_commande_client),
         IDcommande_client: Number(l.IDcommande_client),
@@ -798,6 +829,10 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
         expedie: prod.expedie,
         // Mirrored lines carry a back-pointer to the ETM sst line that owns them.
         IDligne_commande_ETM: Number(l.IDligne_commande_ETM) || 0,
+        // Délai (LIVA #1123): ETM is waiting for TRM to announce a date.
+        attente_delai: sst?.sstatut === STATUT_ATTENTE_DELAI,
+        // The original délai ETM froze on the first reschedule, when it differs.
+        date_delai_initiale: delaiInitial,
       }
     })
 
@@ -1087,6 +1122,86 @@ commandesTrmRouter.put('/lignes/:lineId', async (req: Request, res: Response) =>
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating commande-trm ligne:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Délai (LIVA #1123) ────────────────────────────────────
+// The SECOND write a mirror accepts, after the état: the date TRM announces
+// it will have knitted the line. The legacy FI_Commande_TRMV2 window carried
+// it per line (ATT_delai in the line looper) and it is the sister company's
+// answer to ETM's « Attente délai ». So this route writes BOTH ledgers:
+//   - ligne_commande_client.date_livraison, the TRM line (what the card and
+//     the confirmation PDF show), on native and mirrored lines alike;
+//   - on a mirror, ligne_commande_sous_traitant.date_livraison through the
+//     line's back-pointer, with the same capture-once `date_delai` rule and
+//     the same Attente_Delai → En_Cours flip as ETM's own PUT /lignes
+//     (`sstDelaiSets`, lib/sst-shared.ts). ETM sees it on its next read.
+// It is deliberately a route of its own rather than a hole in `refuseIfMirror`:
+// the mirror rule stays "content is ETM's", and the two exceptions (état,
+// délai) are each named, gated and documented.
+const delaiBody = z.object({
+  date_livraison: z.string().regex(/^(\d{8}|\d{4}-\d{2}-\d{2})?$/, 'YYYYMMDD, YYYY-MM-DD or empty'),
+}).strict()
+
+commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
+  try {
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = delaiBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const nextLiv = dateStr(parsed.data.date_livraison)
+
+    const commandeId = await loadCommandeIdForLine(lineId)
+    if (commandeId === null) { res.status(404).json({ error: 'Ligne not found' }); return }
+    const g = await loadCommandeGuard(commandeId)
+    if (!g) { res.status(404).json({ error: 'Commande not found' }); return }
+    // A mirror is fine here (that is the point); a soldée order is not.
+    if (refuseIfSoldee(res, g)) return
+
+    await query(
+      `UPDATE ligne_commande_client SET date_livraison = '${nextLiv}' WHERE IDligne_commande_client = ${lineId}`,
+    )
+
+    // Cross-ledger half, mirrors only. The sst line is read AFTER the TRM
+    // write so a failure here leaves the TRM date in place and is reported,
+    // never hidden — the same contract as the ETM→TRM bridge (`mirror_status`).
+    let sst: { IDligne_commande_sous_traitant: number; date_livraison: string; date_delai: string; sstatut: string } | null = null
+    let sstStatus: 'updated' | 'skipped' | 'failed' | undefined
+    if (g.IDcommande_ETM > 0) {
+      try {
+        const link = await query<{ IDligne_commande_ETM: number | null }>(
+          `SELECT IDligne_commande_ETM FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+        )
+        const sstLineId = n(link[0]?.IDligne_commande_ETM)
+        const cur = sstLineId > 0
+          ? await query<{ date_livraison: string | null; date_delai: string | null; sstatut: string | null }>(
+            `SELECT date_livraison, date_delai, sstatut FROM ligne_commande_sous_traitant
+             WHERE IDligne_commande_sous_traitant = ${sstLineId}`,
+          )
+          : []
+        if (sstLineId === 0 || cur.length === 0) {
+          console.warn('[trm-bridge] DELAI: no sst line behind mirror cc line', lineId, '— skipping')
+          sstStatus = 'skipped'
+        } else {
+          const r = sstDelaiSets(cur[0], nextLiv)
+          await query(
+            `UPDATE ligne_commande_sous_traitant SET ${r.sets.join(', ')}
+             WHERE IDligne_commande_sous_traitant = ${sstLineId}`,
+          )
+          sst = { IDligne_commande_sous_traitant: sstLineId, date_livraison: r.date_livraison, date_delai: r.date_delai, sstatut: r.sstatut }
+          sstStatus = 'updated'
+        }
+      } catch (e: any) {
+        console.error('[trm-bridge] DELAI: sst update failed for cc line', lineId, e)
+        sstStatus = 'failed'
+      }
+    }
+
+    res.json({ ok: true, date_livraison: nextLiv, sst_status: sstStatus, sst })
+  } catch (err) {
+    console.error('Error updating commande-trm delai:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
