@@ -39,6 +39,8 @@ same capture-once `date_delai` + `Attente_Delai → En_Cours` rules as this repo
 exposes `attente_delai` / `date_delai_initiale` per line, the list `lignes_sans_delai`. Guard
 `check-commandes-trm-delai.ts` (writes, localhost only, restores). Design doc §30.5 records that
 TRM's Clients › Commandes colours its left list on the délai, the opposite pick from ETM's.
+## 2026-09-07 — feat/debug-3
+API du widget TRM « Rapport de production » (LIVA #1132) : `GET /api/dashboard-trm/rapport-production?du=&au=[&machine=][&ref=]`, port de FI_Rapport_de_production_période (Σ stock_ecru.poids sur date_saisie entre deux date-heures, IDordre_fabrication > 0 comme Prime, pas d'IDsociete), avec la répartition par métier et par référence et la part de 2nd choix ; calcul pur testé dans lib/rapport-production-trm.ts. Deux clés dans le catalogue TRM (permission-keys-trm.ts) : dashboard_rapport_production et dashboard_utilisation_fil (le widget « Utilisation fil » côté TRM est la copie verbatim d'ETM sur le même endpoint). Aucun changement côté ETM web.
 
 ## 2026-09-02 — feat/debug-3 (Facturation : un proforma par adresse de livraison — LIVA #1117)
 « Générer les factures » (formelle pass of `POST /factures/prov/generate`) now groups by client ×
