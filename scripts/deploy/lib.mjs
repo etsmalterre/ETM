@@ -121,3 +121,12 @@ export function stagingDir() {
   fs.mkdirSync(d, { recursive: true })
   return d
 }
+
+// GNU tar (git-bash's /usr/bin/tar, first on PATH under the Bash tool) reads
+// "C:\…" as a REMOTE HOST and dies with "Cannot connect to C: resolve failed".
+// Windows ships bsdtar in System32; pin it. Returns { status } like spawnSync.
+export function tarCreate(tarball, cwd) {
+  // Doubled backslashes: '\W' / '\S' are silently dropped by JS and '\t' is a TAB.
+  const exe = process.platform === 'win32' ? 'C:\\Windows\\System32\\tar.exe' : 'tar'
+  return spawnSync(exe, ['czf', tarball, '-C', cwd, '.'], { stdio: 'inherit' })
+}

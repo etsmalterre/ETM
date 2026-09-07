@@ -23,7 +23,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
   ETM, TRM, WEB_HOST, assertReachable, die, git, guardTree, httpBody, httpCode, ok,
-  remoteScript, scp, short, stagingDir, step,
+  remoteScript, scp, short, stagingDir, step, tarCreate,
 } from './lib.mjs'
 
 // THE table. A per-app difference is a row, never a fork. preflight.mjs has the
@@ -101,7 +101,7 @@ if (dryRun) { ok(`dry run — ${label} ${short(sha)} v${version} is ready to shi
 step(`upload → ${WEB_HOST}:${remoteDist}`)
 const tarball = path.join(stagingDir(), `${appKey}_web_dist.tar.gz`)
 fs.rmSync(tarball, { force: true })
-const t = spawnSync('tar', ['czf', tarball, '-C', dist, '.'], { stdio: 'inherit' })
+const t = tarCreate(tarball, dist)
 if (t.status !== 0) die('tar failed')
 scp(tarball, WEB_HOST, `/home/debian/${appKey}_web_dist.tar.gz`)
 const ex = remoteScript(WEB_HOST, `

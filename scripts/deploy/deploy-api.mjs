@@ -27,7 +27,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
   API_HOST, ETM, assertReachable, die, git, guardTree, httpCode, ok, red, remote,
-  remoteScript, scp, short, stagingDir, step,
+  remoteScript, scp, short, stagingDir, step, tarCreate,
 } from './lib.mjs'
 
 const argv = process.argv.slice(2)
@@ -89,7 +89,7 @@ fs.cpSync(path.join(apiDir, 'src'), path.join(stage, 'src'), {
 if (depsChanged) fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify(local, null, 2) + '\n')
 const tarball = path.join(stagingDir(), 'mps_api_src.tar.gz')
 fs.rmSync(tarball, { force: true })
-const t = spawnSync('tar', ['czf', tarball, '-C', stage, '.'], { stdio: 'inherit' })
+const t = tarCreate(tarball, stage)
 if (t.status !== 0) die('tar failed')
 ok(`${tarball} (${(fs.statSync(tarball).size / 1024 / 1024).toFixed(1)} MB)`)
 
