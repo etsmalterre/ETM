@@ -36,6 +36,7 @@ import {
   sqlText,
   nowDt,
 } from '../lib/production-trm.js'
+import { terminerOf } from '../lib/of-queue-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { maxId } from './expeditions.js'
@@ -708,8 +709,12 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
           `UPDATE ordre_fabrication SET arret_prod = '${nowDt()}' WHERE IDordre_fabrication = ${id}`,
         )
         ecrits.push('arret_prod')
-        const active = await autoActivation(id, ctx.IDmachine, ctx.priorite)
-        if (active > 0) ecrits.push(`OF ${active} activé`)
+        // Close the OF the way the web button does (est_termine, priorite,
+        // re-rank, auto-activation of the head) — see lib/of-queue-trm.ts for
+        // why the legacy est_actif-only flip was abandoned (LIVA #1128).
+        const { activated } = await terminerOf(id, ctx.IDmachine, { stampArret: false })
+        ecrits.push('OF terminé')
+        if (activated > 0) ecrits.push(`OF ${activated} activé`)
         break
       }
 
@@ -842,32 +847,11 @@ async function ecrireDefaut(d: {
   return newId
 }
 
-/** Hand the métier to the next OF in its queue.
- *
- *  Legacy AutoActivation(), verbatim:
- *    SELECT ordre_fabrication.IDordre_fabrication FROM ordre_fabrication
- *    WHERE IDmachine = {pIDMachine} AND priorite = {pPriorite}
- *      AND auto_activation = 1
- *  with pPriorite = the finished OF's priorite + 1, and the flip happening
- *  only `SI reqOFSuivant.NbEnr() = 1` — EXACTLY one candidate.
- *
- *  ⚠️ `auto_activation` is read on the NEXT OF, not on the one being closed.
- *  Note also that the legacy always clears est_actif on the current OF inside
- *  that same `if`: when there is no eligible successor the métier is left with
- *  its finished OF still flagged active, which is what the OF screen's queue
- *  arrows then let a régleur sort out. Reproduced rather than "fixed" — the
- *  ERP's own /of-trm endpoints already own that flip, and two different rules
- *  for the same column is how a queue silently forks. */
-async function autoActivation(ofId: number, machineId: number, priorite: number): Promise<number> {
-  if (machineId <= 0) return 0
-  const rows = await query<{ IDordre_fabrication: number }>(
-    `SELECT IDordre_fabrication FROM ordre_fabrication
-     WHERE IDmachine = ${machineId} AND priorite = ${priorite + 1} AND auto_activation = 1`,
-  )
-  if (rows.length !== 1) return 0
-  const next = n(rows[0].IDordre_fabrication)
-  if (next <= 0) return 0
-  await query(`UPDATE ordre_fabrication SET est_actif = 0 WHERE IDordre_fabrication = ${ofId}`)
-  await query(`UPDATE ordre_fabrication SET est_actif = 1 WHERE IDordre_fabrication = ${next}`)
-  return next
-}
+// The legacy AutoActivation() — `SELECT … WHERE IDmachine = ? AND priorite =
+// finished + 1 AND auto_activation = 1`, flip est_actif when EXACTLY one row —
+// used to be reproduced here verbatim. It leaves the finished OF with
+// est_termine = 0 and its old rank, which the ERP reads as « En attente » and
+// Visitage as the queue head (LIVA #1128, 2026-09-07). The phone now closes an
+// OF through lib/of-queue-trm.ts terminerOf, the same path as the web button;
+// the Android terminals still in use write the old shape, which
+// healHandedOverOfs repairs on the ERP reads.

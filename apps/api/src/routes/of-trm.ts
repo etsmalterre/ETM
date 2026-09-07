@@ -33,9 +33,10 @@
 //  - Terminé   = est_termine = 1 (priorite reset to 0)
 //  - Terminer: est_termine←1, est_actif←0, priorite←0, arret_prod←now, then the
 //    machine's queue is re-ranked and, if the new head has auto_activation = 1,
-//    it becomes est_actif = 1. The legacy auto-activation trigger lives in the
-//    unreadable workshop terminal code — this route now owns that flip for
-//    web-driven completions; both write the same columns, so no conflict.
+//    it becomes est_actif = 1. That transition lives in lib/of-queue-trm.ts
+//    (terminerOf), shared with the phone's « Terminer OF » — and the legacy
+//    Android handover, which only flips est_actif, is repaired on every list
+//    read (healHandedOverOfs, LIVA #1128). Never write these columns elsewhere.
 //
 // Deliberate approximations (the legacy windows are PCS-compressed):
 //  - Per-piece % = théorique/réel with théorique_min =
@@ -62,6 +63,7 @@ import {
   selectStockFilByIds, resolveLigneContexts, loadOf, realiseByOf, OF_COLUMNS,
   type DefautRow, type StockFilLot, type OfRow,
 } from '../lib/production-trm.js'
+import { rerankQueue, activeOfOnMachine, terminerOf, healHandedOverOfs } from '../lib/of-queue-trm.js'
 
 export const ofTrmRouter: RouterType = Router()
 
@@ -148,40 +150,9 @@ async function hasProduction(ofId: number): Promise<boolean> {
 }
 
 // ── Queue management ─────────────────────────────────────
-
-interface QueueEntry { id: number; priorite: number; est_actif: number; auto_activation: number }
-
-/** Re-rank a métier's open queue to a dense 1..n (active OF first). Returns the
- *  ranked queue. Priorite semantics recovered from live data: 1 = the running
- *  OF, 2 = next, …; 0 once terminé. */
-async function rerankQueue(machineId: number): Promise<QueueEntry[]> {
-  if (machineId <= 0) return []
-  const rows = await query<any>(
-    `SELECT IDordre_fabrication, priorite, est_actif, auto_activation
-     FROM ordre_fabrication WHERE IDmachine = ${machineId} AND est_termine = 0
-     ORDER BY est_actif DESC, priorite ASC, IDordre_fabrication ASC`,
-  )
-  const out: QueueEntry[] = []
-  let p = 1
-  for (const r of rows) {
-    const id = Number(r.IDordre_fabrication)
-    if (Number(r.priorite) !== p) {
-      await query(`UPDATE ordre_fabrication SET priorite = ${p} WHERE IDordre_fabrication = ${id}`)
-    }
-    out.push({ id, priorite: p, est_actif: Number(r.est_actif) || 0, auto_activation: Number(r.auto_activation) || 0 })
-    p++
-  }
-  return out
-}
-
-async function activeOfOnMachine(machineId: number, excludeId = 0): Promise<number> {
-  const rows = await query<{ IDordre_fabrication: number }>(
-    `SELECT IDordre_fabrication FROM ordre_fabrication
-     WHERE IDmachine = ${machineId} AND est_actif = 1 AND est_termine = 0
-       AND IDordre_fabrication <> ${excludeId}`,
-  )
-  return Number(rows[0]?.IDordre_fabrication) || 0
-}
+// rerankQueue / activeOfOnMachine / terminerOf live in lib/of-queue-trm.ts —
+// shared with routes/atelier.ts so the phone and the web close an OF the same
+// way (LIVA #1128).
 
 // ════════════════════════════════════════════════════════
 //  LOOKUPS  (literal paths — must register before /:id)
@@ -688,6 +659,9 @@ ofTrmRouter.get('/', async (req: Request, res: Response) => {
   try {
     const statut = typeof req.query.statut === 'string' ? req.query.statut : 'encours'
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    // The legacy Android handover leaves a finished OF in « attente » shape;
+    // close it before listing so no tab ever shows it (LIVA #1128).
+    await healHandedOverOfs()
 
     let where: string
     let order: string
@@ -1865,20 +1839,7 @@ ofTrmRouter.post('/:id/terminer', async (req: Request, res: Response) => {
       res.status(409).json({ error: 'of_termine', message: 'OF déjà terminé.' })
       return
     }
-    await query(
-      `UPDATE ordre_fabrication SET est_termine = 1, est_actif = 0, priorite = 0,
-         arret_prod = '${nowDt()}' WHERE IDordre_fabrication = ${id}`,
-    )
-    const machineId = Number(of.IDmachine) || 0
-    let activated = 0
-    if (machineId > 0) {
-      const queue = await rerankQueue(machineId)
-      const head = queue[0]
-      if (head && head.est_actif === 0 && head.auto_activation === 1) {
-        await query(`UPDATE ordre_fabrication SET est_actif = 1 WHERE IDordre_fabrication = ${head.id}`)
-        activated = head.id
-      }
-    }
+    const { activated } = await terminerOf(id, Number(of.IDmachine) || 0, { stampArret: true })
     res.json({ ok: true, activated })
   } catch (err) {
     console.error('Error terminating of-trm:', err)

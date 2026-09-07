@@ -90,6 +90,7 @@ import {
   awaitingPieces,
   type DefautRow, type WaitingPieceRow,
 } from '../lib/production-trm.js'
+import { activeOfOnMachine, healHandedOverOfs } from '../lib/of-queue-trm.js'
 import { EtiquetteEcruPdf, type EtiquetteEcruData } from '../lib/pdf/EtiquetteEcruPdf.js'
 import { createSerialLock } from '../lib/serial-lock.js'
 
@@ -208,27 +209,19 @@ async function awaitingByMachine(): Promise<Map<number, PieceRow[]>> {
   return out
 }
 
-/** The OF at the head of a métier's queue — the legacy's machine → OF hop,
- *  verbatim from the compile cache. `est_actif` names the running OF; the
- *  `priorite <= prio_actif.priorite AND priorite <> 0` pair then takes the
- *  lowest-ranked open OF at or before it. Returns 0 when the métier has none
- *  ("Pas d'OF affecté à cette machine"). */
+/** The OF the poste opens on for a métier = the OF « en cours » (est_actif = 1,
+ *  est_termine = 0). Returns 0 when the métier has none ("Pas d'OF affecté à
+ *  cette machine").
+ *
+ *  ⚠️ This used to be the legacy's query verbatim — the lowest-ranked open OF
+ *  at or before the active one's priorite. After the legacy Android handover
+ *  (est_actif flipped, est_termine and priorite untouched) that rule picked the
+ *  FINISHED OF, and the new OF's pieces were only reachable as strays: LIVA
+ *  #1128. The running OF is the context; the previous OF's last pieces still
+ *  come through `autres_pieces` (they are strays of the last 7 days). Callers
+ *  run healHandedOverOfs first so the leftover is closed, not merely ignored. */
 async function headOfForMachine(machineId: number): Promise<number> {
-  const rows = await query<{ IDordre_fabrication: number }>(
-    `SELECT ordre_fabrication.IDordre_fabrication
-     FROM ordre_fabrication
-     LEFT JOIN (
-       SELECT ordre_fabrication.IDmachine, ordre_fabrication.priorite
-       FROM ordre_fabrication WHERE ordre_fabrication.est_actif = 1
-     ) prio_actif ON prio_actif.IDmachine = ordre_fabrication.IDmachine
-     WHERE ordre_fabrication.IDmachine = ${machineId}
-       AND ordre_fabrication.est_termine = 0
-       AND ordre_fabrication.priorite <= prio_actif.priorite
-       AND ordre_fabrication.priorite <> 0
-     ORDER BY ordre_fabrication.priorite ASC
-     LIMIT 1`,
-  )
-  return Number(rows[0]?.IDordre_fabrication) || 0
+  return activeOfOnMachine(machineId)
 }
 
 /** Open (non-terminé) OFs of a métier — the population `autres_pieces` scans
@@ -424,6 +417,9 @@ function shapeDefauts(rows: DefautRow[], names: Map<number, { prenom: string; no
 // terminé OF never appear there at all.
 visitageTrmRouter.get('/lookups/metiers', async (req: Request, res: Response) => {
   try {
+    // Close what the legacy Android handover left half-open, so the head of
+    // every métier below is really the OF in production (LIVA #1128).
+    await healHandedOverOfs()
     const actives = await query<{ IDmachine: number }>(
       `SELECT IDmachine FROM ordre_fabrication WHERE est_actif = 1 AND est_termine = 0`,
     )
@@ -527,6 +523,7 @@ visitageTrmRouter.get('/poste', async (req: Request, res: Response) => {
     if (!machine) { res.status(404).json({ error: 'Métier introuvable' }); return }
     const metier = { id: machine.id, emplacement: machine.emplacement, nom: machine.nom }
 
+    await healHandedOverOfs(machineId)
     const headId = await headOfForMachine(machineId)
     // Strays older than ORPHAN_MAX_AGE_DAYS are off the screen: a stale tab
     // asking for one gets the same 409 as a piece another poste took.
