@@ -31,6 +31,7 @@ import React from 'react'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { CommandeClientPdf, type CommandeClientPdfData } from '../lib/pdf/CommandeClientPdf.js'
 import { FacturePdf, type FacturePdfData } from '../lib/pdf/FacturePdf.js'
+import { formatSirenForDocument } from '../lib/siren.js'
 import { CgvPdf } from '../lib/pdf/CgvPdf.js'
 import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
@@ -4706,13 +4707,16 @@ export async function buildProformaPdfData(id: number): Promise<FacturePdfData |
   // uses (factures.ts billingDefaults). The TVA rate already comes from the
   // client via buildClientPdfData; only the VAT number is read here.
   let numTva: string | null = null
+  let siren: string | null = null
   const tvaRate = base.tvaRate
   if (IDclient > 0) {
     try {
-      const cli = await query<{ num_tva: string | null }>(
-        `SELECT num_tva FROM client WHERE IDclient = ${IDclient}`,
+      const cli = await query<{ num_tva: string | null; siren: unknown }>(
+        `SELECT num_tva, siren FROM client WHERE IDclient = ${IDclient}`,
       )
       numTva = ((cli[0]?.num_tva ?? '').toString().trim()) || null
+      // LIVA #1130 — same rule as the definitive invoice (factures.ts).
+      siren = formatSirenForDocument(cli[0]?.siren)
     } catch { /* keep defaults */ }
   }
 
@@ -4726,6 +4730,7 @@ export async function buildProformaPdfData(id: number): Promise<FacturePdfData |
     isProforma: true,
     dateFacture: formatHfsqlDateLongFr(todayYmd),
     clientNom: base.clientNom,
+    siren,
     numTva,
     adresseFacturation: base.adresseFacturation,
     modePaiement: base.modePaiement,

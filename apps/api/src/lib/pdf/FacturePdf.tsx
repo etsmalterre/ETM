@@ -1,7 +1,7 @@
 // PDF document for a client invoice ("Facture") or credit note ("Avoir"),
 // rendered inside the shared MalterreDocument frame. Mirrors CommandeClientPdf
 // but for the facture/ligne_facture model: a header with the client billing
-// address + payment terms (N° TVA, mode de paiement, échéance), a lines table
+// address + payment terms (SIREN, N° TVA, mode de paiement, échéance), a lines table
 // (free-text désignation · qté+unité · prix u. · montant), and a totals block
 // (HT, TVA, TTC). An Avoir uses the same layout — only the document title and
 // reference change; amounts are shown positive (the "AVOIR" heading conveys the
@@ -17,6 +17,7 @@ import {
   ClockIcon,
   MessageSquareIcon,
   LandmarkIcon,
+  FactoryIcon,
   TagIcon,
   type AddressBlockData,
 } from './MalterreDocument.js'
@@ -42,6 +43,10 @@ export interface FacturePdfData {
   /** "25 mars 2026" — long-form French. */
   dateFacture: string
   clientNom: string
+  /** Client SIREN, already formatted « 123 456 789 » (LIVA #1130): the key
+   *  the facturation électronique routes an invoice on. Read from the client
+   *  record at render time, omitted when the client has none. */
+  siren?: string | null
   /** Client VAT number (free text on the invoice). */
   numTva: string | null
   adresseFacturation: AddrLite | null
@@ -263,6 +268,13 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
                 <View style={styles.comboMetaIconBox}><TagIcon /></View>
                 <Text style={styles.comboMetaLabel}>N° commande</Text>
                 <Text style={styles.comboMetaValue}>{`N°${data.refCommande}`}</Text>
+              </View>
+            ) : null}
+            {data.siren ? (
+              <View style={styles.comboMetaRow}>
+                <View style={styles.comboMetaIconBox}><FactoryIcon size={11} /></View>
+                <Text style={styles.comboMetaLabel}>SIREN</Text>
+                <Text style={styles.comboMetaValue}>{data.siren}</Text>
               </View>
             ) : null}
             {data.numTva ? (

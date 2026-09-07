@@ -64,6 +64,7 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { FacturePdf, type FacturePdfData } from '../lib/pdf/FacturePdf.js'
+import { loadClientSirenForDocument } from '../lib/siren.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
@@ -2027,13 +2028,16 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
   if (Number(h.IDsociete) !== scope.societe) return null
   const IDclient = Number(h.IDclient) || 0
 
-  const [clientNames, adr, lignes, tvaMap, modePaiement, echeance] = await Promise.all([
+  const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, siren] = await Promise.all([
     resolveClientNames([IDclient]),
     loadAdresse(Number(h.IDadresse) || 0),
     loadFactureLines(kind, id),
     loadTvaMap(),
     loadModePaiementLabel(Number(h.IDmode_paiement) || 0),
     loadEcheanceRule(Number(h.IDecheance) || 0),
+    // LIVA #1130 — the SIREN is read from the client, not stored on the
+    // facture (see loadClientSirenForDocument for why no snapshot is needed).
+    loadClientSirenForDocument(query, IDclient),
   ])
   const tva = tvaMap.get(Number(h.IDtva)) ?? { valeur: 0, libelle: '' }
 
@@ -2049,6 +2053,7 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
     isProforma: kind === 'prov',
     dateFacture: formatHfsqlDateLongFr(h.DATE),
     clientNom: clientNames.get(IDclient) ?? '',
+    siren,
     numTva: (h.num_tva ?? '').toString() || null,
     adresseFacturation: cleanAddr,
     modePaiement,

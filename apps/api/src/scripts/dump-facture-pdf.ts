@@ -12,6 +12,7 @@ const data: FacturePdfData = {
   type: 1,
   dateFacture: '6 juillet 2026',
   clientNom: 'FATTON Orly',
+  siren: '552 100 554',
   numTva: 'FR 12 345 678 901',
   adresseFacturation: {
     nom: 'FATTON Orly', adresse1: 'Zone de Fret Juliette', adresse2: 'Bâtiment 131 A BP 786', adresse3: null,

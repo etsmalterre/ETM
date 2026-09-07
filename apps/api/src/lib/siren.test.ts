@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeSiren, isValidSiren, sirenLuhnOk } from './siren.js'
+import { normalizeSiren, isValidSiren, sirenLuhnOk, formatSiren, formatSirenForDocument } from './siren.js'
 
 describe('normalizeSiren', () => {
   it('keeps the digits only', () => {
@@ -40,5 +40,25 @@ describe('sirenLuhnOk', () => {
   it('is false for anything that is not 9 digits', () => {
     expect(sirenLuhnOk('')).toBe(false)
     expect(sirenLuhnOk('55210055400013')).toBe(false)
+  })
+})
+
+describe('formatSiren / formatSirenForDocument (LIVA #1130)', () => {
+  it('prints a full SIREN in groups of three', () => {
+    expect(formatSiren('552100554')).toBe('552 100 554')
+    expect(formatSiren('552 100 554')).toBe('552 100 554')
+  })
+  it('leaves an incomplete value as bare digits', () => {
+    expect(formatSiren('55210')).toBe('55210')
+    expect(formatSiren('')).toBe('')
+  })
+  it('gives a document a formatted SIREN or nothing at all', () => {
+    expect(formatSirenForDocument('552100554')).toBe('552 100 554')
+    expect(formatSirenForDocument(' 552.100.554 ')).toBe('552 100 554')
+    expect(formatSirenForDocument('')).toBeNull()
+    expect(formatSirenForDocument(null)).toBeNull()
+    expect(formatSirenForDocument(undefined)).toBeNull()
+    // A junk value must not reach the invoice half-formatted.
+    expect(formatSirenForDocument('12345')).toBeNull()
   })
 })

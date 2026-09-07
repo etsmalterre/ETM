@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-07 — feat/debug-2 (SIREN sur la facture — LIVA #1130)
+Clients › Facturation. The invoice PDF now carries the client's SIREN — the key the facturation
+électronique will route on — as a « SIREN · 123 456 789 » row at the top of the terms card, before
+N° TVA. **Read from `client.siren` at render time, never copied onto `facture`**: a SIREN identifies
+the legal entity for life (another SIREN = another client), so unlike `num_tva` there is no
+"as issued" value to snapshot, and no schema change. A client without one gets no row. Both
+builders are wired — `buildFacturePdfData` (`factures.ts`, ETM and TRM mounts, so facture + avoir)
+and `buildProformaPdfData` (`commandes-client.ts`) — through `formatSirenForDocument` /
+`loadClientSirenForDocument` in `lib/siren.ts` (`formatSiren` mirrored from the web lib). Guard:
+`check-siren.ts` gained a PDF element-tree section (row present + formatted + before N° TVA, absent
+without a SIREN, live reader returns null on an empty client); `siren.test.ts` +3 cases. Verified on a
+real dev invoice through the slot API with a SIREN stamped then restored. The dev copy has 0 clients
+with a SIREN, so the live-read branch of the guard only exercises itself on prod.
+
 ## 2026-09-07 — feat/debug-1 (avis d'expédition divers sans prix — LIVA #1127)
 Isabelle: the new AE divers printed a unit price and a line total on every priced article plus
 a euro grand total; Unicycle only wants the piece count, as on the legacy
