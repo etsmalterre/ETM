@@ -1001,10 +1001,8 @@ stockFilTrmRouter.get('/fil-trm/:id/label', async (req: Request, res: Response) 
       ref_fil: String(row.ref_fil ?? '').trim(),
       colori_reference: String(row.colori_reference ?? '').trim(),
       client_nom: String(row.client_nom ?? '').trim(),
-      lot_frs: String(row.lot_frs ?? '').trim(),
-      stock_initial: floatOf(row.stock_initial),
-      emplacement: String(row.emplacement ?? '').trim(),
-      niveau: numOf(row.niveau),
+      // Poids, lot fournisseur and emplacement dropped on purpose — LIVA #1133,
+      // see the note at the top of StockFilLabelPdf.tsx.
     }
     const buffer = await renderToBuffer(
       React.createElement(StockFilLabelPdf, { data }) as React.ReactElement,

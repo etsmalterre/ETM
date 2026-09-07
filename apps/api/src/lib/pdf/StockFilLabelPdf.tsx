@@ -6,6 +6,14 @@
 // "Large Address" page (89 × 36 mm), same left vertical Malterre-logo band,
 // with the lot number as the headline and the yarn-lot identity lines.
 //
+// 2026-09-07 (LIVA #1133, Nicolas Antonino, approved by the user): the label
+// is read on pallets that are STACKED, so the lot number has to be legible
+// from a distance. Three lines were dropped because they said nothing
+// durable — the weight (moves every visitage), the supplier lot (never
+// looked up on the floor) and the emplacement (misleading once the pallet is
+// moved) — and the space went to the lot number, now the whole upper half of
+// the label. What stays: lot, référence, coloris, client.
+//
 // Self-contained: built-in Helvetica family (no Font.register) so the tiny
 // label has no font-path dependency.
 
@@ -31,18 +39,6 @@ export interface StockFilLabelData {
   ref_fil: string | null
   colori_reference: string | null
   client_nom: string | null
-  lot_frs: string | null
-  /** kg received — the label states the lot's nominal weight, not the moving stock. */
-  stock_initial: number | string | null
-  emplacement: string | null
-  niveau: number | null
-}
-
-function fmtKg(value: number | string | null): string {
-  if (value == null || value === '') return ''
-  const n = typeof value === 'string' ? Number(value) : value
-  if (!Number.isFinite(n)) return ''
-  return `${Math.round(n * 10) / 10} Kg`
 }
 
 function clean(value: string | null): string {
@@ -77,10 +73,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingLeft: 6,
   },
-  lot: {
+  lotRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginBottom: 2,
+  },
+  lotCaption: {
+    fontSize: 9,
+    marginRight: 5,
+  },
+  // The headline: a 5-digit lot at 48 pt Helvetica-Bold is ~135 pt wide on a
+  // ~200 pt body — legible from a couple of metres, which is the point. Six
+  // digits (the counter is at 10 5xx in 2026) still fit.
+  lotNumber: {
     fontFamily: 'Helvetica-Bold',
-    fontSize: 15,
-    marginBottom: 1,
+    fontSize: 48,
+    lineHeight: 1,
   },
   line: {
     fontSize: 10,
@@ -91,9 +99,6 @@ const styles = StyleSheet.create({
 // ── Component ─────────────────────────────────────────────
 
 export function StockFilLabelPdf({ data }: { data: StockFilLabelData }): React.ReactElement {
-  const empl = [clean(data.emplacement), data.niveau != null && data.niveau > 0 ? `Niv. ${data.niveau}` : '']
-    .filter(Boolean)
-    .join(' / ')
   return (
     <Document>
       <Page size={[PAGE_WIDTH, PAGE_HEIGHT]} style={styles.page}>
@@ -101,13 +106,13 @@ export function StockFilLabelPdf({ data }: { data: StockFilLabelData }): React.R
           <Image src={LOGO_BUFFER} style={styles.logo} />
         </View>
         <View style={styles.body}>
-          <Text style={styles.lot}>Lot : {clean(data.lot)}</Text>
+          <View style={styles.lotRow}>
+            <Text style={styles.lotCaption}>Lot</Text>
+            <Text style={styles.lotNumber}>{clean(data.lot)}</Text>
+          </View>
           <Text style={styles.line}>Réf. : {clean(data.ref_fil)}</Text>
           <Text style={styles.line}>Col. : {clean(data.colori_reference)}</Text>
           <Text style={styles.line}>Client : {clean(data.client_nom)}</Text>
-          <Text style={styles.line}>Lot frs : {clean(data.lot_frs)}</Text>
-          <Text style={styles.line}>Poids : {fmtKg(data.stock_initial)}</Text>
-          <Text style={styles.line}>Empl. : {empl}</Text>
         </View>
       </Page>
     </Document>
