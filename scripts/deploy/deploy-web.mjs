@@ -90,9 +90,16 @@ function checkBundle(read, where) {
     if (js.includes(`"${version}"`)) hasVersion = true
   }
   if (!hasApi) die(`${where}: no index chunk carries ="/api" — the API base is wrong, do NOT deploy`)
-  if (!hasVersion) die(`${where}: version "${version}" not found in any index chunk — built from the wrong tree?`)
-  ok(`${where}: API base /api, version ${version}, no dev fallback, no mangled path (${chunks.length} index chunk(s))`)
+  // An app that declares __APP_VERSION__ but never renders it (atelier, as of
+  // 2026-09-07) has the string tree-shaken away: only assert it where it is used.
+  if (!hasVersion && rendersVersion) die(`${where}: version "${version}" not found in any index chunk — built from the wrong tree?`)
+  ok(`${where}: API base /api, ${hasVersion ? `version ${version}` : `version not rendered by this app (${version} in package.json)`}, no dev fallback, no mangled path (${chunks.length} index chunk(s))`)
 }
+const rendersVersion = (() => {
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(path.join(d, e.name)) : /\.(tsx?|jsx?)$/.test(e.name) && !e.name.endsWith('.d.ts') ? [path.join(d, e.name)] : [])
+  return walk(path.join(appDir, 'src')).some((f) => fs.readFileSync(f, 'utf8').includes('__APP_VERSION__'))
+})()
 checkBundle((c) => fs.readFileSync(path.join(assets, c), 'utf8'), 'local dist')
 
 if (dryRun) { ok(`dry run — ${label} ${short(sha)} v${version} is ready to ship; nothing uploaded`); process.exit(0) }
