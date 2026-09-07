@@ -154,11 +154,15 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    notes for completed phases, references to deleted files. **Never relocate content mid-landing** — finish the
    merge, then offer the extraction in the step-8 report.
 
-   *Known state (2026-09-02):* ETM's `CLAUDE.md` is ~53 KB and still needs a dedicated
-   extraction pass — mention it once, don't re-litigate it. TRM's hit the tool's hard
-   **150 k-char limit** (157 k) that day and was split into `claude_doc/` (18 dossiers) + a
-   47 KB summary sheet; see TRM's `CLAUDE.md` § Feature dossiers for the shape to copy when
-   ETM's pass happens. The 20 KB figure above is the target, 150 k is the wall.
+   *Known state (2026-09-07):* ETM's `CLAUDE.md` had reached 147 KB (~40 k tokens) and was
+   split that day into a ~30 KB rules sheet + `claude_doc/screen_notes.md` (per-screen
+   post-mortems, one section per menu), `claude_doc/dashboard_widgets.md` (widget doctrine),
+   `claude_doc/frontend_rules.md` and a "Footguns — full case histories" section appended to
+   `claude_doc/hfsql_odbc.md`. **That is where a feature's notes go now**: a one- or two-line
+   rule in `CLAUDE.md` (with a ticket number), the story in the matching `claude_doc` file.
+   TRM's hit the tool's hard **150 k-char limit** (157 k) on 2026-09-02 and was split the same
+   way (`claude_doc/` dossiers + a 47 KB summary sheet). The 20 KB figure above is the target,
+   150 k is the wall.
 
    **2c — the note + commit.** Craft a thorough summary of what this screen does — this is the
    **note**, used as the merge-commit message. If the project has a merge log

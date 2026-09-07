@@ -43,7 +43,7 @@ ETM/
 │           ├── pages/            # Dashboard, Entreprises, FilsGestion, FilsReferences, FilsStock, FilsCommandes, SousTraitantsCommandes, SousTraitantsGestion, EtudesColoris, FinisReferences, FinisStock, TombeMetierReferences, TombeMetierStock, DiversReferences, ProspectsDemandes, SettingsUtilisateurs
 │           ├── main.tsx          # QueryClient → UserProvider → PermissionsProvider → UserPickerGate → RouterProvider
 │           └── router.tsx
-├── claude_doc/                   # Detailed reference docs (load on demand)
+├── claude_doc/                   # Detailed reference docs (load on demand): screen_notes.md (per-screen rules), dashboard_widgets.md, frontend_rules.md, hfsql_odbc.md (+ footgun case histories), …
 ├── data_migration/               # Legacy PostgreSQL migration scripts (reference)
 ├── packages/                     # shared/, db/ (legacy PostgreSQL, unused)
 ├── .claude/skills/               # mps_designer/, etm_deploy/, worktree skills (ssh-context is user-level, ~/.claude/skills/)
