@@ -10,6 +10,17 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-07 — feat/debug-1 (avis d'expédition divers sans prix — LIVA #1127)
+Isabelle: the new AE divers printed a unit price and a line total on every priced article plus
+a euro grand total; Unicycle only wants the piece count, as on the legacy
+`ETAT_Expédition_diverse` (model DIV632). `BonLivraisonDiversPdf.tsx` drops the P.U. / TOTAL (€)
+columns and the euro total, and `BlDiversItem` loses its `prix` field entirely so the builder
+cannot smuggle one back; the per-carton footer and the gold box now count pieces per unit
+(`quantiteParUnite`, « 13 unités · 2,50 Ml »). `buildBlDiversPdfData` no longer passes the
+price; `dump-bl-divers-pdf.ts` lost its `--no-prices` toggle. DB-free guard
+`check-bl-divers-sans-prix.ts` (element-tree walk; optional real id). Left as is: unit 4 prints
+« unité » where the legacy model says « Pièce » (`uniteLabel`, shared with the screen).
+
 ## 2026-09-07 — feat/debug-2 (clôture d OF unique + étiquette de lot — LIVA #1128, #1133)
 TRM API. **#1128** : the legacy Android bonnetier app closes an OF by flipping `est_actif` only
 (`est_termine` stays 0, `priorite` keeps its rank); the ERP read the leftover as « En attente » with
