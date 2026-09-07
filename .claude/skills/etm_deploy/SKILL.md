@@ -31,7 +31,7 @@ so smoke-check more than the app you happen to be standing in.
 - **The TRM repo's own `/trm_deploy`** owns: the TRM web bundle only. Never deploy the
   API from there; never deploy the TRM web bundle from here.
 - **After every API deploy, smoke-check BOTH frontends**: `https://mpsng.malterre/api/...`
-  and `http://trm.malterre/api/...` (same API through two proxies — if one fails, it's
+  and `https://trm.malterre/api/...` (same API through two proxies — if one fails, it's
   nginx-side, not the API).
 - Shared-API changes for TRM features land on this repo's `master` via a **paired NG
   worktree** (see `claude_doc/worktrees.md` §"Shared-API changes") — so deploying `master`
@@ -105,7 +105,7 @@ cd /c/dev/etsmalterre/ETM && git fetch -q origin && git merge --ff-only origin/m
 **Then one command answers the whole question, for both tiers and both repos:**
 
 ```bash
-node scripts/deploy/preflight.mjs        # read-only; exit 1 = blockers
+node C:/dev/etsmalterre/ETM/scripts/deploy/preflight.mjs   # read-only; exit 1 = blockers (absolute path: the Bash tool cwd drifts)
 ```
 
 It prints what is live on each tier, what is behind (splitting runtime `apps/api/**` from
@@ -194,61 +194,50 @@ of every deploy — see the deploy steps). The check:
 - `node_modules/` installed with npm (not pnpm — monorepo workspace refs stripped)
 - `package.json` is a standalone copy (no workspace protocol)
 
-### Deploy Steps (API)
+### Deploy Steps (API) — one command
 
-1. **Build a deploy tarball** locally with the API source files:
-   - `src/` directory (all .ts files)
-   - `package.json` (convert `workspace:*` refs to actual versions or remove them)
-   - `.env.production` → `.env`
-   - Do NOT include `node_modules/`, `hfsql_bridge` binary (already on server), or `.env.development`
+```bash
+cd /c/dev/etsmalterre/ETM && node scripts/deploy/deploy-api.mjs        # --dry-run to rehearse
+```
 
-2. **Upload** the tarball to the server (uses `$SCP`/`$KEY` from the SSH Access block):
-   ```bash
-   "$SCP" -i "$KEY" -o IdentitiesOnly=yes tarball.tar.gz debian@10.10.2.163:/home/debian/
-   ```
+Since 2026-09-07 the API deploy is a script, not the typed sequence it used to be here.
+The prose below stays as the record of **why** each step exists; the script is what runs.
+In order it: guards the ETM main checkout (clean, on master, at `origin/master`); refuses
+if prod's `src/scripts` holds a file that is in no commit (see the drift note — rescue it
+into the repo, or `--allow-orphans` to drop it deliberately); compares prod's `package.json`
+with ours minus the `workspace:` refs and ships it + runs `npm install` **only** when the
+dependencies differ; refuses if the host's `.env` differs from `.env.production` (it never
+writes the host's `.env` — reconcile by hand); tars `src/` (tests excluded); uploads;
+backs up `src/` + `package.json` to `../mps_api_backup.tar.gz`; `rm -rf src/scripts`;
+extracts; restarts `mps-api`; waits up to 30 s for `/api/health` to answer
+`"app":"MPS API"` (otherwise prints the journal tail and exits without stamping); counts
+`HY090` / `Error` in the journal; smoke-checks **all four clients through their own
+nginx** — `mpsng`, `trm`, `atelier`, `trs` — and only then writes `DEPLOYED_SHA`, by its
+own call, re-reading `origin/master` first (a landing during the deploy is reported and
+the SHA actually shipped is what gets stamped).
 
-3. **On the server**: extract, install deps, restart service:
-   ```bash
-   cd /home/debian/mps_api
-   # backup current
-   tar czf ../mps_api_backup.tar.gz src/ package.json
-   # prune src/scripts BEFORE extracting — see the drift note below
-   rm -rf src/scripts
-   # extract new files
-   tar xzf ../tarball.tar.gz
-   # install new dependencies if package.json changed
-   npm install --production
-   # restart
-   sudo systemctl restart mps-api
-   sudo systemctl status mps-api
-   ```
+Remote commands are fed to `bash -s` on stdin (`scripts/deploy/lib.mjs`): nothing to
+escape, `set -e`, no `$(…)` / `$VAR` lost inside `wsl bash -c "ssh … '…'"` — the
+quoting that on 2026-09-07 wrote a web stamp for a bundle that was never extracted.
 
-   ⚠️ **`tar xzf` extracts OVER the tree and never deletes**, so anything the archive
-   no longer carries survives for ever. Measured 2026-08-25: `src/scripts/` on prod held
-   **11 files that were in no commit** — nine one-off diagnostics from a May 2026 session
-   (`inspect-*`, `verify-*`, `test-dc-*`), one probe from that day, and
-   `check-retour-marchandise.ts`, a genuine 196-line guard for ticket #1086 that had been
-   written straight onto the server and existed **nowhere else**. Deleting blind would
-   have destroyed it; it was recovered into the repo instead.
-   So: `rm -rf src/scripts` before extracting keeps the deployed tree honest, but **check
-   for orphans first** and rescue anything worth keeping —
-   `comm -23 <(ssh … 'ls -1 …/src/scripts' | sort) <(ls -1 apps/api/src/scripts | sort)`.
-   Only `src/scripts` is safe to prune this way: nothing under it is imported by the
-   running service. Never do it to `src/routes` or `src/lib`.
+Rollback if the health wait fails: `cd /home/debian/mps_api && tar xzf
+../mps_api_backup.tar.gz && sudo systemctl restart mps-api` (the script prints it).
 
-4. **Stamp the deployed commit** after a clean restart (this is what Step 0 reads next time).
-   **Re-read `origin/master` at THIS moment — do not reuse the SHA from Step 0.** A deploy
-   takes long enough for someone else's `/feature-complete` to land in between, and
-   stamping the stale SHA then claims prod is current when it is a commit behind. Happened
-   2026-08-25: `feat/prime` merged mid-deploy, so `prime-trm.ts` sat undeployed under a
-   `DEPLOYED_SHA` that said otherwise. If the fetch shows master has moved, either rebuild
-   the tarball from the new tip or stamp the SHA you **actually** shipped — never the tip
-   you did not.
-   ```bash
-   cd /c/dev/etsmalterre/ETM && git fetch -q origin
-   SHA=$(git rev-parse origin/master)   # verify this is what the tarball was built from
-   wsl bash -c "ssh $WOPTS debian@10.10.2.163 'echo $SHA > /home/debian/mps_api/DEPLOYED_SHA'"
-   ```
+⚠️ **`tar xzf` extracts OVER the tree and never deletes**, so anything the archive
+no longer carries survives for ever. Measured 2026-08-25: `src/scripts/` on prod held
+**11 files that were in no commit** — nine one-off diagnostics from a May 2026 session
+(`inspect-*`, `verify-*`, `test-dc-*`), one probe from that day, and
+`check-retour-marchandise.ts`, a genuine 196-line guard for ticket #1086 that had been
+written straight onto the server and existed **nowhere else**. Deleting blind would
+have destroyed it; it was recovered into the repo instead. That is why the script
+refuses on orphans instead of pruning silently. Only `src/scripts` is safe to prune:
+nothing under it is imported by the running service. Never do it to `src/routes` or
+`src/lib`.
+
+**Stamping reads `origin/master` at THAT moment, not Step 0's.** A deploy takes long
+enough for someone else's `/feature-complete` to land in between; happened 2026-08-25
+(`feat/prime` merged mid-deploy, `prime-trm.ts` sat undeployed under a stamp that said
+otherwise). The script stamps what it shipped and tells you to rerun for the new tip.
 
 ### Key Differences from Local Dev
 - Linux uses `hfsql-bridge.ts` (C bridge binary via iODBC) instead of `odbc` npm package (unixODBC)
@@ -274,100 +263,59 @@ of every deploy — see the deploy steps). The check:
 - Hashed assets cached 1 year; `index.html` + `sw.js` never cached
 - **Default `client_max_body_size` is 1MB** — may need increasing for certificate file uploads
 
-### Deploy Steps (Web)
+### Deploy Steps (Web) — one command
 
-1. **Build locally — use PowerShell, NOT the Bash tool.** `VITE_API_URL=/api`
-   MUST be set in the build env. **Run `pnpm install` first** — features are built in
-   worktrees (which get their own fresh install), so the main checkout's `node_modules`
-   lags whenever a landed feature added a dependency. Skipping it fails the build with a
-   misleading `tsc` error like `Cannot find module 'html-to-image'` (seen 2026-07-23:
-   the tickets feature's dep wasn't in the main checkout). `pnpm install` is a no-op when
-   already current, so always run it:
-   ```powershell
-   cd C:\dev\etsmalterre\ETM; pnpm install; $env:VITE_API_URL='/api'; pnpm --filter web build   # USE THIS
-   ```
-   ```bash
-   MSYS_NO_PATHCONV=1 VITE_API_URL=/api pnpm --filter web build          # bash ONLY with the guard
-   ```
-   This produces `apps/web/dist/` with hashed assets.
+```bash
+cd /c/dev/etsmalterre/ETM && node scripts/deploy/deploy-web.mjs --app etm     # --dry-run / --skip-build
+```
 
-   **Footgun A — git-bash path mangling (caused a prod outage 2026-06-15):**
-   the Claude Code Bash tool on this machine is **git-bash**, whose MSYS
-   path-conversion rewrites any value that looks like an absolute Unix path. So
-   `VITE_API_URL=/api ... build` run through Bash bakes the API base as
-   **`C:/Program Files/Git/api`**, and the prod bundle does
-   `fetch(\`C:/Program Files/Git/api/auth/users\`)` → resolves to
-   `https://mpsng.malterre/C:/Program Files/Git/api/...` → never matches `/api/*`.
-   Result is identical to Footgun B ("Impossible de charger la liste" everywhere)
-   but the `localhost:3002` grep below PASSES because the var *was* set, just to a
-   garbage value. Build with PowerShell to avoid it entirely.
+Same script for every web bundle of the platform (`--app etm|trm|atelier|trs`, one row per
+app in its `APPS` table — a per-app difference is a row, never a fork). It: guards the
+checkout; `pnpm install` (the main checkout's `node_modules` lags whenever a landed
+feature added a dependency — seen 2026-07-23, `html-to-image`); builds
+`pnpm --filter <pkg> build` with **`VITE_API_URL=/api` set in the child's env object** —
+no shell in between, so neither footgun below can happen; verifies **every**
+`index-*.js` chunk (no `localhost:<port>/api` dev fallback, no `Program Files/Git/api`,
+`="/api"` present in at least one, the root version baked in); tars; uploads; **extracts
+over** the dist; sweeps hashed assets untouched for 14 days; re-fetches the served
+`index.html` and greps the chunk **nginx actually serves**; and stamps last.
 
-   **Footgun B — unset var (caused a prod outage 2026-06-14):** if the var is
-   unset at build time, `apiFetch` silently bakes in its dev fallback
-   `http://localhost:3002/api` (`apps/web/src/lib/api.ts:5`). The build succeeds,
-   but every prod API call goes to `localhost:3002` and is blocked.
+**Footgun A — git-bash path mangling (caused a prod outage 2026-06-15):** the Claude
+Code Bash tool on this machine is git-bash, whose MSYS path conversion rewrites any
+value that looks like an absolute Unix path. `VITE_API_URL=/api … build` typed through
+Bash bakes the API base as **`C:/Program Files/Git/api`**, so prod does
+`fetch('C:/Program Files/Git/api/auth/users')` → never matches `/api/*`. Identical
+symptom to Footgun B ("Impossible de charger la liste" everywhere) but a `localhost`
+grep PASSES because the var *was* set, to garbage. The script sets the env in-process
+and greps for the mangled string anyway.
 
-   **Verify the built bundle BEFORE upload — both a negative AND a positive
-   check (the negative alone is necessary-but-not-sufficient, it misses Footgun A):**
-   The build now emits **more than one `index-*.js` chunk** (e.g. the ~1.6 MB main
-   bundle `index-BGQgngLQ.js` **and** a small ~14 KB `index-*.js`), so `ls … | head`/
-   `tail -1` picks an arbitrary one — and the `="/api"` base lives **only in the main
-   bundle**, so grabbing the wrong chunk gives a false "assertion doesn't match, do NOT
-   deploy" (seen 2026-07-23). Grep **across all** index chunks: the negatives must be 0
-   in every chunk, the positive must match in **at least one**.
-   ```bash
-   B=$(ls apps/web/dist/assets/index-*.js)                        # ALL index chunks
-   grep -oc 'localhost:3002'        $B   # must be 0 for every file  (Footgun B)
-   grep -oc 'Program Files/Git/api' $B   # must be 0 for every file  (Footgun A)
-   grep -lE  'ht="/api"|="/api"'    $B   # MUST list ≥1 file — that chunk has API base /api
-   ```
-   If no chunk matches the positive `="/api"` assertion, do NOT deploy — the base is
-   wrong regardless of what the negative checks say. (Do not `"$B"`-quote when it holds
-   multiple filenames.)
+**Footgun B — unset var (caused a prod outage 2026-06-14):** if the var is unset at
+build time, `apiFetch` silently bakes in its dev fallback (`apps/web/src/lib/api.ts`,
+`localhost:3002` here, `localhost:8080` in the TRM apps). Build succeeds, every prod call
+goes to localhost.
 
-2. **Upload** the dist folder (uses `$SSH`/`$SCP`/`$KEY`/`$OPTS` from the SSH Access block):
-   ```bash
-   "$SCP" -i "$KEY" -o IdentitiesOnly=yes -r apps/web/dist/* debian@10.10.2.165:/home/debian/mps_erp/dist/
-   ```
-   Or tar it first for speed. **On the factory PC (wsl transport), stage the tarball under a
-   `/mnt/c`-visible dir — NOT git-bash `/tmp`, which WSL `scp` cannot read** (see §SSH Access):
-   ```bash
-   tar czf /tmp/mps_web_dist.tar.gz -C apps/web/dist .
-   "$SCP" -i "$KEY" -o IdentitiesOnly=yes /tmp/mps_web_dist.tar.gz debian@10.10.2.165:/home/debian/   # win transport
-   # Extract OVER the existing dist — do NOT wipe it first (see below), then age out
-   # hashed assets untouched by a deploy for 14 days.
-   "$SSH" $OPTS debian@10.10.2.165 'tar xzf /home/debian/mps_web_dist.tar.gz -C /home/debian/mps_erp/dist/ && find /home/debian/mps_erp/dist/assets -type f -mtime +14 -delete'
-   ```
+**Never `rm -rf dist/*` before extracting.** The shell files (`index.html`, `sw.js`,
+`registerSW.js`, `manifest.webmanifest`) are overwritten in place by the extract, and the
+new build's assets are hash-named, so a plain extract-over is already a complete deploy.
+Wiping first deletes the *previous* build's hashed chunks, which breaks any browser tab a
+user left open across the deploy: that tab runs the old bundle, whose lazy `import()` URLs
+(`assets/xlsx-<oldhash>.js`, `html-to-image`) point at files that no longer exist. Once the
+new service worker activates and claims the tab (it is built with `clientsClaim`), those
+chunks aren't in its precache either, so the request hits nginx, 404s into the SPA fallback,
+and the dynamic import rejects — the user clicks "Exporter Excel" and nothing happens.
+Keeping the old assets for 14 days makes that tab keep working until it is reloaded.
+The `-mtime +14` sweep is what stops `dist/assets` growing without bound: `tar` restores
+each file's build-time mtime, so a redeployed file looks fresh and only genuinely superseded
+chunks age out. The web app also carries a client-side backstop
+(`apps/web/src/lib/chunk-error.ts` + `components/shared/StaleBundleReload.tsx`) offering a
+reload when a chunk does go missing — the safety net, not the fix. Keep both.
 
-   **Never `rm -rf dist/*` before extracting.** The shell files (`index.html`, `sw.js`,
-   `registerSW.js`, `manifest.webmanifest`) are overwritten in place by the extract, and the
-   new build's assets are hash-named, so a plain extract-over is already a complete deploy.
-   Wiping first deletes the *previous* build's hashed chunks, which breaks any browser tab a
-   user left open across the deploy: that tab runs the old bundle, whose lazy `import()` URLs
-   (`assets/xlsx-<oldhash>.js`, `html-to-image`) point at files that no longer exist. Once the
-   new service worker activates and claims the tab (it is built with `clientsClaim`), those
-   chunks aren't in its precache either, so the request hits nginx, 404s into the SPA fallback,
-   and the dynamic import rejects — the user clicks "Exporter Excel" and nothing happens.
-   Keeping the old assets for 14 days makes that tab keep working until it is reloaded.
+**The stamp goes to `/home/debian/mps_erp/DEPLOYED_SHA`**, the PARENT of `dist/` so it is
+never served publicly. Written last, after the served-bundle check — on 2026-09-07 a
+hand-typed sequence wrote it *before* an extract that had silently not run.
 
-   The `-mtime +14` sweep is what stops `dist/assets` growing without bound: `tar` restores
-   each file's build-time mtime, so a redeployed file looks fresh and only genuinely superseded
-   chunks age out. The web app also carries a client-side backstop for the residual case
-   (`apps/web/src/lib/chunk-error.ts` + `components/shared/StaleBundleReload.tsx`), which
-   offers the user a reload when a chunk does go missing — but that is the safety net, not the
-   fix. Keep both.
-
-3. **Stamp the deployed commit** — write it to `/home/debian/mps_erp/DEPLOYED_SHA`, which is the
-   PARENT of `dist/` so it is never served publicly (and survives any dist-level cleanup):
-   ```bash
-   SHA=$(cd /c/dev/etsmalterre/ETM && git rev-parse origin/master)
-   wsl bash -c "ssh $WOPTS debian@10.10.2.165 'echo $SHA > /home/debian/mps_erp/DEPLOYED_SHA'"
-   ```
-
-4. **No restart needed** — nginx serves static files directly. Just verify:
-   ```bash
-   curl -s -o /dev/null -w "%{http_code}" http://mpsng.malterre/
-   ```
+No restart: nginx serves static files. `curl -sk https://mpsng.malterre/` → 200 (the hosts
+are **https only**; `http://` answers 308).
 
 ### Production Environment
 - `VITE_API_URL=/api` — relative URL, proxied by nginx to the API server
@@ -376,10 +324,10 @@ of every deploy — see the deploy steps). The check:
 ## Verification Checklist
 
 After deployment, verify:
-- [ ] `curl http://10.10.2.163:8081/api/fournisseurs` returns JSON
-- [ ] `curl http://mpsng.malterre/` returns HTML
-- [ ] `curl http://mpsng.malterre/api/fournisseurs` returns JSON (through nginx proxy)
-- [ ] Navigate to `http://mpsng.malterre/fournisseurs/gestion` in browser
+- [ ] `curl http://10.10.2.163:8081/api/fournisseurs` returns JSON (the API itself is plain http on the LAN)
+- [ ] `curl -sk https://mpsng.malterre/` returns HTML (https only; http is a 308)
+- [ ] `curl -sk https://mpsng.malterre/api/fournisseurs` returns JSON (through nginx proxy)
+- [ ] Navigate to `https://mpsng.malterre/fournisseurs/gestion` in browser
 - [ ] Certificate PDF viewer works (may need `client_max_body_size` increase in nginx)
 
 ## Step 5 — Clean up merged worktrees (after a green deploy)

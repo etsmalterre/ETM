@@ -113,10 +113,22 @@ else if (apiRuntime.length === 0) {
   TODO(`MPS API: only src/scripts/** changed (${apiFiles.length} file(s)) — do NOT restart the service.`)
   say('       Run the script by hand on the host instead; a restart blips every client.')
 } else {
-  TODO(`MPS API is BEHIND — ${apiRuntime.length} runtime file(s). Deploy it FIRST (/etm_deploy).`)
+  TODO(`MPS API is BEHIND — ${apiRuntime.length} runtime file(s). Deploy it FIRST: node scripts/deploy/deploy-api.mjs`)
   apiRuntime.slice(0, 6).forEach((f) => say(`       ${f}`))
   say('       \u26a0 A sub-route added to an already-mounted router passes check-api-routes.mjs')
   say('         while prod serves the OLD handler. Only this SHA diff catches that.')
+}
+// One-off scripts a landed feature may still OWE on the host (seed a permission key,
+// backfill a column, free rows the old code mis-stamped). The code diff cannot tell
+// whether they ran; it can at least NAME them so nobody has to find them in the
+// merge-log prose. 2026-09-07: fix-choix2-affectation-trm.ts was only known from
+// CLAUDE.md. Run on the host as
+//   node --env-file=.env --import tsx src/scripts/<x>.ts   (dry-run first; --write)
+// and RESTART after any that writes data/*.json (module-load cache).
+const owed = apiFiles.filter((f) => /^apps\/api\/src\/scripts\/(seed|fix|backfill|migrate)-[^/]+\.ts$/.test(f))
+if (owed.length) {
+  say(`       ${owed.length} one-off script(s) landed in this range — check whether each still needs running on the host:`)
+  owed.forEach((f) => say(`         ${f.replace('apps/api/src/scripts/', '')}`))
 }
 
 // 2. the web bundles - each diffed against ITS OWN source path. Diffing them all
