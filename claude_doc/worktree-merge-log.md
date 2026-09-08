@@ -10,6 +10,25 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-08 — feat/debug-1 (supprimer un avis dé-expédie ses rouleaux — suite de #1086)
+Clients › Expéditions. Found while reading a mail from Isabelle: AE 9698 (Save Futur, 19/11/2024,
+4 m of 186A recut from roll 909/15 and reshipped against commande 2978, already invoiced in full on
+facture 7979) came back in every « Générer les factures » run because it sat at `est_facture = 0`,
+neither donation nor internal client. Data fix, no code: the user flagged it as a donation from the
+ETM screen (verified on prod), and the generator skips donations. Deleting it would have left a
+ghost: `DELETE /expeditions/formelle/:id` and `DELETE …/lignes/:lccId/rolls/:stockId` reset only
+`stock_fini.IDligne_expedition`, while "shipped" is two facts (#1086) — the roll kept état 4
+« Expédié », so Finis › Stock hid it, Gestion › Marchandise lost it and the line's roll picker
+never offered it back. New `unshipFiniRolls()` in `expeditions.ts` clears the link AND demotes état
+4 → 3 « Validé » (any other état kept), and deliberately KEEPS `IDligne_commande_client`: deleting an
+avis undoes a shipment, not the order the roll was picked for — the roll returns exactly where it
+was before being ticked; the retour-stock route stays the one that releases the line. Écru has no
+état column. Dialog text aligned. Guard `check-expedition-unship.ts` (writes then restores,
+localhost only): one roll with its sibling untouched, another état kept, whole line. Story in
+`screen_notes.md` § Expéditions; the `CLAUDE.md` « two facts » rule now names the delete path. Also
+recorded (memory): reading prod HFSQL ad hoc through `./hfsql_bridge` on the API server.
+
+
 ## 2026-09-08 — feat/debug-2 (numérotation des coupes — LIVA #1135)
 Finis › Stock and Tombé Métier › Stock, « Couper le rouleau ». Isabelle cut 3 m off a 5 m fini roll
 and found the 2 m left in stock renamed `3204/14-2` while the cut piece kept `3204/14`: the dialog
