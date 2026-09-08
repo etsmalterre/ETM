@@ -10,6 +10,22 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-08 — feat/debug-1 (traitements sur la fiche référence finie — LIVA #1136)
+Finis › Références. The Traitements card had been read-only since the screen's first commit — no
+route wrote `traitement_ref_fini`, so a reference created in ETM could never get a treatment (the
+gap stayed invisible while every reference still carried its legacy treatments). Now, in edit mode,
+each chip has a remove (through `ConfirmDialog`) and a `PopoverSelect` « + Ajouter un traitement »
+adds one; both persist immediately (no Enregistrer step, never dirty the unsaved guard) and the card
+unfolds when editing starts. New `lib/traitements.ts` holds the shared catalog loader (now also
+behind `/tarifs-fini/lookups/traitements`) plus `attachTraitement` / `detachTraitement`; routes
+`GET /references-fini/lookups/traitements`, `POST /references-fini/:id/traitements` (409
+`deja_associe` on a duplicate — the junction is a strict set, 1 570 legacy rows with zero duplicate
+pairs, unlike the simulator's `asso_traitement_tarif`; 400 on a deleted treatment; 404 on a missing
+ref) and `DELETE …/:traitementId` (idempotent). The picker only offers what is not attached yet.
+Verified with eleven curl cases on a throwaway ref and a browser round-trip on 129A (add Lavage,
+count 3, confirm-remove, back to 2, no console errors). Side effect: the pre-existing 409 on deleting
+a ref that still has treatments is now reachable — detach first, then delete.
+
 ## 2026-09-07 — feat/debug-2 (SIREN sur la facture — LIVA #1130)
 Clients › Facturation. The invoice PDF now carries the client's SIREN — the key the facturation
 électronique will route on — as a « SIREN · 123 456 789 » row at the top of the terms card, before
