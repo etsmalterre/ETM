@@ -7,6 +7,7 @@ import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
 import { loadTraitementCatalog, loadRefFiniTraitements, attachTraitement, detachTraitement } from '../lib/traitements.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
+import { EtiquetteRefFiniPdf, type EtiquetteRefFiniData } from '../lib/pdf/EtiquetteRefFiniPdf.js'
 
 export const referencesFiniRouter: RouterType = Router()
 
@@ -764,6 +765,57 @@ export async function renderFicheTarifsPdfBuffer(data: TarifsClientPdfData): Pro
     >,
   )
 }
+
+// ──────────────────────────────────────────────────────────
+// ÉTIQUETTE (Dymo 89 × 36) PDF
+// ──────────────────────────────────────────────────────────
+
+/** Build the client-facing Dymo tag data for one ref_fini — the legacy
+ *  « Clic sur IMG_Etiquette » fields (see EtiquetteRefFiniPdf.tsx). */
+export async function buildEtiquetteRefFiniData(id: number): Promise<EtiquetteRefFiniData | null> {
+  const rows = await query<Record<string, unknown>>(`SELECT * FROM ref_fini WHERE IDref_fini = ${id}`)
+  if (rows.length === 0) return null
+  const raw = normalizeRefFini(rows[0])
+  const fixed = (await fixEncoding([raw] as any, 'ref_fini', 'IDref_fini', ['reference', 'designation'])) as RefFini[]
+  const ref = fixed[0]
+  return {
+    IDref_fini: id,
+    reference: (ref.reference ?? '').trim() || `#${id}`,
+    designation: ref.designation,
+    laizeHT: ref.laizeHT_Moy,
+    poids: ref.poids_Moy,
+    tempLavage: ref.temp_lavage,
+  }
+}
+
+// GET /api/references-fini/:id/etiquette — Dymo étiquette (89 × 36 mm), one
+// tag, always with the QR code, streamed inline. Read-only like the other two
+// PDFs of the screen: a read-only user must be able to tag a sample.
+referencesFiniRouter.get('/:id/etiquette', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+    const data = await buildEtiquetteRefFiniData(id)
+    if (!data) { res.status(404).json({ error: 'Ref fini not found' }); return }
+    const buffer = await renderToBuffer(
+      React.createElement(EtiquetteRefFiniPdf, { data }) as unknown as React.ReactElement<
+        import('@react-pdf/renderer').DocumentProps
+      >,
+    )
+
+    const safeRef = data.reference.replace(/[^\w.-]+/g, '_')
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="etiquette-${safeRef}.pdf"`)
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.send(buffer)
+  } catch (err) {
+    console.error('Error rendering ref fini étiquette PDF:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
 // GET /api/references-fini/:id/tarifs/pdf?rlx15=1&rlx30=1&coloris=1,2,3
 // Fiche tarifs, inline. `coloris` is an optional CSV of coloris ids limiting

@@ -34,6 +34,20 @@ Server-side PDF rendering for documents (`Bon de commande` shipped, `Devis` / `F
   width and leaves the band half empty. Reach for the square badge **`logo-m-email.png`** there
   — it also survives a thermal screen better, the script strokes being the first thing to break
   up. Canonical: `EtiquetteEcruPdf.tsx`.
+- ⚠️ **A Dymo label is BLACK AND WHITE** — the LabelWriter is a thermal printer: no colour at
+  all, and anything not near-black dithers to grey. The client-facing ref_fini étiquette shipped
+  its first cut with the gold M badge before the user pointed this out (2026-09-08); it now uses
+  `assets/logo-m-mono.png` (the badge's non-gold pixels → ink) painted in the centre of the QR
+  code, drawn at **level H** so the overlay is paid for (`QrCode.tsx` `level` prop). Any future
+  label: no badge, no brand colour, solid black marks only. Canonical: `EtiquetteRefFiniPdf.tsx`.
+- **react-pdf 4.4 has no `maxLines`** (neither in the types nor in `@react-pdf/layout`): clamp
+  long text in JS before rendering (`clampDesignation()` in `EtiquetteRefFiniPdf.tsx`, word
+  boundary + ellipsis). On a fixed-height page an unclamped extra line pushes everything below it
+  off the sheet.
+- **Care symbols** (wash / no bleach / no tumble dry / iron / dry clean P) live in
+  `lib/pdf/care-symbols.tsx`, shared by the fiche technique and the étiquette — `size` / `stroke`
+  / `glyphScale` per call, never a second drawing. A QR code is `lib/pdf/QrCode.tsx` (vector,
+  `qrcode` matrix → one path of horizontal runs).
 
 ### Documents issued by a company OTHER than ETS Malterre
 

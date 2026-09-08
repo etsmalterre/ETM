@@ -10,6 +10,24 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-08 — feat/debug-3 (étiquette Dymo client sur la fiche référence finie)
+Finis › Références, Imprimer › Étiquette: the Dymo 89 × 36 tag that travels with a fabric sample
+to a customer, ported from the legacy `FI_Ref_Fini` « IMG_Etiquette » click (PCS-compressed window;
+the handler's literals were read from the WinDev compile cache): reference, designation, laize HT
+moyenne, poids moyen, the five care symbols (wash at `temp_lavage`, no bleach, no tumble dry, iron,
+dry clean P) and a QR code to `https://etsmalterre.fr/echantillon/?ID=<IDref_fini>` (the legacy URL,
+https'd — the site 302s it to the live page and it is what customers' tags already carry). New
+`GET /references-fini/:id/etiquette` → `lib/pdf/EtiquetteRefFiniPdf.tsx`, opened straight from the
+§42 print menu's third row: always with the QR, always one tag, no options dialog (Vincent's call;
+a preview / QR-toggle / copies dialog was built and removed the same day). Black and white only —
+the Dymo is thermal — so no gold badge: the brand is the monochrome script M
+(`assets/logo-m-mono.png`) in the centre of a level-H QR, and the type takes the width
+(Réf 22 pt, designation clamped to two lines in JS since react-pdf 4.4 has no `maxLines`). The
+five care symbols moved to `lib/pdf/care-symbols.tsx`, shared with the fiche technique (unchanged
+rendering); the QR is vector (`lib/pdf/QrCode.tsx`, new `qrcode` dependency for the matrix).
+Guard `EtiquetteRefFiniPdf.test.ts`; visual harness `scripts/dump-etiquette-ref-fini.ts`.
+Notes in `claude_doc/screen_notes.md` § 8 and `claude_doc/pdf_email.md` § gotchas.
+
 ## 2026-09-08 — feat/debug-1 (supprimer un avis dé-expédie ses rouleaux — suite de #1086)
 Clients › Expéditions. Found while reading a mail from Isabelle: AE 9698 (Save Futur, 19/11/2024,
 4 m of 186A recut from roll 909/15 and reshipped against commande 2978, already invoiced in full on

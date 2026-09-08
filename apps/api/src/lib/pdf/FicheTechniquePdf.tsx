@@ -11,8 +11,9 @@ import React from 'react'
 import * as fs from 'fs'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
-import { View, Text, StyleSheet, Image, Svg, Path, Rect, Circle, Line } from '@react-pdf/renderer'
+import { View, Text, StyleSheet, Image } from '@react-pdf/renderer'
 import { MalterreDocument } from './MalterreDocument.js'
+import { WashSymbol, NoBleachSymbol, NoTumbleDrySymbol, IronSymbol, DryCleanPSymbol } from './care-symbols.js'
 import { colors, sizes } from './theme.js'
 
 // ── Asset loading ────────────────────────────────────────
@@ -64,112 +65,11 @@ function fmt(n: number | null, dp = 0): string {
 
 // ── Care symbols (ISO 3758-style line drawings) ──────────
 // The legacy fiche prints five symbols: wash at temp_lavage, no bleach,
-// no tumble dry, iron, professional dry clean (P). Drawn inline so the PDF
-// stays asset-free.
+// no tumble dry, iron, professional dry clean (P). Shared with the Dymo
+// étiquette (EtiquetteRefFiniPdf) — drawings live in care-symbols.tsx; this
+// document keeps its original 34 pt / theme-coloured rendering.
 
 const SYM = { size: 34, stroke: colors.text, sw: 1.4 }
-
-function WashSymbol({ temp }: { temp: number | null }) {
-  return (
-    <View style={careStyles.symBox}>
-      <Svg width={SYM.size} height={SYM.size} viewBox="0 0 24 24">
-        {/* Basin: wavy top edge + tapering sides */}
-        <Path
-          d="M2.5 6 C4 7.6 5.5 7.6 7 6 C8.5 4.4 10 4.4 11.5 6 C13 7.6 14.5 7.6 16 6 C17.5 4.4 19 4.4 20.5 6"
-          stroke={SYM.stroke}
-          strokeWidth={SYM.sw}
-          fill="none"
-        />
-        <Path d="M3.2 7.5 L5.5 20 H18.5 L20.8 7.5" stroke={SYM.stroke} strokeWidth={SYM.sw} fill="none" />
-      </Svg>
-      {temp != null && temp > 0 ? <Text style={careStyles.washTemp}>{String(Math.round(temp))}</Text> : null}
-    </View>
-  )
-}
-
-function NoBleachSymbol() {
-  return (
-    <View style={careStyles.symBox}>
-      <Svg width={SYM.size} height={SYM.size} viewBox="0 0 24 24">
-        <Path d="M12 4 L21.5 20.5 H2.5 Z" stroke={SYM.stroke} strokeWidth={SYM.sw} fill="none" />
-        <Line x1={4} y1={5} x2={20} y2={21.5} stroke={SYM.stroke} strokeWidth={SYM.sw} />
-        <Line x1={20} y1={5} x2={4} y2={21.5} stroke={SYM.stroke} strokeWidth={SYM.sw} />
-      </Svg>
-    </View>
-  )
-}
-
-function NoTumbleDrySymbol() {
-  return (
-    <View style={careStyles.symBox}>
-      <Svg width={SYM.size} height={SYM.size} viewBox="0 0 24 24">
-        <Rect x={3} y={3} width={18} height={18} stroke={SYM.stroke} strokeWidth={SYM.sw} fill="none" />
-        <Circle cx={12} cy={12} r={7} stroke={SYM.stroke} strokeWidth={SYM.sw} fill="none" />
-        <Line x1={3.5} y1={3.5} x2={20.5} y2={20.5} stroke={SYM.stroke} strokeWidth={SYM.sw} />
-        <Line x1={20.5} y1={3.5} x2={3.5} y2={20.5} stroke={SYM.stroke} strokeWidth={SYM.sw} />
-      </Svg>
-    </View>
-  )
-}
-
-function IronSymbol() {
-  return (
-    <View style={careStyles.symBox}>
-      <Svg width={SYM.size} height={SYM.size} viewBox="0 0 24 24">
-        <Path
-          d="M21 18 H3 C3 13 7 9.5 12.5 9.5 H17.5 L21 18 Z"
-          stroke={SYM.stroke}
-          strokeWidth={SYM.sw}
-          fill="none"
-        />
-        <Path d="M10 9.5 V7 H18" stroke={SYM.stroke} strokeWidth={SYM.sw} fill="none" />
-      </Svg>
-    </View>
-  )
-}
-
-function DryCleanPSymbol() {
-  return (
-    <View style={careStyles.symBox}>
-      <Svg width={SYM.size} height={SYM.size} viewBox="0 0 24 24">
-        <Circle cx={12} cy={12} r={9.5} stroke={SYM.stroke} strokeWidth={SYM.sw} fill="none" />
-      </Svg>
-      <Text style={careStyles.dryCleanLetter}>P</Text>
-    </View>
-  )
-}
-
-const careStyles = StyleSheet.create({
-  symBox: {
-    width: SYM.size,
-    height: SYM.size,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  washTemp: {
-    position: 'absolute',
-    top: 11,
-    left: 0,
-    right: 0,
-    textAlign: 'center',
-    fontSize: 7.5,
-    fontWeight: 700,
-    color: colors.text,
-    lineHeight: 1,
-  },
-  dryCleanLetter: {
-    position: 'absolute',
-    top: 10,
-    left: 0,
-    right: 0,
-    textAlign: 'center',
-    fontSize: 10,
-    fontWeight: 700,
-    color: colors.text,
-    lineHeight: 1,
-  },
-})
 
 // ── Section chrome ───────────────────────────────────────
 
@@ -464,11 +364,11 @@ export function FicheTechniquePdf({ data }: { data: FicheTechniquePdfData }) {
       {/* Code entretien */}
       <Section title="CODE ENTRETIEN">
         <View style={styles.careRow}>
-          <WashSymbol temp={data.tempLavage ?? 30} />
-          <NoBleachSymbol />
-          <NoTumbleDrySymbol />
-          <IronSymbol />
-          <DryCleanPSymbol />
+          <WashSymbol temp={data.tempLavage ?? 30} {...SYM} />
+          <NoBleachSymbol {...SYM} />
+          <NoTumbleDrySymbol {...SYM} />
+          <IronSymbol {...SYM} />
+          <DryCleanPSymbol {...SYM} />
         </View>
       </Section>
 

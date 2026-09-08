@@ -42,6 +42,7 @@ import {
   Lock,
   BadgeEuro,
   Printer,
+  Tag,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -629,6 +630,10 @@ export function FinisReferences() {
               if (selectedId === null) return
               if (doc === 'technique') {
                 window.open(`${API_URL}/references-fini/${selectedId}/pdf`, '_blank')
+              } else if (doc === 'etiquette') {
+                // Always with the QR code, always one tag (user decision 2026-09-08):
+                // no options dialog, the row prints.
+                window.open(`${API_URL}/references-fini/${selectedId}/etiquette`, '_blank')
               } else {
                 setTarifsDialogOpen(true)
               }
@@ -928,6 +933,7 @@ function DetailHeader({
                   items={[
                     { key: 'technique', label: 'Fiche technique', icon: FileText },
                     { key: 'tarifs', label: 'Fiche tarifs', icon: BadgeEuro },
+                    { key: 'etiquette', label: 'Étiquette', icon: Tag },
                   ]}
                   onSelect={onPrintDoc}
                 />
@@ -952,7 +958,7 @@ function DetailHeader({
 
 // ── Print: doc menu + fiche tarifs options dialog ──────
 
-type PrintDocKind = 'technique' | 'tarifs'
+type PrintDocKind = 'technique' | 'tarifs' | 'etiquette'
 
 /** Icon button opening a small popover menu — the print header button uses it
  *  to pick which document to generate. Pattern: DocMenuButton in
