@@ -10,6 +10,22 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-08 — feat/etiquette-centrage (l'étiquette Dymo client se centre sur l'étiquette physique)
+Finis › Références, Imprimer › Étiquette — follow-up to feat/debug-3, same day. The first tag
+read shifted left: the block padded 7 pt left and 26 pt right, the écru tag's "centred in the
+printable band" doctrine (the LabelWriter's head stops ~234 pt in). That is fine for an internal
+tag, wrong for one a customer holds — they see the whole 89 mm. `EtiquetteRefFiniPdf.tsx` now
+centres the block on the PHYSICAL label (equal `PAGE_PADDING_X` ≈ 21 pt both sides) and narrows
+the content to `CONTENT_WIDTH` 210 pt so the QR's right edge still clears the head limit by ~3 pt.
+Vertically the text stack and the QR column each get a small bottom padding (3 / 2.5 pt): the
+22 pt réf line box carries air above its capitals while the care row ends on ink, so the
+mathematically centred stack read ~3 pt low. Designation clamp budget 64 → 60 chars for the
+narrower column (the catalog's longest, 50 chars, still fits in two lines — checked on the render).
+Both layout invariants (centred; inside the printable band) are pinned in
+`EtiquetteRefFiniPdf.test.ts` via the exported `LAYOUT`. Doctrine recorded in
+`claude_doc/pdf_email.md` so the two tags are not "harmonised" onto each other. API only, no
+version bump — shipped straight to prod for a printer test.
+
 ## 2026-09-08 — feat/debug-3 (étiquette Dymo client sur la fiche référence finie)
 Finis › Références, Imprimer › Étiquette: the Dymo 89 × 36 tag that travels with a fabric sample
 to a customer, ported from the legacy `FI_Ref_Fini` « IMG_Etiquette » click (PCS-compressed window;

@@ -3,7 +3,7 @@
 // pins the legacy fields, the QR caption, the designation clamp and the wash
 // temperature fallback. Layout is checked by eye on a rasterized render.
 import { describe, it, expect } from 'vitest'
-import { EtiquetteRefFiniPdf, echantillonUrl, clampDesignation, type EtiquetteRefFiniData } from './EtiquetteRefFiniPdf.js'
+import { EtiquetteRefFiniPdf, LAYOUT, echantillonUrl, clampDesignation, type EtiquetteRefFiniData } from './EtiquetteRefFiniPdf.js'
 import { qrModulesPath } from './QrCode.js'
 
 function pdfStrings(node: unknown, out: string[] = []): string[] {
@@ -43,6 +43,14 @@ describe('EtiquetteRefFiniPdf', () => {
     expect(s).toContain('P')
     // Brand is the badge alone — no website line (user decision 2026-09-08).
     expect(s).not.toContain('etsmalterre.fr')
+  })
+
+  it('centres the block on the physical label and keeps it inside the printable band', () => {
+    // Equal padding both sides = centred on the 89 mm the customer sees …
+    expect(LAYOUT.PAGE_PADDING_X * 2 + LAYOUT.CONTENT_WIDTH).toBeCloseTo(LAYOUT.PAGE_WIDTH, 6)
+    // … and the right edge (the QR) still stops short of where the head stops
+    // printing (≈ 234 pt, measured on the écru tag), with a little slack.
+    expect(LAYOUT.PAGE_PADDING_X + LAYOUT.CONTENT_WIDTH).toBeLessThanOrEqual(LAYOUT.PRINT_LIMIT - 2)
   })
 
   it('always carries the QR code, captioned TARIFS', () => {

@@ -54,9 +54,20 @@ const PAGE_HEIGHT = 36 * 2.834646 // ≈ 102.05
 
 // ⚠️ The LabelWriter's head does NOT reach the end of the label: printing stops
 // ~234 pt in (~82,5 mm of the 89), measured on the écru tag (2026-08-27, see
-// EtiquetteEcruPdf). Same SAFE AREA here — the QR code, the one thing on this
-// tag that must never be clipped, sits flush against it.
-const SAFE_RIGHT = 26
+// EtiquetteEcruPdf). The left edge prints exactly where the PDF puts it.
+const PRINT_LIMIT = 234
+//
+// Centring (user, 2026-09-08 — the first print read shifted left). The écru
+// tag pads 5 pt left and 26 pt right and calls that "centred in the printable
+// band"; on this client-facing tag the customer sees the whole 89 mm, so the
+// block is centred on the PHYSICAL label instead: equal padding on both sides,
+// and the content narrowed to 210 pt so that its right edge — the QR code, the
+// one thing that must never be clipped — still stops ~3 pt short of the head
+// limit. Both constraints are pinned by the test; grow CONTENT_WIDTH only
+// against PRINT_LIMIT.
+const CONTENT_WIDTH = 210
+const PAGE_PADDING_X = (PAGE_WIDTH - CONTENT_WIDTH) / 2 // ≈ 21.1 — both sides
+export const LAYOUT = { PAGE_WIDTH, PRINT_LIMIT, CONTENT_WIDTH, PAGE_PADDING_X }
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -90,13 +101,13 @@ export interface EtiquetteRefFiniData {
 }
 
 /** Clamp the designation to what two 8 pt lines hold beside the QR
- *  (≈ 32 chars a line over 128 pt — Helvetica averages ~0.5 em a glyph).
+ *  (≈ 30 chars a line over 121 pt — Helvetica averages ~0.5 em a glyph).
  *  react-pdf 4.4 has no maxLines, and a third line would push the care
  *  symbols off the 36 mm page at the type sizes below; cut on a word boundary
  *  with an ellipsis instead. The longest designation in the catalog (50
  *  chars) fits untouched. */
 export function clampDesignation(text: string): string {
-  const budget = 64
+  const budget = 60
   const t = text.replace(/\s+/g, ' ').trim()
   if (t.length <= budget) return t
   const cut = t.slice(0, budget - 1)
@@ -115,13 +126,16 @@ function fmtNum(n: number | null): string {
 //
 // Black and white by construction (see the header): solid black type, rules,
 // symbols and QR; the only "grey" is the two small labels, and even those stay
-// dark (#333) so they print as text, not fog. Two columns — the text takes
-// the width, the QR sits flush against the printable edge.
+// dark (#333) so they print as text, not fog. Two columns inside the centred
+// 210 pt block — the text takes 126 pt, the QR the remaining 78 + 6 gutter.
 //
 // Vertical budget: 102 pt page − 2 × 3 pt padding = 96 pt. Réf 22 + designation
 // 2 × 9 + 2.5 + rule 7.8 + specs 20.5 + care 20 ≈ 91 at a two-line designation,
 // which the clamp above makes the worst case. Grow a size only against that
-// sum — a third designation line would already overflow.
+// sum — a third designation line would already overflow. The body carries
+// 3 pt of bottom padding on top of that: the 22 pt réf line box has ~5 pt of
+// air above the capitals while the care row ends on ink, so a mathematically
+// centred stack read ~3 pt low on the render.
 
 const SYM = 17
 const QR_SIZE = 78
@@ -138,8 +152,7 @@ const styles = StyleSheet.create({
     fontFamily: 'Helvetica',
     color: '#000000',
     paddingVertical: 3,
-    paddingLeft: 7,
-    paddingRight: SAFE_RIGHT,
+    paddingHorizontal: PAGE_PADDING_X,
   },
 
   // Left column — the legacy's four lines, given a hierarchy.
@@ -147,7 +160,8 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'column',
     justifyContent: 'center',
-    paddingRight: 6,
+    paddingRight: 5,
+    paddingBottom: 3,
   },
   headline: {
     flexDirection: 'row',
@@ -216,15 +230,16 @@ const styles = StyleSheet.create({
     width: 4,
   },
 
-  // Right column — the QR code with the M in its centre, tight against the
-  // safe edge, and a one-word caption so the customer knows what scanning it
-  // gets them.
+  // Right column — the QR code with the M in its centre, its right edge on
+  // the content block's (≈ 3 pt inside the head limit), and a one-word caption
+  // so the customer knows what scanning it gets them.
   qrCol: {
     width: QR_SIZE,
     marginLeft: 6,
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingBottom: 2.5, // same optical lift as the body: the caption's box has air below its caps
   },
   qrWrap: {
     width: QR_SIZE,
