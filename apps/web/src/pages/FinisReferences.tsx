@@ -46,7 +46,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { SearchableCombobox } from '@/components/ui/popover-select'
+import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
@@ -643,6 +643,7 @@ export function FinisReferences() {
             isEditing={isEditing}
             draft={draft}
             onDraftChange={setDraft}
+            onMutationSuccess={invalidateAll}
           />
         }
         sidebar={
@@ -1182,6 +1183,7 @@ function DetailMain({
   isEditing,
   draft,
   onDraftChange,
+  onMutationSuccess,
 }: {
   detail: RefFiniDetail | null
   isLoading: boolean
@@ -1189,6 +1191,7 @@ function DetailMain({
   isEditing: boolean
   draft: HeaderDraft
   onDraftChange: (d: HeaderDraft) => void
+  onMutationSuccess: () => void
 }) {
   if (!hasSelection) {
     return (
@@ -1216,7 +1219,7 @@ function DetailMain({
       <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
       <StabiliteCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
       <ColorisCard detail={detail} isEditing={isEditing} />
-      <TraitementsCard detail={detail} isEditing={isEditing} />
+      <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
       {!isEditing && <StockCard detail={detail} isEditing={isEditing} />}
       <ObservationsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
     </div>
@@ -1514,40 +1517,154 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
   )
 }
 
-// ── Traitements Card (read-only) ───────────────────────
+// ── Traitements Card ───────────────────────────────────
+// The treatments attached to a reference (`traitement_ref_fini`, a strict set).
+// Read-only badges in view mode; in edit mode each badge gets a remove button
+// and a picker adds one — both persist immediately, like the Tarifs screen's
+// treatment list (LIVA #1136: the card shipped read-only, with no way to add).
 
-function TraitementsCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: boolean }) {
+interface TraitementLookup {
+  IDtraitement: number
+  designation: string | null
+  ordre: number
+}
+
+function TraitementsCard({
+  detail, isEditing, onMutationSuccess,
+}: {
+  detail: RefFiniDetail; isEditing: boolean; onMutationSuccess: () => void
+}) {
+  const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<Traitement | null>(null)
+  const [addError, setAddError] = useState<string | null>(null)
+
+  // The add picker lives inside the collapsed body — unfold it when editing
+  // starts so the affordance is visible without a second click.
+  useEffect(() => {
+    if (isEditing) setOpen(true)
+  }, [isEditing])
+
+  const { data: catalog } = useQuery<TraitementLookup[]>({
+    queryKey: ['ref-fini-lookup-traitements'],
+    queryFn: () => apiFetch('/references-fini/lookups/traitements'),
+    enabled: isEditing,
+    staleTime: 5 * 60_000,
+  })
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['ref-fini', detail.IDref_fini] })
+    onMutationSuccess()
+  }, [queryClient, detail.IDref_fini, onMutationSuccess])
+
+  const addMut = useMutation({
+    mutationFn: (IDtraitement: number) =>
+      apiFetch(`/references-fini/${detail.IDref_fini}/traitements`, {
+        method: 'POST',
+        body: JSON.stringify({ IDtraitement }),
+      }),
+    onMutate: () => setAddError(null),
+    onSuccess: invalidate,
+    onError: (err: Error & { status?: number }) => {
+      setAddError(
+        err.status === 409
+          ? 'Ce traitement est déjà associé à la référence.'
+          : "Impossible d'ajouter ce traitement.",
+      )
+    },
+  })
+  const deleteMut = useMutation({
+    mutationFn: (IDtraitement: number) =>
+      apiFetch(`/references-fini/${detail.IDref_fini}/traitements/${IDtraitement}`, { method: 'DELETE' }),
+    onSuccess: () => { invalidate(); setDeleteTarget(null) },
+  })
+
+  // Only offer what is not attached yet — the junction is a set.
+  const attached = useMemo(() => new Set(detail.traitements.map((t) => t.IDtraitement)), [detail.traitements])
+  const options = useMemo(
+    () => (catalog ?? [])
+      .filter((t) => !attached.has(t.IDtraitement))
+      .map((t) => ({ id: t.IDtraitement, primary: t.designation ?? `#${t.IDtraitement}` })),
+    [catalog, attached],
+  )
+
   return (
-    <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader
-        className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-        onClick={() => setOpen(!open)}
-      >
-        <Droplets className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Traitements</CardTitle>
-        <Badge variant="secondary" className="text-xs ml-auto">
-          {detail.traitements.length}
-        </Badge>
-        <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-      </CardHeader>
-      {open && (
-        <CardContent className="pb-3">
-          {detail.traitements.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">Aucun traitement</p>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {detail.traitements.map((t) => (
-                <Badge key={t.IDtraitement} variant="secondary" className="text-[11px] py-0.5 px-2 gap-1 font-normal">
-                  <Droplets className="h-2.5 w-2.5 text-muted-foreground" />
-                  {t.designation ?? '—'}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      )}
-    </Card>
+    <>
+      <Card className={cn('card-premium', isEditing && editSectionClass)}>
+        <CardHeader
+          className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
+          onClick={() => setOpen(!open)}
+        >
+          <Droplets className="h-4 w-4 text-accent" />
+          <CardTitle className="text-sm font-semibold">Traitements</CardTitle>
+          <Badge variant="secondary" className="text-xs ml-auto">
+            {detail.traitements.length}
+          </Badge>
+          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
+        </CardHeader>
+        {open && (
+          <CardContent className="pb-3 space-y-2">
+            {detail.traitements.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">Aucun traitement</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {detail.traitements.map((t) =>
+                  isEditing ? (
+                    <Badge
+                      key={t.IDtraitement}
+                      className="bg-accent/10 text-accent hover:bg-accent/20 border-accent/20 gap-1"
+                    >
+                      {t.designation ?? `#${t.IDtraitement}`}
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(t)}
+                        className="ml-0.5 rounded-full hover:bg-destructive/20 hover:text-destructive p-0.5 -mr-1 transition-colors"
+                        title="Retirer ce traitement"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ) : (
+                    <Badge key={t.IDtraitement} variant="secondary" className="text-[11px] py-0.5 px-2 gap-1 font-normal">
+                      <Droplets className="h-2.5 w-2.5 text-muted-foreground" />
+                      {t.designation ?? '—'}
+                    </Badge>
+                  ),
+                )}
+              </div>
+            )}
+            {isEditing && (
+              <div className="pt-1 flex items-center gap-2 flex-wrap">
+                <PopoverSelect
+                  size="sm"
+                  value={0}
+                  onChange={(id) => { if (id > 0) addMut.mutate(id) }}
+                  emptyLabel="+ Ajouter un traitement"
+                  options={options}
+                  disabled={addMut.isPending || (catalog !== undefined && options.length === 0)}
+                  disabledTitle={options.length === 0 ? 'Tous les traitements sont déjà associés' : undefined}
+                />
+                {addMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />}
+                {addError && (
+                  <span className="text-[11px] text-destructive flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" />{addError}
+                  </span>
+                )}
+              </div>
+            )}
+          </CardContent>
+        )}
+      </Card>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Retirer le traitement"
+        description={deleteTarget ? `« ${deleteTarget.designation ?? `#${deleteTarget.IDtraitement}`} » ne sera plus appliqué à cette référence.` : undefined}
+        confirmLabel="Retirer"
+        isPending={deleteMut.isPending}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => { if (deleteTarget) deleteMut.mutate(deleteTarget.IDtraitement) }}
+      />
+    </>
   )
 }
 

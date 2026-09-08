@@ -4,6 +4,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
+import { loadTraitementCatalog, loadRefFiniTraitements, attachTraitement, detachTraitement } from '../lib/traitements.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
 
@@ -224,6 +225,17 @@ referencesFiniRouter.get('/lookups/ecru', async (_req: Request, res: Response) =
 // ──────────────────────────────────────────────────────────
 
 // GET /api/references-fini — non-archived ref_fini with coloris + stock summary.
+// GET /api/references-fini/lookups/traitements — the ennoblissement catalog
+// (same shape as /tarifs-fini/lookups/traitements; shared loader).
+referencesFiniRouter.get('/lookups/traitements', async (_req: Request, res: Response) => {
+  try {
+    res.json(await loadTraitementCatalog())
+  } catch (err) {
+    console.error('Error fetching traitements lookup:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 referencesFiniRouter.get('/', async (_req: Request, res: Response) => {
   try {
     // SELECT * works on ref_fini even with accented column names; the archivé
@@ -350,16 +362,7 @@ referencesFiniRouter.get('/:id', async (req: Request, res: Response) => {
     coloris = coloris.filter((c) => c.reference && String(c.reference).trim().length > 0)
 
     // Traitements via traitement_ref_fini (ASCII junction) → traitement.
-    let traitements: Array<{ IDtraitement: number; designation: string | null }> = []
-    const tr = await query<{ IDtraitement: number; designation: string | null; ordre: number | null }>(
-      `SELECT t.IDtraitement, t.designation, t.ordre
-         FROM traitement_ref_fini trf
-         JOIN traitement t ON trf.IDtraitement = t.IDtraitement
-        WHERE trf.IDref_fini = ${id}
-        ORDER BY t.ordre`,
-    )
-    const trFixed = (await fixEncoding(tr, 'traitement', 'IDtraitement', ['designation'])) as any[]
-    traitements = trFixed.map((t) => ({ IDtraitement: Number(t.IDtraitement), designation: t.designation ?? null }))
+    const traitements = await loadRefFiniTraitements(id)
 
     // Active stock aggregate (exclude shipped).
     let stock_total_kg = 0
@@ -925,6 +928,46 @@ referencesFiniRouter.put('/:id', async (req: Request, res: Response) => {
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating ref_fini:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/references-fini/:id/traitements — attach a treatment (LIVA #1136).
+// The junction is a set: attaching one already present answers 409.
+referencesFiniRouter.post('/:id/traitements', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = z.object({ IDtraitement: z.number().int().positive() }).safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed' }); return }
+
+    const result = await attachTraitement(id, parsed.data.IDtraitement)
+    if (result === 'ref_not_found') { res.status(404).json({ error: 'Ref fini not found' }); return }
+    if (result === 'traitement_not_found') {
+      res.status(400).json({ error: "Ce traitement n'existe pas ou a été supprimé." })
+      return
+    }
+    if (result === 'deja_associe') {
+      res.status(409).json({ error: 'deja_associe', message: 'Ce traitement est déjà associé à la référence.' })
+      return
+    }
+    res.status(201).json(await loadRefFiniTraitements(id))
+  } catch (err) {
+    console.error('Error attaching ref_fini traitement:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/references-fini/:id/traitements/:traitementId — detach (idempotent).
+referencesFiniRouter.delete('/:id/traitements/:traitementId', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const traitementId = parseInt(req.params.traitementId, 10)
+    if (isNaN(id) || isNaN(traitementId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    await detachTraitement(id, traitementId)
+    res.json(await loadRefFiniTraitements(id))
+  } catch (err) {
+    console.error('Error detaching ref_fini traitement:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

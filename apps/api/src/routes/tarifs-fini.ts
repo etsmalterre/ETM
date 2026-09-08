@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { loadTraitementCatalog } from '../lib/traitements.js'
 import {
   calcTarifSimulation,
   type PortMode,
@@ -324,21 +325,7 @@ tarifsFiniRouter.get('/lookups/fils', async (_req: Request, res: Response) => {
 // GET /api/tarifs-fini/lookups/traitements — the ennoblissement catalog.
 tarifsFiniRouter.get('/lookups/traitements', async (_req: Request, res: Response) => {
   try {
-    const rows = await query<{ IDtraitement: number; designation: string | null; ordre: number; is_deleted: number }>(
-      `SELECT IDtraitement, designation, ordre, is_deleted FROM traitement ORDER BY ordre`,
-    )
-    const fixed = (await fixEncoding(rows as any[], 'traitement', 'IDtraitement', [
-      'designation',
-    ])) as Array<{ IDtraitement: number; designation: string | null; ordre: number; is_deleted: number }>
-    res.json(
-      fixed
-        .filter((t) => Number(t.is_deleted) !== 1)
-        .map((t) => ({
-          IDtraitement: Number(t.IDtraitement),
-          designation: t.designation ?? null,
-          ordre: Number(t.ordre) || 0,
-        })),
-    )
+    res.json(await loadTraitementCatalog())
   } catch (err) {
     console.error('Error fetching traitements lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
