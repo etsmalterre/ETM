@@ -10,6 +10,21 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-08 — feat/debug-2 (numérotation des coupes — LIVA #1135)
+Finis › Stock and Tombé Métier › Stock, « Couper le rouleau ». Isabelle cut 3 m off a 5 m fini roll
+and found the 2 m left in stock renamed `3204/14-2` while the cut piece kept `3204/14`: the dialog
+made the user type the cut length on the row carrying the original number and gave the suffix to
+the auto-computed remainder. Now the typed rows are the pieces cut off and the remainder (the roll
+still on the shelf) keeps its numero — the dialog sends it as piece 0, the row the API updates in
+place. Suffixes follow the legacy `FEN_Coupe_Fini` MAX rule through the new `lib/roll-cut.ts`
+(`cutBase` / `nextCutIndex` / `childNumero`, Vitest): next free `<base>-N` among the existing
+siblings, first cut `-1` as the tables already hold (`3204/11-1`, `3204/13-1`, `3204/13-2`), so a
+second cut on the same roll or a cut on `<base>-2` no longer duplicates a number. Both cut endpoints
+answer the created `numeros`, and a new `GET /stock/{fini,ecru}/:id/cut/preview` feeds the dialog's
+labels. Probe `probe-1135-cut-numbering.ts` (read-only) showed the driver returning the bare base for
+`LIKE '<base>-%'` — the digits test lives in JS. Existing cut rows are not renumbered. Post-mortem in
+`screen_notes.md` § Finis; rule in `CLAUDE.md` § Data semantics.
+
 ## 2026-09-08 — feat/debug-1 (traitements sur la fiche référence finie — LIVA #1136)
 Finis › Références. The Traitements card had been read-only since the screen's first commit — no
 route wrote `traitement_ref_fini`, so a reference created in ETM could never get a treatment (the

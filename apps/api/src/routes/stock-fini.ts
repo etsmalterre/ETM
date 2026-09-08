@@ -4,6 +4,7 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
+import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { StockFiniLabelPdf, type StockFiniLabelData } from '../lib/pdf/StockFiniLabelPdf.js'
 
 export const stockFiniRouter: RouterType = Router()
@@ -1130,13 +1131,58 @@ stockFiniRouter.post('/fini/surteindre', async (req: Request, res: Response) => 
   }
 })
 
+/** Base + next free suffix index for a roll about to be cut. The sibling scan
+ *  is a flat `LIKE '<base>-%'` on `numero` alone (no memo column named, so the
+ *  Windows driver returns rows); the digits test happens in JS. */
+async function nextFiniCutNumero(numero: string | null, id: number): Promise<{ base: string; next: number }> {
+  const own = (numero ?? '').trim() || `#${id}`
+  const base = cutBase(own)
+  const siblings = await query<{ numero: string | null }>(
+    `SELECT numero FROM stock_fini WHERE numero LIKE '${esc(base)}-%'`,
+  )
+  return { base, next: nextCutIndex(base, siblings.map((r) => r.numero ?? '')) }
+}
+
+// GET /api/stock/fini/:id/cut/preview - the numbers a cut of this roll would
+//   produce: `{ base, next }` — the dialog labels its pieces `<base>-<next>`,
+//   `<base>-<next+1>`, … before the user confirms. Same gate as the cut.
+stockFiniRouter.get('/fini/:id/cut/preview', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) {
+      res.status(401).json({ error: 'not authenticated' })
+      return
+    }
+    const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'cut_stock_fini')
+    if (!allowed) {
+      res.status(403).json({ error: 'permission denied: cut_stock_fini' })
+      return
+    }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid ID' })
+      return
+    }
+    const rows = await query<{ numero: string | null }>(`SELECT numero FROM stock_fini WHERE IDstock_fini = ${id}`)
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Stock fini not found' })
+      return
+    }
+    res.json(await nextFiniCutNumero(rows[0].numero, id))
+  } catch (err) {
+    console.error('Error previewing stock_fini cut:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // POST /api/stock/fini/:id/cut - cut one physical roll into N rolls.
 //   Body: { pieces: Array<{ poids: number; metrage: number }> } (length 2..10).
-//   Piece 0 is the original row (updated in place, numero kept); pieces 1..N-1
-//   are new rows that inherit EVERY other column from the original (ref, coloris,
-//   lot, état, magasin, emplacement, client-line link, …) with numero suffixed
-//   -2, -3, … The poids/metrage of the pieces must sum to the original (value
-//   conservation), re-validated here regardless of what the client sent.
+//   Piece 0 is the original row (updated in place, numero kept) — the piece
+//   that stays on the shelf; pieces 1..N-1 are new rows that inherit EVERY
+//   other column from the original (ref, coloris, lot, état, magasin,
+//   emplacement, client-line link, …) numbered `<base>-<next>`, `<base>-<next+1>`,
+//   … (lib/roll-cut.ts). The poids/metrage of the pieces must sum to the
+//   original (value conservation), re-validated here regardless of what the
+//   client sent. Answers `{ ok, created, numeros }`.
 //
 //   New rows are created with INSERT ... SELECT so accented text columns
 //   (observations, …) are copied inside the DB — no encoding round-trip through
@@ -1199,9 +1245,14 @@ stockFiniRouter.post('/fini/:id/cut', async (req: Request, res: Response) => {
 
     // Round to avoid float artefacts in the stored values.
     const r2 = (v: number) => Math.round(v * 100) / 100
-    const base = (orig.numero ?? '').trim() || `#${id}`
+    // Suffix rule (lib/roll-cut.ts, LIVA #1135): the next free `<base>-N` among
+    // the numeros already derived from this roll's base, so a second cut on the
+    // same roll — or a cut on `<base>-2` itself — never duplicates a number.
+    const { base, next } = await nextFiniCutNumero(orig.numero, id)
 
-    // Piece 0 -> update the original row in place (numero unchanged).
+    // Piece 0 -> update the original row in place (numero unchanged). The
+    // dialog sends the piece that STAYS ON THE SHELF here; the cut-off pieces
+    // are the new rows.
     await query(
       `UPDATE stock_fini SET poids = ${r2(norm[0].poids)}, metrage = ${r2(norm[0].metrage)} WHERE IDstock_fini = ${id}`,
     )
@@ -1209,9 +1260,10 @@ stockFiniRouter.post('/fini/:id/cut', async (req: Request, res: Response) => {
     // Pieces 1..N-1 -> new rows copying every other column from the original.
     const COPY_COLS =
       'numero, IDstock_ecru, poids, metrage, lot, observations, second_choix, IDref_commande_source, IDmagasin, IDref_fini, IDColoris, date_saisie, IDetat_stock_fini, destockage, IDligne_commande_client, IDProprietaire, IDcommande_donation, conteneur, emplacement, don, pointage, observation_sst, IDligne_expedition'
+    const created: string[] = []
     for (let i = 1; i < norm.length; i++) {
-      const suffix = `-${i + 1}`
-      const child = base.slice(0, 20 - suffix.length) + suffix
+      const child = childNumero(base, next + i - 1)
+      created.push(child)
       await query(
         `INSERT INTO stock_fini (${COPY_COLS})
          SELECT '${esc(child)}', IDstock_ecru, ${r2(norm[i].poids)}, ${r2(norm[i].metrage)}, lot, observations, second_choix, IDref_commande_source, IDmagasin, IDref_fini, IDColoris, date_saisie, IDetat_stock_fini, destockage, IDligne_commande_client, IDProprietaire, IDcommande_donation, conteneur, emplacement, don, pointage, observation_sst, IDligne_expedition
@@ -1219,7 +1271,7 @@ stockFiniRouter.post('/fini/:id/cut', async (req: Request, res: Response) => {
       )
     }
 
-    res.json({ ok: true, created: norm.length - 1 })
+    res.json({ ok: true, created: norm.length - 1, numeros: created })
   } catch (err) {
     console.error('Error cutting stock_fini:', err)
     res.status(500).json({ error: 'Internal server error' })

@@ -652,10 +652,11 @@ export function TombeMetierStock() {
 }
 
 // ── Cut-roll dialog ────────────────────────────────────
-// Split one physical écru roll into N rolls. Pieces 1..N-1 are editable; the
-// LAST piece is auto-computed as the remainder so the weight & length totals
-// always equal the original. Piece 1 keeps the original numero; the others
-// preview as "<base>-2", "<base>-3", …
+// Split one physical écru roll into N rolls. The typed pieces are what is CUT
+// OFF; the LAST row is auto-computed as the remainder so the weight & length
+// totals always equal the original. The remainder stays on the shelf and KEEPS
+// the original numero; the cut-off pieces get the next free "<base>-N" numbers
+// from the API's cut preview (LIVA #1135, same rule as Finis › Stock).
 
 interface CutPieceDraft {
   poids: string
@@ -685,7 +686,16 @@ function CutRollDialog({
   // Écru rolls are tracked by weight; metrage is usually 0, so only surface the
   // metrage column when the original roll actually carries a length.
   const hasMetrage = origMetrage > 0
-  const base = ((row?.numero ?? '').trim() || (origId != null ? `#${origId}` : '')).slice(0, 18)
+
+  // Numbers the cut will produce: `<base>-<next>`, `<base>-<next+1>`, … The
+  // API scans the existing siblings so a second cut never reuses a suffix.
+  const previewQuery = useQuery<{ base: string; next: number }>({
+    queryKey: ['stock-ecru', 'cut-preview', origId],
+    queryFn: () => apiFetch(`/stock/ecru/${origId}/cut/preview`),
+    enabled: open && origId != null,
+    staleTime: 0,
+  })
+  const preview = previewQuery.data ?? null
 
   const num = (s: string) => {
     const v = Number(String(s).replace(',', '.'))
@@ -701,9 +711,11 @@ function CutRollDialog({
 
   const cutMutation = useMutation({
     mutationFn: () => {
+      // Piece 0 is the row the API updates in place (numero kept): the
+      // remainder. The typed pieces become the new suffixed rows.
       const pieces = [
-        ...editable.map((p) => ({ poids: num(p.poids), metrage: hasMetrage ? num(p.metrage) : 0 })),
         { poids: Math.max(0, lastPoids), metrage: hasMetrage ? Math.max(0, lastMetrage) : 0 },
+        ...editable.map((p) => ({ poids: num(p.poids), metrage: hasMetrage ? num(p.metrage) : 0 })),
       ]
       return apiFetch(`/stock/ecru/${origId}/cut`, {
         method: 'POST',
@@ -713,7 +725,9 @@ function CutRollDialog({
     onSuccess: () => onSuccess(),
   })
 
-  const pieceLabel = (idx: number) => (idx === 0 ? row?.numero || base : `${base}-${idx + 1}`)
+  const origLabel = (row?.numero ?? '').trim() || (origId != null ? `#${origId}` : '')
+  // Cut-off piece `idx` (0-based) → `<base>-<next + idx>`; '…' until the preview lands.
+  const cutLabel = (idx: number) => (preview ? `${preview.base}-${preview.next + idx}` : `${origLabel}-…`)
   const totalPieces = editable.length + 1
 
   // Cross-multiplication (règle de trois): a cut preserves the roll's linear
@@ -767,6 +781,9 @@ function CutRollDialog({
             <div className="text-xs text-muted-foreground tabular-nums mt-0.5">
               Original : {fmtNum(origPoids, 1)} kg{hasMetrage ? ` · ${fmtNum(origMetrage, 1)} m` : ''}
             </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              Saisir les morceaux coupés : ils reçoivent un nouveau numéro, le reste garde le numéro du rouleau.
+            </div>
           </div>
 
           {/* Piece rows */}
@@ -780,7 +797,7 @@ function CutRollDialog({
 
             {editable.map((p, idx) => (
               <div key={idx} className={cn('grid items-center gap-2', gridCols)}>
-                <span className="text-sm tabular-nums truncate">{pieceLabel(idx)}</span>
+                <span className="text-sm tabular-nums truncate">{cutLabel(idx)}</span>
                 <input
                   type="number"
                   inputMode="decimal"
@@ -814,11 +831,11 @@ function CutRollDialog({
               </div>
             ))}
 
-            {/* Auto-balanced last piece */}
+            {/* Auto-balanced remainder — stays on the shelf under the roll's own numero */}
             <div className={cn('grid items-center gap-2', gridCols)}>
               <span className="text-sm tabular-nums truncate text-muted-foreground">
-                {pieceLabel(editable.length)}
-                <span className="ml-1.5 text-[10px] uppercase tracking-wide">auto</span>
+                {origLabel}
+                <span className="ml-1.5 text-[10px] uppercase tracking-wide">reste</span>
               </span>
               <span
                 className={cn(

@@ -3,6 +3,7 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { repairAliased, resolveSstLine, resolveProvenanceFils } from './stock-fini.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
+import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 
 export const stockEcruRouter: RouterType = Router()
 
@@ -1181,12 +1182,55 @@ stockEcruRouter.patch('/ecru/:id', async (req: Request, res: Response) => {
   }
 })
 
+/** Base + next free suffix index for an écru roll about to be cut (see
+ *  stock-fini.ts `nextFiniCutNumero`, same rule on the other table). */
+async function nextEcruCutNumero(numero: string | null, id: number): Promise<{ base: string; next: number }> {
+  const own = (numero ?? '').trim() || `#${id}`
+  const base = cutBase(own)
+  const siblings = await query<{ numero: string | null }>(
+    `SELECT numero FROM stock_ecru WHERE numero LIKE '${esc(base)}-%'`,
+  )
+  return { base, next: nextCutIndex(base, siblings.map((r) => r.numero ?? '')) }
+}
+
+// GET /api/stock/ecru/:id/cut/preview - `{ base, next }`, the numbers a cut of
+//   this roll would produce, for the dialog's labels. Same gate as the cut.
+stockEcruRouter.get('/ecru/:id/cut/preview', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) {
+      res.status(401).json({ error: 'not authenticated' })
+      return
+    }
+    const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'cut_stock_ecru')
+    if (!allowed) {
+      res.status(403).json({ error: 'permission denied: cut_stock_ecru' })
+      return
+    }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid ID' })
+      return
+    }
+    const rows = await query<{ numero: string | null }>(`SELECT numero FROM stock_ecru WHERE IDstock_ecru = ${id}`)
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Stock écru not found' })
+      return
+    }
+    res.json(await nextEcruCutNumero(rows[0].numero, id))
+  } catch (err) {
+    console.error('Error previewing stock_ecru cut:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // POST /api/stock/ecru/:id/cut - split one écru roll into N rolls (2..10). The
 //   poids/metrage of the pieces must sum to the original (value conservation),
-//   re-validated server-side. Piece 0 updates the original in place; pieces
-//   1..N-1 are INSERT ... SELECT copies (accented text columns copied inside the
-//   DB — no encoding round-trip) with numero suffixes -2, -3, … Gated by the
-//   cut_stock_ecru permission.
+//   re-validated server-side. Piece 0 updates the original in place (the piece
+//   that stays on the shelf, numero kept); pieces 1..N-1 are INSERT ... SELECT
+//   copies (accented text columns copied inside the DB — no encoding
+//   round-trip) numbered `<base>-<next>`, `<base>-<next+1>`, … (lib/roll-cut.ts,
+//   LIVA #1135). Gated by the cut_stock_ecru permission. Answers
+//   `{ ok, created, numeros }`.
 stockEcruRouter.post('/ecru/:id/cut', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) {
@@ -1234,9 +1278,14 @@ stockEcruRouter.post('/ecru/:id/cut', async (req: Request, res: Response) => {
     }
 
     const r2 = (v: number) => Math.round(v * 100) / 100
-    const base = (orig.numero ?? '').trim() || `#${id}`
+    // Suffix rule (lib/roll-cut.ts, LIVA #1135): the next free `<base>-N` among
+    // the numeros already derived from this roll's base, so a second cut on the
+    // same roll — or a cut on `<base>-2` itself — never duplicates a number.
+    const { base, next } = await nextEcruCutNumero(orig.numero, id)
 
-    // Piece 0 -> update the original row in place (numero unchanged).
+    // Piece 0 -> update the original row in place (numero unchanged). The
+    // dialog sends the piece that STAYS ON THE SHELF here; the cut-off pieces
+    // are the new rows.
     await query(
       `UPDATE stock_ecru SET poids = ${r2(norm[0].poids)}, metrage = ${r2(norm[0].metrage)} WHERE IDstock_ecru = ${id}`,
     )
@@ -1246,9 +1295,10 @@ stockEcruRouter.post('/ecru/:id/cut', async (req: Request, res: Response) => {
     // Linux bridge).
     const COPY_COLS =
       'numero, IDref_ecru, IDcolori_ecru, IDmagasin, IDordre_fabrication, IDref_commande_source, IDref_commande_affectation, IDligne_commande_client, IDLigne_Commande_TRM, IDsociete, poids, metrage, lot, observations, visiteur, second_choix, date_saisie'
+    const created: string[] = []
     for (let i = 1; i < norm.length; i++) {
-      const suffix = `-${i + 1}`
-      const child = base.slice(0, 20 - suffix.length) + suffix
+      const child = childNumero(base, next + i - 1)
+      created.push(child)
       await query(
         `INSERT INTO stock_ecru (${COPY_COLS})
          SELECT '${esc(child)}', IDref_ecru, IDcolori_ecru, IDmagasin, IDordre_fabrication, IDref_commande_source, IDref_commande_affectation, IDligne_commande_client, IDLigne_Commande_TRM, IDsociete, ${r2(norm[i].poids)}, ${r2(norm[i].metrage)}, lot, observations, visiteur, second_choix, date_saisie
@@ -1256,7 +1306,7 @@ stockEcruRouter.post('/ecru/:id/cut', async (req: Request, res: Response) => {
       )
     }
 
-    res.json({ ok: true, created: norm.length - 1 })
+    res.json({ ok: true, created: norm.length - 1, numeros: created })
   } catch (err) {
     console.error('Error cutting stock_ecru:', err)
     res.status(500).json({ error: 'Internal server error' })
