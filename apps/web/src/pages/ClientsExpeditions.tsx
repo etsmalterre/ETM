@@ -505,7 +505,7 @@ export function ClientsExpeditions() {
         title="Supprimer l'expédition"
         description={
           detail?.kind === 'formelle'
-            ? 'Cette expédition et ses lignes seront supprimées. Les rouleaux affectés seront libérés. Cette action est irréversible.'
+            ? 'Cette expédition et ses lignes seront supprimées. Les rouleaux repassent en stock « Validé », toujours affectés à leur ligne de commande. Cette action est irréversible.'
             : 'Cette expédition et toutes ses lignes seront supprimées. Cette action est irréversible.'
         }
         confirmLabel="Supprimer"

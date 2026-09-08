@@ -51,6 +51,9 @@
 //    IDligne_expedition → ligne_expedition; divers via the facture.
 //    IDexpedition_divers header back-pointer. est_valide still exists in the
 //    schema (legacy writes it) but ETM ignores it everywhere.
+//  - Deleting an expedition / removing a roll from it UNSHIPS the roll
+//    (`unshipFiniRolls`): IDligne_expedition → 0 AND état 4 → 3, keeping the
+//    commande-line affectation. Guard: scripts/check-expedition-unship.ts.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
@@ -270,6 +273,32 @@ interface RollLite {
 }
 const ETAT_FINI_LABELS: Record<number, string> = {
   1: 'En Contrôle', 2: 'En Reprise', 3: 'Validé', 4: 'Expédié', 5: 'Attente décision',
+}
+/** État "Expédié" — stamped by the legacy expedition routine on shipped rolls. */
+const ETAT_FINI_EXPEDIE = 4
+/** État "Validé" — where a roll sat just before shipping, so where it goes back. */
+const ETAT_FINI_VALIDE = 3
+
+/** Undo the SHIPMENT of the fini rolls sitting on the given expedition lines
+ *  (optionally one roll only): the roll goes back to exactly where it was
+ *  before being picked — still affected to its commande line, no longer on
+ *  any expedition, and no longer « Expédié ».
+ *
+ *  "A roll is shipped" is two facts (#1086): `IDligne_expedition > 0` AND
+ *  `IDetat_stock_fini = 4`. Clearing only the first left a ghost — état 4 with
+ *  no expedition — that Finis › Stock hides (`IDetat_stock_fini <> 4`) and that
+ *  the line's roll picker never offers back, so the roll was reachable from no
+ *  screen. Unlike the retour-stock route in clients.ts (goods physically came
+ *  back, reservation released), `IDligne_commande_client` is deliberately KEPT:
+ *  deleting an avis undoes a shipment, not the order it was picked for.
+ *  Only état 4 is demoted; any other état is the warehouse's own classification.
+ *  Écru has no état column — its shipped fact is `IDligne_expedition_ETM` alone. */
+export async function unshipFiniRolls(leIds: number[], stockId?: number): Promise<void> {
+  const ids = leIds.filter((x) => x > 0)
+  if (ids.length === 0) return
+  const scope = `IDligne_expedition IN (${ids.join(',')})` + (stockId !== undefined ? ` AND IDstock_fini = ${stockId}` : '')
+  await query(`UPDATE stock_fini SET IDligne_expedition = 0, IDetat_stock_fini = ${ETAT_FINI_VALIDE} WHERE ${scope} AND IDetat_stock_fini = ${ETAT_FINI_EXPEDIE}`)
+  await query(`UPDATE stock_fini SET IDligne_expedition = 0 WHERE ${scope}`)
 }
 
 export async function resolveEcruColoris(coloriIds: number[]): Promise<Map<number, string>> {
@@ -926,9 +955,8 @@ expeditionsRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
       const leRows = await query<{ IDligne_expedition: number }>(`SELECT IDligne_expedition FROM ligne_expedition WHERE IDexpedition = ${id}`)
       const leIds = leRows.map((r) => Number(r.IDligne_expedition)).filter((x) => x > 0)
       if (leIds.length > 0) {
-        const inLe = leIds.join(',')
-        await query(`UPDATE stock_fini SET IDligne_expedition = 0 WHERE IDligne_expedition IN (${inLe})`)
-        await query(`UPDATE stock_ecru SET IDligne_expedition_ETM = 0 WHERE IDligne_expedition_ETM IN (${inLe})`)
+        await unshipFiniRolls(leIds)
+        await query(`UPDATE stock_ecru SET IDligne_expedition_ETM = 0 WHERE IDligne_expedition_ETM IN (${leIds.join(',')})`)
       }
       await query(`DELETE FROM ligne_expedition WHERE IDexpedition = ${id}`)
       await query(`DELETE FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`)
@@ -1120,7 +1148,7 @@ expeditionsRouter.delete('/formelle/:id/lignes/:lccId/rolls/:stockId', async (re
     const leId = await findLigneExpedition(id, lccId)
     if (leId > 0) {
       if (ctx.kind === 'fini') {
-        await query(`UPDATE stock_fini SET IDligne_expedition = 0 WHERE IDstock_fini = ${stockId} AND IDligne_expedition = ${leId}`)
+        await unshipFiniRolls([leId], stockId)
       } else {
         await query(`UPDATE stock_ecru SET IDligne_expedition_ETM = 0 WHERE IDstock_ecru = ${stockId} AND IDligne_expedition_ETM = ${leId}`)
       }
