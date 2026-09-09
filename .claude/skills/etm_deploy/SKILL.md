@@ -41,8 +41,8 @@ so smoke-check more than the app you happen to be standing in.
 
 | Component | Server | IP | User | Hostname |
 |-----------|--------|-----|------|----------|
-| **API** | mfprod-api | `10.10.20.3` | `debian` | `mfprod-api` |
-| **Web** | mfprod-erp | `10.10.20.4` | `debian` | `mfprod-erp` |
+| **API** | mps-api (PVE `MPS-API`, ssh alias `mps_api`) | `10.10.20.3` | `debian` | `mps-api` (was `mfprod-api` until 2026-09-09) |
+| **Web** | mps-webapps (PVE `MPS-WebApps`, ssh alias `mps_webapps`) | `10.10.20.4` | `debian` | `mps-webapps` (was `mfprod-erp` until 2026-09-09) |
 | **HFSQL** | mps.malterre | `mps.malterre:4900` | `Malterre` | — |
 
 Both servers are Debian Linux (x86_64). The MFProd (separate project) also runs on these servers.
