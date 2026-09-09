@@ -92,7 +92,7 @@ async function resolveMachineNames(ids: number[]): Promise<Map<number, string>> 
   return out
 }
 
-async function resolveRefFilNames(ids: number[]): Promise<Map<number, string>> {
+export async function resolveRefFilNames(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const list = Array.from(new Set(ids.filter((x) => x > 0)))
   if (list.length === 0) return out
@@ -105,7 +105,7 @@ async function resolveRefFilNames(ids: number[]): Promise<Map<number, string>> {
   return out
 }
 
-async function resolveColoriFilNames(ids: number[]): Promise<Map<number, string>> {
+export async function resolveColoriFilNames(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const list = Array.from(new Set(ids.filter((x) => x > 0)))
   if (list.length === 0) return out

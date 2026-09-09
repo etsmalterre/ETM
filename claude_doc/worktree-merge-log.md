@@ -10,6 +10,23 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-09 — feat/atelier-regleur (API du côté régleur de la PWA atelier)
+Routes `/api/atelier` for the régleur side of `TRM/apps/atelier`, ported from the
+`Appli_Regleur` Android build (`AndroidgenCompile`, 2026-05-25): `GET /machines?regleur=1`
+(state réglage / pause / marche, unexplained-stop frequency per hour, % 2nd choix, alert;
+"inactives" = machines without an OF), `GET /of/:id/reglage` (the `FEN_Reglage_Machine`
+sheet: marks per turn, settings, yarns, consigne — "Lancer OF" reuses the existing
+`Lancement OF` event), `GET/POST/DELETE /of/:id/messages[/:msgId]` (the `message_of` thread,
+both roles, delete only one's own) and `PUT /of/:id/consigne` (régleur writes
+`ordre_fabrication.observations`). Pure rules + 17 tests in `lib/atelier-regleur-trm.ts`;
+`probe-atelier-regleur-trm.ts` replays the two SELECTs at a chosen date. Every régleur write
+requires `saisie_atelier` on the cookie AND `bonnetier.regleur = 1` on the named
+`IDbonnetier`; the role itself is still self-declared by the phone until the identity /
+device-enrolment layer is built (user decision 2026-09-08: build it at deploy time, do not
+ship the régleur side without it). `FEN_Historique` deliberately not ported.
+`resolveRefFilNames` / `resolveColoriFilNames` exported from `of-trm.ts` for reuse; the
+`saisie_atelier` permission description now names messages and consigne.
+
 ## 2026-09-08 — feat/etiquette-centrage (l'étiquette Dymo client se centre sur l'étiquette physique)
 Finis › Références, Imprimer › Étiquette — follow-up to feat/debug-3, same day. The first tag
 read shifted left: the block padded 7 pt left and 26 pt right, the écru tag's "centred in the

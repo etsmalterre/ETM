@@ -40,6 +40,16 @@ import { terminerOf } from '../lib/of-queue-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { maxId } from './expeditions.js'
+import { resolveRefFilNames, resolveColoriFilNames } from './of-trm.js'
+import {
+  etatMetier,
+  debutFenetreArrets,
+  frequenceArret,
+  pourcentageDefauts,
+  alerteRegleur,
+  FENETRE_FREQ_ARRET_MS,
+  type AlerteRegleur,
+} from '../lib/atelier-regleur-trm.js'
 
 export const atelierRouter: RouterType = Router()
 
@@ -139,8 +149,19 @@ atelierRouter.get('/bonnetiers', async (req: Request, res: Response) => {
 //
 //     The `|| nom` fallback stays for the day an unarchived métier lands with
 //     no emplacement — a blank tile is unusable, a brand name merely odd.
-atelierRouter.get('/machines', async (_req: Request, res: Response) => {
+//
+// ── `?regleur=1` — the régleur build's tile (lib/atelier-regleur-trm.ts) ──
+//
+// The legacy régleur configuration (`Android\gen\Compile`, 2026-05-25) decorates
+// every active tile with a state icon, a stop frequency and a second-choice
+// ratio, plus an alert flag; and its « Inactives » list holds only the métiers
+// with NO active OF (the bonnetier build also lists finished-but-still-active
+// ones there). The extras cost bounded queries — two 24 h scans plus one
+// `TOP 100` per (reference, coloris) pair — so they are computed only when the
+// phone asks for them; the bonnetier list stays as cheap as before.
+atelierRouter.get('/machines', async (req: Request, res: Response) => {
   try {
+    const wantRegleur = String(req.query.regleur ?? '0') === '1'
     const machines = (await selectMachines()).filter((m) => m.archive === 0)
 
     // Active OFs, one per métier at most (the queue invariant).
@@ -153,11 +174,13 @@ atelierRouter.get('/machines', async (_req: Request, res: Response) => {
     const ofs = await fixEncoding(ofRows, 'ordre_fabrication', 'IDordre_fabrication', ['observations'])
 
     const ofIds = ofs.map((o) => n(o.IDordre_fabrication)).filter((x) => x > 0)
-    const [produites, refs, coloris] = await Promise.all([
-      countFinishedPieces(ofIds),
+    const [pieces, refs, coloris] = await Promise.all([
+      selectPiecesForOfs(ofIds),
       resolveEcruRefs(ofs.map((o) => n(o.IDref_ecru)).filter((x) => x > 0)),
       resolveColorisEcru(ofs.map((o) => n(o.IDcolori_ecru)).filter((x) => x > 0)),
     ])
+    const produites = countFinished(pieces)
+    const regleur = wantRegleur ? await regleurExtras(ofs, pieces) : null
 
     const byMachine = new Map<number, Record<string, unknown>>()
     for (const o of ofs) byMachine.set(n(o.IDmachine), o)
@@ -171,6 +194,8 @@ atelierRouter.get('/machines', async (_req: Request, res: Response) => {
       // The legacy's own predicate, verbatim in meaning: a métier is "active"
       // when it still owes pieces, or when it runs until the yarn is gone.
       const actif = ofId > 0 && (total < nbPieces || finirFil)
+      const demarre = o ? parseDtMs(o.demarrage_prod) !== null : false
+      const interrompu = o ? parseDtMs(o.arret_prod) !== null : false
       return {
         IDmachine: m.id,
         label: m.emplacement || m.nom,
@@ -189,10 +214,18 @@ atelierRouter.get('/machines', async (_req: Request, res: Response) => {
               // Presence only — the consigne itself is read on the OF screen.
               // HFSQL stores " " for empty, so trim before deciding (§24).
               a_consigne: String(o!.observations ?? '').trim().length > 0,
-              demarre: parseDtMs(o!.demarrage_prod) !== null,
-              interrompu: parseDtMs(o!.arret_prod) !== null,
+              demarre,
+              interrompu,
             }
           : null,
+        // Only on `?regleur=1`; null for a bonnetier's phone.
+        regleur:
+          regleur && ofId
+            ? {
+                etat: etatMetier(demarre, interrompu),
+                ...(regleur.get(ofId) ?? { alerte: false, pct_defaut: 0, freq_arret: 0, eligible: false }),
+              }
+            : null,
       }
     })
 
@@ -206,21 +239,146 @@ atelierRouter.get('/machines', async (_req: Request, res: Response) => {
   }
 })
 
-/** Finished pieces per OF. See departure (2) above: the count is done in JS on
- *  parsed dates, never with `date_fin <> ''` in the WHERE. */
-async function countFinishedPieces(ofIds: number[]): Promise<Map<number, number>> {
-  const out = new Map<number, number>()
+interface PieceRow {
+  id: number
+  ofId: number
+  finMs: number | null
+}
+
+/** Every piece of the given OFs — the one read behind both the finished-piece
+ *  count and the régleur's stop frequency (which needs piece → OF). */
+async function selectPiecesForOfs(ofIds: number[]): Promise<PieceRow[]> {
   const ids = ofIds.filter((x) => x > 0)
-  if (ids.length === 0) return out
-  for (const id of ids) out.set(id, 0)
+  if (ids.length === 0) return []
   const rows = await query<Record<string, unknown>>(
-    `SELECT IDordre_fabrication, date_fin FROM piece_production
+    `SELECT IDpiece_production, IDordre_fabrication, date_fin FROM piece_production
      WHERE IDordre_fabrication IN (${ids.join(',')})`,
   )
-  for (const r of rows) {
-    if (parseDtMs(r.date_fin) === null) continue // still on the machine
-    const k = n(r.IDordre_fabrication)
-    out.set(k, (out.get(k) ?? 0) + 1)
+  return rows.map((r) => ({
+    id: n(r.IDpiece_production),
+    ofId: n(r.IDordre_fabrication),
+    finMs: parseDtMs(r.date_fin),
+  }))
+}
+
+/** Finished pieces per OF. See departure (2) above: the count is done in JS on
+ *  parsed dates, never with `date_fin <> ''` in the WHERE. Every requested OF
+ *  gets an entry, 0 included. */
+function countFinished(pieces: PieceRow[], ofIds?: number[]): Map<number, number> {
+  const out = new Map<number, number>()
+  for (const id of ofIds ?? []) out.set(id, 0)
+  for (const p of pieces) {
+    if (!out.has(p.ofId)) out.set(p.ofId, 0)
+    if (p.finMs === null) continue // still on the machine
+    out.set(p.ofId, (out.get(p.ofId) ?? 0) + 1)
+  }
+  return out
+}
+
+async function countFinishedPieces(ofIds: number[]): Promise<Map<number, number>> {
+  return countFinished(await selectPiecesForOfs(ofIds), ofIds.filter((x) => x > 0))
+}
+
+/** Compact HFSQL DATETIME literal for an epoch (same shape as nowDt()). */
+function dtLit(ms: number): string {
+  const t = new Date(ms)
+  const p = (x: number) => String(x).padStart(2, '0')
+  return `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`
+}
+
+type RegleurExtras = AlerteRegleur & { eligible: boolean }
+
+/** The régleur tile's numbers for every active OF, in four bounded reads:
+ *
+ *   1. evenement_machine, etat = 0, last 24 h, all métiers   (the stops)
+ *   2. evenement_piece, Nettoyage / Fin du tricotage, 24 h    (the expected stops)
+ *   3. stock_ecru TOP 100 per distinct (reference, coloris)   (the 2nd-choice ratio)
+ *   4. ref_ecru_machine for the métiers on screen             (the eligibility)
+ *
+ *  The legacy runs 1 + 2 + 3 once PER TILE, with the JOIN inside 2. Both dates
+ *  are reserved words (`DATE`), hence the aliases, and both windows are cut
+ *  at 24 h in SQL then narrowed per OF in JS (`debutFenetreArrets`). */
+async function regleurExtras(
+  ofs: Record<string, unknown>[],
+  pieces: PieceRow[],
+): Promise<Map<number, RegleurExtras>> {
+  const out = new Map<number, RegleurExtras>()
+  if (ofs.length === 0) return out
+  const now = Date.now()
+  const lit = dtLit(now - FENETRE_FREQ_ARRET_MS)
+  const machineIds = Array.from(new Set(ofs.map((o) => n(o.IDmachine)).filter((x) => x > 0)))
+
+  const [arretRows, evtRows, eligRows] = await Promise.all([
+    query<Record<string, unknown>>(
+      `SELECT IDmachine, DATE AS date_ev FROM evenement_machine
+       WHERE etat = 0 AND DATE >= '${lit}'`,
+    ),
+    query<Record<string, unknown>>(
+      `SELECT IDpiece_production, DATE AS date_ev FROM evenement_piece
+       WHERE DATE >= '${lit}' AND evenement IN ('Nettoyage', 'Fin du tricotage')`,
+    ),
+    machineIds.length > 0
+      ? query<Record<string, unknown>>(
+          `SELECT IDref_ecru, IDmachine FROM ref_ecru_machine WHERE IDmachine IN (${machineIds.join(',')})`,
+        )
+      : Promise.resolve([] as Record<string, unknown>[]),
+  ])
+
+  const arretsParMachine = new Map<number, number[]>()
+  for (const r of arretRows) {
+    const t = parseDtMs(r.date_ev)
+    if (t === null) continue
+    const k = n(r.IDmachine)
+    if (!arretsParMachine.has(k)) arretsParMachine.set(k, [])
+    arretsParMachine.get(k)!.push(t)
+  }
+  const ofParPiece = new Map<number, number>()
+  for (const p of pieces) ofParPiece.set(p.id, p.ofId)
+  const evtsParOf = new Map<number, number[]>()
+  for (const r of evtRows) {
+    const ofId = ofParPiece.get(n(r.IDpiece_production))
+    const t = parseDtMs(r.date_ev)
+    if (ofId === undefined || t === null) continue
+    if (!evtsParOf.has(ofId)) evtsParOf.set(ofId, [])
+    evtsParOf.get(ofId)!.push(t)
+  }
+  const eligible = new Set(eligRows.map((r) => `${n(r.IDref_ecru)}:${n(r.IDmachine)}`))
+
+  // One TOP 100 per distinct (reference, coloris) pair — two OFs on the same
+  // article share the read, as they share the ratio.
+  const pctParPaire = new Map<string, number>()
+  for (const o of ofs) {
+    const key = `${n(o.IDref_ecru)}:${n(o.IDcolori_ecru)}`
+    if (pctParPaire.has(key)) continue
+    if (n(o.IDref_ecru) <= 0) {
+      pctParPaire.set(key, 0)
+      continue
+    }
+    const rows = await query<Record<string, unknown>>(
+      `SELECT TOP 100 poids, second_choix FROM stock_ecru
+       WHERE IDref_ecru = ${n(o.IDref_ecru)} AND IDcolori_ecru = ${n(o.IDcolori_ecru)}
+       ORDER BY date_saisie DESC`,
+    )
+    pctParPaire.set(
+      key,
+      pourcentageDefauts(rows.map((r) => ({ poids: Number(r.poids) || 0, second_choix: n(r.second_choix) === 1 }))),
+    )
+  }
+
+  for (const o of ofs) {
+    const ofId = n(o.IDordre_fabrication)
+    const debut = debutFenetreArrets(parseDtMs(o.demarrage_prod), now)
+    const freq = frequenceArret(
+      debut,
+      now,
+      arretsParMachine.get(n(o.IDmachine)) ?? [],
+      evtsParOf.get(ofId) ?? [],
+    )
+    const pct = pctParPaire.get(`${n(o.IDref_ecru)}:${n(o.IDcolori_ecru)}`) ?? 0
+    out.set(ofId, {
+      ...alerteRegleur(pct, freq),
+      eligible: eligible.has(`${n(o.IDref_ecru)}:${n(o.IDmachine)}`),
+    })
   }
   return out
 }
@@ -258,6 +416,385 @@ atelierRouter.get('/of/:id', async (req: Request, res: Response) => {
     res.json(ctx)
   } catch (err) {
     console.error('Error fetching atelier OF:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══════════════════════════════════════════════════════════
+//  RÉGLEUR — the screens only the régleur build opens
+// ═══════════════════════════════════════════════════════════
+//
+// Spec: `C:\Mes Projets\MPS\Android\gen\Compile\` (configuration Appli_Regleur,
+// 2026-05-25). Three deltas over the bonnetier build, all ported here:
+//   - FEN_Reglage_Machine — the setup sheet a régleur reads before « Lancer OF »
+//     (GET /of/:id/reglage; the launch itself is the existing « Lancement OF »
+//     event, so there is one write path for it, not two);
+//   - FEN_Consigne plan 3 — the régleur WRITES the consigne (PUT /of/:id/consigne);
+//   - FEN_Consigne plan 2 — the message_of thread, both roles (GET/POST/DELETE
+//     /of/:id/messages).
+// FEN_Historique (régleur-only icon on Action_Machine) is NOT ported yet.
+
+// ── GET /api/atelier/of/:id/reglage ───────────────────────
+//
+// Legacy FEN_Reglage_Machine, verbatim:
+//
+//   req (ref_ecru_machine): SELECT IDref_ecru_machine FROM ref_ecru_machine
+//        WHERE IDmachine = {pIDMachine} AND IDref_ecru = {pIDRefEcru}
+//   reqRefPrec: SELECT ordre_fabrication.arret_prod, ref_ecru.lfa_tour_1..4
+//        FROM ordre_fabrication
+//        LEFT JOIN ligne_commande_client ON … LEFT JOIN ref_ecru ON …IDreference
+//        WHERE IDmachine = {pIDMachine} AND IDordre_fabrication <> {pOFEnCours}
+//          AND arret_prod <> '' ORDER BY arret_prod DESC LIMIT 1
+//   ZR_Repere: 4 rows (tour, reqRefPrec.lfa_tour_n, ref_ecru.lfa_tour_n,
+//        ref_ecru_machine.repere_n) + a 5th with repere_5 only
+//   ZR_Reglage: Hauteur Plateau / Abattage · Nb Chutes / Compteur ·
+//        Écarteur / Poids Pièce · Maille d'ouverture / Tombé Métier ·
+//        Ouvert au large
+//   Fils: SELECT DISTINCT … FROM asso_fil_of, ref_fil, colori_fil
+//   Observations: ordre_fabrication.observations (the consigne)
+//
+// Choix_Metier only opens this window when `reqEligible.total = 1`
+// (a ref_ecru_machine row exists) — otherwise « La référence demandée n'est
+// pas disponible sur cette machine ». Here the sheet carries `eligible` and
+// the phone renders that sentence instead of the launch button.
+//
+// Two departures:
+//   - the previous OF's reference is read from `ordre_fabrication.IDref_ecru`
+//     (the column every other atelier read uses), not through the commande
+//     line; and `arret_prod <> ''` is not sent to the driver (departure 2 of
+//     /machines) — the last 20 OFs of the métier are fetched and the first
+//     with a parseable arret_prod wins;
+//   - the compteur is the poste's own (compteurFor: OF poids_piece), where the
+//     legacy sheet divides `ref_ecru.poids`. The régleur dialling the counter
+//     and the bonnetier reading it on the poste must see the same number.
+atelierRouter.get('/of/:id/reglage', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(String(req.params.id), 10)
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid id' })
+      return
+    }
+    const loaded = await loadOf(id)
+    if (!loaded) {
+      res.status(404).json({ error: 'OF not found' })
+      return
+    }
+    const { of } = loaded
+    const machineId = n(of.IDmachine)
+    const refId = n(of.IDref_ecru)
+    const coloriId = n(of.IDcolori_ecru)
+    const poidsPiece = round2(n(of.poids_piece))
+
+    const [machines, refs, coloris, refRows, refMachRows, assoRaw, prevRows, compteur] = await Promise.all([
+      selectMachines(),
+      refId > 0 ? resolveEcruRefs([refId]) : Promise.resolve(new Map()),
+      coloriId > 0 ? resolveColorisEcru([coloriId]) : Promise.resolve(new Map()),
+      refId > 0
+        ? query<Record<string, unknown>>(
+            `SELECT IDref_ecru, poids, ouvert_visiteuse, maille_ouverture, ecarteur, tombe_metier,
+                    lfa_tour_1, lfa_tour_2, lfa_tour_3, lfa_tour_4
+             FROM ref_ecru WHERE IDref_ecru = ${refId}`,
+          )
+        : Promise.resolve([] as Record<string, unknown>[]),
+      refId > 0 && machineId > 0
+        ? query<Record<string, unknown>>(
+            `SELECT IDref_ecru_machine, repere_1, repere_2, repere_3, repere_4, repere_5,
+                    hauteur_pl, abattage, nb_chutes, trs_10kg_chute
+             FROM ref_ecru_machine WHERE IDref_ecru = ${refId} AND IDmachine = ${machineId}`,
+          )
+        : Promise.resolve([] as Record<string, unknown>[]),
+      query<Record<string, unknown>>(
+        `SELECT IDref_fil, IDcolori_fil FROM asso_fil_of WHERE IDordre_fabrication = ${id} ORDER BY IDasso_fil_of`,
+      ),
+      machineId > 0
+        ? query<Record<string, unknown>>(
+            `SELECT TOP 20 IDordre_fabrication, arret_prod, IDref_ecru FROM ordre_fabrication
+             WHERE IDmachine = ${machineId} AND IDordre_fabrication <> ${id}
+             ORDER BY IDordre_fabrication DESC`,
+          )
+        : Promise.resolve([] as Record<string, unknown>[]),
+      compteurFor(refId, machineId, poidsPiece),
+    ])
+
+    const ref = (await fixEncoding(refRows, 'ref_ecru', 'IDref_ecru', ['tombe_metier', 'lfa_tour_1', 'lfa_tour_2', 'lfa_tour_3', 'lfa_tour_4']))[0]
+    const refMach = (
+      await fixEncoding(refMachRows, 'ref_ecru_machine', 'IDref_ecru_machine', [
+        'repere_1', 'repere_2', 'repere_3', 'repere_4', 'repere_5', 'hauteur_pl', 'abattage',
+      ])
+    )[0]
+
+    // The reference that ran before this one on the métier — its LFA are the
+    // starting point the régleur adjusts from.
+    const prev = prevRows
+      .filter((r) => parseDtMs(r.arret_prod) !== null)
+      .sort((a, b) => (parseDtMs(b.arret_prod) ?? 0) - (parseDtMs(a.arret_prod) ?? 0))[0]
+    const prevRefId = prev ? n(prev.IDref_ecru) : 0
+    let prevRef: Record<string, unknown> | undefined
+    if (prevRefId > 0) {
+      const rows = await query<Record<string, unknown>>(
+        `SELECT IDref_ecru, lfa_tour_1, lfa_tour_2, lfa_tour_3, lfa_tour_4 FROM ref_ecru WHERE IDref_ecru = ${prevRefId}`,
+      )
+      prevRef = (await fixEncoding(rows, 'ref_ecru', 'IDref_ecru', ['lfa_tour_1', 'lfa_tour_2', 'lfa_tour_3', 'lfa_tour_4']))[0]
+    }
+
+    const txt = (v: unknown): string => String(v ?? '').trim()
+    const reperes = [1, 2, 3, 4].map((tour) => ({
+      tour,
+      lfa_precedente: prevRef ? txt(prevRef[`lfa_tour_${tour}`]) : '',
+      lfa: ref ? txt(ref[`lfa_tour_${tour}`]) : '',
+      repere: refMach ? txt(refMach[`repere_${tour}`]) : '',
+    }))
+    reperes.push({ tour: 5, lfa_precedente: '', lfa: '', repere: refMach ? txt(refMach.repere_5) : '' })
+
+    // Fils: the legacy lists DISTINCT (fil, coloris) pairs — a composition is a
+    // list of feed positions, so the same pair legitimately repeats.
+    const [refFilNames, coloriFilNames] = await Promise.all([
+      resolveRefFilNames(assoRaw.map((a) => n(a.IDref_fil))),
+      resolveColoriFilNames(assoRaw.map((a) => n(a.IDcolori_fil))),
+    ])
+    const fils: string[] = []
+    const seen = new Set<string>()
+    for (const a of assoRaw) {
+      const k = `${n(a.IDref_fil)}:${n(a.IDcolori_fil)}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      const r = refFilNames.get(n(a.IDref_fil)) ?? ''
+      const c = coloriFilNames.get(n(a.IDcolori_fil)) ?? ''
+      fils.push(c ? `${r} - ${c}` : r)
+    }
+
+    const machine = machines.find((m) => m.id === machineId)
+    res.json({
+      IDordre_fabrication: id,
+      IDmachine: machineId,
+      machine: machine ? machine.emplacement || machine.nom : '',
+      reference: refs.get(refId)?.reference ?? '',
+      coloris: coloris.get(coloriId) ?? '',
+      demarre: parseDtMs(of.demarrage_prod) !== null,
+      termine: n(of.est_termine) === 1,
+      eligible: !!refMach,
+      consigne: txt(of.observations),
+      reperes,
+      reglages: {
+        hauteur_pl: refMach ? txt(refMach.hauteur_pl) : '',
+        abattage: refMach ? txt(refMach.abattage) : '',
+        nb_chutes: refMach ? n(refMach.nb_chutes) : 0,
+        compteur,
+        ecarteur: ref ? Number(ref.ecarteur) || 0 : 0,
+        poids_piece: poidsPiece,
+        maille_ouverture: ref ? n(ref.maille_ouverture) === 1 : false,
+        tombe_metier: ref ? txt(ref.tombe_metier) : '',
+        ouvert_visiteuse: ref ? n(ref.ouvert_visiteuse) === 1 : false,
+      },
+      fils,
+    })
+  } catch (err) {
+    console.error('Error fetching atelier reglage:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── The message_of thread (FEN_Consigne plan 2) ───────────
+//
+// Legacy: ZR_Messages lists every message of the OF with the author's photo;
+// « ENVOYER » appends one (`Erreur("Vous n'avez écrit aucun message")` on an
+// empty field); the « Supprimer » button shows only on the reader's OWN
+// messages (`ATT_Btn = ATT_IDBonnetier = bonnetier.IDbonnetier`).
+//
+// `message_of` carries the reserved `date` column → positional INSERT, MAX+1
+// PK. Physical order (routes/of-trm.ts, same table):
+//   IDmessage_of, observation, IDordre_fabrication, IDbonnetier, date
+// The ERP's own POST writes IDbonnetier = 0 to mark a saisie bureau; here the
+// author is the identified bonnetier, as the legacy terminal writes it.
+
+/** The write gate every régleur/bonnetier write below shares: the phone's
+ *  poste-account cookie must hold `saisie_atelier`, and the body must name a
+ *  live bonnetier. Sends the refusal itself; null when refused. */
+async function gateSaisie(
+  req: Request,
+  res: Response,
+  IDbonnetier: number,
+): Promise<{ id: number; regleur: number } | null> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return null
+  }
+  const allowed = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'saisie_atelier')
+  if (!allowed) {
+    res.status(403).json({ error: 'permission denied: saisie_atelier' })
+    return null
+  }
+  const who = (await selectBonnetiers()).find((b) => b.id === IDbonnetier)
+  if (!who || who.archive !== 0) {
+    res.status(400).json({ error: 'bonnetier inconnu ou archivé' })
+    return null
+  }
+  return { id: who.id, regleur: who.regleur }
+}
+
+function parseOfId(req: Request, res: Response): number | null {
+  const id = parseInt(String(req.params.id), 10)
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid id' })
+    return null
+  }
+  return id
+}
+
+atelierRouter.get('/of/:id/messages', async (req: Request, res: Response) => {
+  try {
+    const id = parseOfId(req, res)
+    if (id === null) return
+    if (!(await loadOf(id))) {
+      res.status(404).json({ error: 'OF not found' })
+      return
+    }
+    const raw = await query<Record<string, unknown>>(
+      `SELECT IDmessage_of, observation, IDbonnetier, DATE AS date_obs
+       FROM message_of WHERE IDordre_fabrication = ${id} ORDER BY DATE DESC`,
+    )
+    const rows = await fixEncoding(raw, 'message_of', 'IDmessage_of', ['observation'])
+    const bonnetiers = new Map((await selectBonnetiers()).map((b) => [b.id, b]))
+    res.json(
+      rows.map((r) => {
+        const bid = n(r.IDbonnetier)
+        const b = bonnetiers.get(bid)
+        return {
+          id: n(r.IDmessage_of),
+          observation: String(r.observation ?? '').trim(),
+          IDbonnetier: bid,
+          // 0 = written from the ERP (saisie bureau), which has no face.
+          prenom: b ? b.prenom : bid === 0 ? 'Bureau' : '',
+          date_ms: parseDtMs(r.date_obs),
+        }
+      }),
+    )
+  } catch (err) {
+    console.error('Error fetching atelier messages:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const messageBody = z
+  .object({
+    IDbonnetier: z.number().int().positive(),
+    observation: z.string().trim().min(1).max(2000),
+  })
+  .strict()
+
+atelierRouter.post('/of/:id/messages', async (req: Request, res: Response) => {
+  try {
+    const id = parseOfId(req, res)
+    if (id === null) return
+    const parsed = messageBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    const who = await gateSaisie(req, res, parsed.data.IDbonnetier)
+    if (!who) return
+    if (!(await loadOf(id))) {
+      res.status(404).json({ error: 'OF not found' })
+      return
+    }
+    const newId = (await maxId('message_of', 'IDmessage_of')) + 1
+    await query(
+      `INSERT INTO message_of VALUES (${newId}, ${sqlText(parsed.data.observation)}, ${id}, ${who.id}, '${nowDt()}')`,
+    )
+    res.status(201).json({ id: newId })
+  } catch (err) {
+    console.error('Error creating atelier message:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const deleteMessageBody = z.object({ IDbonnetier: z.number().int().positive() }).strict()
+
+atelierRouter.delete('/of/:id/messages/:msgId', async (req: Request, res: Response) => {
+  try {
+    const id = parseOfId(req, res)
+    if (id === null) return
+    const msgId = parseInt(String(req.params.msgId), 10)
+    if (!Number.isInteger(msgId) || msgId <= 0) {
+      res.status(400).json({ error: 'Invalid message id' })
+      return
+    }
+    const parsed = deleteMessageBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    const who = await gateSaisie(req, res, parsed.data.IDbonnetier)
+    if (!who) return
+    const rows = await query<Record<string, unknown>>(
+      `SELECT IDmessage_of, IDordre_fabrication, IDbonnetier FROM message_of WHERE IDmessage_of = ${msgId}`,
+    )
+    const m = rows[0]
+    if (!m || n(m.IDordre_fabrication) !== id) {
+      res.status(404).json({ error: 'message not found' })
+      return
+    }
+    // The legacy only offers the button on your own messages; the route is
+    // where that rule actually holds.
+    if (n(m.IDbonnetier) !== who.id) {
+      res.status(403).json({ error: 'message_autrui', message: "Ce message n'est pas le vôtre." })
+      return
+    }
+    await query(`DELETE FROM message_of WHERE IDmessage_of = ${msgId}`)
+    res.status(204).end()
+  } catch (err) {
+    console.error('Error deleting atelier message:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── PUT /api/atelier/of/:id/consigne (FEN_Consigne plan 3) ─
+//
+// The one régleur-only WRITE of the legacy: `SAI_Consigne_regleur` is bound to
+// `ordre_fabrication.observations` and saves on every keystroke. Here it saves
+// on « Enregistrer », and the route — not the grid — is what makes it
+// régleur-only: the named bonnetier must carry `regleur = 1`, exactly the
+// check that gates « Interrompre OF ». Until device enrolment lands the name
+// is self-declared on the phone, which is the accepted trust model of the
+// workshop (dossier § Identité); the cookie right still has to be held.
+const consigneBody = z
+  .object({
+    IDbonnetier: z.number().int().positive(),
+    consigne: z.string().max(4000),
+  })
+  .strict()
+
+atelierRouter.put('/of/:id/consigne', async (req: Request, res: Response) => {
+  try {
+    const id = parseOfId(req, res)
+    if (id === null) return
+    const parsed = consigneBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    const who = await gateSaisie(req, res, parsed.data.IDbonnetier)
+    if (!who) return
+    if (who.regleur !== 1) {
+      res.status(403).json({ error: 'regleur_requis', message: 'Seul un régleur peut écrire la consigne.' })
+      return
+    }
+    const loaded = await loadOf(id)
+    if (!loaded) {
+      res.status(404).json({ error: 'OF not found' })
+      return
+    }
+    if (n(loaded.of.est_termine) === 1) {
+      res.status(409).json({ error: 'of_termine', message: 'OF terminé — il ne peut plus être modifié.' })
+      return
+    }
+    const consigne = parsed.data.consigne.trim()
+    await query(
+      `UPDATE ordre_fabrication SET observations = ${sqlText(consigne)} WHERE IDordre_fabrication = ${id}`,
+    )
+    res.json({ ok: true, consigne })
+  } catch (err) {
+    console.error('Error writing atelier consigne:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
