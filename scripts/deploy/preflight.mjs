@@ -28,8 +28,8 @@ function mainCheckout(start) {
 }
 const ETM = mainCheckout(here)
 const TRM = path.resolve(ETM, '..', 'TRM')
-const API_HOST = 'debian@10.10.2.163'
-const WEB_HOST = 'debian@10.10.2.165'
+const API_HOST = 'debian@10.10.20.3'
+const WEB_HOST = 'debian@10.10.20.4'
 
 const sh = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const git = (repo, args) => { try { return sh('git', ['-C', repo, ...args]) } catch { return '' } }

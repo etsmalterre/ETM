@@ -16,8 +16,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const API_HOST = 'debian@10.10.2.163'
-export const WEB_HOST = 'debian@10.10.2.165'
+export const API_HOST = 'debian@10.10.20.3'
+export const WEB_HOST = 'debian@10.10.20.4'
 
 // Resolve the MAIN checkouts, never a worktree (this file may live in one).
 const here = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')

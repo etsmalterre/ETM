@@ -21,7 +21,7 @@ ownership.** See `CLAUDE.md` §"MPS — the platform".
 
 It currently serves **two frontends**: ETM (`mpsng.malterre`) and the sister app **TRM**
 (`trm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web server, its nginx site
-proxies `/api/` to this same `10.10.2.163:8081`) — with the régleur / bonnetier mobile apps,
+proxies `/api/` to this same `10.10.20.3:8081`) — with the régleur / bonnetier mobile apps,
 the pointeuse and the atelier display screens planned. **One restart blips every one of them**,
 so smoke-check more than the app you happen to be standing in.
 
@@ -41,8 +41,8 @@ so smoke-check more than the app you happen to be standing in.
 
 | Component | Server | IP | User | Hostname |
 |-----------|--------|-----|------|----------|
-| **API** | mfprod-api | `10.10.2.163` | `debian` | `mfprod-api` |
-| **Web** | mfprod-erp | `10.10.2.165` | `debian` | `mfprod-erp` |
+| **API** | mfprod-api | `10.10.20.3` | `debian` | `mfprod-api` |
+| **Web** | mfprod-erp | `10.10.20.4` | `debian` | `mfprod-erp` |
 | **HFSQL** | mps.malterre | `mps.malterre:4900` | `Malterre` | — |
 
 Both servers are Debian Linux (x86_64). The MFProd (separate project) also runs on these servers.
@@ -58,9 +58,9 @@ KEY="$HOME/.ssh/claude_deploy/claude_deploy"   # C:\Users\<current-user>\.ssh\cl
 OPTS="-F none -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 
 # API server
-"$SSH" $OPTS debian@10.10.2.163 'command'
+"$SSH" $OPTS debian@10.10.20.3 'command'
 # Web server
-"$SSH" $OPTS debian@10.10.2.165 'command'
+"$SSH" $OPTS debian@10.10.20.4 'command'
 ```
 
 **Important**: The claude_deploy key is only enabled during active sessions. The user enables it before deployment and disables it after for security. `Permission denied (publickey)` = the key isn't enabled right now (normal, not a bug) — ask the user to enable it. A timeout on a `10.10.x.x` address = not on the factory LAN/VPN.
@@ -78,8 +78,8 @@ if [ -f "$HOME/.ssh/claude_deploy/claude_deploy" ]; then TRANSPORT=win; else TRA
   ```bash
   WKEY="/home/vincent/.ssh/claude_deploy/claude_deploy"
   WOPTS="-i $WKEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
-  wsl bash -c "ssh $WOPTS debian@10.10.2.163 '<command>'"
-  wsl bash -c "scp $WOPTS <local> debian@10.10.2.163:<remote>"
+  wsl bash -c "ssh $WOPTS debian@10.10.20.3 '<command>'"
+  wsl bash -c "scp $WOPTS <local> debian@10.10.20.3:<remote>"
   ```
   **WSL `scp` can only read `/mnt/c/...` paths** — git-bash `/tmp` is NOT reachable. Stage any
   tarball under a Windows-visible dir first (the session scratchpad works; its `/mnt/c/...`
@@ -126,8 +126,8 @@ of every deploy — see the deploy steps). The check:
    cd /c/dev/etsmalterre/ETM && git fetch origin
    LOCAL=$(git rev-parse origin/master)
    # factory PC (wsl) form — read both servers' deployed SHA (missing file → "none"):
-   API_SHA=$(wsl bash -c "ssh $WOPTS debian@10.10.2.163 'cat /home/debian/mps_api/DEPLOYED_SHA 2>/dev/null || echo none'")
-   WEB_SHA=$(wsl bash -c "ssh $WOPTS debian@10.10.2.165 'cat /home/debian/mps_erp/DEPLOYED_SHA 2>/dev/null || echo none'")
+   API_SHA=$(wsl bash -c "ssh $WOPTS debian@10.10.20.3 'cat /home/debian/mps_api/DEPLOYED_SHA 2>/dev/null || echo none'")
+   WEB_SHA=$(wsl bash -c "ssh $WOPTS debian@10.10.20.4 'cat /home/debian/mps_erp/DEPLOYED_SHA 2>/dev/null || echo none'")
    ```
 
 2. **Show the gap** — the merged features not yet on prod (this is the "make sure you get it
@@ -169,7 +169,7 @@ of every deploy — see the deploy steps). The check:
 4. **Report the plan to the user before proceeding**: e.g. *"prod API at `9b208bc`, origin/master
    at `f4c26c9` (1 ahead: facturation) — touches apps/api + apps/web → deploying both."*
 
-## API Server (10.10.2.163)
+## API Server (10.10.20.3)
 
 ### Location
 - **App directory**: `/home/debian/mps_api/`
@@ -249,7 +249,7 @@ otherwise). The script stamps what it shipped and tells you to rerun for the new
 - `multer` must be in `package.json` dependencies for certificate file uploads
 - **Use `npm install` (not `--production`)** — `tsx` is in devDependencies but needed at runtime since the service runs TypeScript directly
 
-## Web Server (10.10.2.165)
+## Web Server (10.10.20.4)
 
 ### Location
 - **Dist directory**: `/home/debian/mps_erp/dist/`
@@ -258,7 +258,7 @@ otherwise). The script stamps what it shipped and tells you to rerun for the new
 
 ### Nginx Setup
 - Serves static files from `/home/debian/mps_erp/dist/`
-- Proxies `/api/` to `http://10.10.2.163:8081` (API server)
+- Proxies `/api/` to `http://10.10.20.3:8081` (API server)
 - SPA routing: all non-file routes → `/index.html`
 - Hashed assets cached 1 year; `index.html` + `sw.js` never cached
 - **Default `client_max_body_size` is 1MB** — may need increasing for certificate file uploads
@@ -324,7 +324,7 @@ are **https only**; `http://` answers 308).
 ## Verification Checklist
 
 After deployment, verify:
-- [ ] `curl http://10.10.2.163:8081/api/fournisseurs` returns JSON (the API itself is plain http on the LAN)
+- [ ] `curl http://10.10.20.3:8081/api/fournisseurs` returns JSON (the API itself is plain http on the LAN)
 - [ ] `curl -sk https://mpsng.malterre/` returns HTML (https only; http is a 308)
 - [ ] `curl -sk https://mpsng.malterre/api/fournisseurs` returns JSON (through nginx proxy)
 - [ ] Navigate to `https://mpsng.malterre/fournisseurs/gestion` in browser

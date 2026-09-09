@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Deploy the MPS API (mps-api.service on 10.10.2.163) from the ETM main checkout:
+// Deploy the MPS API (mps-api.service on 10.10.20.3) from the ETM main checkout:
 //
 //   node scripts/deploy/deploy-api.mjs [--dry-run] [--allow-orphans]
 //
