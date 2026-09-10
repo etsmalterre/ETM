@@ -169,6 +169,12 @@ export async function fixEncoding<T extends object>(
       continue
     }
 
+    if (r[idField] === undefined) {
+      // The feeding SELECT did not include idField: the repair below cannot key
+      // its CONVERT and the U+FFFD glyph stays - which sqlText() then writes back
+      // as a literal "?" (#1137, #1146). Say so instead of failing silently.
+      console.warn(`[fixEncoding] ${table}: idField ${idField} is not selected by the feeding query - accents cannot be repaired`)
+    }
     const idNum = Number(r[idField])
     const fixed = { ...row } as T
     // Guard: a non-finite id would emit `WHERE col = NaN`, which HFSQL rejects as

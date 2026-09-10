@@ -4093,7 +4093,7 @@ async function diversExpeditionDefaults(commandeId: number): Promise<
   { IDclient: number; IDadresse: number; IDtransporteur: number; ref_client: string } | null
 > {
   const cmdRows = await query<any>(
-    `SELECT IDclient, IDadresse_livraison, numero, date_commande, ref_client
+    `SELECT IDcommande_client, IDclient, IDadresse_livraison, numero, date_commande, ref_client
        FROM commande_client WHERE IDcommande_client = ${commandeId} AND IDsociete = 1`,
   )
   if (cmdRows.length === 0) return null
@@ -4523,14 +4523,14 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
 
 async function loadModePaiementLabel(id: number): Promise<string | null> {
   if (!(id > 0)) return null
-  const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`)
+  const rows = await query<{ libelle: string | null }>(`SELECT IDmode_paiement, libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`)
   const fixed = await fixEncoding(rows, 'mode_paiement', 'IDmode_paiement', ['libelle'])
   return (fixed[0]?.libelle ?? null) as string | null
 }
 
 async function loadEcheanceLabel(id: number): Promise<string | null> {
   if (!(id > 0)) return null
-  const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM echeance WHERE IDecheance = ${id}`)
+  const rows = await query<{ libelle: string | null }>(`SELECT IDecheance, libelle FROM echeance WHERE IDecheance = ${id}`)
   const fixed = await fixEncoding(rows, 'echeance', 'IDecheance', ['libelle'])
   return (fixed[0]?.libelle ?? null) as string | null
 }
@@ -5058,7 +5058,7 @@ commandesClientRouter.post('/:id/email', async (req: Request, res: Response) => 
         return
       }
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null
@@ -5129,7 +5129,7 @@ commandesClientRouter.post('/:id/proforma/email', async (req: Request, res: Resp
         return
       }
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null
@@ -5197,7 +5197,7 @@ commandesClientRouter.post('/:id/donation-valeur/email', async (req: Request, re
         return
       }
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null

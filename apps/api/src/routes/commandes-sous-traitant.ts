@@ -2030,7 +2030,7 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
       metrage: number | null
       observations: string | null
     }>(
-      `SELECT IDref_commande_affectation, numero, lot, poids, metrage, observations
+      `SELECT IDstock_ecru, IDref_commande_affectation, numero, lot, poids, metrage, observations
        FROM stock_ecru
        WHERE IDref_commande_affectation IN (${lineIdsForKg.join(',')})
        ORDER BY numero, lot`,
@@ -2382,7 +2382,7 @@ commandesSousTraitantRouter.post('/:id/email', async (req: Request, res: Respons
       }
 
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null
@@ -2871,7 +2871,7 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
     IDligne_commande_client: number
     metrage: number | null
   }>(
-    `SELECT IDref_fini, IDColoris, lot, IDligne_commande_client, metrage
+    `SELECT IDstock_fini, IDref_fini, IDColoris, lot, IDligne_commande_client, metrage
      FROM stock_fini
      WHERE IDref_commande_source IN (${lineIds.join(',')})
        AND IDligne_commande_client > 0`,
@@ -3266,7 +3266,7 @@ export async function buildSoumissionLotPdfData(
 
   // 5) Expéditeur — current user's prénom.
   const uRows = await query<{ prenom: string | null; nom: string | null }>(
-    `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${userId}`,
+    `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${userId}`,
   )
   const uFixed = await fixEncoding(uRows as any[], 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
   const expediteur = ((uFixed[0] as any)?.prenom ?? '').toString().trim() || 'ETS Malterre'
@@ -3547,7 +3547,7 @@ commandesSousTraitantRouter.post('/:id/soumission/email', async (req: Request, r
       }
 
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null
@@ -5729,7 +5729,7 @@ commandesSousTraitantRouter.get(
       let teinture_nom: string | null = null
       if (bd.IDteinture > 0) {
         const teintRows = await query<{ designation_interne: string | null; designation_externe: string | null }>(
-          `SELECT designation_interne, designation_externe FROM teinture WHERE IDteinture = ${bd.IDteinture}`,
+          `SELECT IDteinture, designation_interne, designation_externe FROM teinture WHERE IDteinture = ${bd.IDteinture}`,
         )
         const fixedT = await fixEncoding(teintRows, 'teinture', 'IDteinture', ['designation_interne', 'designation_externe'])
         const t = fixedT[0] as any

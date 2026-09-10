@@ -901,7 +901,7 @@ etudesColorisRouter.post('/:id/email', async (req: Request, res: Response) => {
 
     // Display name for the From header
     const userRows = await query<{ prenom: string | null; nom: string | null }>(
-      `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+      `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
     )
     const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
     const u = (fixedUser[0] as any) ?? null
@@ -1364,7 +1364,7 @@ etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, re
         IDref_fini_colori: number
         IDsous_traitant: number
       }>(
-        `SELECT libelle, IDref_fini, IDref_fini_colori, IDsous_traitant
+        `SELECT IDetude_col, libelle, IDref_fini, IDref_fini_colori, IDsous_traitant
          FROM etude_col WHERE IDetude_col = ${etudeId}`,
       )
       const fixedEtude = await fixEncoding(etudeRows, 'etude_col', 'IDetude_col', ['libelle'])
@@ -1474,7 +1474,7 @@ async function loadSoumissionContext(soumId: number): Promise<SoumissionWithCont
 
   const etudeId = Number(s.IDetude_col)
   const etudeRows = await query<any>(
-    `SELECT IDclient, IDsous_traitant, IDref_fini, IDref_fini_colori, libelle, desig_client, commentaire
+    `SELECT IDetude_col, IDclient, IDsous_traitant, IDref_fini, IDref_fini_colori, libelle, desig_client, commentaire
      FROM etude_col WHERE IDetude_col = ${etudeId}`,
   )
   if (etudeRows.length === 0) return null
@@ -1776,7 +1776,7 @@ etudesColorisRouter.post('/soumissions/:soumId/email', async (req: Request, res:
     }
 
     const userRows = await query<{ prenom: string | null; nom: string | null }>(
-      `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+      `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
     )
     const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
     const u = (fixedUser[0] as any) ?? null

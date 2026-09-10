@@ -120,7 +120,7 @@ One or two lines per rule. **The incident, the measurements, the canonical file 
 - ⚠️ **`ligne_commande_sous_traitant.sstatut`: never compare to `'Terminé'`** — match the ASCII prefix (`NOT LIKE 'Termin%'`, `SUPPLY_NOT_DONE`, `isLineDone()` = `startsWith('Termin')`). Filter sst lines by "not done", never by an allowlist of open statuts (12 live values).
 
 **Outages**
-- ⚠️ **A query naming a non-existent column = prod outage on Linux** (respawn storm on the shared HFSQL server `10.10.20.2`, hangs mfprod too). `WHERE col = NaN` storms identically — `fixEncoding`'s `idField` must be selected by the feeding query. Verify prod via `https://mpsng.malterre`, never `localhost:8081`; don't hammer-restart.
+- ⚠️ **A query naming a non-existent column = prod outage on Linux** (respawn storm on the shared HFSQL server `10.10.20.2`, hangs mfprod too). `WHERE col = NaN` storms identically — `fixEncoding`'s `idField` must be selected by the feeding query (and a missing `idField` silently keeps the U+FFFD glyph, which a re-save or a PDF turns into a literal `?` — #1137/#1145/#1146; guard `check-fixencoding-idfield.ts`). Verify prod via `https://mpsng.malterre`, never `localhost:8081`; don't hammer-restart.
 - ⚠️ **Never SELECT `ordre_fabrication.interruption_prod`** (the only *Durée* column: bridge emits unquoted text → invalid JSON, every OF route 500s in prod while Windows passes).
 
 **Binary / memo columns**

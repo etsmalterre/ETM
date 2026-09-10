@@ -1160,7 +1160,7 @@ devisRouter.post('/:id/convert', async (req: Request, res: Response) => {
     }
 
     const lignes = await query<any>(
-      `SELECT TYPE AS type_kind, IDreference, IDcolori, quantite, unite, prix, poids,
+      `SELECT IDligne_devis_etm, TYPE AS type_kind, IDreference, IDcolori, quantite, unite, prix, poids,
               date_livraison, IDdesignation_client
        FROM ligne_devis_etm WHERE IDDevis_etm = ${id} ORDER BY IDligne_devis_etm`,
     )
@@ -1232,14 +1232,14 @@ devisRouter.post('/:id/convert', async (req: Request, res: Response) => {
 
 async function loadModePaiementLabel(id: number): Promise<string | null> {
   if (!(id > 0)) return null
-  const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`)
+  const rows = await query<{ libelle: string | null }>(`SELECT IDmode_paiement, libelle FROM mode_paiement WHERE IDmode_paiement = ${id}`)
   const fixed = await fixEncoding(rows, 'mode_paiement', 'IDmode_paiement', ['libelle'])
   return (fixed[0]?.libelle ?? null) as string | null
 }
 
 async function loadEcheanceLabel(id: number): Promise<string | null> {
   if (!(id > 0)) return null
-  const rows = await query<{ libelle: string | null }>(`SELECT libelle FROM echeance WHERE IDecheance = ${id}`)
+  const rows = await query<{ libelle: string | null }>(`SELECT IDecheance, libelle FROM echeance WHERE IDecheance = ${id}`)
   const fixed = await fixEncoding(rows, 'echeance', 'IDecheance', ['libelle'])
   return (fixed[0]?.libelle ?? null) as string | null
 }
@@ -1515,7 +1515,7 @@ devisRouter.post('/:id/email', async (req: Request, res: Response) => {
         return
       }
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null

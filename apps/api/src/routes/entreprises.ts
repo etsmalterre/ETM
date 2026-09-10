@@ -485,7 +485,7 @@ entreprisesRouter.post('/:id/email', async (req: Request, res: Response) => {
 
     // Look up the user's display name so the From header reads nicely.
     const userRows = await query<{ prenom: string | null; nom: string | null }>(
-      `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+      `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
     )
     const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
     const u = (fixedUser[0] as any) ?? null

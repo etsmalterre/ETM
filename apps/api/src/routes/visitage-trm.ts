@@ -298,7 +298,7 @@ async function visitageEventRolls(rollIds: number[]): Promise<Set<number>> {
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200).join(',')
     const rows = await query<any>(
-      `SELECT IDstock_ecru, evenement FROM evenement_piece WHERE IDstock_ecru IN (${chunk})`,
+      `SELECT IDevenement_piece, IDstock_ecru, evenement FROM evenement_piece WHERE IDstock_ecru IN (${chunk})`,
     )
     const fixed = await fixEncoding(rows, 'evenement_piece', 'IDevenement_piece', ['evenement'])
     for (const r of fixed as any[]) {

@@ -2935,7 +2935,7 @@ expeditionsRouter.post('/formelle/:id/email', async (req: Request, res: Response
         return
       }
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null
@@ -3181,7 +3181,7 @@ expeditionsRouter.post('/divers/:id/email', async (req: Request, res: Response) 
         return
       }
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
       const u = (fixedUser[0] as any) ?? null

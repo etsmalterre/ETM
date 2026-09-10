@@ -79,6 +79,7 @@ import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateLotQualityCaches, invalidateStockCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { sstTypeTagClasses } from '@/lib/sst-type'
+import { pruneSelection } from '@/lib/transfert-picker'
 
 // ── Constants ──────────────────────────────────────────
 
@@ -4177,6 +4178,13 @@ function byNumeroAsc(a: { numero: string | null }, b: { numero: string | null })
   return (a.numero ?? '').localeCompare(b.numero ?? '', undefined, { numeric: true, sensitivity: 'base' })
 }
 
+/** Lower-case, accent-stripped, trimmed — the comparison key for the
+ *  client-side picker search (numero and lot are ASCII in practice, the
+ *  fold is for whatever the user types). */
+function foldSearch(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
+}
+
 function BatchReceptionDialog(props: BatchReceptionProps) {
   const { commandeId, ligne, onClose, onSuccess } = props
   const isReprise = props.mode === 'reprise'
@@ -4960,15 +4968,41 @@ function LinkEcruDialog({
   // stable across Shift+clicks so the range always extends from the same
   // anchor (OS file-manager convention).
   const lastSelectedRef = useRef<number | null>(null)
+  // Free-text search over the piece number and the lot (#1140). The API
+  // returns the COMPLETE list of unaffected rolls at the magasin (no cap),
+  // so a client-side filter is exact here — unlike the transfer picker,
+  // whose /available is capped at 200 rows and must search server-side.
+  const [search, setSearch] = useState('')
 
-  const totalKg = available
+  // Pieces in ascending numero order, numeric-aware ("3570/8" < "3570/10"),
+  // instead of the API's date_saisie DESC — the operator reads OF numbers,
+  // and mixed OFs made the list unusable to scan (#1140).
+  const sorted = useMemo(() => available.slice().sort(byNumeroAsc), [available])
+  const visible = useMemo(() => {
+    const q = foldSearch(search)
+    if (!q) return sorted
+    return sorted.filter((r) =>
+      foldSearch(r.numero ?? '').includes(q) || foldSearch(r.lot ?? '').includes(q),
+    )
+  }, [sorted, search])
+
+  // The selection is always a subset of the rows on screen (#1120 rule,
+  // shared with the transfer picker): narrowing the search drops the
+  // rolls that left the list, so the footer count and Affecter never
+  // carry rolls the user no longer sees. pruneSelection returns the same
+  // Set when nothing changed, so this never loops.
+  useEffect(() => {
+    setSelected((prev) => pruneSelection(prev, visible.map((r) => r.IDstock_ecru)))
+  }, [visible])
+
+  const totalKg = visible
     .filter((r) => selected.has(r.IDstock_ecru))
     .reduce((s, r) => s + (Number(r.poids) || 0), 0)
-  const allSelected = available.length > 0 && available.every((r) => selected.has(r.IDstock_ecru))
+  const allSelected = visible.length > 0 && visible.every((r) => selected.has(r.IDstock_ecru))
 
   const selectAll = () => {
-    setSelected(new Set(available.map((r) => r.IDstock_ecru)))
-    lastSelectedRef.current = available[available.length - 1]?.IDstock_ecru ?? null
+    setSelected(new Set(visible.map((r) => r.IDstock_ecru)))
+    lastSelectedRef.current = visible[visible.length - 1]?.IDstock_ecru ?? null
   }
   const clearSelection = () => {
     setSelected(new Set())
@@ -4976,7 +5010,7 @@ function LinkEcruDialog({
   }
 
   const handleToggle = (id: number, shiftKey: boolean) => {
-    const ids = available.map((r) => r.IDstock_ecru)
+    const ids = visible.map((r) => r.IDstock_ecru)
     const anchor = lastSelectedRef.current
     // Shift+click: extend the selection from the anchor to the clicked row.
     // The anchor stays put so successive Shift+clicks keep the range based
@@ -5030,6 +5064,7 @@ function LinkEcruDialog({
             <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
               {available.length} rouleau{available.length > 1 ? 'x' : ''} disponible{available.length > 1 ? 's' : ''}
               {sousTraitantNom && ` chez ${sousTraitantNom}`}
+              {search.trim() !== '' && ` · ${visible.length} affiché${visible.length > 1 ? 's' : ''}`}
               {selected.size > 0 && ` · ${selected.size} sélectionné${selected.size > 1 ? 's' : ''} (${fmtNum(totalKg, 1)} kg)`}
             </p>
             <p className="text-[10px] text-muted-foreground/80 italic mt-0.5">
@@ -5064,14 +5099,39 @@ function LinkEcruDialog({
           )}
         </div>
 
+        {available.length > 0 && (
+          // §5 search bar, in the zinc header band above the list — the same
+          // control the transfer picker opens on, so a piece number typed
+          // here finds its row instead of being scrolled for.
+          <div className="flex-shrink-0 px-3 py-2 border-b bg-zinc-200/50">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Rechercher un n° de pièce ou un lot…"
+                autoFocus
+                disabled={busy}
+                className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5 bg-zinc-100/80 scrollbar-transparent">
           {available.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <TmRollIcon className="h-12 w-12 mb-2 opacity-40" />
               <p className="text-sm">Aucun rouleau écru disponible pour cette référence</p>
             </div>
+          ) : visible.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <Search className="h-12 w-12 mb-2 opacity-40" />
+              <p className="text-sm">Aucun rouleau ne correspond à « {search.trim()} »</p>
+            </div>
           ) : (
-            available.map((roll) => (
+            visible.map((roll) => (
               <SelectableEcruRow
                 key={roll.IDstock_ecru}
                 roll={roll}

@@ -1217,7 +1217,7 @@ retoursClientTrmRouter.post('/:id/email', async (req: Request, res: Response) =>
       return
     }
     const userRows = await fixEncoding(
-      await query<any>(`SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`),
+      await query<any>(`SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`),
       'utilisateur', 'IDutilisateur', ['prenom', 'nom'],
     )
     const u = (userRows as any[])[0]

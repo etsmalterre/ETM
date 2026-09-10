@@ -1306,7 +1306,7 @@ expeditionsTrmRouter.post('/:id/email', async (req: Request, res: Response) => {
         return
       }
       const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
+        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
       )
       const u = (await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom']))[0] as any
       const displayName = u

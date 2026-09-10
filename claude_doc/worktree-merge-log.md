@@ -10,6 +10,9 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-10 — feat/debug-1
+Tickets #1137 / #1146 / #1145 / #1140. **Encoding**: `fixEncoding` fed by a SELECT that omits its `idField` silently keeps the U+FFFD glyph, which `sqlText()` then writes back as a literal `?` (études coloris acceptance mangled « poudré » into « poudr? » in both the étude and the created `ref_fini_colori`) and which PDFs/emails print as `?` (échéance « A réception », sender names, teinture designations). 28 call sites in 17 route files now select their id column; both `fixEncoding` implementations warn on a missing id; static guard `apps/api/src/scripts/check-fixencoding-idfield.ts`. Prod rows `ref_fini_colori` 5303/5304 and `etude_col` 1386 repaired by hand. **#1137 was not a refresh bug**: the status pill set to « Accepté » without a soumission creates no coloris (open question for Vincent in `screen_notes.md` § 8). **#1140**: the « Affecter des rouleaux écru » picker sorts by piece number (`byNumeroAsc`) and gains a client-side search on numero/lot (the list is uncapped, unlike the transfer picker), with `pruneSelection` keeping the selection a subset of the visible rows (#1120 rule).
+
 ## 2026-09-10 — feat/debug-3 (État des stocks de fil : le Besoin déduit le déjà tricoté, #1139)
 The dashboard widget's « Besoin » summed the raw `asso_fil_lignecmdsst` reservations of every
 open tricoteur line, while visitage had already decremented `stock_fil.stock` for each roll
