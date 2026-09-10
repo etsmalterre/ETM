@@ -96,14 +96,15 @@ export function cookieOptions(): {
 } {
   // SameSite=Lax without Secure. The ideal for the WinDev HTML control (which
   // Chromium treats as a third-party iframe context) is SameSite=None; Secure
-  // so cookies persist across app restarts — but that requires HTTPS, and
-  // `http://mpsng.malterre/` is plain HTTP. With Secure, Chromium silently
-  // drops the cookie on every Set-Cookie, so the picker reappears on every
-  // page load. Lax without Secure is the workable compromise until Caddy
-  // terminates TLS for mpsng.malterre: cookies persist while the WinDev
-  // session is alive; at worst the user re-picks once per WinDev restart.
-  // Flip this back to `sameSite: 'none'` + `secure: true` once the site is
-  // reachable over HTTPS.
+  // so cookies persist across app restarts — but that requires HTTPS. When
+  // the site was served over plain HTTP (until 2026-09-10),
+  // Secure made Chromium silently drop every Set-Cookie and the picker came
+  // back on every page load, hence Lax without Secure: cookies persist while
+  // the WinDev session is alive; at worst the user re-picks once per restart.
+  // Since 2026-09-10 the site is served over HTTPS at
+  // `https://etm.intra.etsmalterre.com/` (Caddy terminates TLS), so flipping
+  // to `sameSite: 'none'` + `secure: true` is now possible — not done yet;
+  // the WinDev embedding must be re-tested when it is.
   return {
     httpOnly: true,
     sameSite: 'lax',

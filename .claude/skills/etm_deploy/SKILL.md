@@ -19,8 +19,8 @@ The API deployed here is the **MPS API** — the Malterre Productive System plat
 historical reasons (ETM was `MPS_NG`, the first client) — **that is a file location, not
 ownership.** See `CLAUDE.md` §"MPS — the platform".
 
-It currently serves **two frontends**: ETM (`mpsng.malterre`) and the sister app **TRM**
-(`trm.malterre`, dist at `/home/debian/mps_trm/dist` on the same web server, its nginx site
+It currently serves **two frontends**: ETM (`etm.intra.etsmalterre.com`) and the sister app **TRM**
+(`trm.intra.etsmalterre.com`, dist at `/home/debian/mps_trm/dist` on the same web server, its nginx site
 proxies `/api/` to this same `10.10.20.3:8081`) — with the régleur / bonnetier mobile apps,
 the pointeuse and the atelier display screens planned. **One restart blips every one of them**,
 so smoke-check more than the app you happen to be standing in.
@@ -30,8 +30,8 @@ so smoke-check more than the app you happen to be standing in.
   here).
 - **The TRM repo's own `/trm_deploy`** owns: the TRM web bundle only. Never deploy the
   API from there; never deploy the TRM web bundle from here.
-- **After every API deploy, smoke-check BOTH frontends**: `https://mpsng.malterre/api/...`
-  and `https://trm.malterre/api/...` (same API through two proxies — if one fails, it's
+- **After every API deploy, smoke-check BOTH frontends**: `https://etm.intra.etsmalterre.com/api/...`
+  and `https://trm.intra.etsmalterre.com/api/...` (same API through two proxies — if one fails, it's
   nginx-side, not the API).
 - Shared-API changes for TRM features land on this repo's `master` via a **paired NG
   worktree** (see `claude_doc/worktrees.md` §"Shared-API changes") — so deploying `master`
@@ -253,8 +253,8 @@ otherwise). The script stamps what it shipped and tells you to rerun for the new
 
 ### Location
 - **Dist directory**: `/home/debian/mps_erp/dist/`
-- **Nginx config**: `/etc/nginx/sites-available/mpsng.malterre` (symlinked to sites-enabled)
-- **Server name**: `mpsng.malterre`
+- **Nginx config**: `/etc/nginx/sites-enabled/mpsng.malterre` — the site file and its `server_name` still carry the pre-2026-09-10 name on the server (verified 2026-09-10; same for `trm.malterre`, `atelier.malterre`, `trs.malterre`). Caddy terminates TLS for the public names and maps them onto these sites, so nothing here needs renaming for a deploy.
+- **Public name**: `etm.intra.etsmalterre.com` (HTTPS only; the old public hostname no longer resolves)
 
 ### Nginx Setup
 - Serves static files from `/home/debian/mps_erp/dist/`
@@ -314,7 +314,7 @@ reload when a chunk does go missing — the safety net, not the fix. Keep both.
 never served publicly. Written last, after the served-bundle check — on 2026-09-07 a
 hand-typed sequence wrote it *before* an extract that had silently not run.
 
-No restart: nginx serves static files. `curl -sk https://mpsng.malterre/` → 200 (the hosts
+No restart: nginx serves static files. `curl -sk https://etm.intra.etsmalterre.com/` → 200 (the hosts
 are **https only**; `http://` answers 308).
 
 ### Production Environment
@@ -325,9 +325,9 @@ are **https only**; `http://` answers 308).
 
 After deployment, verify:
 - [ ] `curl http://10.10.20.3:8081/api/fournisseurs` returns JSON (the API itself is plain http on the LAN)
-- [ ] `curl -sk https://mpsng.malterre/` returns HTML (https only; http is a 308)
-- [ ] `curl -sk https://mpsng.malterre/api/fournisseurs` returns JSON (through nginx proxy)
-- [ ] Navigate to `https://mpsng.malterre/fournisseurs/gestion` in browser
+- [ ] `curl -sk https://etm.intra.etsmalterre.com/` returns HTML (https only; http is a 308)
+- [ ] `curl -sk https://etm.intra.etsmalterre.com/api/fournisseurs` returns JSON (through nginx proxy)
+- [ ] Navigate to `https://etm.intra.etsmalterre.com/fournisseurs/gestion` in browser
 - [ ] Certificate PDF viewer works (may need `client_max_body_size` increase in nginx)
 
 ## Step 5 — Clean up merged worktrees (after a green deploy)
@@ -388,9 +388,9 @@ that registry is the authority on what is live, not the commit graph. Never dele
 - **Logo files**: `logo-full.png`, `logo-small.png`, `logo-dev.webp` are in `public/` and included in the build. The `logo-dev.webp` only shows in dev mode (`import.meta.env.DEV`), so it won't appear in production.
 - **Service Worker caching**: After deploying, users may need to hard-refresh (Ctrl+Shift+R) or unregister the SW in DevTools to pick up the new bundle. The SW precaches assets by hash, so new filenames are picked up on next SW update cycle.
 - **Diagnosing "Impossible de charger la liste" / "API inaccessible" in the browser while curl works**: do NOT assume stale service worker and send the user through cache-clearing rituals first. **Diagnose server-side before touching the client**, in this order:
-  1. `curl -sk https://mpsng.malterre/api/auth/users` — if it returns JSON, the API is fine.
+  1. `curl -sk https://etm.intra.etsmalterre.com/api/auth/users` — if it returns JSON, the API is fine.
   2. Check the nginx access log for the user's request: `sudo grep 'auth/users' /var/log/nginx/access.log | tail`. **If the browser shows the error but NO matching request appears in the log, the bundle is sending the request to the wrong URL** (Footgun A `C:/Program Files/Git/api/...` or Footgun B `localhost:3002`) — it's a bad build, not a cache problem.
-  3. Confirm by grepping the *served* bundle: `curl -sk https://mpsng.malterre/$(curl -sk https://mpsng.malterre/ | grep -oE 'assets/index-[^"]+\.js')` then check for `ht="/api"` vs `Program Files`/`localhost`.
+  3. Confirm by grepping the *served* bundle: `curl -sk https://etm.intra.etsmalterre.com/$(curl -sk https://etm.intra.etsmalterre.com/ | grep -oE 'assets/index-[^"]+\.js')` then check for `ht="/api"` vs `Program Files`/`localhost`.
   Only after the served bundle is confirmed correct is a client-side SW clear the right next step. Rebuilding wrong → re-pushing → telling the user to clear cache again wastes everyone's time.
 - **Missing PWA manifest icons**: `manifest.webmanifest` references `/icons/icon-192.png` and `/icons/icon-512.png`, but `apps/web/public/icons/` only contains `fini.png` and `tm.png` — so these 404 in the nginx error log after every deploy. Cosmetic (only affects the PWA install icon), NOT a sign of a broken deploy. Don't chase it while diagnosing API failures.
 - **SW NavigationRoute**: The `navigateFallbackDenylist: [/^\/api\//]` in `vite.config.ts` is critical — without it, the SW intercepts iframe loads to `/api/` and serves `index.html`, causing React Router 404 errors.

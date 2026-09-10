@@ -175,10 +175,10 @@ app.use('/api/of-trm', ofTrmRouter)
 // Guarded by a shared secret (RECORDER_TOKEN), not a user session.
 app.use('/api/recorder', recorderRouter)
 app.use('/api/visitage-trm', visitageTrmRouter)
-// Atelier PWA (bonnetier + régleur, host atelier.malterre) — a SECOND TRM
+// Atelier PWA (bonnetier + régleur, host atelier.intra.etsmalterre.com) — a SECOND TRM
 // client of this API, not part of the TRM ERP web app. Read-only for now.
 app.use('/api/atelier', atelierRouter)
-// TRS wall tablet (TRM/apps/trs, host trs.malterre) — a THIRD TRM client:
+// TRS wall tablet (TRM/apps/trs, host trs.intra.etsmalterre.com) — a THIRD TRM client:
 // the shift TRS of every métier on the floor plan. Read-only, no identity.
 app.use('/api/trs', trsRouter)
 // TRM tableau de bord widgets (Poids des pièces, …) — consumed by the TRM web app.

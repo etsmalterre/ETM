@@ -5,7 +5,7 @@
 //
 //   pnpm exec tsx src/scripts/probe-trs-trm.ts            # http://localhost:8080
 //   TRS_API_URL=http://localhost:8081 pnpm exec tsx src/scripts/probe-trs-trm.ts
-//   TRS_API_URL=https://trm.malterre pnpm exec tsx src/scripts/probe-trs-trm.ts
+//   TRS_API_URL=https://trm.intra.etsmalterre.com pnpm exec tsx src/scripts/probe-trs-trm.ts
 
 const base = (process.env.TRS_API_URL ?? 'http://localhost:8080').replace(/\/$/, '')
 

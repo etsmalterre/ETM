@@ -4,7 +4,7 @@
 // ⚠ THIS SCRIPT WRITES. It creates real proformas and flips est_facture on the
 // shipments they invoice, then deletes them again through /prov/delete-batch
 // (which is what reopens the shipments). It refuses any non-localhost target —
-// never point it at mpsng.malterre. For a read-only check use
+// never point it at etm.intra.etsmalterre.com. For a read-only check use
 // check-divers-facturation.ts instead.
 //
 // Run:  node scripts/worktree/status.mjs      # find your slot's API port

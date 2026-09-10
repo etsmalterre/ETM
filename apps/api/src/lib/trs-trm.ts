@@ -1,5 +1,5 @@
 // TRS — the per-métier shift computation behind the workshop tablet
-// (TRM/apps/trs, host trs.malterre). Pure functions, no HFSQL: this file is
+// (TRM/apps/trs, host trs.intra.etsmalterre.com). Pure functions, no HFSQL: this file is
 // unit-tested, and routes/trs.ts only feeds it rows.
 //
 // The spec is the legacy FI_TRS timeline procedure (`MAJAffichageAtelier`),

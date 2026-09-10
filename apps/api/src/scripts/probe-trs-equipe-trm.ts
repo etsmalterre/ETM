@@ -7,7 +7,7 @@
 //   pnpm exec tsx src/scripts/probe-trs-equipe-trm.ts                       # current shift, localhost:8080
 //   pnpm exec tsx src/scripts/probe-trs-equipe-trm.ts --debut 20251015130000
 //   TRS_API_URL=http://localhost:8081 pnpm exec tsx src/scripts/probe-trs-equipe-trm.ts --debut 20260828130000
-//   TRS_API_URL=https://trm.malterre pnpm exec tsx src/scripts/probe-trs-equipe-trm.ts
+//   TRS_API_URL=https://trm.intra.etsmalterre.com pnpm exec tsx src/scripts/probe-trs-equipe-trm.ts
 //
 // The endpoint is behind `view_trs`, so the probe signs the admin cookie the
 // way the check scripts do (AUTH_COOKIE_SECRET, dev default otherwise).

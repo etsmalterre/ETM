@@ -118,10 +118,10 @@ if (r.code !== 0) die(`deploy failed on the host (exit ${r.code}) — stamp NOT 
 // 7. smoke every client through its own proxy (a failure here is nginx-side if health passed)
 step('smoke — every client through its nginx')
 const probes = [
-  ['https://mpsng.malterre/api/fournisseurs', ['200']],
-  ['https://trm.malterre/api/auth/users', ['200']],
-  ['https://atelier.malterre/api/health', ['200']],
-  ['https://trs.malterre/api/trs/atelier', ['200']],
+  ['https://etm.intra.etsmalterre.com/api/fournisseurs', ['200']],
+  ['https://trm.intra.etsmalterre.com/api/auth/users', ['200']],
+  ['https://atelier.intra.etsmalterre.com/api/health', ['200']],
+  ['https://trs.intra.etsmalterre.com/api/trs/atelier', ['200']],
 ]
 let bad = 0
 for (const [url, want] of probes) {

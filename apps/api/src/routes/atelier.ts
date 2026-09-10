@@ -1,4 +1,4 @@
-// Atelier — the bonnetier/régleur PWA's read API (TRM, host atelier.malterre).
+// Atelier — the bonnetier/régleur PWA's read API (TRM, host atelier.intra.etsmalterre.com).
 //
 // Port of the legacy WinDev Android app (project MPS, configurations
 // "Appli_Bonnetier" / "Appli_Regleur"). Unlike every previous TRM port the

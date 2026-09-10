@@ -1,6 +1,6 @@
 // TRS — the two read APIs of the workshop's TRS:
 //
-//   GET /api/trs/atelier   the wall tablet (TRM/apps/trs, host trs.malterre):
+//   GET /api/trs/atelier   the wall tablet (TRM/apps/trs, host trs.intra.etsmalterre.com):
 //                          the state of every live métier over the CURRENT
 //                          shift — running / stopped and since when, the
 //                          measured speed, the shift TRS, the arrêts par

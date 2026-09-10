@@ -29,10 +29,10 @@ import {
 // THE table. A per-app difference is a row, never a fork. preflight.mjs has the
 // same rows (its WEB_TIERS) — add an app to both in the same commit.
 const APPS = {
-  etm:     { repo: ETM, pkg: '@mps/web',         src: 'apps/web',     dir: 'mps_erp',     host: 'mpsng.malterre',   versionFrom: 'root' },
-  trm:     { repo: TRM, pkg: '@mps-trm/web',     src: 'apps/web',     dir: 'mps_trm',     host: 'trm.malterre',     versionFrom: 'root' },
-  atelier: { repo: TRM, pkg: '@mps-trm/atelier', src: 'apps/atelier', dir: 'mps_atelier', host: 'atelier.malterre', versionFrom: 'app' },
-  trs:     { repo: TRM, pkg: '@mps-trm/trs',     src: 'apps/trs',     dir: 'mps_trs',     host: 'trs.malterre',     versionFrom: 'app' },
+  etm:     { repo: ETM, pkg: '@mps/web',         src: 'apps/web',     dir: 'mps_erp',     host: 'etm.intra.etsmalterre.com',   versionFrom: 'root' },
+  trm:     { repo: TRM, pkg: '@mps-trm/web',     src: 'apps/web',     dir: 'mps_trm',     host: 'trm.intra.etsmalterre.com',     versionFrom: 'root' },
+  atelier: { repo: TRM, pkg: '@mps-trm/atelier', src: 'apps/atelier', dir: 'mps_atelier', host: 'atelier.intra.etsmalterre.com', versionFrom: 'app' },
+  trs:     { repo: TRM, pkg: '@mps-trm/trs',     src: 'apps/trs',     dir: 'mps_trs',     host: 'trs.intra.etsmalterre.com',     versionFrom: 'app' },
 }
 
 const argv = process.argv.slice(2)
