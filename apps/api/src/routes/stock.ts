@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
+import { computeBesoin, type AssoRow, type MirrorLine, type OfRow, type PieceRow, type OfFilRow } from '../lib/fil-etat-besoin.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 
@@ -246,24 +247,62 @@ stockRouter.get('/fil/etat', async (req: Request, res: Response) => {
     // Outstanding quantity still to receive — gross ordered minus what's landed.
     const commande = commande_rows.reduce((s, r) => s + r.kg, 0)
 
-    // Besoin — yarn affected to OPEN tricoteur orders. asso_fil_lignecmdsst links
-    // a stock_fil roll → a tricoteur sst line; scope to commandes est_soldee = 0.
-    // All-ASCII columns, no CONVERT → the JOIN is bridge-safe. Lots are ASCII.
-    const besoinRows = await query<{ quantite: number | null; lot: string | null; cmd_sst: number }>(
-      `SELECT a.quantite, sf.lot AS lot, cst.IDcommande_sous_traitant AS cmd_sst
+    // Besoin — yarn reserved on OPEN tricoteur lines, MINUS what their OFs
+    // already knitted (LIVA #1139: visitage decrements stock_fil.stock at
+    // every pesage while the reservation never moves, so a knitted kilo was
+    // subtracted twice). The arithmetic lives in lib/fil-etat-besoin.ts; this
+    // block only walks the chain sst line → TRM mirror line → OF → pieces.
+    // All-ASCII columns, no CONVERT → the JOINs are bridge-safe. Lots are ASCII.
+    const besoinRows = await query<{ ligne: number; cmd_sst: number; lot: string | null; quantite: number | null }>(
+      `SELECT a.IDligne_commande_sous_traitant AS ligne, cst.IDcommande_sous_traitant AS cmd_sst,
+              sf.lot AS lot, a.quantite AS quantite
        FROM asso_fil_lignecmdsst a
        JOIN stock_fil sf ON a.IDstock_fil = sf.IDstock_fil
        JOIN ligne_commande_sous_traitant lcs ON a.IDligne_commande_sous_traitant = lcs.IDligne_commande_sous_traitant
        JOIN commande_sous_traitant cst ON lcs.IDcommande_sous_traitant = cst.IDcommande_sous_traitant
        WHERE sf.IDref_fil = ${refFil} AND sf.IDcolori_fil = ${coloriFil} AND cst.est_soldee = 0
-       ORDER BY a.quantite DESC`,
+       ORDER BY a.IDasso_fil_ligneCmdSST`,
     )
-    const besoin_rows = besoinRows.map((r) => ({
-      lot: (r.lot ?? '').toString().trim() || '—',
+    const asso: AssoRow[] = besoinRows.map((r) => ({
+      ligne: Number(r.ligne) || 0,
       commande_sst: Number(r.cmd_sst) || 0,
-      kg: Number(r.quantite) || 0,
+      lot: (r.lot ?? '').toString(),
+      quantite: Number(r.quantite) || 0,
     }))
-    const besoin = besoin_rows.reduce((s, r) => s + r.kg, 0)
+    const sstLineIds = Array.from(new Set(asso.map((a) => a.ligne).filter((x) => x > 0)))
+    let mirrors: MirrorLine[] = []
+    let ofs: OfRow[] = []
+    let pieces: PieceRow[] = []
+    let ofFil: OfFilRow[] = []
+    if (sstLineIds.length > 0) {
+      mirrors = (await query<MirrorLine>(
+        `SELECT IDligne_commande_client, IDligne_commande_ETM FROM ligne_commande_client
+         WHERE IDligne_commande_ETM IN (${sstLineIds.join(',')})`,
+      )).map((m) => ({ IDligne_commande_client: Number(m.IDligne_commande_client) || 0, IDligne_commande_ETM: Number(m.IDligne_commande_ETM) || 0 }))
+      const trmLineIds = mirrors.map((m) => m.IDligne_commande_client).filter((x) => x > 0)
+      if (trmLineIds.length > 0) {
+        ofs = (await query<OfRow>(
+          `SELECT IDordre_fabrication, IDligne_commande_client FROM ordre_fabrication
+           WHERE IDligne_commande_client IN (${trmLineIds.join(',')})`,
+        )).map((o) => ({ IDordre_fabrication: Number(o.IDordre_fabrication) || 0, IDligne_commande_client: Number(o.IDligne_commande_client) || 0 }))
+        const ofIds = ofs.map((o) => o.IDordre_fabrication).filter((x) => x > 0)
+        if (ofIds.length > 0) {
+          // Every roll counts, déclassés included — that is what visitage
+          // decremented. No IDsociete filter: shipping to ETM re-homes the piece.
+          pieces = (await query<PieceRow>(
+            `SELECT IDordre_fabrication, poids FROM stock_ecru WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+          )).map((p) => ({ IDordre_fabrication: Number(p.IDordre_fabrication) || 0, poids: Number(p.poids) || 0 }))
+          ofFil = (await query<OfFilRow>(
+            `SELECT a.IDordre_fabrication, a.pourcentage FROM asso_fil_of a
+             JOIN stock_fil sf ON a.IDstock_fil = sf.IDstock_fil
+             WHERE a.IDordre_fabrication IN (${ofIds.join(',')})
+               AND sf.IDref_fil = ${refFil} AND sf.IDcolori_fil = ${coloriFil}`,
+          )).map((f) => ({ IDordre_fabrication: Number(f.IDordre_fabrication) || 0, pourcentage: Number(f.pourcentage) || 0 }))
+        }
+      }
+    }
+    const { rows: besoin_rows, besoin, reserve: besoin_reserve, produit: besoin_produit } =
+      computeBesoin({ asso, mirrors, ofs, pieces, ofFil })
     const nb_affectations = besoin_rows.length
 
     res.json({
@@ -276,6 +315,8 @@ stockRouter.get('/fil/etat', async (req: Request, res: Response) => {
       nb_commandes,
       commande_rows,
       besoin,
+      besoin_reserve,
+      besoin_produit,
       nb_affectations,
       besoin_rows,
       disponible: en_stock + commande - besoin,

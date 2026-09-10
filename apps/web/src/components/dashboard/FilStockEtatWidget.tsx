@@ -25,9 +25,14 @@ interface FilEtat {
   commande: number
   nb_commandes: number
   commande_rows: { commande: number; fournisseur: string; ordered: number; recu: number; kg: number }[]
+  /** Remaining need = Σ max(0, reserved − already knitted) over open tricoteur lines (#1139). */
   besoin: number
+  besoin_reserve: number
+  besoin_produit: number
   nb_affectations: number
-  besoin_rows: { lot: string; commande_sst: number; kg: number }[]
+  /** One row per open tricoteur line; `kg` is the remaining need, `suivi` false = external
+   *  tricoteur whose production is not tracked (nothing deducted). */
+  besoin_rows: { lot: string; commande_sst: number; reserve: number; produit: number; suivi: boolean; kg: number }[]
   disponible: number
 }
 
@@ -157,15 +162,19 @@ export function FilStockEtatWidget() {
                   <Kpi
                     label="Besoin"
                     value={etat.besoin}
-                    sub={`${etat.nb_affectations} affectation${etat.nb_affectations > 1 ? 's' : ''}`}
+                    sub={`${etat.nb_affectations} commande${etat.nb_affectations > 1 ? 's' : ''} en cours`}
                     icon={Scissors}
                     wrap="border-terracotta/25 bg-terracotta/[0.06]"
                     iconBox="icon-box-terracotta"
                     info={{
                       title: 'Besoin',
-                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées).',
-                      headers: ['Lot', 'N° STT', 'kg'],
-                      rows: etat.besoin_rows.map((r) => [r.lot, `N°${r.commande_sst}`, fmtNum(r.kg, 1)]),
+                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées), déduction faite de ce que leurs OF ont déjà tricoté (reste à tricoter). « — » : tricoteur externe, production non suivie.',
+                      headers: ['N° STT', 'Lot', 'Affecté', 'Tricoté', 'Reste'],
+                      numCols: 3,
+                      rows: etat.besoin_rows.map((r) => [
+                        `N°${r.commande_sst}`, r.lot, fmtNum(r.reserve, 1), r.suivi ? fmtNum(r.produit, 1) : '—', fmtNum(r.kg, 1),
+                      ]),
+                      colTotals: [fmtNum(etat.besoin_reserve, 1), fmtNum(etat.besoin_produit, 1)],
                       totalKg: etat.besoin,
                     }}
                   />

@@ -10,6 +10,18 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-10 — feat/debug-3 (État des stocks de fil : le Besoin déduit le déjà tricoté, #1139)
+The dashboard widget's « Besoin » summed the raw `asso_fil_lignecmdsst` reservations of every
+open tricoteur line, while visitage had already decremented `stock_fil.stock` for each roll
+knitted — every knitted kilo was subtracted twice, and on 1/60 coton peigné bio écru the widget
+announced a 1 349 kg rupture with ~8 000 kg available. `GET /stock/fil/etat` now walks sst line
+→ TRM mirror line (`ligne_commande_client.IDligne_commande_ETM`) → `ordre_fabrication` →
+`stock_ecru` and, per line, needs `max(0, reserved − Σ poids × asso_fil_of share of this fil)`
+(`lib/fil-etat-besoin.ts`, pure, pinned on the prod figures by its test). External tricoteur
+lines have no mirror and keep their full reservation. The « Besoin » tooltip shows Affecté /
+Tricoté / Reste per commande. Doctrine in `claude_doc/dashboard_widgets.md`; probe
+`scripts/probe-1139-besoin-fil.ts`.
+
 ## 2026-09-09 — feat/atelier-regleur (API du côté régleur de la PWA atelier)
 Routes `/api/atelier` for the régleur side of `TRM/apps/atelier`, ported from the
 `Appli_Regleur` Android build (`AndroidgenCompile`, 2026-05-25): `GET /machines?regleur=1`
