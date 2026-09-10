@@ -10,17 +10,18 @@
 // It is a thin layer over the legacy `PrixDeVenteV4` port:
 //   - Fini (type 2) reuses `calcTarifRefFini` (validated exact against the legacy
 //     "Gestion ligne de commande" window: ref 040A beige2585, 10 rolls → 10,43 €).
-//   - Écru / tombé-de-métier (type 1) is the nType_Ref=1 reduction of the same
-//     procedure: prix de revient = fil + tricotage only (no ennoblissement), then
-//     ÷ margin ÷ port. Kg-based (écru has no rendement).
+//   - Écru / tombé-de-métier (type 1) reuses `calcTarifRefEcru`, the nType_Ref=1
+//     reduction of the same procedure: prix de revient = fil + tricotage only (no
+//     ennoblissement), then ÷ margin ÷ port. Sold by the Kg.
 //   - Divers (type 3) and non Kg/Ml units are not auto-priced (manual entry).
 //
 // ⚠️ The grid above is the STANDARD catalogue price. It is only what the client
 // pays when the client has no negotiated tarif on that (référence × coloris) —
 // so every call carries the client, and `lib/tarif-client.ts` decides:
-//   - contrat actif    → the negotiated €/Ml of the matching band, and the
-//                        next-tranche nudge only offers bands that contract
-//                        actually defines;
+//   - contrat actif    → the negotiated price of the matching band — €/Ml on a
+//                        fini, €/Kg on an écru (a tombé de métier is always
+//                        sold by the Kg; LIVA #1144) — and the next-tranche
+//                        nudge only offers bands that contract actually defines;
 //   - contrat expiré   → `blocked` — the reference is not sellable until a new
 //                        contract is signed (same rule as Clients › Gestion),
 //                        NEVER a silent fall back to the standard grid;
@@ -36,17 +37,13 @@
 import { query } from './hfsql-auto.js'
 import {
   calcTarifRefFini,
-  computePrixFil,
-  COEFFICIENT_V2,
+  calcTarifRefEcru,
   ROLL_MULT,
 } from './pricing-fini-tarif.js'
 import {
   resolveLigneTarifMode, contratPrixForTrancheIdx,
   type ContratTarifInfo, type LigneTarifMode,
 } from './tarif-client.js'
-
-const TAUX_FRAIS_DE_PORT = 0.05
-const TAUX_FRAIS_DE_PORT_30RLX = 0.03 // tranche i=8 (30 rolls)
 
 /** Flag the next-tranche commercial nudge when the extra quantity needed to reach
  *  the next (cheaper) band is ≤ this fraction of the entered quantity. */
@@ -123,15 +120,25 @@ export function expiredContractMessage(mode: LigneTarifMode): string {
 }
 
 /** Per-tranche price function of an ACTIVE contract, in the line's unit.
- *  `prix_saisi` is negotiated in €/Ml, so a Kg line converts through the
- *  rendement (1 kg = rendement Ml — the same relation the engine uses to derive
- *  its own €/Ml from €/Kg). Returns null when the contract prices nothing, or
- *  when a Kg line has no rendement to convert with: in that case the line falls
- *  through to manual entry rather than silently billing the standard grid. */
+ *  `prix_saisi` is negotiated in the reference's selling unit: **€/Ml on a fini,
+ *  €/Kg on an écru** — a tombé de métier is always sold by the Kg (Vincent,
+ *  2026-09-10; LIVA #1144: Gant Maille's 10,01 €/Kg contract on ref 254 was
+ *  being multiplied by the rendement into 28,23 €/Kg). A line in the other unit
+ *  converts through the rendement (1 kg = rendement Ml). Returns null when the
+ *  contract prices nothing, or when the conversion has no rendement to work
+ *  with: the line then falls through to manual entry rather than silently
+ *  billing the standard grid. */
 function contratPriceFn(
-  contrat: ContratTarifInfo, unite: number, rendement: number,
+  contrat: ContratTarifInfo, unite: number, rendement: number, kind: 'fini' | 'ecru',
 ): ((j: number) => number) | null {
   if (contratPrixForTrancheIdx(contrat, 8) == null) return null
+  if (kind === 'ecru') {
+    if (unite === 3 && !(rendement > 0)) return null
+    return (j: number) => {
+      const kg = contratPrixForTrancheIdx(contrat, j) ?? 0
+      return round2(unite === 1 ? kg : kg / rendement)
+    }
+  }
   if (unite === 1 && !(rendement > 0)) return null
   return (j: number) => {
     const ml = contratPrixForTrancheIdx(contrat, j) ?? 0
@@ -260,7 +267,7 @@ export async function calcLignePriceClient(p: {
     const standardAt = (j: number) => (p.unite === 3 ? tarif.tranches[j].moPrixDeVenteAuMl : tarif.tranches[j].moPrixDeVenteAuKg)
     // An active contract replaces the grid entirely — including the next-tranche
     // nudge, which may only offer bands that contract actually negotiated.
-    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement) : null
+    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, 'fini') : null
     if (contrat && !contratAt) return { ...base, rollSize, nRolls, cleanQty, exact }
     const priceAt = contratAt ?? standardAt
     const prix = priceAt(idx)
@@ -274,35 +281,17 @@ export async function calcLignePriceClient(p: {
 
   // ── Écru / tombé de métier (type 1) — prix de revient = fil + tricotage ──
   if (p.type === 1) {
-    const ecruRows = await query<{ poids: number | null; prix: number | null; rendement: number | null }>(
-      `SELECT poids, prix, rendement FROM ref_ecru WHERE IDref_ecru = ${p.IDreference}`,
-    )
-    if (ecruRows.length === 0) return base
-    const poids = Number(ecruRows[0].poids) || 0
-    const prixTricotage = Number(ecruRows[0].prix) || 0
-    const rendement = Math.round((Number(ecruRows[0].rendement) || 0) * 100) / 100
-    if (!(poids > 0)) return base
+    const tarif = await calcTarifRefEcru(p.IDreference, p.IDcolori, coefOpt)
+    if (!tarif.ref_ecru || tarif.tranches.length === 0) return base
+    const poids = tarif.ref_ecru.poids
+    const rendement = Math.round(tarif.rendement * 100) / 100
     // One roll = poids kg = poids × rendement Ml. Ml lines need a rendement.
     const rollSize = p.unite === 3 ? (rendement > 0 ? poids * rendement : 0) : poids
     if (!(rollSize > 0)) return base
     const { nRolls, cleanQty, exact } = geom(p.quantite, rollSize)
     const idx = pickTrancheIndex(nRolls)
-
-    const fil = await computePrixFil(p.IDreference, p.IDcolori)
-    const moFil = round2(fil.reduce((s, d) => s + d.valueKg, 0))
-
-    const standardAt = (j: number) => {
-      let tric = prixTricotage
-      if (j === 7) tric *= 0.95
-      else if (j === 8) tric *= 0.9
-      // A "coefficient fixe" client trades the degressive margin for its own,
-      // flat across every tranche — same substitution calcTarifRefFini makes.
-      const marge = coefOpt ? coefOpt.coefficient : COEFFICIENT_V2[j]
-      const venteKg = (moFil + tric) / (1 - marge)
-      const port = j === 8 ? TAUX_FRAIS_DE_PORT_30RLX : TAUX_FRAIS_DE_PORT
-      return p.unite === 3 ? round2(venteKg / rendement / (1 - port)) : round2(venteKg / (1 - port))
-    }
-    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement) : null
+    const standardAt = (j: number) => (p.unite === 3 ? tarif.tranches[j].moPrixDeVenteAuMl : tarif.tranches[j].moPrixDeVenteAuKg)
+    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, 'ecru') : null
     if (contrat && !contratAt) return { ...base, rollSize, nRolls, cleanQty, exact }
     const priceAt = contratAt ?? standardAt
     const prix = priceAt(idx)

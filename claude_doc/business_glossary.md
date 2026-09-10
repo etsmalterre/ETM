@@ -34,7 +34,7 @@ Fil (Yarn) → Tricotage (Knitting) → Écru (Raw fabric) → Teinture (Dyeing)
 | Bonnetier | Knitter/machine operator | Person operating the loom |
 | OF (Ordre de Fabrication) | Work Order | Production order |
 | Écru | Raw/greige fabric | Unfinished knitted fabric |
-| Tombé métier (TM) | Loom output | Fabric as it comes off the loom |
+| Tombé métier (TM) | Loom output | Fabric as it comes off the loom. **Always sold by the Kg** (Vincent, 2026-09-10): an écru order line is in Kg and a contract price on an écru reference is €/Kg, never €/Ml — the €/Ml convention belongs to ennobli (fini) references only (#1144) |
 | Contexture | Fabric structure | Stitch pattern/density |
 | Liage | Binding/linking | Knitting pattern connections |
 | Jauge | Gauge | Machine needle gauge |

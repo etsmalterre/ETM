@@ -34,7 +34,7 @@ import {
   requirePermission, ETM_PERMISSIONS, repairNames, countClientActivity, setClientFlag,
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
-import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
+import { calcTarifRefFini, calcTarifRefEcru } from '../lib/pricing-fini-tarif.js'
 import {
   NB_RLX_TO_TRANCHE_IDX, DEFAULT_TRANCHE_IDX, parseLstTrancheIdx, fetchTarifModes,
 } from '../lib/tarif-client.js'
@@ -1504,11 +1504,13 @@ async function fetchClientRcc(clientId: number, rccId: number): Promise<{
   contrat: number
   lst_tranche: string
   IDref_fini: number
+  /** The écru behind a tombé-de-métier designation (0 on a fini one). */
+  IDref_ecru: number
   IDref_fini_colori: number
   IDcolori_ecru: number
 } | null> {
   const rows = await query<Record<string, unknown>>(
-    `SELECT rcc.IDref_client_colori, rcc.contrat, rcc.lst_tranche, rcc.IDref_fini_colori, rcc.IDcolori_ecru, dc.IDref_fini ` +
+    `SELECT rcc.IDref_client_colori, rcc.contrat, rcc.lst_tranche, rcc.IDref_fini_colori, rcc.IDcolori_ecru, dc.IDref_fini, dc.IDref_ecru ` +
       `FROM ref_client_colori rcc ` +
       `INNER JOIN designation_client dc ON dc.IDdesignation_client = rcc.IDdesignation_client ` +
       `WHERE rcc.IDref_client_colori = ${rccId} AND dc.IDclient = ${clientId}`,
@@ -1520,6 +1522,7 @@ async function fetchClientRcc(clientId: number, rccId: number): Promise<{
     contrat: numOf(r.contrat),
     lst_tranche: strOf(r.lst_tranche) ?? '',
     IDref_fini: numOf(r.IDref_fini),
+    IDref_ecru: numOf(r.IDref_ecru),
     IDref_fini_colori: numOf(r.IDref_fini_colori),
     IDcolori_ecru: numOf(r.IDcolori_ecru),
   }
@@ -1527,8 +1530,10 @@ async function fetchClientRcc(clientId: number, rccId: number): Promise<{
 
 // GET /api/clients/:id/coloris/:rccId/tarif — PrixDeVente breakdown honoring the
 // client's tarif mode: coefficient fixe recomputes every tranche with the fixed
-// margin; an ACTIVE contrat surfaces its negotiated €/Ml as `prixContrat` on the
+// margin; an ACTIVE contrat surfaces its negotiated price as `prixContrat` on the
 // matching tranches (expired contracts fall back to the standard calculation).
+// A fini designation prices through `calcTarifRefFini` in €/Ml; a tombé-de-métier
+// one through `calcTarifRefEcru` in €/Kg (`prix_unit` says which — LIVA #1144).
 clientsRouter.get('/:id/coloris/:rccId/tarif', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -1551,11 +1556,10 @@ clientsRouter.get('/:id/coloris/:rccId/tarif', async (req: Request, res: Respons
       colorisId = avecTeinture !== 0 ? rcc.IDref_fini_colori : rcc.IDcolori_ecru
     }
 
-    const tarif = await calcTarifRefFini(
-      rcc.IDref_fini,
-      colorisId,
-      mode.tarif_mode === 'coefficient' && mode.coefficient > 0 ? { coefficient: mode.coefficient / 100 } : undefined,
-    )
+    const coefOpt = mode.tarif_mode === 'coefficient' && mode.coefficient > 0 ? { coefficient: mode.coefficient / 100 } : undefined
+    const tarif = rcc.IDref_fini > 0
+      ? await calcTarifRefFini(rcc.IDref_fini, colorisId, coefOpt)
+      : await calcTarifRefEcru(rcc.IDref_ecru, rcc.IDcolori_ecru, coefOpt)
 
     const contratPrixByIdx = new Map<number, number>()
     if (mode.tarif_mode === 'contrat' && mode.contrat_actif) {
@@ -1569,6 +1573,8 @@ clientsRouter.get('/:id/coloris/:rccId/tarif', async (req: Request, res: Respons
       ...tarif,
       tranches: tarif.tranches.map((t, i) => ({ ...t, prixContrat: contratPrixByIdx.get(i) ?? null })),
       tranche_idx: parseLstTrancheIdx(rcc.lst_tranche),
+      // Unit of every price on this breakdown, contract ones included.
+      prix_unit: rcc.IDref_fini > 0 ? 'Ml' : 'Kg',
       tarif_mode: mode.tarif_mode,
       coefficient: mode.coefficient,
       contrats: mode.contrats,

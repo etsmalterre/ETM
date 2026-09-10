@@ -348,6 +348,24 @@ the freshly-rendered string. `LabeledInput` accepts an optional
 `inputRef?: React.Ref<HTMLInputElement>` for this kind of programmatic
 focus.
 
+## Tricoteur lines — « Affecté » is the knitter's running reception (LIVA #1138)
+
+On a tricoteur line (`type = 1`) the detail endpoint's `nb_ecru_lies` /
+`total_kg_ecru_lie` are aggregated over `stock_ecru.IDref_commande_source =
+line id` — the écru the knitter has produced FOR the line (stamped at TRM
+visitage, or by « Créer rouleau » for an external knitter) — instead of
+`IDref_commande_affectation`, which is the ennoblisseur-side pointer and
+stays the rule for type 2 / 0 lines. It is the same projection as the
+drawer's Réception tab, so the card and the drawer never disagree.
+
+The line card reuses the existing « Affecté » row (user decision 2026-09-10:
+no separate « Reçu » row): `X kg · N rouleaux (P %)` with P = share of the
+ordered kg — muted below 95 %, green inside ±5 %, red once over-delivered.
+The totals footer's « kg affectés » follows automatically. The reception
+dialog's success handler invalidates `['commande-sst', id]` so the row moves
+with the drawer. The bon de commande PDF keeps its own `kgByLine` query and
+is untouched.
+
 ## Dev-only "Faux envoi" send
 
 `SendEmailDialog` shows a dashed amber "Faux envoi (dev)" button next to

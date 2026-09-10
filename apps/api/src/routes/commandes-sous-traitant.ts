@@ -1602,10 +1602,23 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     // - `total_kg_ecru_lie` is the sum of poids over écru rolls affected to
     //   the line — multiplied by `prix` it yields the actual € total
     //   (qty × prix is treated as a *nominal* projection, not the bill).
+    //   Which pointer "affects" a roll to a line depends on the line type:
+    //     · ennoblisseur / écru lines (type 2 / 0): `IDref_commande_affectation`
+    //       — écru we hand to the dyer.
+    //     · tricoteur lines (type 1): `IDref_commande_source` — écru the
+    //       knitter produced FOR this line (TRM stamps it at visitage, the
+    //       « Créer rouleau » reception does the same for an external
+    //       knitter). Same projection as the drawer's Réception tab, so the
+    //       card's « Affecté » kg grows as rolls come in (LIVA #1138).
     // - `total_metrage_fini_recu` is the running metrage of dyed rolls
     //   received back, surfaced so the user can see how much of the order
     //   has actually returned.
     const lineIds = fixedLignes.map((l) => Number(l.IDligne_commande_sous_traitant)).filter((x) => x > 0)
+    const tricoteurLineIds = fixedLignes
+      .filter((l) => Number((l as any).type_kind) === 1)
+      .map((l) => Number(l.IDligne_commande_sous_traitant))
+      .filter((x) => x > 0)
+    const affectationLineIds = lineIds.filter((id) => !tricoteurLineIds.includes(id))
     interface LineAgg {
       nb_ecru_lies: number
       total_kg_ecru_lie: number
@@ -1619,20 +1632,31 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     const newAgg = (): LineAgg => ({ nb_ecru_lies: 0, total_kg_ecru_lie: 0, nb_fini_recu: 0, total_metrage_fini_recu: 0, fini_lots: [] })
     const piecesByLine = new Map<number, LineAgg>()
     if (lineIds.length > 0) {
-      const [ecruRows, finiRows] = await Promise.all([
-        query<{ IDref_commande_affectation: number; poids: number | null }>(
-          `SELECT IDref_commande_affectation, poids
-           FROM stock_ecru
-           WHERE IDref_commande_affectation IN (${lineIds.join(',')})`,
-        ),
+      // Both écru queries return the line id under one alias so the merge
+      // below is a single loop. Flat SELECTs, no JOIN (see CLAUDE.md).
+      const [ecruAffectesRows, ecruProduitsRows, finiRows] = await Promise.all([
+        affectationLineIds.length > 0
+          ? query<{ line_id: number; poids: number | null }>(
+            `SELECT IDref_commande_affectation AS line_id, poids
+             FROM stock_ecru
+             WHERE IDref_commande_affectation IN (${affectationLineIds.join(',')})`,
+          )
+          : Promise.resolve([] as Array<{ line_id: number; poids: number | null }>),
+        tricoteurLineIds.length > 0
+          ? query<{ line_id: number; poids: number | null }>(
+            `SELECT IDref_commande_source AS line_id, poids
+             FROM stock_ecru
+             WHERE IDref_commande_source IN (${tricoteurLineIds.join(',')})`,
+          )
+          : Promise.resolve([] as Array<{ line_id: number; poids: number | null }>),
         query<{ IDstock_fini: number; IDref_commande_source: number; metrage: number | null; lot: string | null }>(
           `SELECT IDstock_fini, IDref_commande_source, metrage, lot
            FROM stock_fini
            WHERE IDref_commande_source IN (${lineIds.join(',')})`,
         ),
       ])
-      for (const r of ecruRows) {
-        const lid = Number(r.IDref_commande_affectation) || 0
+      for (const r of [...ecruAffectesRows, ...ecruProduitsRows]) {
+        const lid = Number(r.line_id) || 0
         if (lid === 0) continue
         const acc = piecesByLine.get(lid) ?? newAgg()
         acc.nb_ecru_lies += 1

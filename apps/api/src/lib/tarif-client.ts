@@ -206,7 +206,7 @@ export async function resolveLigneTarifMode(p: {
   }
 }
 
-/** Negotiated €/Ml of a contract at a tranche index (0 = métrage "<1 rouleau",
+/** Negotiated price of a contract at a tranche index (0 = métrage "<1 rouleau",
  *  1..8 = 1,2,3,4,5,10,15,30 rouleaux): the largest band the contract defines
  *  at or below that index, falling back to its smallest (dearest) band when the
  *  quantity sits below every negotiated one — a contract that only prices

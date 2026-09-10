@@ -74,8 +74,10 @@ export interface TarifTranche {
   rolls: number
   /** True for tranche 0 — the table renders its quantity prefixed with "< ". */
   isMetrage: boolean
-  /** Display quantity in meters. */
+  /** Display quantity in meters (0 when the écru has no rendement). */
   qte_ml: number
+  /** Display quantity in kg — the unit a tombé de métier is sold in. */
+  qte_kg: number
   /** Weight (kg) used to pick the tariff band for this tranche. */
   poids_ref: number
   moFil: number
@@ -97,7 +99,12 @@ export interface TarifTranche {
 }
 
 export interface TarifResult {
+  /** Which engine produced the tranches: 'fini' (PrixDeVenteV4 nType_Ref = 2)
+   *  or 'ecru' (nType_Ref = 1 — tombé de métier, sold by the Kg). */
+  kind: 'fini' | 'ecru'
   IDref_fini: number
+  /** Set by the écru engine (0 on a fini result — the écru behind a fini is `ref_ecru`). */
+  IDref_ecru: number
   IDcoloris: number
   avec_teinture: number
   rendement: number
@@ -141,7 +148,9 @@ export async function calcTarifRefFini(
   opts?: { coefficient?: number },
 ): Promise<TarifResult> {
   const empty: TarifResult = {
+    kind: 'fini',
     IDref_fini,
+    IDref_ecru: 0,
     IDcoloris,
     avec_teinture: 0,
     rendement: 0,
@@ -345,6 +354,7 @@ export async function calcTarifRefFini(
       // prints 355 Ml for 4 rolls of 124A where the 2dp-rounded rendement
       // gives 354. Prices keep rdt2 (they match legacy with the rounding).
       qte_ml: Math.round(ROLL_MULT[i] * poidsUnRlx * rendement),
+      qte_kg: round2(ROLL_MULT[i] * poidsUnRlx),
       poids_ref: poidsRef,
       moFil,
       detailFil,
@@ -364,7 +374,105 @@ export async function calcTarifRefFini(
     })
   }
 
-  return { IDref_fini, IDcoloris, avec_teinture: avecTeinture, rendement, ref_ecru, tranches }
+  return { kind: 'fini', IDref_fini, IDref_ecru: 0, IDcoloris, avec_teinture: avecTeinture, rendement, ref_ecru, tranches }
+}
+
+/**
+ * Écru / tombé-de-métier tariff — the nType_Ref = 1 reduction of the same
+ * `PrixDeVenteV4`: prix de revient = fil + tricotage only (no treatment, no
+ * dye), then ÷ margin ÷ port, on the same nine tranches. A tombé de métier is
+ * always sold by the Kg (Vincent, 2026-09-10 — LIVA #1144), so `moPrixDeVenteAuKg`
+ * is the figure that matters; the Ml figure is derived through `ref_ecru.rendement`
+ * when the écru has one and stays 0 otherwise. Shares `TarifResult` with the
+ * fini engine so the client fiche's tariff dialog, the tarif-mode editor and
+ * the line pricer render both kinds from one shape.
+ *
+ * `IDcolori_ecru` picks the yarn composition (falls back to the base
+ * composition when the coloris has none of its own — see `computePrixFil`).
+ * `opts.coefficient` is the "coefficient fixe" margin, as for the fini engine.
+ */
+export async function calcTarifRefEcru(
+  IDref_ecru: number,
+  IDcolori_ecru: number,
+  opts?: { coefficient?: number },
+): Promise<TarifResult> {
+  const empty: TarifResult = {
+    kind: 'ecru',
+    IDref_fini: 0,
+    IDref_ecru,
+    IDcoloris: IDcolori_ecru,
+    avec_teinture: 0,
+    rendement: 0,
+    ref_ecru: null,
+    tranches: [],
+  }
+  if (!(IDref_ecru > 0)) return empty
+
+  const ecruRows = await query<{ IDref_ecru: number; reference: string | null; poids: number | null; prix: number | null; rendement: number | null }>(
+    `SELECT IDref_ecru, reference, poids, prix, rendement FROM ref_ecru WHERE IDref_ecru = ${IDref_ecru}`,
+  )
+  if (ecruRows.length === 0) return empty
+  const ecruFixed = await fixEncoding(ecruRows as any[], 'ref_ecru', 'IDref_ecru', ['reference'])
+  const ecruReference = (ecruFixed[0]?.reference ?? null) as string | null
+  const poidsUnRlx = Number(ecruRows[0].poids) || 0
+  const prixTricotage = Number(ecruRows[0].prix) || 0
+  const rendement = Number(ecruRows[0].rendement) || 0
+  const ref_ecru = { IDref_ecru, reference: ecruReference, poids: poidsUnRlx, prix: prixTricotage }
+  if (!(poidsUnRlx > 0)) return { ...empty, rendement, ref_ecru }
+
+  const detailFil = await computePrixFil(IDref_ecru, IDcolori_ecru)
+  const moFil = round2(detailFil.reduce((s, d) => s + d.valueKg, 0))
+  const rdt2 = Math.round(rendement * 100) / 100
+
+  const tranches: TarifTranche[] = []
+  for (let i = 0; i < ROLL_MULT.length; i++) {
+    const poidsRef = poidsUnRlx * ROLL_MULT[i] + 1
+    let moTricotage = prixTricotage
+    let tricSuffix = ''
+    if (i === 7) {
+      moTricotage = 0.95 * moTricotage
+      tricSuffix = ' -5%'
+    } else if (i === 8) {
+      moTricotage = 0.9 * moTricotage
+      tricSuffix = ' -10%'
+    }
+    const detailTricotage: TarifDetailLine = {
+      label: `Ref tombé de métier ${ecruReference ?? ''} à ${eur(prixTricotage)} €${tricSuffix}`,
+      valueKg: round2(moTricotage),
+    }
+    const moRevient = moFil + moTricotage
+    const tauxPort = i === 8 ? TAUX_FRAIS_DE_PORT_30RLX : TAUX_FRAIS_DE_PORT
+    const rCoeff =
+      opts?.coefficient !== undefined && opts.coefficient > 0 && opts.coefficient < 1
+        ? opts.coefficient
+        : COEFFICIENT_V2[i]
+    const venteAvantPortKg = moRevient / (1 - rCoeff)
+    const moPrixDeVenteAuKg = round2(venteAvantPortKg / (1 - tauxPort))
+    const moPrixDeVenteAuMl = rdt2 > 0 ? round2(venteAvantPortKg / rdt2 / (1 - tauxPort)) : 0
+    tranches.push({
+      rolls: ROLL_LABEL[i],
+      isMetrage: i === 0,
+      qte_ml: rendement > 0 ? Math.round(ROLL_MULT[i] * poidsUnRlx * rendement) : 0,
+      qte_kg: round2(ROLL_MULT[i] * poidsUnRlx),
+      poids_ref: poidsRef,
+      moFil,
+      detailFil,
+      moTricotage: round2(moTricotage),
+      detailTricotage,
+      moTraitements: 0,
+      detailTraitement: [],
+      moTeinte: 0,
+      detailTeinture: null,
+      moRevient: round2(moRevient),
+      rCoeff,
+      tauxFraisDePort: tauxPort,
+      moPortAuKg: round2(moPrixDeVenteAuKg * tauxPort),
+      moPortAuMl: round2(moPrixDeVenteAuMl * tauxPort),
+      moPrixDeVenteAuKg,
+      moPrixDeVenteAuMl,
+    })
+  }
+  return { ...empty, rendement, ref_ecru, tranches }
 }
 
 /** Legacy `PrixFil()` — Σ(pourcentage × yarn €/Kg)/100 over the écru's

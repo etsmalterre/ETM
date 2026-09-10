@@ -1689,6 +1689,10 @@ interface RefColoris {
   tarif_mode: TarifMode; coefficient: number; contrats: ContratTarif[]; contrat_actif: ContratTarif | null; contrat_expire: boolean
 }
 interface ClientReference { IDdesignation_client: number; client_ref: string; IDref_fini: number; IDref_ecru: number; ref_interne: string; designation: string; avec_teinture: number; soumettre: number; unite: number; fil_non_facture: number[]; associees: number[]; coloris: RefColoris[] }
+/** Unit every price of a reference is negotiated and displayed in: €/Ml on an
+ *  ennobli (fini), €/Kg on a tombé de métier — always sold by the Kg (#1144). */
+type PrixUnit = 'Kg' | 'Ml'
+const prixUnitOf = (r: ClientReference): PrixUnit => (r.IDref_fini > 0 ? 'Ml' : 'Kg')
 
 interface RefAssocieeLookup { IDref_fini: number; reference: string; designation: string }
 
@@ -1728,7 +1732,7 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs, ca
   const canAddColoris = isEditing && !canManageRefs && canManageColoris
   const [addColorisRefId, setAddColorisRefId] = useState<number | null>(null)
   const [tarif, setTarif] = useState<{ rccId: number; label: string } | null>(null)
-  const [tarifMode, setTarifMode] = useState<{ coloris: RefColoris; label: string; duplicate?: boolean } | null>(null)
+  const [tarifMode, setTarifMode] = useState<{ coloris: RefColoris; label: string; prixUnit: PrixUnit; duplicate?: boolean } | null>(null)
   // Ref-level settings dialog: { refId: null } = create, { refId: n } = edit.
   // Stores the id (not a snapshot) so the dialog's Tarifs tab re-derives the
   // ref from the live query after a tarif-mode save invalidates the list.
@@ -1842,7 +1846,7 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs, ca
             onAddColoris={canAddColoris ? () => setAddColorisRefId(drawerRef.IDdesignation_client) : undefined}
             onClose={() => setDrawerRefId(null)}
             onOpenTarif={(c) => setTarif({ rccId: c.IDref_client_colori, label: `${drawerRef.client_ref} · ${c.label}` })}
-            onOpenTarifMode={(c) => setTarifMode({ coloris: c, label: `${drawerRef.client_ref} · ${c.label}` })}
+            onOpenTarifMode={(c) => setTarifMode({ coloris: c, label: `${drawerRef.client_ref} · ${c.label}`, prixUnit: prixUnitOf(drawerRef) })}
           />
         </div>
       )}
@@ -1864,7 +1868,7 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs, ca
       <RefSettingsDialog open={settings !== null} existing={settingsExisting} clientId={clientId} onClose={() => setSettings(null)}
         canManageTarifs={canManageTarifs}
         onOpenTarif={(c, label) => setTarif({ rccId: c.IDref_client_colori, label })}
-        onOpenTarifMode={(c, label) => setTarifMode({ coloris: c, label })} />
+        onOpenTarifMode={(c, label, prixUnit) => setTarifMode({ coloris: c, label, prixUnit })} />
     </>
   )
 }
@@ -1899,7 +1903,7 @@ function ColorisDrawer({ refItem, tarifEditable, onAddColoris, onClose, onOpenTa
         ) : (
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-2">
             {refItem.coloris.map((c) => {
-              const priceable = refItem.IDref_fini > 0 && c.coloris_id > 0
+              const priceable = (refItem.IDref_fini > 0 || refItem.IDref_ecru > 0) && c.coloris_id > 0
               return (
                 <button key={c.IDref_client_colori} type="button" disabled={!priceable}
                   onClick={() => { if (priceable) (tarifEditable ? onOpenTarifMode(c) : onOpenTarif(c)) }}
@@ -2200,17 +2204,17 @@ function RefTarifsTab({ refItem, draftColoris, canManageTarifs, onOpenTarif, onO
   draftColoris: Set<number>
   canManageTarifs: boolean
   onOpenTarif: (c: RefColoris, label: string) => void
-  onOpenTarifMode: (c: RefColoris, label: string) => void
+  onOpenTarifMode: (c: RefColoris, label: string, prixUnit: PrixUnit) => void
 }) {
   // Tarifs hang off ref_client_colori rows, which exist only after Enregistrer.
   const savedIds = new Set(refItem.coloris.map((c) => c.coloris_id).filter((x) => x > 0))
   const draftDiffers = draftColoris.size !== savedIds.size || [...draftColoris].some((id) => !savedIds.has(id))
 
-  if (refItem.IDref_fini === 0) {
+  if (refItem.IDref_fini === 0 && refItem.IDref_ecru === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
         <BadgeEuro className="h-10 w-10 mb-3 opacity-40" />
-        <p className="text-sm">Les tarifs ne sont disponibles que pour les références ennoblies.</p>
+        <p className="text-sm">Les tarifs ne sont disponibles que pour les références ennoblies ou tombé de métier.</p>
       </div>
     )
   }
@@ -2229,7 +2233,7 @@ function RefTarifsTab({ refItem, draftColoris, canManageTarifs, onOpenTarif, onO
         const label = `${refItem.client_ref} · ${c.label}`
         return (
           <button key={c.IDref_client_colori} type="button" disabled={!priceable}
-            onClick={() => { if (priceable) (canManageTarifs ? onOpenTarifMode(c, label) : onOpenTarif(c, label)) }}
+            onClick={() => { if (priceable) (canManageTarifs ? onOpenTarifMode(c, label, prixUnitOf(refItem)) : onOpenTarif(c, label)) }}
             title={priceable ? (canManageTarifs ? 'Modifier le tarif' : 'Voir le tarif') : 'Tarif indisponible pour ce coloris'}
             className={cn('group w-full flex items-center gap-2 rounded-lg border bg-card shadow-sm p-2.5 text-left transition-colors',
               priceable ? 'hover:border-accent/50 cursor-pointer' : 'opacity-60 cursor-default')}>
@@ -2259,7 +2263,7 @@ function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs,
   canManageTarifs: boolean
   /** Open the read-only tarif breakdown / the tarif-mode editor for a saved coloris (stacks over this dialog). */
   onOpenTarif: (c: RefColoris, label: string) => void
-  onOpenTarifMode: (c: RefColoris, label: string) => void
+  onOpenTarifMode: (c: RefColoris, label: string, prixUnit: PrixUnit) => void
 }) {
   const queryClient = useQueryClient()
   const isNew = existing === null
@@ -2538,7 +2542,7 @@ function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs,
 
 interface TarifDetailLine { label: string; valueKg: number }
 interface TarifTranche {
-  rolls: number; isMetrage: boolean; qte_ml: number; poids_ref: number
+  rolls: number; isMetrage: boolean; qte_ml: number; qte_kg: number; poids_ref: number
   moFil: number; detailFil: TarifDetailLine[]
   moTricotage: number; detailTricotage: TarifDetailLine | null
   moTraitements: number; detailTraitement: TarifDetailLine[]
@@ -2548,8 +2552,10 @@ interface TarifTranche {
   prixContrat: number | null
 }
 interface TarifResult {
-  IDref_fini: number; IDcoloris: number; avec_teinture: number; rendement: number; tranches: TarifTranche[]
+  kind: 'fini' | 'ecru'; IDref_fini: number; IDref_ecru: number; IDcoloris: number; avec_teinture: number; rendement: number; tranches: TarifTranche[]
   tranche_idx: number[]
+  /** Unit of every price on the breakdown, contract ones included (#1144). */
+  prix_unit: PrixUnit
   tarif_mode: TarifMode; coefficient: number; contrats: ContratTarif[]; contrat_actif: ContratTarif | null; contrat_expire: boolean
 }
 
@@ -2629,6 +2635,11 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
     : allTranches.filter((_, i) => enabledIdx.includes(i))
   const current = tranches[Math.min(selectedTranche, Math.max(tranches.length - 1, 0))] ?? null
   const eurKg = (v: number) => `${fmtNum(v, 2)} €/Kg`
+  // A tombé de métier is priced and sold by the Kg: quantities and prices show
+  // in Kg, and a contract price is €/Kg as is (#1144).
+  const isEcru = data?.kind === 'ecru'
+  const unit: PrixUnit = data?.prix_unit ?? 'Ml'
+  const qteOf = (t: TarifTranche) => (isEcru ? t.qte_kg : t.qte_ml)
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="max-w-lg" onClose={onClose}>
@@ -2661,13 +2672,13 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                     <colgroup><col style={{ width: '26%' }} /><col style={{ width: '34%' }} /><col style={{ width: '40%' }} /></colgroup>
                     <thead className={thHead}><tr>
                       <th className="px-2 py-1.5 text-left font-semibold">Qté (Rlx)</th>
-                      <th className="px-2 py-1.5 text-right font-semibold">Qté (Ml)</th>
-                      <th className="px-2 py-1.5 text-right font-semibold">Prix / Ml</th>
+                      <th className="px-2 py-1.5 text-right font-semibold">Qté ({unit})</th>
+                      <th className="px-2 py-1.5 text-right font-semibold">Prix / {unit}</th>
                     </tr></thead>
                     <tbody>
                       {data.contrats[0].tranches.map((t) => {
                         const idx = TRANCHE_NB_VALUES.indexOf(t.nb_rouleaux)
-                        const qteMl = idx >= 0 ? allTranches[idx]?.qte_ml ?? null : null
+                        const qteMl = idx >= 0 && allTranches[idx] ? qteOf(allTranches[idx]) : null
                         return (
                           <tr key={t.nb_rouleaux} className="border-b border-border/40 last:border-b-0 text-muted-foreground">
                             <td className="px-2 py-1.5 tabular-nums">{t.nb_rouleaux === 0 ? '< 1' : `${t.nb_rouleaux} et plus`}</td>
@@ -2702,15 +2713,15 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                   <colgroup><col style={{ width: '26%' }} /><col style={{ width: '34%' }} /><col style={{ width: '40%' }} /></colgroup>
                   <thead className={thHead}><tr>
                     <th className="px-2 py-1.5 text-left font-semibold">Qté (Rlx)</th>
-                    <th className="px-2 py-1.5 text-right font-semibold">Qté (Ml)</th>
-                    <th className="px-2 py-1.5 text-right font-semibold">Prix / Ml</th>
+                    <th className="px-2 py-1.5 text-right font-semibold">Qté ({unit})</th>
+                    <th className="px-2 py-1.5 text-right font-semibold">Prix / {unit}</th>
                   </tr></thead>
                   <tbody>
                     {tranches.map((t, i) => (
                       <tr key={i} onClick={() => setSelectedTranche(i)}
                         className={cn('border-b border-border/40 last:border-b-0 cursor-pointer transition-colors', selectedTranche === i ? 'bg-accent/10' : 'hover:bg-accent/5')}>
                         <td className="px-2 py-1.5 tabular-nums">{t.isMetrage ? '< 1' : t.prixContrat != null ? `${t.rolls} et plus` : t.rolls}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">{t.isMetrage ? '< ' : ''}{fmtNum(t.qte_ml)}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{t.isMetrage ? '< ' : ''}{fmtNum(qteOf(t))}</td>
                         <td className="px-2 py-1.5 text-right tabular-nums font-medium">
                           {t.prixContrat != null ? (
                             <span className="inline-flex items-center gap-1.5">
@@ -2718,7 +2729,7 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                               {fmtNum(t.prixContrat, 2)} €
                             </span>
                           ) : (
-                            <>{fmtNum(t.moPrixDeVenteAuMl, 2)} €</>
+                            <>{fmtNum(isEcru ? t.moPrixDeVenteAuKg : t.moPrixDeVenteAuMl, 2)} €</>
                           )}
                         </td>
                       </tr>
@@ -2731,10 +2742,11 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                 // on the 15-roll cost basis (bulk dye/treatment bands, -5%
                 // tricotage) — the coefficient is then DERIVED from the fixed
                 // contract price against those bulk costs ("Coeff Calculé").
-                const isContrat = current.prixContrat != null && (data?.rendement ?? 0) > 0
+                const isContrat = current.prixContrat != null && (isEcru || (data?.rendement ?? 0) > 0)
                 const basis = isContrat ? (allTranches.find((t) => !t.isMetrage && t.rolls === 15) ?? current) : current
                 const rdt = Math.round((data?.rendement ?? 0) * 100) / 100
-                const pvKgContrat = isContrat ? current.prixContrat! * rdt : 0
+                // An écru contract IS a €/Kg figure; a fini one is €/Ml → Kg through the rendement.
+                const pvKgContrat = isContrat ? (isEcru ? current.prixContrat! : current.prixContrat! * rdt) : 0
                 const coefDerive = isContrat
                   ? Math.round(100 * (1 - basis.moRevient / (pvKgContrat * (1 - basis.tauxFraisDePort))))
                   : 0
@@ -2742,9 +2754,11 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                 <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2.5">
                   <CostSection title="Fil" total={eurKg(basis.moFil)}>{basis.detailFil.map((l, i) => <CostLine key={i} label={l.label} value={eurKg(l.valueKg)} />)}</CostSection>
                   <CostSection title="Tricotage" total={eurKg(basis.moTricotage)}>{basis.detailTricotage && <CostLine label={basis.detailTricotage.label} value={eurKg(basis.detailTricotage.valueKg)} />}</CostSection>
-                  <CostSection title="Traitement" total={eurKg(basis.moTraitements)}>
-                    {basis.detailTraitement.length > 0 ? basis.detailTraitement.map((l, i) => <CostLine key={i} label={l.label} value={eurKg(l.valueKg)} />) : <p className="text-[11px] text-muted-foreground italic">Aucun traitement</p>}
-                  </CostSection>
+                  {!isEcru && (
+                    <CostSection title="Traitement" total={eurKg(basis.moTraitements)}>
+                      {basis.detailTraitement.length > 0 ? basis.detailTraitement.map((l, i) => <CostLine key={i} label={l.label} value={eurKg(l.valueKg)} />) : <p className="text-[11px] text-muted-foreground italic">Aucun traitement</p>}
+                    </CostSection>
+                  )}
                   {(data?.avec_teinture ?? 0) !== 0 && (
                     <CostSection title="Teinture" total={eurKg(basis.moTeinte)}>{basis.detailTeinture && <CostLine label={basis.detailTeinture.label} value={eurKg(basis.detailTeinture.valueKg)} />}</CostSection>
                   )}
@@ -2754,13 +2768,13 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                       <>
                         <CostLine label="Coefficient (calculé du contrat)" value={String(coefDerive)} />
                         <CostLine label={`Prix de vente au Kg · port ${Math.round(basis.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(pvKgContrat, 2)} €/Kg`} />
-                        <CostLine label={`Prix de vente au Ml · port ${Math.round(basis.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(current.prixContrat!, 2)} €/Ml`} />
+                        {!isEcru && <CostLine label={`Prix de vente au Ml · port ${Math.round(basis.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(current.prixContrat!, 2)} €/Ml`} />}
                       </>
                     ) : (
                       <>
                         <CostLine label="Coefficient" value={String(Math.round(current.rCoeff * 100))} />
                         <CostLine label={`Prix de vente au Kg · port ${Math.round(current.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(current.moPrixDeVenteAuKg, 2)} €/Kg`} />
-                        <CostLine label={`Prix de vente au Ml · port ${Math.round(current.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(current.moPrixDeVenteAuMl, 2)} €/Ml`} />
+                        {current.moPrixDeVenteAuMl > 0 && <CostLine label={`Prix de vente au Ml · port ${Math.round(current.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(current.moPrixDeVenteAuMl, 2)} €/Ml`} />}
                       </>
                     )}
                   </CostSection>
@@ -2814,9 +2828,11 @@ function TarifModeCard({ selected, onSelect, icon: Icon, title, desc, children }
 
 function TarifModeDialog({ open, onClose, clientId, target }: {
   open: boolean; onClose: () => void; clientId: number
-  target: { coloris: RefColoris; label: string } | null
+  target: { coloris: RefColoris; label: string; prixUnit: PrixUnit } | null
 }) {
   const queryClient = useQueryClient()
+  // Negotiated prices are typed in the reference's selling unit (#1144).
+  const unit: PrixUnit = target?.prixUnit ?? 'Ml'
   const [mode, setMode] = useState<TarifMode>('standard')
   const [coefficient, setCoefficient] = useState('')
   const [contratId, setContratId] = useState<number | null>(null)
@@ -2949,7 +2965,7 @@ function TarifModeDialog({ open, onClose, clientId, target }: {
           </TarifModeCard>
 
           <TarifModeCard selected={mode === 'contrat'} onSelect={() => setMode('contrat')} icon={FileSignature}
-            title="Contrat" desc="Prix négociés au Ml par tranche, valables sur une période définie.">
+            title="Contrat" desc={`Prix négociés au ${unit} par tranche, valables sur une période définie.`}>
             <div className="pl-6 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-semibold text-accent uppercase tracking-wide">
@@ -2974,7 +2990,7 @@ function TarifModeDialog({ open, onClose, clientId, target }: {
                 </div>
               </div>
               <div className="space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground">Prix négociés (€/Ml)</p>
+                <p className="text-xs font-medium text-muted-foreground">Prix négociés (€/{unit})</p>
                 {tranches.map((t) => (
                   <div key={t.key} className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
@@ -2985,7 +3001,7 @@ function TarifModeDialog({ open, onClose, clientId, target }: {
                     <input value={t.prix} inputMode="decimal" placeholder="0,00" autoComplete="off"
                       onChange={(e) => setTranches((prev) => prev.map((x) => (x.key === t.key ? { ...x, prix: e.target.value } : x)))}
                       className="h-7 w-24 px-2 text-sm text-right rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring tabular-nums" />
-                    <span className="text-xs text-muted-foreground">€/Ml</span>
+                    <span className="text-xs text-muted-foreground">€/{unit}</span>
                     <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive"
                       disabled={tranches.length <= 1}
                       onClick={() => setTranches((prev) => prev.filter((x) => x.key !== t.key))}>

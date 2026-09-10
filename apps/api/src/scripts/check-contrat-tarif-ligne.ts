@@ -19,9 +19,13 @@
  *     block is the client's tarif mode talking, not a broken pricer.
  *  4. Band selection inside a contract: a single "1 rouleau" band prices every
  *     larger quantity (C2TEC = 6,65 €/Ml at 4 rouleaux).
+ *  4bis. Gant Maille / ref 254 (LIVA #1144): a contract on a TOMBÉ DE MÉTIER is
+ *     negotiated in €/Kg — a tombé de métier is always sold by the Kg — and the
+ *     Kg line is quoted that figure as is (10,01 €/Kg), never × rendement (28,23).
  *  5. Live data sweep — every (client × ref × coloris) with an ACTIVE contract
- *     is quoted that contract's price, and a "coefficient fixe" pair is quoted
- *     the standard engine re-run with the client's margin.
+ *     is quoted that contract's price (€/Ml on a fini, €/Kg on an écru), and a
+ *     "coefficient fixe" pair is quoted the standard engine re-run with the
+ *     client's margin.
  *
  * Read-only — never writes.
  */
@@ -30,7 +34,7 @@ dotenv.config({ path: '.env' })
 dotenv.config({ path: `.env.${process.env.NODE_ENV || 'development'}` })
 import { query, closeConnection } from '../lib/hfsql-auto.js'
 import { calcLignePriceClient } from '../lib/pricing-ligne-client.js'
-import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
+import { calcTarifRefFini, calcTarifRefEcru } from '../lib/pricing-fini-tarif.js'
 import {
   resolveLigneTarifMode, contratPrixForTrancheIdx, fetchTarifModes,
 } from '../lib/tarif-client.js'
@@ -94,6 +98,22 @@ async function main() {
     check('contrat lisible', false, 'aucun contrat trouvé')
   }
 
+  console.log('\n4bis) Gant Maille / 254 — contrat sur un tombé de métier : €/Kg tel quel, jamais × rendement (#1144)')
+  const GANT = { client: 682, type: 1, ref: 370, colori: 1293, rcc: 2035, prixKg: 10.01 }
+  const gm = await resolveLigneTarifMode({ IDclient: GANT.client, type: GANT.type, IDreference: GANT.ref, IDcolori: GANT.colori })
+  check('la paire écru (référence × coloris) est résolue', gm?.IDref_client_colori === GANT.rcc, String(gm?.IDref_client_colori))
+  check('tarif_mode contrat', gm?.tarif_mode === 'contrat', gm?.tarif_mode)
+  const gmLine = await calcLignePriceClient({
+    type: GANT.type, IDreference: GANT.ref, IDcolori: GANT.colori, quantite: 320, unite: 1, IDclient: GANT.client,
+  })
+  if (gm?.contrat_actif) {
+    check('320 kg → le prix négocié tel quel, en €/Kg', gmLine.prix === GANT.prixKg, `${gmLine.prix} €/Kg (attendu ${GANT.prixKg}, PAS ${GANT.prixKg} × rendement)`)
+    check('mode contrat, ligne tarifable', gmLine.tarif_mode === 'contrat' && gmLine.priceable)
+  } else {
+    console.log(`       (contrat 479 non actif dans cette base — expiration ${gm?.dernier_contrat?.date_expiration ?? '?'} ; le pin sur le prix est sauté)`)
+    check('contrat expiré → ligne bloquée', gmLine.blocked === true)
+  }
+
   console.log('\n5) Balayage des contrats ACTIFS et des coefficients en base')
   // designation_client / ref_client_colori tolerate SELECT * (accented `archivé`
   // is pruned in JS, never named in SQL).
@@ -124,9 +144,16 @@ async function main() {
     if (!d) continue
     const clientId = Number(d.IDclient)
     const refFini = Number(d.IDref_fini)
-    // Écru-only catalogue entries exist but the fini path is what users price.
-    if (!(clientId > 0) || !(refFini > 0)) continue
-    const colori = Number(r.IDref_fini_colori) || Number(r.IDcolori_ecru)
+    const refEcru = Number(d.IDref_ecru)
+    // A designation is either a fini (priced in Ml) or a tombé de métier
+    // (priced in Kg — always sold by the Kg, #1144).
+    const kind: 'fini' | 'ecru' = refFini > 0 ? 'fini' : 'ecru'
+    const refId = kind === 'fini' ? refFini : refEcru
+    const type = kind === 'fini' ? 2 : 1
+    const unite = kind === 'fini' ? 3 : 1
+    const unitLabel = kind === 'fini' ? '€/Ml' : '€/Kg'
+    if (!(clientId > 0) || !(refId > 0)) continue
+    const colori = kind === 'fini' ? (Number(r.IDref_fini_colori) || Number(r.IDcolori_ecru)) : Number(r.IDcolori_ecru)
     if (!(colori > 0)) continue
     // An ARCHIVED catalogue entry must never price a new line — and several
     // clients do carry an old archived designation holding a coefficient next to
@@ -136,10 +163,10 @@ async function main() {
     // Duplicate rows can point at the same coloris; only assert on the pair the
     // resolver actually lands on, otherwise the expectation is built from a row
     // the pricer never read.
-    const resolved = await resolveLigneTarifMode({ IDclient: clientId, type: 2, IDreference: refFini, IDcolori: colori })
+    const resolved = await resolveLigneTarifMode({ IDclient: clientId, type, IDreference: refId, IDcolori: colori })
     if (resolved?.IDref_client_colori !== rccId) { skipped++; continue }
 
-    const res = await calcLignePriceClient({ type: 2, IDreference: refFini, IDcolori: colori, quantite: 100, unite: 3, IDclient: clientId })
+    const res = await calcLignePriceClient({ type, IDreference: refId, IDcolori: colori, quantite: 100, unite, IDclient: clientId })
     if (!res.priceable) { skipped++; continue }
     const idx = usedIdx(res.nRolls, res.trancheRolls)
 
@@ -148,16 +175,18 @@ async function main() {
       const want = contratPrixForTrancheIdx(info.contrat_actif, idx)
       // Print one conforming example: it is the pair to open in the app when
       // you want to SEE a negotiated price applied, not just read a counter.
-      if (actifs === 1) console.log(`       exemple: client ${clientId} ref_fini ${refFini} coloris ${colori} → ${res.prix} €/Ml (contrat)`)
+      if (actifs === 1) console.log(`       exemple: client ${clientId} ref_${kind} ${refId} coloris ${colori} → ${res.prix} ${unitLabel} (contrat)`)
       if (res.tarif_mode === 'contrat' && res.prix === want) actifsOk++
-      else console.log(`       contrat actif divergent: client ${clientId} ref ${refFini} col ${colori} → ${res.prix} (attendu ${want})`)
+      else console.log(`       contrat actif divergent: client ${clientId} ref_${kind} ${refId} col ${colori} → ${res.prix} (attendu ${want} ${unitLabel})`)
     } else if (info.tarif_mode === 'coefficient' && info.coefficient > 0) {
       coefs++
-      const tarif = await calcTarifRefFini(refFini, colori, { coefficient: info.coefficient / 100 })
-      const want = tarif.tranches[idx]?.moPrixDeVenteAuMl
-      if (coefs === 1) console.log(`       exemple: client ${clientId} ref_fini ${refFini} coloris ${colori} → ${res.prix} €/Ml (coefficient ${info.coefficient} %)`)
+      const tarif = kind === 'fini'
+        ? await calcTarifRefFini(refId, colori, { coefficient: info.coefficient / 100 })
+        : await calcTarifRefEcru(refId, colori, { coefficient: info.coefficient / 100 })
+      const want = kind === 'fini' ? tarif.tranches[idx]?.moPrixDeVenteAuMl : tarif.tranches[idx]?.moPrixDeVenteAuKg
+      if (coefs === 1) console.log(`       exemple: client ${clientId} ref_${kind} ${refId} coloris ${colori} → ${res.prix} ${unitLabel} (coefficient ${info.coefficient} %)`)
       if (res.tarif_mode === 'coefficient' && res.prix === want) coefsOk++
-      else console.log(`       coefficient divergent: client ${clientId} ref ${refFini} col ${colori} → ${res.prix} (attendu ${want})`)
+      else console.log(`       coefficient divergent: client ${clientId} ref_${kind} ${refId} col ${colori} → ${res.prix} (attendu ${want} ${unitLabel})`)
     }
   }
   console.log(`  contrats actifs testés: ${actifs}, conformes: ${actifsOk}`)

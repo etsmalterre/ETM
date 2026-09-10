@@ -2362,11 +2362,35 @@ function LineCard({
         )}
         {/* Affecté — once écru is linked. Total kg + derived potentiel
             Ml (green/amber/red vs ordered Ml). The € total is no longer
-            on this row — it has its own footer line below. */}
+            on this row — it has its own footer line below.
+            On a tricoteur line the kg are the écru the knitter has produced
+            for the line so far (LIVA #1138) — the row is the « prévu /
+            reçu » progress: roll count + share of the ordered kg. */}
         {totalKgEcru > 0 && (
           <div className="flex items-center gap-3">
             <span className="text-xs uppercase tracking-wide text-muted-foreground/80 w-24 flex-shrink-0">Affecté</span>
             <span className="text-foreground">{fmtNum(totalKgEcru, 1)} kg</span>
+            {line.type === 1 && (() => {
+              const nb = Number(line.nb_ecru_lies) || 0
+              const pct = qty > 0 ? (totalKgEcru / qty) * 100 : null
+              // Partial reception is the normal state of a knitting order:
+              // stay neutral until the order is nearly complete, green
+              // inside ±5 % of the ordered kg, red once over-delivered.
+              const pctClass = pct == null ? 'text-muted-foreground'
+                : pct < 95 ? 'text-muted-foreground'
+                : pct <= 105 ? 'text-green-700'
+                : 'text-red-600'
+              return (
+                <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  {nb > 0 && <span>{nb} rouleau{nb > 1 ? 'x' : ''}</span>}
+                  {pct != null && (
+                    <span className={cn('font-medium', pctClass)} title={`Commandé : ${fmtNum(qty, 1)} kg`}>
+                      ({fmtNum(pct, 0)} %)
+                    </span>
+                  )}
+                </span>
+              )
+            })()}
             {mlPotentiel > 0 && (
               <span
                 className={cn(
@@ -3385,6 +3409,9 @@ function TricoteurDrawer({
           onClose={() => setShowReceptionDialog(false)}
           onSuccess={(payload) => {
             queryClient.setQueryData(queryKey, payload)
+            // The line card's « Affecté » kg is the same tally (#1138) —
+            // refresh the parent detail so it moves with the drawer.
+            queryClient.invalidateQueries({ queryKey: ['commande-sst', commandeId] })
             // Tricoteur réception CREATES stock_ecru rows (tombés de métier).
             invalidateStockCaches(queryClient)
             setShowReceptionDialog(false)
