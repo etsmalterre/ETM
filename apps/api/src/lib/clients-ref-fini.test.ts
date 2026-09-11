@@ -33,19 +33,22 @@ describe('aggregateClientsForRef — « Clients » tab of a ref fini (#1155)', (
     expect(slip.dernier_numero).toBe(3050)
   })
 
-  it('sorts by most recent order first, then by name', () => {
+  it('sorts by volume, highest first — Ml before Kg, then by name', () => {
     const rows = aggregateClientsForRef(
       [
-        { IDcommande_client: 1, quantite: 1, unite: 3 },
-        { IDcommande_client: 2, quantite: 1, unite: 3 },
+        { IDcommande_client: 1, quantite: 500, unite: 3 },
+        { IDcommande_client: 2, quantite: 20, unite: 3 },
+        { IDcommande_client: 3, quantite: 900, unite: 1 },
       ],
       [
         { IDcommande_client: 1, IDclient: 10, numero: 1, date_commande: '20250101' },
         { IDcommande_client: 2, IDclient: 20, numero: 2, date_commande: '20260101' },
+        { IDcommande_client: 3, IDclient: 30, numero: 3, date_commande: '20260201' },
       ],
       names,
     )
-    expect(rows.map((r) => r.IDclient)).toEqual([20, 10])
+    // The Kg-only client (900 Kg) ranks after every Ml buyer, however recent.
+    expect(rows.map((r) => r.IDclient)).toEqual([10, 20, 30])
   })
 
   it('drops lines whose order header is outside the scope', () => {

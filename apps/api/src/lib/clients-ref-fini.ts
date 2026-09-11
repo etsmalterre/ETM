@@ -39,8 +39,9 @@ export interface RefFiniClientRow {
 /**
  * Group the lines of one ref by client. Lines whose order header is missing
  * (foreign partition, dangling FK) are dropped — the header set IS the scope.
- * Sorted by most recent order first, then by name, so the client the user is
- * most likely to be thinking of comes first.
+ * Sorted by volume, highest first (Ml, then Kg for the rare Kg-only client,
+ * then name) — the big buyers of the reference are what the user wants to see
+ * at the top (Vincent, 2026-09-11).
  */
 export function aggregateClientsForRef(
   lines: RefFiniOrderLine[],
@@ -90,9 +91,8 @@ export function aggregateClientsForRef(
     out.push({ ...rest, nb_commandes: commandes.size })
   }
   out.sort((a, b) => {
-    const da = a.derniere_date ?? ''
-    const db = b.derniere_date ?? ''
-    if (da !== db) return da < db ? 1 : -1
+    if (a.metrage !== b.metrage) return b.metrage - a.metrage
+    if (a.poids !== b.poids) return b.poids - a.poids
     return a.nom.localeCompare(b.nom, 'fr')
   })
   return out

@@ -1920,7 +1920,7 @@ interface RefFiniClientRow {
 }
 
 /** Informations-tab card listing the ETM clients that ordered the reference,
- *  most recent first — the memory aid Isabelle had on the legacy fiche. Read
+ *  biggest volume first — the memory aid Isabelle had on the legacy fiche. Read
  *  only; lazily loaded per reference. */
 function ClientsCard({ refId }: { refId: number }) {
   const { data, isLoading, isError } = useQuery<RefFiniClientRow[]>({
