@@ -117,8 +117,12 @@ const styles = StyleSheet.create({
   // "Page X/Y" line (bottom: 72) keeps clear air under the card border.
   livraisonBottom: { marginTop: 16, marginBottom: 10 },
 
+  // No marginBottom on the table: react-pdf's paginator counts a block's
+  // bottom margin as part of its "presence", so a table that fits the page
+  // by a few points but whose margin does not is pushed WHOLE to the next
+  // page, leaving page 1 blank (LIVA #1148). The gap lives on the totals
+  // block's marginTop instead.
   table: {
-    marginBottom: 8,
     borderWidth: 0.75,
     borderColor: colors.borderStrong,
     borderStyle: 'solid',
@@ -154,7 +158,7 @@ const styles = StyleSheet.create({
   coloriProminent: { fontSize: 10.5, color: colors.text, fontWeight: 700, marginTop: 3, lineHeight: 1.3 },
   designationLine: { fontSize: 10, color: colors.muted, marginTop: 2, lineHeight: 1.3 },
 
-  totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 0 },
+  totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8 },
   totals: {
     width: '52%',
     borderWidth: 0.75,

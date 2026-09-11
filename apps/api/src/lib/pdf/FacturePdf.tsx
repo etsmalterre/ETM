@@ -114,8 +114,12 @@ const styles = StyleSheet.create({
   // ── Lines table — formal ledger styling ──────────────
   // No rounded outer box: a muted header band with a gold rule beneath, thin
   // hairline rules between rows, and a matching gold rule closing the table.
+  // No marginBottom on the table: react-pdf's paginator counts a block's
+  // bottom margin as part of its "presence", so a table that fits the page
+  // by a few points but whose margin does not is pushed WHOLE to the next
+  // page, leaving page 1 blank (LIVA #1148). The gap lives on the totals
+  // block's marginTop instead.
   table: {
-    marginBottom: 16,
     borderBottomWidth: 2,
     borderBottomColor: colors.gold,
     borderBottomStyle: 'solid',
@@ -155,7 +159,7 @@ const styles = StyleSheet.create({
   // padding) so every figure on the page lines up in one column. Rows are
   // deliberately tight (3.5pt vertical) — the block should read as a small
   // arithmetic recap, not a second table.
-  totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 0 },
+  totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 16 },
   totals: { width: '45%' },
   totalRow: {
     flexDirection: 'row',

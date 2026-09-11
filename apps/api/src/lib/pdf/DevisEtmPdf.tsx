@@ -110,8 +110,12 @@ const styles = StyleSheet.create({
   metaLabel: { fontSize: 6, color: colors.muted, fontWeight: 700, letterSpacing: 0.4, lineHeight: 1, marginBottom: 2 },
   metaValue: { fontSize: sizes.fontBase, color: colors.text, fontWeight: 700, lineHeight: 1 },
 
+  // No marginBottom on the table: react-pdf's paginator counts a block's
+  // bottom margin as part of its "presence", so a table that fits the page
+  // by a few points but whose margin does not is pushed WHOLE to the next
+  // page, leaving page 1 blank (LIVA #1148). The gap lives on the totals
+  // block's marginTop instead.
   table: {
-    marginBottom: 8,
     borderWidth: 0.75,
     borderColor: colors.borderStrong,
     borderStyle: 'solid',
@@ -146,7 +150,7 @@ const styles = StyleSheet.create({
   refMainBig: { fontSize: 13, color: colors.primary, fontWeight: 900, letterSpacing: 0.2, lineHeight: 1.2 },
   coloriProminent: { fontSize: 10.5, color: colors.text, fontWeight: 700, marginTop: 3, lineHeight: 1.3 },
 
-  totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 0 },
+  totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8 },
   totals: {
     width: '52%',
     borderWidth: 0.75,
