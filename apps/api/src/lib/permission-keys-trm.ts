@@ -168,13 +168,28 @@ export const TRM_PERMISSION_KEYS = [
   // expedition flow, never from this screen — what this key opens is the ONE
   // field a person legitimately adds after the fact: the roll's free-text
   // observations (« ouvrir dans la maille » on a roll already in stock, LIVA
-  // #1108). Weight, choix and affectation stay read-only for everyone. Same
-  // key NAME as ETM's catalog (same action, separate store — see the header).
+  // #1108). Weight and affectation stay read-only for everyone; the choix has
+  // its own key below. Same key NAME as ETM's catalog (same action, separate
+  // store — see the header).
   {
     key: 'edit_stock_ecru',
     label: 'Édition des observations d’un rouleau',
     description:
-      'Affiche le bouton « Modifier » dans le tiroir d’un rouleau de Tombé Métier > Stock et autorise la modification de ses observations. Le poids, le choix, la réservation et l’étiquette ne changent pas : le rouleau reste ce que le poste de visitage a pesé.',
+      'Affiche le bouton « Modifier » dans le tiroir d’un rouleau de Tombé Métier > Stock et autorise la modification de ses observations. Le poids, la réservation et l’étiquette ne changent pas : le rouleau reste ce que le poste de visitage a pesé. Le choix relève du droit « Changer le choix d’un rouleau ».',
+    category: 'Tombé Métier',
+  },
+  // Tombé Métier > Stock, the roll's choix (1er / 2ᵉ) after the fact — LIVA
+  // #1150. Deliberately NOT folded into edit_stock_ecru: a note on a roll is
+  // harmless, a choix change moves money (Prime déclassements, the weight an
+  // avis and an invoice carry, ETM's transfer) and its reservation follows
+  // (a déclassé leaves the commande line, a re-promoted roll takes the OF's).
+  // Granted by hand to the person who re-inspects rolls. Only rolls still in
+  // stock: a shipped roll's choix is on an avis already (409 from the route).
+  {
+    key: 'edit_choix_stock_ecru',
+    label: 'Changer le choix d’un rouleau',
+    description:
+      'En mode édition du tiroir d’un rouleau de Tombé Métier > Stock, permet de passer un rouleau en 2ᵉ choix ou de le remettre en 1er choix. La réservation suit (un 2ᵉ choix quitte la ligne de commande, un 1er choix reprend celle de l’OF), le passage est tracé dans l’historique de la pièce, et l’étiquette est à réimprimer. Impossible sur un rouleau déjà expédié.',
     category: 'Tombé Métier',
   },
   // Fils > Stock, the manual correction of `stock`. Deliberately NOT folded

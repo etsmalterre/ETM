@@ -1,6 +1,7 @@
 /**
  * HTTP guard for PATCH /api/stock/ecru-trm/:id — the one write of Tombé
- * Métier > Stock (the roll's observations, key edit_stock_ecru, LIVA #1108).
+ * Métier > Stock: the roll's observations (key edit_stock_ecru, LIVA #1108)
+ * and its choix (key edit_choix_stock_ecru, LIVA #1150).
  *
  *   API_BASE=http://localhost:8085/api pnpm --filter @mps/api exec tsx src/scripts/check-stock-ecru-trm-observations.ts
  *
@@ -10,11 +11,17 @@
  *     lisière ») — restored to the stored text afterwards;
  *   • the partition: an ETM roll (IDsociete = 1) is refused with 404, and so is
  *     a roll that does not exist;
- *   • the whitelist: a body carrying `poids` or `second_choix` is refused with
+ *   • the whitelist: a body carrying `poids`, or an empty one, is refused with
  *     400 rather than silently ignored;
- *   • the key: without edit_stock_ecru (and without admin) the route 403s.
+ *   • the keys: without edit_stock_ecru (and without admin) `observations`
+ *     403s; without edit_choix_stock_ecru `second_choix` 403s — per field;
+ *   • the choix flip: the flag moves, the reservation follows (0 on a
+ *     déclassé, the OF's line on a re-promoted roll), the number does NOT
+ *     move, an evenement_piece row is written, a same-value PATCH is a no-op,
+ *     and a shipped roll is refused with 409 rouleau_expedie.
  *
- * Writes a scratch value on ONE TRM roll and puts it back — the dev database
+ * Writes scratch values on ONE TRM roll and puts everything back (observations,
+ * flag, line — by SQL — and the two event rows are deleted) — the dev database
  * is a stale copy of prod, same assumption as every other check script here.
  * Never run it against the production API.
  */
@@ -79,8 +86,13 @@ async function main() {
   check('unknown id -> 404', missing.status === 404, missing.status)
   const extra = await patch(id, { observations: 'x', poids: 1 })
   check('body with poids -> 400 (whitelist is strict)', extra.status === 400, extra.status)
+  const empty = await patch(id, {})
+  check('empty body -> 400', empty.status === 400, empty.status)
   const wrongType = await patch(id, { observations: 12 })
   check('non-string observations -> 400', wrongType.status === 400, wrongType.status)
+  const choixNoKey = await patch(id, { second_choix: true }, USER_COOKIE)
+  check(`user ${NON_ADMIN_USER} without edit_choix_stock_ecru -> 403`, choixNoKey.status === 403, choixNoKey.status)
+  check('…and the 403 names the choix key', /edit_choix_stock_ecru/.test(String(choixNoKey.json?.error)), choixNoKey.json)
 
   console.log('\nround-trip (accented value, then restored)')
   // Accents and a degree sign: Latin-1, expected back intact. NOT an em-dash
@@ -103,6 +115,68 @@ async function main() {
   check('restored the original observations', restore.status === 200, restore.status)
   const after = await api(`/stock/ecru-trm/${id}`)
   check('the roll reads as before', String(after.json?.observations ?? '').trim() === before.trim(), after.json?.observations)
+
+  console.log('\nchoix (flip both ways on a roll in stock, then restored by SQL)')
+  // The list only serves rolls in stock (IDligne_expedition_TRM = 0), so
+  // `target` qualifies. Snapshot flag, line and number straight from the table.
+  const snap = (
+    await query<Record<string, unknown>>(
+      `SELECT IDstock_ecru, IDordre_fabrication, second_choix, num_piece_OF, IDLigne_Commande_TRM, IDligne_expedition_TRM
+       FROM stock_ecru WHERE IDstock_ecru = ${id}`,
+    )
+  )[0]
+  const wasSecond = n(snap.second_choix) === 1
+  const lineBefore = n(snap.IDLigne_Commande_TRM)
+  const numBefore = n(snap.num_piece_OF)
+  const ofId = n(snap.IDordre_fabrication)
+  const ofLine = ofId > 0
+    ? n((await query<Record<string, unknown>>(`SELECT IDligne_commande_client FROM ordre_fabrication WHERE IDordre_fabrication = ${ofId}`))[0]?.IDligne_commande_client)
+    : 0
+  const countEvents = async () =>
+    n((await query<{ c: number }>(`SELECT COUNT(*) AS c FROM evenement_piece WHERE IDstock_ecru = ${id} AND evenement LIKE 'Passage en %'`))[0]?.c)
+  const eventsBefore = await countEvents()
+
+  const same = await patch(id, { second_choix: wasSecond })
+  check('same value -> 200, choix_change false', same.status === 200 && same.json?.choix_change === false, same.json)
+  check('same value writes no event', (await countEvents()) === eventsBefore)
+
+  const flip = await patch(id, { second_choix: !wasSecond })
+  check(`flip roll ${id} to ${wasSecond ? '1er' : '2nd'} choix -> 200`, flip.status === 200, flip.json)
+  check('the response says choix_change', flip.json?.choix_change === true, flip.json)
+  check('the response carries the new flag', n(flip.json?.second_choix) === (wasSecond ? 0 : 1), flip.json)
+  const expectedLine = wasSecond ? ofLine : 0
+  check(`the reservation follows (line ${expectedLine})`, n(flip.json?.IDLigne_Commande_TRM) === expectedLine, flip.json)
+  const mid = (await query<Record<string, unknown>>(`SELECT IDstock_ecru, second_choix, num_piece_OF, IDLigne_Commande_TRM FROM stock_ecru WHERE IDstock_ecru = ${id}`))[0]
+  check('the table carries the new flag', n(mid.second_choix) === (wasSecond ? 0 : 1), mid)
+  check('the table carries the new line', n(mid.IDLigne_Commande_TRM) === expectedLine, mid)
+  check('num_piece_OF did NOT move', n(mid.num_piece_OF) === numBefore, mid)
+  check('one event written', (await countEvents()) === eventsBefore + 1)
+  const detailMid = await api(`/stock/ecru-trm/${id}`)
+  check('GET detail shows the new flag', n(detailMid.json?.second_choix) === (wasSecond ? 0 : 1), detailMid.json?.second_choix)
+
+  const back = await patch(id, { second_choix: wasSecond, observations: before })
+  check('flip back (with observations in the same body) -> 200', back.status === 200 && back.json?.choix_change === true, back.json)
+  check('two events written in total', (await countEvents()) === eventsBefore + 2)
+
+  // Restore by SQL: the flip back re-derives the line from the OF, which is
+  // not necessarily what the roll carried (a manual affectation), and the
+  // scratch events must not stay in the timeline.
+  await query(`UPDATE stock_ecru SET second_choix = ${wasSecond ? 1 : 0}, IDLigne_Commande_TRM = ${lineBefore} WHERE IDstock_ecru = ${id}`)
+  await query(`DELETE FROM evenement_piece WHERE IDstock_ecru = ${id} AND evenement LIKE 'Passage en %'`)
+  const end = (await query<Record<string, unknown>>(`SELECT IDstock_ecru, second_choix, IDLigne_Commande_TRM FROM stock_ecru WHERE IDstock_ecru = ${id}`))[0]
+  check('restored flag and line', n(end.second_choix) === (wasSecond ? 1 : 0) && n(end.IDLigne_Commande_TRM) === lineBefore, end)
+  check('scratch events deleted', (await countEvents()) === 0)
+
+  const shipped = await query<{ IDstock_ecru: number }>(
+    'SELECT TOP 1 IDstock_ecru FROM stock_ecru WHERE IDsociete = 2 AND IDligne_expedition_TRM > 0 ORDER BY IDstock_ecru DESC',
+  )
+  const shippedId = n(shipped[0]?.IDstock_ecru)
+  check('a shipped TRM roll exists to test the lock with', shippedId > 0, shippedId)
+  if (shippedId > 0) {
+    const flag = n((await query<Record<string, unknown>>(`SELECT IDstock_ecru, second_choix FROM stock_ecru WHERE IDstock_ecru = ${shippedId}`))[0]?.second_choix) === 1
+    const locked = await patch(shippedId, { second_choix: !flag })
+    check(`shipped roll ${shippedId} -> 409 rouleau_expedie`, locked.status === 409 && locked.json?.error === 'rouleau_expedie', locked.json)
+  }
 
   console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`)
   process.exitCode = failures === 0 ? 0 : 1
