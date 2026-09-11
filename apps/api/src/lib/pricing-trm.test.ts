@@ -1,51 +1,37 @@
 import { describe, it, expect } from 'vitest'
 import { retain, NbAiguilles, coutOperation } from './pricing-trm.js'
 
-// The two rules coincide whenever the base is at or below the cost of revient,
-// and diverge sharply above it — which is the common case (on the 51 refs used
-// by native TRM client orders they differ on 40 at 100 kg). These numbers are
-// real ones probed from société 2 on 2026-08-26.
-describe('retain — which role ref_ecru.prix plays', () => {
-  it("keeps the base flat when it wins under 'price-floor' (the legacy rule)", () => {
+// One rule — the legacy one: max(cost / 0,7, base), the base retained flat
+// when it wins. Real numbers probed from société 2 on 2026-08-26. The
+// cost-floor variant (max(cost, base) / 0,7) the native TRM suggestion used
+// between 2026-08-26 and 2026-09-11 is gone: pinning these protects both the
+// intercompany transfer price and the suggestion from being repriced.
+describe('retain — the base is a floor on the sale price', () => {
+  it('keeps the base flat when it wins', () => {
     // ref 4 @500 kg: the ETM → TRM sous-traitance line really is stored at 2,07
-    // €, the bare base with no markup. Pinning this protects the intercompany
-    // transfer price from being silently repriced.
-    expect(retain(1.4025, 2.07, 'price-floor')).toEqual({ retainedPrice: 2.07, retainedFrom: 'base' })
-    expect(retain(1.1994, 2.30, 'price-floor')).toEqual({ retainedPrice: 2.3, retainedFrom: 'base' })
-    // Cost between base × 0,7 and base: the marged cost beats the base, so the
-    // price is cost / 0,7 and its provenance must say so (LIVA #1151 — it said
-    // 'base' while carrying 2,43 €).
-    expect(retain(1.70, 1.84, 'price-floor')).toEqual({ retainedPrice: 2.43, retainedFrom: 'revient' })
-    expect(retain(1.70, 1.84, 'cost-floor')).toEqual({ retainedPrice: 2.63, retainedFrom: 'base' })
+    // €, the bare base with no markup.
+    expect(retain(1.4025, 2.07)).toEqual({ retainedPrice: 2.07, retainedFrom: 'base' })
+    // ref 180 @2 000 kg — LIVA #1151: 2,30 € is the fiche's base, not a margin.
+    expect(retain(1.1994, 2.30)).toEqual({ retainedPrice: 2.3, retainedFrom: 'base' })
   })
 
-  it("marks the base up when it wins under 'cost-floor' (TRM client orders)", () => {
-    expect(retain(1.4025, 2.07, 'cost-floor')).toEqual({ retainedPrice: 2.96, retainedFrom: 'base' })
-    expect(retain(1.1994, 2.30, 'cost-floor')).toEqual({ retainedPrice: 3.29, retainedFrom: 'base' })
-  })
-
-  it('agrees on both rules when the cost of revient wins', () => {
-    // ref 350 (« 005 ») @100 kg — cost 2,0158 vs base 2,0125, the case that
-    // exposed the legacy/PWA gap: 2,88 € either way.
-    for (const role of ['price-floor', 'cost-floor'] as const) {
-      expect(retain(2.0158, 2.0125, role)).toEqual({ retainedPrice: 2.88, retainedFrom: 'revient' })
-    }
+  it('takes the marged cost when it beats the base, and says so', () => {
+    // Cost between base × 0,7 and base: the price is cost / 0,7 and the
+    // provenance must follow (LIVA #1151 — it said 'base' while carrying 2,43 €).
+    expect(retain(1.70, 1.84)).toEqual({ retainedPrice: 2.43, retainedFrom: 'revient' })
+    // ref 350 (« 005 ») @100 kg — cost 2,0158 vs base 2,0125: 2,88 €.
+    expect(retain(2.0158, 2.0125)).toEqual({ retainedPrice: 2.88, retainedFrom: 'revient' })
     // ref 328 @10 kg — cost far above the base.
-    for (const role of ['price-floor', 'cost-floor'] as const) {
-      expect(retain(5.7468, 2.3, role)).toEqual({ retainedPrice: 8.21, retainedFrom: 'revient' })
-    }
+    expect(retain(5.7468, 2.3)).toEqual({ retainedPrice: 8.21, retainedFrom: 'revient' })
   })
 
-  it('falls back to the base alone when the cost is not computable', () => {
-    // No ref_ecru_machine rows → costPerKg 0. The legacy rule suggests the bare
-    // base; the cost-floor rule still applies TRM's margin to it.
-    expect(retain(0, 2.3, 'price-floor')).toEqual({ retainedPrice: 2.3, retainedFrom: 'base' })
-    expect(retain(0, 2.3, 'cost-floor')).toEqual({ retainedPrice: 3.29, retainedFrom: 'base' })
+  it('falls back to the bare base when the cost is not computable', () => {
+    // No ref_ecru_machine rows → costPerKg 0: the legacy rule suggests the base.
+    expect(retain(0, 2.3)).toEqual({ retainedPrice: 2.3, retainedFrom: 'base' })
   })
 
   it('never returns a negative price from bad inputs', () => {
-    expect(retain(-5, -3, 'price-floor').retainedPrice).toBe(0)
-    expect(retain(-5, -3, 'cost-floor').retainedPrice).toBe(0)
+    expect(retain(-5, -3).retainedPrice).toBe(0)
   })
 })
 

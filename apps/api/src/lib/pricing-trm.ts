@@ -166,25 +166,17 @@ const MACHINE_POWER_KW = 3       // ConsoElecParKg = gxMinParKg × 3 / 60
  *  `moPrixMargé = PrixDeRevientTRM(...) / 0.7` — 30 % markup. */
 export const TRM_MARGIN = 0.30
 
-/** What role `ref_ecru.prix` plays when the retained price is derived.
- *
- *  - **`'price-floor'` (legacy, the default)** — `max(cost / 0.7, base)`. The
- *    base is a floor on the *sale* price: when it wins it is retained flat,
- *    with no markup on top. This is what the WinDev app does, and it is what
- *    the ETM → TRM sous-traitance bridge writes (verified 15/15 against recent
- *    mirrored lines, e.g. ref 4 @500 kg stored at 2,07 € = the bare base).
- *    **Do not change this default** — it would reprice the intercompany
- *    transfer price by ~+39 % and diverge from the legacy that still writes
- *    those lines.
- *  - **`'cost-floor'`** — `max(cost, base) / 0.7`. The base is a floor on the
- *    *cost*: whichever of the two is the higher assiette gets the 30 % margin,
- *    so TRM never sells below base + 30 %. Used by the native TRM client-order
- *    suggestion only (`/commandes-trm/lookups/line-price`), on the user's
- *    2026-08-26 decision. The two rules coincide only when `base <= cost`,
- *    which is the minority of refs (on 51 refs used by native TRM orders they
- *    differ on 40 at 100 kg).
- */
-export type TrmBaseRole = 'price-floor' | 'cost-floor'
+/** ONE retained-price rule, the legacy one: `max(cost / 0.7, base)`.
+ *  `ref_ecru.prix` is a floor on the *sale* price — when it wins it is
+ *  retained flat, with no markup on top. This is what the WinDev app does,
+ *  what the ETM → TRM sous-traitance bridge writes (verified 15/15 against
+ *  recent mirrored lines, e.g. ref 4 @500 kg stored at 2,07 € = the bare base)
+ *  and, since 2026-09-11, what the native TRM client-order suggestion proposes
+ *  too. From 2026-08-26 to that date the suggestion read the base as a floor
+ *  on the *cost* (`max(cost, base) / 0.7`, ~+39 % on most refs); the user
+ *  retired that second rule on LIVA #1151, when a 2,30 € base retained flat
+ *  next to a 3,29 € suggestion for the same reference made the fiche's
+ *  « prix » mean two things. Do not reintroduce a per-caller role. */
 
 // ── Breakdown (per-component detail, for the "Coût de tricotage" UI) ────────
 
@@ -220,12 +212,9 @@ export interface CoutTricotageBreakdown {
   salePrice: number
   floor: number
   retainedPrice: number
-  /** Which rule produced `retainedPrice` — see `TrmBaseRole`. */
-  baseRole: TrmBaseRole
   /** Which of the two inputs the retained price was built on, so a UI can say
    *  where the number came from instead of showing a bare figure. `'base'`
-   *  means `ref_ecru.prix` won the max (under `'price-floor'` it was retained
-   *  flat; under `'cost-floor'` it carries the 30 % margin). */
+   *  means `ref_ecru.prix` beat `salePrice` and was retained flat. */
   retainedFrom: 'revient' | 'base'
 }
 
@@ -253,28 +242,19 @@ function laborBlock(
 }
 
 /** The retained price and its provenance, from the cost of revient and the
- *  base. Single place both breakdown paths (computable and not) go through, so
- *  the two rules can never drift apart between them. */
+ *  base. Single place both breakdown paths (computable and not) go through.
+ *  The provenance follows the same comparison as the max — base against the
+ *  MARGED cost — or a line whose cost sits between base × 0,7 and the base
+ *  reports « base » while carrying cost / 0,7 (LIVA #1151, 2026-09-11). */
 export function retain(
   costPerKg: number,
   floor: number,
-  baseRole: TrmBaseRole,
 ): { retainedPrice: number; retainedFrom: 'revient' | 'base' } {
   const base = Math.max(0, floor)
   const cost = Math.max(0, costPerKg)
-  // The assiette the base is compared against: the bare cost under
-  // 'cost-floor', the marged price under 'price-floor' — the provenance must
-  // follow the same comparison as the max, or a mirrored line whose cost sits
-  // between base × 0,7 and base reports « base » while carrying cost / 0,7
-  // (LIVA #1151, 2026-09-11).
-  const computed = baseRole === 'cost-floor'
-    ? cost
-    : (cost > 0 ? cost / (1 - TRM_MARGIN) : 0)
-  const raw = baseRole === 'cost-floor'
-    ? Math.max(cost, base) / (1 - TRM_MARGIN)
-    : Math.max(computed, base)
+  const computed = cost > 0 ? cost / (1 - TRM_MARGIN) : 0
   return {
-    retainedPrice: Math.round(raw * 100) / 100,
+    retainedPrice: Math.round(Math.max(computed, base) * 100) / 100,
     // Ties go to 'revient': with base == computed the algorithm is what priced it.
     retainedFrom: base > computed ? 'base' : 'revient',
   }
@@ -282,16 +262,14 @@ export function retain(
 
 /** Breakdown skeleton for the not-computable case (no machine data / bad
  *  inputs). The floor still flows through to `retainedPrice` so the UI can show
- *  the price that will actually be retained — the floor under `'price-floor'`,
- *  the floor plus its margin under `'cost-floor'`. */
+ *  the price that will actually be retained — the bare floor. */
 function emptyBreakdown(
   IDref_ecru: number,
   qty: number,
   floor: number,
   inputs: CoutTricotageBreakdown['inputs'],
-  baseRole: TrmBaseRole,
 ): CoutTricotageBreakdown {
-  const { retainedPrice, retainedFrom } = retain(0, floor, baseRole)
+  const { retainedPrice, retainedFrom } = retain(0, floor)
   return {
     computable: false,
     IDref_ecru,
@@ -306,7 +284,6 @@ function emptyBreakdown(
     salePrice: 0,
     floor,
     retainedPrice,
-    baseRole,
     retainedFrom,
   }
 }
@@ -320,14 +297,13 @@ function emptyBreakdown(
 export async function prixDeRevientTRMDetail(
   IDref_ecru: number,
   xPoidsCommandé: number,
-  baseRole: TrmBaseRole = 'price-floor',
 ): Promise<CoutTricotageBreakdown> {
   const zeroInputs = { gxNbToursKg: 0, gxMinParKg: 0, nbAiguilles: 0, prodAnnuel: 0, jaugeCode: 0, diametreCode: 0 }
 
   // Bad inputs — still surface the floor so retainedPrice is meaningful.
   if (xPoidsCommandé <= 0 || IDref_ecru <= 0) {
     const floor = await loadRefEcruPrixFloor(IDref_ecru)
-    return emptyBreakdown(IDref_ecru, xPoidsCommandé, floor, zeroInputs, baseRole)
+    return emptyBreakdown(IDref_ecru, xPoidsCommandé, floor, zeroInputs)
   }
 
   const [tarif, gxNbToursKg, codes, floor] = await Promise.all([
@@ -345,7 +321,7 @@ export async function prixDeRevientTRMDetail(
   if (gxNbToursKg <= 0) {
     return emptyBreakdown(IDref_ecru, xPoidsCommandé, floor, {
       gxNbToursKg: 0, gxMinParKg: 0, nbAiguilles, prodAnnuel, jaugeCode: codes.Jauge, diametreCode: codes.diametre,
-    }, baseRole)
+    })
   }
 
   const gxMinParKg = gxNbToursKg / TARGET_SPEED_TRS_MIN
@@ -453,7 +429,7 @@ export async function prixDeRevientTRMDetail(
     + administration.perKg
   )
   const salePrice = costPerKg > 0 ? costPerKg / (1 - TRM_MARGIN) : 0
-  const { retainedPrice, retainedFrom } = retain(costPerKg, floor, baseRole)
+  const { retainedPrice, retainedFrom } = retain(costPerKg, floor)
 
   return {
     computable: true,
@@ -469,7 +445,6 @@ export async function prixDeRevientTRMDetail(
     salePrice,
     floor,
     retainedPrice,
-    baseRole,
     retainedFrom,
   }
 }
@@ -496,10 +471,9 @@ export async function prixDeRevientTRM(
  *  Rounded to 2 decimals (Arrondi(moPrix, 2)). Thin wrapper over the breakdown
  *  (`retainedPrice` carries the same max/round/margin math).
  *
- *  Stays on the legacy `'price-floor'` rule — this is the ETM → TRM transfer
- *  price and must keep matching the WinDev app that still writes those lines.
- *  The native TRM client-order suggestion deliberately uses `'cost-floor'`
- *  instead; see `TrmBaseRole`. */
+ *  This is the ETM → TRM transfer price and must keep matching the WinDev app
+ *  that still writes those lines; the native TRM client-order suggestion
+ *  (`/commandes-trm/lookups/line-price`) proposes the same number. */
 export async function trmLinePrix(
   IDref_ecru: number,
   xPoidsCommandé: number,

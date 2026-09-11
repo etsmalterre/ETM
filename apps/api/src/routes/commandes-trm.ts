@@ -510,36 +510,33 @@ commandesTrmRouter.get('/lookups/colori-ecru', async (req: Request, res: Respons
   }
 })
 
-/** Suggested price for a line being entered — `max(PrixDeRevientTRM,
- *  ref_ecru.prix) / 0.7`, the `'cost-floor'` rule. `ref_ecru.prix` is the safe
- *  base: whichever of the base and the computed cost of revient is the higher
- *  assiette gets TRM's 30 % margin, so a native client order never goes out
- *  below base + 30 % (user decision, 2026-08-26).
- *
- *  ⚠️ This is NOT `trmLinePrix`, which stays on the legacy `'price-floor'`
- *  rule (`max(cost / 0.7, base)`) because it prices the ETM → TRM
- *  sous-traitance lines and must keep matching the WinDev app that still
- *  writes them — the two rules differ by ~+39 % in value on recent lines. Do
- *  not "unify" them without deciding the intercompany transfer price too.
+/** Suggested price for a line being entered — `max(PrixDeRevientTRM / 0,7,
+ *  ref_ecru.prix)`, the one legacy rule (`trmLinePrix`): the base is a floor
+ *  on the sale price and is retained flat when it wins. The same number the
+ *  ETM → TRM bridge writes on a mirrored line, so both apps quote one price
+ *  for one reference. Between 2026-08-26 and 2026-09-11 this endpoint read the
+ *  base as a floor on the COST (`max(cost, base) / 0,7`, ~+39 %); retired on
+ *  LIVA #1151 — see `pricing-trm.ts`.
  *
  *  The legacy TRM client-order window suggested neither: its COMBO_Reference
- *  event reads `ref_ecru.prix` and stops there, which is why it proposes a
- *  visibly lower number than this screen.
+ *  event reads `ref_ecru.prix` and stops there.
  *
- *  `cout` and `base` ride along so the form can say where the price came from
- *  rather than showing a bare figure. Never throws; an unpriceable ref comes
- *  back priceable=false and the form falls back to manual entry. */
+ *  `cout`, `prix_calcule` (= cout / 0,7) and `base` ride along so the form can
+ *  say where the price came from rather than showing a bare figure. Never
+ *  throws; an unpriceable ref comes back priceable=false and the form falls
+ *  back to manual entry. */
 commandesTrmRouter.get('/lookups/line-price', async (req: Request, res: Response) => {
-  const empty = { priceable: false, prix: 0, cout: 0, base: 0, retenu: 'revient' as const }
+  const empty = { priceable: false, prix: 0, cout: 0, prix_calcule: 0, base: 0, retenu: 'revient' as const }
   try {
     const refId = parseInt(String(req.query.ref ?? ''), 10) || 0
     const quantite = Number(req.query.quantite ?? 0) || 0
     if (refId <= 0 || quantite <= 0) { res.json(empty); return }
-    const d = await prixDeRevientTRMDetail(refId, quantite, 'cost-floor')
+    const d = await prixDeRevientTRMDetail(refId, quantite)
     res.json({
       priceable: d.retainedPrice > 0,
       prix: d.retainedPrice,
       cout: round2(d.costPerKg),
+      prix_calcule: round2(d.salePrice),
       base: round2(d.floor),
       retenu: d.retainedFrom,
     })
@@ -761,12 +758,11 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
     //
     // `tarif` — where the price came from, so the chip can explain itself
     // (LIVA #1151: a 2,30 € line read as « 40 % de marge » when it was simply
-    // the fiche's base price retained flat). The rule follows the line's
-    // origin: a mirrored line was priced by the ETM bridge under the legacy
-    // `'price-floor'` rule (max(cost / 0,7, base), the base retained bare); a
-    // native line was suggested under `'cost-floor'` (max(cost, base) / 0,7),
-    // and the user may have typed something else — `suggere` says what the
-    // rule would have given, `prix` is what the line carries.
+    // the fiche's base price retained flat). One rule for every line since
+    // 2026-09-11 (max(cost / 0,7, base)); `regle` only says who priced it —
+    // the ETM bridge on a mirrored line, the TRM suggestion on a native one,
+    // where the user may have typed something else: `suggere` is what the
+    // rule gives, `prix` what the line carries.
     const marges = await Promise.all(lignesFixed.map(async (l) => {
       const refId = Number(l.IDreference) || 0
       const qty = Number(l.quantite) || 0
@@ -774,7 +770,7 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
       if (refId <= 0 || qty <= 0 || prix <= 0) return null
       const regle: 'etm' | 'trm' = (Number(l.IDligne_commande_ETM) || 0) > 0 ? 'etm' : 'trm'
       try {
-        const d = await prixDeRevientTRMDetail(refId, qty, regle === 'etm' ? 'price-floor' : 'cost-floor')
+        const d = await prixDeRevientTRMDetail(refId, qty)
         const cout = d.costPerKg
         return {
           cout: cout > 0 ? round2(cout) : null,
@@ -782,10 +778,7 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
           tarif: {
             regle,
             cout: round2(cout),
-            // Under the ETM rule the computed assiette is already the marged
-            // price (cost / 0,7); under the TRM rule the rows are the bare
-            // assiettes and the margin sits on whichever wins.
-            prix_calcule: regle === 'etm' ? round2(d.salePrice) : round2(cout),
+            prix_calcule: round2(d.salePrice),
             base: round2(d.floor),
             suggere: d.retainedPrice,
             retenu: d.retainedFrom,
