@@ -35,6 +35,7 @@ import { formatSirenForDocument } from '../lib/siren.js'
 import { CgvPdf } from '../lib/pdf/CgvPdf.js'
 import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
+import { attachDonationSql, detachDonationSql, planDonationSet } from '../lib/donation-pieces.js'
 import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-ligne-client.js'
 import { resolveLigneTarifMode } from '../lib/tarif-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
@@ -1690,9 +1691,11 @@ commandesClientRouter.delete('/:id', async (req: Request, res: Response) => {
       await query(`UPDATE stock_ecru SET IDligne_commande_client = 0 WHERE IDligne_commande_client IN (${inList})`)
       await query(`UPDATE stock_fini SET IDligne_commande_client = 0 WHERE IDligne_commande_client IN (${inList})`)
     }
-    // Release donation pieces too (stock reserved via IDcommande_donation).
-    await query(`UPDATE stock_ecru SET IDcommande_donation = 0 WHERE IDcommande_donation = ${id}`)
-    await query(`UPDATE stock_fini SET IDcommande_donation = 0 WHERE IDcommande_donation = ${id}`)
+    // Release donation pieces too. Attaching a fini roll stamped état 4
+    // (the stock exit, #1154) — the detach rolls it back to 3, else the roll
+    // would be an « Expédié » ghost with no avis (lib/donation-pieces.ts).
+    for (const sql of detachDonationSql('ecru', id)) await query(sql)
+    for (const sql of detachDonationSql('fini', id)) await query(sql)
     await query(`DELETE FROM ligne_commande_client WHERE IDcommande_client = ${id}`)
     await query(`DELETE FROM commande_client WHERE IDcommande_client = ${id}`)
     res.json({ ok: true })
@@ -1897,10 +1900,7 @@ commandesClientRouter.put('/:id/donation-pieces', async (req: Request, res: Resp
     const currentRows = await query<any>(
       `SELECT ${pk} AS pid FROM ${table} WHERE IDcommande_donation = ${id}`,
     )
-    const current = new Set(currentRows.map((r: any) => Number(r.pid)).filter((x: number) => x > 0))
-    const wanted = new Set(ids)
-    const toAdd = ids.filter((x) => !current.has(x))
-    const toRemove = Array.from(current).filter((x) => !wanted.has(x))
+    const { toAdd, toRemove } = planDonationSet(currentRows.map((r: any) => Number(r.pid)), ids)
 
     let added = 0
     if (toAdd.length > 0) {
@@ -1914,14 +1914,16 @@ commandesClientRouter.put('/:id/donation-pieces', async (req: Request, res: Resp
       )
       const eligible = eligRows.map((r: any) => Number(r.pid)).filter((x: number) => x > 0)
       if (eligible.length > 0) {
-        await query(`UPDATE ${table} SET IDcommande_donation = ${id} WHERE ${pk} IN (${eligible.join(',')})`)
+        // Attaching IS the stock exit: a fini roll also takes état 4
+        // « Expédié », as the legacy FEN_Ligne_Donation did (#1154). Écru has
+        // no état — the TM stock filters on IDcommande_donation itself.
+        for (const sql of attachDonationSql(kind, id, eligible)) await query(sql)
         added = eligible.length
       }
     }
     if (toRemove.length > 0) {
-      await query(
-        `UPDATE ${table} SET IDcommande_donation = 0 WHERE ${pk} IN (${toRemove.join(',')}) AND IDcommande_donation = ${id}`,
-      )
+      // Fini: état 4 → 3 first (only on rolls still in 4), then clear the FK.
+      for (const sql of detachDonationSql(kind, id, toRemove)) await query(sql)
     }
 
     res.json({ ok: true, added, removed: toRemove.length, skipped: toAdd.length - added, ...(await buildDonationPieces(id)) })
