@@ -1198,7 +1198,6 @@ function DetailMain({
       <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} ecruOptions={ecruOptions} />
       <ColorisCard detail={detail} isEditing={isEditing} />
       <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
-      {!isEditing && <StockCard detail={detail} isEditing={isEditing} />}
     </div>
   )
 }
@@ -1733,56 +1732,6 @@ function TraitementsCard({
   )
 }
 
-// ── Stock Card (read-only aggregate) ───────────────────
-
-function StockCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: boolean }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader
-        className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-        onClick={() => setOpen(!open)}
-      >
-        <Warehouse className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Stock actuel</CardTitle>
-        <Badge variant="secondary" className="text-xs ml-auto">
-          {detail.stock_lots} lot{detail.stock_lots !== 1 ? 's' : ''}
-        </Badge>
-        <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-      </CardHeader>
-      {open && (
-        <CardContent className="pb-4">
-          {detail.stock_lots === 0 ? (
-            <p className="text-sm text-muted-foreground italic">Aucun stock en cours</p>
-          ) : (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-baseline gap-x-10 gap-y-2">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">Total poids</span>
-                  <span className="text-lg font-semibold tabular-nums">{fmtNum(detail.stock_total_kg, 1)} kg</span>
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">Total métrage</span>
-                  <span className="text-lg font-semibold tabular-nums">{fmtNum(detail.stock_total_m, 1)} Ml</span>
-                </div>
-              </div>
-              {detail.reference && (
-                <a
-                  href={`/finis/stock?q=${encodeURIComponent(detail.reference)}`}
-                  className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline"
-                >
-                  <Warehouse className="h-3.5 w-3.5" />
-                  Voir les lots dans Stock Finis
-                </a>
-              )}
-            </div>
-          )}
-        </CardContent>
-      )}
-    </Card>
-  )
-}
-
 // ── Right Panel: Sidebar ───────────────────────────────
 
 type SidebarTab = 'informations' | 'tarif'
@@ -2132,8 +2081,36 @@ function DetailSidebar({
             <p className="text-xs font-semibold text-muted-foreground">Statistiques</p>
             <KV label="Coloris" value={<span className="tabular-nums">{detail.coloris.length}</span>} />
             <KV label="Traitements" value={<span className="tabular-nums">{detail.traitements.length}</span>} />
-            <KV label="Stock actuel" value={<span className="tabular-nums">{fmtNum(detail.stock_total_kg, 1)} kg</span>} />
-            <KV label="Lots en stock" value={<span className="tabular-nums">{detail.stock_lots}</span>} />
+          </div>
+        )}
+
+        {/* Stock actuel — read-only aggregate, moved here from the centre panel */}
+        {!isEditing && (
+          <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Warehouse className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-semibold text-muted-foreground">Stock actuel</p>
+              <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">
+                {detail.stock_lots} lot{detail.stock_lots !== 1 ? 's' : ''}
+              </Badge>
+            </div>
+            {detail.stock_lots === 0 ? (
+              <p className="text-sm text-muted-foreground italic">Aucun stock en cours</p>
+            ) : (
+              <>
+                <KV label="Poids" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_kg, 1)} kg</span>} />
+                <KV label="Métrage" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_m, 1)} Ml</span>} />
+                {detail.reference && (
+                  <a
+                    href={`/finis/stock?q=${encodeURIComponent(detail.reference)}`}
+                    className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline pt-1"
+                  >
+                    <Warehouse className="h-3.5 w-3.5" />
+                    Voir les lots dans Stock Finis
+                  </a>
+                )}
+              </>
+            )}
           </div>
         )}
 
