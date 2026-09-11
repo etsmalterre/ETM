@@ -29,6 +29,8 @@ import {
   Trash2,
   Info,
   ChevronDown,
+  CheckCircle2,
+  Circle,
   Package,
   Ruler,
   Palette,
@@ -220,38 +222,6 @@ function KV({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 /** Read-mode spec value: bold tabular number + optional unit, or em-dash. */
-function SpecValue({ value, unit }: { value: number | null; unit?: string }) {
-  if (value == null) return <span className="text-lg font-semibold text-muted-foreground">—</span>
-  return (
-    <span className="text-lg font-semibold tabular-nums">
-      {fmtNum(value, Number.isInteger(value) ? 0 : 2)}
-      {unit ? <span className="text-xs text-muted-foreground font-normal"> {unit}</span> : null}
-    </span>
-  )
-}
-
-/** "min / moy / max" triple for read mode (skips entirely-empty triples). */
-function MinMoyMax({
-  min,
-  moy,
-  max,
-  unit,
-}: {
-  min: number | null
-  moy: number | null
-  max: number | null
-  unit?: string
-}) {
-  const fmt = (v: number | null) => (v == null ? '—' : fmtNum(v, Number.isInteger(v) ? 0 : 2))
-  return (
-    <span className="text-sm font-semibold tabular-nums">
-      {fmt(min)} <span className="text-muted-foreground font-normal">/</span> {fmt(moy)}{' '}
-      <span className="text-muted-foreground font-normal">/</span> {fmt(max)}
-      {unit ? <span className="text-xs text-muted-foreground font-normal"> {unit}</span> : null}
-    </span>
-  )
-}
-
 function teintureLabel(avec: number): string {
   if (avec === 1) return 'Simple teinture'
   if (avec === 2) return 'Double teinture'
@@ -1226,7 +1196,6 @@ function DetailMain({
   return (
     <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
       <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} ecruOptions={ecruOptions} />
-      <StabiliteCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
       <ColorisCard detail={detail} isEditing={isEditing} />
       <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
       {!isEditing && <StockCard detail={detail} isEditing={isEditing} />}
@@ -1465,6 +1434,86 @@ function SpecsCard({
           </SpecTile>
         </div>
 
+        {/* Stabilité & élasticité — same tile language, its own thin divider */}
+        <div className="flex items-center gap-2 pt-1">
+          <Ruler className="h-3.5 w-3.5 text-accent" />
+          <span className="text-xs font-semibold text-muted-foreground">Stabilité &amp; élasticité</span>
+          <div className="flex-1 h-px bg-border/60" />
+        </div>
+        <div className="grid grid-cols-4 gap-2">
+          <SpecTile label="Stabilité H">
+            {isEditing ? (
+              <input type="number" step="0.01" value={draft.stab_hauteur} onChange={(e) => onDraftChange({ ...draft, stab_hauteur: e.target.value })} className={tileInput} />
+            ) : (
+              <TileValue value={detail.stab_hauteur} unit="%" />
+            )}
+          </SpecTile>
+          <SpecTile label="Stabilité L">
+            {isEditing ? (
+              <input type="number" step="0.01" value={draft.stab_largeur} onChange={(e) => onDraftChange({ ...draft, stab_largeur: e.target.value })} className={tileInput} />
+            ) : (
+              <TileValue value={detail.stab_largeur} unit="%" />
+            )}
+          </SpecTile>
+          <SpecTile label="Allongement H">
+            {isEditing ? (
+              <TileRangeInputs
+                min={draft.allongementH_Min} moy={draft.allongementH_Moy} max={draft.allongementH_Max}
+                onChange={(n) => onDraftChange({ ...draft, allongementH_Min: n.min, allongementH_Moy: n.moy, allongementH_Max: n.max })}
+              />
+            ) : (
+              <TileRange min={detail.allongementH_Min} moy={detail.allongementH_Moy} max={detail.allongementH_Max} unit="%" />
+            )}
+          </SpecTile>
+          <SpecTile label="Allongement L">
+            {isEditing ? (
+              <TileRangeInputs
+                min={draft.allongementL_Min} moy={draft.allongementL_Moy} max={draft.allongementL_Max}
+                onChange={(n) => onDraftChange({ ...draft, allongementL_Min: n.min, allongementL_Moy: n.moy, allongementL_Max: n.max })}
+              />
+            ) : (
+              <TileRange min={detail.allongementL_Min} moy={detail.allongementL_Moy} max={detail.allongementL_Max} unit="%" />
+            )}
+          </SpecTile>
+        </div>
+
+        {/* Contrôles à réception — the three sst flags, always all three shown */}
+        <SpecTile label="Contrôles à réception (sous-traitant)">
+          {isEditing ? (
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                ['controle_sst_rendement', 'Rendement'],
+                ['controle_sst_stab', 'Stabilité'],
+                ['controle_sst_allongement', 'Allongement'],
+              ] as const).map(([k, label]) => (
+                <label key={k} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-white px-2.5 py-1.5">
+                  <span className="text-sm">{label}</span>
+                  <Pill value={draft[k]} onChange={(v) => onDraftChange({ ...draft, [k]: v })} />
+                </label>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {([
+                [detail.controle_sst_rendement, 'Rendement'],
+                [detail.controle_sst_stab, 'Stabilité'],
+                [detail.controle_sst_allongement, 'Allongement'],
+              ] as const).map(([on, label]) => (
+                <span
+                  key={label}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium',
+                    on ? 'bg-accent/10 text-accent border-accent/25' : 'bg-transparent text-muted-foreground/60 border-border/60',
+                  )}
+                >
+                  {on ? <CheckCircle2 className="h-3 w-3" /> : <Circle className="h-3 w-3" />}
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+        </SpecTile>
+
         {/* Prose fields — full-width tiles. The legacy texts are multi-line
             (CRLF-separated on every reference), so they are shown line by line
             and edited in textareas. Empty ones are hidden in view mode. */}
@@ -1473,105 +1522,6 @@ function SpecsCard({
         <TextTile label="Observation technique" value={detail.observation_technique} isEditing={isEditing} draft={draft.observation_technique} rows={2} onChange={(v) => onDraftChange({ ...draft, observation_technique: v })} />
         <TextTile label="Description commerciale" value={detail.description_commercial} isEditing={isEditing} draft={draft.description_commercial} rows={2} onChange={(v) => onDraftChange({ ...draft, description_commercial: v })} />
       </CardContent>
-    </Card>
-  )
-}
-
-// ── Stabilité & élasticité Card ────────────────────────
-
-function StabiliteCard({
-  detail,
-  isEditing,
-  draft,
-  onDraftChange,
-}: {
-  detail: RefFiniDetail
-  isEditing: boolean
-  draft: HeaderDraft
-  onDraftChange: (d: HeaderDraft) => void
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader
-        className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-        onClick={() => setOpen(!open)}
-      >
-        <Ruler className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Stabilité &amp; élasticité</CardTitle>
-        <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform ml-auto', open && 'rotate-180')} />
-      </CardHeader>
-      {open && (
-        <CardContent className="pb-4 space-y-4">
-          {isEditing ? (
-            <>
-              <div className="grid grid-cols-2 gap-2">
-                <LabeledInput label="Stabilité hauteur" suffix="%" type="number" value={draft.stab_hauteur} onChange={(v) => onDraftChange({ ...draft, stab_hauteur: v })} />
-                <LabeledInput label="Stabilité largeur" suffix="%" type="number" value={draft.stab_largeur} onChange={(v) => onDraftChange({ ...draft, stab_largeur: v })} />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">Allongement hauteur (%) — min / moy / max</p>
-                <div className="grid grid-cols-3 gap-2">
-                  <input type="number" value={draft.allongementH_Min} onChange={(e) => onDraftChange({ ...draft, allongementH_Min: e.target.value })} className={inputClass} placeholder="Min" />
-                  <input type="number" value={draft.allongementH_Moy} onChange={(e) => onDraftChange({ ...draft, allongementH_Moy: e.target.value })} className={inputClass} placeholder="Moy" />
-                  <input type="number" value={draft.allongementH_Max} onChange={(e) => onDraftChange({ ...draft, allongementH_Max: e.target.value })} className={inputClass} placeholder="Max" />
-                </div>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">Allongement largeur (%) — min / moy / max</p>
-                <div className="grid grid-cols-3 gap-2">
-                  <input type="number" value={draft.allongementL_Min} onChange={(e) => onDraftChange({ ...draft, allongementL_Min: e.target.value })} className={inputClass} placeholder="Min" />
-                  <input type="number" value={draft.allongementL_Moy} onChange={(e) => onDraftChange({ ...draft, allongementL_Moy: e.target.value })} className={inputClass} placeholder="Moy" />
-                  <input type="number" value={draft.allongementL_Max} onChange={(e) => onDraftChange({ ...draft, allongementL_Max: e.target.value })} className={inputClass} placeholder="Max" />
-                </div>
-              </div>
-              <div className="pt-2 border-t border-border/50 space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Contrôles à réception (sous-traitant)</p>
-                <label className="flex items-center justify-between gap-3">
-                  <span className="text-sm">Contrôler le rendement</span>
-                  <Pill value={draft.controle_sst_rendement} onChange={(v) => onDraftChange({ ...draft, controle_sst_rendement: v })} />
-                </label>
-                <label className="flex items-center justify-between gap-3">
-                  <span className="text-sm">Contrôler la stabilité</span>
-                  <Pill value={draft.controle_sst_stab} onChange={(v) => onDraftChange({ ...draft, controle_sst_stab: v })} />
-                </label>
-                <label className="flex items-center justify-between gap-3">
-                  <span className="text-sm">Contrôler l'allongement</span>
-                  <Pill value={draft.controle_sst_allongement} onChange={(v) => onDraftChange({ ...draft, controle_sst_allongement: v })} />
-                </label>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-baseline gap-x-10 gap-y-3">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">Stabilité H</span>
-                  <SpecValue value={detail.stab_hauteur} unit="%" />
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">Stabilité L</span>
-                  <SpecValue value={detail.stab_largeur} unit="%" />
-                </div>
-              </div>
-              <div className="flex flex-wrap items-baseline gap-x-10 gap-y-3">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">Allongement H</span>
-                  <MinMoyMax min={detail.allongementH_Min} moy={detail.allongementH_Moy} max={detail.allongementH_Max} unit="%" />
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">Allongement L</span>
-                  <MinMoyMax min={detail.allongementL_Min} moy={detail.allongementL_Moy} max={detail.allongementL_Max} unit="%" />
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {!!detail.controle_sst_rendement && <Badge variant="secondary" className="text-[10px] py-0">Contrôle rendement</Badge>}
-                {!!detail.controle_sst_stab && <Badge variant="secondary" className="text-[10px] py-0">Contrôle stabilité</Badge>}
-                {!!detail.controle_sst_allongement && <Badge variant="secondary" className="text-[10px] py-0">Contrôle allongement</Badge>}
-              </div>
-            </>
-          )}
-        </CardContent>
-      )}
     </Card>
   )
 }
