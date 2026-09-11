@@ -42,6 +42,7 @@
 //     Both stay as literals.
 
 import { query } from './hfsql-auto.js'
+import { pickVal } from './accented-keys.js'
 
 // ── Pure helpers (no DB access) ────────────────────────────
 
@@ -127,21 +128,26 @@ export async function loadTrsParKg(IDref_ecru: number): Promise<number> {
 }
 
 /** Per-ref Jauge + diamètre codes from ref_ecru.
- *  Accented column "diamètre" — Linux ODBC bridge rejects accented
- *  identifiers in SELECT lists, Windows accepts them. Use `SELECT *` so
- *  the row carries both forms (the bridge mangles to "diamtre" or
- *  similar on Linux; Windows keeps the accent). Pluck whichever key the
- *  driver surfaced. */
+ *  Accented column "diamètre" — the Linux ODBC bridge rejects accented
+ *  identifiers in SELECT lists and, on `SELECT *`, returns the key TRUNCATED
+ *  at the accent with a non-deterministic trailing byte (`diamtre`, `diamtx`,
+ *  …); Windows keeps the accent. Read it by PREFIX (`lib/accented-keys.ts`),
+ *  never by a list of spellings: the hardcoded `r['diamètre'] ?? r.diametre
+ *  ?? r['diamtre']` that stood here read 0 on every reference in production
+ *  (2026-09-11, found under LIVA #1151), so NbAiguilles was 0 and the
+ *  « Changement aiguilles » line of every cost of revient was 0 € — a silent
+ *  ~3 % understatement of the cost, the margin chip, the suggested price and
+ *  the ETM → TRM transfer price wherever the computed price wins. */
 export async function loadRefEcruMachineCodes(IDref_ecru: number): Promise<{ Jauge: number; diametre: number }> {
   if (!(IDref_ecru > 0)) return { Jauge: 0, diametre: 0 }
   const rows = await query<Record<string, unknown>>(
     `SELECT * FROM ref_ecru WHERE IDref_ecru = ${IDref_ecru}`,
   )
   if (rows.length === 0) return { Jauge: 0, diametre: 0 }
-  const r = rows[0] as any
+  const r = rows[0]
   return {
     Jauge: Number(r.Jauge) || 0,
-    diametre: Number(r['diamètre'] ?? r.diametre ?? r['diamtre']) || 0,
+    diametre: Number(pickVal(r, /^diam/i)) || 0,
   }
 }
 

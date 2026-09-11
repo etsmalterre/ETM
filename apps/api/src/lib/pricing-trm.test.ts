@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest'
-import { retain, NbAiguilles, coutOperation } from './pricing-trm.js'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// No base in unit tests: `loadRefEcruMachineCodes` reads through this mock.
+const queryMock = vi.fn()
+vi.mock('./hfsql-auto.js', () => ({
+  query: (...args: unknown[]) => queryMock(...args),
+}))
+
+const { retain, NbAiguilles, coutOperation, loadRefEcruMachineCodes } = await import('./pricing-trm.js')
+
+beforeEach(() => queryMock.mockReset())
 
 // One rule — the legacy one: max(cost / 0,7, base), the base retained flat
 // when it wins. Real numbers probed from société 2 on 2026-08-26. The
@@ -61,5 +70,23 @@ describe('coutOperation', () => {
 
   it('treats a non-positive frequency as a single operation rather than dividing by zero', () => {
     expect(coutOperation('tps', 'absent', 60, 250, tarif)).toBeCloseTo(6, 10)
+  })
+})
+
+describe('loadRefEcruMachineCodes', () => {
+  it('reads diamètre however the driver spells the key', async () => {
+    // Windows keeps the accent; the Linux bridge truncates it and appends a
+    // garbage byte that changes between calls. Every shape must yield 3 —
+    // the hardcoded fallback that stood here read 0 in production.
+    for (const key of ['diamètre', 'diamtre', 'diamtx', 'diam']) {
+      queryMock.mockResolvedValueOnce([{ IDref_ecru: 192, Jauge: 4, [key]: 3 }])
+      expect(await loadRefEcruMachineCodes(192)).toEqual({ Jauge: 4, diametre: 3 })
+    }
+  })
+
+  it('returns zeros for an unknown reference', async () => {
+    queryMock.mockResolvedValueOnce([])
+    expect(await loadRefEcruMachineCodes(999999)).toEqual({ Jauge: 0, diametre: 0 })
+    expect(await loadRefEcruMachineCodes(0)).toEqual({ Jauge: 0, diametre: 0 })
   })
 })
