@@ -1230,7 +1230,6 @@ function DetailMain({
       <ColorisCard detail={detail} isEditing={isEditing} />
       <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
       {!isEditing && <StockCard detail={detail} isEditing={isEditing} />}
-      <ObservationsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
     </div>
   )
 }
@@ -1307,6 +1306,30 @@ function TileRangeInputs({
         </div>
       ))}
     </div>
+  )
+}
+
+/** Full-width prose tile: caption + multi-line text in view mode, a
+ *  textarea in edit mode. Hidden in view mode when the value is empty. */
+function TextTile({
+  label, value, isEditing, draft, rows, onChange,
+}: {
+  label: string; value: string | null; isEditing: boolean; draft: string; rows: number; onChange: (v: string) => void
+}) {
+  if (!isEditing && !value?.trim()) return null
+  return (
+    <SpecTile label={label}>
+      {isEditing ? (
+        <textarea
+          value={draft}
+          onChange={(e) => onChange(e.target.value)}
+          rows={rows}
+          className="w-full rounded-md border border-input bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+        />
+      ) : (
+        <p className="text-sm whitespace-pre-line leading-snug">{value!.trim()}</p>
+      )}
+    </SpecTile>
   )
 }
 
@@ -1442,22 +1465,13 @@ function SpecsCard({
           </SpecTile>
         </div>
 
-        {/* Conditionnement — prose, full width */}
-        {isEditing ? (
-          <LabeledInput
-            label="Conditionnement"
-            value={draft.conditionnement}
-            onChange={(v) => onDraftChange({ ...draft, conditionnement: v })}
-          />
-        ) : detail.conditionnement?.trim() ? (
-          <div className="flex items-start gap-2 pt-1">
-            <Package className="h-3.5 w-3.5 text-muted-foreground/60 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-muted-foreground">
-              <span className="text-[10px] uppercase tracking-wide font-semibold mr-2">Conditionnement</span>
-              {detail.conditionnement.trim()}
-            </p>
-          </div>
-        ) : null}
+        {/* Prose fields — full-width tiles. The legacy texts are multi-line
+            (CRLF-separated on every reference), so they are shown line by line
+            and edited in textareas. Empty ones are hidden in view mode. */}
+        <TextTile label="Conditionnement" value={detail.conditionnement} isEditing={isEditing} draft={draft.conditionnement} rows={3} onChange={(v) => onDraftChange({ ...draft, conditionnement: v })} />
+        <TextTile label="Observations (production)" value={detail.observations} isEditing={isEditing} draft={draft.observations} rows={3} onChange={(v) => onDraftChange({ ...draft, observations: v })} />
+        <TextTile label="Observation technique" value={detail.observation_technique} isEditing={isEditing} draft={draft.observation_technique} rows={2} onChange={(v) => onDraftChange({ ...draft, observation_technique: v })} />
+        <TextTile label="Description commerciale" value={detail.description_commercial} isEditing={isEditing} draft={draft.description_commercial} rows={2} onChange={(v) => onDraftChange({ ...draft, description_commercial: v })} />
       </CardContent>
     </Card>
   )
@@ -1815,89 +1829,6 @@ function StockCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: bo
           )}
         </CardContent>
       )}
-    </Card>
-  )
-}
-
-// ── Observations Card ──────────────────────────────────
-
-function ObservationsCard({
-  detail,
-  isEditing,
-  draft,
-  onDraftChange,
-}: {
-  detail: RefFiniDetail
-  isEditing: boolean
-  draft: HeaderDraft
-  onDraftChange: (d: HeaderDraft) => void
-}) {
-  const hasAny =
-    !!detail.observations?.trim() ||
-    !!detail.observation_technique?.trim() ||
-    !!detail.description_commercial?.trim()
-  return (
-    <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2">
-        <FileText className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Observations &amp; descriptions</CardTitle>
-      </CardHeader>
-      <CardContent className="pb-4 space-y-3">
-        {isEditing ? (
-          <>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Observations (production)</label>
-              <textarea
-                value={draft.observations}
-                onChange={(e) => onDraftChange({ ...draft, observations: e.target.value })}
-                rows={3}
-                className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Observation technique</label>
-              <textarea
-                value={draft.observation_technique}
-                onChange={(e) => onDraftChange({ ...draft, observation_technique: e.target.value })}
-                rows={2}
-                className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Description commerciale</label>
-              <textarea
-                value={draft.description_commercial}
-                onChange={(e) => onDraftChange({ ...draft, description_commercial: e.target.value })}
-                rows={2}
-                className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-              />
-            </div>
-          </>
-        ) : !hasAny ? (
-          <p className="text-sm text-muted-foreground italic">Aucune observation</p>
-        ) : (
-          <div className="space-y-3">
-            {detail.observations?.trim() && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-0.5">Observations</p>
-                <p className="text-sm text-muted-foreground whitespace-pre-line">{detail.observations}</p>
-              </div>
-            )}
-            {detail.observation_technique?.trim() && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-0.5">Technique</p>
-                <p className="text-sm text-muted-foreground whitespace-pre-line">{detail.observation_technique}</p>
-              </div>
-            )}
-            {detail.description_commercial?.trim() && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-0.5">Commerciale</p>
-                <p className="text-sm text-muted-foreground whitespace-pre-line">{detail.description_commercial}</p>
-              </div>
-            )}
-          </div>
-        )}
-      </CardContent>
     </Card>
   )
 }
