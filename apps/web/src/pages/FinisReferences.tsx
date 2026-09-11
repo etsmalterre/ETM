@@ -36,13 +36,13 @@ import {
   Droplet,
   Warehouse,
   FileText,
-  Layers,
   FlaskConical,
   Archive,
   Lock,
   BadgeEuro,
   Printer,
   Tag,
+  Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -51,6 +51,7 @@ import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-selec
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
+import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
@@ -649,6 +650,7 @@ export function FinisReferences() {
             draft={draft}
             onDraftChange={setDraft}
             onMutationSuccess={invalidateAll}
+            ecruOptions={ecruOptions ?? []}
           />
         }
         sidebar={
@@ -658,7 +660,6 @@ export function FinisReferences() {
               isEditing={isEditing}
               draft={draft}
               onDraftChange={setDraft}
-              ecruOptions={ecruOptions ?? []}
             />
           ) : null
         }
@@ -1190,6 +1191,7 @@ function DetailMain({
   draft,
   onDraftChange,
   onMutationSuccess,
+  ecruOptions,
 }: {
   detail: RefFiniDetail | null
   isLoading: boolean
@@ -1198,6 +1200,7 @@ function DetailMain({
   draft: HeaderDraft
   onDraftChange: (d: HeaderDraft) => void
   onMutationSuccess: () => void
+  ecruOptions: EcruRef[]
 }) {
   if (!hasSelection) {
     return (
@@ -1222,7 +1225,7 @@ function DetailMain({
 
   return (
     <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
-      <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
+      <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} ecruOptions={ecruOptions} />
       <StabiliteCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
       <ColorisCard detail={detail} isEditing={isEditing} />
       <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
@@ -1234,18 +1237,94 @@ function DetailMain({
 
 // ── Specs Card ─────────────────────────────────────────
 
+/** A spec tile: uppercase caption on top, the value big underneath — the
+ *  "instant picture" layout (one figure per tile, six tiles in two rows). */
+function SpecTile({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-zinc-100/80 px-3 py-2.5 min-w-0">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold truncate">
+        {label}
+      </p>
+      <div className="mt-1">{children}</div>
+    </div>
+  )
+}
+
+/** Read-mode single figure inside a SpecTile. */
+function TileValue({ value, unit }: { value: number | null; unit?: string }) {
+  if (value == null) return <span className="text-2xl font-bold text-muted-foreground/60 leading-none">—</span>
+  return (
+    <span className="text-2xl font-bold tabular-nums leading-none">
+      {fmtNum(value, Number.isInteger(value) ? 0 : 2)}
+      {unit ? <span className="text-xs text-muted-foreground font-normal ml-1">{unit}</span> : null}
+    </span>
+  )
+}
+
+/** Read-mode min / moy / max inside a SpecTile: the average is the big
+ *  figure, the bounds sit under it in small type. */
+function TileRange({ min, moy, max, unit }: { min: number | null; moy: number | null; max: number | null; unit?: string }) {
+  const fmt = (v: number | null) => (v == null ? '—' : fmtNum(v, Number.isInteger(v) ? 0 : 2))
+  const hasBounds = min != null || max != null
+  return (
+    <div>
+      <TileValue value={moy} unit={unit} />
+      <p className="mt-1 text-[11px] text-muted-foreground tabular-nums">
+        {hasBounds ? (
+          <>
+            <span className="text-muted-foreground/70">min</span> {fmt(min)}
+            <span className="mx-1.5 text-muted-foreground/40">·</span>
+            <span className="text-muted-foreground/70">max</span> {fmt(max)}
+          </>
+        ) : (
+          <span className="text-muted-foreground/50">min / max non renseignés</span>
+        )}
+      </p>
+    </div>
+  )
+}
+
+/** Edit-mode min / moy / max inputs inside a SpecTile. */
+function TileRangeInputs({
+  min, moy, max, onChange,
+}: {
+  min: string; moy: string; max: string
+  onChange: (next: { min: string; moy: string; max: string }) => void
+}) {
+  const cell = 'h-8 w-full px-1.5 text-sm text-center tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
+  return (
+    <div className="grid grid-cols-3 gap-1">
+      {([['min', min], ['moy', moy], ['max', max]] as const).map(([k, v]) => (
+        <div key={k} className="min-w-0">
+          <input
+            type="number"
+            value={v}
+            placeholder={k === 'moy' ? 'Moy' : k === 'min' ? 'Min' : 'Max'}
+            onChange={(e) => onChange({ min, moy, max, [k]: e.target.value })}
+            className={cn(cell, k === 'moy' && 'font-semibold')}
+          />
+          <p className="mt-0.5 text-[9px] uppercase tracking-wide text-center text-muted-foreground/70">{k}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function SpecsCard({
   detail,
   isEditing,
   draft,
   onDraftChange,
+  ecruOptions,
 }: {
   detail: RefFiniDetail
   isEditing: boolean
   draft: HeaderDraft
   onDraftChange: (d: HeaderDraft) => void
+  ecruOptions: EcruRef[]
 }) {
   const dyed = detail.avec_teinture !== 0
+  const tileInput = 'h-8 w-full px-2 text-sm tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
       <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2">
@@ -1263,106 +1342,122 @@ function SpecsCard({
           {teintureLabel(detail.avec_teinture)}
         </Badge>
       </CardHeader>
-      <CardContent className="pb-4">
-        {isEditing ? (
-          <div className="space-y-3">
-            <LabeledInput
-              label="Désignation"
-              value={draft.designation}
-              onChange={(v) => onDraftChange({ ...draft, designation: v })}
-            />
-            <LabeledInput
-              label="Conditionnement"
-              value={draft.conditionnement}
-              onChange={(v) => onDraftChange({ ...draft, conditionnement: v })}
-            />
-            <div className="grid grid-cols-3 gap-2">
-              <LabeledInput
-                label="Rendement"
-                suffix="Ml/kg"
-                type="number"
-                step="0.01"
-                value={draft.rendement}
-                onChange={(v) => onDraftChange({ ...draft, rendement: v })}
-              />
-              <LabeledInput
-                label="Freinte"
-                type="number"
-                step="0.01"
-                value={draft.freinte}
-                onChange={(v) => onDraftChange({ ...draft, freinte: v })}
-              />
-              <LabeledInput
-                label="Temp. lavage"
-                suffix="°C"
-                type="number"
-                value={draft.temp_lavage}
-                onChange={(v) => onDraftChange({ ...draft, temp_lavage: v })}
-              />
-            </div>
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1">Poids (g/m²) — min / moy / max</p>
-              <div className="grid grid-cols-3 gap-2">
-                <input type="number" value={draft.poids_Min} onChange={(e) => onDraftChange({ ...draft, poids_Min: e.target.value })} className={inputClass} placeholder="Min" />
-                <input type="number" value={draft.poids_Moy} onChange={(e) => onDraftChange({ ...draft, poids_Moy: e.target.value })} className={inputClass} placeholder="Moy" />
-                <input type="number" value={draft.poids_Max} onChange={(e) => onDraftChange({ ...draft, poids_Max: e.target.value })} className={inputClass} placeholder="Max" />
-              </div>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1">Laize hors-tout (cm) — min / moy / max</p>
-              <div className="grid grid-cols-3 gap-2">
-                <input type="number" value={draft.laizeHT_Min} onChange={(e) => onDraftChange({ ...draft, laizeHT_Min: e.target.value })} className={inputClass} placeholder="Min" />
-                <input type="number" value={draft.laizeHT_Moy} onChange={(e) => onDraftChange({ ...draft, laizeHT_Moy: e.target.value })} className={inputClass} placeholder="Moy" />
-                <input type="number" value={draft.laizeHT_Max} onChange={(e) => onDraftChange({ ...draft, laizeHT_Max: e.target.value })} className={inputClass} placeholder="Max" />
-              </div>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1">Laize utile (cm) — min / moy / max</p>
-              <div className="grid grid-cols-3 gap-2">
-                <input type="number" value={draft.laizeUtile_Min} onChange={(e) => onDraftChange({ ...draft, laizeUtile_Min: e.target.value })} className={inputClass} placeholder="Min" />
-                <input type="number" value={draft.laizeUtile_Moy} onChange={(e) => onDraftChange({ ...draft, laizeUtile_Moy: e.target.value })} className={inputClass} placeholder="Moy" />
-                <input type="number" value={draft.laizeUtile_Max} onChange={(e) => onDraftChange({ ...draft, laizeUtile_Max: e.target.value })} className={inputClass} placeholder="Max" />
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {detail.conditionnement?.trim() && (
-              <div className="flex items-start gap-2">
-                <span className="text-xs text-muted-foreground flex-shrink-0 w-28 pt-0.5">Conditionnement</span>
-                <span className="text-sm">{detail.conditionnement}</span>
-              </div>
-            )}
-            <div className="flex flex-wrap items-baseline gap-x-10 gap-y-3">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Rendement</span>
-                <SpecValue value={detail.rendement} unit="Ml/kg" />
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Freinte</span>
-                <SpecValue value={detail.freinte} />
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Temp. lavage</span>
-                <SpecValue value={detail.temp_lavage} unit="°C" />
-              </div>
-            </div>
-            <div className="flex flex-wrap items-baseline gap-x-10 gap-y-3">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Poids</span>
-                <MinMoyMax min={detail.poids_Min} moy={detail.poids_Moy} max={detail.poids_Max} unit="g/m²" />
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Laize HT</span>
-                <MinMoyMax min={detail.laizeHT_Min} moy={detail.laizeHT_Moy} max={detail.laizeHT_Max} unit="cm" />
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Laize utile</span>
-                <MinMoyMax min={detail.laizeUtile_Min} moy={detail.laizeUtile_Moy} max={detail.laizeUtile_Max} unit="cm" />
-              </div>
-            </div>
-          </div>
+      <CardContent className="pb-4 space-y-3">
+        {isEditing && (
+          <LabeledInput
+            label="Désignation"
+            value={draft.designation}
+            onChange={(v) => onDraftChange({ ...draft, designation: v })}
+          />
         )}
+
+        {/* Référence écru — the base fabric this fini is made from */}
+        <div className="rounded-lg border border-border/60 bg-zinc-100/80 px-3 py-2 flex items-center gap-2.5">
+          <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
+            <TmRollIcon className="h-4 w-4 text-amber-600" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Référence écru</p>
+            {isEditing ? (
+              <div className="mt-1">
+                <SearchableCombobox<EcruRef>
+                  options={ecruOptions}
+                  value={draft.IDref_ecru}
+                  onChange={(id) => onDraftChange({ ...draft, IDref_ecru: id })}
+                  getId={(e) => e.IDref_ecru}
+                  getPrimary={(e) => e.reference ?? `#${e.IDref_ecru}`}
+                  getSecondary={(e) => e.designation ?? undefined}
+                  placeholder="Rechercher une référence écru"
+                />
+              </div>
+            ) : detail.ecru ? (
+              <p className="text-sm truncate">
+                <span className="font-semibold">{detail.ecru.reference ?? '—'}</span>
+                {detail.ecru.designation && (
+                  <span className="text-muted-foreground"> — {detail.ecru.designation}</span>
+                )}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground italic">Aucune référence écru liée</p>
+            )}
+          </div>
+        </div>
+
+        {/* Row 1 — the three scalar figures */}
+        <div className="grid grid-cols-3 gap-2">
+          <SpecTile label="Rendement">
+            {isEditing ? (
+              <input type="number" step="0.01" value={draft.rendement} onChange={(e) => onDraftChange({ ...draft, rendement: e.target.value })} className={tileInput} />
+            ) : (
+              <TileValue value={detail.rendement} unit="Ml/kg" />
+            )}
+          </SpecTile>
+          <SpecTile label="Freinte">
+            {isEditing ? (
+              <input type="number" step="0.01" value={draft.freinte} onChange={(e) => onDraftChange({ ...draft, freinte: e.target.value })} className={tileInput} />
+            ) : (
+              <TileValue value={detail.freinte} />
+            )}
+          </SpecTile>
+          <SpecTile label="Temp. lavage">
+            {isEditing ? (
+              <input type="number" value={draft.temp_lavage} onChange={(e) => onDraftChange({ ...draft, temp_lavage: e.target.value })} className={tileInput} />
+            ) : (
+              <TileValue value={detail.temp_lavage} unit="°C" />
+            )}
+          </SpecTile>
+        </div>
+
+        {/* Row 2 — the three min / moy / max ranges */}
+        <div className="grid grid-cols-3 gap-2">
+          <SpecTile label="Poids">
+            {isEditing ? (
+              <TileRangeInputs
+                min={draft.poids_Min} moy={draft.poids_Moy} max={draft.poids_Max}
+                onChange={(n) => onDraftChange({ ...draft, poids_Min: n.min, poids_Moy: n.moy, poids_Max: n.max })}
+              />
+            ) : (
+              <TileRange min={detail.poids_Min} moy={detail.poids_Moy} max={detail.poids_Max} unit="g/m²" />
+            )}
+          </SpecTile>
+          <SpecTile label="Laize hors-tout">
+            {isEditing ? (
+              <TileRangeInputs
+                min={draft.laizeHT_Min} moy={draft.laizeHT_Moy} max={draft.laizeHT_Max}
+                onChange={(n) => onDraftChange({ ...draft, laizeHT_Min: n.min, laizeHT_Moy: n.moy, laizeHT_Max: n.max })}
+              />
+            ) : (
+              <TileRange min={detail.laizeHT_Min} moy={detail.laizeHT_Moy} max={detail.laizeHT_Max} unit="cm" />
+            )}
+          </SpecTile>
+          <SpecTile label="Laize utile">
+            {isEditing ? (
+              <TileRangeInputs
+                min={draft.laizeUtile_Min} moy={draft.laizeUtile_Moy} max={draft.laizeUtile_Max}
+                onChange={(n) => onDraftChange({ ...draft, laizeUtile_Min: n.min, laizeUtile_Moy: n.moy, laizeUtile_Max: n.max })}
+              />
+            ) : (
+              <TileRange min={detail.laizeUtile_Min} moy={detail.laizeUtile_Moy} max={detail.laizeUtile_Max} unit="cm" />
+            )}
+          </SpecTile>
+        </div>
+
+        {/* Conditionnement — prose, full width */}
+        {isEditing ? (
+          <LabeledInput
+            label="Conditionnement"
+            value={draft.conditionnement}
+            onChange={(v) => onDraftChange({ ...draft, conditionnement: v })}
+          />
+        ) : detail.conditionnement?.trim() ? (
+          <div className="flex items-start gap-2 pt-1">
+            <Package className="h-3.5 w-3.5 text-muted-foreground/60 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-muted-foreground">
+              <span className="text-[10px] uppercase tracking-wide font-semibold mr-2">Conditionnement</span>
+              {detail.conditionnement.trim()}
+            </p>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   )
@@ -1811,6 +1906,78 @@ function ObservationsCard({
 
 type SidebarTab = 'informations' | 'tarif'
 
+// ── Clients card — who has already ordered this reference (LIVA #1155) ──
+
+interface RefFiniClientRow {
+  IDclient: number
+  nom: string
+  nb_commandes: number
+  nb_lignes: number
+  metrage: number
+  poids: number
+  derniere_date: string | null
+  dernier_numero: number | null
+}
+
+/** Informations-tab card listing the ETM clients that ordered the reference,
+ *  most recent first — the memory aid Isabelle had on the legacy fiche. Read
+ *  only; lazily loaded per reference. */
+function ClientsCard({ refId }: { refId: number }) {
+  const { data, isLoading, isError } = useQuery<RefFiniClientRow[]>({
+    queryKey: ['ref-fini-clients', refId],
+    queryFn: () => apiFetch(`/references-fini/${refId}/clients`),
+  })
+  const rows = data ?? []
+  return (
+    <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Users className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-semibold text-muted-foreground">Clients</p>
+        {rows.length > 0 && (
+          <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">{rows.length}</Badge>
+        )}
+      </div>
+      {isLoading ? (
+        <div className="flex justify-center py-2">
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
+        </div>
+      ) : isError ? (
+        <p className="text-xs text-destructive">Erreur de chargement</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground italic">Aucun client n'a encore commandé cette référence</p>
+      ) : (
+        <div className="divide-y divide-border/50">
+          {rows.map((c) => {
+            const qty = [
+              c.metrage > 0 ? `${fmtNum(c.metrage, 1)} Ml` : null,
+              c.poids > 0 ? `${fmtNum(c.poids, 1)} Kg` : null,
+            ].filter(Boolean).join(' · ')
+            const last = c.derniere_date ? formatHfsqlDate(c.derniere_date) : null
+            return (
+              <div key={c.IDclient} className="py-1.5 first:pt-0 last:pb-0">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm font-medium truncate">{c.nom}</span>
+                  <span className="text-xs tabular-nums text-muted-foreground flex-shrink-0">{qty || '—'}</span>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {c.nb_commandes} commande{c.nb_commandes > 1 ? 's' : ''}
+                  {c.dernier_numero != null && (
+                    <>
+                      {' · dernière '}
+                      <span className="tabular-nums">N°{c.dernier_numero}</span>
+                      {last && <> le <span className="tabular-nums">{last}</span></>}
+                    </>
+                  )}
+                </p>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Tarif (cost-price) tab — port of the legacy FI_Tarifs / PrixDeVenteV4 ──
 
 interface TarifDetailLine {
@@ -2035,13 +2202,11 @@ function DetailSidebar({
   isEditing,
   draft,
   onDraftChange,
-  ecruOptions,
 }: {
   detail: RefFiniDetail | null
   isEditing: boolean
   draft: HeaderDraft
   onDraftChange: (d: HeaderDraft) => void
-  ecruOptions: EcruRef[]
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('informations')
   if (!detail) {
@@ -2090,35 +2255,6 @@ function DetailSidebar({
             <KV label="Lots en stock" value={<span className="tabular-nums">{detail.stock_lots}</span>} />
           </div>
         )}
-
-        {/* Référence écru */}
-        <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
-          <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-            <Layers className="h-3.5 w-3.5" />
-            Référence écru
-          </p>
-          {isEditing ? (
-            <SearchableCombobox<EcruRef>
-              options={ecruOptions}
-              value={draft.IDref_ecru}
-              onChange={(id) => onDraftChange({ ...draft, IDref_ecru: id })}
-              getId={(e) => e.IDref_ecru}
-              getPrimary={(e) => e.reference ?? `#${e.IDref_ecru}`}
-              getSecondary={(e) => e.designation ?? undefined}
-              placeholder="Rechercher une référence écru"
-              size="sm"
-            />
-          ) : detail.ecru ? (
-            <div>
-              <p className="text-sm font-medium">{detail.ecru.reference ?? '—'}</p>
-              {detail.ecru.designation && (
-                <p className="text-xs text-muted-foreground">{detail.ecru.designation}</p>
-              )}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground italic">Aucune référence écru liée</p>
-          )}
-        </div>
 
         {/* Métadonnées */}
         <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
@@ -2175,6 +2311,9 @@ function DetailSidebar({
             </div>
           )}
         </div>
+
+        {/* Clients ayant commandé la référence (#1155) — read-only, view mode */}
+        {!isEditing && <ClientsCard refId={detail.IDref_fini} />}
         </div>
         )}
       </div>

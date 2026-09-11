@@ -4,6 +4,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
+import { loadClientsForRefFini } from '../lib/clients-ref-fini.js'
 import { loadTraitementCatalog, loadRefFiniTraitements, attachTraitement, detachTraitement } from '../lib/traitements.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
@@ -433,6 +434,20 @@ referencesFiniRouter.get('/:id/tarif', async (req: Request, res: Response) => {
     res.json(result)
   } catch (err) {
     console.error('Error computing ref_fini tarif:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /:id/clients — who has already ordered this reference (LIVA #1155):
+// one row per ETM client with order count, Ml / Kg totals and the last order.
+// Read-only, port of the legacy FI_Ref_Fini « TABLE_Client ».
+referencesFiniRouter.get('/:id/clients', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    res.json(await loadClientsForRefFini(id))
+  } catch (err) {
+    console.error('Error loading ref_fini clients:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
