@@ -10,8 +10,23 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-11 — feat/etiquette (étiquette Dymo écru en noir et blanc, #1152)
+The tombé-métier Dymo tag (`lib/pdf/EtiquetteEcruPdf.tsx`, printed by the TRM visitage
+poste) carried the gold M badge in its left band; a LabelWriter is thermal, so it printed
+as a mottled grey square, and there will never be a colour label printer at the poste
+(Vincent, 2026-09-11). The band is now a single outlined "stamp": the monochrome script M
+(`assets/logo-m-mono.png`, shared with the ref_fini tag) above the métier code knocked out
+of a solid black cell; the small labels (N° · POIDS · RÉF.) become tracked black capitals
+instead of grey. Fields, order, type sizes and the `SAFE_RIGHT` print-head zone are
+unchanged. New `EtiquetteEcruPdf.test.ts` pins the legacy fields, the DÉCLASSÉ marker and
+the palette (any stylesheet colour other than `#000000` / `#FFFFFF` fails). Two variants
+rejected at render: a black badge with the M knocked out (heavy, ribbon becomes a white
+notch) and the bare M above the old outlined box (two floating marks). `claude_doc/pdf_email.md`
+now sends every Dymo label to the mono M. TRM side: dossier only (`TRM feat/etiquette`).
+
 ## 2026-09-11 — feat/debug-2 (Tombé Métier › Stock TRM : le choix d’un rouleau se change depuis le tiroir, LIVA #1150)
 `PATCH /api/stock/ecru-trm/:id` prend `{ observations?, second_choix? }` (toujours `z.strict`, corps vide = 400), **chaque champ vérifié contre sa propre clé** : `edit_stock_ecru` pour la note, **nouvelle clé `edit_choix_stock_ecru`** (catégorie Tombé Métier, fermée par défaut — à accorder à Nicolas Antonino) pour le choix. Un basculement **ne renumérote pas `num_piece_OF`** (identité du rouleau sur l’étiquette, les défauts et l’avis ; tout le code lit le drapeau `second_choix`, le legacy ne renumérotait pas non plus), fait suivre la réservation (règle #1129 : 2nd choix → `IDLigne_Commande_TRM = 0`, 1er choix → la ligne de l’OF), refuse un rouleau expédié (409 `rouleau_expedie`), trace une ligne `evenement_piece` positionnelle « Passage en 2nd/1er choix — par Prénom Nom » et répond `choix_change` pour que le tiroir TRM demande la réimpression de l’étiquette Dymo. Valeur identique = no-op. `check-stock-ecru-trm-observations.ts` couvre les nouveaux cas et restaure drapeau, ligne et traces (⚠️ sur un worktree, passer `AUTH_COOKIE_SECRET` depuis `apps/api/.env.development`, sinon tout est 401). Écran côté TRM (`feat/debug-2` de TRM, landé juste après).
+
 
 ## 2026-09-10 — feat/debug-2
 Deux tickets LIVA. **#1144 Clients › Gestion / Commandes — tarif d'un tombé de métier** : un contrat sur une référence écru est en **€/Kg** (le tombé de métier se vend toujours au Kg — Vincent) et n'est plus converti par le rendement (Gant Maille, réf 254 : 10,01 €/Kg proposé au lieu de 28,23) ; nouveau moteur `calcTarifRefEcru` (`lib/pricing-fini-tarif.ts`, fil + tricotage, `qte_kg` par tranche, `kind` sur le résultat) réutilisé par le pricer de ligne ; la fiche client ouvre l'onglet Tarifs, le clic coloris, le détail (`GET …/coloris/:rccId/tarif` + `prix_unit`) et l'éditeur de contrat (libellés €/Kg) aux références tombé de métier ; garde `check-contrat-tarif-ligne.ts` §4bis + balayage écru ; sondes `probe-1144-*.ts`. **#1138 Sous-traitants › Commandes — prévu / reçu sur les commandes de tricotage** : sur une ligne tricoteur (`type = 1`), `nb_ecru_lies` / `total_kg_ecru_lie` agrègent les rouleaux écru produits par le tricoteur (`stock_ecru.IDref_commande_source`, même projection que l'onglet Réception du tiroir) ; la ligne « Affecté » de la carte affiche `X kg · N rouleaux (P %)` et le pied « kg affectés » suit ; la réception invalide le détail. Docs : CLAUDE.md (règle d'unité des contrats), `screen_notes.md` § 3, `sous_traitants_status_model.md`, glossaire (tombé de métier au Kg).
