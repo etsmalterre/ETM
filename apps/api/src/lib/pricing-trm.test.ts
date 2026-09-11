@@ -12,6 +12,11 @@ describe('retain — which role ref_ecru.prix plays', () => {
     // transfer price from being silently repriced.
     expect(retain(1.4025, 2.07, 'price-floor')).toEqual({ retainedPrice: 2.07, retainedFrom: 'base' })
     expect(retain(1.1994, 2.30, 'price-floor')).toEqual({ retainedPrice: 2.3, retainedFrom: 'base' })
+    // Cost between base × 0,7 and base: the marged cost beats the base, so the
+    // price is cost / 0,7 and its provenance must say so (LIVA #1151 — it said
+    // 'base' while carrying 2,43 €).
+    expect(retain(1.70, 1.84, 'price-floor')).toEqual({ retainedPrice: 2.43, retainedFrom: 'revient' })
+    expect(retain(1.70, 1.84, 'cost-floor')).toEqual({ retainedPrice: 2.63, retainedFrom: 'base' })
   })
 
   it("marks the base up when it wins under 'cost-floor' (TRM client orders)", () => {

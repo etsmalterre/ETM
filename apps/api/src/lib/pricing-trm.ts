@@ -262,13 +262,21 @@ export function retain(
 ): { retainedPrice: number; retainedFrom: 'revient' | 'base' } {
   const base = Math.max(0, floor)
   const cost = Math.max(0, costPerKg)
+  // The assiette the base is compared against: the bare cost under
+  // 'cost-floor', the marged price under 'price-floor' — the provenance must
+  // follow the same comparison as the max, or a mirrored line whose cost sits
+  // between base × 0,7 and base reports « base » while carrying cost / 0,7
+  // (LIVA #1151, 2026-09-11).
+  const computed = baseRole === 'cost-floor'
+    ? cost
+    : (cost > 0 ? cost / (1 - TRM_MARGIN) : 0)
   const raw = baseRole === 'cost-floor'
     ? Math.max(cost, base) / (1 - TRM_MARGIN)
-    : Math.max(cost > 0 ? cost / (1 - TRM_MARGIN) : 0, base)
+    : Math.max(computed, base)
   return {
     retainedPrice: Math.round(raw * 100) / 100,
-    // Ties go to 'revient': with base == cost the algorithm is what priced it.
-    retainedFrom: base > cost ? 'base' : 'revient',
+    // Ties go to 'revient': with base == computed the algorithm is what priced it.
+    retainedFrom: base > computed ? 'base' : 'revient',
   }
 }
 

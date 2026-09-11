@@ -46,7 +46,7 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
 import { esc, n, dateDigits as dateStr, IS_WINDOWS, sstDelaiSets, STATUT_ATTENTE_DELAI } from '../lib/sst-shared.js'
-import { prixDeRevientTRM, prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
+import { prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
@@ -758,15 +758,39 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
     // line because PrixDeRevientTRM amortises one-off operations over the
     // ordered weight, so the same ref costs differently at 60 kg and 600 kg.
     // Best-effort: a ref with no machine sheet just yields marge_pct = null.
+    //
+    // `tarif` — where the price came from, so the chip can explain itself
+    // (LIVA #1151: a 2,30 € line read as « 40 % de marge » when it was simply
+    // the fiche's base price retained flat). The rule follows the line's
+    // origin: a mirrored line was priced by the ETM bridge under the legacy
+    // `'price-floor'` rule (max(cost / 0,7, base), the base retained bare); a
+    // native line was suggested under `'cost-floor'` (max(cost, base) / 0,7),
+    // and the user may have typed something else — `suggere` says what the
+    // rule would have given, `prix` is what the line carries.
     const marges = await Promise.all(lignesFixed.map(async (l) => {
       const refId = Number(l.IDreference) || 0
       const qty = Number(l.quantite) || 0
       const prix = Number(l.prix) || 0
       if (refId <= 0 || qty <= 0 || prix <= 0) return null
+      const regle: 'etm' | 'trm' = (Number(l.IDligne_commande_ETM) || 0) > 0 ? 'etm' : 'trm'
       try {
-        const cout = await prixDeRevientTRM(refId, qty)
-        if (!(cout > 0)) return null
-        return { cout: round2(cout), marge_pct: Math.round(((prix - cout) / prix) * 100) }
+        const d = await prixDeRevientTRMDetail(refId, qty, regle === 'etm' ? 'price-floor' : 'cost-floor')
+        const cout = d.costPerKg
+        return {
+          cout: cout > 0 ? round2(cout) : null,
+          marge_pct: cout > 0 ? Math.round(((prix - cout) / prix) * 100) : null,
+          tarif: {
+            regle,
+            cout: round2(cout),
+            // Under the ETM rule the computed assiette is already the marged
+            // price (cost / 0,7); under the TRM rule the rows are the bare
+            // assiettes and the margin sits on whichever wins.
+            prix_calcule: regle === 'etm' ? round2(d.salePrice) : round2(cout),
+            base: round2(d.floor),
+            suggere: d.retainedPrice,
+            retenu: d.retainedFrom,
+          },
+        }
       } catch {
         return null
       }
@@ -824,6 +848,7 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
         montant: round2(qty * prix),
         cout_revient: m?.cout ?? null,
         marge_pct: m?.marge_pct ?? null,
+        tarif: m?.tarif ?? null,
         nb_pieces: prod.nb_pieces,
         produit: prod.produit,
         expedie: prod.expedie,
