@@ -64,6 +64,7 @@ import {
   type DefautRow, type StockFilLot, type OfRow,
 } from '../lib/production-trm.js'
 import { rerankQueue, activeOfOnMachine, terminerOf, healHandedOverOfs } from '../lib/of-queue-trm.js'
+import { realisableSurLots } from '../lib/realisable-fil-trm.js'
 
 export const ofTrmRouter: RouterType = Router()
 
@@ -786,16 +787,6 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
     const refFilNames = await resolveRefFilNames(assoRaw.map((a: any) => Number(a.IDref_fil) || 0))
     const coloriFilNames = await resolveColoriFilNames(assoRaw.map((a: any) => Number(a.IDcolori_fil) || 0))
 
-    // Per-pair on-hand stock (all lots of the pair, not just the chosen one) —
-    // feeds both the Stock column and the Réalisable potential.
-    const pairStock = new Map<string, number>()
-    for (const a of assoRaw) {
-      const k = `${Number(a.IDref_fil) || 0}:${Number(a.IDcolori_fil) || 0}`
-      if (pairStock.has(k)) continue
-      const lots = await selectStockFilByPair(Number(a.IDref_fil) || 0, Number(a.IDcolori_fil) || 0)
-      pairStock.set(k, round2(lots.reduce((s, l) => s + l.stock, 0)))
-    }
-
     // « Hors réf » — the yarns this run knits that the reference's own
     // composition_ecru does not list. A deliberate variation: the régleur burns
     // internal stock on a run he knows the customer will not notice. The OF
@@ -827,24 +818,21 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
         coloris_label: coloriFilNames.get(cf) ?? '',
         pourcentage: Number(a.pourcentage) || 0,
         lot: lot?.lot ?? '',
+        // Stock of the CHOSEN lot — what the Stock column shows and what
+        // Réalisable is bounded by. Not the pair's total (LIVA #1147: 2 226 Kg
+        // read against a 380 Kg lot): the OF reserves a lot, the visitage
+        // decrements that lot, and the other lots may be another customer's yarn.
         lot_stock: lot?.stock ?? 0,
-        pair_stock: pairStock.get(`${rf}:${cf}`) ?? 0,
         // false, never null, when the reference declares no composition at all:
         // "everything is off-sheet" would be noise, not information.
         hors_ref: refPairs.size > 0 && !refPairs.has(`${rf}:${cf}`),
       }
     })
 
-    // Réalisable — yarn-limited potential over the OF's own composition: for
-    // each pair, on-hand kg ÷ its share of the blend, then the minimum (a
-    // blend only knits while every component lasts). Same algorithm as the
-    // commandes-trm stock-fil footer.
-    let potentiel = Infinity
-    for (const c of composition) {
-      if (c.pourcentage <= 0) continue
-      potentiel = Math.min(potentiel, (pairStock.get(`${c.IDref_fil}:${c.IDcolori_fil}`) ?? 0) / (c.pourcentage / 100))
-    }
-    if (!isFinite(potentiel)) potentiel = 0
+    // Réalisable — what the chosen lots still allow (`lib/realisable-fil-trm.ts`,
+    // the rule the web's « Finir le fil » estimate already applies). 0 when no
+    // line carries a lot: nothing knits without yarn.
+    const potentiel = realisableSurLots(composition) ?? 0
 
     // Incorporer — one-off extra lots fed alongside the recipe.
     const incRaw = await query<any>(
