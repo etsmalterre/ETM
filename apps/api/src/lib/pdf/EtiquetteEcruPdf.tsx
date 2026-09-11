@@ -18,10 +18,21 @@
 //
 // So the fields below are the legacy's, verbatim and in its order. What
 // changed is the dress: `TRM.jpg` (the old "Tricotage Malterre S.A.R.L."
-// pyramid) becomes the current Malterre wordmark, the values get a real
-// hierarchy against their labels, and a déclassé roll now says so on the
-// label — the legacy prints the same label for both choix, which is the one
-// thing a roll's own tag really ought to carry.
+// pyramid) becomes the Malterre M, the values get a real hierarchy against
+// their labels, and a déclassé roll now says so on the label — the legacy
+// prints the same label for both choix, which is the one thing a roll's own
+// tag really ought to carry.
+//
+// ⚠️ BLACK AND WHITE ONLY — by construction, and pinned by the test. A Dymo
+// LabelWriter is a thermal printer: no colour, and anything not near-black
+// comes out as grey dither. The first cut carried the gold M badge in the
+// left band; it printed as a mottled grey square, and there will never be a
+// colour label printer at the poste (user, 2026-09-11). The band is now a
+// single "stamp": the script M in black above the métier code knocked out of
+// a solid black cell, both inside one outlined frame — one object, the way a
+// rubber stamp reads, and every mark on the tag is solid ink or bare paper.
+// The same monochrome M already carries the brand on the ref_fini tag
+// (EtiquetteRefFiniPdf), for the same reason.
 //
 // Page is the Dymo 99012 "Large Address" 89 × 36 mm, same as
 // StockFiniLabelPdf / StockFilLabelPdf. Self-contained: built-in Helvetica
@@ -36,6 +47,7 @@ import { fileURLToPath } from 'url'
 // 89 × 36 mm in PostScript points (1 mm = 2.834646 pt).
 const PAGE_WIDTH = 89 * 2.834646 // ≈ 252.3
 const PAGE_HEIGHT = 36 * 2.834646 // ≈ 102.05
+const PAGE_PADDING_Y = 4
 
 // ⚠️ The LabelWriter's head does NOT reach the end of the label. Measured off a
 // printed tag (2026-08-27 — the DÉCLASSÉ pill came out sliced mid-word, "DÉCLASS"):
@@ -55,12 +67,19 @@ const SAFE_RIGHT = 26
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const ASSETS = path.resolve(__dirname, '../../assets')
-// The square M badge, not the wide wordmark (user decision, 2026-08-27): the
-// left band of a 89 × 36 label is tall and narrow, so a 2.5:1 wordmark has to
-// shrink to fit the width and then leaves the band half empty. The badge fills
-// it, and it survives the Dymo's thermal screen far better — the wordmark's
-// script strokes are the first thing to break up at that size.
-const LOGO_BUFFER: Buffer = fs.readFileSync(path.join(ASSETS, 'logo-m-email.png'))
+// The script M alone, black on transparent — derived from the gold badge
+// (logo-m-email.png: every non-gold pixel → ink, trimmed, squared). Shared
+// with EtiquetteRefFiniPdf. Not the badge itself: gold prints as dither, and a
+// black badge with the M knocked out was tried (2026-09-11) — a heavy block
+// that fought the DÉCLASSÉ pill, with the tricolour ribbon left as an odd
+// white notch.
+const LOGO_MONO_BUFFER: Buffer = fs.readFileSync(path.join(ASSETS, 'logo-m-mono.png'))
+
+// The two colours this tag is allowed to use — see the header. `INK` for type,
+// rules, the frame and the two solid cells; `PAPER` only for what is knocked
+// out of them. The test walks the stylesheet and fails on anything else.
+export const INK = '#000000'
+export const PAPER = '#FFFFFF'
 
 // ── Input shape ──────────────────────────────────────────
 
@@ -69,7 +88,7 @@ export interface EtiquetteEcruData {
   numero: string
   /** kg, as weighed at the poste. */
   poids: number
-  /** machine.emplacement (falls back to machine.nom) — the boxed code, "3E". */
+  /** machine.emplacement (falls back to machine.nom) — the stamped code, "3E". */
   metier: string
   /** ref_ecru.reference, e.g. "029". */
   ref: string
@@ -81,7 +100,7 @@ export interface EtiquetteEcruData {
   second_choix: 0 | 1
 }
 
-function fmtPoids(value: number): string {
+export function fmtPoids(value: number): string {
   const n = Number(value)
   if (!Number.isFinite(n)) return ''
   // The legacy's %5,2f — two decimals, French comma.
@@ -89,7 +108,7 @@ function fmtPoids(value: number): string {
 }
 
 /** The legacy's "JJ/MM/AAAA HH:mm:SS". */
-function fmtDate(ms: number | null): string {
+export function fmtDate(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return ''
   const d = new Date(ms)
   const p = (x: number) => String(x).padStart(2, '0')
@@ -98,54 +117,70 @@ function fmtDate(ms: number | null): string {
 
 // ── Styles ───────────────────────────────────────────────
 //
-// Monochrome by construction apart from the logo block: a Dymo LabelWriter is
-// a thermal printer, so anything that is not near-black prints as grey. Hence
-// black rules and a solid black DÉCLASSÉ pill rather than the app's amber.
+// Hierarchy is carried by size, weight and letter-spacing alone — there is no
+// grey to lean on. The small labels (N° · POIDS · RÉF.) are light, tracked
+// capitals beside their bold values: the legacy's "N° : " made typographic.
 
-const styles = StyleSheet.create({
+// The stamp: the band is 56 pt (50 of frame + 6 of gutter). Its height is the
+// page's inner height, so the frame runs the full depth of the body beside it.
+const STAMP_WIDTH = 50
+const STAMP_BORDER = 1.6
+const STAMP_RADIUS = 4
+const METIER_CELL_HEIGHT = 40
+
+export const styles = StyleSheet.create({
   page: {
     width: PAGE_WIDTH,
     height: PAGE_HEIGHT,
     flexDirection: 'row',
     fontFamily: 'Helvetica',
-    color: '#000000',
-    paddingVertical: 4,
+    color: INK,
+    paddingVertical: PAGE_PADDING_Y,
     paddingLeft: 5,
     paddingRight: SAFE_RIGHT,
   },
 
-  // Left column — brand above, métier below.
-  //
-  // ⚠️ INVARIANT: `logo.width` and `metierBox.width` must stay EQUAL, and the
-  // band is those 50pt plus the 6pt gutter. Two marks stacked at different
-  // widths read as two floating objects instead of one stamp — which is what
-  // happened when the label was scaled up to fill the tag and the two were
-  // grown independently (fixed 2026-08-27). Change one, change all three.
+  // Left band — the stamp.
   band: {
-    width: 56,
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    width: STAMP_WIDTH + 6,
     paddingRight: 6,
   },
-  // Square badge. Width tied to metierBox — see the band invariant above.
-  logo: {
-    width: 50,
-    height: 50,
+  // One outlined frame holding both cells. `overflow: 'hidden'` clips the
+  // black cell to the frame's rounded corners; the cell's own bottom radius is
+  // the frame's inner radius (outer − border), so the two agree even where a
+  // renderer ignores the clip.
+  stamp: {
+    width: STAMP_WIDTH,
+    height: PAGE_HEIGHT - 2 * PAGE_PADDING_Y,
+    borderWidth: STAMP_BORDER,
+    borderColor: INK,
+    borderRadius: STAMP_RADIUS,
+    flexDirection: 'column',
+    overflow: 'hidden',
   },
-  // The legacy's boxed métier code, kept — it is what the operator matches
-  // against the machine she is standing at. Height and font are what give:
-  // the width is fixed by the band invariant above.
-  metierBox: {
-    width: 50,
-    height: 40,
-    borderWidth: 1.6,
-    borderColor: '#000000',
-    borderRadius: 3,
+  // Top cell — the brand, ink on paper.
+  brandCell: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logo: {
+    width: 33,
+    height: 33,
+  },
+  // Bottom cell — the legacy's boxed métier code, kept as the thing the
+  // operator matches against the machine she is standing at, now knocked out
+  // of solid ink so it reads from across the atelier.
+  metierCell: {
+    height: METIER_CELL_HEIGHT,
+    backgroundColor: INK,
+    borderBottomLeftRadius: STAMP_RADIUS - STAMP_BORDER,
+    borderBottomRightRadius: STAMP_RADIUS - STAMP_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
   },
   metier: {
+    color: PAPER,
     fontFamily: 'Helvetica-Bold',
     fontSize: 21,
     letterSpacing: 0.5,
@@ -158,17 +193,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingLeft: 7,
     borderLeftWidth: 0.8,
-    borderLeftColor: '#000000',
+    borderLeftColor: INK,
   },
   headline: {
     flexDirection: 'row',
     alignItems: 'flex-end',
   },
   tag: {
-    fontSize: 8.5,
-    color: '#444444',
+    fontSize: 7.5,
+    letterSpacing: 0.6,
     marginRight: 4,
-    marginBottom: 1.5,
+    marginBottom: 2,
   },
   numero: {
     fontFamily: 'Helvetica-Bold',
@@ -188,17 +223,23 @@ const styles = StyleSheet.create({
   },
   rule: {
     borderBottomWidth: 0.7,
-    borderBottomColor: '#000000',
+    borderBottomColor: INK,
     marginTop: 5,
     marginBottom: 4,
   },
-  line: {
-    fontSize: 11,
-    lineHeight: 1.25,
+  refTag: {
+    fontSize: 7.5,
+    letterSpacing: 0.6,
+    marginRight: 4,
+    marginBottom: 1.5,
+  },
+  ref: {
+    fontFamily: 'Helvetica-Bold',
+    fontSize: 11.5,
+    lineHeight: 1,
   },
   date: {
-    fontSize: 9.5,
-    color: '#333333',
+    fontSize: 9,
     lineHeight: 1.25,
   },
 
@@ -213,15 +254,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginTop: 3,
   },
   declasseBox: {
-    backgroundColor: '#000000',
+    backgroundColor: INK,
     borderRadius: 2,
     paddingHorizontal: 5,
     paddingVertical: 2.5,
   },
   declasse: {
-    color: '#FFFFFF',
+    color: PAPER,
     fontFamily: 'Helvetica-Bold',
     fontSize: 8,
     letterSpacing: 0.6,
@@ -236,9 +278,13 @@ function Etiquette({ d }: { d: EtiquetteEcruData }): React.ReactElement {
   return (
     <Page size={[PAGE_WIDTH, PAGE_HEIGHT]} style={styles.page}>
       <View style={styles.band}>
-        <Image src={LOGO_BUFFER} style={styles.logo} />
-        <View style={styles.metierBox}>
-          <Text style={styles.metier}>{(d.metier ?? '').trim()}</Text>
+        <View style={styles.stamp}>
+          <View style={styles.brandCell}>
+            <Image src={LOGO_MONO_BUFFER} style={styles.logo} />
+          </View>
+          <View style={styles.metierCell}>
+            <Text style={styles.metier}>{(d.metier ?? '').trim()}</Text>
+          </View>
         </View>
       </View>
 
@@ -248,12 +294,15 @@ function Etiquette({ d }: { d: EtiquetteEcruData }): React.ReactElement {
           <Text style={styles.numero}>{(d.numero ?? '').trim()}</Text>
         </View>
         <View style={[styles.headline, { marginTop: 6 }]}>
-          <Text style={styles.tag}>Poids</Text>
+          <Text style={styles.tag}>POIDS</Text>
           <Text style={styles.poids}>{fmtPoids(d.poids)}</Text>
           <Text style={styles.unite}>Kg</Text>
         </View>
         <View style={styles.rule} />
-        <Text style={styles.line}>Réf. {refLine}</Text>
+        <View style={styles.headline}>
+          <Text style={styles.refTag}>RÉF.</Text>
+          <Text style={styles.ref}>{refLine}</Text>
+        </View>
         <View style={styles.footRow}>
           <Text style={styles.date}>{fmtDate(d.date_ms)}</Text>
           {d.second_choix === 1 && (

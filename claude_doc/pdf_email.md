@@ -31,9 +31,12 @@ Server-side PDF rendering for documents (`Bon de commande` shipped, `Devis` / `F
   has since moved back into the flow, but the trap is general.)
 - **Which logo file at label scale**: `logo-malterre-wide.png` is the wide wordmark and needs
   ~2.5:1 of room; on a Dymo 89 × 36 the left band is tall and narrow, so it shrinks to fit the
-  width and leaves the band half empty. Reach for the square badge **`logo-m-email.png`** there
-  — it also survives a thermal screen better, the script strokes being the first thing to break
-  up. Canonical: `EtiquetteEcruPdf.tsx`.
+  width and leaves the band half empty. Reach for the monogram there — and on a Dymo that means
+  **`logo-m-mono.png`** (the script M alone, black on transparent), never the gold badge
+  `logo-m-email.png`, which is for email and screen only: see the next bullet. Canonical:
+  `EtiquetteEcruPdf.tsx`, whose left band is a single outlined "stamp" — the mono M above the
+  métier code knocked out of a solid black cell (2026-09-11; its test rejects any stylesheet
+  colour but `#000000` / `#FFFFFF`).
 - ⚠️ **A Dymo label is BLACK AND WHITE** — the LabelWriter is a thermal printer: no colour at
   all, and anything not near-black dithers to grey. The client-facing ref_fini étiquette shipped
   its first cut with the gold M badge before the user pointed this out (2026-09-08); it now uses
