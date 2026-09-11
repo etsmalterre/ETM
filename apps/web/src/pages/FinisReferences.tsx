@@ -28,7 +28,6 @@ import {
   Save,
   Trash2,
   Info,
-  ChevronDown,
   CheckCircle2,
   Circle,
   Package,
@@ -47,7 +46,7 @@ import {
   Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
@@ -1153,6 +1152,16 @@ function TarifsPrintDialog({
 
 // ── Center: Detail Main ────────────────────────────────
 
+// ── Center panel: Classeur master tabs (§39) ───────────
+// One dataset at a time gets the full panel height — Spécifications is the
+// technical sheet, Coloris and Traitements are the two catalogs hanging off it.
+const MAIN_TABS = [
+  { key: 'specifications', label: 'Spécifications', icon: Package },
+  { key: 'coloris', label: 'Coloris', icon: Palette },
+  { key: 'traitements', label: 'Traitements', icon: Droplets },
+] as const
+type MainTab = (typeof MAIN_TABS)[number]['key']
+
 function DetailMain({
   detail,
   isLoading,
@@ -1172,6 +1181,10 @@ function DetailMain({
   onMutationSuccess: () => void
   ecruOptions: EcruRef[]
 }) {
+  const [activeTab, setActiveTab] = useState<MainTab>('specifications')
+  // Land on the technical sheet whenever the selection changes.
+  useEffect(() => { setActiveTab('specifications') }, [detail?.IDref_fini])
+
   if (!hasSelection) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -1193,11 +1206,41 @@ function DetailMain({
   }
   if (!detail) return null
 
+  const counts: Partial<Record<MainTab, number>> = {
+    coloris: detail.coloris.length,
+    traitements: detail.traitements.length,
+  }
+
   return (
-    <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
-      <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} ecruOptions={ecruOptions} />
-      <ColorisCard detail={detail} isEditing={isEditing} />
-      <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
+    <div className="flex-1 min-h-0 flex flex-col">
+      {/* Master tabs — header-submenu style pills on the natural background */}
+      <div className="flex-shrink-0 flex items-center gap-1 border-b border-border/60 pb-2">
+        {MAIN_TABS.map((t) => {
+          const Icon = t.icon
+          const active = activeTab === t.key
+          const count = counts[t.key]
+          return (
+            <button key={t.key} type="button" onClick={() => setActiveTab(t.key)}
+              className={cn('flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap',
+                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10 hover:text-accent')}>
+              <Icon className="h-3.5 w-3.5" />{t.label}
+              {/* Counts come from the already-loaded detail — no extra fetch,
+                  so the §39 "no count badges" rationale does not apply here. */}
+              {count != null && <span className="text-xs tabular-nums opacity-70">{count}</span>}
+            </button>
+          )
+        })}
+      </div>
+      {/* px-1/pb-1 keep focus rings and hover borders clear of the overflow clip (§31.5) */}
+      <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1 scrollbar-transparent">
+        {activeTab === 'specifications' && (
+          <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} ecruOptions={ecruOptions} />
+        )}
+        {activeTab === 'coloris' && <ColorisCard detail={detail} isEditing={isEditing} />}
+        {activeTab === 'traitements' && (
+          <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
+        )}
+      </div>
     </div>
   )
 }
@@ -1318,22 +1361,7 @@ function SpecsCard({
   const tileInput = 'h-8 w-full px-2 text-sm tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2">
-        <Package className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Spécifications</CardTitle>
-        <Badge
-          className={cn(
-            'ml-auto text-[10px] py-0 px-1.5 gap-1',
-            dyed
-              ? 'bg-accent-blue/10 text-accent-blue ring-1 ring-accent-blue/20'
-              : 'bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20',
-          )}
-        >
-          <Droplet className="h-2.5 w-2.5" />
-          {teintureLabel(detail.avec_teinture)}
-        </Badge>
-      </CardHeader>
-      <CardContent className="pb-4 space-y-3">
+      <CardContent className="pt-4 pb-4 space-y-3">
         {isEditing && (
           <LabeledInput
             label="Désignation"
@@ -1372,6 +1400,17 @@ function SpecsCard({
               <p className="text-sm text-muted-foreground italic">Aucune référence écru liée</p>
             )}
           </div>
+          <Badge
+            className={cn(
+              'flex-shrink-0 text-[10px] py-0 px-1.5 gap-1',
+              dyed
+                ? 'bg-accent-blue/10 text-accent-blue ring-1 ring-accent-blue/20'
+                : 'bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20',
+            )}
+          >
+            <Droplet className="h-2.5 w-2.5" />
+            {teintureLabel(detail.avec_teinture)}
+          </Badge>
         </div>
 
         {/* Row 1 — the three scalar figures */}
@@ -1528,33 +1567,25 @@ function SpecsCard({
 // ── Coloris Card (read-only, polymorphic) ──────────────
 
 function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: boolean }) {
-  const [open, setOpen] = useState(false)
   const dyed = detail.coloris_mode === 'dye'
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader
-        className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-        onClick={() => setOpen(!open)}
-      >
-        <Palette className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Coloris</CardTitle>
-        <Badge
-          className={cn(
-            'text-[10px] py-0 px-1.5 ml-auto',
-            dyed
-              ? 'bg-accent-blue/10 text-accent-blue ring-1 ring-accent-blue/20'
-              : 'bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20',
-          )}
-        >
-          {dyed ? 'Teinture' : 'Écru'}
-        </Badge>
-        <Badge variant="secondary" className="text-xs">
-          {detail.coloris.length}
-        </Badge>
-        <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-      </CardHeader>
-      {open && (
-        <CardContent className="space-y-2 pb-3">
+        <CardContent className="pt-4 space-y-2 pb-3">
+          <div className="flex items-center gap-2">
+            <Badge
+              className={cn(
+                'text-[10px] py-0 px-1.5',
+                dyed
+                  ? 'bg-accent-blue/10 text-accent-blue ring-1 ring-accent-blue/20'
+                  : 'bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20',
+              )}
+            >
+              {dyed ? 'Teinture' : 'Écru'}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              {dyed ? 'Coloris de teinture de la référence' : 'Coloris écru de la référence de base'}
+            </span>
+          </div>
           {detail.coloris.length === 0 ? (
             <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
           ) : (
@@ -1576,7 +1607,6 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
             Les coloris se gèrent dans Finis › Études coloris.
           </p>
         </CardContent>
-      )}
     </Card>
   )
 }
@@ -1599,16 +1629,11 @@ function TraitementsCard({
   detail: RefFiniDetail; isEditing: boolean; onMutationSuccess: () => void
 }) {
   const queryClient = useQueryClient()
-  const [open, setOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Traitement | null>(null)
   const [addError, setAddError] = useState<string | null>(null)
 
   // The add picker lives inside the collapsed body — unfold it when editing
   // starts so the affordance is visible without a second click.
-  useEffect(() => {
-    if (isEditing) setOpen(true)
-  }, [isEditing])
-
   const { data: catalog } = useQuery<TraitementLookup[]>({
     queryKey: ['ref-fini-lookup-traitements'],
     queryFn: () => apiFetch('/references-fini/lookups/traitements'),
@@ -1655,19 +1680,7 @@ function TraitementsCard({
   return (
     <>
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardHeader
-          className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-          onClick={() => setOpen(!open)}
-        >
-          <Droplets className="h-4 w-4 text-accent" />
-          <CardTitle className="text-sm font-semibold">Traitements</CardTitle>
-          <Badge variant="secondary" className="text-xs ml-auto">
-            {detail.traitements.length}
-          </Badge>
-          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-        </CardHeader>
-        {open && (
-          <CardContent className="pb-3 space-y-2">
+          <CardContent className="pt-4 pb-3 space-y-2">
             {detail.traitements.length === 0 ? (
               <p className="text-sm text-muted-foreground italic">Aucun traitement</p>
             ) : (
@@ -1717,7 +1730,6 @@ function TraitementsCard({
               </div>
             )}
           </CardContent>
-        )}
       </Card>
       <ConfirmDialog
         open={deleteTarget !== null}
