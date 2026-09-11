@@ -18,6 +18,10 @@ export interface TraitementCatalogRow {
 export interface RefTraitementRow {
   IDtraitement: number
   designation: string | null
+  /** Catalog process order (`traitement.ordre`) — the fiche draws the steps in it. */
+  ordre: number
+  /** Catalog note on the treatment (`traitement.observation`), trimmed, null when empty. */
+  observation: string | null
 }
 
 /** Catalog rows in display order, soft-deleted ones excluded. */
@@ -39,15 +43,20 @@ export async function loadTraitementCatalog(): Promise<TraitementCatalogRow[]> {
 
 /** Treatments attached to one `ref_fini`, in catalog order. */
 export async function loadRefFiniTraitements(IDref_fini: number): Promise<RefTraitementRow[]> {
-  const tr = await query<{ IDtraitement: number; designation: string | null; ordre: number | null }>(
-    `SELECT t.IDtraitement, t.designation, t.ordre
+  const tr = await query<{ IDtraitement: number; designation: string | null; ordre: number | null; observation: string | null }>(
+    `SELECT t.IDtraitement, t.designation, t.ordre, t.observation
        FROM traitement_ref_fini trf
        JOIN traitement t ON trf.IDtraitement = t.IDtraitement
       WHERE trf.IDref_fini = ${IDref_fini}
       ORDER BY t.ordre`,
   )
-  const fixed = (await fixEncoding(tr as any[], 'traitement', 'IDtraitement', ['designation'])) as any[]
-  return fixed.map((t) => ({ IDtraitement: Number(t.IDtraitement), designation: t.designation ?? null }))
+  const fixed = (await fixEncoding(tr as any[], 'traitement', 'IDtraitement', ['designation', 'observation'])) as any[]
+  return fixed.map((t) => ({
+    IDtraitement: Number(t.IDtraitement),
+    designation: t.designation ?? null,
+    ordre: Number(t.ordre) || 0,
+    observation: (t.observation ?? '').toString().trim() || null,
+  }))
 }
 
 export type AttachResult = 'ok' | 'ref_not_found' | 'traitement_not_found' | 'deja_associe'

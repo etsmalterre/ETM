@@ -346,22 +346,89 @@ referencesFiniRouter.get('/:id', async (req: Request, res: Response) => {
 
     // Coloris — polymorphic by avec_teinture. ref_fini_colori / colori_ecru only
     // ever read with explicit columns (SELECT * fails on both tables).
-    let coloris: Array<{ id: number; reference: string | null; IDteinture: number | null }> = []
+    // The fiche's Coloris tab is a table: besides the label it shows the dye
+    // type (dyed catalog), the catalog note, a GOTS flag and the live
+    // stock per coloris — every lookup batched, every query flat.
+    interface ColorisOut {
+      id: number
+      reference: string | null
+      IDteinture: number | null
+      teinture: string | null
+      gots: number
+      client: string | null
+      note: string | null
+      stock_lots: number
+      stock_kg: number
+      stock_m: number
+    }
+    let coloris: ColorisOut[] = []
     const coloris_mode: 'dye' | 'wash' = ref.avec_teinture !== 0 ? 'dye' : 'wash'
     if (coloris_mode === 'dye') {
-      const cr = await query<{ IDref_fini_colori: number; reference: string | null; IDteinture: number | null }>(
-        `SELECT IDref_fini_colori, reference, IDteinture FROM ref_fini_colori WHERE IDref_fini = ${id} ORDER BY reference`,
+      const cr = await query<{ IDref_fini_colori: number; reference: string | null; IDteinture: number | null; gots: number | null }>(
+        `SELECT IDref_fini_colori, reference, IDteinture, gots FROM ref_fini_colori WHERE IDref_fini = ${id} ORDER BY reference`,
       )
       const crFixed = (await fixEncoding(cr, 'ref_fini_colori', 'IDref_fini_colori', ['reference'])) as any[]
-      coloris = crFixed.map((c) => ({ id: Number(c.IDref_fini_colori), reference: c.reference ?? null, IDteinture: toNumOrNull(c.IDteinture) }))
+      // Dye-type labels (teinture catalog), one query. designation_externe
+      // already carries the level (« Coloration Simple Teinture »).
+      const teintureIds = Array.from(new Set(crFixed.map((c) => Number(c.IDteinture) || 0).filter((x) => x > 0)))
+      const teintureById = new Map<number, string>()
+      if (teintureIds.length > 0) {
+        const tRows = await query<{ IDteinture: number; designation_externe: string | null }>(
+          `SELECT IDteinture, designation_externe FROM teinture WHERE IDteinture IN (${teintureIds.join(',')})`,
+        )
+        const tFixed = (await fixEncoding(tRows, 'teinture', 'IDteinture', ['designation_externe'])) as any[]
+        for (const t of tFixed) {
+          const label = (t.designation_externe ?? '').toString().trim()
+          if (label) teintureById.set(Number(t.IDteinture), label)
+        }
+      }
+      coloris = crFixed.map((c) => ({
+        id: Number(c.IDref_fini_colori),
+        reference: c.reference ?? null,
+        IDteinture: toNumOrNull(c.IDteinture),
+        teinture: teintureById.get(Number(c.IDteinture) || 0) ?? null,
+        gots: Number(c.gots) ? 1 : 0,
+        client: null,
+        note: null,
+        stock_lots: 0, stock_kg: 0, stock_m: 0,
+      }))
     } else if (ref.IDref_ecru > 0) {
-      const cr = await query<{ IDcolori_ecru: number; reference: string | null }>(
-        `SELECT IDcolori_ecru, reference FROM colori_ecru WHERE IDref_ecru = ${ref.IDref_ecru} ORDER BY reference`,
+      const cr = await query<{ IDcolori_ecru: number; reference: string | null; commentaire: string | null }>(
+        `SELECT IDcolori_ecru, reference, commentaire FROM colori_ecru WHERE IDref_ecru = ${ref.IDref_ecru} ORDER BY reference`,
       )
-      const crFixed = (await fixEncoding(cr, 'colori_ecru', 'IDcolori_ecru', ['reference'])) as any[]
-      coloris = crFixed.map((c) => ({ id: Number(c.IDcolori_ecru), reference: c.reference ?? null, IDteinture: null }))
+      const crFixed = (await fixEncoding(cr, 'colori_ecru', 'IDcolori_ecru', ['reference', 'commentaire'])) as any[]
+      coloris = crFixed.map((c) => ({
+        id: Number(c.IDcolori_ecru),
+        reference: c.reference ?? null,
+        IDteinture: null,
+        teinture: null,
+        gots: 0,
+        client: null,
+        note: (c.commentaire ?? '').toString().trim() || null,
+        stock_lots: 0, stock_kg: 0, stock_m: 0,
+      }))
     }
     coloris = coloris.filter((c) => c.reference && String(c.reference).trim().length > 0)
+
+    // Live stock per coloris (same "not shipped" predicate as the aggregate
+    // below). Single-table GROUP BY, no CONVERT — safe on the bridge.
+    if (coloris.length > 0) {
+      const byColoris = new Map(coloris.map((c) => [c.id, c]))
+      const sc = await query<{ IDColoris: number; lots: number; kg: number | null; m: number | null }>(
+        `SELECT IDColoris, COUNT(*) AS lots, SUM(poids) AS kg, SUM(metrage) AS m FROM stock_fini
+         WHERE IDref_fini = ${id}
+           AND (IDligne_expedition IS NULL OR IDligne_expedition = 0)
+           AND (IDetat_stock_fini IS NULL OR IDetat_stock_fini <> 4)
+         GROUP BY IDColoris`,
+      )
+      for (const r of sc) {
+        const c = byColoris.get(Number(r.IDColoris))
+        if (!c) continue
+        c.stock_lots = Number(r.lots) || 0
+        c.stock_kg = Number(r.kg) || 0
+        c.stock_m = Number(r.m) || 0
+      }
+    }
 
     // Traitements via traitement_ref_fini (ASCII junction) → traitement.
     const traitements = await loadRefFiniTraitements(id)

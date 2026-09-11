@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef, type ComponentType } from 'react'
+import { Fragment, useState, useMemo, useEffect, useCallback, useRef, type ComponentType } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -29,6 +29,8 @@ import {
   Trash2,
   Info,
   CheckCircle2,
+  ChevronRight,
+  Leaf,
   Circle,
   Package,
   Ruler,
@@ -75,11 +77,24 @@ interface Coloris {
   id: number
   reference: string | null
   IDteinture: number | null
+  /** Dye-type label from the teinture catalog (dyed refs only). */
+  teinture: string | null
+  gots: number
+  client: string | null
+  /** Catalog note (colori_ecru.commentaire on washed refs). */
+  note: string | null
+  /** Live stock of this coloris — same "not shipped" rule as the sidebar total. */
+  stock_lots: number
+  stock_kg: number
+  stock_m: number
 }
 
 interface Traitement {
   IDtraitement: number
   designation: string | null
+  /** Catalog process order — the tab draws the steps in it. */
+  ordre: number
+  observation: string | null
 }
 
 interface EcruRef {
@@ -1301,7 +1316,7 @@ function TileRangeInputs({
   min: string; moy: string; max: string
   onChange: (next: { min: string; moy: string; max: string }) => void
 }) {
-  const cell = 'h-8 w-full px-1.5 text-sm text-center tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
+  const cell = 'h-8 w-full px-1 text-sm text-center tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
   return (
     <div className="grid grid-cols-3 gap-1">
       {([['min', min], ['moy', moy], ['max', max]] as const).map(([k, v]) => (
@@ -1568,45 +1583,106 @@ function SpecsCard({
 
 function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: boolean }) {
   const dyed = detail.coloris_mode === 'dye'
+  const [q, setQ] = useState('')
+  // Reset the filter when the selection changes — a term typed for one ref
+  // silently emptying the next one's table reads as "no coloris".
+  useEffect(() => { setQ('') }, [detail.IDref_fini])
+  const rows = useMemo(() => {
+    const t = q.trim().toLowerCase()
+    if (!t) return detail.coloris
+    return detail.coloris.filter((c) =>
+      [c.reference, c.teinture, c.note].some((v) => (v ?? '').toLowerCase().includes(t)),
+    )
+  }, [detail.coloris, q])
+  const inStock = detail.coloris.filter((c) => c.stock_lots > 0).length
+  const hasNotes = detail.coloris.some((c) => !!c.note)
+  const hasGots = detail.coloris.some((c) => !!c.gots)
+
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardContent className="pt-4 space-y-2 pb-3">
-          <div className="flex items-center gap-2">
-            <Badge
-              className={cn(
-                'text-[10px] py-0 px-1.5',
-                dyed
-                  ? 'bg-accent-blue/10 text-accent-blue ring-1 ring-accent-blue/20'
-                  : 'bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20',
-              )}
-            >
-              {dyed ? 'Teinture' : 'Écru'}
-            </Badge>
-            <span className="text-xs text-muted-foreground">
-              {dyed ? 'Coloris de teinture de la référence' : 'Coloris écru de la référence de base'}
-            </span>
-          </div>
-          {detail.coloris.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {detail.coloris.map((c) => (
-                <Badge
-                  key={c.id}
-                  variant="secondary"
-                  className="text-[11px] py-0.5 px-2 gap-1 font-normal"
-                >
-                  <Palette className="h-2.5 w-2.5 text-muted-foreground" />
-                  {c.reference ?? '—'}
-                </Badge>
-              ))}
+      <CardContent className="pt-4 pb-3 space-y-3">
+        {/* Caption row: mode badge, counts, filter */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Badge
+            className={cn(
+              'text-[10px] py-0 px-1.5',
+              dyed
+                ? 'bg-accent-blue/10 text-accent-blue ring-1 ring-accent-blue/20'
+                : 'bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20',
+            )}
+          >
+            {dyed ? 'Teinture' : 'Écru'}
+          </Badge>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {detail.coloris.length} coloris
+            {inStock > 0 && <> · <span className="font-medium text-foreground">{inStock}</span> en stock</>}
+          </span>
+          {detail.coloris.length > 8 && (
+            <div className="relative ml-auto w-56 max-w-full">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <input
+                type="text"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Filtrer les coloris"
+                className="h-8 w-full pl-8 pr-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+              />
             </div>
           )}
-          <p className="text-[11px] text-muted-foreground/70 italic flex items-center gap-1.5 pt-1">
-            <Lock className="h-3 w-3" />
-            Les coloris se gèrent dans Finis › Études coloris.
-          </p>
-        </CardContent>
+        </div>
+
+        {detail.coloris.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic">Aucun coloris ne correspond au filtre</p>
+        ) : (
+          <div className="rounded-lg border border-border/60 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-zinc-200/60 border-b border-border/60">
+                <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+                  <th className="px-3 py-2 text-left font-semibold">Coloris</th>
+                  {dyed && <th className="px-3 py-2 text-left font-semibold">Teinture</th>}
+                  {hasNotes && <th className="px-3 py-2 text-left font-semibold">Note</th>}
+                  <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">Stock</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((c) => (
+                  <tr key={c.id} className="border-b border-border/40 last:border-b-0 hover:bg-accent/5 transition-colors">
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Palette className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                        <span className="font-medium truncate">{c.reference ?? '—'}</span>
+                        {hasGots && !!c.gots && (
+                          <Badge variant="outline" className="text-[10px] py-0 gap-0.5 border-green-600/30 text-green-700 flex-shrink-0">
+                            <Leaf className="h-2.5 w-2.5" />GOTS
+                          </Badge>
+                        )}
+                      </div>
+                    </td>
+                    {dyed && <td className="px-3 py-2 text-xs text-muted-foreground">{c.teinture ?? '—'}</td>}
+                    {hasNotes && <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-[220px]" title={c.note ?? undefined}>{c.note ?? ''}</td>}
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">
+                      {c.stock_lots > 0 ? (
+                        <>
+                          <span className="font-semibold">{fmtNum(c.stock_kg, 1)} kg</span>
+                          <span className="text-[11px] text-muted-foreground"> · {c.stock_lots} lot{c.stock_lots > 1 ? 's' : ''}</span>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground/40">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-[11px] text-muted-foreground/70 italic flex items-center gap-1.5">
+          <Lock className="h-3 w-3" />
+          Les coloris se gèrent dans Finis › Études coloris.
+        </p>
+      </CardContent>
     </Card>
   )
 }
@@ -1677,57 +1753,68 @@ function TraitementsCard({
     [catalog, attached],
   )
 
+  const steps = detail.traitements
+  const stepClass = 'flex items-center gap-2.5 rounded-lg border border-border/60 bg-zinc-100/80 pl-2.5 pr-3 py-2 min-w-0'
+
   return (
     <>
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
-          <CardContent className="pt-4 pb-3 space-y-2">
-            {detail.traitements.length === 0 ? (
+          <CardContent className="pt-4 pb-3 space-y-3">
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {steps.length} traitement{steps.length > 1 ? 's' : ''}
+              {steps.length > 1 && ' · dans l\u2019ordre du process'}
+            </p>
+            {steps.length === 0 && !isEditing ? (
               <p className="text-sm text-muted-foreground italic">Aucun traitement</p>
             ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {detail.traitements.map((t) =>
-                  isEditing ? (
-                    <Badge
-                      key={t.IDtraitement}
-                      className="bg-accent/10 text-accent hover:bg-accent/20 border-accent/20 gap-1"
-                    >
-                      {t.designation ?? `#${t.IDtraitement}`}
-                      <button
-                        type="button"
-                        onClick={() => setDeleteTarget(t)}
-                        className="ml-0.5 rounded-full hover:bg-destructive/20 hover:text-destructive p-0.5 -mr-1 transition-colors"
-                        title="Retirer ce traitement"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </Badge>
-                  ) : (
-                    <Badge key={t.IDtraitement} variant="secondary" className="text-[11px] py-0.5 px-2 gap-1 font-normal">
-                      <Droplets className="h-2.5 w-2.5 text-muted-foreground" />
-                      {t.designation ?? '—'}
-                    </Badge>
-                  ),
+              <div className="flex flex-wrap items-center gap-2">
+                {steps.map((t, i) => (
+                  <Fragment key={t.IDtraitement}>
+                    {i > 0 && <ChevronRight className="h-4 w-4 text-muted-foreground/50 flex-shrink-0" />}
+                    <div className={stepClass}>
+                      <span className="h-6 w-6 rounded-full bg-accent text-accent-foreground text-xs font-bold flex items-center justify-center flex-shrink-0 tabular-nums">
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{t.designation ?? `#${t.IDtraitement}`}</p>
+                        {t.observation && <p className="text-[11px] text-muted-foreground truncate">{t.observation}</p>}
+                      </div>
+                      {isEditing && (
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(t)}
+                          className="ml-1 rounded-full p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors flex-shrink-0"
+                          title="Retirer ce traitement"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </Fragment>
+                ))}
+                {isEditing && (
+                  <>
+                    {steps.length > 0 && <ChevronRight className="h-4 w-4 text-muted-foreground/50 flex-shrink-0" />}
+                    <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-2 py-1.5">
+                      <PopoverSelect
+                        size="sm"
+                        value={0}
+                        onChange={(id) => { if (id > 0) addMut.mutate(id) }}
+                        emptyLabel="+ Ajouter un traitement"
+                        options={options}
+                        disabled={addMut.isPending || (catalog !== undefined && options.length === 0)}
+                        disabledTitle={options.length === 0 ? 'Tous les traitements sont déjà associés' : undefined}
+                      />
+                      {addMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />}
+                    </div>
+                  </>
                 )}
               </div>
             )}
-            {isEditing && (
-              <div className="pt-1 flex items-center gap-2 flex-wrap">
-                <PopoverSelect
-                  size="sm"
-                  value={0}
-                  onChange={(id) => { if (id > 0) addMut.mutate(id) }}
-                  emptyLabel="+ Ajouter un traitement"
-                  options={options}
-                  disabled={addMut.isPending || (catalog !== undefined && options.length === 0)}
-                  disabledTitle={options.length === 0 ? 'Tous les traitements sont déjà associés' : undefined}
-                />
-                {addMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />}
-                {addError && (
-                  <span className="text-[11px] text-destructive flex items-center gap-1">
-                    <AlertCircle className="h-3 w-3" />{addError}
-                  </span>
-                )}
-              </div>
+            {addError && (
+              <span className="text-[11px] text-destructive flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" />{addError}
+              </span>
             )}
           </CardContent>
       </Card>
