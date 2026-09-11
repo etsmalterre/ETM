@@ -88,7 +88,7 @@ Load these on demand when working on the matching topic:
 | `claude_doc/dev_setup.md` | Fresh-machine setup: HFSQL server/driver, `.env.development`, dev ports |
 | `claude_doc/implemented_screens.md` | Canonical reference screens (Entreprises, Fournisseurs, Commandes, Stock) — grep first before inventing patterns |
 | `claude_doc/auth_permissions.md` | Cookie auth picker, effective vs session admin, permission catalog, screen access (menu/screen visibility), admin guard |
-| `claude_doc/pdf_email.md` | `@react-pdf/renderer` gotchas, Gmail DWD setup, per-document email endpoint pattern — **and how to verify a PDF you changed** (rasterize, or assert on the element tree; read this BEFORE inventing a way to check your output) |
+| `claude_doc/pdf_email.md` | `@react-pdf/renderer` gotchas, Gmail DWD setup, per-document email endpoint pattern — **and how to verify a PDF you changed** (rasterize, or assert on the element tree; read this BEFORE inventing a way to check your output). ⚠️ **No `marginBottom` on a wrapping lines table** — the paginator counts it as presence and moves the table WHOLE to the next page when only the margin overflows (blank page 1, #1148); the gap goes on the next block's `marginTop` |
 | `claude_doc/legacy_tables.md` | All 204 HFSQL tables with fields |
 | `claude_doc/legacy_windows.md` | All 319 windows + 49 reports |
 | `claude_doc/navigation_mapping.md` | Legacy windows → ETM routes |
