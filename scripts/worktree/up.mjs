@@ -124,9 +124,7 @@ async function pickMainApi(preferred) {
 // VITE_WORKTREE_LABEL in dev (see its main.tsx). Returns the files it changed.
 const TRM_APPS = ['apps/web', 'apps/atelier', 'apps/trs']
 function writeTrmEnvLocal(wt, api, feature) {
-  const next = `VITE_API_URL=http://localhost:${api}/api
-VITE_WORKTREE_LABEL=${feature}
-`
+  const next = `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n`
   const changed = []
   for (const app of TRM_APPS) {
     if (!fs.existsSync(path.join(wt, app))) continue
@@ -263,8 +261,11 @@ if (isRestart) {
   // Label the web dev server's browser tab with the branch so parallel worktree
   // tabs are distinguishable. Vite reads .env.development.local (gitignored); the
   // app prefixes document.title from VITE_WORKTREE_LABEL in dev (see main.tsx).
-  writeTrmEnvLocal(wt, api, feature)
-  console.log(`Wrote .env.development.local for ${TRM_APPS.join(', ')} (API → :${api}, tab label "${feature}").`)
+  fs.writeFileSync(
+    path.join(wt, 'apps/web/.env.development.local'),
+    `VITE_WORKTREE_LABEL=${feature}\n`,
+  )
+  console.log(`Wrote apps/web/.env.development.local (tab label "${feature}").`)
 
   // Secrets (Google service-account key) for email/PDF — copy if present.
   const srcSecrets = path.join(main, 'apps/api/secrets')
@@ -275,11 +276,8 @@ if (isRestart) {
 } else {
   // TRM: web-only. Point VITE_API_URL at the chosen ETM API and label the tab.
   // The dev:517N scripts don't bake VITE_API_URL, so this .env value wins.
-  fs.writeFileSync(
-    path.join(wt, 'apps/web/.env.development.local'),
-    `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n`,
-  )
-  console.log(`Wrote apps/web/.env.development.local (API → :${api}, tab label "${feature}").`)
+  writeTrmEnvLocal(wt, api, feature)
+  console.log(`Wrote .env.development.local for ${TRM_APPS.join(', ')} (API → :${api}, tab label "${feature}").`)
 }
 
 const logDir = path.join(wt, '.dev-logs')
