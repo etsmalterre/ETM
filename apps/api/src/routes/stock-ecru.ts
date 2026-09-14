@@ -44,14 +44,64 @@ function sqlText(value: string | null | undefined): string {
   return `x'${bytes.toString('hex')}'`
 }
 
-// stock_ecru and the tables we join (ref_ecru, colori_ecru, sous_traitant) have
-// NO accented columns in the fields we read, so the IS_WINDOWS branching from
-// stock.ts is not needed on the base query — every selected column name is
-// ASCII. Accented *values* in numero/lot/observations/visiteur and the joined
-// labels are repaired afterwards via repairAliased (batched CONVERT).
-const STOCK_ECRU_SELECT = `se.IDstock_ecru, se.IDref_ecru, se.IDcolori_ecru, se.IDmagasin, se.IDordre_fabrication, se.IDref_commande_source, se.IDref_commande_affectation, se.IDligne_commande_client, se.poids, se.metrage, se.lot, se.numero, se.observations, se.visiteur, se.second_choix, se.date_saisie, re.reference AS ref_ecru, ce.reference AS coloris_reference, st.nom AS magasin_nom`
+// stock_ecru has NO accented column names in the fields we read, so the
+// IS_WINDOWS branching from stock.ts is not needed — every selected column
+// name is ASCII. Accented *values* in numero/lot/observations/visiteur are
+// repaired afterwards via repairAliased (batched CONVERT).
+//
+// Perf shape (LIVA #1156 audit, 2026-09-14, measured on the dev copy with
+// `scripts/probe-1156-ecru-perf*.ts`, full story in hfsql_odbc.md § Footguns):
+//   - ONE select, NO JOINs. The three LEFT JOINs (ref_ecru / colori_ecru /
+//     sous_traitant) cost ~90 ms per list; the labels are resolved afterwards
+//     by three flat `IN (...)` lookups over the ~70 distinct ids (~30 ms) —
+//     attachEcruLabels.
+//   - `observations` (MEMO) is read INLINE on purpose, although it is ~230 ms
+//     of the select when the server is fast and only 160 of 762 rows carry
+//     one: the same WHERE costs ~1.6 s whatever the columns when the server
+//     is in its slow state, so a second "memo where present" select doubled
+//     the list time there (3.5 s vs 2.5 s, interleaved A/B). One pass over
+//     the population, always.
+const STOCK_ECRU_SELECT = `se.IDstock_ecru, se.IDref_ecru, se.IDcolori_ecru, se.IDmagasin, se.IDordre_fabrication, se.IDref_commande_source, se.IDref_commande_affectation, se.IDligne_commande_client, se.poids, se.metrage, se.lot, se.numero, se.observations, se.visiteur, se.second_choix, se.date_saisie`
+const STOCK_ECRU_FROM = `FROM stock_ecru se`
 
-const STOCK_ECRU_JOINS = `FROM stock_ecru se LEFT JOIN ref_ecru re ON se.IDref_ecru = re.IDref_ecru LEFT JOIN colori_ecru ce ON se.IDcolori_ecru = ce.IDcolori_ecru LEFT JOIN sous_traitant st ON se.IDmagasin = st.IDsous_traitant`
+/** Split an id list into `IN (...)` chunks: HFSQL stops using the index above
+ *  a few hundred literals (defaut_qualite: 439 ms for one 766-item list vs
+ *  164 ms for 16 lists of 50). */
+function chunks<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+/** Resolve the three display labels (ref_ecru / coloris / magasin) for a batch
+ *  of écru rows with flat lookups instead of JOINs on the list query. Each
+ *  lookup is one `IN (...)` query over the distinct ids plus a batched accent
+ *  repair (repairAliased). Sets ref_ecru / coloris_reference / magasin_nom. */
+async function attachEcruLabels(rows: StockEcru[]): Promise<void> {
+  const distinct = (key: string) =>
+    Array.from(new Set(rows.map((r) => Number((r as any)[key]) || 0).filter((x) => x > 0)))
+  const lookup = async (table: string, pk: string, col: string, ids: number[]): Promise<Map<number, string | null>> => {
+    const out = new Map<number, string | null>()
+    if (ids.length === 0) return out
+    let found: Record<string, unknown>[] = []
+    for (const part of chunks(ids, 200)) {
+      found = found.concat(await query<Record<string, unknown>>(`SELECT ${pk}, ${col} FROM ${table} WHERE ${pk} IN (${part.join(',')})`))
+    }
+    const fixed = await repairAliased(found, table, pk, { [col]: col })
+    for (const r of fixed) out.set(Number(r[pk]), (r[col] ?? null) as string | null)
+    return out
+  }
+  const [refs, coloris, magasins] = await Promise.all([
+    lookup('ref_ecru', 'IDref_ecru', 'reference', distinct('IDref_ecru')),
+    lookup('colori_ecru', 'IDcolori_ecru', 'reference', distinct('IDcolori_ecru')),
+    lookup('sous_traitant', 'IDsous_traitant', 'nom', distinct('IDmagasin')),
+  ])
+  for (const r of rows as any[]) {
+    r.ref_ecru = refs.get(Number(r.IDref_ecru) || 0) ?? null
+    r.coloris_reference = coloris.get(Number(r.IDcolori_ecru) || 0) ?? null
+    r.magasin_nom = magasins.get(Number(r.IDmagasin) || 0) ?? null
+  }
+}
 
 const TEXT_FIELDS = ['numero', 'lot', 'observations', 'visiteur']
 
@@ -89,20 +139,32 @@ export async function fetchDefectsByEcru(ecruIds: number[]): Promise<Map<number,
   const out = new Map<number, DefautQualite[]>()
   const ids = Array.from(new Set(ecruIds.filter((x) => Number.isInteger(x) && x > 0)))
   if (ids.length === 0) return out
-  const inList = ids.map((x) => `'${x}'`).join(',')
-  const rows = await query<{
+  // `reference` is a STRING column: one 766-literal IN list makes HFSQL scan
+  // the 12k écru defects (439 ms); chunks of 50 stay on the index (164 ms).
+  type DefRow = {
     IDdefaut_qualite: number
     reference: string | null
     description: string | null
     type_defaut: string | null
     taille_cm: number | null
     nombre: number | null
-  }>(
-    `SELECT IDdefaut_qualite, reference, description, type_defaut, taille_cm, nombre
-     FROM defaut_qualite
-     WHERE Type_Reference = 2 AND reference IN (${inList})`,
-  )
-  const fixed = await fixEncoding(rows, 'defaut_qualite', 'IDdefaut_qualite', ['description', 'type_defaut'])
+  }
+  let rows: DefRow[] = []
+  for (const part of chunks(ids, 50)) {
+    rows = rows.concat(
+      await query<DefRow>(
+        `SELECT IDdefaut_qualite, reference, description, type_defaut, taille_cm, nombre
+         FROM defaut_qualite
+         WHERE Type_Reference = 2 AND reference IN (${part.map((x) => `'${x}'`).join(',')})`,
+      ),
+    )
+  }
+  // Accent repair in ONE batched CONVERT over the corrupted rows ("Démaillage"
+  // is on a third of them) instead of fixEncoding's per-row query each.
+  const fixed = await repairAliased(rows as unknown as Record<string, unknown>[], 'defaut_qualite', 'IDdefaut_qualite', {
+    description: 'description',
+    type_defaut: 'type_defaut',
+  })
   for (const d of fixed as any[]) {
     const ecruId = parseInt(String(d.reference ?? ''), 10)
     if (!Number.isInteger(ecruId)) continue
@@ -183,15 +245,14 @@ export async function resolveClientReservations(lccIds: number[]): Promise<Map<n
  *  attach the resolved client reservation (N° commande + client) and the
  *  défauts summary. Shared by the list and detail endpoints. */
 async function hydrateEcruRows(rows: StockEcru[]): Promise<StockEcru[]> {
-  let fixed = await repairAliased(rows, 'stock_ecru', 'IDstock_ecru', {
+  const fixed = await repairAliased(rows, 'stock_ecru', 'IDstock_ecru', {
     numero: 'numero',
     lot: 'lot',
     observations: 'observations',
     visiteur: 'visiteur',
   })
-  fixed = await repairAliased(fixed, 'ref_ecru', 'IDref_ecru', { ref_ecru: 'reference' })
-  fixed = await repairAliased(fixed, 'colori_ecru', 'IDcolori_ecru', { coloris_reference: 'reference' })
-  fixed = await repairAliased(fixed, 'sous_traitant', 'IDmagasin', { magasin_nom: 'nom' }, 'IDsous_traitant')
+  // Labels come from flat lookups, not JOINs (see STOCK_ECRU_SELECT).
+  await attachEcruLabels(fixed)
 
   const lccIds = fixed.map((r) => Number((r as any).IDligne_commande_client) || 0)
   const reservations = await resolveClientReservations(lccIds)
@@ -252,15 +313,19 @@ stockEcruRouter.get('/ecru', async (req: Request, res: Response) => {
     }
     if (onlySecond) where.push(`se.second_choix = 1`)
     if (q) {
+      // Base columns only — the labels are no longer joined here (the web
+      // client never sends ?q=; it filters client-side, chips included).
       const e = esc(q)
       where.push(
-        `(se.lot LIKE '%${e}%' OR se.numero LIKE '%${e}%' OR se.observations LIKE '%${e}%' OR se.visiteur LIKE '%${e}%' OR re.reference LIKE '%${e}%' OR ce.reference LIKE '%${e}%')`,
+        `(se.lot LIKE '%${e}%' OR se.numero LIKE '%${e}%' OR se.observations LIKE '%${e}%' OR se.visiteur LIKE '%${e}%')`,
       )
     }
-    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+    const whereSql = `WHERE ${where.join(' AND ')}`
 
-    const sql = `SELECT ${STOCK_ECRU_SELECT} ${STOCK_ECRU_JOINS} ${whereSql} ORDER BY se.date_saisie DESC, se.IDstock_ecru DESC`
-    const rows = await query<StockEcru>(sql)
+    // One pass over the population (see the STOCK_ECRU_SELECT note).
+    const rows = await query<StockEcru>(
+      `SELECT ${STOCK_ECRU_SELECT} ${STOCK_ECRU_FROM} ${whereSql} ORDER BY se.date_saisie DESC, se.IDstock_ecru DESC`,
+    )
     const hydrated = await hydrateEcruRows(rows)
     res.json(hydrated)
   } catch (err) {
@@ -1042,7 +1107,7 @@ stockEcruRouter.get('/ecru/:id', async (req: Request, res: Response) => {
       return
     }
     const rows = await query<StockEcru>(
-      `SELECT ${STOCK_ECRU_SELECT} ${STOCK_ECRU_JOINS} WHERE se.IDstock_ecru = ${id}`,
+      `SELECT ${STOCK_ECRU_SELECT} ${STOCK_ECRU_FROM} WHERE se.IDstock_ecru = ${id}`,
     )
     if (rows.length === 0) {
       res.status(404).json({ error: 'Stock écru not found' })
@@ -1173,7 +1238,7 @@ stockEcruRouter.patch('/ecru/:id', async (req: Request, res: Response) => {
     await query(`UPDATE stock_ecru SET ${sets.join(', ')} WHERE IDstock_ecru = ${id}`)
 
     const rows = await query<StockEcru>(
-      `SELECT ${STOCK_ECRU_SELECT} ${STOCK_ECRU_JOINS} WHERE se.IDstock_ecru = ${id}`,
+      `SELECT ${STOCK_ECRU_SELECT} ${STOCK_ECRU_FROM} WHERE se.IDstock_ecru = ${id}`,
     )
     const hydrated = await hydrateEcruRows(rows)
     res.json(hydrated[0])

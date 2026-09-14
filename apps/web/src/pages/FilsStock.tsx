@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
+import { useMediaQuery, MD_UP } from '@/hooks/useMediaQuery'
 import {
   Boxes,
   Loader2,
@@ -228,6 +229,8 @@ export function FilsStock() {
   const [searchQuery, setSearchQuery] = useState('')
   // Field-scoped chips (see SEARCH_FIELDS above).
   const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
+  // Mount ONE row branch (table at md+, cards below) — see useMediaQuery.
+  const isMdUp = useMediaQuery(MD_UP)
   const [hideFinished, setHideFinished] = useState(true)
   const [sort, setSort] = useState<SortState>({ key: 'date_entree', dir: 'desc' })
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -381,7 +384,7 @@ export function FilsStock() {
                   <col style={{ width: ICON_COL_WIDTH }} />
                 </colgroup>
                 <tbody>
-                  {filteredSorted.map((r) => {
+                  {isMdUp && filteredSorted.map((r) => {
                     const isSelected = r.IDstock_fil === selectedId
                     return (
                       <tr
@@ -429,7 +432,7 @@ export function FilsStock() {
             <div className="md:hidden flex-1 min-h-0 flex flex-col">
               <MobileSortRow columns={COLUMNS} sort={sort} onSortChange={setSort} />
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent p-2 space-y-2 bg-zinc-100/80">
-                {filteredSorted.map((r) => (
+                {!isMdUp && filteredSorted.map((r) => (
                   <StockLotCard
                     key={r.IDstock_fil}
                     row={r}

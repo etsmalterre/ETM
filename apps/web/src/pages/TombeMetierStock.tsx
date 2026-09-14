@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
+import { useMediaQuery, MD_UP } from '@/hooks/useMediaQuery'
 import {
   Boxes,
   Loader2,
@@ -276,6 +277,8 @@ export function TombeMetierStock() {
   const [searchQuery, setSearchQuery] = useState('')
   // Field-scoped chips (see SEARCH_FIELDS above).
   const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
+  // Mount ONE row branch (table at md+, cards below) — see useMediaQuery.
+  const isMdUp = useMediaQuery(MD_UP)
   const [statut, setStatut] = useState<StatutCode>(1)
   const [secondChoix, setSecondChoix] = useState(false)
   const [sort, setSort] = useState<SortState>({ key: 'date_saisie', dir: 'desc' })
@@ -573,7 +576,7 @@ export function TombeMetierStock() {
                   ))}
                 </colgroup>
                 <tbody className="group" data-editing={isEditing ? 'true' : 'false'}>
-                  {filteredSorted.map((r) => (
+                  {isMdUp && filteredSorted.map((r) => (
                     <StockRow
                       key={r.IDstock_ecru}
                       row={r}
@@ -597,7 +600,7 @@ export function TombeMetierStock() {
                 className="group flex-1 min-h-0 overflow-y-auto scrollbar-transparent p-2 space-y-2 bg-zinc-100/80"
                 data-editing={isEditing ? 'true' : 'false'}
               >
-                {filteredSorted.map((r) => (
+                {!isMdUp && filteredSorted.map((r) => (
                   <StockEcruCard
                     key={r.IDstock_ecru}
                     row={r}

@@ -28,6 +28,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
+import { useMediaQuery, MD_UP } from '@/hooks/useMediaQuery'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
 import {
@@ -243,6 +244,8 @@ export function DiversStock() {
   const [searchQuery, setSearchQuery] = useState('')
   // Field-scoped chips (see SEARCH_FIELDS above).
   const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
+  // Mount ONE row branch (table at md+, cards below) — see useMediaQuery.
+  const isMdUp = useMediaQuery(MD_UP)
   const [sort, setSort] = useState<SortState>({ key: 'ref_designation', dir: 'asc' })
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -420,7 +423,7 @@ export function DiversStock() {
                     ))}
                   </colgroup>
                   <tbody>
-                    {filteredSorted.map((r) => (
+                    {isMdUp && filteredSorted.map((r) => (
                       <StockRow
                         key={r.IDstock_divers}
                         row={r}
@@ -437,7 +440,7 @@ export function DiversStock() {
             <div className="md:hidden flex-1 min-h-0 flex flex-col">
               <MobileSortRow columns={columns} sort={sort} onSortChange={setSort} />
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent p-2 space-y-2 bg-zinc-100/80">
-                {filteredSorted.map((r) => (
+                {!isMdUp && filteredSorted.map((r) => (
                   <StockDiversCard
                     key={r.IDstock_divers}
                     row={r}

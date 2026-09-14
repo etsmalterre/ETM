@@ -125,6 +125,7 @@ One or two lines per rule. **The incident, the measurements, the canonical file 
 
 **Binary / memo columns**
 - **Windows driver + memo-binary column = 0 rows** on `SELECT` naming a blob or `SELECT *` on a table holding one (`stock_fil`, `client`); probe with `LENGTH(col)`. Not universal (`bonnetier.photo` reads fine; `machine` has no memo) — probe the specific column, keep single-row `WHERE` shapes. MEMO text columns cost per row: select them only for returned rows (`stock-fil-trm.ts fetchBaseRows`).
+- ⚠️ **List-query cost is bimodal (~450 ms or ~2.5 s for the same SQL, server idle)**: A/B two shapes only INTERLEAVED in one run; never add a second pass over the same `WHERE` (it doubles in the slow state); labels by flat `IN` lookups, not JOINs; **an `IN` list on a STRING column stays indexed only in chunks of ~50** (`defaut_qualite.reference`, `fetchDefectsByEcru`); repair accents in one batched `repairAliased`, never per-row `fixEncoding` on a list (#1156 audit, `hfsql_odbc.md`).
 - ⚠️ **A binary read needs `queryRaw`, never `query`** (`cleanRow` decodes buffers as UTF-8); verify magic bytes, 404 otherwise; resize with `sharp` (`.rotate()` first). Canonical `prime-trm.ts` photo route.
 - **`commande_sous_traitant`: `commentaire` is RTF (`stripRtf()`/`wrapRtf()`), `journal` is plain text** (`sqlText()`).
 
@@ -162,6 +163,7 @@ Full text and incident history: `claude_doc/frontend_rules.md`.
 
 - **Hooks before early returns** — violating this crashes production builds (React #310).
 - **`useElementSize` returns a CALLBACK ref, deliberately** — a `useRef` + effect never attaches on a conditionally rendered target. Don't simplify it back.
+- ⚠️ **A responsive table/card pair mounts ONE branch** (`useMediaQuery(MD_UP)` gating both row maps, `hooks/useMediaQuery.ts`): `hidden md:flex` hides pixels, not work — 762 rows rendered twice = 34k DOM nodes (#1156 audit, `mps_designer §40.2`).
 - **A guard must never decide while its permission fetch is in flight**: render nothing until `usePermissions().isLoading` is false (bit `AppShell` and the admin guard).
 - **Shared `apiFetch`** (`apps/web/src/lib/api.ts`, `credentials: 'include'`) — never a per-page fetch.
 - ⚠️ **A screen that MOVES stock must call `invalidateStockCaches(queryClient)`** (`lib/cache-sync.ts`) unconditionally for every family, and **the four stock screens spread `STOCK_QUERY_FRESHNESS`** (`staleTime: 0` + `refetchOnMount: 'always'`) into list and detail queries — the legacy app and other sessions write these tables live (#1089). Guard `cache-sync.test.ts`. Don't "optimise" it back.

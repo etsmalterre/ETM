@@ -4136,7 +4136,7 @@ Structure inside the §27.3 table card container — loading/error/empty branche
 </div>
 ```
 
-**No logic duplication** — the cards consume the exact same `filteredSorted`, `selectedId`, `handleRowClick` (and therefore the unsaved-changes guard) as the table. Only row markup is rendered twice; one branch is `display:none` at any width.
+**No logic duplication** — the cards consume the exact same `filteredSorted`, `selectedId`, `handleRowClick` (and therefore the unsaved-changes guard) as the table. ⚠️ **Only ONE branch's rows are mounted** — gate both row maps on `useMediaQuery(MD_UP)` (`apps/web/src/hooks/useMediaQuery.ts`): `{isMdUp && filteredSorted.map(...)}` in the tbody, `{!isMdUp && filteredSorted.map(...)}` in the card list. Until the LIVA #1156 perf audit (2026-09-14) both were rendered and one hidden by `hidden md:flex` / `md:hidden` — CSS hides pixels, not work: 762 écru rows made 1 524 row elements and ~34k DOM nodes, reconciled twice on every keystroke. The Tailwind classes stay on the wrappers as belt and braces for the instant between a resize and the re-render; the hook is what saves the work.
 
 ### 40.3 The card pattern (`StockLotCard` / `CardKV`)
 
