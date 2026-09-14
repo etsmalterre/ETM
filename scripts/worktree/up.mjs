@@ -115,6 +115,30 @@ async function pickMainApi(preferred) {
   return r.port
 }
 
+// The three TRM apps (ERP + the two PWAs) each read their own
+// .env.development.local. The tooling only starts apps/web, but a session
+// that hand-starts apps/atelier or apps/trs from the worktree (their ports are
+// fixed, 5176 / 5177, see TRM_PWA_PORTS) still wants the API pointer and the
+// tab label — until 2026-09-14 those tabs all read "Atelier" / "TRS" whichever
+// worktree served them. Each app prefixes document.title from
+// VITE_WORKTREE_LABEL in dev (see its main.tsx). Returns the files it changed.
+const TRM_APPS = ['apps/web', 'apps/atelier', 'apps/trs']
+function writeTrmEnvLocal(wt, api, feature) {
+  const next = `VITE_API_URL=http://localhost:${api}/api
+VITE_WORKTREE_LABEL=${feature}
+`
+  const changed = []
+  for (const app of TRM_APPS) {
+    if (!fs.existsSync(path.join(wt, app))) continue
+    const envLocal = path.join(wt, app, '.env.development.local')
+    const prev = fs.existsSync(envLocal) ? fs.readFileSync(envLocal, 'utf8') : ''
+    if (prev === next) continue
+    fs.writeFileSync(envLocal, next)
+    changed.push(`${app}/.env.development.local`)
+  }
+  return changed
+}
+
 if (isRestart) {
   // Reuse the recorded slot/ports so the tree comes back exactly where it was
   // (its .env files already point at those ports, and the URL the user has open
@@ -216,13 +240,8 @@ if (isRestart) {
     // branch below writes — so without this the restart printed the NEW port in
     // its summary while the browser kept calling the OLD one, and every new
     // endpoint 404'd with no visible clue. Rewrite it from the resolved port.
-    const envLocal = path.join(wt, 'apps/web/.env.development.local')
-    const next = `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n`
-    const prev = fs.existsSync(envLocal) ? fs.readFileSync(envLocal, 'utf8') : ''
-    if (prev !== next) {
-      fs.writeFileSync(envLocal, next)
-      console.log(`Rewrote apps/web/.env.development.local (API → :${api}).`)
-    }
+    const changed = writeTrmEnvLocal(wt, api, feature)
+    if (changed.length) console.log(`Rewrote ${changed.join(', ')} (API → :${api}).`)
   }
 } else if (proj.hasApi) {
   // Copy gitignored dev config the new worktree needs, and force a CORS_ORIGIN
@@ -244,11 +263,8 @@ if (isRestart) {
   // Label the web dev server's browser tab with the branch so parallel worktree
   // tabs are distinguishable. Vite reads .env.development.local (gitignored); the
   // app prefixes document.title from VITE_WORKTREE_LABEL in dev (see main.tsx).
-  fs.writeFileSync(
-    path.join(wt, 'apps/web/.env.development.local'),
-    `VITE_WORKTREE_LABEL=${feature}\n`,
-  )
-  console.log(`Wrote apps/web/.env.development.local (tab label "${feature}").`)
+  writeTrmEnvLocal(wt, api, feature)
+  console.log(`Wrote .env.development.local for ${TRM_APPS.join(', ')} (API → :${api}, tab label "${feature}").`)
 
   // Secrets (Google service-account key) for email/PDF — copy if present.
   const srcSecrets = path.join(main, 'apps/api/secrets')
