@@ -2040,7 +2040,8 @@ let out = filterRowsByChips(rows ?? [], searchChips, rowHaystacks)
 Rules:
 - **Field keys must be real row keys** (`K extends Extract<keyof T, string>`), because `filterRowsByChips` reads the cell directly. `rowHaystacks(row)` supplies the lower-cased columns for the any-column match.
 - **A scoped chip replaces a filter dropdown.** Divers › Stock dropped its "Toutes les références" combobox for a `Référence :` chip — one control instead of two, and it searches. Prefer this over adding a new toolbar select whenever the filter is just "narrow to one value of a column".
-- Consumers: `FinisStock.tsx`, `DiversStock.tsx`. **Never fork the widget** — add a field to the screen's `SEARCH_FIELDS`, or a prop to the shared component.
+- Consumers: `FinisStock.tsx`, `DiversStock.tsx`, `TombeMetierStock.tsx`, `FilsStock.tsx` (the last two since LIVA #1156 — every table-centric stock screen carries it now). **Never fork the widget** — add a field to the screen's `SEARCH_FIELDS`, or a prop to the shared component.
+- **Magasin 0 is « Malterre », normalized at the query layer.** `IDmagasin = 0` is HFSQL's "no FK" for the factory's own stock, so the `sous_traitant` JOIN returns no name and the column read « — » (LIVA #1156). Each stock screen maps it in the list AND detail `select` (`withDefaultMagasin`), never in the cell — so the table, the drawer, the sort and the `Magasin :` chip agree. Same label on the three screens.
 
 ### 27.3 Split header / body table (the alignment trick)
 

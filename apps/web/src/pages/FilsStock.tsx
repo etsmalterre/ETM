@@ -5,7 +5,6 @@ import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import {
   Boxes,
-  Search,
   Loader2,
   AlertCircle,
   Pencil,
@@ -36,6 +35,11 @@ import { fmtNum } from '@/lib/format'
 import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
+import {
+  SmartSearchInput,
+  filterRowsByChips,
+  type SearchChip,
+} from '@/components/stock/SmartSearchInput'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -93,6 +97,15 @@ interface RefFilOption {
 // ── API helpers ────────────────────────────────────────
 // Shared apiFetch + API_URL — see apps/web/src/lib/api.ts
 
+// stock_fil.IDMagasin = 0 (HFSQL's "no FK") means the lot is stored at the
+// factory — the sous_traitant JOIN yields nothing, so surface it as "Malterre"
+// instead of an empty dash. Same label as FinisStock / TombeMetierStock,
+// normalized at the query layer so the drawer AND the "Magasin :" search chip
+// agree (LIVA #1156).
+function withDefaultMagasin<T extends StockRow>(r: T): T {
+  return r.magasin_nom ? r : { ...r, magasin_nom: 'Malterre' }
+}
+
 function useStockList(filters: { hideFinished: boolean }) {
   const params = new URLSearchParams()
   if (!filters.hideFinished) params.set('termine', 'all')
@@ -100,6 +113,7 @@ function useStockList(filters: { hideFinished: boolean }) {
   return useQuery<StockRow[]>({
     queryKey: ['stock-fil', filters],
     queryFn: () => apiFetch<StockRow[]>(`/stock/fil${qs ? `?${qs}` : ''}`),
+    select: (rows) => rows.map(withDefaultMagasin),
     ...STOCK_QUERY_FRESHNESS,
   })
 }
@@ -109,6 +123,7 @@ function useStockDetail(id: number | null) {
     queryKey: ['stock-fil', 'detail', id],
     queryFn: () => apiFetch<StockDetail>(`/stock/fil/${id}`),
     enabled: id !== null,
+    select: withDefaultMagasin,
     ...STOCK_QUERY_FRESHNESS,
   })
 }
@@ -162,6 +177,40 @@ const COLUMNS: { key: SortKey; label: string; width: string; align?: 'left' | 'r
 ]
 const ICON_COL_WIDTH = '3%'
 
+// ── Field-scoped search chips ──────────────────────────
+// The toolbar search accepts field-scoped chips ("Fournisseur : NAZAR") on top
+// of the free-text multi-term search (LIVA #1156 — same widget as Finis ›
+// Stock). Semantics live in the shared `SmartSearchInput`; this screen only
+// declares which of its columns can be scoped. Magasin is not a table column
+// but the list row carries it, so it is searchable here.
+const SEARCH_FIELDS = [
+  { key: 'ref_fil', label: 'Référence' },
+  { key: 'colori_reference', label: 'Coloris' },
+  { key: 'lot', label: 'Lot interne' },
+  { key: 'lot_frs', label: 'Lot fournisseur' },
+  { key: 'fournisseur_nom', label: 'Fournisseur' },
+  { key: 'emplacement', label: 'Emplacement' },
+  { key: 'magasin_nom', label: 'Magasin' },
+  { key: 'commentaire', label: 'Commentaire' },
+] as const
+type SearchFieldKey = (typeof SEARCH_FIELDS)[number]['key']
+
+/** Lower-cased text columns of a row, for the any-column match. */
+function rowHaystacks(r: StockRow): string[] {
+  return [
+    r.ref_fil,
+    r.colori_reference,
+    r.lot,
+    r.lot_frs,
+    r.emplacement,
+    r.fournisseur_nom,
+    r.magasin_nom,
+    r.commentaire,
+  ]
+    .filter((f): f is string => !!f)
+    .map((f) => f.toLowerCase())
+}
+
 function compareRows(a: StockRow, b: StockRow, key: SortKey): number {
   const va = a[key]
   const vb = b[key]
@@ -177,6 +226,8 @@ function compareRows(a: StockRow, b: StockRow, key: SortKey): number {
 export function FilsStock() {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
+  // Field-scoped chips (see SEARCH_FIELDS above).
+  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
   const [hideFinished, setHideFinished] = useState(true)
   const [sort, setSort] = useState<SortState>({ key: 'date_entree', dir: 'desc' })
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -187,18 +238,17 @@ export function FilsStock() {
   const { data: rows, isLoading, isError, error } = useStockList({ hideFinished })
 
   const filteredSorted = useMemo(() => {
-    let out = rows ?? []
-    // Split the query on whitespace and require EVERY term to match SOME
-    // column (AND across terms, OR across columns). This lets one search combine
-    // criteria from different columns — e.g. "1/34 chanvre ecru" matches a row
-    // whose ref_fil is "1/34 chanvre" AND whose coloris is "ecru". A single
-    // term behaves exactly as the old substring search.
+    // Field-scoped chips first (each chip ANDs, restricted to its column),
+    // then the free text: split on whitespace and require EVERY term to match
+    // SOME column (AND across terms, OR across columns). This lets one search
+    // combine criteria from different columns — e.g. "1/34 chanvre ecru"
+    // matches a row whose ref_fil is "1/34 chanvre" AND whose coloris is
+    // "ecru". A single term behaves exactly as the old substring search.
+    let out = filterRowsByChips(rows ?? [], searchChips, rowHaystacks)
     const terms = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length > 0) {
       out = out.filter((r) => {
-        const haystacks = [r.ref_fil, r.colori_reference, r.lot, r.lot_frs, r.emplacement, r.fournisseur_nom, r.commentaire]
-          .filter((f): f is string => !!f)
-          .map((f) => f.toLowerCase())
+        const haystacks = rowHaystacks(r)
         return terms.every((t) => haystacks.some((h) => h.includes(t)))
       })
     }
@@ -207,7 +257,7 @@ export function FilsStock() {
       return sort.dir === 'asc' ? cmp : -cmp
     })
     return out
-  }, [rows, searchQuery, sort])
+  }, [rows, searchQuery, searchChips, sort])
 
   const handleSort = useCallback((key: SortKey) => {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -248,16 +298,15 @@ export function FilsStock() {
       {/* Toolbar — below sm: search + Nouveau share row 1 (create action stays top-right),
           the filter checkbox wraps to row 2. Desktop order/pixels unchanged. */}
       <div className="flex-shrink-0 flex flex-wrap items-center gap-3">
-        <div className="relative order-1 flex-1 min-w-0">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Rechercher (réf, coloris, lot, fournisseur, emplacement, commentaire…)"
-            className="h-9 w-full pl-8 pr-3 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
+        <SmartSearchInput<SearchFieldKey>
+          className="order-1 flex-1 min-w-0"
+          value={searchQuery}
+          onValueChange={setSearchQuery}
+          chips={searchChips}
+          onChipsChange={setSearchChips}
+          fields={SEARCH_FIELDS}
+          placeholder="Rechercher (réf, coloris, lot, fournisseur, magasin, emplacement, commentaire…)"
+        />
 
         <label className="flex items-center gap-2 text-sm cursor-pointer select-none flex-shrink-0 order-3 sm:order-2 w-full sm:w-auto">
           <input

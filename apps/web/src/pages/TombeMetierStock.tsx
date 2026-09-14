@@ -5,7 +5,6 @@ import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import {
   Boxes,
-  Search,
   Loader2,
   AlertCircle,
   Pencil,
@@ -46,6 +45,11 @@ import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
+import {
+  SmartSearchInput,
+  filterRowsByChips,
+  type SearchChip,
+} from '@/components/stock/SmartSearchInput'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -117,6 +121,15 @@ const STATUT_OPTIONS = [
 
 // ── API helpers ────────────────────────────────────────
 
+// stock_ecru.IDmagasin = 0 (HFSQL's "no FK") means the piece is stored at the
+// factory — the sous_traitant JOIN yields nothing, so surface it as "Malterre"
+// instead of an empty dash (LIVA #1156). Same label as FinisStock, normalized
+// at the query layer so the table, the drawer, sorting AND the "Magasin :"
+// search chip all agree.
+function withDefaultMagasin(r: StockEcruRow): StockEcruRow {
+  return r.magasin_nom ? r : { ...r, magasin_nom: 'Malterre' }
+}
+
 function useStockEcruList(filters: { statut: StatutCode; secondChoix: boolean }) {
   const params = new URLSearchParams()
   params.set('statut', STATUT_PARAM[filters.statut])
@@ -125,6 +138,7 @@ function useStockEcruList(filters: { statut: StatutCode; secondChoix: boolean })
   return useQuery<StockEcruRow[]>({
     queryKey: ['stock-ecru', filters],
     queryFn: () => apiFetch<StockEcruRow[]>(`/stock/ecru${qs ? `?${qs}` : ''}`),
+    select: (rows) => rows.map(withDefaultMagasin),
     ...STOCK_QUERY_FRESHNESS,
   })
 }
@@ -134,6 +148,7 @@ function useStockEcruDetail(id: number | null) {
     queryKey: ['stock-ecru', 'detail', id],
     queryFn: () => apiFetch<StockEcruRow>(`/stock/ecru/${id}`),
     enabled: id !== null,
+    select: withDefaultMagasin,
     ...STOCK_QUERY_FRESHNESS,
   })
 }
@@ -205,6 +220,43 @@ const COLUMNS: { key: SortKey; label: string; width: string; align?: 'left' | 'r
 ]
 const SELECT_COL_WIDTH = '4%' // leading selection box column, edit mode only
 
+// ── Field-scoped search chips ──────────────────────────
+// The toolbar search accepts field-scoped chips ("Magasin : Malterre") on top
+// of the free-text multi-term search (LIVA #1156 — Pierrot wanted the Finis ›
+// Stock search here). Widget + chip semantics live in the shared
+// `SmartSearchInput`; this screen only declares which columns can be scoped.
+const SEARCH_FIELDS = [
+  { key: 'ref_ecru', label: 'Référence' },
+  { key: 'coloris_reference', label: 'Coloris' },
+  { key: 'numero', label: 'Numéro' },
+  { key: 'lot', label: 'Lot' },
+  { key: 'magasin_nom', label: 'Magasin' },
+  { key: 'commande_numero', label: 'N° Cmd' },
+  { key: 'client_nom', label: 'Client' },
+  { key: 'visiteur', label: 'Visiteur' },
+  { key: 'observations', label: 'Observations' },
+  { key: 'defauts', label: 'Défauts' },
+] as const
+type SearchFieldKey = (typeof SEARCH_FIELDS)[number]['key']
+
+/** Lower-cased text columns of a row, for the any-column match. */
+function rowHaystacks(r: StockEcruRow): string[] {
+  return [
+    r.ref_ecru,
+    r.coloris_reference,
+    r.lot,
+    r.numero,
+    r.magasin_nom,
+    r.commande_numero,
+    r.client_nom,
+    r.visiteur,
+    r.observations,
+    r.defauts,
+  ]
+    .filter((f): f is string => !!f)
+    .map((f) => f.toLowerCase())
+}
+
 const ROW_COLLATOR = new Intl.Collator('fr', { numeric: true, sensitivity: 'base' })
 
 function compareRows(a: StockEcruRow, b: StockEcruRow, key: SortKey): number {
@@ -222,6 +274,8 @@ function compareRows(a: StockEcruRow, b: StockEcruRow, key: SortKey): number {
 export function TombeMetierStock() {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
+  // Field-scoped chips (see SEARCH_FIELDS above).
+  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
   const [statut, setStatut] = useState<StatutCode>(1)
   const [secondChoix, setSecondChoix] = useState(false)
   const [sort, setSort] = useState<SortState>({ key: 'date_saisie', dir: 'desc' })
@@ -246,24 +300,13 @@ export function TombeMetierStock() {
   const deferredSearch = useDeferredValue(searchQuery)
 
   const filteredSorted = useMemo(() => {
-    let out = rows ?? []
+    // Field-scoped chips first (each chip ANDs, restricted to its column),
+    // then the free text: every term must match SOME column.
+    let out = filterRowsByChips(rows ?? [], searchChips, rowHaystacks)
     const terms = deferredSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length > 0) {
       out = out.filter((r) => {
-        const haystacks = [
-          r.ref_ecru,
-          r.coloris_reference,
-          r.lot,
-          r.numero,
-          r.magasin_nom,
-          r.commande_numero,
-          r.client_nom,
-          r.visiteur,
-          r.observations,
-          r.defauts,
-        ]
-          .filter((f): f is string => !!f)
-          .map((f) => f.toLowerCase())
+        const haystacks = rowHaystacks(r)
         return terms.every((t) => haystacks.some((h) => h.includes(t)))
       })
     }
@@ -272,7 +315,7 @@ export function TombeMetierStock() {
       return sort.dir === 'asc' ? cmp : -cmp
     })
     return out
-  }, [rows, deferredSearch, sort])
+  }, [rows, deferredSearch, searchChips, sort])
 
   const handleSort = useCallback((key: SortKey) => {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -389,16 +432,15 @@ export function TombeMetierStock() {
             </Badge>
           </div>
         )}
-        <div className="relative order-1 sm:order-2 flex-1 min-w-0">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Rechercher (réf, coloris, lot, numéro, magasin, client, visiteur, observations…)"
-            className="h-9 w-full pl-8 pr-3 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
+        <SmartSearchInput<SearchFieldKey>
+          className="order-1 sm:order-2 flex-1 min-w-0"
+          value={searchQuery}
+          onValueChange={setSearchQuery}
+          chips={searchChips}
+          onChipsChange={setSearchChips}
+          fields={SEARCH_FIELDS}
+          placeholder="Rechercher (réf, coloris, lot, numéro, magasin, client, visiteur, observations…)"
+        />
 
         {/* Below sm this wrapper is a full-width row of its own, so the statut
             select + checkbox can NEVER share row 1 and push the action buttons
