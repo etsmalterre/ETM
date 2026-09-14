@@ -39,6 +39,7 @@ import {
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
+import { formatCompositionLabel, type CompositionEcruRow } from '../lib/composition-label.js'
 import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
@@ -760,10 +761,17 @@ commandesSousTraitantRouter.get('/lookups/refs-fini', async (_req: Request, res:
   }
 })
 
-// Coloris options for a given ref_fini. The legacy table is `ref_fini_colori`
-// (NOT `colori_fini`, which is a different M:N junction). Each row is one
-// (ref_fini, coloris) pair — `IDref_fini_colori` is the ID stored in
-// `ligne_commande_sous_traitant.IDColoris` and `stock_fini.IDColoris`.
+// Coloris options for a given ref_fini — the catalog an ennoblisseur line's
+// `IDColoris` points into, polymorphic on `ref_fini.avec_teinture` exactly
+// like the detail's resolveColoris and Clients › Commandes' lookup:
+//   - dyed (1/2)   → `ref_fini_colori` rows of the fini (NOT `colori_fini`,
+//                    a different M:N junction);
+//   - wash-only (0) → `colori_ecru` rows of the fini's écru.
+// LIVA #1158: this read only `ref_fini_colori`, so a wash-only fini (253 of
+// the 610 in prod — 329D among them, « ecru/ecru » and three greys) offered
+// « — Aucun — » and the order went out without a coloris; the legacy app
+// stores the colori_ecru id on 1 401 such lines. `id` is what goes into
+// `IDColoris`; `catalog` says which table it belongs to.
 commandesSousTraitantRouter.get('/lookups/colori-fini', async (req: Request, res: Response) => {
   try {
     const refFiniId = parseInt(String(req.query.ref_fini ?? ''), 10)
@@ -771,18 +779,29 @@ commandesSousTraitantRouter.get('/lookups/colori-fini', async (req: Request, res
       res.status(400).json({ error: 'ref_fini query parameter required' })
       return
     }
-    const rows = await query<{ IDref_fini_colori: number; reference: string | null }>(
-      `SELECT IDref_fini_colori, reference FROM ref_fini_colori
-       WHERE IDref_fini = ${refFiniId}
-       ORDER BY reference`,
+    const refRows = await query<{ avec_teinture: number | null; IDref_ecru: number | null }>(
+      `SELECT avec_teinture, IDref_ecru FROM ref_fini WHERE IDref_fini = ${refFiniId}`,
     )
-    const fixed = await fixEncoding(rows, 'ref_fini_colori', 'IDref_fini_colori', ['reference'])
-    res.json(
-      fixed.map((r) => ({
-        IDref_fini_colori: Number(r.IDref_fini_colori),
-        reference: r.reference ?? '',
-      })),
-    )
+    if (refRows.length === 0) { res.status(404).json({ error: 'ref_fini not found' }); return }
+    const washOnly = (Number(refRows[0].avec_teinture) || 0) === 0
+    let options: Array<{ id: number; reference: string; catalog: 'ref_fini_colori' | 'colori_ecru' }>
+    if (washOnly) {
+      const idEcru = Number(refRows[0].IDref_ecru) || 0
+      const rows = idEcru > 0
+        ? await query<{ IDcolori_ecru: number; reference: string | null }>(
+            `SELECT IDcolori_ecru, reference FROM colori_ecru WHERE IDref_ecru = ${idEcru} ORDER BY reference`,
+          )
+        : []
+      const fixed = await fixEncoding(rows, 'colori_ecru', 'IDcolori_ecru', ['reference'])
+      options = fixed.map((r) => ({ id: Number(r.IDcolori_ecru), reference: r.reference ?? '', catalog: 'colori_ecru' }))
+    } else {
+      const rows = await query<{ IDref_fini_colori: number; reference: string | null }>(
+        `SELECT IDref_fini_colori, reference FROM ref_fini_colori WHERE IDref_fini = ${refFiniId} ORDER BY reference`,
+      )
+      const fixed = await fixEncoding(rows, 'ref_fini_colori', 'IDref_fini_colori', ['reference'])
+      options = fixed.map((r) => ({ id: Number(r.IDref_fini_colori), reference: r.reference ?? '', catalog: 'ref_fini_colori' }))
+    }
+    res.json(options)
   } catch (err) {
     console.error('Error fetching colori-fini lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -2042,6 +2061,39 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
     }
   }
 
+  // Structured composition (LIVA #1157): `ref_ecru.composition` is free text
+  // and empty on 184 of the 398 écrus, so the bon de commande said nothing
+  // about the yarn. Fetch the `composition_ecru` rows of every écru on the
+  // order once; the label is derived per line (the rows may be scoped to the
+  // line's colori_ecru) in lib/composition-label.ts, text taking precedence.
+  const compositionByEcru = new Map<number, CompositionEcruRow[]>()
+  const refFilNames = new Map<number, string>()
+  if (ecruExtraIds.size > 0) {
+    const compRows = await query<{ IDref_ecru: number; IDcolori_ecru: number | null; IDref_fil: number; pourcentage: number | null }>(
+      `SELECT IDref_ecru, IDcolori_ecru, IDref_fil, pourcentage FROM composition_ecru
+       WHERE IDref_ecru IN (${Array.from(ecruExtraIds).join(',')}) AND IDref_fil > 0`,
+    )
+    for (const c of compRows) {
+      const eid = Number(c.IDref_ecru) || 0
+      const arr = compositionByEcru.get(eid) ?? []
+      arr.push({
+        IDref_ecru: eid,
+        IDcolori_ecru: Number(c.IDcolori_ecru) || 0,
+        IDref_fil: Number(c.IDref_fil) || 0,
+        pourcentage: Number(c.pourcentage) || 0,
+      })
+      compositionByEcru.set(eid, arr)
+    }
+    const filIds = Array.from(new Set(compRows.map((c) => Number(c.IDref_fil) || 0).filter((x) => x > 0)))
+    if (filIds.length > 0) {
+      const filRows = await query<{ IDref_fil: number; reference: string | null }>(
+        `SELECT IDref_fil, reference FROM ref_fil WHERE IDref_fil IN (${filIds.join(',')})`,
+      )
+      for (const f of await fixEncoding(filRows, 'ref_fil', 'IDref_fil', ['reference']))
+        refFilNames.set(Number(f.IDref_fil), (f.reference ?? '').toString())
+    }
+  }
+
   // Attached écru rolls per line — Stock à mettre en oeuvre. Single batch
   // SELECT scoped to the lines on this commande; group by line id.
   const piecesByLine = new Map<number, Array<{ numero: string | null; poids_kg: number | null; metrage_m: number | null; observations: string | null }>>()
@@ -2165,6 +2217,14 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
       // ecru lines (type=0), the line's own IDreference IS the écru.
       const ecruId = finiExtra?.IDref_ecru || (typeKind === 0 ? refId : 0)
       const ecruExtra = ecruId > 0 ? ecruExtrasMap.get(ecruId) : null
+      // The line's coloris is a colori_ecru on écru lines and on wash-only
+      // finis — that is what scopes the composition rows. A dyed fini's
+      // IDColoris is a ref_fini_colori, meaningless here → unscoped rows.
+      const washOnly = typeKind === 2 && (finiAvecTeintureMap.get(refId) ?? 1) === 0
+      const coloriEcruId = typeKind === 0 || washOnly ? colId : 0
+      const derivedComposition = ecruId > 0
+        ? formatCompositionLabel(compositionByEcru.get(ecruId) ?? [], coloriEcruId, (fid) => refFilNames.get(fid))
+        : null
 
       return {
         ref_label: resolveRef(refId, typeKind) || null,
@@ -2175,7 +2235,7 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
         poids_gm2: finiExtra?.poids_Moy ?? null,
         laize_cm: finiExtra?.laizeHT_Moy ?? null,
         rendement_ml_kg: finiExtra?.rendement ?? null,
-        ecru_label: buildEcruLabel(ecruExtra),
+        ecru_label: buildEcruLabel(ecruExtra, derivedComposition),
         quantite: l.quantite == null ? null : Number(l.quantite),
         prix: l.prix == null ? null : Number(l.prix),
         total_kg_ecru_lie: kgByLine.get(lid) ?? 0,
@@ -2200,7 +2260,13 @@ function derivePresentation(conditionnement: string | null): string | null {
   return null
 }
 
-function buildEcruLabel(e: { reference: string | null; designation: string | null; composition: string | null } | null | undefined): string | null {
+/** « <ref> — écru : <désignation> — <composition> ». The composition is the
+ *  fiche's free text when someone typed one, otherwise the label derived from
+ *  `composition_ecru` (LIVA #1157). Exported for the PDF guard. */
+export function buildEcruLabel(
+  e: { reference: string | null; designation: string | null; composition: string | null } | null | undefined,
+  derivedComposition: string | null = null,
+): string | null {
   if (!e) return null
   const parts: string[] = []
   if (e.reference) parts.push(e.reference)
@@ -2208,7 +2274,8 @@ function buildEcruLabel(e: { reference: string | null; designation: string | nul
   // we keep the "ecru" hint inline so the bilingual row reads cleanly.
   if (e.designation) parts.push(`écru : ${e.designation}`)
   else parts.push('écru')
-  if (e.composition) parts.push(e.composition)
+  const composition = (e.composition ?? '').trim() || derivedComposition
+  if (composition) parts.push(composition)
   return parts.join(' — ')
 }
 

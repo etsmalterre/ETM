@@ -5283,8 +5283,10 @@ function LineFormFields({
   const isEcru = kind === 'ecru'
   const prixDisabled = !isEcru && autoPricing !== false
 
-  // Coloris options — different table per kind.
-  const { data: coloriFiniOptions } = useQuery<Array<{ IDref_fini_colori: number; reference: string }>>({
+  // Coloris options — different table per kind. For a fini the API picks the
+  // catalog itself (ref_fini_colori when dyed, the écru's colori_ecru when
+  // wash-only, LIVA #1158) and returns `id` = what IDColoris stores.
+  const { data: coloriFiniOptions } = useQuery<Array<{ id: number; reference: string; catalog: 'ref_fini_colori' | 'colori_ecru' }>>({
     queryKey: ['commande-sst-colori-fini', form.IDreference],
     queryFn: () => apiFetch(`/commandes-sous-traitant/lookups/colori-fini?ref_fini=${form.IDreference}`),
     enabled: !isEcru && editable && form.IDreference > 0,
@@ -5297,7 +5299,7 @@ function LineFormFields({
 
   const coloriOpts = isEcru
     ? (coloriEcruOptions ?? []).map((c) => ({ id: c.IDcolori_ecru, primary: c.reference }))
-    : (coloriFiniOptions ?? []).map((c) => ({ id: c.IDref_fini_colori, primary: c.reference }))
+    : (coloriFiniOptions ?? []).map((c) => ({ id: c.id, primary: c.reference }))
 
   // When picking a ref_ecru, auto-fill prix from the catalog value so the
   // user sees the unit cost up front. They can still override before save.
