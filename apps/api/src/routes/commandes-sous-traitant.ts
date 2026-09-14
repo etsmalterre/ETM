@@ -40,6 +40,7 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { formatCompositionLabel, type CompositionEcruRow } from '../lib/composition-label.js'
+import { resolveSstAdresses } from '../lib/sst-adresses.js'
 import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
@@ -462,16 +463,9 @@ export async function createKnitOrder(opts: {
   const dateCmd = dateStr(opts.dateCommande) || dateStr(new Date().toISOString().slice(0, 10))
 
   // The knitter's default addresses (legacy modal uses them for both header
-  // fields — adresse 777 on the TRM reference commande). Fallback to the
-  // first visible one.
-  const adrRows = await query<{ IDadresse: number; est_defaut: number | null; est_defaut_livraison: number | null }>(
-    `SELECT IDadresse, est_defaut, est_defaut_livraison FROM adresse
-      WHERE IDsous_traitant = ${sstId} AND est_visible = 1`,
-  )
-  const defaut = adrRows.find((a) => Number(a.est_defaut) === 1) ?? adrRows[0]
-  const defautLiv = adrRows.find((a) => Number(a.est_defaut_livraison) === 1) ?? defaut
-  const adrId = Number(defaut?.IDadresse) || 0
-  const adrLivId = Number(defautLiv?.IDadresse) || 0
+  // fields — adresse 777 on the TRM reference commande). Shared resolver,
+  // lib/sst-adresses.ts.
+  const { principal: adrId, livraison: adrLivId } = await resolveSstAdresses(sstId)
 
   await query(
     `INSERT INTO commande_sous_traitant
@@ -3926,12 +3920,19 @@ commandesSousTraitantRouter.post('/', async (req: Request, res: Response) => {
     // outside the migrated sst commande screen may still read it as RTF).
     // journal is plain text — the legacy screen that bound it is retired.
     const commentaireRtf = wrapRtf(d.commentaire ?? '')
+    // An address the dialog left at 0 is filled from the sous-traitant's
+    // defaults here — 20 MATEL orders reached the base with 0/0 between
+    // 30/07 and 02/09/2026 and printed without any address (lib/sst-adresses.ts).
+    const adr = await resolveSstAdresses(d.IDsous_traitant, {
+      principal: d.IDadresse_sous_traitant,
+      livraison: d.IDadresse_livraison,
+    })
     await query(
       `INSERT INTO commande_sous_traitant
        (IDsous_traitant, date_commande, est_soldee, commentaire, journal,
         IDadresse_sous_traitant, IDadresse_livraison, IDdossier, IDcommande_client, IDligne_commande_client)
        VALUES (${d.IDsous_traitant}, '${dateCmd}', 0, '${esc(commentaireRtf)}', ${sqlText(d.journal ?? '')},
-               ${d.IDadresse_sous_traitant ?? 0}, ${d.IDadresse_livraison ?? 0}, 0, 0, 0)`,
+               ${adr.principal}, ${adr.livraison}, 0, 0, 0)`,
     )
 
     const rows = await query<{ IDcommande_sous_traitant: number }>(

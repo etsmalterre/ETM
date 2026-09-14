@@ -46,6 +46,7 @@ import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { IS_WINDOWS, esc, n, dateDigits as dateStr, addWorkingDays } from '../lib/sst-shared.js'
+import { resolveSstAdresses } from '../lib/sst-adresses.js'
 import { createKnitOrder, TRICOTAGE_MALTERRE_ID } from './commandes-sous-traitant.js'
 import { computeDateEcheance, loadEcheanceRule } from './factures.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
@@ -4438,12 +4439,15 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     //    4 812 dyer orders carry them); nothing in ETM reads them, the WinDev
     //    sous-traitant screen does.
     const dateCmd = dateStr(d.date_commande ?? '')
+    // Header addresses = the dyer's defaults (this insert wrote 0/0 until
+    // 2026-09-14: 12 MATEL orders since July printed without any address).
+    const adr = await resolveSstAdresses(d.IDsous_traitant)
     await query(
       `INSERT INTO commande_sous_traitant
        (IDsous_traitant, date_commande, est_soldee, commentaire, journal,
         IDadresse_sous_traitant, IDadresse_livraison, IDdossier, IDcommande_client, IDligne_commande_client)
        VALUES (${d.IDsous_traitant}, '${dateCmd}', 0, '', '',
-               0, 0, 0, ${commandeId}, ${ligneId})`,
+               ${adr.principal}, ${adr.livraison}, 0, ${commandeId}, ${ligneId})`,
     )
     const hdr = await query<{ IDcommande_sous_traitant: number }>(
       `SELECT IDcommande_sous_traitant FROM commande_sous_traitant
