@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
-import { computeBesoin, type AssoRow, type MirrorLine, type OfRow, type PieceRow, type OfFilRow } from '../lib/fil-etat-besoin.js'
+import { computeBesoin, type AssoRow, type MirrorLine, type OfRow, type PieceRow, type OfFilRow, type LineRow } from '../lib/fil-etat-besoin.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 
@@ -269,7 +269,28 @@ stockRouter.get('/fil/etat', async (req: Request, res: Response) => {
       lot: (r.lot ?? '').toString(),
       quantite: Number(r.quantite) || 0,
     }))
-    const sstLineIds = Array.from(new Set(asso.map((a) => a.ligne).filter((x) => x > 0)))
+    // The other way round (LIVA #1159): open Tricotage Malterre lines whose
+    // OFs already consume this fil (`asso_fil_of`) with NO affectation on it —
+    // the OF dialog picks its lots on its own, so the reservation step is
+    // routinely skipped. Walked from the OF end: asso_fil_of → OF → TRM line
+    // → mirror sst line → open commande. computeBesoin derives their reserve.
+    const lineRows = await query<{ ligne: number; cmd_sst: number; quantite: number | null }>(
+      `SELECT DISTINCT lcs.IDligne_commande_sous_traitant AS ligne, cst.IDcommande_sous_traitant AS cmd_sst,
+              lcs.quantite AS quantite
+       FROM asso_fil_of a
+       JOIN stock_fil sf ON a.IDstock_fil = sf.IDstock_fil
+       JOIN ordre_fabrication o ON a.IDordre_fabrication = o.IDordre_fabrication
+       JOIN ligne_commande_client l ON o.IDligne_commande_client = l.IDligne_commande_client
+       JOIN ligne_commande_sous_traitant lcs ON l.IDligne_commande_ETM = lcs.IDligne_commande_sous_traitant
+       JOIN commande_sous_traitant cst ON lcs.IDcommande_sous_traitant = cst.IDcommande_sous_traitant
+       WHERE sf.IDref_fil = ${refFil} AND sf.IDcolori_fil = ${coloriFil} AND cst.est_soldee = 0`,
+    )
+    const lines: LineRow[] = lineRows.map((r) => ({
+      ligne: Number(r.ligne) || 0,
+      commande_sst: Number(r.cmd_sst) || 0,
+      quantite: Number(r.quantite) || 0,
+    }))
+    const sstLineIds = Array.from(new Set([...asso.map((a) => a.ligne), ...lines.map((l) => l.ligne)].filter((x) => x > 0)))
     let mirrors: MirrorLine[] = []
     let ofs: OfRow[] = []
     let pieces: PieceRow[] = []
@@ -282,9 +303,13 @@ stockRouter.get('/fil/etat', async (req: Request, res: Response) => {
       const trmLineIds = mirrors.map((m) => m.IDligne_commande_client).filter((x) => x > 0)
       if (trmLineIds.length > 0) {
         ofs = (await query<OfRow>(
-          `SELECT IDordre_fabrication, IDligne_commande_client FROM ordre_fabrication
+          `SELECT IDordre_fabrication, IDligne_commande_client, quantite FROM ordre_fabrication
            WHERE IDligne_commande_client IN (${trmLineIds.join(',')})`,
-        )).map((o) => ({ IDordre_fabrication: Number(o.IDordre_fabrication) || 0, IDligne_commande_client: Number(o.IDligne_commande_client) || 0 }))
+        )).map((o) => ({
+          IDordre_fabrication: Number(o.IDordre_fabrication) || 0,
+          IDligne_commande_client: Number(o.IDligne_commande_client) || 0,
+          quantite: Number(o.quantite) || 0,
+        }))
         const ofIds = ofs.map((o) => o.IDordre_fabrication).filter((x) => x > 0)
         if (ofIds.length > 0) {
           // Every roll counts, déclassés included — that is what visitage
@@ -292,17 +317,21 @@ stockRouter.get('/fil/etat', async (req: Request, res: Response) => {
           pieces = (await query<PieceRow>(
             `SELECT IDordre_fabrication, poids FROM stock_ecru WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
           )).map((p) => ({ IDordre_fabrication: Number(p.IDordre_fabrication) || 0, poids: Number(p.poids) || 0 }))
-          ofFil = (await query<OfFilRow>(
-            `SELECT a.IDordre_fabrication, a.pourcentage FROM asso_fil_of a
+          ofFil = (await query<{ IDordre_fabrication: number; pourcentage: number | null; lot: string | null }>(
+            `SELECT a.IDordre_fabrication, a.pourcentage, sf.lot FROM asso_fil_of a
              JOIN stock_fil sf ON a.IDstock_fil = sf.IDstock_fil
              WHERE a.IDordre_fabrication IN (${ofIds.join(',')})
                AND sf.IDref_fil = ${refFil} AND sf.IDcolori_fil = ${coloriFil}`,
-          )).map((f) => ({ IDordre_fabrication: Number(f.IDordre_fabrication) || 0, pourcentage: Number(f.pourcentage) || 0 }))
+          )).map((f) => ({
+            IDordre_fabrication: Number(f.IDordre_fabrication) || 0,
+            pourcentage: Number(f.pourcentage) || 0,
+            lot: (f.lot ?? '').toString(),
+          }))
         }
       }
     }
     const { rows: besoin_rows, besoin, reserve: besoin_reserve, produit: besoin_produit } =
-      computeBesoin({ asso, mirrors, ofs, pieces, ofFil })
+      computeBesoin({ asso, mirrors, ofs, pieces, ofFil, lines })
     const nb_affectations = besoin_rows.length
 
     res.json({

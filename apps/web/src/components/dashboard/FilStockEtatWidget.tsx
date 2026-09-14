@@ -31,8 +31,12 @@ interface FilEtat {
   besoin_produit: number
   nb_affectations: number
   /** One row per open tricoteur line; `kg` is the remaining need, `suivi` false = external
-   *  tricoteur whose production is not tracked (nothing deducted). */
-  besoin_rows: { lot: string; commande_sst: number; reserve: number; produit: number; suivi: boolean; kg: number }[]
+   *  tricoteur whose production is not tracked (nothing deducted). `source` 'of' = no
+   *  affectation on this fil, reserve derived from the OFs launched in TRM (#1159). */
+  besoin_rows: {
+    lot: string; commande_sst: number; reserve: number; produit: number; suivi: boolean; kg: number
+    source: 'affectation' | 'of'
+  }[]
   disponible: number
 }
 
@@ -168,11 +172,13 @@ export function FilStockEtatWidget() {
                     iconBox="icon-box-terracotta"
                     info={{
                       title: 'Besoin',
-                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées), déduction faite de ce que leurs OF ont déjà tricoté (reste à tricoter). « — » : tricoteur externe, production non suivie.',
+                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées), déduction faite de ce que leurs OF ont déjà tricoté (reste à tricoter). « * » : fil non affecté sur la commande, besoin déduit des OF lancés. « — » : tricoteur externe, production non suivie.',
                       headers: ['N° STT', 'Lot', 'Affecté', 'Tricoté', 'Reste'],
                       numCols: 3,
                       rows: etat.besoin_rows.map((r) => [
-                        `N°${r.commande_sst}`, r.lot, fmtNum(r.reserve, 1), r.suivi ? fmtNum(r.produit, 1) : '—', fmtNum(r.kg, 1),
+                        `N°${r.commande_sst}`, r.lot,
+                        r.source === 'of' ? `${fmtNum(r.reserve, 1)} *` : fmtNum(r.reserve, 1),
+                        r.suivi ? fmtNum(r.produit, 1) : '—', fmtNum(r.kg, 1),
                       ]),
                       colTotals: [fmtNum(etat.besoin_reserve, 1), fmtNum(etat.besoin_produit, 1)],
                       totalKg: etat.besoin,

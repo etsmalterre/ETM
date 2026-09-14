@@ -111,4 +111,83 @@ describe('computeBesoin (#1139)', () => {
   it('sorts the biggest remaining need first', () => {
     expect(out.rows.map((r) => r.commande_sst).slice(0, 2)).toEqual([9005, 8884])
   })
+
+  it('every row read from an affectation says so', () => {
+    expect(out.rows.every((r) => r.source === 'affectation')).toBe(true)
+  })
+})
+
+// LIVA #1159 — prod figures of 2026-09-14 for 22 ELASTHANNE écru (ref 8 /
+// coloris 338, lot 10379). sst 9005 (line 8979) had its affectation; sst 9032
+// (line 9005, 3 000 kg) was launched on three OFs straight from TRM, lot
+// 10379 at 6 %, with no affectation at all — the widget listed 9005 alone.
+describe('computeBesoin — line without affectation, OFs consuming the fil (#1159)', () => {
+  const asso = [{ ligne: 8979, commande_sst: 9005, lot: '10379', quantite: 180 }]
+  const lines = [
+    { ligne: 8979, commande_sst: 9005, quantite: 3000 },
+    { ligne: 9005, commande_sst: 9032, quantite: 3000 },
+  ]
+  const mirrors = [
+    { IDligne_commande_client: 13129, IDligne_commande_ETM: 8979 },
+    { IDligne_commande_client: 13171, IDligne_commande_ETM: 9005 },
+  ]
+  const ofs = [
+    { IDordre_fabrication: 3570, IDligne_commande_client: 13129, quantite: 1000 },
+    { IDordre_fabrication: 3571, IDligne_commande_client: 13129, quantite: 1000 },
+    { IDordre_fabrication: 3572, IDligne_commande_client: 13129, quantite: 1000 },
+    { IDordre_fabrication: 3579, IDligne_commande_client: 13171, quantite: 1000 },
+    { IDordre_fabrication: 3580, IDligne_commande_client: 13171, quantite: 1000 },
+    { IDordre_fabrication: 3581, IDligne_commande_client: 13171, quantite: 1000 },
+  ]
+  const pieces = [
+    { IDordre_fabrication: 3570, poids: 867.8 },
+    { IDordre_fabrication: 3571, poids: 978.8 },
+    { IDordre_fabrication: 3572, poids: 984.7 },
+  ]
+  const ofFil = [3570, 3571, 3572, 3579, 3580, 3581].map((o) => ({ IDordre_fabrication: o, pourcentage: 6, lot: '10379' }))
+  const out = computeBesoin({ asso, mirrors, ofs, pieces, ofFil, lines })
+  const row = (cmd: number) => out.rows.find((r) => r.commande_sst === cmd)!
+
+  it('derives the reserve of 9032 from its OFs: 3 000 kg × 6 %', () => {
+    expect(row(9032)).toMatchObject({ source: 'of', lot: '10379', reserve: 180, produit: 0, suivi: true, kg: 180 })
+  })
+
+  it('keeps 9005 on its affectation (the OFs do not override an existing reserve)', () => {
+    // 2 831.3 kg knitted × 6 % = 169.9 → 10.1 left of the 180 reserved.
+    expect(row(9005)).toMatchObject({ source: 'affectation', reserve: 180, produit: 169.9, kg: 10.1 })
+  })
+
+  it('totals include the derived line', () => {
+    expect(out.rows).toHaveLength(2)
+    expect(out.reserve).toBe(360)
+    expect(out.besoin).toBe(190.1)
+  })
+
+  it('weights the share by OF quantity when the OFs disagree', () => {
+    const two = computeBesoin({
+      asso: [],
+      lines: [{ ligne: 1, commande_sst: 10, quantite: 1000 }],
+      mirrors: [{ IDligne_commande_client: 100, IDligne_commande_ETM: 1 }],
+      ofs: [
+        { IDordre_fabrication: 5, IDligne_commande_client: 100, quantite: 300 },
+        { IDordre_fabrication: 6, IDligne_commande_client: 100, quantite: 700 },
+      ],
+      pieces: [],
+      ofFil: [{ IDordre_fabrication: 5, pourcentage: 10, lot: 'A' }, { IDordre_fabrication: 6, pourcentage: 20, lot: 'B' }],
+    })
+    // (300 × 10 + 700 × 20) / 1000 = 17 % of 1 000 kg.
+    expect(two.rows[0]).toMatchObject({ source: 'of', reserve: 170, lot: 'A, B' })
+  })
+
+  it('ignores a line whose OFs use another fil', () => {
+    const none = computeBesoin({
+      asso: [],
+      lines: [{ ligne: 1, commande_sst: 10, quantite: 1000 }],
+      mirrors: [{ IDligne_commande_client: 100, IDligne_commande_ETM: 1 }],
+      ofs: [{ IDordre_fabrication: 5, IDligne_commande_client: 100, quantite: 300 }],
+      pieces: [],
+      ofFil: [],
+    })
+    expect(none.rows).toHaveLength(0)
+  })
 })
