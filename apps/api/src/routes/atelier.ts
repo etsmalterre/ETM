@@ -43,13 +43,11 @@ import { maxId } from './expeditions.js'
 import { resolveRefFilNames, resolveColoriFilNames } from './of-trm.js'
 import {
   etatMetier,
-  debutFenetreArrets,
-  frequenceArret,
   pourcentageDefauts,
   alerteRegleur,
-  FENETRE_FREQ_ARRET_MS,
   type AlerteRegleur,
 } from '../lib/atelier-regleur-trm.js'
+import { arretsParPieceDesOfs } from '../lib/arrets-par-piece-trm.js'
 
 export const atelierRouter: RouterType = Router()
 
@@ -180,7 +178,7 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
       resolveColorisEcru(ofs.map((o) => n(o.IDcolori_ecru)).filter((x) => x > 0)),
     ])
     const produites = countFinished(pieces)
-    const regleur = wantRegleur ? await regleurExtras(ofs, pieces) : null
+    const regleur = wantRegleur ? await regleurExtras(ofs) : null
 
     const byMachine = new Map<number, Record<string, unknown>>()
     for (const o of ofs) byMachine.set(n(o.IDmachine), o)
@@ -223,7 +221,7 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
           regleur && ofId
             ? {
                 etat: etatMetier(demarre, interrompu),
-                ...(regleur.get(ofId) ?? { alerte: false, pct_defaut: 0, freq_arret: 0, eligible: false }),
+                ...(regleur.get(ofId) ?? { alerte: false, pct_defaut: 0, arrets_piece: { moyenne: null, pieces: 0 }, eligible: false }),
               }
             : null,
       }
@@ -279,69 +277,30 @@ async function countFinishedPieces(ofIds: number[]): Promise<Map<number, number>
   return countFinished(await selectPiecesForOfs(ofIds), ofIds.filter((x) => x > 0))
 }
 
-/** Compact HFSQL DATETIME literal for an epoch (same shape as nowDt()). */
-function dtLit(ms: number): string {
-  const t = new Date(ms)
-  const p = (x: number) => String(x).padStart(2, '0')
-  return `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`
-}
-
 type RegleurExtras = AlerteRegleur & { eligible: boolean }
 
-/** The régleur tile's numbers for every active OF, in four bounded reads:
+/** The régleur tile's numbers for every active OF, in three bounded reads:
  *
- *   1. evenement_machine, etat = 0, last 24 h, all métiers   (the stops)
- *   2. evenement_piece, Nettoyage / Fin du tricotage, 24 h    (the expected stops)
- *   3. stock_ecru TOP 100 per distinct (reference, coloris)   (the 2nd-choice ratio)
- *   4. ref_ecru_machine for the métiers on screen             (the eligibility)
+ *   1. arrêts par pièce — lib/arrets-par-piece-trm.ts, the TRS tablet's own
+ *      reader, cached per (OF, ids of its last finished pieces)
+ *   2. stock_ecru TOP 100 per distinct (reference, coloris)   (the 2nd-choice ratio)
+ *   3. ref_ecru_machine for the métiers on screen             (the eligibility)
  *
- *  The legacy runs 1 + 2 + 3 once PER TILE, with the JOIN inside 2. Both dates
- *  are reserved words (`DATE`), hence the aliases, and both windows are cut
- *  at 24 h in SQL then narrowed per OF in JS (`debutFenetreArrets`). */
-async function regleurExtras(
-  ofs: Record<string, unknown>[],
-  pieces: PieceRow[],
-): Promise<Map<number, RegleurExtras>> {
+ *  The legacy runs two 24 h scans PER TILE for an hourly stop rate; why that
+ *  number is not ported: the header of lib/atelier-regleur-trm.ts. */
+async function regleurExtras(ofs: Record<string, unknown>[]): Promise<Map<number, RegleurExtras>> {
   const out = new Map<number, RegleurExtras>()
   if (ofs.length === 0) return out
-  const now = Date.now()
-  const lit = dtLit(now - FENETRE_FREQ_ARRET_MS)
   const machineIds = Array.from(new Set(ofs.map((o) => n(o.IDmachine)).filter((x) => x > 0)))
 
-  const [arretRows, evtRows, eligRows] = await Promise.all([
-    query<Record<string, unknown>>(
-      `SELECT IDmachine, DATE AS date_ev FROM evenement_machine
-       WHERE etat = 0 AND DATE >= '${lit}'`,
-    ),
-    query<Record<string, unknown>>(
-      `SELECT IDpiece_production, DATE AS date_ev FROM evenement_piece
-       WHERE DATE >= '${lit}' AND evenement IN ('Nettoyage', 'Fin du tricotage')`,
-    ),
+  const [arrets, eligRows] = await Promise.all([
+    arretsParPieceDesOfs(ofs.map((o) => ({ ofId: n(o.IDordre_fabrication), machineId: n(o.IDmachine) }))),
     machineIds.length > 0
       ? query<Record<string, unknown>>(
           `SELECT IDref_ecru, IDmachine FROM ref_ecru_machine WHERE IDmachine IN (${machineIds.join(',')})`,
         )
       : Promise.resolve([] as Record<string, unknown>[]),
   ])
-
-  const arretsParMachine = new Map<number, number[]>()
-  for (const r of arretRows) {
-    const t = parseDtMs(r.date_ev)
-    if (t === null) continue
-    const k = n(r.IDmachine)
-    if (!arretsParMachine.has(k)) arretsParMachine.set(k, [])
-    arretsParMachine.get(k)!.push(t)
-  }
-  const ofParPiece = new Map<number, number>()
-  for (const p of pieces) ofParPiece.set(p.id, p.ofId)
-  const evtsParOf = new Map<number, number[]>()
-  for (const r of evtRows) {
-    const ofId = ofParPiece.get(n(r.IDpiece_production))
-    const t = parseDtMs(r.date_ev)
-    if (ofId === undefined || t === null) continue
-    if (!evtsParOf.has(ofId)) evtsParOf.set(ofId, [])
-    evtsParOf.get(ofId)!.push(t)
-  }
   const eligible = new Set(eligRows.map((r) => `${n(r.IDref_ecru)}:${n(r.IDmachine)}`))
 
   // One TOP 100 per distinct (reference, coloris) pair — two OFs on the same
@@ -367,16 +326,9 @@ async function regleurExtras(
 
   for (const o of ofs) {
     const ofId = n(o.IDordre_fabrication)
-    const debut = debutFenetreArrets(parseDtMs(o.demarrage_prod), now)
-    const freq = frequenceArret(
-      debut,
-      now,
-      arretsParMachine.get(n(o.IDmachine)) ?? [],
-      evtsParOf.get(ofId) ?? [],
-    )
     const pct = pctParPaire.get(`${n(o.IDref_ecru)}:${n(o.IDcolori_ecru)}`) ?? 0
     out.set(ofId, {
-      ...alerteRegleur(pct, freq),
+      ...alerteRegleur(pct, arrets.get(ofId) ?? { moyenne: null, pieces: 0 }),
       eligible: eligible.has(`${n(o.IDref_ecru)}:${n(o.IDmachine)}`),
     })
   }

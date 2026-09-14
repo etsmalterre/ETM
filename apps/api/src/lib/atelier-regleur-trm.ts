@@ -5,9 +5,9 @@
 // `C:\Mes Projets\MPS\Android\gen\Compile\` (dated 2026-05-25), NOT in `dbg\`
 // (the bonnetier build of 2026-03-24). Its machine list adds three things to
 // every active tile that the bonnetier never sees: a state icon (réglage /
-// pause / marche), a stop frequency, and a second-choice ratio — and an alert
-// flag combining the last two. Everything here is pure so it can be tested
-// without a base; routes/atelier.ts feeds it the rows.
+// pause / marche), a stop figure on a bell, and a second-choice ratio — and an
+// alert flag combining the last two. Everything here is pure so it can be
+// tested without a base; routes/atelier.ts feeds it the rows.
 //
 // Legacy, verbatim (FEN_Choix_Metier.ZR_Machine init + local procedures):
 //
@@ -41,13 +41,37 @@
 //       SI xPoidsTotal >= 1000 ALORS SORTIR
 //     renvoyer xPoidsSecondChoix / xPoidsTotal   (0 quand xPoidsTotal = 0)
 //
+// ⚠️ The bell number is NOT ported as written — the legacy's is a bug.
+// `FrequenceArret` divides 24 h of stops by `DateHeureDifférence(dhDateRef,
+// DateSys)`, and `DateSys` is the system DATE: the interval runs from the
+// window start to TODAY'S MIDNIGHT while both counts run up to now. At 17:37
+// that inflates the hourly rate ×3.8, just before midnight it explodes, and
+// an OF started today gets a negative interval, hence no bell at all. Checked
+// on prod on 2026-09-14: every tile of the Android app (4 / 4 / 2 / 3 / 6 /
+// nothing) reproduces from the honest counts once divided by the minutes to
+// midnight; the honest hourly rate reads "1" on every métier and tells the
+// régleur nothing.
+//
+// Decision (user, 2026-09-14): the bell carries the TRS tablet's number
+// instead — the mean of unexplained stops PER PIECE over the last
+// ARRETS_PIECES finished pieces of the active OF (`arretsParPiece()` in
+// trs-trm.ts, read by lib/arrets-par-piece-trm.ts for both callers). It is
+// what the régleurs learned to read the legacy bell as ("about 4 stops per
+// roll"), it is the number already on the wall, and it does not depend on
+// the time of day. Alert threshold = above 1 stop per piece, the tablet's own
+// amber step (apps/trs lib/affichage.ts `teinteArrets`). The second-choice
+// ratio, its 2 % threshold and the "zeroed without alert" rule are the
+// legacy's, unchanged — so the % still shows only when the bell is on.
+//
 // Two readings of the legacy worth keeping in mind:
-//  - The stop count subtracts the *expected* stops (a Nettoyage and a Fin de
-//    pièce each stop the métier on purpose), so the frequency is the rate of
-//    UNEXPLAINED stops per hour. It can go negative on paper; the legacy clamps.
 //  - The second-choice ratio is by WEIGHT over the most recent rolls of the
 //    (reference, coloris) pair — all OFs, all machines — stopped at the first
 //    roll that carries the running total to 1 000 kg, or at 100 rolls.
+//  - The legacy % label is visible whenever it is non-zero, and the bell (with
+//    its number) only on alert: 1,2 % shows under a bell lit by the stops, not
+//    because 1,2 % crosses a threshold of its own.
+
+import type { ArretsParPiece } from './trs-trm.js'
 
 export type EtatMetier = 'reglage' | 'pause' | 'marche'
 
@@ -59,45 +83,11 @@ export function etatMetier(demarre: boolean, interrompu: boolean): EtatMetier {
   return 'marche'
 }
 
-/** Seuils du legacy — `bAlert = (pctDefaut > 0.02 ou nFreqArret > 1)`. */
+/** Legacy threshold — `bAlert = (pctDefaut > 0.02 ou …)`. */
 export const SEUIL_PCT_DEFAUT = 0.02
-export const SEUIL_FREQ_ARRET = 1
-
-export const FENETRE_FREQ_ARRET_MS = 24 * 3600_000
-
-/** The reference instant the stop frequency is measured from: the start of the
- *  OF, or 24 h ago when the OF is older than that. Null when the OF has not
- *  started (the legacy would compute on a blank date; the régleur list shows
- *  a réglage tile there, with no frequency). */
-export function debutFenetreArrets(demarrageMs: number | null, nowMs: number): number | null {
-  if (demarrageMs === null) return null
-  const ref = nowMs - FENETRE_FREQ_ARRET_MS
-  return demarrageMs > ref ? demarrageMs : ref
-}
-
-/** Unexplained stops per hour since `debutMs`.
- *
- *  @param arretsMs       timestamps of the métier's `evenement_machine` rows
- *                        with `etat = 0` (any window — filtered here)
- *  @param evenementsMs   timestamps of the OF's `evenement_piece` rows whose
- *                        `evenement` is 'Nettoyage' or 'Fin du tricotage'
- */
-export function frequenceArret(
-  debutMs: number | null,
-  nowMs: number,
-  arretsMs: number[],
-  evenementsMs: number[],
-): number {
-  if (debutMs === null) return 0
-  const minutes = Math.floor((nowMs - debutMs) / 60_000)
-  if (minutes <= 0) return 0
-  const arrets = arretsMs.filter((t) => t >= debutMs).length
-  const attendus = evenementsMs.filter((t) => t >= debutMs).length
-  const freq = Math.round(((arrets - attendus) * 60) / minutes)
-  // `<= 0`, not `< 0`: Math.round(-0.25) is -0, which `< 0` lets through and
-  // the JSON then carries as a bare 0 — harmless on the wire, wrong in a test.
-  return freq <= 0 ? 0 : freq
-}
+/** Above this many unexplained stops per piece the bell lights up — the TRS
+ *  tablet's amber step (`teinteArrets`: ≤ 1 green, ≤ 3 amber, more red). */
+export const SEUIL_ARRETS_PIECE = 1
 
 export interface RouleauPoids {
   poids: number
@@ -121,10 +111,14 @@ export interface AlerteRegleur {
   alerte: boolean
   /** Zeroed when there is no alert, exactly as the legacy tile does. */
   pct_defaut: number
-  freq_arret: number
+  /** The TRS tablet's `arretsParPiece` for the OF — `moyenne` null until the
+   *  OF has a finished piece. Never zeroed: the bell number is informative
+   *  on its own, only its colour follows the alert. */
+  arrets_piece: ArretsParPiece
 }
 
-export function alerteRegleur(pctDefaut: number, freqArret: number): AlerteRegleur {
-  const alerte = pctDefaut > SEUIL_PCT_DEFAUT || freqArret > SEUIL_FREQ_ARRET
-  return { alerte, pct_defaut: alerte ? pctDefaut : 0, freq_arret: freqArret }
+export function alerteRegleur(pctDefaut: number, arrets: ArretsParPiece): AlerteRegleur {
+  const tropDArrets = arrets.moyenne !== null && arrets.moyenne > SEUIL_ARRETS_PIECE
+  const alerte = pctDefaut > SEUIL_PCT_DEFAUT || tropDArrets
+  return { alerte, pct_defaut: alerte ? pctDefaut : 0, arrets_piece: arrets }
 }
