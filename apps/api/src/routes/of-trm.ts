@@ -65,6 +65,7 @@ import {
 } from '../lib/production-trm.js'
 import { rerankQueue, activeOfOnMachine, terminerOf, healHandedOverOfs } from '../lib/of-queue-trm.js'
 import { realisableSurLots } from '../lib/realisable-fil-trm.js'
+import { loadEtmAffectation, missingAffectations, type FilPair } from '../lib/affectation-fil-trm.js'
 
 export const ofTrmRouter: RouterType = Router()
 
@@ -117,6 +118,32 @@ export async function resolveColoriFilNames(ids: number[]): Promise<Map<number, 
     out.set(Number(r.IDcolori_fil), (r.reference ?? '').toString().trim())
   }
   return out
+}
+
+/** The ETM affectation gate (LIVA #1159): an OF on the mirror of an ETM sst
+ *  line may only knit fils affected on that line. Answers 409
+ *  `fil_non_affecte` naming the missing fils and returns true when refused.
+ *  A TRM-native line (no mirror) is never refused. */
+async function refuseIfFilNonAffecte(res: Response, trmLigneId: number, composition: FilPair[]): Promise<boolean> {
+  const aff = await loadEtmAffectation(trmLigneId)
+  if (!aff.suivi) return false
+  const missing = missingAffectations(composition, aff.lots)
+  if (missing.length === 0) return false
+  const refNames = await resolveRefFilNames(missing.map((m) => m.IDref_fil))
+  const coloriNames = await resolveColoriFilNames(missing.map((m) => m.IDcolori_fil))
+  const manquants = missing.map((m) => {
+    const ref = refNames.get(m.IDref_fil) ?? `#${m.IDref_fil}`
+    const coloris = coloriNames.get(m.IDcolori_fil) ?? ''
+    return { IDref_fil: m.IDref_fil, IDcolori_fil: m.IDcolori_fil, label: coloris ? `${ref} ${coloris}` : ref }
+  })
+  res.status(409).json({
+    error: 'fil_non_affecte',
+    sst_numero: aff.sst_numero,
+    manquants,
+    message: `Fil non affecté sur la commande ETM N°${aff.sst_numero} : ${manquants.map((m) => m.label).join(', ')}. `
+      + "Affectez-le dans ETM (Sous-traitants › Commandes, onglet Stock fil) avant de lancer l'OF.",
+  })
+  return true
 }
 
 async function selectStockFilByPair(refFil: number, coloriFil: number): Promise<StockFilLot[]> {
@@ -317,15 +344,22 @@ ofTrmRouter.get('/lookups/composition', async (req: Request, res: Response) => {
 
     const refFilNames = await resolveRefFilNames(components.map((c) => c.IDref_fil))
     const coloriFilNames = await resolveColoriFilNames(components.map((c) => c.IDcolori_fil))
+    // The ETM affectation behind the line (LIVA #1159): the affected lot is
+    // the row's default, and the dialog warns on a fil with none — POST will
+    // refuse it. Unsuivi (TRM-native line) → no default, no warning.
+    const affectation = await loadEtmAffectation(ligneId)
+    const affectedIds = new Set(affectation.lots.map((l) => l.IDstock_fil))
     // Lots are a property of the pair, so two rows sharing one pair share the
     // query (and offer the same lot list).
-    const lotsByPair = new Map<string, Array<{ id: number; lot: string; stock: number }>>()
+    const lotsByPair = new Map<string, Array<{ id: number; lot: string; stock: number; affecte: boolean }>>()
     for (const c of components) {
       const pairKey = `${c.IDref_fil}:${c.IDcolori_fil}`
       let lots = lotsByPair.get(pairKey)
       if (!lots) {
-        lots = await selectStockFilByPair(c.IDref_fil, c.IDcolori_fil)
-        lots.sort((a, b) => b.stock - a.stock)
+        lots = (await selectStockFilByPair(c.IDref_fil, c.IDcolori_fil))
+          .map((l) => ({ ...l, affecte: affectedIds.has(l.id) }))
+        // Affected first, then biggest stock.
+        lots.sort((a, b) => Number(b.affecte) - Number(a.affecte) || b.stock - a.stock)
         lotsByPair.set(pairKey, lots)
       }
       c.ref_label = refFilNames.get(c.IDref_fil) ?? `#${c.IDref_fil}`
@@ -364,7 +398,7 @@ ofTrmRouter.get('/lookups/composition', async (req: Request, res: Response) => {
 
     // The legacy window prints "Total des pourcentages" and expects 100 %.
     const total = components.reduce((s: number, c: any) => s + (Number(c.pourcentage) || 0), 0)
-    res.json({ components, compatibles, defaults, total_pourcentage: round2(total) })
+    res.json({ components, compatibles, defaults, total_pourcentage: round2(total), affectation })
   } catch (err) {
     console.error('Error fetching of-trm composition lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -1575,6 +1609,8 @@ ofTrmRouter.post('/', async (req: Request, res: Response) => {
     const b = parsed.data
     const ctx = (await resolveLigneContexts([b.IDligne_commande_client])).get(b.IDligne_commande_client)
     if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
+    // LIVA #1159 — every fil of the OF must be affected on the ETM line.
+    if (await refuseIfFilNonAffecte(res, b.IDligne_commande_client, b.composition)) return
 
     // Reference defaults for anything the dialog left implicit.
     let refDefaults = { poids: 0, ouvert: 0, maille: 0, sonneter: 0 }
@@ -1763,6 +1799,9 @@ ofTrmRouter.put('/:id/composition', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
       return
     }
+    // LIVA #1159 — a lot swap within an affected fil is fine, a new fil with
+    // no affectation on the ETM line is not.
+    if (await refuseIfFilNonAffecte(res, Number(loaded.of.IDligne_commande_client) || 0, parsed.data.rows)) return
     await query(`DELETE FROM asso_fil_of WHERE IDordre_fabrication = ${id}`)
     for (const c of parsed.data.rows) {
       await query(
