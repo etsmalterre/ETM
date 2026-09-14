@@ -4,6 +4,7 @@ import { repairAliased, resolveSstLine, resolveProvenanceFils } from './stock-fi
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
+import { finiIdsByComponentEcru, loadFiniSources, mergedComponentEcruIds } from '../lib/fini-sources.js'
 
 export const stockEcruRouter: RouterType = Router()
 
@@ -326,7 +327,12 @@ stockEcruRouter.get('/ecru', async (req: Request, res: Response) => {
     const rows = await query<StockEcru>(
       `SELECT ${STOCK_ECRU_SELECT} ${STOCK_ECRU_FROM} ${whereSql} ORDER BY se.date_saisie DESC, se.IDstock_ecru DESC`,
     )
-    const hydrated = await hydrateEcruRows(rows)
+    // A piece merged into a grouped roll (LIVA #1149) has left stock too, but
+    // it is a component in stock_fini_source, not the roll's IDstock_ecru —
+    // and the driver refuses a NOT EXISTS on that table, so drop them here.
+    const merged = await mergedComponentEcruIds()
+    const live = merged.size > 0 ? rows.filter((r) => !merged.has(Number(r.IDstock_ecru))) : rows
+    const hydrated = await hydrateEcruRows(live)
     res.json(hydrated)
   } catch (err) {
     console.error('Error fetching stock_ecru:', err)
@@ -721,8 +727,14 @@ stockEcruRouter.get('/ecru/suivi', async (req: Request, res: Response) => {
        WHERE numero = '${q}' ORDER BY IDstock_fini DESC`,
     )
     const ecruIds = ecruRows.map((r) => Number(r.IDstock_ecru))
+    // A grouped roll ("3510/11+3510/2") is made of several écru pieces: its
+    // link rows name every component, not just the IDstock_ecru it carries.
+    const finiByNumeroSources = await loadFiniSources(finiByNumero.map((r) => Number(r.IDstock_fini)))
     const extraEcruIds = Array.from(new Set(
-      finiByNumero.map((r) => Number(r.IDstock_ecru)).filter((x) => x > 0 && !ecruIds.includes(x)),
+      [
+        ...finiByNumero.map((r) => Number(r.IDstock_ecru)),
+        ...Array.from(finiByNumeroSources.values()).flat(),
+      ].filter((x) => x > 0 && !ecruIds.includes(x)),
     ))
     if (extraEcruIds.length > 0) {
       const more = await query<Record<string, unknown>>(
@@ -741,15 +753,22 @@ stockEcruRouter.get('/ecru/suivi', async (req: Request, res: Response) => {
     }
     const allEcruIds = ecruRows.map((r) => Number(r.IDstock_ecru))
 
-    // ── 3. Fini rolls born from those écru pieces ──
+    // ── 3. Fini rolls born from those écru pieces — by IDstock_ecru, plus the
+    //      grouped rolls that hold a piece as a merged component ──
+    const finiByComponent = await finiIdsByComponentEcru(allEcruIds)
+    const componentFiniIds = Array.from(new Set(Array.from(finiByComponent.values()).flat()))
     const finiRows = await query<Record<string, unknown>>(
       `SELECT IDstock_fini, IDstock_ecru, IDref_fini, IDColoris, lot, numero, poids, metrage,
               IDmagasin, IDref_commande_source, IDetat_stock_fini,
               IDligne_expedition, IDligne_commande_client,
               observations, observation_sst, second_choix
-       FROM stock_fini WHERE IDstock_ecru IN (${allEcruIds.join(',')}) ORDER BY IDstock_fini`,
+       FROM stock_fini WHERE IDstock_ecru IN (${allEcruIds.join(',')})${componentFiniIds.length > 0 ? ` OR IDstock_fini IN (${componentFiniIds.join(',')})` : ''} ORDER BY IDstock_fini`,
     )
     const finiIds = finiRows.map((r) => Number(r.IDstock_fini))
+    const finiSources = await loadFiniSources(finiIds)
+    /** A fini belongs to an écru piece when it points at it OR lists it as a component. */
+    const finiOfEcru = (f: Record<string, unknown>, ecruId: number): boolean =>
+      Number(f.IDstock_ecru) === ecruId || (finiSources.get(Number(f.IDstock_fini)) ?? []).includes(ecruId)
 
     // ── 4. Transfers touching either stage ──
     const ptWhere = [`IDpiece_ecru IN (${allEcruIds.join(',')})`]
@@ -961,7 +980,7 @@ stockEcruRouter.get('/ecru/suivi', async (req: Request, res: Response) => {
       const ecruId = Number(e.IDstock_ecru)
       const re = refEcru.get(Number(e.IDref_ecru))
       const finis = finiRows
-        .filter((f) => Number(f.IDstock_ecru) === ecruId)
+        .filter((f) => finiOfEcru(f, ecruId))
         .map((f) => {
           const rf = refFini.get(Number(f.IDref_fini))
           const cid = Number(f.IDColoris)

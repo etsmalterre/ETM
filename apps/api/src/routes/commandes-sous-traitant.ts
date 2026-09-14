@@ -44,6 +44,7 @@ import { resolveSstAdresses } from '../lib/sst-adresses.js'
 import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
+import { consumedEcruIds, deleteFiniSources, insertFiniSources, loadFiniSources, probeFiniSourceTable, FiniSourceUnavailableError } from '../lib/fini-sources.js'
 import {
   loadActions,
   loadLineKeysForCommande,
@@ -4756,6 +4757,10 @@ interface StockFiniLite {
   IDstock_ecru: number
   IDmagasin: number
   date_saisie: string | null
+  /** Grouped roll (LIVA #1149): every écru piece merged into this roll, in
+   *  order, with the matching numeros. Empty on a plain roll. */
+  source_ecru_ids?: number[]
+  source_numeros?: string[]
   // Two distinct free-text fields on stock_fini: the visitor's note
   // (`observations`, captured when the roll is checked in) and the
   // ennoblisseur's note (`observation_sst`). They're surfaced as two
@@ -4785,6 +4790,8 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
    *  price without forcing the frontend to refetch the whole commande
    *  detail. Read from the row after any in-flight recalc has persisted. */
   prix: number
+  /** Whether grouped receptions (LIVA #1149) can be recorded on this server. */
+  fusion_disponible: boolean
 }> {
   // Linked écru rolls — those already affected to this line.
   const linkedRows = await query<StockEcruLite>(
@@ -4929,15 +4936,35 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
     defects: defectsByEcruId.get(Number(r.IDstock_ecru) || 0) ?? [],
   }))
 
+  // Grouped rolls (LIVA #1149): the components of a merged roll, with their
+  // numeros, so the Réception card can list them and the Affectés tab can lock
+  // every piece that went into a roll — not only the one IDstock_ecru names.
+  const sourcesByFini = await loadFiniSources(finiFixed.map((r) => Number(r.IDstock_fini)))
+  const componentNumero = new Map<number, string>()
+  for (const r of linkedFixed) componentNumero.set(Number(r.IDstock_ecru), ((r.numero ?? '') as string).toString().trim())
+  const missingComponentIds = Array.from(new Set(Array.from(sourcesByFini.values()).flat()))
+    .filter((id) => !componentNumero.has(id))
+  if (missingComponentIds.length > 0) {
+    const rows = await query<{ IDstock_ecru: number; numero: string | null }>(
+      `SELECT IDstock_ecru, numero FROM stock_ecru WHERE IDstock_ecru IN (${missingComponentIds.join(',')})`,
+    )
+    for (const r of await fixEncoding(rows, 'stock_ecru', 'IDstock_ecru', ['numero'])) {
+      componentNumero.set(Number(r.IDstock_ecru), ((r.numero ?? '') as string).toString().trim())
+    }
+  }
+
   // Attach client_nom to each fini using the shared clientByLcc map
   // built above. The raw IDligne_commande_client comes from the stock_fini
   // SELECT (already fetched into finiFixed); it isn't part of the public
   // StockFiniLite shape so we read it as any.
   const fini = finiFixed.map((r) => {
     const lcc = Number((r as any).IDligne_commande_client) || 0
+    const sources = sourcesByFini.get(Number(r.IDstock_fini)) ?? []
     return {
       ...r,
       client_nom: lcc > 0 ? (clientByLcc.get(lcc) ?? null) : null,
+      source_ecru_ids: sources,
+      source_numeros: sources.map((id) => componentNumero.get(id) ?? `#${id}`),
     }
   })
 
@@ -4955,6 +4982,9 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
     ecruAvailable: available as StockEcruLite[],
     finiReceived: fini as StockFiniLite[],
     prix,
+    // « Fusionner » needs the stock_fini_source table on this server; the
+    // dialog hides the affordance when it is not there yet.
+    fusion_disponible: await probeFiniSourceTable(),
   }
 }
 
@@ -5944,6 +5974,9 @@ const finiBody = z.object({
   poids: z.number().optional(),
   metrage: z.number().optional(),
   IDstock_ecru: z.number().int().nonnegative().optional(),
+  /** Grouped roll (LIVA #1149): every écru piece the dyer joined into this
+   *  one roll, `IDstock_ecru` (the first) included. Two or more ids. */
+  IDstock_ecru_sources: z.array(z.number().int().positive()).min(2).max(10).optional(),
   IDref_fini: z.number().int().positive(),
   IDColoris: z.number().int().nonnegative().optional(),
   IDmagasin: z.number().int().nonnegative().optional(),
@@ -6002,6 +6035,40 @@ commandesSousTraitantRouter.post(
         inheritedLcc = Number((verify[0] as any).IDligne_commande_client) || 0
       }
 
+      // Grouped roll: every component must be affected to this line and not
+      // already consumed into a fini (its own or as a component of another
+      // grouped roll). The first component is the roll's IDstock_ecru.
+      const sources = d.IDstock_ecru_sources ?? []
+      if (sources.length > 0) {
+        if (!(await probeFiniSourceTable())) {
+          res.status(503).json({ error: 'fusion_indisponible', message: new FiniSourceUnavailableError().message })
+          return
+        }
+        if (!(d.IDstock_ecru && d.IDstock_ecru > 0) || sources[0] !== d.IDstock_ecru) {
+          res.status(400).json({ error: 'IDstock_ecru_sources must start with IDstock_ecru' }); return
+        }
+        if (new Set(sources).size !== sources.length) {
+          res.status(400).json({ error: 'IDstock_ecru_sources holds a duplicate' }); return
+        }
+        const compRows = await query<{ IDstock_ecru: number; IDref_commande_affectation: number | null }>(
+          `SELECT IDstock_ecru, IDref_commande_affectation FROM stock_ecru WHERE IDstock_ecru IN (${sources.join(',')})`,
+        )
+        const affById = new Map(compRows.map((r) => [Number(r.IDstock_ecru), Number(r.IDref_commande_affectation) || 0]))
+        const notAffected = sources.filter((id) => affById.get(id) !== ligneId)
+        if (notAffected.length > 0) {
+          res.status(400).json({ error: 'Every component must be affected to this line', ids: notAffected }); return
+        }
+        const consumed = await consumedEcruIds(sources)
+        if (consumed.size > 0) {
+          res.status(409).json({
+            error: 'ecru_deja_recu',
+            message: 'Une des pièces à fusionner a déjà été réceptionnée.',
+            ids: Array.from(consumed),
+          })
+          return
+        }
+      }
+
       const today = new Date()
       const yyyy = String(today.getFullYear())
       const mm = String(today.getMonth() + 1).padStart(2, '0')
@@ -6023,6 +6090,9 @@ commandesSousTraitantRouter.post(
       // IDetat_stock_fini = 1 → "En Contrôle" (per etat_stock_fini
       // label table). New receptions need inspection before being
       // validated/shipped, so they enter at state 1.
+      const beforeRows = sources.length > 0
+        ? await query<{ m: number | null }>(`SELECT MAX(IDstock_fini) AS m FROM stock_fini`)
+        : []
       await query(
         `INSERT INTO stock_fini
          (numero, lot, poids, metrage, IDref_fini, IDColoris, IDstock_ecru,
@@ -6034,6 +6104,19 @@ commandesSousTraitantRouter.post(
                  ${idMagasin}, ${ligneId}, ${sqlText(d.observations)}, ${sqlText(d.observation_sst)}, '${dateSaisie}',
                  0, 0, 0, 0, 0, ${inheritedLcc}, 0, 1)`,
       )
+      if (sources.length > 0) {
+        // Find the row just inserted (no RETURNING on HFSQL): the newest row of
+        // this line above the pre-insert MAX.
+        const before = Number(beforeRows[0]?.m) || 0
+        const newRows = await query<{ IDstock_fini: number }>(
+          `SELECT TOP 1 IDstock_fini FROM stock_fini
+           WHERE IDstock_fini > ${before} AND IDref_commande_source = ${ligneId} AND IDstock_ecru = ${d.IDstock_ecru ?? 0}
+           ORDER BY IDstock_fini DESC`,
+        )
+        const newId = Number(newRows[0]?.IDstock_fini) || 0
+        if (newId > 0) await insertFiniSources(newId, sources)
+        else console.error(`[fini-sources] new stock_fini row not found after insert (ligne ${ligneId}, numero ${d.numero})`)
+      }
 
       // Track the lot in suivilot if it isn't already. Idempotent per
       // (ligne, lot) — only the first reception of a given lot creates
@@ -6091,6 +6174,8 @@ commandesSousTraitantRouter.delete(
       }
 
       await query(`DELETE FROM stock_fini WHERE IDstock_fini = ${stockFiniId}`)
+      // A grouped roll frees every component piece with it.
+      await deleteFiniSources([stockFiniId])
       res.json(await fetchPiecesPayload(ctx, ligneId))
     } catch (err) {
       console.error('Error deleting stock_fini reception:', err)

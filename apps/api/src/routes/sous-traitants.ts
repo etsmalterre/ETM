@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { consumedEcruIds } from '../lib/fini-sources.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 
 // Gestion route for the `sous_traitant` entity (subcontractor management).
@@ -173,13 +174,7 @@ sousTraitantsRouter.get('/:id/rolls', async (req: Request, res: Response) => {
 
     // Drop écru already consumed into a fini (dedup against the fini list).
     const ecruIds = ecruFixed.map((r) => Number(r.IDstock_ecru)).filter((n) => n > 0)
-    const consumed = new Set<number>()
-    if (ecruIds.length > 0) {
-      const consumedRows = await query<{ IDstock_ecru: number }>(
-        `SELECT IDstock_ecru FROM stock_fini WHERE IDstock_ecru IN (${ecruIds.join(',')})`,
-      )
-      for (const r of consumedRows) consumed.add(Number(r.IDstock_ecru))
-    }
+    const consumed = await consumedEcruIds(ecruIds)
     const ecruLive = ecruFixed.filter((r) => !consumed.has(Number(r.IDstock_ecru)))
 
     // Resolve ref_ecru + colori_ecru labels (ASCII columns; batched lookups).

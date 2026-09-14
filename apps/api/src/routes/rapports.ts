@@ -41,6 +41,7 @@ import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { createFinanceRouter, FINANCE_SCOPE_ETM } from '../lib/finance-common.js'
 import { valoriserStock } from '../lib/valorisation-stock.js'
+import { allConsumedEcruIds } from '../lib/fini-sources.js'
 
 export const rapportsRouter: RouterType = Router()
 
@@ -847,11 +848,9 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
     // IN (…)` over the 20 k+ reserved ids instead cost 5.9 s across 54 round
     // trips — the dominant cost of the full-history scope, and 54 avoidable
     // hits on the HFSQL server ETM shares with mfprod.
-    const dyedEcru = new Set<number>()
-    {
-      const rows = await query<any>(`SELECT IDstock_ecru FROM stock_fini WHERE IDstock_ecru > 0`)
-      for (const r of rows as any[]) dyedEcru.add(n(r.IDstock_ecru))
-    }
+    // Both sources of consumption: the roll's own IDstock_ecru and the
+    // components of grouped rolls (stock_fini_source, LIVA #1149).
+    const dyedEcru = await allConsumedEcruIds()
     for (const r of ecruReserved as any[]) {
       const lid = n(r.IDligne_commande_client)
       if (lid === 0 || dyedEcru.has(n(r.IDstock_ecru))) continue

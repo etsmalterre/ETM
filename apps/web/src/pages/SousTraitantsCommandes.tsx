@@ -58,6 +58,7 @@ import {
   Scissors,
   BellRing,
   Factory,
+  Merge,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -74,6 +75,7 @@ import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { RollNotes } from '@/components/shared/RollNotes'
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
+import { mergedNumero, splitMergedNumero } from '@/lib/roll-merge'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateLotQualityCaches, invalidateStockCaches } from '@/lib/cache-sync'
@@ -318,6 +320,10 @@ interface StockFiniLite {
   IDstock_ecru: number
   IDmagasin: number
   date_saisie: string | null
+  /** Grouped roll (LIVA #1149): every écru piece the dyer joined into this
+   *  roll, in order, with the matching numeros. Empty on a plain roll. */
+  source_ecru_ids?: number[]
+  source_numeros?: string[]
   /** Same semantic as on écru — >0 = second choix. */
   second_choix: number | null
   /** Visiteur's note at reception. */
@@ -343,6 +349,10 @@ interface PiecesPayload {
    *  commande detail React Query cache so the LineCard re-renders with
    *  the new value without a full refetch. */
   prix: number
+  /** Grouped rolls (LIVA #1149) can be recorded on this server — false while
+   *  the `stock_fini_source` table is not declared; the reception dialog then
+   *  hides « Fusionner ». */
+  fusion_disponible?: boolean
 }
 
 // Read-only payload for the tricoteur (type=1) line drawer. Mirrors the
@@ -2863,12 +2873,15 @@ function PiecesDrawer({
 
         {!isLoading && !isError && activeTab === 'affectes' && (() => {
           // Per-écru lock: only the rolls that have a fini linked back
-          // via `stock_fini.IDstock_ecru` are considered "received".
+          // via `stock_fini.IDstock_ecru` — or merged into a grouped roll
+          // (`source_ecru_ids`, LIVA #1149) — are considered "received".
           // Those rolls hide their unlink button AND can't be selected
           // for a new reception (no duplicate fini per écru). Other
           // linked rolls remain fully interactive.
           const ecruIdsWithFini = new Set(
-            finiReceived.map((f) => Number(f.IDstock_ecru)).filter((id) => id > 0)
+            finiReceived
+              .flatMap((f) => [Number(f.IDstock_ecru), ...(f.source_ecru_ids ?? [])])
+              .filter((id) => id > 0)
           )
           const selectableEcrus = ecruLinked.filter((r) => !ecruIdsWithFini.has(r.IDstock_ecru))
           const allSelected = selectableEcrus.length > 0 && selectableEcrus.every((r) => selectedEcruIds.has(r.IDstock_ecru))
@@ -3016,6 +3029,7 @@ function PiecesDrawer({
         <BatchReceptionDialog
           commandeId={commandeId}
           ligne={ligne}
+          fusionEnabled={data?.fusion_disponible === true}
           ecruRolls={ecruLinked.filter((r) => selectedEcruIds.has(r.IDstock_ecru))}
           onClose={() => setShowBatchReception(false)}
           onSuccess={(payload) => {
@@ -4037,6 +4051,15 @@ function FiniRollRow({
               <span>reçu {formatHfsqlDate(roll.date_saisie)}</span>
             )}
           </div>
+          {/* Grouped roll (LIVA #1149): the écru pieces the dyer joined. */}
+          {(roll.source_numeros?.length ?? 0) > 1 && (
+            <div className="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground min-w-0">
+              <Merge className="h-3 w-3 text-accent flex-shrink-0" />
+              <span className="truncate">
+                Fusion de {roll.source_numeros!.length} pièces : {roll.source_numeros!.join(' · ')}
+              </span>
+            </div>
+          )}
         </div>
         <EtatFiniBadge etat={roll.IDetat_stock_fini} />
         {!!roll.client_nom && (
@@ -4193,6 +4216,9 @@ type BatchReceptionProps = {
   ligne: LigneCommande
   onClose: () => void
   onSuccess: (payload: PiecesPayload) => void
+  /** « Fusionner » (LIVA #1149) is offered only when the server can record a
+   *  grouped roll (`PiecesPayload.fusion_disponible`). */
+  fusionEnabled?: boolean
 } & (
   | { mode?: 'create'; ecruRolls: StockEcruLite[]; finiRolls?: undefined }
   | { mode: 'reprise'; finiRolls: StockFiniLite[]; ecruRolls?: undefined }
@@ -4215,6 +4241,8 @@ function foldSearch(s: string): string {
 function BatchReceptionDialog(props: BatchReceptionProps) {
   const { commandeId, ligne, onClose, onSuccess } = props
   const isReprise = props.mode === 'reprise'
+  // Grouped rolls: create mode only, and only when the server has the table.
+  const canMerge = !isReprise && props.fusionEnabled === true
 
   // Type-narrowed locals: TS can't follow `isReprise` back to the
   // discriminated union, so we resolve the arrays once via the mode
@@ -4227,7 +4255,16 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   // reprise mode we iterate over the existing fini rolls and PATCH them.
   // The wizard, sticky-lot carryover, and submit progress all key on the
   // same "row id" (écru id for create, fini id for reprise).
-  const rolls: Array<{ id: number; numero: string | null; lot: string | null; poidsRef: number | null }> = (
+  type WizardRoll = {
+    id: number
+    numero: string | null
+    lot: string | null
+    poidsRef: number | null
+    /** Grouped roll (LIVA #1149): the écru pieces merged into this one
+     *  physical roll, leader first. Undefined on a plain roll. */
+    members?: Array<{ id: number; numero: string | null; poidsRef: number | null }>
+  }
+  const baseRolls: WizardRoll[] = (
     isReprise
       ? finiRolls.map((r) => ({
           id: r.IDstock_fini, numero: r.numero, lot: r.lot, poidsRef: Number(r.poids) || null,
@@ -4236,6 +4273,37 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
           id: r.IDstock_ecru, numero: r.numero, lot: r.lot, poidsRef: Number(r.poids) || null,
         }))
   ).sort(byNumeroAsc)
+
+  // Fusionner (LIVA #1149, create mode only): the dyer sometimes joins two
+  // écru pieces into ONE dyed roll — the BL prints `3510/11+3510/2`, one
+  // weight, one length, both tags on the roll. `groups` maps a leader écru
+  // id to its ordered member ids (leader first, then in the order the user —
+  // or the BL — named them). Members leave the wizard list; the leader's
+  // step edits the whole roll and POSTs once with `IDstock_ecru_sources`.
+  const [groups, setGroups] = useState<Record<number, number[]>>({})
+  const memberOf = new Map<number, number>()
+  for (const [leaderKey, members] of Object.entries(groups)) {
+    const leader = Number(leaderKey)
+    for (const m of members) if (m !== leader) memberOf.set(m, leader)
+  }
+  const baseById = new Map(baseRolls.map((r) => [r.id, r]))
+  const rolls: WizardRoll[] = baseRolls
+    .filter((r) => !memberOf.has(r.id))
+    .map((r) => {
+      const memberIds = groups[r.id]
+      if (!memberIds || memberIds.length < 2) return r
+      const members = memberIds
+        .map((id) => baseById.get(id))
+        .filter((m): m is WizardRoll => !!m)
+        .map((m) => ({ id: m.id, numero: m.numero, poidsRef: m.poidsRef }))
+      const poidsRef = members.reduce((s, m) => s + (m.poidsRef ?? 0), 0)
+      return {
+        ...r,
+        numero: mergedNumero(members.map((m) => m.numero || `#${m.id}`)),
+        poidsRef: poidsRef > 0 ? Math.round(poidsRef * 10) / 10 : null,
+        members,
+      }
+    })
 
   // Référence fini and Magasin are no longer user-editable here; both
   // default once and apply to the whole batch. IDref_fini is taken from
@@ -4327,10 +4395,90 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   // complete), so the colour can't key off `tricobotState`.
   const [tricobotMsgError, setTricobotMsgError] = useState(false)
 
-  const current = rolls[currentIndex]
+  // Merging shrinks the list: keep the pointer inside it.
+  const safeIndex = Math.min(currentIndex, Math.max(0, rolls.length - 1))
+  const current = rolls[safeIndex]
   const currentRow = current ? rows[current.id] : null
-  const canPrev = currentIndex > 0
-  const canNext = currentIndex < rolls.length - 1
+  const canPrev = safeIndex > 0
+  const canNext = safeIndex < rolls.length - 1
+
+  /** Index of `leaderId` in the wizard list that `nextGroups` would produce. */
+  const indexAfterRegroup = (leaderId: number, nextGroups: Record<number, number[]>): number => {
+    const hidden = new Set<number>()
+    for (const [leaderKey, members] of Object.entries(nextGroups)) {
+      const leader = Number(leaderKey)
+      for (const m of members) if (m !== leader) hidden.add(m)
+    }
+    const visible = baseRolls.filter((r) => !hidden.has(r.id)).map((r) => r.id)
+    return Math.max(0, visible.indexOf(leaderId))
+  }
+
+  /** Merge `ids` (plain rolls or leaders of other groups) into the roll
+   *  `leaderId`, in the given order. The leader's step keeps its lot / notes;
+   *  its weight becomes the écru sum (the dyer's figure overwrites it), and a
+   *  « Couper en deux » on either side is dropped — a joined roll is one roll. */
+  const mergeInto = (leaderId: number, ids: number[]) => {
+    if (!canMerge) return
+    const targets = ids.filter((id) => id !== leaderId && baseById.has(id))
+    if (targets.length === 0) return
+    const nextGroups: Record<number, number[]> = { ...groups }
+    const members = [...(nextGroups[leaderId] ?? [leaderId])]
+    for (const id of targets) {
+      const absorbed = nextGroups[id] ?? [id]
+      delete nextGroups[id]
+      for (const m of absorbed) if (!members.includes(m)) members.push(m)
+    }
+    nextGroups[leaderId] = members
+    const poidsSum = members.reduce((s, id) => s + (baseById.get(id)?.poidsRef ?? 0), 0)
+    setGroups(nextGroups)
+    setRows((prev) => ({
+      ...prev,
+      [leaderId]: {
+        ...prev[leaderId],
+        poids: poidsSum > 0 ? poidsSum.toFixed(1) : prev[leaderId]?.poids ?? '',
+        split: false,
+        poids2: '',
+        metrage2: '',
+      },
+    }))
+    setVisited((prev) => new Set(prev).add(leaderId))
+    setCurrentIndex(indexAfterRegroup(leaderId, nextGroups))
+  }
+
+  /** Undo a merge: the members come back as their own steps, the leader's
+   *  weight returns to its own écru weight. */
+  const ungroup = (leaderId: number) => {
+    const memberIds = groups[leaderId]
+    if (!memberIds) return
+    const nextGroups: Record<number, number[]> = { ...groups }
+    delete nextGroups[leaderId]
+    const own = baseById.get(leaderId)?.poidsRef ?? 0
+    setGroups(nextGroups)
+    setRows((prev) => ({
+      ...prev,
+      [leaderId]: { ...prev[leaderId], poids: own > 0 ? own.toFixed(1) : '' },
+    }))
+    setCurrentIndex(indexAfterRegroup(leaderId, nextGroups))
+  }
+
+  /** Click on a preview row. Plain click = jump to that step. Ctrl/⌘+click
+   *  (or the row's checkbox) = merge that roll into the CURRENT one. Maj+click
+   *  = merge every roll between the current step and the clicked one, in list
+   *  order (§44 range idiom; the current step is the anchor). */
+  const handlePreviewClick = (wizardIndex: number, ecruId: number, mods: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+    if (!current || !canMerge || wizardIndex === safeIndex) { goTo(wizardIndex); return }
+    if (mods.shiftKey) {
+      const [lo, hi] = wizardIndex < safeIndex ? [wizardIndex, safeIndex] : [safeIndex, wizardIndex]
+      const ids = rolls.slice(lo, hi + 1).map((r) => r.id).filter((id) => id !== current.id)
+      mergeInto(current.id, ids)
+      return
+    }
+    if (mods.ctrlKey || mods.metaKey) {
+      mergeInto(current.id, [ecruId])
+      return
+    }
+    goTo(wizardIndex)
+  }
 
   // Fini-level preview: one entry per stock_fini row that will be created
   // (or PATCHed in reprise). A split roll expands into two entries —
@@ -4349,6 +4497,8 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     hasObs: boolean
     hasDef: boolean
     half: 0 | 1 | 2
+    /** Number of écru pieces merged into this roll (0 = plain roll). */
+    merged: number
   }
   const finiPreview: FiniPreview[] = []
   rolls.forEach((r, i) => {
@@ -4359,23 +4509,29 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     const hasObs = (row.observations ?? '').trim().length > 0
     const hasDef = (row.observation_sst ?? '').trim().length > 0
     const baseNum = r.numero || `#${r.id}`
-    if (row.split) {
+    if (r.members) {
+      finiPreview.push({
+        key: `${r.id}`, wizardIndex: i, ecruId: r.id, numero: baseNum,
+        lot, poids: Number(row.poids) || 0, metrage: Number(row.metrage) || 0,
+        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 0, merged: r.members.length,
+      })
+    } else if (row.split) {
       const base = baseNum.slice(0, 18)
       finiPreview.push({
         key: `${r.id}-1`, wizardIndex: i, ecruId: r.id, numero: `${base}-1`,
         lot, poids: Number(row.poids) || 0, metrage: Number(row.metrage) || 0,
-        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 1,
+        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 1, merged: 0,
       })
       finiPreview.push({
         key: `${r.id}-2`, wizardIndex: i, ecruId: r.id, numero: `${base}-2`,
         lot, poids: Number(row.poids2) || 0, metrage: Number(row.metrage2) || 0,
-        complete: lotOk && Number(row.metrage2) > 0, hasObs, hasDef, half: 2,
+        complete: lotOk && Number(row.metrage2) > 0, hasObs, hasDef, half: 2, merged: 0,
       })
     } else {
       finiPreview.push({
         key: `${r.id}`, wizardIndex: i, ecruId: r.id, numero: baseNum,
         lot, poids: Number(row.poids) || 0, metrage: Number(row.metrage) || 0,
-        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 0,
+        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 0, merged: 0,
       })
     }
   })
@@ -4453,11 +4609,71 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
         const np = (r.num_piece ?? '').trim()
         if (np) byNumero.set(np, r)
       }
+      // Grouped rolls on the BL (`3510/11+3510/2`, LIVA #1149): when every
+      // printed component is an écru of this batch, form the group the way
+      // the dyer wrote it (first piece leads) and fill the leader's step.
+      const matches: Array<{ rollId: number; hit: typeof data[number] }> = []
+      let nextGroups: Record<number, number[]> = groups
+      if (canMerge) {
+        const ecruByNumero = new Map<string, number>()
+        for (const r of baseRolls) {
+          const np = (r.numero ?? '').trim()
+          if (np) ecruByNumero.set(np, r.id)
+        }
+        for (const [np, hit] of byNumero) {
+          const parts = splitMergedNumero(np)
+          if (parts.length < 2) continue
+          const ids = parts.map((p) => ecruByNumero.get(p) ?? 0)
+          if (ids.some((id) => id === 0)) continue
+          const [leader, ...others] = ids
+          const merged: Record<number, number[]> = { ...nextGroups }
+          const members = [...(merged[leader] ?? [leader])]
+          for (const id of others) {
+            const absorbed = merged[id] ?? [id]
+            delete merged[id]
+            for (const m of absorbed) if (!members.includes(m)) members.push(m)
+          }
+          merged[leader] = members
+          nextGroups = merged
+          matches.push({ rollId: leader, hit })
+        }
+        if (nextGroups !== groups) {
+          const hidden = new Set<number>()
+          for (const [leaderKey, members] of Object.entries(nextGroups)) {
+            const leader = Number(leaderKey)
+            for (const m of members) if (m !== leader) hidden.add(m)
+          }
+          setGroups(nextGroups)
+          setRows((prev) => {
+            const next = { ...prev }
+            for (const [leaderKey, members] of Object.entries(nextGroups)) {
+              const leader = Number(leaderKey)
+              const poidsSum = members.reduce((s, id) => s + (baseById.get(id)?.poidsRef ?? 0), 0)
+              next[leader] = {
+                ...next[leader],
+                poids: poidsSum > 0 ? poidsSum.toFixed(1) : next[leader]?.poids ?? '',
+                split: false, poids2: '', metrage2: '',
+              }
+            }
+            return next
+          })
+          setCurrentIndex((i) => {
+            const visible = baseRolls.filter((r) => !hidden.has(r.id))
+            return Math.min(i, Math.max(0, visible.length - 1))
+          })
+        }
+      }
       // Count matches synchronously — the setRows updater below runs
       // lazily, so reading a `filled++` from inside it would still be 0
       // when we build the status message.
-      const matches: Array<{ rollId: number; hit: typeof data[number] }> = []
-      for (const r of rolls) {
+      const grouped = new Set(matches.map((m) => m.rollId))
+      const hiddenNow = new Set<number>()
+      for (const [leaderKey, members] of Object.entries(nextGroups)) {
+        const leader = Number(leaderKey)
+        for (const m of members) if (m !== leader) hiddenNow.add(m)
+      }
+      for (const r of baseRolls) {
+        if (hiddenNow.has(r.id) || grouped.has(r.id)) continue
         const np = (r.numero ?? '').trim()
         const hit = np ? byNumero.get(np) : undefined
         if (hit) matches.push({ rollId: r.id, hit })
@@ -4483,7 +4699,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
         })
       }
       setTricobotState('done')
-      const missing = rolls.length - filled
+      const missing = baseRolls.length - hiddenNow.size - filled
       setTricobotMsgError(filled === 0)
       setTricobotMessage(
         filled === 0
@@ -4575,21 +4791,32 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               body: JSON.stringify(body),
             },
           )
-        for (const r of ecruRolls) {
-          const row = rows[r.IDstock_ecru]
+        for (const r of rolls) {
+          const row = rows[r.id]
           const shared = {
             lot: row.lot,
-            IDstock_ecru: r.IDstock_ecru,
+            IDstock_ecru: r.id,
             IDref_fini: idRefFini,
             IDmagasin: idMagasin || 0,
             observations: row.observations,
             observation_sst: row.observation_sst,
           }
-          if (row.split) {
+          if (r.members) {
+            // Fusionner: several écru → ONE fini roll numbered as the dyer
+            // prints it; the server records every component in
+            // stock_fini_source so each piece reads as consumed.
+            lastPayload = await postFini({
+              ...shared,
+              numero: (r.numero || `#${r.id}`).slice(0, 20),
+              IDstock_ecru_sources: r.members.map((m) => m.id),
+              poids: num(row.poids), metrage: num(row.metrage),
+            })
+            setDoneCount((n) => n + 1)
+          } else if (row.split) {
             // Couper en deux: one écru → two fini rolls `<base>-1` /
             // `<base>-2`, both pointing at the same source écru. Base is
             // trimmed to 18 so the suffix fits the 20-char numero column.
-            const base = (r.numero || `#${r.IDstock_ecru}`).slice(0, 18)
+            const base = (r.numero || `#${r.id}`).slice(0, 18)
             lastPayload = await postFini({
               ...shared, numero: `${base}-1`,
               poids: num(row.poids), metrage: num(row.metrage),
@@ -4603,7 +4830,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
           } else {
             lastPayload = await postFini({
               ...shared,
-              numero: (r.numero || `#${r.IDstock_ecru}`).slice(0, 20),
+              numero: (r.numero || `#${r.id}`).slice(0, 20),
               poids: num(row.poids), metrage: num(row.metrage),
             })
             setDoneCount((n) => n + 1)
@@ -4641,7 +4868,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                 : `Réceptionner ${finiCount} rouleau${finiCount > 1 ? 'x' : ''}`}
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
-              Tombé métier {currentIndex + 1} sur {rolls.length}
+              Tombé métier {safeIndex + 1} sur {rolls.length}
             </p>
             {!!tricobotMessage && (
               <p
@@ -4699,26 +4926,50 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
         <div className="flex-shrink-0 px-6 pt-4">
           <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-accent/[0.03] p-3 space-y-3">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="h-7 w-7 rounded-md bg-zinc-100 flex items-center justify-center flex-shrink-0">
-                <TmRollIcon className="h-4 w-4 text-muted-foreground" />
+              <div className={cn(
+                'h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0',
+                current.members ? 'bg-accent/15' : 'bg-zinc-100',
+              )}>
+                {current.members
+                  ? <Merge className="h-4 w-4 text-accent" />
+                  : <TmRollIcon className="h-4 w-4 text-muted-foreground" />}
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold truncate">
                     {current.numero || `#${current.id}`}
                   </span>
-                  {current.lot && (
+                  {current.lot && !current.members && (
                     <span className="text-[11px] text-muted-foreground truncate">
                       · lot {isReprise ? 'actuel' : 'écru'} {current.lot}
                     </span>
                   )}
                 </div>
-                {current.poidsRef != null && current.poidsRef > 0 && (
+                {current.members ? (
+                  // Grouped roll: the pieces the dyer joined + the écru sum,
+                  // which the BL weight should match to the 100 g.
+                  <p className="text-[10px] text-muted-foreground mt-0.5 tabular-nums truncate">
+                    {current.members.length} pièces fusionnées : {current.members.map((m) => m.numero || `#${m.id}`).join(' + ')}
+                    {current.poidsRef != null && current.poidsRef > 0 && ` · poids écru ${fmtNum(current.poidsRef, 1)} kg`}
+                  </p>
+                ) : current.poidsRef != null && current.poidsRef > 0 && (
                   <p className="text-[10px] text-muted-foreground mt-0.5 tabular-nums">
                     {isReprise ? 'Poids actuel' : 'Poids écru'}: {fmtNum(current.poidsRef, 1)} kg
                   </p>
                 )}
               </div>
+              {current.members && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive flex-shrink-0"
+                  onClick={() => ungroup(current.id)}
+                  title="Annuler la fusion : chaque pièce redevient un rouleau"
+                >
+                  <X className="h-3.5 w-3.5 mr-1" />
+                  Séparer
+                </Button>
+              )}
             </div>
 
             {/* Lot (shared across both halves when split) + the
@@ -4735,7 +4986,8 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                   autoFocus
                 />
               </div>
-              <button
+              {/* A joined roll is one roll: no cut on a group. */}
+              {!current.members && <button
                 type="button"
                 role="switch"
                 aria-checked={currentRow.split}
@@ -4763,7 +5015,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                     )}
                   />
                 </span>
-              </button>
+              </button>}
             </div>
 
             {currentRow.split ? (
@@ -4857,7 +5109,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => { goTo(currentIndex - 1); focusMetrageNextTick() }}
+                onClick={() => { goTo(safeIndex - 1); focusMetrageNextTick() }}
                 disabled={!canPrev}
               >
                 <ChevronLeft className="h-4 w-4 mr-1" /> Précédent
@@ -4865,7 +5117,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => { goTo(currentIndex + 1); focusMetrageNextTick() }}
+                onClick={() => { goTo(safeIndex + 1); focusMetrageNextTick() }}
                 disabled={!canNext}
               >
                 Suivant <ChevronRight className="h-4 w-4 ml-1" />
@@ -4876,24 +5128,35 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
 
         {/* Bottom roll list — compact summary, click-to-jump */}
         <div className="flex-1 min-h-0 flex flex-col border-t mt-4 bg-zinc-100/80">
-          <div className="flex-shrink-0 px-6 pt-3 pb-1.5">
+          <div className="flex-shrink-0 px-6 pt-3 pb-1.5 flex items-center justify-between gap-2">
             <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
               Aperçu des {finiCount} rouleau{finiCount > 1 ? 'x' : ''} finis
             </p>
+            {canMerge && rolls.length > 1 && (
+              <p className="text-[10px] text-muted-foreground truncate" title="L'ennoblisseur a cousu plusieurs pièces en un seul rouleau : fusionnez-les pour saisir un seul poids et un seul métrage.">
+                Ctrl + clic ou Maj + clic pour fusionner des pièces en un rouleau
+              </p>
+            )}
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-3 space-y-1 scrollbar-transparent">
             {finiPreview.map((e, idx) => {
-              const isCurrent = e.wizardIndex === currentIndex
+              const isCurrent = e.wizardIndex === safeIndex
               const isVisited = visited.has(e.ecruId)
               const hasData =
                 e.lot.length > 0 || e.metrage > 0 || e.hasObs || e.hasDef
+              // A row can be merged INTO the current step when it is another
+              // step of a create batch (a cut half is not a whole piece).
+              const mergeable = canMerge && !isCurrent && e.half === 0 && !!current
               return (
-                <button
+                <div
                   key={e.key}
-                  type="button"
-                  onClick={() => goTo(e.wizardIndex)}
+                  role="button"
+                  tabIndex={0}
+                  onClick={(ev) => handlePreviewClick(e.wizardIndex, e.ecruId, ev)}
+                  onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); goTo(e.wizardIndex) } }}
+                  title={mergeable ? 'Clic : ouvrir · Ctrl + clic : fusionner avec le rouleau en cours · Maj + clic : fusionner la plage' : undefined}
                   className={cn(
-                    'w-full rounded-md border bg-card p-2 text-left text-xs flex items-center gap-2 transition-colors',
+                    'group/row w-full rounded-md border bg-card p-2 text-left text-xs flex items-center gap-2 transition-colors cursor-pointer select-none',
                     isCurrent
                       ? 'border-accent ring-1 ring-accent shadow-[inset_3px_0_0_0_rgb(242_184_10)]'
                       : 'border-border/60 hover:border-accent/40'
@@ -4908,23 +5171,47 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                   )}>
                     {e.complete && !isCurrent ? <Check className="h-3 w-3" /> : idx + 1}
                   </div>
-                  <span className="font-semibold truncate flex-shrink-0 max-w-[130px] flex items-center gap-1">
+                  <span className="font-semibold truncate flex-shrink-0 max-w-[170px] flex items-center gap-1">
                     {e.half !== 0 && (
                       <Scissors className="h-3 w-3 text-accent flex-shrink-0" />
+                    )}
+                    {e.merged > 0 && (
+                      <Merge className="h-3 w-3 text-accent flex-shrink-0" />
                     )}
                     {e.numero}
                   </span>
                   <div className="flex items-center gap-2 tabular-nums text-muted-foreground min-w-0 flex-1 truncate">
-                    {e.lot && <span className="truncate">lot {e.lot}</span>}
+                    {e.merged > 0 && <span className="text-accent">{e.merged} pièces</span>}
+                    {e.lot && <span className="truncate">{e.merged > 0 ? '· ' : ''}lot {e.lot}</span>}
                     {e.poids > 0 && <span>· {fmtNum(e.poids, 1)} kg</span>}
                     {e.metrage > 0 && <span>· {fmtNum(e.metrage, 1)} Ml</span>}
-                    {!hasData && <span className="italic">— en attente</span>}
+                    {!hasData && e.merged === 0 && <span className="italic">— en attente</span>}
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     {e.hasObs && <MessageSquare className="h-3 w-3 text-blue-600" />}
                     {e.hasDef && <AlertTriangle className="h-3 w-3 text-red-600" />}
+                    {e.merged > 0 && (
+                      <button
+                        type="button"
+                        onClick={(ev) => { ev.stopPropagation(); ungroup(e.ecruId) }}
+                        title="Annuler la fusion"
+                        className="h-5 w-5 rounded flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                    {mergeable && (
+                      // Touch fallback for Ctrl + clic: a hover-revealed
+                      // checkbox that merges this roll into the current step.
+                      <Checkbox
+                        checked={false}
+                        onClick={(ev) => { ev.stopPropagation(); mergeInto(current!.id, [e.ecruId]) }}
+                        title="Fusionner avec le rouleau en cours"
+                        className="h-3.5 w-3.5 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 transition-opacity"
+                      />
+                    )}
                   </div>
-                </button>
+                </div>
               )
             })}
           </div>

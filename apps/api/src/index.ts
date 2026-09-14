@@ -60,6 +60,7 @@ import { userProfilesRouter } from './routes/user-profiles.js'
 import { query } from './lib/hfsql-auto.js'
 import { attachUser } from './lib/auth.js'
 import { closeConnection } from './lib/hfsql-auto.js'
+import { probeFiniSourceTable, FINI_SOURCE_TABLE } from './lib/fini-sources.js'
 
 const app = express()
 const PORT = process.env.PORT || 8080
@@ -194,6 +195,16 @@ app.use('/api/retours-client-trm', retoursClientTrmRouter)
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)
 })
+
+// Grouped rolls (LIVA #1149) need `stock_fini_source`, declared in the WinDev
+// analysis and pushed to the server. Probe once at start and say so: while it
+// is missing every reader behaves as before and « Fusionner » is disabled.
+probeFiniSourceTable()
+  .then((ok) => {
+    if (ok) console.log(`[fini-sources] ${FINI_SOURCE_TABLE} available — grouped rolls enabled`)
+    else console.warn(`[fini-sources] ${FINI_SOURCE_TABLE} missing on this HFSQL server — grouped rolls disabled until the analysis declares it`)
+  })
+  .catch((err) => console.error('[fini-sources] probe failed:', err instanceof Error ? err.message : err))
 
 async function shutdown() {
   await closeConnection()

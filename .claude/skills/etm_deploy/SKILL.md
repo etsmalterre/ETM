@@ -169,6 +169,24 @@ of every deploy — see the deploy steps). The check:
 4. **Report the plan to the user before proceeding**: e.g. *"prod API at `9b208bc`, origin/master
    at `f4c26c9` (1 ahead: facturation) — touches apps/api + apps/web → deploying both."*
 
+5. **HFSQL data files the API owns (`apps/api/hfsql/*.fic` + `.ndx`)** — a feature that
+   adds a table ships its file pair there (first one: `stock_fini_source`, grouped rolls,
+   LIVA #1149). `CREATE TABLE` through ODBC is NOT a deploy step (it writes a local file,
+   `hfsql_odbc.md` § Footguns): the table is installed by copying the pair into the prod
+   database folder **`/var/lib/hfsql/mps/`** on the HFSQL box `10.10.20.2` (owner
+   `hfsql:hfsql`, `debian` has sudo), **then restarting `mps-api`** — a connection lists the
+   database's files when it opens, so the running API keeps saying « table missing »
+   until restarted. A prod write: **confirm with Vincent first**, skip when the file is
+   already there (`sudo ls /var/lib/hfsql/mps/stock_fini_source.fic`).
+
+   ```bash
+   # from the repo root, WSL + claude_deploy key ($K as in "SSH Access")
+   wsl -- scp $K /mnt/c/dev/etsmalterre/ETM/apps/api/hfsql/stock_fini_source.fic /mnt/c/dev/etsmalterre/ETM/apps/api/hfsql/stock_fini_source.ndx debian@10.10.20.2:/tmp/
+   wsl -- ssh $K debian@10.10.20.2 "sudo install -o hfsql -g hfsql -m 0644 /tmp/stock_fini_source.fic /tmp/stock_fini_source.ndx /var/lib/hfsql/mps/ && rm -f /tmp/stock_fini_source.* && sudo ls -la /var/lib/hfsql/mps/ | grep stock_fini_source"
+   # then the API deploy (restarts mps-api); the API log must print
+   # "[fini-sources] stock_fini_source available — grouped rolls enabled"
+   ```
+
 ## API Server (10.10.20.3)
 
 ### Location

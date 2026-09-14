@@ -52,6 +52,7 @@ import { computeDateEcheance, loadEcheanceRule } from './factures.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
+import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const commandesClientRouter: RouterType = Router()
@@ -1199,13 +1200,13 @@ async function lineReservationAggregates(
     rdtByLine.set(l.id, kind === 'fini' ? (rdtByFini.get(l.refId) ?? 0) : kind === 'ecru' ? (rdtByEcru.get(l.refId) ?? 0) : 0)
   }
 
-  const [ecru, fini, trico] = await Promise.all([
+  const [ecruRaw, fini, trico, mergedComponents] = await Promise.all([
     // Écru only counts while still écru: a roll already dyed into a stock_fini
     // (IDstock_ecru back-pointer) is represented by that fini roll — counting
     // its écru form too double-counted the gauge (commande 3643 showed
     // 4 404,8 / 1 635,0 Ml). Same NOT EXISTS as the available-écru pools.
-    query<{ IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition_ETM: number | null }>(
-      `SELECT se.IDligne_commande_client, se.metrage, se.poids, se.IDligne_expedition_ETM
+    query<{ IDstock_ecru: number; IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition_ETM: number | null }>(
+      `SELECT se.IDstock_ecru, se.IDligne_commande_client, se.metrage, se.poids, se.IDligne_expedition_ETM
        FROM stock_ecru se WHERE se.IDligne_commande_client IN (${inList})
          AND NOT EXISTS (SELECT 1 FROM stock_fini sfx WHERE sfx.IDstock_ecru = se.IDstock_ecru)`,
     ),
@@ -1215,7 +1216,11 @@ async function lineReservationAggregates(
     query<{ IDligne_commande_client: number; poids_affecte: number | null }>(
       `SELECT IDligne_commande_client, poids_affecte FROM affectation_cmd_tricotage WHERE IDligne_commande_client IN (${inList})`,
     ),
+    // Pieces merged into a grouped roll (LIVA #1149) are consumed too, but the
+    // link table cannot join the NOT EXISTS above — filter them out in JS.
+    mergedComponentEcruIds(),
   ])
+  const ecru = ecruRaw.filter((r) => !mergedComponents.has(Number(r.IDstock_ecru)))
   const acc = (lid: number) => {
     const a = out.get(lid) ?? { nb_rolls: 0, total_metrage: 0, total_poids: 0, exp_metrage: 0, exp_poids: 0 }
     out.set(lid, a)
@@ -2256,13 +2261,7 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
     ])
     // Drop available écru rolls already consumed into a stock_fini (dyed).
     const availIds = availRaw.map((r: any) => Number(r.IDstock_ecru)).filter((x: number) => x > 0)
-    const consumed = new Set<number>()
-    if (availIds.length > 0) {
-      const dyed = await query<{ IDstock_ecru: number }>(
-        `SELECT DISTINCT IDstock_ecru FROM stock_fini WHERE IDstock_ecru IN (${availIds.join(',')})`,
-      )
-      for (const r of dyed) consumed.add(Number(r.IDstock_ecru))
-    }
+    const consumed = await consumedEcruIds(availIds)
     const avail = availRaw.filter((r: any) => !consumed.has(Number(r.IDstock_ecru)))
     const linkedFixed = await fixEncoding(linkedRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
     const availFixed = await fixEncoding(avail, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
@@ -3019,13 +3018,7 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
      ORDER BY date_saisie DESC, IDstock_ecru DESC`,
   )
   const ids = rows.map((x: any) => Number(x.IDstock_ecru)).filter((x: number) => x > 0)
-  const consumed = new Set<number>()
-  if (ids.length > 0) {
-    const dyed = await query<{ IDstock_ecru: number }>(
-      `SELECT DISTINCT IDstock_ecru FROM stock_fini WHERE IDstock_ecru IN (${ids.join(',')})`,
-    )
-    for (const d of dyed) consumed.add(Number(d.IDstock_ecru))
-  }
+  const consumed = await consumedEcruIds(ids)
   const kept = rows.filter((x: any) => !consumed.has(Number(x.IDstock_ecru)))
   const fixed = await fixEncoding(kept, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   const magNames = await resolveMagasinNames(fixed.map((x: any) => Number(x.IDmagasin)))
@@ -3141,13 +3134,7 @@ async function fetchEnnoLocations(ctx: ClientLineContext) {
         AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0)`,
   )
   const ids = rows.map((x) => Number(x.IDstock_ecru)).filter((x) => x > 0)
-  const consumed = new Set<number>()
-  if (ids.length > 0) {
-    const dyed = await query<{ IDstock_ecru: number }>(
-      `SELECT DISTINCT IDstock_ecru FROM stock_fini WHERE IDstock_ecru IN (${ids.join(',')})`,
-    )
-    for (const d of dyed) consumed.add(Number(d.IDstock_ecru))
-  }
+  const consumed = await consumedEcruIds(ids)
   // Key by magasin when at a sous-traitant, else by owning company (à l'usine).
   const agg = new Map<string, { magId: number; socId: number; nb: number; poids: number }>()
   for (const x of rows) {

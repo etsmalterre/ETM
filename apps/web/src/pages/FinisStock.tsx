@@ -31,6 +31,7 @@ import {
   Paintbrush,
   FileSpreadsheet,
   Columns3,
+  Merge,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -158,6 +159,9 @@ interface StockFiniProvenance {
   tricotage: SstOrigin | null
   ennoblissement: SstOrigin | null
   fils: ProvenanceFil[]
+  /** Grouped roll (LIVA #1149): the écru pieces the dyer joined into this
+   *  one roll. Empty on a plain roll. */
+  composants?: Array<{ IDstock_ecru: number; numero: string }>
 }
 
 function useStockFiniProvenance(id: number | null) {
@@ -2481,6 +2485,15 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                         />
                       ))}
                     </div>
+                  )}
+
+                  {/* Pièces fusionnées — a roll the dyer made out of several écru pieces */}
+                  {(provenance?.composants?.length ?? 0) > 1 && (
+                    <ProvenanceRow
+                      icon={<Merge className="h-3.5 w-3.5 text-accent" />}
+                      title={`${provenance!.composants!.length} pièces fusionnées`}
+                      detail={provenance!.composants!.map((c) => c.numero).join(' · ')}
+                    />
                   )}
 
                   {/* Tricotage — the knitting order that produced the écru base */}

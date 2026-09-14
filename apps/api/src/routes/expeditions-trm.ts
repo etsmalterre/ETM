@@ -57,6 +57,7 @@ import { z } from 'zod'
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { consumedEcruIds } from '../lib/fini-sources.js'
 import { n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -183,10 +184,9 @@ export async function releaseShippedPieces(
   )
   if (rows.length === 0) return { released: [], blocked: [] }
   const ids = rows.map((r: any) => Number(r.IDstock_ecru)).filter((x: number) => x > 0)
-  const finis = await query<{ IDstock_ecru: number }>(
-    `SELECT IDstock_ecru FROM stock_fini WHERE IDstock_ecru IN (${ids.join(',')})`,
-  )
-  const withFini = new Set(finis.map((f) => Number(f.IDstock_ecru)))
+  // Own fini child OR component of a grouped roll (LIVA #1149) — both mean ETM
+  // has dyed the piece and TRM can no longer take the avis back.
+  const withFini = await consumedEcruIds(ids)
   const released: number[] = []
   const blocked: number[] = []
   for (const r of rows) {

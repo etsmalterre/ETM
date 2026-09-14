@@ -336,6 +336,51 @@ be transferred first. `LineContext.IDsous_traitant` carries the value
 from `loadEnnoblisseurLineContext`; the dialog subtitle reads
 `"N rouleaux disponibles chez <sst>"` so the scope is obvious.
 
+## Fusionner — grouped rolls (LIVA #1149)
+
+The dyer sometimes joins two (or more) écru pieces into ONE dyed roll; the BL
+prints `3510/11+3510/2` with one weight and one length. In `BatchReceptionDialog`
+(create mode only, and only when `PiecesPayload.fusion_disponible` is true):
+
+- `groups: Record<leaderEcruId, memberIds[]>` — leader first, then the order
+  the user (or the BL) named them. Members leave the wizard list; the leader's
+  step edits the whole roll. `rolls` is derived from `baseRolls` + `groups`,
+  `safeIndex` clamps the pointer when the list shrinks.
+- Preview-list gestures: plain click = jump; **Ctrl/⌘+click** or the
+  hover-revealed checkbox = merge that roll into the CURRENT step; **Maj+click**
+  = merge the range between the current step and the clicked row (§44, the
+  current step is the anchor). The merge is immediate — rows collapse, the
+  header / footer counts follow — and « Séparer » (card button or the row's ✕)
+  undoes it. A cut half is never mergeable; merging drops any « Couper en deux ».
+- Leader's card: `Merge` icon, numero = `mergedNumero(members)` (BL form when
+  ≤ 20 chars, `3510/11+2` otherwise — `apps/web/src/lib/roll-merge.ts`, twin of
+  the API's), subtitle `N pièces fusionnées : A + B · poids écru Σ`, weight
+  pre-filled with the écru sum (MATEL's BL weights ARE the sums — exact on BL
+  108968), one lot, one métrage.
+- Tricobot: a `num_piece` with `+` whose every component is an écru of the
+  batch forms the group itself (first printed piece leads) and fills the leader.
+- Submit: one `POST /pieces/fini` with `numero`, `IDstock_ecru` = leader,
+  `IDstock_ecru_sources` = all members. Server: every member affected to the
+  line (400), none consumed (409 `ecru_deja_recu`), table present (503
+  `fusion_indisponible`); inserts the fini, finds its id (`MAX` before / after),
+  writes the `stock_fini_source` rows. `fetchPiecesPayload` returns
+  `source_ecru_ids` / `source_numeros` per fini — the Réception card lists them,
+  the Affectés tab locks every component.
+- Elsewhere: `lib/fini-sources.ts` is the single owner of "consumed écru"
+  (`consumedEcruIds`, `mergedComponentEcruIds`, `allConsumedEcruIds`), the cut
+  copies the components onto the children, surteinture traces each component
+  and deletes the link rows, the sst DELETE deletes them too, Suivi pièce and
+  the Finis › Stock Provenance card (`composants`) walk the table.
+
+⚠️ `stock_fini_source` is installed by copying `apps/api/hfsql/stock_fini_source.{fic,ndx}`
+into the server's database folder and restarting the API — `CREATE TABLE`
+through ODBC only writes a local file, and a connection lists the database's
+files when it opens (see `hfsql_odbc.md` § Footguns). Columns:
+`IDstock_fini_source` (PK, integer 8), `IDstock_fini` (integer 8),
+`IDstock_ecru` (integer 8). Done on the dev server 2026-09-14. Until a server
+has it, the API logs « grouped rolls disabled » at start and the dialog hides
+the affordance.
+
 ## BatchReceptionDialog — completion gate + Suivant focus
 
 The "Réceptionner N rouleaux" submit is disabled until every roll has a

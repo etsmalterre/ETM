@@ -5,6 +5,7 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
+import { copyFiniSources, deleteFiniSources, loadFiniSources } from '../lib/fini-sources.js'
 import { StockFiniLabelPdf, type StockFiniLabelData } from '../lib/pdf/StockFiniLabelPdf.js'
 
 export const stockFiniRouter: RouterType = Router()
@@ -494,12 +495,29 @@ stockFiniRouter.get('/fini/:id', async (req: Request, res: Response) => {
     let fixed = await fixEncoding(rows, 'stock_fini', 'IDstock_fini', TEXT_FIELDS)
     fixed = await repairAllJoins(fixed)
 
-    res.json(fixed[0])
+    // Grouped roll (LIVA #1149): the écru pieces the dyer joined into it.
+    const sources = await loadComponentPieces(id)
+    res.json({ ...fixed[0], sources })
   } catch (err) {
     console.error('Error fetching stock_fini detail:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+/** The component écru pieces of a grouped roll (`stock_fini_source`), with
+ *  their numeros — empty for a plain roll. */
+async function loadComponentPieces(finiId: number): Promise<Array<{ IDstock_ecru: number; numero: string }>> {
+  const comps = (await loadFiniSources([finiId])).get(finiId) ?? []
+  if (comps.length === 0) return []
+  const rows = await query<{ IDstock_ecru: number; numero: string | null }>(
+    `SELECT IDstock_ecru, numero FROM stock_ecru WHERE IDstock_ecru IN (${comps.join(',')})`,
+  )
+  const byId = new Map<number, string>()
+  for (const r of await fixEncoding(rows, 'stock_ecru', 'IDstock_ecru', ['numero'])) {
+    byId.set(Number(r.IDstock_ecru), ((r.numero ?? '') as string).toString().trim())
+  }
+  return comps.map((id) => ({ IDstock_ecru: id, numero: byId.get(id) ?? `#${id}` }))
+}
 
 // ── Provenance helpers ─────────────────────────────────
 // Resolve a sous-traitant commande LINE id to { sous-traitant name, commande
@@ -631,18 +649,35 @@ stockFiniRouter.get('/fini/:id/provenance', async (req: Request, res: Response) 
     // Immediate source line = the dyeing (ennoblisseur) sst commande line.
     const ennoblissement = await resolveSstLine(sourceLineId)
 
-    // Tricotage = the line that knit the source écru roll.
-    let tricoteurLineId = 0
-    if (ecruId > 0) {
-      const ecruRows = await query<{ IDref_commande_source: number }>(
-        `SELECT IDref_commande_source FROM stock_ecru WHERE IDstock_ecru = ${ecruId}`,
+    // Tricotage = the line(s) that knit the source écru piece(s). A grouped
+    // roll (LIVA #1149) may join pieces from different knitting lines: the
+    // first one keeps the `tricotage` slot, the yarns are the union.
+    const composants = await loadComponentPieces(id)
+    const ecruIds = composants.length > 0 ? composants.map((c) => c.IDstock_ecru) : ecruId > 0 ? [ecruId] : []
+    const tricoteurLineIds: number[] = []
+    if (ecruIds.length > 0) {
+      const ecruRows = await query<{ IDstock_ecru: number; IDref_commande_source: number }>(
+        `SELECT IDstock_ecru, IDref_commande_source FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`,
       )
-      tricoteurLineId = Number(ecruRows[0]?.IDref_commande_source) || 0
+      const byId = new Map(ecruRows.map((r) => [Number(r.IDstock_ecru), Number(r.IDref_commande_source) || 0]))
+      for (const eid of ecruIds) {
+        const lid = byId.get(eid) ?? 0
+        if (lid > 0 && !tricoteurLineIds.includes(lid)) tricoteurLineIds.push(lid)
+      }
     }
-    const tricotage = await resolveSstLine(tricoteurLineId)
-    const fils = await resolveProvenanceFils(tricoteurLineId)
+    const tricotage = await resolveSstLine(tricoteurLineIds[0] ?? 0)
+    const filsSeen = new Set<string>()
+    const fils: Awaited<ReturnType<typeof resolveProvenanceFils>> = []
+    for (const lid of tricoteurLineIds) {
+      for (const f of await resolveProvenanceFils(lid)) {
+        const key = `${f.ref_fil}|${f.fournisseur}|${f.IDcommande_fil}`
+        if (filsSeen.has(key)) continue
+        filsSeen.add(key)
+        fils.push(f)
+      }
+    }
 
-    res.json({ tricotage, ennoblissement, fils })
+    res.json({ tricotage, ennoblissement, fils, composants })
   } catch (err) {
     console.error('Error fetching stock_fini provenance:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -1094,8 +1129,16 @@ stockFiniRouter.post('/fini/surteindre', async (req: Request, res: Response) => 
 
     const finiRows = await loadSurteintFiniRows(ids)
 
+    // A grouped roll (LIVA #1149) sends EVERY component piece back to écru:
+    // each gets the trace, and the link rows go with the deleted fini.
+    const sourcesByFini = await loadFiniSources(finiRows.map((r) => r.IDstock_fini))
+    const ecruIdsOf = (f: SurteintFiniRow): number[] => {
+      const comps = sourcesByFini.get(f.IDstock_fini) ?? []
+      return comps.length > 0 ? comps : f.IDstock_ecru > 0 ? [f.IDstock_ecru] : []
+    }
+
     // Existing écru observations (to append, not overwrite).
-    const ecruIds = Array.from(new Set(finiRows.map((r) => r.IDstock_ecru).filter((x) => x > 0)))
+    const ecruIds = Array.from(new Set(finiRows.flatMap((r) => ecruIdsOf(r))))
     const ecruObs = new Map<number, string>()
     if (ecruIds.length > 0) {
       const ecruRows = await query<{ IDstock_ecru: number; observations: string | null }>(
@@ -1115,12 +1158,14 @@ stockFiniRouter.post('/fini/surteindre', async (req: Request, res: Response) => 
         continue
       }
       const trace = surteintObservation(f.lot, f.ref_fini, f.coloris_reference)
-      const existing = (ecruObs.get(f.IDstock_ecru) ?? '').trim()
-      const obs = existing ? `${existing}\n${trace}` : trace
-
-      await query(`UPDATE stock_ecru SET observations = ${sqlText(obs)} WHERE IDstock_ecru = ${f.IDstock_ecru}`)
-      updated++
+      for (const ecruId of ecruIdsOf(f)) {
+        const existing = (ecruObs.get(ecruId) ?? '').trim()
+        const obs = existing ? `${existing}\n${trace}` : trace
+        await query(`UPDATE stock_ecru SET observations = ${sqlText(obs)} WHERE IDstock_ecru = ${ecruId}`)
+        updated++
+      }
       await query(`DELETE FROM stock_fini WHERE IDstock_fini = ${f.IDstock_fini}`)
+      await deleteFiniSources([f.IDstock_fini])
       deleted++
     }
 
@@ -1260,15 +1305,29 @@ stockFiniRouter.post('/fini/:id/cut', async (req: Request, res: Response) => {
     // Pieces 1..N-1 -> new rows copying every other column from the original.
     const COPY_COLS =
       'numero, IDstock_ecru, poids, metrage, lot, observations, second_choix, IDref_commande_source, IDmagasin, IDref_fini, IDColoris, date_saisie, IDetat_stock_fini, destockage, IDligne_commande_client, IDProprietaire, IDcommande_donation, conteneur, emplacement, don, pointage, observation_sst, IDligne_expedition'
+    // A grouped roll's pieces are made of the same écru components as the
+    // parent: copy its stock_fini_source rows onto every child (LIVA #1149).
+    const parentIsGrouped = ((await loadFiniSources([id])).get(id) ?? []).length > 0
     const created: string[] = []
     for (let i = 1; i < norm.length; i++) {
       const child = childNumero(base, next + i - 1)
       created.push(child)
+      const beforeRows = parentIsGrouped
+        ? await query<{ m: number | null }>(`SELECT MAX(IDstock_fini) AS m FROM stock_fini`)
+        : []
       await query(
         `INSERT INTO stock_fini (${COPY_COLS})
          SELECT '${esc(child)}', IDstock_ecru, ${r2(norm[i].poids)}, ${r2(norm[i].metrage)}, lot, observations, second_choix, IDref_commande_source, IDmagasin, IDref_fini, IDColoris, date_saisie, IDetat_stock_fini, destockage, IDligne_commande_client, IDProprietaire, IDcommande_donation, conteneur, emplacement, don, pointage, observation_sst, IDligne_expedition
          FROM stock_fini WHERE IDstock_fini = ${id}`,
       )
+      if (parentIsGrouped) {
+        const before = Number(beforeRows[0]?.m) || 0
+        const newRows = await query<{ IDstock_fini: number }>(
+          `SELECT TOP 1 IDstock_fini FROM stock_fini WHERE IDstock_fini > ${before} AND numero = '${esc(child)}' ORDER BY IDstock_fini DESC`,
+        )
+        const childId = Number(newRows[0]?.IDstock_fini) || 0
+        if (childId > 0) await copyFiniSources(id, childId)
+      }
     }
 
     res.json({ ok: true, created: norm.length - 1, numeros: created })
