@@ -1,5 +1,5 @@
 // Create a feature worktree on a free slot and spin up its dev server(s).
-//   node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal]
+//   node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]
 //
 // --restart reuses an EXISTING worktree + slot instead of creating anything:
 // it kills whatever is still alive, respawns the dev server(s) on the slot's
@@ -62,6 +62,17 @@ if (isRestart) argv.splice(restartIdx, 1)
 const terminalIdx = argv.indexOf('--terminal')
 const wantTerminal = terminalIdx !== -1
 if (wantTerminal) argv.splice(terminalIdx, 1)
+// --app: which app of a multi-app project the slot's port serves (TRM: web = the
+// ERP, atelier, trs). The skill infers it from the session's cwd — a session
+// opened in apps/atelier is atelier work and wants the PWA's link back, not the
+// ERP's (2026-09-15). On --restart it defaults to the app the slot already serves.
+const appIdx = argv.indexOf('--app')
+let appKey = null
+if (appIdx !== -1) {
+  appKey = argv[appIdx + 1]
+  if (!appKey || appKey.startsWith('--')) { console.error('--app needs one of: web, atelier, trs'); process.exit(1) }
+  argv.splice(appIdx, 2)
+}
 const apiIdx = argv.indexOf('--api')
 let apiOverride = null
 if (apiIdx !== -1) {
@@ -75,7 +86,7 @@ if (apiIdx !== -1) {
 const feature = (argv[0] || '').trim()
 const projectKey = (argv[1] || detectDefaultProject()).trim().toLowerCase()
 if (!/^[a-z0-9][a-z0-9-]*$/.test(feature)) {
-  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal]  (feature kebab-case)')
+  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]  (feature kebab-case)')
   process.exit(1)
 }
 if (projectKey !== 'ng' && projectKey !== 'trm') {
@@ -163,6 +174,7 @@ if (isRestart) {
   }
   const [key, entry] = hit
   slot = parseSlotKey(key).slot
+  if (!appKey && entry.app) appKey = entry.app
   api = proj.hasApi ? proj.apiPort(slot) : (apiOverride || entry.apiTarget || proj.defaultApiPort)
   if (!proj.hasApi && !apiOverride) api = await pickMainApi(api)
   web = proj.webPort(slot)
@@ -292,9 +304,17 @@ fs.mkdirSync(logDir, { recursive: true })
 const apiLog = path.join(logDir, 'api.log')
 const webLog = path.join(logDir, 'web.log')
 
+// Which app serves the slot's web port (multi-app projects only).
+if (appKey && !proj.apps) { console.warn(`NOTE: --app is ignored for ${proj.label} (single web app).`); appKey = null }
+if (appKey && !proj.apps[appKey]) { console.error(`Unknown app "${appKey}" for ${proj.label} — one of: ${Object.keys(proj.apps).join(', ')}`); process.exit(1) }
+const app = proj.apps ? proj.apps[appKey || 'web'] : null
+const webPkg = app ? app.pkg : proj.webPkg
+const webScript = app ? app.script(slot) : proj.webScript(slot)
+const webLabel = app && appKey && appKey !== 'web' ? `   (${app.label})` : ''
+
 console.log('Starting dev server(s) (detached) …')
 const apiPid = proj.hasApi ? spawnDetached(wt, proj.apiPkg, proj.apiScript(slot), apiLog) : null
-const webPid = spawnDetached(wt, proj.webPkg, proj.webScript(slot), webLog)
+const webPid = spawnDetached(wt, webPkg, webScript, webLog)
 
 updateRegistry((reg) => {
   const prev = reg.slots[slotKey(projectKey, slot)] ?? {}
@@ -303,6 +323,7 @@ updateRegistry((reg) => {
     main: main.replace(/\\/g, '/'),
     apiPort: proj.hasApi ? api : null, apiTarget: proj.hasApi ? null : api,
     webPort: web, apiPid, webPid,
+    ...(app ? { app: appKey || 'web' } : {}),
     logDir: logDir.replace(/\\/g, '/'),
     createdAt: (isRestart && prev.createdAt) || new Date().toISOString(),
     ...(isRestart ? { restartedAt: new Date().toISOString() } : {}),
@@ -350,7 +371,7 @@ if (dbCheck) {
 if (apiUp) {
   console.log(`  CORS     : ${corsOk ? `accepts http://localhost:${web}` : `REJECTS http://localhost:${web} — the browser will fail`}`)
 }
-console.log(`  Web      : http://localhost:${web}   pid ${webPid}  ${webUp ? 'UP' : 'NOT UP (check log)'}`)
+console.log(`  Web      : http://localhost:${web}   pid ${webPid}  ${webUp ? 'UP' : 'NOT UP (check log)'}${webLabel}`)
 console.log(`  Logs     : ${apiLog}`)
 console.log(`             ${webLog}`)
 console.log('──────────────────────────────────────────')

@@ -75,7 +75,8 @@ for (const k of keys) {
       : `UNREACHABLE — ${db.error}`
     console.log(`    HFSQL    ${verdict}`)
   }
-  console.log(`    Web      http://localhost:${s.webPort}  pid ${s.webPid} ${webAlive ? 'alive' : 'dead'}${webServing ? ' (serving)' : ''}`)
+  const appTag = s.app && s.app !== 'web' && proj.apps?.[s.app] ? `  [${proj.apps[s.app].label}]` : ''
+  console.log(`    Web      http://localhost:${s.webPort}  pid ${s.webPid} ${webAlive ? 'alive' : 'dead'}${webServing ? ' (serving)' : ''}${appTag}`)
   const deadServers = hasApi ? (!apiAlive && !webAlive) : !webAlive
   if (!exists || (deadServers && !webServing)) stale.push(k)
 }

@@ -51,6 +51,17 @@ export const PROJECTS = {
     webPkg: '@mps-trm/web',
     webPort: (n) => 5170 + n, // 5171..5176
     webScript: (n) => `dev:${5170 + n}`,
+    // The slot's port serves ONE app of the monorepo — the one the feature is
+    // for (up.mjs --app, inferred by the skill from the session's cwd). Default
+    // is the ERP; a PWA worktree serves the PWA on 517N instead and the ERP is
+    // simply not started (its dev:517N scripts stay for the default). The PWAs
+    // have no per-slot scripts: vite takes the port from the command line, over
+    // the fixed port in their vite.config.ts (5176 / 5177).
+    apps: {
+      web: { pkg: '@mps-trm/web', script: (n) => `dev:${5170 + n}`, label: 'ERP' },
+      atelier: { pkg: '@mps-trm/atelier', script: (n) => `exec vite --port ${5170 + n}`, label: 'Atelier PWA' },
+      trs: { pkg: '@mps-trm/trs', script: (n) => `exec vite --port ${5170 + n}`, label: 'TRS' },
+    },
     // TRM web has no API of its own — by default it targets the slot-0 master
     // MPS API (served via /serve-main). Overridable per worktree (up --api).
     defaultApiPort: 8080,
