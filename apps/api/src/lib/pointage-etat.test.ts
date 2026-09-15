@@ -7,6 +7,7 @@ import {
   jourPrecedent,
   parseDtParisMs,
   cumulPausesMin,
+  semaineDeReference,
   semaineIso,
   texteMessage,
   type LigneHoraire,
@@ -101,6 +102,21 @@ describe('semaineIso', () => {
     expect(semaineIso(Date.UTC(2026, 11, 31, 12))).toEqual({ annee: 2026, numero: 53 })
     expect(semaineIso(Date.UTC(2027, 0, 1, 12))).toEqual({ annee: 2026, numero: 53 })
     expect(semaineIso(Date.UTC(2027, 0, 4, 12))).toEqual({ annee: 2027, numero: 1 })
+  })
+})
+
+describe('semaineDeReference — the legacy « Semaine N » is last week', () => {
+  it('takes the previous ISO week in the calendar year of today', () => {
+    expect(semaineDeReference(Date.UTC(2026, 8, 15, 12))).toEqual({ annee: 2026, numero: 37 })
+    expect(semaineDeReference(Date.UTC(2026, 0, 5, 12))).toEqual({ annee: 2026, numero: 1 })
+  })
+
+  it('hides the fields in week 1', () => {
+    expect(semaineDeReference(Date.UTC(2026, 0, 1, 12))).toBeNull()
+  })
+
+  it('keeps the legacy year edge: 1 January 2027 is ISO week 53 of 2026', () => {
+    expect(semaineDeReference(Date.UTC(2027, 0, 1, 12))).toEqual({ annee: 2027, numero: 52 })
   })
 })
 

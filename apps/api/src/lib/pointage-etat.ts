@@ -184,6 +184,17 @@ export function semaineIso(ms: number): { annee: number; numero: number } {
   return { annee, numero }
 }
 
+/** The week FEN_PointageSalarié reports (code given by Vincent, 2026-09-15):
+ *  LAST week — `NuméroDeSemaine(DateSys()) - 1` — in the CALENDAR year of today
+ *  (`dDate..Année`). null in ISO week 1, where the legacy hides both fields.
+ *  Faithful to its edge: on 1–3 January, still ISO week 52/53, it asks for a
+ *  week of the new year that has no lissage row, so the fields stay hidden. */
+export function semaineDeReference(ms: number): { annee: number; numero: number } | null {
+  const { numero } = semaineIso(ms)
+  if (numero === 1) return null
+  return { annee: partiesParis(ms).y, numero: numero - 1 }
+}
+
 /** `lst_message.message` is HTML written by Admin Pointage's editor
  *  (`<BODY bgColor=…><P><FONT …>`). The tablet shows text, never that markup. */
 export function texteMessage(html: string | null | undefined): string {

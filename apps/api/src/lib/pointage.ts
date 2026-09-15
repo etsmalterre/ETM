@@ -94,6 +94,48 @@ export async function messagesActifs(idSalarie: number, jour: string): Promise<{
   return rows.map((r) => ({ id: num(r.id), texte: texteMessage(txt(r[k])) })).filter((m) => m.texte !== '')
 }
 
+export interface SoldeHeures {
+  /** Minutes worked in the reference week (`lst_lissage.cumul_semaine`). */
+  semaineMin: number
+  /** Annual balance in minutes: worked − planned − yearly adjustment. */
+  cumulMin: number
+}
+
+/**
+ * FEN_PointageSalarié's « Semaine N : » and « Cumul » — window code and the three
+ * queries given by Vincent (2026-09-15):
+ *   - no `lst_lissage` row for (salarié, year, week, is_deleted = 0) → null, the
+ *     legacy hides both fields;
+ *   - semaine = that row's `cumul_semaine`;
+ *   - cumul = REQ_lissage.total − REQ_prev.total − REQ_info_sal_annee.total:
+ *       REQ_lissage         SUM(cumul_semaine) WHERE num_semaine <= week, year, salarié, not deleted
+ *       REQ_prev            SUM(prev)          WHERE num_semaine <= week, year, salarié, not deleted
+ *       REQ_info_sal_annee  SUM(info)          WHERE year, salarié, not deleted
+ *   A SUM over no row is NULL, which WinDev reads as 0.
+ */
+export async function soldeHeures(
+  idSalarie: number,
+  semaine: { annee: number; numero: number } | null,
+): Promise<SoldeHeures | null> {
+  if (!semaine) return null
+  const { annee, numero } = semaine
+  const lissage = await pointageDb.query<Record<string, unknown>>(
+    `SELECT id, cumul_semaine FROM lst_lissage
+     WHERE id_salarie = ${idSalarie} AND annee = ${annee} AND num_semaine = ${numero} AND is_deleted = 0 ORDER BY id`,
+  )
+  if (lissage.length === 0) return null
+  const total = async (sql: string) => num((await pointageDb.query<Record<string, unknown>>(sql))[0]?.total)
+  const [travaille, prevu, info] = await Promise.all([
+    total(`SELECT SUM(cumul_semaine) AS total FROM lst_lissage
+           WHERE is_deleted = 0 AND num_semaine <= ${numero} AND id_salarie = ${idSalarie} AND annee = ${annee}`),
+    total(`SELECT SUM(prev) AS total FROM lst_prev
+           WHERE id_salarie = ${idSalarie} AND annee = ${annee} AND num_semaine <= ${numero} AND is_deleted = 0`),
+    total(`SELECT SUM(info) AS total FROM lst_info_sal_annee
+           WHERE annee = ${annee} AND id_salarie = ${idSalarie} AND is_deleted = 0`),
+  ])
+  return { semaineMin: num(lissage[0].cumul_semaine), cumulMin: travaille - prevu - info }
+}
+
 /** The day's « temps hors prod » in hours, or null when no row exists. */
 export async function horsProdDuJour(idSalarie: number, jour: string): Promise<number | null> {
   const rows = await pointageDb.query<Record<string, unknown>>(

@@ -43,7 +43,7 @@ import {
   cumulPausesMin,
   etatPointage,
   jourParis,
-  semaineIso,
+  semaineDeReference,
   type ActionPointage,
   type LigneHoraire,
 } from '../lib/pointage-etat.js'
@@ -54,6 +54,7 @@ import {
   lignesOuvertes,
   listerSalaries,
   messagesActifs,
+  soldeHeures,
   tousLesSalaries,
   trouverSalarie,
   type Salarie,
@@ -137,10 +138,12 @@ const salarieJson = (s: Salarie) => ({ id: s.id, nom: s.nom, prenom: s.prenom, p
 
 async function etatSalarie(s: Salarie, maintenantMs = Date.now()) {
   const jour = jourParis(maintenantMs)
-  const [ouverte, messages, horsProd] = await Promise.all([
+  const reference = semaineDeReference(maintenantMs)
+  const [ouverte, messages, horsProd, solde] = await Promise.all([
     ligneOuverte(s.id),
     messagesActifs(s.id, jour),
     horsProdDuJour(s.id, jour),
+    soldeHeures(s.id, reference),
   ])
   const e = etatPointage(ouverte, Math.floor(maintenantMs / 1000))
   return {
@@ -150,10 +153,9 @@ async function etatSalarie(s: Salarie, maintenantMs = Date.now()) {
     posteNonFerme: e.nonFermee && ligneJson(e.nonFermee),
     actions: e.actions.map(({ action, libelle }) => ({ action, libelle })),
     messages,
-    // The legacy « Cumul » next to the week is an annualised-hours balance
-    // (lst_lissage / lst_prev / lst_info_sal_annee) whose formula did not
-    // survive the bytecode — not shown until it is confirmed.
-    semaine: semaineIso(maintenantMs),
+    // « Semaine N : » (last week's worked minutes) and « Cumul » (annual
+    // balance) — lib/pointage.ts soldeHeures; null = the legacy hides both.
+    semaine: reference && solde ? { ...reference, ...solde } : null,
     horsProd,
     maintenantMs,
   }
