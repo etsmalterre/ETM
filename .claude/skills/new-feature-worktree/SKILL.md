@@ -70,9 +70,9 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
    **The session opens by itself.** `--terminal` hands the worktree to one of the six
    Windows Terminal windows of the 2x3 grid whose title is exactly « free »: that window is
    replaced on the same spot by one titled after the feature, running the context launcher
-   (`yolo-ets` under `C:devetsmalterre`, `yolo-liva` under `C:devliva`) in the
+   (`yolo-ets` under `C:\dev\etsmalterre`, `yolo-liva` under `C:\dev\liva`) in the
    worktree. When Claude exits there, the window turns back into a « free » one. The
-   mechanics live in `C:devclaude_configinwt-slot.ps1` (`list` / `claim` / `free` /
+   mechanics live in `C:\dev\claude_config\bin\wt-slot.ps1` (`list` / `claim` / `free` /
    `layout`). No « free » window (all six busy, or the grid not open) → the script says so
    and the user opens the session by hand; a « busy » title means someone is typing there.
 
