@@ -140,7 +140,7 @@ async function pickMainApi(preferred) {
 // tab label — until 2026-09-14 those tabs all read "Atelier" / "TRS" whichever
 // worktree served them. Each app prefixes document.title from
 // VITE_WORKTREE_LABEL in dev (see its main.tsx). Returns the files it changed.
-const TRM_APPS = ['apps/web', 'apps/atelier', 'apps/trs']
+const TRM_APPS = ['apps/web', 'apps/atelier', 'apps/trs', 'apps/pointage']
 function writeTrmEnvLocal(wt, api, feature) {
   const next = `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n`
   const changed = []

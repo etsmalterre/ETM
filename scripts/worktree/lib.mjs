@@ -61,6 +61,7 @@ export const PROJECTS = {
       web: { pkg: '@mps-trm/web', script: (n) => `dev:${5170 + n}`, label: 'ERP' },
       atelier: { pkg: '@mps-trm/atelier', script: (n) => `exec vite --port ${5170 + n}`, label: 'Atelier PWA' },
       trs: { pkg: '@mps-trm/trs', script: (n) => `exec vite --port ${5170 + n}`, label: 'TRS' },
+      pointage: { pkg: '@mps-trm/pointage', script: (n) => `exec vite --port ${5170 + n}`, label: 'Pointage' },
     },
     // TRM web has no API of its own — by default it targets the slot-0 master
     // MPS API (served via /serve-main). Overridable per worktree (up --api).
@@ -84,9 +85,9 @@ export const MAIN_SLOT = 0
 // auth works from any slot — NG web ports (slot-0 master + 1..6), the two legacy
 // defaults, and the TRM web ports (5171..6) since a TRM worktree's web server
 // calls the MPS API cross-origin. Deduped (5175 == trm slot 5).
-// Dev ports of the TRM monorepo's PWAs — apps/atelier (5176, also TRM slot 6)
-// and apps/trs (5177) — so every MPS API worktree answers them.
-export const TRM_PWA_PORTS = [5176, 5177]
+// Dev ports of the TRM monorepo's PWAs — apps/atelier (5176, also TRM slot 6),
+// apps/trs (5177) and apps/pointage (5178) — so every MPS API worktree answers them.
+export const TRM_PWA_PORTS = [5176, 5177, 5178]
 
 export const DEV_WEB_ORIGINS = [
   ...new Set([
