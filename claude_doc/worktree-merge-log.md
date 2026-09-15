@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-15 — feat/of-actif
+Atelier PWA, consultation of the active OF (TRM feat/of-actif is the screen half). Three
+read routes on `/api/atelier`: `GET /of/:id/historique` (pieces newest first with a
+counted-down position, knitting minutes and the legacy productivity %; the OF's weighed
+rolls), `GET /of/:id/pieces/:pieceId/evenements` (one piece's events with the author's
+prénom), `GET /of/:id/fils` (un-finished reserved lots with stock, emplacement and
+fournisseur; the coloris composition with its notes; previous/next OF ids on the métier).
+`lib/historique-atelier-trm.ts` holds the FEN_Historique arithmetic, pure and tested:
+durée mini = ref_ecru.poids / (20 tours/min × 10 / (trs_10kg_chute / nb_chutes)),
+% capped at 120 and red above it, red under 70 %. Departures: previous OF read on
+`arret_prod` (TOP 20 by id) instead of scanning evenement_piece; `stock_fil.terminé`
+read Windows-named / Linux-pickVal. No writes, no new permission.
+
+
 ## 2026-09-14 — feat/metier-diff (la cloche régleur = l'« arrêts / pièce » de la tablette)
 **Atelier PWA › liste régleur (`GET /atelier/machines?regleur=1`)** : la photo d'un téléphone Android encore sur le legacy montrait 4 / 4 / 2 / 3 / 6 arrêts sur les cloches et « 1,2 % » sous la 1D, là où la PWA disait « 1 arrêt/h » partout et rien sur les défauts. Le legacy `FrequenceArret` (`Android\gen\Compile\GWDFFEN_Choix_Metier.java`) compte 24 h d'arrêts `etat = 0` moins les Nettoyage / Fin du tricotage, puis divise par `DateHeureDifférence(dhDateRef, DateSys)` — **`DateSys` est une date : l'intervalle s'arrête à minuit d'aujourd'hui** pendant que les comptes vont jusqu'à maintenant (×3,8 à 17 h 37, explosion en soirée, jamais de cloche sur un OF lancé le jour même). Sonde sur la prod : les six tuiles de la photo se reproduisent exactement depuis les comptes honnêtes ÷ minutes-jusqu'à-minuit ; la fréquence horaire honnête vaut « 1 » sur tous les métiers. Le « 1,2 % » n'apparaît que parce que la cloche est allumée (le % est remis à 0 sans alerte), pas par un seuil à 1 %. **Décision Vincent** : la cloche porte le chiffre de la tablette TRS — moyenne des arrêts anormaux par pièce sur les 3 dernières pièces terminées de l'OF — via un lecteur unique **`lib/arrets-par-piece-trm.ts`** (sorti de `routes/trs.ts` avec son cache par OF ; `routes/trs.ts` et `routes/atelier.ts` l'importent) ; alerte = `% 2nd choix > 2 %` (legacy) ou `arrêts/pièce > 1` (palier ambre de la tablette, `SEUIL_ARRETS_PIECE`) ; charge utile `freq_arret` → `arrets_piece { moyenne, pieces }`. `probe-atelier-regleur-trm.ts` imprime le chiffre de la tuile ET la cloche legacy bug compris, pour comparer à un téléphone Android sur la prod. Branche TRM appariée (`feat/metier-diff`) : tuile refaite — barre d'avancement de l'OF, pastilles « 2,3 % » / « 0,7 arrêt / pièce ».
 
