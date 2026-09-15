@@ -35,7 +35,11 @@ import {
   uniteForType,
   sqlText,
   nowDt,
+  IS_WINDOWS,
+  bonnetierDirectory,
 } from '../lib/production-trm.js'
+import { pickVal } from '../lib/accented-keys.js'
+import { dureeMinimalePiece, productivitePiece, dureeMinutes } from '../lib/historique-atelier-trm.js'
 import { terminerOf } from '../lib/of-queue-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -384,7 +388,7 @@ atelierRouter.get('/of/:id', async (req: Request, res: Response) => {
 //   - FEN_Consigne plan 3 — the régleur WRITES the consigne (PUT /of/:id/consigne);
 //   - FEN_Consigne plan 2 — the message_of thread, both roles (GET/POST/DELETE
 //     /of/:id/messages).
-// FEN_Historique (régleur-only icon on Action_Machine) is NOT ported yet.
+// FEN_Historique and FEN_Fils_OF are ported further down (« HISTORIQUE & FILS »).
 
 // ── GET /api/atelier/of/:id/reglage ───────────────────────
 //
@@ -747,6 +751,378 @@ atelierRouter.put('/of/:id/consigne', async (req: Request, res: Response) => {
     res.json({ ok: true, consigne })
   } catch (err) {
     console.error('Error writing atelier consigne:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══════════════════════════════════════════════════════════
+//  HISTORIQUE & FILS — the two consultation windows of an OF
+// ═══════════════════════════════════════════════════════════
+//
+// Legacy FEN_Historique (régleur build, `Android\gen\Compile`) and
+// FEN_Fils_OF (both builds). Both are read-only, both are keyed by the OF the
+// métier resolved to, and the phone reaches them from the poste's link rows.
+// The pure arithmetic of the first lives in lib/historique-atelier-trm.ts.
+
+// ── GET /api/atelier/of/:id/historique ────────────────────
+//
+// FEN_Historique, plan 1 (ZR_Prod) + plan 3 (ZR_Visitage):
+//
+//   ZR_Prod:     select IDpiece_production, date_debut, date_fin, observations
+//                from piece_production where IDordre_fabrication = {pIDOF}
+//                order by IDpiece_production desc
+//                → « Pièce N° i » (i = NbEnr() counting DOWN — a position,
+//                  not the `numero` column), durée, productivité, couleur
+//   ZR_Visitage: SELECT numero, date_saisie, visiteur, poids, observations,
+//                CASE WHEN second_choix = 1 THEN 'croix.png' ELSE 'terminer3.png' END
+//                FROM stock_ecru where IDordre_fabrication = {pIDOF}
+//
+// Departures:
+//   - the reference is read on `ordre_fabrication.IDref_ecru` (every other
+//     atelier read does), where the legacy goes through the commande line;
+//   - the theoretical minimum takes `ref_ecru.poids` like the legacy, and only
+//     falls back to the OF's `poids_piece` when the reference carries none;
+//   - the rolls are ordered newest first (num_piece_OF DESC) — the legacy's
+//     inline query has no ORDER BY and the Android list shows 3568/1, 3568/10,
+//     3568/11… (string order), which nobody wants.
+atelierRouter.get('/of/:id/historique', async (req: Request, res: Response) => {
+  try {
+    const id = parseOfId(req, res)
+    if (id === null) return
+    const loaded = await loadOf(id)
+    if (!loaded) {
+      res.status(404).json({ error: 'OF not found' })
+      return
+    }
+    const { of } = loaded
+    const machineId = n(of.IDmachine)
+    const refId = n(of.IDref_ecru)
+
+    const [pieces, rollsRaw, refRows, refMachRows] = await Promise.all([
+      query<Record<string, unknown>>(
+        `SELECT IDpiece_production, numero, date_debut, date_fin, observations
+         FROM piece_production WHERE IDordre_fabrication = ${id}
+         ORDER BY IDpiece_production DESC`,
+      ),
+      query<Record<string, unknown>>(
+        `SELECT IDstock_ecru, numero, num_piece_OF, poids, second_choix, visiteur, observations, date_saisie
+         FROM stock_ecru WHERE IDordre_fabrication = ${id}
+         ORDER BY num_piece_OF DESC, IDstock_ecru DESC`,
+      ),
+      refId > 0
+        ? query<{ poids: number | null }>(`SELECT poids FROM ref_ecru WHERE IDref_ecru = ${refId}`)
+        : Promise.resolve([] as { poids: number | null }[]),
+      refId > 0 && machineId > 0
+        ? query<{ trs_10kg_chute: number | null; nb_chutes: number | null }>(
+            `SELECT trs_10kg_chute, nb_chutes FROM ref_ecru_machine
+             WHERE IDref_ecru = ${refId} AND IDmachine = ${machineId}`,
+          )
+        : Promise.resolve([] as { trs_10kg_chute: number | null; nb_chutes: number | null }[]),
+    ])
+
+    const poidsRef = Number(refRows[0]?.poids) || 0
+    const poids = poidsRef > 0 ? poidsRef : n(of.poids_piece)
+    const dureeMini = dureeMinimalePiece(
+      Number(refMachRows[0]?.trs_10kg_chute) || 0,
+      Number(refMachRows[0]?.nb_chutes) || 0,
+      poids,
+    )
+
+    const piecesFixed = await fixEncoding(pieces, 'piece_production', 'IDpiece_production', ['observations'])
+    let i = piecesFixed.length
+    const productions = piecesFixed.map((p) => {
+      const debut = parseDtMs(p.date_debut)
+      const fin = parseDtMs(p.date_fin)
+      const minutes = dureeMinutes(debut, fin)
+      const prod = productivitePiece(dureeMini, minutes)
+      return {
+        IDpiece_production: n(p.IDpiece_production),
+        position: i--,
+        numero: n(p.numero),
+        terminee: fin !== null,
+        debut_ms: debut,
+        fin_ms: fin,
+        duree_min: minutes,
+        pct: prod?.pct ?? null,
+        alerte: prod?.alerte ?? false,
+        observations: String(p.observations ?? '').trim(),
+      }
+    })
+
+    const rolls = await fixEncoding(rollsRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'visiteur', 'observations'])
+    const rouleaux = rolls.map((r) => ({
+      IDstock_ecru: n(r.IDstock_ecru),
+      numero: String(r.numero ?? '').trim(),
+      num_piece_OF: n(r.num_piece_OF),
+      poids: round2(Number(r.poids) || 0),
+      second_choix: n(r.second_choix) === 1,
+      visiteur: String(r.visiteur ?? '').trim(),
+      observations: String(r.observations ?? '').trim(),
+      date_ms: parseDtMs(r.date_saisie),
+    }))
+
+    res.json({
+      IDordre_fabrication: id,
+      duree_mini_min: dureeMini === null ? null : Math.round(dureeMini * 10) / 10,
+      pieces: productions,
+      rouleaux,
+    })
+  } catch (err) {
+    console.error('Error fetching atelier historique:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── GET /api/atelier/of/:id/pieces/:pieceId/evenements ────
+//
+// FEN_Historique plan 2 (SC_Popup / ZR_Controle) — the events of one piece:
+//
+//   SELECT evenement_piece.IDevenement_piece, IDpiece_production, date, evenement,
+//          observation, bonnetier.prénom, bonnetier.photo
+//   FROM bonnetier, evenement_piece
+//   WHERE bonnetier.IDbonnetier = evenement_piece.IDbonnetier
+//     AND evenement_piece.IDpiece_production = {ParamIDpiece_production}
+//
+// The legacy's inner join silently drops rows whose IDbonnetier matches no
+// one (the visitage poste writes with the visiteuse's id, the ERP with 0);
+// here they are kept with an empty prénom — the phone shows the event anyway.
+atelierRouter.get('/of/:id/pieces/:pieceId/evenements', async (req: Request, res: Response) => {
+  try {
+    const id = parseOfId(req, res)
+    if (id === null) return
+    const pieceId = parseInt(String(req.params.pieceId), 10)
+    if (!Number.isInteger(pieceId) || pieceId <= 0) {
+      res.status(400).json({ error: 'Invalid piece id' })
+      return
+    }
+    const owner = await query<{ IDordre_fabrication: number }>(
+      `SELECT IDordre_fabrication FROM piece_production WHERE IDpiece_production = ${pieceId}`,
+    )
+    if (n(owner[0]?.IDordre_fabrication) !== id) {
+      res.status(404).json({ error: 'Piece not found' })
+      return
+    }
+    const [raw, bonnetiers] = await Promise.all([
+      query<Record<string, unknown>>(
+        `SELECT IDevenement_piece, evenement, observation, IDbonnetier, DATE AS date_ev
+         FROM evenement_piece WHERE IDpiece_production = ${pieceId}
+         ORDER BY IDevenement_piece ASC`,
+      ),
+      bonnetierDirectory(),
+    ])
+    const rows = await fixEncoding(raw, 'evenement_piece', 'IDevenement_piece', ['evenement', 'observation'])
+    res.json(
+      rows.map((r) => {
+        const bid = n(r.IDbonnetier)
+        return {
+          id: n(r.IDevenement_piece),
+          evenement: String(r.evenement ?? '').trim(),
+          observation: String(r.observation ?? '').trim(),
+          IDbonnetier: bid,
+          prenom: bonnetiers.get(bid)?.prenom ?? '',
+          date_ms: parseDtMs(r.date_ev),
+        }
+      }),
+    )
+  } catch (err) {
+    console.error('Error fetching atelier piece events:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── GET /api/atelier/of/:id/fils ──────────────────────────
+//
+// FEN_Fils_OF — where the yarn of an OF is, for the OF on the métier and for
+// the one before and the one after it. Legacy, verbatim:
+//
+//   ZR_Fil (requête 2):
+//     SELECT DISTINCT asso_fil_of.IDordre_fabrication, stock_fil.IDfournisseur,
+//            stock_fil.stock, stock_fil.lot, stock_fil.emplacement,
+//            stock_fil.commentaire, fournisseur.nom,
+//            concat(ref_fil.reference,' - ',colori_fil.reference) AS RefColoris,
+//            stock_fil.terminé
+//     FROM ref_fil, asso_fil_of, colori_fil, stock_fil, fournisseur
+//     WHERE fournisseur.IDfournisseur = stock_fil.IDfournisseur
+//       AND stock_fil.IDstock_fil = asso_fil_of.IDstock_fil
+//       AND colori_fil.IDcolori_fil = asso_fil_of.IDcolori_fil
+//       AND ref_fil.IDref_fil = asso_fil_of.IDref_fil
+//       AND asso_fil_of.IDordre_fabrication = {ParamIDordre_fabrication}
+//       AND stock_fil.terminé = 0
+//   ZR_Compo:
+//     SELECT ref_fil.reference, colori_fil.reference as coloris,
+//            composition_ecru.pourcentage, composition_ecru.commentaire
+//     FROM composition_ecru
+//     left join ref_fil … left join colori_fil …
+//     where composition_ecru.IDref_ecru = {pIDRefEcru}
+//       and composition_ecru.IDcolori_ecru = {pIDColorisEcru}
+//     → « <pourcentage>% : <reference> - <coloris> » + ⓘ commentaire
+//   reqOFPrec:
+//     select evenement_piece.date, ordre_fabrication.IDordre_fabrication
+//     from evenement_piece
+//     left join piece_production on … left join ordre_fabrication on …
+//     where ordre_fabrication.IDmachine = {pIDMachine}
+//       and ordre_fabrication.IDordre_fabrication <> {pOFEnCours}
+//     order by evenement_piece.date desc limit 1
+//   gReqOFSuivant:
+//     select IDordre_fabrication from ordre_fabrication
+//     where IDmachine = {pIDMachine} and priorite = {pPriorité}   -- current + 1
+//       and est_termine = 0 limit 1
+//
+// Departures:
+//   - the previous OF is NOT found by scanning every evenement_piece of the
+//     métier (the biggest table in the base, for one id): it is the OF of the
+//     métier with the latest `arret_prod` — the same reading the réglage sheet
+//     uses for the previous reference (TOP 20 by id, first parseable stamp).
+//     An OF that ran but was never stopped is the one in front of you anyway;
+//   - `stock_fil.terminé` is accented: named as `terminé AS termine` on
+//     Windows, read by key prefix through SELECT * on the Linux bridge
+//     (routes/stock-fil-trm.ts, same pattern). A lot that has no fournisseur
+//     is kept (the legacy's inner join would drop it), with an empty name;
+//   - the response carries `precedent` / `suivant` ids relative to :id; the
+//     phone re-calls this route with the other id and ignores its neighbours,
+//     exactly as the legacy window computes its two neighbours once and then
+//     only swaps the displayed OF.
+atelierRouter.get('/of/:id/fils', async (req: Request, res: Response) => {
+  try {
+    const id = parseOfId(req, res)
+    if (id === null) return
+    const loaded = await loadOf(id)
+    if (!loaded) {
+      res.status(404).json({ error: 'OF not found' })
+      return
+    }
+    const { of } = loaded
+    const machineId = n(of.IDmachine)
+    const refId = n(of.IDref_ecru)
+    const coloriId = n(of.IDcolori_ecru)
+    const priorite = n(of.priorite)
+
+    const [produites, refs, coloris, assoRaw, compoRaw, prevRows, nextRows] = await Promise.all([
+      countFinishedPieces([id]),
+      refId > 0 ? resolveEcruRefs([refId]) : Promise.resolve(new Map()),
+      coloriId > 0 ? resolveColorisEcru([coloriId]) : Promise.resolve(new Map()),
+      query<Record<string, unknown>>(
+        `SELECT IDasso_fil_of, IDref_fil, IDcolori_fil, IDstock_fil FROM asso_fil_of
+         WHERE IDordre_fabrication = ${id} ORDER BY IDasso_fil_of`,
+      ),
+      refId > 0
+        ? query<Record<string, unknown>>(
+            `SELECT IDcomposition_ecru, IDref_fil, IDcolori_fil, pourcentage, commentaire
+             FROM composition_ecru
+             WHERE IDref_ecru = ${refId} AND IDcolori_ecru = ${coloriId}
+             ORDER BY IDcomposition_ecru`,
+          )
+        : Promise.resolve([] as Record<string, unknown>[]),
+      machineId > 0
+        ? query<Record<string, unknown>>(
+            `SELECT TOP 20 IDordre_fabrication, arret_prod FROM ordre_fabrication
+             WHERE IDmachine = ${machineId} AND IDordre_fabrication <> ${id}
+             ORDER BY IDordre_fabrication DESC`,
+          )
+        : Promise.resolve([] as Record<string, unknown>[]),
+      machineId > 0
+        ? query<Record<string, unknown>>(
+            `SELECT TOP 1 IDordre_fabrication FROM ordre_fabrication
+             WHERE IDmachine = ${machineId} AND priorite = ${priorite + 1} AND est_termine = 0
+             ORDER BY IDordre_fabrication`,
+          )
+        : Promise.resolve([] as Record<string, unknown>[]),
+    ])
+
+    // The lots — one row per DISTINCT lot (the legacy's DISTINCT folds the
+    // feed positions that share a lot), un-finished ones only.
+    const lotIds = Array.from(new Set(assoRaw.map((a) => n(a.IDstock_fil)).filter((x) => x > 0)))
+    const lotRows: Record<string, unknown>[] = lotIds.length === 0
+      ? []
+      : IS_WINDOWS
+        ? await query<Record<string, unknown>>(
+            `SELECT IDstock_fil, IDfournisseur, stock, lot, emplacement, commentaire, terminé AS termine
+             FROM stock_fil WHERE IDstock_fil IN (${lotIds.join(',')})`,
+          )
+        : await query<Record<string, unknown>>(
+            `SELECT * FROM stock_fil WHERE IDstock_fil IN (${lotIds.join(',')})`,
+          )
+    const lotsFixed = await fixEncoding(lotRows, 'stock_fil', 'IDstock_fil', ['lot', 'emplacement', 'commentaire'])
+    const lotById = new Map<number, Record<string, unknown>>()
+    for (const r of lotsFixed) {
+      if (n(pickVal(r, /^termin/i)) !== 0) continue
+      lotById.set(n(r.IDstock_fil), r)
+    }
+    const fournisseurIds = Array.from(new Set(Array.from(lotById.values()).map((r) => n(r.IDfournisseur)).filter((x) => x > 0)))
+    const fournisseurs = new Map<number, string>()
+    if (fournisseurIds.length > 0) {
+      const rows = await query<Record<string, unknown>>(
+        `SELECT IDfournisseur, nom FROM fournisseur WHERE IDfournisseur IN (${fournisseurIds.join(',')})`,
+      )
+      for (const r of await fixEncoding(rows, 'fournisseur', 'IDfournisseur', ['nom'])) {
+        fournisseurs.set(n(r.IDfournisseur), String(r.nom ?? '').trim())
+      }
+    }
+
+    const compoFixed = await fixEncoding(compoRaw, 'composition_ecru', 'IDcomposition_ecru', ['commentaire'])
+    const [refFilNames, coloriFilNames] = await Promise.all([
+      resolveRefFilNames([...assoRaw, ...compoFixed].map((a) => n(a.IDref_fil))),
+      resolveColoriFilNames([...assoRaw, ...compoFixed].map((a) => n(a.IDcolori_fil))),
+    ])
+    const filLabel = (rf: number, cf: number): string => {
+      const r = refFilNames.get(rf) ?? ''
+      const c = coloriFilNames.get(cf) ?? ''
+      return c ? `${r} - ${c}` : r
+    }
+
+    const lots: {
+      IDstock_fil: number
+      fil: string
+      lot: string
+      stock: number
+      emplacement: string
+      fournisseur: string
+      commentaire: string
+    }[] = []
+    const seen = new Set<number>()
+    for (const a of assoRaw) {
+      const lotId = n(a.IDstock_fil)
+      const lot = lotById.get(lotId)
+      if (!lot || seen.has(lotId)) continue
+      seen.add(lotId)
+      lots.push({
+        IDstock_fil: lotId,
+        fil: filLabel(n(a.IDref_fil), n(a.IDcolori_fil)),
+        lot: String(lot.lot ?? '').trim(),
+        stock: round2(Number(lot.stock) || 0),
+        emplacement: String(lot.emplacement ?? '').trim(),
+        fournisseur: fournisseurs.get(n(lot.IDfournisseur)) ?? '',
+        commentaire: String(lot.commentaire ?? '').trim(),
+      })
+    }
+
+    const composition = compoFixed.map((c) => ({
+      IDcomposition_ecru: n(c.IDcomposition_ecru),
+      pourcentage: Number(c.pourcentage) || 0,
+      fil: filLabel(n(c.IDref_fil), n(c.IDcolori_fil)),
+      commentaire: String(c.commentaire ?? '').trim(),
+    }))
+
+    const prev = prevRows
+      .filter((r) => parseDtMs(r.arret_prod) !== null)
+      .sort((a, b) => (parseDtMs(b.arret_prod) ?? 0) - (parseDtMs(a.arret_prod) ?? 0))[0]
+
+    res.json({
+      IDordre_fabrication: id,
+      reference: refs.get(refId)?.reference ?? '',
+      coloris: coloris.get(coloriId) ?? '',
+      nb_pieces: n(of.nb_pieces),
+      produites: produites.get(id) ?? 0,
+      finir_fil: n(of.finir_fil) === 1,
+      demarre: parseDtMs(of.demarrage_prod) !== null,
+      termine: n(of.est_termine) === 1,
+      lots,
+      composition,
+      precedent: prev ? n(prev.IDordre_fabrication) : null,
+      suivant: nextRows[0] ? n(nextRows[0].IDordre_fabrication) : null,
+    })
+  } catch (err) {
+    console.error('Error fetching atelier fils:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
