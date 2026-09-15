@@ -10,6 +10,7 @@
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express'
 import crypto from 'node:crypto'
+import { resoudreAppareil, type AppareilAtelier } from './appareils-atelier.js'
 
 // Read the secret lazily — ESM hoists imports to the top of the file, so
 // dotenv.config() in index.ts runs AFTER this module is first evaluated.
@@ -35,6 +36,31 @@ export const ADMIN_COOKIE_NAME = `${COOKIE_NAME}_admin`
 // 10 years, in seconds. Effectively permanent — the legacy hostname model
 // has no expiry either.
 export const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365 * 10
+
+// Third cookie: an ENROLLED ATELIER PHONE (lib/appareils-atelier.ts). Its
+// payload is `<deviceId>.<secret>` resolved against the device store — not an
+// HMAC of a user id — so revoking the row kills a copied cookie without
+// touching AUTH_COOKIE_SECRET. Its own name and jar: atelier.intra… never
+// carries `mps_uid`, and the ERP hosts never see this one.
+export const APPAREIL_COOKIE_NAME = 'mps_appareil'
+
+/** Cookie options for the phone cookie. `Secure` in production (the atelier
+ *  host is HTTPS-only since 2026-09-10); off in dev so a real phone on the LAN
+ *  can hit a plain-HTTP dev server. SameSite=Lax is enough: the PWA and its
+ *  API are same-site in both environments. */
+export function appareilCookieOptions(): {
+  httpOnly: true
+  sameSite: 'lax'
+  path: '/'
+  secure: boolean
+} {
+  return {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    secure: process.env.NODE_ENV === 'production',
+  }
+}
 
 // Hardcoded admin list — users with the right to switch to another identity.
 // Currently just Vincent Malterre. When a real role/flag column is added to
@@ -124,7 +150,24 @@ export function attachUser(): RequestHandler {
     if (id !== null) req.userId = id
     const adminId = verifyUserCookie(cookies[ADMIN_COOKIE_NAME])
     if (adminId !== null) req.adminId = adminId
-    next()
+
+    // An enrolled atelier phone. Only requests that carry the cookie pay the
+    // store lookup (a cached file, an fs.stat). The phone acts as its
+    // enrolment account, but never over a user cookie already present.
+    const rawAppareil = cookies[APPAREIL_COOKIE_NAME]
+    if (!rawAppareil) {
+      next()
+      return
+    }
+    resoudreAppareil(rawAppareil)
+      .then((appareil) => {
+        if (appareil) {
+          req.appareil = appareil
+          if (req.userId === undefined) req.userId = appareil.IDutilisateur
+        }
+      })
+      .catch((err) => console.error('attachUser: appareil lookup failed', err))
+      .finally(() => next())
   }
 }
 
@@ -172,6 +215,10 @@ declare global {
        *  impersonate another user. The admin cookie persists across switches
        *  so the admin can always come back to themselves. */
       adminId?: number
+      /** Populated by attachUser() when a valid `mps_appareil` cookie names an
+       *  enrolled atelier phone (lib/appareils-atelier.ts). Every atelier
+       *  write requires it — see gateSaisie() in routes/atelier.ts. */
+      appareil?: AppareilAtelier
     }
   }
 }

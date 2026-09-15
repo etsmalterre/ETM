@@ -42,7 +42,6 @@ import { pickVal } from '../lib/accented-keys.js'
 import { dureeMinimalePiece, productivitePiece, dureeMinutes } from '../lib/historique-atelier-trm.js'
 import { terminerOf } from '../lib/of-queue-trm.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
-import { isEffectiveAdmin } from '../lib/auth.js'
 import { maxId } from './expeditions.js'
 import { resolveRefFilNames, resolveColoriFilNames } from './of-trm.js'
 import {
@@ -760,19 +759,34 @@ atelierRouter.get('/of/:id/reglage', async (req: Request, res: Response) => {
 // The ERP's own POST writes IDbonnetier = 0 to mark a saisie bureau; here the
 // author is the identified bonnetier, as the legacy terminal writes it.
 
-/** The write gate every régleur/bonnetier write below shares: the phone's
- *  poste-account cookie must hold `saisie_atelier`, and the body must name a
- *  live bonnetier. Sends the refusal itself; null when refused. */
+/** The write gate every régleur/bonnetier write of this file shares. Three
+ *  checks, in order, each refusing on its own:
+ *   1. the request comes from an ENROLLED PHONE (`req.appareil`, the
+ *      `mps_appareil` cookie — lib/appareils-atelier.ts). A plain user cookie
+ *      is not enough: `POST /auth/login` accepts any IDutilisateur with no
+ *      authentication, so without this a curl could act as anyone;
+ *   2. the phone's account holds `saisie_atelier` (granted in Paramètres ›
+ *      Utilisateurs, exactly as the visitage PC's poste account);
+ *   3. the body names a live bonnetier — and the phone is allowed to speak
+ *      for him: a régleur's phone (fixed identity) only for HIMSELF, a shared
+ *      phone only for a NON-régleur (a régleur is his own phone, never a face
+ *      in the shared grid — the plan's §3.3 rule, enforced here, not only in
+ *      the UI).
+ *  Sends the refusal itself; null when refused. */
 async function gateSaisie(
   req: Request,
   res: Response,
   IDbonnetier: number,
-): Promise<{ id: number; regleur: number } | null> {
-  if (req.userId === undefined) {
-    res.status(401).json({ error: 'not authenticated' })
+): Promise<{ id: number; regleur: number; appareil: string } | null> {
+  const appareil = req.appareil
+  if (!appareil) {
+    res.status(req.userId === undefined ? 401 : 403).json({
+      error: 'appareil_non_enrole',
+      message: 'Ce téléphone n’est pas enrôlé.',
+    })
     return null
   }
-  const allowed = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'saisie_atelier')
+  const allowed = await trmUserHasPermission(appareil.IDutilisateur, false, 'saisie_atelier')
   if (!allowed) {
     res.status(403).json({ error: 'permission denied: saisie_atelier' })
     return null
@@ -782,7 +796,21 @@ async function gateSaisie(
     res.status(400).json({ error: 'bonnetier inconnu ou archivé' })
     return null
   }
-  return { id: who.id, regleur: who.regleur }
+  if (appareil.IDbonnetier !== null && appareil.IDbonnetier !== who.id) {
+    res.status(403).json({
+      error: 'identite_appareil',
+      message: 'Ce téléphone ne peut enregistrer que pour son régleur.',
+    })
+    return null
+  }
+  if (appareil.IDbonnetier === null && who.regleur === 1) {
+    res.status(403).json({
+      error: 'regleur_hors_appareil',
+      message: 'Un régleur enregistre depuis son propre téléphone.',
+    })
+    return null
+  }
+  return { id: who.id, regleur: who.regleur, appareil: appareil.libelle }
 }
 
 function parseOfId(req: Request, res: Response): number | null {
@@ -1632,8 +1660,9 @@ const saisieBody = z.object({
   action: z.enum(ACTIONS),
   IDbonnetier: z.number().int().positive(),
   /** The legacy stamps `evenement_piece.appareil` with its hard-coded terminal
-   *  name (NomAppareil()). The web cannot read an Android id, so the phone
-   *  sends a label it was given at provisioning; empty is accepted. */
+   *  name (NomAppareil()). Since enrolment the server stamps the phone's own
+   *  label (lib/appareils-atelier.ts); this field is only a fallback and is
+   *  ignored when the phone has one. */
   appareil: z.string().max(50).optional(),
   defaut: z
     .object({
@@ -1649,19 +1678,9 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
   try {
     // ── Gate. attachUser() is best-effort and there is no global guard, so
     // every write route in TRM carries its own (CLAUDE.md § Paramètres >
-    // Utilisateurs). The phone holds a shared poste account's cookie, exactly
-    // as the visitage PC does; WHO did the work travels in IDbonnetier below,
-    // which is the legacy's own model.
-    if (req.userId === undefined) {
-      res.status(401).json({ error: 'not authenticated' })
-      return
-    }
-    const allowed = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), 'saisie_atelier')
-    if (!allowed) {
-      res.status(403).json({ error: 'permission denied: saisie_atelier' })
-      return
-    }
-
+    // Utilisateurs). Here it is gateSaisie(): an enrolled phone, its account's
+    // `saisie_atelier`, and a bonnetier the phone may speak for — WHO did the
+    // work travels in IDbonnetier, which is the legacy's own model.
     const id = parseInt(String(req.params.id), 10)
     if (!Number.isInteger(id) || id <= 0) {
       res.status(400).json({ error: 'Invalid id' })
@@ -1674,17 +1693,13 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
     }
     const body = parsed.data
 
+    const who = await gateSaisie(req, res, body.IDbonnetier)
+    if (!who) return
+
     // ── Everything checkable, checked before the first write.
     const ctx = await chargerContexte(id)
     if (!ctx) {
       res.status(404).json({ error: 'OF not found' })
-      return
-    }
-
-    const bonnetiers = await selectBonnetiers()
-    const who = bonnetiers.find((b) => b.id === body.IDbonnetier)
-    if (!who || who.archive !== 0) {
-      res.status(400).json({ error: 'bonnetier inconnu ou archivé' })
       return
     }
 
@@ -1718,7 +1733,9 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
       return
     }
 
-    const appareil = (body.appareil ?? '').slice(0, 50)
+    // The phone's enrolment label — the legacy's terminal name, from the
+    // server's own row rather than whatever the client claims.
+    const appareil = (who.appareil || body.appareil || '').slice(0, 50)
     const ecrits: string[] = []
 
     // ── Writes. Past this line a failure is partial, and the response says so.

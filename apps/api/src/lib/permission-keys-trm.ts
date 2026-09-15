@@ -302,7 +302,7 @@ export const TRM_PERMISSION_KEYS = [
     key: 'saisie_atelier',
     label: 'Saisir au poste de l’atelier',
     description:
-      'Autorise l’enregistrement des actions du bonnetier depuis la PWA Atelier (atelier.intra.etsmalterre.com) : lancement d’un OF, nettoyage, fin de pièce, dernière pièce, fin d’OF, déclaration d’un défaut, interruption et relance, messages sur l’OF, et — pour un régleur — la consigne de l’OF. Ces actions écrivent la production réelle — pièces, événements, défauts et l’activation de l’OF suivant sur le métier. Sans ce droit l’app reste consultable mais rien ne s’enregistre.',
+      'Autorise l’enregistrement des actions du bonnetier depuis la PWA Atelier (atelier.intra.etsmalterre.com) : lancement d’un OF, nettoyage, fin de pièce, dernière pièce, fin d’OF, déclaration d’un défaut, interruption et relance, messages sur l’OF, et — pour un régleur — la consigne de l’OF. Ces actions écrivent la production réelle — pièces, événements, défauts et l’activation de l’OF suivant sur le métier. Ce droit s’accorde au compte sous lequel un téléphone est enrôlé (onglet Appareils) : sans lui, le téléphone reste consultable mais rien ne s’enregistre.',
     category: 'Production',
   },
 ] as const

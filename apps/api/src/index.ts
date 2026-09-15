@@ -44,6 +44,7 @@ import { ofTrmRouter } from './routes/of-trm.js'
 import { recorderRouter } from './routes/recorder.js'
 import { visitageTrmRouter } from './routes/visitage-trm.js'
 import { atelierRouter } from './routes/atelier.js'
+import { appareilsAtelierRouter } from './routes/appareils-atelier.js'
 import { trsRouter } from './routes/trs.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
@@ -177,7 +178,10 @@ app.use('/api/of-trm', ofTrmRouter)
 app.use('/api/recorder', recorderRouter)
 app.use('/api/visitage-trm', visitageTrmRouter)
 // Atelier PWA (bonnetier + régleur, host atelier.intra.etsmalterre.com) — a SECOND TRM
-// client of this API, not part of the TRM ERP web app. Read-only for now.
+// client of this API, not part of the TRM ERP web app. Its phones are
+// enrolled (routes/appareils-atelier.ts) — mounted first so the more specific
+// path wins over /api/atelier.
+app.use('/api/atelier/appareils', appareilsAtelierRouter)
 app.use('/api/atelier', atelierRouter)
 // TRS wall tablet (TRM/apps/trs, host trs.intra.etsmalterre.com) — a THIRD TRM client:
 // the shift TRS of every métier on the floor plan. Read-only, no identity.
