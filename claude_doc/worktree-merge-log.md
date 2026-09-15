@@ -10,6 +10,9 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-15 — feat/enrolement-ecriture (l'enrôlement d'un téléphone vaut droit d'écrire)
+**Atelier PWA — écriture** : le droit `saisie_atelier` (« Saisir au poste de l'atelier ») est **retiré** du catalogue TRM. Un téléphone enrôlé écrit, un téléphone non enrôlé consulte, révoquer le téléphone retire l'écriture. Décision de Vincent le jour même de la mise en prod de l'enrôlement : un code d'enrôlement n'est émis que par un admin (`requireAdmin`), personne n'enrôle un téléphone pour qu'il reste en lecture, et le droit en plus n'ajoutait qu'une manipulation et un encart peu clair (« Ce compte ne peut pas saisir au poste »). `gateSaisie` (`routes/atelier.ts`) garde ses autres contrôles : téléphone enrôlé (401 sans cookie, 403 avec un simple `mps_uid`), bonnetier connu, identité fixe = son régleur seulement, téléphone partagé jamais pour un régleur. `GET /atelier/appareils/moi` perd le drapeau `saisie`. Les droits `saisie_atelier` restés dans `data/permissions-trm.json` sont inertes. Vérifié sur l'API du worktree (11/11) : code admin, enrôlement, `/moi` sans drapeau, écriture refusée sur le bonnetier inconnu (la porte est passée), sans cookie et avec un `mps_uid` seul toujours refusés, révocation = plus d'identité ni d'écriture. Branche TRM appariée (`feat/enrolement-ecriture`) : plus d'encart dans l'onglet Appareils, plus de « consultation seule » sur le téléphone, docs.
+
 ## 2026-09-15 — feat/of-actif
 Atelier PWA, consultation of the active OF (TRM feat/of-actif is the screen half). Three
 read routes on `/api/atelier`: `GET /of/:id/historique` (pieces newest first with a
