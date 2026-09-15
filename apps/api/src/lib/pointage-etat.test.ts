@@ -6,7 +6,7 @@ import {
   jourParis,
   jourPrecedent,
   parseDtParisMs,
-  pausesS,
+  cumulPausesMin,
   semaineIso,
   texteMessage,
   type LigneHoraire,
@@ -56,10 +56,16 @@ describe('etatPointage — the FEN_PointageSalarié button table', () => {
   })
 })
 
-describe('pausesS', () => {
-  it('sums finished pauses and runs a current one up to now', () => {
-    expect(pausesS(ligne({ debut_pause1: T, fin_pause1: T + 600 }), T + 9999)).toBe(600)
-    expect(pausesS(ligne({ debut_pause1: T, fin_pause1: T + 600, debut_pause2: T + 1000 }), T + 1300)).toBe(900)
+describe('cumulPausesMin — the legacy cumul_pause', () => {
+  it('sums the finished pauses, in rounded minutes', () => {
+    expect(cumulPausesMin(ligne({ debut_pause1: T, fin_pause1: T + 600 }))).toBe(10)
+    expect(cumulPausesMin(ligne({ debut_pause1: T, fin_pause1: T + 600, debut_pause2: T + 1000, fin_pause2: T + 1930 }))).toBe(26)
+    expect(cumulPausesMin(ligne({ debut_pause1: T, fin_pause1: T + 90 }))).toBe(2)
+  })
+
+  it('does not count a pause still running', () => {
+    expect(cumulPausesMin(ligne({ debut_pause1: T }))).toBe(0)
+    expect(cumulPausesMin(ligne({ debut_pause1: T, fin_pause1: T + 600, debut_pause2: T + 1000 }))).toBe(10)
   })
 })
 

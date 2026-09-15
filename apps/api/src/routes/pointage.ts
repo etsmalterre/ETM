@@ -9,7 +9,7 @@
 //     GET  /appareil/enrolement-en-attente  { enAttente } — a pointeuse code is pending
 //     POST /appareil/enroler                { code } → sets the `mps_pointeuse` cookie
 //   The screens (enrolled tablet; reads also open to an admin session):
-//     GET  /jour                            the home table: today's lines
+//     GET  /en-poste                        the home table: every open line (legacy TABLE_Pointage)
 //     GET  /salaries                        the face grid, with each one's status
 //     GET  /salaries/:id/photo?size=        portrait through id_mps → bonnetier.photo
 //     GET  /salaries/:id/etat               buttons, open line, messages, week, hors prod
@@ -40,10 +40,9 @@ import { enrolementContourne } from '../lib/pointage-dev.js'
 import {
   POSTE_OUVERT_MAX_S,
   ACTIONS_POINTAGE,
+  cumulPausesMin,
   etatPointage,
   jourParis,
-  jourPrecedent,
-  pausesS,
   semaineIso,
   type ActionPointage,
   type LigneHoraire,
@@ -51,7 +50,7 @@ import {
 import {
   horsProdDuJour,
   ligneOuverte,
-  lignesDepuis,
+  lignesEnPoste,
   lignesOuvertes,
   listerSalaries,
   messagesActifs,
@@ -210,33 +209,34 @@ pointageRouter.post('/appareil/enroler', async (req: Request, res: Response) => 
 
 // ── Reads ──
 
-// FEN_Pointage's TABLE_Pointage: the lines of the day, plus a night shift
-// still open from yesterday.
-pointageRouter.get('/jour', async (req: Request, res: Response) => {
+// FEN_Pointage's TABLE_Pointage — its query, given by Vincent (2026-09-15):
+// every OPEN line (`fin = 0 AND is_deleted = 0`, joined to lst_salarie without
+// filtering deleted salariés), whatever its day, with the minutes of the
+// pauses already finished. No departure column: a line with a departure has
+// left the table. `nonFermee` flags a shift too old to be continued — the
+// legacy listed those without a word; they are Admin Pointage's to close.
+pointageRouter.get('/en-poste', async (req: Request, res: Response) => {
   try {
     if (!(await gateLecture(req, res))) return
     const maintenantMs = Date.now()
     const maintenantS = Math.floor(maintenantMs / 1000)
-    const jour = jourParis(maintenantMs)
-    const [lignes, salaries] = await Promise.all([lignesDepuis(jourPrecedent(jour)), tousLesSalaries()])
+    const [lignes, salaries] = await Promise.all([lignesEnPoste(), tousLesSalaries()])
     const noms = new Map(salaries.map((s) => [s.id, s]))
-    const retenues = lignes
-      .filter((l) => l.jour === jour || (l.fin === 0 && maintenantS - l.debut <= POSTE_OUVERT_MAX_S))
-      .sort((a, b) => a.debut - b.debut || a.id - b.id)
     res.json({
-      jour,
+      jour: jourParis(maintenantMs),
       maintenantMs,
-      lignes: retenues.map((l) => {
+      lignes: lignes.map((l) => {
         const s = noms.get(l.idSalarie)
         return {
           ...ligneJson(l),
           salarie: s ? salarieJson(s) : { id: l.idSalarie, nom: '', prenom: '', photo: false },
-          pauseMin: Math.round(pausesS(l, maintenantS) / 60),
+          cumulPauseMin: cumulPausesMin(l),
+          nonFermee: maintenantS - l.debut > POSTE_OUVERT_MAX_S,
         }
       }),
     })
   } catch (err) {
-    erreur(res, 'jour', err)
+    erreur(res, 'en-poste', err)
   }
 })
 

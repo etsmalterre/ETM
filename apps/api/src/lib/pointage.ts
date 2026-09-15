@@ -66,22 +66,21 @@ export async function ligneOuverte(idSalarie: number): Promise<LigneHoraire | nu
   return rows.map(versLigne).sort(plusRecente)[0] ?? null
 }
 
-/** The newest open line of every salarié. */
-export async function lignesOuvertes(): Promise<Map<number, LigneHoraire>> {
+/** Every open line (`fin = 0`, not deleted), oldest arrival first — the rows
+ *  of FEN_Pointage's TABLE_Pointage: who is at work or on a break right now,
+ *  a shift forgotten on a previous day included. */
+export async function lignesEnPoste(): Promise<LigneHoraire[]> {
   const rows = await pointageDb.query<Record<string, unknown>>(
     `SELECT ${COLONNES_LIGNE} FROM lst_horaire WHERE fin = 0 AND is_deleted = 0`,
   )
-  const out = new Map<number, LigneHoraire>()
-  for (const l of rows.map(versLigne).sort(plusRecente)) if (!out.has(l.idSalarie)) out.set(l.idSalarie, l)
-  return out
+  return rows.map(versLigne).sort((a, b) => a.debut - b.debut || a.id - b.id)
 }
 
-/** Lines dated `depuisJour` (YYYYMMDD) or later. */
-export async function lignesDepuis(depuisJour: string): Promise<LigneHoraire[]> {
-  const rows = await pointageDb.query<Record<string, unknown>>(
-    `SELECT ${COLONNES_LIGNE} FROM lst_horaire WHERE DATE >= '${depuisJour}' AND is_deleted = 0`,
-  )
-  return rows.map(versLigne)
+/** The newest open line of every salarié. */
+export async function lignesOuvertes(): Promise<Map<number, LigneHoraire>> {
+  const out = new Map<number, LigneHoraire>()
+  for (const l of (await lignesEnPoste()).sort(plusRecente)) if (!out.has(l.idSalarie)) out.set(l.idSalarie, l)
+  return out
 }
 
 /** FEN_PointageSalarié's HTM_Message: `is_deleted = 0 AND id_salarie = X AND

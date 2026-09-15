@@ -101,10 +101,12 @@ export function etatPointage(ouverte: LigneHoraire | null, maintenantS: number):
   return au([FIN_TRAVAIL])
 }
 
-/** Seconds of pause on a line; a pause still running counts up to `maintenantS`. */
-export function pausesS(l: LigneHoraire, maintenantS: number): number {
-  const une = (debut: number, fin: number) => (debut > 0 ? Math.max(0, (fin > 0 ? fin : maintenantS) - debut) : 0)
-  return une(l.debut_pause1, l.fin_pause1) + une(l.debut_pause2, l.fin_pause2)
+/** Minutes of FINISHED pauses on a line — FEN_Pointage's `cumul_pause`
+ *  (`CASE fin_pauseN WHEN 0 THEN 0 ELSE fin_pauseN - debut_pauseN END`, both
+ *  summed, `ROUND(… / 60)`). A pause still running does not count until it ends. */
+export function cumulPausesMin(l: LigneHoraire): number {
+  const une = (debut: number, fin: number) => (fin > 0 ? fin - debut : 0)
+  return Math.round((une(l.debut_pause1, l.fin_pause1) + une(l.debut_pause2, l.fin_pause2)) / 60)
 }
 
 // ── Europe/Paris wall clock ──
