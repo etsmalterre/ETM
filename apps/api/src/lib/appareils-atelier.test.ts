@@ -14,6 +14,7 @@ import {
   peutEssayer,
   noterEchec,
   oublierEchecs,
+  typeAppareil,
   CODE_TTL_MS,
 } from './appareils-atelier.js'
 
@@ -81,6 +82,26 @@ describe('enrolment codes', () => {
     const e = creerCode(input, t0)
     annulerCode(e.code)
     expect(codeEnAttente(t0 + 3)).toBe(false) // cancelled
+  })
+})
+
+describe('device types', () => {
+  const pointeuse = { type: 'pointeuse' as const, IDutilisateur: 14, IDbonnetier: null, libelle: 'Tablette pointage', creePar: 1 }
+
+  it('a code enrols only its own type and stays pending for it', () => {
+    const t0 = 3_000_000
+    const c = creerCode(pointeuse, t0)
+    expect(codeEnAttente(t0 + 1)).toBe(false) // the atelier PWA does not offer it
+    expect(codeEnAttente(t0 + 1, 'pointeuse')).toBe(true)
+    expect(consommerCode(c.code, t0 + 1)).toBeNull() // typed on a phone
+    expect(consommerCode(c.code, t0 + 2, 'pointeuse')).toMatchObject({ type: 'pointeuse', IDutilisateur: 14 })
+    expect(codeEnAttente(t0 + 3, 'pointeuse')).toBe(false)
+  })
+
+  it('defaults to a phone, as every row enrolled before the type existed', () => {
+    expect(creerCode({ IDutilisateur: 11, IDbonnetier: null, libelle: 'x', creePar: 1 }).type).toBe('atelier')
+    expect(typeAppareil({})).toBe('atelier')
+    expect(typeAppareil({ type: 'pointeuse' })).toBe('pointeuse')
   })
 })
 

@@ -43,8 +43,21 @@ const __dirname = path.dirname(__filename)
 const DATA_DIR = path.resolve(__dirname, '../../data')
 const FILE_PATH = path.join(DATA_DIR, 'appareils-atelier.json')
 
+/** What an enrolled device is for. The store also holds the POINTEUSE tablet
+ *  (routes/pointage.ts, 2026-09-15): one list in Paramètres › Utilisateurs ›
+ *  Appareils, one revocation. A code enrols only its own type, and each app
+ *  refuses the other's devices — a tablet never records production, a phone
+ *  never clocks anyone in. Rows written before the type existed are phones. */
+export type AppareilType = 'atelier' | 'pointeuse'
+
+export function typeAppareil(a: { type?: AppareilType }): AppareilType {
+  return a.type ?? 'atelier'
+}
+
 export interface AppareilAtelier {
   id: number
+  /** Absent on rows enrolled before 2026-09-15 = 'atelier'. Read through typeAppareil(). */
+  type?: AppareilType
   /** sha256 (hex) of the bearer secret carried by the cookie. */
   secretHash: string
   /** The account the phone acts as (its TRM grants apply). */
@@ -184,6 +197,7 @@ export async function resoudreAppareil(raw: string | undefined | null): Promise<
 
 export interface CodeEnrolement {
   code: string
+  type: AppareilType
   IDutilisateur: number
   IDbonnetier: number | null
   libelle: string
@@ -205,7 +219,7 @@ export function listerCodes(now = Date.now()): CodeEnrolement[] {
 
 /** Six digits, unique among the pending codes. */
 export function creerCode(
-  input: { IDutilisateur: number; IDbonnetier: number | null; libelle: string; creePar: number },
+  input: { type?: AppareilType; IDutilisateur: number; IDbonnetier: number | null; libelle: string; creePar: number },
   now = Date.now(),
 ): CodeEnrolement {
   purgerCodes(now)
@@ -213,27 +227,37 @@ export function creerCode(
   do {
     code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0')
   } while (codes.has(code))
-  const entry: CodeEnrolement = { code, ...input, expireLe: now + CODE_TTL_MS }
+  const entry: CodeEnrolement = {
+    code,
+    type: input.type ?? 'atelier',
+    IDutilisateur: input.IDutilisateur,
+    IDbonnetier: input.IDbonnetier,
+    libelle: input.libelle,
+    creePar: input.creePar,
+    expireLe: now + CODE_TTL_MS,
+  }
   codes.set(code, entry)
   return entry
 }
 
-/** Whether an admin has a code pending — the ONE fact about codes a phone
- *  that is not enrolled may learn (the PWA only offers « Enrôler ce
- *  téléphone » while there is something to type). Never the code itself. */
-export function codeEnAttente(now = Date.now()): boolean {
-  return listerCodes(now).length > 0
+/** Whether an admin has a code pending FOR THIS TYPE of device — the ONE fact
+ *  about codes a device that is not enrolled may learn (the PWA only offers
+ *  « Enrôler » while there is something to type). Never the code itself. */
+export function codeEnAttente(now = Date.now(), type: AppareilType = 'atelier'): boolean {
+  return listerCodes(now).some((c) => c.type === type)
 }
 
 export function annulerCode(code: string): boolean {
   return codes.delete(code)
 }
 
-/** Single use: a valid code is removed on the way out. */
-export function consommerCode(code: string, now = Date.now()): CodeEnrolement | null {
+/** Single use: a valid code is removed on the way out. A code of the other
+ *  type is refused and LEFT pending, so the device it was meant for can still
+ *  use it. */
+export function consommerCode(code: string, now = Date.now(), type: AppareilType = 'atelier'): CodeEnrolement | null {
   purgerCodes(now)
   const c = codes.get(code)
-  if (!c) return null
+  if (!c || c.type !== type) return null
   codes.delete(code)
   return c
 }
@@ -279,6 +303,7 @@ export async function enroler(
     const id = f.appareils.reduce((m, a) => Math.max(m, a.id), 0) + 1
     const row: AppareilAtelier = {
       id,
+      type: c.type,
       secretHash: hashSecret(secret),
       IDutilisateur: c.IDutilisateur,
       IDbonnetier: c.IDbonnetier,

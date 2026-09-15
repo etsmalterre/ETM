@@ -13,6 +13,10 @@
 //     GET    /moi         what this phone is (401 = not enrolled / revoked)
 //     GET    /enrolement-en-attente  { enAttente } — is a code pending?
 //
+// The admin side also issues codes for the pointage TABLET (`type:
+// 'pointeuse'`); that device enrols through routes/pointage.ts, under its own
+// cookie. The phone side here only ever sees and consumes 'atelier' codes.
+//
 // Model and store: lib/appareils-atelier.ts.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
@@ -39,6 +43,7 @@ import {
   peutEssayer,
   noterEchec,
   oublierEchecs,
+  typeAppareil,
   type AppareilPublic,
 } from '../lib/appareils-atelier.js'
 import { selectBonnetiers } from '../lib/production-trm.js'
@@ -139,9 +144,10 @@ appareilsAtelierRouter.get('/', async (req: Request, res: Response) => {
       const b = bonnetiers.find((x) => x.id === id)
       return b ? { IDbonnetier: b.id, prenom: b.prenom, nom: b.nom } : { IDbonnetier: id, prenom: '?', nom: '' }
     }
-    const appareils = (await listerAppareils()).map((a) => ({ ...a, bonnetier: nom(a.IDbonnetier) }))
+    const appareils = (await listerAppareils()).map((a) => ({ ...a, type: typeAppareil(a), bonnetier: nom(a.IDbonnetier) }))
     const codes = listerCodes().map((c) => ({
       code: c.code,
+      type: c.type,
       IDutilisateur: c.IDutilisateur,
       libelle: c.libelle,
       bonnetier: nom(c.IDbonnetier),
@@ -156,6 +162,8 @@ appareilsAtelierRouter.get('/', async (req: Request, res: Response) => {
 
 const codeBody = z
   .object({
+    /** 'pointeuse' = the pointage tablet (never a fixed identity). Default: a phone. */
+    type: z.enum(['atelier', 'pointeuse']).optional(),
     IDutilisateur: z.number().int().positive(),
     /** A régleur's own phone; omit / null for a shared bonnetier phone. */
     IDbonnetier: z.number().int().positive().nullable().optional(),
@@ -172,7 +180,13 @@ appareilsAtelierRouter.post('/codes', async (req: Request, res: Response) => {
       return
     }
     const { IDutilisateur, libelle } = parsed.data
+    const type = parsed.data.type ?? 'atelier'
     const IDbonnetier = parsed.data.IDbonnetier ?? null
+    if (type === 'pointeuse' && IDbonnetier !== null) {
+      // The tablet is shared by every salarié: who clocks in is the face they tap.
+      res.status(400).json({ error: 'pointeuse_partagee', message: 'Une pointeuse n’a pas d’identité fixe.' })
+      return
+    }
     if (IDbonnetier !== null) {
       // A fixed identity is a RÉGLEUR's: the whole point of the fixed phone
       // is the régleur screens, and a bonnetier keeps picking his face.
@@ -182,7 +196,7 @@ appareilsAtelierRouter.post('/codes', async (req: Request, res: Response) => {
         return
       }
     }
-    const c = creerCode({ IDutilisateur, IDbonnetier, libelle, creePar: req.userId! })
+    const c = creerCode({ type, IDutilisateur, IDbonnetier, libelle, creePar: req.userId! })
     res.status(201).json({ code: c.code, expireLe: new Date(c.expireLe).toISOString(), ttlMs: CODE_TTL_MS })
   } catch (err) {
     console.error('Error creating enrolment code:', err)

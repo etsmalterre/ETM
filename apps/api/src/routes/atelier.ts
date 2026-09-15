@@ -789,6 +789,12 @@ async function gateSaisie(
     })
     return null
   }
+  // The device store also holds the pointage tablet (lib/appareils-atelier.ts
+  // `type`); it enrols under its own cookie, but never let one record production.
+  if ((appareil.type ?? 'atelier') !== 'atelier') {
+    res.status(403).json({ error: 'appareil_non_atelier', message: 'Cet appareil n’est pas un téléphone d’atelier.' })
+    return null
+  }
   const who = (await selectBonnetiers()).find((b) => b.id === IDbonnetier)
   if (!who || who.archive !== 0) {
     res.status(400).json({ error: 'bonnetier inconnu ou archivé' })

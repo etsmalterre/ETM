@@ -46,6 +46,7 @@ import { visitageTrmRouter } from './routes/visitage-trm.js'
 import { atelierRouter } from './routes/atelier.js'
 import { appareilsAtelierRouter } from './routes/appareils-atelier.js'
 import { trsRouter } from './routes/trs.js'
+import { pointageRouter } from './routes/pointage.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
 import { maintenanceTrmRouter } from './routes/maintenance-trm.js'
@@ -186,6 +187,10 @@ app.use('/api/atelier', atelierRouter)
 // TRS wall tablet (TRM/apps/trs, host trs.intra.etsmalterre.com) — a THIRD TRM client:
 // the shift TRS of every métier on the floor plan. Read-only, no identity.
 app.use('/api/trs', trsRouter)
+// Pointage tablet (TRM/apps/pointage, host pointage.intra.etsmalterre.com) — a FOURTH
+// client: the shared time clock, on the legacy `pointage` database. Enrolled
+// tablet only, under its own `mps_pointeuse` cookie (routes/pointage.ts).
+app.use('/api/pointage', pointageRouter)
 // TRM tableau de bord widgets (Poids des pièces, …) — consumed by the TRM web app.
 app.use('/api/dashboard-trm', dashboardTrmRouter)
 // TRM production prime (Production › Prime) — consumed by the TRM web app.
