@@ -46,7 +46,7 @@ Full design system in `.claude/skills/mps_designer/SKILL.md`.
 | Monorepo | pnpm + Turborepo, Vitest |
 | API | Express |
 | Database | HFSQL Client/Server via `odbc` npm package |
-| Auth | Cookie-based (HMAC-signed, no JWT lib) — `cookie-parser` |
+| Auth | Cookie-based (HMAC-signed, no JWT lib) — `cookie-parser`. ⚠️ `POST /auth/login` authenticates nothing (any `IDutilisateur`); atelier phones carry a third, revocable cookie `mps_appareil` (`lib/appareils-atelier.ts`, `req.appareil`) and every atelier write requires it, never `mps_uid` alone |
 | PDF | `@react-pdf/renderer` (server-side, Lato fonts bundled) |
 | Excel | `xlsx` (SheetJS) — **client-side**, lazy `await import('xlsx')` so it's a separate chunk; API returns JSON, browser builds the `.xlsx` |
 | Email | Gmail API via `googleapis` + domain-wide delegation |
