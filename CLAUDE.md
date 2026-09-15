@@ -109,6 +109,7 @@ One or two lines per rule. **The incident, the measurements, the canonical file 
 - **BinMemo `IS NOT NULL` is unreliable**: file endpoints 404 on an empty buffer; UI does a HEAD pre-check.
 - **Avoid accents in HFSQL table names and backup folder names** ("fichier de données est déjà décrit").
 - ⚠️ **Never `CREATE TABLE` through ODBC as a deploy step**: it writes a local `.fic` in the process cwd, visible to that connection only (every other connection: « fichier inconnu », a new CREATE: « existe déjà »). **Adding a table = copy its `.fic` + `.ndx` into the server's database folder, then restart the API** (a connection lists the files when it opens) — versioned pair in `apps/api/hfsql/`; the API probes it (`probeFiniSourceTable()`) and degrades while it is missing. No correlated `NOT EXISTS` / `NOT IN (SELECT…)` on such a table — flat lookups + JS sets (`lib/fini-sources.ts`).
+- ⚠️ **Second database `pointage` (time clock) = `pointageDb` from `lib/hfsql-pointage.ts`, never the default client** — the dev `mps` folder holds stale `lst_horaire` / `lst_salarie` / `hors_prod` / `pointage` files that the wrong client reads silently. Dev copy: `scripts/copy-pointage-prod-to-dev.ts --write` (indexes last, cp1252 text — `hfsql_odbc.md` § « A second database »).
 
 **Accents and encoding**
 - **Accented identifiers are platform-specific**: the Linux bridge rejects them, Windows silently returns 0 rows on `alias.*` joins. Branch on `IS_WINDOWS`; canonical `routes/stock.ts`. Truncation is in the driver — the "Latin-1 bridge" idea is a dead end.

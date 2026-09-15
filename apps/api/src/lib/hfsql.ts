@@ -1,12 +1,34 @@
 import odbc from 'odbc'
 import { utimes } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { hfsqlLogTag } from './hfsql-log-tag.js'
 
 const CONNECTION_STRING =
   process.env.HFSQL_CONNECTION_STRING ||
   'DRIVER={HFSQL};Server Name=localhost;Server Port=4900;Database=MPS;UID=Admin;PWD=;'
 
-let connectionPromise: Promise<odbc.Connection> | null = null
+/**
+ * One HFSQL database behind one connection string. This file (Windows, `odbc`)
+ * and hfsql-bridge.ts (Linux, iODBC child process) build the same shape;
+ * hfsql-auto.ts picks the right one. The module-level exports below are the
+ * default client on HFSQL_CONNECTION_STRING (the `mps` database) — a second
+ * database (e.g. `pointage`, lib/hfsql-pointage.ts) gets its own client from
+ * `createHfsqlClient(cs)` instead of a copy of this file.
+ *
+ * No params argument on query functions on purpose: `?` placeholders do not
+ * work on HFSQL (CLAUDE.md rule) — build the SQL with esc()/parseInt/hex literals.
+ */
+export interface HfsqlClient {
+  query: <T = Record<string, unknown>>(sql: string) => Promise<T[]>
+  queryRaw: (sql: string) => Promise<Record<string, unknown>[]>
+  queryB64Text: <T = Record<string, unknown>>(sql: string) => Promise<T[]>
+  fixEncoding: <T extends object>(rows: T[], table: string, idField: string, textFields: string[]) => Promise<T[]>
+  closeConnection: () => Promise<void>
+}
+
+export interface OdbcClient extends HfsqlClient {
+  getConnection: () => Promise<odbc.Connection>
+}
 
 /**
  * Hard ceiling on a single connect attempt. The driver's own `loginTimeout` is
@@ -37,6 +59,8 @@ const CONNECT_TIMEOUT_MS = Number(process.env.HFSQL_CONNECT_TIMEOUT_MS) || 15000
 // `up.mjs <feature> --restart` fixed it. `status.mjs` now reports the slot
 // DEGRADED so it is at least diagnosed in one command; see
 // claude_doc/worktrees.md § "The browser loads forever".
+// The counters stay module-level, shared by every client: the wedge is
+// process-wide native state, not per connection string.
 const WEDGE_RESTART_AFTER = 2
 const WEDGE_RESTART_MIN_INTERVAL_MS = 60_000
 let consecutiveConnectTimeouts = 0
@@ -57,45 +81,6 @@ function maybeSelfRestartOnWedge(): void {
       ),
     (err) => console.error('[hfsql] wedge self-restart failed to touch entry file:', err?.message ?? err),
   )
-}
-
-export function getConnection(): Promise<odbc.Connection> {
-  if (!connectionPromise) {
-    const attempt = odbc.connect({
-      connectionString: CONNECTION_STRING,
-      loginTimeout: 10,
-    })
-    let timer: NodeJS.Timeout
-    connectionPromise = Promise.race([
-      attempt,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`HFSQL connect timed out after ${CONNECT_TIMEOUT_MS}ms`)),
-          CONNECT_TIMEOUT_MS
-        )
-      }),
-    ]).finally(() => clearTimeout(timer)) as Promise<odbc.Connection>
-
-    connectionPromise.then(() => {
-      consecutiveConnectTimeouts = 0
-    }).catch((err) => {
-      console.error('[hfsql] connect failed, will retry on next query:', err?.message ?? err)
-      connectionPromise = null
-      // If the hung connect ever does resolve, close the orphan so the driver
-      // doesn't leak a session we no longer reference.
-      attempt.then((conn) => conn.close().catch(() => {})).catch(() => {})
-      // Only timeouts indicate the wedged-native-state failure mode; a fast
-      // refusal (server down, bad credentials) errors immediately and must not
-      // trigger restarts.
-      if (err instanceof Error && err.message.startsWith('HFSQL connect timed out')) {
-        consecutiveConnectTimeouts++
-        maybeSelfRestartOnWedge()
-      } else {
-        consecutiveConnectTimeouts = 0
-      }
-    })
-  }
-  return connectionPromise
 }
 
 /** Decode ArrayBuffer from CONVERT() to UTF-8 string */
@@ -123,107 +108,161 @@ function cleanRow<T>(row: Record<string, unknown>): T {
   return cleaned as T
 }
 
-/** Run a SQL query against HFSQL via ODBC.
- *  No params argument on purpose: `?` placeholders do not work on HFSQL
- *  (CLAUDE.md rule) — build the SQL with esc()/parseInt/hex literals. */
-export async function query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-  const conn = await getConnection()
-  const rows = await conn.query(sql)
-  return (rows as Record<string, unknown>[]).map((row) => cleanRow<T>(row))
-}
+/** A client on its own cached connection. Nothing connects until the first query. */
+export function createOdbcClient(connectionString: string): OdbcClient {
+  const tag = hfsqlLogTag(connectionString)
+  let connectionPromise: Promise<odbc.Connection> | null = null
 
-/**
- * Windows counterpart of the Linux bridge's queryB64Text. The base64-text trick
- * is a Linux-only workaround (the iODBC driver can't CONVERT accented-named
- * columns); on Windows the odbc driver path handles encoding via fixEncoding, so
- * this is a plain passthrough. The prospects route only calls queryB64Text on
- * Linux — this export exists so hfsql-auto can wire it uniformly.
- */
-export async function queryB64Text<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-  return query<T>(sql)
-}
-
-/**
- * Fix encoding for text/memo fields that contain U+FFFD replacement characters.
- * HFSQL ODBC driver corrupts accented chars; CONVERT(field USING 'UTF-8') fixes them.
- * This does per-row CONVERT queries only for rows that actually have broken encoding.
- */
-export async function fixEncoding<T extends object>(
-  rows: T[],
-  table: string,
-  idField: string,
-  textFields: string[]
-): Promise<T[]> {
-  const conn = await getConnection()
-  const result: T[] = []
-
-  for (const row of rows) {
-    const r = row as Record<string, unknown>
-    const needsFix = textFields.some((f) => {
-      const val = r[f]
-      return typeof val === 'string' && val.includes('\ufffd')
-    })
-
-    if (!needsFix) {
-      result.push(row)
-      continue
-    }
-
-    if (r[idField] === undefined) {
-      // The feeding SELECT did not include idField: the repair below cannot key
-      // its CONVERT and the U+FFFD glyph stays - which sqlText() then writes back
-      // as a literal "?" (#1137, #1146). Say so instead of failing silently.
-      console.warn(`[fixEncoding] ${table}: idField ${idField} is not selected by the feeding query - accents cannot be repaired`)
-    }
-    const idNum = Number(r[idField])
-    const fixed = { ...row } as T
-    // Guard: a non-finite id would emit `WHERE col = NaN`, which HFSQL rejects as
-    // an unknown identifier. On the Linux bridge that is classed as "connection
-    // lost" and triggers a respawn storm against the shared HFSQL server. Skip the
-    // CONVERT and keep the original (a leftover U+FFFD glyph is purely cosmetic).
-    if (!Number.isInteger(idNum)) {
-      result.push(fixed)
-      continue
-    }
-    const fixedRec = fixed as Record<string, unknown>
-    for (const field of textFields) {
-      const orig = r[field]
-      if (typeof orig === 'string' && orig.includes('\ufffd')) {
-        try {
-          const qRes = await conn.query<Record<string, unknown>>(
-            `SELECT CONVERT(${field} USING 'UTF-8') as v FROM ${table} WHERE ${idField} = ${idNum}`
+  function getConnection(): Promise<odbc.Connection> {
+    if (!connectionPromise) {
+      const attempt = odbc.connect({
+        connectionString,
+        loginTimeout: 10,
+      })
+      let timer: NodeJS.Timeout
+      connectionPromise = Promise.race([
+        attempt,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`HFSQL connect timed out after ${CONNECT_TIMEOUT_MS}ms`)),
+            CONNECT_TIMEOUT_MS
           )
-          if (qRes.length > 0 && qRes[0].v != null) {
-            const val = qRes[0].v
-            fixedRec[field] =
-              val instanceof ArrayBuffer ? Buffer.from(val).toString('utf8') : val
+        }),
+      ]).finally(() => clearTimeout(timer)) as Promise<odbc.Connection>
+
+      connectionPromise.then(() => {
+        consecutiveConnectTimeouts = 0
+      }).catch((err) => {
+        console.error(`${tag} connect failed, will retry on next query:`, err?.message ?? err)
+        connectionPromise = null
+        // If the hung connect ever does resolve, close the orphan so the driver
+        // doesn't leak a session we no longer reference.
+        attempt.then((conn) => conn.close().catch(() => {})).catch(() => {})
+        // Only timeouts indicate the wedged-native-state failure mode; a fast
+        // refusal (server down, bad credentials) errors immediately and must not
+        // trigger restarts.
+        if (err instanceof Error && err.message.startsWith('HFSQL connect timed out')) {
+          consecutiveConnectTimeouts++
+          maybeSelfRestartOnWedge()
+        } else {
+          consecutiveConnectTimeouts = 0
+        }
+      })
+    }
+    return connectionPromise
+  }
+
+  /** Run a SQL query against HFSQL via ODBC. */
+  async function query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+    const conn = await getConnection()
+    const rows = await conn.query(sql)
+    return (rows as Record<string, unknown>[]).map((row) => cleanRow<T>(row))
+  }
+
+  /**
+   * Windows counterpart of the Linux bridge's queryB64Text. The base64-text trick
+   * is a Linux-only workaround (the iODBC driver can't CONVERT accented-named
+   * columns); on Windows the odbc driver path handles encoding via fixEncoding, so
+   * this is a plain passthrough. The prospects route only calls queryB64Text on
+   * Linux — this export exists so hfsql-auto can wire it uniformly.
+   */
+  async function queryB64Text<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+    return query<T>(sql)
+  }
+
+  /**
+   * Fix encoding for text/memo fields that contain U+FFFD replacement characters.
+   * HFSQL ODBC driver corrupts accented chars; CONVERT(field USING 'UTF-8') fixes them.
+   * This does per-row CONVERT queries only for rows that actually have broken encoding.
+   */
+  async function fixEncoding<T extends object>(
+    rows: T[],
+    table: string,
+    idField: string,
+    textFields: string[]
+  ): Promise<T[]> {
+    const conn = await getConnection()
+    const result: T[] = []
+
+    for (const row of rows) {
+      const r = row as Record<string, unknown>
+      const needsFix = textFields.some((f) => {
+        const val = r[f]
+        return typeof val === 'string' && val.includes('�')
+      })
+
+      if (!needsFix) {
+        result.push(row)
+        continue
+      }
+
+      if (r[idField] === undefined) {
+        // The feeding SELECT did not include idField: the repair below cannot key
+        // its CONVERT and the U+FFFD glyph stays - which sqlText() then writes back
+        // as a literal "?" (#1137, #1146). Say so instead of failing silently.
+        console.warn(`[fixEncoding] ${table}: idField ${idField} is not selected by the feeding query - accents cannot be repaired`)
+      }
+      const idNum = Number(r[idField])
+      const fixed = { ...row } as T
+      // Guard: a non-finite id would emit `WHERE col = NaN`, which HFSQL rejects as
+      // an unknown identifier. On the Linux bridge that is classed as "connection
+      // lost" and triggers a respawn storm against the shared HFSQL server. Skip the
+      // CONVERT and keep the original (a leftover U+FFFD glyph is purely cosmetic).
+      if (!Number.isInteger(idNum)) {
+        result.push(fixed)
+        continue
+      }
+      const fixedRec = fixed as Record<string, unknown>
+      for (const field of textFields) {
+        const orig = r[field]
+        if (typeof orig === 'string' && orig.includes('�')) {
+          try {
+            const qRes = await conn.query<Record<string, unknown>>(
+              `SELECT CONVERT(${field} USING 'UTF-8') as v FROM ${table} WHERE ${idField} = ${idNum}`
+            )
+            if (qRes.length > 0 && qRes[0].v != null) {
+              const val = qRes[0].v
+              fixedRec[field] =
+                val instanceof ArrayBuffer ? Buffer.from(val).toString('utf8') : val
+            }
+          } catch {
+            // keep original value if CONVERT fails
           }
-        } catch {
-          // keep original value if CONVERT fails
         }
       }
+      result.push(fixed)
     }
-    result.push(fixed)
+
+    return result
   }
 
-  return result
-}
-
-/** Run a SQL query and return raw rows without cleanRow (preserves ArrayBuffer for binary blobs) */
-export async function queryRaw(sql: string): Promise<Record<string, unknown>[]> {
-  const conn = await getConnection()
-  const rows = await conn.query(sql)
-  return rows as Record<string, unknown>[]
-}
-
-export async function closeConnection(): Promise<void> {
-  if (connectionPromise) {
-    try {
-      const conn = await connectionPromise
-      await conn.close()
-    } catch {
-      // ignore close errors
-    }
-    connectionPromise = null
+  /** Run a SQL query and return raw rows without cleanRow (preserves ArrayBuffer for binary blobs) */
+  async function queryRaw(sql: string): Promise<Record<string, unknown>[]> {
+    const conn = await getConnection()
+    const rows = await conn.query(sql)
+    return rows as Record<string, unknown>[]
   }
+
+  async function closeConnection(): Promise<void> {
+    if (connectionPromise) {
+      try {
+        const conn = await connectionPromise
+        await conn.close()
+      } catch {
+        // ignore close errors
+      }
+      connectionPromise = null
+    }
+  }
+
+  return { getConnection, query, queryRaw, queryB64Text, fixEncoding, closeConnection }
 }
+
+const defaultClient = createOdbcClient(CONNECTION_STRING)
+
+export const getConnection = defaultClient.getConnection
+export const query = defaultClient.query
+export const queryB64Text = defaultClient.queryB64Text
+export const fixEncoding = defaultClient.fixEncoding
+export const queryRaw = defaultClient.queryRaw
+export const closeConnection = defaultClient.closeConnection

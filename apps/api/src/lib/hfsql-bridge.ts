@@ -1,132 +1,27 @@
 import { spawn, ChildProcess } from 'child_process'
 import { resolve } from 'path'
 import { createInterface, Interface } from 'readline'
+import type { HfsqlClient } from './hfsql.js'
+import { hfsqlLogTag } from './hfsql-log-tag.js'
 
 /**
  * HFSQL Bridge - communicates with HFSQL via a C child process linked against iODBC.
  * Used on Linux where the HFSQL ODBC driver requires iODBC (incompatible with Node.js odbc/unixODBC).
  * On Windows, the standard `odbc` npm package is used instead (see hfsql.ts).
  *
- * Queries are serialized through a queue since the bridge handles one query at a time.
+ * One bridge process per client (i.e. per connection string). Queries are
+ * serialized through that client's queue since a bridge handles one query at a time.
  */
-
-let bridge: ChildProcess | null = null
-let rl: Interface | null = null
-let pendingResolve: ((value: string) => void) | null = null
-let connected = false
-
-// Query queue to serialize concurrent requests
-const queryQueue: Array<{ sql: string; b64text?: boolean; resolve: (value: string) => void; reject: (err: Error) => void }> = []
-let processing = false
 
 function getBridgePath(): string {
   return resolve(process.cwd(), 'hfsql_bridge')
 }
 
-function getConnectionString(): string {
-  const cs = process.env.HFSQL_CONNECTION_STRING || ''
+function driverConnectionString(cs: string): string {
   if (cs.includes('DRIVER={HFSQL}')) {
     return cs.replace('DRIVER={HFSQL}', 'DRIVER=/opt/hfsql_odbc/wd310hfo64.so')
   }
   return cs
-}
-
-async function ensureConnected(): Promise<void> {
-  if (connected && bridge && !bridge.killed) return
-
-  return new Promise((resolve, reject) => {
-    const connStr = getConnectionString()
-    bridge = spawn(getBridgePath(), [connStr], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    rl = createInterface({ input: bridge.stdout! })
-
-    bridge.stderr!.on('data', (data: Buffer) => {
-      console.error('[hfsql_bridge stderr]', data.toString())
-    })
-
-    bridge.on('error', (err) => {
-      console.error('[hfsql_bridge] Failed to start:', err.message)
-      connected = false
-      bridge = null
-      reject(err)
-    })
-
-    bridge.on('exit', (code) => {
-      connected = false
-      bridge = null
-      rl = null
-      if (pendingResolve) {
-        pendingResolve('')
-        pendingResolve = null
-      }
-      // Reject all queued queries
-      while (queryQueue.length > 0) {
-        const item = queryQueue.shift()!
-        item.reject(new Error('Bridge process exited'))
-      }
-    })
-
-    rl.on('line', (line: string) => {
-      if (!connected) {
-        try {
-          const msg = JSON.parse(line)
-          if (msg.status === 'connected') {
-            connected = true
-            resolve()
-          } else if (msg.error) {
-            reject(new Error(msg.error))
-          }
-        } catch {
-          reject(new Error(`Unexpected bridge output: ${line}`))
-        }
-      } else if (pendingResolve) {
-        const cb = pendingResolve
-        pendingResolve = null
-        cb(line)
-      }
-    })
-  })
-}
-
-function sendQueryRaw(sql: string, b64text?: boolean): Promise<string> {
-  return new Promise((resolve, reject) => {
-    if (!bridge || !bridge.stdin) {
-      reject(new Error('Bridge not connected'))
-      return
-    }
-    pendingResolve = resolve
-    const escaped = sql.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')
-    // The C bridge detects b64text only when the line is prefixed EXACTLY with
-    // {"b64text":1, — keep this literal in sync with the strncmp in hfsql_bridge.c.
-    bridge.stdin.write(b64text ? `{"b64text":1,"sql":"${escaped}"}\n` : `{"sql":"${escaped}"}\n`)
-  })
-}
-
-async function processQueue(): Promise<void> {
-  if (processing) return
-  processing = true
-
-  while (queryQueue.length > 0) {
-    const item = queryQueue.shift()!
-    try {
-      await ensureConnected()
-      const result = await sendQueryRaw(item.sql, item.b64text)
-      item.resolve(result)
-    } catch (err) {
-      item.reject(err instanceof Error ? err : new Error(String(err)))
-    }
-  }
-
-  processing = false
-}
-
-function sendQuery(sql: string, b64text?: boolean): Promise<string> {
-  return new Promise((resolve, reject) => {
-    queryQueue.push({ sql, b64text, resolve, reject })
-    processQueue()
-  })
 }
 
 /** Clean HFSQL quirks: \x00 memo → null, b64: prefix → UTF-8 string */
@@ -207,183 +102,305 @@ function isConnectionLostError(errMsg: string): boolean {
     || errMsg.includes('Bridge process exited')
 }
 
-/** Force-kill the bridge so the next query respawns it with a fresh HFSQL connection */
-function killBridge(): void {
-  if (bridge) {
-    try { bridge.kill() } catch { /* ignore */ }
-  }
-  bridge = null
-  rl = null
-  connected = false
-  pendingResolve = null
-}
+/** A client with its own bridge process. Nothing is spawned until the first query. */
+export function createBridgeClient(connectionString: string): HfsqlClient {
+  const tag = hfsqlLogTag(connectionString, 'hfsql_bridge')
 
-/** Run a SQL query against HFSQL via the iODBC bridge, with auto-reconnect on
- *  connection loss. No params argument on purpose — `?` placeholders do not
- *  work on HFSQL (CLAUDE.md rule). */
-export async function query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const raw = await sendQuery(sql)
-      if (!raw) throw new Error('Empty response from bridge')
+  let bridge: ChildProcess | null = null
+  let rl: Interface | null = null
+  let pendingResolve: ((value: string) => void) | null = null
+  let connected = false
 
-      const result = JSON.parse(raw)
-      if (result.error) {
-        if (isConnectionLostError(result.error) && attempt === 0) {
-          console.warn('[hfsql_bridge] Connection lost, respawning bridge and retrying:', result.error)
-          killBridge()
-          continue
+  // Query queue to serialize concurrent requests
+  const queryQueue: Array<{ sql: string; b64text?: boolean; resolve: (value: string) => void; reject: (err: Error) => void }> = []
+  let processing = false
+
+  async function ensureConnected(): Promise<void> {
+    if (connected && bridge && !bridge.killed) return
+
+    return new Promise((resolve, reject) => {
+      const connStr = driverConnectionString(connectionString)
+      bridge = spawn(getBridgePath(), [connStr], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+
+      rl = createInterface({ input: bridge.stdout! })
+
+      bridge.stderr!.on('data', (data: Buffer) => {
+        console.error(`${tag} stderr`, data.toString())
+      })
+
+      bridge.on('error', (err) => {
+        console.error(`${tag} Failed to start:`, err.message)
+        connected = false
+        bridge = null
+        reject(err)
+      })
+
+      bridge.on('exit', () => {
+        connected = false
+        bridge = null
+        rl = null
+        if (pendingResolve) {
+          pendingResolve('')
+          pendingResolve = null
         }
-        throw new Error(result.error)
-      }
-
-      return (result.rows as Record<string, unknown>[]).map((row) => cleanRow<T>(row))
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (isConnectionLostError(msg) && attempt === 0) {
-        console.warn('[hfsql_bridge] Connection error, respawning bridge and retrying:', msg)
-        killBridge()
-        continue
-      }
-      throw err
-    }
-  }
-  throw new Error('Query failed after retry')
-}
-
-/**
- * Run a SQL query in base64-text mode: every text column value is returned
- * decoded from its raw Latin-1 bytes, so accented characters survive even in
- * columns whose NAME is accented (prénom, société) and therefore can't be
- * CONVERT()'d. Use for tables with accented column names; ordinary routes keep
- * using query() + fixEncoding(). Numeric/date columns are unaffected.
- */
-export async function queryB64Text<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const raw = await sendQuery(sql, true)
-      if (!raw) throw new Error('Empty response from bridge')
-      const result = JSON.parse(raw)
-      if (result.error) {
-        if (isConnectionLostError(result.error) && attempt === 0) {
-          console.warn('[hfsql_bridge] Connection lost in queryB64Text, respawning:', result.error)
-          killBridge()
-          continue
+        // Reject all queued queries
+        while (queryQueue.length > 0) {
+          const item = queryQueue.shift()!
+          item.reject(new Error('Bridge process exited'))
         }
-        throw new Error(result.error)
-      }
-      return (result.rows as Record<string, unknown>[]).map((row) => cleanRowB64Text<T>(row))
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (isConnectionLostError(msg) && attempt === 0) {
-        console.warn('[hfsql_bridge] Connection error in queryB64Text, respawning:', msg)
-        killBridge()
-        continue
-      }
-      throw err
-    }
-  }
-  throw new Error('queryB64Text failed after retry')
-}
+      })
 
-/**
- * Fix encoding for text/memo fields - on iODBC bridge, encoding may already be correct.
- * Keeping the same interface as hfsql.ts for compatibility.
- */
-export async function fixEncoding<T extends object>(
-  rows: T[],
-  table: string,
-  idField: string,
-  textFields: string[]
-): Promise<T[]> {
-  const result: T[] = []
-
-  for (const row of rows) {
-    const r = row as Record<string, unknown>
-    const needsFix = textFields.some((f) => {
-      const val = r[f]
-      return typeof val === 'string' && val.includes('\ufffd')
-    })
-
-    if (!needsFix) {
-      result.push(row)
-      continue
-    }
-
-    if (r[idField] === undefined) {
-      // The feeding SELECT did not include idField: the repair below cannot key
-      // its CONVERT and the U+FFFD glyph stays - which sqlText() then writes back
-      // as a literal "?" (#1137, #1146). Say so instead of failing silently.
-      console.warn(`[fixEncoding] ${table}: idField ${idField} is not selected by the feeding query - accents cannot be repaired`)
-    }
-    const idNum = Number(r[idField])
-    const fixed = { ...row } as T
-    // Guard: a non-finite id would emit `WHERE col = NaN`, which HFSQL treats as
-    // an unknown identifier and rejects with [01000] \u2014 on the Linux bridge that
-    // is classed as "connection lost" and triggers a respawn storm that floods
-    // the shared HFSQL server. Skip the CONVERT and keep the original (a leftover
-    // U+FFFD glyph is purely cosmetic; a prod outage is not).
-    if (!Number.isInteger(idNum)) {
-      result.push(fixed)
-      continue
-    }
-    const fixedRec = fixed as Record<string, unknown>
-    for (const field of textFields) {
-      const orig = r[field]
-      if (typeof orig === 'string' && orig.includes('\ufffd')) {
-        try {
-          const qRes = await query<{ v: string }>(
-            `SELECT CONVERT(${field} USING 'UTF-8') as v FROM ${table} WHERE ${idField} = ${idNum}`
-          )
-          if (qRes.length > 0 && qRes[0].v != null) {
-            fixedRec[field] = qRes[0].v
+      rl.on('line', (line: string) => {
+        if (!connected) {
+          try {
+            const msg = JSON.parse(line)
+            if (msg.status === 'connected') {
+              connected = true
+              resolve()
+            } else if (msg.error) {
+              reject(new Error(msg.error))
+            }
+          } catch {
+            reject(new Error(`Unexpected bridge output: ${line}`))
           }
-        } catch {
-          // keep original value if CONVERT fails
+        } else if (pendingResolve) {
+          const cb = pendingResolve
+          pendingResolve = null
+          cb(line)
         }
-      }
-    }
-    result.push(fixed)
+      })
+    })
   }
 
-  return result
-}
+  function sendQueryRaw(sql: string, b64text?: boolean): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (!bridge || !bridge.stdin) {
+        reject(new Error('Bridge not connected'))
+        return
+      }
+      pendingResolve = resolve
+      const escaped = sql.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')
+      // The C bridge detects b64text only when the line is prefixed EXACTLY with
+      // {"b64text":1, — keep this literal in sync with the strncmp in hfsql_bridge.c.
+      bridge.stdin.write(b64text ? `{"b64text":1,"sql":"${escaped}"}\n` : `{"sql":"${escaped}"}\n`)
+    })
+  }
 
-/** queryRaw for bridge — preserves b64 as raw Buffer (for binary blob retrieval) */
-export async function queryRaw(sql: string): Promise<Record<string, unknown>[]> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const raw = await sendQuery(sql)
-      if (!raw) throw new Error('Empty response from bridge')
-      const result = JSON.parse(raw)
-      if (result.error) {
-        if (isConnectionLostError(result.error) && attempt === 0) {
-          console.warn('[hfsql_bridge] Connection lost in queryRaw, respawning:', result.error)
+  async function processQueue(): Promise<void> {
+    if (processing) return
+    processing = true
+
+    while (queryQueue.length > 0) {
+      const item = queryQueue.shift()!
+      try {
+        await ensureConnected()
+        const result = await sendQueryRaw(item.sql, item.b64text)
+        item.resolve(result)
+      } catch (err) {
+        item.reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    }
+
+    processing = false
+  }
+
+  function sendQuery(sql: string, b64text?: boolean): Promise<string> {
+    return new Promise((resolve, reject) => {
+      queryQueue.push({ sql, b64text, resolve, reject })
+      processQueue()
+    })
+  }
+
+  /** Force-kill the bridge so the next query respawns it with a fresh HFSQL connection */
+  function killBridge(): void {
+    if (bridge) {
+      try { bridge.kill() } catch { /* ignore */ }
+    }
+    bridge = null
+    rl = null
+    connected = false
+    pendingResolve = null
+  }
+
+  /** Run a SQL query against HFSQL via the iODBC bridge, with auto-reconnect on
+   *  connection loss. No params argument on purpose — `?` placeholders do not
+   *  work on HFSQL (CLAUDE.md rule). */
+  async function query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const raw = await sendQuery(sql)
+        if (!raw) throw new Error('Empty response from bridge')
+
+        const result = JSON.parse(raw)
+        if (result.error) {
+          if (isConnectionLostError(result.error) && attempt === 0) {
+            console.warn(`${tag} Connection lost, respawning bridge and retrying:`, result.error)
+            killBridge()
+            continue
+          }
+          throw new Error(result.error)
+        }
+
+        return (result.rows as Record<string, unknown>[]).map((row) => cleanRow<T>(row))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (isConnectionLostError(msg) && attempt === 0) {
+          console.warn(`${tag} Connection error, respawning bridge and retrying:`, msg)
           killBridge()
           continue
         }
-        throw new Error(result.error)
+        throw err
       }
-      return (result.rows as Record<string, unknown>[]).map(cleanRowRaw)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (isConnectionLostError(msg) && attempt === 0) {
-        console.warn('[hfsql_bridge] Connection error in queryRaw, respawning:', msg)
-        killBridge()
+    }
+    throw new Error('Query failed after retry')
+  }
+
+  /**
+   * Run a SQL query in base64-text mode: every text column value is returned
+   * decoded from its raw Latin-1 bytes, so accented characters survive even in
+   * columns whose NAME is accented (prénom, société) and therefore can't be
+   * CONVERT()'d. Use for tables with accented column names; ordinary routes keep
+   * using query() + fixEncoding(). Numeric/date columns are unaffected.
+   */
+  async function queryB64Text<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const raw = await sendQuery(sql, true)
+        if (!raw) throw new Error('Empty response from bridge')
+        const result = JSON.parse(raw)
+        if (result.error) {
+          if (isConnectionLostError(result.error) && attempt === 0) {
+            console.warn(`${tag} Connection lost in queryB64Text, respawning:`, result.error)
+            killBridge()
+            continue
+          }
+          throw new Error(result.error)
+        }
+        return (result.rows as Record<string, unknown>[]).map((row) => cleanRowB64Text<T>(row))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (isConnectionLostError(msg) && attempt === 0) {
+          console.warn(`${tag} Connection error in queryB64Text, respawning:`, msg)
+          killBridge()
+          continue
+        }
+        throw err
+      }
+    }
+    throw new Error('queryB64Text failed after retry')
+  }
+
+  /**
+   * Fix encoding for text/memo fields - on iODBC bridge, encoding may already be correct.
+   * Keeping the same interface as hfsql.ts for compatibility.
+   */
+  async function fixEncoding<T extends object>(
+    rows: T[],
+    table: string,
+    idField: string,
+    textFields: string[]
+  ): Promise<T[]> {
+    const result: T[] = []
+
+    for (const row of rows) {
+      const r = row as Record<string, unknown>
+      const needsFix = textFields.some((f) => {
+        const val = r[f]
+        return typeof val === 'string' && val.includes('�')
+      })
+
+      if (!needsFix) {
+        result.push(row)
         continue
       }
-      throw err
+
+      if (r[idField] === undefined) {
+        // The feeding SELECT did not include idField: the repair below cannot key
+        // its CONVERT and the U+FFFD glyph stays - which sqlText() then writes back
+        // as a literal "?" (#1137, #1146). Say so instead of failing silently.
+        console.warn(`[fixEncoding] ${table}: idField ${idField} is not selected by the feeding query - accents cannot be repaired`)
+      }
+      const idNum = Number(r[idField])
+      const fixed = { ...row } as T
+      // Guard: a non-finite id would emit `WHERE col = NaN`, which HFSQL treats as
+      // an unknown identifier and rejects with [01000] — on the Linux bridge that
+      // is classed as "connection lost" and triggers a respawn storm that floods
+      // the shared HFSQL server. Skip the CONVERT and keep the original (a leftover
+      // U+FFFD glyph is purely cosmetic; a prod outage is not).
+      if (!Number.isInteger(idNum)) {
+        result.push(fixed)
+        continue
+      }
+      const fixedRec = fixed as Record<string, unknown>
+      for (const field of textFields) {
+        const orig = r[field]
+        if (typeof orig === 'string' && orig.includes('�')) {
+          try {
+            const qRes = await query<{ v: string }>(
+              `SELECT CONVERT(${field} USING 'UTF-8') as v FROM ${table} WHERE ${idField} = ${idNum}`
+            )
+            if (qRes.length > 0 && qRes[0].v != null) {
+              fixedRec[field] = qRes[0].v
+            }
+          } catch {
+            // keep original value if CONVERT fails
+          }
+        }
+      }
+      result.push(fixed)
     }
+
+    return result
   }
-  throw new Error('queryRaw failed after retry')
+
+  /** queryRaw for bridge — preserves b64 as raw Buffer (for binary blob retrieval) */
+  async function queryRaw(sql: string): Promise<Record<string, unknown>[]> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const raw = await sendQuery(sql)
+        if (!raw) throw new Error('Empty response from bridge')
+        const result = JSON.parse(raw)
+        if (result.error) {
+          if (isConnectionLostError(result.error) && attempt === 0) {
+            console.warn(`${tag} Connection lost in queryRaw, respawning:`, result.error)
+            killBridge()
+            continue
+          }
+          throw new Error(result.error)
+        }
+        return (result.rows as Record<string, unknown>[]).map(cleanRowRaw)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (isConnectionLostError(msg) && attempt === 0) {
+          console.warn(`${tag} Connection error in queryRaw, respawning:`, msg)
+          killBridge()
+          continue
+        }
+        throw err
+      }
+    }
+    throw new Error('queryRaw failed after retry')
+  }
+
+  async function closeConnection(): Promise<void> {
+    if (bridge && bridge.stdin) {
+      bridge.stdin.write('{"cmd":"quit"}\n')
+      bridge.kill()
+    }
+    bridge = null
+    rl = null
+    connected = false
+  }
+
+  return { query, queryRaw, queryB64Text, fixEncoding, closeConnection }
 }
 
-export async function closeConnection(): Promise<void> {
-  if (bridge && bridge.stdin) {
-    bridge.stdin.write('{"cmd":"quit"}\n')
-    bridge.kill()
-  }
-  bridge = null
-  rl = null
-  connected = false
-}
+const defaultClient = createBridgeClient(process.env.HFSQL_CONNECTION_STRING || '')
+
+export const query = defaultClient.query
+export const queryB64Text = defaultClient.queryB64Text
+export const fixEncoding = defaultClient.fixEncoding
+export const queryRaw = defaultClient.queryRaw
+export const closeConnection = defaultClient.closeConnection

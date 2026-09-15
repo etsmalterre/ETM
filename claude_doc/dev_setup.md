@@ -2,7 +2,7 @@
 
 The factory PC has everything pre-installed; on a fresh machine you also need:
 
-1. **HFSQL Client/Server** running on `localhost:4900` with the `MPS` database.
+1. **HFSQL Client/Server** running on `localhost:4900` with the `MPS` database — and, for the pointage PWA, a `pointage` database built from prod with `node --import tsx src/scripts/copy-pointage-prod-to-dev.ts --write` (run from `apps/api`; reads `ETM/apps/api/.env.production`, only SELECTs prod). No env line needed: the API derives it from `HFSQL_CONNECTION_STRING` (`HFSQL_POINTAGE_CONNECTION_STRING` overrides).
 2. **HFSQL ODBC driver** — install once via `C:\PC SOFT\WINDEV Suite <year>\Install\ODBC\WX310PACKODBC.exe` (admin required). Without this, the API throws ODBC `IM002` ("Source de données introuvable") on every query and the user picker shows "Impossible de charger la liste".
 3. **`apps/api/.env.development`** with at minimum `PORT=3002`, `AUTH_COOKIE_SECRET=<32-byte hex>`, `HFSQL_CONNECTION_STRING=DRIVER={HFSQL};Server Name=localhost;Server Port=4900;Database=MPS;UID=Admin;PWD=;`, and a `CORS_ORIGIN` **spanning every dev web port** (see below). Gitignored. Gmail send/draft is disabled until `apps/api/secrets/<service-account>.json` exists and `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` points at it.
 4. **Ticket reporting (LIVA issue tracker)** — optional in dev; without it the widget's proxy returns 503 "non configuré". Server-side env only (the key must never reach the client):
