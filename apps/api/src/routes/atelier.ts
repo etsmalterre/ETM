@@ -52,6 +52,7 @@ import {
   type AlerteRegleur,
 } from '../lib/atelier-regleur-trm.js'
 import { arretsParPieceDesOfs } from '../lib/arrets-par-piece-trm.js'
+import { dernierOfParMetier, prochainOfParMetier, finDeOf, DERNIERS_OF_MAX } from '../lib/metier-repos-trm.js'
 
 export const atelierRouter: RouterType = Router()
 
@@ -156,11 +157,19 @@ atelierRouter.get('/bonnetiers', async (req: Request, res: Response) => {
 //
 // The legacy régleur configuration (`Android\gen\Compile`, 2026-05-25) decorates
 // every active tile with a state icon, a stop frequency and a second-choice
-// ratio, plus an alert flag; and its « Inactives » list holds only the métiers
+// ratio, plus an alert flag; and its « Inactifs » list holds only the métiers
 // with NO active OF (the bonnetier build also lists finished-but-still-active
 // ones there). The extras cost bounded queries — two 24 h scans plus one
 // `TOP 100` per (reference, coloris) pair — so they are computed only when the
 // phone asks for them; the bonnetier list stays as cheap as before.
+//
+// ── `inactif` — what an idle métier says about itself (2026-09-15) ──
+//
+// The legacy tile of a métier without an OF is blank. Here it carries the last
+// OF that ran on it (reference, coloris, when it stopped) and the head of its
+// waiting queue, for both roles — the régleur reads the idle list as the
+// machines to set up next. Three bounded reads for the whole list
+// (reposDesMetiers); `null` on a métier that has an OF.
 atelierRouter.get('/machines', async (req: Request, res: Response) => {
   try {
     const wantRegleur = String(req.query.regleur ?? '0') === '1'
@@ -175,17 +184,19 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
     )
     const ofs = await fixEncoding(ofRows, 'ordre_fabrication', 'IDordre_fabrication', ['observations'])
 
+    const byMachine = new Map<number, Record<string, unknown>>()
+    for (const o of ofs) byMachine.set(n(o.IDmachine), o)
+    const idleIds = machines.filter((m) => !byMachine.has(m.id)).map((m) => m.id)
+
     const ofIds = ofs.map((o) => n(o.IDordre_fabrication)).filter((x) => x > 0)
-    const [pieces, refs, coloris] = await Promise.all([
-      selectPiecesForOfs(ofIds),
-      resolveEcruRefs(ofs.map((o) => n(o.IDref_ecru)).filter((x) => x > 0)),
-      resolveColorisEcru(ofs.map((o) => n(o.IDcolori_ecru)).filter((x) => x > 0)),
+    const [pieces, repos] = await Promise.all([selectPiecesForOfs(ofIds), reposDesMetiers(idleIds)])
+    const reposOfs = Array.from(repos.values()).flatMap((r) => [r.dernier, r.prochain]).filter((x) => x !== null)
+    const [refs, coloris] = await Promise.all([
+      resolveEcruRefs([...ofs, ...reposOfs].map((o) => n(o.IDref_ecru)).filter((x) => x > 0)),
+      resolveColorisEcru([...ofs, ...reposOfs].map((o) => n(o.IDcolori_ecru)).filter((x) => x > 0)),
     ])
     const produites = countFinished(pieces)
     const regleur = wantRegleur ? await regleurExtras(ofs) : null
-
-    const byMachine = new Map<number, Record<string, unknown>>()
-    for (const o of ofs) byMachine.set(n(o.IDmachine), o)
 
     const payload = machines.map((m) => {
       const o = byMachine.get(m.id)
@@ -228,6 +239,33 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
                 ...(regleur.get(ofId) ?? { alerte: false, pct_defaut: 0, arrets_piece: { moyenne: null, pieces: 0 }, eligible: false }),
               }
             : null,
+        // Only on a métier with no OF at all; null while one runs.
+        inactif: ofId
+          ? null
+          : (() => {
+              const r = repos.get(m.id)
+              const d = r?.dernier ?? null
+              const p = r?.prochain ?? null
+              return {
+                dernier_of: d
+                  ? {
+                      IDordre_fabrication: n(d.IDordre_fabrication),
+                      reference: refs.get(n(d.IDref_ecru))?.reference ?? '',
+                      coloris: coloris.get(n(d.IDcolori_ecru)) ?? '',
+                      fin_ms: d.fin_ms,
+                    }
+                  : null,
+                prochain_of: p
+                  ? {
+                      IDordre_fabrication: n(p.IDordre_fabrication),
+                      reference: refs.get(n(p.IDref_ecru))?.reference ?? '',
+                      coloris: coloris.get(n(p.IDcolori_ecru)) ?? '',
+                      nb_pieces: n(p.nb_pieces),
+                      finir_fil: n(p.finir_fil) === 1,
+                    }
+                  : null,
+              }
+            })(),
       }
     })
 
@@ -237,6 +275,165 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
     res.json(payload)
   } catch (err) {
     console.error('Error fetching atelier machines:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+interface ReposMetier {
+  /** The last finished OF of the métier, with `fin_ms` resolved (finDeOf). */
+  dernier: (Record<string, unknown> & { fin_ms: number | null }) | null
+  /** The head of the métier's waiting queue. */
+  prochain: Record<string, unknown> | null
+}
+
+/** The idle métiers' last and next OF, in three bounded reads for the whole
+ *  list: one GROUP BY for the highest finished id per métier, one for those
+ *  rows, one for the waiting queue (a handful of rows across the workshop).
+ *  A fourth, rare read fetches the last piece end for a finished OF without
+ *  `arret_prod` (the legacy Android handover stamps none — 1 in 3 163). The
+ *  choices themselves are lib/metier-repos-trm.ts. */
+async function reposDesMetiers(machineIds: number[]): Promise<Map<number, ReposMetier>> {
+  const out = new Map<number, ReposMetier>()
+  const ids = machineIds.filter((x) => x > 0)
+  if (ids.length === 0) return out
+  const inList = ids.join(',')
+
+  const [groupRows, attenteRows] = await Promise.all([
+    query<Record<string, unknown>>(
+      `SELECT IDmachine, MAX(IDordre_fabrication) AS dernier FROM ordre_fabrication
+       WHERE est_termine = 1 AND IDmachine IN (${inList}) GROUP BY IDmachine`,
+    ),
+    query<Record<string, unknown>>(
+      `SELECT IDordre_fabrication, IDmachine, IDref_ecru, IDcolori_ecru, priorite, nb_pieces, finir_fil
+       FROM ordre_fabrication WHERE est_termine = 0 AND est_actif = 0 AND IDmachine IN (${inList})`,
+    ),
+  ])
+  // The GROUP BY already picked the max per métier; dernierOfParMetier() only
+  // re-applies the rule over the rows, so the driver's grouping is not trusted
+  // to be the reader of record.
+  const dernierIds = dernierOfParMetier(
+    groupRows.map((r) => ({ id: n(r.dernier), machineId: n(r.IDmachine) })),
+  )
+  const prochains = prochainOfParMetier(
+    attenteRows.map((r) => ({ id: n(r.IDordre_fabrication), machineId: n(r.IDmachine), priorite: n(r.priorite), row: r })),
+  )
+
+  const dernierRows =
+    dernierIds.size > 0
+      ? await query<Record<string, unknown>>(
+          `SELECT IDordre_fabrication, IDmachine, IDref_ecru, IDcolori_ecru, arret_prod
+           FROM ordre_fabrication WHERE IDordre_fabrication IN (${Array.from(dernierIds.values()).join(',')})`,
+        )
+      : []
+  const sansArret = dernierRows.filter((r) => parseDtMs(r.arret_prod) === null).map((r) => n(r.IDordre_fabrication))
+  const finPieces = await finDernierePiece(sansArret)
+
+  for (const id of ids) {
+    const d = dernierRows.find((r) => n(r.IDmachine) === id) ?? null
+    out.set(id, {
+      dernier: d
+        ? { ...d, fin_ms: finDeOf(parseDtMs(d.arret_prod), finPieces.get(n(d.IDordre_fabrication)) ?? null) }
+        : null,
+      prochain: prochains.get(id)?.row ?? null,
+    })
+  }
+  return out
+}
+
+/** The end of the last finished piece of each OF (the `finDeOf` fallback).
+ *  Empty map for an empty list — the common case. */
+async function finDernierePiece(ofIds: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  if (ofIds.length === 0) return out
+  for (const p of await selectPiecesForOfs(ofIds)) {
+    if (p.finMs === null) continue
+    const cur = out.get(p.ofId)
+    if (cur === undefined || p.finMs > cur) out.set(p.ofId, p.finMs)
+  }
+  return out
+}
+
+// ── GET /api/atelier/machines/:id/derniers-of ─────────────
+//
+// The last DERNIERS_OF_MAX finished OFs knitted on one métier, newest first,
+// for the poste's « Aucun OF en cours » state (2026-09-15). Not a legacy
+// window — FEN_Historique is the per-piece history of ONE OF — but the answer
+// to the question a régleur asks in front of an idle machine: what ran here,
+// when, and how did it go. Read-only; both roles.
+//
+// Per OF: reference, coloris, pieces ordered / finished, total weight visited
+// and the second-choice share of it (Σ stock_ecru.poids, no IDsociete filter —
+// a delivered roll flips to société 1 on the ETM handover and must keep
+// counting, see realiseByOf), start and stop stamps.
+atelierRouter.get('/machines/:id/derniers-of', async (req: Request, res: Response) => {
+  try {
+    const machineId = parseInt(String(req.params.id), 10)
+    if (!Number.isInteger(machineId) || machineId <= 0) {
+      res.status(400).json({ error: 'Invalid id' })
+      return
+    }
+    const machine = (await selectMachines()).find((m) => m.id === machineId && m.archive === 0)
+    if (!machine) {
+      res.status(404).json({ error: 'Machine not found' })
+      return
+    }
+    const ofRows = await query<Record<string, unknown>>(
+      `SELECT TOP ${DERNIERS_OF_MAX} IDordre_fabrication, IDref_ecru, IDcolori_ecru, nb_pieces, finir_fil,
+              demarrage_prod, arret_prod
+       FROM ordre_fabrication WHERE IDmachine = ${machineId} AND est_termine = 1
+       ORDER BY IDordre_fabrication DESC`,
+    )
+    const ofIds = ofRows.map((r) => n(r.IDordre_fabrication)).filter((x) => x > 0)
+    const [pieces, rolls, refs, coloris] = await Promise.all([
+      selectPiecesForOfs(ofIds),
+      ofIds.length > 0
+        ? query<Record<string, unknown>>(
+            `SELECT IDordre_fabrication, poids, second_choix FROM stock_ecru
+             WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
+          )
+        : Promise.resolve([] as Record<string, unknown>[]),
+      resolveEcruRefs(ofRows.map((r) => n(r.IDref_ecru)).filter((x) => x > 0)),
+      resolveColorisEcru(ofRows.map((r) => n(r.IDcolori_ecru)).filter((x) => x > 0)),
+    ])
+    const produites = countFinished(pieces, ofIds)
+    const finPiece = new Map<number, number>()
+    for (const p of pieces) {
+      if (p.finMs === null) continue
+      const cur = finPiece.get(p.ofId)
+      if (cur === undefined || p.finMs > cur) finPiece.set(p.ofId, p.finMs)
+    }
+    const poids = new Map<number, { total: number; second: number }>()
+    for (const r of rolls) {
+      const id = n(r.IDordre_fabrication)
+      const acc = poids.get(id) ?? { total: 0, second: 0 }
+      const kg = Number(r.poids) || 0
+      acc.total += kg
+      if (n(r.second_choix) === 1) acc.second += kg
+      poids.set(id, acc)
+    }
+
+    res.json({
+      IDmachine: machineId,
+      label: machine.emplacement || machine.nom,
+      ofs: ofRows.map((r) => {
+        const id = n(r.IDordre_fabrication)
+        const w = poids.get(id) ?? { total: 0, second: 0 }
+        return {
+          IDordre_fabrication: id,
+          reference: refs.get(n(r.IDref_ecru))?.reference ?? '',
+          coloris: coloris.get(n(r.IDcolori_ecru)) ?? '',
+          nb_pieces: n(r.nb_pieces),
+          finir_fil: n(r.finir_fil) === 1,
+          produites: produites.get(id) ?? 0,
+          poids: round2(w.total),
+          poids_second_choix: round2(w.second),
+          debut_ms: parseDtMs(r.demarrage_prod),
+          fin_ms: finDeOf(parseDtMs(r.arret_prod), finPiece.get(id) ?? null),
+        }
+      }),
+    })
+  } catch (err) {
+    console.error('Error fetching atelier derniers OF:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
