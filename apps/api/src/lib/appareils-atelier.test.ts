@@ -10,6 +10,7 @@ import {
   consommerCode,
   annulerCode,
   listerCodes,
+  codeEnAttente,
   peutEssayer,
   noterEchec,
   oublierEchecs,
@@ -63,6 +64,23 @@ describe('enrolment codes', () => {
     expect(annulerCode(c.code)).toBe(true)
     expect(annulerCode(c.code)).toBe(false)
     expect(consommerCode(c.code)).toBeNull()
+  })
+
+  it('tells whether one is pending: until used, expired or cancelled', () => {
+    const t0 = 2_000_000
+    expect(codeEnAttente(t0)).toBe(false)
+
+    creerCode(input, t0)
+    expect(codeEnAttente(t0 + 1)).toBe(true)
+    expect(codeEnAttente(t0 + CODE_TTL_MS)).toBe(false) // expired
+
+    const d = creerCode(input, t0)
+    consommerCode(d.code, t0 + 1)
+    expect(codeEnAttente(t0 + 2)).toBe(false) // used
+
+    const e = creerCode(input, t0)
+    annulerCode(e.code)
+    expect(codeEnAttente(t0 + 3)).toBe(false) // cancelled
   })
 })
 

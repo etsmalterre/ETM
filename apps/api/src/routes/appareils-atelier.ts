@@ -11,6 +11,7 @@
 //   The phone itself (atelier PWA, no prior identity):
 //     POST   /enroler     { code } → sets the `mps_appareil` cookie
 //     GET    /moi         what this phone is (401 = not enrolled / revoked)
+//     GET    /enrolement-en-attente  { enAttente } — is a code pending?
 //
 // Model and store: lib/appareils-atelier.ts.
 
@@ -27,6 +28,7 @@ import {
   CODE_TTL_MS,
   listerAppareils,
   listerCodes,
+  codeEnAttente,
   creerCode,
   annulerCode,
   consommerCode,
@@ -83,6 +85,14 @@ appareilsAtelierRouter.get('/moi', async (req: Request, res: Response) => {
     console.error('Error in /atelier/appareils/moi:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
+})
+
+// The PWA offers « Enrôler ce téléphone » only while an admin has a code
+// pending (2026-09-15). Public like /enroler, and a boolean only — never the
+// code, its label or its régleur. It tells a guesser WHEN a code exists,
+// nothing more; the brake on /enroler still holds.
+appareilsAtelierRouter.get('/enrolement-en-attente', (_req: Request, res: Response) => {
+  res.json({ enAttente: codeEnAttente() })
 })
 
 const enrolerBody = z.object({ code: z.string().regex(/^\d{6}$/) }).strict()

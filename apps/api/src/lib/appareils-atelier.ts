@@ -218,6 +218,13 @@ export function creerCode(
   return entry
 }
 
+/** Whether an admin has a code pending — the ONE fact about codes a phone
+ *  that is not enrolled may learn (the PWA only offers « Enrôler ce
+ *  téléphone » while there is something to type). Never the code itself. */
+export function codeEnAttente(now = Date.now()): boolean {
+  return listerCodes(now).length > 0
+}
+
 export function annulerCode(code: string): boolean {
   return codes.delete(code)
 }
