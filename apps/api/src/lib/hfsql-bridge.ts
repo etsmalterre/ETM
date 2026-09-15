@@ -102,9 +102,16 @@ function isConnectionLostError(errMsg: string): boolean {
     || errMsg.includes('Bridge process exited')
 }
 
-/** A client with its own bridge process. Nothing is spawned until the first query. */
-export function createBridgeClient(connectionString: string): HfsqlClient {
-  const tag = hfsqlLogTag(connectionString, 'hfsql_bridge')
+/** A client with its own bridge process. Nothing is spawned until the first query.
+ *  A function `connectionString` is read at each spawn, never at construction:
+ *  the default client below is built when this module loads, which — ES imports
+ *  being hoisted — is BEFORE index.ts runs dotenv.config(). Reading the env at
+ *  load time spawned the bridge with an empty string and took every prod DB
+ *  route down with [IM007] (2026-09-15). */
+export function createBridgeClient(connectionString: string | (() => string)): HfsqlClient {
+  const resolveConnectionString = () =>
+    typeof connectionString === 'function' ? connectionString() : connectionString
+  let tag = '[hfsql_bridge]'
 
   let bridge: ChildProcess | null = null
   let rl: Interface | null = null
@@ -119,7 +126,9 @@ export function createBridgeClient(connectionString: string): HfsqlClient {
     if (connected && bridge && !bridge.killed) return
 
     return new Promise((resolve, reject) => {
-      const connStr = driverConnectionString(connectionString)
+      const cs = resolveConnectionString()
+      tag = hfsqlLogTag(cs, 'hfsql_bridge')
+      const connStr = driverConnectionString(cs)
       bridge = spawn(getBridgePath(), [connStr], {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
@@ -397,7 +406,8 @@ export function createBridgeClient(connectionString: string): HfsqlClient {
   return { query, queryRaw, queryB64Text, fixEncoding, closeConnection }
 }
 
-const defaultClient = createBridgeClient(process.env.HFSQL_CONNECTION_STRING || '')
+// Lazy on purpose — see createBridgeClient: this line runs before dotenv.config().
+const defaultClient = createBridgeClient(() => process.env.HFSQL_CONNECTION_STRING || '')
 
 export const query = defaultClient.query
 export const queryB64Text = defaultClient.queryB64Text
