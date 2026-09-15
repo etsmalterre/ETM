@@ -8,10 +8,12 @@
 // atelier-malterre.md §3.2–3.4.
 //
 // One row per phone:
-//   - `IDutilisateur` — the account the phone acts as. Its TRM grants apply
-//     (`saisie_atelier` is what lets it write), exactly as the visitage PC's
-//     poste account does. A régleur's phone is enrolled under his personal
-//     account; a shared bonnetier phone under the atelier station account.
+//   - `IDutilisateur` — the account the phone acts as. Being enrolled is what
+//     lets the phone record production: no separate grant on this account
+//     (the `saisie_atelier` key was removed on 2026-09-15 — an admin issues
+//     every enrolment code, so an enrolled phone is by definition allowed).
+//     A régleur's phone is enrolled under his personal account; a shared
+//     bonnetier phone under the atelier station account.
 //   - `IDbonnetier` — a FIXED identity (a régleur's phone): the app opens as
 //     him, with the régleur screens, no face grid, and the API refuses any
 //     write naming someone else. `null` = a shared phone: the face grid of

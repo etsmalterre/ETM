@@ -41,7 +41,6 @@ import {
 import { pickVal } from '../lib/accented-keys.js'
 import { dureeMinimalePiece, productivitePiece, dureeMinutes } from '../lib/historique-atelier-trm.js'
 import { terminerOf } from '../lib/of-queue-trm.js'
-import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { maxId } from './expeditions.js'
 import { resolveRefFilNames, resolveColoriFilNames } from './of-trm.js'
 import {
@@ -759,15 +758,19 @@ atelierRouter.get('/of/:id/reglage', async (req: Request, res: Response) => {
 // The ERP's own POST writes IDbonnetier = 0 to mark a saisie bureau; here the
 // author is the identified bonnetier, as the legacy terminal writes it.
 
-/** The write gate every régleur/bonnetier write of this file shares. Three
+/** The write gate every régleur/bonnetier write of this file shares. Two
  *  checks, in order, each refusing on its own:
  *   1. the request comes from an ENROLLED PHONE (`req.appareil`, the
  *      `mps_appareil` cookie — lib/appareils-atelier.ts). A plain user cookie
  *      is not enough: `POST /auth/login` accepts any IDutilisateur with no
- *      authentication, so without this a curl could act as anyone;
- *   2. the phone's account holds `saisie_atelier` (granted in Paramètres ›
- *      Utilisateurs, exactly as the visitage PC's poste account);
- *   3. the body names a live bonnetier — and the phone is allowed to speak
+ *      authentication, so without this a curl could act as anyone.
+ *      Being enrolled IS the right to write (Vincent, 2026-09-15): an
+ *      enrolment code is only ever issued by an admin (`requireAdmin`), nobody
+ *      enrols a phone meaning it to be read-only, and revoking the phone is how
+ *      writes are taken away. The `saisie_atelier` grant this gate used to
+ *      require on the phone's account on top of it is gone — do not bring a
+ *      per-account check back without a real read-only use case;
+ *   2. the body names a live bonnetier — and the phone is allowed to speak
  *      for him: a régleur's phone (fixed identity) only for HIMSELF, a shared
  *      phone only for a NON-régleur (a régleur is his own phone, never a face
  *      in the shared grid — the plan's §3.3 rule, enforced here, not only in
@@ -784,11 +787,6 @@ async function gateSaisie(
       error: 'appareil_non_enrole',
       message: 'Ce téléphone n’est pas enrôlé.',
     })
-    return null
-  }
-  const allowed = await trmUserHasPermission(appareil.IDutilisateur, false, 'saisie_atelier')
-  if (!allowed) {
-    res.status(403).json({ error: 'permission denied: saisie_atelier' })
     return null
   }
   const who = (await selectBonnetiers()).find((b) => b.id === IDbonnetier)
@@ -1678,9 +1676,9 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
   try {
     // ── Gate. attachUser() is best-effort and there is no global guard, so
     // every write route in TRM carries its own (CLAUDE.md § Paramètres >
-    // Utilisateurs). Here it is gateSaisie(): an enrolled phone, its account's
-    // `saisie_atelier`, and a bonnetier the phone may speak for — WHO did the
-    // work travels in IDbonnetier, which is the legacy's own model.
+    // Utilisateurs). Here it is gateSaisie(): an enrolled phone (enrolment is
+    // the right to write), and a bonnetier the phone may speak for — WHO did
+    // the work travels in IDbonnetier, which is the legacy's own model.
     const id = parseInt(String(req.params.id), 10)
     if (!Number.isInteger(id) || id <= 0) {
       res.status(400).json({ error: 'Invalid id' })

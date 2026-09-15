@@ -18,7 +18,6 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import {
   requireAdmin,
-  isEffectiveAdmin,
   APPAREIL_COOKIE_NAME,
   COOKIE_MAX_AGE_SECONDS,
   appareilCookieOptions,
@@ -41,7 +40,6 @@ import {
   type AppareilPublic,
 } from '../lib/appareils-atelier.js'
 import { selectBonnetiers } from '../lib/production-trm.js'
-import { trmUserHasPermission } from '../lib/permissions-trm.js'
 
 export const appareilsAtelierRouter: RouterType = Router()
 
@@ -59,18 +57,16 @@ async function bonnetierPublic(id: number | null): Promise<BonnetierPublic | nul
   return { IDbonnetier: b.id, prenom: b.prenom, nom: b.nom, regleur: b.regleur }
 }
 
-/** The phone-facing shape: the row plus its resolved identity and whether its
- *  account can write — so the PWA can say « consultation seule » up front
- *  instead of discovering it on the first « Fin de pièce ». */
-async function moi(req: Request, a: AppareilPublic) {
+/** The phone-facing shape: the row plus its resolved identity. No « can it
+ *  write? » flag any more: an enrolled phone always can (routes/atelier.ts,
+ *  gateSaisie — decision of 2026-09-15). */
+async function moi(a: AppareilPublic) {
   const bonnetier = await bonnetierPublic(a.IDbonnetier)
-  const saisie = await trmUserHasPermission(a.IDutilisateur, isEffectiveAdmin(req), 'saisie_atelier')
   return {
     id: a.id,
     libelle: a.libelle,
     IDutilisateur: a.IDutilisateur,
     bonnetier,
-    saisie,
   }
 }
 
@@ -82,7 +78,7 @@ appareilsAtelierRouter.get('/moi', async (req: Request, res: Response) => {
       res.status(401).json({ error: 'appareil_non_enrole' })
       return
     }
-    res.json(await moi(req, publier(req.appareil)))
+    res.json(await moi(publier(req.appareil)))
   } catch (err) {
     console.error('Error in /atelier/appareils/moi:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -115,7 +111,7 @@ appareilsAtelierRouter.post('/enroler', async (req: Request, res: Response) => {
       ...appareilCookieOptions(),
       maxAge: COOKIE_MAX_AGE_SECONDS * 1000,
     })
-    res.status(201).json(await moi(req, publier(appareil)))
+    res.status(201).json(await moi(publier(appareil)))
   } catch (err) {
     console.error('Error in /atelier/appareils/enroler:', err)
     res.status(500).json({ error: 'Internal server error' })

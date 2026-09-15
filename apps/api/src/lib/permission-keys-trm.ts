@@ -298,13 +298,11 @@ export const TRM_PERMISSION_KEYS = [
       'Affiche l’entrée « TRS » du menu Production et autorise la lecture du tableau de bord d’équipe : timeline et TRS de chaque métier, pièces produites, visitées et déclassées, bonnetiers pointés et leurs heures. Lecture seule ; fermé par défaut.',
     category: 'Production',
   },
-  {
-    key: 'saisie_atelier',
-    label: 'Saisir au poste de l’atelier',
-    description:
-      'Autorise l’enregistrement des actions du bonnetier depuis la PWA Atelier (atelier.intra.etsmalterre.com) : lancement d’un OF, nettoyage, fin de pièce, dernière pièce, fin d’OF, déclaration d’un défaut, interruption et relance, messages sur l’OF, et — pour un régleur — la consigne de l’OF. Ces actions écrivent la production réelle — pièces, événements, défauts et l’activation de l’OF suivant sur le métier. Ce droit s’accorde au compte sous lequel un téléphone est enrôlé (onglet Appareils) : sans lui, le téléphone reste consultable mais rien ne s’enregistre.',
-    category: 'Production',
-  },
+  // `saisie_atelier` (« Saisir au poste de l’atelier ») was removed on
+  // 2026-09-15: enrolling a phone — an admin-only gesture, onglet Appareils —
+  // is itself the right to record from the atelier PWA, and revoking the phone
+  // takes it away (routes/atelier.ts, gateSaisie). Grants of the old key left in
+  // data/permissions-trm.json are inert.
 ] as const
 
 export type TrmPermissionKey = (typeof TRM_PERMISSION_KEYS)[number]['key']
