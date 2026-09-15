@@ -36,6 +36,7 @@ import {
   type AppareilAtelier,
 } from '../lib/appareils-atelier.js'
 import { photoBonnetier, taillePhoto } from '../lib/bonnetier-photo.js'
+import { enrolementContourne } from '../lib/pointage-dev.js'
 import {
   POSTE_OUVERT_MAX_S,
   ACTIONS_POINTAGE,
@@ -66,11 +67,24 @@ export const POINTEUSE_COOKIE_NAME = 'mps_pointeuse'
 
 // ── Who is asking ──
 
+/** Stands in for an enrolled tablet on a local dev setup (lib/pointage-dev.ts). */
+const POINTEUSE_DE_DEV: AppareilAtelier = {
+  id: 0,
+  type: 'pointeuse',
+  secretHash: '',
+  IDutilisateur: 0,
+  IDbonnetier: null,
+  libelle: 'Pointeuse de dev (sans enrôlement)',
+  creeLe: new Date(0).toISOString(),
+  creePar: 0,
+  vuLe: null,
+}
+
 async function pointeuse(req: Request): Promise<AppareilAtelier | null> {
   const raw = (req.cookies as Record<string, string> | undefined)?.[POINTEUSE_COOKIE_NAME]
-  if (!raw) return null
-  const a = await resoudreAppareil(raw)
-  return a && typeAppareil(a) === 'pointeuse' ? a : null
+  const a = raw ? await resoudreAppareil(raw) : null
+  if (a && typeAppareil(a) === 'pointeuse') return a
+  return enrolementContourne() ? POINTEUSE_DE_DEV : null
 }
 
 /** Hours and names are personal data: an enrolled tablet, or an admin. */
