@@ -41,7 +41,7 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
 
 2. **Run the spin-up script** from the ETM main checkout:
    ```bash
-   node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>]
+   node scripts/worktree/up.mjs <feature-name> [ng|trm] --terminal [--api <port>]
    ```
    This fetches origin (in the target repo — TRM is resolved as the sibling checkout
    for `trm`), allocates a free slot, creates the worktree off `origin/master`, installs
@@ -63,9 +63,18 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
    `/serve-main` (master on `:8080`) — the TRM web will 404 its API calls until then.
 
 4. **Report to the user** the project, worktree path, the web URL (`http://localhost:300N`
-   for ng, `http://localhost:517N` for trm), and the slot number. Tell them to **open a new
-   Claude Code session in the worktree directory** to do the screen work there — that
-   session will use `/feature-checkpoint` to sync and `/feature-complete` to land it.
+   for ng, `http://localhost:517N` for trm), the slot number, and which terminal now carries
+   the feature (the script's `wt-slot:` line). That session will use `/feature-checkpoint`
+   to sync and `/feature-complete` to land it.
+
+   **The session opens by itself.** `--terminal` hands the worktree to one of the six
+   Windows Terminal windows of the 2x3 grid whose title is exactly « free »: that window is
+   replaced on the same spot by one titled after the feature, running the context launcher
+   (`yolo-ets` under `C:devetsmalterre`, `yolo-liva` under `C:devliva`) in the
+   worktree. When Claude exits there, the window turns back into a « free » one. The
+   mechanics live in `C:devclaude_configinwt-slot.ps1` (`list` / `claim` / `free` /
+   `layout`). No « free » window (all six busy, or the grid not open) → the script says so
+   and the user opens the session by hand; a « busy » title means someone is typing there.
 
 ## Notes / failure modes
 

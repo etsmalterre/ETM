@@ -1,5 +1,5 @@
 // Create a feature worktree on a free slot and spin up its dev server(s).
-//   node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart]
+//   node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal]
 //
 // --restart reuses an EXISTING worktree + slot instead of creating anything:
 // it kills whatever is still alive, respawns the dev server(s) on the slot's
@@ -55,6 +55,13 @@ const argv = process.argv.slice(2)
 const restartIdx = argv.indexOf('--restart')
 const isRestart = restartIdx !== -1
 if (isRestart) argv.splice(restartIdx, 1)
+// --terminal: hand the worktree to one of the « free » Windows Terminal windows
+// of the 2x3 grid — retitled after the feature, Claude started in the worktree
+// (claude_config/bin/wt-slot.ps1). The skills pass it; a throwaway worktree
+// spun up from inside a session does not want a terminal of its own.
+const terminalIdx = argv.indexOf('--terminal')
+const wantTerminal = terminalIdx !== -1
+if (wantTerminal) argv.splice(terminalIdx, 1)
 const apiIdx = argv.indexOf('--api')
 let apiOverride = null
 if (apiIdx !== -1) {
@@ -68,7 +75,7 @@ if (apiIdx !== -1) {
 const feature = (argv[0] || '').trim()
 const projectKey = (argv[1] || detectDefaultProject()).trim().toLowerCase()
 if (!/^[a-z0-9][a-z0-9-]*$/.test(feature)) {
-  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart]  (feature kebab-case)')
+  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal]  (feature kebab-case)')
   process.exit(1)
 }
 if (projectKey !== 'ng' && projectKey !== 'trm') {
@@ -373,4 +380,25 @@ if (!proj.hasApi && apiForeign) {
 } else if (!proj.hasApi && !apiUp) {
   console.log(`NOTE: the MPS API on :${api} isn't reachable. TRM web will 404 its API`)
   console.log(`      calls until you start it (e.g. /serve-main for the master on :8080).`)
+}
+
+// ── Terminal slot (--terminal) ───────────────────────────────────────────────
+// Last, and never fatal: the servers are up whatever happens to the window.
+if (wantTerminal) {
+  const slotScript = 'C:/dev/claude_config/bin/wt-slot.ps1'
+  if (!fs.existsSync(slotScript)) {
+    console.log(`NOTE: --terminal ignored — ${slotScript} is not on this machine.`)
+  } else {
+    try {
+      const out = execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', slotScript, 'claim', '-Title', feature, '-Dir', wt],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+      process.stdout.write(out)
+    } catch (e) {
+      const msg = (e.stdout || '') + (e.stderr || '')
+      console.log(msg.trim() || `NOTE: wt-slot claim failed (${e.message}) — open the session by hand.`)
+    }
+  }
 }
