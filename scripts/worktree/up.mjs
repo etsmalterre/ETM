@@ -18,7 +18,7 @@
 // trm → web only on 517N (package @mps-trm/web). TRM web has no API of its own;
 //       it targets the slot-0 master ETM API (8080) by default, or the port
 //       given by --api (e.g. an NG worktree's 808N). Requires that API running.
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import {
@@ -26,6 +26,7 @@ import {
   spawnDetached, isPortInUse, DEV_WEB_ORIGINS, git, reapPending, PROJECTS, mainCheckout,
   readRegistry, entryProject, parseSlotKey, pidAlive, killTree, dropPending, isMergedRemoteBranch,
   waitForDbHealth, checkCors, probeApiIdentity, resolveMainApiPort, tailLog, ensureDeps, ensureCorsOrigin,
+  IS_WIN,
 } from './lib.mjs'
 
 // Default project = the repo this script is invoked from (so `up.mjs <feature>`
@@ -405,21 +406,54 @@ if (!proj.hasApi && apiForeign) {
 
 // ── Terminal slot (--terminal) ───────────────────────────────────────────────
 // Last, and never fatal: the servers are up whatever happens to the window.
+//
+// Windows: hand the worktree to a « free » window of the Windows Terminal grid
+// (claude_config/bin/wt-slot.ps1). Linux (Omarchy / Hyprland): there is no grid —
+// open a new terminal on the CURRENT workspace, cwd'd in the worktree, running the
+// same context launcher the grid would (`yolo-ets` under <root>/etsmalterre,
+// `yolo-liva` under <root>/liva — bash functions from claude_config/bin/launchers.sh,
+// sourced by ~/.bashrc, hence `bash -ic`). Hyprland places a new window on the
+// active workspace, so no placement logic is needed. When Claude exits, the shell
+// stays (`exec bash`) so the window is not lost with it. `setsid uwsm-app --` is what
+// omarchy-launch-terminal does: the window must outlive this script and the
+// Claude tool shell that ran it.
 if (wantTerminal) {
-  const slotScript = 'C:/dev/claude_config/bin/wt-slot.ps1'
-  if (!fs.existsSync(slotScript)) {
-    console.log(`NOTE: --terminal ignored — ${slotScript} is not on this machine.`)
+  if (IS_WIN) {
+    const slotScript = 'C:/dev/claude_config/bin/wt-slot.ps1'
+    if (!fs.existsSync(slotScript)) {
+      console.log(`NOTE: --terminal ignored — ${slotScript} is not on this machine.`)
+    } else {
+      try {
+        const out = execFileSync(
+          'powershell.exe',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', slotScript, 'claim', '-Title', feature, '-Dir', wt],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+        )
+        process.stdout.write(out)
+      } catch (e) {
+        const msg = (e.stdout || '') + (e.stderr || '')
+        console.log(msg.trim() || `NOTE: wt-slot claim failed (${e.message}) — open the session by hand.`)
+      }
+    }
   } else {
-    try {
-      const out = execFileSync(
-        'powershell.exe',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', slotScript, 'claim', '-Title', feature, '-Dir', wt],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      )
-      process.stdout.write(out)
-    } catch (e) {
-      const msg = (e.stdout || '') + (e.stderr || '')
-      console.log(msg.trim() || `NOTE: wt-slot claim failed (${e.message}) — open the session by hand.`)
+    const hasCmd = (c) => { try { execFileSync('which', [c], { stdio: 'ignore' }); return true } catch { return false } }
+    const norm = wt.replace(/\\/g, '/')
+    const launcher = /\/etsmalterre\//.test(norm) ? 'yolo-ets'
+      : /\/liva\//.test(norm) ? 'yolo-liva'
+      : 'claude --dangerously-skip-permissions'
+    if (!hasCmd('xdg-terminal-exec')) {
+      console.log(`NOTE: --terminal ignored — xdg-terminal-exec is not on this machine; open a terminal in ${wt} and run \`${launcher}\`.`)
+    } else {
+      const shellCmd = `${launcher}; exec bash`
+      const args = ['--', 'xdg-terminal-exec', `--title=${feature}`, `--dir=${wt}`, '--', 'bash', '-ic', shellCmd]
+      const runner = hasCmd('uwsm-app') ? ['uwsm-app', ...args] : ['xdg-terminal-exec', ...args.slice(2)]
+      try {
+        const child = spawn('setsid', runner, { detached: true, stdio: 'ignore', cwd: wt })
+        child.unref()
+        console.log(`terminal: new « ${feature} » window on the current workspace, running ${launcher} in ${wt}`)
+      } catch (e) {
+        console.log(`NOTE: could not open a terminal (${e.message}) — open one in ${wt} and run \`${launcher}\`.`)
+      }
     }
   }
 }
