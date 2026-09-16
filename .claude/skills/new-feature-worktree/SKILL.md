@@ -69,6 +69,8 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
    for ng, `http://localhost:517N` for trm), the slot number, and which terminal now carries
    the feature (the script's `wt-slot:` line). That session will use `/feature-checkpoint`
    to sync and `/feature-complete` to land it.
+   **End the report with the dev link alone on its last line** (`http://localhost:300N` /
+   `517N`), not inside a bullet or a sentence: the user opens it from there.
 
    **The session opens by itself.** `--terminal` hands the worktree to one of the six
    Windows Terminal windows of the 2x3 grid whose title is exactly « free »: that window is
