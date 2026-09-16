@@ -48,10 +48,27 @@ box (`10.10.20.3`, `/home/debian/hfsql_odbc/`, ~200 MB of `wd310*64.so`).
 
 Symptom before this: `serve-main.mjs` prints `HFSQL : UNREACHABLE — spawn …/hfsql_bridge
 ENOENT` and the API log repeats `[hfsql_bridge] Failed to start` (idle, not a storm).
-⚠️ **There is no HFSQL server on the Linux box**: the dev `MPS` copy lives on the Windows
-workstation's HFSQL Client/Server (`localhost:4900` there), which does not answer on
-`4900` from the LAN. `HFSQL_CONNECTION_STRING` in `.env.development` still has to point at a
-dev copy — never at `mps.malterre` (prod).
+**Local HFSQL Client/Server (same day).** The dev `MPS` copy used to live on the Windows
+workstation; on the Linux box it is a local server built from the prod install:
+
+- Binaries: `/opt/hfsql` copied from the MPS VM (`debian@10.10.20.2:/opt/hfsql`, minus
+  `hfmailer64`, `AI Models`, `backup`), `HFConf.ini` unchanged (`DBRootPATH=/var/lib/hfsql/`,
+  logs under `/var/log/hfsql/{log,stat}`). System user `hfsql`, data root `/var/lib/hfsql`
+  mode 770. Unit `/etc/systemd/system/hfsql.service` = prod's (`Type=notify`,
+  `ExecStart=/opt/hfsql/manta64`, `WorkingDirectory=/opt/hfsql`), enabled; listens on 4900,
+  kept LAN-invisible by ufw's default deny. A first start with an empty root creates
+  `__system` with `Admin` / empty password — the dev connection string as-is.
+- Data: a database is just a folder under the root, and **names are case-insensitive**
+  (`Database=MPS` opens `mps`). `mps` (2.8 GB, 501 files, `_backup` excluded) and
+  `pointage` were streamed live from prod with
+  `ssh … 'sudo tar -C /var/lib/hfsql -cf - --exclude=mps/_backup mps pointage | zstd -3' | zstd -d | sudo tar -C /var/lib/hfsql -x`
+  (~25 min at ~2 MB/s; the prod box has no rsync), then `chown -R hfsql:hfsql`. The
+  journals (`__jnl`, 4.7 GB) were **not** copied and the server did not object. Tables
+  being written during the copy (`stock_ecru`, `evenement_piece`) queried fine afterwards;
+  if one ever reports a corrupt index, re-copy that table's three files.
+- Refresh the copy: stop `hfsql.service`, `rm -rf /var/lib/hfsql/mps`, re-run the stream,
+  start. ⚠️ **It is a prod snapshot** (2026-09-16), the same rule as the March one on
+  Windows: never point `.env.development` at `mps.malterre`.
 
 ## Quick Start
 
