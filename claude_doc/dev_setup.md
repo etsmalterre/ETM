@@ -24,6 +24,35 @@ node -e "import('./scripts/worktree/lib.mjs').then(m => console.log('CORS_ORIGIN
 `up.mjs` (worktrees) and `serve-main.mjs` (main checkout) both rewrite this line on every
 start, so in practice you only hit it if you start a server another way.
 
+## Linux dev machine (Arch / Omarchy) — done 2026-09-16
+
+On Linux the API does not use the `odbc` npm package: `hfsql-auto.ts` spawns the C bridge
+`apps/api/hfsql_bridge`, which needs **iODBC** and the **HFSQL Linux ODBC driver**. Neither
+ships with the repo; the driver is PC SOFT's and the only copy we hold is on the prod API
+box (`10.10.20.3`, `/home/debian/hfsql_odbc/`, ~200 MB of `wd310*64.so`).
+
+1. `sudo pacman -S libiodbc` (headers land in `/usr/include/libiodbc`, not Debian's
+   `/usr/include/iodbc`).
+2. Copy the driver bundle from the prod API box and register it:
+   ```bash
+   scp -r -i ~/.ssh/claude_deploy/claude_deploy -o IdentitiesOnly=yes debian@10.10.20.3:/home/debian/hfsql_odbc /tmp/
+   sudo mkdir -p /opt/hfsql_odbc && sudo cp /tmp/hfsql_odbc/*.so /opt/hfsql_odbc/
+   printf '[HFSQL]\nDescription = HFSQL ODBC Driver\nDriver = /opt/hfsql_odbc/wd310hfo64.so\nSetup = /opt/hfsql_odbc/wd310hfo64.so\n' | sudo tee /etc/odbcinst.ini
+   ```
+3. Compile the bridge (gitignored, per machine):
+   `cd apps/api && gcc -o hfsql_bridge src/hfsql_bridge.c -I/usr/include/libiodbc -liodbc -liodbcinst`
+4. Smoke-check without a server: `./hfsql_bridge "DRIVER={HFSQL};Server Name=localhost;Server Port=4900;Database=MPS;UID=Admin;PWD=;" </dev/null`
+   must answer an HFSQL `[08001] The connection to the <localhost:4900> server failed`
+   (driver loaded); a `[iODBC][Driver Manager] … cannot open shared object file` means
+   `/etc/odbcinst.ini` or the `.so` path is wrong.
+
+Symptom before this: `serve-main.mjs` prints `HFSQL : UNREACHABLE — spawn …/hfsql_bridge
+ENOENT` and the API log repeats `[hfsql_bridge] Failed to start` (idle, not a storm).
+⚠️ **There is no HFSQL server on the Linux box**: the dev `MPS` copy lives on the Windows
+workstation's HFSQL Client/Server (`localhost:4900` there), which does not answer on
+`4900` from the LAN. `HFSQL_CONNECTION_STRING` in `.env.development` still has to point at a
+dev copy — never at `mps.malterre` (prod).
+
 ## Quick Start
 
 ```bash
