@@ -83,3 +83,7 @@ apps/api/*-rollback-*.json
 # Playwright artifacts (baselines in apps/web/e2e/__screenshots__ ARE committed)
 apps/web/test-results/
 apps/web/playwright-report/
+
+# Linux HFSQL bridge binary, compiled per machine from src/hfsql_bridge.c
+# (gcc -o hfsql_bridge src/hfsql_bridge.c -I/usr/include/<iodbc|libiodbc> -liodbc -liodbcinst)
+apps/api/hfsql_bridge
