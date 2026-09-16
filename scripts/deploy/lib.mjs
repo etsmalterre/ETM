@@ -44,14 +44,21 @@ export const ok = (s) => console.log(green('\u2713 ') + s)
 export const step = (s) => console.log('\n' + yellow('\u2192 ') + s)
 
 // ── Transport ──────────────────────────────────────────────────────────────
-// The key lives Windows-side on the laptop (user malte), WSL-side on the factory
-// PC (user vince). Pick by file test, never by a failed probe.
-const WIN_KEY = path.join(os.homedir(), '.ssh', 'claude_deploy', 'claude_deploy')
-export const useWin = fs.existsSync(WIN_KEY)
+// Three transports, picked by platform + file test, never by a failed probe:
+//   Windows laptop (user malte): the key is Windows-side → System32 OpenSSH.
+//   Windows factory PC (user vince): the key is WSL-side → `wsl bash -c "ssh …"`.
+//   Linux workstation (Omarchy, 2026-09-16): the key is at the same ~/.ssh path →
+//   the system ssh/scp directly. Before this branch, the Windows file test matched
+//   the Linux key path and every run tried ssh.exe → "Cannot reach the servers".
+const KEY = path.join(os.homedir(), '.ssh', 'claude_deploy', 'claude_deploy')
+const IS_WIN = process.platform === 'win32'
+export const useWin = IS_WIN && fs.existsSync(KEY)
+export const useNative = !IS_WIN && fs.existsSync(KEY)
 const WIN_SSH = 'C:\\Windows\\System32\\OpenSSH\\ssh.exe'
 const WIN_SCP = 'C:\\Windows\\System32\\OpenSSH\\scp.exe'
-const WIN_OPTS = ['-F', 'none', '-i', WIN_KEY, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+const KEY_OPTS = ['-F', 'none', '-i', KEY, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
   '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new']
+const WIN_OPTS = KEY_OPTS
 const WSL_OPTS = '-i /home/vincent/.ssh/claude_deploy/claude_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no'
 
 // C:\Users\x\… → /mnt/c/Users/x/… (WSL scp can only read /mnt/c paths).
@@ -68,7 +75,9 @@ export function remoteScript(host, script, { quiet = false } = {}) {
   const body = 'set -euo pipefail\n' + script
   const r = useWin
     ? spawnSync(WIN_SSH, [...WIN_OPTS, host, 'bash -s'], { input: body, encoding: 'utf8' })
-    : spawnSync('wsl', ['bash', '-c', `ssh ${WSL_OPTS} ${host} 'bash -s'`], { input: body, encoding: 'utf8' })
+    : useNative
+      ? spawnSync('ssh', [...KEY_OPTS, host, 'bash -s'], { input: body, encoding: 'utf8' })
+      : spawnSync('wsl', ['bash', '-c', `ssh ${WSL_OPTS} ${host} 'bash -s'`], { input: body, encoding: 'utf8' })
   const out = ((r.stdout || '') + (r.stderr || '')).trim()
   if (!quiet && out) console.log(out.split('\n').map((l) => '    ' + l).join('\n'))
   return { code: r.status ?? 1, out }
@@ -81,6 +90,8 @@ export function remote(host, cmd) {
 export function scp(localPath, host, remotePath) {
   if (useWin) {
     sh(WIN_SCP, [...WIN_OPTS.filter((o) => o !== '-F' && o !== 'none'), localPath, `${host}:${remotePath}`])
+  } else if (useNative) {
+    sh('scp', [...KEY_OPTS.filter((o) => o !== '-F' && o !== 'none'), localPath, `${host}:${remotePath}`])
   } else {
     sh('wsl', ['bash', '-c', `scp ${WSL_OPTS} ${winToWsl(localPath)} ${host}:${remotePath}`])
   }

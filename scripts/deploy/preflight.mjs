@@ -34,9 +34,12 @@ const WEB_HOST = 'debian@10.10.20.4'
 const sh = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const git = (repo, args) => { try { return sh('git', ['-C', repo, ...args]) } catch { return '' } }
 
-// Transport: the key lives Windows-side on the laptop, WSL-side on the factory PC.
+// Transport: the key lives Windows-side on the laptop, WSL-side on the factory PC,
+// and at the same ~/.ssh path on the Linux workstation (native ssh) — same rule as
+// deploy/lib.mjs.
 const WIN_KEY = path.join(os.homedir(), '.ssh', 'claude_deploy', 'claude_deploy')
-const useWin = fs.existsSync(WIN_KEY)
+const useWin = process.platform === 'win32' && fs.existsSync(WIN_KEY)
+const useNative = process.platform !== 'win32' && fs.existsSync(WIN_KEY)
 const WOPTS = '-i /home/vincent/.ssh/claude_deploy/claude_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no'
 function remote(host, cmd) {
   try {
@@ -47,6 +50,10 @@ function remote(host, cmd) {
       return sh('C:\\Windows\\System32\\OpenSSH\\ssh.exe',
         ['-F', 'none', '-i', WIN_KEY, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
          '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new', host, cmd])
+    }
+    if (useNative) {
+      return sh('ssh', ['-F', 'none', '-i', WIN_KEY, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+        '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new', host, cmd])
     }
     // Never nest $(…) inside this — it silently yields the fallback branch.
     return sh('wsl', ['bash', '-c', `ssh ${WOPTS} ${host} '${cmd}'`])
