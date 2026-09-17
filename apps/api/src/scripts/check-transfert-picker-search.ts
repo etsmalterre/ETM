@@ -276,6 +276,20 @@ async function main() {
     }
     if (bad > 0) fail(`fini : ${bad} rouleaux hors état Validé ou en donation proposés`)
     else ok(`fini : ${finiPool.length} rouleaux proposés à l'usine, tous Validé et hors donation`)
+
+    // (e) LIVA #1169 — a TRM roll (IDsociete 2, not yet shipped by TRM) sits at
+    // the usine too; the picker must never offer it, at the usine or at a dyer.
+    for (const mag of [0, dyer]) {
+      const pool = await loadAvailableEcru(mag, NONE, true, { destId: mag === 0 ? dyer : 0, showAffectees: true })
+      const eIds = pool.map((r) => r.stock_id)
+      let foreign = 0
+      for (let i = 0; i < eIds.length; i += 200) {
+        const rows = await query<any>(`SELECT COUNT(*) AS n FROM stock_ecru WHERE IDstock_ecru IN (${eIds.slice(i, i + 200).join(',')}) AND IDsociete <> 1`)
+        foreign += Number(rows[0]?.n) || 0
+      }
+      if (foreign > 0) fail(`magasin ${mag} : ${foreign} rouleaux d'une autre société (TRM non expédié) proposés`)
+      else ok(`magasin ${mag} : ${eIds.length} écrus proposés, tous IDsociete = 1`)
+    }
   }
 
   console.log(problems === 0 ? '\n✅ Recherche du picker de transfert conforme' : `\n❌ ${problems} problème(s)`)

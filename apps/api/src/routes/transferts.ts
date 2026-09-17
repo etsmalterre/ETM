@@ -893,8 +893,20 @@ const FINI_FROM =
   `FROM stock_fini sf LEFT JOIN ref_fini rf ON sf.IDref_fini = rf.IDref_fini ` +
   `LEFT JOIN ref_fini_colori rfc ON sf.IDColoris = rfc.IDref_fini_colori ` +
   `LEFT JOIN colori_ecru ce ON sf.IDColoris = ce.IDcolori_ecru `
+// ── Only ETM's own rolls (LIVA #1169) ──────────────────
+//
+// `stock_ecru` is partitioned by IDsociete and TRM's freshly visited rolls
+// sit at IDmagasin 0 too — the same building, the same "usine" — until TRM
+// ships them, which is the moment they flip to IDsociete 1 (the handover in
+// expeditions-trm.ts). Without a company filter the usine picker listed them
+// the minute they came off the machine, and on 2026-09-17 three rolls of OF
+// 3568 (plus 3573/23, never shipped) went to MATEL on bon 4441 before TRM had
+// shipped them — the roll then read « MATEL » on TRM's own avis. Same rule as
+// the ETM stock screen (stock-ecru.ts, `se.IDsociete = 1`): a roll ETM does
+// not own yet is never offered, at any magasin, and never accepted on a bon.
+const ECRU_OWNED = 'se.IDsociete = 1'
 const ecruWhere = (sourceId: number, crit: SearchCriteria) =>
-  `WHERE se.IDmagasin = ${sourceId} AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0) ` +
+  `WHERE se.IDmagasin = ${sourceId} AND ${ECRU_OWNED} AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0) ` +
   `AND NOT EXISTS (SELECT 1 FROM stock_fini sfc WHERE sfc.IDstock_ecru = se.IDstock_ecru)${searchSql(crit, ECRU_SEARCH_COLS)}`
 // Fini: legacy FEN_Gestion_d_un_bon_de_transfert lists only état 3 (Validé)
 // and no donation roll — ported here (#1121, point 4).
@@ -1108,7 +1120,8 @@ transfertsRouter.put('/:kind/:id/pieces', async (req: Request, res: Response) =>
     let validIds: number[] = []
     if (type === 'ecru') {
       const rows = await query<any>(
-        `SELECT IDstock_ecru FROM stock_ecru WHERE IDstock_ecru IN (${inIds}) AND IDmagasin = ${h.IDmagasin_source} AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0)`,
+        // IDsociete = 1: a TRM roll not yet shipped is not ETM's to move (#1169).
+        `SELECT IDstock_ecru FROM stock_ecru WHERE IDstock_ecru IN (${inIds}) AND IDmagasin = ${h.IDmagasin_source} AND IDsociete = 1 AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0)`,
       )
       validIds = rows.map((r: any) => Number(r.IDstock_ecru))
     } else if (type === 'fini') {
