@@ -37,8 +37,9 @@ export interface FacturePdfData {
   numero: string
   /** 1 = Facture, 2 = Avoir. */
   type: number
-  /** When true, render as a proforma (draft): "Facture proforma" title + a
-   *  non-contractual mention. The numero is the proforma sequence number. */
+  /** When true, render as a proforma (draft): "Facture proforma" title + the
+   *  adjustment mention under the totals (LIVA #1164). The numero is the
+   *  proforma sequence number. */
   isProforma?: boolean
   /** "25 mars 2026" — long-form French. */
   dateFacture: string
@@ -191,6 +192,20 @@ const styles = StyleSheet.create({
   },
   grandLabel: { fontSize: sizes.fontLg, color: colors.primary, fontWeight: 900, letterSpacing: 0.6, lineHeight: 1.25 },
   grandValue: { fontSize: sizes.fontLg, color: colors.primary, fontWeight: 900, textAlign: 'right', lineHeight: 1.25 },
+  // Proforma only (LIVA #1164): the amount is provisional — the definitive
+  // invoice follows the metres actually knitted and shipped. Sits right under
+  // the TTC row, same width and right inset as the totals block, so the
+  // reader meets it as a caption of the price and not as small print.
+  proformaNoteWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
+  proformaNote: {
+    width: '45%',
+    paddingLeft: 14,
+    paddingRight: 16,
+    fontSize: 8.5,
+    color: colors.muted,
+    lineHeight: 1.35,
+    textAlign: 'right',
+  },
 
   // ── Bank coordinates card ────────────────────────────
   // Pinned to the bottom of the last page, just above the footer band: the
@@ -230,6 +245,10 @@ function buildClientAddress(data: FacturePdfData): AddressBlockData {
   }
   return { title: 'Client', name: data.clientNom, lines, icon: 'user' }
 }
+
+/** Printed under the totals of a proforma (LIVA #1164). Wording is Isabelle's. */
+export const PROFORMA_NOTE =
+  'Le montant définitif sera ajusté à la livraison selon les métrages réellement produits et livrés.'
 
 export function FacturePdf({ data }: { data: FacturePdfData }) {
   const isAvoir = Number(data.type) === 2
@@ -342,7 +361,10 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
         })}
       </View>
 
-      <View style={styles.totalsWrapper} wrap={false}>
+      {/* One unsplittable block: totals + (proforma) note. The note must never
+          land alone on the next page, orphaned from the price it qualifies. */}
+      <View wrap={false}>
+      <View style={styles.totalsWrapper}>
         <View style={styles.totals}>
           {/* Exonerated client: no VAT, so the block collapses to TOTAL HT.
               The sub-total row is then printed only when a remise or frais de
@@ -380,6 +402,12 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
             <Text style={styles.grandValue}>{`${fmtNum(exonere ? netHT : ttc, 2)} €`}</Text>
           </View>
         </View>
+      </View>
+      {isProforma ? (
+        <View style={styles.proformaNoteWrapper}>
+          <Text style={styles.proformaNote}>{PROFORMA_NOTE}</Text>
+        </View>
+      ) : null}
       </View>
 
       {/* Bank coordinates at the bottom of the last page, just above the

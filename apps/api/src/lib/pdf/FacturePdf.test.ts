@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest'
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
-import { FacturePdf, type FacturePdfData } from './FacturePdf.js'
+import { FacturePdf, PROFORMA_NOTE, type FacturePdfData } from './FacturePdf.js'
 
 function pageCount(pdf: Buffer): number {
   return (pdf.toString('latin1').match(/\/Type\s*\/Page(?![s\w])/g) ?? []).length
@@ -69,4 +69,36 @@ describe('FacturePdf pagination (LIVA #1148)', () => {
     )
     expect(pageCount(buf)).toBe(1)
   }, 30_000)
+})
+
+// LIVA #1164 — the proforma carries an adjustment mention under the totals
+// (the amount follows the metres actually produced and shipped); the
+// definitive invoice and the avoir never do. Asserted on the element tree:
+// the rendered bytes hold glyph indices, not text (claude_doc/pdf_email.md).
+function collectStrings(node: any, out: string[] = []): string[] {
+  if (node == null || typeof node === 'boolean') return out
+  if (typeof node === 'string') { out.push(node); return out }
+  if (Array.isArray(node)) { node.forEach((n) => collectStrings(n, out)); return out }
+  if (typeof node === 'object') {
+    if (typeof node.type === 'function') return collectStrings(node.type(node.props), out)
+    collectStrings(node.props?.children, out)
+  }
+  return out
+}
+
+describe('FacturePdf proforma mention (LIVA #1164)', () => {
+  const lignes = lignes9228().slice(0, 1)
+  it('prints the adjustment mention on the proforma only', () => {
+    const proforma = collectStrings(FacturePdf({ data: { ...base, lignes, isProforma: true } })).join('\n')
+    expect(proforma).toContain(PROFORMA_NOTE)
+    const facture = collectStrings(FacturePdf({ data: { ...base, lignes } })).join('\n')
+    expect(facture).not.toContain(PROFORMA_NOTE)
+    const avoir = collectStrings(FacturePdf({ data: { ...base, lignes, type: 2 } })).join('\n')
+    expect(avoir).not.toContain(PROFORMA_NOTE)
+  })
+  it('keeps the exact wording asked on the ticket', () => {
+    expect(PROFORMA_NOTE).toBe(
+      'Le montant définitif sera ajusté à la livraison selon les métrages réellement produits et livrés.',
+    )
+  })
 })
