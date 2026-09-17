@@ -235,8 +235,10 @@ function buildLivraisonLines(data: DevisEtmPdfData): { name: string; lines: stri
   let name = ''
   if (a) {
     name = a.nom ?? data.clientNom
+    // Three street lines, same as the billing block (LIVA #1163).
     if (a.adresse1) lines.push(a.adresse1)
     if (a.adresse2) lines.push(a.adresse2)
+    if (a.adresse3) lines.push(a.adresse3)
     const cityLine = [a.cp, a.ville].filter(Boolean).join(' ')
     if (cityLine) lines.push(cityLine)
     if (a.pays) lines.push(a.pays)

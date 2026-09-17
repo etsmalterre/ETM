@@ -230,8 +230,12 @@ function buildLivraisonLines(data: CommandeClientPdfData): { name: string; lines
   let name = data.clientNom
   if (a) {
     name = a.nom?.trim() || data.clientNom
+    // All THREE street lines, like the billing block above: the third one
+    // held the street itself on order 3835 (« Attn », « POUR … », then the
+    // street) and the confirmation printed without it (LIVA #1163).
     pushLine(lines, a.adresse1)
     pushLine(lines, a.adresse2)
+    pushLine(lines, a.adresse3)
     pushLine(lines, [a.cp?.trim(), a.ville?.trim()].filter(Boolean).join(' '))
     pushLine(lines, a.pays)
   }

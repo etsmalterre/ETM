@@ -85,7 +85,11 @@ Hard-won footguns from wiring "Page X/Y" + the multi-page stock section (commits
     if (node == null || node === false) return out
     if (typeof node === 'string' || typeof node === 'number') { out.push(String(node)); return out }
     if (Array.isArray(node)) { for (const c of node) pdfStrings(c, out); return out }
-    const el = node as { props?: { children?: unknown } }
+    const el = node as { type?: unknown; props?: { children?: unknown } }
+    // A nested component (AddressCard, MetadataCard…) keeps its text behind
+    // `props.data`, not `children`: invoke function-typed elements to descend
+    // (the fournisseur order's delivery card was invisible without it, #1163).
+    if (typeof el.type === 'function') return pdfStrings((el.type as (p: unknown) => unknown)(el.props), out)
     if (el.props?.children !== undefined) pdfStrings(el.props.children, out)
     return out
   }

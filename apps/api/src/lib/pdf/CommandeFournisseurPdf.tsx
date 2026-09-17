@@ -31,6 +31,8 @@ export interface CommandeFournisseurPdfData {
   adresseLivraison: {
     nom: string | null
     adresse1: string | null
+    adresse2: string | null
+    adresse3: string | null
     cp: string | null
     ville: string | null
     pays: string | null
@@ -286,7 +288,10 @@ function buildLivraisonAddress(data: CommandeFournisseurPdfData): AddressBlockDa
   const a = data.adresseLivraison
   const lines: string[] = []
   if (a) {
+    // Three street lines, same as the addressee block (LIVA #1163).
     if (a.adresse1) lines.push(a.adresse1)
+    if (a.adresse2) lines.push(a.adresse2)
+    if (a.adresse3) lines.push(a.adresse3)
     const cityLine = [a.cp, a.ville].filter(Boolean).join(' ')
     if (cityLine) lines.push(cityLine)
     if (a.pays) lines.push(a.pays)

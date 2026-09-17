@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-17 — feat/adresse
+Fix LIVA #1163 (Clients › Commandes): the confirmation de commande dropped the third street
+line of the delivery address (order 3835 — « Attn », « POUR … », then the street in `adresse3`);
+the livraison builder pushed two lines where the billing block pushed three. The devis had the
+same two-line block, and the sst / fournisseur bons de commande typed their delivery address
+with a single street line although every route hands over the three. All four templates now
+print `adresse1`/`adresse2`/`adresse3`. Regression test `adresse-livraison.test.ts` (real 3835
+address, element-tree walk that invokes nested components such as the shared `AddressCard`).
+Post-mortem in `screen_notes.md` § 3, walker note in `pdf_email.md`.
+
 ## 2026-09-15 — feat/pointage (la tablette pointeuse : seconde base HFSQL + `/api/pointage`)
 **Seconde base HFSQL `pointage`** : `lib/hfsql.ts` / `hfsql-bridge.ts` deviennent des fabriques (`createOdbcClient` / `createBridgeClient`, exports par défaut inchangés), `hfsql-auto` exporte `createHfsqlClient`, `lib/hfsql-pointage.ts` → `pointageDb` (chaîne principale avec `Database=pointage`, surcharge `HFSQL_POINTAGE_CONNECTION_STRING`, aucune ligne d'env en prod). ⚠️ Le client bridge Linux est réécrit en fabrique mais n'a tourné que sous Windows : à surveiller au premier `/etm_deploy`. Base de dev : `scripts/copy-pointage-prod-to-dev.ts --write` (SELECT prod seulement, index créés en dernier, texte cp1252 via `lib/sql-cp1252.ts`, 96 379 lignes vérifiées). **`/api/pointage`** (`routes/pointage.ts`) : enrôlement d'un appareil de type `pointeuse` (store partagé avec les téléphones, cookie propre `mps_pointeuse`, `gateSaisie` d'atelier refuse une pointeuse), `/salaries`, `/en-poste` (= TABLE_Pointage du legacy : lignes ouvertes, cumul des pauses terminées), `/salaries/:id/etat` (boutons calculés par `lib/pointage-etat.ts`, poste > 14 h = « Commencer aujourd'hui », « Semaine N » et « Cumul » = requêtes du legacy), `POST .../pointage` (seul écrivain `lib/pointage-ecritures.ts` : `lst_horaire` → `lst_pointage` retrouvée par `debut` → `mps.pointage` si `id_mps > 0`, verrou, 409 sur écran périmé), `PUT .../hors-prod`. Pas d'enrôlement en dev local (`lib/pointage-dev.ts` : hors production ET base locale). `lib/bonnetier-photo.ts` sorti de prime-trm. Scripts : `check-pointage.ts` (cycle d'écriture sur la copie de dev), `link-salarie-bonnetier.ts` (utilisé sur la PROD : MARIE BOURSIER 46 → bonnetier 30). Worktree : 5178 dans `TRM_PWA_PORTS`, `--app pointage`. Branche TRM appariée `feat/pointage` (`apps/pointage` + carte « Pointeuses »). L'app n'a pas encore d'hôte : déployer l'API est sans risque pour les autres clients (routes ajoutées, gate atelier inchangé pour les téléphones).
 
