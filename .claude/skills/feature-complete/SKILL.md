@@ -249,6 +249,10 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    merge is already done and the slot is freed. The leftover dir is reaped **automatically**
    the next time any worktree skill runs from the main checkout (or `node
    scripts/worktree/reap.mjs` there after you close this session).
+   **Inside Herdr (Linux):** the script also closes the Herdr tabs still living in the
+   worktree — other tabs (panes and agents) at once, and **this tab closes itself 60 s
+   later** so the step-8 report can be read (a Herdr notification says so). Do not
+   start anything new in this session after step 8.
 
 8. **Report.** Confirm: landed on `origin/master` (show `git log --oneline -3 origin/master`
    — that is the proof, not `<MAIN>`'s log), whether `<MAIN>` was fast-forwarded or left
@@ -256,5 +260,6 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    and flag it if the file is over its size budget.
    State whether the worktree dir was removed now or deferred (per the script's
    output). Tell the user to **close this Claude session / terminal** — the work is on `master`,
-   and any deferred dir cleans itself up on the next worktree skill. Shipping is a separate
+   and any deferred dir cleans itself up on the next worktree skill. Inside Herdr say instead
+   that this tab closes itself in about a minute. Shipping is a separate
    `/etm_deploy` (or `/trm_deploy`) from the main checkout.

@@ -10,6 +10,8 @@
 //   later from the main checkout by any worktree skill (see lib.reapPending).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   killTree, killProcessesUnder, pidsUnder, mainCheckout, readRegistry, updateRegistry,
   addPending, reapPending, entryProject,
@@ -108,4 +110,21 @@ if (remove) {
   }
 } else {
   console.log(`Slot ${slotKey} freed. Worktree kept on disk.`)
+}
+
+// Inside Herdr (Linux): close the tabs — panes and agents — still living in the
+// worktree. Other tabs close now; the calling tab (the feature session running
+// /feature-complete) closes itself after a delay so its report can be read.
+// claude_config/bin/herdr-worktree-close.mjs, reached through ~/.claude/hooks
+// (a symlink into the hub). No Herdr, no hub → nothing happens.
+if (remove && process.env.HERDR_ENV === '1') {
+  try {
+    const hooks = fs.realpathSync(path.join(os.homedir(), '.claude', 'hooks'))
+    const helper = path.join(hooks, '..', '..', 'bin', 'herdr-worktree-close.mjs')
+    if (fs.existsSync(helper)) {
+      execFileSync(process.execPath, [helper, entry.worktree, '--feature', entry.branch], { stdio: 'inherit' })
+    }
+  } catch (e) {
+    console.log(`NOTE: Herdr tab cleanup skipped (${e.message}).`)
+  }
 }
