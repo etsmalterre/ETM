@@ -81,7 +81,19 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
    `layout`). No « free » window (all six busy, or the grid not open) → the script says so
    and the user opens the session by hand; a « busy » title means someone is typing there.
 
-   **On Linux (Omarchy / Hyprland) there is no grid.** The same `--terminal` opens a new
+   **On Linux inside Herdr** (`HERDR_ENV=1` in the session) the same `--terminal` opens the
+   worktree as a **new tab of the repo's Herdr space**, named after the feature (one space
+   per repo, one tab per worktree), and runs the launcher in that tab's shell without
+   stealing focus. The script prints `terminal: Herdr tab « <feature> » (wN:tM) in space wN …`.
+   The sidebar's agent row then reads « ETM · <feature> », with the current task and the
+   web URL under it — both reported by the Claude SessionStart / UserPromptSubmit hook
+   (`claude_config/config/hooks/task-line.mjs`), which also names a hand-opened, still
+   numbered tab after its worktree folder. `prefix+u` in any pane of the worktree opens
+   its web app (`claude_config/bin/herdr-open-dev.sh`). A `NOTE: could not open a Herdr
+   tab` means the socket call failed: open a tab (`prefix+c`) in the worktree and run the
+   launcher by hand.
+
+   **On Linux outside Herdr (Omarchy / Hyprland) there is no grid.** The same `--terminal` opens a new
    terminal window on the **current workspace**, titled after the feature, cwd'd in the
    worktree and running the same launcher (`yolo-ets` / `yolo-liva`, the bash functions from
    `claude_config/bin/launchers.sh` that `~/.bashrc` sources — hence `bash -ic`). When Claude

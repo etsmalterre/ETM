@@ -417,11 +417,34 @@ if (!proj.hasApi && apiForeign) {
   console.log(`      calls until you start it (e.g. /serve-main for the master on :8080).`)
 }
 
+// ── Herdr ───────────────────────────────────────────────────────────────────
+// When this script runs inside a Herdr pane (HERDR_ENV=1 is injected into every
+// managed pane), the worktree becomes a TAB of the repo's space, named after the
+// feature — one space per repo (ETM, TRM, MFPROD…), one tab per worktree, so the
+// sidebar's agent row reads « ETM · <feature> ». The dev URL, task line and
+// worktree name on that row come from the Claude SessionStart hook
+// (claude_config/config/hooks/task-line.mjs), not from here. Never fatal.
+const inHerdr = process.env.HERDR_ENV === '1'
+function herdrCall(args) {
+  const out = execFileSync('herdr', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const res = JSON.parse(out)
+  if (res.error) throw new Error(`${res.error.code}: ${res.error.message}`)
+  return res.result
+}
+// The space of the repo this script runs from (the main checkout's pane), or the
+// space currently showing the main checkout when run from elsewhere.
+function herdrRepoWorkspace() {
+  if (process.env.HERDR_WORKSPACE_ID) return process.env.HERDR_WORKSPACE_ID
+  const list = herdrCall(['worktree', 'list', '--cwd', main])
+  return list.source?.source_workspace_id ?? null
+}
+
 // ── Terminal slot (--terminal) ───────────────────────────────────────────────
 // Last, and never fatal: the servers are up whatever happens to the window.
 //
 // Windows: hand the worktree to a « free » window of the Windows Terminal grid
-// (claude_config/bin/wt-slot.ps1). Linux (Omarchy / Hyprland): there is no grid —
+// (claude_config/bin/wt-slot.ps1). Linux inside Herdr: see the Herdr block above.
+// Linux outside Herdr (Omarchy / Hyprland): there is no grid —
 // open a new terminal on the CURRENT workspace, cwd'd in the worktree, running the
 // same context launcher the grid would (`yolo-ets` under <root>/etsmalterre,
 // `yolo-liva` under <root>/liva — bash functions from claude_config/bin/launchers.sh,
@@ -454,7 +477,21 @@ if (wantTerminal) {
     const launcher = /\/etsmalterre\//.test(norm) ? 'yolo-ets'
       : /\/liva\//.test(norm) ? 'yolo-liva'
       : 'claude --dangerously-skip-permissions'
-    if (!hasCmd('xdg-terminal-exec')) {
+    if (inHerdr) {
+      // Tab in the repo's space, cwd'd in the worktree, launcher submitted to its
+      // shell (the pane's interactive bash sources launchers.sh, so the bare
+      // function name is the command). --no-focus: the summary above is being
+      // read in the calling pane; the new tab is one click away.
+      try {
+        const ws = herdrRepoWorkspace()
+        if (!ws) throw new Error('no Herdr space shows the main checkout')
+        const tab = herdrCall(['tab', 'create', '--workspace', ws, '--cwd', wt, '--label', feature, '--no-focus'])
+        herdrCall(['pane', 'run', tab.root_pane.pane_id, launcher])
+        console.log(`terminal: Herdr tab « ${feature} » (${tab.tab.tab_id}) in space ${ws}, running ${launcher} in ${wt}`)
+      } catch (e) {
+        console.log(`NOTE: could not open a Herdr tab for the worktree (${e.message}) — open one (prefix+c) in ${wt} and run \`${launcher}\`.`)
+      }
+    } else if (!hasCmd('xdg-terminal-exec')) {
       console.log(`NOTE: --terminal ignored — xdg-terminal-exec is not on this machine; open a terminal in ${wt} and run \`${launcher}\`.`)
     } else {
       const shellCmd = `${launcher}; exec bash`
