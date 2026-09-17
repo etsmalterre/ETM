@@ -293,6 +293,19 @@ if (isRestart) {
     fs.cpSync(srcSecrets, path.join(wt, 'apps/api/secrets'), { recursive: true })
     console.log('Copied apps/api/secrets/.')
   }
+  // Linux: the API talks to HFSQL through the compiled, gitignored
+  // apps/api/hfsql_bridge (dev_setup.md). A fresh tree has none, so the API
+  // comes up with "HFSQL : UNREACHABLE — spawn …/hfsql_bridge ENOENT". Copy the
+  // main checkout's binary; it is built from the same source.
+  if (!IS_WIN) {
+    const srcBridge = path.join(main, 'apps/api/hfsql_bridge')
+    const dstBridge = path.join(wt, 'apps/api/hfsql_bridge')
+    if (fs.existsSync(srcBridge) && !fs.existsSync(dstBridge)) {
+      fs.copyFileSync(srcBridge, dstBridge)
+      fs.chmodSync(dstBridge, 0o755)
+      console.log('Copied apps/api/hfsql_bridge (Linux ODBC bridge binary).')
+    }
+  }
 } else {
   // TRM: web-only. Point VITE_API_URL at the chosen ETM API and label the tab.
   // The dev:517N scripts don't bake VITE_API_URL, so this .env value wins.
