@@ -10,6 +10,9 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-17 — feat/proforma (mention d'ajustement sous les totaux du proforma, LIVA #1164)
+**Clients › Commandes — facture proforma** : la proforma éditée depuis une commande (`GET /commandes-client/:id/proforma/pdf`) imprime, juste sous la ligne TOTAL TTC et dans la colonne des totaux, « Le montant définitif sera ajusté à la livraison selon les métrages réellement produits et livrés. » (`PROFORMA_NOTE` dans `lib/pdf/FacturePdf.tsx`, rendue seulement quand `isProforma` — jamais sur la facture ni l'avoir). Totaux + mention forment un seul bloc `wrap={false}` pour que la phrase ne parte jamais seule en page suivante ; la géométrie des totaux est inchangée (le test de pagination #1148 passe toujours). Test arbre d'éléments dans `FacturePdf.test.ts` (présence sur la proforma, absence sur facture/avoir, libellé exact). Rendu vérifié sur les deux variantes du script `dump-facture-pdf.ts`. Réponse développeur envoyée sur le ticket.
+
 ## 2026-09-17 — feat/adresse
 Fix LIVA #1163 (Clients › Commandes): the confirmation de commande dropped the third street
 line of the delivery address (order 3835 — « Attn », « POUR … », then the street in `adresse3`);
