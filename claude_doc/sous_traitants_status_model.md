@@ -397,8 +397,10 @@ focus.
 
 On a tricoteur line (`type = 1`) the detail endpoint's `nb_ecru_lies` /
 `total_kg_ecru_lie` are aggregated over `stock_ecru.IDref_commande_source =
-line id` — the écru the knitter has produced FOR the line (stamped at TRM
-visitage, or by « Créer rouleau » for an external knitter) — instead of
+line id` — the écru the knitter has produced FOR the line (stamped when TRM
+**ships** it, `handoverSets()` in `lib/trm-handover.ts` — the visitage writes 0;
+until 2026-09-18 only the legacy « Expédier » stamped it, LIVA #1172 — or by
+« Créer rouleau » for an external knitter) — instead of
 `IDref_commande_affectation`, which is the ennoblisseur-side pointer and
 stays the rule for type 2 / 0 lines. It is the same projection as the
 drawer's Réception tab, so the card and the drawer never disagree.

@@ -50,7 +50,9 @@
 //    the legacy 2026-09-02). Those rows must stay visible on the avis (they are
 //    what was shipped); they come back to TRM only while ETM has not touched
 //    them (releaseShippedPieces). Reads therefore ignore IDsociete; the stamp
-//    requires `IDsociete = 2`.
+//    requires `IDsociete = 2`. On a mirror line the stamp also writes
+//    `IDref_commande_source` = the ETM sst line (lib/trm-handover.ts, #1172);
+//    it NEVER touches IDmagasin — that was the legacy « Expédier », retired.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
@@ -58,6 +60,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { consumedEcruIds } from '../lib/fini-sources.js'
+import { handoverSets, releaseSets } from '../lib/trm-handover.js'
 import { n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -151,8 +154,20 @@ export async function stampShippedPieces(expId: number, leId: number, stockIds: 
     `SELECT IDclient FROM commande_client WHERE IDcommande_client = ${Number(exp[0]?.IDcommande_client) || 0}`,
   )
   const toEtm = Number(cmd[0]?.IDclient) === ETS_MALTERRE_CLIENT_ID
-  const sets = [`IDligne_expedition_TRM = ${leId}`, `lot = 'trm${expId}'`]
-  if (toEtm) sets.push('IDsociete = 1')
+  // The ETM sst line this knitting mirrors (0 on a TRM-native line): the roll
+  // is stamped as knitted FOR it, as the legacy « Expédier » did (#1172,
+  // lib/trm-handover.ts). Two flat PK reads, never a JOIN.
+  const le = await query<{ IDligne_commande_client: number }>(
+    `SELECT IDligne_commande_client FROM ligne_expedition WHERE IDligne_expedition = ${leId}`,
+  )
+  const lccId = Number(le[0]?.IDligne_commande_client) || 0
+  const link = lccId > 0
+    ? await query<{ IDligne_commande_ETM: number | null }>(
+        `SELECT IDligne_commande_ETM FROM ligne_commande_client WHERE IDligne_commande_client = ${lccId}`,
+      )
+    : []
+  const etmLineId = Number(link[0]?.IDligne_commande_ETM) || 0
+  const sets = handoverSets({ expId, leId, toEtm, etmLineId })
   await query(
     `UPDATE stock_ecru SET ${sets.join(', ')} ` +
       `WHERE IDstock_ecru IN (${ids.join(',')}) AND IDsociete = ${SOCIETE_TRM} ` +
@@ -201,7 +216,7 @@ export async function releaseShippedPieces(
   }
   if (blocked.length > 0) return { released: [], blocked }
   await query(
-    `UPDATE stock_ecru SET IDligne_expedition_TRM = 0, lot = '', IDsociete = ${SOCIETE_TRM} ` +
+    `UPDATE stock_ecru SET ${releaseSets().join(', ')} ` +
       `WHERE IDstock_ecru IN (${released.join(',')})`,
   )
   return { released, blocked }

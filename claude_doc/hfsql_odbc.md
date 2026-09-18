@@ -154,3 +154,38 @@ Integer discriminator (`1`=piece_production, `2`=stock_ecru) with the parent id 
 The WinDev pointeuse keeps its data in its own HFSQL database `pointage`, same server and credentials as `mps`. The API reaches it through **`lib/hfsql-pointage.ts` → `pointageDb`** (same interface as `hfsql-auto`: `query`, `queryRaw`, `queryB64Text`, `fixEncoding`, `closeConnection`), built by `createHfsqlClient(cs)` — `lib/hfsql.ts` and `lib/hfsql-bridge.ts` are factories (`createOdbcClient` / `createBridgeClient`) whose module-level exports are the default `mps` client, so the ~275 existing importers are untouched. Connection string: `HFSQL_POINTAGE_CONNECTION_STRING` if set, else `HFSQL_CONNECTION_STRING` with `Database=pointage` (so prod needs no new env line). On Linux each client has its own bridge process; log lines carry the database (`[hfsql:pointage]`). Dev: `node --import tsx src/scripts/copy-pointage-prod-to-dev.ts --write` from `apps/api` (dry run without `--write`, `--replace` to rebuild; prod only SELECTed; every row verified identical from a fresh connection).
 
 **Connection**: `DRIVER={HFSQL};Server Name=localhost;Server Port=4900;Database=MPS;UID=Admin;PWD=;`
+
+### Reading the HFSQL journal — who wrote a row, from where (2026-09-18, LIVA #1172)
+
+Journaling is on for the `mps` database on `10.10.20.2` (`/var/lib/hfsql/__jnl/`).
+Two layers, both HFSQL files:
+
+- **`__jnl/jnl_users`, `jnl_operation`, `jnl_files`** — readable over ODBC with the
+  prod connection string and `Database=__jnl` (`createBridgeClient()`). `jnl_users`
+  maps `User_ID` → `Login`, `WorkStation_Name`, `IPAddress64`, `Application`
+  (`MPS.exe ( MPS )` = the legacy, `hfsql_bridge (  )` = the MPS API on 10.10.20.3,
+  `app_process32 ( BONNETIER )` = a terminal). ⚠️ `jnl_operation` only lists the four
+  atelier tables (`message_of`, `bonnetier`, `utilisateur`, `evenement_machine`) —
+  "no MPS.exe operation since X" read there proves nothing about `stock_ecru`.
+- **`__jnl/mps/<table>jnl.{fic,ndx,mmo}`** — the per-file journals (`stock_ecrujnl`,
+  `ligne_expeditionjnl`, `commande_clientjnl`… 19 tables, ~4.7 GB): one row per
+  operation with `User_ID`, `Server_Time` (**UTC**), `WLFunction_Id` (0 = add,
+  5/16 = modify pair: before / after), and **the full row image**. A subfolder is not
+  an HFSQL database name (`Database=__jnl/mps` is refused), so copy the three files
+  (`ssh … sudo cat`) into a folder under the DEV server's `DBRootPATH`
+  (`/var/lib/hfsql/<probe>/`, `chown hfsql:`) and query them there with
+  `Database=<probe>`; delete the folder afterwards. Never create the folder on the
+  prod server.
+
+Fingerprint without the journal: **`expedition.est_valide = 1` was written by the
+legacy** — every API INSERT writes 0 and nothing in the API ever sets it — and so was
+a non-zero `stock_ecru.IDref_commande_source` before 2026-09-18.
+
+Case: #1172. The `stock_ecrujnl` rows of 3568/7 showed User 84 (`PC-PIERROT`,
+`MPS.exe`) at 07:15:54 UTC on 17/09 turning `IDmagasin` 9 → 0 together with the
+handover stamp, between the API's transfer (09:22 local, 14/09) and re-transfer
+(09:31 local, 17/09). One `SELECT` on the copied journal replaced a day of guessing.
+The `hfsql_bridge` user id also revealed a **dev machine writing to prod** over
+Tailscale (User 85, 48 rows at 16:40 on 18/09) — check `HFSQL_CONNECTION_STRING` of
+every running dev API before trusting a "prod" anomaly.
+
