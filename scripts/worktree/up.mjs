@@ -427,6 +427,7 @@ if (!proj.hasApi && apiForeign) {
 const inHerdr = process.env.HERDR_ENV === '1'
 function herdrCall(args) {
   const out = execFileSync('herdr', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  if (!out.trim()) return {}   // `pane run` answers with nothing on success (was a spurious "Unexpected end of JSON input" NOTE)
   const res = JSON.parse(out)
   if (res.error) throw new Error(`${res.error.code}: ${res.error.message}`)
   return res.result
