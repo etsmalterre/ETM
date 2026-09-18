@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
+import { pickVal } from '../lib/accented-keys.js'
 import {
   DemandeEtudeColorisPdf,
   type DemandeEtudeColorisPdfData,
@@ -64,13 +65,15 @@ const IS_WINDOWS = process.platform === 'win32'
 // a query: SELECT * (or only ASCII columns), drop the `invalidé` predicate, and
 // prune invalidated rows in JS via the surfaced (truncated) key.
 function isActiveEnvoi(r: Record<string, unknown>): boolean {
-  return Number((r as any).invalid ?? (r as any)['invalidé'] ?? 0) === 0
+  return Number(pickVal(r, /^invalid/i) ?? 0) === 0 // prefix: `invalid` + garbage byte on Linux (#1177)
 }
 
 // Read the `archivé` column off a row regardless of the platform-specific
 // column-name shape (Linux returns it truncated to `archiv`).
 function isArchive(row: Record<string, unknown>): boolean {
-  const v = row.archivé ?? row.archiv ?? 0
+  // Prefix match: the Linux bridge returns `archiv` + a garbage byte, so an
+  // exact `row.archiv` never matched and every row read as active (#1177).
+  const v = pickVal(row, /^archiv/i) ?? 0
   return Number(v) === 1
 }
 

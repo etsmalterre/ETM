@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { pickVal } from '../lib/accented-keys.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
@@ -21,7 +22,9 @@ const IS_WINDOWS = process.platform === 'win32'
 
 /** ref_fini.archivé is accented — on Linux SELECT * returns a mangled key. */
 function isArchive(row: Record<string, unknown>): boolean {
-  const v = row.archivé ?? row.archiv ?? 0
+  // Prefix match: the Linux bridge returns `archiv` + a garbage byte, so an
+  // exact `row.archiv` never matched and every row read as active (#1177).
+  const v = pickVal(row, /^archiv/i) ?? 0
   return Number(v) === 1
 }
 

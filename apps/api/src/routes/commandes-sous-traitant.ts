@@ -41,6 +41,7 @@ import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { formatCompositionLabel, type CompositionEcruRow } from '../lib/composition-label.js'
 import { resolveSstAdresses } from '../lib/sst-adresses.js'
+import { pickVal } from '../lib/accented-keys.js'
 import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
@@ -3085,7 +3086,9 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
          AND soumettre = 1`,
     )
     const dcActive = (dcRows as any[]).filter(
-      (r) => Number(r.archiv ?? r['archivé'] ?? 0) === 0,
+      // `archivé` is accent-mangled on the Linux bridge (`archiv?`): read by
+      // prefix, never by an exact fallback list (#1090 / #1177).
+      (r) => Number(pickVal(r, /^archiv/i) ?? 0) === 0,
     )
     const dcFixed = await fixEncoding(dcActive as any[], 'designation_client', 'IDdesignation_client', ['designation'])
     for (const r of dcFixed as any[]) {
@@ -3103,7 +3106,7 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
         `SELECT * FROM ref_client_colori WHERE IDdesignation_client IN (${dcIds.join(',')})`,
       )
       for (const r of rccRows as any[]) {
-        if (Number(r.archiv ?? r['archivé'] ?? 0) !== 0) continue
+        if (Number(pickVal(r, /^archiv/i) ?? 0) !== 0) continue
         const dc = dcById.get(n(r.IDdesignation_client))
         if (!dc) continue
         // dye refs link via IDref_fini_colori, wash refs via IDcolori_ecru —

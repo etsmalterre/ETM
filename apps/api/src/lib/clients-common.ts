@@ -57,11 +57,24 @@ export const strOf = (v: unknown): string | null => {
   return String(v)
 }
 
-/** Read a value off a row by trying several candidate keys (covers the
- *  platform-specific accented-name truncation: `archivé` vs `archiv`). */
+/** Read a value off a row by candidate keys — exact names first, then by
+ *  case-insensitive PREFIX. The accented column of a `SELECT *` (`archivé`,
+ *  `caché`, `fil_non_facturé`) comes back verbatim on Windows but TRUNCATED
+ *  at the accent with a garbage trailing byte on the Linux bridge (`archiv?`,
+ *  `archivt`, …), so an exact fallback list never matches it in production
+ *  and every archived row read as active (LIVA #1177: 17 archived « LF043 -
+ *  coloris » designations listed on Simone Perele — the #1090 footgun, see
+ *  `lib/accented-keys.ts`). Pass the ASCII stem (`'archiv'`) as the last
+ *  candidate; it is the one the prefix pass needs. */
 export function pick(r: Record<string, unknown>, ...keys: string[]): unknown {
   for (const k of keys) {
     if (k in r && r[k] != null) return r[k]
+  }
+  const rowKeys = Object.keys(r)
+  for (const k of keys) {
+    const stem = k.toLowerCase()
+    const hit = rowKeys.find((rk) => rk.toLowerCase().startsWith(stem) && r[rk] != null)
+    if (hit !== undefined) return r[hit]
   }
   return undefined
 }
