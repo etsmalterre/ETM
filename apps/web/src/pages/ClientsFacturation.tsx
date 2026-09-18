@@ -28,6 +28,8 @@ import {
   FileDown,
   Package,
   CalendarDays,
+  MailCheck,
+  Undo2,
 } from 'lucide-react'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -125,6 +127,8 @@ interface FactureDetail {
   total_ht: number
   total_tva: number
   total_ttc: number
+  /** Same rule as the list row's flag (definitive only, proformas always 1). */
+  est_envoye: number
 }
 
 interface GenerateSummary {
@@ -223,6 +227,9 @@ export function ClientsFacturation() {
   // "Non envoyé" red filter pill (definitive bucket only) — mirrors the
   // Sous-traitants › Commandes urgency pills.
   const [nonEnvoyeOn, setNonEnvoyeOn] = useState(false)
+  // « Marquer comme envoyée » — a definitive facture mailed outside the app
+  // (LIVA #1174): writes a marker row in envoi_email so the red frame clears.
+  const [markEnvoyeeOpen, setMarkEnvoyeeOpen] = useState(false)
 
   // Edit-mode header draft.
   const [editDate, setEditDate] = useState('')
@@ -507,6 +514,7 @@ export function ClientsFacturation() {
             onDelete={() => setDeleteConfirmOpen(true)}
             onPrintClick={() => { if (selectedId !== null) window.open(`${API_URL}/factures/${bucket}/${selectedId}/pdf`, '_blank') }}
             onEmailClick={() => setEmailModalOpen(true)}
+            onMarkEnvoyeeClick={() => setMarkEnvoyeeOpen(true)}
             onConvertClick={() => setConvertConfirmOpen(true)}
             onAvoirClick={() => setAvoirConfirmOpen(true)}
             canEdit={canEditFactures}
@@ -645,6 +653,16 @@ export function ClientsFacturation() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {selectedId !== null && bucket === 'def' && (
+        <MarquerEnvoyeeDialog
+          open={markEnvoyeeOpen}
+          onClose={() => setMarkEnvoyeeOpen(false)}
+          factureId={selectedId}
+          numero={detail?.numero ?? selectedId}
+          clientNom={detail?.client_nom ?? ''}
+        />
+      )}
 
       {selectedId !== null && (
         <SendEmailDialog
@@ -1256,7 +1274,7 @@ function FactureList({
 function DetailHeader({
   facture, isLoading, isEditing, editable,
   onStartEdit, onCancelEdit, onSave, isSaving,
-  onDelete, onPrintClick, onEmailClick, onConvertClick, onAvoirClick,
+  onDelete, onPrintClick, onEmailClick, onMarkEnvoyeeClick, onConvertClick, onAvoirClick,
   canEdit,
 }: {
   facture: FactureDetail | null
@@ -1270,6 +1288,7 @@ function DetailHeader({
   onDelete: () => void
   onPrintClick: () => void
   onEmailClick: () => void
+  onMarkEnvoyeeClick: () => void
   onConvertClick: () => void
   onAvoirClick: () => void
   canEdit: boolean
@@ -1341,6 +1360,14 @@ function DetailHeader({
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmailClick}>
                   <AtSign className="h-4 w-4" />
                 </Button>
+                {/* Marquer comme envoyée — a red (never emailed from here)
+                    definitive facture that went out another way (LIVA #1174).
+                    Same permission as the other ledger writes. */}
+                {facture?.kind === 'def' && !facture.est_envoye && canEdit && (
+                  <Button variant="outline" size="icon" className="h-9 w-9" title="Marquer comme envoyée (envoi hors application)" onClick={onMarkEnvoyeeClick}>
+                    <MailCheck className="h-4 w-4" />
+                  </Button>
+                )}
                 {/* Convert proforma → definitive — edit_factures permission */}
                 {editable && canEdit && (
                   <Button variant="outline" size="sm" onClick={onConvertClick} title="Convertir le proforma en facture définitive">
@@ -1974,12 +2001,32 @@ function AdressePickerDialog({
 
 // ── Sidebar Tab: Historique ────────────────────────────
 
-interface HistoriqueEvent { kind: 'email'; type_label: string; recipients: string[]; DATE: string }
+interface HistoriqueEvent {
+  kind: 'email' | 'manuel'
+  type_label: string
+  recipients: string[]
+  DATE: string
+  /** `manuel` only — who marked it and why (LIVA #1174). */
+  auteur?: string
+  motif?: string
+}
 
 function HistoriqueTab({ kind, factureId }: { kind: Kind; factureId: number }) {
+  const queryClient = useQueryClient()
+  const canEdit = useHasPermission('edit_factures')
   const { data, isLoading, error } = useQuery<HistoriqueEvent[]>({
     queryKey: ['facture-historique', kind, factureId],
     queryFn: () => apiFetch(`/factures/${kind}/${factureId}/historique`),
+  })
+  // Undo a manual « marquée envoyée » — the facture goes back to red unless a
+  // real send was logged since. Trivially redoable, so no confirm (§33.5).
+  const unmarkMut = useMutation({
+    mutationFn: () => apiFetch(`/factures/${kind}/${factureId}/marquer-envoyee`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['facture-historique', kind, factureId] })
+      queryClient.invalidateQueries({ queryKey: ['facture', kind, factureId] })
+      queryClient.invalidateQueries({ queryKey: ['factures'] })
+    },
   })
   if (isLoading) return <div className="flex items-center justify-center py-6"><Loader2 className="h-4 w-4 animate-spin text-accent" /></div>
   if (error) return <div className="flex items-center gap-1.5 py-3 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" /><span>Erreur de chargement</span></div>
@@ -1995,22 +2042,123 @@ function HistoriqueTab({ kind, factureId }: { kind: Kind; factureId: number }) {
   return (
     <div className="space-y-2">
       {data.map((ev, i) => (
-        <div key={i} className="p-3 rounded-lg border bg-card shadow-sm">
+        <div key={i} className="group p-3 rounded-lg border bg-card shadow-sm">
           <div className="flex items-center gap-2">
-            <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-accent/10"><AtSign className="h-3.5 w-3.5 text-accent" /></div>
+            <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-accent/10">
+              {ev.kind === 'manuel' ? <MailCheck className="h-3.5 w-3.5 text-accent" /> : <AtSign className="h-3.5 w-3.5 text-accent" />}
+            </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium truncate">{ev.type_label}</p>
               <p className="text-[11px] text-muted-foreground">{ev.DATE ? formatDateTime(ev.DATE) : ''}</p>
             </div>
+            {ev.kind === 'manuel' && canEdit && (
+              <Button
+                variant="ghost" size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                title="Annuler le marquage — la facture redevient « non envoyée »"
+                disabled={unmarkMut.isPending}
+                onClick={() => unmarkMut.mutate()}
+              >
+                {unmarkMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5 mr-1" />}
+                Annuler
+              </Button>
+            )}
           </div>
           {ev.recipients.length > 0 && (
             <p className="text-[11px] text-muted-foreground mt-1.5 ml-9 truncate" title={ev.recipients.join(', ')}>
               À : {ev.recipients.join(', ')}
             </p>
           )}
+          {ev.kind === 'manuel' && (
+            <p className="text-[11px] text-muted-foreground mt-1.5 ml-9 whitespace-pre-line">
+              {ev.auteur ? `Par ${ev.auteur}` : ''}{ev.auteur && ev.motif ? ' · ' : ''}{ev.motif ? <span className="italic">{ev.motif}</span> : null}
+            </p>
+          )}
         </div>
       ))}
     </div>
+  )
+}
+
+// ── Marquer comme envoyée (LIVA #1174) ─────────────────
+
+/** Small §18.A form: the reason the facture was NOT emailed from here (customs
+ *  data added by hand, grouped send from Gmail…). The API writes one marker
+ *  row in envoi_email; the list's red frame and the « non envoyé » pill clear
+ *  on the next refetch, and the Historique tab shows who marked it and why. */
+function MarquerEnvoyeeDialog({ open, onClose, factureId, numero, clientNom }: {
+  open: boolean
+  onClose: () => void
+  factureId: number
+  numero: number
+  clientNom: string
+}) {
+  const queryClient = useQueryClient()
+  const [motif, setMotif] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) { setMotif(''); setError(null) }
+  }, [open])
+
+  const markMut = useMutation({
+    mutationFn: () => apiFetch(`/factures/def/${factureId}/marquer-envoyee`, {
+      method: 'POST',
+      body: JSON.stringify({ motif: motif.trim() }),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['facture-historique', 'def', factureId] })
+      queryClient.invalidateQueries({ queryKey: ['facture', 'def', factureId] })
+      queryClient.invalidateQueries({ queryKey: ['factures'] })
+      onClose()
+    },
+    onError: (e: Error) => setError(e.message || 'Erreur lors du marquage'),
+  })
+
+  const canSubmit = motif.trim().length > 0 && !markMut.isPending
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-md" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <MailCheck className="h-5 w-5 text-accent" />
+            Marquer comme envoyée
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            La facture <span className="font-medium text-foreground">N° {numero}</span>
+            {clientNom ? <> · <span className="font-medium text-foreground">{clientNom}</span></> : null} n'a pas été envoyée depuis l'application
+            (envoi manuel, groupé, ou complété à la main). Elle ne sera plus signalée comme « non envoyée ».
+          </p>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Motif</label>
+            <textarea
+              rows={3}
+              value={motif}
+              onChange={(e) => setMotif(e.target.value)}
+              maxLength={200}
+              autoFocus
+              placeholder="Ex. : envoyée par mail groupé avec la 9231 · PDF complété pour la douane"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+            />
+          </div>
+          {error && (
+            <div className="flex items-center gap-2 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 flex-shrink-0" /><span>{error}</span>
+            </div>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose} disabled={markMut.isPending}>Annuler</Button>
+          <Button onClick={() => markMut.mutate()} disabled={!canSubmit}>
+            {markMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <MailCheck className="h-3.5 w-3.5 mr-1.5" />}
+            Marquer comme envoyée
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

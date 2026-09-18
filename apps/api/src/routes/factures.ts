@@ -73,6 +73,7 @@ import { requirePermission, ETM_PERMISSIONS, TRM_PERMISSIONS, type PermissionSco
 import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
 import { loadDiversItems, resolveDiversPrix, type DiversItem } from './expeditions.js'
 import { groupFormelle, type FormelleCandidate, type FormelleCommande } from '../lib/facturation-groupes.js'
+import { MANUAL_MARK_PREFIX, buildManualMarkNotes, parseManualMarkNotes } from '../lib/envoi-manuel.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -127,6 +128,21 @@ async function requireEditFactures(scope: FacturesScope, req: Request, res: Resp
 // type_doc 19 = "facture definitve" (sic — validated invoice). Used for the
 // envoi_email audit log when a facture/avoir is emailed.
 const TYPE_DOC_FACTURE = 19
+
+/** "Envoyé" flag — definitive only: at least one envoi_email row logged for
+ *  the facture (IDreference = IDfacture, shared with the legacy app's own send
+ *  log — a real send, the July 2026 backfill marker, or a manual « marquée
+ *  envoyée » row, see lib/envoi-manuel.ts). Proformas never log (id-space
+ *  collision — see file header), so the prov bucket reports everything as
+ *  sent. Returns the subset of `ids` that reads as sent. */
+async function loadEnvoyeIds(kind: Kind, ids: number[]): Promise<Set<number>> {
+  if (kind !== 'def' || ids.length === 0) return new Set<number>()
+  const rows = await query<{ IDreference: number }>(
+    `SELECT DISTINCT IDreference FROM envoi_email
+     WHERE IDtype_doc = ${TYPE_DOC_FACTURE} AND IDreference IN (${ids.join(',')})`,
+  )
+  return new Set(rows.map((r) => Number(r.IDreference)))
+}
 
 // ── Proforma / définitive table model ────────────────────
 
@@ -842,18 +858,7 @@ router.get('/', async (req: Request, res: Response) => {
       resolveClientNames(clientIds),
       loadTvaMap(),
       lineTotals(kind, ids),
-      // "Envoyé" flag — definitive only: at least one envoi_email row logged
-      // for this facture (IDreference = IDfacture, shared with the legacy
-      // app's own send log). Proformas never log (id-space collision — see
-      // file header), so the prov bucket reports everything as sent.
-      (async () => {
-        if (kind !== 'def' || ids.length === 0) return new Set<number>()
-        const rows = await query<{ IDreference: number }>(
-          `SELECT DISTINCT IDreference FROM envoi_email
-           WHERE IDtype_doc = ${TYPE_DOC_FACTURE} AND IDreference IN (${ids.join(',')})`,
-        )
-        return new Set(rows.map((r) => Number(r.IDreference)))
-      })(),
+      loadEnvoyeIds(kind, ids),
     ])
 
     const result = factures.map((f: any) => {
@@ -969,7 +974,7 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
     if (Number(h.IDsociete) !== scope.societe) { res.status(404).json(NOT_FOUND); return }
     const IDclient = Number(h.IDclient) || 0
 
-    const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, codeComptable] = await Promise.all([
+    const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, codeComptable, envoyeIds] = await Promise.all([
       resolveClientNames([IDclient]),
       loadAdresse(Number(h.IDadresse) || 0),
       loadFactureLines(kind, id),
@@ -977,6 +982,7 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
       loadModePaiementLabel(Number(h.IDmode_paiement) || 0),
       loadEcheanceRule(Number(h.IDecheance) || 0),
       loadCodeComptableLabel(Number(h.IDcode_comptable) || 0),
+      loadEnvoyeIds(kind, [id]),
     ])
 
     const tva = tvaMap.get(Number(h.IDtva)) ?? { valeur: 0, libelle: '' }
@@ -1010,6 +1016,9 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
       total_ht: totalHt,
       total_tva: tvaAmount,
       total_ttc: round2(totalHt + tvaAmount),
+      // Same rule as the list (see loadEnvoyeIds) — the header's « Marquer
+      // comme envoyée » button hangs off it.
+      est_envoye: kind === 'def' ? (envoyeIds.has(id) ? 1 : 0) : 1,
     })
   } catch (err) {
     console.error('Error fetching facture detail:', err)
@@ -2171,27 +2180,56 @@ router.get('/:kind/:id/email-defaults', async (req: Request, res: Response) => {
   }
 })
 
-async function logEnvoiEmails(idReference: number, recipients: string[], societe: string): Promise<void> {
-  if (recipients.length === 0) return
+/** One envoi_email row for a definitive facture. The accented columns
+ *  (`société`, `invalidé`) can only be named on the Windows driver — the Linux
+ *  bridge rejects accented identifiers — so they are left to their defaults
+ *  there (CLAUDE.md § Accents and encoding). */
+async function insertEnvoiEmailRow(idReference: number, adresse: string, societe: string, notes: string): Promise<void> {
   const ts = nowHfsqlDatetime()
+  if (IS_WINDOWS) {
+    await query(
+      `INSERT INTO envoi_email (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
+       VALUES ('${ts}', ${sqlText(adresse)}, ${sqlText(societe || '')}, ${idReference}, 0, ${sqlText(notes)}, ${TYPE_DOC_FACTURE})`,
+    )
+  } else {
+    await query(
+      `INSERT INTO envoi_email (DATE, adresse, IDreference, notes, IDtype_doc)
+       VALUES ('${ts}', ${sqlText(adresse)}, ${idReference}, ${sqlText(notes)}, ${TYPE_DOC_FACTURE})`,
+    )
+  }
+}
+
+async function logEnvoiEmails(idReference: number, recipients: string[], societe: string): Promise<void> {
   for (const raw of recipients) {
     const addr = String(raw).trim()
     if (!addr) continue
     try {
-      if (IS_WINDOWS) {
-        await query(
-          `INSERT INTO envoi_email (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
-           VALUES ('${ts}', ${sqlText(addr)}, ${sqlText(societe || '')}, ${idReference}, 0, '', ${TYPE_DOC_FACTURE})`,
-        )
-      } else {
-        await query(
-          `INSERT INTO envoi_email (DATE, adresse, IDreference, notes, IDtype_doc)
-           VALUES ('${ts}', ${sqlText(addr)}, ${idReference}, '', ${TYPE_DOC_FACTURE})`,
-        )
-      }
+      await insertEnvoiEmailRow(idReference, addr, societe, '')
     } catch (e) {
       console.error(`envoi_email log failed (facture/${idReference}/${addr}):`, (e as Error).message)
     }
+  }
+}
+
+/** « Prénom Nom » of the acting user, '' when unknown. */
+async function loadUserDisplayName(userId: number): Promise<string> {
+  const userRows = await query<{ prenom: string | null; nom: string | null }>(
+    `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${userId}`,
+  )
+  const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
+  const u = (fixedUser[0] as any) ?? null
+  return u ? [u.prenom, u.nom].filter((s: string | null) => s && s.trim()).map((s: string) => s.trim()).join(' ') : ''
+}
+
+/** Client name stamped in `envoi_email.société` next to a facture's log row —
+ *  informational, never blocks the write. */
+async function loadFactureSocieteLabel(id: number): Promise<string> {
+  try {
+    const cr = await query<{ IDclient: number }>(`SELECT IDclient FROM facture WHERE IDfacture = ${id}`)
+    const names = await resolveClientNames([Number(cr[0]?.IDclient) || 0])
+    return names.get(Number(cr[0]?.IDclient) || 0) ?? ''
+  } catch {
+    return ''
   }
 }
 
@@ -2220,12 +2258,7 @@ router.post('/:kind/:id/email', async (req: Request, res: Response) => {
         })
         return
       }
-      const userRows = await query<{ prenom: string | null; nom: string | null }>(
-        `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${req.userId}`,
-      )
-      const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
-      const u = (fixedUser[0] as any) ?? null
-      const displayName = u ? [u.prenom, u.nom].filter((s: string | null) => s && s.trim()).map((s: string) => s.trim()).join(' ') : ''
+      const displayName = await loadUserDisplayName(req.userId)
       const fromName = displayName ? `${displayName} — ${scope.brand}` : scope.brand
 
       const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
@@ -2251,13 +2284,7 @@ router.post('/:kind/:id/email', async (req: Request, res: Response) => {
     // with a definitive facture's history (see file header note).
     if (kind === 'def') {
       const allRecipients = [...parsed.data.to, ...(parsed.data.cc ?? [])]
-      let societe = ''
-      try {
-        const cr = await query<{ IDclient: number }>(`SELECT IDclient FROM facture WHERE IDfacture = ${id}`)
-        const names = await resolveClientNames([Number(cr[0]?.IDclient) || 0])
-        societe = names.get(Number(cr[0]?.IDclient) || 0) ?? ''
-      } catch { /* informational */ }
-      await logEnvoiEmails(id, allRecipients, societe)
+      await logEnvoiEmails(id, allRecipients, await loadFactureSocieteLabel(id))
     }
 
     res.json({ ok: true, messageId })
@@ -2265,6 +2292,64 @@ router.post('/:kind/:id/email', async (req: Request, res: Response) => {
     console.error('Error sending facture email:', err)
     const message = err instanceof Error ? err.message : 'Internal server error'
     res.status(500).json({ error: 'send_failed', message })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  MARQUER COMME ENVOYÉE  (LIVA #1174 — sent outside the app)
+// ════════════════════════════════════════════════════════
+
+const marquerEnvoyeeBody = z.object({
+  motif: z.string().trim().min(1).max(200),
+})
+
+/** POST /def/:id/marquer-envoyee — one marker row in envoi_email (no address,
+ *  `notes` = prefix | author | reason) so the facture leaves the red « non
+ *  envoyée » state when it was mailed by hand: customs data added to the PDF,
+ *  several invoices grouped in one Gmail thread… Definitive only — proformas
+ *  never log (see file header). Same permission as every other write on the
+ *  ledger; the author is the acting user. */
+router.post('/:kind/:id/marquer-envoyee', async (req: Request, res: Response) => {
+  try {
+    const kind = parseKind(req.params.kind)
+    if (kind !== 'def') { res.status(404).json({ error: 'Not found' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await requireEditFactures(scope, req, res))) return
+    if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
+    const parsed = marquerEnvoyeeBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+
+    const auteur = await loadUserDisplayName(req.userId as number)
+    const notes = buildManualMarkNotes(auteur || `utilisateur ${req.userId}`, parsed.data.motif)
+    await insertEnvoiEmailRow(id, '', await loadFactureSocieteLabel(id), notes)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error marking facture as sent:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** DELETE /def/:id/marquer-envoyee — removes the manual marker row(s). A real
+ *  send logged in the meantime keeps the facture green on its own. */
+router.delete('/:kind/:id/marquer-envoyee', async (req: Request, res: Response) => {
+  try {
+    const kind = parseKind(req.params.kind)
+    if (kind !== 'def') { res.status(404).json({ error: 'Not found' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await requireEditFactures(scope, req, res))) return
+    if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
+    // The prefix is pure ASCII by construction (lib/envoi-manuel.ts), so the
+    // pattern goes through the bridge as a plain quoted literal.
+    await query(
+      `DELETE FROM envoi_email
+       WHERE IDreference = ${id} AND IDtype_doc = ${TYPE_DOC_FACTURE} AND notes LIKE '${MANUAL_MARK_PREFIX}%'`,
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error unmarking facture as sent:', err)
+    res.status(500).json({ error: 'Internal server error' })
   }
 })
 
@@ -2282,20 +2367,31 @@ router.get('/:kind/:id/historique', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (!(await inScope(scope, kind, id))) { res.status(404).json(NOT_FOUND); return }
-    const rows = await query<{ adresse: string | null; DATE: string | null }>(
-      `SELECT adresse, DATE FROM envoi_email WHERE IDreference = ${id} AND IDtype_doc = ${TYPE_DOC_FACTURE}`,
+    const raw = await query<{ IDenvoi_email: number; adresse: string | null; DATE: string | null; notes: string | null }>(
+      `SELECT IDenvoi_email, adresse, DATE, notes FROM envoi_email WHERE IDreference = ${id} AND IDtype_doc = ${TYPE_DOC_FACTURE}`,
     )
+    // The manual marker's author / reason are user-typed text (accents).
+    const rows = await fixEncoding(raw, 'envoi_email', 'IDenvoi_email', ['notes'])
+    type Event =
+      | { kind: 'email'; type_label: string; recipients: string[]; DATE: string }
+      | { kind: 'manuel'; type_label: string; recipients: string[]; DATE: string; auteur: string; motif: string }
     const byDate = new Map<string, { DATE: string; recipients: string[] }>()
+    const manual: Event[] = []
     for (const r of rows as any[]) {
       const dt = (r.DATE ?? '').toString()
+      const mark = parseManualMarkNotes(r.notes)
+      if (mark) {
+        manual.push({ kind: 'manuel', type_label: 'Envoyée hors application', recipients: [], DATE: dt, auteur: mark.auteur, motif: mark.motif })
+        continue
+      }
       const acc = byDate.get(dt) ?? { DATE: dt, recipients: [] as string[] }
       const addr = (r.adresse ?? '').toString().trim()
       if (addr) acc.recipients.push(addr)
       byDate.set(dt, acc)
     }
-    const events = Array.from(byDate.values())
+    const sends: Event[] = Array.from(byDate.values())
       .map((e) => ({ kind: 'email' as const, type_label: 'Document envoyé', recipients: e.recipients, DATE: e.DATE }))
-      .sort((a, b) => (a.DATE < b.DATE ? 1 : -1))
+    const events = sends.concat(manual).sort((a, b) => (a.DATE < b.DATE ? 1 : -1))
     res.json(events)
   } catch (err) {
     console.error('Error fetching facture historique:', err)
