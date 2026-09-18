@@ -185,6 +185,15 @@ async function loadCommandeIdForLine(lineId: number): Promise<number | null> {
   return Number(rows[0].IDcommande_client) || null
 }
 
+/** A piece attached to a donation has left stock (#1154) — reserving it to a
+ *  client line would only re-create the invisible gauge inflation of LIVA
+ *  #1173. The pools already hide donated pieces; this catches a stale tab. */
+function refuseIfDonated(res: Response, IDcommande_donation: unknown): boolean {
+  if ((Number(IDcommande_donation) || 0) <= 0) return false
+  res.status(409).json({ error: 'piece_donnee', message: 'Cette pièce est attachée à une commande de donation : elle ne peut plus être affectée à une commande client.' })
+  return true
+}
+
 function refuseIfSoldee(res: Response, est_soldee: number | null): boolean {
   if (est_soldee === 1) {
     res.status(409).json({
@@ -1205,13 +1214,21 @@ async function lineReservationAggregates(
     // (IDstock_ecru back-pointer) is represented by that fini roll — counting
     // its écru form too double-counted the gauge (commande 3643 showed
     // 4 404,8 / 1 635,0 Ml). Same NOT EXISTS as the available-écru pools.
+    // A donated piece has left stock (#1154) and is hidden by every tab of
+    // the screen — it must not feed the gauge either (LIVA #1173: 1448/17,
+    // 10 kg in donation 2071 yet reserved to the Thuasne line, added 29,8 Ml
+    // nobody could find). The legacy windows still write the two FKs
+    // independently, so the filter stays even after the data repair.
     query<{ IDstock_ecru: number; IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition_ETM: number | null }>(
       `SELECT se.IDstock_ecru, se.IDligne_commande_client, se.metrage, se.poids, se.IDligne_expedition_ETM
        FROM stock_ecru se WHERE se.IDligne_commande_client IN (${inList})
+         AND (se.IDcommande_donation IS NULL OR se.IDcommande_donation = 0)
          AND NOT EXISTS (SELECT 1 FROM stock_fini sfx WHERE sfx.IDstock_ecru = se.IDstock_ecru)`,
     ),
     query<{ IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition: number | null; IDetat_stock_fini: number | null }>(
-      `SELECT IDligne_commande_client, metrage, poids, IDligne_expedition, IDetat_stock_fini FROM stock_fini WHERE IDligne_commande_client IN (${inList})`,
+      `SELECT IDligne_commande_client, metrage, poids, IDligne_expedition, IDetat_stock_fini FROM stock_fini
+       WHERE IDligne_commande_client IN (${inList})
+         AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)`,
     ),
     query<{ IDligne_commande_client: number; poids_affecte: number | null }>(
       `SELECT IDligne_commande_client, poids_affecte FROM affectation_cmd_tricotage WHERE IDligne_commande_client IN (${inList})`,
@@ -2595,12 +2612,13 @@ commandesClientRouter.put('/:id/lignes/:ligneId/pieces/ecru/:stockId', async (re
     const ctx = await loadClientLineContext(commandeId, ligneId)
     if (!ctx || ctx.kind !== 'ecru') { res.status(404).json({ error: 'Écru line not found' }); return }
     if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
-    const rollRows = await query<{ IDref_ecru: number; IDcolori_ecru: number | null; IDligne_commande_client: number | null }>(
-      `SELECT IDref_ecru, IDcolori_ecru, IDligne_commande_client FROM stock_ecru WHERE IDstock_ecru = ${stockId}`,
+    const rollRows = await query<{ IDref_ecru: number; IDcolori_ecru: number | null; IDligne_commande_client: number | null; IDcommande_donation: number | null }>(
+      `SELECT IDref_ecru, IDcolori_ecru, IDligne_commande_client, IDcommande_donation FROM stock_ecru WHERE IDstock_ecru = ${stockId}`,
     )
     if (rollRows.length === 0) { res.status(404).json({ error: 'Stock ecru not found' }); return }
     if (Number(rollRows[0].IDref_ecru) !== ctx.refId) { res.status(400).json({ error: 'Roll ref does not match the line' }); return }
     if (ctx.coloriId > 0 && Number(rollRows[0].IDcolori_ecru) !== ctx.coloriId) { res.status(400).json({ error: 'Roll coloris does not match the line' }); return }
+    if (refuseIfDonated(res, rollRows[0].IDcommande_donation)) return
     const current = Number(rollRows[0].IDligne_commande_client) || 0
     if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
     await query(`UPDATE stock_ecru SET IDligne_commande_client = ${ligneId} WHERE IDstock_ecru = ${stockId}`)
@@ -2645,12 +2663,13 @@ commandesClientRouter.put('/:id/lignes/:ligneId/pieces/fini/:stockId', async (re
     const ctx = await loadClientLineContext(commandeId, ligneId)
     if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
     if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
-    const rollRows = await query<{ IDref_fini: number; IDColoris: number | null; IDligne_commande_client: number | null; IDetat_stock_fini: number | null }>(
-      `SELECT IDref_fini, IDColoris, IDligne_commande_client, IDetat_stock_fini FROM stock_fini WHERE IDstock_fini = ${stockId}`,
+    const rollRows = await query<{ IDref_fini: number; IDColoris: number | null; IDligne_commande_client: number | null; IDetat_stock_fini: number | null; IDcommande_donation: number | null }>(
+      `SELECT IDref_fini, IDColoris, IDligne_commande_client, IDetat_stock_fini, IDcommande_donation FROM stock_fini WHERE IDstock_fini = ${stockId}`,
     )
     if (rollRows.length === 0) { res.status(404).json({ error: 'Stock fini not found' }); return }
     if (Number(rollRows[0].IDref_fini) !== ctx.refId) { res.status(400).json({ error: 'Roll ref does not match the line' }); return }
     if (ctx.coloriId > 0 && Number(rollRows[0].IDColoris) !== ctx.coloriId) { res.status(400).json({ error: 'Roll coloris does not match the line' }); return }
+    if (refuseIfDonated(res, rollRows[0].IDcommande_donation)) return
     const current = Number(rollRows[0].IDligne_commande_client) || 0
     if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
     await query(`UPDATE stock_fini SET IDligne_commande_client = ${ligneId} WHERE IDstock_fini = ${stockId}`)
@@ -2714,7 +2733,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/pieces/:kind/affecter', async (
     const colCol = kindParam === 'ecru' ? 'IDcolori_ecru' : 'IDColoris'
     const idList = stockIds.join(',')
     const rows = await query<Record<string, unknown>>(
-      `SELECT ${pk}, ${refCol}, ${colCol}, IDligne_commande_client FROM ${table} WHERE ${pk} IN (${idList})`,
+      `SELECT ${pk}, ${refCol}, ${colCol}, IDligne_commande_client, IDcommande_donation FROM ${table} WHERE ${pk} IN (${idList})`,
     )
     const byId = new Map(rows.map((r) => [Number(r[pk]), r]))
     for (const sid of stockIds) {
@@ -2722,6 +2741,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/pieces/:kind/affecter', async (
       if (!r) { res.status(404).json({ error: `Stock ${kindParam} ${sid} not found` }); return }
       if (Number(r[refCol]) !== ctx.refId) { res.status(400).json({ error: `Roll ${sid}: ref does not match the line` }); return }
       if (ctx.coloriId > 0 && Number(r[colCol]) !== ctx.coloriId) { res.status(400).json({ error: `Roll ${sid}: coloris does not match the line` }); return }
+      if (refuseIfDonated(res, r.IDcommande_donation)) return
       const current = Number(r.IDligne_commande_client) || 0
       if (current !== 0 && current !== ligneId) { res.status(409).json({ error: `Roll ${sid} already reserved to another line` }); return }
     }
@@ -2881,11 +2901,12 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/ennoblissement/:sstLineId
     const ctx = await loadClientLineContext(commandeId, ligneId)
     if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
     if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
-    const rollRows = await query<{ IDref_commande_affectation: number | null; IDligne_commande_client: number | null }>(
-      `SELECT IDref_commande_affectation, IDligne_commande_client FROM stock_ecru WHERE IDstock_ecru = ${stockId}`,
+    const rollRows = await query<{ IDref_commande_affectation: number | null; IDligne_commande_client: number | null; IDcommande_donation: number | null }>(
+      `SELECT IDref_commande_affectation, IDligne_commande_client, IDcommande_donation FROM stock_ecru WHERE IDstock_ecru = ${stockId}`,
     )
     if (rollRows.length === 0) { res.status(404).json({ error: 'Stock ecru not found' }); return }
     if (Number(rollRows[0].IDref_commande_affectation) !== sstLineId) { res.status(400).json({ error: 'Roll does not belong to this ennoblisseur order' }); return }
+    if (refuseIfDonated(res, rollRows[0].IDcommande_donation)) return
     const current = Number(rollRows[0].IDligne_commande_client) || 0
     if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
     await query(`UPDATE stock_ecru SET IDligne_commande_client = ${ligneId} WHERE IDstock_ecru = ${stockId}`)

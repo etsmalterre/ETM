@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DONATION_LINKED_CLIENT_WHERE,
   ETAT_FINI_EXPEDIE,
   ETAT_FINI_VALIDE,
   DONATION_FINI_STRANDED_WHERE,
   attachDonationSql,
   detachDonationSql,
   planDonationSet,
+  repairDonationClientLinkSql,
   repairStrandedDonationSql,
 } from './donation-pieces.js'
 
@@ -30,7 +32,7 @@ describe('attachDonationSql — fini', () => {
     const sql = attachDonationSql('fini', 7174, [40983, 46324])
     expect(sql).toHaveLength(1)
     expect(sql[0]).toBe(
-      `UPDATE stock_fini SET IDcommande_donation = 7174, IDetat_stock_fini = ${ETAT_FINI_EXPEDIE} WHERE IDstock_fini IN (40983,46324)`,
+      `UPDATE stock_fini SET IDcommande_donation = 7174, IDetat_stock_fini = ${ETAT_FINI_EXPEDIE}, IDligne_commande_client = 0 WHERE IDstock_fini IN (40983,46324)`,
     )
   })
   it('never writes IDligne_expedition — a donation has no avis', () => {
@@ -47,7 +49,7 @@ describe('attachDonationSql — fini', () => {
 describe('attachDonationSql — écru', () => {
   it('writes the FK only: écru has no état, the TM stock filters on IDcommande_donation', () => {
     const sql = attachDonationSql('ecru', 7174, [43528])
-    expect(sql).toEqual(['UPDATE stock_ecru SET IDcommande_donation = 7174 WHERE IDstock_ecru IN (43528)'])
+    expect(sql).toEqual(['UPDATE stock_ecru SET IDcommande_donation = 7174, IDligne_commande_client = 0 WHERE IDstock_ecru IN (43528)'])
     expect(sql[0]).not.toMatch(/IDetat_stock_fini/)
   })
 })
@@ -94,9 +96,11 @@ describe('detachDonationSql — écru', () => {
 })
 
 describe('attach → detach round trip', () => {
-  it('leaves a fini roll exactly as it was (état 3, no donation)', () => {
+  it('leaves a fini roll back in stock (état 3, no donation) — the client reservation released on attach stays released', () => {
     // Simulate the three writes on one row.
-    const row = { IDcommande_donation: 0, IDetat_stock_fini: ETAT_FINI_VALIDE }
+    // The roll starts reserved to a client line (a legacy-written reservation,
+    // #1173): attach must release it, detach must not resurrect it.
+    const row = { IDcommande_donation: 0, IDetat_stock_fini: ETAT_FINI_VALIDE, IDligne_commande_client: 12945 }
     const apply = (sql: string) => {
       const set = /SET (.+?) WHERE (.+)$/.exec(sql)!
       const where = set[2]
@@ -110,9 +114,9 @@ describe('attach → detach round trip', () => {
       }
     }
     for (const s of attachDonationSql('fini', 7174, [40983])) apply(s)
-    expect(row).toEqual({ IDcommande_donation: 7174, IDetat_stock_fini: ETAT_FINI_EXPEDIE })
+    expect(row).toEqual({ IDcommande_donation: 7174, IDetat_stock_fini: ETAT_FINI_EXPEDIE, IDligne_commande_client: 0 })
     for (const s of detachDonationSql('fini', 7174, [40983])) apply(s)
-    expect(row).toEqual({ IDcommande_donation: 0, IDetat_stock_fini: ETAT_FINI_VALIDE })
+    expect(row).toEqual({ IDcommande_donation: 0, IDetat_stock_fini: ETAT_FINI_VALIDE, IDligne_commande_client: 0 })
   })
 })
 
@@ -123,6 +127,32 @@ describe('repair of rolls attached before the fix', () => {
     )
     expect(repairStrandedDonationSql()).toBe(
       `UPDATE stock_fini SET IDetat_stock_fini = ${ETAT_FINI_EXPEDIE} WHERE ${DONATION_FINI_STRANDED_WHERE}`,
+    )
+  })
+})
+
+// LIVA #1173 — piece 1448/17 (10 kg écru, donation 2071) still reserved to
+// the Thuasne line of commande 3795: 10 × 2.97767 = 29,8 Ml on a gauge whose
+// tabs listed 162,8. A donated piece never keeps a client reservation.
+describe('donation releases the client-line reservation (#1173)', () => {
+  it('attach clears IDligne_commande_client in the same UPDATE, both catalogs', () => {
+    for (const kind of ['ecru', 'fini'] as const) {
+      const [sql] = attachDonationSql(kind, 3962, [19770])
+      expect(sql).toMatch(/SET IDcommande_donation = 3962, .*IDligne_commande_client = 0 WHERE/)
+    }
+  })
+  it('detach never touches the client line (the original reservation is gone for good)', () => {
+    for (const s of [...detachDonationSql('ecru', 3962, [19770]), ...detachDonationSql('fini', 3962), ...detachDonationSql('ecru', 3962)]) {
+      expect(s).not.toMatch(/IDligne_commande_client/)
+    }
+  })
+  it('repair targets donated pieces holding a client reservation, per catalog', () => {
+    expect(DONATION_LINKED_CLIENT_WHERE).toBe('IDcommande_donation > 0 AND IDligne_commande_client > 0')
+    expect(repairDonationClientLinkSql('ecru')).toBe(
+      'UPDATE stock_ecru SET IDligne_commande_client = 0 WHERE IDcommande_donation > 0 AND IDligne_commande_client > 0',
+    )
+    expect(repairDonationClientLinkSql('fini')).toBe(
+      'UPDATE stock_fini SET IDligne_commande_client = 0 WHERE IDcommande_donation > 0 AND IDligne_commande_client > 0',
     )
   })
 })

@@ -66,15 +66,22 @@ export function planDonationSet(
 }
 
 /** Statements that attach `ids` to `commandeId`. Fini rolls leave stock
- *  (état 4) in the same UPDATE as the FK. Empty when nothing to do. */
+ *  (état 4) in the same UPDATE as the FK. Empty when nothing to do.
+ *
+ *  The same UPDATE releases any client-line reservation (LIVA #1173): a piece
+ *  given away can never be delivered to a client, and a reservation left on
+ *  it keeps inflating that line's « Affecté » gauge (10 kg × rendement =
+ *  29,8 Ml on commande 3795) while every stock reader hides the piece. The
+ *  NG picker refuses reserved pieces anyway; this covers a reservation the
+ *  legacy WinDev windows wrote without looking at the other column. */
 export function attachDonationSql(kind: DonationKind, commandeId: number, ids: readonly number[]): string[] {
   const clean = cleanIds(ids)
   const id = Number(commandeId)
   if (clean.length === 0 || !Number.isInteger(id) || id <= 0) return []
   const { table, pk } = TABLE[kind]
   const sets = kind === 'fini'
-    ? `IDcommande_donation = ${id}, IDetat_stock_fini = ${ETAT_FINI_EXPEDIE}`
-    : `IDcommande_donation = ${id}`
+    ? `IDcommande_donation = ${id}, IDetat_stock_fini = ${ETAT_FINI_EXPEDIE}, IDligne_commande_client = 0`
+    : `IDcommande_donation = ${id}, IDligne_commande_client = 0`
   return [`UPDATE ${table} SET ${sets} WHERE ${pk} IN (${clean.join(',')})`]
 }
 
@@ -108,4 +115,17 @@ export const DONATION_FINI_STRANDED_WHERE =
 
 export function repairStrandedDonationSql(): string {
   return `UPDATE stock_fini SET IDetat_stock_fini = ${ETAT_FINI_EXPEDIE} WHERE ${DONATION_FINI_STRANDED_WHERE}`
+}
+
+/** A donated piece still reserved to a client line — the two FKs are
+ *  independent columns, nothing in HFSQL ties them, and the legacy windows
+ *  write each one alone (LIVA #1173: 24 écru pieces on the dev copy, all in
+ *  donation 2071, five of them on live 2026 orders). Same fragment for both
+ *  catalogs; shared with the gauge's exclusion and the check script. */
+export const DONATION_LINKED_CLIENT_WHERE = 'IDcommande_donation > 0 AND IDligne_commande_client > 0'
+
+/** Release the client-line reservation on every donated piece of `kind`. */
+export function repairDonationClientLinkSql(kind: DonationKind): string {
+  const { table } = TABLE[kind]
+  return `UPDATE ${table} SET IDligne_commande_client = 0 WHERE ${DONATION_LINKED_CLIENT_WHERE}`
 }
