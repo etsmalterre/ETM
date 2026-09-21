@@ -443,19 +443,46 @@ function herdrRepoWorkspace() {
 // ── Terminal slot (--terminal) ───────────────────────────────────────────────
 // Last, and never fatal: the servers are up whatever happens to the window.
 //
-// Windows: hand the worktree to a « free » window of the Windows Terminal grid
-// (claude_config/bin/wt-slot.ps1). Linux inside Herdr: see the Herdr block above.
+// Inside Herdr (any platform, HERDR_ENV=1 — see the Herdr block above): the
+// worktree becomes a TAB of the repo's space, named after the feature, and the
+// context launcher runs in its shell, so a new « <repo> · <feature> » agent row
+// appears in the sidebar at once. Since 2026-09-21 this is the Windows path too:
+// the Windows Terminal grid (claude_config/bin/wt-slot.ps1) is only the fallback
+// OUTSIDE Herdr, and its « no window titled free » answer was the whole result
+// of a /new-feature-worktree run from a Herdr pane.
 // Linux outside Herdr (Omarchy / Hyprland): there is no grid —
 // open a new terminal on the CURRENT workspace, cwd'd in the worktree, running the
-// same context launcher the grid would (`yolo-ets` under <root>/etsmalterre,
-// `yolo-liva` under <root>/liva — bash functions from claude_config/bin/launchers.sh,
-// sourced by ~/.bashrc, hence `bash -ic`). Hyprland places a new window on the
-// active workspace, so no placement logic is needed. When Claude exits, the shell
-// stays (`exec bash`) so the window is not lost with it. `setsid uwsm-app --` is what
-// omarchy-launch-terminal does: the window must outlive this script and the
-// Claude tool shell that ran it.
+// same context launcher (`yolo-ets` under <root>/etsmalterre, `yolo-liva` under
+// <root>/liva — bash functions from claude_config/bin/launchers.sh, sourced by
+// ~/.bashrc, hence `bash -ic`; on Windows the .ps1 twins of the same names).
+// Hyprland places a new window on the active workspace, so no placement logic is
+// needed. When Claude exits, the shell stays (`exec bash`) so the window is not
+// lost with it. `setsid uwsm-app --` is what omarchy-launch-terminal does: the
+// window must outlive this script and the Claude tool shell that ran it.
 if (wantTerminal) {
-  if (IS_WIN) {
+  const hasCmd = (c) => { try { execFileSync(IS_WIN ? 'where' : 'which', [c], { stdio: 'ignore' }); return true } catch { return false } }
+  const norm = wt.replace(/\\/g, '/')
+  const launcherName = /\/etsmalterre\//.test(norm) ? 'yolo-ets' : /\/liva\//.test(norm) ? 'yolo-liva' : null
+  // What the pane's interactive shell is told to run: the bash function on
+  // Linux, the hub's .ps1 on Windows (Herdr panes there are Windows PowerShell,
+  // and the hub's bin is not on PATH).
+  const launcher = !launcherName ? 'claude --dangerously-skip-permissions'
+    : IS_WIN ? `& 'C:/dev/claude_config/bin/${launcherName}.ps1'`
+    : launcherName
+  if (inHerdr) {
+    // Tab in the repo's space, cwd'd in the worktree, launcher submitted to its
+    // shell. --no-focus: the summary above is being read in the calling pane;
+    // the new tab is one click away.
+    try {
+      const ws = herdrRepoWorkspace()
+      if (!ws) throw new Error('no Herdr space shows the main checkout')
+      const tab = herdrCall(['tab', 'create', '--workspace', ws, '--cwd', wt, '--label', feature, '--no-focus'])
+      herdrCall(['pane', 'run', tab.root_pane.pane_id, launcher])
+      console.log(`terminal: Herdr tab « ${feature} » (${tab.tab.tab_id}) in space ${ws}, running ${launcherName ?? launcher} in ${wt}`)
+    } catch (e) {
+      console.log(`NOTE: could not open a Herdr tab for the worktree (${e.message}) — open one (prefix+c) in ${wt} and run \`${launcher}\`.`)
+    }
+  } else if (IS_WIN) {
     const slotScript = 'C:/dev/claude_config/bin/wt-slot.ps1'
     if (!fs.existsSync(slotScript)) {
       console.log(`NOTE: --terminal ignored — ${slotScript} is not on this machine.`)
@@ -473,26 +500,7 @@ if (wantTerminal) {
       }
     }
   } else {
-    const hasCmd = (c) => { try { execFileSync('which', [c], { stdio: 'ignore' }); return true } catch { return false } }
-    const norm = wt.replace(/\\/g, '/')
-    const launcher = /\/etsmalterre\//.test(norm) ? 'yolo-ets'
-      : /\/liva\//.test(norm) ? 'yolo-liva'
-      : 'claude --dangerously-skip-permissions'
-    if (inHerdr) {
-      // Tab in the repo's space, cwd'd in the worktree, launcher submitted to its
-      // shell (the pane's interactive bash sources launchers.sh, so the bare
-      // function name is the command). --no-focus: the summary above is being
-      // read in the calling pane; the new tab is one click away.
-      try {
-        const ws = herdrRepoWorkspace()
-        if (!ws) throw new Error('no Herdr space shows the main checkout')
-        const tab = herdrCall(['tab', 'create', '--workspace', ws, '--cwd', wt, '--label', feature, '--no-focus'])
-        herdrCall(['pane', 'run', tab.root_pane.pane_id, launcher])
-        console.log(`terminal: Herdr tab « ${feature} » (${tab.tab.tab_id}) in space ${ws}, running ${launcher} in ${wt}`)
-      } catch (e) {
-        console.log(`NOTE: could not open a Herdr tab for the worktree (${e.message}) — open one (prefix+c) in ${wt} and run \`${launcher}\`.`)
-      }
-    } else if (!hasCmd('xdg-terminal-exec')) {
+    if (!hasCmd('xdg-terminal-exec')) {
       console.log(`NOTE: --terminal ignored — xdg-terminal-exec is not on this machine; open a terminal in ${wt} and run \`${launcher}\`.`)
     } else {
       const shellCmd = `${launcher}; exec bash`
