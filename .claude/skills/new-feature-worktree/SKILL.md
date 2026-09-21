@@ -41,7 +41,7 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
 
 2. **Run the spin-up script** from the ETM main checkout:
    ```bash
-   node scripts/worktree/up.mjs <feature-name> [ng|trm] --terminal [--app atelier|trs] [--api <port>]
+   node scripts/worktree/up.mjs <feature-name> [ng|trm] --terminal [--app atelier|trs|pointage] [--api <port>]
    ```
    This fetches origin (in the target repo — TRM is resolved as the sibling checkout
    for `trm`), allocates a free slot, creates the worktree off `origin/master`, installs
