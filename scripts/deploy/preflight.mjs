@@ -81,6 +81,7 @@ const WEB_TIERS = [
   { key: 'trmWeb',  label: 'TRM web', repo: TRM, dir: 'mps_trm',     src: 'apps/web',     head: 'TRM' },
   { key: 'atelier', label: 'atelier', repo: TRM, dir: 'mps_atelier', src: 'apps/atelier', head: 'TRM' },
   { key: 'trs',     label: 'TRS',     repo: TRM, dir: 'mps_trs',     src: 'apps/trs',     head: 'TRM' },
+  { key: 'pointage', label: 'pointage', repo: TRM, dir: 'mps_pointage', src: 'apps/pointage', head: 'TRM' },
 ]
 
 const stamps = {

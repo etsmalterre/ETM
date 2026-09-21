@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deploy ONE web bundle of the MPS platform, end to end, in the only safe order:
 //
-//   node scripts/deploy/deploy-web.mjs --app <etm|trm|atelier|trs> [--dry-run] [--skip-build]
+//   node scripts/deploy/deploy-web.mjs --app <etm|trm|atelier|trs|pointage> [--dry-run] [--skip-build]
 //
 //   1. guard   the app's main checkout is clean, on master, at origin/master
 //   2. build   `pnpm --filter <pkg> build` with VITE_API_URL=/api set IN THE CHILD ENV
@@ -33,6 +33,7 @@ const APPS = {
   trm:     { repo: TRM, pkg: '@mps-trm/web',     src: 'apps/web',     dir: 'mps_trm',     host: 'trm.intra.etsmalterre.com',     versionFrom: 'root' },
   atelier: { repo: TRM, pkg: '@mps-trm/atelier', src: 'apps/atelier', dir: 'mps_atelier', host: 'atelier.intra.etsmalterre.com', versionFrom: 'app' },
   trs:     { repo: TRM, pkg: '@mps-trm/trs',     src: 'apps/trs',     dir: 'mps_trs',     host: 'trs.intra.etsmalterre.com',     versionFrom: 'app' },
+  pointage: { repo: TRM, pkg: '@mps-trm/pointage', src: 'apps/pointage', dir: 'mps_pointage', host: 'pointage.intra.etsmalterre.com', versionFrom: 'app' },
 }
 
 const argv = process.argv.slice(2)

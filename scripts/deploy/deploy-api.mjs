@@ -15,10 +15,10 @@
 //   6. host     backup → rm -rf src/scripts → extract → [npm install] → restart →
 //               wait for /api/health to say "MPS API" → journal scan (HY090 = the
 //               accented-literal footgun that only fails on the Linux bridge)
-//   7. smoke    every client through its own nginx: mpsng, trm, atelier, trs
+//   7. smoke    every client through its own nginx: mpsng, trm, atelier, trs, pointage
 //   8. stamp    DEPLOYED_SHA — last, its own call, only after 6 and 7
 //
-// One restart blips EVERY client (ETM, TRM, atelier, TRS) — which is why step 7
+// One restart blips EVERY client (ETM, TRM, atelier, TRS, pointage) — which is why step 7
 // checks all of them and why an src/scripts-only change should not come through here
 // (preflight.mjs says so; run the script on the host by hand instead).
 // --dry-run stops after step 5's tarball (nothing leaves this machine).
@@ -122,6 +122,7 @@ const probes = [
   ['https://trm.intra.etsmalterre.com/api/auth/users', ['200']],
   ['https://atelier.intra.etsmalterre.com/api/health', ['200']],
   ['https://trs.intra.etsmalterre.com/api/trs/atelier', ['200']],
+  ['https://pointage.intra.etsmalterre.com/api/health', ['200']],
 ]
 let bad = 0
 for (const [url, want] of probes) {
