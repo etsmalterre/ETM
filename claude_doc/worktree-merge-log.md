@@ -10,6 +10,18 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-21 — feat/pointage-app
+**Pointage : retrait du « temps hors prod du jour »** (décision de Vincent : mesure de
+productivité abandonnée, d'autres moyens existent). `routes/pointage.ts` perd `PUT
+/salaries/:id/hors-prod` et le champ `horsProd` de `/salaries/:id/etat` ; `lib/pointage.ts`
+perd `horsProdDuJour` ; `lib/pointage-ecritures.ts` n'ouvre plus la ligne `hors_prod` du jour
+au « Début du travail » (`assurerHorsProd`, `definirHorsProd`, `HORS_PROD_MAX_H` supprimés).
+La table `hors_prod` reste : l'ancienne pointeuse WinDev, encore en service pendant le
+rollout, l'écrit toujours ; plus rien de l'API ne la lit. Scripts `check-pointage.ts` et
+`seed-pointage-dev.ts` alignés. Branche TRM appariée `feat/pointage-app` (cartes « En poste »,
+« Solde annuel », plein écran, retrait du pas-à-pas). Déploiement sans risque pour les autres
+clients : suppression seule, aucun changement de gate.
+
 ## 2026-09-18 — feat/doublon (LIVA #1177)
 Clients › Gestion listed 17 archived « LF043 - <coloris> » designations on Simone Perele next to the standard LF043 (39 coloris). `pick(r, 'archivé', 'archiv')` in `lib/clients-common.ts` matched exact keys only; the Linux bridge returns the accented key truncated plus a garbage byte (`archiv?`), so `archivé` read 0 on every row in prod — the #1090 footgun. `pick()` now falls back to a case-insensitive prefix match (test `clients-common.test.ts`), which also fixes the order coloris picker (`tarif-client.ts`) and the client list's `archive` flag (236 archived clients read « En cours »). A new static guard `apps/api/src/scripts/check-accented-key-fallback.ts` (refuses `?? r['…é']` and bare truncated-stem reads) exposed the same fallback in `commandes-sous-traitant.ts` (Soumission Lot Client designation), `stock-ecru.ts`, `stock-fini.ts` and `etudes-coloris.ts` (+ `invalidé` on `envoi_email`): all read by `pickVal(/^prefix/i)` now; the reference/client pickers dropped from 398→327 écrus, 610→471 finis, 667→431 clients on the dev base. Docs: CLAUDE.md § Accents, `hfsql_odbc.md` footgun story, `screen_notes.md` § 3. Pre-existing on master, not touched: `check-coloris-client-scope.ts` and `check-contrat-tarif-ligne.ts` each fail one pinned dev-data value.
 
