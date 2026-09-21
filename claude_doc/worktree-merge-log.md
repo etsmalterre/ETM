@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-21 — feat/refresh (LIVA #1178)
+**Sous-traitants › Commandes : une commande sst lancée depuis Clients › Commandes apparaît
+aussitôt.** Les dialogues ennoblisseur / tricoteur de l'onglet Approvisionnement ne
+rafraîchissaient que les familles de la commande client ; la liste sst restait sur le cache
+global de 5 min. `invalidateSstCommandeCaches()` (`lib/cache-sync.ts` : liste, compteurs
+d'urgence, fiche, Rapports › Commandes sst) appelé par les deux dialogues avec
+`invalidateStockCaches()` ; `invalidateLotQualityCaches()` s'appuie dessus ; la liste sst
+étale `STOCK_QUERY_FRESHNESS` (le legacy et les autres sessions créent aussi des commandes
+sst). Garde `cache-sync.test.ts`. Web seulement — aucun changement d'API.
+
 ## 2026-09-21 — feat/pointage-app
 **Pointage : retrait du « temps hors prod du jour »** (décision de Vincent : mesure de
 productivité abandonnée, d'autres moyens existent). `routes/pointage.ts` perd `PUT
