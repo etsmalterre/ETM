@@ -47,6 +47,7 @@ import { atelierRouter } from './routes/atelier.js'
 import { appareilsAtelierRouter } from './routes/appareils-atelier.js'
 import { trsRouter } from './routes/trs.js'
 import { pointageRouter } from './routes/pointage.js'
+import { pointageAdminRouter } from './routes/pointage-admin.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
 import { maintenanceTrmRouter } from './routes/maintenance-trm.js'
@@ -191,6 +192,9 @@ app.use('/api/trs', trsRouter)
 // client: the shared time clock, on the legacy `pointage` database. Enrolled
 // tablet only, under its own `mps_pointeuse` cookie (routes/pointage.ts).
 app.use('/api/pointage', pointageRouter)
+// Admin Pointage — the office's side of the same time clock, from the TRM ERP
+// menu « Pointage » (cookie session + view_pointage / edit_pointage).
+app.use('/api/pointage-admin', pointageAdminRouter)
 // TRM tableau de bord widgets (Poids des pièces, …) — consumed by the TRM web app.
 app.use('/api/dashboard-trm', dashboardTrmRouter)
 // TRM production prime (Production › Prime) — consumed by the TRM web app.

@@ -120,6 +120,15 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
       { href: '/rapports/finance', label: 'Finance' },
     ],
   },
+  {
+    id: 'pointage',
+    href: '/pointage',
+    label: 'Pointage',
+    screens: [
+      { href: '/pointage/horaires', label: 'Horaires' },
+      { href: '/pointage/salaries', label: 'Salariés' },
+    ],
+  },
 ] as const
 
 /** '/tombe-metier/references' → 'tombe_metier_references' */

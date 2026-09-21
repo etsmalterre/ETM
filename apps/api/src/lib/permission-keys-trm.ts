@@ -298,6 +298,29 @@ export const TRM_PERMISSION_KEYS = [
       'Affiche l’entrée « TRS » du menu Production et autorise la lecture du tableau de bord d’équipe : timeline et TRS de chaque métier, pièces produites, visitées et déclassées, bonnetiers pointés et leurs heures. Lecture seule ; fermé par défaut.',
     category: 'Production',
   },
+  // Pointage — the office's side of the time clock (menu « Pointage », port
+  // of the WinDev Admin Pointage, 2026-09-21). Hours are personal data and
+  // the legacy had no login at all, so reading is its own key, closed by
+  // default and granted by hand like view_trs; the menu entries carry it
+  // (SubMenuItem.permission) and every /api/pointage-admin read checks it.
+  {
+    key: 'view_pointage',
+    label: 'Consulter le pointage',
+    description:
+      'Affiche le menu « Pointage » et autorise la lecture des horaires pointés (arrivées, pauses, départs de chaque salarié), de la liste des salariés de la pointeuse et de leurs messages. Lecture seule ; fermé par défaut.',
+    category: 'Pointage',
+  },
+  // Writing corrects the truth of the time clock: a corrected or created
+  // shift also moves the lst_pointage twin and the TRS presence journal
+  // (decision A, 2026-09-21). Sub-right of view_pointage.
+  {
+    key: 'edit_pointage',
+    label: 'Corriger le pointage',
+    description:
+      'Autorise la correction des horaires dans Pointage > Horaires (modifier une heure, fermer un poste oublié, ajouter ou supprimer un poste), la gestion des salariés de la pointeuse (création, fiche, suppression) et de leurs messages. Chaque correction est répercutée sur le journal de présence lu par le TRS.',
+    category: 'Pointage',
+    parent: 'view_pointage',
+  },
   // `saisie_atelier` (« Saisir au poste de l’atelier ») was removed on
   // 2026-09-15: enrolling a phone — an admin-only gesture, onglet Appareils —
   // is itself the right to record from the atelier PWA, and revoking the phone

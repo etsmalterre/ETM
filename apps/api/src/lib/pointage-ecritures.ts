@@ -173,3 +173,144 @@ export function pointer(
     return { action, instantMs: s * 1000, ligneId, lstPointage, mps }
   })
 }
+
+// ── Admin Pointage — the office's corrections (TRM menu « Pointage ») ──
+//
+// The legacy Admin Pointage edited `lst_horaire` alone: a corrected shift left
+// its lst_pointage twin stale and the TRS presence journal wrong (a forgotten
+// « fin » closed by the office kept the bonnetier present all night on the
+// TRS). Decision A (Vincent, 2026-09-21): a correction goes through this module
+// and moves the twin and the journal with it —
+//   - a stamp that changes moves the journal row that carried the old instant
+//     (found by IDbonnetier + old DATE + en_poste); a stamp added inserts one;
+//     a stamp cleared removes the one row that carried it;
+//   - closing a forgotten shift is the `fin` case of the above: one departure
+//     row at the typed instant;
+//   - deleting a shift flags the truth AND the twin `is_deleted = 1`, and
+//     leaves the journal alone (decisions 2 and 4).
+// The hours come typed as « HH:MM » and are placed by lib/pointage-admin.ts
+// (the legacy after-midnight rule + the port's ordering check).
+
+import {
+  EN_POSTE_PAR_COLONNE,
+  appliquerSaisie,
+  SaisieInvalide,
+  type SaisieHeures,
+} from './pointage-admin.js'
+import { COLONNES_HEURE, type LigneHoraire } from './pointage-etat.js'
+import { trouverLigne } from './pointage.js'
+
+export interface ResultatCorrection {
+  ligneId: number
+  lstPointage: Issue
+  mps: Issue
+}
+
+const dtOuNull = (s: number) => (s > 0 ? `'${dtParis(s * 1000)}'` : 'NULL')
+
+/** One presence-journal write per changed stamp (see the header above). */
+async function journalMps(
+  salarie: Salarie,
+  avant: Record<ColonneHeure, number> | null,
+  apres: Record<ColonneHeure, number>,
+): Promise<Issue> {
+  if (salarie.idMps <= 0) return 'sans_lien'
+  return secondaire('mps.pointage admin', async () => {
+    for (const c of COLONNES_HEURE) {
+      const old = avant ? avant[c] : 0
+      const neu = apres[c]
+      if (old === neu) continue
+      const enPoste = EN_POSTE_PAR_COLONNE[c]
+      if (old > 0 && neu > 0) {
+        await query(
+          `UPDATE pointage SET DATE = '${dtParis(neu * 1000)}'
+           WHERE IDbonnetier = ${salarie.idMps} AND DATE = '${dtParis(old * 1000)}' AND en_poste = ${enPoste}`,
+        )
+        const vu = await query<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM pointage WHERE IDbonnetier = ${salarie.idMps} AND DATE = '${dtParis(neu * 1000)}' AND en_poste = ${enPoste}`,
+        )
+        if (Number(vu[0]?.n) > 0) continue
+        // the legacy never journaled a hand-made stamp: nothing to move, insert
+      }
+      if (neu > 0) {
+        const rows = await query<{ m: number | null }>('SELECT MAX(IDpointage) AS m FROM pointage')
+        const id = (Number(rows[0]?.m) || 0) + 1
+        await query(`INSERT INTO pointage VALUES (${id}, ${salarie.idMps}, '${dtParis(neu * 1000)}', ${enPoste})`)
+      } else {
+        await query(
+          `DELETE FROM pointage WHERE IDbonnetier = ${salarie.idMps} AND DATE = '${dtParis(old * 1000)}' AND en_poste = ${enPoste}`,
+        )
+      }
+    }
+    return 'ecrit'
+  })
+}
+
+/** A shift typed by the office (FEN_Nouvel_horaire). */
+export function creerLigneAdmin(salarie: Salarie, jour: string, saisie: SaisieHeures): Promise<ResultatCorrection> {
+  return verrou.run(async () => {
+    const h = appliquerSaisie(jour, null, saisie)
+    const ligneId = (await maxId('lst_horaire')) + 1
+    await pointageDb.query(
+      `INSERT INTO lst_horaire VALUES (${ligneId}, ${salarie.id}, '${jour}', ${COLONNES_HEURE.map((c) => h[c]).join(', ')}, 0)`,
+    )
+    const vue = await pointageDb.query(`SELECT id FROM lst_horaire WHERE id = ${ligneId} AND id_salarie = ${salarie.id}`)
+    if (vue.length !== 1) throw new Error(`lst_horaire: line ${ligneId} not found after its INSERT`)
+    const lstPointage = await secondaire('lst_pointage admin insert', async () => {
+      const id = (await maxId('lst_pointage')) + 1
+      await pointageDb.query(
+        `INSERT INTO lst_pointage VALUES (${id}, ${salarie.id}, '${jour}', ${COLONNES_HEURE.map((c) => dtOuNull(h[c])).join(', ')}, 0)`,
+      )
+      return 'ecrit'
+    })
+    const mps = await journalMps(salarie, null, h)
+    return { ligneId, lstPointage, mps }
+  })
+}
+
+/** One or more stamps corrected on a shift — closing a forgotten one included
+ *  (FEN_Horaires, the six `Sortie de COL_*`). `saisie` names only the hours
+ *  that change (null clears one). */
+export function corrigerLigneAdmin(salarie: Salarie, ligneId: number, saisie: SaisieHeures): Promise<ResultatCorrection> {
+  return verrou.run(async () => {
+    const actuelle = await trouverLigne(ligneId)
+    if (!actuelle || actuelle.idSalarie !== salarie.id) throw new SaisieInvalide('Cet horaire n’existe plus.')
+    const h = appliquerSaisie(actuelle.jour, actuelle, saisie)
+    const changees = COLONNES_HEURE.filter((c) => h[c] !== actuelle[c])
+    if (changees.length === 0) return { ligneId, lstPointage: 'ecrit', mps: 'ecrit' }
+    await pointageDb.query(
+      `UPDATE lst_horaire SET ${changees.map((c) => `${c} = ${h[c]}`).join(', ')} WHERE id = ${ligneId} AND is_deleted = 0`,
+    )
+    const relu = await trouverLigne(ligneId)
+    if (!relu || changees.some((c) => relu[c] !== h[c])) throw new Error(`lst_horaire: line ${ligneId} not updated`)
+    const lstPointage = await secondaire('lst_pointage admin update', async () => {
+      // the twin is matched on the OLD start — a moved start is exactly the
+      // case where the new one matches nothing
+      const id = await jumelle(salarie.id, actuelle.debut)
+      if (id === null) return 'introuvable'
+      await pointageDb.query(
+        `UPDATE lst_pointage SET ${changees.map((c) => `${c} = ${dtOuNull(h[c])}`).join(', ')} WHERE id = ${id}`,
+      )
+      return 'ecrit'
+    })
+    const mps = await journalMps(salarie, actuelle, h)
+    return { ligneId, lstPointage, mps }
+  })
+}
+
+/** The legacy's Suppr key on a shift: flagged, never removed. The twin is
+ *  flagged too so TricoBot stops seeing it; the journal keeps its rows. */
+export function supprimerLigneAdmin(salarie: Salarie, ligneId: number): Promise<{ lstPointage: Issue }> {
+  return verrou.run(async () => {
+    const actuelle: LigneHoraire | null = await trouverLigne(ligneId)
+    if (!actuelle || actuelle.idSalarie !== salarie.id) throw new SaisieInvalide('Cet horaire n’existe plus.')
+    await pointageDb.query(`UPDATE lst_horaire SET is_deleted = 1 WHERE id = ${ligneId}`)
+    const lstPointage = await secondaire('lst_pointage admin delete', async () => {
+      const id = await jumelle(salarie.id, actuelle.debut)
+      if (id === null) return 'introuvable'
+      await pointageDb.query(`UPDATE lst_pointage SET is_deleted = 1 WHERE id = ${id}`)
+      return 'ecrit'
+    })
+    return { lstPointage }
+  })
+}
