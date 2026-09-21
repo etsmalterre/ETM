@@ -19,11 +19,29 @@ export function invalidateLotQualityCaches(qc: QueryClient): void {
 
   // Sous-traitants › Commandes — note these are distinct key roots (React Query
   // matches by array prefix, element-by-element, so each family is listed).
-  qc.invalidateQueries({ queryKey: ['commandes-sst'] }) // list (computed phase pill)
-  qc.invalidateQueries({ queryKey: ['commande-sst'] }) // detail
+  invalidateSstCommandeCaches(qc)
   qc.invalidateQueries({ queryKey: ['commande-sst-pieces'] }) // réception / affectés drawer (roll état badges)
   qc.invalidateQueries({ queryKey: ['commande-sst-lots-eligibles'] }) // soumission eligibility
-  qc.invalidateQueries({ queryKey: ['commande-sst-urgency-counts'] }) // header urgency counts
+}
+
+// A `commande_sous_traitant` is created or changed from screens that are NOT
+// Sous-traitants › Commandes: Clients › Commandes › Approvisionnement launches
+// an ennoblisseur order (« Nouvelle commande — <teinturier> ») or a tricotage
+// order from a line, and Qualité › Suivi des lots moves its lots. Ticket #1178:
+// an order launched from the client line took « un certain temps » to show up
+// in the sst list — the 5-minute default staleTime (main.tsx) served the
+// pre-creation page until it expired. Every query-key root that lists or
+// describes sst orders, so a writer outside the screen can name them all in one
+// call. `cache-sync.test.ts` checks the two creation dialogs call this.
+export const SST_COMMANDE_QUERY_ROOTS = [
+  'commandes-sst', // Sous-traitants › Commandes list (every filter / search page)
+  'commandes-sst-urgency-counts', // its header urgency counts
+  'commande-sst', // any open detail (phase pill, lines)
+  'rapport-commandes-sst', // Rapports › Commandes sous-traitants
+] as const
+
+export function invalidateSstCommandeCaches(qc: QueryClient): void {
+  for (const root of SST_COMMANDE_QUERY_ROOTS) qc.invalidateQueries({ queryKey: [root] })
 }
 
 // Where a roll/lot physically IS, and whether it is still available, is written

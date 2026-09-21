@@ -3,7 +3,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
-import { STOCK_QUERY_ROOTS, invalidateStockCaches, STOCK_QUERY_FRESHNESS } from './cache-sync'
+import {
+  STOCK_QUERY_ROOTS,
+  invalidateStockCaches,
+  STOCK_QUERY_FRESHNESS,
+  SST_COMMANDE_QUERY_ROOTS,
+  invalidateSstCommandeCaches,
+} from './cache-sync'
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -91,5 +97,47 @@ describe('STOCK_QUERY_FRESHNESS', () => {
       expect(spreads, `${rel} should spread STOCK_QUERY_FRESHNESS into its list and detail queries`)
         .toBeGreaterThanOrEqual(2)
     }
+  })
+})
+
+describe('invalidateSstCommandeCaches', () => {
+  // Ticket #1178: a sst order launched from Clients › Commandes took up to five
+  // minutes to appear on Sous-traitants › Commandes — the dialogs refreshed the
+  // client-order families only, and the sst list sat on the app-wide staleTime.
+  it('names the sst list, its urgency counts, the detail and the rapport', () => {
+    for (const root of ['commandes-sst', 'commandes-sst-urgency-counts', 'commande-sst', 'rapport-commandes-sst']) {
+      expect(SST_COMMANDE_QUERY_ROOTS as readonly string[]).toContain(root)
+    }
+  })
+
+  it('invalidates each root exactly once', () => {
+    const calls: unknown[][] = []
+    const qc = { invalidateQueries: ({ queryKey }: { queryKey: unknown[] }) => calls.push(queryKey) }
+    invalidateSstCommandeCaches(qc as never)
+    expect(calls).toEqual(SST_COMMANDE_QUERY_ROOTS.map((r) => [r]))
+  })
+
+  // Every screen that creates a sst order outside Sous-traitants › Commandes
+  // (the client line's ennoblissement / tricotage dialogs POST to
+  // `…/supply/<kind>/orders`) must call the helper — once per creation site.
+  it('is called by every screen that launches a sst order from elsewhere', () => {
+    let sites = 0
+    for (const { path: file, text } of FILES) {
+      if (file.includes('SousTraitantsCommandes')) continue
+      const creations = [...text.matchAll(/supply\/(ennoblissement|tricotage)\/orders`/g)].length
+      if (creations === 0) continue
+      sites++
+      const calls = [...text.matchAll(/invalidateSstCommandeCaches\(/g)].length
+      expect(calls, `${path.relative(SRC, file)} launches ${creations} kind(s) of sst order but calls invalidateSstCommandeCaches ${calls} time(s)`)
+        .toBeGreaterThanOrEqual(creations)
+    }
+    expect(sites).toBeGreaterThan(0) // the scan itself must not silently find nothing
+  })
+
+  // The list itself re-reads on arrival: the legacy WinDev app and other
+  // sessions create sst orders too, and no invalidation here can see those.
+  it('the sst list query spreads STOCK_QUERY_FRESHNESS', () => {
+    const text = fs.readFileSync(path.join(SRC, 'pages/SousTraitantsCommandes.tsx'), 'utf8')
+    expect(text).toMatch(/\.\.\.STOCK_QUERY_FRESHNESS/)
   })
 })

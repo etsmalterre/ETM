@@ -62,7 +62,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
-import { invalidateStockCaches } from '@/lib/cache-sync'
+import { invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { EtatPill } from '@/lib/etat-stock-fini'
 
@@ -2427,6 +2427,11 @@ function AffectationDrawer({
           queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
           queryClient.invalidateQueries({ queryKey })
           queryClient.invalidateQueries({ queryKey: ['commande-client-enno-locations', commandeId, ligne.IDligne_commande_client] })
+          // The new order must show up on Sous-traitants › Commandes at once
+          // (#1178), and the écru rolls it affects are no longer "disponible"
+          // on Tombé Métier › Stock.
+          invalidateSstCommandeCaches(queryClient)
+          invalidateStockCaches(queryClient)
           onSuccess()
         }}
       />
@@ -2457,6 +2462,10 @@ function AffectationDrawer({
           // reservations change the stock-fil panel too.
           queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
           queryClient.invalidateQueries({ queryKey: ['commande-client-trico-stockfil', commandeId, ligne.IDligne_commande_client] })
+          // The new order must show up on Sous-traitants › Commandes at once
+          // (#1178); the yarn it reserves changes Fils › Stock's « Besoin ».
+          invalidateSstCommandeCaches(queryClient)
+          invalidateStockCaches(queryClient)
           onSuccess()
         }}
       />

@@ -78,7 +78,7 @@ import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates
 import { mergedNumero, splitMergedNumero } from '@/lib/roll-merge'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
-import { invalidateLotQualityCaches, invalidateStockCaches } from '@/lib/cache-sync'
+import { invalidateLotQualityCaches, invalidateStockCaches, STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { sstTypeTagClasses } from '@/lib/sst-type'
 import { pruneSelection } from '@/lib/transfert-picker'
@@ -775,6 +775,10 @@ export function SousTraitantsCommandes() {
       const last = lastPage[lastPage.length - 1]
       return last?.IDcommande_sous_traitant ?? undefined
     },
+    // Arriving on the screen re-reads the list (#1178): sst orders are also
+    // created by the legacy WinDev app and by other users' sessions, which
+    // nothing in this browser can invalidate. Cached pages render meanwhile.
+    ...STOCK_QUERY_FRESHNESS,
   })
   const commandes = useMemo<CommandeListRow[] | undefined>(
     () => {
