@@ -135,11 +135,3 @@ export async function soldeHeures(
   ])
   return { semaineMin: num(lissage[0].cumul_semaine), cumulMin: travaille - prevu - info }
 }
-
-/** The day's « temps hors prod » in hours, or null when no row exists. */
-export async function horsProdDuJour(idSalarie: number, jour: string): Promise<number | null> {
-  const rows = await pointageDb.query<Record<string, unknown>>(
-    `SELECT id, duree FROM hors_prod WHERE id_salarie = ${idSalarie} AND DATE = '${jour}' ORDER BY id`,
-  )
-  return rows.length ? Number(rows[0].duree) || 0 : null
-}

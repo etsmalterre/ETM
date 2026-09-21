@@ -12,9 +12,8 @@
 //     GET  /en-poste                        the home table: every open line (legacy TABLE_Pointage)
 //     GET  /salaries                        the face grid, with each one's status
 //     GET  /salaries/:id/photo?size=        portrait through id_mps → bonnetier.photo
-//     GET  /salaries/:id/etat               buttons, open line, messages, week, hors prod
+//     GET  /salaries/:id/etat               buttons, open line, messages, week
 //     POST /salaries/:id/pointage           { action, ligneId } → 409 when stale
-//     PUT  /salaries/:id/hors-prod          { duree } (hours)
 //
 // ⚠️ Its own cookie, `mps_pointeuse`, not `mps_appareil`: browsers share
 // cookies across ports on localhost, so in dev enrolling the tablet would
@@ -48,7 +47,6 @@ import {
   type LigneHoraire,
 } from '../lib/pointage-etat.js'
 import {
-  horsProdDuJour,
   ligneOuverte,
   lignesEnPoste,
   lignesOuvertes,
@@ -59,7 +57,7 @@ import {
   trouverSalarie,
   type Salarie,
 } from '../lib/pointage.js'
-import { HORS_PROD_MAX_H, RefusPointage, definirHorsProd, pointer } from '../lib/pointage-ecritures.js'
+import { RefusPointage, pointer } from '../lib/pointage-ecritures.js'
 
 export const pointageRouter: RouterType = Router()
 
@@ -139,10 +137,9 @@ const salarieJson = (s: Salarie) => ({ id: s.id, nom: s.nom, prenom: s.prenom, p
 async function etatSalarie(s: Salarie, maintenantMs = Date.now()) {
   const jour = jourParis(maintenantMs)
   const reference = semaineDeReference(maintenantMs)
-  const [ouverte, messages, horsProd, solde] = await Promise.all([
+  const [ouverte, messages, solde] = await Promise.all([
     ligneOuverte(s.id),
     messagesActifs(s.id, jour),
-    horsProdDuJour(s.id, jour),
     soldeHeures(s.id, reference),
   ])
   const e = etatPointage(ouverte, Math.floor(maintenantMs / 1000))
@@ -156,7 +153,6 @@ async function etatSalarie(s: Salarie, maintenantMs = Date.now()) {
     // « Semaine N : » (last week's worked minutes) and « Cumul » (annual
     // balance) — lib/pointage.ts soldeHeures; null = the legacy hides both.
     semaine: reference && solde ? { ...reference, ...solde } : null,
-    horsProd,
     maintenantMs,
   }
 }
@@ -323,23 +319,3 @@ pointageRouter.post('/salaries/:id/pointage', async (req: Request, res: Response
   }
 })
 
-const horsProdBody = z
-  .object({ duree: z.number().min(0).max(HORS_PROD_MAX_H).multipleOf(0.25) })
-  .strict()
-
-pointageRouter.put('/salaries/:id/hors-prod', async (req: Request, res: Response) => {
-  try {
-    if (!(await gateEcriture(req, res))) return
-    const parsed = horsProdBody.safeParse(req.body)
-    if (!parsed.success) {
-      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
-      return
-    }
-    const s = await salarieDeLaRoute(req, res)
-    if (!s) return
-    await definirHorsProd(s, parsed.data.duree)
-    res.json({ horsProd: parsed.data.duree })
-  } catch (err) {
-    erreur(res, 'hors-prod', err)
-  }
-})

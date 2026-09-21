@@ -30,10 +30,7 @@
  * is stored as 0, so the id is always computed. Runtime column orders:
  *   lst_horaire   id, id_salarie, DATE, debut, debut_pause1, fin_pause1, debut_pause2, fin_pause2, fin, is_deleted
  *   lst_pointage  (same, the six times as DATETIME, NULL = empty)
- *   hors_prod     id, id_salarie, DATE, duree
  *   mps.pointage  IDpointage, IDbonnetier, DATE, en_poste
- * ⚠️ `hors_prod`'s unique key (id_salarie, date) is NOT enforced by the server
- * (a duplicate inserted fine on the dev copy): existence is checked here.
  */
 import { query } from './hfsql-auto.js'
 import { pointageDb } from './hfsql-pointage.js'
@@ -66,10 +63,7 @@ export interface ResultatPointage {
   mps: Issue
 }
 
-/** Hours of « temps hors prod » the tablet may record. */
-export const HORS_PROD_MAX_H = 12
-
-async function maxId(table: 'lst_horaire' | 'lst_pointage' | 'hors_prod'): Promise<number> {
+async function maxId(table: 'lst_horaire' | 'lst_pointage'): Promise<number> {
   const rows = await pointageDb.query<{ m: number | null }>(`SELECT MAX(id) AS m FROM ${table}`)
   return Number(rows[0]?.m) || 0
 }
@@ -98,16 +92,6 @@ async function jumelle(idSalarie: number, debutS: number): Promise<number | null
     if (ecart <= 2000 && (!best || ecart < best.ecart)) best = { id: Number(r.id), ecart }
   }
   return best?.id ?? null
-}
-
-async function assurerHorsProd(idSalarie: number, jour: string, duree: number | null): Promise<void> {
-  const rows = await pointageDb.query(`SELECT id FROM hors_prod WHERE id_salarie = ${idSalarie} AND DATE = '${jour}'`)
-  if (rows.length === 0) {
-    const id = (await maxId('hors_prod')) + 1
-    await pointageDb.query(`INSERT INTO hors_prod VALUES (${id}, ${idSalarie}, '${jour}', ${duree ?? 0})`)
-  } else if (duree !== null) {
-    await pointageDb.query(`UPDATE hors_prod SET duree = ${duree} WHERE id_salarie = ${idSalarie} AND DATE = '${jour}'`)
-  }
 }
 
 /**
@@ -149,12 +133,9 @@ export function pointer(
         )
         return 'ecrit'
       })
-      // The legacy creates the day's hors_prod row (duree 0) when the salarié
-      // opens his screen; here, when he starts work — a GET stays a read.
-      await secondaire('hors_prod', async () => {
-        await assurerHorsProd(salarie.id, jour, null)
-        return 'ecrit'
-      })
+      // No `hors_prod` row: the legacy opened one (duree 0) for « temps hors
+      // prod du jour », a productivity measure the company no longer uses —
+      // dropped with the tablet's stepper (Vincent, 2026-09-21).
     } else {
       const ligne = etat.ligne!
       ligneId = ligne.id
@@ -191,9 +172,4 @@ export function pointer(
 
     return { action, instantMs: s * 1000, ligneId, lstPointage, mps }
   })
-}
-
-/** The day's « temps hors prod » (COMBO_Temps_hors_prod_du_jour), in hours. */
-export function definirHorsProd(salarie: Salarie, duree: number, maintenantMs = Date.now()): Promise<void> {
-  return verrou.run(() => assurerHorsProd(salarie.id, jourParis(maintenantMs), duree))
 }

@@ -6,7 +6,7 @@
  *   node --env-file=.env.development --import tsx src/scripts/seed-pointage-dev.ts            # dry run
  *   node --env-file=.env.development --import tsx src/scripts/seed-pointage-dev.ts --write    # seed
  *   node --env-file=.env.development --import tsx src/scripts/seed-pointage-dev.ts --write --replace
- *     # first deletes what a previous run seeded for today (today's lines, hors_prod,
+ *     # first deletes what a previous run seeded for today (today's lines,
  *     # the reference week's lissage rows, the seeded message), then seeds again
  *
  * Needs the dev copy (copy-pointage-prod-to-dev.ts --write). Instants are
@@ -24,7 +24,7 @@
  *
  * Other stale open lines (fin = 0, older than 14 h) are closed so they stop
  * cluttering « En poste ». Each lst_horaire line gets its lst_pointage twin and
- * its hors_prod row (NICOLAS 0.5 h, to show the stepper with a value). The
+ * (no hors_prod row: « temps hors prod » was dropped on 2026-09-21). The
  * reference week (last ISO week, lib/pointage-etat.ts semaineDeReference) gets a
  * lst_lissage row per salarié, copied from the latest week on file, so
  * « Semaine N » and « Cumul » appear. NICOLAS gets a message for a week.
@@ -33,7 +33,6 @@
  * Column orders (lib/pointage-ecritures.ts, copy-pointage-prod-to-dev.ts):
  *   lst_horaire   id, id_salarie, DATE, debut, debut_pause1, fin_pause1, debut_pause2, fin_pause2, fin, is_deleted
  *   lst_pointage  same, DATETIMEs
- *   hors_prod     id, id_salarie, DATE, duree
  *   lst_lissage   id, id_salarie, annee, num_semaine, <jour>_type/<jour>_total ×7, cumul_semaine, is_deleted
  *   lst_message   id, id_salarie, MESSAGE, date_fin, is_deleted
  */
@@ -65,7 +64,6 @@ const POSTES: Poste[] = [
   { salarie: 'DAUNOVAN', id: 44, debut: m(11, 0), p1: [m(7, 0), m(6, 40)], fin: m(3, 0) },
   { salarie: 'MARIE', id: 46, debut: m(10, 55), p1: [m(7, 5), m(6, 45)], fin: m(3, 5) },
 ]
-const HORS_PROD: Record<number, number> = { 1: 0.5 }
 
 const sql = async (label: string, statement: string): Promise<void> => {
   console.log(`  ${WRITE ? '→' : '(dry)'} ${label}`)
@@ -88,7 +86,6 @@ async function main(): Promise<void> {
     console.log('\nNettoyage du seed précédent :')
     await sql(`lst_horaire du ${today}`, `DELETE FROM lst_horaire WHERE DATE = '${today}'`)
     await sql(`lst_pointage du ${today}`, `DELETE FROM lst_pointage WHERE DATE = '${today}'`)
-    await sql(`hors_prod du ${today}`, `DELETE FROM hors_prod WHERE DATE = '${today}'`)
     if (semaine) {
       await sql(`lst_lissage S${semaine.numero}`, `DELETE FROM lst_lissage WHERE annee = ${semaine.annee} AND num_semaine = ${semaine.numero}`)
     }
@@ -122,7 +119,6 @@ async function main(): Promise<void> {
   console.log('\nPostes du jour :')
   let idH = await maxId('lst_horaire')
   let idP = await maxId('lst_pointage')
-  let idHp = await maxId('hors_prod')
   const at = (minAgo: number | null | undefined) => (minAgo == null ? 0 : nowS - minAgo * 60)
   for (const p of POSTES) {
     const t = {
@@ -146,11 +142,6 @@ async function main(): Promise<void> {
       `          lst_pointage ${idP}`,
       `INSERT INTO lst_pointage VALUES (${idP}, ${p.id}, '${jour}', ${dt(t.debut)}, ${dt(t.debut_pause1)}, ${dt(t.fin_pause1)}, ${dt(t.debut_pause2)}, ${dt(t.fin_pause2)}, ${dt(t.fin)}, 0)`,
     )
-    const existant = await pointageDb.query(`SELECT id FROM hors_prod WHERE id_salarie = ${p.id} AND DATE = '${jour}'`)
-    if (existant.length === 0) {
-      idHp++
-      await sql(`          hors_prod ${idHp} (${HORS_PROD[p.id] ?? 0} h)`, `INSERT INTO hors_prod VALUES (${idHp}, ${p.id}, '${jour}', ${HORS_PROD[p.id] ?? 0})`)
-    }
   }
 
   // ── 3. Worked hours of the reference week, so « Semaine N » and « Cumul » show. ──

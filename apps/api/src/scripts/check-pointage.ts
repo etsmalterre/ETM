@@ -14,12 +14,12 @@
  *   - its lst_pointage twin carries the same instants as Paris DATETIMEs;
  *   - mps.pointage logged 1, 0, 1, 0, 0;
  *   - a repeated or out-of-order action is refused (RefusPointage), writing nothing;
- *   - hors_prod: the day's row exists and takes a duration.
+ *   - no hors_prod row is written (the feature was dropped on 2026-09-21).
  */
 import { closeConnection, query } from '../lib/hfsql-auto.js'
 import { pointageConnectionString, pointageDb } from '../lib/hfsql-pointage.js'
-import { horsProdDuJour, ligneOuverte, listerSalaries } from '../lib/pointage.js'
-import { RefusPointage, definirHorsProd, pointer, type ResultatPointage } from '../lib/pointage-ecritures.js'
+import { ligneOuverte, listerSalaries } from '../lib/pointage.js'
+import { RefusPointage, pointer, type ResultatPointage } from '../lib/pointage-ecritures.js'
 import { COLONNES_HEURE, etatPointage, jourParis, parseDtParisMs, type ActionPointage } from '../lib/pointage-etat.js'
 
 const isLocal = (cs: string) => /Server Name\s*=\s*(localhost|127\.0\.0\.1)\s*(;|$)/i.test(cs)
@@ -49,11 +49,9 @@ async function main(): Promise<void> {
   const avant = {
     horaire: await maxDe('SELECT MAX(id) AS m FROM lst_horaire'),
     pointage: await maxDe('SELECT MAX(id) AS m FROM lst_pointage'),
-    horsProd: await maxDe('SELECT MAX(id) AS m FROM hors_prod'),
     mps: Number((await query<{ m: number | null }>('SELECT MAX(IDpointage) AS m FROM pointage'))[0]?.m) || 0,
   }
   const jour = jourParis(t0)
-  const horsProdAvant = await horsProdDuJour(s.id, jour)
 
   const refuse = async (label: string, action: ActionPointage, ligne: number | null, at: number) => {
     try {
@@ -95,16 +93,9 @@ async function main(): Promise<void> {
     const m = await query<Record<string, unknown>>(`SELECT IDpointage, en_poste FROM pointage WHERE IDpointage > ${avant.mps} AND IDbonnetier = ${s.idMps} ORDER BY IDpointage`)
     verifier(m.map((r) => Number(r.en_poste)).join(',') === '1,0,1,0,0', `mps.pointage : en_poste ${m.map((r) => r.en_poste).join(',')}`)
 
-    verifier((await horsProdDuJour(s.id, jour)) !== null, 'hors_prod : la ligne du jour existe')
-    await definirHorsProd(s, 1.5, t0)
-    verifier((await horsProdDuJour(s.id, jour)) === 1.5, 'hors_prod : durée enregistrée')
   } finally {
     await pointageDb.query(`DELETE FROM lst_horaire WHERE id > ${avant.horaire} AND id_salarie = ${s.id}`)
     await pointageDb.query(`DELETE FROM lst_pointage WHERE id > ${avant.pointage} AND id_salarie = ${s.id}`)
-    await pointageDb.query(`DELETE FROM hors_prod WHERE id > ${avant.horsProd} AND id_salarie = ${s.id}`)
-    if (horsProdAvant !== null) {
-      await pointageDb.query(`UPDATE hors_prod SET duree = ${horsProdAvant} WHERE id_salarie = ${s.id} AND DATE = '${jour}'`)
-    }
     await query(`DELETE FROM pointage WHERE IDpointage > ${avant.mps} AND IDbonnetier = ${s.idMps}`)
     console.log('  (lignes de test supprimées)')
   }
