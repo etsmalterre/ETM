@@ -10,6 +10,13 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/pauses-journee — rapport de pointage : « Pauses » compte la pause de midi
+**MPS API seule.** Pour un salarié à la journée, la colonne « Pauses » additionne désormais
+pauses pointées et pause de midi (`repasMin`, nouveau champ de `LigneRapport`), écrite
+« 2 h 08 » dès une heure via `dureeTexte()` (« 20 min » en dessous) ; texte « pauses 2 h 08 ».
+La règle des 20 min d'une équipe lit toujours `pauseMin` seul. Vérifié sur les pointages du
+21/09 en prod (Olivier 1 h 51, Nicolas 2 h 08, Mickael 1 h 58). Tests (19).
+
 ## 2026-09-22 — feat/repas-pointage — rapport de pointage : la pause de midi s'affiche, plus de ligne de désabonnement
 **MPS API seule.** Un salarié à la journée (hors planning) qui pointe sa sortie de midi n'avait
 aucune pause sur sa ligne alors que la note disait « reprise 14:06 » (Nicolas, 22/09).
