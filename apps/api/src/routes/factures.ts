@@ -583,6 +583,142 @@ const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
 //  ROUTER FACTORY  (one instance per société — see the file header)
 // ════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════
+//  RAPPORT  (Rapports › Factures — flat, read-only, one row per definitive
+//  facture over a date range)
+// ════════════════════════════════════════════════════════
+//
+// The port of the legacy `FEN_Factures.wdw` grid: numéro, date, client, type,
+// HT, taux de TVA, TVA, TTC — the columns the facturation desk scans and
+// totalises (the TVA column in particular, to split exonérées from 20 %).
+// The Clients › Facturation left list cannot carry that many columns, and its
+// list endpoint is capped at the last few hundred rows, so the rapport reads
+// its own bounded window: every definitive facture whose DATE falls in
+// [du, au], capped at RAPPORT_MAX_ROWS (a full year is ~900 ETM factures).
+//
+// Same arithmetic as the list / detail / XImport (lineMontant → round2), same
+// display numero, same "envoyée" fact (an envoi_email row of the facture type),
+// and the échéance date from the same rule engine as the PDF. Handed to
+// `rapports.ts` / `rapports-trm.ts` as a scoped handler so both companies read
+// their own ledger through `/rapports/factures` and `/rapports-trm/factures` —
+// the FinanceScope shape on the frontend too (`basePath`), never a fork.
+
+const RAPPORT_MAX_ROWS = 3000
+
+export interface FactureRapportRow {
+  id: number
+  numero: number | null
+  /** YYYYMMDD */
+  date: string | null
+  IDclient: number
+  client_nom: string
+  /** 1 = Facture, 2 = Avoir. Amounts are magnitudes — the caller signs them. */
+  type: number
+  tva_rate: number
+  tva_label: string
+  total_ht: number
+  total_tva: number
+  total_ttc: number
+  nb_lignes: number
+  est_envoye: number
+  mode_paiement: string
+  echeance_label: string
+  /** YYYYMMDD, null when the rule has no computable date (à réception…). */
+  date_echeance: string | null
+  code_comptable: string
+}
+
+/** dd/mm/yyyy (what computeDateEcheance emits) → YYYYMMDD, for sorting. */
+function frDateToDigits(fr: string | null): string | null {
+  if (!fr) return null
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(fr)
+  return m ? `${m[3]}${m[2]}${m[1]}` : null
+}
+
+/** All rows of a small label table, accent-repaired, keyed by id. */
+async function loadLabelMap(table: string, pk: string, col: string): Promise<Map<number, string>> {
+  const rows = await query<any>(`SELECT ${pk}, ${col} FROM ${table}`)
+  const fixed = await fixEncoding(rows, table, pk, [col])
+  const out = new Map<number, string>()
+  for (const r of fixed) out.set(Number(r[pk]), (r[col] ?? '').toString().trim())
+  return out
+}
+
+export function createFacturesRapportHandler(scope: FacturesScope) {
+  return async function facturesRapport(req: Request, res: Response): Promise<void> {
+    try {
+      const du = String(req.query.du ?? '')
+      const au = String(req.query.au ?? '')
+      if (!/^\d{8}$/.test(du) || !/^\d{8}$/.test(au) || du > au) {
+        res.status(400).json({ error: 'invalid_period', message: 'Période attendue : du=YYYYMMDD&au=YYYYMMDD' })
+        return
+      }
+
+      // DATE is stored as an 8-digit string, so a string range is a date
+      // range. SELECT * is safe on the header table (no accented columns);
+      // DATE / TYPE come back uppercase (reserved words).
+      const factures = await query<any>(
+        `SELECT TOP ${RAPPORT_MAX_ROWS + 1} * FROM facture
+         WHERE IDsociete = ${scope.societe} AND DATE >= '${du}' AND DATE <= '${au}'
+         ORDER BY numero DESC`,
+      )
+      const truncated = factures.length > RAPPORT_MAX_ROWS
+      if (truncated) factures.length = RAPPORT_MAX_ROWS
+
+      const ids = factures.map((f: any) => Number(f.IDfacture)).filter(Boolean)
+      const clientIds = factures.map((f: any) => Number(f.IDclient)).filter(Boolean)
+      const echeanceIds = Array.from(new Set(factures.map((f: any) => Number(f.IDecheance) || 0).filter((x: number) => x > 0)))
+
+      // Every lookup is flat and batched; the line totals are chunked so a
+      // year of factures never becomes one giant IN list.
+      const [clientNames, tvaMap, envoyeIds, modes, codes, echeances, totalsChunks] = await Promise.all([
+        resolveClientNames(clientIds),
+        loadTvaMap(),
+        loadEnvoyeIds('def', ids),
+        loadLabelMap('mode_paiement', 'IDmode_paiement', 'libelle'),
+        loadLabelMap('code_comptable', 'IDcode_comptable', 'libelle'),
+        Promise.all(echeanceIds.map(async (id) => [id, await loadEcheanceRule(id)] as const)),
+        Promise.all(chunks(ids, 400).map((c) => lineTotals('def', c))),
+      ])
+      const echeanceMap = new Map<number, EcheanceRule | null>(echeances)
+      const totalsMap = new Map<number, { total_ht: number; nb_lignes: number }>()
+      for (const m of totalsChunks) for (const [k, v] of m) totalsMap.set(k, v)
+
+      const rows: FactureRapportRow[] = factures.map((f: any) => {
+        const id = Number(f.IDfacture)
+        const totals = totalsMap.get(id) ?? { total_ht: 0, nb_lignes: 0 }
+        const tva = tvaMap.get(Number(f.IDtva)) ?? { valeur: 0, libelle: '' }
+        const tvaAmount = round2(totals.total_ht * (tva.valeur / 100))
+        const ech = echeanceMap.get(Number(f.IDecheance) || 0) ?? null
+        return {
+          id,
+          numero: displayNumero('def', id, f.numero),
+          date: f.DATE ?? null,
+          IDclient: Number(f.IDclient) || 0,
+          client_nom: clientNames.get(Number(f.IDclient)) ?? '',
+          type: Number(f.TYPE) || 1,
+          tva_rate: tva.valeur,
+          tva_label: tva.libelle,
+          total_ht: totals.total_ht,
+          total_tva: tvaAmount,
+          total_ttc: round2(totals.total_ht + tvaAmount),
+          nb_lignes: totals.nb_lignes,
+          est_envoye: envoyeIds.has(id) ? 1 : 0,
+          mode_paiement: modes.get(Number(f.IDmode_paiement) || 0) ?? '',
+          echeance_label: ech?.libelle?.trim() ?? '',
+          date_echeance: frDateToDigits(computeDateEcheance(f.DATE, ech)),
+          code_comptable: codes.get(Number(f.IDcode_comptable) || 0) ?? '',
+        }
+      })
+
+      res.json({ du, au, truncated, rows })
+    } catch (err) {
+      console.error('Error building factures rapport:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  }
+}
+
 function createFacturesRouter(scope: FacturesScope): RouterType {
   const router: RouterType = Router()
 
@@ -2407,3 +2543,8 @@ router.get('/:kind/:id/historique', async (req: Request, res: Response) => {
 // same code path; only `FacturesScope` differs. See index.ts for the mounts.
 export const facturesRouter: RouterType = createFacturesRouter(SCOPE_ETM)
 export const facturesTrmRouter: RouterType = createFacturesRouter(SCOPE_TRM)
+
+// Rapports › Factures — mounted by rapports.ts (ETM) and rapports-trm.ts (TRM)
+// under `/factures`, next to the finance routes of the same société.
+export const facturesRapportEtm = createFacturesRapportHandler(SCOPE_ETM)
+export const facturesRapportTrm = createFacturesRapportHandler(SCOPE_TRM)

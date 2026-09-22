@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -203,10 +204,22 @@ export function ClientsFacturation() {
   // Gates the invoice-lifecycle actions: generate proformas, batch-delete
   // proformas, convert proforma → definitive (edit_factures permission).
   const canEditFactures = useHasPermission('edit_factures')
+  // Deep link from Rapports › Factures: `?numero=8957` lands on that
+  // definitive facture. The list search matches a numero exactly, so seeding
+  // the search with it makes the master list hold that one document and the
+  // auto-select-first hook opens it — no separate "select by id" path, and
+  // no fight with the 200-row list cap on an old invoice. The param is
+  // consumed once (stripped below) so a later refresh shows the plain list.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedNumero = /^\d+$/.test(searchParams.get('numero') ?? '') ? searchParams.get('numero')! : ''
   const [bucket, setBucket] = useState<Kind>('def')
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState(linkedNumero)
+  const [debouncedQuery, setDebouncedQuery] = useState(linkedNumero)
+  useEffect(() => {
+    if (searchParams.has('numero')) setSearchParams({}, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [typeFilter, setTypeFilter] = useState<'all' | 'facture' | 'avoir'>('all')
   const [isEditing, setIsEditing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)

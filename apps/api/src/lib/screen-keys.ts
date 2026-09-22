@@ -146,6 +146,7 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
       { href: '/rapports/commandes-clients', label: 'Commandes clients' },
       { href: '/rapports/commandes-sst', label: 'Commandes sst' },
       { href: '/rapports/commandes-fils', label: 'Commandes fils' },
+      { href: '/rapports/factures', label: 'Factures' },
       { href: '/rapports/finance', label: 'Finance' },
     ],
   },

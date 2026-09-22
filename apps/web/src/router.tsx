@@ -75,6 +75,7 @@ import { ProspectsDemandes } from '@/pages/ProspectsDemandes'
 import { RapportCommandesSst } from '@/pages/RapportCommandesSst'
 import { RapportCommandesClients } from '@/pages/RapportCommandesClients'
 import { RapportCommandesFil } from '@/pages/RapportCommandesFil'
+import { RapportFactures } from '@/pages/RapportFactures'
 import { RapportFinance } from '@/pages/RapportFinance'
 
 // Réseau pages
@@ -152,6 +153,7 @@ export const router = createBrowserRouter([
       { path: 'rapports/commandes-clients', element: <RapportCommandesClients /> },
       { path: 'rapports/commandes-sst', element: <RapportCommandesSst /> },
       { path: 'rapports/commandes-fils', element: <RapportCommandesFil /> },
+      { path: 'rapports/factures', element: <RapportFactures /> },
       // The page renders its own "Accès restreint" state without the
       // view_rapport_finance permission; the API refuses too.
       { path: 'rapports/finance', element: <RapportFinance /> },

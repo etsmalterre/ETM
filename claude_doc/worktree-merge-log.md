@@ -10,6 +10,25 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/rapport-facture (LIVA #1182)
+**Rapports › Factures — le tableau des factures de l'ancienne application** (Laetitia :
+la colonne TVA lui servait toute la journée, la liste de Clients › Facturation ne peut pas
+la porter). Nouvel écran `/rapports/factures` (`pages/RapportFactures.tsx`, forme Tableau des
+autres rapports) : une ligne par facture **définitive** d'une période (défaut : l'année en
+cours), numéro / date / client / type / HT / taux / TVA / TTC / envoyée / paiement / échéance
++ date calculée / compte de vente, recherche, filtres type / taux / non envoyées, export Excel
+avec sélecteur de colonnes, **pied de page avec les totaux signés (avoirs négatifs) et la
+répartition par taux** (`lib/rapport-factures-agg.ts` + test). Clic sur une ligne →
+`/clients/facturation?numero=` : la fiche sème sa recherche avec le numéro (correspondance
+exacte du list endpoint), la liste ne tient que ce document, l'auto-sélection l'ouvre ; le
+paramètre est consommé. API : `GET /rapports/factures?du=&au=` → `{ du, au, truncated,
+rows }`, `createFacturesRapportHandler(scope)` dans `routes/factures.ts` (réutilise
+`lineTotals` / `displayNumero` / `loadEnvoyeIds` / `computeDateEcheance` du grand livre),
+monté par `rapports.ts` et `rapports-trm.ts` ; plafond 3 000 lignes, totaux par paquets de
+400 ids. L'écran prend `basePath` comme Finance — le câblage web TRM (router, nav,
+`screen-keys-trm.ts`) reste à faire dans le dépôt TRM. Entrée `screen-keys.ts` +
+`navigation.ts` (garde `check-screen-access.ts` OK).
+
 ## 2026-09-21 — feat/refresh (LIVA #1178)
 **Sous-traitants › Commandes : une commande sst lancée depuis Clients › Commandes apparaît
 aussitôt.** Les dialogues ennoblisseur / tricoteur de l'onglet Approvisionnement ne

@@ -42,8 +42,15 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { createFinanceRouter, FINANCE_SCOPE_ETM } from '../lib/finance-common.js'
 import { valoriserStock } from '../lib/valorisation-stock.js'
 import { allConsumedEcruIds } from '../lib/fini-sources.js'
+import { facturesRapportEtm } from './factures.js'
 
 export const rapportsRouter: RouterType = Router()
+
+// `/factures` — Rapports › Factures (legacy `FEN_Factures.wdw` grid): every
+// definitive facture of a date range with the invoice arithmetic of
+// factures.ts. The handler is a scoped factory living next to the ledger it
+// reads; rapports-trm.ts mounts the société-2 instance at the same path.
+rapportsRouter.get('/factures', facturesRapportEtm)
 
 // Cap the number of commandes scanned when including soldées (the full
 // history is several thousand lines). Open-only is naturally bounded.

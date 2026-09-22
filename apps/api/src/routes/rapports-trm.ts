@@ -20,7 +20,12 @@
 // The screen is ETM's file, imported by the TRM web through its `@etm` alias
 // with `basePath="/rapports-trm/finance"` — the one thing that differs between
 // the two mounts on the frontend, as `FinanceScope` is on the backend.
+//   Rapports › Factures  → GET /factures?du=&au=   (facturesRapportTrm — the
+//                          société-2 instance of factures.ts' rapport handler,
+//                          same path as ETM's `/rapports/factures`)
 import type { Router as RouterType } from 'express'
 import { createFinanceRouter, FINANCE_SCOPE_TRM } from '../lib/finance-common.js'
+import { facturesRapportTrm } from './factures.js'
 
 export const rapportsTrmRouter: RouterType = createFinanceRouter(FINANCE_SCOPE_TRM)
+rapportsTrmRouter.get('/factures', facturesRapportTrm)

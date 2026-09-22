@@ -275,6 +275,7 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Commandes clients', href: '/rapports/commandes-clients' },
       { title: 'Commandes sst', href: '/rapports/commandes-sst' },
       { title: 'Commandes fils', href: '/rapports/commandes-fils' },
+      { title: 'Factures', href: '/rapports/factures' },
       { title: 'Finance', href: '/rapports/finance', permission: 'view_rapport_finance' },
     ],
   },
@@ -359,6 +360,7 @@ export const routeTitles: Record<string, string> = {
   '/rapports/commandes-clients': 'Commandes clients',
   '/rapports/commandes-sst': 'Commandes sst',
   '/rapports/commandes-fils': 'Commandes fils',
+  '/rapports/factures': 'Factures',
   '/rapports/finance': 'Finance',
   // Réseau
   '/reseau': 'Réseau',
