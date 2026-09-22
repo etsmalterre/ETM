@@ -1,0 +1,2003 @@
+{
+"pointage.hors_prod": {
+"date": "DATE",
+"duree": "duree",
+"id": "id",
+"id_salarie": "id_salarie"
+},
+"pointage.lst_horaire": {
+"date": "DATE",
+"debut": "debut",
+"debut_pause1": "debut_pause1",
+"debut_pause2": "debut_pause2",
+"fin": "fin",
+"fin_pause1": "fin_pause1",
+"fin_pause2": "fin_pause2",
+"id": "id",
+"id_salarie": "id_salarie",
+"is_deleted": "is_deleted"
+},
+"pointage.lst_info_sal_annee": {
+"annee": "annee",
+"commentaire": "commentaire",
+"id": "id",
+"id_salarie": "id_salarie",
+"info": "info",
+"is_deleted": "is_deleted"
+},
+"pointage.lst_lissage": {
+"annee": "annee",
+"cumul_semaine": "cumul_semaine",
+"dimanche_total": "dimanche_total",
+"dimanche_type": "dimanche_type",
+"id": "id",
+"id_salarie": "id_salarie",
+"is_deleted": "is_deleted",
+"jeudi_total": "jeudi_total",
+"jeudi_type": "jeudi_type",
+"lundi_total": "lundi_total",
+"lundi_type": "lundi_type",
+"mardi_total": "mardi_total",
+"mardi_type": "mardi_type",
+"mercredi_total": "mercredi_total",
+"mercredi_type": "mercredi_type",
+"num_semaine": "num_semaine",
+"samedi_total": "samedi_total",
+"samedi_type": "samedi_type",
+"vendredi_total": "vendredi_total",
+"vendredi_type": "vendredi_type"
+},
+"pointage.lst_message": {
+"date_fin": "date_fin",
+"id": "id",
+"id_salarie": "id_salarie",
+"is_deleted": "is_deleted",
+"message": "MESSAGE"
+},
+"pointage.lst_pointage": {
+"date": "DATE",
+"debut": "debut",
+"debut_pause1": "debut_pause1",
+"debut_pause2": "debut_pause2",
+"fin": "fin",
+"fin_pause1": "fin_pause1",
+"fin_pause2": "fin_pause2",
+"id": "id",
+"id_salarie": "id_salarie",
+"is_deleted": "is_deleted"
+},
+"pointage.lst_prev": {
+"annee": "annee",
+"commentaire": "commentaire",
+"id": "id",
+"id_salarie": "id_salarie",
+"is_deleted": "is_deleted",
+"num_semaine": "num_semaine",
+"prev": "prev"
+},
+"pointage.lst_salarie": {
+"id": "id",
+"id_mps": "id_mps",
+"is_deleted": "is_deleted",
+"login": "login",
+"nom": "nom",
+"prenom": "prenom",
+"useinratio": "useInRatio"
+},
+"pointage.pointage": {
+"date": "DATE",
+"en_poste": "en_poste",
+"idbonnetier": "IDbonnetier",
+"idpointage": "IDpointage"
+},
+"public.abonnement_notif": {
+"description": "description",
+"icone": "icone",
+"idabonnement_notif": "IDabonnement_notif",
+"idsociete": "IDsociete",
+"nom": "nom"
+},
+"public.abonnement_user": {
+"idabonnement": "IDabonnement",
+"idabonnement_user": "IDabonnement_user",
+"idutilisateur": "IDutilisateur"
+},
+"public.action_qualite": {
+"date_creation": "date_creation",
+"description": "Description",
+"idaction_qualite": "IDaction_qualite",
+"titre": "Titre"
+},
+"public.activite": {
+"idactivite": "IDactivite",
+"nom": "nom"
+},
+"public.adresse": {
+"adresse1": "adresse1",
+"adresse2": "adresse2",
+"adresse3": "adresse3",
+"commentaire": "commentaire",
+"cp": "cp",
+"est_defaut": "est_defaut",
+"est_defaut_facturation": "est_defaut_facturation",
+"est_defaut_livraison": "est_defaut_livraison",
+"est_visible": "est_visible",
+"idadresse": "IDadresse",
+"idclient": "IDclient",
+"identreprise": "IDentreprise",
+"idfournisseur": "IDfournisseur",
+"idsous_traitant": "IDsous_traitant",
+"nom": "nom",
+"pays": "pays",
+"ville": "ville"
+},
+"public.affectation_cmd_tricotage": {
+"idaffectation_cmd_tricotage": "IDaffectation_cmd_tricotage",
+"idligne_commande_client": "IDligne_commande_client",
+"idligne_commande_sous_traitant": "IDligne_commande_sous_traitant",
+"poids_affecte": "poids_affecte"
+},
+"public.ajeol": {
+"annee": "annee",
+"date_echeance": "date_echeance",
+"date_reglement": "date_reglement",
+"fre_reglee": "fre_reglee",
+"idajeol": "IDajeol",
+"idclient": "IDclient",
+"metrage_commande": "metrage_commande",
+"metrage_facture": "metrage_facture",
+"mois": "mois",
+"montant_ajeol": "montant_ajeol",
+"montant_facture": "montant_facture",
+"num_commande": "num_commande",
+"num_facture": "num_facture",
+"pourcentage": "pourcentage",
+"ref": "ref",
+"regle_ajeol": "regle_ajeol"
+},
+"public.asso_action_mention": {
+"idaction_qualite": "IDaction_qualite",
+"idasso_action_mention": "IDasso_action_mention"
+},
+"public.asso_article_machine": {
+"idasso_article_machine": "IDasso_article_machine",
+"idmachine_confection": "IDmachine_confection",
+"idref_article": "IDref_article"
+},
+"public.asso_article_taille": {
+"idasso_article_taille": "IDasso_article_taille",
+"idref_article": "IDref_article",
+"idunite_taille": "IDunite_taille"
+},
+"public.asso_article_textile": {
+"idasso_article_textile": "IDasso_article_textile",
+"idref_article": "IDref_article",
+"idref_fini1": "IDref_fini1",
+"idref_fini2": "IDref_fini2",
+"idref_fini3": "IDref_fini3"
+},
+"public.asso_colorisfil_frs": {
+"idasso_colorisfil_frs": "IDasso_colorisfil_frs",
+"idcolori_fil": "IDcolori_fil",
+"idfournisseur": "IDfournisseur"
+},
+"public.asso_fil_lignecmdsst": {
+"idasso_fil_lignecmdsst": "IDasso_fil_ligneCmdSST",
+"idligne_commande_sous_traitant": "IDligne_commande_sous_traitant",
+"idstock_fil": "IDstock_fil",
+"quantite": "quantite"
+},
+"public.asso_fil_matiere": {
+"bio": "bio",
+"idref_fil": "IDRef_fil",
+"pourcentage": "pourcentage"
+},
+"public.asso_fil_of": {
+"idasso_fil_of": "IDasso_fil_of",
+"idcolori_fil": "IDcolori_fil",
+"idordre_fabrication": "IDordre_fabrication",
+"idref_fil": "IDref_fil",
+"idstock_fil": "IDstock_fil",
+"pourcentage": "pourcentage"
+},
+"public.asso_fil_stock_tm": {
+"idasso_fil_stock_tm": "IDasso_fil_stock_tm",
+"idstock_ecru": "IDstock_ecru",
+"idstock_fil": "IDstock_fil"
+},
+"public.asso_fil_tarif": {
+"idasso_fil_tarif": "IDasso_fil_tarif",
+"idcolori_fil": "IDcolori_fil",
+"idref_fil": "IDref_fil",
+"idref_tarif": "IDref_tarif",
+"pourcentage": "pourcentage",
+"prix": "prix"
+},
+"public.asso_lot_dq": {
+"idasso_lot_dq": "IDasso_lot_dq",
+"idsuivilot": "IDsuivilot"
+},
+"public.asso_ref_catalogue_categorie": {
+"idasso_ref_catalogue_categorie": "IDasso_ref_catalogue_categorie",
+"idref_catalogue": "IDRef_Catalogue"
+},
+"public.asso_tarif_client": {
+"conditions_livraison": "conditions_livraison",
+"conditions_reglement": "conditions_reglement",
+"conditions_validite": "conditions_validite",
+"designation": "designation",
+"idasso_tarif_client": "IDasso_tarif_client",
+"idclient": "IDclient",
+"idref_tarif": "IDref_tarif",
+"notes": "notes",
+"port_fixe": "port_fixe",
+"port_pct": "port_pct",
+"remarques": "remarques"
+},
+"public.asso_traitement_tarif": {
+"coeff": "coeff",
+"date_saisie": "date_saisie",
+"idasso_traitement_tarif": "IDasso_traitement_tarif",
+"idref_tarif": "IDref_tarif",
+"idtraitement": "IDtraitement",
+"metrage": "metrage",
+"pv_calcule": "pv_calcule",
+"pv_saisi": "pv_saisi"
+},
+"public.asso_traitement_tarif_client": {
+"coeff": "coeff",
+"date_saisie": "date_saisie",
+"desig_client": "desig_client",
+"idasso_tarif_client": "IDasso_tarif_client",
+"idasso_traitement_tarif_client": "IDasso_traitement_tarif_client",
+"idtraitement": "IDtraitement",
+"metrage": "metrage",
+"pv_calcule": "pv_calcule",
+"pv_saisi": "pv_saisi"
+},
+"public.bon_transfert": {
+"commentaire": "commentaire",
+"date": "DATE",
+"est_valide": "est_valide",
+"idadresse_destination": "IDadresse_destination",
+"idbon_transfert": "IDbon_transfert",
+"idmagasin_destination": "IDmagasin_destination",
+"idmagasin_source": "IDmagasin_source",
+"idtransporteur": "IDtransporteur",
+"type_matiere": "type_matiere"
+},
+"public.bonnetier": {
+"date_entree": "date_entree",
+"date_sortie": "date_sortie",
+"idbonnetier": "IDbonnetier",
+"idrole_employe": "IDrole_employe",
+"nom": "nom",
+"observation": "observation",
+"observation_rh": "observation_rh",
+"photo": "photo",
+"preference": "preference",
+"regleur": "regleur",
+"telephone": "telephone"
+},
+"public.cage": {
+"emplacement": "emplacement",
+"idcage": "IDcage",
+"magasin": "magasin"
+},
+"public.categorie_defaut": {
+"idcategorie_defaut": "IDcategorie_defaut",
+"nom": "nom"
+},
+"public.categorie_produit": {
+"nom": "nom",
+"ordre": "ordre"
+},
+"public.cause_defaut": {
+"idcause_defaut": "IDcause_defaut",
+"lot": "lot",
+"metrage": "metrage",
+"nom": "nom",
+"observation": "observation",
+"poids": "poids"
+},
+"public.certificat": {
+"date_expiration": "date_expiration",
+"debut_validite": "debut_validite",
+"fichier": "fichier",
+"idcertificat": "IDcertificat",
+"idfournisseur": "IDfournisseur",
+"idsous_traitant": "IDsous_traitant",
+"idtype_doc": "IDtype_doc",
+"nom": "nom",
+"numero_ref": "numero_ref"
+},
+"public.chute_liage": {
+"idchute_liage": "IDchute_liage",
+"idcomposition_ecru1": "IDcomposition_ecru1",
+"idcomposition_ecru2": "IDcomposition_ecru2",
+"idref_ecru": "IDref_ecru",
+"lfa1": "lfa1",
+"lfa2": "lfa2",
+"num_chute": "num_chute"
+},
+"public.client": {
+"clecomp": "CleComp",
+"client_interne": "client_interne",
+"commentaire": "commentaire",
+"compte": "compte",
+"date_creation": "date_creation",
+"dernier_contact": "dernier_contact",
+"domiciliation": "domiciliation",
+"est_visible": "est_visible",
+"fax": "fax",
+"idactivite": "IDactivite",
+"idclient": "IDclient",
+"idcode_comptable": "IDcode_comptable",
+"idecheance": "IDecheance",
+"idmode_paiement": "IDmode_paiement",
+"idsecteur_activite": "IDsecteur_activite",
+"idsociete": "IDsociete",
+"idtransporteur": "IDtransporteur",
+"idtva": "IDtva",
+"inclurerapportqualite": "inclureRapportQualite",
+"journal_commercial": "journal_commercial",
+"login": "login",
+"mot_de_passe": "mot_de_passe",
+"nom": "nom",
+"num_tva": "num_tva",
+"pct_ajeol": "pct_ajeol",
+"pct_remise": "pct_remise",
+"rib": "rib",
+"siren": "siren",
+"tel": "tel"
+},
+"public.code_comptable": {
+"est_defaut": "est_defaut",
+"est_visible": "est_visible",
+"idcode_comptable": "IDcode_comptable",
+"idsociete": "IDsociete",
+"libelle": "libelle",
+"numero": "numero"
+},
+"public.code_sp": {
+"article_client": "article_client",
+"article_fournisseur": "article_fournisseur",
+"code_ean_13": "code_ean_13",
+"coloris": "coloris",
+"idcode_sp": "IDcode_sp",
+"libelle_article": "libelle_article",
+"num_bain": "num_bain"
+},
+"public.colori_ecru": {
+"commentaire": "commentaire",
+"idcolori_ecru": "IDcolori_ecru",
+"idref_ecru": "IDref_ecru",
+"idvignette_coloris": "IDvignette_coloris",
+"photo": "photo",
+"reference": "reference",
+"suivis": "suivis"
+},
+"public.colori_fil": {
+"commentaire": "commentaire",
+"idcolori_fil": "IDcolori_fil",
+"idfournisseur": "IDfournisseur",
+"idref_fil": "IDref_fil",
+"prix_kg": "prix_kg",
+"reference": "reference",
+"stock_mini": "stock_mini"
+},
+"public.colori_fini": {
+"idcolori_ecru": "IDcolori_ecru",
+"idcolori_fini": "IDcolori_fini",
+"idgamme_coloris": "IDgamme_coloris",
+"idref_fini_colori": "IDref_fini_colori"
+},
+"public.coloris_guide_fil": {
+"idcolori_fil": "IDcolori_fil",
+"idcoloris_guide_fil": "IDcoloris_guide_fil",
+"idcoloris_rectiligne": "IDcoloris_rectiligne",
+"idguide_fil_rectiligne": "IDguide_fil_rectiligne"
+},
+"public.coloris_rectiligne": {
+"coloris": "coloris",
+"idcoloris_rectiligne": "IDcoloris_rectiligne",
+"idref_rectiligne": "IDref_rectiligne"
+},
+"public.coloris_teint": {
+"idcoloris_teint": "IDcoloris_teint",
+"reference": "reference"
+},
+"public.coloristeint_reffini": {
+"idcoloris_teint": "IDcoloris_teint",
+"idcoloristeint_reffini": "IDColorisTeint_RefFini",
+"idref_fini": "IDref_fini"
+},
+"public.coloristeint_teinturier": {
+"idcoloris_teint": "IDcoloris_teint",
+"idcoloristeint_teinturier": "IDColorisTeint_Teinturier",
+"idsous_traitant": "IDsous_traitant"
+},
+"public.commande_client": {
+"attente_paiement": "attente_paiement",
+"commentaire": "commentaire",
+"commentaire_interne": "commentaire_interne",
+"date_commande": "date_commande",
+"date_demande_paiement": "date_demande_paiement",
+"donation": "donation",
+"est_soldee": "est_soldee",
+"frais_port": "frais_port",
+"idadresse_facturation": "IDadresse_facturation",
+"idadresse_livraison": "IDadresse_livraison",
+"idclient": "IDclient",
+"idcommande_client": "IDcommande_client",
+"idcommande_etm": "IDcommande_ETM",
+"iddossier": "IDdossier",
+"idecheance": "IDecheance",
+"idmode_paiement": "IDmode_paiement",
+"idsociete": "IDsociete",
+"numero": "numero",
+"observations_facturation": "observations_facturation",
+"ref_client": "ref_client",
+"remise": "remise"
+},
+"public.commande_fil": {
+"commentaire": "commentaire",
+"date_commande": "date_commande",
+"etat": "etat",
+"idadresse_fournisseur": "IDadresse_fournisseur",
+"idadresse_livraison": "IDadresse_livraison",
+"idcommande_fil": "IDcommande_fil",
+"idecheance": "IDecheance",
+"idfournisseur": "IDfournisseur",
+"idmode_paiement": "IDmode_paiement",
+"journal": "journal"
+},
+"public.commande_previsionnelle": {
+"idcommande_previsionnelle": "IDcommande_previsionnelle",
+"iddate_previsionnelle": "IDdate_previsionnelle",
+"idref_client_colori": "IDref_client_colori",
+"quantite": "quantite"
+},
+"public.commande_sous_traitant": {
+"commentaire": "commentaire",
+"date_commande": "date_commande",
+"date_notif": "date_notif",
+"est_soldee": "est_soldee",
+"idadresse_livraison": "IDadresse_livraison",
+"idadresse_sous_traitant": "IDadresse_sous_traitant",
+"idcommande_client": "IDcommande_client",
+"idcommande_sous_traitant": "IDcommande_sous_traitant",
+"iddossier": "IDdossier",
+"idligne_commande_client": "IDligne_commande_client",
+"idsous_traitant": "IDsous_traitant",
+"journal": "journal"
+},
+"public.commentaire_formation": {
+"commentaire": "commentaire",
+"date": "DATE",
+"idbonnetier": "IDbonnetier",
+"idcommentaire_formation": "IDcommentaire_formation",
+"iditem_formation": "IDitem_formation"
+},
+"public.competence": {
+"idcompetence": "IDcompetence",
+"reference": "reference"
+},
+"public.completion_item": {
+"date": "DATE",
+"idbonnetier": "IDbonnetier",
+"idcompletion_item": "IDcompletion_item",
+"iditem_formation": "IDitem_formation"
+},
+"public.composition_ecru": {
+"commentaire": "commentaire",
+"idcolori_ecru": "IDcolori_ecru",
+"idcolori_fil": "IDcolori_fil",
+"idcomposition_ecru": "IDcomposition_ecru",
+"idref_ecru": "IDref_ecru",
+"idref_fil": "IDref_fil",
+"pourcentage": "pourcentage"
+},
+"public.compte_compta": {
+"description": "Description",
+"frais_variable": "frais_variable",
+"id_societe": "id_societe",
+"idcompte_compta": "IDcompte_compta",
+"libelle": "libelle",
+"numero": "numero"
+},
+"public.conformite_action": {
+"idconfomite_action": "IDconfomite_action",
+"idligne_commande_sous_traitant": "IDligne_commande_sous_traitant"
+},
+"public.conso_fil": {
+"conso": "conso",
+"date_debut": "date_debut",
+"date_fin": "date_fin"
+},
+"public.contact": {
+"commentaire": "commentaire",
+"envoi_bl": "envoi_bl",
+"envoi_bt": "envoi_bt",
+"envoi_commande": "envoi_commande",
+"envoi_facture": "envoi_facture",
+"envoi_soumission": "envoi_soumission",
+"est_defaut": "est_defaut",
+"est_visible": "est_visible",
+"idclient": "IDclient",
+"idcontact": "IDcontact",
+"identreprise": "IDentreprise",
+"idfournisseur": "IDfournisseur",
+"idsous_traitant": "IDsous_traitant",
+"mail": "mail",
+"nom": "nom",
+"prenom": "prenom",
+"tel": "tel"
+},
+"public.contexte": {
+"idcontexte": "IDcontexte",
+"nom": "nom"
+},
+"public.contexture": {
+"idcontexture": "IDcontexture",
+"nom": "nom"
+},
+"public.contrat_tarif": {
+"date_debut": "date_debut",
+"date_expiration": "date_expiration",
+"idcontrat_tarif": "IDcontrat_tarif",
+"idref_client_colori": "IDref_client_colori"
+},
+"public.controle_titrage": {
+"date": "DATE",
+"idcontrole_titrage": "IDcontrole_titrage",
+"idstock_fil": "IDstock_fil",
+"idunite_titrage": "IDunite_titrage",
+"nb_brin": "nb_brin",
+"nb_fil": "nb_fil",
+"titrage": "titrage"
+},
+"public.coupe_article": {
+"idcoupe_article": "IDcoupe_article",
+"idref_article": "IDref_article",
+"nombre": "nombre",
+"reference": "reference"
+},
+"public.coupe_textile_modele": {
+"idcoupe_article": "IDcoupe_article",
+"idcoupe_textile_modele": "IDcoupe_textile_modele",
+"idtextile_modele": "IDtextile_modele"
+},
+"public.data_bl_tricotbot": {
+"date": "DATE",
+"iddata_bl_tricotbot": "IDdata_bl_tricotbot",
+"idligne_commande_sous_traitant": "IDligne_commande_sous_traitant",
+"lot": "lot",
+"metrage": "metrage",
+"num_piece": "num_piece",
+"observation": "observation",
+"poids": "poids"
+},
+"public.date_previsionnelle": {
+"date": "DATE",
+"idclient": "IDclient",
+"iddate_previsionnelle": "IDdate_previsionnelle"
+},
+"public.debug_log": {
+"appli": "appli",
+"code_erreur": "code_erreur",
+"date": "DATE",
+"description": "description",
+"iddebug_log": "IDdebug_log",
+"terminal": "terminal",
+"utilisateur": "utilisateur"
+},
+"public.defaut_qualite": {
+"date": "DATE",
+"description": "description",
+"iddefaut_qualite": "IDdefaut_qualite",
+"idspotteur": "IDSpotteur",
+"nombre": "nombre",
+"reference": "reference",
+"taille_cm": "taille_cm",
+"type_defaut": "type_defaut",
+"type_reference": "Type_Reference",
+"type_spotteur": "Type_Spotteur"
+},
+"public.defaut_textile": {
+"idcategorie_defaut": "IDcategorie_defaut",
+"iddefaut_textile": "IDdefaut_textile",
+"nom": "nom"
+},
+"public.desiderata": {
+"date": "DATE",
+"declare": "declare",
+"description": "description",
+"idbonnetier": "IDbonnetier",
+"iddesiderata": "IDdesiderata",
+"justifie": "justifie"
+},
+"public.designation_client": {
+"archive": "archive",
+"associee": "associee",
+"date_modification": "date_modification",
+"designation": "designation",
+"idclient": "IDclient",
+"iddesignation_client": "IDdesignation_client",
+"idref_ecru": "IDref_ecru",
+"idref_fini": "IDref_fini",
+"soumettre": "soumettre",
+"unite": "unite"
+},
+"public.devis_etm": {
+"commentaire": "commentaire",
+"commentaire_interne": "commentaire_interne",
+"date": "DATE",
+"date_expiration": "date_expiration",
+"est_soldee": "est_soldee",
+"frais_port": "frais_port",
+"idadresse_facturation": "IDadresse_facturation",
+"idadresse_livraison": "IDadresse_livraison",
+"idclient": "IDclient",
+"idcommande_etm": "IDcommande_ETM",
+"iddevis_etm": "IDDevis_etm",
+"idecheance": "IDecheance",
+"idmode_paiement": "IDmode_paiement",
+"idprospect": "IDprospect",
+"numero": "numero",
+"observations_facturation": "observations_facturation",
+"ref_client": "ref_client",
+"remise": "remise"
+},
+"public.doc_qualite": {
+"fichier": "fichier",
+"idprospect": "IDprospect",
+"idsuivilot": "IDsuivilot",
+"nom": "nom"
+},
+"public.dossier": {
+"commentaire": "commentaire",
+"est_termine": "est_termine",
+"iddossier": "IDdossier",
+"nom": "nom"
+},
+"public.dossier_qualite": {
+"action": "action",
+"date": "DATE",
+"description": "description",
+"envoifnc": "envoiFNC",
+"idclient": "IDclient",
+"iddefaut_textile": "IDdefaut_textile",
+"iddossier_qualite": "IDdossier_qualite",
+"idreference": "IDreference",
+"idsuivilot": "IDsuivilot",
+"journal": "journal",
+"messagefnc": "messageFNC",
+"reference": "reference",
+"reponsefnc": "reponseFNC",
+"type_reference": "Type_Reference"
+},
+"public.echeance": {
+"est_defaut": "est_defaut",
+"est_visible": "est_visible",
+"idecheance": "IDecheance",
+"jour": "jour",
+"libelle": "libelle",
+"nb_jours": "nb_jours",
+"type": "TYPE"
+},
+"public.entreprise": {
+"commentaire": "commentaire",
+"identreprise": "IDentreprise",
+"nom": "nom"
+},
+"public.entreprise_competence": {
+"idcompetence": "IDcompetence",
+"identreprise": "IDentreprise"
+},
+"public.envoi_email": {
+"adresse": "adresse",
+"date": "DATE",
+"idenvoi_email": "IDenvoi_email",
+"idreference": "IDreference",
+"idtype_doc": "IDtype_doc",
+"invalide": "invalide",
+"notes": "notes"
+},
+"public.etat_stock_fini": {
+"idetat_stock_fini": "IDetat_stock_fini",
+"libelle": "libelle"
+},
+"public.etude_col": {
+"commentaire": "commentaire",
+"date_derniere_action": "date_derniere_action",
+"date_reception_type": "date_reception_type",
+"desig_client": "desig_client",
+"idclient": "IDclient",
+"idetude_col": "IDetude_col",
+"idref_fini": "IDref_fini",
+"idref_fini_colori": "IDref_fini_colori",
+"idsous_traitant": "IDsous_traitant",
+"journal": "journal",
+"libelle": "libelle",
+"num_commande": "num_commande",
+"statut_col": "statut_col"
+},
+"public.evenement_machine": {
+"commentaire": "commentaire",
+"date": "DATE",
+"etat": "etat",
+"idevenement_machine": "IDevenement_machine",
+"idmachine": "IDmachine",
+"meta": "meta",
+"nb_tour": "nb_tour"
+},
+"public.evenement_piece": {
+"appareil": "appareil",
+"date": "DATE",
+"evenement": "evenement",
+"idbonnetier": "IDbonnetier",
+"idevenement_piece": "IDevenement_piece",
+"idpiece_production": "IDpiece_production",
+"idstock_ecru": "IDstock_ecru",
+"observation": "observation"
+},
+"public.expediteur": {
+"compte": "compte",
+"est_defaut": "est_defaut",
+"idexpediteur": "IDexpediteur",
+"idsociete": "IDsociete",
+"mail": "mail",
+"nom": "nom",
+"password": "PASSWORD",
+"port": "port",
+"signature": "signature",
+"smtp": "smtp"
+},
+"public.expedition": {
+"affiche_observations": "affiche_observations",
+"date": "DATE",
+"donation": "donation",
+"est_facture": "est_facture",
+"est_valide": "est_valide",
+"idadresse": "IDadresse",
+"idcommande_client": "IDcommande_client",
+"idcontact": "IDcontact",
+"idexpedition": "IDexpedition",
+"idsociete": "IDsociete",
+"idtransporteur": "IDtransporteur",
+"inclurerapportqualite": "inclureRapportQualite",
+"observation_bl": "observation_bl"
+},
+"public.expedition_divers": {
+"date": "DATE",
+"est_facture": "est_facture",
+"est_valide": "est_valide",
+"idadresse": "IDadresse",
+"idclient": "IDclient",
+"idcommande_client": "IDcommande_client",
+"idexpedition_divers": "IDexpedition_divers",
+"idtransporteur": "IDtransporteur",
+"ref_client": "ref_client"
+},
+"public.facture": {
+"date": "DATE",
+"idadresse": "IDadresse",
+"idclient": "IDclient",
+"idcode_comptable": "IDcode_comptable",
+"idcommande_client": "IDcommande_client",
+"idecheance": "IDecheance",
+"idexpedition_divers": "IDexpedition_divers",
+"idfacture": "IDfacture",
+"idmode_paiement": "IDmode_paiement",
+"idsociete": "IDsociete",
+"idtva": "IDtva",
+"num_tva": "num_tva",
+"numero": "numero",
+"type": "TYPE"
+},
+"public.facture_prov": {
+"date": "DATE",
+"idadresse": "IDadresse",
+"idclient": "IDclient",
+"idcode_comptable": "IDcode_comptable",
+"idecheance": "IDecheance",
+"idexpedition_divers": "IDexpedition_divers",
+"idfacture_prov": "IDfacture_prov",
+"idmode_paiement": "IDmode_paiement",
+"idsociete": "IDsociete",
+"idtva": "IDtva",
+"num_tva": "num_tva",
+"numero": "numero",
+"type": "TYPE"
+},
+"public.fil_incorpore": {
+"idfil_incorpore": "IDfil_incorpore",
+"idordre_fabrication": "IDordre_fabrication",
+"idstock_fil": "IDstock_fil",
+"poids": "poids"
+},
+"public.fil_ref_echantillon": {
+"idcolori_fil": "IDcolori_fil",
+"idfil_ref_echantillon": "IDfil_ref_echantillon",
+"idref_echantillon": "IDref_echantillon",
+"idref_fil": "IDref_fil",
+"pourcentage": "pourcentage"
+},
+"public.fournisseur": {
+"commentaire": "commentaire",
+"est_visible": "est_visible",
+"fax": "fax",
+"idfournisseur": "IDfournisseur",
+"idsociete": "IDsociete",
+"nom": "nom",
+"tel": "tel"
+},
+"public.fourniture_confection": {
+"idfourniture_confection": "IDfourniture_confection",
+"reference": "reference"
+},
+"public.fourniture_fournisseur": {
+"idfournisseur": "IDfournisseur",
+"idfourniture_confection": "IDfourniture_confection",
+"idfourniture_fournisseur": "IDfourniture_fournisseur"
+},
+"public.fourniture_option": {
+"idfourniture_confection": "IDfourniture_confection",
+"idfourniture_option": "IDfourniture_option",
+"idoption_confection": "IDoption_confection"
+},
+"public.gamme_coloris": {
+"gots": "GOTS",
+"idgamme_coloris": "IDgamme_coloris",
+"idref_catalogue": "IDRef_Catalogue",
+"idteinture": "IDteinture",
+"nom": "nom"
+},
+"public.gamme_coloris_fini": {
+"idgamme_coloris": "IDgamme_coloris",
+"idgamme_coloris_fini": "IDgamme_coloris_fini",
+"idref_fini": "IDref_fini"
+},
+"public.ged": {
+"commentaire": "commentaire",
+"fichier": "fichier",
+"idcommande_client": "IDcommande_client",
+"idcommande_sous_traitant": "IDcommande_sous_traitant",
+"iddossier": "IDdossier",
+"idged": "IDged",
+"idreference": "IDreference",
+"idtype_doc": "IDtype_doc",
+"nom": "nom"
+},
+"public.guide_fil_rectiligne": {
+"idguide_fil_rectiligne": "IDguide_fil_rectiligne",
+"idref_fil": "IDref_fil",
+"idref_rectiligne": "IDref_rectiligne",
+"montage": "montage",
+"nb_fil": "nb_fil",
+"pourcentage": "pourcentage"
+},
+"public.hors_prod": {
+"date": "DATE",
+"duree": "duree",
+"id": "id",
+"id_salarie": "id_salarie"
+},
+"public.inventaire_compta": {
+"date": "DATE",
+"idinventaire_compta": "IDinventaire_compta",
+"idtype_stock": "IDtype_stock",
+"prix_achat": "prix_achat",
+"quantite": "quantite",
+"unite": "unite",
+"valeur_deprecie": "valeur_deprecie"
+},
+"public.item_formation": {
+"iditem_formation": "IDitem_formation",
+"item": "item",
+"ordre": "ordre"
+},
+"public.ligne_cmd_confection": {
+"commentaire": "commentaire",
+"idcommande_client": "IDcommande_client",
+"idligne_cmd_confection": "IDligne_cmd_confection",
+"idmodel_article": "IDmodel_article",
+"idref_article": "IDref_article"
+},
+"public.ligne_commande_client": {
+"commentaire": "commentaire",
+"date_livraison": "date_livraison",
+"delai_reel": "delai_reel",
+"idcolori": "IDcolori",
+"idcommande_client": "IDcommande_client",
+"iddesignation_client": "IDdesignation_client",
+"idligne_commande_client": "IDligne_commande_client",
+"idligne_commande_etm": "IDligne_commande_ETM",
+"idmachine_planning": "IDmachine_planning",
+"idreference": "IDreference",
+"idvariation1": "IDVariation1",
+"idvariation2": "IDVariation2",
+"planning_depart": "planning_depart",
+"planning_fin": "planning_fin",
+"poids": "poids",
+"prix": "prix",
+"quantite": "quantite",
+"type": "TYPE",
+"unite": "unite"
+},
+"public.ligne_commande_sous_traitant": {
+"commentaire": "commentaire",
+"date_delai": "date_delai",
+"date_livraison": "date_livraison",
+"date_notif": "date_notif",
+"date_reception": "date_reception",
+"idcoloris": "IDColoris",
+"idcommande_sous_traitant": "IDcommande_sous_traitant",
+"idligne_commande_sous_traitant": "IDligne_commande_sous_traitant",
+"idreference": "IDreference",
+"num_facture": "num_facture",
+"prix": "prix",
+"quantite": "quantite",
+"sstatut": "sstatut",
+"type": "TYPE",
+"unite": "unite"
+},
+"public.ligne_devis_etm": {
+"commentaire": "commentaire",
+"date_livraison": "date_livraison",
+"delai_reel": "delai_reel",
+"idcolori": "IDcolori",
+"iddesignation_client": "IDdesignation_client",
+"iddevis_etm": "IDDevis_etm",
+"idligne_devis_etm": "IDligne_devis_etm",
+"idref_catalogue": "IDRef_Catalogue",
+"idref_ecru": "IDref_ecru",
+"idreference": "IDreference",
+"idvariation1": "IDVariation1",
+"idvariation2": "IDVariation2",
+"laize_demandee": "laize_demandee",
+"poids": "poids",
+"poids_demande": "poids_demande",
+"prix": "prix",
+"quantite": "quantite",
+"rendement_demande": "rendement_demande",
+"type": "TYPE",
+"unite": "unite"
+},
+"public.ligne_expedition": {
+"est_facture": "est_facture",
+"idexpedition": "IDexpedition",
+"idligne_commande_client": "IDligne_commande_client",
+"idligne_expedition": "IDligne_expedition"
+},
+"public.ligne_expedition_divers": {
+"detail_ligne": "detail_ligne",
+"idexpedition_divers": "IDexpedition_divers",
+"idligne_expedition_divers": "IDligne_expedition_divers"
+},
+"public.ligne_facture": {
+"designation": "designation",
+"idfacture": "IDfacture",
+"idligne_expedition": "IDligne_expedition",
+"idligne_facture": "IDligne_facture",
+"prix": "prix",
+"quantite": "quantite",
+"unite": "unite"
+},
+"public.ligne_facture_prov": {
+"designation": "designation",
+"idfacture_prov": "IDfacture_prov",
+"idligne_expedition": "IDligne_expedition",
+"idligne_facture_prov": "IDligne_facture_prov",
+"prix": "prix",
+"quantite": "quantite",
+"unite": "unite"
+},
+"public.lst_horaire": {
+"date": "DATE",
+"debut": "debut",
+"debut_pause1": "debut_pause1",
+"debut_pause2": "debut_pause2",
+"fin": "fin",
+"fin_pause1": "fin_pause1",
+"fin_pause2": "fin_pause2",
+"id": "id",
+"id_salarie": "id_salarie",
+"is_deleted": "is_deleted"
+},
+"public.lst_salarie": {
+"id": "id",
+"id_mps": "id_mps",
+"is_deleted": "is_deleted",
+"login": "login",
+"nom": "nom",
+"prenom": "prenom",
+"useinratio": "useInRatio"
+},
+"public.lst_unite": {
+"id": "id",
+"is_deleted": "is_deleted",
+"libelle": "libelle"
+},
+"public.machine": {
+"adresse_automate": "adresse_automate",
+"archive": "archive",
+"chg_aiguilles": "chg_aiguilles",
+"chg_platines": "chg_platines",
+"comm_chg_aiguilles": "comm_chg_aiguilles",
+"comm_chg_platines": "comm_chg_platines",
+"comm_nett_cylindre": "comm_nett_cylindre",
+"comm_nett_plateau": "comm_nett_plateau",
+"comm_nett_platines": "comm_nett_platines",
+"comm_pulsonque": "comm_pulsonque",
+"commentaire": "commentaire",
+"date_maintenance": "date_maintenance",
+"double_fonture": "double_fonture",
+"elasthanne": "elasthanne",
+"emplacement": "emplacement",
+"iddernier_evenement": "IDDernier_evenement",
+"idmachine": "IDmachine",
+"jauge": "Jauge",
+"nb_chutes": "nb_chutes",
+"nb_chutes_max": "nb_chutes_max",
+"nett_cylindre": "nett_cylindre",
+"nett_plateau": "nett_plateau",
+"nett_platines": "nett_platines",
+"nom": "nom",
+"observation_maintenace": "observation_maintenace",
+"pulsonique": "pulsonique",
+"vitesse": "vitesse"
+},
+"public.machine_confection": {
+"idmachine_confection": "IDmachine_confection",
+"type_machine": "type_machine"
+},
+"public.machine_data": {
+"adresseip": "adresseIP",
+"date": "DATE",
+"description": "description",
+"idmachine_data": "IDmachine_data",
+"machine": "machine"
+},
+"public.maj_appli": {
+"version_appli_bonnetier": "version_appli_bonnetier",
+"version_appli_competence": "version_appli_competence",
+"version_appli_regleur": "version_appli_regleur"
+},
+"public.matiere_premiere": {
+"libelle": "libelle"
+},
+"public.mention_qualite": {
+"idcoloris": "IDColoris",
+"idreference": "IDreference",
+"idsous_traitant": "IDsous_traitant",
+"idtype_sst": "IDtype_sst",
+"mention": "mention"
+},
+"public.message_of": {
+"date": "DATE",
+"idbonnetier": "IDbonnetier",
+"idmessage_of": "IDmessage_of",
+"idordre_fabrication": "IDordre_fabrication",
+"observation": "observation"
+},
+"public.mode_paiement": {
+"est_defaut": "est_defaut",
+"est_visible": "est_visible",
+"idmode_paiement": "IDmode_paiement",
+"libelle": "libelle"
+},
+"public.model_article": {
+"designation": "designation",
+"idmodel_article": "IDmodel_article",
+"idref_article": "IDref_article"
+},
+"public.notif_token": {
+"id_terminal": "id_terminal",
+"idnotif_token": "IDnotif_token",
+"nom_terminal": "nom_terminal",
+"token": "token"
+},
+"public.notifutilisateur": {
+"description": "Description",
+"hash": "hash",
+"icone": "icone",
+"idabonnement_notif": "IDabonnement_notif",
+"idnotifutilisateur": "IDnotifutilisateur",
+"idsociete": "IDsociete",
+"titre": "Titre",
+"visible": "visible"
+},
+"public.obs_ref_ecru": {
+"date": "DATE",
+"idcolori_ecru": "IDcolori_ecru",
+"idmachine": "IDmachine",
+"idobs_ref_ecru": "IDobs_ref_ecru",
+"idref_ecru": "IDref_ecru",
+"observation": "observation"
+},
+"public.of_confection": {
+"idligne_cmd_confection": "IDligne_cmd_confection",
+"idof_confection": "IDof_confection"
+},
+"public.offre_fil": {
+"date": "DATE",
+"idcolori_fil": "IDcolori_fil",
+"idfournisseur": "IDfournisseur",
+"idoffre_fil": "IDoffre_fil",
+"idref_fil": "IDref_fil",
+"observation": "observation",
+"prix": "prix",
+"quantite": "quantite",
+"unite": "unite"
+},
+"public.operation_maintenance": {
+"date_derniere": "date_derniere",
+"frequence": "frequence",
+"idoperation_maintenance": "IDoperation_maintenance",
+"nom": "nom"
+},
+"public.option_article": {
+"idoption_article": "IDoption_article",
+"idoption_confection": "IDoption_confection",
+"idref_article": "IDref_article"
+},
+"public.option_confection": {
+"idoption_confection": "IDoption_confection",
+"reference": "reference"
+},
+"public.option_ligne_cmd_confection": {
+"idligne_cmd_confection": "IDligne_cmd_confection",
+"idoption_confection": "IDoption_confection",
+"idoption_ligne_cmd_confection": "IDoption_ligne_cmd_confection"
+},
+"public.ordre_fabrication": {
+"arret_prod": "arret_prod",
+"auto_activation": "auto_activation",
+"date_creation": "date_creation",
+"demarrage_prod": "demarrage_prod",
+"est_actif": "est_actif",
+"est_termine": "est_termine",
+"finir_fil": "finir_fil",
+"idcolori_ecru": "IDcolori_ecru",
+"idligne_commande_client": "IDligne_commande_client",
+"idmachine": "IDmachine",
+"idordre_fabrication": "IDordre_fabrication",
+"idref_ecru": "IDref_ecru",
+"interruption_prod": "interruption_prod",
+"maille_ouverture": "maille_ouverture",
+"nb_pieces": "nb_pieces",
+"nb_tour_1_chute": "nb_tour_1_chute",
+"nb_tour_cpt": "nb_tour_cpt",
+"nettoyage": "Nettoyage",
+"observations": "observations",
+"ouvert_visiteuse": "ouvert_visiteuse",
+"planning_depart": "planning_depart",
+"planning_fin": "planning_fin",
+"poids_piece": "poids_piece",
+"prioritaire": "prioritaire",
+"priorite": "priorite",
+"quantite": "quantite",
+"raison_modif": "raison_modif",
+"sonneter": "sonneter",
+"visitage": "visitage",
+"vitesse": "vitesse"
+},
+"public.origine_matiere": {
+"idfournisseur": "IDfournisseur",
+"idref_fil": "IDref_fil",
+"latitude": "latitude",
+"longitude": "longitude",
+"pays": "pays",
+"ville": "ville"
+},
+"public.partenaire": {
+"avis": "avis",
+"idpartenaire": "IDpartenaire",
+"journal": "journal"
+},
+"public.patronage": {
+"fichier": "fichier",
+"idpatronage": "IDpatronage",
+"idref_article": "IDref_article",
+"idunite_taille": "IDunite_taille",
+"observation": "observation",
+"type": "TYPE"
+},
+"public.photo_defaut": {
+"iddefaut_qualite": "IDdefaut_qualite",
+"idphoto_defaut": "IDphoto_defaut",
+"photo": "photo"
+},
+"public.photo_produit": {
+"couleur": "couleur",
+"idcoloris": "IDColoris",
+"idcontexture": "IDcontexture",
+"idphoto_produit": "IDphoto_produit",
+"idref_fini": "IDref_fini",
+"photo": "photo",
+"vignette": "vignette"
+},
+"public.piece_composant": {
+"commentaire": "commentaire",
+"id119": "ID119",
+"id_commande_fournisseur": "Id_commande_fournisseur",
+"idcouleur": "IDcouleur",
+"idetat": "IDetat",
+"idligne_commande_collage": "IDligne_commande_collage",
+"idmagasin": "IDMagasin",
+"idpvc": "IDPVC",
+"idtype_composant": "IDType_Composant",
+"laize": "laize",
+"longueur_colleur": "longueur_colleur",
+"longueur_frs": "longueur_frs",
+"longueur_mf": "longueur_mf",
+"numero": "numero",
+"poids": "poids"
+},
+"public.piece_echantillon": {
+"date": "DATE",
+"idmachine": "IDmachine",
+"idpiece_echantillon": "IDpiece_echantillon",
+"idref_echantillon": "IDref_echantillon",
+"laize": "laize",
+"longueur": "longueur",
+"numero": "numero",
+"poids": "poids"
+},
+"public.piece_production": {
+"bonnetier_controle": "bonnetier_controle",
+"bonnetier_debut": "bonnetier_debut",
+"bonnetier_fin": "bonnetier_fin",
+"bonnetier_interruption": "bonnetier_interruption",
+"date_controle": "date_controle",
+"date_debut": "date_debut",
+"date_fin": "date_fin",
+"date_interruption": "date_interruption",
+"date_visitage": "date_visitage",
+"idordre_fabrication": "IDordre_fabrication",
+"idpiece_production": "IDpiece_production",
+"numero": "numero",
+"observations": "observations",
+"poids": "poids",
+"visiteur": "visiteur"
+},
+"public.piece_transfert": {
+"idbon_transfert": "IDbon_transfert",
+"idpiece_ecru": "IDpiece_ecru",
+"idpiece_fini": "IDpiece_fini",
+"idpiece_transfert": "IDpiece_transfert",
+"idstock_fil": "IDstock_fil"
+},
+"public.planning_bonnetier": {
+"date_debut": "date_debut",
+"date_fin": "date_fin",
+"idbonnetier": "IDbonnetier",
+"idplanning_bonnetier": "IDplanning_bonnetier"
+},
+"public.plus_moins_value_kg": {
+"description": "description",
+"idplus_moins_value_kg": "IDplus_moins_value_kg",
+"idref_tarif": "IDref_tarif",
+"montant": "montant"
+},
+"public.plus_moins_value_kg_client": {
+"description": "description",
+"idasso_tarif_client": "IDasso_tarif_client",
+"idplus_moins_value_kg_client": "IDplus_moins_value_kg_client",
+"montant": "montant"
+},
+"public.pointage": {
+"date": "DATE",
+"en_poste": "en_poste",
+"idbonnetier": "IDbonnetier",
+"idpointage": "IDpointage"
+},
+"public.prix_gamme_colori": {
+"date_maj": "date_MAJ",
+"idgamme_coloris": "IDgamme_coloris",
+"idprix_gamme_colori": "IDprix_gamme_colori",
+"idtranche_tarifaire": "IDtranche_tarifaire"
+},
+"public.produit_fournisseur": {
+"designation": "designation",
+"idfourniture_fournisseur": "IDfourniture_fournisseur",
+"idproduit_fournisseur": "IDproduit_fournisseur",
+"reference": "reference"
+},
+"public.prospect": {
+"adresse": "adresse",
+"code_postal": "code_postal",
+"date": "DATE",
+"email": "email",
+"expe_catalogue": "expe_catalogue",
+"idclient": "IDclient",
+"idprospect": "IDprospect",
+"idtransporteur": "IDtransporteur",
+"nom": "nom",
+"notes_interne": "notes_interne",
+"observation": "observation",
+"pays": "pays",
+"status_catalogue": "status_catalogue",
+"telephone": "telephone",
+"tracking_number": "tracking_number",
+"ville": "ville"
+},
+"public.quizz": {
+"actif": "Actif",
+"date": "DATE",
+"iddefaut_textile": "IDdefaut_textile",
+"idquizz": "IDquizz",
+"listecausecorrect": "ListeCauseCorrect",
+"listecauseerreur": "ListeCauseErreur",
+"reference": "reference"
+},
+"public.recommandation": {
+"besoin": "besoin",
+"contact": "contact",
+"date": "DATE",
+"identreprise": "IDentreprise",
+"idrecommandation": "IDrecommandation"
+},
+"public.ref_article": {
+"description": "description",
+"en_developpement": "en_developpement",
+"idref_article": "IDref_article",
+"observation": "observation",
+"reference": "reference"
+},
+"public.ref_catalogue": {
+"date_modification": "date_modification",
+"description": "Description",
+"idref_catalogue": "IDRef_Catalogue",
+"idref_fini": "IDref_fini",
+"nom_commercial": "nom_commercial",
+"ordre": "ordre"
+},
+"public.ref_client_colori": {
+"contrat": "contrat",
+"idcolori_ecru": "IDcolori_ecru",
+"iddesignation_client": "IDdesignation_client",
+"idphoto_produit": "IDphoto_produit",
+"idref_client_colori": "IDref_client_colori",
+"idref_fini_colori": "IDref_fini_colori",
+"lst_tranche": "lst_tranche",
+"prevision": "prevision"
+},
+"public.ref_divers": {
+"designation": "designation",
+"idref_divers": "IDref_divers",
+"observations": "observations",
+"prix_unitaire": "prix_unitaire",
+"stypevariation1": "sTypeVariation1",
+"stypevariation2": "sTypeVariation2",
+"unite": "unite"
+},
+"public.ref_divers_expedie": {
+"designation": "designation",
+"idligne_expedition_divers": "IDligne_expedition_divers",
+"idref_divers": "IDref_divers",
+"idref_divers_expedie": "IDref_divers_expedie",
+"idvariation1": "IDVariation1",
+"idvariation2": "IDVariation2",
+"prix": "prix",
+"quantite": "quantite",
+"unite": "unite"
+},
+"public.ref_divers_variation": {
+"designation": "designation",
+"idref_divers": "IDref_divers",
+"idref_divers_variation": "IDref_divers_variation",
+"niveau": "niveau",
+"prix": "prix",
+"unite": "unite"
+},
+"public.ref_echantillon": {
+"commentaire": "commentaire",
+"idclient": "IDclient",
+"idcontexture": "IDcontexture",
+"idref_echantillon": "IDref_echantillon",
+"jauge": "Jauge",
+"lfa1": "lfa1",
+"lfa2": "lfa2",
+"lfa3": "lfa3",
+"lfa4": "lfa4"
+},
+"public.ref_ecru": {
+"bio": "bio",
+"commentaire": "commentaire",
+"composition": "composition",
+"date_maj_ft": "date_maj_ft",
+"designation": "designation",
+"ecarteur": "ecarteur",
+"idclient": "IDclient",
+"idcontexture": "IDcontexture",
+"idref_ecru": "IDref_ecru",
+"jauge": "Jauge",
+"laize_tbm": "laize_tbm",
+"lfa_tour_1": "lfa_tour_1",
+"lfa_tour_2": "lfa_tour_2",
+"lfa_tour_3": "lfa_tour_3",
+"lfa_tour_4": "lfa_tour_4",
+"maille_ouverture": "maille_ouverture",
+"nb_aiguilles": "nb_aiguilles",
+"nb_chutes": "nb_chutes",
+"observations": "observations",
+"ouvert_visiteuse": "ouvert_visiteuse",
+"poids": "poids",
+"poids_m2_tbm": "poids_m2_tbm",
+"poulies_1": "poulies_1",
+"poulies_2": "poulies_2",
+"poulies_3": "poulies_3",
+"poulies_4": "poulies_4",
+"prix": "prix",
+"recycle": "recycle",
+"reference": "reference",
+"reference_client": "reference_client",
+"rendement": "rendement",
+"sonneter": "sonneter",
+"tombe_metier": "tombe_metier",
+"vitesse_cible": "vitesse_cible"
+},
+"public.ref_ecru_machine": {
+"abattage": "abattage",
+"hauteur_pl": "hauteur_pl",
+"idmachine": "IDmachine",
+"idref_ecru": "IDref_ecru",
+"idref_ecru_machine": "IDref_ecru_machine",
+"nb_chutes": "nb_chutes",
+"repere_1": "repere_1",
+"repere_2": "repere_2",
+"repere_3": "repere_3",
+"repere_4": "repere_4",
+"repere_5": "repere_5",
+"trs_10kg_chute": "trs_10kg_chute"
+},
+"public.ref_fil": {
+"bio": "bio",
+"commentaire": "commentaire",
+"idref_fil": "IDref_fil",
+"idunite_titrage": "IDunite_titrage",
+"nb_brin": "nb_brin",
+"nb_fil": "nb_fil",
+"prix_kg": "prix_kg",
+"reference": "reference",
+"titrage": "titrage"
+},
+"public.ref_fil_certif": {
+"idcertificat": "IDcertificat",
+"idref_fil": "IDref_fil",
+"idref_fil_certif": "IDref_fil_certif"
+},
+"public.ref_fil_commande": {
+"date_livraison": "date_livraison",
+"date_notif": "date_notif",
+"etat": "etat",
+"idcolori_fil": "IDcolori_fil",
+"idcommande_fil": "IDcommande_fil",
+"idref_fil": "IDref_fil",
+"idref_fil_commande": "IDref_fil_commande",
+"prix_unitaire": "prix_unitaire",
+"quantite": "quantite",
+"unite": "unite"
+},
+"public.ref_fini": {
+"allongementh_max": "allongementH_Max",
+"allongementh_min": "allongementH_Min",
+"allongementh_moy": "allongementH_Moy",
+"allongementl_max": "allongementL_Max",
+"allongementl_min": "allongementL_Min",
+"allongementl_moy": "allongementL_Moy",
+"archive": "archive",
+"associee": "associee",
+"avec_teinture": "avec_teinture",
+"conditionnement": "conditionnement",
+"controle_sst_allongement": "controle_sst_allongement",
+"controle_sst_rendement": "controle_sst_rendement",
+"controle_sst_stab": "controle_sst_stab",
+"datemodification": "dateModification",
+"description_commercial": "description_commercial",
+"designation": "designation",
+"en_developpement": "en_developpement",
+"finition": "finition",
+"freinte": "freinte",
+"idcolori_ecru": "IDcolori_ecru",
+"idref_ecru": "IDref_ecru",
+"idref_fini": "IDref_fini",
+"laizeht_max": "laizeHT_Max",
+"laizeht_min": "laizeHT_Min",
+"laizeht_moy": "laizeHT_Moy",
+"laizeutile_max": "laizeUtile_Max",
+"laizeutile_min": "laizeUtile_Min",
+"laizeutile_moy": "laizeUtile_Moy",
+"observation_technique": "observation_technique",
+"observations": "observations",
+"poids_max": "poids_Max",
+"poids_min": "poids_Min",
+"poids_moy": "poids_Moy",
+"reference": "reference",
+"rendement": "rendement",
+"responsable": "responsable",
+"site": "site",
+"stab_hauteur": "stab_hauteur",
+"stab_largeur": "stab_largeur",
+"temp_lavage": "temp_lavage",
+"unite": "unite"
+},
+"public.ref_fini_colori": {
+"finition": "finition",
+"gots": "gots",
+"idref_fini": "IDref_fini",
+"idref_fini_colori": "IDref_fini_colori",
+"idsous_traitant": "IDsous_traitant",
+"idteinture": "IDteinture",
+"idvignette_coloris": "IDvignette_coloris",
+"laize": "laize",
+"lotref": "LotRef",
+"observations": "observations",
+"photo": "photo",
+"poids": "poids",
+"reference": "reference",
+"rendement": "rendement",
+"soumettre": "soumettre",
+"suivis": "suivis"
+},
+"public.ref_rectiligne": {
+"commentaire": "commentaire",
+"designation": "designation",
+"idref_rectiligne": "IDref_rectiligne",
+"nb_aiguilles": "nb_aiguilles",
+"nb_guide_fil": "nb_guide_fil",
+"prix": "prix",
+"programme": "programme",
+"reference": "reference",
+"unite": "unite"
+},
+"public.ref_tarif": {
+"avec_teinture": "avec_teinture",
+"carac_tech": "carac_tech",
+"commentaire": "commentaire",
+"conditionnement": "conditionnement",
+"conditions_livraison": "conditions_livraison",
+"conditions_reglement": "conditions_reglement",
+"conditions_validite": "conditions_validite",
+"designation": "designation",
+"freinte": "freinte",
+"idref_tarif": "IDref_tarif",
+"idteinture": "IDteinture",
+"laize": "laize",
+"multiplicateur": "multiplicateur",
+"notes": "notes",
+"ok_tarif": "ok_tarif",
+"plus_moins_laize": "plus_moins_laize",
+"plus_moins_poids": "plus_moins_poids",
+"poids": "poids",
+"poids_rouleau": "poids_rouleau",
+"poids_teinture": "poids_teinture",
+"port_fixe": "port_fixe",
+"port_pct": "port_pct",
+"prix_tricotage": "prix_tricotage",
+"reference": "reference",
+"remarques": "remarques",
+"rendement": "rendement"
+},
+"public.releve_compta": {
+"credit": "credit",
+"date": "DATE",
+"debit": "debit",
+"idcompte_compta": "IDcompte_compta",
+"idreleve_compta": "IDreleve_compta"
+},
+"public.reponse_soumission": {
+"date": "DATE",
+"idclient": "IDclient",
+"idcommande_sous_traitant": "IDcommande_sous_traitant",
+"idreponse_soumission": "IDreponse_soumission",
+"lot": "lot",
+"reponse": "reponse"
+},
+"public.resolution_qualite": {
+"id_societe": "id_societe",
+"idresolution_qualite": "IDresolution_qualite",
+"libelle": "libelle"
+},
+"public.resultat_quizz": {
+"date": "DATE",
+"idbonnetier": "IDbonnetier",
+"idcategorie_defaut": "IDcategorie_defaut",
+"idcause_defaut": "IDcause_defaut",
+"idquizz": "IDquizz",
+"idresultat_quizz": "IDresultat_quizz",
+"sais_reparer": "sais_reparer",
+"succes": "succes"
+},
+"public.retour_client": {
+"date": "DATE",
+"defaut": "defaut",
+"idbonnetier": "IDbonnetier",
+"idclient": "IDclient",
+"iddefaut_textile": "IDdefaut_textile",
+"iddossier_qualite": "IDdossier_qualite",
+"idmachine": "IDmachine",
+"idresolution_qualite": "IDresolution_qualite",
+"idretour_client": "IDretour_client",
+"impact_prime": "impact_prime",
+"journal": "journal",
+"message_client": "message_client",
+"message_resp_atelier": "message_resp_atelier",
+"reference": "reference",
+"reponse": "reponse",
+"type_reference": "Type_Reference"
+},
+"public.retour_client_confection": {
+"idclient": "IDclient",
+"idref_article": "IDref_article",
+"idretour_client_confection": "IDretour_client_confection",
+"observation": "observation",
+"tailles": "tailles",
+"version": "version"
+},
+"public.role_employe": {
+"idrole_employe": "IDrole_employe",
+"role": "Role"
+},
+"public.schema_liage": {
+"idchute_liage": "IDchute_liage",
+"idref_ecru": "IDref_ecru",
+"idschema_liage": "IDschema_liage",
+"idsymbole_liage": "IDsymbole_liage",
+"num_symbole": "num_symbole"
+},
+"public.secteur_activite": {
+"idsecteur_activite": "IDsecteur_activite",
+"nom": "nom"
+},
+"public.societe": {
+"idsociete": "IDsociete",
+"nom": "nom"
+},
+"public.soum_col": {
+"accepte": "accepte",
+"date_reponse": "date_reponse",
+"date_soum": "date_soum",
+"idetude_col": "IDetude_col",
+"idsoum_col": "IDsoum_col",
+"observation": "observation",
+"type_soum": "type_soum"
+},
+"public.sous_traitant": {
+"commentaire": "commentaire",
+"est_visible": "est_visible",
+"fax": "fax",
+"idsous_traitant": "IDsous_traitant",
+"idtype_sst": "IDtype_sst",
+"nom": "nom",
+"tel": "tel"
+},
+"public.stat_stock_fil": {
+"date": "DATE",
+"idclient": "IDclient",
+"idstat_stock_fil": "IDstat_stock_fil",
+"stockplus12": "stockPlus12",
+"stockplus6": "stockPlus6",
+"stocktotal": "stockTotal"
+},
+"public.stock_divers": {
+"idref_divers": "IDref_divers",
+"idstock_divers": "IDstock_divers",
+"idvariation1": "IDVariation1",
+"idvariation2": "IDVariation2",
+"quantite": "quantite",
+"unite": "unite"
+},
+"public.stock_ecru": {
+"date_saisie": "date_saisie",
+"idcolori_ecru": "IDcolori_ecru",
+"idcommande_donation": "IDcommande_donation",
+"idligne_commande_client": "IDligne_commande_client",
+"idligne_commande_trm": "IDLigne_Commande_TRM",
+"idligne_expedition_etm": "IDligne_expedition_ETM",
+"idligne_expedition_trm": "IDligne_expedition_TRM",
+"idmagasin": "IDmagasin",
+"idordre_fabrication": "IDordre_fabrication",
+"idpiece_production": "IDpiece_production",
+"idref_commande_affectation": "IDref_commande_affectation",
+"idref_commande_source": "IDref_commande_source",
+"idref_ecru": "IDref_ecru",
+"idsociete": "IDsociete",
+"idstock_ecru": "IDstock_ecru",
+"info_dev": "info_dev",
+"lot": "lot",
+"metrage": "metrage",
+"num_piece_of": "num_piece_OF",
+"numero": "numero",
+"observations": "observations",
+"poids": "poids",
+"second_choix": "second_choix",
+"visiteur": "visiteur"
+},
+"public.stock_fil": {
+"certif_bio": "certif_bio",
+"commentaire": "commentaire",
+"date_entree": "date_entree",
+"dernier_mouvement": "dernier_mouvement",
+"dernier_pointage": "dernier_pointage",
+"emplacement": "emplacement",
+"idclient": "IDclient",
+"idcolori_fil": "IDcolori_fil",
+"idfournisseur": "IDfournisseur",
+"idmagasin": "IDMagasin",
+"idref_fil": "IDref_fil",
+"idref_fil_commande": "IDref_fil_commande",
+"idstock_fil": "IDstock_fil",
+"lot": "lot",
+"lot_frs": "lot_frs",
+"niveau": "niveau",
+"observation_freinte": "observation_freinte",
+"stock": "stock",
+"stock_initial": "stock_initial"
+},
+"public.stock_fil_ged": {
+"idged": "IDged",
+"idstock_fil": "IDstock_fil",
+"idstock_fil_ged": "IDstock_fil_ged"
+},
+"public.stock_fini": {
+"conteneur": "conteneur",
+"date_saisie": "date_saisie",
+"destockage": "destockage",
+"don": "don",
+"emplacement": "emplacement",
+"idcoloris": "IDColoris",
+"idcommande_donation": "IDcommande_donation",
+"idetat_stock_fini": "IDetat_stock_fini",
+"idligne_commande_client": "IDligne_commande_client",
+"idligne_expedition": "IDligne_expedition",
+"idmagasin": "IDmagasin",
+"idproprietaire": "IDProprietaire",
+"idref_commande_source": "IDref_commande_source",
+"idref_fini": "IDref_fini",
+"idstock_ecru": "IDstock_ecru",
+"idstock_fini": "IDstock_fini",
+"lot": "lot",
+"metrage": "metrage",
+"numero": "numero",
+"observation_sst": "observation_sst",
+"observations": "observations",
+"poids": "poids",
+"pointage": "pointage",
+"second_choix": "second_choix"
+},
+"public.stock_fini_source": {
+"idstock_ecru": "IDstock_ecru",
+"idstock_fini": "IDstock_fini",
+"idstock_fini_source": "IDstock_fini_source"
+},
+"public.stock_mini": {
+"idcoloris": "IDColoris",
+"idreference": "IDreference",
+"idsous_traitant": "IDsous_traitant",
+"idstock_mini": "IDstock_mini",
+"type": "TYPE",
+"unite": "unite"
+},
+"public.stock_rectiligne": {
+"idcoloris_rectiligne": "IDcoloris_rectiligne",
+"idref_rectiligne": "IDref_rectiligne",
+"idstock_rectiligne": "IDstock_rectiligne",
+"quantite": "quantite",
+"unite": "unite"
+},
+"public.suivilot": {
+"date": "DATE",
+"defauts": "defauts",
+"description_defaut": "description_defaut",
+"emplacement_tirelle": "emplacement_tirelle",
+"fin_archivage": "fin_archivage",
+"idcoloris": "IDColoris",
+"idcommande_sous_traitant": "IDcommande_sous_traitant",
+"idetatlot": "IDetatLot",
+"idligne_commande_sous_traitant": "IDligne_commande_sous_traitant",
+"idref_fini": "IDref_fini",
+"idref_fini_colori": "IDref_fini_colori",
+"idsous_traitant": "IDsous_traitant",
+"idsuivilot": "IDsuivilot",
+"laize_demandee": "laize_demandee",
+"laize_sst": "laize_sst",
+"laize_tirelle": "laize_tirelle",
+"lot": "lot",
+"metrage_receptionne": "metrage_receptionne",
+"observations": "observations",
+"poids_demande": "poids_demande",
+"poids_sst": "poids_sst",
+"poids_tirelle": "poids_tirelle",
+"prix": "prix",
+"prix_convenu": "prix_convenu",
+"quantite_receptionnee": "quantite_receptionnee",
+"rendement_demande": "rendement_demande",
+"rendement_sst": "rendement_sst",
+"rendement_tirelle": "rendement_tirelle",
+"stabh_sst": "stabH_sst",
+"stabh_tirelle": "stabH_tirelle",
+"stabl_sst": "stabL_sst",
+"stabl_tirelle": "stabL_tirelle",
+"test": "test"
+},
+"public.symbole_liage": {
+"icone": "icone",
+"idsymbole_liage": "IDsymbole_liage"
+},
+"public.tache": {
+"date_creation": "date_creation",
+"description": "description",
+"idcontexte": "IDcontexte",
+"idreference": "IDreference",
+"idsociete": "IDsociete",
+"idtache": "IDtache"
+},
+"public.taille_ligne_cmd_confection": {
+"idligne_cmd_confection": "IDligne_cmd_confection",
+"idtaille_ligne_cmd_confection": "IDtaille_ligne_cmd_confection",
+"idunite_taille": "IDunite_taille",
+"nombre": "nombre"
+},
+"public.tarif_coloris": {
+"date_calcul": "date_calcul",
+"date_expiration": "date_expiration",
+"idcoloris": "IDColoris",
+"iddesignation_client": "IDdesignation_client",
+"idref_catalogue": "IDRef_Catalogue",
+"idtarif_coloris": "IDtarif_coloris",
+"prochain_prix": "prochain_prix",
+"tranche_tarifaire": "tranche_tarifaire"
+},
+"public.tarif_divers": {
+"idref_divers": "IDref_divers",
+"idtarif_divers": "IDtarif_divers",
+"idvariation1": "IDVariation1",
+"idvariation2": "IDVariation2",
+"prix": "prix"
+},
+"public.tarif_trm": {
+"identifiant": "identifiant",
+"idtarif_trm": "IDtarif_trm",
+"nombre": "nombre"
+},
+"public.teinture": {
+"designation_externe": "designation_externe",
+"designation_interne": "designation_interne",
+"idteinture": "IDteinture",
+"prix_gots": "prix_gots",
+"simple_teinture": "simple_teinture"
+},
+"public.test_competence": {
+"commentaire": "commentaire",
+"date": "DATE",
+"idbonnetier": "IDbonnetier",
+"idtest_competence": "IDtest_competence",
+"idtype_test": "IDtype_test",
+"succes": "succes"
+},
+"public.textile_ligne_cmd_confection": {
+"idcoloris": "IDColoris",
+"idligne_cmd_confection": "IDligne_cmd_confection",
+"idref_fini": "IDref_fini",
+"idtextile_ligne_cmd_confection": "IDtextile_ligne_cmd_confection"
+},
+"public.textile_modele": {
+"idmodel_article": "IDmodel_article",
+"idref_fini": "IDref_fini",
+"idtextile_modele": "IDtextile_modele"
+},
+"public.traitement": {
+"designation": "designation",
+"idtraitement": "IDtraitement",
+"is_deleted": "is_deleted",
+"observation": "observation",
+"ordre": "ordre",
+"teinture": "teinture"
+},
+"public.traitement_ref_fini": {
+"idref_fini": "IDref_fini",
+"idtraitement": "IDtraitement",
+"idtraitement_ref_fini": "IDtraitement_ref_fini"
+},
+"public.tranche_tarif_ennoblissement": {
+"idsous_traitant": "IDsous_traitant",
+"idteinture": "IDteinture",
+"idtraitement": "IDtraitement",
+"idtranche_tarif_ennoblissement": "IDtranche_tarif_ennoblissement",
+"listetraitements": "ListeTraitements",
+"prix": "prix",
+"quantite_maxi": "quantite_maxi",
+"quantite_mini": "quantite_mini"
+},
+"public.tranche_tarifaire": {
+"coefficient": "coefficient",
+"idcontrat_tarif": "IDcontrat_tarif",
+"idref_catalogue": "IDRef_Catalogue",
+"idref_client_colori": "IDref_client_colori",
+"idtranche_tarifaire": "IDtranche_tarifaire",
+"nb_rouleaux": "nb_rouleaux",
+"prix_saisi": "prix_saisi"
+},
+"public.transporteur": {
+"commentaire": "commentaire",
+"destinatairefax": "destinataireFax",
+"est_visible": "est_visible",
+"fax": "fax",
+"idtransporteur": "IDtransporteur",
+"mail": "mail",
+"nom": "nom",
+"tel": "tel"
+},
+"public.tva": {
+"compte": "compte",
+"est_defaut": "est_defaut",
+"est_visible": "est_visible",
+"idsociete": "IDsociete",
+"idtva": "IDtva",
+"libelle_compte": "libelle_compte",
+"valeur": "valeur"
+},
+"public.type_defaut": {
+"nom": "nom"
+},
+"public.type_doc": {
+"idtype_doc": "IDtype_doc",
+"nom": "nom"
+},
+"public.type_evenement": {
+"description": "description",
+"idtype_evenement": "IDtype_evenement"
+},
+"public.type_partenaire": {
+"idtype_partenaire": "IDtype_partenaire",
+"reference": "reference"
+},
+"public.type_sst": {
+"idtype_sst": "IDtype_sst",
+"type": "TYPE"
+},
+"public.type_stock": {
+"idtype_stock": "IDtype_stock",
+"reference": "reference"
+},
+"public.type_test": {
+"frequence": "frequence",
+"idtype_test": "IDtype_test",
+"nom": "nom"
+},
+"public.unite_taille": {
+"idunite_taille": "IDunite_taille",
+"libelle": "libelle"
+},
+"public.unite_titrage": {
+"idunite_titrage": "IDunite_titrage",
+"nomenclature": "nomenclature"
+},
+"public.upload_compta": {
+"charges": "charges",
+"date": "DATE",
+"fichier": "fichier",
+"frais_fixe": "frais_fixe",
+"frais_variable": "frais_variable",
+"id_societe": "id_societe",
+"idupload_compta": "IDupload_compta",
+"produits": "produits",
+"provisions": "provisions"
+},
+"public.utilisateur": {
+"idexpediteur": "IDexpediteur",
+"idutilisateur": "IDutilisateur",
+"nom": "nom",
+"pc": "pc",
+"prenom": "prenom"
+},
+"public.vignette_coloris": {
+"idvignette_coloris": "IDvignette_coloris",
+"image": "image",
+"label": "label"
+}
+}

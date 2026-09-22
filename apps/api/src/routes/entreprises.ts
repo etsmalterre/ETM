@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { pickVal } from '../lib/accented-keys.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 
@@ -65,7 +66,20 @@ entreprisesRouter.get('/:id', async (req: Request, res: Response) => {
     const fixedAdresses = await fixEncoding(adresses, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays', 'commentaire'])
     const fixedContacts = await fixEncoding(contacts, 'contact', 'IDcontact', ['nom', 'prenom', 'tel', 'mail', 'commentaire'])
     const fixedCompetences = await fixEncoding(competenceLinks, 'competence', 'IDcompetence', ['reference'])
-    const fixedRecommandations = await fixEncoding(recommandations, 'recommandation', 'IDrecommandation', ['soci', 'contact', 'besoin'])
+    const fixedRecommandations = (await fixEncoding(recommandations, 'recommandation', 'IDrecommandation', ['contact', 'besoin']))
+      // The screen reads `société` and `date_reco`. `SELECT *` returns `DATE`, and
+      // the accented `société` comes back truncated with a garbage byte on the
+      // Linux bridge (`soci`, `socius_`…) or as `societe` from PostgreSQL: read it
+      // by prefix (lib/accented-keys.ts). Before this, the card showed « — » with
+      // no date in production (found by the PG shadow diff, 2026-09-22).
+      .map((r: Record<string, unknown>) => ({
+        IDrecommandation: r.IDrecommandation,
+        IDentreprise: r.IDentreprise,
+        date_reco: r.DATE ?? null,
+        société: (pickVal(r, /^soci/i) as string | null | undefined) ?? null,
+        contact: r.contact ?? null,
+        besoin: r.besoin ?? null,
+      }))
 
     res.json({
       ...fixed[0],
