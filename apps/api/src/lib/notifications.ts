@@ -7,6 +7,11 @@
 //
 // Mirrors lib/permissions.ts structure, with one deliberate difference: there
 // is NO admin bypass. Subscriptions are opt-in — see notification-keys.ts.
+//
+// One store per app, like the permissions: ETM's (data/notifications.json,
+// catalog lib/notification-keys.ts) and TRM's (data/notifications-trm.json,
+// catalog lib/notification-keys-trm.ts), built by the same factory so the two
+// can never drift. The module-level exports below are ETM's store.
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
@@ -16,94 +21,95 @@ import { isKnownNotificationKey, type NotificationKey } from './notification-key
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const DATA_DIR = path.resolve(__dirname, '../../data')
-const FILE_PATH = path.join(DATA_DIR, 'notifications.json')
 
-interface NotificationsFile {
+interface NotificationsFile<K extends string> {
   version: 1
   /** keyed by IDutilisateur as a string (JSON object keys must be strings) */
-  users: Record<string, NotificationKey[]>
+  users: Record<string, K[]>
 }
 
-const EMPTY: NotificationsFile = { version: 1, users: {} }
+export interface NotificationStore<K extends string> {
+  /** The notification keys a user is subscribed to (empty if none). */
+  getUserNotifications(userId: number): Promise<K[]>
+  /** Overwrite a user's subscription list; unknown keys are dropped, duplicates
+   *  collapsed. Empty array unsubscribes the user from everything. */
+  setUserNotifications(userId: number, keys: readonly K[]): Promise<void>
+  /** Every stored subscription (used by the admin /users endpoint). */
+  getAllNotifications(): Promise<Record<number, K[]>>
+  /** IDutilisateur of every user subscribed to a key. */
+  subscribersOf(key: K): Promise<number[]>
+}
 
-let cache: NotificationsFile | null = null
+export function createNotificationStore<K extends string>(
+  fileName: string,
+  isKnown: (k: string) => k is K,
+): NotificationStore<K> {
+  const filePath = path.join(DATA_DIR, fileName)
+  let cache: NotificationsFile<K> | null = null
 
-/** Load the notifications file from disk, creating an empty one if missing.
- *  Result is cached in memory; subsequent reads are O(1). */
-async function loadNotifications(): Promise<NotificationsFile> {
-  if (cache !== null) return cache
-  try {
-    const raw = await fs.readFile(FILE_PATH, 'utf8')
-    const parsed = JSON.parse(raw) as NotificationsFile
-    if (typeof parsed !== 'object' || parsed === null || parsed.version !== 1 || typeof parsed.users !== 'object') {
-      throw new Error('notifications.json: invalid shape')
-    }
-    cache = parsed
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException
-    if (e.code === 'ENOENT') {
-      // First boot — file doesn't exist yet. Start empty.
+  /** Load the file from disk, starting empty if it is missing. Cached in
+   *  memory; subsequent reads are O(1). */
+  async function load(): Promise<NotificationsFile<K>> {
+    if (cache !== null) return cache
+    try {
+      const raw = await fs.readFile(filePath, 'utf8')
+      const parsed = JSON.parse(raw) as NotificationsFile<K>
+      if (typeof parsed !== 'object' || parsed === null || parsed.version !== 1 || typeof parsed.users !== 'object') {
+        throw new Error(`${fileName}: invalid shape`)
+      }
+      cache = parsed
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      if (e.code !== 'ENOENT') console.error(`Failed to load ${fileName}:`, err)
+      // First boot (file doesn't exist yet) or unreadable file: start empty.
       cache = { version: 1, users: {} }
-    } else {
-      console.error('Failed to load notifications.json:', err)
-      cache = { ...EMPTY }
     }
+    return cache
   }
-  return cache
-}
 
-/** Persist the notifications file to disk, atomically (write to .tmp, rename). */
-async function saveNotifications(file: NotificationsFile): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true })
-  const tmp = `${FILE_PATH}.tmp`
-  await fs.writeFile(tmp, JSON.stringify(file, null, 2), 'utf8')
-  await fs.rename(tmp, FILE_PATH)
-  cache = file
-}
-
-/** Returns the notification keys a user is subscribed to (empty if none). */
-export async function getUserNotifications(userId: number): Promise<NotificationKey[]> {
-  const file = await loadNotifications()
-  const list = file.users[String(userId)]
-  return list ? [...list] : []
-}
-
-/** Overwrite a user's subscription list. Validates that every key is known
- *  before persisting. Empty array unsubscribes the user from everything. */
-export async function setUserNotifications(
-  userId: number,
-  keys: readonly NotificationKey[],
-): Promise<void> {
-  const valid = keys.filter((k) => isKnownNotificationKey(k))
-  const seen = new Set<string>()
-  const cleaned: NotificationKey[] = []
-  for (const k of valid) {
-    if (seen.has(k)) continue
-    seen.add(k)
-    cleaned.push(k)
+  /** Persist atomically (write to .tmp, rename). */
+  async function save(file: NotificationsFile<K>): Promise<void> {
+    await fs.mkdir(DATA_DIR, { recursive: true })
+    const tmp = `${filePath}.tmp`
+    await fs.writeFile(tmp, JSON.stringify(file, null, 2), 'utf8')
+    await fs.rename(tmp, filePath)
+    cache = file
   }
-  const file = await loadNotifications()
-  await saveNotifications({ ...file, users: { ...file.users, [String(userId)]: cleaned } })
+
+  return {
+    async getUserNotifications(userId) {
+      const list = (await load()).users[String(userId)]
+      return list ? [...list] : []
+    },
+    async setUserNotifications(userId, keys) {
+      const cleaned = [...new Set(keys.filter((k) => isKnown(k)))]
+      const file = await load()
+      await save({ ...file, users: { ...file.users, [String(userId)]: cleaned } })
+    },
+    async getAllNotifications() {
+      const out: Record<number, K[]> = {}
+      for (const [k, v] of Object.entries((await load()).users)) {
+        const id = Number(k)
+        if (Number.isFinite(id)) out[id] = [...v]
+      }
+      return out
+    },
+    async subscribersOf(key) {
+      const out: number[] = []
+      for (const [k, v] of Object.entries((await load()).users)) {
+        const id = Number(k)
+        if (Number.isFinite(id) && v.includes(key)) out.push(id)
+      }
+      return out
+    },
+  }
 }
 
-/** Read all stored subscriptions (used by the admin /users endpoint). */
-export async function getAllNotifications(): Promise<Record<number, NotificationKey[]>> {
-  const file = await loadNotifications()
-  const out: Record<number, NotificationKey[]> = {}
-  for (const [k, v] of Object.entries(file.users)) {
-    const id = Number(k)
-    if (Number.isFinite(id)) out[id] = [...v]
-  }
-  return out
-}
+// ── ETM's store ──────────────────────────────────────────
 
-/** IDutilisateur of every user subscribed to a notification key. */
-export async function subscribersOf(key: NotificationKey): Promise<number[]> {
-  const file = await loadNotifications()
-  const out: number[] = []
-  for (const [k, v] of Object.entries(file.users)) {
-    const id = Number(k)
-    if (Number.isFinite(id) && v.includes(key)) out.push(id)
-  }
-  return out
-}
+const etmStore = createNotificationStore<NotificationKey>('notifications.json', isKnownNotificationKey)
+
+export const getUserNotifications = etmStore.getUserNotifications
+export const setUserNotifications = etmStore.setUserNotifications
+export const getAllNotifications = etmStore.getAllNotifications
+export const subscribersOf = etmStore.subscribersOf

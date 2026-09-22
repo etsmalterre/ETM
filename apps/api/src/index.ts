@@ -57,6 +57,8 @@ import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
 import { permissionsTrmRouter } from './routes/permissions-trm.js'
 import { notificationsRouter } from './routes/notifications.js'
+import { notificationsTrmRouter } from './routes/notifications-trm.js'
+import { demarrerRapportsPointage } from './lib/rapports-pointage-envoi.js'
 import { abonnementsRouter } from './routes/abonnements.js'
 import { userEmailsRouter } from './routes/user-emails.js'
 import { userProfilesRouter } from './routes/user-profiles.js'
@@ -126,6 +128,8 @@ app.use('/api/permissions', permissionsRouter)
 // can strip the other app's grants on save (see lib/permissions-trm.ts).
 app.use('/api/permissions-trm', permissionsTrmRouter)
 app.use('/api/notifications', notificationsRouter)
+// TRM's own subscriptions (Paramètres › Utilisateurs › Notifications of the TRM app)
+app.use('/api/notifications-trm', notificationsTrmRouter)
 app.use('/api/abonnements', abonnementsRouter)
 app.use('/api/user-emails', userEmailsRouter)
 app.use('/api/user-profiles', userProfilesRouter)
@@ -207,6 +211,8 @@ app.use('/api/retours-client-trm', retoursClientTrmRouter)
 
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)
+  // The daily pointage report + weekly balance emails (production only).
+  demarrerRapportsPointage()
 })
 
 // Grouped rolls (LIVA #1149) need `stock_fini_source`, declared in the WinDev

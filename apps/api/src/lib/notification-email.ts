@@ -52,7 +52,31 @@ export interface NotificationEmailContent {
   /** Overrides the default "how to unsubscribe" footer line (plain text), for
    *  mails that are not driven by a Notifications subscription. */
   footerNote?: string | null
+  /** Wordmark in the header band and footer. Defaults to 'MPS'; the TRM
+   *  reports pass 'TRM' (the skill's `appName`). */
+  appName?: string
+  /** Pre-rendered blocks placed after the detail rows, for reports whose body
+   *  is not a label / value list (a table per person, a red « À vérifier »
+   *  note…). Each carries its own text/plain twin so the two parts still say
+   *  the same thing. Build the HTML with EMAIL_STYLE so it matches the card. */
+  sections?: EmailSection[]
 }
+
+export interface EmailSection {
+  html: string
+  text: string
+}
+
+/** The template's palette and font, for code that renders an EmailSection. */
+export const EMAIL_STYLE = {
+  navy: NAVY,
+  gold: GOLD,
+  text: TEXT,
+  muted: MUTED,
+  border: BORDER,
+  pageBg: PAGE_BG,
+  font: FONT,
+} as const
 
 function esc(s: string): string {
   return s
@@ -79,10 +103,11 @@ function renderText(c: NotificationEmailContent): string {
   for (const r of c.rows) lines.push(`${r.label} : ${r.value}`)
   if (c.note && c.note.value.trim()) lines.push('', `${c.note.label} : ${c.note.value.trim()}`)
   if (c.callout) lines.push('', stripBold(c.callout))
+  for (const s of c.sections ?? []) lines.push('', s.text)
   lines.push(
     '',
     '---',
-    'Notification automatique MPS - ETS Malterre',
+    `Notification automatique ${c.appName ?? 'MPS'} - ETS Malterre`,
     c.footerNote ?? 'Pour ne plus recevoir cet email : Paramètres > Utilisateurs > Notifications.',
   )
   return lines.join('\n')
@@ -90,6 +115,7 @@ function renderText(c: NotificationEmailContent): string {
 
 function renderHtml(c: NotificationEmailContent, logoSrc: string): string {
   const accent = c.tone === 'alert' ? AMBER_BORDER : GOLD
+  const app = esc(c.appName ?? 'MPS')
 
   const rows = c.rows
     .map(
@@ -143,7 +169,7 @@ function renderHtml(c: NotificationEmailContent, logoSrc: string): string {
     `<img src="${logoSrc}" width="36" height="36" alt="Malterre" ` +
     `style="display:block;width:36px;height:36px;border:0;"></td>` +
     `<td style="vertical-align:middle;font-family:${FONT};">` +
-    `<div style="font-size:16px;line-height:1.2;font-weight:bold;color:#FFFFFF;letter-spacing:0.5px;">MPS</div>` +
+    `<div style="font-size:16px;line-height:1.2;font-weight:bold;color:#FFFFFF;letter-spacing:0.5px;">${app}</div>` +
     `<div style="font-size:11px;line-height:1.3;color:${GOLD};letter-spacing:0.6px;">ETS MALTERRE</div>` +
     `</td></tr></table></td></tr>` +
 
@@ -156,10 +182,14 @@ function renderHtml(c: NotificationEmailContent, logoSrc: string): string {
     `<div style="font-size:14px;line-height:1.6;color:${TEXT};margin-top:10px;">${inline(c.intro)}</div>` +
     `</td></tr>` +
 
-    // Detail rows
-    `<tr><td style="padding:20px 28px 0 28px;">` +
-    `<table cellpadding="0" cellspacing="0" border="0" width="100%" ` +
-    `style="border-collapse:collapse;">${rows}</table></td></tr>` +
+    // Detail rows (a report made only of sections has none)
+    (c.rows.length
+      ? `<tr><td style="padding:20px 28px 0 28px;">` +
+        `<table cellpadding="0" cellspacing="0" border="0" width="100%" ` +
+        `style="border-collapse:collapse;">${rows}</table></td></tr>`
+      : '') +
+
+    (c.sections ?? []).map((s) => `<tr><td style="padding:20px 28px 0 28px;">${s.html}</td></tr>`).join('') +
 
     noteBlock +
     calloutBlock +
@@ -168,7 +198,7 @@ function renderHtml(c: NotificationEmailContent, logoSrc: string): string {
     `<tr><td style="padding:24px 28px 22px 28px;">` +
     `<div style="border-top:1px solid ${BORDER};padding-top:14px;font-family:${FONT};` +
     `font-size:11px;line-height:1.6;color:${MUTED};">` +
-    `Notification automatique envoyée par <strong style="color:${NAVY};">MPS</strong> - ETS Malterre.<br>` +
+    `Notification automatique envoyée par <strong style="color:${NAVY};">${app}</strong> - ETS Malterre.<br>` +
     (c.footerNote != null
       ? esc(c.footerNote)
       : `Pour ne plus la recevoir : Paramètres &gt; Utilisateurs &gt; Notifications.`) +
