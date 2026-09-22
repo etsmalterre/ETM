@@ -10,6 +10,15 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/bug-of — Visitage TRM : un métier sans OF en cours ouvre sur sa pièce isolée
+**MPS API, `routes/visitage-trm.ts` `GET /poste`.** Quand « Dernière pièce » termine l’OF et que
+rien n’attend derrière sur le métier (`headId = 0`), le poste répondait « Pas d’OF affecté »
+avec `autres_pieces: []` : le métier restait listé dans `lookups/metiers` (1 isolée) mais la
+pièce était inatteignable (OF 3588 sur le 2B, pièce 41513, prod 2026-09-22). Le poste s’ouvre
+désormais sur la plus ancienne isolée, avec son OF comme contexte (`orpheline: true`).
+`check-visitage-trm.ts` vérifie que tout métier listé ouvre sur une pièce. API seule, pas de
+web ; dossier TRM `claude_doc/production-visitage.md`. `/etm_deploy` pour livrer.
+
 ## 2026-09-22 — feat/atelier — API PWA atelier : % 2nd choix pour les deux rôles, « Lancement OF » régleur seul
 **MPS API, `routes/atelier.ts` + `lib/atelier-regleur-trm.ts`** (demande Vincent, cinq retraits
 côté bonnetier de la PWA — le web est dans TRM `feat/atelier`). `GET /atelier/machines` porte
