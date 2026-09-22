@@ -692,3 +692,36 @@ pointageAdminRouter.delete('/previsionnel/variables/:id', async (req: Request, r
     erreur(res, 'previsionnel/variables DELETE', err)
   }
 })
+
+// ── Données paie — FEN_Données_paie ──
+//   GET /paie?salarie=&annee=&du=&au=   the validated weeks of the range with meals and night hours, + totals
+
+import { paieSemaine, totauxPaie } from '../lib/pointage-admin.js'
+
+pointageAdminRouter.get('/paie', async (req: Request, res: Response) => {
+  try {
+    if (!(await lecture(req, res))) return
+    const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
+    const annee = entierQuery(req.query.annee, 2000, 2100)
+    const du = entierQuery(req.query.du, 1, 53)
+    const au = entierQuery(req.query.au, 1, 53)
+    if (idSalarie === null || annee === null || du === null || au === null || au < du) {
+      res.status(400).json({ error: 'Invalid salarie/annee/du/au' })
+      return
+    }
+    const semaines = (await lissagesAnnee(idSalarie, annee)).filter((l) => l.numero >= du && l.numero <= au).map(paieSemaine)
+    res.json({
+      idSalarie,
+      annee,
+      du,
+      au,
+      nbSemaines: nbSemainesIso(annee),
+      semaines: semaines.map((s) => ({ ...s, lundi: lundiIso(annee, s.numero) })),
+      totaux: totauxPaie(semaines),
+      /** Weeks of the range with no validated row — the payroll is incomplete until they are. */
+      manquantes: Array.from({ length: au - du + 1 }, (_, i) => du + i).filter((n) => !semaines.some((s) => s.numero === n)),
+    })
+  } catch (err) {
+    erreur(res, 'paie', err)
+  }
+})

@@ -128,6 +128,7 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
       { href: '/pointage/horaires', label: 'Horaires' },
       { href: '/pointage/semaines', label: 'Semaines' },
       { href: '/pointage/previsionnel', label: 'Prévisionnel' },
+      { href: '/pointage/paie', label: 'Paie' },
       { href: '/pointage/salaries', label: 'Salariés' },
     ],
   },

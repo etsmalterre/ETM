@@ -249,3 +249,44 @@ export function minutesDepuisHM(v: string): number {
   if (!m) throw new SaisieInvalide(`Durée invalide : « ${v} » (attendu HH:MM).`)
   return +m[1] * 60 + +m[2]
 }
+
+// ── Données paie — FEN_Données_paie › AfficheDonneesPaie (plan § 9.7) ──
+
+/** A meal (panier) is owed for a day only when its smoothed total reaches 6 h. */
+export const PANIER_MIN_MINUTES = 360
+
+export interface PaieSemaine {
+  numero: number
+  jours: { type: string; totalMin: number }[]
+  totalMin: number
+  /** Σ of the N days' totals — the legacy's « Total nuit ». */
+  nuitMin: number
+  paniersJour: number
+  paniersNuit: number
+}
+
+/** One week's payroll figures from its validated lissage row: night hours are
+ *  the N days, a night meal per N day ≥ 6 h, a day meal per M / A / E day ≥ 6 h,
+ *  J gives nothing (Leticia, 2026-09-22 — and the legacy code). */
+export function paieSemaine(l: { numero: number; jours: { type: string; totalMin: number }[]; cumulSemaineMin: number }): PaieSemaine {
+  let nuitMin = 0
+  let paniersJour = 0
+  let paniersNuit = 0
+  for (const j of l.jours) {
+    const t = j.type.toUpperCase()
+    if (t === 'N') {
+      nuitMin += j.totalMin
+      if (j.totalMin >= PANIER_MIN_MINUTES) paniersNuit++
+    } else if (t === 'M' || t === 'A' || t === 'E') {
+      if (j.totalMin >= PANIER_MIN_MINUTES) paniersJour++
+    }
+  }
+  return { numero: l.numero, jours: l.jours, totalMin: l.cumulSemaineMin, nuitMin, paniersJour, paniersNuit }
+}
+
+export function totauxPaie(semaines: PaieSemaine[]) {
+  return semaines.reduce(
+    (t, s) => ({ totalMin: t.totalMin + s.totalMin, nuitMin: t.nuitMin + s.nuitMin, paniersJour: t.paniersJour + s.paniersJour, paniersNuit: t.paniersNuit + s.paniersNuit }),
+    { totalMin: 0, nuitMin: 0, paniersJour: 0, paniersNuit: 0 },
+  )
+}

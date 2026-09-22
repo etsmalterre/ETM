@@ -194,3 +194,26 @@ describe('FEN_Lissage proposals', () => {
     expect(() => minutesDepuisHM('7h15')).toThrow(SaisieInvalide)
   })
 })
+
+// ── Données paie ──
+import { paieSemaine, totauxPaie } from './pointage-admin.js'
+
+describe('paieSemaine — meals and night hours of a validated week', () => {
+  const j = (type: string, totalMin: number) => ({ type, totalMin })
+  it('a day meal per M/A/E day of 6 h or more, a night meal per N day, nothing for J', () => {
+    const s = paieSemaine({
+      numero: 38,
+      jours: [j('M', 420), j('A', 420), j('E', 359), j('J', 480), j('N', 480), j('N', 300), j('J', 0)],
+      cumulSemaineMin: 2459,
+    })
+    expect(s.paniersJour).toBe(2) // E at 5:59 does not count
+    expect(s.paniersNuit).toBe(1) // the 5 h night does not count
+    expect(s.nuitMin).toBe(780) // both N days' hours count as night hours
+    expect(s.totalMin).toBe(2459)
+  })
+  it('totals over a range', () => {
+    const a = paieSemaine({ numero: 1, jours: [j('M', 420), j('M', 420), j('M', 420), j('M', 420), j('M', 420), j('J', 0), j('J', 0)], cumulSemaineMin: 2100 })
+    const b = paieSemaine({ numero: 2, jours: [j('N', 480), j('N', 480), j('N', 480), j('N', 480), j('N', 480), j('J', 0), j('J', 0)], cumulSemaineMin: 2400 })
+    expect(totauxPaie([a, b])).toEqual({ totalMin: 4500, nuitMin: 2400, paniersJour: 5, paniersNuit: 5 })
+  })
+})
