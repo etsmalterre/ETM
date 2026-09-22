@@ -10,6 +10,26 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/ai-agents — menu « Agents IA » + agent BL MATEL (remplace n8n « BL Processing »)
+**MPS API + web ETM.** Nouveau menu **Agents IA › Agents** (`/agents-ia/agents`, `pages/AgentsIa.tsx`,
+Classeur : liste des agents, onglets Exécutions / Prompt / Coûts / Fonctionnement, pied « mode »
+À l'arrêt / En essai / En service) sur `/api/agents-ia` (`routes/agents-ia.ts`, lectures = session,
+écritures = `edit_agents_ia`). Moteur `lib/agents/` inspiré de MFProd : catalogue en code, état en
+JSON dans `data/agents/` (versions de prompt immuables, `startedAt`, exécutions + PDF lus),
+relevé in-process toutes les 2 min en production seulement (`AGENTS_IA=off|on`). Premier agent
+**BL MATEL** : mails de mct.celine@mateltextiles.fr dans contact@ (`lib/gmail-reader.ts`, scope
+gmail.modify déjà délégué) → OCR Mistral + `mistral-small` en JSON strict (`lib/mistral.ts`,
+`MISTRAL_API_KEY` à ajouter au .env prod) → contrôles purs testés (`bl-extraction.ts` : deux mises en
+page MATEL, rouleaux assemblés et raccourci `3067/17+3`, totaux imprimés, pièce coupée à 0 kg,
+BL sur plusieurs PJ) → ligne de commande + pièces vérifiées contre `stock_ecru` / `stock_fini`
+(`bl-matel-db.ts`) → en service : `ged` type 3 `MA<lot>.pdf` (`lib/ged-sst.ts`, extrait de la route
+d'upload sst) + `data_bl_tricotbot`, idempotent (même pièce + mêmes valeurs = déjà importé), libellé
+Gmail ; sinon « à vérifier » + notification `notif_agent_bl`. Benchmark 120 BL : 119/120 exacts
+(Gemini/n8n 96,7 %), ~0,0045 $/BL ; essai à blanc sur 46 BL dev = identique à n8n, plus les pièces que
+le WebDev perdait. `useAutoSelectFirst` accepte des id texte. Déploiement : agent livré à l'arrêt,
+puis essai en parallèle de n8n, puis bascule. Question ouverte (Vincent) : BL avec une pièce en
+anomalie → tout bloquer (actuel) ou écrire les pièces saines. Détails : `screen_notes.md` § 13.
+
 ## 2026-09-22 — feat/horaires-fixes — rapport de pointage : horaires fixes par salarié + « En poste »
 **MPS API seule.** `HORAIRES_FIXES` (lib/rapport-pointage.ts, par `lst_salarie.id`, dans le code
 par choix de Vincent : un changement = commit + /etm_deploy) : Nicolas (1) et Mickael (20) en
