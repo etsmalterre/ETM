@@ -57,9 +57,9 @@ describe('alerteRegleur — 2 % second choice (legacy) or more than one stop per
   const calme = { moyenne: 0.7, pieces: 3 }
   const aucune = { moyenne: null, pieces: 0 }
 
-  it('alerts above 2 % second choice, and zeroes the ratio when quiet', () => {
-    expect(alerteRegleur(0.021, calme)).toEqual({ alerte: true, pct_defaut: 0.021, arrets_piece: calme })
-    expect(alerteRegleur(0.02, calme)).toEqual({ alerte: false, pct_defaut: 0, arrets_piece: calme })
+  it('alerts strictly above 2 % second choice', () => {
+    expect(alerteRegleur(0.021, calme)).toEqual({ alerte: true, arrets_piece: calme })
+    expect(alerteRegleur(0.02, calme)).toEqual({ alerte: false, arrets_piece: calme })
   })
   it('alerts strictly above the tablet amber step, never at it', () => {
     expect(SEUIL_ARRETS_PIECE).toBe(1)
@@ -67,13 +67,16 @@ describe('alerteRegleur — 2 % second choice (legacy) or more than one stop per
     expect(alerteRegleur(0, { moyenne: 1, pieces: 3 }).alerte).toBe(false)
   })
   it('is quiet without a finished piece, and keeps the number on the tile either way', () => {
-    expect(alerteRegleur(0, aucune)).toEqual({ alerte: false, pct_defaut: 0, arrets_piece: aucune })
-    // 1,2 % of second choice shows only because the bell is on — the legacy rule.
+    expect(alerteRegleur(0, aucune)).toEqual({ alerte: false, arrets_piece: aucune })
     expect(alerteRegleur(0.012, { moyenne: 4.7, pieces: 3 })).toEqual({
       alerte: true,
-      pct_defaut: 0.012,
       arrets_piece: { moyenne: 4.7, pieces: 3 },
     })
-    expect(alerteRegleur(0.012, calme).pct_defaut).toBe(0)
+  })
+  it('never carries the ratio — it travels raw on every machine list, alert or not (2026-09-22)', () => {
+    // The legacy zeroed the % without a bell; both roles now read it from 1 %
+    // on the tile, so the alert no longer owns the figure.
+    expect(alerteRegleur(0.012, calme)).not.toHaveProperty('pct_defaut')
+    expect(alerteRegleur(0.05, calme)).not.toHaveProperty('pct_defaut')
   })
 })

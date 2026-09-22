@@ -157,9 +157,16 @@ atelierRouter.get('/bonnetiers', async (req: Request, res: Response) => {
 // every active tile with a state icon, a stop frequency and a second-choice
 // ratio, plus an alert flag; and its « Inactifs » list holds only the métiers
 // with NO active OF (the bonnetier build also lists finished-but-still-active
-// ones there). The extras cost bounded queries — two 24 h scans plus one
-// `TOP 100` per (reference, coloris) pair — so they are computed only when the
-// phone asks for them; the bonnetier list stays as cheap as before.
+// ones there). The state, the stops reader and the eligibility are computed
+// only when the phone asks for them.
+//
+// ── `of.pct_defaut` — the second-choice ratio, for BOTH roles (2026-09-22) ──
+//
+// The legacy shows the ratio to the régleur only, and only under a lit bell.
+// Vincent wants the bonnetier to read it too, from 1 %: it is what tells them
+// the article is going out as second choice. One `TOP 100` per distinct
+// (reference, coloris) pair — the pairs on the floor at once are few — so it
+// rides on every list, raw; the tile decides from which figure it shows.
 //
 // ── `inactif` — what an idle métier says about itself (2026-09-15) ──
 //
@@ -194,7 +201,8 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
       resolveColorisEcru([...ofs, ...reposOfs].map((o) => n(o.IDcolori_ecru)).filter((x) => x > 0)),
     ])
     const produites = countFinished(pieces)
-    const regleur = wantRegleur ? await regleurExtras(ofs) : null
+    const pctDefaut = await pctDefautDesOfs(ofs)
+    const regleur = wantRegleur ? await regleurExtras(ofs, pctDefaut) : null
 
     const payload = machines.map((m) => {
       const o = byMachine.get(m.id)
@@ -227,6 +235,9 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
               a_consigne: String(o!.observations ?? '').trim().length > 0,
               demarre,
               interrompu,
+              // Raw second-choice weight ratio of the article (0–1), for
+              // both roles; the tile shows it from 1 %.
+              pct_defaut: pctDefaut.get(ofId) ?? 0,
             }
           : null,
         // Only on `?regleur=1`; null for a bonnetier's phone.
@@ -234,7 +245,7 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
           regleur && ofId
             ? {
                 etat: etatMetier(demarre, interrompu),
-                ...(regleur.get(ofId) ?? { alerte: false, pct_defaut: 0, arrets_piece: { moyenne: null, pieces: 0 }, eligible: false }),
+                ...(regleur.get(ofId) ?? { alerte: false, arrets_piece: { moyenne: null, pieces: 0 }, eligible: false }),
               }
             : null,
         // Only on a métier with no OF at all; null while one runs.
@@ -476,34 +487,11 @@ async function countFinishedPieces(ofIds: number[]): Promise<Map<number, number>
   return countFinished(await selectPiecesForOfs(ofIds), ofIds.filter((x) => x > 0))
 }
 
-type RegleurExtras = AlerteRegleur & { eligible: boolean }
-
-/** The régleur tile's numbers for every active OF, in three bounded reads:
- *
- *   1. arrêts par pièce — lib/arrets-par-piece-trm.ts, the TRS tablet's own
- *      reader, cached per (OF, ids of its last finished pieces)
- *   2. stock_ecru TOP 100 per distinct (reference, coloris)   (the 2nd-choice ratio)
- *   3. ref_ecru_machine for the métiers on screen             (the eligibility)
- *
- *  The legacy runs two 24 h scans PER TILE for an hourly stop rate; why that
- *  number is not ported: the header of lib/atelier-regleur-trm.ts. */
-async function regleurExtras(ofs: Record<string, unknown>[]): Promise<Map<number, RegleurExtras>> {
-  const out = new Map<number, RegleurExtras>()
-  if (ofs.length === 0) return out
-  const machineIds = Array.from(new Set(ofs.map((o) => n(o.IDmachine)).filter((x) => x > 0)))
-
-  const [arrets, eligRows] = await Promise.all([
-    arretsParPieceDesOfs(ofs.map((o) => ({ ofId: n(o.IDordre_fabrication), machineId: n(o.IDmachine) }))),
-    machineIds.length > 0
-      ? query<Record<string, unknown>>(
-          `SELECT IDref_ecru, IDmachine FROM ref_ecru_machine WHERE IDmachine IN (${machineIds.join(',')})`,
-        )
-      : Promise.resolve([] as Record<string, unknown>[]),
-  ])
-  const eligible = new Set(eligRows.map((r) => `${n(r.IDref_ecru)}:${n(r.IDmachine)}`))
-
-  // One TOP 100 per distinct (reference, coloris) pair — two OFs on the same
-  // article share the read, as they share the ratio.
+/** The second-choice weight ratio of each active OF's article, keyed by OF —
+ *  for every caller of the list (2026-09-22). One `stock_ecru` TOP 100 per
+ *  distinct (reference, coloris) pair: two OFs on the same article share the
+ *  read, as they share the ratio. */
+async function pctDefautDesOfs(ofs: Record<string, unknown>[]): Promise<Map<number, number>> {
   const pctParPaire = new Map<string, number>()
   for (const o of ofs) {
     const key = `${n(o.IDref_ecru)}:${n(o.IDcolori_ecru)}`
@@ -522,12 +510,46 @@ async function regleurExtras(ofs: Record<string, unknown>[]): Promise<Map<number
       pourcentageDefauts(rows.map((r) => ({ poids: Number(r.poids) || 0, second_choix: n(r.second_choix) === 1 }))),
     )
   }
+  const out = new Map<number, number>()
+  for (const o of ofs) {
+    out.set(n(o.IDordre_fabrication), pctParPaire.get(`${n(o.IDref_ecru)}:${n(o.IDcolori_ecru)}`) ?? 0)
+  }
+  return out
+}
+
+type RegleurExtras = AlerteRegleur & { eligible: boolean }
+
+/** The régleur tile's numbers for every active OF, in two bounded reads on
+ *  top of the ratio the list already computed for everyone (`pctDefaut`):
+ *
+ *   1. arrêts par pièce — lib/arrets-par-piece-trm.ts, the TRS tablet's own
+ *      reader, cached per (OF, ids of its last finished pieces)
+ *   2. ref_ecru_machine for the métiers on screen             (the eligibility)
+ *
+ *  The legacy runs two 24 h scans PER TILE for an hourly stop rate; why that
+ *  number is not ported: the header of lib/atelier-regleur-trm.ts. */
+async function regleurExtras(
+  ofs: Record<string, unknown>[],
+  pctDefaut: Map<number, number>,
+): Promise<Map<number, RegleurExtras>> {
+  const out = new Map<number, RegleurExtras>()
+  if (ofs.length === 0) return out
+  const machineIds = Array.from(new Set(ofs.map((o) => n(o.IDmachine)).filter((x) => x > 0)))
+
+  const [arrets, eligRows] = await Promise.all([
+    arretsParPieceDesOfs(ofs.map((o) => ({ ofId: n(o.IDordre_fabrication), machineId: n(o.IDmachine) }))),
+    machineIds.length > 0
+      ? query<Record<string, unknown>>(
+          `SELECT IDref_ecru, IDmachine FROM ref_ecru_machine WHERE IDmachine IN (${machineIds.join(',')})`,
+        )
+      : Promise.resolve([] as Record<string, unknown>[]),
+  ])
+  const eligible = new Set(eligRows.map((r) => `${n(r.IDref_ecru)}:${n(r.IDmachine)}`))
 
   for (const o of ofs) {
     const ofId = n(o.IDordre_fabrication)
-    const pct = pctParPaire.get(`${n(o.IDref_ecru)}:${n(o.IDcolori_ecru)}`) ?? 0
     out.set(ofId, {
-      ...alerteRegleur(pct, arrets.get(ofId) ?? { moyenne: null, pieces: 0 }),
+      ...alerteRegleur(pctDefaut.get(ofId) ?? 0, arrets.get(ofId) ?? { moyenne: null, pieces: 0 }),
       eligible: eligible.has(`${n(o.IDref_ecru)}:${n(o.IDmachine)}`),
     })
   }
@@ -1649,7 +1671,11 @@ atelierRouter.get('/lookups/defauts', (_req: Request, res: Response) => {
  *  the authoritative copy: the other one only decides what to render. Change
  *  them together. */
 function actionsFor(ctx: Contexte, estRegleur: boolean): ActionAtelier[] {
-  if (!ctx.demarre) return ['Lancement OF']
+  // Launching is the régleur's (2026-09-22): the legacy offered « Lancement
+  // OF » to both builds, but the launch is the end of the réglage sheet,
+  // which only a régleur reads. A bonnetier on an unlaunched OF has nothing
+  // to record; the phone shows the poste and waits.
+  if (!ctx.demarre) return estRegleur ? ['Lancement OF'] : []
   const out: ActionAtelier[] = []
   if (ctx.nb_nettoyages_faits < ctx.nb_nettoyages_requis) out.push('Nettoyage')
   if (ctx.produites + 1 >= ctx.nb_pieces && !ctx.finir_fil) out.push('Terminer OF')

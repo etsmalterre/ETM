@@ -60,16 +60,22 @@
 // roll"), it is the number already on the wall, and it does not depend on
 // the time of day. Alert threshold = above 1 stop per piece, the tablet's own
 // amber step (apps/trs lib/affichage.ts `teinteArrets`). The second-choice
-// ratio, its 2 % threshold and the "zeroed without alert" rule are the
-// legacy's, unchanged — so the % still shows only when the bell is on.
+// ratio and its 2 % alert threshold are the legacy's, unchanged.
 //
-// Two readings of the legacy worth keeping in mind:
-//  - The second-choice ratio is by WEIGHT over the most recent rolls of the
-//    (reference, coloris) pair — all OFs, all machines — stopped at the first
-//    roll that carries the running total to 1 000 kg, or at 100 rolls.
-//  - The legacy % label is visible whenever it is non-zero, and the bell (with
-//    its number) only on alert: 1,2 % shows under a bell lit by the stops, not
-//    because 1,2 % crosses a threshold of its own.
+// ⚠️ The legacy's "zeroed without alert" rule is NOT kept (2026-09-22). The
+// régleur tile used to blank the % unless the bell was on; Vincent wants BOTH
+// roles to see the second-choice ratio as soon as it passes 1 %, bell or not —
+// a bonnetier who reads « 1,5 % » on their tile knits more carefully. So the
+// ratio travels raw on every machine list (`of.pct_defaut`, no `?regleur=1`
+// needed — routes/atelier.ts `pctDefautDesOfs`), and the tile alone decides
+// from which figure it shows the pill (ChoixMetier.tsx `SEUIL_PCT_DEFAUT`,
+// 1 %). The alert flag — the red frame of the régleur tile — still fires at
+// 2 % or above one stop per piece.
+//
+// One reading of the legacy worth keeping in mind: the second-choice ratio is
+// by WEIGHT over the most recent rolls of the (reference, coloris) pair — all
+// OFs, all machines — stopped at the first roll that carries the running total
+// to 1 000 kg, or at 100 rolls.
 
 import type { ArretsParPiece } from './trs-trm.js'
 
@@ -109,16 +115,16 @@ export function pourcentageDefauts(rouleaux: RouleauPoids[]): number {
 
 export interface AlerteRegleur {
   alerte: boolean
-  /** Zeroed when there is no alert, exactly as the legacy tile does. */
-  pct_defaut: number
   /** The TRS tablet's `arretsParPiece` for the OF — `moyenne` null until the
    *  OF has a finished piece. Never zeroed: the bell number is informative
    *  on its own, only its colour follows the alert. */
   arrets_piece: ArretsParPiece
 }
 
+/** The régleur's alert. `pctDefaut` is the raw ratio the machine list already
+ *  carries for everyone (`of.pct_defaut`): an input here, never an output. */
 export function alerteRegleur(pctDefaut: number, arrets: ArretsParPiece): AlerteRegleur {
   const tropDArrets = arrets.moyenne !== null && arrets.moyenne > SEUIL_ARRETS_PIECE
   const alerte = pctDefaut > SEUIL_PCT_DEFAUT || tropDArrets
-  return { alerte, pct_defaut: alerte ? pctDefaut : 0, arrets_piece: arrets }
+  return { alerte, arrets_piece: arrets }
 }
