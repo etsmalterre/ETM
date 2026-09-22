@@ -112,9 +112,40 @@ function fetchSamples(): { samples: Sample[]; error: string | null } {
   return { samples, error: null }
 }
 
+interface BackupStatus {
+  checked: string
+  stanza_ok: boolean
+  last_backup: { type: string; stop: string; size_mb: number } | null
+  oldest_restore_point: string | null
+  archive: { last_archived: string; failed_count: number; last_failed: string }
+}
+
 interface MigrationSummary {
   run?: string; tables?: number; tables_ok?: number; rows?: number; duration_min?: number
   new?: number; regressed?: number; open_errors?: number; gone?: number
+  /** pgBackRest health of the PostgreSQL VM (windev_migration backup/pg-backup.sh). */
+  backup?: BackupStatus | null
+}
+
+/** One line on the PostgreSQL backups (MFProd today, MPS after the cutover). */
+function backupRow(m: { summary: MigrationSummary | null; error: string | null }): NotificationRow {
+  const label = 'Sauvegarde PostgreSQL'
+  const b = m.summary?.backup
+  if (m.error || !b) return { label, value: `état INDISPONIBLE${m.error ? ` : ${m.error}` : ''}` }
+  const fr = (s: string) => `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}`
+  const hoursSince = (s: string) => (Date.now() - new Date(s.replace(' ', 'T')).getTime()) / 3_600_000
+  const problems = [
+    !b.stanza_ok ? 'DÉPÔT EN ERREUR' : null,
+    !b.last_backup ? 'AUCUNE SAUVEGARDE' : hoursSince(b.last_backup.stop) > 30 ? `DERNIÈRE SAUVEGARDE IL Y A ${Math.round(hoursSince(b.last_backup.stop))} H` : null,
+    b.archive.last_failed && b.archive.last_failed > b.archive.last_archived ? `ARCHIVAGE EN ÉCHEC depuis ${fr(b.archive.last_failed)}` : null,
+  ].filter(Boolean)
+  const parts = [
+    ...problems,
+    b.last_backup ? `dernière ${b.last_backup.type === 'full' ? 'complète' : 'différentielle'} le ${fr(b.last_backup.stop)}` : null,
+    b.archive.last_archived ? `archivage continu, dernier journal ${fr(b.archive.last_archived)}` : null,
+    b.oldest_restore_point ? `restauration possible à la minute depuis le ${fr(b.oldest_restore_point)}` : null,
+  ].filter(Boolean)
+  return { label, value: parts.join(' · ') }
 }
 
 /** Summary of the latest nightly rehearsal, through the same key, forced on the
@@ -351,7 +382,9 @@ async function main() {
   for (const h of day.filter(x => !x.legacy)) {
     rows.push({ label: h.label, value: `connectée ${duration(h.minutes)} (normal)` })
   }
-  rows.push(migrationRow(fetchMigration()))
+  const migration = fetchMigration()
+  rows.push(migrationRow(migration))
+  rows.push(backupRow(migration))
   if (silentRecently.length) {
     rows.push({
       label: 'Silencieux depuis peu',
