@@ -7,14 +7,16 @@
  *     one line per salarié — start, pause 1, pause 2, end as app-style pills,
  *     total pause — red only where something is wrong;
  *   - a day-hours salarié's lunch (clocked out, clocked back in) sits in the
- *     pause columns in its own blue pill, outside the pause total (2026-09-22,
- *     Nicolas: the row showed no break at all while the note said « reprise »);
+ *     pause columns in its own blue pill (2026-09-22, Nicolas: the row showed
+ *     no break at all while the note said « reprise »). The « Pauses » column
+ *     then sums pauses and lunch, « 2 h 08 » from an hour up; the 20 min rule
+ *     of a shift worker still reads `pauseMin` alone;
  *   - weekly: the annual balances ranked, green up to 5 h, amber to 10 h, red above.
  * Email-safe markup only: tables, inline styles, no <style>, no flexbox.
  * No em / en dash in the content (skill rule).
  */
 import { EMAIL_STYLE as S, type EmailSection, type NotificationEmailContent } from './notification-email.js'
-import { hhmm, type LigneRapport, type Plage } from './rapport-pointage.js'
+import { dureeTexte, hhmm, type LigneRapport, type Plage } from './rapport-pointage.js'
 
 const RED = '#B91C1C'
 const RED_BG = '#FEF2F2'
@@ -82,20 +84,24 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
   const cellule = (cs: ReturnType<typeof creneaux>) =>
     cs.length ? cs.map((c) => pill(plage(c.p), c.kind)).join('<br>') : vide
 
-  const ligne = (l: LigneRapport) =>
-    '<tr>' +
-    `<td style="padding:10px 8px 10px 0;vertical-align:middle;${bt}font-family:${S.font};font-size:14px;font-weight:bold;` +
-    `color:${l.alertes.length ? RED : S.navy};">${esc(l.salarie.prenom)}</td>` +
-    td(heure(l.debut, l.rouge.debut)) +
-    td(cellule(creneaux(l).slice(0, 1))) +
-    td(cellule(creneaux(l).slice(1))) +
-    td(l.debut === null ? vide : heure(l.fin, l.rouge.fin)) +
-    td(
-      `<span style="font-family:${S.font};font-size:13px;font-weight:bold;color:${l.rouge.pause ? RED : l.pauseMin ? S.text : FAINT};">` +
-        `${l.pauseMin ? `${l.pauseMin} min` : '-'}</span>`,
-      'right',
-    ) +
-    '</tr>'
+  const ligne = (l: LigneRapport) => {
+    const total = l.pauseMin + l.repasMin
+    return (
+      '<tr>' +
+      `<td style="padding:10px 8px 10px 0;vertical-align:middle;${bt}font-family:${S.font};font-size:14px;font-weight:bold;` +
+      `color:${l.alertes.length ? RED : S.navy};">${esc(l.salarie.prenom)}</td>` +
+      td(heure(l.debut, l.rouge.debut)) +
+      td(cellule(creneaux(l).slice(0, 1))) +
+      td(cellule(creneaux(l).slice(1))) +
+      td(l.debut === null ? vide : heure(l.fin, l.rouge.fin)) +
+      td(
+        `<span style="font-family:${S.font};font-size:13px;font-weight:bold;color:${l.rouge.pause ? RED : total ? S.text : FAINT};white-space:nowrap;">` +
+          `${total ? dureeTexte(total) : '-'}</span>`,
+        'right',
+      ) +
+      '</tr>'
+    )
+  }
 
   const titreHtml = titre
     ? `<div style="font-family:${S.font};font-size:15px;font-weight:bold;color:${S.navy};margin:0 0 10px 0;">${esc(titre)}</div>`
@@ -116,7 +122,7 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
         ...l.pauses.map((p, i) => `pause ${i + 1} ${plage(p)}`),
         ...l.repas.map((p) => `midi ${plage(p)}`),
         `fin ${l.debut === null ? '-' : txtHeure(l.fin)}`,
-        `pauses ${l.pauseMin} min`,
+        `pauses ${dureeTexte(l.pauseMin + l.repasMin)}`,
       ].join(' · '),
     ),
   ].join('\n')

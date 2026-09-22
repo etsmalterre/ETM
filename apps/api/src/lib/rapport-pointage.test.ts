@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { analyserJournee, arrondiMinute, joursCouverts, prenomAffiche } from './rapport-pointage.js'
+import { analyserJournee, dureeTexte, arrondiMinute, joursCouverts, prenomAffiche } from './rapport-pointage.js'
 import { contenuBilanHeures, contenuRapportPointage, soldeTexte, toneSolde } from './rapport-pointage-email.js'
 import { msHeureParis, type LigneHoraire } from './pointage-etat.js'
 
@@ -120,13 +120,15 @@ describe('email content', () => {
     expect(all).not.toMatch(/[—–]/)
   })
 
-  it('shows the lunch in the pause columns, outside the pause total, and no unsubscribe line', () => {
+  it('shows the lunch in the pause columns and in the pause total, and no unsubscribe line', () => {
     const l = analyserJournee(sal('Nicolas'), [ligne(sec(8, 50), sec(12, 4)), ligne(sec(14, 6), sec(18, 8))], null, heure)
     const r = contenuRapportPointage([{ jour: '20260922', lignes: [l] }])!
     const table = r.content.sections!.at(-1)!
     expect(table.html).toContain('12:04 - 14:06')
     expect(table.text).toContain('midi 12:04 - 14:06')
-    expect(table.text).toContain('pauses 0 min')
+    expect(l.pauseMin).toBe(0)
+    expect(table.text).toContain('pauses 2 h 02')
+    expect(table.html).toContain('2 h 02')
     expect(r.content.footerNote).toBe('')
   })
 
@@ -139,6 +141,15 @@ describe('email content', () => {
     const r = contenuBilanHeures([{ prenom: 'Nicolas', soldeMin: 15 }, { prenom: 'Angelique', soldeMin: 2070 }], { numero: 38, lundi: '20260914', samedi: '20260919' })!
     expect(r.subject).toBe('Bilan des heures annualisées - Semaine 38')
     expect(r.content.sections![0].text.split('\n')[0]).toMatch(/^Angelique/)
+  })
+})
+
+describe('dureeTexte', () => {
+  it('minutes under an hour, hours and minutes from one', () => {
+    expect(dureeTexte(20)).toBe('20 min')
+    expect(dureeTexte(59)).toBe('59 min')
+    expect(dureeTexte(60)).toBe('1 h 00')
+    expect(dureeTexte(128)).toBe('2 h 08')
   })
 })
 

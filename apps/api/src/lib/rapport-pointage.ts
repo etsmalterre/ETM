@@ -56,6 +56,7 @@ export interface LigneRapport {
    *  clocked out and back in. Shown apart from the pauses and never counted
    *  in `pauseMin` (it is not paid time off the machine, it is time off work). */
   repas: Plage[]
+  repasMin: number
   /** What to check, in words — empty when the day is in order. */
   alertes: string[]
   /** Which cells turn red. */
@@ -77,6 +78,11 @@ export function prenomAffiche(s: string): string {
 }
 
 const dureeMin = (p: Plage) => Math.max(0, Math.round((p.fin - p.debut) / MIN))
+
+/** A duration as the report writes it: « 20 min » under an hour, « 2 h 08 » from one. */
+export function dureeTexte(min: number): string {
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')}`
+}
 
 /** « HH:MM » of an epoch ms, Paris wall clock. */
 export function hhmm(ms: number, tz = 'Europe/Paris'): string {
@@ -171,7 +177,8 @@ export function analyserJournee(
     }
   }
 
-  return { salarie, regime, prevu, debut, fin, pauses, pauseMin, repas, alertes, rouge }
+  const repasMin = repas.reduce((t, p) => t + dureeMin(p), 0)
+  return { salarie, regime, prevu, debut, fin, pauses, pauseMin, repas, repasMin, alertes, rouge }
 }
 
 /** Order of the report: by first clock-in, never-clocked (planned) salariés last. */
