@@ -13,6 +13,9 @@
 //      only on the four atelier tables (message_of, bonnetier, utilisateur,
 //      evenement_machine), so it mainly shows the workshop tablets.
 //
+// Also carries one line on the nightly HFSQL -> PostgreSQL rehearsal (step 2),
+// read from the PG VM through the same key (forced to serve-summary.sh there).
+//
 // Usage (on the API host, from ~/mps_api):
 //   npx tsx src/scripts/legacy-activity-report.ts                  # dry run, prints the text part
 //   npx tsx src/scripts/legacy-activity-report.ts --send           # mail it + update the state file
@@ -38,6 +41,8 @@ import { sendMail } from '../lib/gmail.js'
 
 const SAMPLE_MINUTES = 2
 const HFSQL_HOST = '10.10.20.2'
+/** The PostgreSQL VM, where the nightly HFSQL -> PG rehearsal runs (pg_migrate.py). */
+const PG_HOST = '10.10.20.6'
 const DEFAULT_TO = 'vincent@etsmalterre.com'
 const STATE_FILE = resolve('data/legacy-audit-state.json')
 const RETIRED_AFTER_DAYS = 7
@@ -105,6 +110,46 @@ function fetchSamples(): { samples: Sample[]; error: string | null } {
     samples.push({ hhmm, ip, conns: Number(conns) || 0, name: (name ?? '').trim() })
   }
   return { samples, error: null }
+}
+
+interface MigrationSummary {
+  run?: string; tables?: number; tables_ok?: number; rows?: number; duration_min?: number
+  new?: number; regressed?: number; open_errors?: number; gone?: number
+}
+
+/** Summary of the latest nightly rehearsal, through the same key, forced on the
+ *  PG VM to serve-summary.sh (it can print that JSON and nothing else). */
+function fetchMigration(): { summary: MigrationSummary | null; error: string | null } {
+  try {
+    const raw = execFileSync('ssh', [
+      '-i', join(homedir(), '.ssh', 'hfsql_audit'),
+      '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+      `debian@${PG_HOST}`,
+    ], { encoding: 'utf8', timeout: 30_000 })
+    const s = JSON.parse(raw) as MigrationSummary
+    return { summary: s.run ? s : null, error: null }
+  } catch (e) {
+    return { summary: null, error: (e as Error).message.split('\n')[0] }
+  }
+}
+
+function migrationRow(m: { summary: MigrationSummary | null; error: string | null }): NotificationRow {
+  const label = 'Migration PostgreSQL'
+  if (m.error) return { label, value: `résumé INDISPONIBLE : ${m.error}` }
+  const s = m.summary
+  if (!s?.run) return { label, value: 'aucune copie de nuit pour l’instant' }
+  const [d, t] = s.run.split('_')
+  const age = daysBetween(d, DAY)
+  const when = `${frDate(d)} à ${t.slice(0, 2)}:${t.slice(2)}`
+  const parts = [
+    `copie du ${when}${age > 1 ? ` (PAS DE COPIE DEPUIS ${age} JOURS)` : ''}`,
+    `${s.tables_ok}/${s.tables} tables, ${(s.rows ?? 0).toLocaleString('fr-FR')} lignes en ${String(s.duration_min).replace(".", ",")} min`,
+    `${s.new} nouveau${(s.new ?? 0) > 1 ? 'x' : ''} problème${(s.new ?? 0) > 1 ? 's' : ''}`,
+    s.regressed ? `${s.regressed} revenu${s.regressed > 1 ? 's' : ''}` : null,
+    `${s.open_errors} erreur${(s.open_errors ?? 0) > 1 ? 's' : ''} ouverte${(s.open_errors ?? 0) > 1 ? 's' : ''}`,
+    (s.new || s.regressed) ? 'à revoir avec /pg_migration_review' : null,
+  ].filter(Boolean)
+  return { label, value: parts.join(' · ') }
 }
 
 /** Local Paris day → the UTC instants bounding it (jnl Server_Time is UTC). */
@@ -306,6 +351,7 @@ async function main() {
   for (const h of day.filter(x => !x.legacy)) {
     rows.push({ label: h.label, value: `connectée ${duration(h.minutes)} (normal)` })
   }
+  rows.push(migrationRow(fetchMigration()))
   if (silentRecently.length) {
     rows.push({
       label: 'Silencieux depuis peu',
