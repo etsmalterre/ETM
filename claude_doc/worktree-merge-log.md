@@ -10,6 +10,21 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/rapport-facture — colonne « Pays »
+**Rapports › Factures — colonne « Pays » après « Client »** (demande Vincent : voir le pays
+de chaque facture de la période, dans le tableau et l'export Excel). Le pays est celui de
+l'adresse PROPRE de la facture (`facture.IDadresse` → `adresse.pays`, lookup plat par
+tranches de 400 `loadPaysByAdresse` dans `factures.ts`), jamais l'adresse par défaut
+actuelle du client — la facture est un instantané. La colonne legacy est saisie librement
+(« FRANCE » / « France » / « france », espaces finaux, sentinelle « -1 », 31 adresses sans
+pays), donc elle passe par `lib/pays.ts normalizePays()` (trim, sentinelles → '', recasage
+uniquement d'une valeur TOUT EN MAJUSCULES / tout en minuscules, valeur mixte rendue telle
+quelle ; test `pays.test.ts`) pour que la colonne trie, se cherche et se filtre dans Excel
+comme un seul pays. Écran : colonne triable, terme de recherche, colonne d'export « Pays »
+(un utilisateur dont la sélection d'export est déjà enregistrée doit la cocher une fois).
+Vérifié sur la base dev 2025 : 655 factures, France 585, Maroc 25, Belgique 11, 26 sans pays
+(« — »). Règle dans `CLAUDE.md` § Data semantics, récit dans `screen_notes.md` § 11.
+
 ## 2026-09-22 — feat/adresse-expe (LIVA #1179)
 **Clients › Expéditions — l'adresse de livraison reste modifiable sur un avis validé ou
 facturé** (Pierrot : l'avis est parfois créé avant de connaître l'adresse, ou le client la

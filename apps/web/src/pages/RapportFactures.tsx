@@ -53,6 +53,8 @@ interface FactureRapportRow {
   date: string | null
   IDclient: number
   client_nom: string
+  /** Country of the facture's billing address, '' when unknown. */
+  pays: string
   /** 1 = Facture, 2 = Avoir — amounts are magnitudes, signed on display. */
   type: number
   tva_rate: number
@@ -139,6 +141,7 @@ const EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'numero', label: 'Numéro', width: 9, value: (r) => r.numero ?? '' },
   { key: 'date', label: 'Date', width: 12, kind: 'date', value: (r) => dateVal(r.date) },
   { key: 'client', label: 'Client', width: 30, value: (r) => r.client_nom || '' },
+  { key: 'pays', label: 'Pays', width: 14, value: (r) => r.pays || '' },
   { key: 'type', label: 'Type', width: 9, value: (r) => typeMeta(r.type).label },
   { key: 'total_ht', label: 'Total HT (€)', width: 13, value: (r) => eur2(signed(r.total_ht, r.type)) },
   { key: 'tva_rate', label: 'Taux TVA (%)', width: 11, value: (r) => r.tva_rate },
@@ -188,6 +191,7 @@ type SortKey =
   | 'numero'
   | 'date'
   | 'client_nom'
+  | 'pays'
   | 'type'
   | 'total_ht'
   | 'tva_rate'
@@ -208,6 +212,7 @@ const COLUMNS: { key: SortKey; label: string; width: number; align?: 'left' | 'r
   { key: 'numero', label: 'Numéro', width: 78, align: 'right' },
   { key: 'date', label: 'Date', width: 96, align: 'right' },
   { key: 'client_nom', label: 'Client', width: 220 },
+  { key: 'pays', label: 'Pays', width: 110 },
   { key: 'type', label: 'Type', width: 96 },
   { key: 'total_ht', label: 'Total HT', width: 112, align: 'right' },
   { key: 'tva_rate', label: 'Taux', width: 70, align: 'right' },
@@ -308,6 +313,7 @@ export function RapportFactures({ basePath = '/rapports/factures' }: RapportFact
         const haystacks = [
           r.numero != null ? String(r.numero) : '',
           r.client_nom,
+          r.pays,
           typeMeta(r.type).label,
           r.tva_label,
           r.mode_paiement,
@@ -519,6 +525,9 @@ export function RapportFactures({ basePath = '/rapports/factures' }: RapportFact
                       <td className="px-2.5 py-2 text-right tabular-nums">{dateFmt(r.date) || '—'}</td>
                       <td className="px-2.5 py-2 truncate" title={r.client_nom || undefined}>
                         {r.client_nom || '—'}
+                      </td>
+                      <td className="px-2.5 py-2 truncate text-muted-foreground" title={r.pays || undefined}>
+                        {r.pays || '—'}
                       </td>
                       <td className="px-2.5 py-2">
                         <TypePill type={r.type} />

@@ -74,6 +74,7 @@ import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/
 import { loadDiversItems, resolveDiversPrix, type DiversItem } from './expeditions.js'
 import { groupFormelle, type FormelleCandidate, type FormelleCommande } from '../lib/facturation-groupes.js'
 import { MANUAL_MARK_PREFIX, buildManualMarkNotes, parseManualMarkNotes } from '../lib/envoi-manuel.js'
+import { normalizePays } from '../lib/pays.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -612,6 +613,9 @@ export interface FactureRapportRow {
   date: string | null
   IDclient: number
   client_nom: string
+  /** Country of the facture's own billing address (`facture.IDadresse`),
+   *  normalised by `normalizePays()`; '' when the address has none. */
+  pays: string
   /** 1 = Facture, 2 = Avoir. Amounts are magnitudes — the caller signs them. */
   type: number
   tva_rate: number
@@ -644,6 +648,21 @@ async function loadLabelMap(table: string, pk: string, col: string): Promise<Map
   return out
 }
 
+/** Country of each address, keyed by IDadresse — flat chunked lookups on the
+ *  integer PK, accent-repaired, normalised (« FRANCE » / « France » / « -1 »
+ *  are one country or none). The facture carries its own address, so the
+ *  rapport reads the country there, never on the client's current default. */
+async function loadPaysByAdresse(adresseIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  const ids = Array.from(new Set(adresseIds.filter((x) => x > 0)))
+  for (const chunk of chunks(ids, 400)) {
+    const rows = await query<any>(`SELECT IDadresse, pays FROM adresse WHERE IDadresse IN (${chunk.join(',')})`)
+    const fixed = await fixEncoding(rows, 'adresse', 'IDadresse', ['pays'])
+    for (const r of fixed) out.set(Number(r.IDadresse), normalizePays(r.pays))
+  }
+  return out
+}
+
 export function createFacturesRapportHandler(scope: FacturesScope) {
   return async function facturesRapport(req: Request, res: Response): Promise<void> {
     try {
@@ -671,8 +690,10 @@ export function createFacturesRapportHandler(scope: FacturesScope) {
 
       // Every lookup is flat and batched; the line totals are chunked so a
       // year of factures never becomes one giant IN list.
-      const [clientNames, tvaMap, envoyeIds, modes, codes, echeances, totalsChunks] = await Promise.all([
+      const adresseIds = factures.map((f: any) => Number(f.IDadresse) || 0)
+      const [clientNames, paysMap, tvaMap, envoyeIds, modes, codes, echeances, totalsChunks] = await Promise.all([
         resolveClientNames(clientIds),
+        loadPaysByAdresse(adresseIds),
         loadTvaMap(),
         loadEnvoyeIds('def', ids),
         loadLabelMap('mode_paiement', 'IDmode_paiement', 'libelle'),
@@ -696,6 +717,7 @@ export function createFacturesRapportHandler(scope: FacturesScope) {
           date: f.DATE ?? null,
           IDclient: Number(f.IDclient) || 0,
           client_nom: clientNames.get(Number(f.IDclient)) ?? '',
+          pays: paysMap.get(Number(f.IDadresse) || 0) ?? '',
           type: Number(f.TYPE) || 1,
           tva_rate: tva.valeur,
           tva_label: tva.libelle,
