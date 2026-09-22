@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/repas-pointage — rapport de pointage : la pause de midi s'affiche, plus de ligne de désabonnement
+**MPS API seule.** Un salarié à la journée (hors planning) qui pointe sa sortie de midi n'avait
+aucune pause sur sa ligne alors que la note disait « reprise 14:06 » (Nicolas, 22/09).
+`analyserJournee()` range désormais l'écart entre deux lignes d'une journée dans `repas`
+(`rouge.repas` quand la reprise est en retard) ; le markup le met dans les colonnes de pause, par
+ordre horaire, en pastille bleue (rouge si retard), hors du total « Pauses » ; texte « midi … ».
+Les deux rapports de pointage passent `footerNote: ''`, qui dans `notification-email.ts` retire
+désormais la ligne « Pour ne plus la recevoir… » (texte et HTML) ; les autres notifications
+gardent leur pied. Tests `rapport-pointage.test.ts` (18).
+
 ## 2026-09-22 — feat/email-pointage — API des rapports de pointage par email pour TRM (remplace n8n)
 **MPS API, paire de la branche TRM `feat/email-pointage`.** Les workflows n8n « pointage » et
 « Bilan des Heures Annualisées » (lus sur le WebDev localapi, destinataires en dur) deviennent
