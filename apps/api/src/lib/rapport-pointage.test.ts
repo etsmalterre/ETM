@@ -148,6 +148,8 @@ describe('email content', () => {
     expect(table.text).toContain('pauses 2 h 02')
     expect(table.text).toContain('en poste 7 h 16')
     expect(table.html).toContain('En poste')
+    // a late return is a pause problem: the total turns red with the lunch pill
+    expect(table.html).toMatch(/color:#B91C1C;white-space:nowrap;">2 h 02/)
     expect(table.html).toContain('2 h 02')
     expect(r.content.footerNote).toBe('')
   })

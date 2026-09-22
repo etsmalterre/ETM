@@ -98,7 +98,7 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
       td(cellule(creneaux(l).slice(1))) +
       td(l.debut === null ? vide : heure(l.fin, l.rouge.fin)) +
       td(
-        `<span style="font-family:${S.font};font-size:13px;font-weight:bold;color:${l.rouge.pause ? RED : total ? S.text : FAINT};white-space:nowrap;">` +
+        `<span style="font-family:${S.font};font-size:13px;font-weight:bold;color:${l.rouge.pause || l.rouge.repas ? RED : total ? S.text : FAINT};white-space:nowrap;">` +
           `${total ? dureeTexte(total) : '-'}</span>`,
         'right',
       ) +
