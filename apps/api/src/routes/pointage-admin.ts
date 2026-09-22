@@ -9,7 +9,7 @@
 //
 //   GET    /salaries                         every salarié, deleted ones flagged, with the bonnetier link
 //   GET    /bonnetiers                       the picker for that link (mps.bonnetier)
-//   POST   /salaries                         { nom, prenom, login, useInRatio, idMps }
+//   POST   /salaries                         { nom, prenom, login, idMps }
 //   PUT    /salaries/:id                     same body
 //   DELETE /salaries/:id                     soft delete
 //   GET    /salaries/:id/messages            every message still on file, expired included
@@ -121,7 +121,6 @@ const salarieJson = (s: SalarieComplet) => ({
   nom: s.nom,
   prenom: s.prenom,
   login: s.login,
-  useInRatio: s.useInRatio,
   idMps: s.idMps,
   supprime: s.supprime,
   photo: s.idMps > 0,
@@ -188,7 +187,6 @@ const salarieBody = z
     nom: z.string().max(50),
     prenom: z.string().max(50),
     login: z.string().max(3),
-    useInRatio: z.boolean(),
     idMps: z.number().int().min(0),
   })
   .strict()

@@ -142,17 +142,17 @@ async function main(): Promise<void> {
     verifier(jn6.length === 2, 'journal conservé')
 
     console.log('\n7. salarié + message')
-    const cree = await creerSalarie({ nom: 'Zz-Contrôle', prenom: 'Éric', login: 'ZZ9', useInRatio: false, idMps: 0 })
+    const cree = await creerSalarie({ nom: 'Zz-Contrôle', prenom: 'Éric', login: 'ZZ9', idMps: 0 })
     salarieCreeId = cree.id
-    verifier(cree.nom === 'Zz-Contrôle' && cree.prenom === 'Éric' && cree.login === 'ZZ9' && !cree.useInRatio, 'créé, accents intacts')
+    verifier(cree.nom === 'Zz-Contrôle' && cree.prenom === 'Éric' && cree.login === 'ZZ9', 'créé, accents intacts')
     try {
-      await creerSalarie({ nom: 'Autre', prenom: 'A', login: 'zz9', useInRatio: true, idMps: 0 })
+      await creerSalarie({ nom: 'Autre', prenom: 'A', login: 'zz9', idMps: 0 })
       verifier(false, 'login en double accepté à tort')
     } catch (err) {
       verifier(err instanceof SaisieInvalide, 'login en double refusé')
     }
-    const modif = await modifierSalarie(cree.id, { nom: 'Zz-Contrôle', prenom: 'Éric', login: 'ZZ8', useInRatio: true, idMps: 0 })
-    verifier(modif.login === 'ZZ8' && modif.useInRatio, 'modifié')
+    const modif = await modifierSalarie(cree.id, { nom: 'Zz-Contrôle', prenom: 'Éric', login: 'ZZ8', idMps: 0 })
+    verifier(modif.login === 'ZZ8', 'modifié')
     const msg = await creerMessage(cree.id, { texte: 'Bonjour « Éric » — 1er test', dateFin: '20010109' })
     verifier(msg.texte === 'Bonjour « Éric » — 1er test' && msg.dateFin === '20010109', 'message créé, texte intact')
     const msg2 = await modifierMessage(msg.id, { texte: 'Modifié', dateFin: '20010110' })

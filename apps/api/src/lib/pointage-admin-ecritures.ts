@@ -22,6 +22,8 @@
  * write on this database (see the header of lib/pointage-ecritures.ts).
  * Runtime column orders (scripts/copy-pointage-prod-to-dev.ts):
  *   lst_salarie  id, nom, prenom, login, is_deleted, id_mps, useInRatio
+ *   (useInRatio — « compte dans le ratio de production » — is a dead flag since
+ *   2026-09-22: the ratio is no longer used; written 1 on create, never shown)
  *   lst_message  id, id_salarie, MESSAGE, date_fin, is_deleted
  */
 import { pointageDb } from './hfsql-pointage.js'
@@ -58,7 +60,6 @@ export interface SaisieSalarie {
   nom: string
   prenom: string
   login: string
-  useInRatio: boolean
   /** `mps.bonnetier.IDbonnetier`, 0 = no link (no photo, no TRS journal). */
   idMps: number
 }
@@ -68,7 +69,6 @@ function normaliserSalarie(s: SaisieSalarie): SaisieSalarie {
     nom: nomPropre(s.nom, 'Le nom', 50),
     prenom: nomPropre(s.prenom, 'Le prénom', 50),
     login: loginNormalise(s.login),
-    useInRatio: !!s.useInRatio,
     idMps: Number.isInteger(s.idMps) && s.idMps > 0 ? s.idMps : 0,
   }
 }
@@ -79,7 +79,7 @@ export function creerSalarie(saisie: SaisieSalarie): Promise<SalarieComplet> {
     if (await loginPris(s.login)) throw new SaisieInvalide('Ce login est déjà utilisé. Veuillez en choisir un autre.')
     const id = (await maxId('lst_salarie')) + 1
     await pointageDb.query(
-      `INSERT INTO lst_salarie VALUES (${id}, ${texte(s.nom, 'Le nom')}, ${texte(s.prenom, 'Le prénom')}, '${s.login}', 0, ${s.idMps}, ${s.useInRatio ? 1 : 0})`,
+      `INSERT INTO lst_salarie VALUES (${id}, ${texte(s.nom, 'Le nom')}, ${texte(s.prenom, 'Le prénom')}, '${s.login}', 0, ${s.idMps}, 1)`,
     )
     const cree = await trouverSalarieMemeSupprime(id)
     if (!cree) throw new Error(`lst_salarie: row ${id} not found after its INSERT`)
@@ -97,7 +97,7 @@ export function modifierSalarie(id: number, saisie: SaisieSalarie): Promise<Sala
     }
     await pointageDb.query(
       `UPDATE lst_salarie SET nom = ${texte(s.nom, 'Le nom')}, prenom = ${texte(s.prenom, 'Le prénom')}, login = '${s.login}',
-       id_mps = ${s.idMps}, useInRatio = ${s.useInRatio ? 1 : 0} WHERE id = ${id}`,
+       id_mps = ${s.idMps} WHERE id = ${id}`,
     )
     const relu = await trouverSalarieMemeSupprime(id)
     if (!relu) throw new Error(`lst_salarie: row ${id} vanished after its UPDATE`)

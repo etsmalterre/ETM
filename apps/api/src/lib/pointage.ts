@@ -142,14 +142,12 @@ export async function soldeHeures(
 export interface SalarieComplet extends Salarie {
   /** 3-character badge code, unique across every row (deleted included). */
   login: string
-  /** « Compte dans le ratio de production » (FEN_Ratio_de_production). */
-  useInRatio: boolean
 }
 
 /** Every `lst_salarie` row with the admin fields, sorted like the grid. */
 export async function tousLesSalariesComplets(): Promise<SalarieComplet[]> {
   const raw = await pointageDb.query<Record<string, unknown>>(
-    'SELECT id, nom, prenom, login, is_deleted, id_mps, useInRatio FROM lst_salarie',
+    'SELECT id, nom, prenom, login, is_deleted, id_mps FROM lst_salarie',
   )
   const rows = await pointageDb.fixEncoding(raw, 'lst_salarie', 'id', ['nom', 'prenom'])
   return rows
@@ -160,7 +158,6 @@ export async function tousLesSalariesComplets(): Promise<SalarieComplet[]> {
       idMps: num(r.id_mps),
       supprime: num(r.is_deleted) !== 0,
       login: txt(r.login).toUpperCase(),
-      useInRatio: num(r[cle(r, 'useInRatio')]) !== 0,
     }))
     .sort((a, b) => a.nom.localeCompare(b.nom, 'fr') || a.prenom.localeCompare(b.prenom, 'fr'))
 }
