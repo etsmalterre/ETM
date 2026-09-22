@@ -49,6 +49,9 @@ export interface NotificationEmailContent {
   note?: { label: string; value: string } | null
   /** Optional closing line, emphasised in a tinted box. */
   callout?: string | null
+  /** Overrides the default "how to unsubscribe" footer line (plain text), for
+   *  mails that are not driven by a Notifications subscription. */
+  footerNote?: string | null
 }
 
 function esc(s: string): string {
@@ -80,7 +83,7 @@ function renderText(c: NotificationEmailContent): string {
     '',
     '---',
     'Notification automatique MPS - ETS Malterre',
-    'Pour ne plus recevoir cet email : Paramètres > Utilisateurs > Notifications.',
+    c.footerNote ?? 'Pour ne plus recevoir cet email : Paramètres > Utilisateurs > Notifications.',
   )
   return lines.join('\n')
 }
@@ -166,7 +169,9 @@ function renderHtml(c: NotificationEmailContent, logoSrc: string): string {
     `<div style="border-top:1px solid ${BORDER};padding-top:14px;font-family:${FONT};` +
     `font-size:11px;line-height:1.6;color:${MUTED};">` +
     `Notification automatique envoyée par <strong style="color:${NAVY};">MPS</strong> - ETS Malterre.<br>` +
-    `Pour ne plus la recevoir : Paramètres &gt; Utilisateurs &gt; Notifications.` +
+    (c.footerNote != null
+      ? esc(c.footerNote)
+      : `Pour ne plus la recevoir : Paramètres &gt; Utilisateurs &gt; Notifications.`) +
     `</div></td></tr>` +
 
     `</table></td></tr></table>`
