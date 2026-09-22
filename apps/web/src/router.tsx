@@ -80,6 +80,7 @@ import { RapportFinance } from '@/pages/RapportFinance'
 
 // Réseau pages
 import { Entreprises } from '@/pages/Entreprises'
+import { AgentsIa } from '@/pages/AgentsIa'
 
 // Settings
 import { SettingsUtilisateurs } from '@/pages/SettingsUtilisateurs'
@@ -161,6 +162,9 @@ export const router = createBrowserRouter([
       // Réseau
       { path: 'reseau', element: <Navigate to="/reseau/entreprises" replace /> },
       { path: 'reseau/entreprises', element: <Entreprises /> },
+      // Agents IA
+      { path: 'agents-ia', element: <Navigate to="/agents-ia/agents" replace /> },
+      { path: 'agents-ia/agents', element: <AgentsIa /> },
 
       // Settings (admin-only sub-routes)
       { path: 'settings', element: <Navigate to="/settings/utilisateurs" replace /> },

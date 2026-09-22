@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useResponsiveLayout } from './useResponsiveLayout'
 
-interface AutoSelectFirstOptions<T> {
+interface AutoSelectFirstOptions<T, K extends number | string = number> {
   /**
    * The list the selection must stay valid against. **Always pass the
    * search/status-filtered array the left list actually renders**, never the
@@ -9,9 +9,9 @@ interface AutoSelectFirstOptions<T> {
    * screen while the list shows a single search hit.
    */
   rows: readonly T[] | undefined
-  selectedId: number | null
-  getId: (row: T) => number
-  select: (id: number | null) => void
+  selectedId: K | null
+  getId: (row: T) => K
+  select: (id: K | null) => void
   /** Pause entirely — edit in progress, list refetching, pending auto-edit… */
   suspended?: boolean
 }
@@ -27,13 +27,13 @@ interface AutoSelectFirstOptions<T> {
  * on its own; when the selection disappears from the list it falls back to
  * null (return to the list) instead of jumping to another row's detail.
  */
-export function useAutoSelectFirst<T>({
+export function useAutoSelectFirst<T, K extends number | string = number>({
   rows,
   selectedId,
   getId,
   select,
   suspended = false,
-}: AutoSelectFirstOptions<T>) {
+}: AutoSelectFirstOptions<T, K>) {
   const { isStacked } = useResponsiveLayout()
 
   // No dep array on purpose: getId/select are inline closures whose identity

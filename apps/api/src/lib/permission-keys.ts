@@ -394,6 +394,16 @@ export const PERMISSION_KEYS = [
       'Autorise la validation / reprise des lots et la saisie des contrôles dans Qualité > Suivi des lots, ainsi que la création et la modification des dossiers de non-conformité dans Qualité > Dossiers. Sans cette permission, ces écrans sont en lecture seule.',
     category: 'Qualité',
   },
+  // Agents IA — reading the screen needs only the menu (screen_agents_ia);
+  // changing an agent (mode, prompt version, relaunch) needs this key, checked
+  // server-side on every write of /api/agents-ia.
+  {
+    key: 'edit_agents_ia',
+    label: 'Piloter les agents IA',
+    description:
+      'Autorise, dans Agents IA, à mettre un agent en service, en essai ou à l’arrêt, à publier ou réactiver une version de son prompt, à relancer la lecture de la boîte mail, à retraiter une exécution et à la marquer correcte ou incorrecte. Sans ce droit l’écran est en lecture seule.',
+    category: 'Agents IA',
+  },
 ] as const
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number]['key']

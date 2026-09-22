@@ -29,6 +29,13 @@ export const NOTIFICATION_KEYS = [
       'Envoie un email lorsqu’un utilisateur, bloqué parce que les coloris de la référence n’ont pas tous le même tarif standard, clique sur « Prévenir le responsable » pour demander l’ajout. Le message indique la référence, les coloris souhaités et la note laissée par le demandeur.',
     category: 'Gestion client',
   },
+  {
+    key: 'notif_agent_bl',
+    label: 'BL MATEL à vérifier',
+    description:
+      'Envoie un email quand l’agent IA « BL MATEL » n’a pas pu enregistrer un bordereau de livraison reçu de MATEL (pièce inconnue, totaux qui ne correspondent pas, numéro illisible, erreur de lecture) : la réception de ce BL doit être vérifiée à la main. Le message donne le motif et le lien vers l’exécution dans Agents IA.',
+    category: 'Agents IA',
+  },
 ] as const
 
 export type NotificationKey = (typeof NOTIFICATION_KEYS)[number]['key']

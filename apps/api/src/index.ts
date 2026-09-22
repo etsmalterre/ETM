@@ -59,6 +59,8 @@ import { permissionsTrmRouter } from './routes/permissions-trm.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { notificationsTrmRouter } from './routes/notifications-trm.js'
 import { demarrerRapportsPointage } from './lib/rapports-pointage-envoi.js'
+import { agentsIaRouter } from './routes/agents-ia.js'
+import { demarrerAgents } from './lib/agents/scheduler.js'
 import { abonnementsRouter } from './routes/abonnements.js'
 import { userEmailsRouter } from './routes/user-emails.js'
 import { userProfilesRouter } from './routes/user-profiles.js'
@@ -208,11 +210,15 @@ app.use('/api/maintenance-trm', maintenanceTrmRouter)
 // TRM client returns (Qualité › Retour client) — the receiving end of an ETM
 // FNC, answered here and republished onto the dossier. Consumed by the TRM web app.
 app.use('/api/retours-client-trm', retoursClientTrmRouter)
+// Agents IA (menu Agents IA) — the BL MATEL agent and its successors, lib/agents/.
+app.use('/api/agents-ia', agentsIaRouter)
 
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)
   // The daily pointage report + weekly balance emails (production only).
   demarrerRapportsPointage()
+  // The Agents IA mailbox polls (production only).
+  demarrerAgents()
 })
 
 // Grouped rolls (LIVA #1149) need `stock_fini_source`, declared in the WinDev

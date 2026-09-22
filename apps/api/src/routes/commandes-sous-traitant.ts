@@ -41,6 +41,7 @@ import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { formatCompositionLabel, type CompositionEcruRow } from '../lib/composition-label.js'
 import { resolveSstAdresses } from '../lib/sst-adresses.js'
+import { insertGedSst } from '../lib/ged-sst.js'
 import { pickVal } from '../lib/accented-keys.js'
 import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
@@ -6514,29 +6515,8 @@ commandesSousTraitantRouter.post(
       const commentaire = (req.body.commentaire ?? '').toString()
       const idTypeDoc = parseInt(req.body.IDtype_doc, 10) || 0
 
-      // Note: IDreference is set to the commande id too (mirroring the
-      // legacy convention seen in commande_fil docs) so any future query
-      // that joined on IDreference still finds the rows.
-      await query(
-        `INSERT INTO ged (nom, commentaire, IDtype_doc, IDreference, IDcommande_client, IDcommande_sous_traitant, IDdossier)
-         VALUES ('${esc(nom)}', '${esc(commentaire)}', ${idTypeDoc}, ${id}, 0, ${id}, 0)`,
-      )
-
-      const newRows = await query<{ IDged: number }>(
-        `SELECT IDged FROM ged
-         WHERE IDcommande_sous_traitant = ${id}
-           AND IDcommande_client = 0
-           AND IDtype_doc = ${idTypeDoc}
-         ORDER BY IDged DESC`,
-      )
-      if (newRows.length === 0) { res.status(500).json({ error: 'Insert lookup failed' }); return }
-      const newId = newRows[0].IDged
-
-      if (req.file && req.file.buffer.length > 0) {
-        const hexStr = req.file.buffer.toString('hex')
-        await queryRaw(`UPDATE ged SET fichier = x'${hexStr}' WHERE IDged = ${newId}`)
-      }
-
+      // IDreference = the commande id too (legacy convention, see lib/ged-sst.ts).
+      const newId = await insertGedSst({ commandeId: id, nom, commentaire, idTypeDoc, fichier: req.file?.buffer ?? null })
       res.status(201).json({ IDged: newId })
     } catch (err) {
       console.error('Error creating commande-sst document:', err)

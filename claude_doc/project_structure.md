@@ -17,6 +17,10 @@ ETM/
 │   │       │   ├── permission-keys.ts    # PERMISSION_KEYS catalog
 │   │       │   ├── user-emails.ts        # JSON-backed per-user emails (TODO: DB)
 │   │       │   ├── gmail.ts              # Gmail API send helper (JWT + DWD)
+│   │       │   ├── gmail-reader.ts       # Gmail READ side (list, attachments, labels) — scope gmail.modify
+│   │       │   ├── mistral.ts            # Mistral OCR + strict-JSON chat, price table (Agents IA)
+│   │       │   ├── ged-sst.ts            # insertGedSst — one ged row on an sst order (upload route + BL agent)
+│   │       │   ├── agents/               # Agents IA: catalog, store (data/agents/), scheduler, bl-matel(+-db), bl-extraction (+test)
 │   │       │   ├── pricing-sst.ts        # Ennoblisseur auto-pricing (see HFSQL rules)
 │   │       │   ├── pricing-trm.ts        # Tricoteur auto-pricing — PrixDeRevientTRM port
 │   │       │   └── pdf/                  # theme.ts, MalterreDocument.tsx, CommandeFournisseurPdf, CommandeSoustraitantPdf, SoumissionLotPdf, DemandeEtudeColorisPdf, SoumissionPdf, FeuilleColorisPdf

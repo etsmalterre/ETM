@@ -10,6 +10,7 @@ import {
   FileBarChart,
   Globe,
   Settings,
+  Bot,
 } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -288,6 +289,15 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Entreprises', href: '/reseau/entreprises' },
     ],
   },
+  {
+    id: 'agents-ia',
+    title: 'Agents IA',
+    icon: Bot,
+    href: '/agents-ia',
+    submenus: [
+      { title: 'Agents', href: '/agents-ia/agents' },
+    ],
+  },
 ]
 
 // Helper to find active menu based on current path
@@ -365,6 +375,9 @@ export const routeTitles: Record<string, string> = {
   // Réseau
   '/reseau': 'Réseau',
   '/reseau/entreprises': 'Entreprises',
+  // Agents IA
+  '/agents-ia': 'Agents IA',
+  '/agents-ia/agents': 'Agents',
   // Settings
   '/settings': 'Paramètres',
   '/settings/utilisateurs': 'Utilisateurs',

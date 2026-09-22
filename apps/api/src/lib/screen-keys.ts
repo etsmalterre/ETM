@@ -156,6 +156,12 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     label: 'Réseau',
     screens: [{ href: '/reseau/entreprises', label: 'Entreprises' }],
   },
+  {
+    id: 'agents-ia',
+    href: '/agents-ia',
+    label: 'Agents IA',
+    screens: [{ href: '/agents-ia/agents', label: 'Agents' }],
+  },
 ] as const
 
 /** '/sous-traitants/commandes' → 'sous_traitants_commandes' */

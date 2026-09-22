@@ -124,6 +124,6 @@ describe('screen access — the Laetitia case', () => {
       '/tombe-metier', '/divers', '/rapports', '/reseau',
     ].map(menuAccessKey)
     const v = viewer(ALL_MENUS.filter((k) => !unwanted.includes(k)))
-    expect(ids(visibleMainNavigation(v))).toEqual(['prospects', 'clients', 'finis', 'qualite'])
+    expect(ids(visibleMainNavigation(v))).toEqual(['prospects', 'clients', 'finis', 'qualite', 'agents-ia'])
   })
 })
