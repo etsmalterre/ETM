@@ -27,7 +27,7 @@ import { query } from './hfsql-auto.js'
 import { lignesPeriode, listerSalaries, soldeHeures, tousLesSalaries } from './pointage.js'
 import { jourParis, msHeureParis, partiesParis, semaineDeReference, type LigneHoraire } from './pointage-etat.js'
 import { lundiIso } from './pointage-admin.js'
-import { analyserJournee, joursCouverts, ordreRapport, prenomAffiche, type Plage, type SalarieRapport } from './rapport-pointage.js'
+import { analyserJournee, horaireDe, joursCouverts, ordreRapport, prenomAffiche, type Plage, type SalarieRapport } from './rapport-pointage.js'
 import { contenuBilanHeures, contenuRapportPointage, type JourRapport } from './rapport-pointage-email.js'
 import { renderNotificationEmail, renderNotificationEmailPreview, type NotificationEmailContent } from './notification-email.js'
 import { sendMail } from './gmail.js'
@@ -101,7 +101,7 @@ export async function construireRapportPointage(jourEnvoi: string): Promise<Rapp
       const s = parId.get(idSalarie)
       const salarie: SalarieRapport = { id: idSalarie, prenom: prenomAffiche(s?.prenom || s?.nom || `Salarié ${idSalarie}`), nom: s?.nom ?? '' }
       const prevu = s && s.idMps > 0 ? planning.get(`${jour}|${s.idMps}`) ?? null : null
-      return analyserJournee(salarie, ls, prevu, heure)
+      return analyserJournee(salarie, ls, prevu, heure, horaireDe(idSalarie))
     })
     return { jour, lignes: out.sort(ordreRapport) }
   })

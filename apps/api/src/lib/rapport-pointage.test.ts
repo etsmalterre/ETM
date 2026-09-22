@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { analyserJournee, dureeTexte, arrondiMinute, joursCouverts, prenomAffiche } from './rapport-pointage.js'
+import { analyserJournee, horaireDe, HORAIRE_JOURNEE, dureeTexte, arrondiMinute, joursCouverts, prenomAffiche } from './rapport-pointage.js'
 import { contenuBilanHeures, contenuRapportPointage, soldeTexte, toneSolde } from './rapport-pointage-email.js'
 import { msHeureParis, type LigneHoraire } from './pointage-etat.js'
 
@@ -74,6 +74,24 @@ describe('day worker (not in the planning), expected 09:00-12:00 / 14:00-18:00',
     expect(r.rouge.repas).toBe(false)
   })
 
+  it('Olivier is judged on his 08:30-12:00 / 14:00-17:30 schedule: leaving at 17:30 is in order (21/09)', () => {
+    const lignes = [ligne(sec(8, 19, 51), sec(12, 0)), ligne(sec(13, 50, 32), sec(17, 30, 15))]
+    expect(analyserJournee(sal('Olivier'), lignes, null, heure, horaireDe(5)).alertes).toEqual([])
+    expect(analyserJournee(sal('Olivier'), lignes, null, heure, horaireDe(5)).rouge.fin).toBe(false)
+    // an unlisted salarié keeps 09-12 / 14-18
+    expect(horaireDe(999)).toEqual(HORAIRE_JOURNEE)
+    expect(analyserJournee(sal('X'), [ligne(sec(9, 0), sec(12, 0)), ligne(sec(14, 0), sec(17, 30))], null, heure, horaireDe(999)).alertes)
+      .toEqual(['départ 17:30 au lieu de 18:00 (30 min plus tôt)'])
+  })
+
+  it('en poste = first in to last out, minus pauses and lunch; null while open', () => {
+    const n = analyserJournee(sal('Nicolas'), [ligne(sec(8, 50), sec(11, 58)), ligne(sec(14, 6), sec(18, 8))], null, heure, horaireDe(1))
+    expect(n.enPosteMin).toBe(7 * 60 + 10)
+    const m = analyserJournee(sal('Marie'), [ligne(sec(4, 54, 1), sec(12, 0, 53), [sec(9, 54, 14), sec(10, 13, 32)])], { debut: ms(5, 0), fin: ms(12, 0) }, heure)
+    expect(m.enPosteMin).toBe(7 * 60 + 7 - m.pauseMin)
+    expect(analyserJournee(sal('A'), [ligne(sec(9, 0))], null, heure).enPosteMin).toBeNull()
+  })
+
   it('a late return turns the lunch red (Nicolas, 22/09)', () => {
     const r = analyserJournee(sal('Nicolas'), [ligne(sec(8, 50), sec(12, 4)), ligne(sec(14, 6), sec(18, 8))], null, heure)
     expect(r.repas).toEqual([{ debut: ms(12, 4), fin: ms(14, 6) }])
@@ -128,6 +146,8 @@ describe('email content', () => {
     expect(table.text).toContain('midi 12:04 - 14:06')
     expect(l.pauseMin).toBe(0)
     expect(table.text).toContain('pauses 2 h 02')
+    expect(table.text).toContain('en poste 7 h 16')
+    expect(table.html).toContain('En poste')
     expect(table.html).toContain('2 h 02')
     expect(r.content.footerNote).toBe('')
   })

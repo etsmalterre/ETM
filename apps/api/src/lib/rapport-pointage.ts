@@ -10,7 +10,8 @@
  *       · on shift = the salarié's linked bonnetier (`lst_salarie.id_mps`) has a
  *         `planning_bonnetier` row that day. Judged against that row, 20 min of
  *         pause in all;
- *       · day hours = everyone else, expected 09:00-12:00 and 14:00-18:00.
+ *       · day hours = everyone else, judged against their fixed schedule
+ *         (`HORAIRES_FIXES`, 09:00-12:00 / 14:00-18:00 when not listed).
  *   - a 5 min tolerance on every arrival / departure (n8n flagged 06:01);
  *   - a clock-out missing between two clock-ins is flagged (n8n kept only the
  *     day's first start and last end, so a forgotten lunch clock-out was
@@ -25,8 +26,30 @@ import type { LigneHoraire } from './pointage-etat.js'
 export const TOLERANCE_MIN = 5
 /** Pause allowed to a shift worker over the whole shift. */
 export const PAUSE_EQUIPE_MAX_MIN = 20
+/** A day-hours schedule: morning start, lunch out, lunch back, evening end, « HH:MM ». */
+export interface Horaire {
+  matin: string
+  midi: string
+  reprise: string
+  soir: string
+}
+
 /** Expected day hours of a salarié who is not in the bonnetier planning. */
-export const HORAIRE_JOURNEE = { matin: '09:00', midi: '12:00', reprise: '14:00', soir: '18:00' } as const
+export const HORAIRE_JOURNEE: Horaire = { matin: '09:00', midi: '12:00', reprise: '14:00', soir: '18:00' }
+
+/**
+ * The fixed schedules, by `lst_salarie.id` (given by Vincent on 2026-09-22).
+ * Kept in code on purpose (his choice that day): a change is a commit and an
+ * /etm_deploy. A salarié not listed here gets HORAIRE_JOURNEE.
+ */
+export const HORAIRES_FIXES: Readonly<Record<number, Horaire>> = {
+  1: { matin: '09:00', midi: '12:00', reprise: '14:00', soir: '18:00' }, // Nicolas Antonino
+  20: { matin: '09:00', midi: '12:00', reprise: '14:00', soir: '18:00' }, // Mickael Grivelet
+  5: { matin: '08:30', midi: '12:00', reprise: '14:00', soir: '17:30' }, // Olivier Petit
+}
+
+/** The schedule a day-hours salarié is judged against. */
+export const horaireDe = (idSalarie: number): Horaire => HORAIRES_FIXES[idSalarie] ?? HORAIRE_JOURNEE
 
 export interface Plage {
   /** Epoch ms. */
@@ -57,6 +80,9 @@ export interface LigneRapport {
    *  in `pauseMin` (it is not paid time off the machine, it is time off work). */
   repas: Plage[]
   repasMin: number
+  /** Time actually working: first clock-in to last clock-out, minus the pauses
+   *  and the lunch (Vincent, 2026-09-22). null while the day is not closed. */
+  enPosteMin: number | null
   /** What to check, in words — empty when the day is in order. */
   alertes: string[]
   /** Which cells turn red. */
@@ -100,6 +126,7 @@ export function analyserJournee(
   lignes: readonly LigneHoraire[],
   prevu: Plage | null,
   heure: (hhmm: string) => number,
+  horaire: Horaire = HORAIRE_JOURNEE,
 ): LigneRapport {
   const tri = [...lignes].sort((a, b) => a.debut - b.debut)
   const regime = prevu ? 'equipe' : 'journee'
@@ -150,10 +177,10 @@ export function analyserJournee(
       rouge.pause = true
     }
   } else if (debut !== null) {
-    const matin = heure(HORAIRE_JOURNEE.matin), midi = heure(HORAIRE_JOURNEE.midi)
-    const reprise = heure(HORAIRE_JOURNEE.reprise), soir = heure(HORAIRE_JOURNEE.soir)
+    const matin = heure(horaire.matin), midi = heure(horaire.midi)
+    const reprise = heure(horaire.reprise), soir = heure(horaire.soir)
     if (debut > matin + tol) {
-      alertes.push(`arrivée ${hhmm(debut)} au lieu de ${HORAIRE_JOURNEE.matin} (${retard(debut, matin)} de retard)`)
+      alertes.push(`arrivée ${hhmm(debut)} au lieu de ${horaire.matin} (${retard(debut, matin)} de retard)`)
       rouge.debut = true
     }
     // The lunch: one uninterrupted line across 12:00-14:00 means it was never clocked.
@@ -167,18 +194,19 @@ export function analyserJournee(
     if (apresMidi && debut < midi) {
       const d = arrondiMinute(apresMidi.debut)!
       if (d > reprise + tol) {
-        alertes.push(`reprise ${hhmm(d)} au lieu de ${HORAIRE_JOURNEE.reprise} (${retard(d, reprise)} de retard)`)
+        alertes.push(`reprise ${hhmm(d)} au lieu de ${horaire.reprise} (${retard(d, reprise)} de retard)`)
         rouge.repas = true
       }
     }
     if (fin !== null && fin < soir - tol) {
-      alertes.push(`départ ${hhmm(fin)} au lieu de ${HORAIRE_JOURNEE.soir} (${retard(soir, fin)} plus tôt)`)
+      alertes.push(`départ ${hhmm(fin)} au lieu de ${horaire.soir} (${retard(soir, fin)} plus tôt)`)
       rouge.fin = true
     }
   }
 
   const repasMin = repas.reduce((t, p) => t + dureeMin(p), 0)
-  return { salarie, regime, prevu, debut, fin, pauses, pauseMin, repas, repasMin, alertes, rouge }
+  const enPosteMin = debut !== null && fin !== null ? Math.max(0, Math.round((fin - debut) / MIN) - pauseMin - repasMin) : null
+  return { salarie, regime, prevu, debut, fin, pauses, pauseMin, repas, repasMin, enPosteMin, alertes, rouge }
 }
 
 /** Order of the report: by first clock-in, never-clocked (planned) salariés last. */

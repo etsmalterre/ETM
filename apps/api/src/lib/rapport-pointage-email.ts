@@ -11,6 +11,7 @@
  *     no break at all while the note said « reprise »). The « Pauses » column
  *     then sums pauses and lunch, « 2 h 08 » from an hour up; the 20 min rule
  *     of a shift worker still reads `pauseMin` alone;
+ *   - « En poste » after it: first in to last out minus pauses and lunch;
  *   - weekly: the annual balances ranked, green up to 5 h, amber to 10 h, red above.
  * Email-safe markup only: tables, inline styles, no <style>, no flexbox.
  * No em / en dash in the content (skill rule).
@@ -70,10 +71,12 @@ function noteAVerifier(lignes: LigneRapport[], avecJour: string | null): EmailSe
 }
 
 function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
-  const th = (t: string, al = 'center') =>
-    `<td align="${al}" style="padding:0 0 8px 0;font-family:${S.font};font-size:11px;color:${S.muted};text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;">${t}</td>`
+  // `gauche` = left padding, for the second of two right-aligned columns.
+  const th = (t: string, al = 'center', gauche = 0) =>
+    `<td align="${al}" style="padding:0 0 8px ${gauche}px;font-family:${S.font};font-size:11px;color:${S.muted};text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;">${t}</td>`
   const bt = `border-top:1px solid ${S.border};`
-  const td = (html: string, al = 'center') => `<td align="${al}" style="padding:10px 0;vertical-align:middle;${bt}">${html}</td>`
+  const td = (html: string, al = 'center', gauche = 0) =>
+    `<td align="${al}" style="padding:10px 0 10px ${gauche}px;vertical-align:middle;${bt}">${html}</td>`
   const heure = (ms: number | null, rouge: boolean) => (ms === null ? pill('non pointé', 'rouge') : pill(hhmm(ms), rouge ? 'rouge' : 'heure'))
   // Pauses and lunch share the two columns, in time order; a third one stacks in the second.
   const creneaux = (l: LigneRapport) =>
@@ -99,6 +102,12 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
           `${total ? dureeTexte(total) : '-'}</span>`,
         'right',
       ) +
+      td(
+        `<span style="font-family:${S.font};font-size:13px;font-weight:bold;color:${l.enPosteMin !== null ? S.navy : FAINT};white-space:nowrap;">` +
+          `${l.enPosteMin !== null ? dureeTexte(l.enPosteMin) : '-'}</span>`,
+        'right',
+        14,
+      ) +
       '</tr>'
     )
   }
@@ -108,7 +117,7 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
     : ''
   const html =
     titreHtml +
-    `<table ${TABLE}><tr>${th('Salarié', 'left')}${th('Début')}${th('Pause 1')}${th('Pause 2')}${th('Fin')}${th('Pauses', 'right')}</tr>` +
+    `<table ${TABLE}><tr>${th('Salarié', 'left')}${th('Début')}${th('Pause 1')}${th('Pause 2')}${th('Fin')}${th('Pauses', 'right')}${th('En poste', 'right', 14)}</tr>` +
     lignes.map(ligne).join('') +
     `</table>`
 
@@ -123,6 +132,7 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
         ...l.repas.map((p) => `midi ${plage(p)}`),
         `fin ${l.debut === null ? '-' : txtHeure(l.fin)}`,
         `pauses ${dureeTexte(l.pauseMin + l.repasMin)}`,
+        `en poste ${l.enPosteMin !== null ? dureeTexte(l.enPosteMin) : '-'}`,
       ].join(' · '),
     ),
   ].join('\n')
