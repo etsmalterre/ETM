@@ -3,6 +3,15 @@
  *
  *   pnpm --filter @mps/api exec tsx src/scripts/seed-screen-access-trm.ts          # dry run
  *   pnpm --filter @mps/api exec tsx src/scripts/seed-screen-access-trm.ts --write  # persist
+ *   … --menu screen_pointage [--menu …] --write   # ONLY that menu: how a NEW menu rolls out
+ *
+ * ⚠️ Without --menu it hands out EVERY menu a user lacks — and once the admin has
+ * removed menus by hand, that means silently giving them back. 2026-09-22: run
+ * bare on prod for the new « Pointage » menu, it re-granted 16 removed menus to
+ * five accounts (the Visitage station got Clients, Atelier, Qualité, Rapports),
+ * undone by hand within the hour. So the bare form is the FIRST-TIME
+ * grandfathering only: it now refuses when the store already holds menu keys,
+ * unless --all is passed on purpose.
  *
  * Menu access is a GRANT, default closed (see lib/screen-keys-trm.ts), so the
  * day this ships every non-admin would lose every TRM menu. This hands each
@@ -12,8 +21,8 @@
  * MUST RUN ON THE SERVER — apps/api/data/permissions-trm.json is gitignored and
  * lives next to the running API, so a local run seeds the local file only.
  *
- * Idempotent: re-running adds nothing. Safe to re-run after a new menu ships,
- * which is the intended way to hand that menu to everyone at once.
+ * Idempotent: re-running adds nothing. After a new menu ships, re-run it WITH
+ * `--menu screen_<menu>` to hand that one menu to everyone at once.
  *
  * Notes:
  *  - Screens are NOT seeded. Granting a menu already means all of its screens
@@ -38,7 +47,31 @@ const FILE_PATH = path.resolve(__dirname, '../../data/permissions-trm.json')
 
 async function main() {
   const write = process.argv.includes('--write')
-  const menuKeys = TRM_SCREEN_MENUS.map((m) => trmMenuAccessKey(m.href))
+  const argv = process.argv.slice(2)
+  const onlyMenus = argv.flatMap((a, i) => (a === '--menu' && argv[i + 1] ? [argv[i + 1]] : []))
+  const allMenuKeys = TRM_SCREEN_MENUS.map((m) => trmMenuAccessKey(m.href))
+  for (const k of onlyMenus) {
+    if (!allMenuKeys.includes(k)) {
+      console.error(`--menu ${k} : clé inconnue. Menus TRM : ${allMenuKeys.join(', ')}`)
+      process.exit(1)
+    }
+  }
+  const menuKeys = onlyMenus.length ? onlyMenus : allMenuKeys
+  if (onlyMenus.length === 0 && !argv.includes('--all')) {
+    // Bare run = first-time grandfathering. Once the store carries menu keys the
+    // admin has been trimming them, and a bare run would hand the trimmed ones back.
+    let raw = ''
+    try {
+      raw = await fs.readFile(FILE_PATH, 'utf8')
+    } catch {
+      /* no store yet: the first run */
+    }
+    if (/"screen_/.test(raw)) {
+      console.error('REFUS : le store porte déjà des menus. Un nouveau menu se déploie avec --menu screen_<menu> ;')
+      console.error('        --all force la distribution de TOUS les menus (rend ceux que l’admin a retirés).')
+      process.exit(1)
+    }
+  }
 
   const users = await query<{ IDutilisateur: number; prenom: string | null; nom: string | null }>(
     'SELECT IDutilisateur, prenom, nom FROM utilisateur ORDER BY IDutilisateur',
