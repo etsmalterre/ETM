@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/atelier — API PWA atelier : % 2nd choix pour les deux rôles, « Lancement OF » régleur seul
+**MPS API, `routes/atelier.ts` + `lib/atelier-regleur-trm.ts`** (demande Vincent, cinq retraits
+côté bonnetier de la PWA — le web est dans TRM `feat/atelier`). `GET /atelier/machines` porte
+sur chaque `of` un `pct_defaut` brut (poids 2nd choix sur les rouleaux récents du couple
+référence/coloris, `pctDefautDesOfs`, un TOP 100 par couple) et un `alerte_defaut`
+(`% > 2 %`, `alerteDefaut()`, seuil legacy) pour TOUTE liste, `?regleur=1` ou non : la tuile
+bonnetier montre la pastille dès 1 % et le liseré rouge au même 2 % que le régleur. La règle
+legacy « % remis à 0 sans alerte » est retirée : `alerteRegleur()` ne rend plus `pct_defaut`
+(le % est une entrée de l’alerte, qui garde les arrêts/pièce > 1). `actionsFor()` ne propose
+« Lancement OF » qu’au régleur — un bonnetier sur un OF non lancé reçoit `[]` (409
+`action_indisponible` pour un vieux bundle). Tests `atelier-regleur-trm.test.ts` (12).
+Dossier côté TRM : `claude_doc/atelier-pwa.md` § « Le bonnetier voit moins que le régleur ».
+À déployer AVANT le web atelier (`/etm_deploy` puis `/trm_deploy atelier`).
+
 ## 2026-09-22 — feat/admin-pointage
 **API du menu « Pointage » de l'ERP TRM (port de l'app WinDev Admin Pointage).** Nouveau routeur
 `/api/pointage-admin` (`routes/pointage-admin.ts`), session `mps_uid` + clés TRM `view_pointage` /
