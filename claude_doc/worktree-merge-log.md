@@ -10,6 +10,21 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/email-pointage — API des rapports de pointage par email pour TRM (remplace n8n)
+**MPS API, paire de la branche TRM `feat/email-pointage`.** Les workflows n8n « pointage » et
+« Bilan des Heures Annualisées » (lus sur le WebDev localapi, destinataires en dur) deviennent
+deux notifications TRM : catalogue `lib/notification-keys-trm.ts` (chaque entrée peut `require`
+un droit TRM, ici `view_pointage`), store `data/notifications-trm.json` via la nouvelle fabrique
+`createNotificationStore()` (le store ETM passe par la même, API publique inchangée), routes
+`/api/notifications-trm` (keys, users, `apercu/:key`, `envoyer-test/:key`, 409
+`permission_requise`). Règles pures et testées `lib/rapport-pointage.ts` (équipe = ligne
+`planning_bonnetier` ± 5 min et 20 min de pause ; journée 09–12 / 14–18 ± 5 min ; sortie oubliée
+entre deux lignes signalée ; lundi = vendredi → dimanche), markup `lib/rapport-pointage-email.ts`
+(le gabarit `notification-email.ts` gagne `appName` et `sections`), lectures + minuterie
+`lib/rapports-pointage-envoi.ts` : premier job planifié de l'API, prod seulement, journal
+`data/rapports-pointage-envois.json` écrit avant l'envoi, expéditeur tricotbot@. Bilan vérifié
+7/7 contre n8n sur la prod. `/etm_deploy` avant le `/trm_deploy` de l'onglet Notifications.
+
 ## 2026-09-22 — feat/bug-of — Visitage TRM : un métier sans OF en cours ouvre sur sa pièce isolée
 **MPS API, `routes/visitage-trm.ts` `GET /poste`.** Quand « Dernière pièce » termine l’OF et que
 rien n’attend derrière sur le métier (`headId = 0`), le poste répondait « Pas d’OF affecté »
