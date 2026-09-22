@@ -85,7 +85,7 @@ Integer discriminator (`1`=piece_production, `2`=stock_ecru) with the parent id 
 
 ## WinDev ↔ PostgreSQL (abandoned)
 
-> PostgreSQL migration was attempted but abandoned due to column casing issues. Kept for historical reference. **Restarted 2026-09-22 without WinDev on PG: see `pg_migration.md`.**
+> PostgreSQL migration was attempted but abandoned due to column casing issues. Kept for historical reference. **Restarted 2026-09-22 without WinDev on PG: see `../windev_migration/docs/plan.md`.**
 
 - **Native PostgreSQL Connector**: column casing mismatch between native connector (quoted mixed-case) and manual SQL (unquoted)
 - **Bulk migration scripts**: `data_migration/scripts/bulk_migrate.txt` — migrates all 204 HFSQL tables to PostgreSQL

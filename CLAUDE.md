@@ -33,7 +33,7 @@ Full design system in `.claude/skills/mps_designer/SKILL.md`.
 ## Project Phases
 
 - **Phase 1 — UI Shell**: complete.
-- **Phase 2 — Database**: web app connects directly to HFSQL via ODBC; WinDev stays on HFSQL during the adaptation period — both share live data. **HFSQL → PostgreSQL migration restarted 2026-09-22** (switch in the MPS API, PG names lowercase/unaccented, HFSQL source of truth until cutover): plan, status and cutover in `claude_doc/pg_migration.md`.
+- **Phase 2 — Database**: web app connects directly to HFSQL via ODBC; WinDev stays on HFSQL during the adaptation period — both share live data. **HFSQL → PostgreSQL migration restarted 2026-09-22** (switch in the MPS API, PG names lowercase/unaccented, HFSQL source of truth until cutover): plan, tools, review and cutover live in the sibling repo **`../windev_migration`** (`docs/plan.md`); only the API-side pieces stay here (`src/scripts/legacy-activity-report.ts`, future `pg-fix-*.ts` repairs and the `DB_BACKEND` switch).
 - **Phase 3 — Features**: match legacy WinDev functionality screen by screen.
 
 ## Tech Stack
@@ -85,7 +85,6 @@ Load these on demand when working on the matching topic:
 | `claude_doc/dashboard_widgets.md` | **Every dashboard widget's doctrine**: CA, finance (exploitation perimeter, EBE, variation de stock estimée), charges, valorisation du stock, BFR, notifications, commandes du jour, utilisation fil, suivi pièce |
 | `claude_doc/hfsql_odbc.md` | HFSQL connection details, driver install, bridge, platform-specific SQL, accented columns — **and the full case history behind every rule in §HFSQL below** |
 | `claude_doc/frontend_rules.md` | Full text behind §React rules below (stock-cache invalidation, dev-server failure modes) |
-| `claude_doc/pg_migration.md` | **HFSQL → PostgreSQL migration**: decisions, step status, HFSQL client inventory, the legacy-audit email, cutover procedure |
 | `claude_doc/dev_setup.md` | Fresh-machine setup: HFSQL server/driver, `.env.development`, dev ports |
 | `claude_doc/implemented_screens.md` | Canonical reference screens (Entreprises, Fournisseurs, Commandes, Stock) — grep first before inventing patterns |
 | `claude_doc/auth_permissions.md` | Cookie auth picker, effective vs session admin, permission catalog, screen access (menu/screen visibility), admin guard |

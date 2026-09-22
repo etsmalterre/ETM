@@ -1,11 +1,11 @@
 // Evening report of LEGACY (WinDev) activity on the HFSQL server, mailed to
-// Vincent every evening until the PostgreSQL cutover (claude_doc/pg_migration.md
-// § Legacy audit). Goal: see which workstation / tablet still runs the old
+// Vincent every evening until the PostgreSQL cutover (windev_migration repo, docs/plan.md
+// § Step 1). Goal: see which workstation / tablet still runs the old
 // software, so it can be uninstalled everywhere before HFSQL is switched off.
 //
 // Two sources, because HFSQL itself logs no connections:
 //   1. the connection samples taken every 2 min on 10.10.20.2 by
-//      scripts/pg-migration/legacy-audit/sample.py — the only trace of
+//      windev_migration/legacy-audit/sample.py — the only trace of
 //      READ-ONLY use. Fetched through a forced-command ssh key (serve.sh) that
 //      can print one day's file and nothing else.
 //   2. the HFSQL journal (Database=__jnl): jnl_users names who is behind an IP
@@ -20,7 +20,7 @@
 //   npx tsx src/scripts/legacy-activity-report.ts                  # dry run, prints the text part
 //   npx tsx src/scripts/legacy-activity-report.ts --send           # mail it + update the state file
 //   options: --date=YYYY-MM-DD  --to=a@b.fr  --preview=out.html  --samples=<local .tsv>
-// Cron (debian, 10.10.20.3): 30 19 * * * — see pg_migration.md.
+// Cron (debian, 10.10.20.3): 30 19 * * * — see windev_migration/docs/plan.md.
 
 import dotenv from 'dotenv'
 const env = process.env.NODE_ENV || 'development'
