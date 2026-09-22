@@ -46,6 +46,7 @@ import { resolveRefFilNames, resolveColoriFilNames } from './of-trm.js'
 import {
   etatMetier,
   pourcentageDefauts,
+  alerteDefaut,
   alerteRegleur,
   type AlerteRegleur,
 } from '../lib/atelier-regleur-trm.js'
@@ -236,8 +237,11 @@ atelierRouter.get('/machines', async (req: Request, res: Response) => {
               demarre,
               interrompu,
               // Raw second-choice weight ratio of the article (0–1), for
-              // both roles; the tile shows it from 1 %.
+              // both roles; the tile shows it from 1 %, and frames the tile
+              // red on `alerte_defaut` — the legacy's 2 %, one trigger for
+              // both roles (2026-09-22).
               pct_defaut: pctDefaut.get(ofId) ?? 0,
+              alerte_defaut: alerteDefaut(pctDefaut.get(ofId) ?? 0),
             }
           : null,
         // Only on `?regleur=1`; null for a bonnetier's phone.

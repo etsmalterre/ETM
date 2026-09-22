@@ -3,6 +3,7 @@ import {
   etatMetier,
   pourcentageDefauts,
   alerteRegleur,
+  alerteDefaut,
   SEUIL_ARRETS_PIECE,
 } from './atelier-regleur-trm.js'
 
@@ -72,6 +73,11 @@ describe('alerteRegleur — 2 % second choice (legacy) or more than one stop per
       alerte: true,
       arrets_piece: { moyenne: 4.7, pieces: 3 },
     })
+  })
+  it('alerteDefaut is the same 2 % trigger for both roles, strictly above (2026-09-22)', () => {
+    expect(alerteDefaut(0.02)).toBe(false)
+    expect(alerteDefaut(0.0201)).toBe(true)
+    expect(alerteDefaut(0)).toBe(false)
   })
   it('never carries the ratio — it travels raw on every machine list, alert or not (2026-09-22)', () => {
     // The legacy zeroed the % without a bell; both roles now read it from 1 %

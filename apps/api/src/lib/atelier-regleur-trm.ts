@@ -69,8 +69,8 @@
 // ratio travels raw on every machine list (`of.pct_defaut`, no `?regleur=1`
 // needed — routes/atelier.ts `pctDefautDesOfs`), and the tile alone decides
 // from which figure it shows the pill (ChoixMetier.tsx `SEUIL_PCT_DEFAUT`,
-// 1 %). The alert flag — the red frame of the régleur tile — still fires at
-// 2 % or above one stop per piece.
+// 1 %). The red frame fires at the legacy's 2 % for both roles
+// (`of.alerte_defaut`, `alerteDefaut`); the régleur's `alerte` adds the stops.
 //
 // One reading of the legacy worth keeping in mind: the second-choice ratio is
 // by WEIGHT over the most recent rolls of the (reference, coloris) pair — all
@@ -121,10 +121,18 @@ export interface AlerteRegleur {
   arrets_piece: ArretsParPiece
 }
 
+/** The second-choice half of the alert, on its own: the red frame of the tile
+ *  for BOTH roles (Vincent, 2026-09-22 — one trigger, the legacy's 2 %). Sent
+ *  as `of.alerte_defaut` on every machine list; the régleur's `alerte` adds
+ *  the stops. */
+export function alerteDefaut(pctDefaut: number): boolean {
+  return pctDefaut > SEUIL_PCT_DEFAUT
+}
+
 /** The régleur's alert. `pctDefaut` is the raw ratio the machine list already
  *  carries for everyone (`of.pct_defaut`): an input here, never an output. */
 export function alerteRegleur(pctDefaut: number, arrets: ArretsParPiece): AlerteRegleur {
   const tropDArrets = arrets.moyenne !== null && arrets.moyenne > SEUIL_ARRETS_PIECE
-  const alerte = pctDefaut > SEUIL_PCT_DEFAUT || tropDArrets
+  const alerte = alerteDefaut(pctDefaut) || tropDArrets
   return { alerte, arrets_piece: arrets }
 }
