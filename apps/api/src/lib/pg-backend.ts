@@ -90,6 +90,18 @@ export function translateSql(sql: string): string {
   // Pending LIMITs: TOP n moves to the end of its own SELECT, i.e. before the
   // parenthesis closing the depth it was opened at (or the end of the text).
   const limits: { depth: number; n: string }[] = []
+  // Open ORDER BY clauses, per parenthesis depth: `dir` = the current item
+  // already carries ASC/DESC. HFSQL sorts NULL as the smallest value (first
+  // ascending, last descending — measured on prod 2026-09-22, prospect.date);
+  // PostgreSQL does the opposite, so every item gets its NULLS placement.
+  const orderBy = new Map<number, { dir: boolean }>()
+  const endItem = (d: number) => {
+    const o = orderBy.get(d)
+    if (o && !o.dir) out.push(' NULLS FIRST')
+    if (o) o.dir = false
+  }
+  const endOrderBy = (d: number) => { endItem(d); orderBy.delete(d) }
+  const nextWord = (k: number) => toks.slice(k + 1).find(x => x.kind !== 'other' || !/^\s$/.test(x.text))
   let depth = 0
   for (let k = 0; k < toks.length; k++) {
     const t = toks[k]
@@ -100,7 +112,9 @@ export function translateSql(sql: string): string {
     if (t.kind === 'str') { out.push(t.text); continue }
     if (t.kind === 'other') {
       if (t.text === '(') depth++
+      if (t.text === ',' && orderBy.has(depth)) endItem(depth)
       if (t.text === ')') {
+        if (orderBy.has(depth)) endOrderBy(depth)
         const i = limits.findIndex(l => l.depth === depth)
         if (i >= 0) { out.push(` LIMIT ${limits[i].n}`); limits.splice(i, 1) }
         depth--
@@ -109,6 +123,19 @@ export function translateSql(sql: string): string {
       continue
     }
     const up = t.text.toUpperCase()
+    if (up === 'ORDER' && nextWord(k)?.text.toUpperCase() === 'BY') {
+      orderBy.set(depth, { dir: false })
+    } else if ((up === 'ASC' || up === 'DESC') && orderBy.has(depth)) {
+      out.push(t.text)
+      if (nextWord(k)?.text.toUpperCase() !== 'NULLS') out.push(up === 'ASC' ? ' NULLS FIRST' : ' NULLS LAST')
+      orderBy.get(depth)!.dir = true
+      continue
+    } else if (['LIMIT', 'OFFSET', 'FOR', 'UNION', 'FETCH', 'EXCEPT', 'INTERSECT'].includes(up) && orderBy.has(depth)) {
+      // Trim the blank before the keyword so « NULLS FIRST » sits right after the item.
+      const blank = out.length && /^\s$/.test(out[out.length - 1]) ? out.pop()! : ''
+      endOrderBy(depth)
+      out.push(blank)
+    }
     if (up === 'TOP') {
       // SELECT [DISTINCT] TOP <n>
       let j = k + 1
@@ -142,6 +169,9 @@ export function translateSql(sql: string): string {
     }
     out.push(/[À-ÿ]/.test(t.text) ? unaccent(t.text) : t.text)
   }
+  // End of text: close the ORDER BY items first, then the moved LIMITs.
+  while (out.length && /^\s$/.test(out[out.length - 1])) out.pop()
+  for (const d of [...orderBy.keys()].sort((a, b) => b - a)) endOrderBy(d)
   for (const l of limits.reverse()) out.push(` LIMIT ${l.n}`)
   return out.join('')
 }
