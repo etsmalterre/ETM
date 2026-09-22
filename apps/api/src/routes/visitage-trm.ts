@@ -538,7 +538,14 @@ visitageTrmRouter.get('/poste', async (req: Request, res: Response) => {
       // falling back to a different piece.
       if (!piece) { res.status(409).json({ error: 'piece_indisponible' }); return }
     } else {
-      piece = waiting.find((p) => p.IDordre_fabrication === headId) ?? null
+      // A métier with no OF in production (headId = 0) still lists in the
+      // picker when a stray waits on it — typically the last piece of an OF
+      // closed by « Dernière pièce » with nothing queued behind it. Open on the
+      // oldest stray, with ITS OF as the context: answering « Pas d'OF » here
+      // dropped the strays with it and left the piece unreachable (OF 3588,
+      // 2026-09-22).
+      piece = waiting.find((p) => p.IDordre_fabrication === headId)
+        ?? (headId === 0 ? waiting[0] ?? null : null)
     }
     const ofId = piece ? piece.IDordre_fabrication : headId
 

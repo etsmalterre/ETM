@@ -143,6 +143,14 @@ async function main(): Promise<void> {
   for (const m of metiers.json) {
     const poste = await api(`/visitage-trm/poste?metier=${m.id}`)
     if (poste.status !== 200) { check(`GET /poste?metier=${m.id} → 200`, false, poste.status); continue }
+    // A listed métier always opens on something to weigh — the picker lists
+    // only métiers with an offered piece. Broken once for a métier with no OF
+    // in production: /poste answered « Pas d'OF » and dropped its strays.
+    check(
+      `GET /poste?metier=${m.id} opens on an offered pièce`,
+      !!poste.json.piece || (poste.json.autres_pieces ?? []).length > 0,
+      { of: poste.json.of?.id ?? null },
+    )
     const offered = [
       ...(poste.json.piece ? [{ id: poste.json.piece.id, orpheline: poste.json.piece.orpheline }] : []),
       ...(poste.json.autres_pieces ?? []).map((p: any) => ({ id: p.id, orpheline: p.orpheline })),
