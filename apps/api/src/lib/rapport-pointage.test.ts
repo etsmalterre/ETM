@@ -69,6 +69,15 @@ describe('day worker (not in the planning), expected 09:00-12:00 / 14:00-18:00',
     expect(r.regime).toBe('journee')
     expect(r.alertes).toEqual([])
     expect(r.pauses).toEqual([])
+    expect(r.pauseMin).toBe(0)
+    expect(r.repas).toEqual([{ debut: ms(11, 58), fin: ms(13, 56) }])
+    expect(r.rouge.repas).toBe(false)
+  })
+
+  it('a late return turns the lunch red (Nicolas, 22/09)', () => {
+    const r = analyserJournee(sal('Nicolas'), [ligne(sec(8, 50), sec(12, 4)), ligne(sec(14, 6), sec(18, 8))], null, heure)
+    expect(r.repas).toEqual([{ debut: ms(12, 4), fin: ms(14, 6) }])
+    expect(r.rouge.repas).toBe(true)
   })
 
   it('a forgotten lunch clock-out is flagged (Olivier, 21/09), and so is leaving at 17:30', () => {
@@ -109,6 +118,16 @@ describe('email content', () => {
     expect(r.content.intro).toContain('1 pointage à vérifier')
     const all = JSON.stringify(r)
     expect(all).not.toMatch(/[—–]/)
+  })
+
+  it('shows the lunch in the pause columns, outside the pause total, and no unsubscribe line', () => {
+    const l = analyserJournee(sal('Nicolas'), [ligne(sec(8, 50), sec(12, 4)), ligne(sec(14, 6), sec(18, 8))], null, heure)
+    const r = contenuRapportPointage([{ jour: '20260922', lignes: [l] }])!
+    const table = r.content.sections!.at(-1)!
+    expect(table.html).toContain('12:04 - 14:06')
+    expect(table.text).toContain('midi 12:04 - 14:06')
+    expect(table.text).toContain('pauses 0 min')
+    expect(r.content.footerNote).toBe('')
   })
 
   it('balances: thresholds, sign and ranking', () => {

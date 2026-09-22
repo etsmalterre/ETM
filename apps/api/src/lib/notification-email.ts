@@ -50,7 +50,8 @@ export interface NotificationEmailContent {
   /** Optional closing line, emphasised in a tinted box. */
   callout?: string | null
   /** Overrides the default "how to unsubscribe" footer line (plain text), for
-   *  mails that are not driven by a Notifications subscription. */
+   *  mails that are not driven by a Notifications subscription. An empty
+   *  string drops the line altogether. */
   footerNote?: string | null
   /** Wordmark in the header band and footer. Defaults to 'MPS'; the TRM
    *  reports pass 'TRM' (the skill's `appName`). */
@@ -104,12 +105,9 @@ function renderText(c: NotificationEmailContent): string {
   if (c.note && c.note.value.trim()) lines.push('', `${c.note.label} : ${c.note.value.trim()}`)
   if (c.callout) lines.push('', stripBold(c.callout))
   for (const s of c.sections ?? []) lines.push('', s.text)
-  lines.push(
-    '',
-    '---',
-    `Notification automatique ${c.appName ?? 'MPS'} - ETS Malterre`,
-    c.footerNote ?? 'Pour ne plus recevoir cet email : Paramètres > Utilisateurs > Notifications.',
-  )
+  lines.push('', '---', `Notification automatique ${c.appName ?? 'MPS'} - ETS Malterre`)
+  const pied = c.footerNote ?? 'Pour ne plus recevoir cet email : Paramètres > Utilisateurs > Notifications.'
+  if (pied) lines.push(pied)
   return lines.join('\n')
 }
 
@@ -198,10 +196,13 @@ function renderHtml(c: NotificationEmailContent, logoSrc: string): string {
     `<tr><td style="padding:24px 28px 22px 28px;">` +
     `<div style="border-top:1px solid ${BORDER};padding-top:14px;font-family:${FONT};` +
     `font-size:11px;line-height:1.6;color:${MUTED};">` +
-    `Notification automatique envoyée par <strong style="color:${NAVY};">${app}</strong> - ETS Malterre.<br>` +
-    (c.footerNote != null
-      ? esc(c.footerNote)
-      : `Pour ne plus la recevoir : Paramètres &gt; Utilisateurs &gt; Notifications.`) +
+    `Notification automatique envoyée par <strong style="color:${NAVY};">${app}</strong> - ETS Malterre.` +
+    (c.footerNote === ''
+      ? ''
+      : '<br>' +
+        (c.footerNote != null
+          ? esc(c.footerNote)
+          : `Pour ne plus la recevoir : Paramètres &gt; Utilisateurs &gt; Notifications.`)) +
     `</div></td></tr>` +
 
     `</table></td></tr></table>`

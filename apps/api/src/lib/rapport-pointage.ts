@@ -52,10 +52,14 @@ export interface LigneRapport {
   /** Pauses shown in the report, in order: clocked ones, plus for a shift worker the gaps between lines. */
   pauses: Plage[]
   pauseMin: number
+  /** Day hours only: the gaps between two lines of the day, i.e. the lunch
+   *  clocked out and back in. Shown apart from the pauses and never counted
+   *  in `pauseMin` (it is not paid time off the machine, it is time off work). */
+  repas: Plage[]
   /** What to check, in words — empty when the day is in order. */
   alertes: string[]
   /** Which cells turn red. */
-  rouge: { debut: boolean; fin: boolean; pause: boolean }
+  rouge: { debut: boolean; fin: boolean; pause: boolean; repas: boolean }
 }
 
 const MIN = 60_000
@@ -94,7 +98,7 @@ export function analyserJournee(
   const tri = [...lignes].sort((a, b) => a.debut - b.debut)
   const regime = prevu ? 'equipe' : 'journee'
   const alertes: string[] = []
-  const rouge = { debut: false, fin: false, pause: false }
+  const rouge = { debut: false, fin: false, pause: false, repas: false }
 
   const debut = tri.length ? arrondiMinute(tri[0].debut) : null
   const fin = tri.length ? arrondiMinute(tri[tri.length - 1].fin) : null
@@ -107,13 +111,14 @@ export function analyserJournee(
       if (pd !== null && pf !== null && pf > pd) pauses.push({ debut: pd, fin: pf })
     }
   }
-  // Between two lines: a forgotten clock-out, or (shift worker) a pause.
+  // Between two lines: a forgotten clock-out, or a pause (shift worker) / the lunch (day hours).
+  const repas: Plage[] = []
   for (let i = 0; i < tri.length - 1; i++) {
     const f = arrondiMinute(tri[i].fin), d = arrondiMinute(tri[i + 1].debut)
     if (f === null) {
       alertes.push(`sortie non pointée entre ${hhmm(arrondiMinute(tri[i].debut)!)} et ${d !== null ? hhmm(d) : '?'}`)
-    } else if (regime === 'equipe' && d !== null && d > f) {
-      pauses.push({ debut: f, fin: d })
+    } else if (d !== null && d > f) {
+      ;(regime === 'equipe' ? pauses : repas).push({ debut: f, fin: d })
     }
   }
   pauses.sort((a, b) => a.debut - b.debut)
@@ -155,7 +160,10 @@ export function analyserJournee(
     const apresMidi = tri.find((l) => arrondiMinute(l.debut)! >= midi)
     if (apresMidi && debut < midi) {
       const d = arrondiMinute(apresMidi.debut)!
-      if (d > reprise + tol) alertes.push(`reprise ${hhmm(d)} au lieu de ${HORAIRE_JOURNEE.reprise} (${retard(d, reprise)} de retard)`)
+      if (d > reprise + tol) {
+        alertes.push(`reprise ${hhmm(d)} au lieu de ${HORAIRE_JOURNEE.reprise} (${retard(d, reprise)} de retard)`)
+        rouge.repas = true
+      }
     }
     if (fin !== null && fin < soir - tol) {
       alertes.push(`départ ${hhmm(fin)} au lieu de ${HORAIRE_JOURNEE.soir} (${retard(soir, fin)} plus tôt)`)
@@ -163,7 +171,7 @@ export function analyserJournee(
     }
   }
 
-  return { salarie, regime, prevu, debut, fin, pauses, pauseMin, alertes, rouge }
+  return { salarie, regime, prevu, debut, fin, pauses, pauseMin, repas, alertes, rouge }
 }
 
 /** Order of the report: by first clock-in, never-clocked (planned) salariés last. */

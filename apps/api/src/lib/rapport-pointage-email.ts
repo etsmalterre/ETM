@@ -6,6 +6,9 @@
  *   - daily: a red « À vérifier » note that says what is wrong in words, then
  *     one line per salarié — start, pause 1, pause 2, end as app-style pills,
  *     total pause — red only where something is wrong;
+ *   - a day-hours salarié's lunch (clocked out, clocked back in) sits in the
+ *     pause columns in its own blue pill, outside the pause total (2026-09-22,
+ *     Nicolas: the row showed no break at all while the note said « reprise »);
  *   - weekly: the annual balances ranked, green up to 5 h, amber to 10 h, red above.
  * Email-safe markup only: tables, inline styles, no <style>, no flexbox.
  * No em / en dash in the content (skill rule).
@@ -26,6 +29,7 @@ const TABLE = 'cellpadding="0" cellspacing="0" border="0" width="100%" style="bo
 const PILL = {
   heure: { bg: S.pageBg, fg: S.text, bd: S.border },
   pause: { bg: '#FEF7E0', fg: '#7A5A00', bd: '#F8DF8B' },
+  repas: { bg: '#EAF2FB', fg: '#1E4F8A', bd: '#BCD5F0' },
   rouge: { bg: RED_BG, fg: RED, bd: RED_BORDER },
 } as const
 
@@ -69,15 +73,22 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
   const bt = `border-top:1px solid ${S.border};`
   const td = (html: string, al = 'center') => `<td align="${al}" style="padding:10px 0;vertical-align:middle;${bt}">${html}</td>`
   const heure = (ms: number | null, rouge: boolean) => (ms === null ? pill('non pointé', 'rouge') : pill(hhmm(ms), rouge ? 'rouge' : 'heure'))
-  const pausePill = (p: Plage | undefined) => (p ? pill(plage(p), 'pause') : vide)
+  // Pauses and lunch share the two columns, in time order; a third one stacks in the second.
+  const creneaux = (l: LigneRapport) =>
+    [
+      ...l.pauses.map((p) => ({ p, kind: 'pause' as const })),
+      ...l.repas.map((p) => ({ p, kind: l.rouge.repas ? ('rouge' as const) : ('repas' as const) })),
+    ].sort((a, b) => a.p.debut - b.p.debut)
+  const cellule = (cs: ReturnType<typeof creneaux>) =>
+    cs.length ? cs.map((c) => pill(plage(c.p), c.kind)).join('<br>') : vide
 
   const ligne = (l: LigneRapport) =>
     '<tr>' +
     `<td style="padding:10px 8px 10px 0;vertical-align:middle;${bt}font-family:${S.font};font-size:14px;font-weight:bold;` +
     `color:${l.alertes.length ? RED : S.navy};">${esc(l.salarie.prenom)}</td>` +
     td(heure(l.debut, l.rouge.debut)) +
-    td(pausePill(l.pauses[0])) +
-    td(pausePill(l.pauses[1])) +
+    td(cellule(creneaux(l).slice(0, 1))) +
+    td(cellule(creneaux(l).slice(1))) +
     td(l.debut === null ? vide : heure(l.fin, l.rouge.fin)) +
     td(
       `<span style="font-family:${S.font};font-size:13px;font-weight:bold;color:${l.rouge.pause ? RED : l.pauseMin ? S.text : FAINT};">` +
@@ -103,6 +114,7 @@ function tableJour(lignes: LigneRapport[], titre: string | null): EmailSection {
         l.salarie.prenom,
         `début ${txtHeure(l.debut)}`,
         ...l.pauses.map((p, i) => `pause ${i + 1} ${plage(p)}`),
+        ...l.repas.map((p) => `midi ${plage(p)}`),
         `fin ${l.debut === null ? '-' : txtHeure(l.fin)}`,
         `pauses ${l.pauseMin} min`,
       ].join(' · '),
@@ -147,6 +159,7 @@ export function contenuRapportPointage(jours: JourRapport[]): { subject: string;
       tone: nAVoir ? 'alert' : 'info',
       intro: `**${majuscule(periode)}** · ${salaries} ${salaries > 1 ? 'salariés pointés' : 'salarié pointé'}, ${bilan}.`,
       rows: [],
+      footerNote: '',
       sections,
     },
   }
@@ -212,6 +225,7 @@ export function contenuBilanHeures(
       tone: 'info',
       intro: `**${periode}** · solde annuel de chaque salarié (heures lissées − heures prévues − variables), du plus élevé au plus bas.`,
       rows: [],
+      footerNote: '',
       sections: [
         {
           html: `<table ${TABLE}><tr><td></td>${th('Salarié')}<td></td>${th('Solde', 'right')}</tr>${rows}</table>`,
