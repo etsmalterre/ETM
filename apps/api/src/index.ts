@@ -62,7 +62,7 @@ import { demarrerRapportsPointage } from './lib/rapports-pointage-envoi.js'
 import { abonnementsRouter } from './routes/abonnements.js'
 import { userEmailsRouter } from './routes/user-emails.js'
 import { userProfilesRouter } from './routes/user-profiles.js'
-import { query } from './lib/hfsql-auto.js'
+import { query, dbBackend } from './lib/hfsql-auto.js'
 import { attachUser } from './lib/auth.js'
 import { closeConnection } from './lib/hfsql-auto.js'
 import { probeFiniSourceTable, FINI_SOURCE_TABLE } from './lib/fini-sources.js'
@@ -105,7 +105,7 @@ app.get('/api/health', async (req, res) => {
   const t0 = Date.now()
   try {
     await query('SELECT COUNT(*) AS n FROM utilisateur')
-    res.json({ ...base, db: 'ok', dbMs: Date.now() - t0 })
+    res.json({ ...base, db: 'ok', dbMs: Date.now() - t0, backend: dbBackend() })
   } catch (err) {
     res.status(503).json({
       ...base,

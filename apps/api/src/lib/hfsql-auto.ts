@@ -46,10 +46,25 @@ if (platform() === 'linux') {
   _createHfsqlClient = mod.createOdbcClient
 }
 
-export const query = _query
-export const queryRaw = _queryRaw
-export const queryB64Text = _queryB64Text
-export const fixEncoding = _fixEncoding
-export const closeConnection = _closeConnection
-/** A client on its own connection (Windows) or bridge process (Linux). Connects on first query. */
-export const createHfsqlClient = _createHfsqlClient
+// PostgreSQL migration, step 3 (lib/pg-backend.ts, sibling repo windev_migration).
+// Opt-in only: without DB_BACKEND=pg every environment keeps its HFSQL driver.
+// ⚠️ Decided at CALL time, never at import: entry points load their .env with
+// dotenv in their module body, which ESM runs AFTER every static import — a
+// check up here saw DB_BACKEND unset and silently stayed on HFSQL.
+// pg-backend opens nothing until its first query.
+const pg = await import('./pg-backend.js')
+const usePg = () => process.env.DB_BACKEND === 'pg'
+
+export const query: QueryFn = (sql) => (usePg() ? pg.query(sql) : _query(sql))
+export const queryRaw: QueryRawFn = (sql) => (usePg() ? pg.queryRaw(sql) : _queryRaw(sql))
+export const queryB64Text: QueryB64TextFn = (sql) => (usePg() ? pg.queryB64Text(sql) : _queryB64Text(sql))
+export const fixEncoding: FixEncodingFn = (rows, table, idField, textFields) =>
+  (usePg() ? pg.fixEncoding : _fixEncoding)(rows, table, idField, textFields)
+export const closeConnection: CloseConnectionFn = () => (usePg() ? pg.closeConnection() : _closeConnection())
+/** A client on its own connection (Windows), bridge process (Linux) or PostgreSQL
+ *  pool (DB_BACKEND=pg). Connects on first query. Callers create it lazily
+ *  (lib/hfsql-pointage.ts), i.e. after the environment is loaded. */
+export const createHfsqlClient: CreateClientFn = (cs) => (usePg() ? pg.createPgClient(cs) : _createHfsqlClient(cs))
+
+/** Which database this process talks to, for /api/health and the logs. */
+export const dbBackend = (): 'pg' | 'hfsql' => (usePg() ? 'pg' : 'hfsql')
