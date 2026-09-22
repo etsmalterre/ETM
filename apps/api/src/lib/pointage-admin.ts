@@ -96,6 +96,11 @@ export function verifierOrdre(h: Record<ColonneHeure, number>): void {
   if (h.fin_pause1 > 0 && h.debut_pause1 === 0) throw new SaisieInvalide('La pause 1 a une fin mais pas de début.')
   if (h.fin_pause2 > 0 && h.debut_pause2 === 0) throw new SaisieInvalide('La pause 2 a une fin mais pas de début.')
   if (h.debut_pause2 > 0 && h.fin_pause1 === 0) throw new SaisieInvalide('La pause 2 commence alors que la pause 1 n’est pas finie.')
+  // A closed shift cannot leave a pause running — the tablet never does (on a
+  // break it only offers « Fin de la pause » or « Fin de la pause et fin du
+  // travail »), and such a line reads as « en pause » forever.
+  if (h.fin > 0 && h.debut_pause1 > 0 && h.fin_pause1 === 0) throw new SaisieInvalide('Le poste est fermé alors que la pause 1 n’est pas finie.')
+  if (h.fin > 0 && h.debut_pause2 > 0 && h.fin_pause2 === 0) throw new SaisieInvalide('Le poste est fermé alors que la pause 2 n’est pas finie.')
   let prev: { c: ColonneHeure; s: number } = { c: 'debut', s: h.debut }
   for (const c of COLONNES_HEURE.slice(1)) {
     const s = h[c]

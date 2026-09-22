@@ -111,7 +111,15 @@ async function main(): Promise<void> {
       continue
     }
     const fin = Number(l.debut) + 8 * 3600
-    await sql(`ligne ${l.id} (salarié ${l.id_salarie}) fermée à debut + 8 h`, `UPDATE lst_horaire SET fin = ${fin} WHERE id = ${l.id}`)
+    // a pause still running on that line ends at the same instant — a closed
+    // shift with an open pause reads as « en pause » forever (2026-09-22)
+    await sql(
+      `ligne ${l.id} (salarié ${l.id_salarie}) fermée à debut + 8 h`,
+      `UPDATE lst_horaire SET fin = ${fin},
+         fin_pause1 = CASE WHEN debut_pause1 > 0 AND fin_pause1 = 0 THEN ${fin} ELSE fin_pause1 END,
+         fin_pause2 = CASE WHEN debut_pause2 > 0 AND fin_pause2 = 0 THEN ${fin} ELSE fin_pause2 END
+       WHERE id = ${l.id}`,
+    )
     await sql(`  jumelle lst_pointage`, `UPDATE lst_pointage SET fin = '${dtParis(fin * 1000)}' WHERE id_salarie = ${l.id_salarie} AND fin IS NULL AND is_deleted = 0`)
   }
 

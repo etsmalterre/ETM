@@ -86,6 +86,12 @@ describe('appliquerSaisie — a correction over an existing line', () => {
       .toThrow(/pause 2 commence alors que la pause 1/)
   })
 
+  it('refuses to close a shift while a pause is still running', () => {
+    const enPause = { ...ligne, fin_pause1: 0 }
+    expect(() => appliquerSaisie('20260921', enPause, { fin: '16:30' })).toThrow(/fermé alors que la pause 1/)
+    expect(() => appliquerSaisie('20260921', enPause, { fin: '16:30', fin_pause1: '10:20' })).not.toThrow()
+  })
+
   it('a moved start re-places nothing else: the other stamps are absolute', () => {
     const out = appliquerSaisie('20260921', ligne, { debut: '07:30' })
     expect(out.debut).toBe(s(2026, 9, 21, 7, 30))
