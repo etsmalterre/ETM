@@ -321,3 +321,12 @@ export async function infosAnnee(idSalarie: number, annee: number): Promise<Info
   const rows = await pointageDb.fixEncoding(raw, 'lst_info_sal_annee', 'id', ['commentaire'])
   return rows.map((r) => ({ id: num(r.id), infoMin: num(r.info), commentaire: txt(r.commentaire) })).sort((a, b) => a.id - b.id)
 }
+
+/** The salariés who have a prévisionnel for `annee` — the copy sources of
+ *  FEN_Initialisation_prévisionnel's combo. */
+export async function salariesAvecPrev(annee: number): Promise<number[]> {
+  const rows = await pointageDb.query<Record<string, unknown>>(
+    `SELECT DISTINCT id_salarie FROM lst_prev WHERE annee = ${annee} AND is_deleted = 0`,
+  )
+  return rows.map((r) => num(r.id_salarie)).filter((id) => id > 0)
+}

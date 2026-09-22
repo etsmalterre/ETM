@@ -227,3 +227,140 @@ export function validerLissage(idSalarie: number, annee: number, numero: number,
     return relu
   })
 }
+
+// ── Prévisionnel : lst_prev (FEN_MAJ_prévisionnel, FEN_Initialisation_prévisionnel) ──
+//   lst_prev  id, id_salarie, annee, num_semaine, prev, commentaire, is_deleted
+// and the yearly adjustments lst_info_sal_annee (FEN_Variables):
+//   lst_info_sal_annee  id, id_salarie, annee, info, commentaire, is_deleted
+// `info` is stored as the legacy typed it: signed minutes SUBTRACTED from the
+// balance (a carry-over of ten extra hours was typed "-10:00"). The API takes
+// the adjustment as its EFFECT on the balance (+600 = ten hours in credit) and
+// stores the negation, which is what the legacy's Détails displayed (info × −1).
+
+import { nbSemainesIso } from './pointage-admin.js'
+import { infosAnnee, prevsAnnee, salariesAvecPrev, type InfoAnnee, type Prev } from './pointage.js'
+
+async function maxIdDe(table: 'lst_prev' | 'lst_info_sal_annee'): Promise<number> {
+  const rows = await pointageDb.query<{ m: number | null }>(`SELECT MAX(id) AS m FROM ${table}`)
+  return Number(rows[0]?.m) || 0
+}
+
+function minutesValides(v: unknown, champ: string, max = 24 * 7 * 60): number {
+  const n = Number(v)
+  if (!Number.isInteger(n) || n < 0 || n > max) throw new SaisieInvalide(`${champ} doit être entre 00:00 et ${Math.floor(max / 60)}:00.`)
+  return n
+}
+
+function commentaireValide(v: unknown): string {
+  const t = String(v ?? '').replace(/\r\n?/g, '\n').trim()
+  if (t.length > 500) throw new SaisieInvalide('Le commentaire dépasse 500 caractères.')
+  return t
+}
+
+function anneeValide(annee: number): number {
+  if (!Number.isInteger(annee) || annee < 2000 || annee > 2100) throw new SaisieInvalide('Année invalide.')
+  return annee
+}
+
+function effetValide(v: unknown): number {
+  const n = Number(v)
+  if (!Number.isInteger(n) || Math.abs(n) > 1000 * 60) throw new SaisieInvalide('L’ajustement doit être entre -1000:00 et +1000:00.')
+  return n
+}
+
+/** One week's planned minutes + comment (create or update — HEnregistre). */
+export function definirPrev(idSalarie: number, annee: number, numero: number, saisie: { prevMin: number; commentaire: string }): Promise<Prev> {
+  return verrou.run(async () => {
+    const s = await trouverSalarieMemeSupprime(idSalarie)
+    if (!s) throw new SaisieInvalide('Salarié inconnu.')
+    anneeValide(annee)
+    if (!Number.isInteger(numero) || numero < 1 || numero > nbSemainesIso(annee)) throw new SaisieInvalide('Semaine invalide.')
+    const prevMin = minutesValides(saisie.prevMin, 'Le prévisionnel de la semaine')
+    const commentaire = commentaireValide(saisie.commentaire)
+    const existant = (await prevsAnnee(idSalarie, annee)).find((p) => p.numero === numero)
+    if (existant) {
+      await pointageDb.query(`UPDATE lst_prev SET prev = ${prevMin}, commentaire = ${texte(commentaire, 'Le commentaire')} WHERE id = ${existant.id}`)
+    } else {
+      const id = (await maxIdDe('lst_prev')) + 1
+      await pointageDb.query(
+        `INSERT INTO lst_prev VALUES (${id}, ${idSalarie}, ${annee}, ${numero}, ${prevMin}, ${texte(commentaire, 'Le commentaire')}, 0)`,
+      )
+    }
+    const relu = (await prevsAnnee(idSalarie, annee)).find((p) => p.numero === numero)
+    if (!relu || relu.prevMin !== prevMin) throw new Error(`lst_prev: week ${annee}-S${numero} of salarié ${idSalarie} not written`)
+    return relu
+  })
+}
+
+export type SaisieInitialisation = { mode: 'heures'; prevMin: number } | { mode: 'copie'; sourceId: number }
+
+/** FEN_Initialisation_prévisionnel: fill every week of an EMPTY year, with a
+ *  fixed weekly total or a copy of another salarié's year (found weeks only). */
+export function initialiserPrev(idSalarie: number, annee: number, saisie: SaisieInitialisation): Promise<Prev[]> {
+  return verrou.run(async () => {
+    const s = await trouverSalarieMemeSupprime(idSalarie)
+    if (!s) throw new SaisieInvalide('Salarié inconnu.')
+    anneeValide(annee)
+    if ((await prevsAnnee(idSalarie, annee)).length > 0) {
+      throw new SaisieInvalide(`Le prévisionnel ${annee} de ce salarié existe déjà : modifiez-le semaine par semaine.`)
+    }
+    const nb = nbSemainesIso(annee)
+    let lignes: { numero: number; prevMin: number; commentaire: string }[]
+    if (saisie.mode === 'heures') {
+      const prevMin = minutesValides(saisie.prevMin, 'Le prévisionnel hebdomadaire')
+      lignes = Array.from({ length: nb }, (_, i) => ({ numero: i + 1, prevMin, commentaire: '' }))
+    } else {
+      if (!(await salariesAvecPrev(annee)).includes(saisie.sourceId)) throw new SaisieInvalide('Le salarié à recopier n’a pas de prévisionnel cette année-là.')
+      lignes = (await prevsAnnee(saisie.sourceId, annee)).filter((p) => p.numero <= nb).map((p) => ({ numero: p.numero, prevMin: p.prevMin, commentaire: p.commentaire }))
+    }
+    let id = await maxIdDe('lst_prev')
+    for (const l of lignes) {
+      id += 1
+      await pointageDb.query(
+        `INSERT INTO lst_prev VALUES (${id}, ${idSalarie}, ${annee}, ${l.numero}, ${l.prevMin}, ${texte(l.commentaire, 'Le commentaire')}, 0)`,
+      )
+    }
+    const relu = await prevsAnnee(idSalarie, annee)
+    if (relu.length !== lignes.length) throw new Error(`lst_prev: ${relu.length}/${lignes.length} weeks written for ${annee}`)
+    return relu
+  })
+}
+
+/** A yearly adjustment, given as its EFFECT on the balance (`soldeMin`, signed). */
+export function creerInfo(idSalarie: number, annee: number, saisie: { soldeMin: number; commentaire: string }): Promise<InfoAnnee> {
+  return verrou.run(async () => {
+    const s = await trouverSalarieMemeSupprime(idSalarie)
+    if (!s) throw new SaisieInvalide('Salarié inconnu.')
+    anneeValide(annee)
+    const info = -effetValide(saisie.soldeMin)
+    const commentaire = commentaireValide(saisie.commentaire)
+    const id = (await maxIdDe('lst_info_sal_annee')) + 1
+    await pointageDb.query(
+      `INSERT INTO lst_info_sal_annee VALUES (${id}, ${idSalarie}, ${annee}, ${info}, ${texte(commentaire, 'Le commentaire')}, 0)`,
+    )
+    const relu = (await infosAnnee(idSalarie, annee)).find((i) => i.id === id)
+    if (!relu) throw new Error(`lst_info_sal_annee: row ${id} not found after its INSERT`)
+    return relu
+  })
+}
+
+export function modifierInfo(id: number, saisie: { soldeMin: number; commentaire: string }): Promise<InfoAnnee> {
+  return verrou.run(async () => {
+    const rows = await pointageDb.query<Record<string, unknown>>(`SELECT id, id_salarie, annee FROM lst_info_sal_annee WHERE id = ${id} AND is_deleted = 0`)
+    if (!rows.length) throw new SaisieInvalide('Variable inconnue.')
+    const info = -effetValide(saisie.soldeMin)
+    const commentaire = commentaireValide(saisie.commentaire)
+    await pointageDb.query(`UPDATE lst_info_sal_annee SET info = ${info}, commentaire = ${texte(commentaire, 'Le commentaire')} WHERE id = ${id}`)
+    const relu = (await infosAnnee(Number(rows[0].id_salarie), Number(rows[0].annee))).find((i) => i.id === id)
+    if (!relu) throw new Error(`lst_info_sal_annee: row ${id} vanished after its UPDATE`)
+    return relu
+  })
+}
+
+export function supprimerInfo(id: number): Promise<void> {
+  return verrou.run(async () => {
+    const rows = await pointageDb.query<Record<string, unknown>>(`SELECT id FROM lst_info_sal_annee WHERE id = ${id} AND is_deleted = 0`)
+    if (!rows.length) throw new SaisieInvalide('Variable inconnue.')
+    await pointageDb.query(`UPDATE lst_info_sal_annee SET is_deleted = 1 WHERE id = ${id}`)
+  })
+}

@@ -556,3 +556,139 @@ pointageAdminRouter.put('/lissage/semaine', async (req: Request, res: Response) 
     erreur(res, 'lissage/semaine PUT', err)
   }
 })
+
+// ── Prévisionnel — FEN_Prévisionnel + FEN_MAJ_prévisionnel + FEN_Initialisation_prévisionnel + FEN_Variables ──
+//   GET    /previsionnel?salarie=&annee=          every week's planned minutes, the adjustments, the yearly target
+//   PUT    /previsionnel/semaine                  { idSalarie, annee, numero, prevMin, commentaire }
+//   POST   /previsionnel/initialiser              { idSalarie, annee, mode: 'heures', prevMin } | { …, mode: 'copie', sourceId }
+//   POST   /previsionnel/variables                { idSalarie, annee, soldeMin, commentaire }   (effect on the balance)
+//   PUT    /previsionnel/variables/:id            { soldeMin, commentaire }
+//   DELETE /previsionnel/variables/:id
+
+import { salariesAvecPrev } from '../lib/pointage.js'
+import { creerInfo, definirPrev, initialiserPrev, modifierInfo, supprimerInfo } from '../lib/pointage-admin-ecritures.js'
+
+async function previsionnelJson(idSalarie: number, annee: number) {
+  const [prevs, infos, sources, salaries] = await Promise.all([prevsAnnee(idSalarie, annee), infosAnnee(idSalarie, annee), salariesAvecPrev(annee), salariesParId()])
+  const nb = nbSemainesIso(annee)
+  const parNumero = new Map(prevs.map((p) => [p.numero, p]))
+  const prevuMin = prevs.filter((p) => p.numero <= nb).reduce((t, p) => t + p.prevMin, 0)
+  const ajustementMin = infos.reduce((t, i) => t + i.infoMin, 0)
+  return {
+    idSalarie,
+    annee,
+    nbSemaines: nb,
+    vide: prevs.length === 0,
+    semaines: Array.from({ length: nb }, (_, i) => {
+      const p = parNumero.get(i + 1)
+      return { numero: i + 1, lundi: lundiIso(annee, i + 1), prevMin: p ? p.prevMin : null, commentaire: p?.commentaire ?? '' }
+    }),
+    /** The Variables, each as its effect on the balance (−info). */
+    variables: infos.map((i) => ({ id: i.id, commentaire: i.commentaire, soldeMin: -i.infoMin })),
+    /** FEN_Prévisionnel's Détail: planned over the year, plus the adjustments = the yearly target. */
+    bilan: { prevuMin, ajustementMin, objectifMin: prevuMin + ajustementMin },
+    /** Copy sources for an empty year: the other salariés who have one. */
+    sourcesRecopie: sources
+      .filter((id) => id !== idSalarie)
+      .map((id) => salaries.get(id))
+      .filter((s): s is SalarieComplet => !!s)
+      .map((s) => ({ id: s.id, nom: s.nom, prenom: s.prenom, supprime: s.supprime })),
+  }
+}
+
+pointageAdminRouter.get('/previsionnel', async (req: Request, res: Response) => {
+  try {
+    if (!(await lecture(req, res))) return
+    const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
+    const annee = entierQuery(req.query.annee, 2000, 2100)
+    if (idSalarie === null || annee === null) {
+      res.status(400).json({ error: 'Invalid salarie/annee' })
+      return
+    }
+    res.json(await previsionnelJson(idSalarie, annee))
+  } catch (err) {
+    erreur(res, 'previsionnel GET', err)
+  }
+})
+
+const prevBody = z
+  .object({
+    idSalarie: z.number().int().positive(),
+    annee: z.number().int().min(2000).max(2100),
+    numero: z.number().int().min(1).max(53),
+    prevMin: z.number().int().min(0).max(24 * 7 * 60),
+    commentaire: z.string().max(500),
+  })
+  .strict()
+
+pointageAdminRouter.put('/previsionnel/semaine', async (req: Request, res: Response) => {
+  try {
+    if (!(await ecriture(req, res))) return
+    const parsed = prevBody.safeParse(req.body)
+    if (!parsed.success) return validation(res, parsed.error.issues)
+    const { idSalarie, annee, numero, prevMin, commentaire } = parsed.data
+    await definirPrev(idSalarie, annee, numero, { prevMin, commentaire })
+    res.json(await previsionnelJson(idSalarie, annee))
+  } catch (err) {
+    erreur(res, 'previsionnel/semaine PUT', err)
+  }
+})
+
+const initBody = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('heures'), idSalarie: z.number().int().positive(), annee: z.number().int().min(2000).max(2100), prevMin: z.number().int().min(0).max(24 * 7 * 60) }).strict(),
+  z.object({ mode: z.literal('copie'), idSalarie: z.number().int().positive(), annee: z.number().int().min(2000).max(2100), sourceId: z.number().int().positive() }).strict(),
+])
+
+pointageAdminRouter.post('/previsionnel/initialiser', async (req: Request, res: Response) => {
+  try {
+    if (!(await ecriture(req, res))) return
+    const parsed = initBody.safeParse(req.body)
+    if (!parsed.success) return validation(res, parsed.error.issues)
+    const { idSalarie, annee } = parsed.data
+    await initialiserPrev(idSalarie, annee, parsed.data.mode === 'heures' ? { mode: 'heures', prevMin: parsed.data.prevMin } : { mode: 'copie', sourceId: parsed.data.sourceId })
+    res.status(201).json(await previsionnelJson(idSalarie, annee))
+  } catch (err) {
+    erreur(res, 'previsionnel/initialiser', err)
+  }
+})
+
+const variableBody = z.object({ soldeMin: z.number().int().min(-60000).max(60000), commentaire: z.string().max(500) }).strict()
+
+pointageAdminRouter.post('/previsionnel/variables', async (req: Request, res: Response) => {
+  try {
+    if (!(await ecriture(req, res))) return
+    const parsed = variableBody.extend({ idSalarie: z.number().int().positive(), annee: z.number().int().min(2000).max(2100) }).strict().safeParse(req.body)
+    if (!parsed.success) return validation(res, parsed.error.issues)
+    const { idSalarie, annee, soldeMin, commentaire } = parsed.data
+    await creerInfo(idSalarie, annee, { soldeMin, commentaire })
+    res.status(201).json(await previsionnelJson(idSalarie, annee))
+  } catch (err) {
+    erreur(res, 'previsionnel/variables POST', err)
+  }
+})
+
+pointageAdminRouter.put('/previsionnel/variables/:id', async (req: Request, res: Response) => {
+  try {
+    if (!(await ecriture(req, res))) return
+    const id = idDeLaRoute(req, res)
+    if (id === null) return
+    const parsed = variableBody.safeParse(req.body)
+    if (!parsed.success) return validation(res, parsed.error.issues)
+    const info = await modifierInfo(id, parsed.data)
+    res.json({ id: info.id, commentaire: info.commentaire, soldeMin: -info.infoMin })
+  } catch (err) {
+    erreur(res, 'previsionnel/variables PUT', err)
+  }
+})
+
+pointageAdminRouter.delete('/previsionnel/variables/:id', async (req: Request, res: Response) => {
+  try {
+    if (!(await ecriture(req, res))) return
+    const id = idDeLaRoute(req, res)
+    if (id === null) return
+    await supprimerInfo(id)
+    res.status(204).end()
+  } catch (err) {
+    erreur(res, 'previsionnel/variables DELETE', err)
+  }
+})
