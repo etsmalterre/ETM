@@ -10,6 +10,15 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/horaires-fixes — rapport de pointage : horaires fixes par salarié + « En poste »
+**MPS API seule.** `HORAIRES_FIXES` (lib/rapport-pointage.ts, par `lst_salarie.id`, dans le code
+par choix de Vincent : un changement = commit + /etm_deploy) : Nicolas (1) et Mickael (20) en
+09:00-12:00 / 14:00-18:00, Olivier (5) en 08:30-12:00 / 14:00-17:30 ; les autres gardent
+`HORAIRE_JOURNEE`. `analyserJournee()` prend l'horaire en 5e argument (`horaireDe(id)`).
+Nouvelle colonne « En poste » = premier au dernier pointage − pauses − pause de midi
+(`enPosteMin`, null si journée ouverte). Le total « Pauses » passe en rouge aussi quand la
+reprise de midi est en retard (`rouge.repas`). Tests (21).
+
 ## 2026-09-22 — feat/pauses-journee — rapport de pointage : « Pauses » compte la pause de midi
 **MPS API seule.** Pour un salarié à la journée, la colonne « Pauses » additionne désormais
 pauses pointées et pause de midi (`repasMin`, nouveau champ de `LigneRapport`), écrite
