@@ -18,7 +18,7 @@
  * whose stamps are out of order breaks the pauses / présence sums and the TRS
  * presence journal — and says which hour is wrong (assumed delta).
  */
-import { COLONNES_HEURE, msHeureParis, type ColonneHeure, type LigneHoraire } from './pointage-etat.js'
+import { COLONNES_HEURE, msHeureParis, partiesParis, semaineIso, type ColonneHeure, type LigneHoraire } from './pointage-etat.js'
 
 /** `HH:MM`, 24 h, zero-padded — what the screens send and what the legacy compared as text. */
 export const HEURE_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -156,4 +156,96 @@ export function loginNormalise(login: string): string {
   const v = login.trim().toUpperCase()
   if (!/^[A-Z0-9]{1,3}$/.test(v)) throw new SaisieInvalide('Le login fait 1 à 3 lettres ou chiffres.')
   return v
+}
+
+// ── Semaines — FEN_Contrôles + FEN_Lissage (plan § 9.3–9.4, code lu le 2026-09-22) ──
+
+export const JOURS_LISSAGE = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'] as const
+export type JourLissage = (typeof JOURS_LISSAGE)[number]
+
+/** The day-type letters Leticia uses (2026-09-22): M matin, A après-midi, N nuit
+ *  (one meal each, night meal for N), J journée without meal (Nico, Mickaël),
+ *  E a journée WITH a meal for a 3×8 bonnetier on odd hours. */
+export const TYPES_JOUR = ['M', 'A', 'N', 'J', 'E'] as const
+
+const ymd = (t: Date) => `${t.getUTCFullYear()}${String(t.getUTCMonth() + 1).padStart(2, '0')}${String(t.getUTCDate()).padStart(2, '0')}`
+
+/** Monday of ISO week `numero` of `annee`, `YYYYMMDD` — WinDev's
+ *  SemaineVersDate(…, iso8601): week 1 holds 4 January. */
+export function lundiIso(annee: number, numero: number): string {
+  const j4 = new Date(Date.UTC(annee, 0, 4))
+  const dow = j4.getUTCDay() || 7
+  return ymd(new Date(j4.getTime() + ((1 - dow) + (numero - 1) * 7) * 86_400_000))
+}
+
+/** ISO week number of a `YYYYMMDD` day (the year it belongs to is not needed here). */
+export function numeroSemaineIso(jour: string): number {
+  return semaineIso(Date.UTC(+jour.slice(0, 4), +jour.slice(4, 6) - 1, +jour.slice(6, 8), 12)).numero
+}
+
+/** 52 or 53 — how many ISO weeks the year has (28 December is always in the last one). */
+export function nbSemainesIso(annee: number): number {
+  return numeroSemaineIso(`${annee}1228`)
+}
+
+/** FEN_Contrôles' nSemMax: the last week that can be validated — last week for
+ *  the current year, the year's last week otherwise (31/12 falling in week 1
+ *  of the next year → the week of 25/12). */
+export function semaineMaxControle(annee: number, aujourdhuiMs: number): number {
+  const p = partiesParis(aujourdhuiMs)
+  if (annee === p.y) return semaineIso(aujourdhuiMs).numero - 1
+  const w = numeroSemaineIso(`${annee}1231`)
+  return w === 1 ? numeroSemaineIso(`${annee}1225`) : w
+}
+
+/** FEN_Contrôles' nSemMin: weeks before the salarié's first shift are not
+ *  shown. `premierJour` = MIN(DATE) of his lines, null = never pointed. */
+export function semaineMinControle(annee: number, premierJour: string | null, semMax: number): number {
+  if (!premierJour) return semMax
+  const a = +premierJour.slice(0, 4)
+  if (a === annee) return numeroSemaineIso(premierJour) - 1
+  return a < annee ? 0 : semMax
+}
+
+/** FEN_Contrôles' BTN_Détail: the week the balance is read up to. */
+export function semaineDetail(annee: number, aujourdhuiMs: number): number {
+  const p = partiesParis(aujourdhuiMs)
+  if (annee !== p.y) {
+    const w = numeroSemaineIso(`${annee}1231`)
+    return w === 1 ? numeroSemaineIso(`${annee}1225`) : w
+  }
+  const w = semaineIso(aujourdhuiMs).numero
+  return w === 1 ? 1 : semaineIso(aujourdhuiMs - 7 * 86_400_000).numero
+}
+
+/** FEN_Lissage's proposed type, from the HHMM of the day's FIRST start:
+ *  before 07:00 M, before 11:00 J, before 16:00 A, else N; no shift → J. */
+export function typePropose(premierDebutS: number | null): 'M' | 'J' | 'A' | 'N' {
+  if (premierDebutS === null) return 'J'
+  const p = partiesParis(premierDebutS * 1000)
+  const hhmm = p.h * 100 + p.mi
+  if (hhmm < 700) return 'M'
+  if (hhmm < 1100) return 'J'
+  if (hhmm < 1600) return 'A'
+  return 'N'
+}
+
+/** FEN_Lissage's proposed smoothed total: the cumul FLOORED to the quarter hour
+ *  (6:56 → 6:45 — the meeting said « le plus proche », the code says floor). */
+export const lissePropose = (cumulMin: number): number => cumulMin - (cumulMin % 15)
+
+/** A day's cumul as FEN_Lissage computes it: Σ (fin − debut) of the day's
+ *  CLOSED lines, in truncated minutes — pauses inside a line are not deducted. */
+export function cumulJourMin(lignes: ReadonlyArray<{ debut: number; fin: number }>): number {
+  let s = 0
+  for (const l of lignes) if (l.fin > 0) s += l.fin - l.debut
+  return Math.floor(s / 60)
+}
+
+/** « HH:MM » (or « H:MM ») typed in the lissé cell → minutes; BTN_Valider did
+ *  Val(Gauche(…,2)) * 60 + Val(Droite(…,2)). */
+export function minutesDepuisHM(v: string): number {
+  const m = /^\s*(\d{1,3}):([0-5]\d)\s*$/.exec(v)
+  if (!m) throw new SaisieInvalide(`Durée invalide : « ${v} » (attendu HH:MM).`)
+  return +m[1] * 60 + +m[2]
 }

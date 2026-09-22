@@ -409,3 +409,150 @@ pointageAdminRouter.delete('/horaires/:id', async (req: Request, res: Response) 
     erreur(res, 'horaires DELETE', err)
   }
 })
+
+// ── Semaines — FEN_Contrôles (the year grid) + FEN_Lissage (one week) ──
+//   GET /lissage/semaines?salarie=&annee=   the grid: one cell per ISO week, red = to validate, + the balance
+//   GET /lissage/semaine?salarie=&annee=&numero=   the seven days with proposals or stored values
+//   PUT /lissage/semaine { idSalarie, annee, numero, jours: [{ type, lisseMin }] × 7 }   validate (create or update)
+
+import {
+  JOURS_LISSAGE,
+  cumulJourMin,
+  lissePropose,
+  lundiIso,
+  nbSemainesIso,
+  semaineDetail,
+  semaineMaxControle,
+  semaineMinControle,
+  typePropose,
+} from '../lib/pointage-admin.js'
+import { infosAnnee, lissageSemaine, lissagesAnnee, premierPointage, prevsAnnee } from '../lib/pointage.js'
+import { validerLissage } from '../lib/pointage-admin-ecritures.js'
+
+function entierQuery(v: unknown, min: number, max: number): number | null {
+  const n = parseInt(String(v ?? ''), 10)
+  return Number.isInteger(n) && n >= min && n <= max ? n : null
+}
+
+/** FEN_Contrôles' BTN_Détail, as figures: planned and done up to `semaine`,
+ *  the yearly adjustments, the balance (= the tablet's « Solde annuel »). */
+async function bilan(idSalarie: number, annee: number, semaine: number) {
+  const [lissages, prevs, infos] = await Promise.all([lissagesAnnee(idSalarie, annee), prevsAnnee(idSalarie, annee), infosAnnee(idSalarie, annee)])
+  const realiseMin = lissages.filter((l) => l.numero <= semaine).reduce((t, l) => t + l.cumulSemaineMin, 0)
+  const prevuMin = prevs.filter((p) => p.numero <= semaine).reduce((t, p) => t + p.prevMin, 0)
+  const ajustementMin = infos.reduce((t, i) => t + i.infoMin, 0)
+  return {
+    semaine,
+    prevuMin,
+    realiseMin,
+    /** Shown as the legacy did: `info × −1` next to its comment. */
+    infos: infos.map((i) => ({ id: i.id, commentaire: i.commentaire, min: -i.infoMin })),
+    totalMin: realiseMin - prevuMin - ajustementMin,
+  }
+}
+
+pointageAdminRouter.get('/lissage/semaines', async (req: Request, res: Response) => {
+  try {
+    if (!(await lecture(req, res))) return
+    const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
+    const annee = entierQuery(req.query.annee, 2000, 2100)
+    if (idSalarie === null || annee === null) {
+      res.status(400).json({ error: 'Invalid salarie/annee' })
+      return
+    }
+    const maintenantMs = Date.now()
+    const [lissages, premier] = await Promise.all([lissagesAnnee(idSalarie, annee), premierPointage(idSalarie)])
+    const semMax = semaineMaxControle(annee, maintenantMs)
+    const semMin = semaineMinControle(annee, premier, semMax)
+    const parNumero = new Map(lissages.map((l) => [l.numero, l]))
+    const nb = nbSemainesIso(annee)
+    const semaines = []
+    for (let n = 1; n <= nb; n++) {
+      const l = parNumero.get(n)
+      semaines.push({
+        numero: n,
+        lundi: lundiIso(annee, n),
+        cumulMin: l ? l.cumulSemaineMin : null,
+        /** In the validation window and not yet validated — the legacy's red cell. */
+        aValider: !l && n > semMin && n <= semMax,
+      })
+    }
+    res.json({ annee, semMin, semMax, nbSemaines: nb, semaines, bilan: await bilan(idSalarie, annee, semaineDetail(annee, maintenantMs)) })
+  } catch (err) {
+    erreur(res, 'lissage/semaines', err)
+  }
+})
+
+async function semaineJson(idSalarie: number, annee: number, numero: number) {
+  const lundi = lundiIso(annee, numero)
+  const dimanche = decalerJour(lundi, 6)
+  const [lignes, stocke] = await Promise.all([lignesPeriode(lundi, dimanche, idSalarie), lissageSemaine(idSalarie, annee, numero)])
+  const jours = JOURS_LISSAGE.map((libelle, i) => {
+    const jour = decalerJour(lundi, i)
+    const duJour = lignes
+      .filter((l) => l.jour === jour && l.fin > 0)
+      .sort((a, b) => a.debut - b.debut)
+    const cumulMin = cumulJourMin(duJour)
+    return {
+      libelle,
+      jour,
+      segments: duJour.map((l) => ({ id: l.id, debutMs: l.debut * 1000, finMs: l.fin * 1000 })),
+      cumulMin,
+      lisseMin: stocke ? stocke.jours[i].totalMin : lissePropose(cumulMin),
+      type: stocke ? stocke.jours[i].type || 'J' : typePropose(duJour[0]?.debut ?? null),
+    }
+  })
+  return {
+    idSalarie,
+    annee,
+    numero,
+    lundi,
+    /** Already validated: the lissé values and types are the stored ones. */
+    existe: stocke !== null,
+    jours,
+    cumulSemaineMin: jours.reduce((t, j) => t + j.lisseMin, 0),
+  }
+}
+
+function decalerJour(jour: string, jours: number): string {
+  const t = new Date(Date.UTC(+jour.slice(0, 4), +jour.slice(4, 6) - 1, +jour.slice(6, 8)) + jours * 86_400_000)
+  return `${t.getUTCFullYear()}${String(t.getUTCMonth() + 1).padStart(2, '0')}${String(t.getUTCDate()).padStart(2, '0')}`
+}
+
+pointageAdminRouter.get('/lissage/semaine', async (req: Request, res: Response) => {
+  try {
+    if (!(await lecture(req, res))) return
+    const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
+    const annee = entierQuery(req.query.annee, 2000, 2100)
+    const numero = entierQuery(req.query.numero, 1, 53)
+    if (idSalarie === null || annee === null || numero === null) {
+      res.status(400).json({ error: 'Invalid salarie/annee/numero' })
+      return
+    }
+    res.json(await semaineJson(idSalarie, annee, numero))
+  } catch (err) {
+    erreur(res, 'lissage/semaine GET', err)
+  }
+})
+
+const lissageBody = z
+  .object({
+    idSalarie: z.number().int().positive(),
+    annee: z.number().int().min(2000).max(2100),
+    numero: z.number().int().min(1).max(53),
+    jours: z.array(z.object({ type: z.string().max(1), lisseMin: z.number().int().min(0).max(1440) }).strict()).length(7),
+  })
+  .strict()
+
+pointageAdminRouter.put('/lissage/semaine', async (req: Request, res: Response) => {
+  try {
+    if (!(await ecriture(req, res))) return
+    const parsed = lissageBody.safeParse(req.body)
+    if (!parsed.success) return validation(res, parsed.error.issues)
+    const { idSalarie, annee, numero, jours } = parsed.data
+    await validerLissage(idSalarie, annee, numero, { jours })
+    res.json(await semaineJson(idSalarie, annee, numero))
+  } catch (err) {
+    erreur(res, 'lissage/semaine PUT', err)
+  }
+})

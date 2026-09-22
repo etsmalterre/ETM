@@ -125,3 +125,72 @@ describe('periodeValide / loginNormalise', () => {
     expect(() => loginNormalise('')).toThrow(SaisieInvalide)
   })
 })
+
+// ── Semaines (FEN_Contrôles + FEN_Lissage) ──
+import {
+  cumulJourMin,
+  lissePropose,
+  lundiIso,
+  minutesDepuisHM,
+  nbSemainesIso,
+  numeroSemaineIso,
+  semaineDetail,
+  semaineMaxControle,
+  semaineMinControle,
+  typePropose,
+} from './pointage-admin.js'
+
+const paris = (y: number, mo: number, d: number, h = 12, mi = 0) => msHeureParis(y, mo, d, h, mi)
+
+describe('ISO weeks — the numbering of lst_lissage', () => {
+  it('Monday of a week (week 1 holds 4 January)', () => {
+    expect(lundiIso(2026, 1)).toBe('20251229')
+    expect(lundiIso(2026, 38)).toBe('20260914')
+    expect(lundiIso(2026, 53)).toBe('20261228')
+    expect(lundiIso(2025, 1)).toBe('20241230')
+  })
+  it('week counts and week of a day', () => {
+    expect(nbSemainesIso(2026)).toBe(53)
+    expect(nbSemainesIso(2025)).toBe(52)
+    expect(numeroSemaineIso('20260922')).toBe(39)
+  })
+})
+
+describe('FEN_Contrôles bounds', () => {
+  it('current year: up to last week', () => {
+    expect(semaineMaxControle(2026, paris(2026, 9, 22))).toBe(38)
+  })
+  it('past year: its last week, 31/12 in week 1 falls back to 25/12', () => {
+    expect(semaineMaxControle(2025, paris(2026, 9, 22))).toBe(1 === numeroSemaineIso('20251231') ? numeroSemaineIso('20251225') : numeroSemaineIso('20251231'))
+    expect(semaineMaxControle(2024, paris(2026, 9, 22))).toBe(52) // 2024-12-31 is ISO week 1 of 2025 → the week of 25/12
+  })
+  it('first shift bounds the start', () => {
+    expect(semaineMinControle(2026, '20260406', 38)).toBe(14)
+    expect(semaineMinControle(2026, '20190417', 38)).toBe(0)
+    expect(semaineMinControle(2026, null, 38)).toBe(38)
+    expect(semaineMinControle(2025, '20260406', 52)).toBe(52)
+  })
+  it('the balance week of BTN_Détail', () => {
+    expect(semaineDetail(2026, paris(2026, 9, 22))).toBe(38)
+    expect(semaineDetail(2026, paris(2026, 1, 1))).toBe(1)
+  })
+})
+
+describe('FEN_Lissage proposals', () => {
+  it('type from the first start', () => {
+    expect(typePropose(Math.floor(paris(2026, 9, 21, 5, 52) / 1000))).toBe('M')
+    expect(typePropose(Math.floor(paris(2026, 9, 21, 8, 50) / 1000))).toBe('J')
+    expect(typePropose(Math.floor(paris(2026, 9, 21, 13, 12) / 1000))).toBe('A')
+    expect(typePropose(Math.floor(paris(2026, 9, 21, 21, 0) / 1000))).toBe('N')
+    expect(typePropose(null)).toBe('J')
+  })
+  it('floor to the quarter hour, gross line durations, HH:MM parsing', () => {
+    expect(lissePropose(416)).toBe(405) // 6:56 → 6:45
+    expect(lissePropose(423)).toBe(420) // 7:03 → 7:00
+    const d = Math.floor(paris(2026, 9, 21, 8, 50) / 1000)
+    expect(cumulJourMin([{ debut: d, fin: d + 3 * 3600 + 15 * 60 + 40 }, { debut: d + 5 * 3600, fin: d + 9 * 3600 + 2 * 60 }, { debut: d, fin: 0 }])).toBe(437)
+    expect(minutesDepuisHM('07:15')).toBe(435)
+    expect(minutesDepuisHM('0:45')).toBe(45)
+    expect(() => minutesDepuisHM('7h15')).toThrow(SaisieInvalide)
+  })
+})

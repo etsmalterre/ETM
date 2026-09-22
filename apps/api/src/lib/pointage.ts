@@ -232,3 +232,92 @@ export async function trouverMessage(id: number): Promise<MessageSalarie | null>
   const rows = await pointageDb.fixEncoding(raw, 'lst_message', 'id', [k])
   return versMessage(rows[0])
 }
+
+// ── Semaines : lst_lissage, lst_prev, lst_info_sal_annee (FEN_Contrôles / FEN_Lissage) ──
+
+export interface JourLisse {
+  type: string
+  totalMin: number
+}
+
+export interface Lissage {
+  id: number
+  idSalarie: number
+  annee: number
+  numero: number
+  /** Monday → Sunday. */
+  jours: JourLisse[]
+  cumulSemaineMin: number
+}
+
+const JOURS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'] as const
+
+function versLissage(r: Record<string, unknown>): Lissage {
+  return {
+    id: num(r.id),
+    idSalarie: num(r.id_salarie),
+    annee: num(r.annee),
+    numero: num(r.num_semaine),
+    jours: JOURS.map((j) => ({ type: txt(r[cle(r, `${j}_type`)]).toUpperCase(), totalMin: num(r[cle(r, `${j}_total`)]) })),
+    cumulSemaineMin: num(r.cumul_semaine),
+  }
+}
+
+/** Every validated week of a salarié's year. */
+export async function lissagesAnnee(idSalarie: number, annee: number): Promise<Lissage[]> {
+  const rows = await pointageDb.query<Record<string, unknown>>(
+    `SELECT * FROM lst_lissage WHERE id_salarie = ${idSalarie} AND annee = ${annee} AND is_deleted = 0`,
+  )
+  return rows.map(versLissage).sort((a, b) => a.numero - b.numero)
+}
+
+/** The validated row of one week, if any (key sal_an_sem_del). */
+export async function lissageSemaine(idSalarie: number, annee: number, numero: number): Promise<Lissage | null> {
+  const rows = await pointageDb.query<Record<string, unknown>>(
+    `SELECT * FROM lst_lissage WHERE id_salarie = ${idSalarie} AND annee = ${annee} AND num_semaine = ${numero} AND is_deleted = 0 ORDER BY id`,
+  )
+  return rows.length ? versLissage(rows[0]) : null
+}
+
+/** REQ_datePremierPointage: the day of the salarié's first shift, `YYYYMMDD`, null when none. */
+export async function premierPointage(idSalarie: number): Promise<string | null> {
+  const rows = await pointageDb.query<Record<string, unknown>>(
+    `SELECT MIN(DATE) AS premier FROM lst_horaire WHERE id_salarie = ${idSalarie} AND is_deleted = 0`,
+  )
+  const j = jourDe(rows[0]?.[cle(rows[0], 'premier')])
+  return j.length === 8 ? j : null
+}
+
+export interface Prev {
+  id: number
+  numero: number
+  prevMin: number
+  commentaire: string
+}
+
+/** The planned minutes of each week of a salarié's year (lst_prev). */
+export async function prevsAnnee(idSalarie: number, annee: number): Promise<Prev[]> {
+  const raw = await pointageDb.query<Record<string, unknown>>(
+    `SELECT id, num_semaine, prev, commentaire FROM lst_prev WHERE id_salarie = ${idSalarie} AND annee = ${annee} AND is_deleted = 0`,
+  )
+  const rows = await pointageDb.fixEncoding(raw, 'lst_prev', 'id', ['commentaire'])
+  return rows
+    .map((r) => ({ id: num(r.id), numero: num(r.num_semaine), prevMin: num(r.prev), commentaire: txt(r.commentaire) }))
+    .sort((a, b) => a.numero - b.numero)
+}
+
+export interface InfoAnnee {
+  id: number
+  /** Signed minutes, SUBTRACTED from the balance (a carry-over of +10 h is stored as −600). */
+  infoMin: number
+  commentaire: string
+}
+
+/** The yearly adjustments of a salarié (lst_info_sal_annee, FEN_Variables). */
+export async function infosAnnee(idSalarie: number, annee: number): Promise<InfoAnnee[]> {
+  const raw = await pointageDb.query<Record<string, unknown>>(
+    `SELECT id, info, commentaire FROM lst_info_sal_annee WHERE id_salarie = ${idSalarie} AND annee = ${annee} AND is_deleted = 0`,
+  )
+  const rows = await pointageDb.fixEncoding(raw, 'lst_info_sal_annee', 'id', ['commentaire'])
+  return rows.map((r) => ({ id: num(r.id), infoMin: num(r.info), commentaire: txt(r.commentaire) })).sort((a, b) => a.id - b.id)
+}

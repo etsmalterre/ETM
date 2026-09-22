@@ -165,3 +165,65 @@ export function supprimerMessage(id: number): Promise<void> {
     await pointageDb.query(`UPDATE lst_message SET is_deleted = 1 WHERE id = ${id}`)
   })
 }
+
+// ── Semaines : la validation d'une semaine (FEN_Lissage › BTN_Valider) ──
+//
+// One lst_lissage row per (salarié, année, semaine ISO): the seven typed
+// (type, total) pairs and their sum in cumul_semaine — the figure the tablet's
+// « Semaine N » and the payroll read. HEnregistre in the legacy: created the
+// first time, UPDATED afterwards, so a validated week can be reopened.
+// Runtime order: id, id_salarie, annee, num_semaine, lundi_type, lundi_total,
+// … dimanche_type, dimanche_total, cumul_semaine, is_deleted.
+
+import { JOURS_LISSAGE } from './pointage-admin.js'
+import { lissageSemaine, type Lissage } from './pointage.js'
+
+export interface SaisieLissage {
+  /** Monday → Sunday. */
+  jours: { type: string; lisseMin: number }[]
+}
+
+async function maxIdLissage(): Promise<number> {
+  const rows = await pointageDb.query<{ m: number | null }>('SELECT MAX(id) AS m FROM lst_lissage')
+  return Number(rows[0]?.m) || 0
+}
+
+function normaliserLissage(s: SaisieLissage): { type: string; lisseMin: number }[] {
+  if (!Array.isArray(s.jours) || s.jours.length !== 7) throw new SaisieInvalide('Il faut les sept jours de la semaine.')
+  return s.jours.map((j, i) => {
+    const type = String(j.type ?? '').trim().toUpperCase()
+    if (!/^[A-Z]$/.test(type)) throw new SaisieInvalide(`Le type du ${JOURS_LISSAGE[i]} doit être une lettre.`)
+    const lisseMin = Number(j.lisseMin)
+    if (!Number.isInteger(lisseMin) || lisseMin < 0 || lisseMin > 24 * 60) {
+      throw new SaisieInvalide(`Le cumul lissé du ${JOURS_LISSAGE[i]} doit être entre 00:00 et 24:00.`)
+    }
+    return { type, lisseMin }
+  })
+}
+
+export function validerLissage(idSalarie: number, annee: number, numero: number, saisie: SaisieLissage): Promise<Lissage> {
+  return verrou.run(async () => {
+    const s = await trouverSalarieMemeSupprime(idSalarie)
+    if (!s) throw new SaisieInvalide('Salarié inconnu.')
+    if (!Number.isInteger(annee) || annee < 2000 || annee > 2100 || !Number.isInteger(numero) || numero < 1 || numero > 53) {
+      throw new SaisieInvalide('Semaine invalide.')
+    }
+    const jours = normaliserLissage(saisie)
+    const cumul = jours.reduce((t, j) => t + j.lisseMin, 0)
+    const existant = await lissageSemaine(idSalarie, annee, numero)
+    if (existant) {
+      await pointageDb.query(
+        `UPDATE lst_lissage SET ${JOURS_LISSAGE.map((j, i) => `${j}_type = '${jours[i].type}', ${j}_total = ${jours[i].lisseMin}`).join(', ')},
+         cumul_semaine = ${cumul} WHERE id = ${existant.id}`,
+      )
+    } else {
+      const id = (await maxIdLissage()) + 1
+      await pointageDb.query(
+        `INSERT INTO lst_lissage VALUES (${id}, ${idSalarie}, ${annee}, ${numero}, ${jours.map((j) => `'${j.type}', ${j.lisseMin}`).join(', ')}, ${cumul}, 0)`,
+      )
+    }
+    const relu = await lissageSemaine(idSalarie, annee, numero)
+    if (!relu || relu.cumulSemaineMin !== cumul) throw new Error(`lst_lissage: week ${annee}-S${numero} of salarié ${idSalarie} not written`)
+    return relu
+  })
+}
