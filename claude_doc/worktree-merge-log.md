@@ -10,6 +10,23 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/adresse-expe (LIVA #1179)
+**Clients › Expéditions — l'adresse de livraison reste modifiable sur un avis validé ou
+facturé** (Pierrot : l'avis est parfois créé avant de connaître l'adresse, ou le client la
+change après ; décision Vincent : libre jusqu'à ce que l'app Expéditions enregistre le départ
+physique de la marchandise). API : route dédiée `PUT /expeditions/:kind/:id/adresse` qui
+ignore `isLocked()` mais exige une adresse du client de l'avis (409 `adresse_hors_client`,
+409 `client_inconnu` sur un divers à destinataire libre) ; le `PUT` général garde son verrou.
+Sans risque comptable : `facture.IDadresse` est l'adresse de facturation, jamais relue depuis
+l'avis, et le regroupement #1117 n'a lieu qu'à la génération — seuls le BL et la demande de
+transport bougent, rendus en direct (le legacy `BTN_Modifier_adresse_livraison` était hors du
+verrou). Écran : `AdresseCard` porte un bouton « Modifier » en consultation (écriture
+immédiate, même avis facturé) à côté du « Choisir » du mode édition ; le lookup d'adresses vit
+dans la carte et ne charge qu'en édition ou à l'ouverture du sélecteur ; info-bulle sur le
+badge « Facturée ». Fumée sur la base dev (avis 11681) : verrou général 409, adresse
+étrangère 409, changement 200 puis restauration. Règle dans `CLAUDE.md` § Data semantics,
+récit dans `screen_notes.md` § 3.
+
 ## 2026-09-22 — feat/rapport-facture (LIVA #1182)
 **Rapports › Factures — le tableau des factures de l'ancienne application** (Laetitia :
 la colonne TVA lui servait toute la journée, la liste de Clients › Facturation ne peut pas
