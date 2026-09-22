@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-22 — feat/admin-pointage
+**API du menu « Pointage » de l'ERP TRM (port de l'app WinDev Admin Pointage).** Nouveau routeur
+`/api/pointage-admin` (`routes/pointage-admin.ts`), session `mps_uid` + clés TRM `view_pointage` /
+`edit_pointage` (catalogue + menu « Pointage » dans `screen-keys-trm.ts`) : horaires (liste par
+période, création / correction / suppression d'un poste — la correction suit dans la jumelle
+`lst_pointage` et le journal `mps.pointage`, décision A), salariés et messages (soft delete, login
+unique), semaines (grille `lst_lissage` de FEN_Contrôles + lissage de FEN_Lissage : plancher au quart
+d'heure, type proposé d'après le premier début, validation = création ou mise à jour), prévisionnel
+(`lst_prev` : semaine, initialisation d'une année vide, Variables `lst_info_sal_annee` saisies comme
+effet sur le solde et stockées négées), paie (repas jour M/A/E et nuit N à partir de 6 h, heures de
+nuit, semaines non validées). Règles pures testées dans `lib/pointage-admin.ts` ; écritures dans
+`lib/pointage-ecritures.ts` (postes) et `lib/pointage-admin-ecritures.ts` ; `scripts/check-pointage-admin.ts`
+sur la copie de dev. `useInRatio` n'est plus lu (ratio abandonné). Code legacy lu sur captures WinDev
+(plan `~/.claude/plans/admin-pointage.md` § 7–9).
 ## 2026-09-22 — feat/rapport-facture — colonne « Pays »
 **Rapports › Factures — colonne « Pays » après « Client »** (demande Vincent : voir le pays
 de chaque facture de la période, dans le tableau et l'export Excel). Le pays est celui de
