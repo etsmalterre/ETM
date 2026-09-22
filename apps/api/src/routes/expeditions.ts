@@ -942,6 +942,72 @@ expeditionsRouter.put('/:kind/:id', async (req: Request, res: Response) => {
   }
 })
 
+/** The client an avis belongs to: formelle through its commande, divers on
+ *  the header itself. null = no such avis, 0 = free-name recipient. */
+async function expeditionClientId(kind: Kind, id: number): Promise<number | null> {
+  if (kind === 'formelle') {
+    const rows = await query<{ IDcommande_client: number }>(
+      `SELECT IDcommande_client FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`,
+    )
+    if (rows.length === 0) return null
+    const cmdId = Number(rows[0].IDcommande_client) || 0
+    if (cmdId === 0) return 0
+    const cmd = await query<{ IDclient: number }>(`SELECT IDclient FROM commande_client WHERE IDcommande_client = ${cmdId}`)
+    return Number(cmd[0]?.IDclient) || 0
+  }
+  const rows = await query<{ IDclient: number }>(
+    `SELECT IDclient FROM expedition_divers WHERE IDexpedition_divers = ${id}`,
+  )
+  if (rows.length === 0) return null
+  return Number(rows[0].IDclient) || 0
+}
+
+const adresseBody = z.object({ IDadresse: z.number().int().positive() })
+
+/** Delivery address — the ONE header field that stays writable on a
+ *  validated / invoiced avis (LIVA #1179, user decision 2026-09-22). The
+ *  address is sometimes unknown when the avis is created early to invoice,
+ *  or the client changes it afterwards. The facture carries its own billing
+ *  address and never reads this one, and the grouping by delivery address
+ *  happens only at invoice generation (#1117), so the change rewrites
+ *  nothing in accounting: only the BL and the demande de transport move,
+ *  both rendered live. This mirrors the legacy BTN_Modifier_adresse_livraison,
+ *  which sat outside the Valider / Dévalider lock. The real boundary — goods
+ *  physically gone — will come with the expedition app; until then the
+ *  users are free. Own route on purpose: the general PUT keeps isLocked(),
+ *  so nobody widens the carve-out by accident. The address must belong to
+ *  the avis's client. */
+expeditionsRouter.put('/:kind/:id/adresse', async (req: Request, res: Response) => {
+  try {
+    const kind = parseKind(req.params.kind)
+    if (!kind) { res.status(404).json({ error: 'Not found' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = adresseBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const idAdresse = parsed.data.IDadresse
+
+    const clientId = await expeditionClientId(kind, id)
+    if (clientId === null) { res.status(404).json({ error: 'Expédition not found' }); return }
+    if (clientId === 0) {
+      res.status(409).json({ error: 'client_inconnu', message: "Cette expédition n'a pas de client enregistré — aucune adresse ne peut lui être affectée." })
+      return
+    }
+    const adr = await query<{ IDadresse: number }>(
+      `SELECT IDadresse FROM adresse WHERE IDadresse = ${idAdresse} AND IDclient = ${clientId}`,
+    )
+    if (adr.length === 0) {
+      res.status(409).json({ error: 'adresse_hors_client', message: "Cette adresse n'appartient pas au client de l'expédition." })
+      return
+    }
+    await query(`UPDATE ${TBL[kind].head} SET IDadresse = ${idAdresse} WHERE ${TBL[kind].pk} = ${id}`)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error updating expedition adresse:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 expeditionsRouter.delete('/:kind/:id', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(req.params.kind)

@@ -1033,7 +1033,7 @@ function DetailHeader({
               </h1>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {locked ? (
-                  <Badge variant="secondary" className="text-xs gap-1"><Lock className="h-3 w-3" />Facturée</Badge>
+                  <Badge variant="secondary" className="text-xs gap-1" title="Facturée — seule l'adresse de livraison reste modifiable"><Lock className="h-3 w-3" />Facturée</Badge>
                 ) : (
                   <Badge className="bg-amber-400/15 text-amber-700 border border-amber-500/30 text-xs gap-1"><Clock className="h-3 w-3" />Non facturée</Badge>
                 )}
@@ -1929,10 +1929,6 @@ function DetailSidebar({
   const { data: transporteurs } = useQuery<TransporteurLite[]>({
     queryKey: ['exp-transporteurs'], queryFn: () => apiFetch('/expeditions/lookups/transporteurs'), enabled: isEditing,
   })
-  const clientForAdr = expedition?.kind === 'divers' ? (editIDClient || expedition?.IDclient || 0) : (expedition?.IDclient ?? 0)
-  const { data: adresses } = useQuery<AdresseLookup[]>({
-    queryKey: ['exp-adresses', clientForAdr], queryFn: () => apiFetch(`/expeditions/lookups/adresses?client=${clientForAdr}`), enabled: isEditing && clientForAdr > 0,
-  })
   const { data: contacts } = useQuery<ContactLite[]>({
     queryKey: ['exp-contacts', expedition?.IDclient], queryFn: () => apiFetch(`/expeditions/lookups/contacts?client=${expedition?.IDclient}`),
     enabled: isEditing && expedition?.kind === 'formelle' && !!expedition?.IDclient,
@@ -1981,7 +1977,7 @@ function DetailSidebar({
           {activeTab === 'info' ? (
             <InfoTab
               expedition={expedition} isEditing={isEditing}
-              transporteurs={transporteurs ?? []} adresses={adresses ?? []} contacts={contacts ?? []} clients={clients ?? []}
+              transporteurs={transporteurs ?? []} contacts={contacts ?? []} clients={clients ?? []}
               editDate={editDate} onEditDateChange={onEditDateChange}
               editIDTransporteur={editIDTransporteur} onEditIDTransporteurChange={onEditIDTransporteurChange}
               editIDAdresse={editIDAdresse} onEditIDAdresseChange={onEditIDAdresseChange}
@@ -2038,7 +2034,7 @@ function FacturesTab({ factures }: { factures: FactureRef[] }) {
 }
 
 function InfoTab({
-  expedition, isEditing, transporteurs, adresses, contacts, clients,
+  expedition, isEditing, transporteurs, contacts, clients,
   editDate, onEditDateChange,
   editIDTransporteur, onEditIDTransporteurChange,
   editIDAdresse, onEditIDAdresseChange,
@@ -2052,7 +2048,6 @@ function InfoTab({
   expedition: ExpeditionDetail
   isEditing: boolean
   transporteurs: TransporteurLite[]
-  adresses: AdresseLookup[]
   contacts: ContactLite[]
   clients: ClientLite[]
   editDate: string; onEditDateChange: (v: string) => void
@@ -2115,9 +2110,9 @@ function InfoTab({
       </div>
 
       <AdresseCard
-        adresse={expedition.adresse_livraison}
+        expedition={expedition}
+        clientId={isFormelle ? expedition.IDclient : (editIDClient || expedition.IDclient || 0)}
         isEditing={isEditing}
-        options={adresses}
         selectedId={editIDAdresse}
         onSelect={onEditIDAdresseChange}
       />
@@ -2142,27 +2137,75 @@ function InfoTab({
 
 // ── Address card + picker (mirror ClientsFacturation) ──
 
+/** Two ways to change the delivery address:
+ *  - edit mode: « Choisir » stages the pick in the header draft, saved with
+ *    the rest by Enregistrer (and blocked by the invoice lock like every
+ *    other field);
+ *  - view mode: « Modifier » writes it at once through its own route, which
+ *    ignores the invoice lock — the legacy's dedicated button (#1179). The
+ *    address is the only field a validated / invoiced avis still accepts;
+ *    the facture never reads it (see the route comment). */
 function AdresseCard({
-  adresse, isEditing, options, selectedId, onSelect,
+  expedition, clientId, isEditing, selectedId, onSelect,
 }: {
-  adresse: AdresseLite | null
+  expedition: ExpeditionDetail
+  clientId: number
   isEditing: boolean
-  options: AdresseLookup[]
   selectedId: number
   onSelect: (id: number) => void
 }) {
+  const queryClient = useQueryClient()
   const [pickerOpen, setPickerOpen] = useState(false)
-  const displayAdresse: AdresseLite | null = isEditing ? (options.find((o) => o.IDadresse === selectedId) ?? adresse) : adresse
+  const [error, setError] = useState<string | null>(null)
+  const adresse = expedition.adresse_livraison
+  // Lookup only when needed — edit mode, or the view-mode picker open.
+  const { data: options } = useQuery<AdresseLookup[]>({
+    queryKey: ['exp-adresses', clientId],
+    queryFn: () => apiFetch(`/expeditions/lookups/adresses?client=${clientId}`),
+    enabled: (isEditing || pickerOpen) && clientId > 0,
+  })
+  const changeMut = useMutation({
+    mutationFn: (id: number) => apiFetch(`/expeditions/${expedition.kind}/${expedition.id}/adresse`, {
+      method: 'PUT', body: JSON.stringify({ IDadresse: id }),
+    }),
+    onSuccess: () => {
+      setError(null)
+      queryClient.invalidateQueries({ queryKey: ['expedition'] })
+      queryClient.invalidateQueries({ queryKey: ['expeditions'] })
+    },
+    // apiFetch carries only the status; 409 = adresse_hors_client (the
+    // picker lists the client's own addresses, so it means a stale list).
+    onError: (err: Error & { status?: number }) => setError(
+      err.status === 409 ? "Cette adresse n'appartient pas au client de l'expédition." : "Impossible de modifier l'adresse.",
+    ),
+  })
+  const opts = options ?? []
+  const currentId = isEditing ? selectedId : expedition.IDadresse
+  const displayAdresse: AdresseLite | null = isEditing ? (opts.find((o) => o.IDadresse === selectedId) ?? adresse) : adresse
+  const handlePick = (id: number) => {
+    setPickerOpen(false)
+    if (isEditing) onSelect(id)
+    else if (id !== expedition.IDadresse) changeMut.mutate(id)
+  }
   return (
     <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
       <div className="flex items-center justify-between gap-2 mb-2">
         <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5" />Adresse de livraison</p>
-        {isEditing && (
+        {isEditing ? (
           <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] gap-1" onClick={() => setPickerOpen(true)}>
             <Search className="h-3 w-3" />Choisir
           </Button>
+        ) : clientId > 0 && (
+          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] gap-1" disabled={changeMut.isPending}
+            title={expedition.locked ? "Modifiable même sur une expédition facturée : la facture ne reprend pas l'adresse de livraison" : "Modifier l'adresse de livraison"}
+            onClick={() => setPickerOpen(true)}>
+            {changeMut.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Pencil className="h-3 w-3" />}Modifier
+          </Button>
         )}
       </div>
+      {error && !isEditing && (
+        <p className="text-xs text-destructive flex items-center gap-1 mb-2"><AlertCircle className="h-3 w-3 flex-shrink-0" />{error}</p>
+      )}
       {displayAdresse ? (
         <div className="text-xs text-muted-foreground space-y-0.5">
           {displayAdresse.nom && <p className="font-medium text-foreground">{displayAdresse.nom}</p>}
@@ -2176,7 +2219,7 @@ function AdresseCard({
         <p className="text-sm text-muted-foreground italic">Aucune adresse</p>
       )}
       <AdressePickerDialog open={pickerOpen} onClose={() => setPickerOpen(false)}
-        options={options} selectedId={selectedId} onSelect={(id) => { onSelect(id); setPickerOpen(false) }} />
+        options={opts} selectedId={currentId} onSelect={handlePick} />
     </div>
   )
 }
