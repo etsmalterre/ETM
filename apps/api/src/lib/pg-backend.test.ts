@@ -4,14 +4,14 @@ import { translateSql, keyResolver, pgDateToHfsql, pgTimestampToHfsql } from './
 describe('translateSql', () => {
   it('moves TOP n to a LIMIT at the end of its SELECT', () => {
     expect(translateSql('SELECT TOP 5 IDclient, nom FROM client ORDER BY nom'))
-      .toBe('SELECT IDclient, nom FROM client ORDER BY nom LIMIT 5')
+      .toBe('SELECT IDclient, nom FROM client ORDER BY nom NULLS FIRST LIMIT 5')
     expect(translateSql('SELECT DISTINCT TOP 10 nom FROM client'))
       .toBe('SELECT DISTINCT nom FROM client LIMIT 10')
   })
 
   it('puts a nested TOP inside its own parentheses', () => {
     expect(translateSql('SELECT * FROM a WHERE id IN (SELECT TOP 3 id FROM b ORDER BY id DESC) AND x = 1'))
-      .toBe('SELECT * FROM a WHERE id IN (SELECT id FROM b ORDER BY id DESC LIMIT 3) AND x = 1')
+      .toBe('SELECT * FROM a WHERE id IN (SELECT id FROM b ORDER BY id DESC NULLS LAST LIMIT 3) AND x = 1')
   })
 
   it('drops CONVERT(… USING …): PostgreSQL text is already UTF-8', () => {
@@ -32,6 +32,26 @@ describe('translateSql', () => {
   it('leaves quotes, TOP and CONVERT inside string literals alone', () => {
     const s = "SELECT nom FROM client WHERE nom = 'TOP 5 l''usine CONVERT(x USING y)'"
     expect(translateSql(s)).toBe(s)
+  })
+})
+
+describe('ORDER BY: NULL is the smallest value, as in HFSQL', () => {
+  it('places NULLs on every item, direction written or not', () => {
+    expect(translateSql('SELECT * FROM prospect ORDER BY date DESC, IDprospect DESC'))
+      .toBe('SELECT * FROM prospect ORDER BY date DESC NULLS LAST, IDprospect DESC NULLS LAST')
+    expect(translateSql('SELECT * FROM a ORDER BY nom, id ASC'))
+      .toBe('SELECT * FROM a ORDER BY nom NULLS FIRST, id ASC NULLS FIRST')
+  })
+
+  it('closes the clause before LIMIT and inside parentheses, not inside function calls', () => {
+    expect(translateSql('SELECT * FROM a ORDER BY COALESCE(x, y) DESC LIMIT 10'))
+      .toBe('SELECT * FROM a ORDER BY COALESCE(x, y) DESC NULLS LAST LIMIT 10')
+    expect(translateSql('SELECT (SELECT TOP 1 d FROM b ORDER BY d) AS last FROM a'))
+      .toBe('SELECT (SELECT d FROM b ORDER BY d NULLS FIRST LIMIT 1) AS last FROM a')
+  })
+
+  it('keeps an explicit NULLS clause', () => {
+    expect(translateSql('SELECT * FROM a ORDER BY d DESC NULLS FIRST')).toBe('SELECT * FROM a ORDER BY d DESC NULLS FIRST')
   })
 })
 
