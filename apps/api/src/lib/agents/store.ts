@@ -67,9 +67,11 @@ export type RunStatut =
   | 'deja_importe' // every piece already in data_bl_tricotbot with the same values
   | 'ignore' // nothing to read (no PDF attachment)
   | 'erreur' // an exception (API down, HFSQL…)
-  // Superviseur (a daily run, not a mail):
-  | 'mail_envoye' // findings worth a mail, and it went out
-  | 'rien_a_signaler' // nothing new worth a mail
+  // Superviseur (a nightly report read in Agents IA):
+  | 'points_a_voir' // the report lists at least one point
+  | 'rien_a_signaler' // nothing to look at
+  // Superviseur until 2026-09-23, when it still mailed its report — history only:
+  | 'mail_envoye'
 
 export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel'
 
@@ -80,6 +82,24 @@ export interface RunFichier {
   taille: number
 }
 
+/** How a user scored a run, or one point of a Superviseur report. « réussite »
+ *  never needs a comment; « partielle » and « échec » do — that comment is what
+ *  the next prompt version is written from. What an échec does beyond being
+ *  recorded is the agent's own business (AgentDef.echec in catalog.ts). */
+export type Note = 'reussite' | 'partielle' | 'echec'
+export const NOTES: readonly Note[] = ['reussite', 'partielle', 'echec']
+
+export interface Evaluation {
+  note: Note
+  commentaire: string
+  par: Auteur
+  le: string
+  /** What an échec removed from ETM, in French (BL: the pre-filled pieces). */
+  retrait?: string | null
+}
+
+/** Before 2026-09-23: thumbs up / down (BL) or « échouée » (Superviseur).
+ *  Read as an Evaluation by normaliserRun(), never written any more. */
 export interface RunVerdict {
   valeur: 'correct' | 'incorrect'
   commentaire: string
@@ -102,13 +122,35 @@ export interface AgentRun {
   version: number
   model: string
   statut: RunStatut
-  /** Free-form per agent (for BL MATEL: OCR text, extraction, resolution, checks, write). */
+  /** Free-form per agent (for BL Ennoblisseur: OCR text, extraction, resolution, checks, write). */
   resultat: Record<string, unknown>
   resume: string
   coutUsd: number
   dureeMs: number
   erreur?: string
+  /** The run's score. Absent = « à évaluer ». */
+  evaluation?: Evaluation | null
+  /** Superviseur: the score of each point of the report, by Constat.cle. */
+  avisPoints?: Record<string, Evaluation>
+  /** Legacy — see RunVerdict. */
   verdict?: RunVerdict | null
+}
+
+/** A stored run in today's shape: a legacy verdict becomes an evaluation
+ *  (correct → réussite, incorrect → échec — the échec removed nothing then). */
+export function normaliserRun(r: AgentRun): AgentRun {
+  if (!r.verdict) return r
+  const { verdict, ...rest } = r
+  return {
+    ...rest,
+    evaluation: rest.evaluation ?? {
+      note: verdict.valeur === 'correct' ? 'reussite' : 'echec',
+      commentaire: verdict.commentaire,
+      par: verdict.par,
+      le: verdict.le,
+      retrait: null,
+    },
+  }
 }
 
 // ── Plumbing ─────────────────────────────────────────────
@@ -139,6 +181,42 @@ async function writeJson(file: string, data: unknown): Promise<void> {
 
 const runsFile = (slug: string) => path.join(AGENTS_DIR, `runs-${slug.replace(/[^a-z0-9-]/g, '')}.json`)
 
+// ── Renamed slugs ────────────────────────────────────────
+
+/** Agents renamed after going live (old slug → new). The state entry, the
+ *  runs file and each run's `slug` move once, before the store is first read —
+ *  the runs carry the Gmail ids already handled, so losing them would make the
+ *  agent re-read its mailbox. Keep an entry until every data/ has moved. */
+const SLUGS_RENOMMES: Record<string, string> = {
+  'bl-matel': 'bl-ennoblisseur', // « BL MATEL » → « BL Ennoblisseur », 2026-09-23
+}
+
+let migration: Promise<void> | null = null
+/** Awaited by every entry point, OUTSIDE `exclusive()` (it queues through it). */
+function migrerSlugs(): Promise<void> {
+  migration ??= exclusive(async () => {
+    const etat = await readJson<Record<string, AgentState>>(STATE_FILE, {})
+    let etatModifie = false
+    for (const [ancien, nouveau] of Object.entries(SLUGS_RENOMMES)) {
+      const runs = await readJson<AgentRun[] | null>(runsFile(ancien), null)
+      if (runs && (await readJson<AgentRun[] | null>(runsFile(nouveau), null)) === null) {
+        for (const r of runs) r.slug = nouveau
+        await writeJson(runsFile(nouveau), runs)
+        await fs.rm(runsFile(ancien))
+      }
+      if (etat[ancien] && !etat[nouveau]) {
+        etat[nouveau] = etat[ancien]
+        delete etat[ancien]
+        etatModifie = true
+      }
+    }
+    if (etatModifie) await writeJson(STATE_FILE, etat)
+  }).catch((err) => {
+    console.error('[agents] slug migration failed:', err)
+  })
+  return migration
+}
+
 // ── State ────────────────────────────────────────────────
 
 export interface VersionInitiale {
@@ -149,6 +227,7 @@ export interface VersionInitiale {
 
 /** State of an agent, seeded (mode off, version 1) the first time it is read. */
 export async function lireEtat(slug: string, initiale: VersionInitiale): Promise<AgentState> {
+  await migrerSlugs()
   const all = await readJson<Record<string, AgentState>>(STATE_FILE, {})
   return all[slug] ?? {
     mode: 'off',
@@ -161,6 +240,7 @@ export async function lireEtat(slug: string, initiale: VersionInitiale): Promise
 }
 
 async function modifierEtat(slug: string, initiale: VersionInitiale, fn: (s: AgentState) => void): Promise<AgentState> {
+  await migrerSlugs()
   return exclusive(async () => {
     const all = await readJson<Record<string, AgentState>>(STATE_FILE, {})
     const s = all[slug] ?? (await lireEtat(slug, initiale))
@@ -216,14 +296,16 @@ export function activerVersion(slug: string, initiale: VersionInitiale, version:
 export const nouvelIdRun = () => `${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
 
 export async function lireRuns(slug: string): Promise<AgentRun[]> {
-  return readJson<AgentRun[]>(runsFile(slug), [])
+  await migrerSlugs()
+  return (await readJson<AgentRun[]>(runsFile(slug), [])).map(normaliserRun)
 }
 
 export async function lireRun(slug: string, id: string): Promise<AgentRun | null> {
   return (await lireRuns(slug)).find((r) => r.id === id) ?? null
 }
 
-export function ajouterRun(run: AgentRun): Promise<void> {
+export async function ajouterRun(run: AgentRun): Promise<void> {
+  await migrerSlugs()
   return exclusive(async () => {
     const runs = await readJson<AgentRun[]>(runsFile(run.slug), [])
     runs.push(run)
@@ -231,9 +313,11 @@ export function ajouterRun(run: AgentRun): Promise<void> {
   })
 }
 
-export function modifierRun(slug: string, id: string, fn: (r: AgentRun) => void): Promise<AgentRun | null> {
+export async function modifierRun(slug: string, id: string, fn: (r: AgentRun) => void): Promise<AgentRun | null> {
+  await migrerSlugs()
   return exclusive(async () => {
-    const runs = await readJson<AgentRun[]>(runsFile(slug), [])
+    // Normalised on the way through: the first write on a legacy run drops its verdict.
+    const runs = (await readJson<AgentRun[]>(runsFile(slug), [])).map(normaliserRun)
     const r = runs.find((x) => x.id === id)
     if (!r) return null
     fn(r)

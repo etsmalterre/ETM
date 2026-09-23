@@ -1,11 +1,11 @@
-// Agent « BL MATEL » — reads the delivery notes (bordereaux de livraison) the
+// Agent « BL Ennoblisseur » — reads the delivery notes (bordereaux de livraison) the
 // dyer MATEL mails to contact@ and feeds the réception of Sous-traitants ›
 // Commandes. Replaces the n8n workflow « BL Processing (Gemini) » + the WebDev
 // REST service localapi.malterre (load_bl_doc / load_bl_data).
 //
 // Pipeline per mail: PDF attachments → Mistral OCR → mistral-small with a
 // strict JSON schema → normalisation + checks (bl-extraction.ts) → order line
-// and pieces resolved against HFSQL (bl-matel-db.ts) → written when EVERY
+// and pieces resolved against HFSQL (bl-ennoblisseur-db.ts) → written when EVERY
 // blocking check passes and the agent is « actif »; otherwise the run is
 // « à vérifier » and the subscribers of notif_agent_bl are mailed.
 //
@@ -26,7 +26,7 @@ import {
   type BlExtraction,
   type Controle,
 } from './bl-extraction.js'
-import { cleDeLigne, ecrireBl, resoudreBl, type Resolution } from './bl-matel-db.js'
+import { cleDeLigne, ecrireBl, resoudreBl, retirerPieces, type Ecriture, type Resolution } from './bl-ennoblisseur-db.js'
 import {
   ajouterRun,
   enregistrerFichier,
@@ -42,17 +42,17 @@ import {
   type VersionInitiale,
 } from './store.js'
 
-export const BL_MATEL_SLUG = 'bl-matel'
+export const BL_ENNOBLISSEUR_SLUG = 'bl-ennoblisseur'
 
-export const BL_MATEL_VERSION_INITIALE: VersionInitiale = {
+export const BL_ENNOBLISSEUR_VERSION_INITIALE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: BL_PROMPT_V1,
   note: 'Version initiale — benchmark du 22/09/2026 : 119/120 BL lus exactement (OCR Mistral + Mistral Small).',
 }
 
 /** The mailbox n8n polled, and the sender it filtered on. */
-export const BL_MATEL_BOITE = process.env.AGENT_BL_BOITE?.trim() || 'contact@etsmalterre.com'
-export const BL_MATEL_EXPEDITEURS = (process.env.AGENT_BL_EXPEDITEURS?.trim() || 'mct.celine@mateltextiles.fr')
+export const BL_ENNOBLISSEUR_BOITE = process.env.AGENT_BL_BOITE?.trim() || 'contact@etsmalterre.com'
+export const BL_ENNOBLISSEUR_EXPEDITEURS = (process.env.AGENT_BL_EXPEDITEURS?.trim() || 'mct.celine@mateltextiles.fr')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
@@ -70,13 +70,13 @@ interface Lecture {
   coutUsd: number
 }
 
-/** What a BL MATEL run stores in `resultat` (read by the web screen). */
+/** What a BL Ennoblisseur run stores in `resultat` (read by the web screen). */
 export interface ResultatBl {
   pages: Array<{ nom: string; ocr: string | null; erreur: string | null }>
   extraction: BlExtraction | null
   resolution: Omit<Resolution, 'controles'> | null
   controles: Controle[]
-  ecriture: { gedId: number | null; lignesEcrites: number } | null
+  ecriture: Ecriture | null
 }
 
 const jourParisYmd = () =>
@@ -121,7 +121,7 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
 
   const base = (): Omit<AgentRun, 'statut' | 'resultat' | 'resume' | 'fichiers' | 'coutUsd'> => ({
     id: nouvelIdRun(),
-    slug: BL_MATEL_SLUG,
+    slug: BL_ENNOBLISSEUR_SLUG,
     createdAt: new Date().toISOString(),
     source: ctx.source,
     mode: ctx.mode,
@@ -218,6 +218,23 @@ function resumer(e: BlExtraction, statut: RunStatut, ecriture: ResultatBl['ecrit
   }
 }
 
+// ── « Échec » ────────────────────────────────────────────
+
+/** What an « échec » does to this run: removes the pieces it wrote for the
+ *  réception (the PDF stays). Returns the French line stored on the evaluation
+ *  and mutates the run's `resultat.ecriture.retire`, or null when there is
+ *  nothing to remove (essai, blocked, already removed). */
+export async function retirerEcritures(run: AgentRun): Promise<string | null> {
+  const res = run.resultat as unknown as ResultatBl
+  const ec = res.ecriture
+  if (run.statut !== 'ecrit' || !ec || !res.extraction || !res.resolution || ec.retire) return null
+  const n = await retirerPieces(res.extraction, res.resolution, ec)
+  ec.retire = { le: new Date().toISOString(), lignes: n }
+  return n > 0
+    ? `${n} pièce${n > 1 ? 's' : ''} retirée${n > 1 ? 's' : ''} du pré-remplissage de la réception (le PDF reste dans les documents de la commande).`
+    : 'Aucune pièce à retirer : elles n’étaient plus dans les données de réception.'
+}
+
 // ── Mailbox polling ──────────────────────────────────────
 
 const estPdf = (p: { nom: string; mimeType: string }) => p.mimeType === 'application/pdf' || /\.pdf$/i.test(p.nom)
@@ -226,18 +243,18 @@ const estPdf = (p: { nom: string; mimeType: string }) => p.mimeType === 'applica
 export async function sonderBoite(state: AgentState, version: AgentVersion, lancePar: Auteur | null = null): Promise<AgentRun[]> {
   if (state.mode === 'off' || !state.startedAt) return []
   const apres = Math.floor(new Date(state.startedAt).getTime() / 1000)
-  const q = `from:(${BL_MATEL_EXPEDITEURS.join(' OR ')}) has:attachment after:${apres}`
-  const ids = await listerMessages(BL_MATEL_BOITE, q, 50)
-  const deja = await messagesTraites(BL_MATEL_SLUG)
+  const q = `from:(${BL_ENNOBLISSEUR_EXPEDITEURS.join(' OR ')}) has:attachment after:${apres}`
+  const ids = await listerMessages(BL_ENNOBLISSEUR_BOITE, q, 50)
+  const deja = await messagesTraites(BL_ENNOBLISSEUR_SLUG)
   const nouveaux = ids.filter((id) => !deja.has(id)).reverse() // oldest first
   const tous: AgentRun[] = []
   for (const id of nouveaux) {
-    const m = await lireMessage(BL_MATEL_BOITE, id)
+    const m = await lireMessage(BL_ENNOBLISSEUR_BOITE, id)
     const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
     const pjs = m.piecesJointes.filter(estPdf)
     if (pjs.length === 0) {
       const run: AgentRun = {
-        id: nouvelIdRun(), slug: BL_MATEL_SLUG, createdAt: new Date().toISOString(), source: 'gmail', mode: state.mode,
+        id: nouvelIdRun(), slug: BL_ENNOBLISSEUR_SLUG, createdAt: new Date().toISOString(), source: 'gmail', mode: state.mode,
         lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
         resultat: {}, resume: `Aucun PDF dans « ${m.sujet} »`, coutUsd: 0, dureeMs: 0,
       }
@@ -245,7 +262,7 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
       tous.push(run)
       continue
     }
-    const pdfs = await Promise.all(pjs.map(async (p) => ({ nom: p.nom, contenu: await lirePieceJointe(BL_MATEL_BOITE, m.id, p.attachmentId) })))
+    const pdfs = await Promise.all(pjs.map(async (p) => ({ nom: p.nom, contenu: await lirePieceJointe(BL_ENNOBLISSEUR_BOITE, m.id, p.attachmentId) })))
     const runs = await traiterPdfs(pdfs, { mode: state.mode, version, source: 'gmail', message, lancePar })
     tous.push(...runs)
     if (state.mode === 'actif') await etiqueter(m.id, runs)
@@ -259,10 +276,10 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
 async function etiqueter(messageId: string, runs: AgentRun[]): Promise<void> {
   try {
     const ok = runs.every((r) => r.statut === 'ecrit' || r.statut === 'deja_importe')
-    const label = await assurerLibelle(BL_MATEL_BOITE, ok ? LIBELLE_TRAITE : LIBELLE_A_VERIFIER)
-    await ajouterLibelle(BL_MATEL_BOITE, messageId, label)
+    const label = await assurerLibelle(BL_ENNOBLISSEUR_BOITE, ok ? LIBELLE_TRAITE : LIBELLE_A_VERIFIER)
+    await ajouterLibelle(BL_ENNOBLISSEUR_BOITE, messageId, label)
   } catch (err) {
-    console.error(`[agents] ${BL_MATEL_SLUG}: label failed for ${messageId}:`, err)
+    console.error(`[agents] ${BL_ENNOBLISSEUR_SLUG}: label failed for ${messageId}:`, err)
   }
 }
 
@@ -274,18 +291,18 @@ export async function prevenir(runs: AgentRun[]): Promise<void> {
   for (const r of aVoir) {
     const res = r.resultat as unknown as ResultatBl
     await notify('notif_agent_bl', {
-      subject: `BL MATEL à vérifier${res.extraction?.numero_bordereau ? ` — ${res.extraction.numero_bordereau}` : ''}`,
+      subject: `BL Ennoblisseur à vérifier${res.extraction?.numero_bordereau ? ` — ${res.extraction.numero_bordereau}` : ''}`,
       content: {
-        title: r.statut === 'erreur' ? 'BL MATEL : lecture en erreur' : 'BL MATEL à vérifier',
+        title: r.statut === 'erreur' ? 'BL Ennoblisseur : lecture en erreur' : 'BL Ennoblisseur à vérifier',
         tone: 'alert',
-        intro: 'L’agent « BL MATEL » n’a rien enregistré pour ce bordereau : une vérification est nécessaire avant la réception.',
+        intro: 'L’agent « BL Ennoblisseur » n’a rien enregistré pour ce bordereau : une vérification est nécessaire avant la réception.',
         rows: [
           { label: 'Bordereau', value: res.extraction?.numero_bordereau || '—' },
           { label: 'Commande', value: res.extraction?.numero_commande || '—' },
           { label: 'Mail', value: r.message ? `${r.message.sujet} (${r.message.de})` : '—' },
           { label: 'Motif', value: r.erreur ?? res.controles?.filter((c) => c.gravite === 'bloquant').map((c) => c.message).join(' ') ?? '—' },
         ],
-        callout: `Voir l’exécution dans ETM : ${base}/agents-ia/agents?agent=${BL_MATEL_SLUG}&run=${r.id}`,
+        callout: `Voir l’exécution dans ETM : ${base}/agents-ia/agents?agent=${BL_ENNOBLISSEUR_SLUG}&run=${r.id}`,
       },
     })
   }

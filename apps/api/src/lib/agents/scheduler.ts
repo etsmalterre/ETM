@@ -10,7 +10,7 @@
 // real mailbox, so keep the agents in « essai » there.
 //
 // One minute tick for every agent, each on its own trigger (catalog.ts):
-//   - `releve`: polled every `intervalleMs` (BL MATEL, 2 min);
+//   - `releve`: polled every `intervalleMs` (BL Ennoblisseur, 2 min);
 //   - `quotidien`: once a day at `heure` (Paris) on `jours`; the day is written
 //     in state.json BEFORE the run (at most once a day even if the process dies
 //     mid-run; after a restart later the same day it catches up).
@@ -19,24 +19,40 @@
 // same agent never overlap (they would process the same mail twice).
 
 import { AGENTS, agentDef, type Declenchement } from './catalog.js'
-import { lireEtat, marquerPlanification, versionActive, type AgentRun, type Auteur } from './store.js'
+import { lireEtat, marquerPlanification, nouvelIdRun, versionActive, type AgentRun, type Auteur } from './store.js'
 import { gmailLectureErreur } from '../gmail-reader.js'
 import { jourParis, msHeureParis, partiesParis } from '../pointage-etat.js'
 
 const TICK_MS = 60_000
 
+/** A manual launch (« Relever / Lancer maintenant »). The route answers at once
+ *  and the screen polls the agent until `fin` is set: the Superviseur runs past
+ *  nginx's 60 s proxy timeout (504 on 2026-09-23 for a 63 s run, whose result
+ *  only showed up on the next refresh). */
+export interface Lancement {
+  id: string
+  debut: string
+  fin: string | null
+  runs: Array<Pick<AgentRun, 'id' | 'statut' | 'resume'>>
+  erreur: string | null
+}
+
 export interface EtatSondage {
   dernierSondage: string | null
   dernierSucces: string | null
   derniereErreur: string | null
+  /** In memory: gone after an API restart (the screen then says so). */
+  dernierLancement: Lancement | null
   enCours: boolean
 }
 
 const etats = new Map<string, EtatSondage>()
 const enCours = new Set<string>()
 
+const etatVide = (): EtatSondage => ({ dernierSondage: null, dernierSucces: null, derniereErreur: null, dernierLancement: null, enCours: false })
+
 export function etatSondage(slug: string): EtatSondage {
-  return { ...(etats.get(slug) ?? { dernierSondage: null, dernierSucces: null, derniereErreur: null }), enCours: enCours.has(slug) }
+  return { ...(etats.get(slug) ?? etatVide()), enCours: enCours.has(slug) }
 }
 
 export class SondageEnCoursError extends Error {
@@ -51,7 +67,7 @@ export async function sonder(slug: string, par: Auteur | null): Promise<AgentRun
   if (!def) throw new Error(`agent inconnu : ${slug}`)
   if (enCours.has(slug)) throw new SondageEnCoursError()
   enCours.add(slug)
-  const e: EtatSondage = etats.get(slug) ?? { dernierSondage: null, dernierSucces: null, derniereErreur: null, enCours: false }
+  const e: EtatSondage = etats.get(slug) ?? etatVide()
   e.dernierSondage = new Date().toISOString()
   etats.set(slug, e)
   try {
@@ -67,6 +83,32 @@ export async function sonder(slug: string, par: Auteur | null): Promise<AgentRun
   } finally {
     enCours.delete(slug)
   }
+}
+
+/** Start one agent now in the background and return at once — the outcome
+ *  lands in `etatSondage(slug).dernierLancement`. Throws SondageEnCoursError
+ *  (synchronously) when already running. */
+export function lancerSondage(slug: string, par: Auteur): Lancement {
+  if (!agentDef(slug)) throw new Error(`agent inconnu : ${slug}`)
+  if (enCours.has(slug)) throw new SondageEnCoursError()
+  const e = etats.get(slug) ?? etatVide()
+  etats.set(slug, e)
+  const l: Lancement = { id: nouvelIdRun(), debut: new Date().toISOString(), fin: null, runs: [], erreur: null }
+  e.dernierLancement = l
+  sonder(slug, par)
+    .then(
+      (runs) => {
+        l.runs = runs.map((r) => ({ id: r.id, statut: r.statut, resume: r.resume }))
+      },
+      (err) => {
+        l.erreur = gmailLectureErreur(err)
+        console.error(`[agents] ${slug}: manual launch failed:`, l.erreur)
+      },
+    )
+    .then(() => {
+      l.fin = new Date().toISOString()
+    })
+  return l
 }
 
 /** Is a daily agent due at `nowMs` (Paris), given the day of its last scheduled run? */

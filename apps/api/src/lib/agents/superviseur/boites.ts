@@ -1,7 +1,7 @@
 // Agent « Superviseur » — READ-ONLY access to the factory mailboxes.
 //
 // ⚠️ Scope `gmail.readonly`, own client cache — never the `gmail.modify`
-// client of lib/gmail-reader.ts (BL MATEL's, which labels mail). The
+// client of lib/gmail-reader.ts (BL Ennoblisseur's, which labels mail). The
 // Superviseur reads people's own mailboxes; the token it holds must not be
 // able to change them. Needs gmail.readonly authorised for the service
 // account's client ID in Google Admin (Sécurité › Contrôle des API ›

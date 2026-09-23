@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { comparer, dedoublonner, doitEnvoyer, memoireVide, type Memoire } from './constats.js'
-import { construireMail } from './email.js'
+import { comparer, dedoublonner, memoireVide, type Memoire } from './constats.js'
+import { appliquerAvis, type IndexAvis } from './avis.js'
 import { quotidienDu, prochainQuotidien } from '../scheduler.js'
 import type { Constat, Gravite } from './types.js'
 
@@ -68,26 +68,31 @@ describe('dedoublonner', () => {
   })
 })
 
-describe('doitEnvoyer', () => {
-  it('mails only on something new that is not mere info', () => {
-    const m = comparer(memoireVide(), [c('1')], J1).memoire
-    expect(doitEnvoyer(comparer(m, [c('1')], J2).constats)).toBe(false) // nothing new
-    expect(doitEnvoyer(comparer(m, [c('1'), c('2', 'info')], J2).constats)).toBe(false) // new but info
-    expect(doitEnvoyer(comparer(m, [c('1'), c('3')], J2).constats)).toBe(true)
-    expect(doitEnvoyer(comparer(m, [c('1', 'urgent')], J2).constats)).toBe(true) // aggravated
-  })
-})
+describe('appliquerAvis', () => {
+  const par = { id: 7, nom: 'Isabelle' }
+  const avis = (note: 'reussite' | 'partielle' | 'echec', commentaire = ''): IndexAvis[string] =>
+    ({ note, commentaire, par, le: J1, runId: 'r1', titre: 't' })
 
-describe('construireMail', () => {
-  it('counts only the new points in the subject and leaves info out', () => {
-    const m = comparer(memoireVide(), [c('old')], J1).memoire
-    const r = comparer(m, [c('old'), c('n1', 'urgent'), c('n2'), c('i', 'info')], J2)
-    const mail = construireMail(r.constats, 0, Date.parse(J2), '/agents-ia/agents?agent=superviseur&run=x')
-    expect(mail.sujet).toMatch(/^Superviseur — 2 points à voir/)
-    const text = mail.contenu.sections!.map((s) => s.text).join('\n')
-    expect(text).toContain('URGENT')
-    expect(text).toContain('TOUJOURS OUVERT')
-    expect(text).not.toContain('Commande i ')
+  it('sets aside the points scored « échec » and keeps the others, with their score', () => {
+    const r = comparer(memoireVide(), [c('1'), c('2'), c('3'), c('4')], J2)
+    const { listes, ecartes } = appliquerAvis(r.constats, {
+      'test:1': avis('echec', 'Déjà livré, fausse alerte'),
+      'test:2': avis('partielle', 'Bon point, mauvaise quantité'),
+      'test:3': avis('reussite'),
+    })
+    expect(ecartes.map((x) => x.cle)).toEqual(['test:1'])
+    expect(ecartes[0].avis?.commentaire).toBe('Déjà livré, fausse alerte')
+    expect(listes.map((x) => [x.cle, x.avis?.note ?? null])).toEqual([
+      ['test:2', 'partielle'],
+      ['test:3', 'reussite'],
+      ['test:4', null],
+    ])
+  })
+
+  it('never carries the bookkeeping fields onto the report', () => {
+    const r = comparer(memoireVide(), [c('1')], J2)
+    const { listes } = appliquerAvis(r.constats, { 'test:1': avis('reussite') })
+    expect(listes[0].avis).toEqual({ note: 'reussite', commentaire: '', par, le: J1 })
   })
 })
 

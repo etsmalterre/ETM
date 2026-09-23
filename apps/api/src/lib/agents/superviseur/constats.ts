@@ -1,6 +1,6 @@
 // Agent « Superviseur » — the findings memory.
 //
-// Without it the 19:00 mail would repeat the same forty lines every evening
+// Without it the morning report would repeat the same forty lines every day
 // and be ignored within a week. A finding seen yesterday is « toujours ouvert »
 // (one compact line), not a new alert; a finding whose gravity rose is
 // « aggravé » and counts like a new one; a finding no check returns any more
@@ -8,14 +8,14 @@
 // not a problem solved.
 //
 // Only the scheduled run updates the memory (superviseur.ts): a manual
-// « Lancer maintenant » at 15:00 must not swallow what the 19:00 mail says.
+// « Lancer maintenant » at 15:00 must not turn tomorrow's new points into old ones.
 //
 // Stored in data/agents/superviseur-constats.json (gitignored, next to the
 // running API) until the PostgreSQL cutover, like the rest of lib/agents/.
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { AGENTS_DIR } from '../store.js'
+import { AGENTS_DIR, type Evaluation } from '../store.js'
 import { GRAVITE_RANG, type Constat } from './types.js'
 
 export interface ConstatOuvert {
@@ -36,6 +36,8 @@ export type EtatConstat = 'nouveau' | 'aggrave' | 'ouvert'
 export interface ConstatRun extends Constat {
   etat: EtatConstat
   depuis: string
+  /** The score someone gave this finding on an earlier report (avis.ts). */
+  avis?: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'>
 }
 
 export const memoireVide = (): Memoire => ({ ouverts: {}, majLe: null })
@@ -87,11 +89,6 @@ export function trier(cs: ConstatRun[]): ConstatRun[] {
       a.depuis.localeCompare(b.depuis) ||
       a.titre.localeCompare(b.titre, 'fr'),
   )
-}
-
-/** The mail goes out when something NEW (or aggravated) needs attention. */
-export function doitEnvoyer(cs: ConstatRun[]): boolean {
-  return cs.some((c) => c.etat !== 'ouvert' && c.gravite !== 'info')
 }
 
 // ── Persistence ──────────────────────────────────────────

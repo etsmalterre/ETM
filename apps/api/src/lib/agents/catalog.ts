@@ -4,13 +4,14 @@
 
 import { isChatModel } from '../mistral.js'
 import {
-  BL_MATEL_BOITE,
-  BL_MATEL_EXPEDITEURS,
-  BL_MATEL_SLUG,
-  BL_MATEL_VERSION_INITIALE,
-  sonderBoite as sonderBlMatel,
-  traiterPdfs as traiterBlMatel,
-} from './bl-matel.js'
+  BL_ENNOBLISSEUR_BOITE,
+  BL_ENNOBLISSEUR_EXPEDITEURS,
+  BL_ENNOBLISSEUR_SLUG,
+  BL_ENNOBLISSEUR_VERSION_INITIALE,
+  retirerEcritures as retirerBlEnnoblisseur,
+  sonderBoite as sonderBlEnnoblisseur,
+  traiterPdfs as traiterBlEnnoblisseur,
+} from './bl-ennoblisseur.js'
 import {
   SUPERVISEUR_BOITES,
   SUPERVISEUR_HEURE,
@@ -21,7 +22,7 @@ import {
 } from './superviseur/superviseur.js'
 import { CONTROLES } from './superviseur/controles/index.js'
 import type { AgentMode, AgentRun, AgentState, AgentVersion, Auteur, VersionInitiale } from './store.js'
-import type { Contexte } from './bl-matel.js'
+import type { Contexte } from './bl-ennoblisseur.js'
 
 /** What starts an agent: a mailbox poll every N ms, or once a day at an hour (Paris). */
 export type Declenchement =
@@ -39,12 +40,24 @@ export interface AgentDef {
   ecritures: string[]
   /** When it holds back, shown in the « Fonctionnement » tab. */
   abstention: string
-  /** How a run is judged on screen: `lecture` = correct / incorrect (a reading,
-   *  BL MATEL); `execution` = « réussie » unless marked « échouée » with a
-   *  mandatory comment (Superviseur). Same stored verdict field. */
-  jugement: 'lecture' | 'execution'
-  /** One line per mode for the status footer menu. */
-  modes: Record<AgentMode, string>
+  /** What each score means for this agent, shown beside the three buttons of
+   *  the run dialog. Every agent is scored the same way (store.ts `Note`):
+   *  réussite needs no comment, partielle and échec need one. */
+  evaluation: {
+    reussite: string
+    partielle: string
+    echec: string
+    /** An échec removes what the run wrote (partielle keeps it for the user
+     *  to correct). Returns the French line stored on the evaluation, or null
+     *  when there was nothing to remove. Absent = an échec removes nothing. */
+    retirer?(run: AgentRun): Promise<string | null>
+  }
+  /** Superviseur: each point of the report is scored too (avis.ts). */
+  pointsEvaluables: boolean
+  /** One line per mode the agent offers, for the status footer menu. An agent
+   *  whose « essai » would change nothing (Superviseur: it writes nothing)
+   *  leaves it out. */
+  modes: Partial<Record<AgentMode, string>>
   versionInitiale: VersionInitiale
   /** Chat models a version may use. */
   modeles: readonly string[]
@@ -60,44 +73,51 @@ const MODELES_MISTRAL = ['mistral-small-latest', 'mistral-medium-latest', 'mistr
 
 export const AGENTS: readonly AgentDef[] = [
   {
-    slug: BL_MATEL_SLUG,
-    nom: 'BL MATEL',
+    slug: BL_ENNOBLISSEUR_SLUG,
+    nom: 'BL Ennoblisseur',
     description:
       'Lit les bordereaux de livraison envoyés par le teinturier MATEL et prépare la réception : chaque pièce (poids, métrage, observations) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande.',
     declenchement: { type: 'releve', intervalleMs: 2 * 60_000 },
-    declencheur: `Relève toutes les 2 minutes la boîte ${BL_MATEL_BOITE}, mails de ${BL_MATEL_EXPEDITEURS.join(', ')} avec une pièce jointe.`,
+    declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE}, mails de ${BL_ENNOBLISSEUR_EXPEDITEURS.join(', ')} avec une pièce jointe.`,
     ecritures: [
       'Le PDF du BL dans les documents de la commande sous-traitant (type « BL retour ennoblisseur »).',
       'Une ligne par pièce dans les données de réception (table data_bl_tricotbot), lot « MA » + numéro de BL.',
       'Un libellé Gmail « ETM/BL traité » ou « ETM/BL à vérifier » sur le mail.',
     ],
     abstention:
-      'Rien n’est enregistré si un contrôle bloque : numéro de commande ou de bordereau illisible, commande inconnue ou pas chez MATEL, pièce introuvable ou affectée à une autre commande, somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « BL MATEL à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
-    jugement: 'lecture',
+      'Rien n’est enregistré si un contrôle bloque : numéro de commande ou de bordereau illisible, commande inconnue ou pas chez MATEL, pièce introuvable ou affectée à une autre commande, somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « BL Ennoblisseur à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
+    evaluation: {
+      reussite: 'Lecture juste : les pièces pré-remplies pour la réception sont bonnes.',
+      partielle: 'Lecture en partie fausse : les pièces restent pré-remplies, corrigez-les dans le dialogue de réception.',
+      echec: 'Lecture fausse : les pièces pré-remplies sont retirées de la réception. Le PDF reste dans les documents de la commande.',
+      retirer: retirerBlEnnoblisseur,
+    },
+    pointsEvaluables: false,
     modes: { off: 'Ne lit pas la boîte mail.', essai: 'Lit et analyse, n’enregistre rien.', actif: 'Lit, analyse et enregistre.' },
-    versionInitiale: BL_MATEL_VERSION_INITIALE,
+    versionInitiale: BL_ENNOBLISSEUR_VERSION_INITIALE,
     modeles: MODELES_MISTRAL,
-    sonder: sonderBlMatel,
-    traiter: traiterBlMatel,
+    sonder: sonderBlEnnoblisseur,
+    traiter: traiterBlEnnoblisseur,
   },
   {
     slug: SUPERVISEUR_SLUG,
     nom: 'Superviseur',
     description:
-      'Contrôle chaque soir l’activité d’ETS Malterre : les clients ont-ils tous une réponse, les commandes reçues par mail sont-elles saisies dans ETM et justes, reste-t-il des actions en attente (pièces à affecter, fil à commander, ennoblissement non lancé…). Il envoie un mail récapitulatif seulement s’il trouve un point nouveau.',
+      'Contrôle chaque nuit l’activité d’ETS Malterre et prépare le rapport du matin : les clients ont-ils tous une réponse, les commandes reçues par mail sont-elles saisies dans ETM et justes, reste-t-il des actions en attente (pièces à affecter, fil à commander, ennoblissement non lancé…). Le rapport se lit ici, dans Exécutions.',
     declenchement: { type: 'quotidien', heure: SUPERVISEUR_HEURE, jours: SUPERVISEUR_JOURS },
-    declencheur: `Chaque jour ouvré à ${SUPERVISEUR_HEURE} h. Lit la base ETM (ETS Malterre uniquement) et les boîtes ${SUPERVISEUR_BOITES.join(', ')}.`,
-    ecritures: [
-      'Rien dans la base ni dans les boîtes mail : il lit seulement.',
-      'Un mail aux abonnés de la notification « Superviseur — points à voir » quand il trouve un point nouveau.',
-    ],
+    declencheur: `Chaque jour ouvré à ${SUPERVISEUR_HEURE} h du matin. Lit la base ETM (ETS Malterre uniquement) et les boîtes ${SUPERVISEUR_BOITES.join(', ')}.`,
+    ecritures: ['Rien dans la base ni dans les boîtes mail : il lit seulement. Le rapport est l’exécution elle-même.'],
     abstention:
-      'Pas de mail les soirs où rien de nouveau ne demande d’attention : un point déjà signalé réapparaît seulement dans la liste « Toujours ouvert » d’un prochain mail. Un lancement manuel ne met jamais à jour sa mémoire et n’envoie jamais de mail.',
-    jugement: 'execution',
+      'Un point déjà signalé reste dans le rapport, marqué « toujours ouvert », jusqu’à ce qu’il soit résolu. Un point jugé en échec (fausse alerte) est écarté des rapports suivants tant qu’il reste identique. Un lancement manuel ne met jamais à jour sa mémoire : le rapport du lendemain reste juste.',
+    evaluation: {
+      reussite: 'Rapport juste : les points relevés sont réels et rien d’important ne manque.',
+      partielle: 'Rapport utile mais incomplet ou en partie faux : dites ce qui manque ou ce qui est faux.',
+      echec: 'Rapport inutilisable. Rien n’est retiré : pour écarter une fausse alerte, jugez le point lui-même en échec.',
+    },
+    pointsEvaluables: true,
     modes: {
       off: 'Ne fait aucun contrôle.',
-      essai: 'Contrôle chaque soir et prépare le mail, sans l’envoyer.',
-      actif: 'Contrôle chaque soir et envoie le mail aux abonnés.',
+      actif: 'Contrôle chaque nuit et prépare le rapport du matin.',
     },
     versionInitiale: SUPERVISEUR_VERSION_INITIALE,
     modeles: MODELES_MISTRAL,

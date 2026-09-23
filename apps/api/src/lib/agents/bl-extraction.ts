@@ -1,4 +1,4 @@
-// Agent « BL MATEL » — the pure half: prompt, JSON schema, normalisation of
+// Agent « BL Ennoblisseur » — the pure half: prompt, JSON schema, normalisation of
 // what the model returns, and the checks that decide whether a BL may be
 // written without a human. No I/O here (tests: bl-extraction.test.ts).
 //

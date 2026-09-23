@@ -213,7 +213,7 @@ app.use('/api/maintenance-trm', maintenanceTrmRouter)
 // TRM client returns (Qualité › Retour client) — the receiving end of an ETM
 // FNC, answered here and republished onto the dossier. Consumed by the TRM web app.
 app.use('/api/retours-client-trm', retoursClientTrmRouter)
-// Agents IA (menu Agents IA) — the BL MATEL agent and its successors, lib/agents/.
+// Agents IA (menu Agents IA) — the BL Ennoblisseur agent and its successors, lib/agents/.
 app.use('/api/agents-ia', agentsIaRouter)
 // The website (etsmalterre.fr customer space + QR sample page) — replaces the
 // WinDev webservice MPS_WS. PUBLIC through Caddy (alpha.etsmalterre.com →

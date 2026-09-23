@@ -1,4 +1,4 @@
-// Agent « BL MATEL » — the database half: which sst order line a BL belongs
+// Agent « BL Ennoblisseur » — the database half: which sst order line a BL belongs
 // to, whether every piece on it is one we sent there, and the two writes the
 // WebDev service `localapi.malterre` used to do for n8n (load_bl_doc +
 // load_bl_data):
@@ -171,6 +171,11 @@ export async function resoudreBl(e: BlExtraction): Promise<Resolution> {
 export interface Ecriture {
   gedId: number | null
   lignesEcrites: number
+  /** IDdata_bl_tricotbot of the rows written — what an « échec » removes.
+   *  Absent on runs written before 2026-09-23 (retirerPieces() then matches). */
+  ids?: number[]
+  /** Set once an « échec » removed the rows. */
+  retire?: { le: string; lignes: number } | null
 }
 
 /** Write the PDF and the pieces. Idempotent: an existing ged of the same name
@@ -199,6 +204,7 @@ export async function ecrireBl(e: BlExtraction, r: Resolution, pdfs: readonly Bu
   // the LAST row per number: write the unweighed part first so the weighed
   // one wins, as it did with n8n (which dropped the 0 kg row).
   const ordre = [...e.pieces].sort((a, b) => Number((a.poids ?? 0) > 0) - Number((b.poids ?? 0) > 0))
+  const ids: number[] = []
   let n = 0
   for (const p of ordre) {
     if (deja.has(cleDeLigne(p.numero_piece, p.poids, p.metrage))) continue
@@ -207,6 +213,49 @@ export async function ecrireBl(e: BlExtraction, r: Resolution, pdfs: readonly Bu
        VALUES (${r.ligneId}, '${esc(r.lot)}', ${p.poids ?? 0}, ${p.metrage ?? 0}, ${sqlText(p.observations)}, '${esc(p.numero_piece)}', '${jourYmd}')`,
     )
     n++
+    // No RETURNING on HFSQL: the row just written is the newest of its piece
+    // (a cut piece's second row included — its first row is already older).
+    const [row] = await query<{ id: number | null }>(
+      `SELECT MAX(IDdata_bl_tricotbot) AS id FROM data_bl_tricotbot
+       WHERE IDligne_commande_sous_traitant = ${r.ligneId} AND lot = '${esc(r.lot)}' AND num_piece = '${esc(p.numero_piece)}'`,
+    )
+    if (row?.id) ids.push(Number(row.id))
   }
-  return { gedId, lignesEcrites: n }
+  return { gedId, lignesEcrites: n, ids }
+}
+
+/** « Échec » on a written BL: remove the pieces it pre-filled, so the réception
+ *  dialog no longer offers values the user judged wrong. The PDF stays filed on
+ *  the order — it is the dyer's real document (decision 2026-09-23). Rows come
+ *  from the ids recorded at write time; a run written before they were recorded
+ *  falls back to its own pieces (same line, lot, piece, poids and métrage)
+ *  minus those an earlier run had already written. Returns the rows removed. */
+export async function retirerPieces(
+  e: BlExtraction,
+  r: Pick<Resolution, 'ligneId' | 'lot' | 'dejaImportees'>,
+  ecriture: Ecriture,
+): Promise<number> {
+  if (r.ligneId == null || !r.lot) return 0
+  let ids = ecriture.ids ?? []
+  if (!ecriture.ids) {
+    const deja = new Set(r.dejaImportees)
+    const miennes = new Set(e.pieces.map((p) => cleDeLigne(p.numero_piece, p.poids, p.metrage)).filter((k) => !deja.has(k)))
+    const rows = await query<{ IDdata_bl_tricotbot: number; num_piece: string | null; poids: number | null; metrage: number | null }>(
+      `SELECT IDdata_bl_tricotbot, num_piece, poids, metrage FROM data_bl_tricotbot
+       WHERE IDligne_commande_sous_traitant = ${r.ligneId} AND lot = '${esc(r.lot)}'`,
+    )
+    ids = rows.filter((x) => miennes.has(cleDeLigne(String(x.num_piece ?? ''), x.poids, x.metrage))).map((x) => Number(x.IDdata_bl_tricotbot))
+  }
+  // Only rows still there and on this line: never delete on a stored id alone.
+  let retirees = 0
+  for (const part of chunks(ids.filter((x) => Number.isInteger(x) && x > 0), 50)) {
+    const presents = await query<{ IDdata_bl_tricotbot: number }>(
+      `SELECT IDdata_bl_tricotbot FROM data_bl_tricotbot
+       WHERE IDligne_commande_sous_traitant = ${r.ligneId} AND IDdata_bl_tricotbot IN (${part.join(',')})`,
+    )
+    if (!presents.length) continue
+    await query(`DELETE FROM data_bl_tricotbot WHERE IDdata_bl_tricotbot IN (${presents.map((x) => Number(x.IDdata_bl_tricotbot)).join(',')})`)
+    retirees += presents.length
+  }
+  return retirees
 }

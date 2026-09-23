@@ -1,6 +1,6 @@
 // A document attached to a sous-traitant order (`ged`). Shared by the upload
 // route (routes/commandes-sous-traitant.ts) and the BL agent
-// (lib/agents/bl-matel-db.ts), so both write the same row shape — the one the
+// (lib/agents/bl-ennoblisseur-db.ts), so both write the same row shape — the one the
 // legacy and the WebDev service wrote: IDreference = the order id,
 // IDcommande_client = 0, IDdossier = 0.
 

@@ -1,11 +1,11 @@
-// Dry run of the BL MATEL agent on BLs already stored in ged (mode essai: no
+// Dry run of the BL Ennoblisseur agent on BLs already stored in ged (mode essai: no
 // HFSQL write, no mail). Usage: npx tsx src/scripts/essai-agent-bl.ts [--n=5] [--skip=0] [idged...]
-// Runs land in data/agents/runs-bl-matel.json like any manual test.
+// Runs land in data/agents/runs-bl-ennoblisseur.json like any manual test.
 import dotenv from 'dotenv'
 dotenv.config({ path: `.env.${process.env.NODE_ENV || 'development'}` })
 dotenv.config({ path: '.env' })
 import { query, queryRaw, closeConnection } from '../lib/hfsql-auto.js'
-import { traiterPdfs, BL_MATEL_SLUG, BL_MATEL_VERSION_INITIALE } from '../lib/agents/bl-matel.js'
+import { traiterPdfs, BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE } from '../lib/agents/bl-ennoblisseur.js'
 import { lireEtat, versionActive } from '../lib/agents/store.js'
 import { MATEL_IDSOUS_TRAITANT } from '../lib/pricing-sst.js'
 
@@ -18,7 +18,7 @@ async function main() {
     `SELECT TOP ${n + skip} g.IDged AS IDged FROM ged g, commande_sous_traitant c
      WHERE g.IDcommande_sous_traitant = c.IDcommande_sous_traitant AND c.IDsous_traitant = ${MATEL_IDSOUS_TRAITANT} AND g.IDtype_doc = 3
      ORDER BY g.IDged DESC`)).map((r) => Number(r.IDged)).slice(skip)
-  const state = await lireEtat(BL_MATEL_SLUG, BL_MATEL_VERSION_INITIALE)
+  const state = await lireEtat(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE)
   for (const id of ids) {
     const rows = await queryRaw(`SELECT fichier FROM ged WHERE IDged = ${id}`)
     const f = rows[0]?.fichier

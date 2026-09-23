@@ -20,7 +20,7 @@ ETM/
 │   │       │   ├── gmail-reader.ts       # Gmail READ side (list, attachments, labels) — scope gmail.modify
 │   │       │   ├── mistral.ts            # Mistral OCR + strict-JSON chat, price table (Agents IA)
 │   │       │   ├── ged-sst.ts            # insertGedSst — one ged row on an sst order (upload route + BL agent)
-│   │       │   ├── agents/               # Agents IA: catalog, store (data/agents/), scheduler, bl-matel(+-db), bl-extraction (+test)
+│   │       │   ├── agents/               # Agents IA: catalog, store (data/agents/), scheduler, bl-ennoblisseur(+-db), bl-extraction (+test)
 │   │       │   ├── pricing-sst.ts        # Ennoblisseur auto-pricing (see HFSQL rules)
 │   │       │   ├── pricing-trm.ts        # Tricoteur auto-pricing — PrixDeRevientTRM port
 │   │       │   ├── webservice-site*.ts   # Website API (/api/site, PUBLIC): -data = bulk loader, (pure) = legacy-shaped documents, -store = snapshot + content dates

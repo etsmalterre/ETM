@@ -8,7 +8,7 @@
 // Without it every call answers `unauthorized_client`, which gmailLectureErreur()
 // turns into a readable message for the Agents IA screen.
 //
-// Used by the « Agents IA » (lib/agents/*) — first reader: BL MATEL, mailbox
+// Used by the « Agents IA » (lib/agents/*) — first reader: BL Ennoblisseur, mailbox
 // contact@etsmalterre.com (the one n8n polled).
 
 import * as fs from 'node:fs'

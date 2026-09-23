@@ -14,6 +14,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { AGENTS, agentDef, type AgentDef } from '../lib/agents/catalog.js'
 import {
   AGENT_MODES,
+  NOTES,
   activerVersion,
   changerMode,
   lireEtat,
@@ -23,13 +24,16 @@ import {
   modifierRun,
   publierVersion,
   versionActive,
+  type AgentMode,
   type AgentRun,
   type AgentState,
   type Auteur,
+  type Evaluation,
+  type Note,
 } from '../lib/agents/store.js'
-import { etatSondage, prochainQuotidien, sonder, SondageEnCoursError } from '../lib/agents/scheduler.js'
-import { renderNotificationEmailPreview } from '../lib/notification-email.js'
+import { etatSondage, lancerSondage, prochainQuotidien, SondageEnCoursError } from '../lib/agents/scheduler.js'
 import type { ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
+import { enregistrerAvis, lireAvis } from '../lib/agents/superviseur/avis.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur } from '../lib/gmail-reader.js'
 
@@ -71,6 +75,24 @@ async function pilote(req: Request, res: Response): Promise<number | null> {
   return id
 }
 
+/** 401 / 403 unless the caller may score runs (a right separate from piloting). */
+async function evaluateur(req: Request, res: Response): Promise<number | null> {
+  const id = session(req, res)
+  if (id === null) return null
+  if (!(await userHasPermission(id, isEffectiveAdmin(req), 'evaluer_agents_ia'))) {
+    res.status(403).json({ error: 'permission denied: evaluer_agents_ia' })
+    return null
+  }
+  return id
+}
+
+/** The mode shown and accepted: an agent that does not offer « essai » (it
+ *  would change nothing — Superviseur) runs the same in it as in « actif »,
+ *  so a state left in essai from before reads as actif. */
+function modeAffiche(def: AgentDef, mode: AgentMode): AgentMode {
+  return mode === 'off' || def.modes[mode] ? mode : 'actif'
+}
+
 function agentOu404(req: Request, res: Response): AgentDef | null {
   const def = agentDef(req.params.slug)
   if (!def) res.status(404).json({ error: 'agent inconnu' })
@@ -82,11 +104,16 @@ function statistiques(runs: AgentRun[], state: AgentState) {
   const actifs = runs.filter((r) => r.version === state.activeVersion && r.source !== 'essai_manuel')
   const parStatut: Record<string, number> = {}
   for (const r of actifs) parStatut[r.statut] = (parStatut[r.statut] ?? 0) + 1
-  const juges = actifs.filter((r) => r.verdict)
+  const note = (n: Note) => actifs.filter((r) => r.evaluation?.note === n).length
   return {
     total: actifs.length,
     parStatut,
-    verdicts: { correct: juges.filter((r) => r.verdict!.valeur === 'correct').length, incorrect: juges.filter((r) => r.verdict!.valeur === 'incorrect').length },
+    evaluations: {
+      reussite: note('reussite'),
+      partielle: note('partielle'),
+      echec: note('echec'),
+      aEvaluer: actifs.filter((r) => !r.evaluation).length,
+    },
     coutUsd: actifs.reduce((s, r) => s + (r.coutUsd || 0), 0),
     dernierRun: runs.length ? runs[runs.length - 1].createdAt : null,
   }
@@ -94,7 +121,7 @@ function statistiques(runs: AgentRun[], state: AgentState) {
 
 /** A run without the heavy parts (OCR text, findings) for lists. */
 function allege(r: AgentRun) {
-  const { resultat, ...rest } = r
+  const { resultat, avisPoints, ...rest } = r
   const res = resultat as { extraction?: { pieces?: unknown[]; numero_bordereau?: string; numero_commande?: string } }
   const sup = resultat as Partial<ResultatSuperviseur>
   return {
@@ -106,7 +133,9 @@ function allege(r: AgentRun) {
     nbNouveaux: sup.constats ? sup.constats.filter((c) => c.etat !== 'ouvert').length : null,
     nbOuverts: sup.constats ? sup.constats.filter((c) => c.etat === 'ouvert').length : null,
     nbFermes: sup.fermes ? sup.fermes.length : null,
-    mailEnvoye: sup.mail ? sup.mail.envoye : null,
+    nbEcartes: sup.ecartes ? sup.ecartes.length : null,
+    /** Points of the report someone scored. */
+    nbAvis: avisPoints ? Object.keys(avisPoints).length : 0,
   }
 }
 
@@ -121,7 +150,8 @@ async function vueAgent(def: AgentDef) {
     ecritures: def.ecritures,
     abstention: def.abstention,
     declenchement: def.declenchement,
-    jugement: def.jugement,
+    evaluation: { reussite: def.evaluation.reussite, partielle: def.evaluation.partielle, echec: def.evaluation.echec },
+    pointsEvaluables: def.pointsEvaluables,
     modes: def.modes,
     peutTester: !!def.traiter,
     controles: def.controles ?? [],
@@ -129,7 +159,7 @@ async function vueAgent(def: AgentDef) {
       def.declenchement.type === 'quotidien' && state.mode !== 'off'
         ? prochainQuotidien(def.declenchement, Date.now(), state.dernierePlanification)
         : null,
-    mode: state.mode,
+    mode: modeAffiche(def, state.mode),
     startedAt: state.startedAt,
     modeChangedAt: state.modeChangedAt,
     modeChangedBy: state.modeChangedBy,
@@ -178,6 +208,7 @@ agentsIaRouter.patch('/:slug', async (req, res) => {
   if (!def) return
   const p = modeBody.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'mode invalide' }); return }
+  if (!def.modes[p.data.mode as AgentMode]) { res.status(400).json({ error: 'mode non proposé pour cet agent' }); return }
   try {
     await changerMode(def.slug, def.versionInitiale, p.data.mode as AgentState['mode'], await auteur(uid))
     res.json(await vueAgent(def))
@@ -234,9 +265,12 @@ agentsIaRouter.get('/:slug/runs', async (req, res) => {
   if (!def) return
   try {
     const statut = typeof req.query.statut === 'string' && req.query.statut ? req.query.statut.split(',') : null
-    const verdict = req.query.verdict === 'correct' || req.query.verdict === 'incorrect' ? req.query.verdict : null
+    // ?note=partielle,echec — any of reussite / partielle / echec, or a_evaluer
+    // for the runs nobody scored.
+    const notes = typeof req.query.note === 'string' && req.query.note ? req.query.note.split(',') : null
+    const parNote = (r: AgentRun) => !notes || notes.includes(r.evaluation ? r.evaluation.note : 'a_evaluer')
     const runs = (await lireRuns(def.slug))
-      .filter((r) => (!statut || statut.includes(r.statut)) && (!verdict || r.verdict?.valeur === verdict))
+      .filter((r) => (!statut || statut.includes(r.statut)) && parNote(r))
       .reverse()
     const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '200'), 10) || 200))
     res.json({ total: runs.length, runs: runs.slice(0, limit).map(allege) })
@@ -253,17 +287,6 @@ agentsIaRouter.get('/:slug/runs/:id', async (req, res) => {
   const r = await lireRun(def.slug, req.params.id)
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
   res.json(r)
-})
-
-/** The mail a Superviseur run sent (or would have sent), rendered like the real one. */
-agentsIaRouter.get('/:slug/runs/:id/apercu-mail', async (req, res) => {
-  if (session(req, res) === null) return
-  const def = agentOu404(req, res)
-  if (!def) return
-  const r = await lireRun(def.slug, req.params.id)
-  const mail = (r?.resultat as Partial<ResultatSuperviseur> | undefined)?.mail
-  if (!mail) { res.status(404).json({ error: 'aucun mail pour cette exécution' }); return }
-  res.json({ sujet: mail.sujet, html: renderNotificationEmailPreview(mail.contenu) })
 })
 
 agentsIaRouter.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
@@ -316,33 +339,117 @@ agentsIaRouter.post('/:slug/runs/:id/retraiter', async (req, res) => {
   }
 })
 
-const verdictBody = z.object({
-  valeur: z.enum(['correct', 'incorrect']).nullable(),
-  commentaire: z.string().trim().max(1000).default(''),
+// ── scores ───────────────────────────────────────────────
+// Every agent is scored the same way: réussite / partielle / échec. Only
+// réussite goes without a comment — the comment is what the next prompt
+// version is written from. What an échec removes is the agent's business
+// (AgentDef.evaluation.retirer): BL Ennoblisseur takes back its pre-filled
+// pieces; the Superviseur removes nothing at run level.
+
+const evaluationBody = z.object({
+  note: z.enum(NOTES as [Note, ...Note[]]).nullable(),
+  commentaire: z.string().trim().max(2000).default(''),
 })
 
-agentsIaRouter.put('/:slug/runs/:id/verdict', async (req, res) => {
-  const uid = await pilote(req, res)
+const COMMENTAIRE_REQUIS = 'Expliquez en commentaire ce qui n’allait pas : c’est ce qui sert à améliorer l’agent.'
+
+agentsIaRouter.put('/:slug/runs/:id/evaluation', async (req, res) => {
+  const uid = await evaluateur(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
   if (!def) return
-  const p = verdictBody.safeParse(req.body)
-  if (!p.success) { res.status(400).json({ error: 'verdict invalide' }); return }
-  // « execution » agents: a run is « réussie » unless marked « échouée », and
-  // failing it needs the reason — the comment is what improves the agent.
-  if (def.jugement === 'execution') {
-    if (p.data.valeur === 'correct') p.data.valeur = null
-    if (p.data.valeur === 'incorrect' && !p.data.commentaire) {
-      res.status(400).json({ error: 'Expliquez en commentaire pourquoi l’exécution a échoué.' })
-      return
-    }
+  const p = evaluationBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'évaluation invalide' }); return }
+  const { note, commentaire } = p.data
+  if (note && note !== 'reussite' && !commentaire) { res.status(400).json({ error: COMMENTAIRE_REQUIS }); return }
+  try {
+    const avant = await lireRun(def.slug, req.params.id)
+    if (!avant) { res.status(404).json({ error: 'exécution introuvable' }); return }
+    // A removal happens once and is never undone: re-scoring keeps its record.
+    let retrait = avant.evaluation?.retrait ?? null
+    if (note === 'echec' && def.evaluation.retirer) retrait = (await def.evaluation.retirer(avant)) ?? retrait
+    const par = await auteur(uid)
+    const r = await modifierRun(def.slug, req.params.id, (run) => {
+      // Carries what retirer() recorded (BL: ecriture.retire), which also
+      // survives clearing the score.
+      run.resultat = avant.resultat
+      run.evaluation = note ? { note, commentaire, par, le: new Date().toISOString(), retrait } : null
+    })
+    if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
+    res.json(r)
+  } catch (err) {
+    console.error('[agents-ia] evaluation failed:', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
   }
-  const par = await auteur(uid)
-  const r = await modifierRun(def.slug, req.params.id, (run) => {
-    run.verdict = p.data.valeur ? { valeur: p.data.valeur, commentaire: p.data.commentaire, par, le: new Date().toISOString() } : null
-  })
-  if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
-  res.json(r)
+})
+
+const avisPointBody = evaluationBody.extend({ cle: z.string().min(1).max(500) })
+
+/** Score one point of a Superviseur report. Kept on the run (feedback for the
+ *  next version) and in the Superviseur's index, so the next reports set a
+ *  point scored « échec » aside (lib/agents/superviseur/avis.ts). */
+agentsIaRouter.put('/:slug/runs/:id/points', async (req, res) => {
+  const uid = await evaluateur(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  if (!def.pointsEvaluables) { res.status(409).json({ error: 'cet agent ne produit pas de points à évaluer' }); return }
+  const p = avisPointBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'évaluation invalide' }); return }
+  const { cle, note, commentaire } = p.data
+  if (note && note !== 'reussite' && !commentaire) { res.status(400).json({ error: COMMENTAIRE_REQUIS }); return }
+  try {
+    const run = await lireRun(def.slug, req.params.id)
+    if (!run) { res.status(404).json({ error: 'exécution introuvable' }); return }
+    const sup = run.resultat as Partial<ResultatSuperviseur>
+    const point = [...(sup.constats ?? []), ...(sup.ecartes ?? [])].find((c) => c.cle === cle)
+    if (!point) { res.status(404).json({ error: 'point introuvable dans ce rapport' }); return }
+    const avis: Evaluation | null = note ? { note, commentaire, par: await auteur(uid), le: new Date().toISOString() } : null
+    const r = await modifierRun(def.slug, run.id, (x) => {
+      const points = { ...(x.avisPoints ?? {}) }
+      if (avis) points[cle] = avis
+      else delete points[cle]
+      x.avisPoints = points
+    })
+    // Clearing a score from an old report must not wipe a newer one.
+    const index = await lireAvis()
+    if (avis) await enregistrerAvis(cle, { ...avis, runId: run.id, titre: point.titre })
+    else if (!index[cle] || index[cle].runId === run.id) await enregistrerAvis(cle, null)
+    res.json(r)
+  } catch (err) {
+    console.error('[agents-ia] avis point failed:', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
+  }
+})
+
+/** Every comment given on a version — what the next prompt is written from. */
+agentsIaRouter.get('/:slug/retours', async (req, res) => {
+  if (session(req, res) === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  try {
+    const state = await lireEtat(def.slug, def.versionInitiale)
+    const version = parseInt(String(req.query.version ?? ''), 10) || state.activeVersion
+    const retours: Array<{
+      runId: string; runLe: string; source: AgentRun['source']; portee: 'execution' | 'point'
+      titre: string | null; note: Note; commentaire: string; par: Auteur; le: string; retrait: string | null
+    }> = []
+    for (const r of await lireRuns(def.slug)) {
+      if (r.version !== version) continue
+      const base = { runId: r.id, runLe: r.createdAt, source: r.source }
+      if (r.evaluation) retours.push({ ...base, portee: 'execution', titre: r.resume, ...r.evaluation, retrait: r.evaluation.retrait ?? null })
+      const sup = r.resultat as Partial<ResultatSuperviseur>
+      const titres = new Map([...(sup.constats ?? []), ...(sup.ecartes ?? [])].map((c) => [c.cle, c.titre]))
+      for (const [cle, a] of Object.entries(r.avisPoints ?? {})) {
+        retours.push({ ...base, portee: 'point', titre: titres.get(cle) ?? cle, ...a, retrait: null })
+      }
+    }
+    retours.sort((a, b) => b.le.localeCompare(a.le))
+    res.json({ version, versions: state.versions.map((v) => v.version).reverse(), retours })
+  } catch (err) {
+    console.error('[agents-ia] retours failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
 })
 
 // ── actions ──────────────────────────────────────────────
@@ -355,8 +462,10 @@ agentsIaRouter.post('/:slug/sonder', async (req, res) => {
   try {
     const state = await lireEtat(def.slug, def.versionInitiale)
     if (state.mode === 'off') { res.status(409).json({ error: 'L’agent est à l’arrêt : passez-le en essai ou en service d’abord.' }); return }
-    const runs = await sonder(def.slug, await auteur(uid))
-    res.json({ runs: runs.map(allege) })
+    // Answer at once: a run can outlast the proxy timeout. The screen polls
+    // GET /:slug until `sondage.dernierLancement.fin` is set.
+    const lancement = lancerSondage(def.slug, await auteur(uid))
+    res.status(202).json({ lancement })
   } catch (err) {
     if (err instanceof SondageEnCoursError) { res.status(409).json({ error: err.message }); return }
     console.error('[agents-ia] sonder failed:', err)

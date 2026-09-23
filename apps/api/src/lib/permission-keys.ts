@@ -401,7 +401,18 @@ export const PERMISSION_KEYS = [
     key: 'edit_agents_ia',
     label: 'Piloter les agents IA',
     description:
-      'Autorise, dans Agents IA, à mettre un agent en service, en essai ou à l’arrêt, à publier ou réactiver une version de son prompt, à relancer la lecture de la boîte mail, à retraiter une exécution et à la marquer correcte ou incorrecte. Sans ce droit l’écran est en lecture seule.',
+      'Autorise, dans Agents IA, à mettre un agent en service, en essai ou à l’arrêt, à publier ou réactiver une version de son prompt, à relancer la lecture de la boîte mail et à retraiter une exécution. Sans ce droit l’écran est en lecture seule.',
+    category: 'Agents IA',
+  },
+  // Scoring is separate from piloting (decision 2026-09-23): the people who
+  // read the agents' output every day score it without being able to change
+  // an agent. An « échec » on BL Ennoblisseur removes the pre-filled pieces —
+  // a real HFSQL write, hence a right of its own.
+  {
+    key: 'evaluer_agents_ia',
+    label: 'Évaluer les agents IA',
+    description:
+      'Autorise, dans Agents IA, à noter chaque exécution (réussite, partielle ou échec, avec un commentaire obligatoire hors réussite) et chaque point du rapport du Superviseur. Ces retours servent à écrire la version suivante du prompt. Un échec peut retirer ce que l’agent a enregistré : sur BL Ennoblisseur, les pièces pré-remplies pour la réception.',
     category: 'Agents IA',
   },
 ] as const

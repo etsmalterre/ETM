@@ -31,18 +31,14 @@ export const NOTIFICATION_KEYS = [
   },
   {
     key: 'notif_agent_bl',
-    label: 'BL MATEL à vérifier',
+    label: 'BL Ennoblisseur à vérifier',
     description:
-      'Envoie un email quand l’agent IA « BL MATEL » n’a pas pu enregistrer un bordereau de livraison reçu de MATEL (pièce inconnue, totaux qui ne correspondent pas, numéro illisible, erreur de lecture) : la réception de ce BL doit être vérifiée à la main. Le message donne le motif et le lien vers l’exécution dans Agents IA.',
+      'Envoie un email quand l’agent IA « BL Ennoblisseur » n’a pas pu enregistrer un bordereau de livraison reçu de MATEL (pièce inconnue, totaux qui ne correspondent pas, numéro illisible, erreur de lecture) : la réception de ce BL doit être vérifiée à la main. Le message donne le motif et le lien vers l’exécution dans Agents IA.',
     category: 'Agents IA',
   },
-  {
-    key: 'notif_agent_superviseur',
-    label: 'Superviseur — points à voir',
-    description:
-      'Envoie, les jours ouvrés vers 19 h, le rapport de l’agent IA « Superviseur » lorsqu’il a trouvé au moins un nouveau point qui demande une attention : client sans réponse, commande reçue par mail absente ou différente dans ETM, action en attente (pièces à affecter, fil à commander…). Aucun mail les soirs où il n’y a rien de nouveau. Le message renvoie vers l’exécution dans Agents IA.',
-    category: 'Agents IA',
-  },
+  // No « Superviseur » key since 2026-09-23: its report is read in Agents IA
+  // every morning instead of mailed every evening. A stored subscription to the
+  // old key is ignored, and dropped on the user's next save (lib/notifications.ts).
 ] as const
 
 export type NotificationKey = (typeof NOTIFICATION_KEYS)[number]['key']
