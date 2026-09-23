@@ -188,7 +188,7 @@ const TEXT_FIELDS_FULL = IS_WINDOWS ? [...TEXT_FIELDS_BASE, 'prénom', 'sociét�
 // Full physical column set of `prospect`, in catalog order (verified via SELECT *
 // on prod). Used for positional INSERT on Linux, where the accented column names
 // (prénom, société, traité) can't be named in a column list.
-interface ProspectFields {
+export interface ProspectFields {
   prenom: string; nom: string; email: string; societe: string; adresse: string
   code_postal: string; ville: string; pays: string; telephone: string
   status_catalogue: number; date: string; observation: string; notes_interne: string
@@ -211,6 +211,38 @@ function prospectPositionalValues(id: number, f: ProspectFields): string {
     `'${dateStr(f.expe_catalogue)}'`, sqlText(f.tracking_number),
     String(n(f.IDtransporteur)), String(f.traite ? 1 : 0), String(n(f.IDclient)),
   ].join(', ')
+}
+
+/** Insert a demande, status_catalogue 1 (Nouveau); returns its IDprospect.
+ *  Shared by « + Nouveau » on this screen and the website's catalogue / sample
+ *  form (routes/webservice-site.ts). The caller checks permissions. */
+export async function insertProspect(f: ProspectFields): Promise<number> {
+  if (IS_WINDOWS) {
+    // Windows ODBC accepts accented column names → ordinary column-list INSERT.
+    const cols = [
+      'nom', 'email', 'adresse', 'code_postal', 'ville', 'pays', 'telephone',
+      'status_catalogue', 'date', 'observation', 'notes_interne',
+      'expe_catalogue', 'tracking_number', 'IDtransporteur', 'IDclient',
+      'prénom', 'société', 'traité',
+    ]
+    const vals = [
+      sqlText(f.nom), sqlText(f.email), sqlText(f.adresse), sqlText(f.code_postal),
+      sqlText(f.ville), sqlText(f.pays), sqlText(f.telephone),
+      '1', `'${dateStr(f.date)}'`, sqlText(f.observation),
+      sqlText(f.notes_interne), `'${dateStr(f.expe_catalogue)}'`, sqlText(f.tracking_number),
+      String(n(f.IDtransporteur)), '0',
+      sqlText(f.prenom), sqlText(f.societe), String(f.traite ? 1 : 0),
+    ]
+    await query(`INSERT INTO prospect (${cols.join(', ')}) VALUES (${vals.join(', ')})`)
+    const created = await selectProspectRows(`ORDER BY IDprospect DESC`)
+    return normalizeProspectRow(created[0]).IDprospect
+  }
+  // Linux: accented column names are unwriteable → positional INSERT with an
+  // explicit, self-assigned PK (max+1; positional INSERT doesn't auto-number).
+  const maxRows = await query<{ m: unknown }>(`SELECT MAX(IDprospect) AS m FROM prospect`)
+  const newId = n(maxRows[0]?.m) + 1
+  await query(`INSERT INTO prospect VALUES (${prospectPositionalValues(newId, f)})`)
+  return newId
 }
 
 // ── Validation ───────────────────────────────────────────
@@ -412,34 +444,7 @@ prospectsRouter.post('/', async (req: Request, res: Response) => {
       IDtransporteur: d.IDtransporteur ?? 0, traite: d.traite ?? 0, IDclient: 0,
     }
 
-    let newId: number
-    if (IS_WINDOWS) {
-      // Windows ODBC accepts accented column names → ordinary column-list INSERT.
-      const cols = [
-        'nom', 'email', 'adresse', 'code_postal', 'ville', 'pays', 'telephone',
-        'status_catalogue', 'date', 'observation', 'notes_interne',
-        'expe_catalogue', 'tracking_number', 'IDtransporteur', 'IDclient',
-        'prénom', 'société', 'traité',
-      ]
-      const vals = [
-        sqlText(f.nom), sqlText(f.email), sqlText(f.adresse), sqlText(f.code_postal),
-        sqlText(f.ville), sqlText(f.pays), sqlText(f.telephone),
-        '1', `'${dateStr(f.date)}'`, sqlText(f.observation),
-        sqlText(f.notes_interne), `'${dateStr(f.expe_catalogue)}'`, sqlText(f.tracking_number),
-        String(n(f.IDtransporteur)), '0',
-        sqlText(f.prenom), sqlText(f.societe), String(f.traite ? 1 : 0),
-      ]
-      await query(`INSERT INTO prospect (${cols.join(', ')}) VALUES (${vals.join(', ')})`)
-      const created = await selectProspectRows(`ORDER BY IDprospect DESC`)
-      newId = normalizeProspectRow(created[0]).IDprospect
-    } else {
-      // Linux: accented column names are unwriteable → positional INSERT with an
-      // explicit, self-assigned PK (max+1; positional INSERT doesn't auto-number).
-      const maxRows = await query<{ m: unknown }>(`SELECT MAX(IDprospect) AS m FROM prospect`)
-      newId = n(maxRows[0]?.m) + 1
-      await query(`INSERT INTO prospect VALUES (${prospectPositionalValues(newId, f)})`)
-    }
-
+    const newId = await insertProspect(f)
     const detail = await loadProspectDetail(newId)
     if (!detail) { res.status(500).json({ error: 'Insert failed' }); return }
     res.status(201).json(detail)

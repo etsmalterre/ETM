@@ -23,8 +23,10 @@ ETM/
 │   │       │   ├── agents/               # Agents IA: catalog, store (data/agents/), scheduler, bl-matel(+-db), bl-extraction (+test)
 │   │       │   ├── pricing-sst.ts        # Ennoblisseur auto-pricing (see HFSQL rules)
 │   │       │   ├── pricing-trm.ts        # Tricoteur auto-pricing — PrixDeRevientTRM port
+│   │       │   ├── webservice-site*.ts   # Website API (/api/site, PUBLIC): -data = bulk loader, (pure) = legacy-shaped documents, -store = snapshot + content dates
+│   │       │   ├── composition-matieres.ts # Matière composition (fiche technique + website)
 │   │       │   └── pdf/                  # theme.ts, MalterreDocument.tsx, CommandeFournisseurPdf, CommandeSoustraitantPdf, SoumissionLotPdf, DemandeEtudeColorisPdf, SoumissionPdf, FeuilleColorisPdf
-│   │       ├── routes/                   # entreprises, fournisseurs, references-fil, references-ecru, references-fini, references-divers, stock, stock-fini, commandes-fil, commandes-sous-traitant, sous-traitants, etudes-coloris, prospects, auth, permissions, user-emails
+│   │       ├── routes/                   # entreprises, fournisseurs, references-fil, references-ecru, references-fini, references-divers, stock, stock-fini, commandes-fil, commandes-sous-traitant, sous-traitants, etudes-coloris, prospects, auth, permissions, user-emails, webservice-site (website, public)
 │   │       └── index.ts
 │   └── web/           # React frontend
 │       └── src/

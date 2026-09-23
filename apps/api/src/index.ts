@@ -61,6 +61,7 @@ import { notificationsRouter } from './routes/notifications.js'
 import { notificationsTrmRouter } from './routes/notifications-trm.js'
 import { demarrerRapportsPointage } from './lib/rapports-pointage-envoi.js'
 import { agentsIaRouter } from './routes/agents-ia.js'
+import { webserviceSiteRouter } from './routes/webservice-site.js'
 import { demarrerAgents } from './lib/agents/scheduler.js'
 import { abonnementsRouter } from './routes/abonnements.js'
 import { userEmailsRouter } from './routes/user-emails.js'
@@ -214,6 +215,10 @@ app.use('/api/maintenance-trm', maintenanceTrmRouter)
 app.use('/api/retours-client-trm', retoursClientTrmRouter)
 // Agents IA (menu Agents IA) — the BL MATEL agent and its successors, lib/agents/.
 app.use('/api/agents-ia', agentsIaRouter)
+// The website (etsmalterre.fr customer space + QR sample page) — replaces the
+// WinDev webservice MPS_WS. PUBLIC through Caddy (alpha.etsmalterre.com →
+// /api/site/*): read-only documents + the catalogue-request form only.
+app.use('/api/site', webserviceSiteRouter)
 
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)

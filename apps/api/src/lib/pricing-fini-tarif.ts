@@ -112,12 +112,41 @@ export interface TarifResult {
   tranches: TarifTranche[]
 }
 
-interface BandRow {
+export interface BandRow {
   IDtraitement: number
   IDteinture: number
   quantite_mini: number
   quantite_maxi: number
   prix: number
+}
+
+/** Options shared by the fini engine's loader and its pure assembly. */
+export interface TarifFiniOptions {
+  /** "Coefficient fixe" margin (0..1 ratio) replacing COEFFICIENT_V2 on every tranche. */
+  coefficient?: number
+  /** IDref_fil the client supplies itself — legacy `PrixDeVenteV4(…, sFilExclu)`,
+   *  fed from `designation_client.fil_non_facturé`: those yarns cost 0 in PrixFil. */
+  filExclu?: readonly number[]
+}
+
+/** Everything `assembleTarifFini` needs, already loaded. The loader
+ *  (`calcTarifRefFini`, per reference) and the website snapshot (bulk, every
+ *  table once — lib/webservice-site-data.ts) both build this, so the two can
+ *  never price differently. */
+export interface TarifFiniInputs {
+  IDref_fini: number
+  IDcoloris: number
+  avecTeinture: number
+  /** ref_fini.rendement, > 0 (the caller returns an empty result otherwise). */
+  rendement: number
+  /** poids > 0 (same). */
+  ref_ecru: { IDref_ecru: number; reference: string | null; poids: number; prix: number }
+  detailFil: TarifDetailLine[]
+  treatments: { IDtraitement: number; designation: string | null }[]
+  bandsByTreatment: Map<number, BandRow[]>
+  /** Present only when avec_teinture ≠ 0 and the coloris has an IDteinture. */
+  dye: { IDteinture: number; label: string | null; gots: boolean; prixGots: number; bands: BandRow[] } | null
+  coefficient?: number
 }
 
 /** Pick the tariff-band price for a given weight (mini ≤ poids ≤ maxi). Returns
@@ -140,12 +169,13 @@ function bandPrix(bands: BandRow[], poids: number): number {
  * `opts.coefficient` (0..1 ratio) replaces the degressive per-tranche
  * COEFFICIENT_V2 margin with a fixed one for every tranche — the legacy
  * "coefficient fixe" client tarif mode (a single `tranche_tarifaire` row with
- * `coefficient` %, e.g. 20 → 0.20).
+ * `coefficient` %, e.g. 20 → 0.20). `opts.filExclu` drops the yarns a client
+ * supplies from the fil cost (see `TarifFiniOptions`).
  */
 export async function calcTarifRefFini(
   IDref_fini: number,
   IDcoloris: number,
-  opts?: { coefficient?: number },
+  opts?: TarifFiniOptions,
 ): Promise<TarifResult> {
   const empty: TarifResult = {
     kind: 'fini',
@@ -224,8 +254,7 @@ export async function calcTarifRefFini(
   }
 
   // ── Fil (quantity-independent) — computed once ──────────────
-  const detailFil = await computePrixFil(IDref_ecru, colorisEcruForFil)
-  const moFil = round2(detailFil.reduce((s, d) => s + d.valueKg, 0))
+  const detailFil = await computePrixFil(IDref_ecru, colorisEcruForFil, opts?.filExclu)
 
   // ── Treatments on the ref + all their tariff bands (IDsous_traitant 0) ──
   const trtRows = await query<{ IDtraitement: number; designation: string | null }>(
@@ -272,6 +301,41 @@ export async function calcTarifRefFini(
         WHERE IDsous_traitant = 0 AND IDteinture = ${IDteinture}`,
     )
   }
+
+  return assembleTarifFini({
+    IDref_fini,
+    IDcoloris,
+    avecTeinture,
+    rendement,
+    ref_ecru,
+    detailFil,
+    treatments,
+    bandsByTreatment,
+    dye: avecTeinture !== 0 && IDteinture > 0
+      ? { IDteinture, label: teintureLabel, gots, prixGots, bands: dyeBands }
+      : null,
+    coefficient: opts?.coefficient,
+  })
+}
+
+/**
+ * The per-tranche half of `PrixDeVenteV4` (nType_Ref = 2), with no I/O: fil +
+ * tricotage (−5 % / −10 % at 15 / 30 rolls) + treatments (band × MATEL × 1.05)
+ * + dye (band × MATEL × 1.05 + GOTS) = prix de revient, ÷ (1 − margin) ÷
+ * (1 − port) → €/Kg, and through the 2-dp rendement → €/Ml.
+ */
+export function assembleTarifFini(inp: TarifFiniInputs): TarifResult {
+  const { IDref_fini, IDcoloris, avecTeinture, rendement, ref_ecru, detailFil, treatments, bandsByTreatment, dye } = inp
+  const poidsUnRlx = ref_ecru.poids
+  const prixTricotage = ref_ecru.prix
+  const ecruReference = ref_ecru.reference
+  const IDteinture = dye?.IDteinture ?? 0
+  const dyeBands = dye?.bands ?? []
+  const gots = dye?.gots ?? false
+  const prixGots = dye?.prixGots ?? 0
+  const teintureLabel = dye?.label ?? null
+  const opts = { coefficient: inp.coefficient }
+  const moFil = round2(detailFil.reduce((s, d) => s + d.valueKg, 0))
 
   const matelMult = multiplicateurMatel(rendement)
   const rdt2 = Math.round(rendement * 100) / 100
@@ -484,6 +548,7 @@ export async function calcTarifRefEcru(
 export async function computePrixFil(
   IDref_ecru: number,
   IDcolori_ecru: number,
+  filExclu?: readonly number[],
 ): Promise<TarifDetailLine[]> {
   let comp = await query<{ IDref_fil: number; IDcolori_fil: number; pourcentage: number | null }>(
     `SELECT IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
@@ -530,14 +595,33 @@ export async function computePrixFil(
     }
   }
 
+  return prixFilLines(comp, yarnById, colById, filExclu)
+}
+
+type YarnPrice = { reference: string | null; prix_kg: number }
+
+/** The pure half of `PrixFil()`: one detail line per composition row. A yarn in
+ *  `filExclu` (supplied by the client) keeps its line at 0 € — legacy
+ *  `sFilExclu`. */
+export function prixFilLines(
+  comp: readonly { IDref_fil: number; IDcolori_fil: number; pourcentage: number | null }[],
+  yarnById: ReadonlyMap<number, YarnPrice>,
+  colById: ReadonlyMap<number, YarnPrice>,
+  filExclu?: readonly number[],
+): TarifDetailLine[] {
+  const exclu = new Set(filExclu ?? [])
   const lines: TarifDetailLine[] = []
   for (const c of comp) {
     const pourcentage = Number(c.pourcentage) || 0
     const yarn = yarnById.get(Number(c.IDref_fil))
     const col = colById.get(Number(c.IDcolori_fil))
+    const colSuffix = col?.reference ? ` - ${col.reference}` : ''
+    if (exclu.has(Number(c.IDref_fil))) {
+      lines.push({ label: `${pourcentage}% de ${yarn?.reference ?? ''}${colSuffix} fourni par le client`, valueKg: 0 })
+      continue
+    }
     const prixKg = col && col.prix_kg !== 0 ? col.prix_kg : (yarn?.prix_kg ?? 0)
     const prixCompo = (prixKg * pourcentage) / 100
-    const colSuffix = col?.reference ? ` - ${col.reference}` : ''
     lines.push({
       label: `${pourcentage}% de ${yarn?.reference ?? ''}${colSuffix} à ${eur(prixKg)} €`,
       valueKg: round2(prixCompo),

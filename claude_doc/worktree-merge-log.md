@@ -10,6 +10,33 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/webservice — API du site web (/api/site) : remplacement du webservice WinDev MPS_WS
+**MPS API seule, surface PUBLIQUE.** Remplace le webservice REST WinDev `MPS_WS` (VM 104, `alpha.etsmalterre.com`)
+appelé par le plugin WordPress `malterre-api` (espace client etsmalterre.fr/client + page QR échantillon).
+- **Compatibilité** : mêmes 9 routes, mêmes JSON (ordre des clés compris), donc le plugin ne change pas ; la bascule
+  consiste à faire pointer `alpha` vers `/api/site` dans Caddy.
+- **Architecture** :
+  - catalogue chargé en bloc (`lib/webservice-site-data.ts`, ~20 requêtes, 1,8 s en prod) ;
+  - documents purs (`lib/webservice-site.ts`) tarifés par le moteur ERP (`assembleTarifFini`, extrait de
+    `calcTarifRefFini`, + option `filExclu` = fil_non_facturé) ;
+  - instantané en mémoire + `data/`, rafraîchi en tâche de fond (`lib/webservice-site-store.ts`) : 4–30 ms par appel
+    contre ≥ 10 s (QR : 24,6 s).
+- **Dates** : `date_modification` suit un hash du contenu, donc les changements de prix atteignent enfin la boutique.
+- **Parité prod** (`scripts/check-webservice-site-parity.ts`, réponses legacy dans `apps/api/data/webservice-site-oracle/`) :
+  473 réfs + 83 produits clients ; 92 % des coloris au centime, le reste à ≤ 0,02 €.
+- **Bugs legacy corrigés** :
+  - poids du rouleau tronqué à l'entier ;
+  - grille réutilisée entre coloris (réf 1867 vendue 10,09 au lieu de 16,19 €/m) ;
+  - composition dupliquée ;
+  - catégorie de poids faussée par les poids 0 ;
+  - coloris non tarifables envoyés à 1 €/m ou 0 € ;
+  - grilles d'une seule ligne.
+- **Extraits partagés** : `lib/composition-matieres.ts` (avec la fiche technique), `insertProspect()` (prospects.ts, avec
+  le formulaire catalogue).
+- **Non portés** : NouvelleCommande et RapportQuotidien (0 appel en un an).
+- **Mise en ligne NON faite** (déploiement, Caddy, liste IP, test d'un formulaire accentué) : check-list dans
+  `claude_doc/webservice_legacy.md` §7. ExtranetTRM est retiré avec la VM (décision du 2026-09-23).
+
 ## 2026-09-23 — feat/cmd-divers — rectiligne (cols / bandes) : catalogue + commande à Tricotage Malterre (LIVA #1185)
 **MPS API + web ETM (écran Tombé Métier › Références partagé avec TRM) ; paire TRM `feat/cmd-divers`
 à atterrir ensuite.** Pierrot voulait « commander à TRM des cols » : c'est le sous-système **rectiligne**

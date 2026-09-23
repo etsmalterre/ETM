@@ -12,6 +12,7 @@ import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } fro
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
 import { EtiquetteRefFiniPdf, type EtiquetteRefFiniData } from '../lib/pdf/EtiquetteRefFiniPdf.js'
+import { chooseCompositionRows, composeMatieres, repairMatiereLibelle } from '../lib/composition-matieres.js'
 
 export const referencesFiniRouter: RouterType = Router()
 
@@ -520,20 +521,13 @@ export async function buildFicheTechniquePdfData(id: number): Promise<FicheTechn
         `SELECT IDcomposition_ecru, IDcolori_ecru, IDref_fil, pourcentage
            FROM composition_ecru WHERE IDref_ecru = ${ref.IDref_ecru}`,
       )
-      // Prefer the rows scoped to the ref's écru coloris, then the generic
-      // (IDcolori_ecru = 0) rows, then whatever exists.
-      let chosen = ref.IDcolori_ecru > 0 ? comp.filter((r) => Number(r.IDcolori_ecru) === ref.IDcolori_ecru) : []
-      if (chosen.length === 0) chosen = comp.filter((r) => Number(r.IDcolori_ecru) === 0)
-      if (chosen.length === 0) chosen = comp
-
+      const chosen = chooseCompositionRows(comp, ref.IDcolori_ecru)
       const totalPct = chosen.reduce((s, r) => s + (Number(r.pourcentage) || 0), 0)
       if (totalPct > 0) {
         const filIds = Array.from(new Set(chosen.map((r) => Number(r.IDref_fil)).filter((n) => n > 0)))
         // asso_fil_matiere / matiere_premiere both have accented column NAMES
         // (IDMatière, IDmatière_première) — never name them in SQL. SELECT * and
-        // resolve the keys via pickKey. matiere_premiere's PK is accented too,
-        // so fixEncoding can't repair libelle; U+FFFD → é is the only accent
-        // that occurs in matière names (élasthanne, acétate, polyéthylène…).
+        // resolve the keys via pickKey (label repair: repairMatiereLibelle).
         const assoByFil = new Map<number, Array<{ matiereId: number; frac: number }>>()
         if (filIds.length > 0) {
           const asso = await query<Record<string, unknown>>(
@@ -554,21 +548,11 @@ export async function buildFicheTechniquePdfData(id: number): Promise<FicheTechn
           const mats = await query<Record<string, unknown>>(`SELECT * FROM matiere_premiere`)
           for (const m of mats) {
             const mid = Number(pickKey(m, /^idmati/i)) || 0
-            const lib = String(m.libelle ?? '').replace(/�/g, 'é').trim()
+            const lib = repairMatiereLibelle(m.libelle)
             if (mid > 0 && lib) libelleById.set(mid, lib)
           }
         }
-        const pctByMatiere = new Map<string, number>()
-        for (const row of chosen) {
-          const share = (Number(row.pourcentage) || 0) / totalPct
-          for (const a of assoByFil.get(Number(row.IDref_fil)) ?? []) {
-            const lib = libelleById.get(a.matiereId)
-            if (!lib) continue
-            pctByMatiere.set(lib, (pctByMatiere.get(lib) ?? 0) + share * a.frac * 100)
-          }
-        }
-        for (const [matiere, pourcentage] of pctByMatiere) composition.push({ matiere, pourcentage })
-        composition.sort((a, b) => b.pourcentage - a.pourcentage)
+        composition.push(...composeMatieres(chosen, assoByFil, libelleById))
       }
     }
   } catch { /* tolerate — fiche renders with an empty composition */ }
