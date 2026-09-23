@@ -112,10 +112,10 @@ if (remove) {
   console.log(`Slot ${slotKey} freed. Worktree kept on disk.`)
 }
 
-// Inside Herdr (Linux): close the tabs — panes and agents — still living in the
-// worktree. Other tabs close now; in the calling tab (the feature session running
+// Inside Herdr (Windows and Linux): close the tabs — panes and agents — still living
+// in the worktree. Other tabs close now; in the calling tab (the feature session running
 // /feature-complete) the helper waits for the landing report, submits `/exit` to
-// the Claude session so it leaves the agents panel, then closes the tab 60 s later.
+// the Claude session so it leaves the agents panel, then closes the tab ~5 s later.
 // claude_config/bin/herdr-worktree-close.mjs, reached through ~/.claude/hooks
 // (a symlink into the hub). No Herdr, no hub → nothing happens.
 if (remove && process.env.HERDR_ENV === '1') {

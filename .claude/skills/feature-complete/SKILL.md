@@ -249,14 +249,14 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    merge is already done and the slot is freed. The leftover dir is reaped **automatically**
    the next time any worktree skill runs from the main checkout (or `node
    scripts/worktree/reap.mjs` there after you close this session).
-   **Inside Herdr (Linux):** the script also closes the Herdr tabs still living in the
-   worktree — other tabs (panes and agents) at once. For THIS tab a detached helper
+   **Inside Herdr (Windows and Linux):** the script also closes the Herdr tabs still living in
+   the worktree — other tabs (panes and agents) at once. For THIS tab a detached helper
    (`claude_config/bin/herdr-worktree-close.mjs`) waits until the step-8 report is written
    (the agent goes idle), **submits `/exit` to this session** so it leaves the Herdr agents
-   panel by itself, and **closes the tab 60 s later** (the report stays readable in the
-   shell's scrollback until then; a Herdr notification says so). So: write the report as the
-   LAST thing this session does — no tool call after it, nothing new started — because the
-   session ends the moment the report is on screen.
+   panel by itself, and **closes the tab ~5 s later** (a Herdr notification says so; the
+   helper's steps are logged in `~/.claude/tasks/herdr-worktree-close.log`). So: write the
+   report as the LAST thing this session does — no tool call after it, nothing new started —
+   because the session ends the moment the report is on screen.
 
 8. **Report.** Confirm: landed on `origin/master` (show `git log --oneline -3 origin/master`
    — that is the proof, not `<MAIN>`'s log), whether `<MAIN>` was fast-forwarded or left
@@ -265,6 +265,6 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
    State whether the worktree dir was removed now or deferred (per the script's
    output). Tell the user to **close this Claude session / terminal** — the work is on `master`,
    and any deferred dir cleans itself up on the next worktree skill. Inside Herdr say instead
-   that this session quits by itself right after this report and the tab closes about a
-   minute later. Shipping is a separate `/etm_deploy` (or `/trm_deploy`) from the main
+   that this session quits by itself right after this report and the tab closes a few
+   seconds later. Shipping is a separate `/etm_deploy` (or `/trm_deploy`) from the main
    checkout.
