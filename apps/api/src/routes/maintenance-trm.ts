@@ -45,13 +45,12 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
-import { esc, n } from '../lib/sst-shared.js'
+import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 
 export const maintenanceTrmRouter: RouterType = Router()
 
-const IS_WINDOWS = process.platform === 'win32'
 
 // ════════════════════════════════════════════════════════
 //  Constants — recovered from live data, NOT from the code

@@ -49,7 +49,7 @@ import { baremePour } from '../lib/bareme-prime-trm.js'
 
 export const primeTrmRouter: RouterType = Router()
 
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 
 // ── Date helpers (plain YYYY-MM-DD strings, no TZ arithmetic) ─────────────

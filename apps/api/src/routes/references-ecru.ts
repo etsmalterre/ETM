@@ -23,7 +23,7 @@ export const referencesEcruRouter: RouterType = Router()
 // NB: `SELECT *` works on ref_ecru but FAILS (0 rows) on colori_ecru — that table
 // is only ever read with an explicit column list.
 
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 /** Escape a string for SQL (single quotes doubled). */
 function esc(value: string): string {

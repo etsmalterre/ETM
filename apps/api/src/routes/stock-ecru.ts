@@ -16,7 +16,7 @@ function esc(value: string): string {
   return value.replace(/'/g, "''")
 }
 
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 /** ref_ecru.archivé is accented — on Linux SELECT * returns a mangled key. */
 function isArchive(row: Record<string, unknown>): boolean {

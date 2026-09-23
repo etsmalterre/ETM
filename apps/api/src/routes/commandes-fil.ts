@@ -119,7 +119,7 @@ async function maybeAutoCloseCommande(commandeId: number): Promise<void> {
 // the same ASCII-only keys. See CLAUDE.md "Accented column names through
 // bridge" for the full picture.
 
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 const STOCK_LOT_SELECT = IS_WINDOWS
   ? `sf.IDstock_fil, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, rf.reference AS ref_fil, rf.bio, cf.reference AS colori_reference, f.nom AS fournisseur_nom`

@@ -9,7 +9,7 @@ export const referencesFilRouter: RouterType = Router()
 // ref_fil.recyclé and every asso_fil_matiere column is accented. Follow the
 // stock.ts pattern: branch on platform for writes, normalise reads via a
 // post-processor so HTTP payloads only ever contain ASCII keys.
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 /** Escape a string for use in SQL (single quotes doubled) */
 function esc(value: string): string {

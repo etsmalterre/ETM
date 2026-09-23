@@ -97,7 +97,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
-import { n } from '../lib/sst-shared.js'
+import { n, IS_WINDOWS } from '../lib/sst-shared.js'
 import { awaitingPieces } from '../lib/production-trm.js'
 import {
   RAPPORT_PRODUCTION_MAX_DAYS, aggregateRapportProduction, dtLocalToHfsql, toLignes,
@@ -106,7 +106,6 @@ import {
 
 export const dashboardTrmRouter: RouterType = Router()
 
-const IS_WINDOWS = process.platform === 'win32'
 
 /** Upper tolerance above the target weight, in kg (legacy literal `+0.7`). */
 export const POIDS_TOLERANCE_KG = 0.7

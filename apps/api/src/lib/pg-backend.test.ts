@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { translateSql, keyResolver, pgDateToHfsql, pgTimestampToHfsql } from './pg-backend.js'
+import { translateSql, keyResolver, pgDateToHfsql, pgTimestampToHfsql, emptyDatesToNull } from './pg-backend.js'
 
 describe('translateSql', () => {
   it('moves TOP n to a LIMIT at the end of its SELECT', () => {
@@ -29,6 +29,25 @@ describe('translateSql', () => {
       .toBe("SELECT prenom FROM contact WHERE nom = 'Hélène'")
   })
 
+  it('spells HFSQL compact DATETIME literals the way PostgreSQL reads them', () => {
+    // /api/trs/atelier and /api/trs/equipe both died on this one.
+    expect(translateSql("SELECT * FROM evenement_machine WHERE DATE >= '20260923050000'"))
+      .toBe("SELECT * FROM evenement_machine WHERE DATE >= '2026-09-23 05:00:00'")
+    expect(translateSql("SELECT * FROM a WHERE d BETWEEN '20260921050000' AND '20260922045959'"))
+      .toBe("SELECT * FROM a WHERE d BETWEEN '2026-09-21 05:00:00' AND '2026-09-22 04:59:59'")
+  })
+
+  it('leaves a 14-digit string that is not a real date and time alone', () => {
+    // A lot number or a barcode must stay exactly what it is.
+    expect(translateSql("SELECT * FROM stock_fil WHERE lot = '99999999999999'"))
+      .toBe("SELECT * FROM stock_fil WHERE lot = '99999999999999'")
+    expect(translateSql("SELECT * FROM a WHERE code = '20261332050000'"))  // month 13, day 32
+      .toBe("SELECT * FROM a WHERE code = '20261332050000'")
+    // The 8-digit DATE form already works on PostgreSQL: untouched.
+    expect(translateSql("SELECT * FROM a WHERE d = '20260923'"))
+      .toBe("SELECT * FROM a WHERE d = '20260923'")
+  })
+
   it('leaves quotes, TOP and CONVERT inside string literals alone', () => {
     const s = "SELECT nom FROM client WHERE nom = 'TOP 5 l''usine CONVERT(x USING y)'"
     expect(translateSql(s)).toBe(s)
@@ -52,6 +71,42 @@ describe('ORDER BY: NULL is the smallest value, as in HFSQL', () => {
 
   it('keeps an explicit NULLS clause', () => {
     expect(translateSql('SELECT * FROM a ORDER BY d DESC NULLS FIRST')).toBe('SELECT * FROM a ORDER BY d DESC NULLS FIRST')
+  })
+})
+
+describe("empty dates: HFSQL writes '', PostgreSQL wants NULL", () => {
+  // The map the nightly copy generates; only these columns are ever touched.
+  const cols = {
+    'public.prospect': { cols: ['idprospect', 'nom', 'date', 'date_relance'], dates: ['date', 'date_relance'] },
+    'public.client': { cols: ['idclient', 'nom', 'date_creation'], dates: ['date_creation'] },
+  }
+
+  it('turns an empty date into NULL in an UPDATE, and leaves text alone', () => {
+    expect(emptyDatesToNull("UPDATE prospect SET date_relance = '', nom = '' WHERE IDprospect = 4", 'public', cols))
+      .toBe("UPDATE prospect SET date_relance = NULL, nom = '' WHERE IDprospect = 4")
+  })
+
+  it('turns an empty date into NULL at its position in an INSERT', () => {
+    expect(emptyDatesToNull("INSERT INTO prospect (nom, date, date_relance) VALUES ('x', '20260923', '')", 'public', cols))
+      .toBe("INSERT INTO prospect (nom, date, date_relance) VALUES ('x', '20260923', NULL)")
+  })
+
+  it('leaves a table with no date column, and a real date, untouched', () => {
+    const sql = "UPDATE transporteur SET nom = '' WHERE IDtransporteur = 6"
+    expect(emptyDatesToNull(sql, 'public', cols)).toBe(sql)
+    const ins = "INSERT INTO client (nom, date_creation) VALUES ('x', '20260923')"
+    expect(emptyDatesToNull(ins, 'public', cols)).toBe(ins)
+  })
+
+  it('fixes a positional INSERT by position, using the copy column order', () => {
+    // The accented-column pattern (setClientFlag, prospects.ts) emits this shape.
+    expect(emptyDatesToNull("INSERT INTO prospect VALUES (1, '', '', '')", 'public', cols))
+      .toBe("INSERT INTO prospect VALUES (1, '', NULL, NULL)")
+  })
+
+  it('leaves a positional INSERT alone when the value count does not match', () => {
+    const sql = "INSERT INTO prospect VALUES (1, 'x')"
+    expect(emptyDatesToNull(sql, 'public', cols)).toBe(sql)
   })
 })
 

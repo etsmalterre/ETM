@@ -56,7 +56,7 @@ async function ensureCanEdit(req: Request, res: Response): Promise<boolean> {
 // post-filter in JS on Linux. The bridge truncates the column name on the
 // way out (last char dropped) so `archivé` arrives as `archiv`. Pattern
 // canonicalised in `apps/api/src/routes/stock.ts`.
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 // `envoi_email.invalidé` is an accented column. Naming it in SQL is FATAL on the
 // Linux iODBC bridge: the truncated `invalid` reaches the server → [01000] →
