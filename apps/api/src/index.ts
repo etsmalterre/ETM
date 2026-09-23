@@ -202,7 +202,7 @@ app.use('/api/trs', trsRouter)
 // tablet only, under its own `mps_pointeuse` cookie (routes/pointage.ts).
 app.use('/api/pointage', pointageRouter)
 // Admin Pointage — the office's side of the same time clock, from the TRM ERP
-// menu « Pointage » (cookie session + view_pointage / edit_pointage).
+// menu « Pointage » (cookie session + the menu grant screen_pointage, LIVA 1196).
 app.use('/api/pointage-admin', pointageAdminRouter)
 // TRM tableau de bord widgets (Poids des pièces, …) — consumed by the TRM web app.
 app.use('/api/dashboard-trm', dashboardTrmRouter)

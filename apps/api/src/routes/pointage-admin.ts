@@ -2,10 +2,13 @@
 // menu « Pointage » (port of the WinDev Admin Pointage, 2026-09-21; plan
 // ~/.claude/plans/admin-pointage.md, dossier TRM/claude_doc/admin-pointage.md).
 // Same legacy `pointage` database as the tablet (routes/pointage.ts), a
-// DIFFERENT caller: a user session (mps_uid) holding TRM's own keys —
-// view_pointage on every read, edit_pointage on every write. An enrolled
-// tablet has no business here and an admin session is not enough for a
-// non-admin: the legacy had no login at all, hours are personal data.
+// DIFFERENT caller: a user session (mps_uid) granted the TRM menu « Pointage »
+// (`screen_pointage`), checked on every route, read or write. Having the menu
+// means having all of it: the view_pointage / edit_pointage keys were dropped
+// on 2026-09-23 (LIVA #1196), as they only ever duplicated the menu grant.
+// That makes this menu grant a server-side guard, unlike every other one
+// (screen-keys-trm.ts) — hours are personal data, and the legacy had no
+// login at all. An enrolled tablet has no business here.
 //
 //   GET    /salaries                         every salarié, deleted ones flagged, with the bonnetier link
 //   GET    /bonnetiers                       the picker for that link (mps.bonnetier)
@@ -26,8 +29,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { isEffectiveAdmin } from '../lib/auth.js'
-import { trmUserHasPermission } from '../lib/permissions-trm.js'
-import type { TrmPermissionKey } from '../lib/permission-keys-trm.js'
+import { trmUserHasMenu } from '../lib/permissions-trm.js'
 import { selectBonnetiers } from '../lib/production-trm.js'
 import {
   COLONNES_HEURE,
@@ -66,19 +68,19 @@ import {
 
 export const pointageAdminRouter: RouterType = Router()
 
-// ── Gates ──
+// ── Gate ──
 
-async function gate(req: Request, res: Response, key: TrmPermissionKey): Promise<boolean> {
+const MENU = '/pointage'
+
+async function acces(req: Request, res: Response): Promise<boolean> {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return false
   }
-  const ok = await trmUserHasPermission(req.userId, isEffectiveAdmin(req), key)
-  if (!ok) res.status(403).json({ error: `permission denied: ${key}` })
+  const ok = await trmUserHasMenu(req.userId, isEffectiveAdmin(req), MENU)
+  if (!ok) res.status(403).json({ error: 'permission denied: menu Pointage' })
   return ok
 }
-const lecture = (req: Request, res: Response) => gate(req, res, 'view_pointage')
-const ecriture = (req: Request, res: Response) => gate(req, res, 'edit_pointage')
 
 function erreur(res: Response, label: string, err: unknown): void {
   if (err instanceof SaisieInvalide) {
@@ -159,7 +161,7 @@ async function salariesParId(): Promise<Map<number, SalarieComplet>> {
 
 pointageAdminRouter.get('/salaries', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const [salaries, bonnetiers] = await Promise.all([tousLesSalariesComplets(), selectBonnetiers()])
     const noms = new Map(bonnetiers.map((b) => [b.id, [b.prenom, b.nom].filter(Boolean).join(' ')]))
     res.json(salaries.map((s) => ({ ...salarieJson(s), bonnetier: s.idMps > 0 ? (noms.get(s.idMps) ?? `#${s.idMps}`) : null })))
@@ -170,7 +172,7 @@ pointageAdminRouter.get('/salaries', async (req: Request, res: Response) => {
 
 pointageAdminRouter.get('/bonnetiers', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const rows = await selectBonnetiers()
     res.json(
       rows
@@ -193,7 +195,7 @@ const salarieBody = z
 
 pointageAdminRouter.post('/salaries', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const parsed = salarieBody.safeParse(req.body)
     if (!parsed.success) return validation(res, parsed.error.issues)
     res.status(201).json(salarieJson(await creerSalarie(parsed.data)))
@@ -204,7 +206,7 @@ pointageAdminRouter.post('/salaries', async (req: Request, res: Response) => {
 
 pointageAdminRouter.put('/salaries/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     const parsed = salarieBody.safeParse(req.body)
@@ -217,7 +219,7 @@ pointageAdminRouter.put('/salaries/:id', async (req: Request, res: Response) => 
 
 pointageAdminRouter.delete('/salaries/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     await supprimerSalarie(id)
@@ -231,7 +233,7 @@ pointageAdminRouter.delete('/salaries/:id', async (req: Request, res: Response) 
 
 pointageAdminRouter.get('/salaries/:id/messages', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     const jour = jourParis(Date.now())
@@ -245,7 +247,7 @@ const messageBody = z.object({ texte: z.string().max(4000), dateFin: z.string().
 
 pointageAdminRouter.post('/salaries/:id/messages', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     const parsed = messageBody.safeParse(req.body)
@@ -258,7 +260,7 @@ pointageAdminRouter.post('/salaries/:id/messages', async (req: Request, res: Res
 
 pointageAdminRouter.put('/messages/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     const parsed = messageBody.safeParse(req.body)
@@ -275,7 +277,7 @@ pointageAdminRouter.put('/messages/:id', async (req: Request, res: Response) => 
 
 pointageAdminRouter.delete('/messages/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     await supprimerMessage(id)
@@ -289,7 +291,7 @@ pointageAdminRouter.delete('/messages/:id', async (req: Request, res: Response) 
 
 pointageAdminRouter.get('/en-poste', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const maintenantMs = Date.now()
     const maintenantS = Math.floor(maintenantMs / 1000)
     const [lignes, salaries] = await Promise.all([lignesEnPoste(), salariesParId()])
@@ -305,7 +307,7 @@ pointageAdminRouter.get('/en-poste', async (req: Request, res: Response) => {
 
 pointageAdminRouter.get('/horaires', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const { du, au } = periodeValide(req.query.du, req.query.au)
     const salarie = req.query.salarie ? parseInt(String(req.query.salarie), 10) : 0
     if (req.query.salarie && (!Number.isInteger(salarie) || salarie <= 0)) {
@@ -347,7 +349,7 @@ async function reponseHoraire(res: Response, ligneId: number, sync: Omit<Resulta
 
 pointageAdminRouter.post('/horaires', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const parsed = creerHoraireBody.safeParse(req.body)
     if (!parsed.success) return validation(res, parsed.error.issues)
     const s = await trouverSalarieMemeSupprime(parsed.data.idSalarie)
@@ -366,7 +368,7 @@ const corrigerHoraireBody = z.object({ heures: heuresSchema }).strict()
 
 pointageAdminRouter.patch('/horaires/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     const parsed = corrigerHoraireBody.safeParse(req.body)
@@ -390,7 +392,7 @@ pointageAdminRouter.patch('/horaires/:id', async (req: Request, res: Response) =
 
 pointageAdminRouter.delete('/horaires/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     const ligne = await trouverLigne(id)
@@ -453,7 +455,7 @@ async function bilan(idSalarie: number, annee: number, semaine: number) {
 
 pointageAdminRouter.get('/lissage/semaines', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
     const annee = entierQuery(req.query.annee, 2000, 2100)
     if (idSalarie === null || annee === null) {
@@ -521,7 +523,7 @@ function decalerJour(jour: string, jours: number): string {
 
 pointageAdminRouter.get('/lissage/semaine', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
     const annee = entierQuery(req.query.annee, 2000, 2100)
     const numero = entierQuery(req.query.numero, 1, 53)
@@ -546,7 +548,7 @@ const lissageBody = z
 
 pointageAdminRouter.put('/lissage/semaine', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const parsed = lissageBody.safeParse(req.body)
     if (!parsed.success) return validation(res, parsed.error.issues)
     const { idSalarie, annee, numero, jours } = parsed.data
@@ -598,7 +600,7 @@ async function previsionnelJson(idSalarie: number, annee: number) {
 
 pointageAdminRouter.get('/previsionnel', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
     const annee = entierQuery(req.query.annee, 2000, 2100)
     if (idSalarie === null || annee === null) {
@@ -623,7 +625,7 @@ const prevBody = z
 
 pointageAdminRouter.put('/previsionnel/semaine', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const parsed = prevBody.safeParse(req.body)
     if (!parsed.success) return validation(res, parsed.error.issues)
     const { idSalarie, annee, numero, prevMin, commentaire } = parsed.data
@@ -641,7 +643,7 @@ const initBody = z.discriminatedUnion('mode', [
 
 pointageAdminRouter.post('/previsionnel/initialiser', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const parsed = initBody.safeParse(req.body)
     if (!parsed.success) return validation(res, parsed.error.issues)
     const { idSalarie, annee } = parsed.data
@@ -656,7 +658,7 @@ const variableBody = z.object({ soldeMin: z.number().int().min(-60000).max(60000
 
 pointageAdminRouter.post('/previsionnel/variables', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const parsed = variableBody.extend({ idSalarie: z.number().int().positive(), annee: z.number().int().min(2000).max(2100) }).strict().safeParse(req.body)
     if (!parsed.success) return validation(res, parsed.error.issues)
     const { idSalarie, annee, soldeMin, commentaire } = parsed.data
@@ -669,7 +671,7 @@ pointageAdminRouter.post('/previsionnel/variables', async (req: Request, res: Re
 
 pointageAdminRouter.put('/previsionnel/variables/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     const parsed = variableBody.safeParse(req.body)
@@ -683,7 +685,7 @@ pointageAdminRouter.put('/previsionnel/variables/:id', async (req: Request, res:
 
 pointageAdminRouter.delete('/previsionnel/variables/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await ecriture(req, res))) return
+    if (!(await acces(req, res))) return
     const id = idDeLaRoute(req, res)
     if (id === null) return
     await supprimerInfo(id)
@@ -700,7 +702,7 @@ import { paieSemaine, totauxPaie } from '../lib/pointage-admin.js'
 
 pointageAdminRouter.get('/paie', async (req: Request, res: Response) => {
   try {
-    if (!(await lecture(req, res))) return
+    if (!(await acces(req, res))) return
     const idSalarie = entierQuery(req.query.salarie, 1, 1e9)
     const annee = entierQuery(req.query.annee, 2000, 2100)
     const du = entierQuery(req.query.du, 1, 53)

@@ -16,7 +16,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isKnownTrmPermissionKey, type TrmPermissionKey } from './permission-keys-trm.js'
-import { isTrmScreenAccessKey } from './screen-keys-trm.js'
+import { isTrmScreenAccessKey, trmMenuAccessKey } from './screen-keys-trm.js'
 
 /** Storable = in the TRM action catalog OR a valid TRM screen-access key. */
 function isStorableTrmKey(k: string): boolean {
@@ -115,6 +115,20 @@ export async function trmUserHasPermission(
   if (isAdmin) return true
   const granted = await getTrmUserPermissions(userId)
   return granted.includes(key)
+}
+
+/** Whether a user holds the grant of a TRM menu (`screen_<menu>`). Admins
+ *  always pass. A menu grant is a UI curtain everywhere EXCEPT where a route
+ *  deliberately makes it its guard — the Pointage menu (routes/pointage-admin.ts,
+ *  LIVA #1196), where having the menu means having all of it. */
+export async function trmUserHasMenu(
+  userId: number,
+  isAdmin: boolean,
+  menuHref: string,
+): Promise<boolean> {
+  if (isAdmin) return true
+  const granted = await getTrmUserPermissions(userId)
+  return granted.includes(trmMenuAccessKey(menuHref))
 }
 
 /** Read all stored TRM permissions (used by the admin /users endpoint). */

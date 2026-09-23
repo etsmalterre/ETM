@@ -9,14 +9,20 @@
 //   GET  /apercu/:key        — admin only, the report as it would go out now (HTML)
 //   POST /envoyer-test/:key  — admin only, send that report to the caller alone
 //
-// A subscription whose notification `requires` a permission the user lacks is
-// refused (409 permission_requise): the pointage reports carry working hours.
+// A subscription whose notification `requires` a key the user lacks (the
+// pointage reports: the menu « Pointage ») is refused (409 permission_requise):
+// they carry working hours.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { requireAdmin } from '../lib/auth.js'
 import { trmNotifications } from '../lib/notifications-trm.js'
-import { TRM_NOTIFICATION_KEYS, isKnownTrmNotificationKey, trmNotificationDef } from '../lib/notification-keys-trm.js'
+import {
+  TRM_NOTIFICATION_KEYS,
+  isKnownTrmNotificationKey,
+  trmNotificationDef,
+  trmRequisLibelle,
+} from '../lib/notification-keys-trm.js'
 import { apercuHtml, construireRapport, envoyerRapport, peutRecevoir } from '../lib/rapports-pointage-envoi.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { msHeureParis } from '../lib/pointage-etat.js'
@@ -62,7 +68,7 @@ notificationsTrmRouter.put('/users/:id', async (req: Request, res: Response) => 
       const def = trmNotificationDef(k)
       res.status(409).json({
         error: 'permission_requise',
-        message: `« ${def.label} » demande le droit ${def.requires} : accordez-le d’abord dans l’onglet Permissions.`,
+        message: `« ${def.label} » demande ${trmRequisLibelle(def.requires ?? '')}.`,
       })
       return
     }
