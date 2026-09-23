@@ -10,6 +10,16 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/permission-pointage-1196 — le menu « Pointage » est tout le droit (LIVA #1196)
+**MPS API, paire TRM `feat/permission-pointage-1196`.** `view_pointage` / `edit_pointage` retirés du
+catalogue TRM : ils ne faisaient que doubler le grant du menu. `/api/pointage-admin` vérifie désormais
+`screen_pointage` lui-même sur chaque route, lecture comme écriture (`trmUserHasMenu` dans
+`lib/permissions-trm.ts`, admin effectif compris) — seul menu TRM dont le grant est une garde serveur,
+les heures étant des données personnelles. Les deux rapports de pointage (`notification-keys-trm.ts`)
+exigent le menu (`requires` = clé stockée : droit ou grant de menu) ; le 409 d'un abonnement refusé nomme
+l'onglet Écrans (`trmRequisLibelle`). Anciens grants inertes. En prod, `screen_pointage` est tenu par huit
+comptes (dont Pierre-Emmanuel Roux 13 et eloise 16) : Vincent fait le ménage dans Écrans.
+
 ## 2026-09-23 — feat/superviseur — agent IA « Superviseur » (contrôle du soir)
 **MPS API + web ETM.** Deuxième agent d'Agents IA : chaque jour ouvré à 19 h il contrôle ETM
 (IDsociete 1) et les boîtes contact@, n.antonino@, l.tellier@ (Laetitia), pierre-emmanuel@ en lecture
