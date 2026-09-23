@@ -4126,9 +4126,17 @@ function EnnoblissementAffectationDialog({
   })
   // Affecting a roll writes stock_ecru.IDref_commande_affectation /
   // IDligne_commande_client — it leaves the free pool the stock screens list.
+  // A refusal (409 `piece_teinte` — the roll came back dyed since the list
+  // loaded, #1188 — or `piece_donnee`) is shown, never silent (#1184 lesson),
+  // and the lists are reloaded so the stale roll disappears.
+  const [linkError, setLinkError] = useState<string | null>(null)
   const linkMut = useMutation({
     mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'PUT' }),
-    onSuccess: (payload: EnnoRollsPayload) => { queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
+    onSuccess: (payload: EnnoRollsPayload) => { setLinkError(null); queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
+    onError: (err: any) => {
+      setLinkError(err?.body?.message ?? 'Affectation refusée.')
+      queryClient.invalidateQueries({ queryKey })
+    },
   })
   const unlinkMut = useMutation({
     mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'DELETE' }),
@@ -4167,6 +4175,7 @@ function EnnoblissementAffectationDialog({
           <div className="h-1.5 rounded-full bg-zinc-200 overflow-hidden">
             <div className={cn('h-full rounded-full transition-all', pct >= 99.9 ? 'bg-green-500' : 'bg-accent')} style={{ width: `${pct}%` }} />
           </div>
+          {linkError && <p className="text-xs text-destructive mt-1.5">{linkError}</p>}
         </div>
 
         {/* Two-panel transfer */}

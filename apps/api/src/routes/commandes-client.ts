@@ -53,6 +53,7 @@ import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
+import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow } from '../lib/ennoblissement-supply.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const commandesClientRouter: RouterType = Router()
@@ -2508,19 +2509,24 @@ async function buildEnnoblissement(finiRefId: number, rendement: number, coloriI
   // per-line affectation — commande 3686 vs sst 8558/8559 case). Rolls reserved
   // to another client line or to a donation commande are spoken for elsewhere:
   // they count in neither column (not affecté here, never disponible).
-  const affKg = new Map<number, number>()
-  const dispoKg = new Map<number, number>()
+  // A roll already dyed (fini child or merged component) is a fini roll now —
+  // out of both columns, like the gauge (LIVA #1188, lib/ennoblissement-supply.ts).
+  let affKg = new Map<number, number>()
+  let dispoKg = new Map<number, number>()
   if (lineIds.length > 0) {
     const rows = await query<any>(
-      `SELECT IDref_commande_affectation AS lid, IDligne_commande_client AS lcc, IDcommande_donation AS don, poids
+      `SELECT IDstock_ecru AS id, IDref_commande_affectation AS lid, IDligne_commande_client AS lcc, IDcommande_donation AS don, poids
          FROM stock_ecru WHERE IDref_commande_affectation IN (${lineIds.join(',')})`,
     )
-    for (const r of rows) {
-      const lid = Number(r.lid)
-      const p = Number(r.poids) || 0
-      if (Number(r.lcc) === ligneId) affKg.set(lid, (affKg.get(lid) ?? 0) + p)
-      else if (!(Number(r.lcc) > 0) && !(Number(r.don) > 0)) dispoKg.set(lid, (dispoKg.get(lid) ?? 0) + p)
-    }
+    const shaped: EnnoEcruRow[] = rows.map((r: any) => ({
+      id: Number(r.id) || 0,
+      lid: Number(r.lid) || 0,
+      lcc: Number(r.lcc) || 0,
+      don: Number(r.don) || 0,
+      poids: Number(r.poids) || 0,
+    }))
+    const consumed = await consumedEcruIds(shaped.map((r) => r.id))
+    ;({ affKg, dispoKg } = ennoSupplyBuckets(shaped, ligneId, consumed))
   }
   const sstNames = await resolveMagasinNames(lines.map((l: any) => Number(l.sstid)))
   return lines.map((l: any) => {
@@ -2839,8 +2845,11 @@ async function fetchEnnoRollsPayload(ctx: ClientLineContext, sstLineId: number) 
         ORDER BY date_saisie DESC, IDstock_ecru DESC`,
     ),
   ])
-  const linkedFixed = await fixEncoding(linkedRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
-  const availFixed = await fixEncoding(availRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
+  // A dyed roll is a fini roll now (Affectation tab): neither linked nor
+  // available here, whatever its écru row still says (LIVA #1188).
+  const consumed = await consumedEcruIds([...linkedRaw, ...availRaw].map((r: any) => Number(r.IDstock_ecru)))
+  const linkedFixed = await fixEncoding(liveEcruRolls(linkedRaw, consumed), 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
+  const availFixed = await fixEncoding(liveEcruRolls(availRaw, consumed), 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   const magNames = await resolveMagasinNames([...linkedFixed, ...availFixed].map((r: any) => Number(r.IDmagasin)))
   const colNames = await resolveEcruColoris([...linkedFixed, ...availFixed].map((r: any) => Number(r.IDcolori_ecru)))
   const toRoll = (r: any): RollLite => ({
@@ -2907,6 +2916,9 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/ennoblissement/:sstLineId
     if (rollRows.length === 0) { res.status(404).json({ error: 'Stock ecru not found' }); return }
     if (Number(rollRows[0].IDref_commande_affectation) !== sstLineId) { res.status(400).json({ error: 'Roll does not belong to this ennoblisseur order' }); return }
     if (refuseIfDonated(res, rollRows[0].IDcommande_donation)) return
+    // Belt and braces: the dialog no longer lists a dyed roll (#1188), but a
+    // stale list or the legacy could still name one.
+    if ((await consumedEcruIds([stockId])).has(stockId)) { res.status(409).json(ECRU_CONSUMED_ERROR); return }
     const current = Number(rollRows[0].IDligne_commande_client) || 0
     if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
     await query(`UPDATE stock_ecru SET IDligne_commande_client = ${ligneId} WHERE IDstock_ecru = ${stockId}`)
