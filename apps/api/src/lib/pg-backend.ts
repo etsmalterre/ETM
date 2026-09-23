@@ -213,8 +213,12 @@ function loadJson<T>(name: string, fallback: T): T {
 
 const DATECOLS: DateCols = loadJson('pg-datecols.json', {})
 
-const entryOf = (map: DateCols, schema: string, table: string) =>
-  map[`${schema}.${table.toLowerCase()}`] ?? map[`public.${table.toLowerCase()}`]
+/** Tolerates a stale pg-datecols.json: an entry that is not { cols, dates } is
+ *  ignored rather than crashing every write. */
+const entryOf = (map: DateCols, schema: string, table: string) => {
+  const e = map[`${schema}.${table.toLowerCase()}`] ?? map[`public.${table.toLowerCase()}`]
+  return e && Array.isArray(e.cols) && Array.isArray(e.dates) ? e : undefined
+}
 
 const dateColsOf = (map: DateCols, schema: string, table: string): Set<string> =>
   new Set(entryOf(map, schema, table)?.dates ?? [])
