@@ -28,7 +28,9 @@
 import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
 import { esc, n } from './sst-shared.js'
 
-export const IS_WINDOWS = process.platform === 'win32'
+/** Same flag, same meaning and same caveat as sst-shared.ts's: « reaches the
+ *  data through the Windows ODBC driver », false on PostgreSQL. */
+export const IS_WINDOWS = process.platform === 'win32' && process.env.DB_BACKEND !== 'pg'
 export const TRM_SOCIETE = 2
 
 // ── Small SQL/format helpers (same contract as commandes-trm.ts) ──

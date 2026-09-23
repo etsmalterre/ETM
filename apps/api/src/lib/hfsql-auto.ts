@@ -68,3 +68,16 @@ export const createHfsqlClient: CreateClientFn = (cs) => (usePg() ? pg.createPgC
 
 /** Which database this process talks to, for /api/health and the logs. */
 export const dbBackend = (): 'pg' | 'hfsql' => (usePg() ? 'pg' : 'hfsql')
+
+/** On PostgreSQL, the database name alone — never the credentials. The write
+ *  tests use it to refuse to run against anything but the rehearsal copy. */
+export const dbName = (): string | undefined => {
+  if (!usePg()) return undefined
+  const url = process.env.PG_CONNECTION_STRING
+  if (!url) return undefined
+  try {
+    return new URL(url).pathname.replace(/^\//, '') || undefined
+  } catch {
+    return undefined
+  }
+}

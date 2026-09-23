@@ -8,8 +8,23 @@
 // Anything that issues queries stays in the route files.
 
 /** HFSQL ODBC bridge rejects accented identifiers on Linux but accepts them
- *  on Windows. Several queries branch on this. */
-export const IS_WINDOWS = process.platform === 'win32'
+ *  on Windows. Several queries branch on this.
+ *
+ *  It means « this process reaches the data through the Windows ODBC driver »,
+ *  not « this process runs on Windows »: on PostgreSQL no identifier is accented
+ *  at all (migration decision D2), so the Linux form — `t.*` plus prefix key
+ *  resolution — is the correct one, and it is also what production will run
+ *  after the cutover. Without this, a PG backend hosted on a Windows dev machine
+ *  takes the Windows branch and answers a DIFFERENT set of columns from
+ *  production (`/api/stock/fil` lost IDclient and certif_*), which the shadow
+ *  diff reports as a migration difference when it is only the host OS.
+ *
+ *  ⚠️ Read from the real process environment, not from .env: this is a
+ *  module-level constant, and ESM runs every import before the entry point's
+ *  dotenv.config() (the same trap documented in hfsql-auto.ts). The worktree
+ *  launcher therefore exports DB_BACKEND itself. In production the process runs
+ *  on Linux, where the platform test is already false, so nothing depends on it. */
+export const IS_WINDOWS = process.platform === 'win32' && process.env.DB_BACKEND !== 'pg'
 
 /** Escape a string for an HFSQL SQL literal (single-quote doubling). HFSQL
  *  has no parameterized queries, so every interpolated string must go

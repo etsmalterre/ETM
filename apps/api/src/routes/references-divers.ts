@@ -35,7 +35,7 @@ export const referencesDiversRouter: RouterType = Router()
 //     always alias when selected.
 //   • Empty FK columns store 0, never NULL — variation ids use 0 as "none".
 
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 /** Upper bound on rows pre-created when switching a reference to per-variation
  *  pricing. Above it the grid opens blank and fills in on demand. */

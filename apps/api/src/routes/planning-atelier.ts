@@ -25,7 +25,7 @@ import { PlanningAtelierPdf, type PlanningAtelierPdfData } from '../lib/pdf/Plan
 
 export const planningAtelierRouter: RouterType = Router()
 
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 // ── Helpers ──────────────────────────────────────────────
 

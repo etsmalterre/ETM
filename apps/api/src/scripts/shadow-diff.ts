@@ -16,6 +16,8 @@
 //   npx tsx src/scripts/shadow-diff.ts --paths=/api/entreprises,/api/entreprises/7
 //   options: --a=<url> --b=<url> --user=<IDutilisateur> --max-diffs=20 --limit=<ids per detail route>
 
+import { createHash } from 'crypto'
+
 const args = process.argv.slice(2)
 const arg = (n: string) => args.find(a => a.startsWith(`--${n}=`))?.slice(n.length + 3)
 const A = arg('a') ?? 'https://etm.intra.etsmalterre.com'
@@ -28,7 +30,7 @@ type Json = unknown
 
 /** A suite: fixed paths, plus detail paths built from the ids a list returns. */
 interface Suite {
-  paths: string[]
+  paths?: string[]
   details?: { list: string; id: string; paths: (id: number) => string[] }[]
 }
 
@@ -40,6 +42,215 @@ const SUITES: Record<string, Suite> = {
       id: 'IDentreprise',
       paths: id => [`/api/entreprises/${id}`, `/api/entreprises/${id}/competences/available`],
     }],
+  },
+
+  // ── The heavy screens (windev_migration docs/plan.md § C6) ──────────────
+  // Each suite is « the lists and lookups a screen loads », then a sample of
+  // its detail pages spread over the whole list (see LIMIT / step below).
+
+  'stock-ecru': {
+    paths: [
+      '/api/stock/ecru', '/api/stock/ecru?second_choix=1', '/api/stock/ecru?statut=dispo',
+      '/api/stock/ecru/suivi',
+      '/api/stock/ecru/lookups/refs', '/api/stock/ecru/lookups/coloris', '/api/stock/ecru/lookups/magasins',
+    ],
+    details: [{
+      list: '/api/stock/ecru', id: 'IDstock_ecru',
+      paths: id => [`/api/stock/ecru/${id}`, `/api/stock/ecru/${id}/provenance`],
+    }],
+  },
+
+  'stock-fini': {
+    paths: [
+      '/api/stock/fini', '/api/stock/fini?expedie=1',
+      '/api/stock/fini/lookups/etats', '/api/stock/fini/lookups/refs',
+      '/api/stock/fini/lookups/coloris', '/api/stock/fini/lookups/magasins',
+    ],
+    details: [{
+      list: '/api/stock/fini', id: 'IDstock_fini',
+      paths: id => [`/api/stock/fini/${id}`, `/api/stock/fini/${id}/provenance`, `/api/stock/fini/${id}/label`],
+    }],
+  },
+
+  'stock-fil': {
+    paths: ['/api/stock/fil', '/api/stock/fil/etat', '/api/stock/fil/la-gentle-stale'],
+    details: [{ list: '/api/stock/fil', id: 'IDstock_fil', paths: id => [`/api/stock/fil/${id}`] }],
+  },
+
+  'commandes-client': {
+    paths: [
+      '/api/commandes-client', '/api/commandes-client?status=en-cours', '/api/commandes-client/du-jour',
+      '/api/commandes-client/urgency-counts',
+      '/api/commandes-client/lookups/clients', '/api/commandes-client/lookups/adresses',
+      '/api/commandes-client/lookups/refs-ecru', '/api/commandes-client/lookups/colori-ecru',
+      '/api/commandes-client/lookups/refs-fini', '/api/commandes-client/lookups/colori-fini',
+      '/api/commandes-client/lookups/refs-divers', '/api/commandes-client/lookups/modes-paiement',
+      '/api/commandes-client/lookups/echeances', '/api/commandes-client/lookups/type-doc',
+    ],
+    details: [{
+      list: '/api/commandes-client', id: 'IDcommande_client',
+      paths: id => [
+        `/api/commandes-client/${id}`,
+        `/api/commandes-client/${id}/historique`,
+        `/api/commandes-client/${id}/documents`,
+        `/api/commandes-client/${id}/factures`,
+        `/api/commandes-client/${id}/expeditions-divers`,
+        `/api/commandes-client/${id}/donation-pieces`,
+      ],
+    }],
+  },
+
+  'commandes-fil': {
+    paths: [
+      '/api/commandes-fil',
+      '/api/commandes-fil/lookups/refs-fil', '/api/commandes-fil/lookups/adresses',
+      '/api/commandes-fil/lookups/modes-paiement', '/api/commandes-fil/lookups/echeances',
+      '/api/commandes-fil/lookups/type-doc',
+    ],
+    details: [{
+      list: '/api/commandes-fil', id: 'IDcommande_fil',
+      paths: id => [`/api/commandes-fil/${id}`, `/api/commandes-fil/${id}/documents`],
+    }],
+  },
+
+  'commandes-sst': {
+    paths: [
+      '/api/commandes-sous-traitant', '/api/commandes-sous-traitant/urgency-counts',
+      '/api/commandes-sous-traitant/lookups/sous-traitants', '/api/commandes-sous-traitant/lookups/magasins',
+      '/api/commandes-sous-traitant/lookups/refs-ecru', '/api/commandes-sous-traitant/lookups/refs-fini',
+      '/api/commandes-sous-traitant/lookups/colori-ecru', '/api/commandes-sous-traitant/lookups/colori-fini',
+      '/api/commandes-sous-traitant/lookups/adresses', '/api/commandes-sous-traitant/lookups/type-doc',
+    ],
+    details: [{
+      list: '/api/commandes-sous-traitant', id: 'IDcommande_sous_traitant',
+      paths: id => [
+        `/api/commandes-sous-traitant/${id}`,
+        `/api/commandes-sous-traitant/${id}/historique`,
+        `/api/commandes-sous-traitant/${id}/documents`,
+        `/api/commandes-sous-traitant/${id}/mentions-qualite`,
+      ],
+    }],
+  },
+
+  facturation: {
+    paths: ['/api/factures', '/api/rapports/factures'],
+    details: [{ list: '/api/factures', id: 'IDfacture', paths: id => [`/api/factures/${id}`] }],
+  },
+
+  expeditions: {
+    paths: [
+      '/api/expeditions',
+      '/api/expeditions/lookups/transporteurs', '/api/expeditions/lookups/clients',
+      '/api/expeditions/lookups/commandes', '/api/expeditions/lookups/adresses',
+      '/api/expeditions/lookups/contacts',
+      '/api/expeditions/divers/lookups/refs', '/api/expeditions/divers/lookups/prix',
+    ],
+    details: [{
+      list: '/api/expeditions', id: 'IDexpedition',
+      paths: id => [`/api/expeditions/formelle/${id}`],
+    }],
+  },
+
+  devis: {
+    paths: [
+      '/api/devis', '/api/devis/urgency-counts',
+      '/api/devis/lookups/clients', '/api/devis/lookups/adresses', '/api/devis/lookups/refs-fini',
+      '/api/devis/lookups/refs-ecru', '/api/devis/lookups/refs-divers', '/api/devis/lookups/colori-fini',
+      '/api/devis/lookups/modes-paiement', '/api/devis/lookups/echeances', '/api/devis/lookups/type-doc',
+    ],
+    details: [{
+      list: '/api/devis', id: 'IDdevis',
+      paths: id => [`/api/devis/${id}`, `/api/devis/${id}/historique`, `/api/devis/${id}/documents`],
+    }],
+  },
+
+  atelier: {
+    paths: ['/api/atelier/bonnetiers', '/api/atelier/machines', '/api/atelier/lookups/defauts'],
+    details: [{
+      list: '/api/of-trm', id: 'IDordre_fabrication',
+      paths: id => [
+        `/api/atelier/of/${id}`, `/api/atelier/of/${id}/reglage`, `/api/atelier/of/${id}/messages`,
+        `/api/atelier/of/${id}/historique`, `/api/atelier/of/${id}/fils`,
+      ],
+    }],
+  },
+
+  of: {
+    paths: [
+      '/api/of-trm', '/api/of-trm?all=1',
+      '/api/of-trm/lookups/machines', '/api/of-trm/lookups/lignes-commande', '/api/of-trm/lookups/composition',
+      '/api/of-trm/lookups/observations', '/api/of-trm/lookups/coloris-ecru', '/api/of-trm/lookups/fils',
+      '/api/of-trm/lookups/lots',
+    ],
+    details: [{
+      list: '/api/of-trm', id: 'IDordre_fabrication',
+      paths: id => [
+        `/api/of-trm/${id}`, `/api/of-trm/${id}/production`, `/api/of-trm/${id}/qualite`,
+        `/api/of-trm/${id}/performance`, `/api/of-trm/${id}/visitage`,
+        `/api/of-trm/${id}/observations`, `/api/of-trm/${id}/observations-ref`,
+      ],
+    }],
+  },
+
+  trs: { paths: ['/api/trs/atelier', '/api/trs/equipe'] },
+
+  pointage: {
+    paths: [
+      '/api/pointage-admin/salaries', '/api/pointage-admin/bonnetiers', '/api/pointage-admin/en-poste',
+      '/api/pointage-admin/horaires', '/api/pointage-admin/lissage/semaines',
+      '/api/pointage-admin/previsionnel', '/api/pointage-admin/paie',
+      '/api/pointage/en-poste', '/api/pointage/salaries',
+    ],
+    details: [{
+      list: '/api/pointage-admin/salaries', id: 'IDsalarie',
+      paths: id => [`/api/pointage-admin/salaries/${id}/messages`, `/api/pointage/salaries/${id}/etat`],
+    }],
+  },
+
+  rapports: {
+    paths: [
+      '/api/rapports/factures', '/api/rapports/commandes-clients', '/api/rapports/commandes-fil',
+      '/api/rapports/commandes-sst', '/api/rapports/stock/valorisation',
+      '/api/rapports/commandes-clients?soldees=1', '/api/rapports/commandes-sst?terminees=1',
+      '/api/rapports-trm/factures',
+    ],
+  },
+
+  dashboard: {
+    paths: [
+      '/api/dashboard-trm/poids-pieces', '/api/dashboard-trm/pieces-a-visiter',
+      '/api/dashboard-trm/rapport-production',
+      '/api/user-profiles/me/dashboard',
+      '/api/commandes-client/urgency-counts', '/api/commandes-sous-traitant/urgency-counts',
+      '/api/devis/urgency-counts',
+    ],
+  },
+
+  qualite: {
+    paths: ['/api/dossiers-qualite', '/api/dossiers-qualite/lookups', '/api/actions-qualite',
+            '/api/actions-qualite/lookups/coloris', '/api/actions-qualite/lookups/references',
+            '/api/actions-qualite/lookups/sous-traitants', '/api/suivi-lots'],
+    details: [{
+      list: '/api/dossiers-qualite', id: 'IDdossier_qualite',
+      paths: id => [`/api/dossiers-qualite/${id}`, `/api/dossiers-qualite/${id}/tracabilite`,
+                    `/api/dossiers-qualite/${id}/documents`],
+    }],
+  },
+
+  // PDFs: compared as binary (see the binary branch in get()). @react-pdf stamps
+  // a creation date into every file, so only the status and a stable size band
+  // can match — a PDF built from different data changes size well beyond that.
+  pdf: {
+    details: [
+      { list: '/api/commandes-client', id: 'IDcommande_client',
+        paths: id => [`/api/commandes-client/${id}/pdf`, `/api/commandes-client/${id}/proforma/pdf`] },
+      { list: '/api/devis', id: 'IDdevis', paths: id => [`/api/devis/${id}/pdf`] },
+      { list: '/api/commandes-sous-traitant', id: 'IDcommande_sous_traitant',
+        paths: id => [`/api/commandes-sous-traitant/${id}/pdf`] },
+      { list: '/api/expeditions', id: 'IDexpedition',
+        paths: id => [`/api/expeditions/formelle/${id}/pdf`] },
+    ],
+    paths: ['/api/commandes-client/cgv/pdf'],
   },
 }
 
@@ -56,9 +267,34 @@ async function login(base: string): Promise<string> {
   return (r.headers.getSetCookie?.() ?? []).map(c => c.split(';')[0]).join('; ')
 }
 
+/** ⚠️ A PDF from @react-pdf is NOT reproducible: the same document fetched twice
+ *  from the SAME server gives different bytes at an identical size (measured on
+ *  prod 2026-09-23, /api/commandes-client/7202/pdf, 47271 bytes both times).
+ *  Stripping /CreationDate, /ModDate and /ID is not enough — something else in
+ *  the generator varies per run. So a digest would report a difference on every
+ *  single PDF, which is worse than useless.
+ *
+ *  PDFs are therefore compared on BYTE LENGTH alone. It is a proxy, not a proof:
+ *  same size means the same text ran through the same layout, and a PDF built
+ *  from different data almost always changes size. A PDF that must be checked
+ *  properly is opened by hand (claude_doc/pdf_email.md § how to verify a PDF). */
+const isPdf = (type: string) => /pdf/.test(type)
+
 async function get(base: string, path: string, cookie: string): Promise<{ status: number; body: Json; ms: number }> {
   const t0 = Date.now()
   const r = await fetch(base + path, { headers: cookie ? { cookie } : {} })
+  const type = r.headers.get('content-type') ?? ''
+  // Binary answers (PDF, label images, stored documents) never parse as JSON:
+  // compare a content digest and the size instead of the bytes themselves, so
+  // the report stays readable.
+  if (!/json|text\//.test(type)) {
+    const buf = Buffer.from(await r.arrayBuffer())
+    const body: Record<string, Json> = { binary: type.split(';')[0], bytes: buf.length }
+    // Everything that is not a PDF (images, labels as PNG) IS reproducible:
+    // compare it byte for byte through a digest.
+    if (!isPdf(type)) body.digest = createHash('sha1').update(buf).digest('hex')
+    return { status: r.status, body, ms: Date.now() - t0 }
+  }
   const text = await r.text()
   let body: Json = text
   try { body = JSON.parse(text) } catch { /* keep text */ }
@@ -118,23 +354,40 @@ const typographyOnly = (a: Json, b: Json) => {
 }
 
 /** Same rows, other order: HFSQL sorts text per its index options (case, spaces,
- *  punctuation vary by column), PostgreSQL in one French order. Rows are
- *  matched on their first ID-like key. */
+ *  punctuation vary by column), PostgreSQL in one French order — the open
+ *  decision « text sort order » in docs/plan.md § Review agenda.
+ *
+ *  Compared as MULTISETS of whole rows, not by an id key. An id key only works
+ *  when it is unique in the list, and several lookups return one row per
+ *  (ref, colori) pair, so `IDref_ecru` repeats and the id match collapsed rows
+ *  onto each other — 1543 « real » differences on one lookup that were only a
+ *  different ORDER BY. Each row is canonicalised (keys sorted, C1 typography
+ *  repaired, floats rounded) and the two bags of rows are compared. */
+function canonicalRow(r: Json): string {
+  const norm = (v: Json): Json => {
+    if (typeof v === 'number') return Math.round(v * 1e5) / 1e5
+    if (typeof v === 'string') return fromC1(v)
+    if (Array.isArray(v)) return v.map(norm)
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, Json>
+      return Object.fromEntries(Object.keys(o).sort().map(k => [k, norm(o[k])]))
+    }
+    return v
+  }
+  return JSON.stringify(norm(r))
+}
+
 function sameRowsOtherOrder(a: Json, b: Json): boolean {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return false
-  const first = a[0]
-  if (!first || typeof first !== 'object') return false
-  const idKey = Object.keys(first as object).find(k => /^id/i.test(k))
-  if (!idKey) return false
-  const key = (r: Json) => JSON.stringify((r as Record<string, Json>)?.[idKey])
-  const byKey = new Map(b.map(r => [key(r), r]))
-  return a.every(r => {
-    const other = byKey.get(key(r))
-    if (other === undefined) return false
-    const d: Diff[] = []
-    diff(r, other, '', d)
-    return d.every(x => floatNoise(x.a, x.b) || typographyOnly(x.a, x.b))
-  })
+  const bag = new Map<string, number>()
+  for (const r of b) bag.set(canonicalRow(r), (bag.get(canonicalRow(r)) ?? 0) + 1)
+  for (const r of a) {
+    const k = canonicalRow(r)
+    const n = bag.get(k)
+    if (!n) return false
+    bag.set(k, n - 1)
+  }
+  return true
 }
 
 type Verdict = 'identical' | 'order' | 'harmless' | 'different'
@@ -152,9 +405,13 @@ const pattern = (p: string) => p.replace(/\[\d+\]/g, '[]')
 // ── Main ─────────────────────────────────────────────────────
 
 async function main() {
-  const suiteName = arg('suite')
-  const suite: Suite = suiteName
-    ? SUITES[suiteName] ?? (() => { throw new Error(`unknown suite ${suiteName}: ${Object.keys(SUITES).join(', ')}`) })()
+  // --suite=stock-ecru, several at once (--suite=stock-ecru,stock-fini) or =all.
+  const names = arg('suite') === 'all' ? Object.keys(SUITES) : (arg('suite') ?? '').split(',').filter(Boolean)
+  for (const n of names) {
+    if (!SUITES[n]) throw new Error(`unknown suite ${n}. Known: ${Object.keys(SUITES).join(', ')}`)
+  }
+  const suite: Suite = names.length
+    ? { paths: names.flatMap(n => SUITES[n].paths ?? []), details: names.flatMap(n => SUITES[n].details ?? []) }
     : { paths: (arg('paths') ?? '').split(',').filter(Boolean) }
   // Refuse to compare unless B really runs on PostgreSQL and A does not: on
   // 2026-09-22 the first "diff" compared HFSQL with dev HFSQL because the
@@ -166,7 +423,7 @@ async function main() {
   const [ca, cb] = await Promise.all([login(A), login(B)])
   console.log(`A ${A}  (${ka})\nB ${B}  (${kb})\n`)
 
-  const paths = [...suite.paths]
+  const paths = [...(suite.paths ?? [])]
   for (const d of suite.details ?? []) {
     const list = await get(A, d.list, ca)
     const ids = Array.isArray(list.body) ? (list.body as Record<string, Json>[]).map(r => Number(r[d.id])).filter(Number.isFinite) : []

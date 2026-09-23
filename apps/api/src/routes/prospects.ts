@@ -38,7 +38,7 @@ async function ensureCanEdit(req: Request, res: Response): Promise<boolean> {
 //     `normalizeProspectRow` folds the returned keys to canonical ASCII keys.
 //   • Writes name the accented columns only on Windows; on Linux those three
 //     fields are skipped (same limitation stock.ts ships for `terminé`).
-const IS_WINDOWS = process.platform === 'win32'
+import { IS_WINDOWS } from '../lib/sst-shared.js'
 
 // ── Helpers ──────────────────────────────────────────────
 
