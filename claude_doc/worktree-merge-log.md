@@ -10,6 +10,29 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/superviseur — agent IA « Superviseur » (contrôle du soir)
+**MPS API + web ETM.** Deuxième agent d'Agents IA : chaque jour ouvré à 19 h il contrôle ETM
+(IDsociete 1) et les boîtes contact@, n.antonino@, l.tellier@ (Laetitia), pierre-emmanuel@ en lecture
+seule (`gmail.readonly`, délégué le 23/09 sur le même client ID que gmail.send/modify), et n'envoie un
+mail aux abonnés de `notif_agent_superviseur` (Vincent, Isabelle) que s'il trouve un point NOUVEAU ou
+aggravé. Moteur : `AgentDef.declenchement` (`releve` / `quotidien`, jour écrit avant l'exécution),
+`traiter` optionnel, jugement `execution` (réussie par défaut, « échouée » + commentaire obligatoire ;
+BL MATEL garde ses pouces), statuts `mail_envoye` / `rien_a_signaler`. Mémoire des points
+(`data/agents/superviseur-constats.json`) : nouveau / aggravé / toujours ouvert / résolu ; seule
+l'exécution planifiée la met à jour et envoie. 6 contrôles (`superviseur/controles/`, seuils testés dans
+`regles.ts`) : client sans réponse (conversations suivies entre les 4 boîtes, fournisseurs / sst /
+transporteurs exclus, tri Mistral), commande reçue par mail non saisie ou différente (OCR + extraction
+Mistral, rapprochement `rapprochement.ts` : n° client ou le nôtre sur ETM+TRM, quantité, appel sur
+commande cadre ouverte, date), pièces à affecter / production à lancer, ennoblissement à lancer, fil à
+commander (`lib/fil-etat.ts`, extrait tel quel de `routes/stock.ts`), fil à affecter chez Tricotage
+Malterre (#1159). Mesuré en prod : 12 points aujourd'hui ; rejeu de 20 soirs ≈ 1 nouvelle alerte
+client/jour ; 60 jours de commandes : 21 nouvelles, 0 non saisie, 7 à vérifier. Écran : Exécutions,
+dialogue d'exécution avec aperçu du mail, carte Planification, liste des contrôles dans Fonctionnement.
+Liens profonds `?commande=` sur Clients › Commandes et Sous-traitants › Commandes ; correctif
+`?agent=` d'Agents IA (retombait sur le premier agent). Scripts : `essai-superviseur.ts`,
+`essai-superviseur-boites.ts`, `replay-superviseur-mails.ts`, `benchmark-superviseur-commandes.ts`.
+À déployer en mode « essai » ; informer par écrit les quatre personnes (CNIL) avant « actif ».
+
 ## 2026-09-23 — feat/1189-a-definir — Adresse de livraison « À définir », bloquée à la sortie de l'usine (LIVA #1189)
 **MPS API + web ETM.** Le legacy offrait une adresse fictive partagée, `adresse` 795 « A Définir » (`IDclient = 0`, champs « - ») ;
 ETM ne la proposait plus.

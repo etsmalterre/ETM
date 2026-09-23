@@ -163,7 +163,7 @@ function lineDim(unite: number | null | undefined): 'metrage' | 'poids' {
 }
 
 /** Roll kind a line reserves: type 1 → écru, type 2 → fini, else none. */
-function lineStockKind(typeKind: number): 'ecru' | 'fini' | 'none' {
+export function lineStockKind(typeKind: number): 'ecru' | 'fini' | 'none' {
   if (typeKind === 1) return 'ecru'
   if (typeKind === 2) return 'fini'
   return 'none'
@@ -1187,7 +1187,7 @@ function resolveColorisLabel(maps: ResolvedMaps, IDcolori: number, typeKind: num
  *    validates 240.60 kg × 3.548387 = 853.74 Ml),
  *   - affectation_cmd_tricotage planning allocations (poids × rendement).
  *  Needs each line's ref to resolve the rendement, hence the meta input. */
-async function lineReservationAggregates(
+export async function lineReservationAggregates(
   lines: Array<{ id: number; typeKind: number; refId: number }>,
 ): Promise<Map<number, { nb_rolls: number; total_metrage: number; total_poids: number; exp_metrage: number; exp_poids: number }>> {
   const out = new Map<number, { nb_rolls: number; total_metrage: number; total_poids: number; exp_metrage: number; exp_poids: number }>()

@@ -27,7 +27,9 @@ import {
   type AgentState,
   type Auteur,
 } from '../lib/agents/store.js'
-import { etatSondage, sonder, SondageEnCoursError } from '../lib/agents/scheduler.js'
+import { etatSondage, prochainQuotidien, sonder, SondageEnCoursError } from '../lib/agents/scheduler.js'
+import { renderNotificationEmailPreview } from '../lib/notification-email.js'
+import type { ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur } from '../lib/gmail-reader.js'
 
@@ -90,15 +92,21 @@ function statistiques(runs: AgentRun[], state: AgentState) {
   }
 }
 
-/** A run without the heavy parts (OCR text) for lists. */
+/** A run without the heavy parts (OCR text, findings) for lists. */
 function allege(r: AgentRun) {
   const { resultat, ...rest } = r
   const res = resultat as { extraction?: { pieces?: unknown[]; numero_bordereau?: string; numero_commande?: string } }
+  const sup = resultat as Partial<ResultatSuperviseur>
   return {
     ...rest,
     bordereau: res.extraction?.numero_bordereau ?? null,
     commande: res.extraction?.numero_commande ?? null,
     nbPieces: res.extraction?.pieces?.length ?? null,
+    // Superviseur
+    nbNouveaux: sup.constats ? sup.constats.filter((c) => c.etat !== 'ouvert').length : null,
+    nbOuverts: sup.constats ? sup.constats.filter((c) => c.etat === 'ouvert').length : null,
+    nbFermes: sup.fermes ? sup.fermes.length : null,
+    mailEnvoye: sup.mail ? sup.mail.envoye : null,
   }
 }
 
@@ -111,6 +119,16 @@ async function vueAgent(def: AgentDef) {
     description: def.description,
     declencheur: def.declencheur,
     ecritures: def.ecritures,
+    abstention: def.abstention,
+    declenchement: def.declenchement,
+    jugement: def.jugement,
+    modes: def.modes,
+    peutTester: !!def.traiter,
+    controles: def.controles ?? [],
+    prochaineExecution:
+      def.declenchement.type === 'quotidien' && state.mode !== 'off'
+        ? prochainQuotidien(def.declenchement, Date.now(), state.dernierePlanification)
+        : null,
     mode: state.mode,
     startedAt: state.startedAt,
     modeChangedAt: state.modeChangedAt,
@@ -216,7 +234,10 @@ agentsIaRouter.get('/:slug/runs', async (req, res) => {
   if (!def) return
   try {
     const statut = typeof req.query.statut === 'string' && req.query.statut ? req.query.statut.split(',') : null
-    const runs = (await lireRuns(def.slug)).filter((r) => !statut || statut.includes(r.statut)).reverse()
+    const verdict = req.query.verdict === 'correct' || req.query.verdict === 'incorrect' ? req.query.verdict : null
+    const runs = (await lireRuns(def.slug))
+      .filter((r) => (!statut || statut.includes(r.statut)) && (!verdict || r.verdict?.valeur === verdict))
+      .reverse()
     const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '200'), 10) || 200))
     res.json({ total: runs.length, runs: runs.slice(0, limit).map(allege) })
   } catch (err) {
@@ -232,6 +253,17 @@ agentsIaRouter.get('/:slug/runs/:id', async (req, res) => {
   const r = await lireRun(def.slug, req.params.id)
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
   res.json(r)
+})
+
+/** The mail a Superviseur run sent (or would have sent), rendered like the real one. */
+agentsIaRouter.get('/:slug/runs/:id/apercu-mail', async (req, res) => {
+  if (session(req, res) === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  const r = await lireRun(def.slug, req.params.id)
+  const mail = (r?.resultat as Partial<ResultatSuperviseur> | undefined)?.mail
+  if (!mail) { res.status(404).json({ error: 'aucun mail pour cette exécution' }); return }
+  res.json({ sujet: mail.sujet, html: renderNotificationEmailPreview(mail.contenu) })
 })
 
 agentsIaRouter.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
@@ -267,6 +299,7 @@ agentsIaRouter.post('/:slug/runs/:id/retraiter', async (req, res) => {
       if (b) pdfs.push({ nom: f.nom, contenu: b })
     }
     if (!pdfs.length) { res.status(409).json({ error: 'aucun PDF conservé pour cette exécution' }); return }
+    if (!def.traiter) { res.status(409).json({ error: 'cet agent ne lit pas de PDF' }); return }
     const state = await lireEtat(def.slug, def.versionInitiale)
     const runs = await def.traiter(pdfs, {
       mode: state.mode === 'actif' ? 'actif' : 'essai',
@@ -295,6 +328,15 @@ agentsIaRouter.put('/:slug/runs/:id/verdict', async (req, res) => {
   if (!def) return
   const p = verdictBody.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'verdict invalide' }); return }
+  // « execution » agents: a run is « réussie » unless marked « échouée », and
+  // failing it needs the reason — the comment is what improves the agent.
+  if (def.jugement === 'execution') {
+    if (p.data.valeur === 'correct') p.data.valeur = null
+    if (p.data.valeur === 'incorrect' && !p.data.commentaire) {
+      res.status(400).json({ error: 'Expliquez en commentaire pourquoi l’exécution a échoué.' })
+      return
+    }
+  }
   const par = await auteur(uid)
   const r = await modifierRun(def.slug, req.params.id, (run) => {
     run.verdict = p.data.valeur ? { valeur: p.data.valeur, commentaire: p.data.commentaire, par, le: new Date().toISOString() } : null
@@ -329,6 +371,7 @@ agentsIaRouter.post('/:slug/essai', upload.single('fichier'), async (req, res) =
   if (uid === null) return
   const def = agentOu404(req, res)
   if (!def) return
+  if (!def.traiter) { res.status(409).json({ error: 'cet agent ne lit pas de PDF' }); return }
   try {
     let pdf: { nom: string; contenu: Buffer } | null = null
     if (req.file?.buffer?.length) {

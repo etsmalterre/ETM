@@ -11,7 +11,7 @@
 // here with ?agent=<slug>&run=<id>.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -23,6 +23,7 @@ import {
   CircleSlash,
   Clock,
   Copy,
+  ExternalLink,
   FileText,
   FlaskConical,
   History,
@@ -37,6 +38,7 @@ import {
   RotateCcw,
   ScrollText,
   Search,
+  ShieldCheck,
   ThumbsDown,
   ThumbsUp,
   Upload,
@@ -58,8 +60,8 @@ import { cn } from '@/lib/utils'
 // ── Types (mirror routes/agents-ia.ts) ───────────────────
 
 type Mode = 'off' | 'essai' | 'actif'
-type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'deja_importe' | 'ignore' | 'erreur'
-type Source = 'gmail' | 'essai_manuel' | 'retraitement'
+type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'deja_importe' | 'ignore' | 'erreur' | 'mail_envoye' | 'rien_a_signaler'
+type Source = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel'
 
 interface Auteur { id: number; nom: string }
 
@@ -69,6 +71,14 @@ interface AgentVue {
   description: string
   declencheur: string
   ecritures: string[]
+  abstention: string
+  declenchement: { type: 'releve'; intervalleMs: number } | { type: 'quotidien'; heure: number; jours: number[] }
+  /** lecture = correct / incorrect (BL MATEL); execution = réussie unless marked échouée (Superviseur). */
+  jugement: 'lecture' | 'execution'
+  modes: Record<Mode, string>
+  peutTester: boolean
+  prochaineExecution: string | null
+  controles: Array<{ id: string; libelle: string; description: string }>
   mode: Mode
   startedAt: string | null
   modeChangedAt: string | null
@@ -119,6 +129,11 @@ interface RunLigne {
   retraiteDe?: string
   verdict?: { valeur: 'correct' | 'incorrect'; commentaire: string; par: Auteur; le: string } | null
   fichiers: Array<{ nom: string; taille: number }>
+  // Superviseur
+  nbNouveaux: number | null
+  nbOuverts: number | null
+  nbFermes: number | null
+  mailEnvoye: boolean | null
 }
 
 interface Controle { code: string; gravite: 'bloquant' | 'avertissement'; message: string }
@@ -184,10 +199,11 @@ const fmtDateCourte = (iso: string) =>
 /** USD cost as millièmes of a dollar when tiny — a BL costs about 0,005 $. */
 const fmtUsd = (v: number, decimals = 2) => (v < 0.1 ? `${fmtNum(v * 1000, decimals)} m$` : `${fmtNum(v, 2)} $`)
 
-const MODE_META: Record<Mode, { label: string; icon: ComponentType<{ className?: string }>; solid: string; description: string }> = {
-  off: { label: 'À l’arrêt', icon: CircleSlash, solid: 'bg-zinc-500 border-zinc-500', description: 'Ne lit pas la boîte mail.' },
-  essai: { label: 'En essai', icon: FlaskConical, solid: 'bg-sky-600 border-sky-600', description: 'Lit et analyse, n’enregistre rien.' },
-  actif: { label: 'En service', icon: Power, solid: 'bg-success border-success', description: 'Lit, analyse et enregistre.' },
+// Per-agent mode descriptions come from the catalog (AgentVue.modes).
+const MODE_META: Record<Mode, { label: string; icon: ComponentType<{ className?: string }>; solid: string }> = {
+  off: { label: 'À l’arrêt', icon: CircleSlash, solid: 'bg-zinc-500 border-zinc-500' },
+  essai: { label: 'En essai', icon: FlaskConical, solid: 'bg-sky-600 border-sky-600' },
+  actif: { label: 'En service', icon: Power, solid: 'bg-success border-success' },
 }
 const MODE_ORDER: Mode[] = ['off', 'essai', 'actif']
 
@@ -198,9 +214,13 @@ const STATUT_META: Record<Statut, { label: string; solid: string; icon: Componen
   deja_importe: { label: 'Déjà importé', solid: 'bg-zinc-500 border-zinc-500', icon: Copy },
   ignore: { label: 'Ignoré', solid: 'bg-zinc-400 border-zinc-400', icon: CircleSlash },
   erreur: { label: 'Erreur', solid: 'bg-red-800 border-red-800', icon: XCircle },
+  mail_envoye: { label: 'Mail envoyé', solid: 'bg-amber-500 border-amber-500', icon: Mail },
+  rien_a_signaler: { label: 'Rien à signaler', solid: 'bg-success border-success', icon: CheckCircle2 },
 }
 
-const SOURCE_LABEL: Record<Source, string> = { gmail: 'Mail', essai_manuel: 'Test', retraitement: 'Retraitement' }
+const SOURCE_LABEL: Record<Source, string> = {
+  gmail: 'Mail', essai_manuel: 'Test', retraitement: 'Retraitement', planifie: 'Planifiée', manuel: 'Manuelle',
+}
 
 function StatutPill({ statut, className }: { statut: Statut; className?: string }) {
   const m = STATUT_META[statut]
@@ -235,7 +255,9 @@ export function AgentsIa() {
     return (agents ?? []).filter((a) => !q || a.nom.toLowerCase().includes(q) || a.description.toLowerCase().includes(q))
   }, [agents, searchQuery])
 
-  useAutoSelectFirst({ rows: filtered, selectedId: selectedSlug, getId: (a) => a.slug, select: setSelectedSlug })
+  // `undefined` while loading: an empty array would make the hook clear the
+  // deep-linked ?agent= and fall back to the first agent.
+  useAutoSelectFirst({ rows: agents ? filtered : undefined, selectedId: selectedSlug, getId: (a) => a.slug, select: setSelectedSlug })
 
   const { data: detail, isLoading: detailLoading } = useQuery({
     queryKey: ['agent-ia', selectedSlug],
@@ -267,6 +289,12 @@ export function AgentsIa() {
     mutationFn: () => callApi<{ runs: RunLigne[] }>(`/agents-ia/${selectedSlug}/sonder`, { method: 'POST' }),
     onSuccess: (r) => {
       invalidate()
+      if (detail?.declenchement.type === 'quotidien') {
+        const run = r.runs[0]
+        setActionMessage(run ? { tone: run.statut === 'erreur' ? 'error' : 'ok', text: `Contrôle terminé : ${run.resume}.` } : { tone: 'ok', text: 'Aucun contrôle lancé.' })
+        if (run) setOpenRunId(run.id)
+        return
+      }
       setActionMessage({ tone: 'ok', text: r.runs.length ? `${r.runs.length} nouveau(x) mail(s) traité(s).` : 'Aucun nouveau mail.' })
     },
     onError: (e: Error) => { invalidate(); setActionMessage({ tone: 'error', text: e.message }) },
@@ -291,7 +319,11 @@ export function AgentsIa() {
         hasSelection={selectedSlug !== null}
         onBack={() => setSelectedSlug(null)}
       />
-      {selectedSlug && (
+      {selectedSlug && detail?.jugement === 'execution' && (
+        <SuperviseurRunDialog slug={selectedSlug} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)}
+          onChanged={invalidate} />
+      )}
+      {selectedSlug && detail?.jugement === 'lecture' && (
         <RunDialog slug={selectedSlug} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)}
           onOpenRun={setOpenRunId} onChanged={invalidate} />
       )}
@@ -366,8 +398,10 @@ function DetailHeader({ agent, isLoading, canPilot, onSonder, isSondant, onEssai
   if (isLoading || !agent) {
     return isLoading ? <div className="flex-shrink-0 pt-0.5"><div className="h-8 w-48 bg-muted animate-pulse rounded" /></div> : null
   }
+  const quotidien = agent.declenchement.type === 'quotidien'
   const sonderTitle = !canPilot ? 'Droit « Piloter les agents IA » requis'
     : agent.mode === 'off' ? 'L’agent est à l’arrêt : passez-le en essai ou en service'
+    : quotidien ? 'Lancer les contrôles maintenant — n’envoie aucun mail et ne change pas ce que dira le contrôle du soir'
     : 'Relever la boîte mail maintenant'
   return (
     <div className="flex-shrink-0 pt-0.5">
@@ -383,13 +417,16 @@ function DetailHeader({ agent, isLoading, canPilot, onSonder, isSondant, onEssai
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <Button variant="outline" size="sm" onClick={onEssai} disabled={!canPilot}
-            title={canPilot ? 'Tester l’agent sur un PDF, sans rien enregistrer' : 'Droit « Piloter les agents IA » requis'}>
-            <Upload className="h-3.5 w-3.5 sm:mr-1.5" /><span className="hidden sm:inline">Tester un PDF</span>
-          </Button>
+          {agent.peutTester && (
+            <Button variant="outline" size="sm" onClick={onEssai} disabled={!canPilot}
+              title={canPilot ? 'Tester l’agent sur un PDF, sans rien enregistrer' : 'Droit « Piloter les agents IA » requis'}>
+              <Upload className="h-3.5 w-3.5 sm:mr-1.5" /><span className="hidden sm:inline">Tester un PDF</span>
+            </Button>
+          )}
           <Button variant="gold" size="sm" onClick={onSonder} disabled={!canPilot || agent.mode === 'off' || isSondant} title={sonderTitle}>
-            {isSondant ? <Loader2 className="h-3.5 w-3.5 sm:mr-1.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 sm:mr-1.5" />}
-            <span className="hidden sm:inline">Relever maintenant</span>
+            {isSondant ? <Loader2 className="h-3.5 w-3.5 sm:mr-1.5 animate-spin" />
+              : quotidien ? <Play className="h-3.5 w-3.5 sm:mr-1.5" /> : <RefreshCw className="h-3.5 w-3.5 sm:mr-1.5" />}
+            <span className="hidden sm:inline">{quotidien ? 'Lancer maintenant' : 'Relever maintenant'}</span>
           </Button>
         </div>
       </div>
@@ -450,7 +487,9 @@ function DetailMain({ agent, isLoading, hasSelection, canPilot, onOpenRun, onCha
         })}
       </div>
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1">
-        {activeTab === 'executions' && <ExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />}
+        {activeTab === 'executions' && (agent.jugement === 'execution'
+          ? <SuperviseurExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />
+          : <ExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />)}
         {activeTab === 'prompt' && <PromptTab agent={agent} canPilot={canPilot} onChanged={onChanged} />}
         {activeTab === 'couts' && <CoutsTab slug={agent.slug} />}
         {activeTab === 'fonctionnement' && <FonctionnementTab agent={agent} />}
@@ -730,28 +769,41 @@ function FonctionnementTab({ agent }: { agent: AgentDetail }) {
         <p className="text-sm text-muted-foreground">{agent.description}</p>
       </div>
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-        <div className="flex items-center gap-2 mb-2"><Mail className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">Déclenchement</h3></div>
+        <div className="flex items-center gap-2 mb-2">
+          {agent.declenchement.type === 'quotidien' ? <Clock className="h-4 w-4 text-accent" /> : <Mail className="h-4 w-4 text-accent" />}
+          <h3 className="text-sm font-semibold">Déclenchement</h3>
+        </div>
         <p className="text-sm text-muted-foreground">{agent.declencheur}</p>
-        <p className="text-xs text-muted-foreground mt-1">
-          Seuls les mails reçus après la première mise en marche sont lus
-          {agent.startedAt ? ` (depuis le ${fmtDateHeure(agent.startedAt)})` : ''}.
-        </p>
+        {agent.declenchement.type === 'releve' && (
+          <p className="text-xs text-muted-foreground mt-1">
+            Seuls les mails reçus après la première mise en marche sont lus
+            {agent.startedAt ? ` (depuis le ${fmtDateHeure(agent.startedAt)})` : ''}.
+          </p>
+        )}
       </div>
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-        <div className="flex items-center gap-2 mb-2"><Play className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">Ce qu’il enregistre (en service)</h3></div>
+        <div className="flex items-center gap-2 mb-2"><Play className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">{agent.declenchement.type === 'quotidien' ? 'Ce qu’il fait (en service)' : 'Ce qu’il enregistre (en service)'}</h3></div>
         <ul className="text-sm text-muted-foreground list-disc pl-5 space-y-1">
           {agent.ecritures.map((e) => <li key={e}>{e}</li>)}
         </ul>
       </div>
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
         <div className="flex items-center gap-2 mb-2"><AlertTriangle className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">Quand il s’abstient</h3></div>
-        <p className="text-sm text-muted-foreground">
-          Rien n’est enregistré si un contrôle bloque : numéro de commande ou de bordereau illisible, commande inconnue ou pas chez MATEL,
-          pièce introuvable ou affectée à une autre commande, somme des poids ou des métrages différente des totaux imprimés.
-          L’exécution passe alors « à vérifier » et les abonnés à la notification « BL MATEL à vérifier » reçoivent un email
-          (Paramètres › Utilisateurs › Notifications).
-        </p>
+        <p className="text-sm text-muted-foreground">{agent.abstention}</p>
       </div>
+      {agent.controles.length > 0 && (
+        <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
+          <div className="flex items-center gap-2 mb-2"><ShieldCheck className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">Contrôles ({agent.controles.length})</h3></div>
+          <ul className="space-y-2">
+            {agent.controles.map((c) => (
+              <li key={c.id}>
+                <p className="text-sm font-medium">{c.libelle}</p>
+                <p className="text-xs text-muted-foreground">{c.description}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </>
   )
 }
@@ -779,6 +831,7 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
   }
   const s = agent.stats
   const n = (k: Statut) => s.parStatut[k] ?? 0
+  const quotidien = agent.declenchement.type === 'quotidien'
   return (
     <div className="w-96 flex-shrink-0 flex flex-col gap-3 min-h-0">
       <div className="flex-1 min-h-0 rounded-xl border flex flex-col overflow-hidden bg-zinc-100/80">
@@ -788,6 +841,31 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-transparent">
+          {quotidien ? (
+            <>
+              <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><Clock className="h-3.5 w-3.5" />Planification</p>
+                <KV label="Prochain contrôle" value={agent.mode === 'off' ? 'agent à l’arrêt' : fmtDateHeure(agent.prochaineExecution)} />
+                <KV label="Dernier contrôle" value={ilYA(s.dernierRun)} />
+                {agent.sondage.derniereErreur && (
+                  <div className="flex items-start gap-1.5 mt-1 text-xs text-destructive">
+                    <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /><span>{agent.sondage.derniereErreur}</span>
+                  </div>
+                )}
+              </div>
+              <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><History className="h-3.5 w-3.5" />Version {agent.activeVersion} — exécutions</p>
+                <KV label="Total" value={fmtNum(s.total)} mono />
+                <KV label="Mails envoyés" value={fmtNum(n('mail_envoye'))} mono />
+                <KV label="Mails préparés (essai)" value={fmtNum(n('simule'))} mono />
+                <KV label="Rien à signaler" value={fmtNum(n('rien_a_signaler'))} mono />
+                <KV label="Erreurs" value={<span className={cn(n('erreur') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('erreur'))}</span>} mono />
+                <KV label="Réussies / échouées" value={<>{fmtNum(s.total - s.verdicts.incorrect)} / <span className={cn(s.verdicts.incorrect > 0 && 'text-destructive font-semibold')}>{fmtNum(s.verdicts.incorrect)}</span></>} mono />
+                <KV label="Coût" value={fmtUsd(s.coutUsd)} mono />
+                <p className="text-[11px] text-muted-foreground pt-1">Une exécution est réussie tant que personne ne l’a marquée échouée. Une nouvelle version repart de zéro.</p>
+              </div>
+            </>
+          ) : (<>
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
             <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><Inbox className="h-3.5 w-3.5" />Boîte mail</p>
             <KV label="Dernier relevé" value={ilYA(agent.sondage.dernierSondage)} />
@@ -810,23 +888,24 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
             <KV label="Coût" value={fmtUsd(s.coutUsd)} mono />
             <p className="text-[11px] text-muted-foreground pt-1">Les tests manuels ne comptent pas. Une nouvelle version repart de zéro.</p>
           </div>
+          </>)}
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
             <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><Clock className="h-3.5 w-3.5" />Mode</p>
-            <p className="text-sm">{MODE_META[agent.mode].description}</p>
+            <p className="text-sm">{agent.modes[agent.mode]}</p>
             {agent.modeChangedBy && (
               <p className="text-[11px] text-muted-foreground">Changé par {agent.modeChangedBy.nom} le {fmtDateHeure(agent.modeChangedAt)}</p>
             )}
           </div>
         </div>
       </div>
-      <ModeFooter current={agent.mode} onChange={onChangeMode} isChanging={isChangingMode} disabled={!canPilot} />
+      <ModeFooter current={agent.mode} descriptions={agent.modes} onChange={onChangeMode} isChanging={isChangingMode} disabled={!canPilot} />
     </div>
   )
 }
 
 /** §29.4 multi-state status footer — the agent's mode. */
-function ModeFooter({ current, onChange, isChanging, disabled }: {
-  current: Mode; onChange: (m: Mode) => void; isChanging: boolean; disabled: boolean
+function ModeFooter({ current, descriptions, onChange, isChanging, disabled }: {
+  current: Mode; descriptions: Record<Mode, string>; onChange: (m: Mode) => void; isChanging: boolean; disabled: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -866,7 +945,7 @@ function ModeFooter({ current, onChange, isChanging, disabled }: {
                 <MIcon className="h-4 w-4 mt-0.5" />
                 <span className="flex-1">
                   <span className="block">{mm.label}</span>
-                  <span className="block text-[11px] text-muted-foreground">{mm.description}</span>
+                  <span className="block text-[11px] text-muted-foreground">{descriptions[m]}</span>
                 </span>
                 {active && <CheckCircle2 className="h-4 w-4 ml-auto text-accent" />}
               </button>
@@ -1065,6 +1144,349 @@ function RunDialog({ slug, runId, canPilot, onClose, onOpenRun, onChanged }: {
                 </div>
               )}
               {error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{error}</div>}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Superviseur (daily checks) ───────────────────────────
+// A run is « réussie » unless someone marked it « échouée » with a comment
+// (stored as verdict `incorrect`). The dialog shows what it found on the left
+// and the mail it sent — or would have sent — on the right.
+
+type Gravite = 'info' | 'attention' | 'urgent'
+interface ConstatRun {
+  cle: string
+  controle: string
+  domaine: string
+  gravite: Gravite
+  titre: string
+  message: string
+  lien: string | null
+  etat: 'nouveau' | 'aggrave' | 'ouvert'
+  depuis: string
+}
+interface ResultatSuperviseur {
+  controles?: Array<{ id: string; libelle: string; domaine: string; nb: number; dureeMs: number; erreur: string | null }>
+  constats?: ConstatRun[]
+  fermes?: Array<{ cle: string; titre: string; domaine: string; depuis: string }>
+  memoireMiseAJour?: boolean
+  mail?: { sujet: string; envoye: boolean; destinataires: number; raison: string } | null
+}
+interface RunSuperviseur extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces' | 'nbNouveaux' | 'nbOuverts' | 'nbFermes' | 'mailEnvoye'> {
+  resultat: ResultatSuperviseur
+}
+
+const DOMAINE_LIBELLE: Record<string, string> = {
+  mails: 'Mails clients', commandes_client: 'Commandes clients', devis: 'Devis', sous_traitants: 'Sous-traitants',
+  fils: 'Fils', stock: 'Stock', references: 'Références', etudes_coloris: 'Études coloris', qualite: 'Qualité',
+  integrite: 'Intégrité des données',
+}
+
+const GRAVITE_META: Record<Gravite, { border: string; iconBg: string; iconCls: string; icon: ComponentType<{ className?: string }> }> = {
+  urgent: { border: 'border-l-destructive/60', iconBg: 'bg-destructive/10', iconCls: 'text-destructive/70', icon: AlertTriangle },
+  attention: { border: 'border-l-amber-400/60', iconBg: 'bg-amber-400/10', iconCls: 'text-amber-600', icon: AlertCircle },
+  info: { border: 'border-l-border', iconBg: 'bg-muted', iconCls: 'text-muted-foreground', icon: Info },
+}
+
+function joursDepuis(iso: string): number {
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000))
+}
+
+function VerdictExecution({ echouee, className }: { echouee: boolean; className?: string }) {
+  return echouee ? (
+    <span className={cn('inline-flex items-center gap-1 text-xs font-semibold text-destructive', className)}><XCircle className="h-3.5 w-3.5" />Échouée</span>
+  ) : (
+    <span className={cn('inline-flex items-center gap-1 text-xs text-success', className)}><CheckCircle2 className="h-3.5 w-3.5" />Réussie</span>
+  )
+}
+
+const SUP_FILTERS: Array<{ key: string; label: string; query: string }> = [
+  { key: 'tout', label: 'Toutes', query: '' },
+  { key: 'mail', label: 'Avec mail', query: '?statut=mail_envoye,simule' },
+  { key: 'echouees', label: 'Échouées', query: '?verdict=incorrect' },
+  { key: 'erreurs', label: 'Erreurs', query: '?statut=erreur' },
+]
+
+function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: string) => void }) {
+  const [filtre, setFiltre] = useState('tout')
+  const q = SUP_FILTERS.find((f) => f.key === filtre)?.query ?? ''
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['agent-ia-runs', slug, filtre],
+    queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`/agents-ia/${slug}/runs${q}`),
+    refetchInterval: 30_000,
+  })
+  const num = (v: number | null) => (v === null ? '—' : fmtNum(v))
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-1">
+        {SUP_FILTERS.map((f) => (
+          <button key={f.key} type="button" onClick={() => setFiltre(f.key)}
+            className={cn('px-3 py-1 text-xs rounded-md transition-colors',
+              filtre === f.key ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10')}>
+            {f.label}
+          </button>
+        ))}
+        {data && <span className="ml-auto text-xs text-muted-foreground">{data.total} exécution{data.total !== 1 ? 's' : ''}</span>}
+      </div>
+      {isLoading ? <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
+      : isError ? <div className="flex flex-col items-center justify-center py-12 text-destructive"><AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Chargement impossible</p></div>
+      : !data || data.runs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+          <Inbox className="h-12 w-12 mb-3 opacity-40" />
+          <p className="text-sm">Aucune exécution</p>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+          <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: '19%' }} /><col style={{ width: '22%' }} /><col style={{ width: '10%' }} />
+              <col style={{ width: '10%' }} /><col style={{ width: '10%' }} /><col style={{ width: '17%' }} /><col style={{ width: '12%' }} />
+            </colgroup>
+            <thead className="bg-zinc-200/60 border-b border-border/60">
+              <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+                <th className="px-3 py-2.5 text-left font-semibold">Date</th>
+                <th className="px-3 py-2.5 text-left font-semibold">Résultat</th>
+                <th className="px-3 py-2.5 text-right font-semibold" title="Points nouveaux ou aggravés">Nouv.</th>
+                <th className="px-3 py-2.5 text-right font-semibold" title="Points toujours ouverts">Ouv.</th>
+                <th className="px-3 py-2.5 text-right font-semibold" title="Points résolus depuis le contrôle précédent">Rés.</th>
+                <th className="px-3 py-2.5 text-left font-semibold">Exécution</th>
+                <th className="px-3 py-2.5 text-right font-semibold">Coût</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.runs.map((r) => (
+                <tr key={r.id} onClick={() => onOpenRun(r.id)} title={r.resume}
+                  className="border-b border-border/40 last:border-b-0 cursor-pointer hover:bg-accent/5 transition-colors">
+                  <td className="px-3 py-1.5">
+                    <div className="tabular-nums truncate">{fmtDateCourte(r.createdAt)}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">
+                      {SOURCE_LABEL[r.source]}{r.mode === 'essai' && r.source === 'planifie' ? ' · essai' : ''}
+                    </div>
+                  </td>
+                  <td className="px-3 py-1.5"><StatutPill statut={r.statut} /></td>
+                  <td className={cn('px-3 py-1.5 text-right tabular-nums', (r.nbNouveaux ?? 0) > 0 && 'font-semibold text-amber-700')}>{num(r.nbNouveaux)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbOuverts)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbFermes)}</td>
+                  <td className="px-3 py-1.5"><VerdictExecution echouee={r.verdict?.valeur === 'incorrect'} /></td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtUsd(r.coutUsd, 1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  )
+}
+
+function ConstatCard({ c }: { c: ConstatRun }) {
+  const g = GRAVITE_META[c.gravite]
+  const Icon = g.icon
+  const j = joursDepuis(c.depuis)
+  return (
+    <div className={cn('rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3', g.border)}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0', g.iconBg)}>
+            <Icon className={cn('h-3.5 w-3.5', g.iconCls)} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium truncate" title={c.titre}>{c.titre}</p>
+            <p className="text-[11px] text-muted-foreground truncate">{DOMAINE_LIBELLE[c.domaine] ?? c.domaine}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {c.etat === 'nouveau' && <Badge variant="outline" className="text-[10px] py-0 border-amber-500/40 bg-amber-500/10 text-amber-800">Nouveau</Badge>}
+          {c.etat === 'aggrave' && <Badge variant="outline" className="text-[10px] py-0 border-destructive/40 bg-destructive/10 text-destructive">Aggravé</Badge>}
+          {c.etat === 'ouvert' && <span className="text-[11px] text-muted-foreground whitespace-nowrap">depuis {j === 0 ? 'aujourd’hui' : `${j} j`}</span>}
+          {c.lien && (
+            <Link to={c.lien} title="Ouvrir dans ETM"
+              className="h-6 w-6 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-accent hover:bg-accent/10 transition-colors">
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+          )}
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mt-2 ml-9">{c.message}</p>
+    </div>
+  )
+}
+
+function SuperviseurRunDialog({ slug, runId, canPilot, onClose, onChanged }: {
+  slug: string; runId: string | null; canPilot: boolean; onClose: () => void; onChanged: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [commentaire, setCommentaire] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [showControles, setShowControles] = useState(false)
+  useEffect(() => { setCommentaire(''); setError(null); setShowControles(false) }, [runId])
+
+  const { data: run, isLoading } = useQuery({
+    queryKey: ['agent-ia-run', slug, runId],
+    queryFn: () => apiFetch<RunSuperviseur>(`/agents-ia/${slug}/runs/${runId}`),
+    enabled: runId !== null,
+  })
+  const aMail = !!run?.resultat.mail
+  const { data: apercu, isLoading: apercuLoading } = useQuery({
+    queryKey: ['agent-ia-run-mail', slug, runId],
+    queryFn: () => apiFetch<{ sujet: string; html: string }>(`/agents-ia/${slug}/runs/${runId}/apercu-mail`),
+    enabled: runId !== null && aMail,
+  })
+
+  const verdictMut = useMutation({
+    mutationFn: (valeur: 'incorrect' | null) =>
+      callApi(`/agents-ia/${slug}/runs/${runId}/verdict`, { method: 'PUT', body: JSON.stringify({ valeur, commentaire: valeur ? commentaire.trim() : '' }) }),
+    onSuccess: () => { setError(null); setCommentaire(''); onChanged(); queryClient.invalidateQueries({ queryKey: ['agent-ia-run', slug, runId] }) },
+    onError: (e: Error) => setError(e.message),
+  })
+
+  const res = run?.resultat
+  const constats = res?.constats ?? []
+  const neufs = constats.filter((c) => c.etat !== 'ouvert')
+  const ouverts = constats.filter((c) => c.etat === 'ouvert')
+  const fermes = res?.fermes ?? []
+  const controles = res?.controles ?? []
+  const echouee = run?.verdict?.valeur === 'incorrect'
+
+  return (
+    <Dialog open={runId !== null} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-6xl w-[94vw] h-[88vh] flex flex-col" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 flex-wrap">
+            <ShieldCheck className="h-5 w-5 text-accent" />
+            {run ? `Contrôle du ${fmtDateHeure(run.createdAt)}` : 'Exécution'}
+            {run && <StatutPill statut={run.statut} className="text-xs py-0.5" />}
+            {run && <VerdictExecution echouee={echouee} />}
+            {run && <span className="text-xs font-normal text-muted-foreground">{SOURCE_LABEL[run.source]} · {MODE_META[run.mode].label.toLowerCase()} · v{run.version}</span>}
+          </DialogTitle>
+        </DialogHeader>
+        {isLoading || !run ? (
+          <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
+        ) : (
+          <div className="mt-4 flex-1 min-h-0 flex flex-col md:flex-row gap-4">
+            {/* Left: what it found, and the verdict */}
+            <div className="md:w-[46%] flex-shrink-0 min-h-0 overflow-y-auto space-y-3 px-1 scrollbar-transparent">
+              {run.erreur && (
+                <div className="rounded-lg border-l-4 border-l-destructive/60 border border-border/60 bg-destructive/5 p-3 text-sm text-destructive flex gap-2">
+                  <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /><span className="break-words">{run.erreur}</span>
+                </div>
+              )}
+              <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1">
+                <KV label="Nouveaux ou aggravés" value={fmtNum(neufs.length)} mono />
+                <KV label="Toujours ouverts" value={fmtNum(ouverts.length)} mono />
+                <KV label="Résolus depuis le contrôle précédent" value={fmtNum(fermes.length)} mono />
+                <KV label="Mail" value={res?.mail ? res.mail.raison : 'aucun — rien de nouveau à signaler'} />
+                <KV label="Durée" value={`${fmtNum(run.dureeMs / 1000, 1)} s`} mono />
+                {res && !res.memoireMiseAJour && (
+                  <p className="text-[11px] text-muted-foreground pt-1">Lancement manuel : la mémoire des points signalés n’a pas été modifiée.</p>
+                )}
+              </div>
+
+              {/* Verdict — « réussie » unless marked échouée with a reason */}
+              {echouee ? (
+                <div className="rounded-lg border-l-4 border-l-destructive/60 border border-border/60 bg-destructive/5 p-3 space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-destructive"><XCircle className="h-4 w-4" />Exécution marquée échouée</div>
+                  <p className="text-sm whitespace-pre-wrap">{run.verdict!.commentaire}</p>
+                  <p className="text-[11px] text-muted-foreground">Par {run.verdict!.par.nom} le {fmtDateHeure(run.verdict!.le)}</p>
+                  {canPilot && (
+                    <Button variant="outline" size="sm" disabled={verdictMut.isPending} onClick={() => verdictMut.mutate(null)}>
+                      {verdictMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1.5" />}Rétablir en réussie
+                    </Button>
+                  )}
+                </div>
+              ) : canPilot && (
+                <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><MessageSquare className="h-3.5 w-3.5" />Cette exécution s’est mal passée ?</p>
+                  <textarea value={commentaire} onChange={(ev) => setCommentaire(ev.target.value)} rows={3} maxLength={1000}
+                    placeholder="Pourquoi ? Fausse alerte, problème manqué, mail illisible…"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
+                  <div className="flex justify-end">
+                    <Button variant="outline" size="sm" disabled={verdictMut.isPending || !commentaire.trim()}
+                      className="text-destructive hover:text-destructive border-destructive/40 hover:bg-destructive/5"
+                      title={commentaire.trim() ? undefined : 'Expliquez d’abord pourquoi elle a échoué'}
+                      onClick={() => verdictMut.mutate('incorrect')}>
+                      {verdictMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5 mr-1.5" />}Marquer échouée
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{error}</div>}
+
+              {neufs.length > 0 && <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Nouveaux points</p>}
+              {neufs.map((c) => <ConstatCard key={c.cle} c={c} />)}
+              {ouverts.length > 0 && <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Toujours ouverts</p>}
+              {ouverts.map((c) => <ConstatCard key={c.cle} c={c} />)}
+              {fermes.length > 0 && (
+                <>
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Résolus</p>
+                  {fermes.map((f) => (
+                    <div key={f.cle} className="rounded-lg border-l-4 border border-border/60 border-l-green-500/60 bg-zinc-100/80 p-2.5 flex items-center gap-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                      <span className="text-sm truncate flex-1">{f.titre}</span>
+                      <span className="text-[11px] text-muted-foreground flex-shrink-0">{DOMAINE_LIBELLE[f.domaine] ?? f.domaine}</span>
+                    </div>
+                  ))}
+                </>
+              )}
+              {constats.length === 0 && fermes.length === 0 && !run.erreur && (
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                  <CheckCircle2 className="h-10 w-10 mb-2 opacity-40" />
+                  <p className="text-sm">Aucun point relevé</p>
+                </div>
+              )}
+
+              <div>
+                <button type="button" onClick={() => setShowControles((v) => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  {showControles ? 'Masquer les contrôles exécutés' : `Afficher les contrôles exécutés (${controles.length})`}
+                </button>
+                {showControles && (
+                  controles.length === 0 ? (
+                    <p className="mt-2 text-xs text-muted-foreground italic">Aucun contrôle n’est encore en place.</p>
+                  ) : (
+                    <div className="mt-2 rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                      <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
+                        <colgroup><col style={{ width: '58%' }} /><col style={{ width: '20%' }} /><col style={{ width: '22%' }} /></colgroup>
+                        <thead className="bg-zinc-200/60 border-b border-border/60">
+                          <tr className="uppercase tracking-wide text-muted-foreground">
+                            <th className="px-2 py-2 text-left font-semibold">Contrôle</th>
+                            <th className="px-2 py-2 text-right font-semibold">Points</th>
+                            <th className="px-2 py-2 text-right font-semibold">Durée</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {controles.map((c) => (
+                            <tr key={c.id} className="border-b border-border/40 last:border-b-0" title={c.erreur ?? undefined}>
+                              <td className={cn('px-2 py-1.5 truncate', c.erreur && 'text-destructive')}>{c.erreur && <XCircle className="h-3 w-3 inline mr-1" />}{c.libelle}</td>
+                              <td className="px-2 py-1.5 text-right tabular-nums">{c.erreur ? '—' : fmtNum(c.nb)}</td>
+                              <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{fmtNum(c.dureeMs / 1000, 1)} s</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+            {/* Right: the mail it sent, or would have sent */}
+            <div className="flex-1 min-w-0 min-h-[300px] flex flex-col gap-2">
+              {apercu && <p className="text-xs text-muted-foreground truncate" title={apercu.sujet}><Mail className="h-3.5 w-3.5 inline mr-1.5" />{apercu.sujet}</p>}
+              <div className="flex-1 min-h-0 rounded-lg border border-border/60 bg-zinc-50 overflow-hidden">
+                {aMail && apercuLoading ? <div className="h-full flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
+                : apercu ? <iframe srcDoc={apercu.html} sandbox="" className="w-full h-full bg-white" title="Mail du Superviseur" />
+                : (
+                  <div className="h-full flex flex-col items-center justify-center text-muted-foreground px-6 text-center">
+                    <Mail className="h-12 w-12 mb-3 opacity-30" />
+                    <p className="text-sm">Pas de mail pour ce contrôle</p>
+                    <p className="text-xs mt-1">Rien de nouveau ne demandait d’attention.</p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

@@ -53,6 +53,9 @@ export interface AgentState {
   versions: AgentVersion[]
   modeChangedAt: string | null
   modeChangedBy: Auteur | null
+  /** Daily agents: the Paris day (YYYYMMDD) of the last scheduled run, written
+   *  BEFORE the run so a crash mid-run never runs it twice the same day. */
+  dernierePlanification?: string | null
 }
 
 // ── Runs ─────────────────────────────────────────────────
@@ -64,8 +67,11 @@ export type RunStatut =
   | 'deja_importe' // every piece already in data_bl_tricotbot with the same values
   | 'ignore' // nothing to read (no PDF attachment)
   | 'erreur' // an exception (API down, HFSQL…)
+  // Superviseur (a daily run, not a mail):
+  | 'mail_envoye' // findings worth a mail, and it went out
+  | 'rien_a_signaler' // nothing new worth a mail
 
-export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement'
+export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel'
 
 export interface RunFichier {
   nom: string
@@ -176,6 +182,12 @@ export function changerMode(slug: string, initiale: VersionInitiale, mode: Agent
     s.modeChangedAt = new Date().toISOString()
     s.modeChangedBy = par
     if (mode !== 'off' && !s.startedAt) s.startedAt = s.modeChangedAt
+  })
+}
+
+export function marquerPlanification(slug: string, initiale: VersionInitiale, jour: string): Promise<AgentState> {
+  return modifierEtat(slug, initiale, (s) => {
+    s.dernierePlanification = jour
   })
 }
 

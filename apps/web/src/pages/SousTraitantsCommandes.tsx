@@ -15,6 +15,7 @@
 //     existing non-ennoblisseur commandes remain readable.
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -688,9 +689,25 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 export function SousTraitantsCommandes() {
   const queryClient = useQueryClient()
   const { isStacked } = useResponsiveLayout()
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // Deep link /sous-traitants/commandes?commande=<IDcommande_sous_traitant>
+  // (the Superviseur's mail) arrives with the order selected — the detail loads
+  // by id even when the order is past the first list page. Consumed once below.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedCommandeId = (() => {
+    const raw = parseInt(searchParams.get('commande') ?? '', 10)
+    return isNaN(raw) || raw <= 0 ? null : raw
+  })()
+  const [selectedId, setSelectedId] = useState<number | null>(linkedCommandeId)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open')
+  useEffect(() => {
+    if (searchParams.has('commande')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('commande')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // Compact pills (right of the search bar) narrow the open list to
   // attente_delai commandes whose bon de commande is overdue. They are
   // independent toggles — both off means no narrowing, either on hides the
@@ -873,7 +890,9 @@ export function SousTraitantsCommandes() {
   // The ref guards against re-triggering on unrelated re-renders — once
   // we've snapped to the first row for a given (statusFilter, search)
   // pair, the user can click any other row without us yanking them back.
-  const lastAppliedListKey = useRef<string | undefined>(undefined)
+  // A deep link pre-applies the initial key so the first load keeps the linked
+  // order instead of snapping to the first row.
+  const lastAppliedListKey = useRef<string | undefined>(linkedCommandeId !== null ? 'open|' : undefined)
   useEffect(() => {
     if (commandes === undefined) return
     // Never yank the selection out from under an in-progress edit — that would

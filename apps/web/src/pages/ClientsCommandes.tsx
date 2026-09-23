@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef, Fragment, type ReactNode, type ComponentType } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -419,10 +420,29 @@ export function ClientsCommandes() {
   // Print / email the facture proforma. Without it the doc menus collapse to
   // their single remaining entry (confirmation de commande) and act directly.
   const canProforma = useHasPermission('proforma_commande_client')
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // Deep link /clients/commandes?commande=<IDcommande_client> (the Superviseur's
+  // mail) arrives with the order selected. Consumed once below.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedCommandeId = (() => {
+    const raw = parseInt(searchParams.get('commande') ?? '', 10)
+    return isNaN(raw) || raw <= 0 ? null : raw
+  })()
+  const [selectedId, setSelectedId] = useState<number | null>(linkedCommandeId)
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
+  // Stays 'open' for a link too: the open list is complete (77 orders under the
+  // 200 cap, 2026-09) while 'all' holds only the latest 200 — an old open
+  // order would fall off it. A link to an order soldée since falls back to
+  // the first row.
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'terminee'>('open')
+  useEffect(() => {
+    if (searchParams.has('commande')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('commande')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // Amber counter-pill toggle: narrow the list to commandes non affectées.
   const [amberOnly, setAmberOnly] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
