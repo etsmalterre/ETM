@@ -6,6 +6,9 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
 import { loadClientsForRefFini } from '../lib/clients-ref-fini.js'
 import { loadTraitementCatalog, loadRefFiniTraitements, attachTraitement, detachTraitement } from '../lib/traitements.js'
+import { duplicateRefFini } from '../lib/duplicate-ref-fini.js'
+import { batchRepair } from '../lib/batch-repair.js'
+import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } from '../lib/ref-fini-reference.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
 import { EtiquetteRefFiniPdf, type EtiquetteRefFiniData } from '../lib/pdf/EtiquetteRefFiniPdf.js'
@@ -134,67 +137,6 @@ function isArchive(row: Record<string, unknown>): boolean {
   return Number(pickKey(row, /^archiv/i)) === 1
 }
 
-/** Batched accent repair for a flat list: one CONVERT(...) WHERE pk IN (...) per
- *  source column, only for the ids whose value actually contains U+FFFD. Avoids
- *  the per-row N+1 that fixEncoding would do (a storm on the Linux bridge for a
- *  ~600-row list). All `fields` must be ASCII-named columns. */
-async function batchRepair<T extends Record<string, unknown>>(
-  rows: T[],
-  table: string,
-  idField: string,
-  fields: string[],
-): Promise<T[]> {
-  const idsByField: Record<string, Set<number>> = {}
-  let any = false
-  for (const f of fields) idsByField[f] = new Set<number>()
-  for (const row of rows) {
-    const id = Number(row[idField])
-    if (!Number.isInteger(id)) continue
-    for (const f of fields) {
-      const v = row[f]
-      if (typeof v === 'string' && v.includes('�')) {
-        idsByField[f].add(id)
-        any = true
-      }
-    }
-  }
-  if (!any) return rows
-  const valueByField: Record<string, Map<number, string>> = {}
-  for (const f of fields) {
-    valueByField[f] = new Map<number, string>()
-    const ids = idsByField[f]
-    if (ids.size === 0) continue
-    try {
-      const r = await query<{ id: number; v: unknown }>(
-        `SELECT ${idField} AS id, CONVERT(${f} USING 'UTF-8') AS v FROM ${table} WHERE ${idField} IN (${Array.from(ids).join(',')})`,
-      )
-      for (const rec of r) {
-        if (rec.v == null) continue
-        valueByField[f].set(
-          Number(rec.id),
-          rec.v instanceof ArrayBuffer ? Buffer.from(rec.v).toString('utf8') : String(rec.v),
-        )
-      }
-    } catch {
-      /* keep originals on failure */
-    }
-  }
-  return rows.map((row) => {
-    const id = Number(row[idField])
-    let fixed: T | null = null
-    for (const f of fields) {
-      const v = row[f]
-      if (typeof v === 'string' && v.includes('�')) {
-        const nv = valueByField[f].get(id)
-        if (nv != null) {
-          if (!fixed) fixed = { ...row }
-          ;(fixed as Record<string, unknown>)[f] = nv
-        }
-      }
-    }
-    return fixed ?? row
-  })
-}
 
 // ──────────────────────────────────────────────────────────
 // LOOKUPS
@@ -950,7 +892,7 @@ referencesFiniRouter.get('/:id/tarifs/pdf', async (req: Request, res: Response) 
 // the coloris catalog + pricing are intentionally NOT writable from this screen,
 // except IDref_ecru which is a clean FK the user sets when wiring a new ref.
 const refFiniBody = z.object({
-  reference: z.string().min(1).max(100),
+  reference: z.string().trim().min(1).max(100),
   designation: z.string().optional().nullable(),
   conditionnement: z.string().optional().nullable(),
   observations: z.string().optional().nullable(),
@@ -1015,23 +957,43 @@ function buildRefFiniSets(b: RefFiniBody): string[] {
 }
 
 // POST /api/references-fini — inline-create an empty datasheet (named-column
-// INSERT → PK auto-assigns). The user fills the rest in edit mode.
+// INSERT → PK auto-assigns). The user fills the rest in edit mode. Names are
+// unique (lib/ref-fini-reference.ts): the placeholder takes the first free
+// « Nouvelle référence », « … 2 »…; an explicit name already used answers 409.
 referencesFiniRouter.post('/', async (req: Request, res: Response) => {
   try {
-    const reference = typeof req.body?.reference === 'string' && req.body.reference.trim()
-      ? String(req.body.reference).trim()
-      : 'Nouvelle référence'
-    await query(
-      `INSERT INTO ref_fini (reference, designation, avec_teinture, IDref_ecru, IDcolori_ecru, en_developpement)
-       VALUES (${sqlText(reference)}, '', 0, 0, 0, 0)`,
-    )
-    const rows = await query<{ IDref_fini: number }>(
-      `SELECT IDref_fini FROM ref_fini WHERE reference = ${sqlText(reference)} ORDER BY IDref_fini DESC`,
-    )
-    const newId = rows[0]?.IDref_fini ?? null
-    res.status(201).json({ IDref_fini: newId })
+    const asked = typeof req.body?.reference === 'string' ? String(req.body.reference).trim() : ''
+    const result = await refFiniReferenceLock.run(async () => {
+      if (asked && (await refFiniReferenceTaken(asked))) return null
+      const reference = asked || (await freeRefFiniReference('Nouvelle référence', false))
+      await query(
+        `INSERT INTO ref_fini (reference, designation, avec_teinture, IDref_ecru, IDcolori_ecru, en_developpement)
+         VALUES (${sqlText(reference)}, '', 0, 0, 0, 0)`,
+      )
+      const rows = await query<{ IDref_fini: number }>(
+        `SELECT IDref_fini FROM ref_fini WHERE reference = ${sqlText(reference)} ORDER BY IDref_fini DESC`,
+      )
+      return { IDref_fini: rows[0]?.IDref_fini ?? null }
+    })
+    if (!result) { res.status(409).json({ error: 'Cette référence existe déjà.' }); return }
+    res.status(201).json(result)
   } catch (err) {
     console.error('Error creating ref_fini:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/references-fini/:id/duplicate — legacy BTN_Dupliquer (LIVA #1186):
+// whole row + treatments, reference « (copie) », no dyed coloris.
+referencesFiniRouter.post('/:id/duplicate', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const newId = await duplicateRefFini(id)
+    if (newId === null) { res.status(404).json({ error: 'Ref fini not found' }); return }
+    res.status(201).json({ IDref_fini: newId })
+  } catch (err) {
+    console.error('Error duplicating ref_fini:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1057,8 +1019,14 @@ referencesFiniRouter.put('/:id', async (req: Request, res: Response) => {
         return
       }
     }
-    const sets = buildRefFiniSets(parsed.data)
-    await query(`UPDATE ref_fini SET ${sets.join(', ')} WHERE IDref_fini = ${id}`)
+    // Unique name (lib/ref-fini-reference.ts) — check and write under one lock.
+    const saved = await refFiniReferenceLock.run(async () => {
+      if (await refFiniReferenceTaken(parsed.data.reference, id)) return false
+      const sets = buildRefFiniSets(parsed.data)
+      await query(`UPDATE ref_fini SET ${sets.join(', ')} WHERE IDref_fini = ${id}`)
+      return true
+    })
+    if (!saved) { res.status(409).json({ error: 'Cette référence existe déjà.' }); return }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating ref_fini:', err)

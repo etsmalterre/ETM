@@ -46,6 +46,7 @@ import {
   Printer,
   Tag,
   Users,
+  Copy,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -432,6 +433,8 @@ export function FinisReferences() {
   const [autoEditForId, setAutoEditForId] = useState<number | null>(null)
   const [tarifsDialogOpen, setTarifsDialogOpen] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [duplicateConfirmOpen, setDuplicateConfirmOpen] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
 
@@ -496,13 +499,24 @@ export function FinisReferences() {
       setIsEditing(false)
       originalDraftRef.current = null
     },
+    onError: (err: Error & { status?: number }) => {
+      setSaveError(
+        err.status === 409
+          ? `La référence « ${draft.reference.trim()} » existe déjà. Choisissez un autre nom.`
+          : err.status === 401
+            ? 'Votre session a expiré. Veuillez vous reconnecter, puis réessayer.'
+            : "L'enregistrement de la référence a échoué. Veuillez réessayer.",
+      )
+    },
   })
 
   const createMutation = useMutation({
+    // The server names the placeholder: first free « Nouvelle référence », « … 2 »…
+    // (names are unique, lib/ref-fini-reference.ts).
     mutationFn: () =>
       apiFetch<{ IDref_fini: number | null }>(`/references-fini`, {
         method: 'POST',
-        body: JSON.stringify({ reference: 'Nouvelle référence' }),
+        body: JSON.stringify({}),
       }),
     onSuccess: (data) => {
       setCreateError(null)
@@ -517,6 +531,29 @@ export function FinisReferences() {
         err.status === 401
           ? 'Votre session a expiré. Veuillez vous reconnecter, puis réessayer.'
           : 'La création de la référence a échoué. Veuillez réessayer.',
+      )
+    },
+  })
+
+  // LIVA #1186 — legacy BTN_Dupliquer: the copy (« <ref> (copie) », treatments
+  // included, dyed coloris not) opens selected and in edit mode for renaming.
+  const duplicateMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ IDref_fini: number | null }>(`/references-fini/${id}/duplicate`, { method: 'POST' }),
+    onSuccess: (data) => {
+      setDuplicateConfirmOpen(false)
+      queryClient.invalidateQueries({ queryKey: ['refs-fini'] })
+      if (data.IDref_fini != null) {
+        setSelectedId(data.IDref_fini)
+        setAutoEditForId(data.IDref_fini)
+      }
+    },
+    onError: (err: Error & { status?: number }) => {
+      setDuplicateConfirmOpen(false)
+      setCreateError(
+        err.status === 401
+          ? 'Votre session a expiré. Veuillez vous reconnecter, puis réessayer.'
+          : 'La duplication de la référence a échoué. Veuillez réessayer.',
       )
     },
   })
@@ -611,6 +648,8 @@ export function FinisReferences() {
               setDeleteError(null)
               setDeleteConfirmOpen(true)
             }}
+            onDuplicate={() => setDuplicateConfirmOpen(true)}
+            isDuplicating={duplicateMutation.isPending}
             onPrintDoc={(doc) => {
               if (selectedId === null) return
               if (doc === 'technique') {
@@ -680,6 +719,36 @@ export function FinisReferences() {
           deleteMutation.mutate()
         }}
       />
+      <ConfirmDialog
+        open={duplicateConfirmOpen}
+        variant="default"
+        title="Dupliquer la référence"
+        description={
+          detail
+            ? `Une copie de « ${detail.reference ?? ''} » sera créée avec ses traitements, sans les coloris teints. Elle s'ouvrira en mode édition pour la renommer.`
+            : undefined
+        }
+        confirmLabel="Dupliquer"
+        isPending={duplicateMutation.isPending}
+        onCancel={() => setDuplicateConfirmOpen(false)}
+        onConfirm={() => {
+          if (selectedId !== null) duplicateMutation.mutate(selectedId)
+        }}
+      />
+      <AlertDialog open={saveError !== null} onOpenChange={(o) => { if (!o) setSaveError(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              Enregistrement impossible
+            </AlertDialogTitle>
+            <AlertDialogDescription>{saveError}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-2 mt-4">
+            <Button onClick={() => setSaveError(null)}>OK</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={createError !== null} onOpenChange={(o) => { if (!o) setCreateError(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -835,6 +904,8 @@ function DetailHeader({
   onSave,
   isSaving,
   onDelete,
+  onDuplicate,
+  isDuplicating,
   onPrintDoc,
 }: {
   detail: RefFiniDetail | null
@@ -847,6 +918,8 @@ function DetailHeader({
   onSave: () => void
   isSaving: boolean
   onDelete: () => void
+  onDuplicate: () => void
+  isDuplicating: boolean
   onPrintDoc: (doc: PrintDocKind) => void
 }) {
   if (!detail && !isLoading) return null
@@ -922,6 +995,9 @@ function DetailHeader({
                   ]}
                   onSelect={onPrintDoc}
                 />
+                <Button variant="outline" size="icon" className="h-9 w-9" title="Dupliquer" onClick={onDuplicate} disabled={isDuplicating}>
+                  {isDuplicating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+                </Button>
                 <Button variant="gold" size="sm" onClick={onStartEdit}>
                   <Pencil className="h-3.5 w-3.5 mr-1.5" />
                   Modifier

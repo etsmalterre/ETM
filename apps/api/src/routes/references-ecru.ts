@@ -873,6 +873,9 @@ referencesEcruRouter.post('/:id/unarchive', async (req: Request, res: Response) 
 // POST /api/references-ecru/:id/duplicate — copy ref + composition + coloris +
 // machine grid + liage diagram into a fresh reference. Windows-complete; on Linux
 // the accented columns of the cloned ref default to 0 (documented limitation).
+// The INSERT must never NAME an accented column: `archivé` there made every prod
+// duplicate fail before the first row (found on LIVA #1186) — left out, it
+// defaults to 0, which is what a fresh copy wants anyway.
 referencesEcruRouter.post('/:id/duplicate', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -888,8 +891,8 @@ referencesEcruRouter.post('/:id/duplicate', async (req: Request, res: Response) 
     // Insert via the same SET builder (named columns) — reuse buildRefEcruSets by
     // faking a body, then turning SETs into an INSERT-from-defaults UPDATE.
     await query(
-      `INSERT INTO ref_ecru (reference, designation, IDclient, IDcontexture, prix, bio, archivé, date_maj_ft)
-       VALUES (${sqlText(newRef)}, '', 0, 0, 0, 0, 0, '${todayHfsql()}')`,
+      `INSERT INTO ref_ecru (reference, designation, IDclient, IDcontexture, prix, bio, date_maj_ft)
+       VALUES (${sqlText(newRef)}, '', 0, 0, 0, 0, '${todayHfsql()}')`,
     )
     const created = await query<{ IDref_ecru: number }>(
       `SELECT IDref_ecru FROM ref_ecru WHERE reference = ${sqlText(newRef)} ORDER BY IDref_ecru DESC`,

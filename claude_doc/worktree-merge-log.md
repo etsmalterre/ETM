@@ -10,6 +10,21 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/duplication-ref — Finis › Références : « Dupliquer » + noms de référence uniques (LIVA #1186)
+**MPS API + web ETM.** Bouton Copy entre Imprimer et Modifier → ConfirmDialog → `POST /references-fini/:id/duplicate`
+(`lib/duplicate-ref-fini.ts`, port du `BTN_Dupliquer` legacy) : la ligne `ref_fini` ENTIÈRE est recopiée
+(avec_teinture, IDcolori_ecru, catalogue_privé, associee compris), référence « X (copie) » / « (copie 2) »,
+dates du jour, archivé = 0, traitements recopiés, coloris teints NON recopiés ; la copie s'ouvre en édition.
+INSERT nommé sous Windows, positionnel sous Linux dans l'ordre runtime du `SELECT *` (43 colonnes,
+`probe-ref-fini-columns.ts`), PK MAX+1 ; `cloneRefFiniRow()` pur, refuse plutôt que deviner (Vitest).
+Noms uniques (`lib/ref-fini-reference.ts`, verrou partagé) pour « + Nouveau » (le serveur nomme
+« Nouvelle référence », « … 2 »), le PUT (409, dialogue « Enregistrement impossible » — l'échec était
+muet) et la duplication ; comparaison insensible casse/accents/espaces faite en JS sur tous les noms
+(`batchRepair` extrait dans `lib/batch-repair.ts`) car `=` sur un littéral accentué est incohérent
+sous Windows. Corrigé au passage : le duplicate Tombé Métier nommait `archivé` dans son INSERT (échec
+à chaque appel en prod). Après déploiement : tester une duplication en prod (branche Linux couverte
+par Vitest seulement) ; prod contient deux « Nouvelle référence » vides (1904, 1905) à supprimer.
+
 ## 2026-09-23 — feat/annulation-cmd — suppression d'une commande sst à Tricotage Malterre (LIVA #1184)
 **MPS API + web ETM.** `DELETE /commandes-sous-traitant/:id` refusait toute commande portant un
 miroir TRM (`commande_client.IDcommande_ETM`) — or le miroir est écrit à la création, avant toute
