@@ -39,6 +39,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { repairAliased } from './stock-fini.js'
+import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
 import { BonTransfertPdf, type BonTransfertPdfData, type BtArticle, type BtPiece, type BtFilRow } from '../lib/pdf/BonTransfertPdf.js'
 import { sendMail } from '../lib/gmail.js'
@@ -905,9 +906,25 @@ const FINI_FROM =
 // the ETM stock screen (stock-ecru.ts, `se.IDsociete = 1`): a roll ETM does
 // not own yet is never offered, at any magasin, and never accepted on a bon.
 const ECRU_OWNED = 'se.IDsociete = 1'
-const ecruWhere = (sourceId: number, crit: SearchCriteria) =>
-  `WHERE se.IDmagasin = ${sourceId} AND ${ECRU_OWNED} AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0) ` +
-  `AND NOT EXISTS (SELECT 1 FROM stock_fini sfc WHERE sfc.IDstock_ecru = se.IDstock_ecru)${searchSql(crit, ECRU_SEARCH_COLS)}`
+// ── Écru that has LEFT stock without a fini child (LIVA #1187) ─────────
+//
+// Two exits the NOT EXISTS on stock_fini does not see, both already excluded
+// by Tombé Métier › Stock — the picker must agree with it, or a piece the user
+// can no longer find anywhere keeps being offered on every new bon:
+//   · a donation: for écru the FK `IDcommande_donation` IS the exit fact (no
+//     état column, #1154). On 2026-09-23 Pierrot got 14 pieces of 027 offered
+//     again on bon 4447 → MATEL: MATEL had sewn them into joined rolls, he had
+//     returned them to the usine on bon 4421 and written them off on the
+//     donation order 3962 « Missing ». 291 donated écru sat in the usine pool.
+//   · a component of a merged roll (#1149): consumed, but only
+//     `stock_fini_source` says so, and the driver refuses a subquery on that
+//     table — the (tiny) id set is read flat and inlined as a literal list.
+const ECRU_NOT_DONATED = '(se.IDcommande_donation IS NULL OR se.IDcommande_donation = 0)'
+const ecruNotMerged = (merged: ReadonlySet<number>) =>
+  merged.size > 0 ? ` AND se.IDstock_ecru NOT IN (${[...merged].join(',')})` : ''
+const ecruWhere = (sourceId: number, crit: SearchCriteria, merged: ReadonlySet<number>) =>
+  `WHERE se.IDmagasin = ${sourceId} AND ${ECRU_OWNED} AND ${ECRU_NOT_DONATED} AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0) ` +
+  `AND NOT EXISTS (SELECT 1 FROM stock_fini sfc WHERE sfc.IDstock_ecru = se.IDstock_ecru)${ecruNotMerged(merged)}${searchSql(crit, ECRU_SEARCH_COLS)}`
 // Fini: legacy FEN_Gestion_d_un_bon_de_transfert lists only état 3 (Validé)
 // and no donation roll — ported here (#1121, point 4).
 const finiWhere = (sourceId: number, crit: SearchCriteria) =>
@@ -928,8 +945,9 @@ const ecruAff = (o: EcruViewOpts) => (o.destId === undefined || o.showAffectees)
  *  were on — what the default view hides. Same FROM/WHERE as the loaders so
  *  the count and the list can never disagree. */
 export async function countSecondChoixHidden(sourceId: number, crit: SearchCriteria, opts: EcruViewOpts = {}): Promise<{ ecru: number; fini: number }> {
+  const merged = await mergedComponentEcruIds()
   const [e, f] = await Promise.all([
-    query<{ n: number }>(`SELECT COUNT(*) AS n ${ECRU_FROM}${ecruWhere(sourceId, crit)}${ecruAff(opts)} AND se.second_choix = 1`),
+    query<{ n: number }>(`SELECT COUNT(*) AS n ${ECRU_FROM}${ecruWhere(sourceId, crit, merged)}${ecruAff(opts)} AND se.second_choix = 1`),
     query<{ n: number }>(`SELECT COUNT(*) AS n ${FINI_FROM}${finiWhere(sourceId, crit)} AND sf.second_choix = 1`),
   ])
   return { ecru: Number(e[0]?.n) || 0, fini: Number(f[0]?.n) || 0 }
@@ -939,19 +957,21 @@ export async function countSecondChoixHidden(sourceId: number, crit: SearchCrite
  *  2e-choix view in force, so the two counters never overlap). */
 export async function countAffecteesHidden(sourceId: number, crit: SearchCriteria, opts: EcruViewOpts): Promise<number> {
   if (opts.destId === undefined) return 0
+  const merged = await mergedComponentEcruIds()
   const rows = await query<{ n: number }>(
-    `SELECT COUNT(*) AS n ${ECRU_FROM}${ecruWhere(sourceId, crit)}${ecruSc(opts)} AND ${AFF_ELSEWHERE(opts.destId)}`,
+    `SELECT COUNT(*) AS n ${ECRU_FROM}${ecruWhere(sourceId, crit, merged)}${ecruSc(opts)} AND ${AFF_ELSEWHERE(opts.destId)}`,
   )
   return Number(rows[0]?.n) || 0
 }
 
 export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria, showSecondChoix = true, view: Omit<EcruViewOpts, 'showSecondChoix'> = {}): Promise<AvailableRoll[]> {
   const opts: EcruViewOpts = { ...view, showSecondChoix }
+  const merged = await mergedComponentEcruIds()
   const raw = await query<any>(
     `SELECT TOP ${AVAILABLE_CAP} se.IDstock_ecru, se.numero, se.lot, se.poids, se.metrage, se.second_choix, se.IDcolori_ecru, ` +
       `se.IDref_commande_affectation AS aff_line, cst.IDcommande_sous_traitant AS aff_cmd, cst.IDsous_traitant AS aff_sst, ` +
       `re.reference AS ref_label ` +
-      ECRU_FROM + ecruWhere(sourceId, crit) + ecruSc(opts) + ecruAff(opts) + ' ' +
+      ECRU_FROM + ecruWhere(sourceId, crit, merged) + ecruSc(opts) + ecruAff(opts) + ' ' +
       `ORDER BY se.IDstock_ecru DESC`,
   )
   let fixed = await fixEncoding(raw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot'])
@@ -1121,9 +1141,14 @@ transfertsRouter.put('/:kind/:id/pieces', async (req: Request, res: Response) =>
     if (type === 'ecru') {
       const rows = await query<any>(
         // IDsociete = 1: a TRM roll not yet shipped is not ETM's to move (#1169).
-        `SELECT IDstock_ecru FROM stock_ecru WHERE IDstock_ecru IN (${inIds}) AND IDmagasin = ${h.IDmagasin_source} AND IDsociete = 1 AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0)`,
+        // Donated écru has left stock (#1187), same predicate as ecruWhere.
+        `SELECT IDstock_ecru FROM stock_ecru WHERE IDstock_ecru IN (${inIds}) AND IDmagasin = ${h.IDmagasin_source} AND IDsociete = 1 ` +
+          `AND (IDcommande_donation IS NULL OR IDcommande_donation = 0) AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0)`,
       )
-      validIds = rows.map((r: any) => Number(r.IDstock_ecru))
+      // Consumed = own fini child OR component of a merged roll — the list
+      // hides both, a stale or hand-built request must not slip one through.
+      const consumed = await consumedEcruIds(rows.map((r: any) => Number(r.IDstock_ecru)))
+      validIds = rows.map((r: any) => Number(r.IDstock_ecru)).filter((sid: number) => !consumed.has(sid))
     } else if (type === 'fini') {
       const rows = await query<any>(
         `SELECT IDstock_fini FROM stock_fini WHERE IDstock_fini IN (${inIds}) AND IDmagasin = ${h.IDmagasin_source} AND (IDligne_expedition IS NULL OR IDligne_expedition = 0) AND destockage = 0`,

@@ -10,6 +10,20 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/transfert — #1187 : le picker de transfert ignore l'écru donné et fusionné
+**MPS API seule.** Pierrot voyait 14 pièces de 027 (3496/3, /5, /10, 3510/7 à /31) reproposées sur le
+bon 4447 → MATEL alors qu'elles avaient disparu de Tombé Métier › Stock. Prod : MATEL les avait cousues
+en rouleaux regroupés ; il les avait ramenées à l'usine (bon 4421) puis sorties sur la donation 3962
+« Missing ». Pour l'écru la FK `IDcommande_donation` est la sortie de stock (#1154) : le Stock l'exclut,
+`ecruWhere` de `routes/transferts.ts` non (le fini, si) — 291 écru donnés dans le pool usine, 87 dans le
+compteur « 2e choix masqués ». `ecruWhere` (liste + deux compteurs) pose désormais
+`ECRU_NOT_DONATED` et exclut les composants de rouleau fusionné (#1149, `mergedComponentEcruIds()` en
+liste littérale `NOT IN`, forme validée sur le pont Linux prod) ; la re-vérification de
+`PUT /:kind/:id/pieces` pose la donation en SQL et `consumedEcruIds()` en JS. Aucune donnée réparée
+(« Missing » est voulu). Garde `check-transfert-picker-search.ts` (f), qui échoue sur l'ancien code ;
+les deux échecs restants (recherche coloris accentué, compteur 2e choix vs COUNT brut) préexistent.
+Réponse développeur envoyée sur le ticket.
+
 ## 2026-09-23 — feat/quantite — onglet Ennoblissement : l'écru déjà teint ne compte plus (LIVA #1188)
 **MPS API + web ETM.** Sur une ligne de commande client, les colonnes « Affecté » / « Disponible » de
 l'onglet Ennoblissement et le dialogue « Affecter le stock » lisaient `stock_ecru.IDref_commande_affectation`,
@@ -23,6 +37,7 @@ disponible ni affectée, jamais proposée par le dialogue, `PUT …/rolls/:stock
 affiché par le dialogue. Invariant : Σ « Affecté » de l'onglet + finis de l'onglet Affectation = la jauge.
 Décision Vincent : une fois reçu, le rouleau porte ses mètres réels et son affectation, c'est là qu'il
 se compte. Au passage : `AS exp` revient en `EXP`, `AS et` est une erreur de syntaxe (mots réservés).
+
 ## 2026-09-23 — feat/duplication-ref — Finis › Références : « Dupliquer » + noms de référence uniques (LIVA #1186)
 **MPS API + web ETM.** Bouton Copy entre Imprimer et Modifier → ConfirmDialog → `POST /references-fini/:id/duplicate`
 (`lib/duplicate-ref-fini.ts`, port du `BTN_Dupliquer` legacy) : la ligne `ref_fini` ENTIÈRE est recopiée

@@ -33,6 +33,7 @@ import {
   likePattern,
   type SearchCriteria,
 } from '../routes/transferts.js'
+import { mergedComponentEcruIds } from '../lib/fini-sources.js'
 
 const NONE: SearchCriteria = { terms: [], chips: [] }
 const fold = (v: string) => v.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
@@ -289,6 +290,39 @@ async function main() {
       }
       if (foreign > 0) fail(`magasin ${mag} : ${foreign} rouleaux d'une autre société (TRM non expédié) proposés`)
       else ok(`magasin ${mag} : ${eIds.length} écrus proposés, tous IDsociete = 1`)
+    }
+
+    // (f) LIVA #1187 — écru that left stock without a fini child is never
+    // offered: a donation (the FK is the exit, #1154 — Pierrot's pieces sat on
+    // the « Missing » donation 3962) or a component of a merged roll (#1149).
+    // Searched BY NUMERO so the 200-row window cannot make the check vacuous.
+    const donated = await query<any>(
+      `SELECT TOP 20 IDstock_ecru, numero, IDmagasin FROM stock_ecru WHERE IDcommande_donation > 0 AND IDsociete = 1 ` +
+        `AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0) ORDER BY IDstock_ecru DESC`,
+    )
+    const merged = await mergedComponentEcruIds()
+    const mergedRows = merged.size === 0 ? [] : await query<any>(
+      `SELECT TOP 20 IDstock_ecru, numero, IDmagasin FROM stock_ecru WHERE IDstock_ecru IN (${[...merged].slice(0, 200).join(',')}) ` +
+        `AND IDsociete = 1 AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0)`,
+    )
+    const cases = [
+      ...donated.map((r: any) => ({ ...r, why: 'en donation' })),
+      ...mergedRows.map((r: any) => ({ ...r, why: 'composant d\'un rouleau fusionné' })),
+    ]
+    if (cases.length === 0) console.log('… aucun écru donné ni fusionné non expédié — contrôle #1187 ignoré')
+    let offered = 0
+    for (const c of cases) {
+      const mag = Number(c.IDmagasin) || 0
+      const numero = String(c.numero ?? '').trim()
+      if (!numero) continue
+      const hits = await loadAvailableEcru(mag, { terms: [], chips: [{ field: 'numero', value: numero }] }, true, { destId: mag === 0 ? 9 : 0, showAffectees: true })
+      if (hits.some((r) => r.stock_id === Number(c.IDstock_ecru))) {
+        fail(`n° ${numero} (${c.why}, magasin ${mag}) encore proposé au transfert`)
+        offered++
+      }
+    }
+    if (cases.length > 0 && offered === 0) {
+      ok(`${donated.length} écru en donation et ${mergedRows.length} composants fusionnés cherchés par numéro : aucun proposé`)
     }
   }
 
