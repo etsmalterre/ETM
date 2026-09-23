@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef, Fragment, type React
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
+import { ADRESSE_A_DEFINIR_BLOQUE, AdresseADefinirNotice } from '@/components/shared/AdresseADefinirNotice'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import {
@@ -10,6 +11,7 @@ import {
   Loader2,
   AlertCircle,
   MapPin,
+  MapPinOff,
   Info,
   History,
   Pencil,
@@ -193,6 +195,8 @@ interface AdresseLite {
   cp: string | null
   ville: string | null
   pays: string | null
+  /** The legacy « À définir » placeholder (LIVA #1189), flagged by the API. */
+  a_definir?: boolean
 }
 
 interface AdresseLookup extends AdresseLite {
@@ -201,10 +205,21 @@ interface AdresseLookup extends AdresseLite {
   est_defaut_livraison: number
 }
 
+// LIVA #1189 — « À définir » is a DELIVERY choice only, pinned first. The
+// lookup appends it when asked with `a_definir=1`; the API then refuses the
+// BL and the demande de transport until the avis gets a real address.
+function realAdresses<T extends AdresseLite>(list: T[]): T[] {
+  return list.filter((a) => !a.a_definir)
+}
+function livraisonAdresses<T extends AdresseLite>(list: T[]): T[] {
+  return [...list.filter((a) => a.a_definir), ...realAdresses(list)]
+}
+
 // Canonical AdresseLookup → PopoverSelect option mapper (mps_designer §11bis).
 // `description` renders the full address (street · postal city · pays) under the
 // name on each popover row so the user can verify the pick at a glance.
 function adresseOption(a: AdresseLookup) {
+  if (a.a_definir) return { id: a.IDadresse, primary: 'À définir', description: 'Adresse communiquée plus tard — le BL attendra' }
   const street = [a.adresse1, a.adresse2, a.adresse3].filter(Boolean).join(' · ')
   const cityLine = [a.cp, a.ville].filter(Boolean).join(' ')
   const descLines = [street, cityLine, a.pays || ''].filter((s) => s.trim().length > 0)
@@ -2720,6 +2735,8 @@ interface LineExpedition {
   transporteur_nom: string
   adresse_nom: string
   adresse_ville: string
+  /** LIVA #1189 — « À définir »: BL, email and demande de transport are refused. */
+  adresse_a_definir?: boolean
   nb_rolls: number
   poids: number
   metrage: number
@@ -2784,16 +2801,25 @@ function ExpeditionTab({
               key: 'actions', label: '', align: 'right',
               render: (r) => (
                 <span className="inline-flex items-center gap-0.5">
+                  {/* LIVA #1189 — an avis on « À définir » can't leave: the
+                      three documents wait for the real address (set on the avis). */}
+                  {r.adresse_a_definir && (
+                    <span title={ADRESSE_A_DEFINIR_BLOQUE} className="inline-flex h-6 w-6 items-center justify-center text-amber-600">
+                      <MapPinOff className="h-3.5 w-3.5" />
+                    </span>
+                  )}
                   <Button
                     variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
-                    title="Imprimer"
+                    title={r.adresse_a_definir ? ADRESSE_A_DEFINIR_BLOQUE : 'Imprimer'}
+                    disabled={r.adresse_a_definir}
                     onClick={(e) => { e.stopPropagation(); window.open(`${API_URL}/expeditions/formelle/${r.IDexpedition}/pdf`, '_blank') }}
                   >
                     <Printer className="h-3.5 w-3.5" />
                   </Button>
                   <Button
                     variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
-                    title="Envoyer un email"
+                    title={r.adresse_a_definir ? ADRESSE_A_DEFINIR_BLOQUE : 'Envoyer un email'}
+                    disabled={r.adresse_a_definir}
                     onClick={(e) => { e.stopPropagation(); setEmailExpId(r.IDexpedition) }}
                   >
                     <AtSign className="h-3.5 w-3.5" />
@@ -2801,7 +2827,8 @@ function ExpeditionTab({
                   {/* Fiche de transport — internal pickup request for the carrier. */}
                   <Button
                     variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
-                    title="Imprimer la demande de transport"
+                    title={r.adresse_a_definir ? ADRESSE_A_DEFINIR_BLOQUE : 'Imprimer la demande de transport'}
+                    disabled={r.adresse_a_definir}
                     onClick={(e) => { e.stopPropagation(); window.open(`${API_URL}/expeditions/formelle/${r.IDexpedition}/demande-transport/pdf`, '_blank') }}
                   >
                     <Truck className="h-3.5 w-3.5" />
@@ -3336,8 +3363,10 @@ function ExpeditionGroupeeDialog({
     staleTime: 5 * 60 * 1000,
   })
   const { data: adresses } = useQuery<AdresseLookup[]>({
-    queryKey: ['cc-adresses', commande.IDclient],
-    queryFn: () => apiFetch(`/commandes-client/lookups/adresses?client=${commande.IDclient}`),
+    // With the placeholder so an avis inherited on « À définir » names it
+    // instead of « — aucune — »; it is only listed while it IS the value.
+    queryKey: ['cc-adresses', commande.IDclient, 'a_definir'],
+    queryFn: () => apiFetch(`/commandes-client/lookups/adresses?client=${commande.IDclient}&a_definir=1`),
     enabled: open && commande.IDclient > 0,
   })
 
@@ -3697,7 +3726,9 @@ function ExpeditionGroupeeDialog({
                   <div className="space-y-0.5 col-span-2">
                     <label className="text-[11px] font-medium text-muted-foreground">Adresse de livraison</label>
                     <PopoverSelect
-                      options={(adresses ?? []).map(adresseOption)}
+                      options={livraisonAdresses(adresses ?? [])
+                        .filter((a) => !a.a_definir || a.IDadresse === selectedExp?.IDadresse)
+                        .map(adresseOption)}
                       value={selectedExp?.IDadresse ?? 0}
                       onChange={(id) => { if (!readOnly) headerMut.mutate({ IDadresse: id }) }}
                       disabled={readOnly}
@@ -5727,8 +5758,9 @@ function DetailSidebar({
     queryFn: () => apiFetch('/commandes-client/lookups/echeances'),
   })
   const { data: adresses } = useQuery<AdresseLookup[]>({
-    queryKey: ['cc-adresses', commande?.IDclient],
-    queryFn: () => apiFetch(`/commandes-client/lookups/adresses?client=${commande?.IDclient}`),
+    // Own key: the avis editor shares 'cc-adresses' WITHOUT the placeholder.
+    queryKey: ['cc-adresses', commande?.IDclient, 'a_definir'],
+    queryFn: () => apiFetch(`/commandes-client/lookups/adresses?client=${commande?.IDclient}&a_definir=1`),
     enabled: isEditing && !!commande?.IDclient,
   })
 
@@ -6000,9 +6032,9 @@ function AdressesTab({
   return (
     <div className="space-y-3">
       <AdresseCard label="Facturation" adresse={commande.adresse_facturation} isEditing={isEditing}
-        options={adresses} selectedId={editIDAdresseFacturation} onSelect={onEditIDAdresseFacturationChange} />
+        options={realAdresses(adresses)} selectedId={editIDAdresseFacturation} onSelect={onEditIDAdresseFacturationChange} />
       <AdresseCard label="Livraison" adresse={commande.adresse_livraison} isEditing={isEditing}
-        options={adresses} selectedId={editIDAdresseLivraison} onSelect={onEditIDAdresseLivraisonChange} />
+        options={livraisonAdresses(adresses)} selectedId={editIDAdresseLivraison} onSelect={onEditIDAdresseLivraisonChange} />
     </div>
   )
 }
@@ -6029,7 +6061,9 @@ function AdresseCard({
           </Button>
         )}
       </div>
-      {displayAdresse ? (
+      {displayAdresse?.a_definir ? (
+        <AdresseADefinirNotice hint="Adresse communiquée plus tard. Elle devra être choisie sur l'avis avant d'éditer le BL." />
+      ) : displayAdresse ? (
         <div className="text-xs text-muted-foreground space-y-0.5">
           {displayAdresse.nom && <p className="font-medium text-foreground">{displayAdresse.nom}</p>}
           {displayAdresse.adresse1 && <p>{displayAdresse.adresse1}</p>}
@@ -6076,10 +6110,17 @@ function AdressePickerDialog({
                 type="button"
                 onClick={() => onSelect(a.IDadresse)}
                 className={cn('w-full text-left p-3 rounded-lg border transition-all',
+                  a.a_definir && !isSelected && 'border-dashed',
                   isSelected ? 'border-accent bg-accent/5 ring-1 ring-accent' : 'border-border bg-card hover:border-accent/50 hover:bg-accent/[0.02]')}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
+                    {a.a_definir ? (
+                      <>
+                        <p className="font-medium text-sm flex items-center gap-1.5"><MapPinOff className="h-3.5 w-3.5 text-amber-600" />À définir</p>
+                        <p className="text-xs text-muted-foreground mt-1">Adresse communiquée plus tard. Le BL et la demande de transport attendront qu'elle soit choisie sur l'avis.</p>
+                      </>
+                    ) : (<>
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="font-medium text-sm truncate">{a.nom || `Adresse #${a.IDadresse}`}</p>
                       {!!a.est_defaut_facturation && <Badge variant="outline" className="text-[10px] py-0">Facturation</Badge>}
@@ -6090,6 +6131,7 @@ function AdressePickerDialog({
                       {(a.cp || a.ville) && <p>{[a.cp, a.ville].filter(Boolean).join(' ')}</p>}
                       {a.pays && <p>{a.pays}</p>}
                     </div>
+                    </>)}
                   </div>
                   {isSelected && <CheckCircle2 className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />}
                 </div>
@@ -6511,14 +6553,17 @@ function CreateCommandeDialog({ open, onClose, onCreated }: { open: boolean; onC
   const { data: echeances } = useQuery<Echeance[]>({ queryKey: ['cc-echeances'], queryFn: () => apiFetch('/commandes-client/lookups/echeances'), enabled: open })
   const { data: adresses } = useQuery<AdresseLookup[]>({
     queryKey: ['cc-create-adresses', clientId],
-    queryFn: () => apiFetch(`/commandes-client/lookups/adresses?client=${clientId}`),
+    queryFn: () => apiFetch(`/commandes-client/lookups/adresses?client=${clientId}&a_definir=1`),
     enabled: open && clientId > 0,
   })
 
   useEffect(() => {
     if (!adresses) return
-    const defaultFact = adresses.find((a) => a.est_defaut_facturation) ?? adresses.find((a) => a.est_defaut) ?? adresses[0]
-    const defaultLiv = adresses.find((a) => a.est_defaut_livraison) ?? adresses.find((a) => a.est_defaut) ?? adresses[0]
+    // Defaults come from the client's own addresses — « À définir » is only
+    // ever a deliberate pick.
+    const own = realAdresses(adresses)
+    const defaultFact = own.find((a) => a.est_defaut_facturation) ?? own.find((a) => a.est_defaut) ?? own[0]
+    const defaultLiv = own.find((a) => a.est_defaut_livraison) ?? own.find((a) => a.est_defaut) ?? own[0]
     setAdresseFactId(defaultFact?.IDadresse ?? 0)
     setAdresseLivId(defaultLiv?.IDadresse ?? 0)
   }, [adresses])
@@ -6597,11 +6642,11 @@ function CreateCommandeDialog({ open, onClose, onCreated }: { open: boolean; onC
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Adr. facturation</label>
-                <PopoverSelect options={(adresses ?? []).map(adresseOption)} value={adresseFactId} onChange={setAdresseFactId} emptyLabel="—" />
+                <PopoverSelect options={realAdresses(adresses ?? []).map(adresseOption)} value={adresseFactId} onChange={setAdresseFactId} emptyLabel="—" />
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Adr. livraison</label>
-                <PopoverSelect options={(adresses ?? []).map(adresseOption)} value={adresseLivId} onChange={setAdresseLivId} emptyLabel="—" />
+                <PopoverSelect options={livraisonAdresses(adresses ?? []).map(adresseOption)} value={adresseLivId} onChange={setAdresseLivId} emptyLabel="—" />
               </div>
             </div>
           )}

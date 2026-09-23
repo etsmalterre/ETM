@@ -10,6 +10,19 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/1189-a-definir — Adresse de livraison « À définir », bloquée à la sortie de l'usine (LIVA #1189)
+**MPS API + web ETM.** Le legacy offrait une adresse fictive partagée, `adresse` 795 « A Définir » (`IDclient = 0`, champs « - ») ;
+ETM ne la proposait plus.
+- **Commande** : `GET /commandes-client/lookups/adresses?a_definir=1` l'ajoute (dernière, marquée `a_definir`, jamais par défaut) ;
+  l'écran l'épingle en tête du choix de l'adresse de LIVRAISON seulement (barre latérale, dialogue Nouveau, éditeur d'avis
+  quand l'avis la porte déjà), jamais en facturation.
+- **Affichage** : `withAdresseADefinir()` (`lib/adresse-a-definir.ts`, aussi dans `loadAdresse()` des expéditions) remplace les
+  tirets par un seul libellé « À définir » (détail commande, PDF de confirmation, avis) ; carte ambre `AdresseADefinirNotice`.
+- **Borne = la marchandise quitte l'usine** : BL formelle/divers (PDF + email) et demande de transport (seule ou groupée)
+  répondent 409 `adresse_a_definir` ; l'écran grise ces boutons, badge « Adresse à définir » sur l'avis, exclusion de la demande
+  groupée. Rapport de contrôle / info matières restent disponibles. Déblocage : « Modifier » sur la carte adresse de l'avis (#1179).
+- **Constante partagée** avec les devis prospect (`devis.ts`). Test `adresse-a-definir.test.ts` ; vérifié sur l'API dev (avis 11441).
+
 ## 2026-09-23 — feat/webservice — API du site web (/api/site) : remplacement du webservice WinDev MPS_WS
 **MPS API seule, surface PUBLIQUE.** Remplace le webservice REST WinDev `MPS_WS` (VM 104, `alpha.etsmalterre.com`)
 appelé par le plugin WordPress `malterre-api` (espace client etsmalterre.fr/client + page QR échantillon).

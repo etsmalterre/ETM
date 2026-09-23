@@ -71,6 +71,7 @@ import { DemandeTransportPdf, type DemandeTransportPdfData } from '../lib/pdf/De
 import { company } from '../lib/pdf/theme.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
+import { ADRESSE_A_DEFINIR_REFUS, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -181,7 +182,19 @@ export async function loadAdresse(id: number): Promise<Record<string, unknown> |
     `SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${id}`,
   )
   const fixed = await fixEncoding(rows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays'])
-  return (fixed[0] as Record<string, unknown>) ?? null
+  // 795 « A Définir » reads as one clean label, flagged `a_definir` (LIVA #1189).
+  return withAdresseADefinir((fixed[0] as Record<string, unknown>) ?? null)
+}
+
+/** LIVA #1189 — an avis still on the « À définir » placeholder must not leave
+ *  the factory: the BL (print, email) and the demande de transport refuse it
+ *  until the real address is chosen (PUT /:kind/:id/adresse). Unknown id →
+ *  false, the caller's own 404 handles it. */
+async function avisAdresseADefinir(kind: Kind, id: number): Promise<boolean> {
+  const rows = await query<{ IDadresse: number }>(
+    `SELECT IDadresse FROM ${TBL[kind].head} WHERE ${TBL[kind].pk} = ${id}`,
+  )
+  return rows.length > 0 && isAdresseADefinir(rows[0].IDadresse)
 }
 
 export async function loadContactName(id: number): Promise<string | null> {
@@ -559,6 +572,8 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
           // IDadresse drives the grouped demande-de-transport picker: one sheet
           // has one "Pour livraison chez" block, so mixed addresses can't group.
           IDadresse: Number(h.IDadresse) || 0,
+          // « À définir » (LIVA #1189) — the grouped request refuses it.
+          adresse_a_definir: isAdresseADefinir(h.IDadresse),
           commande_numero: cmd.numero, IDclient: cmd.IDclient,
           client_nom: clientNames.get(cmd.IDclient) ?? '',
           transporteur_nom: transNames.get(Number(h.IDtransporteur)) ?? '',
@@ -1950,6 +1965,7 @@ expeditionsRouter.get('/formelle/:id/pdf', async (req: Request, res: Response) =
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await avisAdresseADefinir('formelle', id)) { res.status(409).json(ADRESSE_A_DEFINIR_REFUS); return }
     const data = await buildBlPdfData(id)
     if (!data) { res.status(404).json({ error: 'Expédition not found' }); return }
     const buffer = await renderBlPdfBuffer(data)
@@ -2618,6 +2634,8 @@ export async function buildDemandeTransportPdfData(
 
   // One delivery block → one address. Unset (0) expeditions inherit.
   const adrIds = Array.from(new Set(heads.map((h: any) => Number(h.IDadresse) || 0).filter((x: number) => x > 0)))
+  // LIVA #1189 — the carrier must not be booked for « À définir ».
+  if (adrIds.some(isAdresseADefinir)) return { err: { status: 409, ...ADRESSE_A_DEFINIR_REFUS } }
   if (adrIds.length > 1) {
     return {
       err: {
@@ -2985,6 +3003,7 @@ expeditionsRouter.post('/formelle/:id/email', async (req: Request, res: Response
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
     const parsed = emailBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    if (await avisAdresseADefinir('formelle', id)) { res.status(409).json(ADRESSE_A_DEFINIR_REFUS); return }
     const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
 
     let messageId: string
@@ -3148,6 +3167,7 @@ expeditionsRouter.get('/divers/:id/pdf', async (req: Request, res: Response) => 
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await avisAdresseADefinir('divers', id)) { res.status(409).json(ADRESSE_A_DEFINIR_REFUS); return }
     const data = await buildBlDiversPdfData(id)
     if (!data) { res.status(404).json({ error: 'Expédition not found' }); return }
     const buffer = await renderBlDiversPdfBuffer(data)
@@ -3231,6 +3251,7 @@ expeditionsRouter.post('/divers/:id/email', async (req: Request, res: Response) 
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
     const parsed = emailBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    if (await avisAdresseADefinir('divers', id)) { res.status(409).json(ADRESSE_A_DEFINIR_REFUS); return }
     const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
 
     let messageId: string

@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef, type ComponentType }
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
+import { ADRESSE_A_DEFINIR_BLOQUE, AdresseADefinirNotice } from '@/components/shared/AdresseADefinirNotice'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import {
   Truck,
@@ -9,6 +10,7 @@ import {
   Loader2,
   AlertCircle,
   MapPin,
+  MapPinOff,
   Info,
   Pencil,
   Plus,
@@ -60,6 +62,8 @@ interface ExpeditionListRow {
   /** Delivery address (formelle) — 0 when none is set. Drives the grouped
    *  demande-de-transport picker: one sheet, one delivery block. */
   IDadresse?: number
+  /** LIVA #1189 — « À définir »: excluded from the grouped demande de transport. */
+  adresse_a_definir?: boolean
   client_nom: string
   ref_client?: string
   transporteur_nom: string
@@ -81,6 +85,8 @@ interface AdresseLite {
   cp: string | null
   ville: string | null
   pays: string | null
+  /** The legacy « À définir » placeholder (LIVA #1189), flagged by the API. */
+  a_definir?: boolean
 }
 interface AdresseLookup extends AdresseLite {
   est_defaut: number
@@ -754,7 +760,10 @@ function TransportPickDialog({
   // narrowing a range keeps the same origin.
   const lastSelectedIdRef = useRef<number | null>(null)
 
-  const formelleRows = useMemo(() => rows.filter((r) => r.kind === 'formelle'), [rows])
+  // An avis still on « À définir » can't be collected (LIVA #1189) — left out,
+  // with a count so the user knows why it is missing.
+  const formelleRows = useMemo(() => rows.filter((r) => r.kind === 'formelle' && !r.adresse_a_definir), [rows])
+  const aDefinirCount = useMemo(() => rows.filter((r) => r.kind === 'formelle' && r.adresse_a_definir).length, [rows])
 
   // Fresh selection every time the dialog opens.
   useEffect(() => {
@@ -857,6 +866,12 @@ function TransportPickDialog({
                 leurs rouleaux. Après la première sélection, la liste se limite aux expéditions du même
                 client.
               </p>
+              {aDefinirCount > 0 && (
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-700">
+                  <MapPinOff className="h-3.5 w-3.5 flex-shrink-0" />
+                  {aDefinirCount} expédition{aDefinirCount > 1 ? 's' : ''} à l'adresse « À définir » non proposée{aDefinirCount > 1 ? 's' : ''}.
+                </p>
+              )}
               <label className="flex items-center gap-2 mt-3 px-2 py-1.5 text-sm font-medium cursor-pointer select-none rounded-md hover:bg-accent/5">
                 <input
                   type="checkbox"
@@ -945,7 +960,7 @@ function TransportPickDialog({
 /** Print button for formelle expeditions — a small popover menu offering the
  *  three printable documents (avis d'expédition / rapport de contrôle / info
  *  matières). Divers keeps the plain one-click Printer button (BL only). */
-function PrintMenuButton({ expeditionId }: { expeditionId: number }) {
+function PrintMenuButton({ expeditionId, blBlocked }: { expeditionId: number; blBlocked: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -964,10 +979,12 @@ function PrintMenuButton({ expeditionId }: { expeditionId: number }) {
     setMenuOpen(false)
   }
 
+  // The avis itself is the BL: it waits for a real address (LIVA #1189). The
+  // two quality documents carry no delivery address and stay available.
   const items = [
-    { label: "Avis d'expédition", icon: Truck, path: '/pdf' },
-    { label: 'Rapport de contrôle', icon: ClipboardCheck, path: '/rapport-controle/pdf' },
-    { label: 'Info matières', icon: Layers, path: '/info-matieres/pdf' },
+    { label: "Avis d'expédition", icon: Truck, path: '/pdf', blocked: blBlocked },
+    { label: 'Rapport de contrôle', icon: ClipboardCheck, path: '/rapport-controle/pdf', blocked: false },
+    { label: 'Info matières', icon: Layers, path: '/info-matieres/pdf', blocked: false },
   ]
 
   return (
@@ -984,10 +1001,13 @@ function PrintMenuButton({ expeditionId }: { expeditionId: number }) {
                 key={item.path}
                 type="button"
                 onClick={() => openDoc(item.path)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-zinc-100"
+                disabled={item.blocked}
+                title={item.blocked ? ADRESSE_A_DEFINIR_BLOQUE : undefined}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               >
                 <ItemIcon className="h-4 w-4 text-muted-foreground" />
                 {item.label}
+                {item.blocked && <MapPinOff className="h-3.5 w-3.5 ml-auto text-amber-600" />}
               </button>
             )
           })}
@@ -1016,6 +1036,8 @@ function DetailHeader({
 }) {
   if (!expedition && !isLoading) return null
   const locked = expedition?.locked === true
+  // LIVA #1189 — the BL (print, email) waits for a real delivery address.
+  const aDefinir = !!expedition?.adresse_livraison?.a_definir
   return (
     <div className="flex-shrink-0 pt-0.5">
       <div className="flex items-center gap-3">
@@ -1036,6 +1058,11 @@ function DetailHeader({
                   <Badge variant="secondary" className="text-xs gap-1" title="Facturée — seule l'adresse de livraison reste modifiable"><Lock className="h-3 w-3" />Facturée</Badge>
                 ) : (
                   <Badge className="bg-amber-400/15 text-amber-700 border border-amber-500/30 text-xs gap-1"><Clock className="h-3 w-3" />Non facturée</Badge>
+                )}
+                {aDefinir && (
+                  <Badge className="bg-amber-400/15 text-amber-700 border border-amber-500/30 text-xs gap-1" title={ADRESSE_A_DEFINIR_BLOQUE}>
+                    <MapPinOff className="h-3 w-3" />Adresse à définir
+                  </Badge>
                 )}
                 {!!expedition?.donation && <Badge variant="secondary" className="text-xs gap-1"><Gift className="h-3 w-3" />Donation</Badge>}
                 {expedition?.date && <Badge variant="secondary" className="text-xs">{formatHfsqlDate(expedition.date)}</Badge>}
@@ -1063,13 +1090,13 @@ function DetailHeader({
             ) : (
               <>
                 {expedition.kind === 'formelle' ? (
-                  <PrintMenuButton expeditionId={expedition.id} />
+                  <PrintMenuButton expeditionId={expedition.id} blBlocked={aDefinir} />
                 ) : (
-                  <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrintClick}>
+                  <Button variant="outline" size="icon" className="h-9 w-9" title={aDefinir ? ADRESSE_A_DEFINIR_BLOQUE : 'Imprimer'} disabled={aDefinir} onClick={onPrintClick}>
                     <Printer className="h-4 w-4" />
                   </Button>
                 )}
-                <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmailClick}>
+                <Button variant="outline" size="icon" className="h-9 w-9" title={aDefinir ? ADRESSE_A_DEFINIR_BLOQUE : 'Envoyer un email'} disabled={aDefinir} onClick={onEmailClick}>
                   <AtSign className="h-4 w-4" />
                 </Button>
                 {editable && (
@@ -2206,7 +2233,9 @@ function AdresseCard({
       {error && !isEditing && (
         <p className="text-xs text-destructive flex items-center gap-1 mb-2"><AlertCircle className="h-3 w-3 flex-shrink-0" />{error}</p>
       )}
-      {displayAdresse ? (
+      {displayAdresse?.a_definir ? (
+        <AdresseADefinirNotice hint="Choisissez l'adresse de livraison : le BL et la demande de transport sont bloqués d'ici là." />
+      ) : displayAdresse ? (
         <div className="text-xs text-muted-foreground space-y-0.5">
           {displayAdresse.nom && <p className="font-medium text-foreground">{displayAdresse.nom}</p>}
           {displayAdresse.adresse1 && <p>{displayAdresse.adresse1}</p>}

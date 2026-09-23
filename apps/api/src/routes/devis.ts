@@ -43,6 +43,7 @@ import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { loadProspectsLite, type ProspectLite } from './prospects.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
+import { ADRESSE_A_DEFINIR } from '../lib/adresse-a-definir.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const devisRouter: RouterType = Router()
@@ -58,7 +59,7 @@ const TYPE_DOC_DEVIS = 28
 // a prospect has no `adresse` rows of its own. We keep writing 795 so the
 // WinDev app still opens these devis, and override the DISPLAY (detail + PDF)
 // with the prospect's own address fields.
-const PROSPECT_PLACEHOLDER_ADRESSE = 795
+const PROSPECT_PLACEHOLDER_ADRESSE = ADRESSE_A_DEFINIR
 // Legacy defaults on every prospect devis: mode_paiement 3, échéance 11.
 const PROSPECT_DEFAULT_MODE_PAIEMENT = 3
 const PROSPECT_DEFAULT_ECHEANCE = 11

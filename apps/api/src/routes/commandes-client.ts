@@ -54,6 +54,7 @@ import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow } from '../lib/ennoblissement-supply.js'
+import { adresseADefinirRow, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const commandesClientRouter: RouterType = Router()
@@ -359,6 +360,13 @@ commandesClientRouter.get('/lookups/adresses', async (req: Request, res: Respons
     const fixed = await fixEncoding(rows, 'adresse', 'IDadresse', [
       'nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays',
     ])
+    // Opt-in (LIVA #1189): the order's delivery picker also offers the legacy
+    // « À définir » placeholder, appended LAST and never flagged as a default
+    // so no caller picks it by accident. Avis and billing pickers never ask.
+    if (req.query.a_definir === '1') {
+      res.json([...fixed, { ...adresseADefinirRow(), est_defaut: 0, est_defaut_facturation: 0, est_defaut_livraison: 0 }])
+      return
+    }
     res.json(fixed)
   } catch (err) {
     console.error('Error fetching adresses lookup:', err)
@@ -1415,7 +1423,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       ),
     ])
 
-    const adrLiv = (await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
+    // 795 « A Définir » reads as one clean label (LIVA #1189).
+    const adrLiv = withAdresseADefinir((await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null)
     const adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
     const ficheFixed = (await fixEncoding(ficheRows, 'client', 'IDclient', ['commentaire']))[0] as any
     const clientFiche = (stripRtf(ficheFixed?.commentaire) || '').trim() || null
@@ -3871,8 +3880,10 @@ commandesClientRouter.get('/:id/lignes/:ligneId/expeditions', async (req: Reques
           est_facture: Number(h.est_facture) || 0,
           inclure_rapport: Number(h.inclureRapportQualite) || 0,
           transporteur_nom: transNames.get(Number(h.IDtransporteur)) ?? '',
-          adresse_nom: adr?.nom ?? '',
-          adresse_ville: adr?.ville ?? '',
+          adresse_nom: isAdresseADefinir(h.IDadresse) ? 'À définir' : adr?.nom ?? '',
+          adresse_ville: isAdresseADefinir(h.IDadresse) ? '' : adr?.ville ?? '',
+          // LIVA #1189 — the BL and the demande de transport refuse it.
+          adresse_a_definir: isAdresseADefinir(h.IDadresse),
           nb_rolls: rolls.length,
           poids: round2c(rolls.reduce((s: number, r: any) => s + r.poids, 0)),
           metrage: round2c(rolls.reduce((s: number, r: any) => s + r.metrage, 0)),
@@ -4585,7 +4596,8 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     loadEcheanceLabel(Number(h.IDecheance) || 0),
   ])
 
-  const adrLiv = (await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
+  // 795 « A Définir » reads as one clean label (LIVA #1189).
+  const adrLiv = withAdresseADefinir((await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null)
   const adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
   const lignesFixed = lignesRaw as any[]
   const maps = await resolveLineLabels(lignesFixed.map((l) => ({
