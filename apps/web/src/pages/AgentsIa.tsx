@@ -84,6 +84,21 @@ interface Evaluation {
   retrait?: string | null
 }
 
+/** How the points of one Superviseur report stand (a point scored on an
+ *  earlier report counts as scored). */
+interface BilanPoints {
+  points: number
+  evalues: number
+  reussite: number
+  partielle: number
+  echec: number
+  aEvaluer: number
+}
+interface ScorePoints extends BilanPoints {
+  /** (réussite + partielle) / évalués, 0..1 — null while nothing is scored. */
+  precision: number | null
+}
+
 interface AgentVue {
   slug: string
   nom: string
@@ -110,6 +125,8 @@ interface AgentVue {
     total: number
     parStatut: Partial<Record<Statut, number>>
     evaluations: Record<Note, number> & { aEvaluer: number }
+    /** Point-scored agents: every finding the version raised, by its latest score. */
+    points: ScorePoints | null
     coutUsd: number
     dernierRun: string | null
   }
@@ -172,7 +189,7 @@ interface RunLigne {
   nbOuverts: number | null
   nbFermes: number | null
   nbEcartes: number | null
-  nbAvis: number
+  bilan: BilanPoints | null
 }
 
 interface Controle { code: string; gravite: 'bloquant' | 'avertissement'; message: string }
@@ -1093,6 +1110,27 @@ function EvaluationsKV({ s }: { s: AgentVue['stats'] }) {
   )
 }
 
+/** A point-scored agent's score: what its version raised, and how much of it
+ *  was worth raising. */
+function PointsKV({ p }: { p: ScorePoints }) {
+  const pct = p.precision === null ? null : Math.round(p.precision * 100)
+  const tone = pct === null ? 'text-muted-foreground' : pct >= 80 ? NOTE_META.reussite.text : pct >= 50 ? NOTE_META.partielle.text : NOTE_META.echec.text
+  return (
+    <>
+      <KV label="Points signalés" value={fmtNum(p.points)} mono />
+      <KV label="Confirmés / partiels / fausses alertes" mono value={
+        <>
+          <span className={NOTE_META.reussite.text}>{fmtNum(p.reussite)}</span>{' / '}
+          <span className={cn(p.partielle > 0 && 'font-semibold', NOTE_META.partielle.text)}>{fmtNum(p.partielle)}</span>{' / '}
+          <span className={cn(p.echec > 0 && 'font-semibold', NOTE_META.echec.text)}>{fmtNum(p.echec)}</span>
+        </>
+      } />
+      <KV label="À évaluer" value={fmtNum(p.aEvaluer)} mono />
+      <KV label="Précision" value={<span className={cn('font-semibold', tone)}>{pct === null ? '—' : `${fmtNum(pct)} %`}</span>} mono />
+    </>
+  )
+}
+
 function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
   agent: AgentDetail | null; canPilot: boolean; onChangeMode: (m: Mode) => void; isChangingMode: boolean
 }) {
@@ -1133,10 +1171,15 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
                 <KV label="Avec des points à voir" value={fmtNum(n('points_a_voir') + n('mail_envoye') + n('simule'))} mono />
                 <KV label="Rien à signaler" value={fmtNum(n('rien_a_signaler'))} mono />
                 <KV label="Erreurs" value={<span className={cn(n('erreur') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('erreur'))}</span>} mono />
-                <EvaluationsKV s={s} />
                 <KV label="Coût" value={fmtUsd(s.coutUsd)} mono />
-                <p className="text-[11px] text-muted-foreground pt-1">Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.</p>
               </div>
+              {s.points && (
+                <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
+                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><ListChecks className="h-3.5 w-3.5" />Version {agent.activeVersion} — points</p>
+                  <PointsKV p={s.points} />
+                  <p className="text-[11px] text-muted-foreground pt-1">Précision = points confirmés ou partiels sur points évalués. Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.</p>
+                </div>
+              )}
             </>
           ) : (<>
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
@@ -1343,19 +1386,15 @@ function EvaluationLue({ evaluation, className }: { evaluation: Pick<Evaluation,
   )
 }
 
-const POINT_TITLES: Record<Note, string> = {
-  reussite: 'Point juste : il fallait bien le traiter',
-  partielle: 'Point réel mais en partie faux (quantité, client, détail…) — dites ce qui ne va pas',
-  echec: 'Fausse alerte : le point sera écarté des prochains rapports tant qu’il reste identique',
-}
-
 /** Score one point of a Superviseur report, inside its card. Réussite saves
  *  in one click; partielle and échec open a comment first. */
-function PointEvaluation({ avis, herite, canEvaluate, onSave, isPending }: {
+function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending }: {
   /** The score given on THIS report. */
   avis: Evaluation | undefined
   /** A score given on an earlier report, carried forward. */
   herite: ConstatRun['avis']
+  /** What each score means for a point (the agent's `evaluation` texts). */
+  textes: Record<Note, string>
   canEvaluate: boolean
   onSave: (note: Note | null, commentaire: string) => Promise<unknown>
   isPending: boolean
@@ -1363,7 +1402,10 @@ function PointEvaluation({ avis, herite, canEvaluate, onSave, isPending }: {
   const [brouillon, setBrouillon] = useState<Note | null>(null)
   const [commentaire, setCommentaire] = useState('')
   const [erreur, setErreur] = useState<string | null>(null)
+  // A scored point shows its score alone; the three buttons come back on « Modifier ».
+  const [modif, setModif] = useState(false)
   const actuel = avis ?? null
+  useEffect(() => { setModif(false); setBrouillon(null) }, [actuel?.le, herite?.le])
   const choisir = (n: Note) => {
     setErreur(null)
     if (n === 'reussite') { setBrouillon(null); onSave('reussite', '').catch((e: Error) => setErreur(e.message)); return }
@@ -1376,6 +1418,8 @@ function PointEvaluation({ avis, herite, canEvaluate, onSave, isPending }: {
       .then(() => setBrouillon(null))
       .catch((e: Error) => setErreur(e.message))
   }
+  const decide = actuel !== null || herite !== undefined
+  const boutons = canEvaluate && (!decide || modif || brouillon !== null)
 
   return (
     <div className="mt-2 ml-9 space-y-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1386,21 +1430,33 @@ function PointEvaluation({ avis, herite, canEvaluate, onSave, isPending }: {
             {actuel.commentaire && <span className="text-foreground">{actuel.commentaire} </span>}
             — {actuel.par.nom}, {fmtDateHeure(actuel.le)}
           </span>
+          {canEvaluate && !modif && (
+            <button type="button" className="flex-shrink-0 text-[11px] text-muted-foreground hover:text-accent transition-colors" disabled={isPending} onClick={() => setModif(true)}>
+              Modifier
+            </button>
+          )}
         </div>
       )}
       {!actuel && herite && !brouillon && (
-        <p className="text-[11px] text-muted-foreground">
-          Évalué {NOTE_META[herite.note].label.toLowerCase()} sur un rapport précédent par {herite.par.nom}{herite.commentaire ? ` : « ${herite.commentaire} »` : ''}
-        </p>
+        <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+          <span className="min-w-0">
+            Évalué {NOTE_META[herite.note].label.toLowerCase()} sur un rapport précédent par {herite.par.nom}{herite.commentaire ? ` : « ${herite.commentaire} »` : ''}
+          </span>
+          {canEvaluate && !modif && (
+            <button type="button" className="flex-shrink-0 hover:text-accent transition-colors" disabled={isPending} onClick={() => setModif(true)}>
+              Réévaluer
+            </button>
+          )}
+        </div>
       )}
-      {canEvaluate && (
+      {boutons && (
         <div className="max-w-md">
-          <NoteButtons size="sm" value={brouillon ?? actuel?.note ?? null} onChange={choisir} disabled={isPending} titles={POINT_TITLES} />
+          <NoteButtons size="sm" value={brouillon ?? actuel?.note ?? null} onChange={choisir} disabled={isPending} titles={textes} />
         </div>
       )}
       {brouillon && (
         <div className="space-y-1.5 max-w-xl">
-          <p className="text-[11px] text-muted-foreground">{POINT_TITLES[brouillon]}</p>
+          <p className="text-[11px] text-muted-foreground">{textes[brouillon]}</p>
           <textarea value={commentaire} onChange={(e) => setCommentaire(e.target.value)} rows={2} maxLength={2000} autoFocus
             placeholder="Qu’est-ce qui ne va pas ? (obligatoire)" className={textareaClass} />
           <div className="flex justify-end gap-2">
@@ -1411,11 +1467,14 @@ function PointEvaluation({ avis, herite, canEvaluate, onSave, isPending }: {
           </div>
         </div>
       )}
-      {canEvaluate && actuel && !brouillon && (
-        <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground transition-colors" disabled={isPending}
-          onClick={() => onSave(null, '').catch((e: Error) => setErreur(e.message))}>
-          Effacer l’évaluation
-        </button>
+      {canEvaluate && actuel && modif && !brouillon && (
+        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+          <button type="button" className="hover:text-foreground transition-colors" disabled={isPending} onClick={() => setModif(false)}>Annuler</button>
+          <button type="button" className="hover:text-destructive transition-colors" disabled={isPending}
+            onClick={() => onSave(null, '').catch((e: Error) => setErreur(e.message))}>
+            Effacer l’évaluation
+          </button>
+        </div>
       )}
       {erreur && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</p>}
     </div>
@@ -1640,7 +1699,7 @@ interface ResultatSuperviseur {
   fermes?: Array<{ cle: string; titre: string; domaine: string; depuis: string }>
   memoireMiseAJour?: boolean
 }
-interface RunSuperviseur extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces' | 'nbNouveaux' | 'nbOuverts' | 'nbFermes' | 'nbEcartes' | 'nbAvis'> {
+interface RunSuperviseur extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces' | 'nbNouveaux' | 'nbOuverts' | 'nbFermes' | 'nbEcartes' | 'bilan'> {
   resultat: ResultatSuperviseur
   avisPoints?: Record<string, Evaluation>
 }
@@ -1655,6 +1714,28 @@ const GRAVITE_META: Record<Gravite, { border: string; iconBg: string; iconCls: s
   urgent: { border: 'border-l-destructive/60', iconBg: 'bg-destructive/10', iconCls: 'text-destructive/70', icon: AlertTriangle },
   attention: { border: 'border-l-amber-400/60', iconBg: 'bg-amber-400/10', iconCls: 'text-amber-600', icon: AlertCircle },
   info: { border: 'border-l-border', iconBg: 'bg-muted', iconCls: 'text-muted-foreground', icon: Info },
+}
+
+/** « 3 / 10 » points scored, then how — one icon per score present. */
+function BilanCell({ b }: { b: BilanPoints | null }) {
+  if (!b || b.points === 0) return <span className="text-muted-foreground">—</span>
+  const fini = b.aEvaluer === 0
+  return (
+    <>
+      <div className={cn('tabular-nums whitespace-nowrap', fini && 'font-semibold text-green-700')}>
+        {fmtNum(b.evalues)}<span className="text-muted-foreground font-normal"> / {fmtNum(b.points)}</span>
+      </div>
+      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        {b.evalues === 0
+          ? <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />à évaluer</span>
+          : NOTE_ORDER.filter((n) => b[n] > 0).map((n) => {
+              const m = NOTE_META[n]
+              const Icon = m.icon
+              return <span key={n} className={cn('inline-flex items-center gap-0.5 tabular-nums', m.text)} title={m.label}><Icon className="h-3 w-3" />{fmtNum(b[n])}</span>
+            })}
+      </div>
+    </>
+  )
 }
 
 function joursDepuis(iso: string): number {
@@ -1711,7 +1792,7 @@ function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun
                 <th className="px-3 py-2.5 text-right font-semibold" title="Points nouveaux ou aggravés">Nouv.</th>
                 <th className="px-3 py-2.5 text-right font-semibold" title="Points toujours ouverts">Ouv.</th>
                 <th className="px-3 py-2.5 text-right font-semibold" title="Points résolus depuis le rapport précédent">Rés.</th>
-                <th className="px-3 py-2.5 text-left font-semibold">Évaluation</th>
+                <th className="px-3 py-2.5 text-left font-semibold" title="Points évalués sur points signalés">Évalués</th>
                 <th className="px-3 py-2.5 text-right font-semibold">Coût</th>
               </tr>
             </thead>
@@ -1727,10 +1808,7 @@ function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun
                   <td className={cn('px-3 py-1.5 text-right tabular-nums', (r.nbNouveaux ?? 0) > 0 && 'font-semibold text-amber-700')}>{num(r.nbNouveaux)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbOuverts)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbFermes)}</td>
-                  <td className="px-3 py-1.5">
-                    <NotePill evaluation={r.evaluation} />
-                    {r.nbAvis > 0 && <div className="text-[11px] text-muted-foreground">{r.nbAvis} point{r.nbAvis > 1 ? 's' : ''} évalué{r.nbAvis > 1 ? 's' : ''}</div>}
-                  </td>
+                  <td className="px-3 py-1.5"><BilanCell b={r.bilan} /></td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtUsd(r.coutUsd, 1)}</td>
                 </tr>
               ))}
@@ -1742,9 +1820,10 @@ function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun
   )
 }
 
-function ConstatCard({ c, avis, canEvaluate, onSave, isPending, estompe }: {
+function ConstatCard({ c, avis, textes, canEvaluate, onSave, isPending, estompe }: {
   c: ConstatRun
   avis: Evaluation | undefined
+  textes: Record<Note, string>
   canEvaluate: boolean
   onSave: (note: Note | null, commentaire: string) => Promise<unknown>
   isPending: boolean
@@ -1779,20 +1858,39 @@ function ConstatCard({ c, avis, canEvaluate, onSave, isPending, estompe }: {
         </div>
       </div>
       <p className="text-sm mt-2 ml-9">{c.message}</p>
-      <PointEvaluation avis={avis} herite={c.avis} canEvaluate={canEvaluate} onSave={onSave} isPending={isPending} />
+      <PointEvaluation avis={avis} herite={c.avis} textes={textes} canEvaluate={canEvaluate} onSave={onSave} isPending={isPending} />
     </div>
   )
 }
 
+/** The report in figures, one strip across the top of the dialog. A figure
+ *  takes a colour only when it carries a meaning (§18.D verdict rule, flat). */
+function KpiStrip({ items }: {
+  items: Array<{ key: string; label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: string }>
+}) {
+  return (
+    <div className="flex-shrink-0 grid grid-cols-3 md:grid-cols-6 gap-px rounded-lg border border-border/60 bg-border/60 overflow-hidden">
+      {items.map((it) => (
+        <div key={it.key} className="bg-zinc-100 px-3 py-2 min-w-0">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground truncate" title={it.label}>{it.label}</p>
+          <p className={cn('text-2xl font-bold tabular-nums leading-tight', it.tone)}>{it.value}</p>
+          <div className="mt-1 h-4 text-[11px] text-muted-foreground truncate">{it.sub}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** The report is the morning's batch of points: the KPIs say how it stands,
+ *  each point is scored on its own — the report as a whole never is. */
 function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }: {
   agent: AgentDetail; runId: string | null; canEvaluate: boolean; onClose: () => void; onChanged: () => void
 }) {
   const slug = agent.slug
   const queryClient = useQueryClient()
-  const [evalError, setEvalError] = useState<string | null>(null)
   const [showControles, setShowControles] = useState(false)
   const [showEcartes, setShowEcartes] = useState(false)
-  useEffect(() => { setEvalError(null); setShowControles(false); setShowEcartes(false) }, [runId])
+  useEffect(() => { setShowControles(false); setShowEcartes(false) }, [runId])
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['agent-ia-run', slug, runId],
@@ -1801,12 +1899,6 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
   })
   const rafraichir = () => { onChanged(); queryClient.invalidateQueries({ queryKey: ['agent-ia-run', slug, runId] }) }
 
-  const evaluationMut = useMutation({
-    mutationFn: (v: { note: Note | null; commentaire: string }) =>
-      callApi(`/agents-ia/${slug}/runs/${runId}/evaluation`, { method: 'PUT', body: JSON.stringify(v) }),
-    onSuccess: () => { setEvalError(null); rafraichir() },
-    onError: (e: Error) => setEvalError(e.message),
-  })
   const pointMut = useMutation({
     mutationFn: (v: { cle: string; note: Note | null; commentaire: string }) =>
       callApi(`/agents-ia/${slug}/runs/${runId}/points`, { method: 'PUT', body: JSON.stringify(v) }),
@@ -1821,41 +1913,107 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
   const fermes = res?.fermes ?? []
   const controles = res?.controles ?? []
   const avis = run?.avisPoints ?? {}
-  const evalues = constats.filter((c) => avis[c.cle]).length
+  // A point scored on an earlier report counts as scored (score.ts, same rule as the list).
+  const noteDe = (c: ConstatRun): Note | null => avis[c.cle]?.note ?? c.avis?.note ?? null
+  const notes = constats.map(noteDe)
+  const evalues = notes.filter((n) => n !== null).length
+  const compte = (n: Note) => notes.filter((x) => x === n).length
+  const aEvaluer = constats.length - evalues
+  const pct = constats.length ? Math.round((evalues / constats.length) * 100) : 0
+
   const carte = (c: ConstatRun, estompe = false) => (
-    <ConstatCard key={c.cle} c={c} avis={avis[c.cle]} canEvaluate={canEvaluate} estompe={estompe}
+    <ConstatCard key={c.cle} c={c} avis={avis[c.cle]} textes={agent.evaluation} canEvaluate={canEvaluate} estompe={estompe}
       isPending={pointMut.isPending && pointMut.variables?.cle === c.cle}
       onSave={(note, commentaire) => pointMut.mutateAsync({ cle: c.cle, note, commentaire })} />
   )
 
   return (
     <Dialog open={runId !== null} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-6xl w-[94vw] h-[88vh] flex flex-col" onClose={onClose}>
+      <DialogContent className="max-w-5xl w-[94vw] h-[88vh] flex flex-col" onClose={onClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 flex-wrap">
             <ShieldCheck className="h-5 w-5 text-accent" />
             {run ? `Rapport du ${fmtDateHeure(run.createdAt)}` : 'Rapport'}
             {run && <StatutPill statut={run.statut} className="text-xs py-0.5" />}
-            {run && <NotePill evaluation={run.evaluation} />}
-            {run && <span className="text-xs font-normal text-muted-foreground">{SOURCE_LABEL[run.source]} · v{run.version}</span>}
+            {run && constats.length > 0 && (aEvaluer > 0
+              ? <span className="inline-flex items-center gap-1 text-xs font-normal text-muted-foreground"><Clock className="h-3.5 w-3.5" />À évaluer</span>
+              : <span className={cn('inline-flex items-center gap-1 text-xs font-semibold', NOTE_META.reussite.text)}><CheckCircle2 className="h-3.5 w-3.5" />Évalué</span>)}
+            {run && (
+              <span className="text-xs font-normal text-muted-foreground">
+                {SOURCE_LABEL[run.source]} · v{run.version} · {fmtNum(run.dureeMs / 1000, 1)} s
+              </span>
+            )}
           </DialogTitle>
+          {run && res && !res.memoireMiseAJour && (
+            <p className="text-xs text-muted-foreground">Lancement manuel : la mémoire des points signalés n’a pas été modifiée.</p>
+          )}
         </DialogHeader>
         {isLoading || !run ? (
           <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
         ) : (
-          <div className="mt-4 flex-1 min-h-0 flex flex-col md:flex-row gap-4">
-            {/* Left: the points to handle, each scored on its own */}
-            <div className="flex-1 min-w-0 min-h-0 overflow-y-auto space-y-3 px-1 scrollbar-transparent">
+          <div className="mt-4 flex-1 min-h-0 flex flex-col gap-3">
+            <KpiStrip items={[
+              { key: 'signales', label: 'Points signalés', value: fmtNum(constats.length),
+                sub: constats.length > 0 ? `${fmtNum(neufs.length)} nouveaux · ${fmtNum(ouverts.length)} ouverts` : 'rien à traiter' },
+              { key: 'evalues', label: 'Évalués', tone: constats.length > 0 && aEvaluer === 0 ? NOTE_META.reussite.text : undefined,
+                value: <>{fmtNum(evalues)}<span className="text-sm font-normal text-muted-foreground"> / {fmtNum(constats.length)}</span></>,
+                sub: constats.length > 0 && (
+                  <div className="h-1.5 mt-1 rounded-full bg-zinc-200 overflow-hidden" title={`${pct} %`}>
+                    <div className={cn('h-full rounded-full transition-all', aEvaluer === 0 ? 'bg-success' : 'bg-accent')} style={{ width: `${pct}%` }} />
+                  </div>
+                ) },
+              { key: 'reussite', label: 'Confirmés', value: fmtNum(compte('reussite')), tone: compte('reussite') > 0 ? NOTE_META.reussite.text : undefined },
+              { key: 'partielle', label: 'Partiels', value: fmtNum(compte('partielle')), tone: compte('partielle') > 0 ? NOTE_META.partielle.text : undefined },
+              { key: 'echec', label: 'Fausses alertes', value: fmtNum(compte('echec')), tone: compte('echec') > 0 ? NOTE_META.echec.text : undefined,
+                sub: ecartes.length > 0 ? `${fmtNum(ecartes.length)} écartée${ecartes.length > 1 ? 's' : ''} avant` : undefined },
+              { key: 'fermes', label: 'Résolus', value: fmtNum(fermes.length), tone: fermes.length > 0 ? NOTE_META.reussite.text : undefined,
+                sub: 'depuis le rapport précédent' },
+            ]} />
+
+            <div className="flex-shrink-0 flex items-center justify-between gap-3 text-xs text-muted-foreground px-1">
+              <span className="min-w-0 truncate">
+                {constats.length === 0 ? ''
+                  : !canEvaluate ? 'Droit « Évaluer les agents IA » requis pour noter les points.'
+                  : aEvaluer > 0 ? 'Évaluez chaque point : « Échec » = fausse alerte, écartée des prochains rapports.'
+                  : 'Tous les points sont évalués.'}
+              </span>
+              <button type="button" onClick={() => setShowControles((v) => !v)} className="flex-shrink-0 hover:text-foreground transition-colors">
+                {showControles ? 'Masquer les contrôles exécutés' : `Afficher les contrôles exécutés (${controles.length})`}
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-3 px-1 pb-1 scrollbar-transparent">
+              {showControles && (
+                controles.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Aucun contrôle n’est encore en place.</p>
+                ) : (
+                  <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                    <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
+                      <colgroup><col style={{ width: '64%' }} /><col style={{ width: '18%' }} /><col style={{ width: '18%' }} /></colgroup>
+                      <thead className="bg-zinc-200/60 border-b border-border/60">
+                        <tr className="uppercase tracking-wide text-muted-foreground">
+                          <th className="px-2 py-2 text-left font-semibold">Contrôle</th>
+                          <th className="px-2 py-2 text-right font-semibold">Points</th>
+                          <th className="px-2 py-2 text-right font-semibold">Durée</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {controles.map((c) => (
+                          <tr key={c.id} className="border-b border-border/40 last:border-b-0" title={c.erreur ?? undefined}>
+                            <td className={cn('px-2 py-1.5 truncate', c.erreur && 'text-destructive')}>{c.erreur && <XCircle className="h-3 w-3 inline mr-1" />}{c.libelle}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums">{c.erreur ? '—' : fmtNum(c.nb)}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{fmtNum(c.dureeMs / 1000, 1)} s</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              )}
               {run.erreur && (
                 <div className="rounded-lg border-l-4 border-l-destructive/60 border border-border/60 bg-destructive/5 p-3 text-sm text-destructive flex gap-2">
                   <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /><span className="break-words">{run.erreur}</span>
                 </div>
-              )}
-              {constats.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  {constats.length} point{constats.length > 1 ? 's' : ''} à traiter · {evalues} évalué{evalues > 1 ? 's' : ''}.
-                  {canEvaluate && ' Évaluez chaque point : « Échec » = fausse alerte, le point sera écarté des prochains rapports.'}
-                </p>
               )}
               {pointMut.error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{(pointMut.error as Error).message}</div>}
 
@@ -1865,19 +2023,9 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
               {ouverts.map((c) => carte(c))}
 
               {constats.length === 0 && !run.erreur && (
-                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
                   <CheckCircle2 className="h-10 w-10 mb-2 opacity-40" />
                   <p className="text-sm">Aucun point à traiter</p>
-                </div>
-              )}
-
-              {ecartes.length > 0 && (
-                <div>
-                  <button type="button" onClick={() => setShowEcartes((v) => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5">
-                    <EyeOff className="h-3.5 w-3.5" />
-                    {showEcartes ? 'Masquer les points écartés' : `Afficher les points écartés — fausses alertes (${ecartes.length})`}
-                  </button>
-                  {showEcartes && <div className="mt-2 space-y-2">{ecartes.map((c) => carte(c, true))}</div>}
                 </div>
               )}
 
@@ -1893,57 +2041,16 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
                   ))}
                 </>
               )}
-            </div>
 
-            {/* Right: the report in figures, and its score as a whole */}
-            <div className="md:w-80 flex-shrink-0 min-h-0 overflow-y-auto space-y-3 px-1 scrollbar-transparent">
-              <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1">
-                <KV label="Nouveaux ou aggravés" value={fmtNum(neufs.length)} mono />
-                <KV label="Toujours ouverts" value={fmtNum(ouverts.length)} mono />
-                <KV label="Écartés (fausses alertes)" value={fmtNum(ecartes.length)} mono />
-                <KV label="Résolus" value={fmtNum(fermes.length)} mono />
-                <KV label="Durée" value={`${fmtNum(run.dureeMs / 1000, 1)} s`} mono />
-                {res && !res.memoireMiseAJour && (
-                  <p className="text-[11px] text-muted-foreground pt-1">Lancement manuel : la mémoire des points signalés n’a pas été modifiée.</p>
-                )}
-              </div>
-
-              <EvaluationPanel titre="Évaluer ce rapport" evaluation={run.evaluation} textes={agent.evaluation}
-                canEvaluate={canEvaluate} confirmEchec={null} isPending={evaluationMut.isPending} error={evalError}
-                onSave={(note, commentaire) => evaluationMut.mutate({ note, commentaire })} />
-
-              <div>
-                <button type="button" onClick={() => setShowControles((v) => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-                  {showControles ? 'Masquer les contrôles exécutés' : `Afficher les contrôles exécutés (${controles.length})`}
-                </button>
-                {showControles && (
-                  controles.length === 0 ? (
-                    <p className="mt-2 text-xs text-muted-foreground italic">Aucun contrôle n’est encore en place.</p>
-                  ) : (
-                    <div className="mt-2 rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-                      <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
-                        <colgroup><col style={{ width: '58%' }} /><col style={{ width: '20%' }} /><col style={{ width: '22%' }} /></colgroup>
-                        <thead className="bg-zinc-200/60 border-b border-border/60">
-                          <tr className="uppercase tracking-wide text-muted-foreground">
-                            <th className="px-2 py-2 text-left font-semibold">Contrôle</th>
-                            <th className="px-2 py-2 text-right font-semibold">Points</th>
-                            <th className="px-2 py-2 text-right font-semibold">Durée</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {controles.map((c) => (
-                            <tr key={c.id} className="border-b border-border/40 last:border-b-0" title={c.erreur ?? undefined}>
-                              <td className={cn('px-2 py-1.5 truncate', c.erreur && 'text-destructive')}>{c.erreur && <XCircle className="h-3 w-3 inline mr-1" />}{c.libelle}</td>
-                              <td className="px-2 py-1.5 text-right tabular-nums">{c.erreur ? '—' : fmtNum(c.nb)}</td>
-                              <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{fmtNum(c.dureeMs / 1000, 1)} s</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )
-                )}
-              </div>
+              {ecartes.length > 0 && (
+                <div className="pt-1">
+                  <button type="button" onClick={() => setShowEcartes((v) => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5">
+                    <EyeOff className="h-3.5 w-3.5" />
+                    {showEcartes ? 'Masquer les points écartés' : `Afficher les points écartés — fausses alertes (${ecartes.length})`}
+                  </button>
+                  {showEcartes && <div className="mt-2 space-y-2">{ecartes.map((c) => carte(c, true))}</div>}
+                </div>
+              )}
             </div>
           </div>
         )}

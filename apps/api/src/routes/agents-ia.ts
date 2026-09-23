@@ -34,6 +34,7 @@ import {
 import { etatSondage, lancerSondage, prochainQuotidien, SondageEnCoursError } from '../lib/agents/scheduler.js'
 import type { ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
 import { enregistrerAvis, lireAvis } from '../lib/agents/superviseur/avis.js'
+import { bilanRun, notesDuBilan, scorePoints } from '../lib/agents/superviseur/score.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur } from '../lib/gmail-reader.js'
 
@@ -99,7 +100,7 @@ function agentOu404(req: Request, res: Response): AgentDef | null {
   return def ?? null
 }
 
-function statistiques(runs: AgentRun[], state: AgentState) {
+function statistiques(def: AgentDef, runs: AgentRun[], state: AgentState) {
   // Stats cover the active version only (MFProd rule): a new prompt starts a new score.
   const actifs = runs.filter((r) => r.version === state.activeVersion && r.source !== 'essai_manuel')
   const parStatut: Record<string, number> = {}
@@ -114,6 +115,9 @@ function statistiques(runs: AgentRun[], state: AgentState) {
       echec: note('echec'),
       aEvaluer: actifs.filter((r) => !r.evaluation).length,
     },
+    /** Point-scored agents (Superviseur): the score of every finding the
+     *  version raised — the number a prompt version is judged on. */
+    points: def.pointsEvaluables ? scorePoints(actifs) : null,
     coutUsd: actifs.reduce((s, r) => s + (r.coutUsd || 0), 0),
     dernierRun: runs.length ? runs[runs.length - 1].createdAt : null,
   }
@@ -121,7 +125,7 @@ function statistiques(runs: AgentRun[], state: AgentState) {
 
 /** A run without the heavy parts (OCR text, findings) for lists. */
 function allege(r: AgentRun) {
-  const { resultat, avisPoints, ...rest } = r
+  const { resultat, avisPoints: _avis, ...rest } = r
   const res = resultat as { extraction?: { pieces?: unknown[]; numero_bordereau?: string; numero_commande?: string } }
   const sup = resultat as Partial<ResultatSuperviseur>
   return {
@@ -134,8 +138,8 @@ function allege(r: AgentRun) {
     nbOuverts: sup.constats ? sup.constats.filter((c) => c.etat === 'ouvert').length : null,
     nbFermes: sup.fermes ? sup.fermes.length : null,
     nbEcartes: sup.ecartes ? sup.ecartes.length : null,
-    /** Points of the report someone scored. */
-    nbAvis: avisPoints ? Object.keys(avisPoints).length : 0,
+    /** How the report's points stand (scored on it, or carried from earlier). */
+    bilan: bilanRun(r),
   }
 }
 
@@ -164,7 +168,7 @@ async function vueAgent(def: AgentDef) {
     modeChangedAt: state.modeChangedAt,
     modeChangedBy: state.modeChangedBy,
     versionActive: { version: v.version, model: v.model },
-    stats: statistiques(runs, state),
+    stats: statistiques(def, runs, state),
     sondage: etatSondage(def.slug),
   }
 }
@@ -266,9 +270,12 @@ agentsIaRouter.get('/:slug/runs', async (req, res) => {
   try {
     const statut = typeof req.query.statut === 'string' && req.query.statut ? req.query.statut.split(',') : null
     // ?note=partielle,echec — any of reussite / partielle / echec, or a_evaluer
-    // for the runs nobody scored.
+    // for the runs nobody scored. A point-scored agent (Superviseur) is read
+    // through its points: a report matches when one of its points does.
     const notes = typeof req.query.note === 'string' && req.query.note ? req.query.note.split(',') : null
-    const parNote = (r: AgentRun) => !notes || notes.includes(r.evaluation ? r.evaluation.note : 'a_evaluer')
+    const notesDuRun = (r: AgentRun): Set<string> =>
+      def.pointsEvaluables ? notesDuBilan(bilanRun(r)) : new Set([r.evaluation ? r.evaluation.note : 'a_evaluer'])
+    const parNote = (r: AgentRun) => !notes || notes.some((n) => notesDuRun(r).has(n))
     const runs = (await lireRuns(def.slug))
       .filter((r) => (!statut || statut.includes(r.statut)) && parNote(r))
       .reverse()
@@ -340,11 +347,12 @@ agentsIaRouter.post('/:slug/runs/:id/retraiter', async (req, res) => {
 })
 
 // ── scores ───────────────────────────────────────────────
-// Every agent is scored the same way: réussite / partielle / échec. Only
-// réussite goes without a comment — the comment is what the next prompt
-// version is written from. What an échec removes is the agent's business
-// (AgentDef.evaluation.retirer): BL Ennoblisseur takes back its pre-filled
-// pieces; the Superviseur removes nothing at run level.
+// Every score is réussite / partielle / échec. Only réussite goes without a
+// comment — the comment is what the next prompt version is written from.
+// WHAT is scored depends on the agent: a run (BL Ennoblisseur — one run, one
+// BL; an échec takes back its pre-filled pieces, AgentDef.evaluation.retirer)
+// or each point of the run (Superviseur — the report is the morning's batch,
+// never scored as a whole; superviseur/score.ts).
 
 const evaluationBody = z.object({
   note: z.enum(NOTES as [Note, ...Note[]]).nullable(),
@@ -358,6 +366,7 @@ agentsIaRouter.put('/:slug/runs/:id/evaluation', async (req, res) => {
   if (uid === null) return
   const def = agentOu404(req, res)
   if (!def) return
+  if (def.pointsEvaluables) { res.status(409).json({ error: 'cet agent s’évalue point par point, pas par rapport' }); return }
   const p = evaluationBody.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'évaluation invalide' }); return }
   const { note, commentaire } = p.data

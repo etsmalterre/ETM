@@ -40,9 +40,10 @@ export interface AgentDef {
   ecritures: string[]
   /** When it holds back, shown in the « Fonctionnement » tab. */
   abstention: string
-  /** What each score means for this agent, shown beside the three buttons of
-   *  the run dialog. Every agent is scored the same way (store.ts `Note`):
-   *  réussite needs no comment, partielle and échec need one. */
+  /** What each score means for this agent, shown beside the three buttons —
+   *  of the run dialog, or of each point when `pointsEvaluables`. Every score
+   *  is the same (store.ts `Note`): réussite needs no comment, partielle and
+   *  échec need one. */
   evaluation: {
     reussite: string
     partielle: string
@@ -52,7 +53,8 @@ export interface AgentDef {
      *  when there was nothing to remove. Absent = an échec removes nothing. */
     retirer?(run: AgentRun): Promise<string | null>
   }
-  /** Superviseur: each point of the report is scored too (avis.ts). */
+  /** Superviseur: what is scored is each point of the report, never the run
+   *  (avis.ts, score.ts) — PUT /runs/:id/evaluation answers 409. */
   pointsEvaluables: boolean
   /** One line per mode the agent offers, for the status footer menu. An agent
    *  whose « essai » would change nothing (Superviseur: it writes nothing)
@@ -109,10 +111,11 @@ export const AGENTS: readonly AgentDef[] = [
     ecritures: ['Rien dans la base ni dans les boîtes mail : il lit seulement. Le rapport est l’exécution elle-même.'],
     abstention:
       'Un point déjà signalé reste dans le rapport, marqué « toujours ouvert », jusqu’à ce qu’il soit résolu. Un point jugé en échec (fausse alerte) est écarté des rapports suivants tant qu’il reste identique. Un lancement manuel ne met jamais à jour sa mémoire : le rapport du lendemain reste juste.',
+    // Each POINT is scored, never the report (the report is the morning's batch).
     evaluation: {
-      reussite: 'Rapport juste : les points relevés sont réels et rien d’important ne manque.',
-      partielle: 'Rapport utile mais incomplet ou en partie faux : dites ce qui manque ou ce qui est faux.',
-      echec: 'Rapport inutilisable. Rien n’est retiré : pour écarter une fausse alerte, jugez le point lui-même en échec.',
+      reussite: 'Point juste : il fallait bien le traiter.',
+      partielle: 'Point réel mais en partie faux (quantité, client, détail…) : dites ce qui ne va pas.',
+      echec: 'Fausse alerte : le point est écarté des prochains rapports tant qu’il reste identique.',
     },
     pointsEvaluables: true,
     modes: {
