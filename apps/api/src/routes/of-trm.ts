@@ -37,6 +37,8 @@
 //    (terminerOf), shared with the phone's « Terminer OF » — and the legacy
 //    Android handover, which only flips est_actif, is repaired on every list
 //    read (healHandedOverOfs, LIVA #1128). Never write these columns elsewhere.
+//  - Réactiver (LIVA #1197): a terminé OF back to the front of the waiting
+//    queue, arret_prod cleared, never active (reactiverOf, same file).
 //
 // Deliberate approximations (the legacy windows are PCS-compressed):
 //  - Per-piece % = théorique/réel with théorique_min =
@@ -63,7 +65,7 @@ import {
   selectStockFilByIds, resolveLigneContexts, loadOf, realiseByOf, OF_COLUMNS,
   type DefautRow, type StockFilLot, type OfRow,
 } from '../lib/production-trm.js'
-import { rerankQueue, activeOfOnMachine, terminerOf, healHandedOverOfs } from '../lib/of-queue-trm.js'
+import { rerankQueue, activeOfOnMachine, terminerOf, reactiverOf, healHandedOverOfs } from '../lib/of-queue-trm.js'
 import { realisableSurLots } from '../lib/realisable-fil-trm.js'
 import { loadEtmAffectation, missingAffectations, type FilPair } from '../lib/affectation-fil-trm.js'
 // A rectiligne line (type 4 — cols / bandes, LIVA #1185) never gets an OF:
@@ -1913,6 +1915,42 @@ ofTrmRouter.post('/:id/activer', async (req: Request, res: Response) => {
     res.json({ ok: true })
   } catch (err) {
     console.error('Error activating of-trm:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/of-trm/:id/reactiver — reopen a terminé OF closed too early
+// (LIVA #1197). It returns « En attente » at the front of its métier's queue,
+// never « en cours » (reactiverOf says why). Refused on a soldée commande:
+// « Solder » was granted because every OF was terminé, and on a mirror ETM may
+// already have clôturé its own order after reading « Soldée par TRM » —
+// reopening the commande for the user would silently desync the two ledgers.
+// The user reopens it first (« Rouvrir », one click), knowingly.
+ofTrmRouter.post('/:id/reactiver', async (req: Request, res: Response) => {
+  if (!(await requireEditOf(req, res))) return
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const loaded = await loadOf(id)
+    if (!loaded) { res.status(404).json({ error: 'Not found' }); return }
+    const { of, ligne } = loaded
+    if (Number(of.est_termine) !== 1) { res.json({ ok: true }); return }
+    if (ligne) {
+      const cmd = await query<{ est_soldee: number | null }>(
+        `SELECT est_soldee FROM commande_client WHERE IDcommande_client = ${ligne.commandeId}`,
+      )
+      if (Number(cmd[0]?.est_soldee) === 1) {
+        res.status(409).json({
+          error: 'commande_soldee',
+          message: `La commande ${ligne.commande_numero} est soldée. Rouvrez-la d'abord dans Clients › Commandes.`,
+        })
+        return
+      }
+    }
+    await reactiverOf(id, Number(of.IDmachine) || 0)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error reactivating of-trm:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

@@ -8,12 +8,13 @@
  * create ×2 on an idle métier → reorder → update (accented consigne) →
  * composition/incorpore replace → observation → 409 guards (delete with
  * production, activer on a busy métier) → activer → terminer with
- * auto-activation handoff → delete both. Leaves the database as it found it
+ * auto-activation handoff → réactiver (front of the queue, soldée refused)
+ * → delete all three. Leaves the database as it found it
  * (the scratch OFs are deleted; the terminé one never produced anything).
  *
  * Also guards the `edit_of` gate the write routes sit behind: anonymous → 401,
  * a signed-in user without the key → 403, and reading stays open to them. Until
- * that key existed these nine routes took **no cookie at all** — this script
+ * that key existed the write routes took **no cookie at all** — this script
  * used to pass without sending one, which is how that was noticed.
  *
  * The dev database is a stale copy of prod — safe for scratch writes, same
@@ -21,6 +22,7 @@
  */
 import crypto from 'node:crypto'
 import { getAllTrmPermissions } from '../lib/permissions-trm.js'
+import { query } from '../lib/hfsql-auto.js'
 
 const BASE = process.env.API_BASE ?? 'http://localhost:8083/api'
 
@@ -57,7 +59,7 @@ async function main() {
   console.log(`Gestion des OF write-cycle check against ${BASE}\n`)
 
   // ── The edit_of gate ────────────────────────────────
-  // Reading an OF is open to whoever holds the Production menu; the nine write
+  // Reading an OF is open to whoever holds the Production menu; the write
   // routes are not. Asserted before the write cycle so a broken gate is the
   // first thing reported, not a casualty of a failed scratch write.
   const anon = await fetch(`${BASE}/of-trm`, {
@@ -218,10 +220,51 @@ async function main() {
   const putTerm = await api(`/of-trm/${idA}`, { method: 'PUT', body: JSON.stringify({ visitage: 1 }) })
   check('PUT on a terminé OF → 409 of_termine', putTerm.status === 409 && putTerm.body.error === 'of_termine', putTerm)
 
-  // ── Cleanup: delete both scratch OFs (neither produced anything).
+  // ── Réactiver A (LIVA #1197): back « En attente » at the FRONT of the
+  //    waiting queue — behind the running B, ahead of a C queued meanwhile —
+  //    arret_prod cleared so the #1128 repair does not close it again.
+  const c = await api('/of-trm', { method: 'POST', body: JSON.stringify(mkBody) })
+  check('POST / creates OF C (201), queued behind B', c.status === 201 && c.body.id > 0, c)
+  const idC = c.body.id as number
+  const react = await api(`/of-trm/${idA}/reactiver`, { method: 'POST' })
+  check('reactiver A (200)', react.status === 200, react)
+  detA = (await api(`/of-trm/${idA}`)).body
+  detB = (await api(`/of-trm/${idB}`)).body
+  let detC = (await api(`/of-trm/${idC}`)).body
+  check('A back en attente (est_termine=0, est_actif=0)', detA.est_termine === 0 && detA.est_actif === 0, detA)
+  check('A arret_prod cleared', !/[1-9]/.test(String(detA.arret_prod ?? '')), detA.arret_prod)
+  check('queue: B running (1), A next (2), C after (3)',
+    detB.est_actif === 1 && detB.priorite === 1 && detA.priorite === 2 && detC.priorite === 3,
+    { a: detA.priorite, b: detB.priorite, c: detC.priorite })
+  const attReact = (await api('/of-trm?statut=attente')).body as any[]
+  check('A still en attente after a list read (not healed shut)', attReact.some((o: any) => o.id === idA), attReact.map((o: any) => o.id))
+  const reactAgain = await api(`/of-trm/${idA}/reactiver`, { method: 'POST' })
+  detA = (await api(`/of-trm/${idA}`)).body
+  check('reactiver an open OF is a no-op (200)', reactAgain.status === 200 && detA.priorite === 2, { reactAgain, p: detA.priorite })
+
+  // A terminé OF of a soldée commande is refused — found on the dev copy, and
+  // the refusal writes nothing, so a real row is safe to aim at.
+  const soldee = await query<{ id: number }>(
+    `SELECT TOP 1 orf.IDordre_fabrication AS id
+     FROM ordre_fabrication orf
+     JOIN ligne_commande_client l ON l.IDligne_commande_client = orf.IDligne_commande_client
+     JOIN commande_client cc ON cc.IDcommande_client = l.IDcommande_client
+     WHERE orf.est_termine = 1 AND cc.est_soldee = 1 AND cc.IDsociete = 2`,
+  )
+  if (soldee.length === 0) console.log('  SKIP commande_soldee guard — no terminé OF on a soldée commande')
+  else {
+    const sid = Number(soldee[0].id)
+    const refused = await api(`/of-trm/${sid}/reactiver`, { method: 'POST' })
+    const still = (await api(`/of-trm/${sid}`)).body
+    check(`reactiver OF ${sid} of a soldée commande → 409 commande_soldee, untouched`,
+      refused.status === 409 && refused.body.error === 'commande_soldee' && still.est_termine === 1, { refused, est_termine: still.est_termine })
+  }
+
+  // ── Cleanup: delete the three scratch OFs (none produced anything).
+  const delC = await api(`/of-trm/${idC}`, { method: 'DELETE' })
   const delB = await api(`/of-trm/${idB}`, { method: 'DELETE' })
   const delA = await api(`/of-trm/${idA}`, { method: 'DELETE' })
-  check('cleanup: both scratch OFs deleted', delA.status === 200 && delB.status === 200, { delA, delB })
+  check('cleanup: the scratch OFs deleted', delA.status === 200 && delB.status === 200 && delC.status === 200, { delA, delB, delC })
   const gone = await api(`/of-trm/${idA}`)
   check('deleted OF is 404', gone.status === 404, gone.status)
   const attAfter = (await api('/of-trm?statut=attente')).body as any[]

@@ -7,7 +7,7 @@ vi.mock('./hfsql-auto.js', () => ({
   query: (...args: unknown[]) => queryMock(...args),
 }))
 
-const { handedOverLeftovers, terminerOf, healHandedOverOfs, rerankQueue } = await import('./of-queue-trm.js')
+const { handedOverLeftovers, terminerOf, reactiverOf, healHandedOverOfs, rerankQueue } = await import('./of-queue-trm.js')
 
 const sql = (): string[] => queryMock.mock.calls.map((c) => String(c[0]).replace(/\s+/g, ' ').trim())
 
@@ -97,6 +97,35 @@ describe('terminerOf — the one closing path', () => {
       ])
     expect(await terminerOf(3565, 25, { stampArret: false })).toEqual({ activated: 0 })
     expect(sql().some((q) => q.includes('SET est_actif = 1'))).toBe(false)
+  })
+})
+
+describe('reactiverOf — the way back (LIVA #1197)', () => {
+  it('reopens waiting, arret_prod cleared, and ranks it right behind the running OF', async () => {
+    queryMock
+      .mockResolvedValueOnce([]) // UPDATE reopen
+      .mockResolvedValueOnce([   // rerank SELECT, in its ORDER BY: active, then priorite
+        { IDordre_fabrication: 3571, priorite: 1, est_actif: 1, auto_activation: 1 },
+        { IDordre_fabrication: 3565, priorite: 0, est_actif: 0, auto_activation: 1 },
+        { IDordre_fabrication: 3580, priorite: 2, est_actif: 0, auto_activation: 1 },
+      ])
+      .mockResolvedValue([])
+    await reactiverOf(3565, 25)
+    const s = sql()
+    expect(s[0]).toBe(
+      "UPDATE ordre_fabrication SET est_termine = 0, est_actif = 0, priorite = 0, arret_prod = '' WHERE IDordre_fabrication = 3565",
+    )
+    expect(s.slice(2)).toEqual([
+      'UPDATE ordre_fabrication SET priorite = 2 WHERE IDordre_fabrication = 3565',
+      'UPDATE ordre_fabrication SET priorite = 3 WHERE IDordre_fabrication = 3580',
+    ])
+    // Never started, even with auto_activation on a free métier: the régleur does.
+    expect(s.some((q) => q.includes('est_actif = 1'))).toBe(false)
+  })
+
+  it('is not the Android leftover the heal closes: no arret_prod once reopened', () => {
+    const reopened = { ...LEFTOVER, arret_prod: '' }
+    expect(handedOverLeftovers([reopened, RUNNING])).toEqual([])
   })
 })
 

@@ -13,6 +13,8 @@
 //    the OF screen (« Passer en cours »). That is the workflow the user
 //    described on 2026-09-07 (LIVA #1128), and it is applied to EVERY closing
 //    path — web button and phone alike.
+//  - Réactiver = the way back (LIVA #1197): est_termine←0, front of the
+//    waiting queue, never active — see reactiverOf.
 //
 // ⚠️ Why healHandedOverOfs exists — the legacy handover leaves a half-state.
 // The Android bonnetier app (still the one in use on the floor, 2026-09-07:
@@ -96,6 +98,26 @@ export async function terminerOf(ofId: number, machineId: number, opts: { stampA
     }
   }
   return { activated }
+}
+
+/** Reopen a terminé OF (LIVA #1197 — « closed too early »). It comes back
+ *  « En attente » at the FRONT of its métier's waiting queue, right behind the
+ *  running OF, and never straight « en cours »: the métier has usually moved on
+ *  to the next OF by then, and two running OFs on one métier is the #1128 mess.
+ *  The régleur restarts it with the usual « Passer en cours ».
+ *
+ *  arret_prod is cleared (`''`, the legacy « Relancer OF » write): left set, a
+ *  waiting OF with an arret_prod behind a running one is exactly the Android
+ *  leftover healHandedOverOfs closes on the next read, and the phone would show
+ *  it « interrompu ». Terminer stamps a fresh one when it closes again. */
+export async function reactiverOf(ofId: number, machineId: number): Promise<void> {
+  // priorite 0 + est_actif 0 → rerank puts it after the active OF (est_actif
+  // DESC) and before every other waiting OF (their priorite is ≥ 1).
+  await query(
+    `UPDATE ordre_fabrication SET est_termine = 0, est_actif = 0, priorite = 0, arret_prod = ''
+     WHERE IDordre_fabrication = ${ofId}`,
+  )
+  if (machineId > 0) await rerankQueue(machineId)
 }
 
 export interface OpenOfState {
