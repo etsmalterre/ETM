@@ -10,6 +10,19 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/quantite — onglet Ennoblissement : l'écru déjà teint ne compte plus (LIVA #1188)
+**MPS API + web ETM.** Sur une ligne de commande client, les colonnes « Affecté » / « Disponible » de
+l'onglet Ennoblissement et le dialogue « Affecter le stock » lisaient `stock_ecru.IDref_commande_affectation`,
+qui survit à la teinture : une pièce revenue en `stock_fini` comptait une fois comme écru sur cet
+onglet et une fois comme rouleau fini sur l'onglet Affectation, alors que la jauge de la ligne
+(`lineReservationAggregates`) l'avait déjà remplacée par son fini. Commande 3762, ligne 12851 : jauge
+4 298,9 Ml, onglet 1 666,7 + 3 503,7 — l'écart de 871,5 Ml était 12 pièces de la cde 8970 déjà teintes
+et expédiées sur la ligne 12849. Règle (`lib/ennoblissement-supply.ts`, tests sur les chiffres de prod) :
+une pièce consommée (`consumedEcruIds()`, enfant fini ou composant fusionné) sort de l'onglet — ni
+disponible ni affectée, jamais proposée par le dialogue, `PUT …/rolls/:stockId` → 409 `piece_teinte`
+affiché par le dialogue. Invariant : Σ « Affecté » de l'onglet + finis de l'onglet Affectation = la jauge.
+Décision Vincent : une fois reçu, le rouleau porte ses mètres réels et son affectation, c'est là qu'il
+se compte. Au passage : `AS exp` revient en `EXP`, `AS et` est une erreur de syntaxe (mots réservés).
 ## 2026-09-23 — feat/duplication-ref — Finis › Références : « Dupliquer » + noms de référence uniques (LIVA #1186)
 **MPS API + web ETM.** Bouton Copy entre Imprimer et Modifier → ConfirmDialog → `POST /references-fini/:id/duplicate`
 (`lib/duplicate-ref-fini.ts`, port du `BTN_Dupliquer` legacy) : la ligne `ref_fini` ENTIÈRE est recopiée
