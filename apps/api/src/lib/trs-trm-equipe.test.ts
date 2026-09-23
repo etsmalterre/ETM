@@ -8,6 +8,7 @@ import {
   equipeDepuisLiteral,
   equipePrecedente,
   equipeSuivante,
+  enPosteA,
   kpiEquipe,
   presenceEquipe,
   segmentsMachine,
@@ -175,6 +176,23 @@ describe('presenceEquipe — ZR_Equipe from pointage', () => {
   it('orders the rows by first arrival', () => {
     const p = presenceEquipe([pt(9, 60, true), pt(4, 30, true)], min(0), min(480))
     expect(p.rows.map((r) => r.bonnetierId)).toEqual([4, 9])
+  })
+})
+
+describe('enPosteA — who is clocked in at an instant (the wall tablet faces)', () => {
+  const pt = (bonnetierId: number, m: number, enPoste: boolean) => ({ bonnetierId, atMs: min(m), enPoste })
+  it('keeps whoever has an « in » as last pointage at or before the instant, earliest arrival first', () => {
+    const rows = [pt(1, -300, true), pt(1, -290, false), pt(1, -10, true), pt(2, 30, true), pt(3, 20, true), pt(3, 200, false)]
+    expect(enPosteA(rows, min(240))).toEqual([1, 2])
+  })
+  it('ignores rows after the instant — an « out » stamped later does not remove a face yet', () => {
+    const rows = [pt(4, 10, true), pt(4, 250, false)]
+    expect(enPosteA(rows, min(240))).toEqual([4])
+    expect(enPosteA(rows, min(250))).toEqual([])
+  })
+  it('breaks a tie on the same instant by id, and returns nobody without a pointage', () => {
+    expect(enPosteA([pt(7, 5, true), pt(6, 5, true)], min(100))).toEqual([6, 7])
+    expect(enPosteA([], min(100))).toEqual([])
   })
 })
 

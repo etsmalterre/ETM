@@ -10,6 +10,17 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/total-prod-1194 — tablette TRS : kg de l'équipe + visages en poste (LIVA #1194)
+**MPS API seule (web dans TRM `feat/total-prod-1194`).** `GET /api/trs/atelier` porte deux champs de
+plus pour le bandeau de la tablette murale : `production` (`{ pieces, kg, kgParHeure }`, la carte
+« Production » de Production › TRS — `kpiEquipe()` sur les `piece_production` dont `date_fin` tombe dans
+]début, fin] de l'équipe, poids nominal) et `enPoste` (`{ id, prenom, nom, regleur }[]`, qui est pointé
+à l'instant sur `mps.pointage`, ordre d'arrivée). Lecteur `chargerBandeau()` (`lib/trs-equipe-trm.ts`,
+trois lectures bornées par poll, mêmes requêtes que `chargerEquipe`), pur `enPosteA()` dans
+`lib/trs-trm.ts` (testé). Type de réponse `TrsAtelierPayload` (miroir de `TrsAtelier` côté tablette).
+Sonde `probe-trs-trm.ts` imprime la ligne Production / en poste ; seed dev `seed-en-poste-dev.ts`
+(localhost seulement, `--clean`). Route non gardée comme avant ; photos via `/prime-trm/bonnetiers/:id/photo`.
+
 ## 2026-09-23 — feat/permission-pointage-1196 — le menu « Pointage » est tout le droit (LIVA #1196)
 **MPS API, paire TRM `feat/permission-pointage-1196`.** `view_pointage` / `edit_pointage` retirés du
 catalogue TRM : ils ne faisaient que doubler le grant du menu. `/api/pointage-admin` vérifie désormais

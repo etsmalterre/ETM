@@ -27,6 +27,11 @@ console.log(
 console.log(
   `Parc : TRS ${pct(body.parc.trs)} · ${body.parc.enMarche} en marche · ${body.parc.arret} à l'arrêt · ${body.parc.inactifs} sans OF`,
 )
+console.log(
+  `Production : ${body.production.kg} kg · ${body.production.pieces} pièce(s)` +
+    (body.production.kgParHeure === null ? '' : ` · ${body.production.kgParHeure} kg/h`) +
+    ` · en poste : ${body.enPoste.length ? body.enPoste.map((b: any) => b.prenom || `#${b.id}`).join(', ') : 'personne'}`,
+)
 console.table(
   body.machines.map((m: any) => ({
     métier: m.emplacement,

@@ -38,6 +38,7 @@ import {
 } from './production-trm.js'
 import {
   calculerTrs,
+  enPosteA,
   equipeCourante,
   equipePrecedente,
   equipeSuivante,
@@ -750,4 +751,63 @@ export async function chargerEquipe(equipe: Equipe, nowMs: number): Promise<TrsE
     equipeBonnetiers: { rows, totalS: presence.totalS },
     dernierEvenement: iso(base.dernierEvenementMs),
   }
+}
+
+// ── The wall tablet's band — shift kg and who is clocked in (LIVA #1194) ──
+//
+// Two figures GET /api/trs/atelier adds beside the plan. Both are the ERP's
+// numbers, not new ones: the kg is the « Production » KPI card (pieces whose
+// tricotage ended inside the shift, at nominal weight) through the SAME
+// kpiEquipe() as Production › TRS, and the faces come from the same
+// `pointage` read as its roster (ZR_Equipe) — so the wall, the ERP and the
+// legacy FI_TRS can never disagree on what a shift produced or who was there.
+// Polled every 10 s: three bounded reads, no per-person query.
+
+export interface BonnetierEnPoste {
+  id: number
+  prenom: string
+  nom: string
+  regleur: boolean
+}
+
+export interface BandeauEquipe {
+  /** Pieces finished so far in the shift, nominal kg, kg per elapsed hour. */
+  production: KpiEquipe['production']
+  /** Clocked in right now (last pointage ≤ now is an « in »), earliest first. */
+  enPoste: BonnetierEnPoste[]
+}
+
+export async function chargerBandeau(equipe: Equipe, nowMs: number): Promise<BandeauEquipe> {
+  const finEvalMs = Math.min(nowMs, equipe.finMs)
+  const debutLit = toHfsqlDt(equipe.debutMs)
+  const finLit = toHfsqlDt(equipe.finMs)
+  const [pieceRows, pointageRows, bonnetiers] = await Promise.all([
+    // The « Production » population of chargerEquipe, weight and end only.
+    query<{ IDpiece_production: number; poids: number; date_fin: unknown }>(
+      `SELECT IDpiece_production, poids, date_fin FROM piece_production
+       WHERE date_fin > '${debutLit}' AND date_fin <= '${finLit}'`,
+    ),
+    // The roster read of chargerEquipe: the day before sets the opening state.
+    query<{ IDbonnetier: number; date_pt: unknown; en_poste: number }>(
+      `SELECT IDbonnetier, DATE AS date_pt, en_poste FROM pointage
+       WHERE DATE >= '${toHfsqlDt(equipe.debutMs - 24 * H)}' AND DATE <= '${toHfsqlDt(finEvalMs)}' ORDER BY DATE ASC`,
+    ),
+    selectBonnetiers(),
+  ])
+
+  const pieces = pieceRows
+    .map((p) => ({ id: n(p.IDpiece_production), poidsNominal: n(p.poids), finMs: parseDtMs(p.date_fin), visiteeMs: null }))
+    .filter((p): p is { id: number; poidsNominal: number; finMs: number; visiteeMs: null } => p.finMs !== null)
+  const { production } = kpiEquipe(pieces, [], equipe, nowMs)
+
+  const pointages = pointageRows
+    .map((p) => ({ bonnetierId: n(p.IDbonnetier), atMs: parseDtMs(p.date_pt), enPoste: n(p.en_poste) === 1 }))
+    .filter((p): p is { bonnetierId: number; atMs: number; enPoste: boolean } => p.atMs !== null)
+  const parId = new Map(bonnetiers.map((b) => [b.id, b]))
+  const enPoste: BonnetierEnPoste[] = enPosteA(pointages, finEvalMs).map((id) => {
+    const b = parId.get(id)
+    return { id, prenom: b?.prenom ?? '', nom: b?.nom ?? '', regleur: (b?.regleur ?? 0) === 1 }
+  })
+
+  return { production, enPoste }
 }

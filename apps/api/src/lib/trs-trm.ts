@@ -512,6 +512,25 @@ export function presenceEquipe(pointages: Pointage[], debutMs: number, finEvalMs
   return { rows, totalS: rows.reduce((s, r) => s + r.dureeS, 0) }
 }
 
+/** Who is clocked in AT `atMs` — the wall tablet's faces (LIVA #1194). Per
+ *  bonnetier the last pointage at or before `atMs` decides; rows after it are
+ *  ignored. Ordered by that last clock-in, earliest first, so the faces on the
+ *  wall keep their place as the shift goes on. Not derived from
+ *  presenceEquipe's intervals: an « out » stamped exactly at the evaluation
+ *  end would be indistinguishable from an open interval there. */
+export function enPosteA(pointages: Pointage[], atMs: number): number[] {
+  const dernier = new Map<number, Pointage>()
+  for (const p of pointages) {
+    if (p.atMs > atMs) continue
+    const d = dernier.get(p.bonnetierId)
+    if (!d || p.atMs >= d.atMs) dernier.set(p.bonnetierId, p)
+  }
+  return Array.from(dernier.values())
+    .filter((p) => p.enPoste)
+    .sort((a, b) => a.atMs - b.atMs || a.bonnetierId - b.bonnetierId)
+    .map((p) => p.bonnetierId)
+}
+
 // ── Colours of the ZR_TRS line (FI_TRS) ───────────────────
 //
 // The three ladders of the legacy `SELON` blocks. 0.8 and 0.9 are the only

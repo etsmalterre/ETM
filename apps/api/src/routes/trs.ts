@@ -4,7 +4,9 @@
 //                          the state of every live métier over the CURRENT
 //                          shift — running / stopped and since when, the
 //                          measured speed, the shift TRS, the arrêts par
-//                          pièce — laid on the floor plan by the client.
+//                          pièce — laid on the floor plan by the client,
+//                          plus the band's two figures (LIVA #1194): the kg
+//                          the shift has produced and who is clocked in.
 //                          Polled every few seconds. Port of the legacy
 //                          `Appli_TRS` (FEN_Main_App_TRS.wdw).
 //   GET /api/trs/equipe    the ERP screen Production › TRS (TRM/apps/web):
@@ -39,7 +41,14 @@ import {
   toHfsqlDt,
   type ArretsParPiece,
 } from '../lib/trs-trm.js'
-import { chargerBase, chargerEquipe, type OfRow, type TrsEquipePayload } from '../lib/trs-equipe-trm.js'
+import {
+  chargerBandeau,
+  chargerBase,
+  chargerEquipe,
+  type BandeauEquipe,
+  type OfRow,
+  type TrsEquipePayload,
+} from '../lib/trs-equipe-trm.js'
 import { arretsParPieceDesOfs } from '../lib/arrets-par-piece-trm.js'
 
 export const trsRouter: RouterType = Router()
@@ -85,6 +94,18 @@ export interface TrsMachine {
   deductibleS: number
 }
 
+/** The wire shape of GET /api/trs/atelier — mirrored by `TrsAtelier` in
+ *  TRM/apps/trs/src/lib/trs-api.ts; keep the two in step. */
+export interface TrsAtelierPayload {
+  generatedAt: string
+  equipe: { nom: string; debut: string; fin: string }
+  dernierEvenement: string | null
+  parc: { trs: number | null; enMarche: number; arret: number; inactifs: number }
+  production: BandeauEquipe['production']
+  enPoste: BandeauEquipe['enPoste']
+  machines: TrsMachine[]
+}
+
 trsRouter.get('/atelier', async (_req: Request, res: Response) => {
   try {
     const nowMs = Date.now()
@@ -92,10 +113,11 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
     const base = await chargerBase(equipe, nowMs)
 
     const actifs = Array.from(base.ofActifParMachine.values())
-    const [refs, coloris, arretsParMachine] = await Promise.all([
+    const [refs, coloris, arretsParMachine, bandeau] = await Promise.all([
       resolveEcruRefs(actifs.map((o) => o.refId)),
       resolveColorisEcru(actifs.map((o) => o.coloriId)),
       arretsDesOfsActifs(base.ofActifParMachine),
+      chargerBandeau(equipe, nowMs),
     ])
 
     let sommeMarcheS = 0
@@ -163,8 +185,13 @@ trsRouter.get('/atelier', async (_req: Request, res: Response) => {
         arret: payload.filter((m) => m.enProduction && m.etat !== 1).length,
         inactifs: payload.filter((m) => !m.enProduction).length,
       },
+      /** The band's kg: the ERP's « Production » card for this shift
+       *  (lib/trs-equipe-trm.ts chargerBandeau). */
+      production: bandeau.production,
+      /** Who is clocked in right now, earliest arrival first. */
+      enPoste: bandeau.enPoste,
       machines: payload,
-    })
+    } satisfies TrsAtelierPayload)
   } catch (err) {
     console.error('[trs] atelier failed:', err)
     res.status(500).json({ error: 'Internal server error' })
