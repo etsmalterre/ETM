@@ -10,6 +10,18 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/reactiver-of-1197 — réactiver un OF terminé (LIVA #1197)
+**MPS API seule (web dans TRM `feat/reactiver-of-1197`).** `POST /api/of-trm/:id/reactiver` (sous
+`edit_of`) rouvre un OF terminé : `reactiverOf()` dans `lib/of-queue-trm.ts`, à côté de `terminerOf()`,
+écrit `est_termine = 0, est_actif = 0, priorite = 0, arret_prod = ''` puis `rerankQueue` — l'OF revient
+« En attente » **en tête de file**, juste derrière l'OF en cours, **jamais en cours** (décision Vincent : le
+métier est souvent passé au suivant). ⚠️ `arret_prod` est vidé (l'écriture « Relancer OF » du legacy) :
+laissé posé, l'OF rouvert derrière un OF en cours est exactement la signature que `healHandedOverOfs()`
+referme à la lecture suivante (#1128). Refusé en 409 `commande_soldee` si la commande de sa ligne est
+soldée — on ne la rouvre pas pour l'utilisateur (sur un miroir, ETM a pu clôturer la sienne). Un OF non
+terminé = no-op 200. Tests `of-queue-trm.test.ts` (+2) ; `check-of-trm.ts` rejoue réactiver (file B/A/C,
+pas de refermeture à la lecture, refus soldée sur une vraie commande de dev).
+
 ## 2026-09-23 — feat/total-prod-1194 — tablette TRS : kg de l'équipe + visages en poste (LIVA #1194)
 **MPS API seule (web dans TRM `feat/total-prod-1194`).** `GET /api/trs/atelier` porte deux champs de
 plus pour le bandeau de la tablette murale : `production` (`{ pieces, kg, kgParHeure }`, la carte
