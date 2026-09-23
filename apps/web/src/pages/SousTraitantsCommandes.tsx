@@ -687,6 +687,9 @@ export function SousTraitantsCommandes() {
   const [emailModalOpen, setEmailModalOpen] = useState(false)
   const [autoEditForId, setAutoEditForId] = useState<number | null>(null)
   const [deleteCommandeConfirmOpen, setDeleteCommandeConfirmOpen] = useState(false)
+  // The server's refusal (409 on an order TRM has started work on) —
+  // shown in the confirm dialog; a mute spinner was LIVA #1184.
+  const [deleteCommandeError, setDeleteCommandeError] = useState<string | null>(null)
   // Soumission Lot — eligibility-gated workflow that opens the email modal
   // with a freshly-built soumission PDF attached. See plan file.
   const [soumissionPickerOpen, setSoumissionPickerOpen] = useState(false)
@@ -957,9 +960,15 @@ export function SousTraitantsCommandes() {
       const flat = cached?.pages.flatMap((p) => p) ?? []
       const remaining = flat.filter((c) => c.IDcommande_sous_traitant !== deletedId)
       queryClient.invalidateQueries({ queryKey: ['commandes-sst'] })
+      invalidateStockCaches(queryClient) // affected rolls and yarn lots go back to the free pool
       setIsEditing(false)
       setDeleteCommandeConfirmOpen(false)
+      setDeleteCommandeError(null)
       setSelectedId(remaining.length > 0 ? remaining[0].IDcommande_sous_traitant : null)
+    },
+    onError: (err: any) => {
+      const body = (err && typeof err === 'object' && 'body' in err) ? (err as any).body : null
+      setDeleteCommandeError(body?.message ?? 'La suppression a échoué (erreur serveur).')
     },
   })
 
@@ -1139,7 +1148,8 @@ export function SousTraitantsCommandes() {
         description="Cette action supprimera la commande, toutes ses lignes et libérera les rouleaux écru affectés. Elle est irréversible."
         confirmLabel="Supprimer"
         isPending={deleteMut.isPending}
-        onCancel={() => setDeleteCommandeConfirmOpen(false)}
+        error={deleteCommandeError}
+        onCancel={() => { setDeleteCommandeConfirmOpen(false); setDeleteCommandeError(null) }}
         onConfirm={() => { if (selectedId !== null) deleteMut.mutate(selectedId) }}
       />
 
@@ -1816,6 +1826,7 @@ function LignesSection({
   const [editingLineId, setEditingLineId] = useState<number | null>(null)
   const [showLineForm, setShowLineForm] = useState(false)
   const [deleteLineConfirmId, setDeleteLineConfirmId] = useState<number | null>(null)
+  const [deleteLineError, setDeleteLineError] = useState<string | null>(null)
   // For ennoblisseur lines, IDreference holds an IDref_fini (the desired
   // dyed/finished reference). The drawer maps fini → écru via ref_fini.IDref_ecru
   // when offering compatible greige rolls.
@@ -1910,7 +1921,13 @@ function LignesSection({
 
   const deleteLineMut = useMutation({
     mutationFn: (lineId: number) => apiFetch(`/commandes-sous-traitant/lignes/${lineId}`, { method: 'DELETE' }),
-    onSuccess: onMutationSuccess,
+    onSuccess: () => { setDeleteLineError(null); onMutationSuccess() },
+    // 409 `trm_production_started` when TRM already has an OF on the mirror
+    // line — show the reason instead of a mute spinner (LIVA #1184).
+    onError: (err: any) => {
+      const body = (err && typeof err === 'object' && 'body' in err) ? (err as any).body : null
+      setDeleteLineError(body?.message ?? 'La suppression a échoué (erreur serveur).')
+    },
   })
 
   const resetLineForm = () => {
@@ -2148,7 +2165,8 @@ function LignesSection({
         description="Cette ligne sera supprimée et les rouleaux écru affectés seront libérés."
         confirmLabel="Supprimer"
         isPending={deleteLineMut.isPending}
-        onCancel={() => setDeleteLineConfirmId(null)}
+        error={deleteLineError}
+        onCancel={() => { setDeleteLineConfirmId(null); setDeleteLineError(null) }}
         onConfirm={() => {
           if (deleteLineConfirmId !== null) {
             deleteLineMut.mutate(deleteLineConfirmId, {

@@ -10,6 +10,18 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/annulation-cmd — suppression d'une commande sst à Tricotage Malterre (LIVA #1184)
+**MPS API + web ETM.** `DELETE /commandes-sous-traitant/:id` refusait toute commande portant un
+miroir TRM (`commande_client.IDcommande_ETM`) — or le miroir est écrit à la création, avant toute
+ligne : aucune commande à TRM n'était supprimable, même vide (la 9050 du ticket). Le miroir part
+désormais avec la commande (lignes miroir, en-tête, affectations écru, `asso_fil_lignecmdsst` —
+orphelines jusqu'ici —, lignes, en-tête) sauf si TRM a commencé : OF ou `stock_ecru.IDLigne_Commande_TRM`
+sur une ligne miroir, ou miroir soldé → 409 `trm_production_started` / `trm_soldee` avec la raison
+(`lib/sst-delete.ts` + tests). Côté web, `apiFetch` porte le JSON de l'erreur en `err.body` (les
+`onError` existants qui le lisaient ne voyaient jamais rien), `ConfirmDialog` gagne une prop `error`
+(ligne rouge, dialogue ouvert), alimentée par la suppression de commande et de ligne. Vérifié sur
+l'API de dev : commande vide 8624 → 200 et miroir disparu, commande 8533 avec OF → 409 intacte.
+
 ## 2026-09-22 — feat/ai-agents — menu « Agents IA » + agent BL MATEL (remplace n8n « BL Processing »)
 **MPS API + web ETM.** Nouveau menu **Agents IA › Agents** (`/agents-ia/agents`, `pages/AgentsIa.tsx`,
 Classeur : liste des agents, onglets Exécutions / Prompt / Coûts / Fonctionnement, pied « mode »

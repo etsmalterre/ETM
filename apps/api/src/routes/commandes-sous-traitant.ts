@@ -66,6 +66,7 @@ import {
   lineStatutRank,
   sstDelaiSets,
 } from '../lib/sst-shared.js'
+import { sstDeleteBlocker } from '../lib/sst-delete.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -4111,20 +4112,42 @@ commandesSousTraitantRouter.delete('/:id', async (req: Request, res: Response) =
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
-    // Refuse the delete outright if a TRM mirror exists. Safe default per
-    // the bridge plan: avoid leaving the TRM ledger with dangling
-    // back-pointers, OFs, or invoiced/billed history. Operator must remove
-    // the mirror via the legacy app first (or via a future cascade-delete
-    // pass that checks ordre_fabrication / stock_ecru downstream).
-    if ((await getTrmMirror(id)) !== null) {
-      res.status(409).json({
-        error: 'trm_mirror_exists',
-        message: "Cette commande ne peut pas être supprimée depuis ETM. Un miroir client existe côté Tricotage Malterre — utilisez l'application legacy pour la supprimer.",
-      })
-      return
+    // TRM mirror (Tricotage Malterre only). The mirror header is written
+    // when the sst order is created, before any line — so every order to
+    // TRM has one and a blanket refusal made them all undeletable (LIVA
+    // #1184, empty order 9050). The mirror goes with the order unless TRM
+    // has started work on it: an OF or a knitted/reserved roll on a mirror
+    // line, or the mirror already soldée — `sstDeleteBlocker`.
+    const mirrorId = await getTrmMirror(id)
+    let mirrorLineIds: number[] = []
+    if (mirrorId !== null) {
+      const hdr = await query<{ est_soldee: number | null }>(
+        `SELECT est_soldee FROM commande_client WHERE IDcommande_client = ${mirrorId}`,
+      )
+      const mirrorLines = await query<{ IDligne_commande_client: number }>(
+        `SELECT IDligne_commande_client FROM ligne_commande_client WHERE IDcommande_client = ${mirrorId}`,
+      )
+      mirrorLineIds = mirrorLines.map((l) => Number(l.IDligne_commande_client)).filter((x) => x > 0)
+      let ofCount = 0
+      let rollCount = 0
+      if (mirrorLineIds.length > 0) {
+        const idList = mirrorLineIds.join(',')
+        const [ofRows, rollRows] = await Promise.all([
+          query<{ n: number | null }>(
+            `SELECT COUNT(*) AS n FROM ordre_fabrication WHERE IDligne_commande_client IN (${idList})`,
+          ),
+          query<{ n: number | null }>(
+            `SELECT COUNT(*) AS n FROM stock_ecru WHERE IDLigne_Commande_TRM IN (${idList})`,
+          ),
+        ])
+        ofCount = Number(ofRows[0]?.n) || 0
+        rollCount = Number(rollRows[0]?.n) || 0
+      }
+      const blocker = sstDeleteBlocker({ est_soldee: Number(hdr[0]?.est_soldee) || 0, ofCount, rollCount })
+      if (blocker) { res.status(409).json(blocker); return }
     }
 
-    // Collect line ids to clear stock_ecru affectations.
+    // Collect line ids to clear stock_ecru affectations and yarn affectations.
     const lines = await query<{ IDligne_commande_sous_traitant: number }>(
       `SELECT IDligne_commande_sous_traitant FROM ligne_commande_sous_traitant WHERE IDcommande_sous_traitant = ${id}`,
     )
@@ -4134,7 +4157,19 @@ commandesSousTraitantRouter.delete('/:id', async (req: Request, res: Response) =
         `UPDATE stock_ecru SET IDref_commande_affectation = 0
          WHERE IDref_commande_affectation IN (${lineIds.join(',')})`,
       )
+      // Yarn lots affected to the lines (asso_fil_lignecmdsst) were left
+      // orphaned by the previous delete — they would keep the fil reserved.
+      await query(`DELETE FROM asso_fil_lignecmdsst WHERE IDligne_commande_sous_traitant IN (${lineIds.join(',')})`)
     }
+
+    // Mirror first: its lines carry back-pointers to the sst lines.
+    if (mirrorId !== null) {
+      if (mirrorLineIds.length > 0) {
+        await query(`DELETE FROM ligne_commande_client WHERE IDcommande_client = ${mirrorId}`)
+      }
+      await query(`DELETE FROM commande_client WHERE IDcommande_client = ${mirrorId}`)
+    }
+
     await query(`DELETE FROM ligne_commande_sous_traitant WHERE IDcommande_sous_traitant = ${id}`)
     await query(`DELETE FROM commande_sous_traitant WHERE IDcommande_sous_traitant = ${id}`)
     res.json({ ok: true })

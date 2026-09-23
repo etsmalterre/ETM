@@ -21,9 +21,13 @@ export async function apiFetch<T = any>(
   })
   if (!res.ok) {
     // Surface a machine-readable error so callers can distinguish
-    // "not authenticated" (401) from generic failure.
-    const err: Error & { status?: number } = new Error(`API ${res.status}`)
+    // "not authenticated" (401) from generic failure. The JSON body
+    // (`{ error, message }` on every 4xx of the MPS API) rides along as
+    // `err.body` so a dialog can show the server's French reason instead
+    // of a mute spinner (LIVA #1184).
+    const err: Error & { status?: number; body?: unknown } = new Error(`API ${res.status}`)
     err.status = res.status
+    try { err.body = await res.json() } catch { /* not JSON — leave body undefined */ }
     throw err
   }
   // Some endpoints (logout) return 204 No Content, which has no body.

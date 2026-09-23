@@ -1,4 +1,4 @@
-import { AlertTriangle, Trash2, X, Loader2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Trash2, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -17,6 +17,9 @@ interface ConfirmDialogProps {
   cancelLabel?: string
   variant?: 'destructive' | 'default'
   isPending?: boolean
+  /** Why the last confirm was refused (the server's message). Shown under
+   *  the description; the dialog stays open so the user can read it. */
+  error?: string | null
   onConfirm: () => void
   onCancel: () => void
 }
@@ -29,6 +32,7 @@ export function ConfirmDialog({
   cancelLabel = 'Annuler',
   variant = 'destructive',
   isPending = false,
+  error = null,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -48,6 +52,12 @@ export function ConfirmDialog({
             <AlertDialogDescription>{description}</AlertDialogDescription>
           )}
         </AlertDialogHeader>
+        {!!error && (
+          <div className="mt-3 flex items-start gap-2 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
         <AlertDialogFooter className="gap-2 sm:gap-2 mt-4">
           <Button variant="outline" onClick={onCancel} disabled={isPending}>
             <X className="h-4 w-4 mr-2" />
