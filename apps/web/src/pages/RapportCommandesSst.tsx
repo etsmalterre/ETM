@@ -45,7 +45,7 @@ interface RapportLine {
   reference: string
   coloris: string
   type_kind: number
-  unite_label: 'Ml' | 'Kg'
+  unite_label: 'Ml' | 'Kg' | 'U'
   qte_commandee: number
   qte_affectee: number
   qte_receptionnee: number

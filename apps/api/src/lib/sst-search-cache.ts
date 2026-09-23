@@ -130,6 +130,28 @@ async function loadColorisTable(
   })
 }
 
+/** Rectiligne catalog (type-4 lines, LIVA #1185): the reference AND its
+ *  designation are searchable (« col 38 » finds R006-38), the coloris by its
+ *  free-text name. Both tables are small (33 / ~170 rows). */
+async function loadRectiligneRefs(): Promise<CacheSnapshot> {
+  return loadCatalog('ref_rectiligne', async () => {
+    const rows = await query<{ IDref_rectiligne: number; reference: string | null; designation: string | null }>(
+      `SELECT IDref_rectiligne, reference, designation FROM ref_rectiligne`,
+    )
+    const fixed = await fixEncoding(rows, 'ref_rectiligne', 'IDref_rectiligne', ['reference', 'designation'])
+    return fixed.map((r) => ({ id: Number(r.IDref_rectiligne), label: `${r.reference ?? ''} ${r.designation ?? ''}` }))
+  })
+}
+async function loadRectiligneColoris(): Promise<CacheSnapshot> {
+  return loadCatalog('coloris_rectiligne', async () => {
+    const rows = await query<{ IDcoloris_rectiligne: number; coloris: string | null }>(
+      `SELECT IDcoloris_rectiligne, coloris FROM coloris_rectiligne`,
+    )
+    const fixed = await fixEncoding(rows, 'coloris_rectiligne', 'IDcoloris_rectiligne', ['coloris'])
+    return fixed.map((r) => ({ id: Number(r.IDcoloris_rectiligne), label: String(r.coloris ?? '') }))
+  })
+}
+
 export interface SearchHits {
   sstIds: number[]
   refEcruIds: number[]
@@ -137,6 +159,8 @@ export interface SearchHits {
   refFilIds: number[]
   coloriEcruIds: number[]
   refFiniColoriIds: number[]
+  refRectiligneIds: number[]
+  colorisRectiligneIds: number[]
 }
 
 const MAX_IDS_PER_CATALOG = 1000
@@ -163,15 +187,17 @@ function matchAll(rows: { id: number; norm: string }[], tokens: string[]): numbe
 export async function resolveSearch(q: string): Promise<SearchHits> {
   const tokens = normalise(q).split(/\s+/).filter(Boolean)
   if (tokens.length === 0) {
-    return { sstIds: [], refEcruIds: [], refFiniIds: [], refFilIds: [], coloriEcruIds: [], refFiniColoriIds: [] }
+    return { sstIds: [], refEcruIds: [], refFiniIds: [], refFilIds: [], coloriEcruIds: [], refFiniColoriIds: [], refRectiligneIds: [], colorisRectiligneIds: [] }
   }
-  const [sst, rEcru, rFini, rFil, cEcru, cFini] = await Promise.all([
+  const [sst, rEcru, rFini, rFil, cEcru, cFini, rRecti, cRecti] = await Promise.all([
     loadSousTraitants(),
     loadRefTable('ref_ecru', 'IDref_ecru'),
     loadRefTable('ref_fini', 'IDref_fini'),
     loadRefTable('ref_fil', 'IDref_fil'),
     loadColorisTable('colori_ecru', 'IDcolori_ecru'),
     loadColorisTable('ref_fini_colori', 'IDref_fini_colori'),
+    loadRectiligneRefs(),
+    loadRectiligneColoris(),
   ])
   return {
     sstIds: matchAll(sst.rows, tokens),
@@ -180,6 +206,8 @@ export async function resolveSearch(q: string): Promise<SearchHits> {
     refFilIds: matchAll(rFil.rows, tokens),
     coloriEcruIds: matchAll(cEcru.rows, tokens),
     refFiniColoriIds: matchAll(cFini.rows, tokens),
+    refRectiligneIds: matchAll(rRecti.rows, tokens),
+    colorisRectiligneIds: matchAll(cRecti.rows, tokens),
   }
 }
 

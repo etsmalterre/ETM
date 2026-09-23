@@ -59,6 +59,7 @@ import {
   BellRing,
   Factory,
   Merge,
+  Spline,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -159,7 +160,10 @@ interface LigneCommande {
   sstatut: string | null
   num_facture: string | null
   ref_label: string | null
-  ref_kind: 'ecru' | 'fini' | 'fil' | null
+  ref_kind: 'ecru' | 'fini' | 'fil' | 'rectiligne' | null
+  /** Rectiligne lines only (type 4, cols / bandes — LIVA #1185):
+   *  ref_rectiligne.designation (« col 38x9 cm BIO »). */
+  ref_designation?: string | null
   // `ref_fini.rendement` in Ml/kg — used to compute "Ml potentiel" =
   // total_kg_ecru_lie × rendement once écru rolls are attached. 0 means
   // either not a fini line or the catalog has no rendement on file.
@@ -249,6 +253,21 @@ interface RefFiniLookup {
   ref_fini: string
   designation: string
 }
+
+/** A rectiligne reference as listed by GET /references-rectiligne. */
+interface RefRectiligneLookup {
+  IDref_rectiligne: number
+  reference: string
+  designation: string
+  prix: number
+  unite: number
+}
+
+/** sst line TYPE of a rectiligne line (cols / bandes, only ever ordered from
+ *  Tricotage Malterre — lib/sst-line-kind.ts on the API). */
+const LINE_TYPE_RECTILIGNE = 4
+/** The sister-company knitter — the one sst offering rectiligne lines. */
+const TRICOTAGE_MALTERRE_ID = 1
 
 interface RefEcruLookup {
   IDref_ecru: number
@@ -1786,7 +1805,8 @@ function DetailMain({
   //     garbage. The bill comes from the real shipped écru weight.
   const totalEurReal = commande.lignes.reduce((s, l) => {
     const prix = Number(l.prix) || 0
-    if (l.type === 1) return s + ((Number(l.quantite) || 0) * prix)
+    // Tricoteur (kg) and rectiligne (pieces) lines are priced per ordered unit.
+    if (l.type === 1 || l.type === LINE_TYPE_RECTILIGNE) return s + ((Number(l.quantite) || 0) * prix)
     return s + ((Number(l.total_kg_ecru_lie) || 0) * prix)
   }, 0)
 
@@ -1837,6 +1857,10 @@ function LignesSection({
     prix: '',
     date_livraison: '',
   })
+  // Circulaire (écru, type 1) or rectiligne (cols / bandes, type 4) — the
+  // legacy line editor's SEL_TypeRef, offered only on a Tricotage Malterre
+  // order. Fixed by the line once it exists (a line never changes catalog).
+  const [lineKind, setLineKind] = useState<'circulaire' | 'rectiligne'>('circulaire')
 
   // Per-lot breakdown of received fini rolls merged across all lines —
   // feeds the "Ml reçus" tooltip in the totals footer.
@@ -1860,6 +1884,8 @@ function LignesSection({
   // Phase 2: both ennoblisseur and tricoteur can edit lines from ETM.
   // Other sst types (confectionneur, autre) still defer to legacy.
   const linesEditable = isEnnoblisseur || isTricoteur
+  const isTrm = commande.IDsous_traitant === TRICOTAGE_MALTERRE_ID
+  const formKind: 'fini' | 'ecru' | 'rectiligne' = lineKind === 'rectiligne' ? 'rectiligne' : isTricoteur ? 'ecru' : 'fini'
 
   useEffect(() => {
     if (!isEditing || linesLocked) {
@@ -1884,6 +1910,12 @@ function LignesSection({
     queryFn: () => apiFetch('/commandes-sous-traitant/lookups/refs-ecru-list'),
     enabled: isEditing && isTricoteur,
   })
+  // Non-archived rectiligne references — the legacy combo's `archivé = 0`.
+  const { data: refRectiligneLookup } = useQuery<RefRectiligneLookup[]>({
+    queryKey: ['refs-rectiligne', 'en_cours'],
+    queryFn: () => apiFetch('/references-rectiligne?archived=0'),
+    enabled: isEditing && isTrm,
+  })
 
   const createLineMut = useMutation({
     mutationFn: () => apiFetch(`/commandes-sous-traitant/${commande.IDcommande_sous_traitant}/lignes`, {
@@ -1893,12 +1925,21 @@ function LignesSection({
         // lines store an IDref_fini + IDref_fini_colori. The backend gates
         // type/unite/prix-default on the parent sst's IDtype_sst, but we
         // pass them explicitly here for symmetry / future-proofing.
-        type: isTricoteur ? 1 : 2,
+        // Rectiligne (type 4): the server takes the unit from the reference
+        // and defaults the price to ref_rectiligne.prix when none is sent.
+        ...(formKind === 'rectiligne'
+          ? {
+              type: LINE_TYPE_RECTILIGNE,
+              ...(lineForm.prix.trim() !== '' ? { prix: Number(lineForm.prix) || 0 } : {}),
+            }
+          : {
+              type: isTricoteur ? 1 : 2,
+              prix: Number(lineForm.prix) || 0,
+              unite: isTricoteur ? 1 : 0,  // 1=kg (tricoteur), 0=Ml (ennoblisseur)
+            }),
         IDreference: lineForm.IDreference,
         IDColoris: lineForm.IDColoris,
         quantite: Number(lineForm.quantite) || 0,
-        prix: Number(lineForm.prix) || 0,
-        unite: isTricoteur ? 1 : 0,  // 1=kg (tricoteur), 0=Ml (ennoblisseur)
         date_livraison: inputDateToHfsql(lineForm.date_livraison),
       }),
     }),
@@ -1948,6 +1989,7 @@ function LignesSection({
   const startEditLine = (l: LigneCommande) => {
     setShowLineForm(false)
     setEditingLineId(l.IDligne_commande_sous_traitant)
+    setLineKind(l.type === LINE_TYPE_RECTILIGNE ? 'rectiligne' : 'circulaire')
     setLineForm({
       IDreference: l.IDreference ?? 0,
       IDColoris: l.IDColoris ?? 0,
@@ -1959,6 +2001,7 @@ function LignesSection({
 
   const startAddLine = () => {
     setEditingLineId(null)
+    setLineKind('circulaire')
     setLineForm({ IDreference: 0, IDColoris: 0, quantite: '', prix: '', date_livraison: '' })
     setShowLineForm(true)
   }
@@ -1985,8 +2028,9 @@ function LignesSection({
   // tricoteur (type=1, output écru weight), Ml when every line is
   // ennoblisseur (type=2, output fabric meterage). Mixed commandes
   // shouldn't happen today; fall back to Ml (the historical default).
-  const commandeTotalUnit: 'kg' | 'Ml' =
-    commande.lignes.length > 0 && commande.lignes.every((l) => l.type === 1) ? 'kg' : 'Ml'
+  const commandeTotalUnit: 'kg' | 'Ml' | 'U' =
+    commande.lignes.length > 0 && commande.lignes.every((l) => l.type === LINE_TYPE_RECTILIGNE) ? 'U'
+      : commande.lignes.length > 0 && commande.lignes.every((l) => l.type === 1) ? 'kg' : 'Ml'
 
   return (
     <>
@@ -2026,9 +2070,10 @@ function LignesSection({
                     <LineFormFields
                       form={lineForm}
                       setForm={setLineForm}
-                      kind={isTricoteur ? 'ecru' : 'fini'}
+                      kind={formKind}
                       refsFini={refFiniLookup ?? []}
                       refsEcru={refEcruLookup ?? []}
+                      refsRectiligne={refRectiligneLookup ?? []}
                       editable={linesEditable}
                       autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
                     />
@@ -2061,12 +2106,22 @@ function LignesSection({
               onCancel={resetLineForm}
               isSaving={createLineMut.isPending}
             >
+              {isTrm && (
+                <LineKindSwitch
+                  value={lineKind}
+                  onChange={(k) => {
+                    setLineKind(k)
+                    setLineForm((f) => ({ ...f, IDreference: 0, IDColoris: 0, prix: '' }))
+                  }}
+                />
+              )}
               <LineFormFields
                 form={lineForm}
                 setForm={setLineForm}
-                kind={isTricoteur ? 'ecru' : 'fini'}
+                kind={formKind}
                 refsFini={refFiniLookup ?? []}
                 refsEcru={refEcruLookup ?? []}
+                refsRectiligne={refRectiligneLookup ?? []}
                 editable={true}
                 autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
               />
@@ -2114,7 +2169,7 @@ function LignesSection({
               Total · {commande.lignes.length} ligne{commande.lignes.length > 1 ? 's' : ''}
             </span>
             <div className="flex items-center gap-4 tabular-nums">
-              <span className="text-muted-foreground text-xs">Prévu {fmtNum(totalQte, 1)} {commandeTotalUnit}</span>
+              <span className="text-muted-foreground text-xs">Prévu {fmtNum(totalQte, commandeTotalUnit === 'U' ? 0 : 1)} {commandeTotalUnit}</span>
               {totalKgEcru > 0 && (
                 <span className="text-muted-foreground text-xs">
                   · {fmtNum(totalKgEcru, 1)} kg affectés
@@ -2213,7 +2268,8 @@ function LineCard({
   //     be multiplied directly with €/kg; total = attached_écru_kg × prix.
   //     Falls back to 0 (and the line € row is hidden) until at least one
   //     roll is linked.
-  const totalEur = line.type === 1 ? qty * prix : totalKgEcru * prix
+  const isRecti = line.type === LINE_TYPE_RECTILIGNE
+  const totalEur = line.type === 1 || isRecti ? qty * prix : totalKgEcru * prix
   // Ml potentiel = kg écru affecté × rendement (Ml/kg from ref_fini).
   // A pre-réception estimate of how much fini the order should yield, used
   // to flag under/over-orders before the worker even starts dyeing.
@@ -2246,7 +2302,8 @@ function LineCard({
   // Order quantity unit is type-dependent: tricoteur lines are ordered in
   // kg of écru to produce; ennoblisseur (and legacy écru) lines are in Ml
   // of finished fabric. See [[project-sst-line-polymorphic]].
-  const qtyUnit = line.type === 1 ? 'kg' : 'Ml'
+  // Rectiligne lines (cols / bandes) count pieces, priced per piece.
+  const qtyUnit = isRecti ? 'U' : line.type === 1 ? 'kg' : 'Ml'
 
   // "Délai initial" indicator: HFSQL stores YYYYMMDD; show only when rescheduled.
   const dateDelaiRaw = line.date_delai && /^\d{8}$/.test(line.date_delai) ? line.date_delai : ''
@@ -2270,13 +2327,18 @@ function LineCard({
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <div className={cn('h-9 w-9 rounded-md flex items-center justify-center flex-shrink-0', iconBg)}>
-            <FiniRollIcon className={cn('h-6 w-6', iconColor)} />
+            {isRecti
+              ? <Spline className={cn('h-5 w-5', iconColor)} />
+              : <FiniRollIcon className={cn('h-6 w-6', iconColor)} />}
           </div>
           <div className="min-w-0">
             <p className="text-sm font-medium truncate">
               {line.ref_label || '—'}
               {line.colori_reference ? <span className="text-muted-foreground"> / {line.colori_reference}</span> : null}
             </p>
+            {isRecti && line.ref_designation && (
+              <p className="text-[11px] text-muted-foreground truncate">Rectiligne · {line.ref_designation}</p>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -2323,10 +2385,14 @@ function LineCard({
           <div className="flex items-center gap-3">
             <span className="text-xs uppercase tracking-wide text-muted-foreground/80 w-24 flex-shrink-0">Quantité</span>
             <span className="text-foreground">
-              {qty > 0 ? `${fmtNum(qty, 1)} ${qtyUnit}` : '—'}
+              {qty > 0 ? `${fmtNum(qty, isRecti ? 0 : 1)} ${qtyUnit}` : '—'}
             </span>
             {dateLivRaw ? (() => {
-              const lineUrgency = deliveryUrgency(dateLivRaw, isLineDone(line.sstatut) ? 1 : 0)
+              // A rectiligne line's sstatut never moves (legacy parity: no
+              // reception, no affectation), so the closed order is its only
+              // « done » signal — without it every soldée col order reads late.
+              const lineDone = isLineDone(line.sstatut) || (isRecti && linesLocked)
+              const lineUrgency = deliveryUrgency(dateLivRaw, lineDone ? 1 : 0)
               // When the délai is past, surface how overdue it is on a
               // second line right under the Livraison date.
               const overdue = lineUrgency === 'late' ? deliveryOverdueDays(dateLivRaw) : 0
@@ -2385,11 +2451,13 @@ function LineCard({
         {prix > 0 && (
           <div className="flex items-center gap-3">
             <span className="text-xs uppercase tracking-wide text-muted-foreground/80 w-24 flex-shrink-0">Prix unit.</span>
-            <span className="text-foreground">{fmtNum(prix, 2)} €/Kg</span>
-            <PrixBreakdownInfo
-              commandeId={line.IDcommande_sous_traitant}
-              ligneId={line.IDligne_commande_sous_traitant}
-            />
+            <span className="text-foreground">{fmtNum(prix, 2)} €/{isRecti ? 'U' : 'Kg'}</span>
+            {!isRecti && (
+              <PrixBreakdownInfo
+                commandeId={line.IDcommande_sous_traitant}
+                ligneId={line.IDligne_commande_sous_traitant}
+              />
+            )}
           </div>
         )}
         {/* Affecté — once écru is linked. Total kg + derived potentiel
@@ -5570,8 +5638,33 @@ function SelectableEcruRow({
 
 // ── Line form fields ──────────────────────────────────
 
+/** Circulaire / Rectiligne segmented choice on a new Tricotage Malterre line
+ *  (legacy SEL_TypeRef). Same gold-pill language as the list filters. */
+function LineKindSwitch({ value, onChange }: {
+  value: 'circulaire' | 'rectiligne'
+  onChange: (v: 'circulaire' | 'rectiligne') => void
+}) {
+  return (
+    <div className="flex gap-1">
+      {([['circulaire', 'Circulaire (tombé métier)'], ['rectiligne', 'Rectiligne (cols, bandes)']] as const).map(([k, label]) => (
+        <button
+          key={k}
+          type="button"
+          onClick={() => { if (k !== value) onChange(k) }}
+          className={cn(
+            'flex-1 px-2 py-1 text-xs rounded-md transition-colors',
+            value === k ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10',
+          )}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function LineFormFields({
-  form, setForm, kind, refsFini, refsEcru, editable, autoPricing,
+  form, setForm, kind, refsFini, refsEcru, refsRectiligne = [], editable, autoPricing,
 }: {
   form: { IDreference: number; IDColoris: number; quantite: string; prix: string; date_livraison: string }
   setForm: (f: typeof form) => void
@@ -5580,9 +5673,11 @@ function LineFormFields({
    *  - 'ecru' → ref_ecru + colori_ecru   (tricoteur — line spec is the
    *             output écru the knitter must produce, see
    *             [[project-sst-line-polymorphic]]) */
-  kind: 'fini' | 'ecru'
+  kind: 'fini' | 'ecru' | 'rectiligne'
   refsFini: RefFiniLookup[]
   refsEcru: RefEcruLookup[]
+  /** 'rectiligne' → ref_rectiligne + coloris_rectiligne (cols / bandes). */
+  refsRectiligne?: RefRectiligneLookup[]
   editable: boolean
   /** When true, the Prix input is read-only (ennoblisseur auto-pricing).
    *  When false, the field is editable — tricoteur defaults the price from
@@ -5590,7 +5685,8 @@ function LineFormFields({
   autoPricing?: boolean
 }) {
   const isEcru = kind === 'ecru'
-  const prixDisabled = !isEcru && autoPricing !== false
+  const isRecti = kind === 'rectiligne'
+  const prixDisabled = kind === 'fini' && autoPricing !== false
 
   // Coloris options — different table per kind. For a fini the API picks the
   // catalog itself (ref_fini_colori when dyed, the écru's colori_ecru when
@@ -5598,17 +5694,33 @@ function LineFormFields({
   const { data: coloriFiniOptions } = useQuery<Array<{ id: number; reference: string; catalog: 'ref_fini_colori' | 'colori_ecru' }>>({
     queryKey: ['commande-sst-colori-fini', form.IDreference],
     queryFn: () => apiFetch(`/commandes-sous-traitant/lookups/colori-fini?ref_fini=${form.IDreference}`),
-    enabled: !isEcru && editable && form.IDreference > 0,
+    enabled: kind === 'fini' && editable && form.IDreference > 0,
   })
+  const { data: coloriRectiOptions } = useQuery<Array<{ IDcoloris_rectiligne: number; coloris: string }>>({
+    queryKey: ['rectiligne-coloris', form.IDreference],
+    queryFn: () => apiFetch(`/references-rectiligne/lookups/coloris?ref=${form.IDreference}`),
+    enabled: isRecti && editable && form.IDreference > 0,
+  })
+  const rectiRef = isRecti ? refsRectiligne.find((r) => r.IDref_rectiligne === form.IDreference) : undefined
+  const rectiUnit = rectiRef ? ({ 1: 'Kg', 3: 'Ml', 5: 'm²' } as Record<number, string>)[rectiRef.unite] ?? 'U' : 'U'
   const { data: coloriEcruOptions } = useQuery<Array<{ IDcolori_ecru: number; reference: string }>>({
     queryKey: ['commande-sst-colori-ecru', form.IDreference],
     queryFn: () => apiFetch(`/commandes-sous-traitant/lookups/colori-ecru?ref_ecru=${form.IDreference}`),
     enabled: isEcru && editable && form.IDreference > 0,
   })
 
-  const coloriOpts = isEcru
+  const coloriOpts = isRecti
+    ? (coloriRectiOptions ?? []).map((c) => ({ id: c.IDcoloris_rectiligne, primary: c.coloris }))
+    : isEcru
     ? (coloriEcruOptions ?? []).map((c) => ({ id: c.IDcolori_ecru, primary: c.reference }))
     : (coloriFiniOptions ?? []).map((c) => ({ id: c.id, primary: c.reference }))
+
+  // Rectiligne: the reference brings its price per piece (legacy behaviour);
+  // a reference change always re-reads it — the old price belonged to the old ref.
+  const handleRectiPick = (id: number) => {
+    const ref = refsRectiligne.find((r) => r.IDref_rectiligne === id)
+    setForm({ ...form, IDreference: id, IDColoris: 0, prix: ref && ref.prix > 0 ? String(ref.prix) : '' })
+  }
 
   // When picking a ref_ecru, auto-fill prix from the catalog value so the
   // user sees the unit cost up front. They can still override before save.
@@ -5622,9 +5734,20 @@ function LineFormFields({
     <>
       <div className="space-y-1">
         <label className="text-xs font-medium text-muted-foreground">
-          {isEcru ? 'Référence écru' : 'Référence fini'}
+          {isRecti ? 'Référence rectiligne' : isEcru ? 'Référence écru' : 'Référence fini'}
         </label>
-        {isEcru ? (
+        {isRecti ? (
+          <SearchableCombobox<RefRectiligneLookup>
+            options={refsRectiligne}
+            value={form.IDreference}
+            onChange={handleRectiPick}
+            getId={(r) => r.IDref_rectiligne}
+            getPrimary={(r) => r.reference}
+            getSecondary={(r) => r.designation || null}
+            disabled={!editable}
+            placeholder="Choisir un col / une bande"
+          />
+        ) : isEcru ? (
           <SearchableCombobox<RefEcruLookup>
             options={refsEcru}
             value={form.IDreference}
@@ -5657,7 +5780,7 @@ function LineFormFields({
           disabled={!editable || form.IDreference === 0}
           emptyLabel={form.IDreference === 0 ? '— Choisir une référence d\'abord —' : '— Aucun —'}
         />
-        {!isEcru && (
+        {kind === 'fini' && (
           <p className="text-[10px] text-muted-foreground">
             Le tombé métier écru à envoyer est sélectionné dans le tiroir « pièces ».
           </p>
@@ -5665,7 +5788,7 @@ function LineFormFields({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <LabeledInput
-          label={isEcru ? 'Quantité (kg)' : 'Quantité (Ml)'}
+          label={isRecti ? `Quantité (${rectiUnit})` : isEcru ? 'Quantité (kg)' : 'Quantité (Ml)'}
           type="number"
           value={form.quantite}
           onChange={(v) => setForm({ ...form, quantite: v })}
@@ -5674,7 +5797,7 @@ function LineFormFields({
             data (`auto_pricing_enabled`). Tricoteur lines default the value
             from ref_ecru.prix but the field stays editable. */}
         <LabeledInput
-          label="Prix (€/Kg)"
+          label={isRecti ? `Prix (€/${rectiUnit})` : 'Prix (€/Kg)'}
           type="number"
           value={form.prix}
           onChange={(v) => setForm({ ...form, prix: v })}

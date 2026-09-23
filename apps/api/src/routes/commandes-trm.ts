@@ -27,7 +27,11 @@
 //  - `SELECT * FROM stock_fil` likewise (accented `terminé`) — explicit columns.
 //  - ligne_commande_client.TYPE is a reserved word (alias `TYPE AS type_kind`,
 //    write it uppercase) and the coloris column is lowercase `IDcolori`.
-//  - TRM lines are always type 1 (écru): TRM knits tombé de métier, nothing else.
+//  - TRM lines are type 1 (écru, tombé de métier knitted on the circular
+//    machines) or type 4 (rectiligne: cols / bandes knitted flat, counted in
+//    pieces, LIVA #1185). A type-4 line has no production flow in the legacy —
+//    no OF, no piece, no shipment — so the OF / pieces / expédition paths
+//    refuse it and it never blocks the clôture. Labels by resolveTrmLineLabels.
 //
 // ── Where each panel of the legacy window gets its data ──
 //  Affectation        stock_ecru WHERE IDLigne_Commande_TRM = <ligne>
@@ -58,6 +62,8 @@ import { requireEditExpeditions, stampShippedPieces } from './expeditions-trm.js
 import { createSerialLock } from '../lib/serial-lock.js'
 import { TYPE_DOC_COMMANDE_CLIENT } from './commandes-client.js'
 import { sendMail } from '../lib/gmail.js'
+import { isRectiligneType, partitionByKind, refuseIfRectiligne, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
+import { loadRectiligneRefLabels, loadRectiligneColorisLabels, readRefRectiligneRow, normalizeRefRectiligne } from '../lib/rectiligne.js'
 import { getUserEmail } from '../lib/user-emails.js'
 
 export const commandesTrmRouter: RouterType = Router()
@@ -136,15 +142,34 @@ async function ordersWithOFs(commandeIds: number[]): Promise<Set<number>> {
   return out
 }
 
+/** Open orders whose every line is rectiligne (type 4) — at least one line. */
+async function rectiligneOnlyOrders(ids: number[]): Promise<Set<number>> {
+  const out = new Set<number>()
+  if (ids.length === 0) return out
+  const rows = await query<{ IDcommande_client: number; type_kind: number | null }>(
+    `SELECT IDcommande_client, TYPE AS type_kind FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
+  )
+  const mixed = new Set<number>()
+  for (const r of rows) {
+    const id = Number(r.IDcommande_client)
+    if (isRectiligneType(r.type_kind)) out.add(id)
+    else mixed.add(id)
+  }
+  for (const id of mixed) out.delete(id)
+  return out
+}
+
 async function computePhasesBatch(
   orders: Array<{ id: number; est_soldee: number }>,
 ): Promise<Map<number, TrmPhase>> {
   const out = new Map<number, TrmPhase>()
   const openIds = orders.filter((o) => o.est_soldee !== 1).map((o) => o.id)
-  const withOFs = await ordersWithOFs(openIds)
+  const [withOFs, rectiOnly] = await Promise.all([ordersWithOFs(openIds), rectiligneOnlyOrders(openIds)])
   for (const o of orders) {
     if (o.est_soldee === 1) out.set(o.id, 'terminee')
-    else out.set(o.id, withOFs.has(o.id) ? 'en_prod' : 'a_lancer')
+    // A cols / bandes order never gets an OF (LIVA #1185): « à lancer » would
+    // ask for something impossible, so it reads « en production » until soldée.
+    else out.set(o.id, withOFs.has(o.id) || rectiOnly.has(o.id) ? 'en_prod' : 'a_lancer')
   }
   return out
 }
@@ -220,6 +245,46 @@ async function resolveColorisEcru(coloriIds: number[]): Promise<Map<number, stri
   return out
 }
 
+/**
+ * Labels of TRM order lines, each read in ITS catalog: type 4 (rectiligne —
+ * cols / bandes, the mirror of an ETM sst type 4, LIVA #1185) from
+ * ref_rectiligne / coloris_rectiligne, everything else from the écru tables.
+ * The id spaces collide (rectiligne 17 « R006-38 » is écru 17 « LTP02 »), so
+ * a line is never looked up in the other catalog (lib/sst-line-kind.ts).
+ */
+export async function resolveTrmLineLabels(
+  lines: Array<{ type_kind: unknown; IDreference: unknown; IDcolori: unknown }>,
+): Promise<{
+  ref: (l: { type_kind: unknown; IDreference: unknown }) => EcruRefInfo | undefined
+  colori: (l: { type_kind: unknown; IDcolori: unknown }) => string
+}> {
+  const { rectiligne, other } = partitionByKind(lines, (l) => l.type_kind)
+  const [ecruRefs, ecruColoris, rectiRefs, rectiColoris] = await Promise.all([
+    resolveEcruRefs(other.map((l) => Number(l.IDreference) || 0)),
+    resolveColorisEcru(other.map((l) => Number(l.IDcolori) || 0)),
+    loadRectiligneRefLabels(rectiligne.map((l) => Number(l.IDreference) || 0)),
+    loadRectiligneColorisLabels(rectiligne.map((l) => Number(l.IDcolori) || 0)),
+  ])
+  return {
+    ref: (l) => {
+      const id = Number(l.IDreference) || 0
+      if (!isRectiligneType(l.type_kind)) return ecruRefs.get(id)
+      const r = rectiRefs.get(id)
+      return r ? { reference: r.reference, designation: r.designation, contexture: '', prix: r.prix, poids_piece: 0 } : undefined
+    },
+    colori: (l) => {
+      const id = Number(l.IDcolori) || 0
+      return (isRectiligneType(l.type_kind) ? rectiColoris.get(id) : ecruColoris.get(id)) ?? ''
+    },
+  }
+}
+
+/** Unit label of a TRM line: pieces for a rectiligne line, Kgs otherwise
+ *  (TRM knits écru by weight — the legacy screen had no unit selector). */
+export function trmUniteLabel(typeKind: unknown): 'Kgs' | 'U' {
+  return isRectiligneType(typeKind) ? 'U' : 'Kgs'
+}
+
 // ── Per-line production aggregates ───────────────────────
 // Everything the machines dropped for a line, and how much of it left.
 // `produit` is what the legacy header prints left of the slash
@@ -249,6 +314,26 @@ async function lineProductionAggregates(lineIds: number[]): Promise<Map<number, 
     acc.expedie = round2(acc.expedie)
   }
   return out
+}
+
+/** A rectiligne TRM line must name an existing reference and one of ITS
+ *  coloris. Returns the reference's unit and price per piece. */
+async function checkTrmRectiligne(
+  refId: number,
+  colorisId: number,
+): Promise<{ ok: true; unite: number; prix: number } | { ok: false; error: string; message: string }> {
+  const row = refId > 0 ? await readRefRectiligneRow(refId) : null
+  if (!row) return { ok: false, error: 'reference_rectiligne_inconnue', message: 'Choisissez une référence rectiligne.' }
+  const ref = normalizeRefRectiligne(row)
+  if (colorisId > 0) {
+    const c = await query<{ IDref_rectiligne: number }>(
+      `SELECT IDref_rectiligne FROM coloris_rectiligne WHERE IDcoloris_rectiligne = ${colorisId}`,
+    )
+    if (Number(c[0]?.IDref_rectiligne) !== refId) {
+      return { ok: false, error: 'coloris_rectiligne_invalide', message: "Ce coloris n'appartient pas à la référence choisie." }
+    }
+  }
+  return { ok: true, unite: ref.unite || 4, prix: ref.prix }
 }
 
 // ── Write guards ─────────────────────────────────────────
@@ -392,6 +477,9 @@ const commandeBody = z.object({
 })
 
 const ligneBody = z.object({
+  // 1 = écru (default), 4 = rectiligne (cols / bandes, LIVA #1185) — the
+  // legacy line editor's Circulaire / Rectiligne switch.
+  type: z.union([z.literal(1), z.literal(LINE_TYPE_RECTILIGNE)]).optional(),
   IDreference: z.number().int().nonnegative().optional(),
   IDcolori: z.number().int().nonnegative().optional(),
   quantite: z.number().optional(),
@@ -556,14 +644,24 @@ commandesTrmRouter.get('/lookups/line-price', async (req: Request, res: Response
  *  corrupts the Linux bridge, and écru references are ASCII codes anyway. */
 async function findCommandeIdsByRefLabel(q: string): Promise<number[]> {
   if (!/^[\x20-\x7E]+$/.test(q)) return []
-  const refs = await query<{ IDref_ecru: number }>(
-    `SELECT TOP 500 IDref_ecru FROM ref_ecru WHERE reference LIKE '%${esc(q)}%'`,
-  )
+  // Each line type in its own catalog: écru refs for type 1, rectiligne refs
+  // (R006-38…) for type 4 — the ids collide, the TYPE keeps them apart.
+  const [refs, rectiRefs] = await Promise.all([
+    query<{ IDref_ecru: number }>(
+      `SELECT TOP 500 IDref_ecru FROM ref_ecru WHERE reference LIKE '%${esc(q)}%'`,
+    ),
+    query<{ IDref_rectiligne: number }>(
+      `SELECT IDref_rectiligne FROM ref_rectiligne WHERE reference LIKE '%${esc(q)}%'`,
+    ),
+  ])
   const refIds = Array.from(new Set(refs.map((r) => Number(r.IDref_ecru) || 0).filter((x) => x > 0)))
-  if (refIds.length === 0) return []
+  const rectiIds = Array.from(new Set(rectiRefs.map((r) => Number(r.IDref_rectiligne) || 0).filter((x) => x > 0)))
+  const conds: string[] = []
+  if (refIds.length > 0) conds.push(`(TYPE = 1 AND IDreference IN (${refIds.join(',')}))`)
+  if (rectiIds.length > 0) conds.push(`(TYPE = ${LINE_TYPE_RECTILIGNE} AND IDreference IN (${rectiIds.join(',')}))`)
+  if (conds.length === 0) return []
   const lignes = await query<{ IDcommande_client: number }>(
-    `SELECT IDcommande_client FROM ligne_commande_client
-     WHERE TYPE = 1 AND IDreference IN (${refIds.join(',')})`,
+    `SELECT IDcommande_client FROM ligne_commande_client WHERE ${conds.join(' OR ')}`,
   )
   return Array.from(new Set(lignes.map((l) => Number(l.IDcommande_client) || 0).filter((x) => x > 0)))
     .sort((a, b) => b - a)
@@ -627,14 +725,17 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
     // Line aggregates + the production gauge, in two flat passes.
     // `lignes_sans_delai` feeds the left list's urgency liseré (LIVA #1123):
     // a commande with any undated line is "something to do on our side".
+    // `kgs` / `pieces` split the ordered quantity by unit: a rectiligne line
+    // (cols / bandes, #1185) counts pieces, never Kgs.
     const totalsMap = new Map<number, {
       total_eur: number; total_qte: number; nb_lignes: number
       earliest_delivery: string | null; produit: number; lignes_sans_delai: number
+      kgs: number; pieces: number
     }>()
-    const emptyTotals = () => ({ total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0, lignes_sans_delai: 0 })
+    const emptyTotals = () => ({ total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0, lignes_sans_delai: 0, kgs: 0, pieces: 0 })
     if (ids.length > 0) {
       const lignes = await query<any>(
-        `SELECT IDligne_commande_client, IDcommande_client, quantite, prix, date_livraison
+        `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, quantite, prix, date_livraison
          FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
       )
       const prodMap = await lineProductionAggregates(
@@ -644,6 +745,8 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
         const id = Number(l.IDcommande_client)
         const acc = totalsMap.get(id) ?? emptyTotals()
         const qty = Number(l.quantite) || 0
+        if (isRectiligneType(l.type_kind)) acc.pieces += qty
+        else acc.kgs += qty
         acc.total_qte += qty
         acc.total_eur += qty * (Number(l.prix) || 0)
         acc.nb_lignes += 1
@@ -675,6 +778,8 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
         phase: phaseMap.get(cid) ?? 'a_lancer',
         total_eur: round2(t.total_eur),
         total_qte: round2(t.total_qte),
+        total_kgs: round2(t.kgs),
+        total_pieces: round2(t.pieces),
         produit: round2(t.produit),
         nb_lignes: t.nb_lignes,
         earliest_delivery: t.earliest_delivery,
@@ -744,9 +849,8 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
     )) as any[]
     for (const l of lignesFixed) l.commentaire = stripRtf(l.commentaire) || null
 
-    const [refMap, coloriMap, prodMap] = await Promise.all([
-      resolveEcruRefs(lignesFixed.map((l) => Number(l.IDreference) || 0)),
-      resolveColorisEcru(lignesFixed.map((l) => Number(l.IDcolori) || 0)),
+    const [labels, prodMap] = await Promise.all([
+      resolveTrmLineLabels(lignesFixed),
       lineProductionAggregates(lignesFixed.map((l) => Number(l.IDligne_commande_client) || 0)),
     ])
 
@@ -768,6 +872,9 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
       const qty = Number(l.quantite) || 0
       const prix = Number(l.prix) || 0
       if (refId <= 0 || qty <= 0 || prix <= 0) return null
+      // The knitting cost model is circular-only (ref_ecru machine sheets):
+      // a rectiligne line has a flat price per piece and no margin chip.
+      if (isRectiligneType(l.type_kind)) return null
       const regle: 'etm' | 'trm' = (Number(l.IDligne_commande_ETM) || 0) > 0 ? 'etm' : 'trm'
       try {
         const d = await prixDeRevientTRMDetail(refId, qty)
@@ -811,7 +918,7 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
 
     const lignes = lignesFixed.map((l, i) => {
       const refId = Number(l.IDreference) || 0
-      const info = refMap.get(refId)
+      const info = labels.ref(l)
       const qty = Number(l.quantite) || 0
       const prix = Number(l.prix) || 0
       const prod = prodMap.get(Number(l.IDligne_commande_client)) ?? { nb_pieces: 0, produit: 0, expedie: 0 }
@@ -825,19 +932,21 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
         IDligne_commande_client: Number(l.IDligne_commande_client),
         IDcommande_client: Number(l.IDcommande_client),
         type: Number(l.type_kind) || 0,
+        // 'rectiligne' = cols / bandes (no OF, pieces, stock nor shipment).
+        kind: isRectiligneType(l.type_kind) ? 'rectiligne' : 'ecru',
         IDreference: refId,
         IDcolori: Number(l.IDcolori) || 0,
         quantite: qty,
         unite: Number(l.unite) || 1,
-        // TRM knits by weight — the legacy screen has no unit selector at all.
-        unite_label: 'Kgs',
+        // TRM knits écru by weight; rectiligne is counted in pieces.
+        unite_label: trmUniteLabel(l.type_kind),
         prix,
         date_livraison: l.date_livraison ?? null,
         commentaire: l.commentaire ?? null,
         ref_label: info?.reference || null,
         ref_designation: info?.designation || null,
         contexture: info?.contexture || null,
-        colori_reference: coloriMap.get(Number(l.IDcolori) || 0) || null,
+        colori_reference: labels.colori(l) || null,
         montant: round2(qty * prix),
         cout_revient: m?.cout ?? null,
         marge_pct: m?.marge_pct ?? null,
@@ -1092,6 +1201,18 @@ commandesTrmRouter.post('/:id/lignes', async (req: Request, res: Response) => {
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
 
+    // A rectiligne line names a reference and one of its coloris; its unit is
+    // the reference's (pieces) and its price defaults to ref_rectiligne.prix.
+    const type = d.type ?? 1
+    let unite = 1
+    let prix = Number(d.prix) || 0
+    if (isRectiligneType(type)) {
+      const chk = await checkTrmRectiligne(n(d.IDreference ?? 0), n(d.IDcolori ?? 0))
+      if (!chk.ok) { res.status(400).json({ error: chk.error, message: chk.message }); return }
+      unite = chk.unite
+      if (d.prix === undefined) prix = chk.prix
+    }
+
     // TYPE uppercase (reserved word), IDcolori lowercase, unite 1 = Kg — the
     // same shape the ETM bridge writes for its TRM mirror lines.
     await query(
@@ -1099,8 +1220,8 @@ commandesTrmRouter.post('/:id/lignes', async (req: Request, res: Response) => {
          (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
           quantite, unite, prix, poids, date_livraison, commentaire)
        VALUES
-         (${id}, 0, 1, ${n(d.IDreference ?? 0)}, ${n(d.IDcolori ?? 0)},
-          ${Number(d.quantite) || 0}, 1, ${Number(d.prix) || 0}, 0,
+         (${id}, 0, ${type}, ${n(d.IDreference ?? 0)}, ${n(d.IDcolori ?? 0)},
+          ${Number(d.quantite) || 0}, ${unite}, ${prix}, 0,
           '${d.date_livraison ? dateStr(d.date_livraison) : ''}', ${sqlText(d.commentaire ?? '')})`,
     )
     const rows = await query<{ IDligne_commande_client: number }>(
@@ -1128,6 +1249,20 @@ commandesTrmRouter.put('/lignes/:lineId', async (req: Request, res: Response) =>
     const d = parsed.data
 
     const sets: string[] = []
+    const cur = (await query<{ type_kind: number | null; IDreference: number | null; IDcolori: number | null }>(
+      `SELECT TYPE AS type_kind, IDreference, IDcolori FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+    ))[0]
+    const nextType = d.type ?? (Number(cur?.type_kind) || 1)
+    if (d.type !== undefined) sets.push(`TYPE = ${d.type}`)
+    if (isRectiligneType(nextType) && (d.type !== undefined || d.IDreference !== undefined || d.IDcolori !== undefined)) {
+      const refId = d.IDreference !== undefined ? n(d.IDreference) : (Number(cur?.IDreference) || 0)
+      const colorisId = d.IDcolori !== undefined ? n(d.IDcolori) : (Number(cur?.IDcolori) || 0)
+      const chk = await checkTrmRectiligne(refId, colorisId)
+      if (!chk.ok) { res.status(400).json({ error: chk.error, message: chk.message }); return }
+      sets.push(`unite = ${chk.unite}`)
+    } else if (d.type === 1) {
+      sets.push('unite = 1')
+    }
     if (d.IDreference !== undefined) sets.push(`IDreference = ${n(d.IDreference)}`)
     if (d.IDcolori !== undefined) sets.push(`IDcolori = ${n(d.IDcolori)}`)
     if (d.quantite !== undefined) sets.push(`quantite = ${Number(d.quantite) || 0}`)
@@ -1259,12 +1394,12 @@ commandesTrmRouter.delete('/lignes/:lineId', async (req: Request, res: Response)
 /** Resolve a line and confirm it belongs to the given TRM commande. Returns
  *  null (caller 404s) for a wrong-partition or cross-commande id. */
 async function loadTrmLine(commandeId: number, ligneId: number): Promise<{
-  IDreference: number; IDcolori: number; quantite: number; prix: number
+  IDreference: number; IDcolori: number; quantite: number; prix: number; type_kind: number
 } | null> {
   const g = await loadCommandeGuard(commandeId)
   if (!g) return null
   const rows = await query<any>(
-    `SELECT IDreference, IDcolori, quantite, prix FROM ligne_commande_client
+    `SELECT TYPE AS type_kind, IDreference, IDcolori, quantite, prix FROM ligne_commande_client
      WHERE IDligne_commande_client = ${ligneId} AND IDcommande_client = ${commandeId}`,
   )
   if (rows.length === 0) return null
@@ -1273,6 +1408,7 @@ async function loadTrmLine(commandeId: number, ligneId: number): Promise<{
     IDcolori: Number(rows[0].IDcolori) || 0,
     quantite: Number(rows[0].quantite) || 0,
     prix: Number(rows[0].prix) || 0,
+    type_kind: Number(rows[0].type_kind) || 0,
   }
 }
 
@@ -1336,6 +1472,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/pieces', async (req: Request, res: 
     if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const line = await loadTrmLine(commandeId, ligneId)
     if (!line) { res.status(404).json({ error: 'Ligne not found' }); return }
+    if (refuseIfRectiligne(res, line.type_kind)) return
 
     const rowsRaw = await query<any>(
       `SELECT IDstock_ecru, numero, lot, poids, metrage, second_choix, observations,
@@ -1411,6 +1548,7 @@ commandesTrmRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request, re
     if (refuseIfSoldee(res, g)) return
     const line = await loadTrmLine(commandeId, ligneId)
     if (!line) { res.status(404).json({ error: 'Ligne not found' }); return }
+    if (refuseIfRectiligne(res, line.type_kind)) return
 
     await expedierLock.run(async () => {
       // Only rolls reserved to THIS line, still TRM's, and not yet on an avis.
@@ -1483,6 +1621,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/stock-fil', async (req: Request, re
     if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const line = await loadTrmLine(commandeId, ligneId)
     if (!line) { res.status(404).json({ error: 'Ligne not found' }); return }
+    if (refuseIfRectiligne(res, line.type_kind)) return
 
     const refMap = await resolveEcruRefs([line.IDreference])
     const coloriMap = await resolveColorisEcru([line.IDcolori])
@@ -1710,6 +1849,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/ordres-fabrication', async (req: Re
     if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const line = await loadTrmLine(commandeId, ligneId)
     if (!line) { res.status(404).json({ error: 'Ligne not found' }); return }
+    if (refuseIfRectiligne(res, line.type_kind)) return
 
     // `productivité` and `Nettoyage` are accented/odd-cased — never named.
     const ofsRaw = await query<any>(
@@ -2029,7 +2169,7 @@ export async function buildTrmConfirmationPdfData(id: number): Promise<CommandeC
       ? query<any>(`SELECT ${adrCols} FROM adresse WHERE IDadresse = ${n(h.IDadresse_livraison)}`)
       : Promise.resolve([]),
     query<any>(
-      `SELECT IDligne_commande_client, IDreference, IDcolori, quantite, prix, date_livraison
+      `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori, quantite, prix, date_livraison
        FROM ligne_commande_client
        WHERE IDcommande_client = ${id}
        ORDER BY IDligne_commande_client`,
@@ -2052,23 +2192,20 @@ export async function buildTrmConfirmationPdfData(id: number): Promise<CommandeC
     : null
 
   const lignesFixed = lignesRaw as any[]
-  const [refMap, coloriMap] = await Promise.all([
-    resolveEcruRefs(lignesFixed.map((l) => Number(l.IDreference) || 0)),
-    resolveColorisEcru(lignesFixed.map((l) => Number(l.IDcolori) || 0)),
-  ])
+  const labels = await resolveTrmLineLabels(lignesFixed)
 
   const lignes = lignesFixed.map((l) => {
-    const info = refMap.get(Number(l.IDreference) || 0)
+    const info = labels.ref(l)
     const qty = Number(l.quantite) || 0
     const prix = Number(l.prix) || 0
     return {
       ref_label: info?.reference || null,
-      colori_reference: coloriMap.get(Number(l.IDcolori) || 0) || null,
+      colori_reference: labels.colori(l) || null,
       designation: info?.designation || null,
       quantite: qty,
-      // TRM knits by weight — every line of the partition is a type-1 écru
-      // priced per Kg, so the unit is never read from `unite`.
-      unite_label: 'Kgs',
+      // Écru is knitted by weight (Kgs); a rectiligne line (cols / bandes,
+      // #1185) is counted in pieces (U) — never read from `unite`.
+      unite_label: trmUniteLabel(l.type_kind),
       prix,
       montant: round2(qty * prix),
       date_livraison: dateFr(l.date_livraison),

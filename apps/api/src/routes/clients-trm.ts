@@ -32,6 +32,8 @@ import {
 } from '../lib/clients-common.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { loadTakenComptes, pickCompte, normalizeCompte, isValidCompte } from '../lib/compte-client.js'
+import { isRectiligneType } from '../lib/sst-line-kind.js'
+import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
 
 export const clientsTrmRouter: RouterType = Router()
 
@@ -559,12 +561,17 @@ clientsTrmRouter.get('/:id/historique', async (req: Request, res: Response) => {
     )
 
     // Line polymorphism on the TRM ledger. 1 = écru (the everyday tricotage
-    // line), 2 = fini, 3 = divers — same as ETM. **4 = confection**: the type
-    // is `type_sst` 4 (Confectionneur), and those 175 legacy rows are mirrors of
-    // ETM sous-traitance lines whose ids resolve against the écru catalog, so
-    // they are read exactly like type 1 (a stale id just renders "—").
-    const ecruLike = (t: number) => t === 1 || t === 4
+    // line), 2 = fini, 3 = divers — same as ETM. **4 = rectiligne**: cols /
+    // bandes knitted flat, ref_rectiligne + coloris_rectiligne (LIVA #1185).
+    // Until 2026-09-23 this read type 4 as « confection » against the écru
+    // catalog — the ids collide, so R006-38 printed as écru « LTP02 ».
+    const ecruLike = (t: number) => t === 1
     const ecruMap = await mapSimpleRef('ref_ecru', 'IDref_ecru', lines.filter((l) => ecruLike(numOf(l.type_kind))).map((l) => numOf(l.IDreference)))
+    const rectiLines = lines.filter((l) => isRectiligneType(l.type_kind))
+    const [rectiRefs, rectiColoris] = await Promise.all([
+      loadRectiligneRefLabels(rectiLines.map((l) => numOf(l.IDreference))),
+      loadRectiligneColorisLabels(rectiLines.map((l) => numOf(l.IDcolori))),
+    ])
     const finiMap = await mapSimpleRef('ref_fini', 'IDref_fini', lines.filter((l) => numOf(l.type_kind) === 2).map((l) => numOf(l.IDreference)))
     const diversMap = await mapDesignation('ref_divers', 'IDref_divers', lines.filter((l) => numOf(l.type_kind) === 3).map((l) => numOf(l.IDreference)))
     const colIds = lines.map((l) => numOf(l.IDcolori))
@@ -575,11 +582,14 @@ clientsTrmRouter.get('/:id/historique', async (req: Request, res: Response) => {
       const type = numOf(l.type_kind)
       const refId = numOf(l.IDreference)
       const colId = numOf(l.IDcolori)
+      const recti = isRectiligneType(type)
       const ref = ecruLike(type) ? (ecruMap.get(refId) ?? '')
         : type === 2 ? (finiMap.get(refId) ?? '')
         : type === 3 ? (diversMap.get(refId) || 'Divers')
+        : recti ? (rectiRefs.get(refId)?.reference ?? '')
         : ''
-      const coloris = type === 2 ? (rfcMap.get(colId) ?? ceMap.get(colId) ?? '') : (ceMap.get(colId) ?? '')
+      const coloris = recti ? (rectiColoris.get(colId) ?? '')
+        : type === 2 ? (rfcMap.get(colId) ?? ceMap.get(colId) ?? '') : (ceMap.get(colId) ?? '')
       const h = headMap.get(numOf(l.IDcommande_client))
       return {
         IDligne: numOf(l.IDligne_commande_client),

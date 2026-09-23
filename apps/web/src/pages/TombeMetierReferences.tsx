@@ -52,6 +52,10 @@ import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
+import { useSearchParams } from 'react-router-dom'
+// Relative on purpose: TRM renders this file through `@etm`, where `@/` is
+// TRM's own src (see the header of RectiligneReferences.tsx).
+import { RectiligneReferences, RefKindSwitch, type RefKind } from './tombe-metier/RectiligneReferences'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -506,7 +510,34 @@ function draftToBody(d: HeaderDraft) {
 
 // ── Page ───────────────────────────────────────────────
 
+/**
+ * Tombé Métier › Références — two catalogs behind one switch, as in the legacy
+ * FI_Ref_TombéMetier (SEL_TypeRef): the circular-knit écru references and the
+ * rectiligne ones (cols / bandes, LIVA #1185). The mode lives in the URL
+ * (`?type=rectiligne`) so an order line can deep-link to its reference; each
+ * mode is its own component with its own unsaved-changes guard, and the switch
+ * in each list header goes through that guard before flipping.
+ */
 export function TombeMetierReferences({ obsOfEditor }: { obsOfEditor?: ComponentType<ObsOfEditorProps> } = {}) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const kind: RefKind = searchParams.get('type') === 'rectiligne' ? 'rectiligne' : 'circulaire'
+  const setKind = useCallback((k: RefKind) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (k === 'rectiligne') next.set('type', 'rectiligne')
+      else next.delete('type')
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+  return kind === 'rectiligne'
+    ? <RectiligneReferences onKindChange={setKind} />
+    : <CirculaireReferences obsOfEditor={obsOfEditor} onKindChange={setKind} />
+}
+
+function CirculaireReferences({ obsOfEditor, onKindChange }: {
+  obsOfEditor?: ComponentType<ObsOfEditorProps>
+  onKindChange: (k: RefKind) => void
+}) {
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -777,6 +808,7 @@ export function TombeMetierReferences({ obsOfEditor }: { obsOfEditor?: Component
             onSearchChange={setSearchQuery}
             archivedFilter={archivedFilter}
             onArchivedFilterChange={(v) => guard.guardAction(() => { setIsEditing(false); setArchivedFilter(v) })}
+            kindSwitch={<RefKindSwitch kind="circulaire" onChange={(k) => guard.guardAction(() => { setIsEditing(false); onKindChange(k) })} />}
             onNew={() => createMutation.mutate()}
             isCreating={createMutation.isPending}
             isEditing={isEditing}
@@ -1061,6 +1093,7 @@ function RefEcruList({
   onSearchChange,
   archivedFilter,
   onArchivedFilterChange,
+  kindSwitch,
   onNew,
   isCreating,
   isEditing,
@@ -1076,6 +1109,7 @@ function RefEcruList({
   onSearchChange: (q: string) => void
   archivedFilter: boolean
   onArchivedFilterChange: (v: boolean) => void
+  kindSwitch: React.ReactNode
   onNew: () => void
   isCreating: boolean
   isEditing: boolean
@@ -1094,6 +1128,7 @@ function RefEcruList({
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
+        {kindSwitch}
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input

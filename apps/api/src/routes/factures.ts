@@ -1076,11 +1076,11 @@ async function resolveLineStockKinds(leIds: number[]): Promise<Map<number, LineS
       `SELECT IDligne_commande_client, TYPE AS type_kind FROM ligne_commande_client WHERE IDligne_commande_client IN (${chunk.join(',')})`,
     )
     for (const r of rows) {
-      // TYPE 4 appears only on TRM orders (175 lines live, none ever shipped)
-      // and points at the same ref_ecru / colori_ecru catalog as TYPE 1 — it is
-      // écru counted per piece rather than per Kg. Same glyph.
+      // TYPE 4 is rectiligne (cols / bandes, ref_rectiligne — LIVA #1185): no
+      // roll behind it, so the neutral glyph. None has ever been shipped, and
+      // the TRM shipment paths refuse one.
       const tk = Number(r.type_kind) || 0
-      lccKind.set(Number(r.IDligne_commande_client), tk === 1 || tk === 4 ? 'ecru' : tk === 2 ? 'fini' : 'divers')
+      lccKind.set(Number(r.IDligne_commande_client), tk === 1 ? 'ecru' : tk === 2 ? 'fini' : 'divers')
     }
   }
   for (const [le, lcc] of leToLcc) out.set(le, lccKind.get(lcc) ?? 'divers')
@@ -1298,14 +1298,13 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       )
       if (lccRows.length === 0) return null
       const lcc = lccRows[0]
-      // TYPE 4 is a TRM-only variant of the écru line (same ref_ecru /
-      // colori_ecru catalog, counted per piece instead of per Kg). No TYPE-4
-      // line has ever reached a ligne_expedition, so this branch is currently
-      // unexercised — it is here so that if one ever ships it is invoiced
-      // rather than silently dropped (a dropped line leaves the expedition
-      // un-marked and the client under-billed).
+      // TYPE 4 is rectiligne (cols / bandes, ref_rectiligne — LIVA #1185),
+      // not écru: its ids collide with ref_ecru, and it has no roll to count.
+      // No TYPE-4 line has ever reached a ligne_expedition and the TRM
+      // shipment paths refuse one (lib/sst-line-kind.ts refuseIfRectiligne),
+      // so there is nothing to invoice from here.
       const typeKind = Number(lcc.type_kind) || 0
-      const kind = typeKind === 1 || typeKind === 4 ? 'ecru' : typeKind === 2 ? 'fini' : 'none'
+      const kind = typeKind === 1 ? 'ecru' : typeKind === 2 ? 'fini' : 'none'
       if (kind === 'none') return null
       const refId = Number(lcc.IDreference) || 0
       const colId = Number(lcc.IDcolori) || 0

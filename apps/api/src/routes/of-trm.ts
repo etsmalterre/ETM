@@ -66,6 +66,11 @@ import {
 import { rerankQueue, activeOfOnMachine, terminerOf, healHandedOverOfs } from '../lib/of-queue-trm.js'
 import { realisableSurLots } from '../lib/realisable-fil-trm.js'
 import { loadEtmAffectation, missingAffectations, type FilPair } from '../lib/affectation-fil-trm.js'
+// A rectiligne line (type 4 — cols / bandes, LIVA #1185) never gets an OF:
+// its IDreference is a ref_rectiligne, and ordre_fabrication.IDref_ecru would
+// then knit the écru sharing the id (and feed it to the atelier, the TRS, the
+// visitage and the prime). The legacy had no rectiligne OF either.
+import { isRectiligneType, refuseIfRectiligne as refuseRectiligneLine, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 
 export const ofTrmRouter: RouterType = Router()
 
@@ -222,10 +227,12 @@ ofTrmRouter.get('/lookups/lignes-commande', async (req: Request, res: Response) 
     )
     const cmdIds = cmds.map((c: any) => Number(c.IDcommande_client) || 0).filter(Boolean)
     if (cmdIds.length === 0) { res.json([]); return }
+    // Rectiligne lines (TYPE 4) are never offered: no OF for cols / bandes.
     const lines = await query<any>(
       `SELECT IDligne_commande_client, IDcommande_client, quantite, IDreference, IDcolori
        FROM ligne_commande_client
-       WHERE ${single ? `IDligne_commande_client = ${oneId}` : `IDcommande_client IN (${cmdIds.join(',')})`}`,
+       WHERE ${single ? `IDligne_commande_client = ${oneId}` : `IDcommande_client IN (${cmdIds.join(',')})`}
+         AND TYPE <> ${LINE_TYPE_RECTILIGNE}`,
     )
     const lineIds = lines.map((l: any) => Number(l.IDligne_commande_client) || 0).filter(Boolean)
 
@@ -316,6 +323,7 @@ ofTrmRouter.get('/lookups/composition', async (req: Request, res: Response) => {
     if (isNaN(ligneId) || ligneId <= 0) { res.status(400).json({ error: 'Invalid ligne' }); return }
     const ctx = (await resolveLigneContexts([ligneId])).get(ligneId)
     if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
+    if (refuseRectiligneLine(res, ctx.type_kind)) return
     if (ctx.IDreference <= 0) { res.json({ components: [], compatibles: [], total_pourcentage: 0 }); return }
 
     // Composition rows — coloris-scoped first, falling back to every variant
@@ -433,7 +441,7 @@ ofTrmRouter.get('/lookups/observations', async (req: Request, res: Response) => 
     const machineId = Math.max(0, parseInt(String(req.query.machine ?? '0'), 10) || 0)
     const ctx = (await resolveLigneContexts([ligneId])).get(ligneId)
     if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
-    if (ctx.IDreference <= 0) { res.json([]); return }
+    if (ctx.IDreference <= 0 || isRectiligneType(ctx.type_kind)) { res.json([]); return }
     res.json(await selectObsRefEcru(ctx.IDreference, machineId, ctx.IDcolori))
   } catch (err) {
     console.error('Error fetching of-trm observations lookup:', err)
@@ -1609,6 +1617,7 @@ ofTrmRouter.post('/', async (req: Request, res: Response) => {
     const b = parsed.data
     const ctx = (await resolveLigneContexts([b.IDligne_commande_client])).get(b.IDligne_commande_client)
     if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
+    if (refuseRectiligneLine(res, ctx.type_kind)) return
     // LIVA #1159 — every fil of the OF must be affected on the ETM line.
     if (await refuseIfFilNonAffecte(res, b.IDligne_commande_client, b.composition)) return
 

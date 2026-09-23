@@ -43,6 +43,8 @@ import { createFinanceRouter, FINANCE_SCOPE_ETM } from '../lib/finance-common.js
 import { valoriserStock } from '../lib/valorisation-stock.js'
 import { allConsumedEcruIds } from '../lib/fini-sources.js'
 import { facturesRapportEtm } from './factures.js'
+import { isRectiligneType } from '../lib/sst-line-kind.js'
+import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
 
 export const rapportsRouter: RouterType = Router()
 
@@ -89,7 +91,7 @@ interface RapportLineRow {
   reference: string
   coloris: string
   type_kind: number
-  unite_label: 'Ml' | 'Kg'
+  unite_label: 'Ml' | 'Kg' | 'U'
   qte_commandee: number
   qte_affectee: number
   qte_receptionnee: number
@@ -260,17 +262,28 @@ rapportsRouter.get('/commandes-sst', async (req: Request, res: Response) => {
         colorisEcruMap.set(n((c as any).IDcolori_ecru), ((c as any).reference ?? '').toString())
     }
 
+    // Rectiligne lines (type 4, cols / bandes — #1185) read their own tables
+    // only: their ids collide with ref_ecru (lib/sst-line-kind.ts).
+    const rectiLines = fixedLines.filter((l) => isRectiligneType(l.type_kind))
+    const [rectiRefs, rectiColoris] = await Promise.all([
+      loadRectiligneRefLabels(rectiLines.map((l) => n(l.IDreference))),
+      loadRectiligneColorisLabels(rectiLines.map((l) => n(l.IDColoris))),
+    ])
+
     // Per-type resolvers — mirror commandes-sous-traitant.ts: route by the
-    // line's `type` (2=ennoblisseur/fini, 1=tricoteur/ecru, 0=legacy/ecru),
-    // fall back to the other catalogs only if the primary lacks the id.
+    // line's `type` (2=ennoblisseur/fini, 1=tricoteur/ecru, 0=legacy/ecru,
+    // 4=rectiligne), fall back to the other catalogs only if the primary
+    // lacks the id (never for rectiligne).
     function resolveRef(IDref: number, typeKind: number): string {
       if (IDref <= 0) return ''
+      if (isRectiligneType(typeKind)) return rectiRefs.get(IDref)?.reference ?? ''
       const order = typeKind === 2 ? [finiMap, ecruMap, filMap] : [ecruMap, finiMap, filMap]
       for (const m of order) if (m.has(IDref)) return m.get(IDref)!
       return ''
     }
     function resolveColoris(IDcoloris: number, typeKind: number, IDref: number): string {
       if (IDcoloris <= 0) return ''
+      if (isRectiligneType(typeKind)) return rectiColoris.get(IDcoloris) ?? ''
       if (typeKind === 2) {
         const dyed = (finiAvecTeintureMap.get(IDref) ?? 1) !== 0
         return dyed
@@ -455,7 +468,9 @@ rapportsRouter.get('/commandes-sst', async (req: Request, res: Response) => {
         reference: resolveRef(n(l.IDreference), typeKind),
         coloris: resolveColoris(n(l.IDColoris), typeKind, n(l.IDreference)),
         type_kind: typeKind,
-        unite_label: isEnnob ? 'Ml' : 'Kg',
+        // Rectiligne: pieces, nothing affected nor received through rolls
+        // (the legacy report printed « Ml » here).
+        unite_label: isRectiligneType(typeKind) ? 'U' : isEnnob ? 'Ml' : 'Kg',
         qte_commandee: n(l.quantite),
         qte_affectee: isEnnob ? agg.affecteeMetrage : agg.affecteePoids,
         qte_receptionnee: isEnnob ? agg.recuFiniMetrage : agg.recuEcruPoids,

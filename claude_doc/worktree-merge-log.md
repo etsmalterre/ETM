@@ -10,6 +10,25 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-23 — feat/cmd-divers — rectiligne (cols / bandes) : catalogue + commande à Tricotage Malterre (LIVA #1185)
+**MPS API + web ETM (écran Tombé Métier › Références partagé avec TRM) ; paire TRM `feat/cmd-divers`
+à atterrir ensuite.** Pierrot voulait « commander à TRM des cols » : c'est le sous-système **rectiligne**
+du legacy (machine plate de TRM), pas du `ref_divers`. Catalogue : `routes/references-rectiligne.ts` +
+`lib/rectiligne.ts` (références R###, guides-fil par montage, coloris + `coloris_guide_fil`, archive
+positionnelle sous Linux, suppression refusée si utilisée, Dupliquer complet, pas de `stock_rectiligne`)
+et un mode « Rectiligne » dans Tombé Métier › Références (`pages/tombe-metier/RectiligneReferences.tsx`,
+importé en relatif ; `?type=rectiligne`). Commande : ligne sst **`TYPE = 4`** réservée à Tricotage
+Malterre (pièces, prix de la référence), miroir TRM en type 4 (le pont forçait TYPE 1 / unité 1), bon de
+commande en « U » avec bloc FILS. **Lecture** : `lib/sst-line-kind.ts` route strictement par type — les
+354 lignes type 4 existantes s'affichaient comme de l'écru (R006-38 = « LTP02 ») dans le détail / PDF sst,
+la recherche, Rapports › Commandes sst, les commandes TRM, l'historique client TRM, les factures et les
+expéditions TRM (la doc disait « 4 = confection »). Garde-fous : pas d'OF, de pièce, d'expédition ni de
+stock fil sur une ligne type 4 (409 `ligne_rectiligne`) ; une commande TRM 100 % rectiligne est « En
+production ». Au passage : « + Nouveau » des références écru nommait `archivé` dans l'INSERT (panne sur le
+pont Linux) — retiré. Garde `check-rectiligne-lines.ts`, `check-pdf-qty-unit.ts` étendu, tests
+`sst-line-kind.test.ts` / `rectiligne.test.ts`. Doc : `screen_notes.md` § 4 et § 7, `hfsql_odbc.md`.
+Réponse développeur envoyée sur le ticket.
+
 ## 2026-09-23 — feat/transfert — #1187 : le picker de transfert ignore l'écru donné et fusionné
 **MPS API seule.** Pierrot voyait 14 pièces de 027 (3496/3, /5, /10, 3510/7 à /31) reproposées sur le
 bon 4447 → MATEL alors qu'elles avaient disparu de Tombé Métier › Stock. Prod : MATEL les avait cousues

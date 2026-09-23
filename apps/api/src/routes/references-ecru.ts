@@ -748,9 +748,12 @@ referencesEcruRouter.post('/', async (_req: Request, res: Response) => {
   try {
     const existingRows = await query<{ reference: string | null }>(`SELECT reference FROM ref_ecru`)
     const reference = nextRefNumber(existingRows.map((r) => r.reference ?? ''))
+    // archivé is never NAMED — the Linux bridge cannot resolve it and an unknown
+    // column storms the shared server (same fix as « Dupliquer », #1186). Left
+    // out, it zero-fills, which is what a new reference wants.
     await query(
-      `INSERT INTO ref_ecru (reference, designation, IDclient, IDcontexture, prix, bio, archivé, date_maj_ft)
-       VALUES (${sqlText(reference)}, '', 0, 0, 0, 0, 0, '${todayHfsql()}')`,
+      `INSERT INTO ref_ecru (reference, designation, IDclient, IDcontexture, prix, bio, date_maj_ft)
+       VALUES (${sqlText(reference)}, '', 0, 0, 0, 0, '${todayHfsql()}')`,
     )
     const rows = await query<{ IDref_ecru: number }>(
       `SELECT IDref_ecru FROM ref_ecru WHERE reference = ${sqlText(reference)} ORDER BY IDref_ecru DESC`,

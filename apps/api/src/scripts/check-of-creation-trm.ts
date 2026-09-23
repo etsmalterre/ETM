@@ -59,9 +59,10 @@ async function pickLine(): Promise<{ id: number; duplicated: boolean } | null> {
   const trmCmds = new Set(cmds.map((c) => Number(c.IDcommande_client)).filter(Boolean))
   if (trmCmds.size === 0) return null
 
-  // TYPE = 1 only: a TRM line is always écru, and the partition still carries a
-  // few type-2/3 rows whose IDreference points at another catalog (no
-  // composition_ecru at all, so they would read as a failure here).
+  // TYPE = 1 only: the écru lines. Type 4 is rectiligne (cols / bandes,
+  // LIVA #1185 — never an OF, POST /of-trm answers 409 ligne_rectiligne) and
+  // the partition still carries a few type-2/3 rows whose IDreference points
+  // at another catalog (no composition_ecru, so they would read as a failure).
   const lines = await query<{ IDligne_commande_client: number; IDcommande_client: number; IDreference: number; IDcolori: number }>(
     `SELECT IDligne_commande_client, IDcommande_client, IDreference, IDcolori FROM ligne_commande_client
      WHERE IDreference > 0 AND quantite > 0 AND TYPE = 1

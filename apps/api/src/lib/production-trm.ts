@@ -362,6 +362,9 @@ export interface LigneContext {
   ligne_quantite: number
   IDreference: number
   IDcolori: number
+  /** ligne_commande_client.TYPE — 4 = rectiligne (cols / bandes, LIVA #1185):
+   *  its IDreference is a ref_rectiligne, never an écru to knit an OF from. */
+  type_kind: number
 }
 
 export async function resolveLigneContexts(ligneIds: number[]): Promise<Map<number, LigneContext>> {
@@ -369,9 +372,9 @@ export async function resolveLigneContexts(ligneIds: number[]): Promise<Map<numb
   const ids = Array.from(new Set(ligneIds.filter((x) => x > 0)))
   if (ids.length === 0) return out
   // ligne_commande_client has accented columns (delai_annoncé, déverrouiller)
-  // and the reserved TYPE — named ASCII columns only.
+  // and the reserved TYPE (aliased) — named ASCII columns only.
   const lines = await query<any>(
-    `SELECT IDligne_commande_client, IDcommande_client, quantite, IDreference, IDcolori
+    `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, quantite, IDreference, IDcolori
      FROM ligne_commande_client WHERE IDligne_commande_client IN (${ids.join(',')})`,
   )
   const cmdIds = Array.from(new Set(lines.map((l: any) => Number(l.IDcommande_client) || 0).filter(Boolean)))
@@ -408,6 +411,7 @@ export async function resolveLigneContexts(ligneIds: number[]): Promise<Map<numb
       ligne_quantite: round2(Number(l.quantite) || 0),
       IDreference: Number(l.IDreference) || 0,
       IDcolori: Number(l.IDcolori) || 0,
+      type_kind: Number(l.type_kind) || 0,
     })
   }
   return out

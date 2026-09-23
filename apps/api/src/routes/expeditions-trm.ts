@@ -75,6 +75,8 @@ import {
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
+import { isRectiligneType, refuseIfRectiligne } from '../lib/sst-line-kind.js'
+import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
 import {
   sqlText,
   norm,
@@ -618,11 +620,22 @@ async function lignePieceInfo(expId: number, lccIds: number[]): Promise<{
 
 /** ref_ecru + colori_ecru labels for a set of order lines. Every TRM line is
  *  écru (type 1), so there is no fini/divers branch to resolve. */
-async function resolveEcruLineLabels(lignes: Array<{ IDreference: number; IDcolori: number }>): Promise<{
+/** Labels per line. A rectiligne line (type 4 — cols / bandes, LIVA #1185)
+ *  is labelled from its own catalog (`rectiRefs` / `rectiColoris`, the ids
+ *  collide with ref_ecru); it has no piece and never ships through here. */
+async function resolveEcruLineLabels(lignes: Array<{ IDreference: number; IDcolori: number; type_kind?: number }>): Promise<{
   refs: Map<number, { reference: string; designation: string }>
   coloris: Map<number, string>
+  rectiRefs: Map<number, { reference: string; designation: string }>
+  rectiColoris: Map<number, string>
 }> {
   const refs = new Map<number, { reference: string; designation: string }>()
+  const recti = lignes.filter((l) => isRectiligneType(l.type_kind))
+  lignes = lignes.filter((l) => !isRectiligneType(l.type_kind))
+  const [rectiRefs, rectiColoris] = await Promise.all([
+    loadRectiligneRefLabels(recti.map((l) => l.IDreference)),
+    loadRectiligneColorisLabels(recti.map((l) => l.IDcolori)),
+  ])
   const refIds = Array.from(new Set(lignes.map((l) => l.IDreference).filter((x) => x > 0)))
   if (refIds.length > 0) {
     const rows = await query<any>(
@@ -636,7 +649,7 @@ async function resolveEcruLineLabels(lignes: Array<{ IDreference: number; IDcolo
     }
   }
   const coloris = await resolveEcruColoris(lignes.map((l) => l.IDcolori))
-  return { refs, coloris }
+  return { refs, coloris, rectiRefs, rectiColoris }
 }
 
 expeditionsTrmRouter.get('/:id', async (req: Request, res: Response) => {
@@ -674,9 +687,10 @@ expeditionsTrmRouter.get('/:id', async (req: Request, res: Response) => {
     ])
 
     const lignesArr = lignesRaw as any[]
-    const { refs, coloris } = await resolveEcruLineLabels(lignesArr.map((l) => ({
+    const { refs, coloris, rectiRefs, rectiColoris } = await resolveEcruLineLabels(lignesArr.map((l) => ({
       IDreference: Number(l.IDreference) || 0,
       IDcolori: Number(l.IDcolori) || 0,
+      type_kind: Number(l.type_kind) || 0,
     })))
     const { leByLcc, expAgg, dispoCount } = await lignePieceInfo(
       id, lignesArr.map((l) => Number(l.IDligne_commande_client) || 0),
@@ -684,7 +698,8 @@ expeditionsTrmRouter.get('/:id', async (req: Request, res: Response) => {
 
     const lignes = lignesArr.map((l) => {
       const lcc = Number(l.IDligne_commande_client) || 0
-      const ref = refs.get(Number(l.IDreference) || 0)
+      const recti = isRectiligneType(l.type_kind)
+      const ref = (recti ? rectiRefs : refs).get(Number(l.IDreference) || 0)
       const agg = expAgg.get(lcc) ?? { nb: 0, poids: 0 }
       return {
         IDligne_commande_client: lcc,
@@ -692,7 +707,7 @@ expeditionsTrmRouter.get('/:id', async (req: Request, res: Response) => {
         type: Number(l.type_kind) || 0,
         ref_label: ref?.reference || null,
         ref_designation: ref?.designation || null,
-        colori_reference: coloris.get(Number(l.IDcolori) || 0) || null,
+        colori_reference: (recti ? rectiColoris : coloris).get(Number(l.IDcolori) || 0) || null,
         quantite: Number(l.quantite) || 0,
         unite: Number(l.unite) || 0,
         unite_label: uniteLabel(l.unite),
@@ -931,6 +946,8 @@ expeditionsTrmRouter.put('/:id/lignes/:lccId/pieces/:stockId', async (req: Reque
     if (await isLocked(id)) { res.status(409).json(FACTURE_LOCK); return }
     const ctx = await loadLineCtx(lccId)
     if (!ctx) { res.status(404).json({ error: 'Ligne introuvable' }); return }
+    // Cols / bandes (type 4) have no piece to ship (LIVA #1185).
+    if (refuseIfRectiligne(res, ctx.type)) return
 
     // The piece must be TRM's own, reserved to this order line, and free.
     const pieceRows = await query<{ IDstock_ecru: number; IDligne_expedition_TRM: number; IDLigne_Commande_TRM: number }>(

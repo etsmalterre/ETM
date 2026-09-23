@@ -67,6 +67,15 @@ import {
   sstDelaiSets,
 } from '../lib/sst-shared.js'
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
+import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
+import {
+  loadRectiligneRefLabels,
+  loadRectiligneColorisLabels,
+  loadCompositionLabels,
+  readRefRectiligneRow,
+  normalizeRefRectiligne,
+} from '../lib/rectiligne.js'
+import { uniteLabel } from './expeditions.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -387,25 +396,31 @@ async function loadRefEcruReference(IDref_ecru: number): Promise<string> {
  *  by reading all cc lines' IDreference values and resolving to ref_ecru.reference.
  *  Matches legacy convention from sample cc 6885 ("commande 8582, 029"). */
 async function refreshTrmRefClient(sstId: number, mirrorId: number): Promise<void> {
-  const lines = await query<{ IDreference: number | null }>(
-    `SELECT IDreference FROM ligne_commande_client WHERE IDcommande_client = ${mirrorId}`,
+  const lines = await query<{ IDreference: number | null; type_kind: number | null }>(
+    `SELECT IDreference, TYPE AS type_kind FROM ligne_commande_client WHERE IDcommande_client = ${mirrorId}`,
   )
+  // Each line's reference in its own catalog: a rectiligne line (type 4)
+  // names its ref_rectiligne, never the ref_ecru that shares its id.
+  const rectiIds = lines.filter((l) => isRectiligneType(l.type_kind)).map((l) => Number(l.IDreference) || 0)
   const ids = Array.from(new Set(
-    lines.map((l) => Number(l.IDreference) || 0).filter((x) => x > 0),
+    lines.filter((l) => !isRectiligneType(l.type_kind)).map((l) => Number(l.IDreference) || 0).filter((x) => x > 0),
   ))
   let refsStr = ''
-  if (ids.length > 0) {
-    const r = await query<{ IDref_ecru: number; reference: string | null }>(
-      `SELECT IDref_ecru, reference FROM ref_ecru WHERE IDref_ecru IN (${ids.join(',')})`,
-    )
+  if (ids.length > 0 || rectiIds.some((x) => x > 0)) {
+    const r = ids.length > 0
+      ? await query<{ IDref_ecru: number; reference: string | null }>(
+        `SELECT IDref_ecru, reference FROM ref_ecru WHERE IDref_ecru IN (${ids.join(',')})`,
+      )
+      : []
     const fixed = await fixEncoding(r, 'ref_ecru', 'IDref_ecru', ['reference'])
+    const rectiRefs = await loadRectiligneRefLabels(rectiIds)
     // Preserve the line insertion order from the previous query.
     const refByLine = new Map<number, string>()
     for (const row of fixed as any[]) refByLine.set(Number(row.IDref_ecru), (row.reference ?? '').toString().trim())
     const labels: string[] = []
     for (const l of lines) {
       const id = Number(l.IDreference) || 0
-      const lbl = refByLine.get(id)
+      const lbl = isRectiligneType(l.type_kind) ? rectiRefs.get(id)?.reference : refByLine.get(id)
       if (lbl) labels.push(lbl)
     }
     refsStr = labels.length > 0 ? `, ${labels.join(', ')}` : ''
@@ -414,6 +429,35 @@ async function refreshTrmRefClient(sstId: number, mirrorId: number): Promise<voi
   await query(
     `UPDATE commande_client SET ref_client = '${esc(refClient)}' WHERE IDcommande_client = ${mirrorId}`,
   )
+}
+
+/**
+ * A rectiligne line (type 4 — cols / bandes, LIVA #1185) is only ever ordered
+ * from Tricotage Malterre, the one knitter with the flat-bed machine, and must
+ * name an existing reference and one of ITS coloris. Returns the reference's
+ * unit and price (the legacy defaulted the line price from
+ * ref_rectiligne.prix), or the 400 body to send.
+ */
+async function checkRectiligneLine(
+  sstId: number,
+  refId: number,
+  colorisId: number,
+): Promise<{ ok: true; unite: number; prix: number } | { ok: false; error: string; message: string }> {
+  if (!(await isTricotageMalterreSst(sstId))) {
+    return { ok: false, error: 'rectiligne_trm_uniquement', message: 'Les cols et bandes (rectiligne) se commandent uniquement à Tricotage Malterre.' }
+  }
+  const row = refId > 0 ? await readRefRectiligneRow(refId) : null
+  if (!row) return { ok: false, error: 'reference_rectiligne_inconnue', message: 'Choisissez une référence rectiligne.' }
+  const ref = normalizeRefRectiligne(row)
+  if (colorisId > 0) {
+    const c = await query<{ IDref_rectiligne: number }>(
+      `SELECT IDref_rectiligne FROM coloris_rectiligne WHERE IDcoloris_rectiligne = ${colorisId}`,
+    )
+    if (Number(c[0]?.IDref_rectiligne) !== refId) {
+      return { ok: false, error: 'coloris_rectiligne_invalide', message: "Ce coloris n'appartient pas à la référence choisie." }
+    }
+  }
+  return { ok: true, unite: ref.unite || 4, prix: ref.prix }
 }
 
 /** Returns true (and sets a 409 JSON response) if any ordre_fabrication
@@ -1236,6 +1280,9 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
       if (hits.refFiniIds.length) lineConds.push(`(lcs.type = 2 AND lcs.IDreference IN (${hits.refFiniIds.join(',')}))`)
       if (hits.coloriEcruIds.length) lineConds.push(`(lcs.type IN (0,1) AND lcs.IDColoris IN (${hits.coloriEcruIds.join(',')}))`)
       if (hits.refFiniColoriIds.length) lineConds.push(`(lcs.type = 2 AND lcs.IDColoris IN (${hits.refFiniColoriIds.join(',')}))`)
+      // type=4 → ref_rectiligne + coloris_rectiligne (cols / bandes, #1185)
+      if (hits.refRectiligneIds.length) lineConds.push(`(lcs.type = ${LINE_TYPE_RECTILIGNE} AND lcs.IDreference IN (${hits.refRectiligneIds.join(',')}))`)
+      if (hits.colorisRectiligneIds.length) lineConds.push(`(lcs.type = ${LINE_TYPE_RECTILIGNE} AND lcs.IDColoris IN (${hits.colorisRectiligneIds.join(',')}))`)
       if (lineConds.length > 0) {
         orParts.push(
           `cst.IDcommande_sous_traitant IN (SELECT lcs.IDcommande_sous_traitant FROM ligne_commande_sous_traitant lcs WHERE ${lineConds.join(' OR ')})`,
@@ -1311,7 +1358,7 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
     if (ids.length > 0) {
       const [lignes, ecruWeights] = await Promise.all([
         query<any>(
-          `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant, quantite, prix, date_livraison, sstatut
+          `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant, type AS type_kind, quantite, prix, date_livraison, sstatut
            FROM ligne_commande_sous_traitant
            WHERE IDcommande_sous_traitant IN (${ids.join(',')})`,
         ),
@@ -1340,7 +1387,9 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
         const price = Number(l.prix) || 0
         const affectedKg = kgByLine.get(lid) ?? 0
         acc.total_qte += qty
-        acc.total_eur += affectedKg * price
+        // A rectiligne line is priced per piece and known up front (no écru
+        // behind it): quantity × price, like the bon de commande.
+        acc.total_eur += isRectiligneType(l.type_kind) ? qty * price : affectedKg * price
         acc.nb_lignes += 1
         if (!isLineDone(typeof l.sstatut === 'string' ? l.sstatut : null)) {
           const dl = typeof l.date_livraison === 'string' ? l.date_livraison : ''
@@ -1554,10 +1603,20 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       for (const r of await fixEncoding(filRows, 'ref_fil', 'IDref_fil', ['reference']))
         filMap.set(r.IDref_fil, r.reference ?? '')
     }
+    // Rectiligne lines (type 4, cols / bandes at Tricotage Malterre — LIVA
+    // #1185) resolve against their own tables ONLY: their ids collide with
+    // ref_ecru (R006-38 is also écru « LTP02 »), so they never enter the
+    // fallback chain below (lib/sst-line-kind.ts).
+    const rectiLines = fixedLignes.filter((l) => isRectiligneType((l as any).type_kind))
+    const [rectiRefs, rectiColoris] = await Promise.all([
+      loadRectiligneRefLabels(rectiLines.map((l) => Number(l.IDreference) || 0)),
+      loadRectiligneColorisLabels(rectiLines.map((l) => Number(l.IDColoris) || 0)),
+    ])
     // Per-line resolver: pick the catalog matching `type`, fall back to the
     // others only if the primary catalog doesn't have the ID.
-    function resolveRef(IDref: number, typeKind: number): { label: string; kind: 'ecru' | 'fini' | 'fil' | null } {
+    function resolveRef(IDref: number, typeKind: number): { label: string; kind: 'ecru' | 'fini' | 'fil' | 'rectiligne' | null } {
       if (IDref <= 0) return { label: '', kind: null }
+      if (isRectiligneType(typeKind)) return { label: rectiRefs.get(IDref)?.reference ?? '', kind: 'rectiligne' }
       const tryFini = () => finiMap.has(IDref) ? { label: finiMap.get(IDref)!, kind: 'fini' as const } : null
       const tryEcru = () => ecruMap.has(IDref) ? { label: ecruMap.get(IDref)!, kind: 'ecru' as const } : null
       const tryFil = () => filMap.has(IDref) ? { label: filMap.get(IDref)!, kind: 'fil' as const } : null
@@ -1606,6 +1665,7 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     // IDColoris usually also exists as an unrelated ref_fini_colori).
     function resolveColoris(IDcoloris: number, typeKind: number, IDref: number): string {
       if (IDcoloris <= 0) return ''
+      if (isRectiligneType(typeKind)) return rectiColoris.get(IDcoloris) ?? ''
       if (typeKind === 2) {
         const dyed = (finiAvecTeintureMap.get(IDref) ?? 1) !== 0
         return dyed
@@ -1635,7 +1695,10 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       .filter((l) => Number((l as any).type_kind) === 1)
       .map((l) => Number(l.IDligne_commande_sous_traitant))
       .filter((x) => x > 0)
-    const affectationLineIds = lineIds.filter((id) => !tricoteurLineIds.includes(id))
+    // A rectiligne line has no roll at all (cols are counted in pieces, never
+    // stocked) — it takes part in neither pointer.
+    const rectiLineIds = new Set(rectiLines.map((l) => Number(l.IDligne_commande_sous_traitant)))
+    const affectationLineIds = lineIds.filter((id) => !tricoteurLineIds.includes(id) && !rectiLineIds.has(id))
     interface LineAgg {
       nb_ecru_lies: number
       total_kg_ecru_lie: number
@@ -1706,14 +1769,18 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       const resolved = resolveRef(refId, typeKind)
       const agg = piecesByLine.get(Number(l.IDligne_commande_sous_traitant)) ?? newAgg()
       const refRendement = resolved.kind === 'fini' ? (finiRendementMap.get(refId) ?? 0) : 0
+      const recti = resolved.kind === 'rectiligne' ? rectiRefs.get(refId) : undefined
       return {
         ...l,
         // Canonical `type` field for the frontend (mirrors type_kind, which
         // is the SQL-safe alias for the HFSQL reserved-word column).
-        // 2=fini/ennoblisseur, 1=fil/tricoteur, 0=écru.
+        // 2=fini/ennoblisseur, 1=écru/tricoteur, 0=écru, 4=rectiligne.
         type: typeKind,
         ref_label: resolved.label || null,
         ref_kind: resolved.kind,
+        // ref_rectiligne.designation (« col 38x9 cm BIO ») — rectiligne only.
+        ref_designation: recti?.designation || null,
+        unite_label: uniteLabel(l.unite),
         ref_rendement: refRendement,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
         ...agg,
@@ -2125,8 +2192,18 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
       piecesByLine.set(lid, arr)
     }
   }
+  // Rectiligne lines (type 4): own catalog only, plus the yarn line of the
+  // ordered coloris (guides + colori_fil) printed where a fini line prints its
+  // « article initial » — what the knitter needs to thread the machine.
+  const rectiLines = fixedLignes.filter((l) => isRectiligneType(l.type_kind))
+  const [rectiRefs, rectiColoris, rectiFils] = await Promise.all([
+    loadRectiligneRefLabels(rectiLines.map((l) => Number(l.IDreference) || 0)),
+    loadRectiligneColorisLabels(rectiLines.map((l) => Number(l.IDColoris) || 0)),
+    loadCompositionLabels(rectiLines.map((l) => ({ refId: Number(l.IDreference) || 0, colorisId: Number(l.IDColoris) || 0 }))),
+  ])
   function resolveRef(IDref: number, typeKind: number): string {
     if (IDref <= 0) return ''
+    if (isRectiligneType(typeKind)) return rectiRefs.get(IDref)?.reference ?? ''
     const tryFini = () => finiMap.get(IDref)
     const tryEcru = () => ecruMap.get(IDref)
     const tryFil = () => filMap.get(IDref)
@@ -2161,6 +2238,7 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
   // colori_ecru; 1/2 = dyed → ref_fini_colori). See the detail endpoint.
   function resolveColoris(IDcoloris: number, typeKind: number, IDref: number): string {
     if (IDcoloris <= 0) return ''
+    if (isRectiligneType(typeKind)) return rectiColoris.get(IDcoloris) ?? ''
     if (typeKind === 2) {
       const dyed = (finiAvecTeintureMap.get(IDref) ?? 1) !== 0
       return dyed
@@ -2179,9 +2257,12 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
   // (type=1) order kg of écru output; ennoblisseur (type=2) orders Ml of
   // fini. Use 'Kg' iff every line is tricoteur — fall back to 'Ml' (the
   // historical default) for ennoblisseur and mixed commandes.
+  // A rectiligne order (type 4, cols / bandes) counts pieces: 'U'. The legacy
+  // never mixed it with another type on one order (0 of 179 lines).
   const allTricoteur = fixedLignes.length > 0
     && fixedLignes.every((l) => Number((l as any).type_kind) === 1)
-  const qtyUnit: 'Ml' | 'Kg' = allTricoteur ? 'Kg' : 'Ml'
+  const allRectiligne = fixedLignes.length > 0 && rectiLines.length === fixedLignes.length
+  const qtyUnit: 'Ml' | 'Kg' | 'U' = allRectiligne ? 'U' : allTricoteur ? 'Kg' : 'Ml'
 
   return {
     numero: String(header.IDcommande_sous_traitant),
@@ -2224,10 +2305,12 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
         ? formatCompositionLabel(compositionByEcru.get(ecruId) ?? [], coloriEcruId, (fid) => refFilNames.get(fid))
         : null
 
+      const recti = isRectiligneType(typeKind)
       return {
         ref_label: resolveRef(refId, typeKind) || null,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
-        ref_designation: finiExtra?.designation ?? null,
+        ref_designation: recti ? (rectiRefs.get(refId)?.designation || null) : (finiExtra?.designation ?? null),
+        fils_label: recti ? (rectiFils.get(`${refId}:${colId}`) || null) : null,
         ref_presentation: derivePresentation(finiExtra?.conditionnement ?? null),
         traitements: treatmentsByFini.get(refId) ?? [],
         poids_gm2: finiExtra?.poids_Moy ?? null,
@@ -4208,7 +4291,15 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
     const isTrm = await isTricotageMalterreSst(id)
     const lineType = d.type ?? (isTricoteur ? 1 : 2)
     let linePrix = d.prix
-    if (isTricoteur && (linePrix == null || linePrix === 0)) {
+    let lineUnite = d.unite ?? 0
+    if (isRectiligneType(lineType)) {
+      // Cols / bandes: price per piece from the reference, never the écru
+      // knitting cost model below.
+      const chk = await checkRectiligneLine(id, d.IDreference ?? 0, d.IDColoris ?? 0)
+      if (!chk.ok) { res.status(400).json({ error: chk.error, message: chk.message }); return }
+      lineUnite = chk.unite
+      if (linePrix == null) linePrix = chk.prix
+    } else if (isTricoteur && (linePrix == null || linePrix === 0)) {
       linePrix = await trmLinePrix(d.IDreference ?? 0, Number(d.quantite) || 0)
     }
 
@@ -4229,7 +4320,7 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
        (IDcommande_sous_traitant, type, IDreference, IDColoris, quantite, unite, prix,
         date_livraison, date_delai, sstatut, commentaire)
        VALUES (${id}, ${lineType}, ${d.IDreference ?? 0}, ${d.IDColoris ?? 0},
-               ${n(d.quantite)}, ${d.unite ?? 0}, ${n(linePrix)},
+               ${n(d.quantite)}, ${lineUnite}, ${n(linePrix)},
                '${dateLiv}', '${dateLiv}', '${esc(d.sstatut ?? defaultStatut)}', '${esc(d.commentaire ?? '')}')`,
     )
 
@@ -4258,13 +4349,18 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
           mirrorStatus = 'skipped'
         } else {
           // ligne_commande_client uses IDcolori (lowercase) — not IDColoris
-          // like the sst side. Quirk preserved from legacy schema.
+          // like the sst side. Quirk preserved from legacy schema. TYPE and
+          // unite follow the sst line: a rectiligne line stays type 4 in
+          // pieces on the TRM side (legacy CreerCommandeTRM did the same);
+          // a knit line is type 1 in Kg.
+          const mirrorType = isRectiligneType(lineType) ? LINE_TYPE_RECTILIGNE : 1
+          const mirrorUnite = isRectiligneType(lineType) ? lineUnite : 1
           await query(
             `INSERT INTO ligne_commande_client
              (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
               quantite, unite, prix, poids, date_livraison, commentaire)
-             VALUES (${mirrorId}, ${newSstLineId}, 1, ${d.IDreference ?? 0}, ${d.IDColoris ?? 0},
-                     ${n(d.quantite)}, 1, ${n(linePrix)}, 0,
+             VALUES (${mirrorId}, ${newSstLineId}, ${mirrorType}, ${d.IDreference ?? 0}, ${d.IDColoris ?? 0},
+                     ${n(d.quantite)}, ${mirrorUnite}, ${n(linePrix)}, 0,
                      '${dateLiv}', '${esc(d.commentaire ?? '')}')`,
           )
           await refreshTrmRefClient(id, mirrorId)
@@ -4325,6 +4421,24 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
        FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${lineId}`,
     )
     const cur = currentRows[0] ?? { date_livraison: '', date_delai: '', type_kind: 0, IDreference: 0, quantite: 0, sstatut: '' }
+
+    // Rectiligne line (type 4): re-check the reference/coloris pair whenever
+    // either moves, and a new reference brings its own price and unit unless
+    // the caller set a price (legacy « référence » combo behaviour).
+    const nextType = d.type !== undefined ? d.type : (Number(cur.type_kind) || 0)
+    if (isRectiligneType(nextType) && (d.type !== undefined || d.IDreference !== undefined || d.IDColoris !== undefined)) {
+      const curColoris = await query<{ IDColoris: number | null }>(
+        `SELECT IDColoris FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${lineId}`,
+      )
+      const refId = d.IDreference !== undefined ? d.IDreference : (Number(cur.IDreference) || 0)
+      const colorisId = d.IDColoris !== undefined ? d.IDColoris : (Number(curColoris[0]?.IDColoris) || 0)
+      const chk = await checkRectiligneLine(commandeId, refId, colorisId)
+      if (!chk.ok) { res.status(400).json({ error: chk.error, message: chk.message }); return }
+      if (d.IDreference !== undefined && d.IDreference !== (Number(cur.IDreference) || 0)) {
+        d.unite = chk.unite
+        if (d.prix === undefined) d.prix = chk.prix
+      }
+    }
 
     const sets: string[] = []
     if (d.type !== undefined) sets.push(`type = ${d.type}`)

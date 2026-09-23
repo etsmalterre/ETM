@@ -329,7 +329,7 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
                 : null}
             </View>
             <Text style={[styles.cellBase, styles.colQty]}>
-              {fmtNum(l.quantite, 1)}{l.unite_label ? ` ${l.unite_label}` : ''}
+              {fmtNum(l.quantite, l.unite_label === 'U' ? 0 : 1)}{l.unite_label ? ` ${l.unite_label}` : ''}
             </Text>
             <Text style={[styles.cellBase, styles.colPU]}>{`${fmtNum(l.prix, 2)} €`}</Text>
             <Text style={[styles.cellBase, styles.colMontant]}>{`${fmtNum(l.montant, 2)} €`}</Text>

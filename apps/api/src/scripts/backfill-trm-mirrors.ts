@@ -16,6 +16,9 @@
 import 'dotenv/config'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
+// A rectiligne sst line (type 4, cols / bandes — LIVA #1185) mirrors as type 4
+// in pieces, like the live bridge; everything else as the type-1 écru line.
+import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 
 const TRICOTAGE_MALTERRE_ID = 1
 
@@ -63,7 +66,8 @@ interface SstLine {
   prix: number | null
   date_livraison: string | null
   commentaire: string | null
-  type: number | null
+  type_kind: number | null
+  unite: number | null
 }
 
 async function backfillOne(sstId: number, apply: boolean): Promise<'created' | 'exists' | 'not-trm' | 'no-sst' | 'failed'> {
@@ -94,7 +98,7 @@ async function backfillOne(sstId: number, apply: boolean): Promise<'created' | '
   // 3) Load lines (raw RTF — we'll strip per line).
   const linesRaw = await query<SstLine>(
     `SELECT IDligne_commande_sous_traitant, IDreference, IDColoris, quantite, prix,
-            date_livraison, commentaire, type
+            date_livraison, commentaire, type AS type_kind, unite
      FROM ligne_commande_sous_traitant
      WHERE IDcommande_sous_traitant = ${sstId}
      ORDER BY IDligne_commande_sous_traitant`,
@@ -159,9 +163,9 @@ async function backfillOne(sstId: number, apply: boolean): Promise<'created' | '
         `INSERT INTO ligne_commande_client
          (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
           quantite, unite, prix, poids, date_livraison, commentaire)
-         VALUES (${newCcId}, ${Number(l.IDligne_commande_sous_traitant)}, 1,
+         VALUES (${newCcId}, ${Number(l.IDligne_commande_sous_traitant)}, ${isRectiligneType(l.type_kind) ? LINE_TYPE_RECTILIGNE : 1},
                  ${Number(l.IDreference) || 0}, ${Number(l.IDColoris) || 0},
-                 ${n(l.quantite)}, 1, ${n(l.prix)}, 0,
+                 ${n(l.quantite)}, ${isRectiligneType(l.type_kind) ? (Number(l.unite) || 4) : 1}, ${n(l.prix)}, 0,
                  '${esc(l.date_livraison ?? '')}', '${esc(plainCmt)}')`,
       )
       lineOk++
