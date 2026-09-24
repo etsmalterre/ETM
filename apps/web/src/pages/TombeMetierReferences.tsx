@@ -1800,7 +1800,6 @@ function CompoFormView({
             getPrimary={(r) => r.reference ?? `#${r.IDref_fil}`}
             getSecondary={(r) => (r.prix_kg != null ? `${fmtNum(r.prix_kg, 2)} €/kg` : undefined)}
             placeholder="Rechercher un fil"
-            size="sm"
           />
         </div>
         <LabeledInput label="Pourcentage (%)" type="number" step="0.1" value={form.pourcentage} onChange={(v) => onFormChange({ ...form, pourcentage: v })} />
