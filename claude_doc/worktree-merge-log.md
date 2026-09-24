@@ -10,6 +10,9 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-24 — feat/ref-tm-fil-1202 — « Rechercher un fil » pleine largeur dans Ajouter un fil (LIVA #1202)
+**Web ETM seul (écran partagé, TRM le reçoit au prochain `/trm_deploy`).** Le formulaire « Ajouter un fil » de la composition (Tombé Métier › Références) passait `size="sm"` au `SearchableCombobox` : cette taille est celle des cellules de tableau (220 px fixes, inline, texte aligné à droite), donc le champ se posait à côté de son libellé. Taille par défaut : pleine largeur sous le libellé, comme Pourcentage et Commentaire.
+
 ## 2026-09-24 — feat/client-trm-1201 — Tombé Métier › Références : le combo Client suit la société (LIVA #1201)
 **Web partagé seul (paire TRM `feat/client-trm-1201`, aucun changement API).** Le combo Client d'une référence écru lisait toujours `/references-ecru/lookups/clients` (`client.IDsociete = 1`), donc TRM créait ses références sur des clients ETM. `TombeMetierReferences` prend une prop `clientsLookupPath` (défaut : le lookup ETM, clé React Query incluant le chemin) ; TRM y passe `/commandes-trm/lookups/clients` (27 clients société 2, `est_visible = 1`). Écart assumé : une référence posée sur un client TRM montre un Client vide en mode édition côté ETM.
 
