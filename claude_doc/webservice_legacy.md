@@ -17,11 +17,11 @@ QR on the sample tag (EtiquetteRefFiniPdf / legacy FI_Ref_Fini)
                     └─ HFSQL mps.malterre (10.10.20.2:4900)
 ```
 
-- **Website** (`C:\dev\etsmalterre\etsmalterre.com`, NOT a git repo): two WordPress installs on OVH cluster128.
+- **Website** (repo `etsmalterre/etsmalterre-site`, checkout `C:\dev\etsmalterre\etsmalterre-site`, since 2026-09-23; sister repo `malterrefencing-site`): two WordPress installs on OVH cluster128.
   - `etsmalterre.fr` (Astra child + Elementor): two Elementor forms POST to `commande_catalogue`.
   - `etsmalterre.fr/client` (sunergy-child + WooCommerce + wholesale prices + **`malterre-api.php`**, 5 748 lines, local copy):
     the customer space. The theme and page templates are on the server only.
-  - ⚠️ That folder's `CLAUDE.md` holds the OVH SSH password in plain text. Move it out and rotate it.
+  - The OVH SSH password moved out of that folder's `CLAUDE.md` into its gitignored `.env` (2026-09-23); still to rotate.
 - **Webservice**: WinDev project `C:\Mes Projets\MPS`, configuration "Webservice".
   - Files: `REST_MPS.wdrest` (routes) and `Webservice.wdg` (code) are PCS-compressed.
   - Readable source: the compile cache `MPS.cpl\vincent@etsmalterre.com\00000001\`, files `Webservice.7FDA7014.wdg.wcg`,
