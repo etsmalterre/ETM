@@ -371,10 +371,13 @@ function useContextures(enabled: boolean) {
     staleTime: 5 * 60_000,
   })
 }
-function useClients(enabled: boolean) {
+// `client` is partitioned by IDsociete: ETM's lookup lists société 1, and TRM
+// injects its own ledger's lookup through the `clientsLookupPath` prop (#1201).
+const DEFAULT_CLIENTS_LOOKUP = '/references-ecru/lookups/clients'
+function useClients(enabled: boolean, path: string) {
   return useQuery<ClientLookup[]>({
-    queryKey: ['ref-ecru-lk-clients'],
-    queryFn: () => apiFetch('/references-ecru/lookups/clients'),
+    queryKey: ['ref-ecru-lk-clients', path],
+    queryFn: () => apiFetch(path),
     enabled,
     staleTime: 5 * 60_000,
   })
@@ -518,7 +521,10 @@ function draftToBody(d: HeaderDraft) {
  * mode is its own component with its own unsaved-changes guard, and the switch
  * in each list header goes through that guard before flipping.
  */
-export function TombeMetierReferences({ obsOfEditor }: { obsOfEditor?: ComponentType<ObsOfEditorProps> } = {}) {
+export function TombeMetierReferences({ obsOfEditor, clientsLookupPath = DEFAULT_CLIENTS_LOOKUP }: {
+  obsOfEditor?: ComponentType<ObsOfEditorProps>
+  clientsLookupPath?: string
+} = {}) {
   const [searchParams, setSearchParams] = useSearchParams()
   const kind: RefKind = searchParams.get('type') === 'rectiligne' ? 'rectiligne' : 'circulaire'
   const setKind = useCallback((k: RefKind) => {
@@ -531,11 +537,12 @@ export function TombeMetierReferences({ obsOfEditor }: { obsOfEditor?: Component
   }, [setSearchParams])
   return kind === 'rectiligne'
     ? <RectiligneReferences onKindChange={setKind} />
-    : <CirculaireReferences obsOfEditor={obsOfEditor} onKindChange={setKind} />
+    : <CirculaireReferences obsOfEditor={obsOfEditor} clientsLookupPath={clientsLookupPath} onKindChange={setKind} />
 }
 
-function CirculaireReferences({ obsOfEditor, onKindChange }: {
+function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: {
   obsOfEditor?: ComponentType<ObsOfEditorProps>
+  clientsLookupPath: string
   onKindChange: (k: RefKind) => void
 }) {
   const queryClient = useQueryClient()
@@ -571,7 +578,7 @@ function CirculaireReferences({ obsOfEditor, onKindChange }: {
   const { data: refs, isLoading, isError, error } = useRefsEcru(archivedFilter)
   const { data: detail, isLoading: detailLoading } = useRefEcruDetail(selectedId)
   const { data: contextures } = useContextures(isEditing)
-  const { data: clients } = useClients(isEditing)
+  const { data: clients } = useClients(isEditing, clientsLookupPath)
   const { data: refsFil } = useRefsFilLookup(isEditing)
   const { data: machinesLk } = useMachinesLookup(isEditing)
 
