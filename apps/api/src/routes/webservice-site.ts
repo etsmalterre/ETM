@@ -278,6 +278,33 @@ webserviceSiteRouter.post('/commande_catalogue', handle(async (req, res) => {
 
 // ── Health of the snapshot (monitoring) ─────────────────────
 
+// ── Espace client (etsmalterre-site) ─────────────────────────
+// Reached only by the sites VPS through the WireGuard tunnel (factory Caddy api-sites.intra…:9443, route allowlist +
+// X-Site-Key). New routes live under espace/: the WordPress plugin never calls them, so their shapes are ours.
+
+/**
+ * Every ETS Malterre client (IDsociete 1, visible), id + name only — the espace client's admin picks one for
+ * « voir comme le client ». No e-mails, no addresses. Cached 5 min to spare HFSQL.
+ */
+let espaceClientsCache: { at: number; clients: { IDClient: number; nom: string }[] } | null = null
+webserviceSiteRouter.get('/espace/clients', handle(async (_req, res) => {
+  if (!espaceClientsCache || Date.now() - espaceClientsCache.at > 5 * 60_000) {
+    // client holds a binary memo → explicit columns only (same as Ref_Client).
+    const rows = await fixEncoding(
+      await query<{ IDclient: number; nom: string | null; IDsociete: number }>(
+        `SELECT IDclient, nom, IDsociete FROM client WHERE est_visible = 1`,
+      ),
+      'client', 'IDclient', ['nom'],
+    )
+    const clients = rows
+      .filter((r) => Number(r.IDsociete) === 1 && String(r.nom ?? '').trim())
+      .map((r) => ({ IDClient: Number(r.IDclient), nom: String(r.nom).trim() }))
+      .sort((a, b) => a.nom.localeCompare(b.nom, 'fr'))
+    espaceClientsCache = { at: Date.now(), clients }
+  }
+  res.json({ clients: espaceClientsCache.clients })
+}))
+
 webserviceSiteRouter.get('/_etat', (_req, res) => {
   res.json(siteSnapshotStatus())
 })

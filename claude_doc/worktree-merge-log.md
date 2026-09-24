@@ -9,6 +9,9 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-09-24 — feat/site-clients
+**MPS API only (read-only, additive).** New `GET /api/site/espace/clients` in `routes/webservice-site.ts`: every visible ETS Malterre client (`IDsociete` 1) as `{ IDClient, nom }`, sorted by name, names through `fixEncoding`, cached 5 min — for the etsmalterre.fr espace client's admin « voir comme le client » dropdown. No e-mails or addresses. Reached only by the sites VPS through the WireGuard tunnel (factory Caddy `api-sites.intra…:9443`, route allowlist + `X-Site-Key`); the WordPress plugin never calls `espace/*`, so existing `/api/site` shapes are untouched.
+
 ## 2026-09-24 — feat/simone-1207
 Simone Pérèle labels, second pass (LIVA #1207). Clients › Commandes › Étiquettes tab: the roll checkboxes could not be ticked — the row checkbox called preventDefault in onClick (to read e.shiftKey) on a controlled input, so the browser reverted each tick after React set it. Row and « Tout cocher » boxes are now button-as-checkbox (role=checkbox, Check icon), §44 Shift+click range kept. Prod data (not code): 16 code_sp EANs missing a 0 fixed directly in HFSQL; 5 clashing codes + GS1 prefix ownership await Simone Pérèle's answer (screen_notes § 3). Rule added: never preventDefault a controlled checkbox click (CLAUDE.md + frontend_rules.md).
 
