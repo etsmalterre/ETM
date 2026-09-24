@@ -1,7 +1,7 @@
 /**
  * Seed the last worked days of the seven active salariés into the LOCAL
  * `pointage` database, plus the matching `planning_bonnetier` rows in the LOCAL
- * MPS database, so Pointage › Salariés « 7 derniers jours travaillés » (and the
+ * MPS database, so the pointage tablet's « 7 derniers jours » (and the
  * daily email preview) show clean days next to every fault the report rules
  * flag. DEV ONLY: refuses unless both connections are localhost.
  *
@@ -16,10 +16,10 @@
  *   day hours (lib/rapport-pointage.ts HORAIRES_FIXES / HORAIRE_JOURNEE)
  *     1  NICOLAS   09-18    i1 arrives 09:22 · i3 lunch not clocked · i5 back from lunch 14:25
  *     5  OLIVIER   08:30-17:30  i0 leaves 16:40 · i2 clock-out forgotten before lunch
- *     20 MICKAEL   09-18    i2 leaves 17:20 · i6 arrives 09:15
- *     35 ANGELIQUE 09-18    always in order
+ *     20 MICKAEL   09-18    i2 leaves 17:20 · i4 leaves 18:25 (too late) · i6 arrives 09:15
+ *     35 ANGELIQUE 09-18    arrives 08:40-08:47: more than 10 min early every day
  *   shift workers (a planning row each day)
- *     46 MARIE     05-13    i1 35 min of pause · i4 arrives 05:14
+ *     46 MARIE     05-13    i1 35 min of pause · i4 arrives 05:14 · i6 arrives 04:40 (too early)
  *     44 DAUNOVAN  13-21    i2 leaves 20:30 · i5 two lines, 25 min between them + 10 min pause
  *     33 ANAIS     21-05    i3 planned, never clocked · i6 arrives 21:12
  */
@@ -70,6 +70,7 @@ const SALARIES: Salarie[] = [
     nom: 'MICKAEL', id: 20, idMps: 15,
     jour: (i) =>
       i === 2 ? journee('08:57', '12:02', '13:57', '17:20')
+      : i === 4 ? journee('08:56', '12:02', '13:58', '18:25')
       : i === 6 ? journee('09:15', '12:03', '13:59', '18:04')
       : journee('08:5' + (i % 9), '12:0' + (i % 4), '13:5' + (i % 9), '18:0' + (i % 6)),
   },
@@ -79,6 +80,7 @@ const SALARIES: Salarie[] = [
     jour: (i) =>
       i === 1 ? [{ d: '04:56', p1: ['09:00', '09:35'], f: '13:03' }]
       : i === 4 ? [{ d: '05:14', p1: ['09:02', '09:20'], f: '13:02' }]
+      : i === 6 ? [{ d: '04:40', p1: ['09:03', '09:21'], f: '13:01' }]
       : [{ d: '04:5' + (i % 9), p1: ['09:0' + (i % 5), '09:2' + (i % 5)], f: '13:0' + (i % 6) }],
   },
   {
@@ -165,7 +167,7 @@ async function main(): Promise<void> {
       }
     }
   }
-  console.log(WRITE ? '\nOK — rouvrir un salarié dans Pointage › Salariés.' : '\nRien écrit.')
+  console.log(WRITE ? '\nOK — toucher un visage sur la tablette pointage.' : '\nRien écrit.')
 }
 
 main()

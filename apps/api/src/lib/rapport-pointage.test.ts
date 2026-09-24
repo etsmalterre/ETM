@@ -44,6 +44,14 @@ describe('shift worker (in the planning)', () => {
     expect(r.alertes).toEqual(['départ 11:50 au lieu de 12:00 (10 min plus tôt)'])
   })
 
+  it('flags arriving more than 10 min early and leaving more than 10 min late (2026-09-24)', () => {
+    expect(analyserJournee(sal('A'), [ligne(sec(4, 50), sec(12, 10))], prevu, heure).alertes).toEqual([])
+    const r = analyserJournee(sal('A'), [ligne(sec(4, 49), sec(12, 11))], prevu, heure)
+    expect(r.alertes).toEqual(['arrivée 04:49 au lieu de 05:00 (11 min d’avance)', 'départ 12:11 au lieu de 12:00 (11 min plus tard)'])
+    expect(r.rouge.debut).toBe(true)
+    expect(r.rouge.fin).toBe(true)
+  })
+
   it('flags pauses over 20 min, the gap between two lines counting as pause', () => {
     const r = analyserJournee(sal('A'), [ligne(sec(5, 0), sec(9, 0)), ligne(sec(9, 25), sec(12, 0))], prevu, heure)
     expect(r.pauses).toEqual([{ debut: ms(9, 0), fin: ms(9, 25) }])
@@ -99,8 +107,21 @@ describe('day worker (not in the planning), expected 09:00-12:00 / 14:00-18:00',
   })
 
   it('a forgotten lunch clock-out is flagged (Olivier, 21/09), and so is leaving at 17:30', () => {
-    const r = analyserJournee(sal('Olivier'), [ligne(sec(8, 19, 51)), ligne(sec(13, 50, 32), sec(17, 30, 15))], null, heure)
-    expect(r.alertes).toEqual(['sortie non pointée entre 08:20 et 13:51', 'départ 17:30 au lieu de 18:00 (30 min plus tôt)'])
+    // judged on the default 09:00-18:00 here, so 08:20 is also 40 min early
+    const lignes = [ligne(sec(8, 19, 51)), ligne(sec(13, 50, 32), sec(17, 30, 15))]
+    expect(analyserJournee(sal('Olivier'), lignes, null, heure).alertes).toEqual([
+      'sortie non pointée entre 08:20 et 13:51',
+      'arrivée 08:20 au lieu de 09:00 (40 min d’avance)',
+      'départ 17:30 au lieu de 18:00 (30 min plus tôt)',
+    ])
+    // on his own 08:30 schedule, 08:20 is exactly 10 min early: in order
+    expect(analyserJournee(sal('Olivier'), lignes, null, heure, horaireDe(5)).alertes).toEqual(['sortie non pointée entre 08:20 et 13:51'])
+  })
+
+  it('day hours: too early / too late too, the lunch keeps the late-return rule alone', () => {
+    const r = analyserJournee(sal('A'), [ligne(sec(8, 45), sec(11, 40)), ligne(sec(13, 40), sec(18, 15))], null, heure)
+    expect(r.alertes).toEqual(['arrivée 08:45 au lieu de 09:00 (15 min d’avance)', 'départ 18:15 au lieu de 18:00 (15 min plus tard)'])
+    expect(r.rouge.repas).toBe(false)
   })
 
   it('one line across noon means the lunch was never clocked', () => {

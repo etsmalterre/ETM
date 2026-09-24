@@ -13,6 +13,8 @@
  *       · day hours = everyone else, judged against their fixed schedule
  *         (`HORAIRES_FIXES`, 09:00-12:00 / 14:00-18:00 when not listed).
  *   - a 5 min tolerance on every arrival / departure (n8n flagged 06:01);
+ *   - arriving more than 10 min early or leaving more than 10 min late is
+ *     flagged too (2026-09-24: overlap the company pays for and does not need);
  *   - a clock-out missing between two clock-ins is flagged (n8n kept only the
  *     day's first start and last end, so a forgotten lunch clock-out was
  *     invisible and inflated the day);
@@ -24,6 +26,11 @@ import type { LigneHoraire } from './pointage-etat.js'
 
 /** Minutes of slack on every expected arrival / departure. */
 export const TOLERANCE_MIN = 5
+/** Minutes a salarié may arrive before / leave after the expected time. Past
+ *  that, the overlap is time the company pays for and does not need
+ *  (Vincent, 2026-09-24) — flagged red like a lateness. Start and end of the
+ *  day only: the lunch keeps the late-return rule alone. */
+export const DEBORD_MAX_MIN = 10
 /** Pause allowed to a shift worker over the whole shift. */
 export const PAUSE_EQUIPE_MAX_MIN = 20
 /** A day-hours schedule: morning start, lunch out, lunch back, evening end, « HH:MM ». */
@@ -161,17 +168,26 @@ export function analyserJournee(
   if (debut !== null && fin === null) { alertes.push('fin de poste non pointée'); rouge.fin = true }
 
   const tol = TOLERANCE_MIN * MIN
+  const debord = DEBORD_MAX_MIN * MIN
   const retard = (reel: number, attendu: number) => `${Math.round((reel - attendu) / MIN)} min`
+  // Start and end of the day: late / early beyond the tolerance, and too early /
+  // too late beyond DEBORD_MAX_MIN, against the planning row or the schedule.
+  const controlerArrivee = (reel: number, attendu: number) => {
+    if (reel > attendu + tol) alertes.push(`arrivée ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(reel, attendu)} de retard)`)
+    else if (reel < attendu - debord) alertes.push(`arrivée ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(attendu, reel)} d’avance)`)
+    else return
+    rouge.debut = true
+  }
+  const controlerDepart = (reel: number, attendu: number) => {
+    if (reel < attendu - tol) alertes.push(`départ ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(attendu, reel)} plus tôt)`)
+    else if (reel > attendu + debord) alertes.push(`départ ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(reel, attendu)} plus tard)`)
+    else return
+    rouge.fin = true
+  }
 
   if (prevu) {
-    if (debut !== null && debut > prevu.debut + tol) {
-      alertes.push(`arrivée ${hhmm(debut)} au lieu de ${hhmm(prevu.debut)} (${retard(debut, prevu.debut)} de retard)`)
-      rouge.debut = true
-    }
-    if (fin !== null && fin < prevu.fin - tol) {
-      alertes.push(`départ ${hhmm(fin)} au lieu de ${hhmm(prevu.fin)} (${retard(prevu.fin, fin)} plus tôt)`)
-      rouge.fin = true
-    }
+    if (debut !== null) controlerArrivee(debut, prevu.debut)
+    if (fin !== null) controlerDepart(fin, prevu.fin)
     if (pauseMin > PAUSE_EQUIPE_MAX_MIN) {
       alertes.push(`${pauseMin} min de pause pour ${PAUSE_EQUIPE_MAX_MIN} prévues`)
       rouge.pause = true
@@ -179,10 +195,7 @@ export function analyserJournee(
   } else if (debut !== null) {
     const matin = heure(horaire.matin), midi = heure(horaire.midi)
     const reprise = heure(horaire.reprise), soir = heure(horaire.soir)
-    if (debut > matin + tol) {
-      alertes.push(`arrivée ${hhmm(debut)} au lieu de ${horaire.matin} (${retard(debut, matin)} de retard)`)
-      rouge.debut = true
-    }
+    controlerArrivee(debut, matin)
     // The lunch: one uninterrupted line across 12:00-14:00 means it was never clocked.
     const traverse = tri.find((l) => {
       const d = arrondiMinute(l.debut), f = arrondiMinute(l.fin)
@@ -198,10 +211,7 @@ export function analyserJournee(
         rouge.repas = true
       }
     }
-    if (fin !== null && fin < soir - tol) {
-      alertes.push(`départ ${hhmm(fin)} au lieu de ${horaire.soir} (${retard(soir, fin)} plus tôt)`)
-      rouge.fin = true
-    }
+    if (fin !== null) controlerDepart(fin, soir)
   }
 
   const repasMin = repas.reduce((t, p) => t + dureeMin(p), 0)
