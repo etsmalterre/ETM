@@ -15,7 +15,6 @@
 //   POST   /salaries                         { nom, prenom, login, idMps }
 //   PUT    /salaries/:id                     same body
 //   DELETE /salaries/:id                     soft delete
-//   GET    /salaries/:id/journees            last 7 worked days judged by the daily email's rules
 //   GET    /salaries/:id/messages            every message still on file, expired included
 //   POST   /salaries/:id/messages            { texte, dateFin }
 //   PUT    /messages/:id                     { texte, dateFin }
@@ -66,8 +65,6 @@ import {
   supprimerMessage,
   supprimerSalarie,
 } from '../lib/pointage-admin-ecritures.js'
-import { analyserJours } from '../lib/rapports-pointage-envoi.js'
-import { derniersJoursTravailles, hhmm, joursPrecedents, type Plage } from '../lib/rapport-pointage.js'
 
 export const pointageAdminRouter: RouterType = Router()
 
@@ -229,42 +226,6 @@ pointageAdminRouter.delete('/salaries/:id', async (req: Request, res: Response) 
     res.status(204).end()
   } catch (err) {
     erreur(res, 'salaries DELETE', err)
-  }
-})
-
-// ── Last worked days (the daily email's rules, one salarié) ──
-
-/** Worked days shown in the drawer, and how far back to look for them. */
-const JOURS_TRAVAILLES = 7
-const JOURS_RECHERCHE = 30
-
-pointageAdminRouter.get('/salaries/:id/journees', async (req: Request, res: Response) => {
-  try {
-    if (!(await acces(req, res))) return
-    const id = idDeLaRoute(req, res)
-    if (id === null) return
-    // Up to yesterday: today's shift may still be running, and the email never judges it either.
-    const jours = await analyserJours(joursPrecedents(jourParis(Date.now()), JOURS_RECHERCHE), id)
-    const plage = (p: Plage) => ({ debut: hhmm(p.debut), fin: hhmm(p.fin) })
-    const heure = (ms: number | null) => (ms === null ? null : hhmm(ms))
-    res.json(
-      derniersJoursTravailles(jours, JOURS_TRAVAILLES).map(({ jour, lignes: [l] }) => ({
-        jour,
-        regime: l.regime,
-        prevu: l.prevu ? plage(l.prevu) : null,
-        debut: heure(l.debut),
-        fin: heure(l.fin),
-        pauses: l.pauses.map(plage),
-        repas: l.repas.map(plage),
-        pauseMin: l.pauseMin,
-        repasMin: l.repasMin,
-        enPosteMin: l.enPosteMin,
-        alertes: l.alertes,
-        rouge: l.rouge,
-      })),
-    )
-  } catch (err) {
-    erreur(res, 'journees GET', err)
   }
 })
 

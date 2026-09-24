@@ -13,6 +13,7 @@
 //     GET  /salaries                        the face grid, with each one's status
 //     GET  /salaries/:id/photo?size=        portrait through id_mps → bonnetier.photo
 //     GET  /salaries/:id/etat               buttons, open line, messages, week
+//     GET  /salaries/:id/journees           last 7 worked days, judged by the daily email's rules
 //     POST /salaries/:id/pointage           { action, ligneId } → 409 when stale
 //
 // ⚠️ Its own cookie, `mps_pointeuse`, not `mps_appareil`: browsers share
@@ -58,6 +59,8 @@ import {
   type Salarie,
 } from '../lib/pointage.js'
 import { RefusPointage, pointer } from '../lib/pointage-ecritures.js'
+import { analyserJours } from '../lib/rapports-pointage-envoi.js'
+import { derniersJoursTravailles, hhmm, joursPrecedents, type Plage } from '../lib/rapport-pointage.js'
 
 export const pointageRouter: RouterType = Router()
 
@@ -281,6 +284,43 @@ pointageRouter.get('/salaries/:id/etat', async (req: Request, res: Response) => 
     res.json(await etatSalarie(s))
   } catch (err) {
     erreur(res, 'etat', err)
+  }
+})
+
+/** Worked days shown under the salarié, and how far back to look for them. */
+const JOURS_TRAVAILLES = 7
+const JOURS_RECHERCHE = 30
+
+// The salarié's last worked days judged by the daily « Rapport de pointage »
+// email's rules — through the email's own reader (analyserJours), never a copy.
+// Worked day = a clocked line or a planning row (the email's population); up
+// to yesterday, today's shift may still be running (decisions 2026-09-24).
+pointageRouter.get('/salaries/:id/journees', async (req: Request, res: Response) => {
+  try {
+    if (!(await gateLecture(req, res))) return
+    const s = await salarieDeLaRoute(req, res)
+    if (!s) return
+    const jours = await analyserJours(joursPrecedents(jourParis(Date.now()), JOURS_RECHERCHE), s.id)
+    const plage = (p: Plage) => ({ debut: hhmm(p.debut), fin: hhmm(p.fin) })
+    const heure = (v: number | null) => (v === null ? null : hhmm(v))
+    res.json(
+      derniersJoursTravailles(jours, JOURS_TRAVAILLES).map(({ jour, lignes: [l] }) => ({
+        jour,
+        regime: l.regime,
+        prevu: l.prevu ? plage(l.prevu) : null,
+        debut: heure(l.debut),
+        fin: heure(l.fin),
+        pauses: l.pauses.map(plage),
+        repas: l.repas.map(plage),
+        pauseMin: l.pauseMin,
+        repasMin: l.repasMin,
+        enPosteMin: l.enPosteMin,
+        alertes: l.alertes,
+        rouge: l.rouge,
+      })),
+    )
+  } catch (err) {
+    erreur(res, 'journees', err)
   }
 })
 
