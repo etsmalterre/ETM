@@ -89,7 +89,7 @@ interface ColorisRow {
   commentaire: string | null
   suivis: number
   /** What still points at this coloris (the server refuses the delete). */
-  in_use: 'rolls' | 'orders' | 'ofs' | 'ref_fini' | 'composition' | null
+  in_use: 'rolls' | 'orders' | 'ofs' | 'ref_fini' | 'chute' | null
 }
 
 const COLORIS_LOCK_TITLE: Record<NonNullable<ColorisRow['in_use']>, string> = {
@@ -97,7 +97,7 @@ const COLORIS_LOCK_TITLE: Record<NonNullable<ColorisRow['in_use']>, string> = {
   orders: 'Coloris utilisé par une commande — suppression impossible',
   ofs: 'Coloris utilisé par un ordre de fabrication — suppression impossible',
   ref_fini: 'Coloris utilisé par une référence finie — suppression impossible',
-  composition: 'Coloris avec une composition spécifique — suppression impossible',
+  chute: 'Composition du coloris utilisée par le schéma de liage — suppression impossible',
 }
 
 interface MachineRow {

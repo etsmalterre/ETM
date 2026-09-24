@@ -1114,15 +1114,18 @@ referencesEcruRouter.delete('/:id/compositions/:compoId', async (req: Request, r
 // ──────────────────────────────────────────────────────────
 
 /** What still points at a colori_ecru, in the order the padlock explains it.
- *  Deleting it would leave that row naming a coloris that no longer exists. */
-type ColorisUse = 'rolls' | 'orders' | 'ofs' | 'ref_fini' | 'composition'
+ *  Deleting it would leave that row naming a coloris that no longer exists.
+ *  The coloris's own composition (composition_ecru rows keyed to it) is NOT a
+ *  use: the screen never shows it, so it goes with the coloris (LIVA #1204) —
+ *  unless a liage chute names one of its rows. */
+type ColorisUse = 'rolls' | 'orders' | 'ofs' | 'ref_fini' | 'chute'
 
 const COLORIS_USE_MSG: Record<ColorisUse, string> = {
   rolls: 'Ce coloris est utilisé par des rouleaux.',
   orders: 'Ce coloris est utilisé par une commande.',
   ofs: 'Ce coloris est utilisé par un ordre de fabrication.',
   ref_fini: 'Ce coloris est utilisé par une référence finie.',
-  composition: 'Ce coloris possède une composition spécifique.',
+  chute: 'La composition de ce coloris est utilisée par le schéma de liage.',
 }
 
 /** First blocking use per coloris id (absent = deletable), one batched query
@@ -1149,24 +1152,52 @@ async function colorisUsage(ids: number[], strict = false): Promise<Map<number, 
       throw err
     }
   }
-  const [rolls, sst, client, ofs, fini, compo] = await Promise.all([
+  const [rolls, sst, client, ofs, fini, chute] = await Promise.all([
     hits('stock_ecru', 'IDcolori_ecru', '', true),
     hits('ligne_commande_sous_traitant', 'IDColoris', ' AND type IN (0, 1)'),
     hits('ligne_commande_client', 'IDcolori', ' AND TYPE = 1'),
     hits('ordre_fabrication', 'IDcolori_ecru'),
     hits('ref_fini', 'IDcolori_ecru'),
-    hits('composition_ecru', 'IDcolori_ecru'),
+    colorisChuteHits(inList, strict),
   ])
   for (const id of list) {
     const use: ColorisUse | null = rolls.has(id) ? 'rolls'
       : sst.has(id) || client.has(id) ? 'orders'
       : ofs.has(id) ? 'ofs'
       : fini.has(id) ? 'ref_fini'
-      : compo.has(id) ? 'composition'
+      : chute.has(id) ? 'chute'
       : null
     if (use) out.set(id, use)
   }
   return out
+}
+
+/** Coloris ids whose own composition rows are named by a chute_liage — the
+ *  only table holding a composition_ecru id. Two plain reads joined in JS. */
+async function colorisChuteHits(inList: string, strict: boolean): Promise<Set<number>> {
+  try {
+    const compos = await query<{ IDcomposition_ecru: number; IDcolori_ecru: number }>(
+      `SELECT IDcomposition_ecru, IDcolori_ecru FROM composition_ecru WHERE IDcolori_ecru IN (${inList})`,
+    )
+    if (compos.length === 0) return new Set()
+    const byCompo = new Map(compos.map((c) => [Number(c.IDcomposition_ecru), Number(c.IDcolori_ecru)]))
+    const ids = [...byCompo.keys()].join(',')
+    const chutes = await query<{ c1: number; c2: number }>(
+      `SELECT IDcomposition_ecru1 AS c1, IDcomposition_ecru2 AS c2 FROM chute_liage
+       WHERE IDcomposition_ecru1 IN (${ids}) OR IDcomposition_ecru2 IN (${ids})`,
+    )
+    const out = new Set<number>()
+    for (const ch of chutes) {
+      for (const c of [Number(ch.c1), Number(ch.c2)]) {
+        const colori = byCompo.get(c)
+        if (colori) out.add(colori)
+      }
+    }
+    return out
+  } catch (err) {
+    if (!strict) return new Set()
+    throw err
+  }
 }
 
 const colorisBody = z.object({
@@ -1220,7 +1251,8 @@ referencesEcruRouter.put('/:id/coloris/:coloriId', async (req: Request, res: Res
   }
 })
 
-// DELETE /api/references-ecru/:id/coloris/:coloriId — refused while anything points at it.
+// DELETE /api/references-ecru/:id/coloris/:coloriId — refused while anything
+// points at it; the coloris's own composition rows go with it (LIVA #1204).
 referencesEcruRouter.delete('/:id/coloris/:coloriId', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -1232,6 +1264,7 @@ referencesEcruRouter.delete('/:id/coloris/:coloriId', async (req: Request, res: 
     if (Number(scope[0]?.n ?? 0) === 0) { res.status(404).json({ error: 'Coloris not found for this reference' }); return }
     const use = (await colorisUsage([coloriId], true)).get(coloriId)
     if (use) { res.status(409).json({ error: COLORIS_USE_MSG[use], in_use: use }); return }
+    await query(`DELETE FROM composition_ecru WHERE IDcolori_ecru = ${coloriId} AND IDref_ecru = ${id}`)
     await query(`DELETE FROM colori_ecru WHERE IDcolori_ecru = ${coloriId}`)
     res.json({ ok: true })
   } catch (err) {
