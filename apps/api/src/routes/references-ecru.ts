@@ -434,40 +434,10 @@ referencesEcruRouter.get('/:id', async (req: Request, res: Response) => {
       suivis: Number(c.suivis) ? 1 : 0,
     }))
 
-    // Per-coloris usage flags → drive the delete affordance. A coloris can't be
-    // deleted if it has rolls (stock_ecru), tricoteur orders, or its own
-    // specific composition (composition_ecru row keyed to it). Batched, not N+1.
-    const coloriIds = coloris.map((c) => c.IDcolori_ecru).filter((n) => n > 0)
-    const usedRolls = new Set<number>()
-    const usedOrders = new Set<number>()
-    const usedCompo = new Set<number>()
-    if (coloriIds.length > 0) {
-      const inList = coloriIds.join(',')
-      try {
-        const r = await query<{ idc: number; n: number }>(
-          `SELECT IDcolori_ecru AS idc, COUNT(*) AS n FROM stock_ecru WHERE IDcolori_ecru IN (${inList}) GROUP BY IDcolori_ecru`,
-        )
-        for (const x of r) if (Number(x.n) > 0) usedRolls.add(Number(x.idc))
-      } catch { /* stock_ecru unreachable on some envs — tolerate */ }
-      try {
-        const o = await query<{ idc: number; n: number }>(
-          `SELECT IDColoris AS idc, COUNT(*) AS n FROM ligne_commande_sous_traitant WHERE IDColoris IN (${inList}) AND type IN (0, 1) GROUP BY IDColoris`,
-        )
-        for (const x of o) if (Number(x.n) > 0) usedOrders.add(Number(x.idc))
-      } catch { /* tolerate */ }
-      try {
-        const cc = await query<{ idc: number; n: number }>(
-          `SELECT IDcolori_ecru AS idc, COUNT(*) AS n FROM composition_ecru WHERE IDcolori_ecru IN (${inList}) GROUP BY IDcolori_ecru`,
-        )
-        for (const x of cc) if (Number(x.n) > 0) usedCompo.add(Number(x.idc))
-      } catch { /* tolerate */ }
-    }
-    const colorisOut = coloris.map((c) => ({
-      ...c,
-      rolls: usedRolls.has(c.IDcolori_ecru),
-      orders: usedOrders.has(c.IDcolori_ecru),
-      has_specific_composition: usedCompo.has(c.IDcolori_ecru),
-    }))
+    // Per-coloris usage → drives the delete padlock. Same reader as the DELETE
+    // guard, so the screen and the server always agree (LIVA #1203).
+    const usage = await colorisUsage(coloris.map((c) => c.IDcolori_ecru))
+    const colorisOut = coloris.map((c) => ({ ...c, in_use: usage.get(c.IDcolori_ecru) ?? null }))
 
     // Machine grid (ref_ecru_machine — all ASCII) + Métier name + computed compteurs.
     const machRows = await query<{
@@ -1143,6 +1113,62 @@ referencesEcruRouter.delete('/:id/compositions/:compoId', async (req: Request, r
 // COLORIS (colori_ecru) — explicit columns only (SELECT * fails)
 // ──────────────────────────────────────────────────────────
 
+/** What still points at a colori_ecru, in the order the padlock explains it.
+ *  Deleting it would leave that row naming a coloris that no longer exists. */
+type ColorisUse = 'rolls' | 'orders' | 'ofs' | 'ref_fini' | 'composition'
+
+const COLORIS_USE_MSG: Record<ColorisUse, string> = {
+  rolls: 'Ce coloris est utilisé par des rouleaux.',
+  orders: 'Ce coloris est utilisé par une commande.',
+  ofs: 'Ce coloris est utilisé par un ordre de fabrication.',
+  ref_fini: 'Ce coloris est utilisé par une référence finie.',
+  composition: 'Ce coloris possède une composition spécifique.',
+}
+
+/** First blocking use per coloris id (absent = deletable), one batched query
+ *  per table — the single reader behind the detail's padlock and the DELETE
+ *  guard. Covers both companies: ETM sst lines (type 0/1 → écru), écru client
+ *  lines (TYPE 1, the TRM orders — type 4 is rectiligne, another id space),
+ *  TRM OFs and ETM finished refs. LIVA #1203: only rolls, sst lines and
+ *  compositions used to be checked. `strict` (the DELETE) lets a failed read
+ *  fail the request instead of reading as "unused"; stock_ecru stays tolerated
+ *  because some dev envs cannot reach it. */
+async function colorisUsage(ids: number[], strict = false): Promise<Map<number, ColorisUse>> {
+  const out = new Map<number, ColorisUse>()
+  const list = Array.from(new Set(ids.filter((n) => n > 0)))
+  if (list.length === 0) return out
+  const inList = list.join(',')
+  const hits = async (table: string, col: string, extra = '', tolerant = !strict): Promise<Set<number>> => {
+    try {
+      const rows = await query<{ idc: number; n: number }>(
+        `SELECT ${col} AS idc, COUNT(*) AS n FROM ${table} WHERE ${col} IN (${inList})${extra} GROUP BY ${col}`,
+      )
+      return new Set(rows.filter((r) => Number(r.n) > 0).map((r) => Number(r.idc)))
+    } catch (err) {
+      if (tolerant) return new Set()
+      throw err
+    }
+  }
+  const [rolls, sst, client, ofs, fini, compo] = await Promise.all([
+    hits('stock_ecru', 'IDcolori_ecru', '', true),
+    hits('ligne_commande_sous_traitant', 'IDColoris', ' AND type IN (0, 1)'),
+    hits('ligne_commande_client', 'IDcolori', ' AND TYPE = 1'),
+    hits('ordre_fabrication', 'IDcolori_ecru'),
+    hits('ref_fini', 'IDcolori_ecru'),
+    hits('composition_ecru', 'IDcolori_ecru'),
+  ])
+  for (const id of list) {
+    const use: ColorisUse | null = rolls.has(id) ? 'rolls'
+      : sst.has(id) || client.has(id) ? 'orders'
+      : ofs.has(id) ? 'ofs'
+      : fini.has(id) ? 'ref_fini'
+      : compo.has(id) ? 'composition'
+      : null
+    if (use) out.set(id, use)
+  }
+  return out
+}
+
 const colorisBody = z.object({
   reference: z.string().min(1).max(100),
   commentaire: z.string().optional().nullable(),
@@ -1194,7 +1220,7 @@ referencesEcruRouter.put('/:id/coloris/:coloriId', async (req: Request, res: Res
   }
 })
 
-// DELETE /api/references-ecru/:id/coloris/:coloriId — guarded against composition use.
+// DELETE /api/references-ecru/:id/coloris/:coloriId — refused while anything points at it.
 referencesEcruRouter.delete('/:id/coloris/:coloriId', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -1204,31 +1230,8 @@ referencesEcruRouter.delete('/:id/coloris/:coloriId', async (req: Request, res: 
       `SELECT COUNT(*) AS n FROM colori_ecru WHERE IDcolori_ecru = ${coloriId} AND IDref_ecru = ${id}`,
     )
     if (Number(scope[0]?.n ?? 0) === 0) { res.status(404).json({ error: 'Coloris not found for this reference' }); return }
-    const used = await query<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM composition_ecru WHERE IDcolori_ecru = ${coloriId}`,
-    )
-    if (Number(used[0]?.n ?? 0) > 0) {
-      res.status(409).json({ error: 'Ce coloris possède une composition spécifique.' })
-      return
-    }
-    // Can't delete a coloris affected to a roll (stock_ecru) or an order
-    // (ligne_commande_sous_traitant.IDColoris on tricoteur lines).
-    try {
-      const rollUse = await query<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM stock_ecru WHERE IDcolori_ecru = ${coloriId}`,
-      )
-      if (Number(rollUse[0]?.n ?? 0) > 0) {
-        res.status(409).json({ error: 'Ce coloris est utilisé par des rouleaux en stock.' })
-        return
-      }
-    } catch { /* stock_ecru unreachable on some envs — tolerate */ }
-    const orderUse = await query<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM ligne_commande_sous_traitant WHERE IDColoris = ${coloriId} AND type IN (0, 1)`,
-    )
-    if (Number(orderUse[0]?.n ?? 0) > 0) {
-      res.status(409).json({ error: 'Ce coloris est utilisé par une commande.' })
-      return
-    }
+    const use = (await colorisUsage([coloriId], true)).get(coloriId)
+    if (use) { res.status(409).json({ error: COLORIS_USE_MSG[use], in_use: use }); return }
     await query(`DELETE FROM colori_ecru WHERE IDcolori_ecru = ${coloriId}`)
     res.json({ ok: true })
   } catch (err) {

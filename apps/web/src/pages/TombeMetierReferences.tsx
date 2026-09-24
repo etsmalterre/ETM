@@ -88,9 +88,16 @@ interface ColorisRow {
   reference: string | null
   commentaire: string | null
   suivis: number
-  rolls: boolean
-  orders: boolean
-  has_specific_composition: boolean
+  /** What still points at this coloris (the server refuses the delete). */
+  in_use: 'rolls' | 'orders' | 'ofs' | 'ref_fini' | 'composition' | null
+}
+
+const COLORIS_LOCK_TITLE: Record<NonNullable<ColorisRow['in_use']>, string> = {
+  rolls: 'Coloris utilisé par des rouleaux — suppression impossible',
+  orders: 'Coloris utilisé par une commande — suppression impossible',
+  ofs: 'Coloris utilisé par un ordre de fabrication — suppression impossible',
+  ref_fini: 'Coloris utilisé par une référence finie — suppression impossible',
+  composition: 'Coloris avec une composition spécifique — suppression impossible',
 }
 
 interface MachineRow {
@@ -1725,10 +1732,10 @@ function CompositionCard({
                         </div>
                         {canEdit && (
                           <div className="flex items-center gap-1.5 flex-shrink-0">
-                            <button onClick={() => startEditRow(c)} className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-foreground transition-opacity" title="Modifier">
+                            <button onClick={() => startEditRow(c)} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors" title="Modifier">
                               <Pencil className="h-3.5 w-3.5" />
                             </button>
-                            <button onClick={() => setDeleteTarget(c)} className="opacity-0 group-hover:opacity-100 p-0.5 text-destructive hover:text-destructive transition-opacity" title="Supprimer">
+                            <button onClick={() => setDeleteTarget(c)} className="p-0.5 text-destructive hover:text-destructive transition-colors" title="Supprimer">
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           </div>
@@ -1910,14 +1917,8 @@ function ColorisCard({
             )}
             {detail.coloris.map((c) => {
               const isRowEditing = editingId === c.IDcolori_ecru
-              const inUse = c.rolls || c.orders || c.has_specific_composition
-              const deleteTitle = !inUse
-                ? 'Supprimer'
-                : c.rolls
-                  ? 'Coloris utilisé par des rouleaux — suppression impossible'
-                  : c.orders
-                    ? 'Coloris utilisé par une commande — suppression impossible'
-                    : 'Coloris avec une composition spécifique — suppression impossible'
+              const inUse = c.in_use != null
+              const deleteTitle = c.in_use ? COLORIS_LOCK_TITLE[c.in_use] : 'Supprimer'
               return (
                 <div key={c.IDcolori_ecru}>
                   {isRowEditing && isEditing ? (
@@ -1936,14 +1937,14 @@ function ColorisCard({
                         </div>
                         {isEditing && (
                           <div className="flex items-center gap-1.5 flex-shrink-0">
-                            <button onClick={() => startEditRow(c)} className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-foreground transition-opacity" title="Modifier">
+                            <button onClick={() => startEditRow(c)} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors" title="Modifier">
                               <Pencil className="h-3.5 w-3.5" />
                             </button>
                             <button
                               onClick={() => { if (!inUse) { setErrorMsg(null); setDeleteTarget(c) } }}
                               aria-disabled={inUse}
                               className={cn(
-                                'opacity-0 group-hover:opacity-100 p-0.5 transition-opacity',
+                                'p-0.5 transition-colors',
                                 inUse ? 'text-muted-foreground/40 cursor-not-allowed' : 'text-destructive hover:text-destructive',
                               )}
                               title={deleteTitle}
