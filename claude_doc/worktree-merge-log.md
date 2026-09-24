@@ -10,6 +10,9 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-24 — feat/delete-coloris-1204 — un coloris part avec sa composition propre (LIVA #1204)
+**MPS API + écran partagé (TRM le reçoit au prochain `/trm_deploy`).** Nico ne pouvait supprimer aucun coloris de « ech 55 » : chacun avait des lignes `composition_ecru` à son `IDcolori_ecru` (une ancienne recette par coloris), que l'écran n'affiche jamais — cadenas « composition spécifique » sans rien à corriger. Le `DELETE /references-ecru/:id/coloris/:coloriId` supprime désormais ces lignes avec le coloris ; `colorisUsage()` ne verrouille plus sur `composition_ecru` mais seulement quand une `chute_liage` nomme une de ces lignes (`in_use: 'chute'`). Rouleaux, commandes, OF et `ref_fini` verrouillent toujours. Testé sur dev (coloris 134 de la réf 024 supprimé avec ses 2 lignes, coloris à rouleaux toujours refusé).
+
 ## 2026-09-24 — feat/ref-tm-fil-1202 — « Rechercher un fil » pleine largeur dans Ajouter un fil (LIVA #1202)
 **Web ETM seul (écran partagé, TRM le reçoit au prochain `/trm_deploy`).** Le formulaire « Ajouter un fil » de la composition (Tombé Métier › Références) passait `size="sm"` au `SearchableCombobox` : cette taille est celle des cellules de tableau (220 px fixes, inline, texte aligné à droite), donc le champ se posait à côté de son libellé. Taille par défaut : pleine largeur sous le libellé, comme Pourcentage et Commentaire.
 
