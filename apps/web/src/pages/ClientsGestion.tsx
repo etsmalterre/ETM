@@ -1149,7 +1149,9 @@ function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarif
         {/* Commercial sub-views (tarif modes editable in edit mode, permission-gated) */}
         {activeTab === 'references' && <ReferencesTab clientId={client.IDclient} isEditing={isEditing} canManageTarifs={canManageTarifs} canManageRefs={canManageRefs} canManageColoris={canManageColoris} />}
         {activeTab === 'historique' && (
-          <div className="flex-1 min-h-0 overflow-auto scrollbar-transparent px-1"><HistoriqueTab clientId={client.IDclient} /></div>
+          // Flex column like Marchandise: the search bar stays pinned while the
+          // table scrolls internally.
+          <div className="flex-1 min-h-0 flex flex-col px-1"><HistoriqueTab clientId={client.IDclient} /></div>
         )}
         {activeTab === 'marchandise' && (
           // Flex column, not a scroll container: the tab pins its toolbar and
@@ -3083,15 +3085,59 @@ function TarifModeDialog({ open, onClose, clientId, target }: {
 interface HistLigne { IDligne: number; IDcommande_client: number; numero: number; date_commande: string | null; type_kind: number; ref: string; coloris: string; quantite: number; unite: number; prix: number }
 
 function HistoriqueTab({ clientId }: { clientId: number }) {
-  const { data, isLoading } = useQuery<{ lignes: HistLigne[]; capped: boolean }>({ queryKey: ['client-historique', clientId], queryFn: () => apiFetch(`/clients/${clientId}/historique`) })
+  // Without a search the tab shows the 120 most recent orders; a search runs
+  // server-side over the client's WHOLE history (LIVA #1206 — « rechercher par
+  // référence » to see the quantities and how often a ref is ordered).
+  const [search, setSearch] = useState('')
+  // Debounced: each search is a full-history read on the shared HFSQL server.
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => clearTimeout(t)
+  }, [search])
+  useEffect(() => { setSearch(''); setDebouncedSearch('') }, [clientId])
+
+  const { data, isLoading } = useQuery<{ lignes: HistLigne[]; capped: boolean }>({
+    queryKey: ['client-historique', clientId, debouncedSearch],
+    queryFn: () => apiFetch(`/clients/${clientId}/historique${debouncedSearch ? `?q=${encodeURIComponent(debouncedSearch)}` : ''}`),
+  })
   const lignes = data?.lignes ?? []
+
+  // Search recap: how many orders the matching lines span, and the quantity
+  // per unit (a fini sells in Ml, a tombé de métier in Kg — never summed together).
+  const recap = useMemo(() => {
+    const commandes = new Set(lignes.map((l) => l.IDcommande_client)).size
+    const byUnit = new Map<number, number>()
+    for (const l of lignes) byUnit.set(l.unite, (byUnit.get(l.unite) ?? 0) + l.quantite)
+    const qtes = [...byUnit.entries()]
+      .filter(([, q]) => q > 0)
+      .map(([u, q]) => `${fmtNum(q, u === 4 ? 0 : 1)} ${UNITE_LABEL[u] ?? ''}`.trim())
+    return { commandes, qtes }
+  }, [lignes])
+
   return (
     <>
-      {isLoading ? <SectionSpinner /> : lignes.length === 0 ? <SectionEmpty text="Aucune commande" /> : (
+      {(lignes.length > 0 || debouncedSearch !== '') && (
+        <div className="relative flex-shrink-0 mx-1 mb-2">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="Rechercher dans tout l'historique (réf, coloris, n° commande…)"
+            className="w-full h-9 pl-9 pr-9 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+          {search !== '' && (
+            <button type="button" onClick={() => setSearch('')} title="Effacer la recherche"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-zinc-100">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+      {isLoading ? <SectionSpinner /> : lignes.length === 0 ? (
+        <SectionEmpty text={debouncedSearch ? 'Aucune commande ne correspond à la recherche' : 'Aucune commande'} />
+      ) : (
         <>
-          <div className="rounded-lg border border-border/60 overflow-x-auto bg-card shadow-sm scrollbar-transparent">
+          <div className="min-h-0 overflow-auto rounded-lg border border-border/60 bg-card shadow-sm scrollbar-transparent">
             <table className="w-full text-xs">
-              <thead className={thHead}><tr>
+              <thead className={cn(thHead, 'sticky top-0 z-10 bg-zinc-100')}><tr>
                 <th className="px-2 py-1.5 text-left font-semibold">Date</th>
                 <th className="px-2 py-1.5 text-left font-semibold">N°</th>
                 <th className="px-2 py-1.5 text-left font-semibold">Référence</th>
@@ -3113,7 +3159,14 @@ function HistoriqueTab({ clientId }: { clientId: number }) {
               </tbody>
             </table>
           </div>
-          {data?.capped && <p className="text-[11px] text-muted-foreground italic mt-2">120 commandes les plus récentes affichées.</p>}
+          {debouncedSearch ? (
+            <p className="flex-shrink-0 text-[11px] text-muted-foreground italic mt-2">
+              {`${fmtNum(lignes.length)} ligne${lignes.length > 1 ? 's' : ''} sur ${fmtNum(recap.commandes)} commande${recap.commandes > 1 ? 's' : ''}`}
+              {recap.qtes.length > 0 && <> · <span className="not-italic font-semibold text-foreground tabular-nums">{recap.qtes.join(' · ')}</span></>}
+            </p>
+          ) : data?.capped && (
+            <p className="flex-shrink-0 text-[11px] text-muted-foreground italic mt-2">120 commandes les plus récentes affichées — la recherche porte sur tout l'historique.</p>
+          )}
         </>
       )}
     </>

@@ -636,22 +636,41 @@ function coloriLabel(id: number, avecTeinture: number, ce: Map<number, string>, 
   return (avecTeinture !== 0 ? (rfc.get(id) ?? ce.get(id)) : (ce.get(id) ?? rfc.get(id))) ?? ''
 }
 
-// GET /api/clients/:id/historique — recent order lines (Date, n° cmd, ref, coloris, qté, prix).
+// GET /api/clients/:id/historique — order lines (Date, n° cmd, ref, coloris, qté, prix).
+//   no ?q — the 120 most recent orders (capped: true when there may be more).
+//   ?q=<terms> — the client's WHOLE history, every whitespace-separated term
+//                matching réf / coloris / n° commande, accent- and case-
+//                insensitive (LIVA #1206: « rechercher par référence » to see
+//                the quantities and how often a ref comes back). Never capped:
+//                the largest client holds ~500 orders / ~550 lines.
+const HISTORIQUE_RECENT = 120
+/** Order ids per IN (...) batch on ligne_commande_client. */
+const HISTORIQUE_IN_CHUNK = 200
+
 clientsRouter.get('/:id/historique', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    // Terms without alphanumerics are dropped (a pasted « - »), as on the
+    // marchandise search: a punctuation-only query degrades to no search.
+    const terms = q ? searchFold(q).split(/\s+/).filter((t) => /[a-z0-9]/.test(t)) : []
+    const searching = terms.length > 0
     const heads = await query<Record<string, unknown>>(
-      `SELECT TOP 120 IDcommande_client, numero, date_commande FROM commande_client ` +
+      `SELECT ${searching ? '' : `TOP ${HISTORIQUE_RECENT} `}IDcommande_client, numero, date_commande FROM commande_client ` +
         `WHERE IDsociete = 1 AND IDcommande_ETM = 0 AND IDclient = ${id} ORDER BY IDcommande_client DESC`,
     )
     if (heads.length === 0) { res.json({ lignes: [], capped: false }); return }
     const cids = heads.map((h) => numOf(h.IDcommande_client))
     const headMap = new Map(heads.map((h) => [numOf(h.IDcommande_client), h]))
-    const lines = await query<Record<string, unknown>>(
-      `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDcolori, IDvariation1, IDvariation2, quantite, unite, prix ` +
-        `FROM ligne_commande_client WHERE IDcommande_client IN (${cids.join(',')}) ORDER BY IDcommande_client DESC, IDligne_commande_client`,
-    )
+    const lines: Record<string, unknown>[] = []
+    for (let i = 0; i < cids.length; i += HISTORIQUE_IN_CHUNK) {
+      const chunk = cids.slice(i, i + HISTORIQUE_IN_CHUNK)
+      lines.push(...await query<Record<string, unknown>>(
+        `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDcolori, IDvariation1, IDvariation2, quantite, unite, prix ` +
+          `FROM ligne_commande_client WHERE IDcommande_client IN (${chunk.join(',')}) ORDER BY IDcommande_client DESC, IDligne_commande_client`,
+      ))
+    }
     const finiMap = await mapRefFini(lines.filter((l) => numOf(l.type_kind) === 2).map((l) => numOf(l.IDreference)))
     const ecruMap = await mapSimpleRef('ref_ecru', 'IDref_ecru', lines.filter((l) => numOf(l.type_kind) === 1).map((l) => numOf(l.IDreference)))
     const colIds = lines.map((l) => numOf(l.IDcolori))
@@ -692,7 +711,15 @@ clientsRouter.get('/:id/historique', async (req: Request, res: Response) => {
         prix: numOf(l.prix),
       }
     })
-    res.json({ lignes, capped: heads.length >= 120 })
+    if (searching) {
+      const kept = lignes.filter((l) => {
+        const hay = searchFold(`${l.ref} ${l.coloris} ${l.numero}`)
+        return terms.every((t) => hay.includes(t))
+      })
+      res.json({ lignes: kept, capped: false })
+      return
+    }
+    res.json({ lignes, capped: heads.length >= HISTORIQUE_RECENT })
   } catch (err) {
     console.error('Error fetching client historique:', err)
     res.status(500).json({ error: 'Internal server error' })
