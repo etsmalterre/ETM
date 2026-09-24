@@ -21,6 +21,8 @@
 //   npx tsx src/scripts/legacy-activity-report.ts --send           # mail it + update the state file
 //   options: --date=YYYY-MM-DD  --to=a@b.fr  --preview=out.html  --samples=<local .tsv>
 // Cron (debian, 10.10.20.3): 30 19 * * * — see windev_migration/docs/plan.md.
+// Its real-time sibling, legacy-activity-alert.ts, mails each new legacy session as it
+// starts; both read the samples through lib/legacy-audit.ts.
 
 import dotenv from 'dotenv'
 const env = process.env.NODE_ENV || 'development'
@@ -32,6 +34,10 @@ import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
 import { createHfsqlClient } from '../lib/hfsql-auto.js'
 import {
+  appLabel, describeHost, fetchSamples as fetchDaySamples, hostKey, JNL_USERS_SQL, KNOWN_HOSTS,
+  parisDay, parseJnlUsers, SAMPLE_MINUTES, shortName, TZ, type JnlUser, type Sample,
+} from '../lib/legacy-audit.js'
+import {
   renderNotificationEmail,
   renderNotificationEmailPreview,
   type NotificationEmailContent,
@@ -39,40 +45,23 @@ import {
 } from '../lib/notification-email.js'
 import { sendMail } from '../lib/gmail.js'
 
-const SAMPLE_MINUTES = 2
-const HFSQL_HOST = '10.10.20.2'
 /** The PostgreSQL VM, where the nightly HFSQL -> PG rehearsal runs (pg_migrate.py). */
 const PG_HOST = '10.10.20.6'
 const DEFAULT_TO = 'vincent@etsmalterre.com'
 const STATE_FILE = resolve('data/legacy-audit-state.json')
 const RETIRED_AFTER_DAYS = 7
-const TZ = 'Europe/Paris'
-
-/** Servers and services, recognised by IP. `legacy: false` = expected
- *  (the new stack); true = a legacy WebDev/WinDev service that must be
- *  ported or stopped before the cutover. */
-const KNOWN_HOSTS: Record<string, { label: string; legacy: boolean }> = {
-  '10.10.20.3': { label: 'MPS API (nouvelles applications)', legacy: false },
-  '10.10.11.2': { label: 'Collecteur TRS (data-recorder)', legacy: true },
-  '10.10.54.2': { label: 'WebDev tricotbotapi (n8n)', legacy: true },
-  '10.10.55.2': { label: 'WebDev webservice (alpha.etsmalterre.com)', legacy: true },
-  '10.10.53.2': { label: 'Serveur GDS', legacy: true },
-  '10.10.80.2': { label: 'n8n', legacy: true },
-}
 
 // ── args ──────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
 const arg = (name: string) => args.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3)
 const SEND = args.includes('--send')
-const DAY = arg('date') ?? new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date())
+const DAY = arg('date') ?? parisDay()
 const TO = arg('to') ?? DEFAULT_TO
 if (!/^\d{4}-\d{2}-\d{2}$/.test(DAY)) throw new Error(`--date must be YYYY-MM-DD, got ${DAY}`)
 
 // ── types ─────────────────────────────────────────────────
 
-interface Sample { hhmm: string; ip: string; conns: number; name: string }
-interface JnlUser { User_ID: number; WorkStation_Name: string; Application: string; IPAddress64: string }
 interface HostDay {
   key: string
   label: string
@@ -89,28 +78,7 @@ interface State { hosts: Record<string, HostState>; lastReport?: string }
 
 // ── sources ───────────────────────────────────────────────
 
-function fetchSamples(): { samples: Sample[]; error: string | null } {
-  let raw = ''
-  try {
-    const local = arg('samples')
-    raw = local
-      ? readFileSync(local, 'utf8')
-      : execFileSync('ssh', [
-          '-i', join(homedir(), '.ssh', 'hfsql_audit'),
-          '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-          `debian@${HFSQL_HOST}`, DAY,
-        ], { encoding: 'utf8', timeout: 30_000 })
-  } catch (e) {
-    return { samples: [], error: (e as Error).message.split('\n')[0] }
-  }
-  const samples: Sample[] = []
-  for (const line of raw.split('\n')) {
-    const [hhmm, ip, conns, name] = line.split('\t')
-    if (!hhmm || !ip) continue
-    samples.push({ hhmm, ip, conns: Number(conns) || 0, name: (name ?? '').trim() })
-  }
-  return { samples, error: null }
-}
+const fetchSamples = () => fetchDaySamples(DAY, arg('samples'))
 
 interface BackupStatus {
   checked: string
@@ -205,14 +173,7 @@ async function fetchJournal(): Promise<{ users: JnlUser[]; writes: Map<number, {
   if (!cs) return { users: [], writes, error: 'HFSQL_CONNECTION_STRING absent' }
   const jnl = createHfsqlClient(cs.replace(/Database=[^;]*/i, 'Database=__jnl'))
   try {
-    const users = (await jnl.query<Record<string, unknown>>(
-      'SELECT User_ID, WorkStation_Name, Application, IPAddress64 FROM jnl_users',
-    )).map(r => ({
-      User_ID: Number(r.User_ID),
-      WorkStation_Name: String(r.WorkStation_Name ?? '').trim(),
-      Application: String(r.Application ?? '').trim(),
-      IPAddress64: String(r.IPAddress64 ?? '').trim(),
-    }))
+    const users = parseJnlUsers(await jnl.query<Record<string, unknown>>(JNL_USERS_SQL))
     const [from, to] = utcBounds(DAY)
     const ops = await jnl.query<Record<string, unknown>>(
       `SELECT User_ID, JNLFile_ID FROM jnl_operation ` +
@@ -247,40 +208,6 @@ async function fetchJournal(): Promise<{ users: JnlUser[]; writes: Map<number, {
 
 // ── classification ────────────────────────────────────────
 
-function appLabel(application: string): string {
-  const a = application.toUpperCase()
-  if (a.includes('BONNETIER')) return 'tablette Bonnetier (WinDev Mobile)'
-  if (a.includes('REGLEUR')) return 'tablette Régleur (WinDev Mobile)'
-  if (a.startsWith('MPS.EXE')) return 'MPS (WinDev)'
-  if (a.startsWith('WDTST')) return 'WinDev, mode test'
-  if (a.startsWith('CC3')) return 'Centre de contrôle HFSQL'
-  if (a.startsWith('HFSQL_BRIDGE')) return 'MPS API ou script'
-  if (a.startsWith('NODE')) return 'script Node'
-  if (a.startsWith('DATA_RECORDER')) return 'ancien collecteur TRS'
-  return application || 'application inconnue'
-}
-
-const shortName = (ws: string) => ws.split('.')[0].toUpperCase()
-
-/** Which applications this host is known for in jnl_users: by NetBIOS name
- *  when we have one (DHCP moves PCs around), else by the latest row for the IP. */
-function appsFor(ip: string, name: string, users: JnlUser[]): string[] {
-  if (name) {
-    const mine = users.filter(u => shortName(u.WorkStation_Name) === name.toUpperCase())
-    if (mine.length) return [...new Set(mine.map(u => appLabel(u.Application)))]
-  }
-  const byIp = users.filter(u => u.IPAddress64 === ip).sort((a, b) => b.User_ID - a.User_ID)
-  return byIp.length ? [appLabel(byIp[0].Application)] : []
-}
-
-/** A PC that doesn't answer NetBIOS: the workstation name of the latest
- *  jnl_users row for its IP. A guess only, DHCP may have moved it since. */
-function probableName(ip: string, users: JnlUser[]): string | null {
-  const u = users.filter(x => x.IPAddress64 === ip && !/^\d/.test(x.WorkStation_Name))
-    .sort((a, b) => b.User_ID - a.User_ID)[0]
-  return u ? shortName(u.WorkStation_Name) : null
-}
-
 function hostKeyOfUser(u: JnlUser): { key: string; ip: string } {
   const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(u.WorkStation_Name)
   return { key: isIp ? u.IPAddress64 : shortName(u.WorkStation_Name), ip: u.IPAddress64 }
@@ -292,13 +219,7 @@ function buildDay(samples: Sample[], users: JnlUser[], writes: Map<number, { n: 
     let h = hosts.get(key)
     if (!h) {
       const known = KNOWN_HOSTS[ip]
-      const tailscale = ip.startsWith('100.')
-      const apps = known ? [] : appsFor(ip, name, users)
-      const label = known?.label
-        ?? (name ? name.toUpperCase()
-          : tailscale ? `${ip} (Tailscale, poste distant)`
-          : apps.some(a => a.startsWith('tablette')) ? `tablette ${ip}`
-          : probableName(ip, users) ? `${ip} (probablement ${probableName(ip, users)})` : ip)
+      const { label, apps } = describeHost(ip, name, users)
       h = {
         key, label, apps,
         legacy: known ? known.legacy : true,
@@ -312,7 +233,7 @@ function buildDay(samples: Sample[], users: JnlUser[], writes: Map<number, { n: 
   const slots = new Map<string, Set<string>>()
   for (const s of samples) {
     if (s.ip === '-') continue
-    const key = s.name ? s.name.toUpperCase() : s.ip
+    const key = hostKey(s)
     const h = get(key, s.ip, s.name)
     const set = slots.get(key) ?? new Set<string>()
     set.add(s.hhmm)
