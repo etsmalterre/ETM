@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { selectMachines, machineLabel, resolveMachineLabels } from '../lib/production-trm.js'
 import { prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
+import { compositionEcart, planColorisComposition, totalOk } from '../lib/composition-coloris.js'
 
 export const referencesEcruRouter: RouterType = Router()
 
@@ -252,6 +253,34 @@ referencesEcruRouter.get('/lookups/refs-fil', async (_req: Request, res: Respons
   }
 })
 
+// GET /api/references-ecru/lookups/colori-fil?ref_fil=<id> — the yarn colours
+// of one fil, for a coloris composition line (LIVA #1205). All-ASCII table.
+referencesEcruRouter.get('/lookups/colori-fil', async (req: Request, res: Response) => {
+  try {
+    const refFil = parseInt(String(req.query.ref_fil ?? ''), 10)
+    if (!(refFil > 0)) { res.status(400).json({ error: 'ref_fil required' }); return }
+    const rows = await query<{ IDcolori_fil: number; reference: string | null }>(
+      `SELECT IDcolori_fil, reference FROM colori_fil WHERE IDref_fil = ${refFil} ORDER BY reference`,
+    )
+    const fixed = await fixEncoding(rows, 'colori_fil', 'IDcolori_fil', ['reference'])
+    // colori_fil reuses names across ids (nine « ecru » on one fil) — the
+    // stock on hand is what tells the right one apart. stock_fil has an
+    // accented `terminé`: name every column, never SELECT *.
+    const stockRows = await query<{ IDcolori_fil: number; kg: number | null }>(
+      `SELECT IDcolori_fil, SUM(stock) AS kg FROM stock_fil WHERE IDref_fil = ${refFil} AND stock > 0 GROUP BY IDcolori_fil`,
+    )
+    const kg = new Map(stockRows.map((s) => [Number(s.IDcolori_fil), Number(s.kg) || 0]))
+    res.json(fixed.map((r) => ({
+      IDcolori_fil: Number(r.IDcolori_fil) || 0,
+      reference: (r.reference ?? '').toString().trim(),
+      stock_kg: Math.round((kg.get(Number(r.IDcolori_fil)) ?? 0) * 10) / 10,
+    })))
+  } catch (err) {
+    console.error('Error fetching colori-fil lookup:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // GET /api/references-ecru/lookups/machines — knitting machines (Métier picker)
 referencesEcruRouter.get('/lookups/machines', async (_req: Request, res: Response) => {
   try {
@@ -437,7 +466,20 @@ referencesEcruRouter.get('/:id', async (req: Request, res: Response) => {
     // Per-coloris usage → drives the delete padlock. Same reader as the DELETE
     // guard, so the screen and the server always agree (LIVA #1203).
     const usage = await colorisUsage(coloris.map((c) => c.IDcolori_ecru))
-    const colorisOut = coloris.map((c) => ({ ...c, in_use: usage.get(c.IDcolori_ecru) ?? null }))
+    // Each coloris's own composition — the one orders, OFs and the sst
+    // affectation actually use (LIVA #1205) — with an écart flag against the
+    // reference's recipe and its own lock.
+    const colorisCompo = await loadColorisCompositions(id, coloris.map((c) => c.IDcolori_ecru))
+    const colorisOut = coloris.map((c) => {
+      const lines = colorisCompo.lines.get(c.IDcolori_ecru) ?? []
+      return {
+        ...c,
+        in_use: usage.get(c.IDcolori_ecru) ?? null,
+        composition: lines,
+        composition_ecart: compositionEcart(compFixed, lines),
+        composition_lock: colorisCompo.locks.get(c.IDcolori_ecru) ?? null,
+      }
+    })
 
     // Machine grid (ref_ecru_machine — all ASCII) + Métier name + computed compteurs.
     const machRows = await query<{
@@ -1269,6 +1311,173 @@ referencesEcruRouter.delete('/:id/coloris/:coloriId', async (req: Request, res: 
     res.json({ ok: true })
   } catch (err) {
     console.error('Error deleting colori_ecru:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ──────────────────────────────────────────────────────────
+// COLORIS COMPOSITION (composition_ecru rows keyed to a colori_ecru) — LIVA #1205
+// ──────────────────────────────────────────────────────────
+//
+// The recipe every yarn-picking reader prefers over the reference's own
+// (Stock de fil, « Créer un OF », the sst affectation, the PDF label). It names
+// yarn COLOURS, which the reference's rows do not. Its lock is per coloris and
+// narrower than the reference's: only what was knitted or launched in that
+// colour (rolls, OFs) freezes it — an order that has not started can still be
+// corrected, which is how « ech 55 » arrived with 029's yarns.
+
+type ColorisCompoLock = 'rolls' | 'ofs'
+
+const COLORIS_COMPO_LOCK_MSG: Record<ColorisCompoLock, string> = {
+  rolls: 'La composition de ce coloris ne peut plus être modifiée : des rouleaux ont été tricotés dans ce coloris.',
+  ofs: 'La composition de ce coloris ne peut plus être modifiée : un ordre de fabrication existe dans ce coloris.',
+}
+
+/** Per coloris: its composition lines (yarn + yarn colour names resolved) and
+ *  its lock. Flat reads, labels by IN lookups — all-ASCII tables. */
+async function loadColorisCompositions(refId: number, coloriIds: number[]) {
+  const lines = new Map<number, Array<{
+    IDcomposition_ecru: number; IDref_fil: number; ref_fil_reference: string | null
+    IDcolori_fil: number; colori_fil_reference: string | null; pourcentage: number | null
+  }>>()
+  const locks = new Map<number, ColorisCompoLock>()
+  const ids = coloriIds.filter((n) => n > 0)
+  if (ids.length === 0) return { lines, locks }
+  const inList = ids.join(',')
+
+  const rows = await query<{ IDcomposition_ecru: number; IDcolori_ecru: number; IDref_fil: number; IDcolori_fil: number; pourcentage: number | null }>(
+    `SELECT IDcomposition_ecru, IDcolori_ecru, IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
+     WHERE IDref_ecru = ${refId} AND IDcolori_ecru IN (${inList}) ORDER BY IDcomposition_ecru`,
+  )
+  const filIds = Array.from(new Set(rows.map((r) => Number(r.IDref_fil)).filter((n) => n > 0)))
+  const cfIds = Array.from(new Set(rows.map((r) => Number(r.IDcolori_fil)).filter((n) => n > 0)))
+  const filName = new Map<number, string | null>()
+  if (filIds.length > 0) {
+    const f = await query<{ IDref_fil: number; reference: string | null }>(
+      `SELECT IDref_fil, reference FROM ref_fil WHERE IDref_fil IN (${filIds.join(',')})`,
+    )
+    for (const r of await batchRepair(f.map((x) => ({ IDref_fil: Number(x.IDref_fil) || 0, reference: x.reference ?? null })), 'ref_fil', 'IDref_fil', ['reference'])) {
+      filName.set(r.IDref_fil, r.reference ? String(r.reference).trim() : null)
+    }
+  }
+  const cfName = new Map<number, string | null>()
+  if (cfIds.length > 0) {
+    const c = await query<{ IDcolori_fil: number; reference: string | null }>(
+      `SELECT IDcolori_fil, reference FROM colori_fil WHERE IDcolori_fil IN (${cfIds.join(',')})`,
+    )
+    for (const r of await fixEncoding(c, 'colori_fil', 'IDcolori_fil', ['reference'])) {
+      cfName.set(Number(r.IDcolori_fil), r.reference ? String(r.reference).trim() : null)
+    }
+  }
+  for (const r of rows) {
+    const k = Number(r.IDcolori_ecru)
+    const list = lines.get(k) ?? []
+    list.push({
+      IDcomposition_ecru: Number(r.IDcomposition_ecru) || 0,
+      IDref_fil: Number(r.IDref_fil) || 0,
+      ref_fil_reference: filName.get(Number(r.IDref_fil)) ?? null,
+      IDcolori_fil: Number(r.IDcolori_fil) || 0,
+      colori_fil_reference: cfName.get(Number(r.IDcolori_fil)) ?? null,
+      pourcentage: toNumOrNull(r.pourcentage),
+    })
+    lines.set(k, list)
+  }
+
+  const hits = async (table: string): Promise<Set<number>> => {
+    try {
+      const h = await query<{ idc: number; n: number }>(
+        `SELECT IDcolori_ecru AS idc, COUNT(*) AS n FROM ${table} WHERE IDcolori_ecru IN (${inList}) GROUP BY IDcolori_ecru`,
+      )
+      return new Set(h.filter((x) => Number(x.n) > 0).map((x) => Number(x.idc)))
+    } catch { return new Set() } // stock_ecru unreachable on some dev envs
+  }
+  const [rolls, ofs] = await Promise.all([hits('stock_ecru'), hits('ordre_fabrication')])
+  for (const id of ids) {
+    if (rolls.has(id)) locks.set(id, 'rolls')
+    else if (ofs.has(id)) locks.set(id, 'ofs')
+  }
+  return { lines, locks }
+}
+
+const colorisCompositionBody = z.object({
+  lines: z.array(z.object({
+    IDref_fil: z.number().int().positive(),
+    IDcolori_fil: z.number().int().positive(),
+    pourcentage: z.number().gt(0).max(100),
+  })).max(20),
+}).strict()
+
+// PUT /api/references-ecru/:id/coloris/:coloriId/composition — replace the
+// coloris's recipe. Empty = the coloris follows the reference's recipe.
+// Row ids are kept in order (planColorisComposition) so a liage chute naming
+// one keeps its position; a surplus row a chute names is refused.
+referencesEcruRouter.put('/:id/coloris/:coloriId/composition', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const coloriId = parseInt(req.params.coloriId, 10)
+    if (isNaN(id) || isNaN(coloriId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = colorisCompositionBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const wanted = parsed.data.lines
+    if (!totalOk(wanted)) { res.status(400).json({ error: 'La composition doit totaliser 100 %.' }); return }
+
+    const scope = await query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM colori_ecru WHERE IDcolori_ecru = ${coloriId} AND IDref_ecru = ${id}`,
+    )
+    if (Number(scope[0]?.n ?? 0) === 0) { res.status(404).json({ error: 'Coloris not found for this reference' }); return }
+    const lock = (await loadColorisCompositions(id, [coloriId])).locks.get(coloriId)
+    if (lock) { res.status(409).json({ error: COLORIS_COMPO_LOCK_MSG[lock], lock }); return }
+
+    // Every yarn colour must belong to its yarn — a lot is matched on the pair.
+    const cfIds = Array.from(new Set(wanted.map((l) => l.IDcolori_fil)))
+    if (cfIds.length > 0) {
+      const cf = await query<{ IDcolori_fil: number; IDref_fil: number }>(
+        `SELECT IDcolori_fil, IDref_fil FROM colori_fil WHERE IDcolori_fil IN (${cfIds.join(',')})`,
+      )
+      const owner = new Map(cf.map((c) => [Number(c.IDcolori_fil), Number(c.IDref_fil)]))
+      if (wanted.some((l) => owner.get(l.IDcolori_fil) !== l.IDref_fil)) {
+        res.status(400).json({ error: 'Un coloris de fil ne correspond pas à son fil.' })
+        return
+      }
+    }
+
+    const existing = await query<{ IDcomposition_ecru: number; IDref_fil: number; IDcolori_fil: number; pourcentage: number | null }>(
+      `SELECT IDcomposition_ecru, IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
+       WHERE IDref_ecru = ${id} AND IDcolori_ecru = ${coloriId}`,
+    )
+    const plan = planColorisComposition(
+      existing.map((e) => ({ ...e, IDcomposition_ecru: Number(e.IDcomposition_ecru) || 0 })),
+      wanted,
+    )
+    const deletes = plan.flatMap((w) => (w.kind === 'delete' ? [w.IDcomposition_ecru] : []))
+    if (deletes.length > 0) {
+      const named = await query<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM chute_liage
+         WHERE IDcomposition_ecru1 IN (${deletes.join(',')}) OR IDcomposition_ecru2 IN (${deletes.join(',')})`,
+      )
+      if (Number(named[0]?.n ?? 0) > 0) {
+        res.status(409).json({ error: 'Un fil retiré est utilisé par le schéma de liage : retirez-le du schéma d’abord.' })
+        return
+      }
+    }
+    for (const w of plan) {
+      if (w.kind === 'update') {
+        await query(
+          `UPDATE composition_ecru SET IDref_fil = ${w.line.IDref_fil}, IDcolori_fil = ${w.line.IDcolori_fil}, pourcentage = ${w.line.pourcentage}
+           WHERE IDcomposition_ecru = ${w.IDcomposition_ecru}`,
+        )
+      } else if (w.kind === 'insert') {
+        await query(
+          `INSERT INTO composition_ecru (IDref_ecru, IDcolori_ecru, IDref_fil, IDcolori_fil, pourcentage, commentaire)
+           VALUES (${id}, ${coloriId}, ${w.line.IDref_fil}, ${w.line.IDcolori_fil}, ${w.line.pourcentage}, '')`,
+        )
+      } else {
+        await query(`DELETE FROM composition_ecru WHERE IDcomposition_ecru = ${w.IDcomposition_ecru}`)
+      }
+    }
+    res.json({ ok: true, writes: plan.length })
+  } catch (err) {
+    console.error('Error saving coloris composition:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

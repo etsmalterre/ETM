@@ -90,6 +90,27 @@ interface ColorisRow {
   suivis: number
   /** What still points at this coloris (the server refuses the delete). */
   in_use: 'rolls' | 'orders' | 'ofs' | 'ref_fini' | 'chute' | null
+  /** The coloris's own recipe — what orders, OFs and the sst affectation
+   *  use, ahead of the reference's (LIVA #1205). Empty = follows the reference. */
+  composition: ColorisCompoLine[]
+  /** Other yarns or shares than the reference's composition. */
+  composition_ecart: boolean
+  /** Knitted (rolls) or launched (OFs) in this coloris: recipe frozen. */
+  composition_lock: 'rolls' | 'ofs' | null
+}
+
+interface ColorisCompoLine {
+  IDcomposition_ecru: number
+  IDref_fil: number
+  ref_fil_reference: string | null
+  IDcolori_fil: number
+  colori_fil_reference: string | null
+  pourcentage: number | null
+}
+
+const COLORIS_COMPO_LOCK_TITLE: Record<NonNullable<ColorisRow['composition_lock']>, string> = {
+  rolls: 'Des rouleaux ont été tricotés dans ce coloris — composition figée',
+  ofs: 'Un ordre de fabrication existe dans ce coloris — composition figée',
 }
 
 const COLORIS_LOCK_TITLE: Record<NonNullable<ColorisRow['in_use']>, string> = {
@@ -1415,7 +1436,7 @@ function DetailMain({
     <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
       <IdentificationCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} clients={clients} contextures={contextures} />
       <CompositionCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
-      <ColorisCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+      <ColorisCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
       <TechnicalTabs detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} machinesLk={machinesLk} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
     </div>
   )
@@ -1831,16 +1852,20 @@ function ColorisCard({
   detail,
   isEditing,
   refId,
+  refsFil,
   onMutationSuccess,
   reportDirty,
 }: {
   detail: RefEcruDetail
   isEditing: boolean
   refId: number
+  refsFil: RefFilLookup[]
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [compoTarget, setCompoTarget] = useState<ColorisRow | null>(null)
+  const ecartCount = detail.coloris.filter((c) => c.composition_ecart).length
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState<ColorisForm>({ reference: '', commentaire: '', suivis: false })
@@ -1907,7 +1932,17 @@ function ColorisCard({
               Coût/kg : {fmtNum(detail.cout_kg, 2)} €
             </Badge>
           )}
-          <Badge variant="secondary" className={cn('text-xs', detail.cout_kg == null && 'ml-auto')}>{detail.coloris.length}</Badge>
+          {ecartCount > 0 && (
+            <Badge
+              variant="outline"
+              className={cn('text-[11px] py-0 px-2 gap-1 bg-amber-500/15 text-amber-800 border-amber-500/30', detail.cout_kg == null && 'ml-auto')}
+              title="La composition de ces coloris diffère de celle de la référence — c'est elle que suivent les commandes et les OF"
+            >
+              <AlertCircle className="h-3 w-3" />
+              {ecartCount} ≠ composition
+            </Badge>
+          )}
+          <Badge variant="secondary" className={cn('text-xs', detail.cout_kg == null && ecartCount === 0 && 'ml-auto')}>{detail.coloris.length}</Badge>
           <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
         </CardHeader>
         {open && (
@@ -1931,12 +1966,35 @@ function ColorisCard({
                             <Palette className="h-3.5 w-3.5 text-amber-600" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{c.reference ?? '—'}</p>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <p className="text-sm font-medium truncate">{c.reference ?? '—'}</p>
+                              {c.composition_ecart && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] py-0 px-1.5 flex-shrink-0 bg-amber-500/15 text-amber-800 border-amber-500/30"
+                                  title="Ce coloris ne suit pas la composition de la référence — c'est sa composition que suivent les commandes et les OF"
+                                >
+                                  ≠ composition
+                                </Badge>
+                              )}
+                            </div>
                             {c.commentaire?.trim() && <p className="text-[11px] text-muted-foreground truncate">{c.commentaire}</p>}
+                            <ColorisCompoSummary lines={c.composition} />
                           </div>
                         </div>
                         {isEditing && (
                           <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button
+                              onClick={() => { if (!c.composition_lock) setCompoTarget(c) }}
+                              aria-disabled={!!c.composition_lock}
+                              className={cn(
+                                'p-0.5 transition-colors',
+                                c.composition_lock ? 'text-muted-foreground/40 cursor-not-allowed' : 'text-muted-foreground hover:text-foreground',
+                              )}
+                              title={c.composition_lock ? COLORIS_COMPO_LOCK_TITLE[c.composition_lock] : 'Composition du coloris'}
+                            >
+                              <FlaskConical className="h-3.5 w-3.5" />
+                            </button>
                             <button onClick={() => startEditRow(c)} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors" title="Modifier">
                               <Pencil className="h-3.5 w-3.5" />
                             </button>
@@ -1973,7 +2031,268 @@ function ColorisCard({
         onCancel={() => { setDeleteTarget(null); setErrorMsg(null) }}
         onConfirm={() => { if (deleteTarget) deleteMut.mutate(deleteTarget.IDcolori_ecru) }}
       />
+      {compoTarget && (
+        <ColorisCompositionDialog
+          refId={refId}
+          coloris={compoTarget}
+          base={detail.composition_lines}
+          refsFil={refsFil}
+          onClose={() => setCompoTarget(null)}
+          onSaved={() => { onMutationSuccess(); setCompoTarget(null) }}
+          reportDirty={reportDirty}
+        />
+      )}
     </>
+  )
+}
+
+/** One line under the coloris name: its own recipe, or that it follows the
+ *  reference's. */
+function ColorisCompoSummary({ lines }: { lines: ColorisCompoLine[] }) {
+  if (lines.length === 0) {
+    return <p className="text-[11px] text-muted-foreground italic">Suit la composition de la référence</p>
+  }
+  const text = lines
+    .map((l) => `${fmtPct(l.pourcentage)} ${l.ref_fil_reference ?? '—'}${l.colori_fil_reference ? ` · ${l.colori_fil_reference}` : ''}`)
+    .join('  —  ')
+  return <p className="text-[11px] text-muted-foreground truncate tabular-nums" title={text}>{text}</p>
+}
+
+// ── Coloris composition dialog (LIVA #1205) ────────────
+//
+// The recipe of ONE coloris, yarn colours included — the one orders, OFs and
+// the sst affectation read ahead of the reference's. Saved as a whole
+// (PUT …/coloris/:id/composition); an empty list hands the coloris back to
+// the reference's composition.
+
+interface ColorisFilLookup { IDcolori_fil: number; reference: string; stock_kg: number }
+interface CompoDraftLine { key: number; IDref_fil: number; IDcolori_fil: number; pourcentage: string }
+
+function useColorisFil(refFil: number) {
+  return useQuery<ColorisFilLookup[]>({
+    queryKey: ['references-ecru', 'lookups', 'colori-fil', refFil],
+    queryFn: () => apiFetch(`/references-ecru/lookups/colori-fil?ref_fil=${refFil}`),
+    enabled: refFil > 0,
+    staleTime: 60_000,
+  })
+}
+
+function ColorisCompositionDialog({
+  refId,
+  coloris,
+  base,
+  refsFil,
+  onClose,
+  onSaved,
+  reportDirty,
+}: {
+  refId: number
+  coloris: ColorisRow
+  base: CompositionRow[]
+  refsFil: RefFilLookup[]
+  onClose: () => void
+  onSaved: () => void
+  reportDirty: (key: string, dirty: boolean) => void
+}) {
+  const keyRef = useRef(0)
+  const nextKey = () => ++keyRef.current
+  const [lines, setLines] = useState<CompoDraftLine[]>(() =>
+    coloris.composition.map((l) => ({ key: nextKey(), IDref_fil: l.IDref_fil, IDcolori_fil: l.IDcolori_fil, pourcentage: String(l.pourcentage ?? '') })),
+  )
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+
+  const reportDirtyRef = useRef(reportDirty)
+  useEffect(() => { reportDirtyRef.current = reportDirty })
+  useEffect(() => {
+    reportDirtyRef.current('ecru-coloris-composition', true)
+    return () => { reportDirtyRef.current('ecru-coloris-composition', false) }
+  }, [])
+
+  const total = lines.reduce((s, l) => s + (Number(l.pourcentage) || 0), 0)
+  const totalOk = lines.length === 0 || Math.abs(total - 100) < 0.01
+  const complete = lines.every((l) => l.IDref_fil > 0 && l.IDcolori_fil > 0 && Number(l.pourcentage) > 0)
+  const canSave = totalOk && complete
+
+  const saveMut = useMutation({
+    mutationFn: () => apiFetch(`/references-ecru/${refId}/coloris/${coloris.IDcolori_ecru}/composition`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        lines: lines.map((l) => ({ IDref_fil: l.IDref_fil, IDcolori_fil: l.IDcolori_fil, pourcentage: Number(l.pourcentage) })),
+      }),
+    }),
+    onSuccess: onSaved,
+    onError: (err: Error & { body?: { error?: string } }) =>
+      setErrorMsg(err.body?.error ?? "L'enregistrement a échoué. Veuillez réessayer."),
+  })
+
+  // « Reprendre la composition de la référence »: its yarns and shares, and
+  // for each yarn the colour carrying this coloris's name when exactly one
+  // does (the one with stock wins a tie) — otherwise left to choose.
+  const [seeding, setSeeding] = useState(false)
+  const seedFromBase = async () => {
+    setSeeding(true)
+    setErrorMsg(null)
+    try {
+      const wantedName = (coloris.reference ?? '').trim().toLowerCase()
+      const next: CompoDraftLine[] = []
+      for (const b of base) {
+        const options = await queryClient.fetchQuery<ColorisFilLookup[]>({
+          queryKey: ['references-ecru', 'lookups', 'colori-fil', b.IDref_fil],
+          queryFn: () => apiFetch(`/references-ecru/lookups/colori-fil?ref_fil=${b.IDref_fil}`),
+          staleTime: 60_000,
+        })
+        const named = options.filter((o) => o.reference.trim().toLowerCase() === wantedName)
+        const stocked = named.filter((o) => o.stock_kg > 0)
+        const pick = named.length === 1 ? named[0] : stocked.length === 1 ? stocked[0] : null
+        next.push({ key: nextKey(), IDref_fil: b.IDref_fil, IDcolori_fil: pick?.IDcolori_fil ?? 0, pourcentage: String(b.pourcentage ?? '') })
+      }
+      setLines(next)
+    } catch {
+      setErrorMsg('Impossible de lire les coloris des fils. Veuillez réessayer.')
+    } finally {
+      setSeeding(false)
+    }
+  }
+
+  const update = (key: number, patch: Partial<CompoDraftLine>) =>
+    setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
+  const addLine = () => setLines((ls) => [...ls, { key: nextKey(), IDref_fil: 0, IDcolori_fil: 0, pourcentage: '' }])
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-3xl" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FlaskConical className="h-5 w-5 text-accent" />
+            Composition du coloris « {coloris.reference ?? '—'} »
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <p className="text-xs text-muted-foreground">
+            C'est cette composition, coloris des fils compris, que suivent les commandes, le stock de fil proposé et les ordres de fabrication de ce coloris.
+            Sans ligne, le coloris suit la composition de la référence.
+          </p>
+          {base.length > 0 && (
+            <Button variant="outline" size="sm" onClick={seedFromBase} disabled={seeding}>
+              {seeding ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Copy className="h-3.5 w-3.5 mr-1.5" />}
+              Reprendre la composition de la référence
+            </Button>
+          )}
+          {lines.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+              <FlaskConical className="h-10 w-10 mb-2 opacity-40" />
+              <p className="text-sm">Suit la composition de la référence</p>
+              <Button variant="outline" size="sm" className="mt-3" onClick={addLine}>
+                <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un fil
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="hidden sm:grid grid-cols-[minmax(0,5fr)_minmax(0,4fr)_5rem_1.5rem] gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <span>Fil</span><span>Coloris du fil</span><span className="text-right">%</span><span />
+              </div>
+              {lines.map((l) => (
+                <ColorisCompoLineRow
+                  key={l.key}
+                  line={l}
+                  refsFil={refsFil}
+                  onChange={(patch) => update(l.key, patch)}
+                  onRemove={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
+                />
+              ))}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={addLine}
+                className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
+              >
+                <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un fil
+              </Button>
+            </div>
+          )}
+        </div>
+        {errorMsg && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+            <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+        <DialogFooter className="mt-4 sm:items-center">
+          {lines.length > 0 && (
+            <Badge
+              variant="secondary"
+              className={cn('text-xs tabular-nums sm:mr-auto self-start sm:self-auto', !totalOk && 'bg-destructive/10 text-destructive ring-1 ring-destructive/20')}
+              title={totalOk ? 'Total composition' : 'La composition doit totaliser 100 %'}
+            >
+              Total {fmtNum(Math.round(total * 100) / 100, Number.isInteger(total) ? 0 : 2)}%
+            </Badge>
+          )}
+          <Button variant="outline" onClick={onClose}>Annuler</Button>
+          <Button onClick={() => { setErrorMsg(null); saveMut.mutate() }} disabled={!canSave || saveMut.isPending}>
+            {saveMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+            Enregistrer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ColorisCompoLineRow({
+  line,
+  refsFil,
+  onChange,
+  onRemove,
+}: {
+  line: CompoDraftLine
+  refsFil: RefFilLookup[]
+  onChange: (patch: Partial<CompoDraftLine>) => void
+  onRemove: () => void
+}) {
+  const { data: colorisFil, isLoading } = useColorisFil(line.IDref_fil)
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_5rem_1.5rem] sm:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_5rem_1.5rem] gap-2 items-center rounded-lg border border-border/60 bg-zinc-100/80 p-2">
+      <div className="min-w-0 col-span-2 sm:col-span-1">
+        <SearchableCombobox<RefFilLookup>
+          options={refsFil}
+          value={line.IDref_fil}
+          onChange={(id) => onChange({ IDref_fil: id, IDcolori_fil: 0 })}
+          getId={(r) => r.IDref_fil}
+          getPrimary={(r) => r.reference ?? `#${r.IDref_fil}`}
+          placeholder="Rechercher un fil"
+        />
+      </div>
+      <button onClick={onRemove} className="sm:hidden p-0.5 text-destructive hover:text-destructive transition-colors justify-self-center" title="Retirer">
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+      <div className="min-w-0">
+        <SearchableCombobox<ColorisFilLookup>
+          options={colorisFil ?? []}
+          value={line.IDcolori_fil}
+          onChange={(id) => onChange({ IDcolori_fil: id })}
+          getId={(c) => c.IDcolori_fil}
+          getPrimary={(c) => c.reference || `#${c.IDcolori_fil}`}
+          getSecondary={(c) => (c.stock_kg > 0 ? `${fmtNum(c.stock_kg, 1)} kg en stock` : 'pas de stock')}
+          placeholder={line.IDref_fil > 0 ? 'Choisir le coloris' : "Choisir d'abord le fil"}
+          loading={isLoading && line.IDref_fil > 0}
+          disabled={line.IDref_fil <= 0}
+        />
+      </div>
+      <input
+        type="number"
+        step="0.1"
+        min="0"
+        max="100"
+        value={line.pourcentage}
+        onChange={(e) => onChange({ pourcentage: e.target.value })}
+        className={cn(inputClass, 'text-right tabular-nums')}
+        aria-label="Pourcentage"
+      />
+      <button onClick={onRemove} className="hidden sm:block p-0.5 text-destructive hover:text-destructive transition-colors justify-self-center" title="Retirer">
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
   )
 }
 
