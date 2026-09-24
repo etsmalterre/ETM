@@ -321,9 +321,14 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
               <thead className="bg-zinc-200/60 border-b border-border/60">
                 <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
                   <th className="w-8 px-2 py-2">
-                    <input type="checkbox" checked={allSelected} title="Tout cocher"
-                      onChange={() => { setSelected(allSelected ? new Set() : new Set(rolls.map((r) => r.id))); lastSelRef.current = allSelected ? null : rolls[rolls.length - 1].id }}
-                      className="h-4 w-4 rounded border-input text-accent cursor-pointer" />
+                    <button type="button" role="checkbox" aria-checked={allSelected} title={allSelected ? 'Tout décocher' : 'Tout cocher'}
+                      onClick={() => { setSelected(allSelected ? new Set() : new Set(rolls.map((r) => r.id))); lastSelRef.current = allSelected ? null : rolls[rolls.length - 1].id }}
+                      className={cn(
+                        'h-4 w-4 rounded border inline-flex items-center justify-center align-middle transition-colors cursor-pointer',
+                        allSelected ? 'bg-accent border-accent text-accent-foreground' : 'border-input bg-background hover:border-accent/60',
+                      )}>
+                      {allSelected && <Check className="h-3 w-3" strokeWidth={3} />}
+                    </button>
                   </th>
                   <th className="px-2 py-2 text-left font-semibold">Pièce</th>
                   <th className="px-1 py-2 text-right font-semibold" title="Métrage connu d'ETM (bon de livraison MATEL)">ETM</th>
@@ -343,10 +348,18 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
                   return (
                     <tr key={r.id} className={cn('border-b border-border/40 last:border-b-0', isSel ? 'bg-accent/[0.06]' : '')}>
                       <td className="px-2 py-1 text-center select-none">
-                        <input type="checkbox" checked={isSel}
-                          onClick={(e) => { e.preventDefault(); toggle(r.id, e.shiftKey) }}
-                          onChange={() => {}}
-                          className="h-4 w-4 rounded border-input text-accent cursor-pointer" />
+                        {/* A button, not a native checkbox: preventDefault on a controlled
+                            checkbox's click makes the browser revert the tick after React
+                            sets it, so rolls could not be checked (LIVA #1207). */}
+                        <button type="button" role="checkbox" aria-checked={isSel}
+                          onClick={(e) => toggle(r.id, e.shiftKey)}
+                          title={isSel ? 'Retirer de la sélection' : 'Sélectionner'}
+                          className={cn(
+                            'h-4 w-4 rounded border inline-flex items-center justify-center align-middle transition-colors cursor-pointer',
+                            isSel ? 'bg-accent border-accent text-accent-foreground' : 'border-input bg-background hover:border-accent/60',
+                          )}>
+                          {isSel && <Check className="h-3 w-3" strokeWidth={3} />}
+                        </button>
                       </td>
                       <td className="px-2 py-1 whitespace-nowrap leading-tight">
                         <span className="font-medium tabular-nums">{r.numero}</span>

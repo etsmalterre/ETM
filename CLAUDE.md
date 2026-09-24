@@ -178,6 +178,7 @@ One or two lines per rule. **The incident, the measurements, the canonical file 
 Full text and incident history: `claude_doc/frontend_rules.md`.
 
 - **Hooks before early returns** — violating this crashes production builds (React #310).
+- ⚠️ **Never `preventDefault()` on a controlled checkbox click** — the browser reverts the tick after React sets it (#1207); Shift+click lists use a button-as-checkbox.
 - **`useElementSize` returns a CALLBACK ref, deliberately** — a `useRef` + effect never attaches on a conditionally rendered target. Don't simplify it back.
 - ⚠️ **A responsive table/card pair mounts ONE branch** (`useMediaQuery(MD_UP)` gating both row maps, `hooks/useMediaQuery.ts`): `hidden md:flex` hides pixels, not work — 762 rows rendered twice = 34k DOM nodes (#1156 audit, `mps_designer §40.2`).
 - **A guard must never decide while its permission fetch is in flight**: render nothing until `usePermissions().isLoading` is false (bit `AppShell` and the admin guard).

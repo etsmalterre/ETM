@@ -9,6 +9,9 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-09-24 — feat/simone-1207
+Simone Pérèle labels, second pass (LIVA #1207). Clients › Commandes › Étiquettes tab: the roll checkboxes could not be ticked — the row checkbox called preventDefault in onClick (to read e.shiftKey) on a controlled input, so the browser reverted each tick after React set it. Row and « Tout cocher » boxes are now button-as-checkbox (role=checkbox, Check icon), §44 Shift+click range kept. Prod data (not code): 16 code_sp EANs missing a 0 fixed directly in HFSQL; 5 clashing codes + GS1 prefix ownership await Simone Pérèle's answer (screen_notes § 3). Rule added: never preventDefault a controlled checkbox click (CLAUDE.md + frontend_rules.md).
+
 ## 2026-09-24 — feat/historique-cmd-1206
 Clients › Gestion, « Historique des commandes » tab (LIVA #1206, Isabelle): search bar pinned above the table (now scrolling internally, sticky header). `GET /clients/:id/historique?q=` searches the client's WHOLE history (réf / coloris / n° commande, accent/case-insensitive, all terms required — same fold as Marchandise #1085), uncapped; without `q` the 120 most recent orders as before. Order lines read in IN-chunks of 200 order ids. While searching, a recap under the table: « N lignes sur M commandes · quantities per unit » (Ml / Kg never summed). Largest dev client (252, ~490 orders) answers in ~0.3 s. Note in `screen_notes.md` § Clients.
 
