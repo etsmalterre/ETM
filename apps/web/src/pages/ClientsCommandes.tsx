@@ -48,6 +48,7 @@ import {
   Boxes,
   FileSignature,
   Percent,
+  Barcode,
 } from 'lucide-react'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -68,6 +69,7 @@ import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { EtatPill } from '@/lib/etat-stock-fini'
+import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -1319,6 +1321,7 @@ function LignesSection({
                 commandeId={commande.IDcommande_client}
                 ligne={drawerLigne}
                 clientNom={commande.client_nom}
+                clientId={commande.IDclient}
                 soldee={Number(commande.est_soldee) === 1}
                 onClose={() => onOpenAffectation(null)}
                 onSuccess={onMutationSuccess}
@@ -1920,11 +1923,13 @@ function LineCard({
 // ── Affectation drawer (reserve écru/fini rolls) ────────
 
 function AffectationDrawer({
-  commandeId, ligne, clientNom, soldee = false, onClose, onSuccess,
+  commandeId, ligne, clientNom, clientId = 0, soldee = false, onClose, onSuccess,
 }: {
   commandeId: number
   ligne: LigneCommande
   clientNom?: string
+  /** Drives the « Étiquettes » tab (clients whose roll labels are switched on). */
+  clientId?: number
   /** Commande terminée (est_soldee) → the Affectation tab goes read-only:
    *  no available pool, no affect/remove/ship, no observation edits. */
   soldee?: boolean
@@ -1995,11 +2000,19 @@ function AffectationDrawer({
     enabled: supplyEnabled,
   })
 
+  // Clients whose rolls get Simone Pérèle-style GS1 labels (LIVA #1200).
+  const { data: etiquetteClients } = useQuery<{ clients: number[] }>({
+    queryKey: ['etiquettes-sp-clients'],
+    queryFn: () => apiFetch('/etiquettes-sp/clients'),
+    staleTime: 5 * 60_000,
+  })
+
   const tabs: { key: SupplyTab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'affectation', label: 'Affectation', icon: Package },
     ...(ligne.type === 2 ? [{ key: 'enno' as const, label: 'Ennoblissement', icon: Droplets }] : []),
     ...(supplyEnabled ? [{ key: 'trico' as const, label: 'Tricotage', icon: KnitIcon }] : []),
     ...(supplyEnabled ? [{ key: 'exped' as const, label: 'Expédition', icon: Truck }] : []),
+    ...(ligne.type === 2 && etiquetteClients?.clients.includes(clientId) ? [{ key: 'etiq' as const, label: 'Étiquettes', icon: Barcode }] : []),
   ]
   const [tab, setTab] = useState<SupplyTab>('affectation')
   // Ennoblissement row clicked → open the roll-affectation modal for that dyer order.
@@ -2166,8 +2179,10 @@ function AffectationDrawer({
   return (
     <>
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-zinc-100/80">
-      {/* Tab strip + close (mps_designer §31.4) */}
+      {/* Tab strip + close (mps_designer §31.4). The tabs scroll sideways when
+          the center panel is narrow; the close button stays pinned. */}
       <div className="flex-shrink-0 flex items-center border-b bg-zinc-200/50 p-1 gap-1">
+        <div className="min-w-0 flex-1 flex items-center gap-1 overflow-x-auto scrollbar-transparent">
         {tabs.map((t) => {
           const Icon = t.icon
           const active = tab === t.key
@@ -2182,11 +2197,12 @@ function AffectationDrawer({
               )}
             >
               <Icon className="h-3.5 w-3.5" />
-              <span>{t.label}</span>
+              <span className="whitespace-nowrap">{t.label}</span>
             </button>
           )
         })}
-        <div className="ml-auto flex items-center pr-1">
+        </div>
+        <div className="ml-auto flex-shrink-0 flex items-center pr-1">
           <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7" title="Fermer">
             <X className="h-3.5 w-3.5" />
           </Button>
@@ -2404,6 +2420,8 @@ function AffectationDrawer({
           kind={kind === 'fini' ? 'fini' : 'ecru'}
         />
       )}
+
+      {tab === 'etiq' && <EtiquettesSpTab ligneId={ligne.IDligne_commande_client} />}
     </div>
     {editObsRoll && (kind === 'ecru' || kind === 'fini') && (
       <EditRollObsDialog
@@ -2509,7 +2527,7 @@ function AffectationDrawer({
   )
 }
 
-type SupplyTab = 'affectation' | 'enno' | 'trico' | 'exped'
+type SupplyTab = 'affectation' | 'enno' | 'trico' | 'exped' | 'etiq'
 
 function fmtSupplyDate(d: string | null): string {
   return d && d.length === 8 && d !== '00000000' ? formatHfsqlDate(d) : '—'

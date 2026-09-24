@@ -38,7 +38,9 @@ import {
   ArrowUp,
   ArrowDown,
   Link2,
+  Barcode,
 } from 'lucide-react'
+import { CodesSpTab, EtiquettesSwitch, useEtiquetteClients } from '@/components/etiquettes/CodesSpTab'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -490,7 +492,7 @@ export function ClientsGestion() {
         detail={<DetailMain client={detail ?? null} isLoading={detailLoading && selectedId !== null}
           hasSelection={selectedId !== null} isEditing={isEditing} canManageTarifs={canManageTarifs}
           canManageRefs={canManageRefs} canManageColoris={canManageColoris}
-          canRetourMarchandise={canRetourMarchandise} />}
+          canRetourMarchandise={canRetourMarchandise} canEditInfo={canEditInfo} />}
         sidebar={selectedId !== null ? <DetailSidebar client={detail ?? null} isLoading={detailLoading}
           isEditing={isEditing} clientId={selectedId} onMutationSuccess={invalidateAll}
           onSubFormsDirtyChange={setSubFormsDirty} draft={draft} onPatch={patch}
@@ -1097,14 +1099,20 @@ const MAIN_TABS = [
   { key: 'references', label: 'Références', icon: Tag },
   { key: 'historique', label: 'Historique des commandes', icon: History },
   { key: 'marchandise', label: 'Marchandise expédiée', icon: Truck },
+  // Only on clients whose roll labels are switched on (LIVA #1200).
+  { key: 'etiquettes', label: 'Étiquettes', icon: Barcode },
 ] as const
 type MainTab = (typeof MAIN_TABS)[number]['key']
 
-function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarifs, canManageRefs, canManageColoris, canRetourMarchandise }: {
+function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarifs, canManageRefs, canManageColoris, canRetourMarchandise, canEditInfo }: {
   client: ClientDetail | null; isLoading: boolean; hasSelection: boolean; isEditing: boolean; canManageTarifs: boolean
-  canManageRefs: boolean; canManageColoris: boolean; canRetourMarchandise: boolean
+  canManageRefs: boolean; canManageColoris: boolean; canRetourMarchandise: boolean; canEditInfo: boolean
 }) {
   const [activeTab, setActiveTab] = useState<MainTab>('references')
+  const { data: etiquetteClients } = useEtiquetteClients()
+  const withEtiquettes = !!client && (etiquetteClients?.clients.includes(client.IDclient) ?? false)
+  // Switching the labels off while on their tab falls back to Références.
+  useEffect(() => { if (!withEtiquettes && activeTab === 'etiquettes') setActiveTab('references') }, [withEtiquettes, activeTab])
   // Land on Références (the client's main info) whenever the selection changes.
   useEffect(() => { setActiveTab('references') }, [client?.IDclient])
 
@@ -1123,7 +1131,7 @@ function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarif
     <div className="flex-1 min-h-0 flex flex-col">
       {/* Master tabs — header-submenu style pills on the natural background */}
       <div className="flex-shrink-0 flex items-center gap-1 border-b border-border/60 pb-2">
-        {MAIN_TABS.map((t) => {
+        {MAIN_TABS.filter((t) => t.key !== 'etiquettes' || withEtiquettes).map((t) => {
           const Icon = t.icon
           const active = activeTab === t.key
           return (
@@ -1148,6 +1156,7 @@ function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarif
           // selection action bar while the table scrolls internally.
           <div className="flex-1 min-h-0 flex flex-col px-1"><MarchandiseTab clientId={client.IDclient} clientNom={client.nom ?? ''} canRetour={canRetourMarchandise} /></div>
         )}
+        {activeTab === 'etiquettes' && withEtiquettes && <CodesSpTab editable={isEditing && canEditInfo} />}
       </div>
     </div>
   )
@@ -1341,6 +1350,7 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
         <div className="space-y-2 pt-1">
           <TogglePill label="Client interne" checked={v.client_interne} disabled={!ed} onChange={(x) => onPatch({ client_interne: x })} />
           <TogglePill label="Inclure rapports contrôle (exp.)" checked={v.inclureRapportQualite} disabled={!edRapport} onChange={(x) => onPatch({ inclureRapportQualite: x })} />
+          <EtiquettesSwitch clientId={client.IDclient} editable={ed} />
         </div>
       </InfoCard>
 

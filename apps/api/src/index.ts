@@ -19,6 +19,7 @@ import { stockDiversRouter } from './routes/stock-divers.js'
 import { commandesFilRouter } from './routes/commandes-fil.js'
 import { commandesSousTraitantRouter } from './routes/commandes-sous-traitant.js'
 import { commandesClientRouter } from './routes/commandes-client.js'
+import { etiquettesSpRouter } from './routes/etiquettes-sp.js'
 import { commandesTrmRouter } from './routes/commandes-trm.js'
 import { facturesRouter, facturesTrmRouter } from './routes/factures.js'
 import { devisRouter } from './routes/devis.js'
@@ -149,6 +150,8 @@ app.use('/api/stock-divers', stockDiversRouter)
 app.use('/api/commandes-fil', commandesFilRouter)
 app.use('/api/commandes-sous-traitant', commandesSousTraitantRouter)
 app.use('/api/commandes-client', commandesClientRouter)
+// Simone Pérèle roll labels (LIVA #1200) — the « Étiquettes » tab of an order line.
+app.use('/api/etiquettes-sp', etiquettesSpRouter)
 // TRM client ledger (IDsociete = 2) — served to the sister TRM app, which has
 // no API of its own. Separate router from commandes-client: same tables, other
 // partition, and a production-centric screen (see commandes-trm.ts header).
