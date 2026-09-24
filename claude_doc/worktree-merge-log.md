@@ -10,6 +10,9 @@ other worktrees see what changed when they rebase. Format:
 
 <!-- entries below -->
 
+## 2026-09-24 — feat/client-trm-1201 — Tombé Métier › Références : le combo Client suit la société (LIVA #1201)
+**Web partagé seul (paire TRM `feat/client-trm-1201`, aucun changement API).** Le combo Client d'une référence écru lisait toujours `/references-ecru/lookups/clients` (`client.IDsociete = 1`), donc TRM créait ses références sur des clients ETM. `TombeMetierReferences` prend une prop `clientsLookupPath` (défaut : le lookup ETM, clé React Query incluant le chemin) ; TRM y passe `/commandes-trm/lookups/clients` (27 clients société 2, `est_visible = 1`). Écart assumé : une référence posée sur un client TRM montre un Client vide en mode édition côté ETM.
+
 ## 2026-09-24 — feat/beck-1199 — un métier TRM se libelle par son emplacement partout (LIVA #1199)
 **MPS API seule (TRM `feat/beck-1199` = docs).** Tombé Métier › Stock affichait « Beck » pour le 1G : #1102 n'avait passé que l'écran OF sur `machine.emplacement`. Le résolveur de l'OF devient `resolveMachineLabels()` dans `lib/production-trm.ts` (emplacement, `nom` en repli pour les machines archivées sans emplacement) et toutes les routes qui nomment un métier passent par lui : stock écru TRM, expéditions TRM, commandes TRM (onglet OF + « Compatible sur »), retours client TRM, prime, la traçabilité écru de `stock-ecru.ts` et Tombé Métier › Références (écran partagé : ETM voit aussi l'emplacement). Noms de champs inchangés, aucun changement web.
 
