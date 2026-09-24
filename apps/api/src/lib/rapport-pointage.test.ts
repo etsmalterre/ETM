@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { analyserJournee, horaireDe, HORAIRE_JOURNEE, dureeTexte, arrondiMinute, joursCouverts, prenomAffiche } from './rapport-pointage.js'
+import { analyserJournee, horaireDe, HORAIRE_JOURNEE, dureeTexte, arrondiMinute, joursCouverts, joursPrecedents, derniersJoursTravailles, prenomAffiche } from './rapport-pointage.js'
 import { contenuBilanHeures, contenuRapportPointage, soldeTexte, toneSolde } from './rapport-pointage-email.js'
 import { msHeureParis, type LigneHoraire } from './pointage-etat.js'
 
@@ -180,5 +180,17 @@ describe('prenomAffiche', () => {
     expect(prenomAffiche('DAUNOVAN')).toBe('Daunovan')
     expect(prenomAffiche('JEAN-MARC')).toBe('Jean-Marc')
     expect(prenomAffiche('ÉLODIE')).toBe('Élodie')
+  })
+})
+
+describe('Pointage › Salariés, « 7 derniers jours »', () => {
+  it('joursPrecedents: the n days before, oldest first, across a month end', () => {
+    expect(joursPrecedents('20261002', 3)).toEqual(['20260929', '20260930', '20261001'])
+  })
+  it('derniersJoursTravailles: only days with a line, newest first, at most n', () => {
+    const l = analyserJournee(sal('Marie'), [], null, heure)
+    const jours = ['01', '02', '03', '04'].map((d, i) => ({ jour: `202609${d}`, lignes: i === 1 ? [] : [l] }))
+    expect(derniersJoursTravailles(jours, 2).map((j) => j.jour)).toEqual(['20260904', '20260903'])
+    expect(derniersJoursTravailles(jours, 7).map((j) => j.jour)).toEqual(['20260904', '20260903', '20260901'])
   })
 })

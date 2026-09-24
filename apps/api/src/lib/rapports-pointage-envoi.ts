@@ -74,20 +74,24 @@ async function planningJours(du: string, au: string): Promise<Map<string, Plage>
   return out
 }
 
-/** The daily report sent on `jourEnvoi` (YYYYMMDD, Paris). Null when nobody
- *  clocked in on the covered days. */
-export async function construireRapportPointage(jourEnvoi: string): Promise<Rapport | null> {
-  const y = +jourEnvoi.slice(0, 4), mo = +jourEnvoi.slice(4, 6), d = +jourEnvoi.slice(6, 8)
-  const jourSemaine = new Date(Date.UTC(y, mo - 1, d)).getUTCDay() || 7
-  const jours = joursCouverts(jourEnvoi, jourSemaine)
+/**
+ * The report rules run over `jours` (YYYYMMDD, Paris, consecutive): one
+ * JourRapport per day, listing the salariés who clocked in or were planned.
+ * Shared by the daily email and Pointage › Salariés (« 7 derniers jours »,
+ * `idSalarie` set) so the two can never judge a day differently.
+ */
+export async function analyserJours(jours: readonly string[], idSalarie = 0): Promise<JourRapport[]> {
+  if (!jours.length) return []
   const du = jours[0], au = jours[jours.length - 1]
 
-  const [salaries, lignes, planning] = await Promise.all([tousLesSalaries(), lignesPeriode(du, au), planningJours(du, au)])
+  const [salaries, lignes, planning] = await Promise.all([tousLesSalaries(), lignesPeriode(du, au, idSalarie), planningJours(du, au)])
   const parId = new Map(salaries.map((s) => [s.id, s]))
   // A bonnetier is a salarié through lst_salarie.id_mps (0 = no link).
-  const parBonnetier = new Map(salaries.filter((s) => !s.supprime && s.idMps > 0).map((s) => [s.idMps, s]))
+  const parBonnetier = new Map(
+    salaries.filter((s) => !s.supprime && s.idMps > 0 && (!idSalarie || s.id === idSalarie)).map((s) => [s.idMps, s]),
+  )
 
-  const joursRapport: JourRapport[] = jours.map((jour) => {
+  return jours.map((jour) => {
     const heure = (hm: string) => msHeureParis(+jour.slice(0, 4), +jour.slice(4, 6), +jour.slice(6, 8), +hm.slice(0, 2), +hm.slice(3, 5))
     const duJour = new Map<number, LigneHoraire[]>()
     for (const l of lignes) if (l.jour === jour) duJour.set(l.idSalarie, [...(duJour.get(l.idSalarie) ?? []), l])
@@ -105,7 +109,14 @@ export async function construireRapportPointage(jourEnvoi: string): Promise<Rapp
     })
     return { jour, lignes: out.sort(ordreRapport) }
   })
-  return contenuRapportPointage(joursRapport)
+}
+
+/** The daily report sent on `jourEnvoi` (YYYYMMDD, Paris). Null when nobody
+ *  clocked in on the covered days. */
+export async function construireRapportPointage(jourEnvoi: string): Promise<Rapport | null> {
+  const y = +jourEnvoi.slice(0, 4), mo = +jourEnvoi.slice(4, 6), d = +jourEnvoi.slice(6, 8)
+  const jourSemaine = new Date(Date.UTC(y, mo - 1, d)).getUTCDay() || 7
+  return contenuRapportPointage(await analyserJours(joursCouverts(jourEnvoi, jourSemaine)))
 }
 
 /** The weekly balance as of `nowMs`: the week FEN_PointageSalarié reports

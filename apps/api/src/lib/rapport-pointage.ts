@@ -220,12 +220,27 @@ export function ordreRapport(a: LigneRapport, b: LigneRapport): number {
  * Sunday). `jourSemaine` is 1 = Monday … 7 = Sunday.
  */
 export function joursCouverts(jour: string, jourSemaine: number): string[] {
-  const d = new Date(Date.UTC(+jour.slice(0, 4), +jour.slice(4, 6) - 1, +jour.slice(6, 8)))
-  const n = jourSemaine === 1 ? 3 : 1
+  return joursPrecedents(jour, jourSemaine === 1 ? 3 : 1)
+}
+
+/** The `n` days before `jour` (YYYYMMDD), oldest first — `jour` itself excluded. */
+export function joursPrecedents(jour: string, n: number): string[] {
+  const d = Date.UTC(+jour.slice(0, 4), +jour.slice(4, 6) - 1, +jour.slice(6, 8))
   const out: string[] = []
   for (let i = n; i >= 1; i--) {
-    const t = new Date(d.getTime() - i * 86_400_000)
+    const t = new Date(d - i * 86_400_000)
     out.push(`${t.getUTCFullYear()}${String(t.getUTCMonth() + 1).padStart(2, '0')}${String(t.getUTCDate()).padStart(2, '0')}`)
   }
   return out
+}
+
+/**
+ * One salarié's last `n` worked days, newest first, out of the days the report
+ * rules analysed for them (Pointage › Salariés, « 7 derniers jours »). A worked
+ * day is the report's own population: a day with a clocked line or a planning
+ * row. A weekday with neither is an absence the rules cannot tell from a day
+ * off, and the email leaves it out too (decision 2026-09-24).
+ */
+export function derniersJoursTravailles<T extends { lignes: readonly LigneRapport[] }>(jours: readonly T[], n: number): T[] {
+  return jours.filter((j) => j.lignes.length > 0).slice(-n).reverse()
 }
