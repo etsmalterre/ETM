@@ -39,7 +39,7 @@
 //  Stock de fil       composition_ecru → stock_fil lots of those yarns
 //  Ordre de fabrication  ordre_fabrication WHERE IDligne_commande_client = <ligne>
 //                     réalisé = Σ stock_ecru.poids for the OF; the footer's
-//                     "Compatible sur" list is ref_ecru_machine → machine.nom
+//                     "Compatible sur" list is ref_ecru_machine → machine emplacement
 //  Expédition         expedition (IDsociete = 2) → ligne_expedition → the rolls
 //                     stamped with that IDligne_expedition_TRM
 
@@ -48,6 +48,7 @@ import { z } from 'zod'
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { resolveMachineLabels } from '../lib/production-trm.js'
 import { stripRtf } from '../lib/rtf-utils.js'
 import { esc, n, dateDigits as dateStr, IS_WINDOWS, sstDelaiSets, STATUT_ATTENTE_DELAI } from '../lib/sst-shared.js'
 import { prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
@@ -1904,15 +1905,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/ordres-fabrication', async (req: Re
     }
 
     const machineIds = Array.from(new Set(ofs.map((o: any) => Number(o.IDmachine) || 0).filter(Boolean)))
-    const machineNames = new Map<number, string>()
-    if (machineIds.length > 0) {
-      const m = await query<{ IDmachine: number; nom: string | null }>(
-        `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`,
-      )
-      for (const row of await fixEncoding(m, 'machine', 'IDmachine', ['nom'])) {
-        machineNames.set(Number(row.IDmachine), (row.nom ?? '').toString().trim())
-      }
-    }
+    const machineNames = await resolveMachineLabels(machineIds)
 
     // "Compatible sur" — every machine the écru has a machine sheet for.
     let compatibles: string[] = []
@@ -1922,12 +1915,8 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/ordres-fabrication', async (req: Re
       )
       const ids = Array.from(new Set(rem.map((r) => Number(r.IDmachine) || 0).filter(Boolean)))
       if (ids.length > 0) {
-        const m = await query<{ IDmachine: number; nom: string | null }>(
-          `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${ids.join(',')})`,
-        )
-        compatibles = (await fixEncoding(m, 'machine', 'IDmachine', ['nom']))
-          .map((row) => (row.nom ?? '').toString().trim())
-          .filter(Boolean)
+        const labels = await resolveMachineLabels(ids)
+        compatibles = ids.map((id) => labels.get(id) ?? '').filter(Boolean)
       }
     }
 

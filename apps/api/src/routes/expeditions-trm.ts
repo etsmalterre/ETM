@@ -59,6 +59,7 @@ import { z } from 'zod'
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { resolveMachineLabels } from '../lib/production-trm.js'
 import { consumedEcruIds } from '../lib/fini-sources.js'
 import { handoverSets, releaseSets } from '../lib/trm-handover.js'
 import { n, dateDigits as dateStr } from '../lib/sst-shared.js'
@@ -278,11 +279,10 @@ function defautLabel(d: DefautQualite): string {
 const PIECE_SELECT =
   'se.IDstock_ecru, se.numero, se.poids, se.observations, se.second_choix, se.IDsociete, ' +
   'se.IDordre_fabrication, se.IDcolori_ecru, se.IDligne_expedition_TRM, se.IDLigne_Commande_TRM, ' +
-  'orf.IDmachine, m.nom AS machine_nom'
+  'orf.IDmachine'
 const PIECE_JOINS =
   'FROM stock_ecru se ' +
-  'LEFT JOIN ordre_fabrication orf ON se.IDordre_fabrication = orf.IDordre_fabrication ' +
-  'LEFT JOIN machine m ON orf.IDmachine = m.IDmachine'
+  'LEFT JOIN ordre_fabrication orf ON se.IDordre_fabrication = orf.IDordre_fabrication'
 
 async function hydratePieces(rows: any[]): Promise<TrmPiece[]> {
   if (rows.length === 0) return []
@@ -302,13 +302,8 @@ async function hydratePieces(rows: any[]): Promise<TrmPiece[]> {
       observations: (r.observations ?? '').toString().trim(),
     }]),
   )
-  const machineFixed = (await fixEncoding(
-    rows.map((r) => ({ IDmachine: Number(r.IDmachine) || 0, nom: (r.machine_nom ?? '') as string })),
-    'machine', 'IDmachine', ['nom'],
-  )) as any[]
-  const machineByRow = new Map<number, string>(
-    machineFixed.map((r) => [Number(r.IDmachine), (r.nom ?? '').toString().trim()]),
-  )
+  // Métier = its emplacement ("1G"), never the brand in `nom` (LIVA #1199).
+  const machineByRow = await resolveMachineLabels(rows.map((r) => Number(r.IDmachine) || 0))
   const defectsByEcru = await fetchDefectsByEcru(rows.map((r) => Number(r.IDstock_ecru) || 0))
 
   return rows.map((r) => {

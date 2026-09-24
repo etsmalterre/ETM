@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
+import { selectMachines, machineLabel, resolveMachineLabels } from '../lib/production-trm.js'
 import { prixDeRevientTRMDetail } from '../lib/pricing-trm.js'
 
 export const referencesEcruRouter: RouterType = Router()
@@ -254,17 +255,13 @@ referencesEcruRouter.get('/lookups/refs-fil', async (_req: Request, res: Respons
 // GET /api/references-ecru/lookups/machines — knitting machines (Métier picker)
 referencesEcruRouter.get('/lookups/machines', async (_req: Request, res: Response) => {
   try {
-    // machine.archivé / diamètre are accented → explicit ASCII columns only.
-    const rows = await query<{ IDmachine: number; nom: string | null; Jauge: number | null }>(
-      `SELECT IDmachine, nom, Jauge FROM machine ORDER BY nom`,
-    )
-    const fixed = await batchRepair(
-      rows.map((r) => ({ IDmachine: Number(r.IDmachine) || 0, nom: r.nom ?? null, Jauge: toNumOrNull(r.Jauge) })),
-      'machine',
-      'IDmachine',
-      ['nom'],
-    )
-    res.json(fixed.filter((r) => r.nom && String(r.nom).trim().length > 0))
+    // `nom` carries the métier's label — its emplacement ("1G"), the brand in
+    // machine.nom only as a fallback (machineLabel(), LIVA #1199).
+    const machines = (await selectMachines())
+      .map((m) => ({ IDmachine: m.id, nom: machineLabel(m), Jauge: m.jauge }))
+      .filter((m) => m.nom.length > 0)
+      .sort((a, b) => a.nom.localeCompare(b.nom, 'fr', { numeric: true }))
+    res.json(machines)
   } catch (err) {
     console.error('Error fetching machines lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -490,14 +487,8 @@ referencesEcruRouter.get('/:id', async (req: Request, res: Response) => {
        FROM ref_ecru_machine WHERE IDref_ecru = ${id} ORDER BY IDref_ecru_machine`,
     )
     const machIds = Array.from(new Set(machRows.map((m) => Number(m.IDmachine)).filter((n) => n > 0)))
-    const machNameById = new Map<number, string>()
-    if (machIds.length > 0) {
-      const mr = await query<{ IDmachine: number; nom: string | null }>(
-        `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machIds.join(',')})`,
-      )
-      const mrFixed = await batchRepair(mr.map((m) => ({ IDmachine: Number(m.IDmachine) || 0, nom: m.nom ?? null })), 'machine', 'IDmachine', ['nom'])
-      for (const m of mrFixed) machNameById.set(m.IDmachine, String(m.nom ?? ''))
-    }
+    // Métier label = emplacement ("1G"), brand as fallback (LIVA #1199).
+    const machNameById = await resolveMachineLabels(machIds)
     const poidsPiece = Number(ref.poids) || 0
     const machines = machRows.map((m) => {
       const trs = Number(m.trs_10kg_chute) || 0

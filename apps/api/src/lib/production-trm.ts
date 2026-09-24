@@ -124,10 +124,29 @@ export interface MachineRow {
  *  "1G"), never its `nom` — two names are brands, not positions ("Beck" = 1G,
  *  "Orizio" = 1H), and a bonnetier sent to the 1G would not recognise "Beck"
  *  (LIVA #1102). `nom` is the fallback for the 4 archived machines whose
- *  `emplacement` is empty, so a historical OF still names its métier. Atelier ›
- *  Maintenance deliberately keeps `nom` (its "Description" is the brand). */
+ *  `emplacement` is empty, so a historical OF still names its métier. Every
+ *  TRM screen labels a métier this way (LIVA #1199: Tombé Métier › Stock still
+ *  said "Beck"); Atelier › Maintenance shows `nom` only as a secondary field. */
 export function machineLabel(m: { nom: string; emplacement: string }): string {
   return m.emplacement || m.nom
+}
+
+/** id → `machineLabel()` for a batch of machines — the one resolver every
+ *  route uses to label a métier, so no screen reads `machine.nom` on its own. */
+export async function resolveMachineLabels(ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  const list = Array.from(new Set(ids.filter((x) => x > 0)))
+  if (list.length === 0) return out
+  const rows = await query<{ IDmachine: number; nom: string | null; emplacement: string | null }>(
+    `SELECT IDmachine, nom, emplacement FROM machine WHERE IDmachine IN (${list.join(',')})`,
+  )
+  for (const r of await fixEncoding(rows, 'machine', 'IDmachine', ['nom', 'emplacement'])) {
+    out.set(Number(r.IDmachine), machineLabel({
+      nom: (r.nom ?? '').toString().trim(),
+      emplacement: (r.emplacement ?? '').toString().trim(),
+    }))
+  }
+  return out
 }
 
 export async function selectMachines(): Promise<MachineRow[]> {

@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
+import { resolveMachineLabels } from '../lib/production-trm.js'
 import { photoBonnetier, taillePhoto } from '../lib/bonnetier-photo.js'
 import { PrimePdf, type PrimePdfData } from '../lib/pdf/PrimePdf.js'
 import { baremePour } from '../lib/bareme-prime-trm.js'
@@ -260,7 +261,7 @@ export interface DeclassementSemaine {
   IDstock_ecru: number
   /** Piece number as keyed by the visiteuse (`stock_ecru.numero`). */
   piece: string
-  /** Métier the piece came off (ordre_fabrication → machine.nom). */
+  /** Métier the piece came off (ordre_fabrication → machine emplacement). */
   machine: string
   poids: number
   /** Positive "manque à gagner" (poids × 0,20 €) — the UI renders the minus.
@@ -301,15 +302,7 @@ async function fetchDeclassementsSemaine(debut: string, tauxSecondChoix: number)
     for (const r of ofRows) machineByOf.set(n(r.IDordre_fabrication), n(r.IDmachine))
   }
   const machineIds = Array.from(new Set(Array.from(machineByOf.values()).filter((x) => x > 0)))
-  const machineName = new Map<number, string>()
-  if (machineIds.length > 0) {
-    const mRows = await query<Record<string, unknown>>(
-      `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`,
-    )
-    for (const r of await fixEncoding(mRows, 'machine', 'IDmachine', ['nom'])) {
-      machineName.set(n(r.IDmachine), String(r.nom ?? '').trim())
-    }
-  }
+  const machineName = await resolveMachineLabels(machineIds)
 
   // defaut_qualite is polymorphic: Type_Reference = 2 + reference = stringified
   // IDstock_ecru (same contract as fetchDeclassementTypes / stock-ecru.ts).

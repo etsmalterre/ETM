@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { resolveMachineLabels } from '../lib/production-trm.js'
 import { pickVal } from '../lib/accented-keys.js'
 import { repairAliased, resolveSstLine, resolveProvenanceFils } from './stock-fini.js'
 import { userHasPermission } from '../lib/permissions.js'
@@ -897,15 +898,8 @@ stockEcruRouter.get('/ecru/suivi', async (req: Request, res: Response) => {
          WHERE IDordre_fabrication IN (${ofIds.join(',')})`,
       )
       const machineIds = Array.from(new Set(ofRows.map((o) => Number(o.IDmachine)).filter((x) => x > 0)))
-      const machines = new Map<number, string>()
-      if (machineIds.length > 0) {
-        // machine.connecté / archivé / diamètre are accented — ASCII only.
-        const mRows = await query<any>(
-          `SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`)
-        for (const m of await fixEncoding(mRows, 'machine', 'IDmachine', ['nom'])) {
-          machines.set(Number((m as any).IDmachine), ((m as any).nom ?? '').toString().trim())
-        }
-      }
+      // Métiers are TRM's; labelled by emplacement ("1G"), not brand (LIVA #1199).
+      const machines = await resolveMachineLabels(machineIds)
       for (const o of ofRows) {
         fabrications.set(Number(o.IDordre_fabrication), {
           IDordre_fabrication: Number(o.IDordre_fabrication),

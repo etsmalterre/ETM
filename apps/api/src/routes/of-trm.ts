@@ -61,7 +61,7 @@ import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 // rather than duplicated (the clients-common.ts precedent). Improve them THERE.
 import {
   TRM_SOCIETE, sqlText, round2, todayHfsql, nowDt, parseDtMs,
-  selectMachines, machineLabel, bonnetierDirectory, selectDefauts, resolveEcruRefs, resolveColorisEcru,
+  selectMachines, machineLabel, resolveMachineLabels, bonnetierDirectory, selectDefauts, resolveEcruRefs, resolveColorisEcru,
   selectStockFilByIds, resolveLigneContexts, loadOf, realiseByOf, OF_COLUMNS,
   type DefautRow, type StockFilLot, type OfRow,
 } from '../lib/production-trm.js'
@@ -82,24 +82,8 @@ const FAUX_ARRETS_MIN_S = 120
 
 // ── Label resolvers (flat batched lookups — no JOIN + CONVERT) ──
 
-// Métier labels are the floor position (`emplacement`), `nom` as fallback —
-// see `machineLabel()`. The list, the fiche, the observations and the search
-// all go through here so they agree (LIVA #1102: "1G" showed as "beck").
-async function resolveMachineNames(ids: number[]): Promise<Map<number, string>> {
-  const out = new Map<number, string>()
-  const list = Array.from(new Set(ids.filter((x) => x > 0)))
-  if (list.length === 0) return out
-  const rows = await query<{ IDmachine: number; nom: string | null; emplacement: string | null }>(
-    `SELECT IDmachine, nom, emplacement FROM machine WHERE IDmachine IN (${list.join(',')})`,
-  )
-  for (const r of await fixEncoding(rows, 'machine', 'IDmachine', ['nom', 'emplacement'])) {
-    out.set(Number(r.IDmachine), machineLabel({
-      nom: (r.nom ?? '').toString().trim(),
-      emplacement: (r.emplacement ?? '').toString().trim(),
-    }))
-  }
-  return out
-}
+// Métier labels: `resolveMachineLabels()` (lib/production-trm.ts), shared by
+// every TRM route so they all agree (LIVA #1102, #1199).
 
 export async function resolveRefFilNames(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
@@ -385,7 +369,7 @@ ofTrmRouter.get('/lookups/composition', async (req: Request, res: Response) => {
     )
     const machIds = Array.from(new Set(rem.map((r) => Number(r.IDmachine) || 0).filter(Boolean)))
     if (machIds.length > 0) {
-      const names = await resolveMachineNames(machIds)
+      const names = await resolveMachineLabels(machIds)
       compatibles = machIds.map((id) => ({ id, nom: names.get(id) ?? '' })).filter((m) => m.nom)
     }
 
@@ -465,7 +449,7 @@ async function selectObsRefEcru(refId: number, machineId: number, coloriId: numb
      ORDER BY DATE DESC`,
   )
   const rows = await fixEncoding(raw, 'obs_ref_ecru', 'IDobs_ref_ecru', ['observation'])
-  const machineNames = await resolveMachineNames(rows.map((r: any) => Number(r.IDmachine) || 0))
+  const machineNames = await resolveMachineLabels(rows.map((r: any) => Number(r.IDmachine) || 0))
   const coloriNames = await resolveColorisEcru(rows.map((r: any) => Number(r.IDcolori_ecru) || 0))
 
   return rows.map((r: any) => {
@@ -747,7 +731,7 @@ ofTrmRouter.get('/', async (req: Request, res: Response) => {
     const ofIds = ofs.map((o: any) => Number(o.IDordre_fabrication)).filter((x: number) => x > 0)
 
     const [machineNames, refMap, coloriMap, ligneCtx] = await Promise.all([
-      resolveMachineNames(ofs.map((o: any) => Number(o.IDmachine) || 0)),
+      resolveMachineLabels(ofs.map((o: any) => Number(o.IDmachine) || 0)),
       resolveEcruRefs(ofs.map((o: any) => Number(o.IDref_ecru) || 0)),
       resolveColorisEcru(ofs.map((o: any) => Number(o.IDcolori_ecru) || 0)),
       resolveLigneContexts(ofs.map((o: any) => Number(o.IDligne_commande_client) || 0)),

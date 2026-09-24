@@ -63,6 +63,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { query, queryRaw, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
 import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
+import { selectMachines, machineLabel, resolveMachineLabels } from '../lib/production-trm.js'
 import {
   TRM_SOCIETE,
   insertRetour,
@@ -142,14 +143,17 @@ async function loadBonnetiers(keepIds: number[]): Promise<{ IDbonnetier: number;
     .sort((a, b) => a.nom.localeCompare(b.nom, 'fr'))
 }
 
+// Métiers are labelled by their emplacement ("1G"), `nom` (the brand) only as
+// a fallback — `machineLabel()`, LIVA #1199. The `nom` field carries that label.
 async function loadMachines(): Promise<{ IDmachine: number; nom: string }[]> {
-  const rows = await fixEncoding(
-    await query<any>(`SELECT IDmachine, nom FROM machine ORDER BY nom`),
-    'machine', 'IDmachine', ['nom'],
-  )
-  return (rows as any[])
-    .map((m) => ({ IDmachine: n(m.IDmachine), nom: trimStr(m.nom) }))
+  return (await selectMachines())
+    .map((m) => ({ IDmachine: m.id, nom: machineLabel(m) }))
     .filter((m) => m.IDmachine > 0 && m.nom !== '')
+    .sort((a, b) => a.nom.localeCompare(b.nom, 'fr', { numeric: true }))
+}
+
+async function machineLabelRows(ids: number[]): Promise<{ IDmachine: number; nom: string }[]> {
+  return Array.from(await resolveMachineLabels(ids), ([IDmachine, nom]) => ({ IDmachine, nom }))
 }
 
 retoursClientTrmRouter.get('/lookups', async (_req: Request, res: Response) => {
@@ -249,10 +253,7 @@ async function loadLabels(rows: RetourRow[]): Promise<{
       : ([] as any[]),
     bonnetierIds.length ? loadBonnetiers(bonnetierIds) : Promise.resolve([]),
     machineIds.length
-      ? fixEncoding(
-          await query<any>(`SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`),
-          'machine', 'IDmachine', ['nom'],
-        )
+      ? machineLabelRows(machineIds)
       : ([] as any[]),
   ])
 
@@ -735,10 +736,7 @@ retoursClientTrmRouter.get('/:id/tracabilite', async (req: Request, res: Respons
     )
     const [machineRows, staff, documents] = await Promise.all([
       machineIds.length
-        ? fixEncoding(
-            await query<any>(`SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`),
-            'machine', 'IDmachine', ['nom'],
-          )
+        ? machineLabelRows(machineIds)
         : Promise.resolve([] as any[]),
       staffIds.length ? loadBonnetiers(staffIds) : Promise.resolve([]),
       loadTracaDocs(ecrus),
@@ -1036,10 +1034,7 @@ export async function buildRetourClientPdfData(id: number): Promise<RetourClient
     : ([] as any[])
   const machineIds = Array.from(new Set((ofRows as any[]).map((o) => n(o.IDmachine)).filter((x) => x > 0)))
   const machineRows = machineIds.length
-    ? await fixEncoding(
-        await query<any>(`SELECT IDmachine, nom FROM machine WHERE IDmachine IN (${machineIds.join(',')})`),
-        'machine', 'IDmachine', ['nom'],
-      )
+    ? await machineLabelRows(machineIds)
     : ([] as any[])
   const machineName = new Map((machineRows as any[]).map((m) => [n(m.IDmachine), trimStr(m.nom)]))
   const ofMachine = new Map((ofRows as any[]).map((o) => [n(o.IDordre_fabrication), n(o.IDmachine)]))
