@@ -48,6 +48,14 @@ export interface AgentDef {
     reussite: string
     partielle: string
     echec: string
+    /** The scoring guide opened beside the buttons: the one question that
+     *  decides, then per score a concrete example from this agent's work. */
+    guide: {
+      question: string
+      exemples: Record<'reussite' | 'partielle' | 'echec', string>
+      /** Edge cases people get wrong, one line each. */
+      remarques: string[]
+    }
     /** An échec removes what the run wrote (partielle keeps it for the user
      *  to correct). Returns the French line stored on the evaluation, or null
      *  when there was nothing to remove. Absent = an échec removes nothing. */
@@ -89,9 +97,18 @@ export const AGENTS: readonly AgentDef[] = [
     abstention:
       'Rien n’est enregistré si un contrôle bloque : numéro de commande ou de bordereau illisible, commande inconnue ou pas chez MATEL, pièce introuvable ou affectée à une autre commande, somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « BL Ennoblisseur à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
     evaluation: {
-      reussite: 'Lecture juste : les pièces pré-remplies pour la réception sont bonnes.',
-      partielle: 'Lecture en partie fausse : les pièces restent pré-remplies, corrigez-les dans le dialogue de réception.',
-      echec: 'Lecture fausse : les pièces pré-remplies sont retirées de la réception. Le PDF reste dans les documents de la commande.',
+      reussite: 'Gardé tel quel : les pièces pré-remplies sont bonnes, rien n’a été retouché à la réception.',
+      partielle: 'Gardé en corrigeant : la base est bonne, mais au moins une valeur a été corrigée à la main (poids, métrage, n° de pièce, ligne). Les pièces restent pré-remplies.',
+      echec: 'Tout jeté : inutilisable (mauvaise commande, pièces inventées ou manquantes en nombre). Les pièces pré-remplies sont retirées de la réception ; le PDF reste dans les documents de la commande.',
+      guide: {
+        question: 'Est-ce que je garde ce qu’il a écrit ? Tel quel → réussite. En corrigeant → partielle. Je jette tout → échec.',
+        exemples: {
+          reussite: '12 pièces lues, poids et métrages identiques au BL papier.',
+          partielle: 'Un poids lu 21,4 kg au lieu de 24,1 kg, corrigé dans le dialogue de réception.',
+          echec: 'Le BL a été rattaché à la mauvaise commande MATEL.',
+        },
+        remarques: ['Une seule valeur corrigée suffit pour une partielle : dites laquelle dans le commentaire.'],
+      },
       retirer: retirerBlEnnoblisseur,
     },
     pointsEvaluables: false,
@@ -113,9 +130,21 @@ export const AGENTS: readonly AgentDef[] = [
       'Un point déjà signalé reste dans le rapport, marqué « toujours ouvert », jusqu’à ce qu’il soit résolu. Un point jugé en échec (fausse alerte) est écarté des rapports suivants tant qu’il reste identique. Un lancement manuel ne met jamais à jour sa mémoire : le rapport du lendemain reste juste.',
     // Each POINT is scored, never the report (the report is the morning's batch).
     evaluation: {
-      reussite: 'Point juste : il fallait bien le traiter.',
-      partielle: 'Point réel mais en partie faux (quantité, client, détail…) : dites ce qui ne va pas.',
-      echec: 'Fausse alerte : le point est écarté des prochains rapports tant qu’il reste identique.',
+      reussite: 'Vrai et utile : il fallait bien le traiter (j’ai agi, ou j’aurais dû agir).',
+      partielle: 'Vrai sujet, mais mal dit (mauvaise cause, mauvais chiffre, mauvais client ou mauvaise personne) ou déjà connu : j’ai dû vérifier moi-même pour comprendre.',
+      echec: 'Rien à faire : c’est faux, ou c’est normal. Le point est écarté des prochains rapports tant qu’il reste identique.',
+      guide: {
+        question: 'Si j’avais ignoré ce point, est-ce que ça aurait posé un problème ? Oui → réussite ou partielle. Non → échec.',
+        exemples: {
+          reussite: '« Commande sans délai » : c’était vrai, je l’ai corrigée.',
+          partielle: 'Il signale un retard fil, alors que c’est la teinture qui bloque.',
+          echec: 'Un avis signalé « non facturé » qui est en fait une donation.',
+        },
+        remarques: [
+          'Vrai mais inutile (« je le sais, c’est normal ») = échec, pas réussite : sinon le rapport se remplit de bruit bien noté.',
+          'Ce que l’agent a raté ne se note pas sur un point : signalez-le à l’administrateur des agents.',
+        ],
+      },
     },
     pointsEvaluables: true,
     modes: {

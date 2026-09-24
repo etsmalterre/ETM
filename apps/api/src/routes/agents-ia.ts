@@ -155,6 +155,7 @@ async function vueAgent(def: AgentDef) {
     abstention: def.abstention,
     declenchement: def.declenchement,
     evaluation: { reussite: def.evaluation.reussite, partielle: def.evaluation.partielle, echec: def.evaluation.echec },
+    guideNotation: def.evaluation.guide,
     pointsEvaluables: def.pointsEvaluables,
     modes: def.modes,
     peutTester: !!def.traiter,

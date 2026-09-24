@@ -21,7 +21,7 @@ export const controleClientsSansReponse: Controle = {
   domaine: 'mails',
   libelle: 'Client sans réponse',
   description:
-    `Conversation d’un client (adresse ou domaine d’un contact client, hors fournisseurs et sous-traitants) dont le dernier message attend depuis 24 h ouvrées sans réponse de l’une des quatre boîtes, et que Mistral juge appeler une réponse. Urgent à 48 h ouvrées ou si le client est mécontent / bloqué. Fenêtre : ${FENETRE_JOURS} jours.`,
+    `Conversation d’un client (adresse ou domaine d’un contact client, hors fournisseurs et sous-traitants) dont le dernier message attend depuis 24 h ouvrées sans réponse de l’une des boîtes lues, et que Mistral juge appeler une réponse. Urgent à 48 h ouvrées ou si le client est mécontent / bloqué. Fenêtre : ${FENETRE_JOURS} jours.`,
   async executer(ctx) {
     const [{ entetes, erreurs }, annuaire] = await Promise.all([entetesDuRun(ctx.nowMs), chargerAnnuaire()])
     if (erreurs.length) throw new Error(`boîte(s) illisible(s) — ${erreurs.join(' ; ')}`)

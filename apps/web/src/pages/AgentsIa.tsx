@@ -39,6 +39,7 @@ import {
   Info,
   ListChecks,
   Loader2,
+  CircleHelp,
   Mail,
   MessageSquare,
   MessagesSquare,
@@ -99,6 +100,13 @@ interface ScorePoints extends BilanPoints {
   precision: number | null
 }
 
+interface GuideNotation {
+  /** The one question that decides between the three scores. */
+  question: string
+  exemples: Record<Note, string>
+  remarques: string[]
+}
+
 interface AgentVue {
   slug: string
   nom: string
@@ -109,6 +117,8 @@ interface AgentVue {
   declenchement: { type: 'releve'; intervalleMs: number } | { type: 'quotidien'; heure: number; jours: number[] }
   /** What each score means for this agent (shown beside the three buttons). */
   evaluation: Record<Note, string>
+  /** The scoring guide opened beside the buttons (catalog.ts `evaluation.guide`). */
+  guideNotation: GuideNotation
   /** Superviseur: each point of the report is scored too. */
   pointsEvaluables: boolean
   /** Only the modes this agent offers. */
@@ -266,8 +276,15 @@ function ilYA(iso: string | null | undefined): string {
 const fmtDateCourte = (iso: string) =>
   new Date(iso).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 
-/** USD cost as millièmes of a dollar when tiny — a BL costs about 0,005 $. */
-const fmtUsd = (v: number, decimals = 2) => (v < 0.1 ? `${fmtNum(v * 1000, decimals)} m$` : `${fmtNum(v, 2)} $`)
+/** Costs are tracked in USD (Mistral's price list); shown in € at a fixed indicative rate. */
+const EUR_PER_USD = 0.86
+
+/** € cost to the centime; anything under a centime (a BL is about 0,005 $) reads « < 0,01 € ». */
+const fmtEur = (usd: number) => {
+  const eur = usd * EUR_PER_USD
+  if (eur <= 0) return '0,00 €'
+  return eur < 0.01 ? '< 0,01 €' : `${fmtNum(eur, 2)} €`
+}
 
 // Per-agent mode descriptions come from the catalog (AgentVue.modes).
 const MODE_META: Record<Mode, { label: string; icon: ComponentType<{ className?: string }>; solid: string }> = {
@@ -721,7 +738,7 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
                       <NoteIcon evaluation={r.evaluation} />
                     </span>
                   </td>
-                  <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtUsd(r.coutUsd, 1)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtEur(r.coutUsd)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1000,9 +1017,9 @@ function CoutsTab({ slug }: { slug: string }) {
     <>
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-1.5">
         <div className="flex items-center gap-2 mb-1"><CircleDollarSign className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">30 derniers jours</h3></div>
-        <KV label="Coût total" value={fmtUsd(data.totalUsd)} mono />
+        <KV label="Coût total" value={fmtEur(data.totalUsd)} mono />
         <KV label="Exécutions" value={fmtNum(data.runs)} mono />
-        <KV label="Coût moyen par exécution" value={fmtUsd(data.moyenneUsd)} mono />
+        <KV label="Coût moyen par exécution" value={fmtEur(data.moyenneUsd)} mono />
         <p className="text-[11px] text-muted-foreground pt-1">Estimation d’après le tarif public Mistral (OCR + modèle) — la facture fait foi.</p>
       </div>
       {jours.length === 0 ? (
@@ -1022,7 +1039,7 @@ function CoutsTab({ slug }: { slug: string }) {
                 <tr key={j.jour} className="border-b border-border/40 last:border-b-0">
                   <td className="px-3 py-2 tabular-nums">{new Date(j.jour).toLocaleDateString('fr-FR')}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{j.runs}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtUsd(j.coutUsd)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtEur(j.coutUsd)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1171,7 +1188,7 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
                 <KV label="Avec des points à voir" value={fmtNum(n('points_a_voir') + n('mail_envoye') + n('simule'))} mono />
                 <KV label="Rien à signaler" value={fmtNum(n('rien_a_signaler'))} mono />
                 <KV label="Erreurs" value={<span className={cn(n('erreur') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('erreur'))}</span>} mono />
-                <KV label="Coût" value={fmtUsd(s.coutUsd)} mono />
+                <KV label="Coût" value={fmtEur(s.coutUsd)} mono />
               </div>
               {s.points && (
                 <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
@@ -1201,7 +1218,7 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
             <KV label="À vérifier" value={<span className={cn(n('a_verifier') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('a_verifier'))}</span>} mono />
             <KV label="Erreurs" value={<span className={cn(n('erreur') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('erreur'))}</span>} mono />
             <EvaluationsKV s={s} />
-            <KV label="Coût" value={fmtUsd(s.coutUsd)} mono />
+            <KV label="Coût" value={fmtEur(s.coutUsd)} mono />
             <p className="text-[11px] text-muted-foreground pt-1">Les tests manuels ne comptent pas. Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.</p>
           </div>
           </>)}
@@ -1305,10 +1322,52 @@ function NoteButtons({ value, onChange, disabled, size = 'md', titles }: {
   )
 }
 
+/** « Comment noter ? » — a link under a run's score buttons (BL) that unfolds
+ *  the agent's scoring guide inline. A Superviseur report has ONE such button
+ *  at the top of the report, never one per point. */
+function GuideNotationToggle({ guide, textes }: { guide: GuideNotation; textes: Record<Note, string> }) {
+  const [ouvert, setOuvert] = useState(false)
+  return (
+    <div className="space-y-1.5">
+      <button type="button" onClick={() => setOuvert((v) => !v)} aria-expanded={ouvert}
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-accent transition-colors">
+        <CircleHelp className="h-3.5 w-3.5" />
+        {ouvert ? 'Masquer le guide de notation' : 'Comment noter ?'}
+      </button>
+      {ouvert && <GuideNotationCard guide={guide} textes={textes} />}
+    </div>
+  )
+}
+
+function GuideNotationCard({ guide, textes }: { guide: GuideNotation; textes: Record<Note, string> }) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-2">
+      <p className="text-xs font-semibold">{guide.question}</p>
+      {NOTE_ORDER.map((n) => {
+        const m = NOTE_META[n]
+        const Icon = m.icon
+        return (
+          <div key={n} className={cn('rounded-md border-l-4 border border-border/60 px-2.5 py-1.5', m.border, m.soft)}>
+            <p className={cn('text-xs font-semibold inline-flex items-center gap-1', m.text)}><Icon className="h-3.5 w-3.5" />{m.label}</p>
+            <p className="text-xs mt-0.5">{textes[n]}</p>
+            <p className="text-[11px] text-muted-foreground italic mt-0.5">Ex. : {guide.exemples[n]}</p>
+          </div>
+        )
+      })}
+      {guide.remarques.length > 0 && (
+        <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-muted-foreground">
+          {guide.remarques.map((r) => <li key={r}>{r}</li>)}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 /** Score a whole run. */
-function EvaluationPanel({ evaluation, textes, canEvaluate, confirmEchec, onSave, isPending, error, titre }: {
+function EvaluationPanel({ evaluation, textes, guide, canEvaluate, confirmEchec, onSave, isPending, error, titre }: {
   evaluation: Evaluation | null | undefined
   textes: Record<Note, string>
+  guide: GuideNotation
   canEvaluate: boolean
   /** Text of the confirmation shown before an échec that removes something; null = none. */
   confirmEchec: string | null
@@ -1341,6 +1400,7 @@ function EvaluationPanel({ evaluation, textes, canEvaluate, confirmEchec, onSave
         <>
           <NoteButtons value={note} onChange={setNote} disabled={isPending} titles={textes} />
           {note && <p className="text-[11px] text-muted-foreground">{textes[note]}</p>}
+          <GuideNotationToggle guide={guide} textes={textes} />
           {note && (
             <textarea value={commentaire} onChange={(e) => setCommentaire(e.target.value)} rows={2} maxLength={2000}
               placeholder={note === 'reussite' ? 'Commentaire (facultatif)' : 'Qu’est-ce qui n’allait pas ? (obligatoire — c’est ce qui sert à améliorer l’agent)'}
@@ -1652,7 +1712,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                 {pdfUrl ? <iframe key={pdfUrl} src={pdfUrl} className="w-full h-full" title="BL" />
                 : <div className="h-full flex flex-col items-center justify-center text-muted-foreground"><FileText className="h-12 w-12 opacity-30" /><p className="text-sm">Aucun PDF</p></div>}
               </div>
-              <EvaluationPanel titre="Évaluer cette lecture" evaluation={run.evaluation} textes={agent.evaluation}
+              <EvaluationPanel titre="Évaluer cette lecture" evaluation={run.evaluation} textes={agent.evaluation} guide={agent.guideNotation}
                 canEvaluate={canEvaluate} confirmEchec={confirmEchec} isPending={evaluationMut.isPending} error={evalError}
                 onSave={(note, commentaire) => evaluationMut.mutate({ note, commentaire })} />
               {canPilot && run.fichiers.length > 0 && (
@@ -1809,7 +1869,7 @@ function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun
                   <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbOuverts)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbFermes)}</td>
                   <td className="px-3 py-1.5"><BilanCell b={r.bilan} /></td>
-                  <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtUsd(r.coutUsd, 1)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtEur(r.coutUsd)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1889,6 +1949,8 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
   const slug = agent.slug
   const queryClient = useQueryClient()
   const [showControles, setShowControles] = useState(false)
+  // One scoring guide for the whole report, never one per point.
+  const [showGuide, setShowGuide] = useState(false)
   const [showEcartes, setShowEcartes] = useState(false)
   useEffect(() => { setShowControles(false); setShowEcartes(false) }, [runId])
 
@@ -1971,18 +2033,27 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
             ]} />
 
             <div className="flex-shrink-0 flex items-center justify-between gap-3 text-xs text-muted-foreground px-1">
-              <span className="min-w-0 truncate">
-                {constats.length === 0 ? ''
-                  : !canEvaluate ? 'Droit « Évaluer les agents IA » requis pour noter les points.'
-                  : aEvaluer > 0 ? 'Évaluez chaque point : « Échec » = fausse alerte, écartée des prochains rapports.'
-                  : 'Tous les points sont évalués.'}
-              </span>
+              <div className="min-w-0 flex items-center gap-3">
+                {constats.length > 0 && (
+                  <button type="button" onClick={() => setShowGuide((v) => !v)} aria-expanded={showGuide}
+                    className={cn('flex-shrink-0 inline-flex items-center gap-1 font-medium transition-colors', showGuide ? 'text-accent' : 'hover:text-accent')}>
+                    <CircleHelp className="h-3.5 w-3.5" />{showGuide ? 'Masquer le guide de notation' : 'Comment noter ?'}
+                  </button>
+                )}
+                <span className="min-w-0 truncate">
+                  {constats.length === 0 ? ''
+                    : !canEvaluate ? 'Droit « Évaluer les agents IA » requis pour noter les points.'
+                    : aEvaluer > 0 ? ''
+                    : 'Tous les points sont évalués.'}
+                </span>
+              </div>
               <button type="button" onClick={() => setShowControles((v) => !v)} className="flex-shrink-0 hover:text-foreground transition-colors">
                 {showControles ? 'Masquer les contrôles exécutés' : `Afficher les contrôles exécutés (${controles.length})`}
               </button>
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto space-y-3 px-1 pb-1 scrollbar-transparent">
+              {showGuide && constats.length > 0 && <GuideNotationCard guide={agent.guideNotation} textes={agent.evaluation} />}
               {showControles && (
                 controles.length === 0 ? (
                   <p className="text-xs text-muted-foreground italic">Aucun contrôle n’est encore en place.</p>
