@@ -100,11 +100,32 @@ export interface ConversationEnAttente {
   /** Mailboxes that received it. */
   boites: string[]
   heuresAttente: number
+  /** Every address seen on the conversation (senders, To, Cc), lowercased. */
+  participants: string[]
 }
 
+/** « le 24/09 à 14h05 » (Paris). */
+export function leA(ms: number): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date(ms))
+      .map((x) => [x.type, x.value]),
+  )
+  return `le ${p.day}/${p.month} à ${p.hour}h${p.minute}`
+}
+const qui = (m: EnteteMessage) => m.de.split('@')[0] || m.boite.split('@')[0]
+
 /** Conversations whose last word is a client's and that nobody answered.
- *  `depuisMs`: older client messages are stale and ignored. */
-export function conversationsSansReponse(msgs: EnteteMessage[], annuaire: AnnuaireClients, nowMs: number, depuisMs: number): ConversationEnAttente[] {
+ *  `depuisMs`: older client messages are stale and ignored. `raison` hears why
+ *  every other conversation is not waiting (an answer, a stale message…) —
+ *  what the report says when a « sans réponse » point closes. */
+export function conversationsSansReponse(
+  msgs: EnteteMessage[],
+  annuaire: AnnuaireClients,
+  nowMs: number,
+  depuisMs: number,
+  raison: (cle: string, texte: string) => void = () => {},
+): ConversationEnAttente[] {
   // One copy per Message-ID (a mail sent to contact@ and cc Laetitia arrives twice).
   const parId = new Map<string, EnteteMessage & { boites: string[] }>()
   for (const m of msgs) {
@@ -131,13 +152,16 @@ export function conversationsSansReponse(msgs: EnteteMessage[], annuaire: Annuai
   for (const [cle, ms] of conv) {
     ms.sort((a, b) => a.date - b.date)
     const dernier = ms[ms.length - 1]
-    if (interne(dernier) || dernier.automatique || estNoReply(dernier.de) || dernier.date < depuisMs) continue
+    if (interne(dernier)) { raison(cle, `Réponse de ${qui(dernier)} ${leA(dernier.date)}.`); continue }
+    if (dernier.automatique || estNoReply(dernier.de)) { raison(cle, `Dernier message automatique (${dernier.de}) ${leA(dernier.date)}.`); continue }
+    if (dernier.date < depuisMs) { raison(cle, `Dernier message du client ${leA(dernier.date)} : plus vieux que la fenêtre surveillée.`); continue }
     const client = identifierClient(dernier.de, annuaire)
-    if (!client) continue
+    if (!client) { raison(cle, `Dernier message de ${dernier.de} ${leA(dernier.date)}, qui n’est pas un contact client.`); continue }
     // Answered by a new mail to the same person (not a reply in the thread)?
-    const repondu = internes.some((x) => x.date > dernier.date && (x.a.includes(dernier.de) || x.cc.includes(dernier.de)))
-    if (repondu) continue
-    out.push({ cle, client, dernier, boites: dernier.boites, heuresAttente: heuresOuvrees(dernier.date, nowMs) })
+    const reponse = internes.find((x) => x.date > dernier.date && (x.a.includes(dernier.de) || x.cc.includes(dernier.de)))
+    if (reponse) { raison(cle, `Réponse de ${qui(reponse)} par un nouveau mail ${leA(reponse.date)} (« ${reponse.sujet || 'sans objet'} »).`); continue }
+    const participants = [...new Set(ms.flatMap((x) => [x.de, ...x.a, ...x.cc]).map((x) => x.toLowerCase()).filter(Boolean))]
+    out.push({ cle, client, dernier, boites: dernier.boites, heuresAttente: heuresOuvrees(dernier.date, nowMs), participants })
   }
   return out.sort((a, b) => b.heuresAttente - a.heuresAttente)
 }

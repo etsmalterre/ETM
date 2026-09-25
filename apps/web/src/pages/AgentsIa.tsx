@@ -23,6 +23,7 @@ import {
   AlertCircle,
   AlertTriangle,
   Bot,
+  CheckCheck,
   CheckCircle2,
   ChevronUp,
   CircleDashed,
@@ -172,6 +173,8 @@ interface AgentDetail extends AgentVue {
   activeVersion: number
   versions: AgentVersion[]
   modeles: Array<{ id: string; label: string }>
+  /** A prompt shipped with the code that no stored version carries yet. */
+  promptLivre?: { model: string; prompt: string; note: string } | null
 }
 
 interface RunLigne {
@@ -223,6 +226,9 @@ interface RunComplet extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces
     ecriture?: { gedId: number | null; lignesEcrites: number; retire?: { le: string; lignes: number } | null } | null
   }
 }
+
+/** A point someone marked résolu, with why (GET /:slug/retours). */
+interface RetourResolution { runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }
 
 /** One comment of the « Retours » tab (GET /:slug/retours). */
 interface Retour {
@@ -762,9 +768,10 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
   useEffect(() => { setVersion(agent.activeVersion) }, [agent.slug, agent.activeVersion])
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-retours', agent.slug, version],
-    queryFn: () => apiFetch<{ version: number; retours: Retour[] }>(`/agents-ia/${agent.slug}/retours?version=${version}`),
+    queryFn: () => apiFetch<{ version: number; retours: Retour[]; resolutions?: RetourResolution[] }>(`/agents-ia/${agent.slug}/retours?version=${version}`),
   })
   const tous = data?.retours ?? []
+  const resolutions = data?.resolutions ?? []
   // « À prendre en compte » = what says something: every partielle or échec,
   // and a réussite only when someone bothered to comment it.
   const retours = filtre === 'tout' ? tous : tous.filter((r) => r.note !== 'reussite' || r.commentaire)
@@ -839,6 +846,31 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
           </div>
         )
       })}
+      {!isLoading && !isError && resolutions.length > 0 && (
+        <>
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-2">
+            Marqués résolus à la main ({resolutions.length}) — ce que l’agent ne pouvait pas voir
+          </p>
+          {resolutions.map((r, i) => (
+            <div key={`${r.runId}-res-${i}`} onClick={() => onOpenRun(r.runId)} title="Ouvrir le rapport"
+              className="rounded-lg border-l-4 border border-border/60 border-l-green-500/60 bg-zinc-100/80 p-3 cursor-pointer hover:border-accent/40 transition-colors">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-green-500/10">
+                  <CheckCheck className="h-3.5 w-3.5 text-green-700" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate" title={r.titre}>{r.titre}</p>
+                  <p className="text-[11px] text-muted-foreground truncate">Point du rapport du {fmtDateCourte(r.runLe)} · {r.par.nom}, {fmtDateHeure(r.le)}</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-1.5 mt-2 ml-9">
+                <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+                <p className="text-sm whitespace-pre-wrap">{r.commentaire}</p>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
     </>
   )
 }
@@ -854,9 +886,49 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
     onSuccess: () => { setError(null); onChanged() },
     onError: (e: Error) => setError(e.message),
   })
+  const livre = agent.promptLivre ?? null
+  const [voirLivre, setVoirLivre] = useState(false)
+  const [confirmLivre, setConfirmLivre] = useState(false)
+  const prochaine = Math.max(0, ...agent.versions.map((v) => v.version)) + 1
+  const publierLivreMut = useMutation({
+    mutationFn: () => callApi(`/agents-ia/${agent.slug}/versions`, { method: 'POST', body: JSON.stringify(livre) }),
+    onSuccess: () => { setError(null); setConfirmLivre(false); onChanged() },
+    onError: (e: Error) => { setConfirmLivre(false); setError(e.message) },
+  })
 
   return (
     <>
+      {livre && (
+        <div className="rounded-lg border-l-4 border border-border/60 border-l-amber-400/60 bg-amber-500/[0.06] p-3 shadow-sm">
+          <div className="flex items-center gap-2">
+            <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
+              <Upload className="h-3.5 w-3.5 text-amber-600" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">Nouvelle version livrée avec l’application</p>
+              <p className="text-[11px] text-muted-foreground">{livre.note}</p>
+            </div>
+            <button type="button" onClick={() => setVoirLivre((v) => !v)} className="flex-shrink-0 text-xs text-muted-foreground hover:text-foreground transition-colors">
+              {voirLivre ? 'Masquer le prompt' : 'Voir le prompt'}
+            </button>
+            <Button size="sm" className="flex-shrink-0" disabled={!canPilot || publierLivreMut.isPending} onClick={() => setConfirmLivre(true)}
+              title={canPilot ? `Publier et activer la version ${prochaine}` : 'Droit « Piloter les agents IA » requis'}>
+              {publierLivreMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Upload className="h-3.5 w-3.5 mr-1.5" />}Publier la v{prochaine}
+            </Button>
+          </div>
+          {voirLivre && <pre className="mt-2 text-xs whitespace-pre-wrap font-mono bg-white/70 rounded-md p-3 max-h-[40vh] overflow-auto scrollbar-transparent">{livre.prompt}</pre>}
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmLivre}
+        variant="default"
+        title={`Publier la version ${prochaine}`}
+        description="Elle devient la version active dès maintenant et son score repart de zéro. La version actuelle reste dans l’historique et peut être réactivée."
+        confirmLabel="Publier"
+        isPending={publierLivreMut.isPending}
+        onCancel={() => setConfirmLivre(false)}
+        onConfirm={() => publierLivreMut.mutate()}
+      />
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
         <div className="flex items-center gap-2 mb-2">
           <ScrollText className="h-4 w-4 text-accent" />
@@ -1750,18 +1822,26 @@ interface ConstatRun {
   depuis: string
   /** A score given on an earlier report, carried forward by the agent. */
   avis?: { note: Note; commentaire: string; par: Auteur; le: string }
+  /** Marked résolu on an earlier report, carried forward by the agent. */
+  resolution?: Resolution
 }
+/** « Résolu » by a person, with why. */
+interface Resolution { commentaire: string; par: Auteur; le: string }
 interface ResultatSuperviseur {
   controles?: Array<{ id: string; libelle: string; domaine: string; nb: number; dureeMs: number; erreur: string | null }>
   constats?: ConstatRun[]
   /** Points scored « échec » (false alarm) on an earlier report. */
   ecartes?: ConstatRun[]
-  fermes?: Array<{ cle: string; titre: string; domaine: string; depuis: string }>
+  /** Still returned by a check, but marked résolu by a person earlier. */
+  resolus?: ConstatRun[]
+  /** Closed by the agent: `raison` says why (absent before 2026-09-25). */
+  fermes?: Array<{ cle: string; titre: string; domaine: string; depuis: string; raison?: string; resolution?: Resolution }>
   memoireMiseAJour?: boolean
 }
 interface RunSuperviseur extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces' | 'nbNouveaux' | 'nbOuverts' | 'nbFermes' | 'nbEcartes' | 'bilan'> {
   resultat: ResultatSuperviseur
   avisPoints?: Record<string, Evaluation>
+  resolutionsPoints?: Record<string, Resolution>
 }
 
 const DOMAINE_LIBELLE: Record<string, string> = {
@@ -1880,25 +1960,38 @@ function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun
   )
 }
 
-function ConstatCard({ c, avis, textes, canEvaluate, onSave, isPending, estompe }: {
+function ConstatCard({ c, avis, resolution, textes, canEvaluate, onSave, onResolve, isPending, estompe }: {
   c: ConstatRun
   avis: Evaluation | undefined
+  /** Marked résolu on THIS report (a carried one is `c.resolution`). */
+  resolution: Resolution | undefined
   textes: Record<Note, string>
   canEvaluate: boolean
   onSave: (note: Note | null, commentaire: string) => Promise<unknown>
+  /** Mark résolu with why, or undo it (null). */
+  onResolve: (commentaire: string | null) => Promise<unknown>
   isPending: boolean
   /** Set aside (false alarm): shown quieter. */
   estompe?: boolean
 }) {
+  const [brouillon, setBrouillon] = useState<string | null>(null)
+  const [erreur, setErreur] = useState<string | null>(null)
+  const res = resolution ?? c.resolution
   const g = GRAVITE_META[c.gravite]
-  const Icon = g.icon
+  const Icon = res ? CheckCircle2 : g.icon
   const j = joursDepuis(c.depuis)
+  const valider = () => {
+    if (!brouillon?.trim()) return
+    setErreur(null)
+    onResolve(brouillon.trim()).then(() => setBrouillon(null)).catch((e: Error) => setErreur(e.message))
+  }
   return (
-    <div className={cn('rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3', estompe ? 'border-l-border opacity-80' : g.border)}>
+    <div className={cn('rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
+      res ? 'border-l-green-500/60' : estompe ? 'border-l-border opacity-80' : g.border)}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0', estompe ? 'bg-muted' : g.iconBg)}>
-            <Icon className={cn('h-3.5 w-3.5', estompe ? 'text-muted-foreground' : g.iconCls)} />
+          <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0', res ? 'bg-green-500/10' : estompe ? 'bg-muted' : g.iconBg)}>
+            <Icon className={cn('h-3.5 w-3.5', res ? 'text-green-600' : estompe ? 'text-muted-foreground' : g.iconCls)} />
           </div>
           <div className="min-w-0">
             <p className="text-sm font-medium truncate" title={c.titre}>{c.titre}</p>
@@ -1909,6 +2002,13 @@ function ConstatCard({ c, avis, textes, canEvaluate, onSave, isPending, estompe 
           {c.etat === 'nouveau' && <Badge variant="outline" className="text-[10px] py-0 border-amber-500/40 bg-amber-500/10 text-amber-800">Nouveau</Badge>}
           {c.etat === 'aggrave' && <Badge variant="outline" className="text-[10px] py-0 border-destructive/40 bg-destructive/10 text-destructive">Aggravé</Badge>}
           {c.etat === 'ouvert' && <span className="text-[11px] text-muted-foreground whitespace-nowrap">depuis {j === 0 ? 'aujourd’hui' : `${j} j`}</span>}
+          {canEvaluate && !res && brouillon === null && (
+            <button type="button" onClick={() => { setBrouillon(''); setErreur(null) }} disabled={isPending}
+              title="Le problème est réglé (appel, accord avec le client…) : expliquez comment"
+              className="h-6 px-2 rounded-md inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-green-700 hover:bg-green-500/10 transition-colors">
+              <CheckCheck className="h-3.5 w-3.5" />Marquer résolu
+            </button>
+          )}
           {c.lien && (
             <Link to={c.lien} title="Ouvrir dans ETM"
               className="h-6 w-6 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-accent hover:bg-accent/10 transition-colors">
@@ -1918,6 +2018,38 @@ function ConstatCard({ c, avis, textes, canEvaluate, onSave, isPending, estompe 
         </div>
       </div>
       <p className="text-sm mt-2 ml-9">{c.message}</p>
+      {res && (
+        <div className="mt-2 ml-9 rounded-md border border-green-500/30 bg-green-500/10 px-2.5 py-1.5 text-xs flex items-start gap-1.5">
+          <CheckCheck className="h-3.5 w-3.5 text-green-700 flex-shrink-0 mt-px" />
+          <span className="min-w-0 flex-1">
+            <span className="font-semibold text-green-700">Résolu{resolution ? '' : ' sur un rapport précédent'} : </span>
+            <span className="text-foreground">{res.commentaire}</span>
+            <span className="text-muted-foreground"> — {res.par.nom}, {fmtDateHeure(res.le)}</span>
+          </span>
+          {canEvaluate && (
+            <button type="button" className="flex-shrink-0 text-[11px] text-muted-foreground hover:text-destructive transition-colors" disabled={isPending}
+              onClick={() => { setErreur(null); onResolve(null).catch((e: Error) => setErreur(e.message)) }}>
+              Annuler
+            </button>
+          )}
+        </div>
+      )}
+      {brouillon !== null && (
+        <div className="mt-2 ml-9 space-y-1.5 max-w-xl">
+          <p className="text-[11px] text-muted-foreground">
+            Le point quitte la liste à traiter. Dites comment il a été réglé — l’agent s’en sert pour sa version suivante.
+          </p>
+          <textarea value={brouillon} onChange={(e) => setBrouillon(e.target.value)} rows={2} maxLength={2000} autoFocus
+            placeholder="Ex. : PE a eu le client au téléphone (obligatoire)" className={textareaClass} />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => { setBrouillon(null); setErreur(null) }}>Annuler</Button>
+            <Button size="sm" disabled={isPending || !brouillon.trim()} onClick={valider}>
+              {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCheck className="h-3.5 w-3.5 mr-1.5" />}Marquer résolu
+            </Button>
+          </div>
+        </div>
+      )}
+      {erreur && <p className="mt-1 ml-9 text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</p>}
       <PointEvaluation avis={avis} herite={c.avis} textes={textes} canEvaluate={canEvaluate} onSave={onSave} isPending={isPending} />
     </div>
   )
@@ -1966,6 +2098,11 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
       callApi(`/agents-ia/${slug}/runs/${runId}/points`, { method: 'PUT', body: JSON.stringify(v) }),
     onSuccess: rafraichir,
   })
+  const resolutionMut = useMutation({
+    mutationFn: (v: { cle: string; commentaire: string | null }) =>
+      callApi(`/agents-ia/${slug}/runs/${runId}/points/resolution`, { method: 'PUT', body: JSON.stringify(v) }),
+    onSuccess: rafraichir,
+  })
 
   const res = run?.resultat
   const constats = res?.constats ?? []
@@ -1973,20 +2110,25 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
   const ouverts = constats.filter((c) => c.etat === 'ouvert')
   const ecartes = res?.ecartes ?? []
   const fermes = res?.fermes ?? []
+  const resolusAvant = res?.resolus ?? []
   const controles = res?.controles ?? []
   const avis = run?.avisPoints ?? {}
+  const resolutions = run?.resolutionsPoints ?? {}
   // A point scored on an earlier report counts as scored (score.ts, same rule as the list).
   const noteDe = (c: ConstatRun): Note | null => avis[c.cle]?.note ?? c.avis?.note ?? null
   const notes = constats.map(noteDe)
-  const evalues = notes.filter((n) => n !== null).length
   const compte = (n: Note) => notes.filter((x) => x === n).length
-  const aEvaluer = constats.length - evalues
-  const pct = constats.length ? Math.round((evalues / constats.length) * 100) : 0
+  // Marked résolu here and not scored: dealt with, never « à évaluer » (score.ts bilanRun).
+  const resolusIci = constats.filter((c) => resolutions[c.cle]).length
+  const aEvaluer = constats.filter((c) => noteDe(c) === null && !resolutions[c.cle]).length
+  const nbResolus = fermes.length + resolusAvant.length + resolusIci
+  const pct = constats.length ? Math.round(((constats.length - aEvaluer) / constats.length) * 100) : 0
 
   const carte = (c: ConstatRun, estompe = false) => (
-    <ConstatCard key={c.cle} c={c} avis={avis[c.cle]} textes={agent.evaluation} canEvaluate={canEvaluate} estompe={estompe}
-      isPending={pointMut.isPending && pointMut.variables?.cle === c.cle}
-      onSave={(note, commentaire) => pointMut.mutateAsync({ cle: c.cle, note, commentaire })} />
+    <ConstatCard key={c.cle} c={c} avis={avis[c.cle]} resolution={resolutions[c.cle]} textes={agent.evaluation} canEvaluate={canEvaluate} estompe={estompe}
+      isPending={(pointMut.isPending && pointMut.variables?.cle === c.cle) || (resolutionMut.isPending && resolutionMut.variables?.cle === c.cle)}
+      onSave={(note, commentaire) => pointMut.mutateAsync({ cle: c.cle, note, commentaire })}
+      onResolve={(commentaire) => resolutionMut.mutateAsync({ cle: c.cle, commentaire })} />
   )
 
   return (
@@ -2018,7 +2160,7 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
               { key: 'signales', label: 'Points signalés', value: fmtNum(constats.length),
                 sub: constats.length > 0 ? `${fmtNum(neufs.length)} nouveaux · ${fmtNum(ouverts.length)} ouverts` : 'rien à traiter' },
               { key: 'evalues', label: 'Évalués', tone: constats.length > 0 && aEvaluer === 0 ? NOTE_META.reussite.text : undefined,
-                value: <>{fmtNum(evalues)}<span className="text-sm font-normal text-muted-foreground"> / {fmtNum(constats.length)}</span></>,
+                value: <>{fmtNum(constats.length - aEvaluer)}<span className="text-sm font-normal text-muted-foreground"> / {fmtNum(constats.length)}</span></>,
                 sub: constats.length > 0 && (
                   <div className="h-1.5 mt-1 rounded-full bg-zinc-200 overflow-hidden" title={`${pct} %`}>
                     <div className={cn('h-full rounded-full transition-all', aEvaluer === 0 ? 'bg-success' : 'bg-accent')} style={{ width: `${pct}%` }} />
@@ -2028,8 +2170,8 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
               { key: 'partielle', label: 'Partiels', value: fmtNum(compte('partielle')), tone: compte('partielle') > 0 ? NOTE_META.partielle.text : undefined },
               { key: 'echec', label: 'Fausses alertes', value: fmtNum(compte('echec')), tone: compte('echec') > 0 ? NOTE_META.echec.text : undefined,
                 sub: ecartes.length > 0 ? `${fmtNum(ecartes.length)} écartée${ecartes.length > 1 ? 's' : ''} avant` : undefined },
-              { key: 'fermes', label: 'Résolus', value: fmtNum(fermes.length), tone: fermes.length > 0 ? NOTE_META.reussite.text : undefined,
-                sub: 'depuis le rapport précédent' },
+              { key: 'fermes', label: 'Résolus', value: fmtNum(nbResolus), tone: nbResolus > 0 ? NOTE_META.reussite.text : undefined,
+                sub: `${fmtNum(fermes.length)} constatés · ${fmtNum(resolusAvant.length + resolusIci)} à la main` },
             ]} />
 
             <div className="flex-shrink-0 flex items-center justify-between gap-3 text-xs text-muted-foreground px-1">
@@ -2100,18 +2242,26 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
                 </div>
               )}
 
-              {fermes.length > 0 && (
-                <>
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Résolus depuis le rapport précédent</p>
-                  {fermes.map((f) => (
-                    <div key={f.cle} className="rounded-lg border-l-4 border border-border/60 border-l-green-500/60 bg-zinc-100/80 p-2.5 flex items-center gap-2">
-                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
-                      <span className="text-sm truncate flex-1">{f.titre}</span>
-                      <span className="text-[11px] text-muted-foreground flex-shrink-0">{DOMAINE_LIBELLE[f.domaine] ?? f.domaine}</span>
-                    </div>
-                  ))}
-                </>
+              {(fermes.length > 0 || resolusAvant.length > 0) && (
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Résolus depuis le rapport précédent</p>
               )}
+              {fermes.map((f) => (
+                <div key={f.cle} className="rounded-lg border-l-4 border border-border/60 border-l-green-500/60 bg-zinc-100/80 p-2.5">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                    <span className="text-sm truncate flex-1" title={f.titre}>{f.titre}</span>
+                    <span className="text-[11px] text-muted-foreground flex-shrink-0">{DOMAINE_LIBELLE[f.domaine] ?? f.domaine}</span>
+                  </div>
+                  {f.raison && <p className="text-xs text-muted-foreground mt-1 ml-[22px]">{f.raison}</p>}
+                  {f.resolution && (
+                    <p className="text-xs mt-0.5 ml-[22px]">
+                      <span className="font-semibold text-green-700">Marqué résolu : </span>{f.resolution.commentaire}
+                      <span className="text-muted-foreground"> — {f.resolution.par.nom}</span>
+                    </p>
+                  )}
+                </div>
+              ))}
+              {resolusAvant.map((c) => carte(c))}
 
               {ecartes.length > 0 && (
                 <div className="pt-1">

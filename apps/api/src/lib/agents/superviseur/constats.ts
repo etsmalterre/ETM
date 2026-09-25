@@ -38,7 +38,13 @@ export interface ConstatRun extends Constat {
   depuis: string
   /** The score someone gave this finding on an earlier report (avis.ts). */
   avis?: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'>
+  /** Someone marked it resolved on an earlier report (resolutions.ts). */
+  resolution?: Pick<Evaluation, 'commentaire' | 'par' | 'le'>
 }
+
+/** Same finding, but not the same problem any more (the client wrote again). */
+export const empreinteChangee = (avant: Constat, apres: Constat) =>
+  avant.empreinte !== undefined && apres.empreinte !== undefined && avant.empreinte !== apres.empreinte
 
 export const memoireVide = (): Memoire => ({ ouverts: {}, majLe: null })
 
@@ -63,7 +69,9 @@ export function comparer(
   const ouverts: Record<string, ConstatOuvert> = {}
   const runs: ConstatRun[] = []
   for (const c of dedoublonner(constats)) {
-    const avant = memoire.ouverts[c.cle]
+    const prec = memoire.ouverts[c.cle]
+    // A client who writes again in the same conversation raises a new point.
+    const avant = prec && !empreinteChangee(prec.constat, c) ? prec : undefined
     const etat: EtatConstat = !avant ? 'nouveau' : GRAVITE_RANG[c.gravite] > GRAVITE_RANG[avant.constat.gravite] ? 'aggrave' : 'ouvert'
     const depuis = avant?.depuis ?? nowIso
     ouverts[c.cle] = { constat: c, depuis, vuLe: nowIso }

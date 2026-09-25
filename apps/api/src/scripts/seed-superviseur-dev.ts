@@ -26,7 +26,9 @@ type ResultatSuperviseur = import('../lib/agents/superviseur/superviseur.js').Re
 
 const t0 = Date.now()
 const nowIso = new Date(t0).toISOString()
-const ctx = { nowMs: t0, version: { version: 1, ...SUPERVISEUR_VERSION_INITIALE }, cout: () => {} }
+// Why each object the checks let pass was not reported: sample « résolus ».
+const raisons = new Map<string, string>()
+const ctx = { nowMs: t0, version: { version: 1, ...SUPERVISEUR_VERSION_INITIALE }, cout: () => {}, raison: (cle: string, t: string) => { raisons.set(cle, t) } }
 const PAR_CONTROLE = 4 // enough of each kind to score, not a wall of points
 // Checks that read the factory mailboxes — replaced below by sample points.
 const MAILS = new Set(['client_sans_reponse', 'commande_mail'])
@@ -75,7 +77,27 @@ const constats: ConstatRun[] = [...mails, ...trouves].map((c, i) =>
   i % 2 === 0 ? { ...c, etat: 'nouveau', depuis: nowIso } : { ...c, etat: 'ouvert', depuis: il_y_a(2 + i) },
 )
 
-const resultat: ResultatSuperviseur = { controles, constats, ecartes: [], fermes: [], memoireMiseAJour: false }
+// A few objects the checks let pass, shown as closed points with the real
+// reason; one mail closed by an answer; one point marked résolu by hand earlier.
+const parControle = new Map<string, number>()
+const fermes: ResultatSuperviseur['fermes'] = []
+for (const [cle, raison] of raisons) {
+  const ctl = cle.split(':')[0]
+  if ((parControle.get(ctl) ?? 0) >= 2) continue
+  parControle.set(ctl, (parControle.get(ctl) ?? 0) + 1)
+  fermes.push({ cle, titre: `[Test] ${cle}`, domaine: CONTROLES.find((c) => c.id === ctl)?.domaine ?? 'commandes_client', depuis: il_y_a(3), raison })
+}
+fermes.push({
+  cle: 'seed:mail:ferme', titre: '[Test] ALLANDE — « RE: Confirmation de commande »', domaine: 'mails', depuis: il_y_a(2),
+  raison: 'Réponse de pierre-emmanuel le 24/09 à 16h12.',
+})
+const resolus: ConstatRun[] = [{
+  cle: 'seed:mail:resolu', controle: 'client_sans_reponse', domaine: 'mails', gravite: 'urgent', etat: 'ouvert', depuis: il_y_a(2),
+  titre: '[Test] WECAMECA — « RE: demande de stock et prix »', lien: null,
+  message: 'Le client demande des informations complémentaires sur le prix et le stock. Sans réponse depuis 6 jours ouvrés (isabelle).',
+  resolution: { commentaire: 'J’ai eu la cliente au téléphone, elle doit revenir vers moi.', par: { id: 0, nom: 'Seed dev' }, le: il_y_a(1) },
+}]
+const resultat: ResultatSuperviseur = { controles, constats, ecartes: [], resolus, fermes, memoireMiseAJour: false }
 const neufs = constats.filter((c) => c.etat === 'nouveau').length
 await ajouterRun({
   id: nouvelIdRun(),

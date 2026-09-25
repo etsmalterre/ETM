@@ -46,6 +46,11 @@ export interface Constat {
   message: string
   /** ETM path to open it (`/clients/commandes?id=…`), or null. */
   lien: string | null
+  /** What makes it the SAME problem while the key stays (a mail conversation:
+   *  the client's last message). When it changes, the point is new again and a
+   *  score or a « résolu » given on the old one no longer applies. Unset = the
+   *  key alone identifies the problem. */
+  empreinte?: string
 }
 
 export interface ContexteControle {
@@ -54,6 +59,11 @@ export interface ContexteControle {
   version: { version: number; model: string; prompt: string }
   /** Adds an LLM / OCR cost (USD) to the run. */
   cout(usd: number): void
+  /** Why the object behind `cle` is NOT reported this run (« Réponse de
+   *  pierre-emmanuel le 24/09 », « Ligne expédiée »). Recorded for every object
+   *  a check looked at and let pass; read only for the findings that close, so
+   *  the report says why each one is resolved. Last call wins. */
+  raison(cle: string, texte: string): void
 }
 
 export interface Controle {
@@ -63,4 +73,8 @@ export interface Controle {
   /** Shown in the « Fonctionnement » tab. */
   description: string
   executer(ctx: ContexteControle): Promise<Constat[]>
+  /** Why an open finding of this check closed when `executer` recorded no
+   *  reason for it — the object left the check's scope (order soldée, mail
+   *  out of the window). */
+  raisonAbsent?: string
 }

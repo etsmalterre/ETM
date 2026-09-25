@@ -18,6 +18,7 @@ import {
   SUPERVISEUR_JOURS,
   SUPERVISEUR_SLUG,
   SUPERVISEUR_VERSION_INITIALE,
+  SUPERVISEUR_PROMPT_LIVRE,
   executer as executerSuperviseur,
 } from './superviseur/superviseur.js'
 import { CONTROLES } from './superviseur/controles/index.js'
@@ -69,6 +70,10 @@ export interface AgentDef {
    *  leaves it out. */
   modes: Partial<Record<AgentMode, string>>
   versionInitiale: VersionInitiale
+  /** A prompt version shipped with the code (the result of reading the
+   *  « Retours »). Offered in the Prompt tab until a stored version carries
+   *  it — publishing stays a person's decision: a version's score starts at 0. */
+  promptLivre?: VersionInitiale
   /** Chat models a version may use. */
   modeles: readonly string[]
   /** One run now (scheduler tick, or « Relever / Lancer maintenant » when `par` is set). */
@@ -152,6 +157,7 @@ export const AGENTS: readonly AgentDef[] = [
       actif: 'Contrôle chaque nuit et prépare le rapport du matin.',
     },
     versionInitiale: SUPERVISEUR_VERSION_INITIALE,
+    promptLivre: SUPERVISEUR_PROMPT_LIVRE,
     modeles: MODELES_MISTRAL,
     sonder: executerSuperviseur,
     controles: CONTROLES.map((c) => ({ id: c.id, libelle: c.libelle, description: c.description })),

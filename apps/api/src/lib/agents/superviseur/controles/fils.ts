@@ -14,7 +14,7 @@ import { calculerEtatFil } from '../../../fil-etat.js'
 import { missingAffectations } from '../../../affectation-fil-trm.js'
 import { TRICOTAGE_MALTERRE_ID } from '../../../../routes/commandes-sous-traitant.js'
 import type { Constat, Controle } from '../types.js'
-import { evaluerAffectationFil, evaluerFil, fmt } from './regles.js'
+import { evaluerAffectationFil, evaluerFil, fmt, raisonFil } from './regles.js'
 import { noms } from './noms.js'
 
 const libelleFil = (ref: string | undefined, coloris: string | undefined, rf: number) =>
@@ -26,7 +26,8 @@ export const controleFilACommander: Controle = {
   libelle: 'Fil à commander',
   description:
     'Fil (référence + coloris) utilisé par une commande de tricotage en cours dont le stock plus ce qui est en commande ne couvre pas le besoin restant (même calcul que le widget « État des stocks de fil »). Tolérance 5 kg, urgent à partir de 50 kg manquants.',
-  async executer() {
+  raisonAbsent: 'Plus utilisé par une commande de tricotage en cours.',
+  async executer(ctx) {
     // All-ASCII columns, no CONVERT: the same JOIN shapes as lib/fil-etat.ts.
     const [p1, p2] = await Promise.all([
       query<{ rf: number; cf: number }>(
@@ -59,6 +60,7 @@ export const controleFilACommander: Controle = {
       const etat = await calculerEtatFil(rf, cf)
       const r = evaluerFil(etat.disponible)
       if (r) manques.push({ rf, cf, etat, r })
+      else ctx.raison(`fil_a_commander:${rf}:${cf}`, raisonFil(etat))
     }
     if (!manques.length) return []
     const [refs, coloris] = await Promise.all([noms('ref_fil', manques.map((m) => m.rf)), noms('colori_fil', manques.map((m) => m.cf))])
@@ -80,6 +82,7 @@ export const controleAffectationFil: Controle = {
   libelle: 'Fil à affecter (Tricotage Malterre)',
   description:
     'Ligne de tricotage ouverte chez Tricotage Malterre, sans OF lancé, dont un fil de la composition n’est affecté sur la ligne ETM : TRM ne peut pas lancer l’OF tant qu’il ne l’est pas (onglet Stock fil). Signalé à partir du lendemain de la commande.',
+  raisonAbsent: 'Commande soldée, ou ligne terminée.',
   async executer(ctx) {
     const today = new Date(ctx.nowMs)
     const cmds = await query<{ IDcommande_sous_traitant: number; date_commande: string | null }>(
@@ -115,7 +118,7 @@ export const controleAffectationFil: Controle = {
     const trouves: Array<{ ligne: number; cmd: number; manquants: Array<{ IDref_fil: number; IDcolori_fil: number }> }> = []
     for (const l of lignes) {
       const trm = trmParSst.get(Number(l.id))
-      if (trm && avecOf.has(trm)) continue // OF launched: the lots were chosen
+      if (trm && avecOf.has(trm)) { ctx.raison(`fil_affectation:${l.id}`, 'OF lancé par Tricotage Malterre : les lots de fil ont été choisis.'); continue }
       // Composition: coloris-scoped first, every variant of the écru as fallback
       // (same rule as the OF creation dialog, of-trm.ts).
       let comp = await query<{ IDref_fil: number; IDcolori_fil: number }>(
@@ -133,6 +136,8 @@ export const controleAffectationFil: Controle = {
       const manquants = missingAffectations(comp.map((c) => ({ IDref_fil: Number(c.IDref_fil) || 0, IDcolori_fil: Number(c.IDcolori_fil) || 0 })), lots)
       if (evaluerAffectationFil(manquants.length, dateCmd.get(Number(l.cmd)) ?? '', today)) {
         trouves.push({ ligne: Number(l.id), cmd: Number(l.cmd), manquants })
+      } else if (!manquants.length) {
+        ctx.raison(`fil_affectation:${l.id}`, 'Tous les fils de la composition sont affectés sur la ligne.')
       }
     }
     if (!trouves.length) return []

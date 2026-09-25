@@ -13,13 +13,14 @@ import { query } from '../../../hfsql-auto.js'
 import { consumedEcruIds } from '../../../fini-sources.js'
 import { lineReservationAggregates } from '../../../../routes/commandes-client.js'
 import type { Constat, ContexteControle, Controle } from '../types.js'
-import { delaiTexte, evaluerCouverture, evaluerEnnoblissement, fmt } from './regles.js'
+import { ACCORDS_LIVRAISON_PARTIELLE, delaiTexte, evaluerCouverture, evaluerEnnoblissement, fmt, raisonCouverture, raisonEnnoblissement } from './regles.js'
 import { noms } from './noms.js'
 
 interface LigneOuverte {
   id: number
   commandeId: number
   numero: number
+  clientId: number
   client: string
   typeKind: number
   refId: number
@@ -73,6 +74,7 @@ async function lire(): Promise<LigneOuverte[]> {
       id,
       commandeId: Number(c.IDcommande_client),
       numero: Number(c.numero) || 0,
+      clientId: Number(c.IDclient) || 0,
       client: clients.get(Number(c.IDclient)) || `Client #${c.IDclient}`,
       typeKind,
       refId,
@@ -102,20 +104,23 @@ export const controleCouverture: Controle = {
   libelle: 'Pièces à affecter / production à lancer',
   description:
     'Ligne de commande client dont le délai tombe dans les 21 jours (ou est dépassé depuis moins de 30 jours) et qui n’est pas couverte à 90 % par des pièces affectées ou du tricotage prévu. Urgent à 7 jours.',
+  raisonAbsent: 'Commande soldée, ou ligne supprimée.',
   async executer(ctx) {
     const today = new Date(ctx.nowMs)
     const out: Constat[] = []
     for (const l of await chargerLignes(ctx)) {
       const r = evaluerCouverture(l, today)
-      if (!r) continue
+      if (!r) { ctx.raison(`couverture:${l.id}`, raisonCouverture(l, today)); continue }
       const u = unite(l.unite)
+      // A client who agreed to receive what is available: worth knowing, not a point to handle.
+      const accord = ACCORDS_LIVRAISON_PARTIELLE.get(l.clientId)
       out.push({
         cle: `couverture:${l.id}`,
         controle: 'couverture',
         domaine: 'commandes_client',
-        gravite: r.gravite,
+        gravite: accord ? 'info' : r.gravite,
         titre: titre(l),
-        message: `Délai ${delaiTexte(l.dateLivraison, r.jours)} : ${fmt(l.affecte)} ${u} affectés sur ${fmt(l.quantite)} ${u} commandés, il manque ${fmt(r.manque)} ${u}. Pièces à affecter ou production à lancer.`,
+        message: `Délai ${delaiTexte(l.dateLivraison, r.jours)} : ${fmt(l.affecte)} ${u} affectés sur ${fmt(l.quantite)} ${u} commandés, il manque ${fmt(r.manque)} ${u}. ${accord ? `Pour information (${accord}).` : 'Pièces à affecter ou production à lancer.'}`,
         lien: lien(l),
       })
     }
@@ -129,6 +134,7 @@ export const controleEnnoblissement: Controle = {
   libelle: 'Ennoblissement à lancer',
   description:
     'Ligne fini dont le délai tombe dans les 30 jours alors que de l’écru lui est réservé sans être parti chez le teinturier (ni teint, ni donné). Urgent à 14 jours.',
+  raisonAbsent: 'Commande soldée, ou ligne supprimée.',
   async executer(ctx) {
     const today = new Date(ctx.nowMs)
     const finis = (await chargerLignes(ctx)).filter((l) => l.typeKind === 2)
@@ -155,7 +161,7 @@ export const controleEnnoblissement: Controle = {
     for (const l of finis) {
       const k = kg.get(l.id) ?? 0
       const r = evaluerEnnoblissement(k, l.dateLivraison, today)
-      if (!r) continue
+      if (!r) { ctx.raison(`ennoblissement:${l.id}`, raisonEnnoblissement(k, l.dateLivraison, today)); continue }
       out.push({
         cle: `ennoblissement:${l.id}`,
         controle: 'ennoblissement',

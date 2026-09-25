@@ -33,7 +33,7 @@ import {
 } from '../lib/agents/store.js'
 import { etatSondage, lancerSondage, prochainQuotidien, SondageEnCoursError } from '../lib/agents/scheduler.js'
 import type { ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
-import { enregistrerAvis, lireAvis } from '../lib/agents/superviseur/avis.js'
+import { enregistrerAvis, enregistrerResolution, lireAvis, lireResolutions } from '../lib/agents/superviseur/avis.js'
 import { bilanRun, notesDuBilan, scorePoints } from '../lib/agents/superviseur/score.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur } from '../lib/gmail-reader.js'
@@ -125,7 +125,7 @@ function statistiques(def: AgentDef, runs: AgentRun[], state: AgentState) {
 
 /** A run without the heavy parts (OCR text, findings) for lists. */
 function allege(r: AgentRun) {
-  const { resultat, avisPoints: _avis, ...rest } = r
+  const { resultat, avisPoints: _avis, resolutionsPoints: _res, ...rest } = r
   const res = resultat as { extraction?: { pieces?: unknown[]; numero_bordereau?: string; numero_commande?: string } }
   const sup = resultat as Partial<ResultatSuperviseur>
   return {
@@ -136,7 +136,7 @@ function allege(r: AgentRun) {
     // Superviseur
     nbNouveaux: sup.constats ? sup.constats.filter((c) => c.etat !== 'ouvert').length : null,
     nbOuverts: sup.constats ? sup.constats.filter((c) => c.etat === 'ouvert').length : null,
-    nbFermes: sup.fermes ? sup.fermes.length : null,
+    nbFermes: sup.fermes ? sup.fermes.length + (sup.resolus?.length ?? 0) : null,
     nbEcartes: sup.ecartes ? sup.ecartes.length : null,
     /** How the report's points stand (scored on it, or carried from earlier). */
     bilan: bilanRun(r),
@@ -196,6 +196,8 @@ agentsIaRouter.get('/:slug', async (req, res) => {
       ...(await vueAgent(def)),
       activeVersion: state.activeVersion,
       versions: [...state.versions].reverse(),
+      // The shipped prompt, until a stored version carries it.
+      promptLivre: def.promptLivre && !state.versions.some((x) => x.prompt.trim() === def.promptLivre!.prompt.trim()) ? def.promptLivre : null,
       modeles: def.modeles.map((m) => ({ id: m, label: CHAT_MODELS[m]?.label ?? m })),
     })
   } catch (err) {
@@ -423,11 +425,58 @@ agentsIaRouter.put('/:slug/runs/:id/points', async (req, res) => {
     })
     // Clearing a score from an old report must not wipe a newer one.
     const index = await lireAvis()
-    if (avis) await enregistrerAvis(cle, { ...avis, runId: run.id, titre: point.titre })
+    if (avis) await enregistrerAvis(cle, { ...avis, runId: run.id, titre: point.titre, empreinte: point.empreinte })
     else if (!index[cle] || index[cle].runId === run.id) await enregistrerAvis(cle, null)
     res.json(r)
   } catch (err) {
     console.error('[agents-ia] avis point failed:', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
+  }
+})
+
+const resolutionBody = z.object({
+  cle: z.string().min(1).max(500),
+  /** Why it is resolved; null undoes the résolu. */
+  commentaire: z.string().trim().max(2000).nullable(),
+})
+
+/** Mark one point of a Superviseur report résolu, with why — what ETM and the
+ *  mailboxes cannot see (a phone call, an agreement with the client). Kept on
+ *  the run (feedback for the next version) and in the Superviseur's index, so
+ *  the next reports list it under « Résolus » while the check still returns it
+ *  (lib/agents/superviseur/avis.ts). Same right as scoring a point. */
+agentsIaRouter.put('/:slug/runs/:id/points/resolution', async (req, res) => {
+  const uid = await evaluateur(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  if (!def.pointsEvaluables) { res.status(409).json({ error: 'cet agent ne produit pas de points à résoudre' }); return }
+  const p = resolutionBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'résolution invalide' }); return }
+  const { cle, commentaire } = p.data
+  if (commentaire !== null && !commentaire) { res.status(400).json({ error: 'Expliquez pourquoi le point est résolu.' }); return }
+  try {
+    const run = await lireRun(def.slug, req.params.id)
+    if (!run) { res.status(404).json({ error: 'exécution introuvable' }); return }
+    const sup = run.resultat as Partial<ResultatSuperviseur>
+    const carries = (sup.resolus ?? []).find((c) => c.cle === cle)
+    const point = [...(sup.constats ?? []), ...(sup.ecartes ?? [])].find((c) => c.cle === cle) ?? carries
+    if (!point) { res.status(404).json({ error: 'point introuvable dans ce rapport' }); return }
+    const resolution = commentaire ? { commentaire, par: await auteur(uid), le: new Date().toISOString() } : null
+    const r = await modifierRun(def.slug, run.id, (x) => {
+      const points = { ...(x.resolutionsPoints ?? {}) }
+      if (resolution) points[cle] = resolution
+      else delete points[cle]
+      x.resolutionsPoints = points
+    })
+    // Undoing on an old report must not wipe a newer résolu — unless this
+    // report shows the point as résolu carried from earlier (that IS the one).
+    const index = await lireResolutions()
+    if (resolution) await enregistrerResolution(cle, { ...resolution, runId: run.id, titre: point.titre, empreinte: point.empreinte })
+    else if (!index[cle] || index[cle].runId === run.id || carries) await enregistrerResolution(cle, null)
+    res.json(r)
+  } catch (err) {
+    console.error('[agents-ia] resolution point failed:', err)
     res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
   }
 })
@@ -444,18 +493,24 @@ agentsIaRouter.get('/:slug/retours', async (req, res) => {
       runId: string; runLe: string; source: AgentRun['source']; portee: 'execution' | 'point'
       titre: string | null; note: Note; commentaire: string; par: Auteur; le: string; retrait: string | null
     }> = []
+    /** Points marked résolu by hand — what ETM and the mailboxes could not see. */
+    const resolutions: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
     for (const r of await lireRuns(def.slug)) {
       if (r.version !== version) continue
       const base = { runId: r.id, runLe: r.createdAt, source: r.source }
       if (r.evaluation) retours.push({ ...base, portee: 'execution', titre: r.resume, ...r.evaluation, retrait: r.evaluation.retrait ?? null })
       const sup = r.resultat as Partial<ResultatSuperviseur>
-      const titres = new Map([...(sup.constats ?? []), ...(sup.ecartes ?? [])].map((c) => [c.cle, c.titre]))
+      const titres = new Map([...(sup.constats ?? []), ...(sup.ecartes ?? []), ...(sup.resolus ?? [])].map((c) => [c.cle, c.titre]))
       for (const [cle, a] of Object.entries(r.avisPoints ?? {})) {
         retours.push({ ...base, portee: 'point', titre: titres.get(cle) ?? cle, ...a, retrait: null })
       }
+      for (const [cle, x] of Object.entries(r.resolutionsPoints ?? {})) {
+        resolutions.push({ runId: r.id, runLe: r.createdAt, titre: titres.get(cle) ?? cle, ...x })
+      }
     }
     retours.sort((a, b) => b.le.localeCompare(a.le))
-    res.json({ version, versions: state.versions.map((v) => v.version).reverse(), retours })
+    resolutions.sort((a, b) => b.le.localeCompare(a.le))
+    res.json({ version, versions: state.versions.map((v) => v.version).reverse(), retours, resolutions })
   } catch (err) {
     console.error('[agents-ia] retours failed:', err)
     res.status(500).json({ error: 'Internal server error' })

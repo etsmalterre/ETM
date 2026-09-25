@@ -105,3 +105,25 @@ describe('sansCitation', () => {
     expect(sansCitation(t)).toBe('Bonjour,\nOui c’est bon pour jeudi.')
   })
 })
+
+describe('conversationsSansReponse — why a conversation is not waiting', () => {
+  const now = LUNDI_9H + 50 * H
+  const depuis = LUNDI_9H - 14 * 24 * H
+  const raisons = (msgs: EnteteMessage[]) => {
+    const out = new Map<string, string>()
+    conversationsSansReponse(msgs, annuaire, now, depuis, (cle, t) => out.set(cle, t))
+    return [...out.values()]
+  }
+
+  it('names who answered and when (Paris time)', () => {
+    const q = m({ messageId: 'q@x' })
+    const r = m({ de: 'pierre-emmanuel@etsmalterre.com', envoye: true, references: ['q@x'], date: LUNDI_9H + 2 * H })
+    expect(raisons([q, r])).toEqual(['Réponse de pierre-emmanuel le 21/09 à 11h00.'])
+  })
+
+  it('names an answer written as a new mail to the client', () => {
+    const q = m({ messageId: 'q2@x', threadId: 't9' })
+    const r = m({ de: 'isabelle@etsmalterre.com', envoye: true, threadId: 't10', a: ['achat@thuasne.fr'], sujet: 'Votre proforma', date: LUNDI_9H + H })
+    expect(raisons([q, r])).toContain('Réponse de isabelle par un nouveau mail le 21/09 à 10h00 (« Votre proforma »).')
+  })
+})

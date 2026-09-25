@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { comparer, dedoublonner, memoireVide, type Memoire } from './constats.js'
-import { appliquerAvis, type IndexAvis } from './avis.js'
+import { appliquerSuivi, type IndexAvis } from './avis.js'
 import { quotidienDu, prochainQuotidien } from '../scheduler.js'
 import type { Constat, Gravite } from './types.js'
 
@@ -68,14 +68,14 @@ describe('dedoublonner', () => {
   })
 })
 
-describe('appliquerAvis', () => {
+describe('appliquerSuivi', () => {
   const par = { id: 7, nom: 'Isabelle' }
   const avis = (note: 'reussite' | 'partielle' | 'echec', commentaire = ''): IndexAvis[string] =>
     ({ note, commentaire, par, le: J1, runId: 'r1', titre: 't' })
 
   it('sets aside the points scored « échec » and keeps the others, with their score', () => {
     const r = comparer(memoireVide(), [c('1'), c('2'), c('3'), c('4')], J2)
-    const { listes, ecartes } = appliquerAvis(r.constats, {
+    const { listes, ecartes } = appliquerSuivi(r.constats, {
       'test:1': avis('echec', 'Déjà livré, fausse alerte'),
       'test:2': avis('partielle', 'Bon point, mauvaise quantité'),
       'test:3': avis('reussite'),
@@ -91,8 +91,37 @@ describe('appliquerAvis', () => {
 
   it('never carries the bookkeeping fields onto the report', () => {
     const r = comparer(memoireVide(), [c('1')], J2)
-    const { listes } = appliquerAvis(r.constats, { 'test:1': avis('reussite') })
+    const { listes } = appliquerSuivi(r.constats, { 'test:1': avis('reussite') })
     expect(listes[0].avis).toEqual({ note: 'reussite', commentaire: '', par, le: J1 })
+  })
+
+  it('moves a point resolved by hand to « résolus », even one scored échec', () => {
+    const r = comparer(memoireVide(), [c('1'), c('2')], J2)
+    const res = { commentaire: 'PE l’a eu au téléphone', par, le: J1, runId: 'r1', titre: 't' }
+    const { listes, ecartes, resolus } = appliquerSuivi(r.constats, { 'test:1': avis('echec', 'x') }, { 'test:1': res })
+    expect(resolus.map((x) => x.cle)).toEqual(['test:1'])
+    expect(resolus[0].resolution).toEqual({ commentaire: 'PE l’a eu au téléphone', par, le: J1 })
+    expect(resolus[0].avis?.note).toBe('echec')
+    expect(ecartes).toEqual([])
+    expect(listes.map((x) => x.cle)).toEqual(['test:2'])
+  })
+
+  it('drops a score or a resolution once the problem changed (client wrote again)', () => {
+    const r = comparer(memoireVide(), [{ ...c('1'), empreinte: 'msg-2' }], J2)
+    const res = { commentaire: 'réglé', par, le: J1, runId: 'r1', titre: 't', empreinte: 'msg-1' }
+    const { listes, resolus } = appliquerSuivi(r.constats, { 'test:1': { ...avis('echec', 'x'), empreinte: 'msg-1' } }, { 'test:1': res })
+    expect(resolus).toEqual([])
+    expect(listes.map((x) => [x.cle, x.avis ?? null])).toEqual([['test:1', null]])
+  })
+})
+
+describe('comparer — empreinte', () => {
+  it('raises the point again as « nouveau » when its empreinte changed', () => {
+    const m = comparer(memoireVide(), [{ ...c('1'), empreinte: 'msg-1' }], J1).memoire
+    const meme = comparer(m, [{ ...c('1'), empreinte: 'msg-1' }], J2).constats[0]
+    expect([meme.etat, meme.depuis]).toEqual(['ouvert', J1])
+    const autre = comparer(m, [{ ...c('1'), empreinte: 'msg-2' }], J2).constats[0]
+    expect([autre.etat, autre.depuis]).toEqual(['nouveau', J2])
   })
 })
 

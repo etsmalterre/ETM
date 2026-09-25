@@ -157,6 +157,7 @@ export const controleCommandesMails: Controle = {
   libelle: 'Commande reçue par mail non saisie ou différente',
   description:
     `Mail d’un client (${FENETRE_JOURS} derniers jours) contenant une nouvelle commande — lue par Mistral dans le texte et les PDF joints — sans commande correspondante dans ETM après 1 jour ouvré (urgent à 2), ou dont la commande saisie diffère en quantité (±5 %) ou en prix (±1 %). Rapprochement par le n° de commande du client dans « Réf. client », sinon par date et quantité totale.`,
+  raisonAbsent: `Mail sorti de la fenêtre de ${FENETRE_JOURS} jours.`,
   async executer(ctx) {
     const [{ entetes, erreurs }, annuaire] = await Promise.all([entetesDuRun(ctx.nowMs), chargerAnnuaire()])
     if (erreurs.length) throw new Error(`boîte(s) illisible(s) — ${erreurs.join(' ; ')}`)
@@ -185,9 +186,16 @@ export const controleCommandesMails: Controle = {
         cache[k] = { le: new Date(ctx.nowMs).toISOString(), model: ctx.version.model, extraction: ext, usd }
         modifie = true
       }
-      if (ext.type_message !== 'nouvelle_commande' || !ext.lignes.length) continue
+      const cle = `commande_mail:${conv}`
+      if (ext.type_message !== 'nouvelle_commande' || !ext.lignes.length) {
+        ctx.raison(cle, 'Le dernier message de la conversation n’est pas une nouvelle commande.')
+        continue
+      }
       const attente = heuresOuvrees(m.date, ctx.nowMs)
-      if (attente < REPONSE_ATTENTION_H) continue // the office has a working day to enter it
+      if (attente < REPONSE_ATTENTION_H) { // the office has a working day to enter it
+        ctx.raison(cle, 'Nouveau message du client : le délai de saisie n’est pas encore écoulé.')
+        continue
+      }
       const r = rapprocher(
         ext,
         { dateMin: ymd(m.date - 7 * 86_400_000), dateEntree: ymd(m.date - 2 * 86_400_000) },
@@ -197,7 +205,8 @@ export const controleCommandesMails: Controle = {
       const resume = ext.lignes.slice(0, 3).map((l) => [l.quantite != null ? `${fmt(l.quantite)} ${l.unite}` : '', l.reference_client || l.designation].filter(Boolean).join(' ')).join(', ')
       if (r.statut === 'absente') {
         out.push({
-          cle: `commande_mail:${conv}`,
+          cle,
+          empreinte: m.messageId || m.id,
           controle: 'commande_mail',
           domaine: 'commandes_client',
           gravite: attente >= REPONSE_URGENT_H ? 'urgent' : 'attention',
@@ -207,7 +216,8 @@ export const controleCommandesMails: Controle = {
         })
       } else if (r.ecarts.length) {
         out.push({
-          cle: `commande_mail:${conv}`,
+          cle,
+          empreinte: m.messageId || m.id,
           controle: 'commande_mail',
           domaine: 'commandes_client',
           gravite: 'attention',
@@ -218,6 +228,8 @@ export const controleCommandesMails: Controle = {
             : `La commande reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} diffère de la saisie : ${r.ecarts.join(' ; ')}.`,
           lien: `/clients/commandes?commande=${r.commande.id}`,
         })
+      } else {
+        ctx.raison(cle, `Commande saisie dans ETM : N°${r.commande.numero} correspond au mail.`)
       }
     }
     if (modifie) await ecrireCache(cache, ctx.nowMs)

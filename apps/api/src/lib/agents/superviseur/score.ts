@@ -54,7 +54,10 @@ function avisDuPoint(c: ConstatRun, avisPoints: Record<string, AvisLu> | undefin
 export function bilanRun(run: AgentRun): BilanPoints | null {
   const sup = run.resultat as Partial<ResultatSuperviseur>
   if (!sup.constats) return null
-  return compter(sup.constats.map((c) => avisDuPoint(c, run.avisPoints)?.note ?? null))
+  // A point marked résolu on this report is dealt with: it is counted only if
+  // someone also scored it, never left « à évaluer ».
+  const aCompter = sup.constats.filter((c) => !run.resolutionsPoints?.[c.cle] || avisDuPoint(c, run.avisPoints))
+  return compter(aCompter.map((c) => avisDuPoint(c, run.avisPoints)?.note ?? null))
 }
 
 /** The scores a report's points would be filtered on: each note present, and

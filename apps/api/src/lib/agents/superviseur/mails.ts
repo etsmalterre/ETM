@@ -17,6 +17,7 @@ import { collecterEntetes, lireFil, type EnteteMessage } from './boites.js'
 import { construireAnnuaire, type AnnuaireClients } from './reponses.js'
 import { noms } from './controles/noms.js'
 import { SUPERVISEUR_BOITES } from './boites-liste.js'
+import type { TypeDocument } from './verifications-etm.js'
 
 // ── Address book (clients vs suppliers) ──────────────────
 
@@ -128,29 +129,54 @@ export const TRI_SCHEMA = {
     client: { type: 'string' },
     numeros_cites: { type: 'array', items: { type: 'string' } },
     resume: { type: 'string' },
-    categorie: { type: 'string', enum: ['commande', 'devis', 'reclamation', 'suivi', 'facture', 'autre', 'bruit'] },
+    // v2 (2026-09-25): what ETM can confirm is already done — an address
+    // entered, a document emailed (verifications-etm.ts). Empty when absent.
+    changement_adresse: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { cp: { type: 'string' }, ville: { type: 'string' } },
+      required: ['cp', 'ville'],
+    },
+    documents_demandes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          type: { type: 'string', enum: ['facture', 'avoir', 'proforma', 'confirmation', 'bl', 'devis', 'autre'] },
+          numero: { type: 'string' },
+        },
+        required: ['type', 'numero'],
+      },
+    },
+    categorie: { type: 'string', enum: ['commande', 'devis', 'reclamation', 'suivi', 'facture', 'technique', 'autre', 'bruit'] },
     action_attendue: { type: 'string' },
     urgence: { type: 'string', enum: ['basse', 'normale', 'haute'] },
     attend_reponse: { type: 'boolean' },
   },
-  required: ['client', 'numeros_cites', 'resume', 'categorie', 'action_attendue', 'urgence', 'attend_reponse'],
+  required: ['client', 'numeros_cites', 'resume', 'changement_adresse', 'documents_demandes', 'categorie', 'action_attendue', 'urgence', 'attend_reponse'],
 } as const
 
 /** Does this conversation call for an answer from us? The model's verdict —
  *  NOT « any action named »: it names trivial ones (« archiver la réponse »)
  *  and that turned a thanked, answered question into an alarm (2026-09-23). */
 export function appelleReponse(t: Tri): boolean {
-  return t.categorie !== 'bruit' && t.attend_reponse
+  // « technique » (machines, spare parts, maintenance) is the workshop's
+  // business, never the office's (v2 — the JVC4 cams thread, 2026-09-24).
+  return t.categorie !== 'bruit' && t.categorie !== 'technique' && t.attend_reponse
 }
 
 export interface Tri {
-  categorie: 'commande' | 'devis' | 'reclamation' | 'suivi' | 'facture' | 'autre' | 'bruit'
+  categorie: 'commande' | 'devis' | 'reclamation' | 'suivi' | 'facture' | 'technique' | 'autre' | 'bruit'
   attend_reponse: boolean
   urgence: 'basse' | 'normale' | 'haute'
   client: string
   numeros_cites: string[]
   resume: string
   action_attendue: string
+  /** v2 — absent on triages cached by v1. */
+  changement_adresse?: { cp: string; ville: string }
+  documents_demandes?: Array<{ type: TypeDocument; numero: string }>
 }
 
 const CACHE = path.join(AGENTS_DIR, 'superviseur-mails.json')
