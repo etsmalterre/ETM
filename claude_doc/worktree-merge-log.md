@@ -9,6 +9,9 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-09-25 — feat/eloise
+No code. Eloise left: prod `utilisateur` #16 (`pc-eloise`) deleted, her `"16"` entry removed from `data/permissions-trm.json` on 10.10.20.3 (backup `.bak-eloise-20260925`; the only side file naming her). Her PC is reused as `pc-reglage` and replaces the retired `PC-REGLEUR`, so Regleur #14 now carries `pc = 'pc-reglage'` (same id, same rights). The how-to for the next departure / PC swap is in `auth_permissions.md` § Authentication. `seed-edit-of-trm.ts` / `seed-edit-expeditions-trm.ts` still list `eloise` in `STATIONS` — dead, harmless.
+
 ## 2026-09-24 — feat/site-clients
 **MPS API only (read-only, additive).** New `GET /api/site/espace/clients` in `routes/webservice-site.ts`: every visible ETS Malterre client (`IDsociete` 1) as `{ IDClient, nom }`, sorted by name, names through `fixEncoding`, cached 5 min — for the etsmalterre.fr espace client's admin « voir comme le client » dropdown. No e-mails or addresses. Reached only by the sites VPS through the WireGuard tunnel (factory Caddy `api-sites.intra…:9443`, route allowlist + `X-Site-Key`); the WordPress plugin never calls `espace/*`, so existing `/api/site` shapes are untouched.
 
