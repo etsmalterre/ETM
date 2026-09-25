@@ -39,9 +39,10 @@ import {
   ArrowDown,
   Link2,
   Barcode,
+  Globe,
 } from 'lucide-react'
 import { CodesSpTab, EtiquettesSwitch, useEtiquetteClients } from '@/components/etiquettes/CodesSpTab'
-import { AccesContactLine, useAccesEspaceClient } from '@/components/espace-client/AccesEspaceClient'
+import { AccesContactLine, etatAccesEspaceClient, useAccesEspaceClient } from '@/components/espace-client/AccesEspaceClient'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -1455,6 +1456,8 @@ const ENVOI_CHIP_CLASS: Record<(typeof ENVOI_FLAGS)[number]['key'], string> = {
   envoi_soumission: 'bg-amber-500/15 text-amber-800 border-amber-500/30',
 }
 const chipClass = 'inline-flex items-center px-1.5 py-0 rounded text-[10px] font-medium border'
+// Espace client access is not a document flag: its own hue (navy) and a Globe icon.
+const espaceClientChipClass = 'gap-0.5 bg-primary/10 text-primary border-primary/25'
 
 // Gold "Principal(e)" star badge + gold avatar tint (icon-box-gold gradient,
 // with the darker gold text the utility uses — text-accent is too light on white).
@@ -1472,6 +1475,9 @@ function ContactsTab({ contacts, isEditing, accesEditable, clientId, onMutationS
   const [form, setForm] = useState({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false })
   const [showForm, setShowForm] = useState(false)
   const { data: acces } = useAccesEspaceClient(clientId)
+  const accesDe = (idcontact: number) => acces?.contacts.find((a) => a.idcontact === idcontact)
+  // Read mode: a chip beside the envoi chips. The switch line only where it can act.
+  const chipEspaceClient = (idcontact: number) => !!acces?.disponible && !accesEditable && !!accesDe(idcontact)?.actif
 
   const onDirtyChangeRef = useRef(onDirtyChange)
   useEffect(() => { onDirtyChangeRef.current = onDirtyChange })
@@ -1549,17 +1555,22 @@ function ContactsTab({ contacts, isEditing, accesEditable, clientId, onMutationS
                     <a href={`mailto:${c.mail}`} className="truncate hover:text-accent transition-colors">{c.mail}</a>
                   </div>
                 )}
-                {ENVOI_FLAGS.some(({ key }) => !!c[key]) && (
+                {(ENVOI_FLAGS.some(({ key }) => !!c[key]) || chipEspaceClient(c.IDcontact)) && (
                   <div className="flex gap-1 mt-1.5 flex-wrap">
                     {ENVOI_FLAGS.map(({ key, label }) => !!c[key] && (
                       <span key={key} className={cn(chipClass, ENVOI_CHIP_CLASS[key])}>{label}</span>
                     ))}
+                    {chipEspaceClient(c.IDcontact) && (
+                      <span className={cn(chipClass, espaceClientChipClass)} title={etatAccesEspaceClient(accesDe(c.IDcontact))}>
+                        <Globe className="h-2.5 w-2.5" />Espace client
+                      </span>
+                    )}
                   </div>
                 )}
-                {acces?.disponible && (
+                {acces?.disponible && accesEditable && (
                   <AccesContactLine clientId={clientId} contactId={c.IDcontact}
                     contactNom={[c.prenom, c.nom].filter(Boolean).join(' ') || 'Ce contact'} mail={c.mail}
-                    acces={acces.contacts.find((a) => a.idcontact === c.IDcontact)} editable={accesEditable} />
+                    acces={accesDe(c.IDcontact)} editable />
                 )}
               </div>
               {isEditing && (

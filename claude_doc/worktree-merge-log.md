@@ -9,6 +9,9 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-09-25 — feat/espace-client
+Clients › Gestion › Contacts: espace client access now reads like the envoi flags. In view mode a contact with active access gets an « Espace client » chip (navy + Globe, its own hue so it never passes for a document type) in the same row as Commande / BL / Facture / Soumission, the access state (`etatAccesEspaceClient`, now exported from `AccesEspaceClient.tsx`) in its tooltip; no access or removed access = no chip. The line with the switch + state + confirm dialog is rendered only in edit mode for users holding `gestion_acces_espace_client` (others keep the chip). It deliberately stays out of the contact form's envoi checkboxes: turning it on e-mails the customer at once and is stored in PostgreSQL, not on `contact`. Web only.
+
 ## 2026-09-25 — feat/espace-client-acces
 Access to client.etsmalterre.fr is now decided in ETM, never by the portal. Clients › Gestion › Contacts: each contact card shows an « Espace client » line (no access / given by whom / invitation sent / password chosen / last sign-in / removed) and a switch, active in edit mode with the new permission `gestion_acces_espace_client`, behind a confirm dialog. A grant needs a visible contact of that client with a valid e-mail no other active access uses, at a visible ETS Malterre client. Stored in PostgreSQL database `espace_client` (windev_migration D9 — first data born outside HFSQL; `ESPACE_CLIENT_PG_URL`, dev twin `espace_client_dev`, append-only migrations run at first use, tables `acces` + `journal`). The portal reads `GET /api/site/espace/acces` (cached 30 s) and reports `POST /api/site/espace/activite` (idempotent: only a date that moves counts); `espace/*` answers in production only through api-sites.intra… (customer e-mails; alpha.etsmalterre.com still proxies /api/site).
 

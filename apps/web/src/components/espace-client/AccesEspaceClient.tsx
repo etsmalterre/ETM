@@ -1,7 +1,9 @@
-// « Espace client » line on each contact card of Clients › Gestion › Contacts: who may use
+// « Espace client » on each contact card of Clients › Gestion › Contacts: who may use
 // client.etsmalterre.fr is decided here, the portal only applies it (API
-// routes/espace-client.ts, lib/espace-client-acces.ts). Same switch as « Étiquettes » —
-// active in edit mode only, behind its own permission (gestion_acces_espace_client).
+// routes/espace-client.ts, lib/espace-client-acces.ts). Read mode shows a chip beside the
+// envoi chips (this state in its tooltip); this switch line is rendered in edit mode only,
+// behind its own permission (gestion_acces_espace_client). It never joins the contact
+// form's envoi checkboxes: turning it on e-mails the customer at once.
 
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -35,7 +37,7 @@ export function useAccesEspaceClient(clientId: number) {
 const jour = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('fr-FR') : null)
 
 /** What the portal did with this access, most advanced step first. */
-function etat(a: AccesContact | undefined): string {
+export function etatAccesEspaceClient(a: AccesContact | undefined): string {
   if (!a) return 'Pas d’accès'
   if (!a.actif) return `Accès retiré le ${jour(a.modifie_le)} par ${a.modifie_par}`
   if (a.derniere_connexion_le) return `Dernière connexion le ${jour(a.derniere_connexion_le)}`
@@ -73,8 +75,8 @@ export function AccesContactLine({ clientId, contactId, contactNom, mail, acces,
       <Globe className={cn('h-3.5 w-3.5 flex-shrink-0', actif ? 'text-accent' : 'text-muted-foreground/60')} />
       <div className="min-w-0 flex-1">
         <div className="text-[11px] font-medium">Espace client</div>
-        <div className="text-[10px] text-muted-foreground truncate" title={etat(acces)}>
-          {sansMail && !actif ? 'Renseignez un e-mail pour donner l’accès' : etat(acces)}
+        <div className="text-[10px] text-muted-foreground truncate" title={etatAccesEspaceClient(acces)}>
+          {sansMail && !actif ? 'Renseignez un e-mail pour donner l’accès' : etatAccesEspaceClient(acces)}
         </div>
       </div>
       {mut.isPending && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
