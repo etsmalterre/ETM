@@ -26,6 +26,7 @@ import { getSiteSnapshot, siteSnapshotStatus } from '../lib/webservice-site-stor
 import { buildFicheTechniquePdfData, renderFicheTechniquePdfBuffer } from './references-fini.js'
 import { insertProspect, type ProspectFields } from './prospects.js'
 import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espace-client-acces.js'
+import { ficheClient } from '../lib/espace-fiche.js'
 import { z } from 'zod'
 
 export const webserviceSiteRouter: RouterType = Router()
@@ -354,6 +355,16 @@ webserviceSiteRouter.post('/espace/activite', handle(async (req, res) => {
     if (err instanceof EspaceIndisponible) { fault(res, 503, 'Accès espace client non configuré'); return }
     throw err
   }
+}))
+
+/** The client's own record for « Mon compte » (lib/espace-fiche.ts: company, addresses, contacts — no internal
+ *  notes). The portal decides :id from its session. 404 for an unknown, hidden or non-ETS client. */
+webserviceSiteRouter.get('/espace/clients/:id/fiche', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  if (!id) { fault(res, 400, 'Identifiant client invalide'); return }
+  const fiche = await ficheClient(id)
+  if (!fiche) { fault(res, 404, 'Client introuvable'); return }
+  res.json(fiche)
 }))
 
 webserviceSiteRouter.get('/_etat', (_req, res) => {
