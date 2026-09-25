@@ -3663,6 +3663,11 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
 
     const { ecruRefId, ecruColoris } = await resolveTricoEcru(ctx)
     if (ecruRefId <= 0) { res.status(400).json({ error: 'Line has no écru ref to knit' }); return }
+    // A knit order names its coloris (LIVA #1215) — it decides the yarns.
+    if (!((ecruColoris[0] ?? 0) > 0)) {
+      res.status(400).json({ error: 'coloris_requis', message: "La ligne n'a pas de coloris : choisissez-en un avant de lancer le tricotage." })
+      return
+    }
 
     // Only actual knitters take knitting orders (defensive against a stale
     // client passing a dyer's magasin id).
@@ -4440,6 +4445,11 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     const ecruRefId = Number(refRows[0]?.IDref_ecru) || 0
     const rendement = Number(refRows[0]?.rendement) || 0
     if (ecruRefId <= 0) { res.status(400).json({ error: 'Fini ref has no écru ref' }); return }
+    // The dyer line copies the client line's coloris (LIVA #1215).
+    if (!(ctx.coloriId > 0)) {
+      res.status(400).json({ error: 'coloris_requis', message: "La ligne n'a pas de coloris : choisissez-en un avant de lancer l'ennoblissement." })
+      return
+    }
 
     // Keep only selected rolls that are this écru ref, still free of a dyer
     // affectation, and not reserved to a donation commande (defensive against

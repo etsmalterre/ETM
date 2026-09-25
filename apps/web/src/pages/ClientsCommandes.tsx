@@ -4772,7 +4772,7 @@ function CreateEnnoblisseurOrderDialog({
       onSuccess()
       onClose()
     } catch (e: any) {
-      setError(e instanceof Error ? e.message : 'Erreur')
+      setError((e as { body?: { message?: string } })?.body?.message ?? (e instanceof Error ? e.message : 'Erreur'))
     } finally {
       setBusy(false)
     }
@@ -5061,7 +5061,7 @@ function CreateTricotageOrderDialog({
       onSuccess()
       onClose()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur')
+      setError((e as { body?: { message?: string } })?.body?.message ?? (e instanceof Error ? e.message : 'Erreur'))
     } finally {
       setBusy(false)
     }

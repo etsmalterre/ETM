@@ -460,6 +460,16 @@ async function checkRectiligneLine(
   return { ok: true, unite: ref.unite || 4, prix: ref.prix }
 }
 
+/** Every sst line names its coloris (LIVA #1215): without one, the Stock fil
+ *  drawer had no composition to pick from and took the union of every
+ *  coloris of the écru, asking for grey yarn on an écru/écru order.
+ *  Returns true (and sets a 400) when `colorisId` is empty. */
+export function refuseIfNoColoris(res: Response, colorisId: number): boolean {
+  if (colorisId > 0) return false
+  res.status(400).json({ error: 'coloris_requis', message: 'Choisissez un coloris pour cette ligne.' })
+  return true
+}
+
 /** Returns true (and sets a 409 JSON response) if any ordre_fabrication
  *  is linked to this cc line — meaning TRM has started production and the
  *  line cannot be safely removed from ETM. */
@@ -4278,6 +4288,7 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
     const dateLiv = dateStr(d.date_livraison)
 
     if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
+    if (refuseIfNoColoris(res, d.IDColoris ?? 0)) return
 
     // Defaults for ANY tricoteur sst (TRM or external):
     // - line.type defaults to 1 for tricoteur sst (instead of the legacy 2).
@@ -4414,25 +4425,28 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
       date_delai: string | null
       type_kind: number | null
       IDreference: number | null
+      IDColoris: number | null
       quantite: number | null
       sstatut: string | null
     }>(
-      `SELECT date_livraison, date_delai, type AS type_kind, IDreference, quantite, sstatut
+      `SELECT date_livraison, date_delai, type AS type_kind, IDreference, IDColoris, quantite, sstatut
        FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${lineId}`,
     )
-    const cur = currentRows[0] ?? { date_livraison: '', date_delai: '', type_kind: 0, IDreference: 0, quantite: 0, sstatut: '' }
+    const cur = currentRows[0] ?? { date_livraison: '', date_delai: '', type_kind: 0, IDreference: 0, IDColoris: 0, quantite: 0, sstatut: '' }
+
+    // A patch that touches the reference or the coloris must leave one
+    // (LIVA #1215). Date / statut-only patches pass, so an old line without
+    // a coloris still takes its délai — it gets one when next edited.
+    const nextColoris = d.IDColoris !== undefined ? d.IDColoris : (Number(cur.IDColoris) || 0)
+    if ((d.IDreference !== undefined || d.IDColoris !== undefined) && refuseIfNoColoris(res, nextColoris)) return
 
     // Rectiligne line (type 4): re-check the reference/coloris pair whenever
     // either moves, and a new reference brings its own price and unit unless
     // the caller set a price (legacy « référence » combo behaviour).
     const nextType = d.type !== undefined ? d.type : (Number(cur.type_kind) || 0)
     if (isRectiligneType(nextType) && (d.type !== undefined || d.IDreference !== undefined || d.IDColoris !== undefined)) {
-      const curColoris = await query<{ IDColoris: number | null }>(
-        `SELECT IDColoris FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${lineId}`,
-      )
       const refId = d.IDreference !== undefined ? d.IDreference : (Number(cur.IDreference) || 0)
-      const colorisId = d.IDColoris !== undefined ? d.IDColoris : (Number(curColoris[0]?.IDColoris) || 0)
-      const chk = await checkRectiligneLine(commandeId, refId, colorisId)
+      const chk = await checkRectiligneLine(commandeId, refId, nextColoris)
       if (!chk.ok) { res.status(400).json({ error: chk.error, message: chk.message }); return }
       if (d.IDreference !== undefined && d.IDreference !== (Number(cur.IDreference) || 0)) {
         d.unite = chk.unite
@@ -5262,13 +5276,13 @@ async function loadCompositionPairs(
   IDref_ecru: number,
   IDcolori_ecru: number,
 ): Promise<CompositionPair[]> {
-  if (!(IDref_ecru > 0)) return []
-  const where = IDcolori_ecru > 0
-    ? `IDref_ecru = ${IDref_ecru} AND IDcolori_ecru = ${IDcolori_ecru}`
-    : `IDref_ecru = ${IDref_ecru}`
+  // No coloris → no composition. Reading every row of the ref instead gave
+  // the union of all its coloris (écru AND grey yarns on an écru/écru
+  // order, plus the colourless recipe no lot matches) — LIVA #1215.
+  if (!(IDref_ecru > 0) || !(IDcolori_ecru > 0)) return []
   const rows = await query<{ IDref_fil: number; IDcolori_fil: number; pourcentage: number | null }>(
     `SELECT DISTINCT IDref_fil, IDcolori_fil, pourcentage FROM composition_ecru
-     WHERE ${where} AND IDref_fil > 0`,
+     WHERE IDref_ecru = ${IDref_ecru} AND IDcolori_ecru = ${IDcolori_ecru} AND IDref_fil > 0`,
   )
   return rows
     .map((r) => ({
@@ -5500,6 +5514,9 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
    *  to enforce coverage on the Stock fil tab: Affecter / Finir le lot
    *  only enable when the user has selected at least one lot per pair. */
   compositionPairs: CompositionPairLite[]
+  /** The line has no coloris, so no composition to cover (LIVA #1215) —
+   *  the drawer asks for one instead of offering yarn. */
+  coloris_manquant: boolean
 }> {
   // Écru rolls produced by the knitter for this tricoteur line. Tricoteur
   // production uses `IDref_commande_source` (the line that *caused* the
@@ -5592,6 +5609,7 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
         targetQtyKg: Number(lineQtyRow[0]?.quantite) || 0,
         affectations: await loadAffectationsForLine(ligneId),
         compositionPairs: [],
+        coloris_manquant: !(ctx.IDcolori_ecru > 0),
       }
     }
 
@@ -5719,6 +5737,7 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
     targetQtyKg,
     affectations,
     compositionPairs,
+    coloris_manquant: false,
   }
 }
 
@@ -5768,6 +5787,7 @@ commandesSousTraitantRouter.post(
         return
       }
       const { stockFilIds, mode } = parsed.data
+      if (refuseIfNoColoris(res, ctx.IDcolori_ecru)) return
 
       // Refuse if affectations already exist — caller must DELETE
       // /affectations first to avoid silent overlap with old data.

@@ -428,6 +428,9 @@ interface TricoteurPiecesPayload {
   /** Required composition pairs for this line's écru — every pair must
    *  have at least one selected lot before Affecter/Finir enable. */
   compositionPairs: TricoteurCompositionPair[]
+  /** The line has no coloris — no composition to cover until one is chosen
+   *  (LIVA #1215). */
+  coloris_manquant?: boolean
 }
 
 // Returned by GET /:id/soumission/lots-eligibles. One entry per
@@ -1993,7 +1996,17 @@ function LignesSection({
   const resetLineForm = () => {
     setLineForm({ IDreference: 0, IDColoris: 0, quantite: '', prix: '', date_livraison: '' })
     setShowLineForm(false)
+    createLineMut.reset()
+    updateLineMut.reset()
   }
+
+  // Every line names a reference and a coloris (LIVA #1215) — the server
+  // refuses otherwise; the button says why before the user tries.
+  const lineSaveBlockedReason = lineForm.IDreference === 0
+    ? 'Choisissez une référence'
+    : lineForm.IDColoris === 0
+      ? 'Choisissez un coloris'
+      : null
 
   // HFSQL stores quantites as float32 — round-trip via String() leaks digits
   // like "36,20000076293945". Format to a clean decimal for the input.
@@ -2085,6 +2098,8 @@ function LignesSection({
                     onSave={() => updateLineMut.mutate(l.IDligne_commande_sous_traitant)}
                     onCancel={() => { setEditingLineId(null); resetLineForm() }}
                     isSaving={updateLineMut.isPending}
+                    saveBlockedReason={lineSaveBlockedReason}
+                    error={mutationMessage(updateLineMut.error)}
                   >
                     <LineFormFields
                       form={lineForm}
@@ -2124,6 +2139,8 @@ function LignesSection({
               onSave={() => createLineMut.mutate()}
               onCancel={resetLineForm}
               isSaving={createLineMut.isPending}
+              saveBlockedReason={lineSaveBlockedReason}
+              error={mutationMessage(createLineMut.error)}
             >
               {isTrm && (
                 <LineKindSwitch
@@ -3458,6 +3475,15 @@ function TricoteurDrawer({
 
         {!isLoading && !isError && activeTab === 'stock-fil' && (
           <>
+            {!!data?.coloris_manquant && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-900 flex items-start gap-1.5">
+                <AlertCircle className="h-3.5 w-3.5 text-amber-600 flex-shrink-0 mt-px" />
+                <span>
+                  Cette ligne n'a pas de coloris : la composition à couvrir en dépend.
+                  Modifiez la ligne pour choisir le coloris avant d'affecter du fil.
+                </span>
+              </div>
+            )}
             {!commandeSoldee && !hasAffectations && compositionPairs.length > 0 && missingPairs.length > 0 && (
               <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-900">
                 <p className="font-medium mb-1">Composition à couvrir :</p>
@@ -5733,6 +5759,8 @@ function LineFormFields({
     : isEcru
     ? (coloriEcruOptions ?? []).map((c) => ({ id: c.IDcolori_ecru, primary: c.reference }))
     : (coloriFiniOptions ?? []).map((c) => ({ id: c.id, primary: c.reference }))
+  // Only claim "no coloris" once the lookup has actually answered.
+  const colorisLoaded = (isRecti ? coloriRectiOptions : isEcru ? coloriEcruOptions : coloriFiniOptions) !== undefined
 
   // Rectiligne: the reference brings its price per piece (legacy behaviour);
   // a reference change always re-reads it — the old price belonged to the old ref.
@@ -5791,14 +5819,24 @@ function LineFormFields({
         )}
       </div>
       <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">Coloris</label>
+        {/* Required on every line (LIVA #1215): the coloris decides the
+            yarns to affect and the finish to deliver. No « Aucun » row. */}
+        <label className="text-xs font-medium text-muted-foreground">
+          Coloris <span className="text-destructive">*</span>
+        </label>
         <PopoverSelect
           options={coloriOpts}
           value={form.IDColoris}
           onChange={(id) => setForm({ ...form, IDColoris: id })}
           disabled={!editable || form.IDreference === 0}
-          emptyLabel={form.IDreference === 0 ? '— Choisir une référence d\'abord —' : '— Aucun —'}
+          hideEmpty
+          emptyLabel={form.IDreference === 0 ? '— Choisir une référence d\'abord —' : '— Choisir un coloris —'}
         />
+        {editable && form.IDreference > 0 && colorisLoaded && coloriOpts.length === 0 && (
+          <p className="text-[10px] text-destructive">
+            Cette référence n'a aucun coloris : créez-en un dans Références avant de la commander.
+          </p>
+        )}
         {kind === 'fini' && (
           <p className="text-[10px] text-muted-foreground">
             Le tombé métier écru à envoyer est sélectionné dans le tiroir « pièces ».
@@ -7155,22 +7193,40 @@ function LabeledInput({
   )
 }
 
+/** The server's French `message` from a failed mutation (`apiFetch` carries
+ *  the JSON body as `err.body`), or a generic line when there is none. */
+function mutationMessage(err: unknown): string | null {
+  if (!err) return null
+  const body = (err && typeof err === 'object' && 'body' in err) ? (err as { body?: { message?: string } }).body : null
+  return body?.message ?? "L'enregistrement a échoué (erreur serveur)."
+}
+
 function InlineForm({
-  title, children, onSave, onCancel, isSaving,
+  title, children, onSave, onCancel, isSaving, saveBlockedReason, error,
 }: {
   title: string
   children: React.ReactNode
   onSave: () => void
   onCancel: () => void
   isSaving: boolean
+  /** When set, Enregistrer is disabled and this explains why (its title). */
+  saveBlockedReason?: string | null
+  /** Server refusal to show above the buttons. */
+  error?: string | null
 }) {
   return (
     <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-4 space-y-3">
       <p className="text-xs font-semibold text-accent uppercase tracking-wide">{title}</p>
       {children}
+      {error && (
+        <div className="flex items-center gap-1.5 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
       <div className="flex justify-end gap-2 pt-1">
         <Button variant="outline" size="sm" onClick={onCancel}>Annuler</Button>
-        <Button size="sm" onClick={onSave} disabled={isSaving}>
+        <Button size="sm" onClick={onSave} disabled={isSaving || !!saveBlockedReason} title={saveBlockedReason ?? undefined}>
           {isSaving ? 'Enregistrement...' : 'Enregistrer'}
         </Button>
       </div>
