@@ -148,7 +148,7 @@ function norm(s: string): string {
 // unite enum (hardcoded WinDev combo; no lookup table). Verified empirically:
 // Kg lines track stock poids, Ml lines track stock metrage.
 
-function uniteLabel(u: number | null | undefined): string {
+export function uniteLabel(u: number | null | undefined): string {
   switch (Number(u)) {
     case 1: return 'Kg'
     case 3: return 'Ml'
@@ -159,7 +159,7 @@ function uniteLabel(u: number | null | undefined): string {
 }
 
 /** Which roll dimension a line's quantite is measured in. */
-function lineDim(unite: number | null | undefined): 'metrage' | 'poids' {
+export function lineDim(unite: number | null | undefined): 'metrage' | 'poids' {
   return Number(unite) === 3 ? 'metrage' : 'poids'
 }
 
@@ -1110,7 +1110,7 @@ async function computeTombeMetier(
     .sort((x, y) => x.ref_label.localeCompare(y.ref_label) || x.coloris_label.localeCompare(y.coloris_label))
 }
 
-async function resolveLineLabels(
+export async function resolveLineLabels(
   lignes: Array<{ IDreference: number | null; IDcolori: number | null; type_kind: number }>,
 ): Promise<ResolvedMaps> {
   const refIds = Array.from(new Set(lignes.map((l) => Number(l.IDreference) || 0).filter((x) => x > 0)))
@@ -1160,7 +1160,7 @@ async function resolveLineLabels(
   return { ecru, fini, divers, finiAvecTeinture, colorisFini, colorisEcru }
 }
 
-function resolveRefLabel(maps: ResolvedMaps, IDref: number, typeKind: number): { label: string; kind: 'ecru' | 'fini' | 'divers' | null } {
+export function resolveRefLabel(maps: ResolvedMaps, IDref: number, typeKind: number): { label: string; kind: 'ecru' | 'fini' | 'divers' | null } {
   if (IDref <= 0) return { label: '', kind: null }
   if (typeKind === 1) return maps.ecru.has(IDref) ? { label: maps.ecru.get(IDref)!, kind: 'ecru' } : { label: '', kind: 'ecru' }
   if (typeKind === 2) return maps.fini.has(IDref) ? { label: maps.fini.get(IDref)!, kind: 'fini' } : { label: '', kind: 'fini' }
@@ -1172,7 +1172,7 @@ function resolveRefLabel(maps: ResolvedMaps, IDref: number, typeKind: number): {
   return { label: '', kind: null }
 }
 
-function resolveColorisLabel(maps: ResolvedMaps, IDcolori: number, typeKind: number, IDref: number): string {
+export function resolveColorisLabel(maps: ResolvedMaps, IDcolori: number, typeKind: number, IDref: number): string {
   if (IDcolori <= 0) return ''
   if (typeKind === 2) {
     const dyed = (maps.finiAvecTeinture.get(IDref) ?? 1) !== 0
@@ -1319,13 +1319,13 @@ export async function lineReservationAggregates(
 // ════════════════════════════════════════════════════════
 
 /** Article key for a divers line / shipped item — ref + both variation axes. */
-function diversKey(refId: number, v1: number, v2: number): string {
+export function diversKey(refId: number, v1: number, v2: number): string {
   return `${refId}|${v1}|${v2}`
 }
 
 /** Batch-resolve ref_divers_variation labels (accent repair via repairAliased,
  *  same as the Expéditions screen — designation is a plain-named column). */
-async function resolveDiversVariations(ids: number[]): Promise<Map<number, string>> {
+export async function resolveDiversVariations(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const u = Array.from(new Set(ids.filter((x) => Number.isInteger(x) && x > 0)))
   if (u.length === 0) return out
@@ -1346,7 +1346,7 @@ async function diversExpeditionIds(commandeId: number): Promise<number[]> {
 }
 
 /** Σ shipped quantity per article key across the commande's divers shipments. */
-async function diversShippedByArticle(commandeId: number): Promise<Map<string, number>> {
+export async function diversShippedByArticle(commandeId: number): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   const expIds = await diversExpeditionIds(commandeId)
   if (expIds.length === 0) return out
@@ -3838,7 +3838,7 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
 //  stock_fini.IDligne_expedition / stock_ecru.IDligne_expedition_ETM.
 // ════════════════════════════════════════════════════════
 
-async function resolveTransporteurNamesCC(ids: number[]): Promise<Map<number, string>> {
+export async function resolveTransporteurNamesCC(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const u = Array.from(new Set(ids.filter((x) => x > 0)))
   if (u.length === 0) return out

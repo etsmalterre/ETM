@@ -27,6 +27,7 @@ import { buildFicheTechniquePdfData, renderFicheTechniquePdfBuffer } from './ref
 import { insertProspect, type ProspectFields } from './prospects.js'
 import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espace-client-acces.js'
 import { ficheClient } from '../lib/espace-fiche.js'
+import { commandeClient, listeCommandesClient } from '../lib/espace-commandes.js'
 import { z } from 'zod'
 
 export const webserviceSiteRouter: RouterType = Router()
@@ -365,6 +366,24 @@ webserviceSiteRouter.get('/espace/clients/:id/fiche', handle(async (req, res) =>
   const fiche = await ficheClient(id)
   if (!fiche) { fault(res, 404, 'Client introuvable'); return }
   res.json(fiche)
+}))
+
+/** The client's orders, newest first (lib/espace-commandes.ts: only what the customer may see). The portal decides
+ *  :id from its session; an ETM-internal client id (IDsociete ≠ 1) has no orders here. */
+webserviceSiteRouter.get('/espace/clients/:id/commandes', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  if (!id) { fault(res, 400, 'Identifiant client invalide'); return }
+  res.json({ commandes: await listeCommandesClient(id) })
+}))
+
+/** One order of the client — 404 when it isn't this client's (never says whose it is). */
+webserviceSiteRouter.get('/espace/clients/:id/commandes/:idCommande', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idCommande = idParam(req.params.idCommande)
+  if (!id || !idCommande) { fault(res, 400, 'Identifiant invalide'); return }
+  const commande = await commandeClient(id, idCommande)
+  if (!commande) { fault(res, 404, 'Commande introuvable'); return }
+  res.json(commande)
 }))
 
 webserviceSiteRouter.get('/_etat', (_req, res) => {
