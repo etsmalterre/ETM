@@ -78,33 +78,54 @@ function chunks<T>(arr: T[], size: number): T[][] {
   return out
 }
 
-/** Resolve the three display labels (ref_ecru / coloris / magasin) for a batch
- *  of écru rows with flat lookups instead of JOINs on the list query. Each
- *  lookup is one `IN (...)` query over the distinct ids plus a batched accent
- *  repair (repairAliased). Sets ref_ecru / coloris_reference / magasin_nom. */
+/** Resolve the display labels (ref_ecru / coloris / magasin / contexture) for
+ *  a batch of écru rows with flat lookups instead of JOINs on the list query.
+ *  Each lookup is one `IN (...)` query over the distinct ids plus a batched
+ *  accent repair (repairAliased). Sets ref_ecru / coloris_reference /
+ *  magasin_nom / contexture_nom. The contexture hangs off the ref
+ *  (ref_ecru.IDcontexture → contexture.nom, LIVA #1216): the ref lookup reads
+ *  the FK in the same query, then one more lookup on the distinct ids. */
 async function attachEcruLabels(rows: StockEcru[]): Promise<void> {
-  const distinct = (key: string) =>
-    Array.from(new Set(rows.map((r) => Number((r as any)[key]) || 0).filter((x) => x > 0)))
-  const lookup = async (table: string, pk: string, col: string, ids: number[]): Promise<Map<number, string | null>> => {
-    const out = new Map<number, string | null>()
+  const distinct = (values: unknown[]) =>
+    Array.from(new Set(values.map((v) => Number(v) || 0).filter((x) => x > 0)))
+  const idsOf = (key: string) => distinct(rows.map((r) => (r as any)[key]))
+  const lookup = async (
+    table: string,
+    pk: string,
+    col: string,
+    ids: number[],
+    extra: string[] = [],
+  ): Promise<Map<number, Record<string, unknown>>> => {
+    const out = new Map<number, Record<string, unknown>>()
     if (ids.length === 0) return out
+    const cols = [pk, col, ...extra].join(', ')
     let found: Record<string, unknown>[] = []
     for (const part of chunks(ids, 200)) {
-      found = found.concat(await query<Record<string, unknown>>(`SELECT ${pk}, ${col} FROM ${table} WHERE ${pk} IN (${part.join(',')})`))
+      found = found.concat(await query<Record<string, unknown>>(`SELECT ${cols} FROM ${table} WHERE ${pk} IN (${part.join(',')})`))
     }
     const fixed = await repairAliased(found, table, pk, { [col]: col })
-    for (const r of fixed) out.set(Number(r[pk]), (r[col] ?? null) as string | null)
+    for (const r of fixed) out.set(Number(r[pk]), r)
     return out
   }
+  const label = (m: Map<number, Record<string, unknown>>, id: unknown, col: string) =>
+    (m.get(Number(id) || 0)?.[col] ?? null) as string | null
   const [refs, coloris, magasins] = await Promise.all([
-    lookup('ref_ecru', 'IDref_ecru', 'reference', distinct('IDref_ecru')),
-    lookup('colori_ecru', 'IDcolori_ecru', 'reference', distinct('IDcolori_ecru')),
-    lookup('sous_traitant', 'IDsous_traitant', 'nom', distinct('IDmagasin')),
+    lookup('ref_ecru', 'IDref_ecru', 'reference', idsOf('IDref_ecru'), ['IDcontexture']),
+    lookup('colori_ecru', 'IDcolori_ecru', 'reference', idsOf('IDcolori_ecru')),
+    lookup('sous_traitant', 'IDsous_traitant', 'nom', idsOf('IDmagasin')),
   ])
+  const contextures = await lookup(
+    'contexture',
+    'IDcontexture',
+    'nom',
+    distinct(Array.from(refs.values()).map((r) => r.IDcontexture)),
+  )
   for (const r of rows as any[]) {
-    r.ref_ecru = refs.get(Number(r.IDref_ecru) || 0) ?? null
-    r.coloris_reference = coloris.get(Number(r.IDcolori_ecru) || 0) ?? null
-    r.magasin_nom = magasins.get(Number(r.IDmagasin) || 0) ?? null
+    r.ref_ecru = label(refs, r.IDref_ecru, 'reference')
+    r.coloris_reference = label(coloris, r.IDcolori_ecru, 'reference')
+    r.magasin_nom = label(magasins, r.IDmagasin, 'nom')
+    const ctxId = refs.get(Number(r.IDref_ecru) || 0)?.IDcontexture
+    r.contexture_nom = label(contextures, ctxId, 'nom')?.toString().trim() || null
   }
 }
 

@@ -80,6 +80,8 @@ interface StockEcruRow {
   date_saisie: string | null
   ref_ecru: string | null
   coloris_reference: string | null
+  /** ref_ecru → contexture.nom ("jersey", "interlock"…), LIVA #1216 */
+  contexture_nom: string | null
   magasin_nom: string | null
   commande_numero: string | null
   client_nom: string | null
@@ -187,6 +189,7 @@ function formatMeters(v: number | null): string {
 type SortKey =
   | 'ref_ecru'
   | 'coloris_reference'
+  | 'contexture_nom'
   | 'numero'
   | 'poids'
   | 'lot'
@@ -206,18 +209,19 @@ interface SortState {
 
 const COLUMNS: { key: SortKey; label: string; width: string; align?: 'left' | 'right' }[] = [
   { key: 'ref_ecru', label: 'Référence', width: '7%' },
-  { key: 'coloris_reference', label: 'Coloris', width: '8%' },
+  { key: 'coloris_reference', label: 'Coloris', width: '7%' },
+  { key: 'contexture_nom', label: 'Contexture', width: '8%' },
   { key: 'numero', label: 'Numéro', width: '6%' },
   { key: 'poids', label: 'Poids', width: '5%', align: 'right' },
-  { key: 'lot', label: 'Lot', width: '7%' },
-  { key: 'magasin_nom', label: 'Magasin', width: '8%' },
+  { key: 'lot', label: 'Lot', width: '6%' },
+  { key: 'magasin_nom', label: 'Magasin', width: '7%' },
   { key: 'commande_numero', label: 'N° Cmd', width: '5%' },
-  { key: 'client_nom', label: 'Client', width: '10%' },
+  { key: 'client_nom', label: 'Client', width: '9%' },
   { key: 'date_saisie', label: 'Date saisie', width: '7%' },
   { key: 'second_choix', label: '2ᵉ', width: '3%' },
-  { key: 'visiteur', label: 'Visiteur', width: '8%' },
-  { key: 'observations', label: 'Observations', width: '13%' },
-  { key: 'defauts', label: 'Défauts', width: '13%' },
+  { key: 'visiteur', label: 'Visiteur', width: '7%' },
+  { key: 'observations', label: 'Observations', width: '12%' },
+  { key: 'defauts', label: 'Défauts', width: '11%' },
 ]
 const SELECT_COL_WIDTH = '4%' // leading selection box column, edit mode only
 
@@ -229,6 +233,7 @@ const SELECT_COL_WIDTH = '4%' // leading selection box column, edit mode only
 const SEARCH_FIELDS = [
   { key: 'ref_ecru', label: 'Référence' },
   { key: 'coloris_reference', label: 'Coloris' },
+  { key: 'contexture_nom', label: 'Contexture' },
   { key: 'numero', label: 'Numéro' },
   { key: 'lot', label: 'Lot' },
   { key: 'magasin_nom', label: 'Magasin' },
@@ -245,6 +250,7 @@ function rowHaystacks(r: StockEcruRow): string[] {
   return [
     r.ref_ecru,
     r.coloris_reference,
+    r.contexture_nom,
     r.lot,
     r.numero,
     r.magasin_nom,
@@ -442,7 +448,7 @@ export function TombeMetierStock() {
           chips={searchChips}
           onChipsChange={setSearchChips}
           fields={SEARCH_FIELDS}
-          placeholder="Rechercher (réf, coloris, lot, numéro, magasin, client, visiteur, observations…)"
+          placeholder="Rechercher (réf, coloris, contexture, lot, numéro, magasin, client, visiteur, observations…)"
         />
 
         {/* Below sm this wrapper is a full-width row of its own, so the statut
@@ -1437,6 +1443,9 @@ const StockRow = memo(function StockRow({
       </td>
       <td className="px-2 py-2 font-medium truncate">{row.ref_ecru ?? '—'}</td>
       <td className="px-2 py-2 truncate">{row.coloris_reference ?? '—'}</td>
+      <td className="px-2 py-2 truncate text-muted-foreground" title={row.contexture_nom ?? undefined}>
+        {row.contexture_nom ?? '—'}
+      </td>
       <td className="px-2 py-2 tabular-nums truncate text-muted-foreground">{row.numero ?? '—'}</td>
       <td className="px-2 py-2 text-right tabular-nums font-medium">{formatKg(row.poids)}</td>
       <td className="px-2 py-2 tabular-nums truncate">{row.lot ?? '—'}</td>
@@ -1509,7 +1518,10 @@ const StockEcruCard = memo(function StockEcruCard({
           )}
         </div>
       </div>
-      <p className="text-xs text-muted-foreground mt-0.5 truncate">{row.coloris_reference ?? '—'}</p>
+      <p className="text-xs text-muted-foreground mt-0.5 truncate">
+        {row.coloris_reference ?? '—'}
+        {row.contexture_nom ? ` · ${row.contexture_nom}` : ''}
+      </p>
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 mt-2">
         <CardKV label="Numéro" value={row.numero ?? '—'} mono />
         <CardKV label="Poids" value={formatKg(row.poids)} mono strong />
@@ -1712,6 +1724,7 @@ function StockEcruDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                 </div>
                 <p className="text-xs text-white/70 truncate">
                   {detail.coloris_reference ?? '—'}
+                  {detail.contexture_nom ? ` · ${detail.contexture_nom}` : ''}
                   {detail.lot ? ` · Lot ${detail.lot}` : ''}
                   {detail.numero ? ` · N° ${detail.numero}` : ''}
                 </p>
