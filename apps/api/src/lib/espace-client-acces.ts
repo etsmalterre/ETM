@@ -294,8 +294,8 @@ const COLONNE: Record<TypeEvenement, 'invitation_le' | 'mot_de_passe_le' | 'dern
   connexion: 'derniere_connexion_le',
 }
 
-/** What the portal reports. Unknown contacts are ignored; a date never goes backwards.
- *  Invitations and passwords are journaled, sign-ins only update the date. */
+/** What the portal reports (it resends its dates on every sync: idempotent). Unknown contacts are ignored; a date
+ *  never goes backwards; only a date that moves counts and, for invitations and passwords, is journaled. */
 export async function enregistrerActivite(evenements: Evenement[]): Promise<number> {
   const s = await conn()
   let n = 0
@@ -304,8 +304,8 @@ export async function enregistrerActivite(evenements: Evenement[]): Promise<numb
     for (const e of evenements) {
       const col = COLONNE[e.type]
       const [row] = await tx<{ idclient: number }[]>`
-        UPDATE acces SET ${tx(col)} = GREATEST(COALESCE(${tx(col)}, ${e.le}), ${e.le})
-        WHERE idcontact = ${e.idcontact} RETURNING idclient`
+        UPDATE acces SET ${tx(col)} = ${e.le}
+        WHERE idcontact = ${e.idcontact} AND (${tx(col)} IS NULL OR ${tx(col)} < ${e.le}) RETURNING idclient`
       if (!row) continue
       n++
       if (e.type !== 'connexion') {
