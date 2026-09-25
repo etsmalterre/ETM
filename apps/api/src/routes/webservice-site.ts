@@ -25,6 +25,8 @@ import { VERTUS } from '../lib/webservice-site.js'
 import { getSiteSnapshot, siteSnapshotStatus } from '../lib/webservice-site-store.js'
 import { buildFicheTechniquePdfData, renderFicheTechniquePdfBuffer } from './references-fini.js'
 import { insertProspect, type ProspectFields } from './prospects.js'
+import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espace-client-acces.js'
+import { z } from 'zod'
 
 export const webserviceSiteRouter: RouterType = Router()
 
@@ -281,6 +283,20 @@ webserviceSiteRouter.post('/commande_catalogue', handle(async (req, res) => {
 // ── Espace client (etsmalterre-site) ─────────────────────────
 // Reached only by the sites VPS through the WireGuard tunnel (factory Caddy api-sites.intra…:9443, route allowlist +
 // X-Site-Key). New routes live under espace/: the WordPress plugin never calls them, so their shapes are ours.
+//
+// ⚠️ They carry customer e-mails. The old public name alpha.etsmalterre.com also proxies /api/site (for the OVH
+// shared-hosting IPs, shared with other OVH customers), so in production espace/* also checks the request came in
+// through api-sites.intra… (Caddy keeps the original Host). The public Caddy block refuses /espace/* as well.
+const ESPACE_HOST = process.env.NODE_ENV === 'production' ? 'api-sites.intra.etsmalterre.com' : null
+
+webserviceSiteRouter.use('/espace', (req: Request, res: Response, next: NextFunction) => {
+  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '').split(',')[0].trim().split(':')[0].toLowerCase()
+  if (ESPACE_HOST && host !== ESPACE_HOST) {
+    fault(res, 403, 'Accès refusé')
+    return
+  }
+  next()
+})
 
 /**
  * Every ETS Malterre client (IDsociete 1, visible), id + name only — the espace client's admin picks one for
@@ -303,6 +319,41 @@ webserviceSiteRouter.get('/espace/clients', handle(async (_req, res) => {
     espaceClientsCache = { at: Date.now(), clients }
   }
   res.json({ clients: espaceClientsCache.clients })
+}))
+
+/** Who may sign in to the espace client — decided in ETM (Clients › Gestion › Contacts), never by the portal.
+ *  One row per contact, e-mail lowercased and unique (lib/espace-client-acces.ts). */
+webserviceSiteRouter.get('/espace/acces', handle(async (_req, res) => {
+  try {
+    res.json({ acces: await listeAcces() })
+  } catch (err) {
+    if (err instanceof EspaceIndisponible) { fault(res, 503, 'Accès espace client non configuré'); return }
+    throw err
+  }
+}))
+
+const activiteSchema = z.object({
+  evenements: z.array(z.object({
+    idcontact: z.number().int().positive(),
+    type: z.enum(['invitation', 'mot_de_passe', 'connexion']),
+    le: z.string().datetime({ offset: true }),
+  })).max(500),
+})
+
+/** What the portal reports back: invitation sent, password set, sign-in. Shown next to the switch in ETM. */
+webserviceSiteRouter.post('/espace/activite', handle(async (req, res) => {
+  const body = activiteSchema.safeParse(req.body)
+  if (!body.success) { fault(res, 400, 'Requête invalide'); return }
+  const now = Date.now()
+  const evenements = body.data.evenements
+    .map((e) => ({ idcontact: e.idcontact, type: e.type, le: new Date(e.le) }))
+    .filter((e) => e.le.getTime() <= now + 5 * 60_000)
+  try {
+    res.json({ enregistres: await enregistrerActivite(evenements) })
+  } catch (err) {
+    if (err instanceof EspaceIndisponible) { fault(res, 503, 'Accès espace client non configuré'); return }
+    throw err
+  }
 }))
 
 webserviceSiteRouter.get('/_etat', (_req, res) => {

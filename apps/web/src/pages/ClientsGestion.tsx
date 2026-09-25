@@ -41,6 +41,7 @@ import {
   Barcode,
 } from 'lucide-react'
 import { CodesSpTab, EtiquettesSwitch, useEtiquetteClients } from '@/components/etiquettes/CodesSpTab'
+import { AccesContactLine, useAccesEspaceClient } from '@/components/espace-client/AccesEspaceClient'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -307,6 +308,7 @@ export function ClientsGestion() {
   const canEditCommercial = useHasPermission('edit_client_commercial')
   const canCrudContacts = useHasPermission('crud_client_contacts')
   const canCrudAdresses = useHasPermission('crud_client_adresses')
+  const canGestionAcces = useHasPermission('gestion_acces_espace_client')
   const { data: deletability } = useQuery<Deletability>({
     queryKey: ['client-deletability', selectedId],
     queryFn: () => apiFetch(`/clients/${selectedId}/deletability`),
@@ -499,7 +501,7 @@ export function ClientsGestion() {
           isEditing={isEditing} clientId={selectedId} onMutationSuccess={invalidateAll}
           onSubFormsDirtyChange={setSubFormsDirty} draft={draft} onPatch={patch}
           canEditInfo={canEditInfo} canEditRapportQualite={canEditRapportQualite} canEditCommercial={canEditCommercial}
-          canCrudContacts={canCrudContacts} canCrudAdresses={canCrudAdresses}
+          canCrudContacts={canCrudContacts} canCrudAdresses={canCrudAdresses} canGestionAcces={canGestionAcces}
           secteurs={secteurs} activites={activites} modesPaiement={modesPaiement} echeances={echeances} tvas={tvas} codesComptables={codesComptables} /> : null}
         sidebarTitle="Contacts & Adresses" hasSelection={selectedId !== null}
         onBack={() => guard.guardAction(() => { setIsEditing(false); setDraft(null); setSelectedId(null) })}
@@ -1196,13 +1198,15 @@ function InlineForm({ title, children, onSave, onCancel, isSaving }: { title: st
 type SidebarTab = 'info' | 'commercial' | 'contacts' | 'adresses'
 
 function DetailSidebar({ client, isLoading, isEditing, clientId, onMutationSuccess, onSubFormsDirtyChange, draft, onPatch,
-  canEditInfo, canEditRapportQualite, canEditCommercial, canCrudContacts, canCrudAdresses,
+  canEditInfo, canEditRapportQualite, canEditCommercial, canCrudContacts, canCrudAdresses, canGestionAcces,
   secteurs, activites, modesPaiement, echeances, tvas, codesComptables }: {
   client: ClientDetail | null; isLoading: boolean; isEditing: boolean; clientId: number; onMutationSuccess: () => void
   onSubFormsDirtyChange: (dirty: boolean) => void
   draft: Draft | null; onPatch: (p: Partial<Draft>) => void
   canEditInfo: boolean; canEditRapportQualite: boolean; canEditCommercial: boolean
   canCrudContacts: boolean; canCrudAdresses: boolean
+  /** The « Espace client » switch on each contact — its own permission, edit mode only. */
+  canGestionAcces: boolean
   secteurs: LookupLabel[]; activites: LookupLabel[]; modesPaiement: LookupLabel[]; echeances: LookupLabel[]; tvas: LookupLabel[]; codesComptables: LookupLabel[]
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('info')
@@ -1242,7 +1246,7 @@ function DetailSidebar({ client, isLoading, isEditing, clientId, onMutationSucce
           canEditRapportQualite={isEditing && canEditRapportQualite} draft={draft} onPatch={onPatch}
           secteurs={secteurs} activites={activites} modesPaiement={modesPaiement} echeances={echeances} tvas={tvas} codesComptables={codesComptables} />}
         {activeTab === 'commercial' && <CommercialTab client={client} isEditing={isEditing && canEditCommercial} draft={draft} onPatch={onPatch} />}
-        {activeTab === 'contacts' && <ContactsTab contacts={client.contacts} isEditing={isEditing && canCrudContacts} clientId={clientId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
+        {activeTab === 'contacts' && <ContactsTab contacts={client.contacts} isEditing={isEditing && canCrudContacts} accesEditable={isEditing && canGestionAcces} clientId={clientId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
         {activeTab === 'adresses' && <AdressesTab adresses={client.adresses} isEditing={isEditing && canCrudAdresses} clientId={clientId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
       </div>
     </div>
@@ -1461,12 +1465,13 @@ function contactInitials(prenom: string | null, nom: string | null): string {
   return [prenom, nom].map((s) => (s ?? '').trim().charAt(0).toUpperCase()).filter(Boolean).join('')
 }
 
-function ContactsTab({ contacts, isEditing, clientId, onMutationSuccess, onDirtyChange }: {
-  contacts: Contact[]; isEditing: boolean; clientId: number; onMutationSuccess: () => void; onDirtyChange: (dirty: boolean) => void
+function ContactsTab({ contacts, isEditing, accesEditable, clientId, onMutationSuccess, onDirtyChange }: {
+  contacts: Contact[]; isEditing: boolean; accesEditable: boolean; clientId: number; onMutationSuccess: () => void; onDirtyChange: (dirty: boolean) => void
 }) {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false })
   const [showForm, setShowForm] = useState(false)
+  const { data: acces } = useAccesEspaceClient(clientId)
 
   const onDirtyChangeRef = useRef(onDirtyChange)
   useEffect(() => { onDirtyChangeRef.current = onDirtyChange })
@@ -1550,6 +1555,11 @@ function ContactsTab({ contacts, isEditing, clientId, onMutationSuccess, onDirty
                       <span key={key} className={cn(chipClass, ENVOI_CHIP_CLASS[key])}>{label}</span>
                     ))}
                   </div>
+                )}
+                {acces?.disponible && (
+                  <AccesContactLine clientId={clientId} contactId={c.IDcontact}
+                    contactNom={[c.prenom, c.nom].filter(Boolean).join(' ') || 'Ce contact'} mail={c.mail}
+                    acces={acces.contacts.find((a) => a.idcontact === c.IDcontact)} editable={accesEditable} />
                 )}
               </div>
               {isEditing && (

@@ -210,6 +210,13 @@ export const PERMISSION_KEYS = [
     category: 'Gestion client',
   },
   {
+    key: 'gestion_acces_espace_client',
+    label: 'Accès espace client',
+    description:
+      'Autorise à donner ou retirer l’accès à client.etsmalterre.fr à un contact, dans l’onglet « Contacts » de Clients > Gestion. L’ERP est la seule source : l’espace client ne crée ni ne supprime aucun compte.',
+    category: 'Gestion client',
+  },
+  {
     key: 'gestion_tarifs',
     label: 'Gestion des tarifs',
     description:
