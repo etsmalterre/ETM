@@ -561,6 +561,7 @@ export async function buildFicheTechniquePdfData(id: number): Promise<FicheTechn
     reference: ref.reference ?? `#${id}`,
     designation: ref.designation,
     contexture,
+    finition: ref.avec_teinture !== 0 ? 'Teint' : 'Lavé',
     laizeHT: { min: ref.laizeHT_Min, moy: ref.laizeHT_Moy, max: ref.laizeHT_Max },
     laizeUtile: { min: ref.laizeUtile_Min, moy: ref.laizeUtile_Moy, max: ref.laizeUtile_Max },
     poids: { min: ref.poids_Min, moy: ref.poids_Moy, max: ref.poids_Max },

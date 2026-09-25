@@ -1,4 +1,7 @@
 # Worktree merge log
+## 2026-09-25 — feat/fiche-technique
+**Fiche technique (Finis › Références › Imprimer) : « Finition Lavé / Teint » + new layout** (LIVA #1213, a client request via Isabelle). `buildFicheTechniquePdfData` adds `finition` from `ref_fini.avec_teinture` (0 → Lavé, 1/2 → Teint; simple / double teinture stays internal, never printed — Vincent). The body of `FicheTechniquePdf.tsx` is redesigned (Vincent chose « B — bandeau gris » among six drafts): désignation as title under « Tissu maille · <contexture> », a key-figures band (Poids / Laize utile / Laize hors tout as average + « Tolérance ± n », Finition), two columns of sections under light grey heading bands with dotted row rules (Composition as « Coton 100 % » rows, Stabilité dimensionnelle, Conditionnement, Douane & origine — wording modernised: « Provenance UE », « Pays de fabrication », 6006 21 00), care symbols with captions, Observations as a normal section that may break across pages, OEKO-TEX + note + « Fiche créée le · Mise à jour le » at the foot. Shared header/footer (`MalterreDocument`) untouched; the website espace client serves the same PDF. `check-fiche-page-counts.ts 80`: only Duo01 on 2 pages, as before. Docs: `screen_notes.md` § 8, `pdf_email.md` (accented capitals / letter-spacing trap).
+
 
 Newest first. `/feature-complete` prepends one entry per screen it lands on `master`, so
 other worktrees see what changed when they rebase. Format:
