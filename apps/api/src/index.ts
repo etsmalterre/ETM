@@ -41,6 +41,7 @@ import { dossiersQualiteRouter } from './routes/dossiers-qualite.js'
 import { actionsQualiteRouter } from './routes/actions-qualite.js'
 import { rapportsRouter } from './routes/rapports.js'
 import { rapportsTrmRouter } from './routes/rapports-trm.js'
+import { importSageRouter, importSageTrmRouter } from './routes/import-sage.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
 import { recorderRouter } from './routes/recorder.js'
@@ -182,6 +183,9 @@ app.use('/api/dossiers-qualite', dossiersQualiteRouter)
 app.use('/api/actions-qualite', actionsQualiteRouter)
 app.use('/api/rapports', rapportsRouter)
 app.use('/api/rapports-trm', rapportsTrmRouter)
+// Paramètres › Outils › Import de la balance Sage — one router per société.
+app.use('/api/outils/import-sage', importSageRouter)
+app.use('/api/outils-trm/import-sage', importSageTrmRouter)
 // TRM atelier planning — consumed by the TRM web app (C:\dev\etsmalterre\TRM)
 app.use('/api/planning-atelier', planningAtelierRouter)
 // TRM production orders (Gestion des OF) — consumed by the TRM web app.

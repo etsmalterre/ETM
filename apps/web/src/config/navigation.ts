@@ -160,6 +160,9 @@ export const settingsItem: MainMenuItem = {
   href: '/settings',
   submenus: [
     { title: 'Utilisateurs', href: '/settings/utilisateurs', adminOnly: true },
+    // Import de la balance Sage (legacy FEN_upload_compta). A permission, not
+    // adminOnly: Isabelle runs it every week.
+    { title: 'Outils', href: '/settings/outils', permission: 'import_compta_sage' },
   ],
 }
 
@@ -381,4 +384,5 @@ export const routeTitles: Record<string, string> = {
   // Settings
   '/settings': 'Paramètres',
   '/settings/utilisateurs': 'Utilisateurs',
+  '/settings/outils': 'Outils',
 }

@@ -84,6 +84,8 @@ import { AgentsIa } from '@/pages/AgentsIa'
 
 // Settings
 import { SettingsUtilisateurs } from '@/pages/SettingsUtilisateurs'
+import { SettingsIndex } from '@/pages/SettingsIndex'
+import { SettingsOutils } from '@/pages/SettingsOutils'
 
 export const router = createBrowserRouter([
   {
@@ -166,9 +168,11 @@ export const router = createBrowserRouter([
       { path: 'agents-ia', element: <Navigate to="/agents-ia/agents" replace /> },
       { path: 'agents-ia/agents', element: <AgentsIa /> },
 
-      // Settings (admin-only sub-routes)
-      { path: 'settings', element: <Navigate to="/settings/utilisateurs" replace /> },
+      // Settings — Utilisateurs is admin-only, Outils needs import_compta_sage;
+      // the index lands on the first one the viewer may open.
+      { path: 'settings', element: <SettingsIndex /> },
       { path: 'settings/utilisateurs', element: <SettingsUtilisateurs /> },
+      { path: 'settings/outils', element: <SettingsOutils /> },
     ],
   },
 ])

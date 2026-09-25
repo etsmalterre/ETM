@@ -7,8 +7,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ContextMenu, type ContextMenuItem } from '@/components/ui/context-menu'
 import { useUser } from '@/contexts/UserContext'
-import { usePermissions } from '@/contexts/PermissionsContext'
-import { useVisibleMainNavigation } from '@/hooks/useSubmenuFilter'
+import { useSubmenuFilter, useVisibleMainNavigation } from '@/hooks/useSubmenuFilter'
 
 interface SidebarProps {
   collapsed: boolean
@@ -88,23 +87,23 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
   useUser() // ensures the sidebar re-renders when the user context updates
-  const { isEffectiveAdmin } = usePermissions()
+  const filterSubmenus = useSubmenuFilter()
 
   const handleNavigate = (href: string) => {
     navigate(href)
   }
 
-  // Filter out adminOnly submenus when the current user is not the EFFECTIVE
-  // admin (i.e. they are NOT currently acting as the admin). When an admin
-  // impersonates another user, this drops to false and the Settings menu
-  // disappears — matching the "see exactly what they see" UX. The admin can
-  // still switch back to themselves via the header avatar's "Changer
+  // Paramètres goes through the same filter as every other menu: adminOnly
+  // entries need the EFFECTIVE admin (an admin impersonating someone sees
+  // exactly what they see), permission entries need their key (Outils ←
+  // import_compta_sage). The menu disappears when nothing is left. The admin
+  // can still switch back to themselves via the header avatar's "Changer
   // d'utilisateur" button to regain access.
   const visibleSettings = useMemo<MainMenuItem | null>(() => {
-    const visible = settingsItem.submenus.filter((s) => isEffectiveAdmin || !s.adminOnly)
+    const visible = filterSubmenus(settingsItem.submenus)
     if (visible.length === 0) return null
     return { ...settingsItem, submenus: visible }
-  }, [isEffectiveAdmin])
+  }, [filterSubmenus])
 
   // Same treatment for the main items: a menu the user wasn't granted, or one
   // whose every screen is hidden, disappears entirely — and the ones that stay

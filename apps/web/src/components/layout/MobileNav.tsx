@@ -1,12 +1,12 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { ChevronDown } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { dashboardItem, settingsItem, type MainMenuItem } from '@/config/navigation'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { useVisibleMainNavigation } from '@/hooks/useSubmenuFilter'
+import { useSubmenuFilter, useVisibleMainNavigation } from '@/hooks/useSubmenuFilter'
 
 interface MobileNavProps {
   open: boolean
@@ -15,6 +15,11 @@ interface MobileNavProps {
 
 export function MobileNav({ open, onOpenChange }: MobileNavProps) {
   const visibleMain = useVisibleMainNavigation()
+  const filterSubmenus = useSubmenuFilter()
+  const visibleSettings = useMemo<MainMenuItem | null>(() => {
+    const submenus = filterSubmenus(settingsItem.submenus)
+    return submenus.length > 0 ? { ...settingsItem, submenus } : null
+  }, [filterSubmenus])
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="left" className="w-80 p-0 bg-gradient-to-b from-primary via-primary/95 to-primary/90 border-r-0">
@@ -49,11 +54,14 @@ export function MobileNav({ open, onOpenChange }: MobileNavProps) {
             {/* Separator */}
             <div className="my-2 border-t border-white/10" />
 
-            {/* Settings */}
-            <MobileNavItemSimple
-              item={settingsItem}
-              onNavigate={() => onOpenChange(false)}
-            />
+            {/* Settings — same entry filter as the sidebar; hidden when
+                the viewer may open none of its screens. */}
+            {visibleSettings && (
+              <MobileNavItem
+                item={visibleSettings}
+                onNavigate={() => onOpenChange(false)}
+              />
+            )}
           </nav>
         </ScrollArea>
       </SheetContent>

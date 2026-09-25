@@ -245,6 +245,15 @@ export const TRM_PERMISSION_KEYS = [
     category: 'Rapports',
     parent: 'view_rapport_finance',
   },
+  // Paramètres > Outils. Gates the whole tool, reads included: the history
+  // and the preview show the balance, which names payroll accounts.
+  {
+    key: 'import_compta_sage',
+    label: 'Importer la balance Sage',
+    description:
+      'Affiche l’entrée « Outils » du menu Paramètres et autorise l’import hebdomadaire de la balance de Tricotage Malterre exportée de Sage, qui alimente Rapports > Finance et les widgets financiers. Ces données incluent les comptes de personnel.',
+    category: 'Paramètres',
+  },
   // Qualité > Retour client. Only the WRITE side is gated: a retour client is
   // the atelier's own quality record, not confidential data, and who sees the
   // screen at all is already the Écrans axis's job. What this key protects is
