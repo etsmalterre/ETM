@@ -203,6 +203,16 @@ export function CodesSpTab({ editable }: { editable: boolean }) {
 function CodeDialog({ code, taken, onClose, onSaved }: { code: CodeSp | 'new' | null; taken: Set<string>; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState<CodeForm>(EMPTY)
   const [error, setError] = useState<string | null>(null)
+  // A new coloris takes the next free code (LIVA #1209). The value shown is a
+  // preview: when it is kept, the server takes the number again on save.
+  const { data: next } = useQuery<{ code_ean_13: string | null }>({
+    queryKey: ['etiquettes-sp-codes-next'],
+    queryFn: () => apiFetch('/etiquettes-sp/codes/next'),
+    enabled: code === 'new',
+    staleTime: 0,
+    gcTime: 0,
+  })
+  const nextCode = code === 'new' ? next?.code_ean_13 ?? null : null
   useEffect(() => {
     if (code === null) return
     setError(null)
@@ -211,9 +221,17 @@ function CodeDialog({ code, taken, onClose, onSaved }: { code: CodeSp | 'new' | 
       article_fournisseur: code.article_fournisseur, libelle_article: code.libelle_article, num_bain: code.num_bain,
     })
   }, [code])
+  // Fill the EAN once the next code arrives, unless the user typed one already.
+  useEffect(() => {
+    if (nextCode) setForm((f) => (f.code_ean_13 === '' ? { ...f, code_ean_13: nextCode } : f))
+  }, [nextCode, code])
+  const auto = nextCode !== null && eanKey(form.code_ean_13) === nextCode
+  const ownKey = code !== null && code !== 'new' ? eanKey(code.code_ean_13) : null
+  const typedKey = eanKey(form.code_ean_13)
+  const clash = typedKey.length === 12 && typedKey !== ownKey && taken.has(typedKey)
   const mut = useMutation({
     mutationFn: () => code === 'new'
-      ? apiFetch('/etiquettes-sp/codes', { method: 'POST', body: JSON.stringify(form) })
+      ? apiFetch('/etiquettes-sp/codes', { method: 'POST', body: JSON.stringify({ ...form, auto }) })
       : apiFetch(`/etiquettes-sp/codes/${(code as CodeSp).IDcode_sp}`, { method: 'PUT', body: JSON.stringify(form) }),
     onSuccess: onSaved,
     onError: (e: Error & { body?: { message?: string } }) => setError(e.body?.message ?? "L'enregistrement a échoué."),
@@ -242,7 +260,14 @@ function CodeDialog({ code, taken, onClose, onSaved }: { code: CodeSp | 'new' | 
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Code EAN 13</label>
             <input value={form.code_ean_13} onChange={set('code_ean_13')} className={cn(input, 'tabular-nums')} />
-            <p className="text-[11px] text-muted-foreground">12 chiffres : la clé de contrôle est ajoutée à l'impression.</p>
+            <p className="text-[11px] text-muted-foreground">
+              {auto ? "Code suivant, attribué à l'enregistrement." : "12 chiffres : la clé de contrôle est ajoutée à l'impression."}
+            </p>
+            {clash && (
+              <p className="flex items-center gap-1 text-[11px] text-destructive">
+                <AlertCircle className="h-3 w-3" />Ce code est déjà celui d'un autre coloris.
+              </p>
+            )}
             {sugg && (
               <button type="button" onClick={() => setForm((f) => ({ ...f, code_ean_13: sugg }))}
                 className="flex items-center gap-1 text-[11px] text-accent hover:underline">
@@ -258,7 +283,7 @@ function CodeDialog({ code, taken, onClose, onSaved }: { code: CodeSp | 'new' | 
         {error && <div className="mt-3 flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4 flex-shrink-0" />{error}</div>}
         <DialogFooter className="mt-4">
           <Button variant="outline" onClick={onClose}>Annuler</Button>
-          <Button onClick={() => mut.mutate()} disabled={mut.isPending || !form.coloris.trim()}>
+          <Button onClick={() => mut.mutate()} disabled={mut.isPending || !form.coloris.trim() || clash}>
             {mut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Enregistrer
           </Button>
         </DialogFooter>

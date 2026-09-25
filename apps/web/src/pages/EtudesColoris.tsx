@@ -32,6 +32,7 @@ import {
   MapPin,
   History,
   Inbox,
+  Barcode,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -62,6 +63,13 @@ import { postEmail } from '@/lib/email'
 
 type EtudeStatut = 1 | 2 | 3 | 4
 type StatutFilter = 'attente_labo' | 'soumis' | 'accepte' | 'annule' | 'all'
+/** Simone Pérèle code created by an acceptance (LIVA #1209). */
+interface CodeSpCree {
+  coloris: string
+  code_ean_13: string
+  ean13: string | null
+}
+
 type SoumissionAccepte = 0 | 1 | 2 // 0=pending, 1=accepted, 2=refused
 
 interface EtudeListRow {
@@ -1462,13 +1470,21 @@ function SoumissionDrawer({
           ...(vars.sampleNumber ? { sampleNumber: vars.sampleNumber } : {}),
         }),
       }),
-    onSuccess: (payload) => {
+    onSuccess: (payload: { codeSp?: CodeSpCree }) => {
       queryClient.setQueryData(['etude-coloris', etudeId], payload)
+      if (payload.codeSp) {
+        setCodeSpCree(payload.codeSp)
+        queryClient.invalidateQueries({ queryKey: ['etiquettes-sp-codes'] })
+      }
       onMutationSuccess()
     },
   })
 
   const [acceptDialogOpen, setAcceptDialogOpen] = useState(false)
+  // The Simone Pérèle code the acceptance just created (LIVA #1209) — shown
+  // until another soumission is opened, so it can be passed on to SP.
+  const [codeSpCree, setCodeSpCree] = useState<CodeSpCree | null>(null)
+  useEffect(() => { setCodeSpCree(null) }, [soumission.IDsoum_col])
 
   const pending = respondMut.isPending
 
@@ -1547,6 +1563,16 @@ function SoumissionDrawer({
           )}
         </div>
       </div>
+      {codeSpCree && (
+        <div className="flex-shrink-0 px-4 py-2.5 border-t border-success/30 bg-success/10 flex items-start gap-2 text-xs">
+          <Barcode className="h-4 w-4 text-success flex-shrink-0 mt-0.5" />
+          <p className="min-w-0">
+            Code Simone Pérèle créé pour <span className="font-semibold">{codeSpCree.coloris}</span> :{' '}
+            <span className="font-semibold tabular-nums">{codeSpCree.ean13 ?? codeSpCree.code_ean_13}</span>.
+            <span className="text-muted-foreground"> À transmettre à Simone Pérèle.</span>
+          </p>
+        </div>
+      )}
       {/* Recording the client's answer is a write — without the right, the
           drawer stays a read-only view of the soumission and its envois. */}
       {canEdit && (

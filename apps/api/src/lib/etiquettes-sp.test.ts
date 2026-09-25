@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchCodeSp, defaultCommandeClient, missingMesures, lotDigits } from './etiquettes-sp.js'
+import { matchCodeSp, defaultCommandeClient, missingMesures, lotDigits, nextCodeEan, spColorisFromLibelle, hasCodeForColoris, bainFromLibelle, articleClientFor } from './etiquettes-sp.js'
 
 // A slice of the real code_sp list (dev base, 2026-09-24).
 const CODES = [
@@ -50,5 +50,56 @@ describe('lotDigits', () => {
   it('keeps the dyer lot number', () => {
     expect(lotDigits('ma107052')).toBe('107052')
     expect(lotDigits('MA106910')).toBe('106910')
+  })
+})
+
+describe('nextCodeEan', () => {
+  it('takes the highest complete code + 1', () => {
+    expect(nextCodeEan(['370044221063', '370044221062', '370044221059'])).toBe('370044221064')
+  })
+  it('ignores short codes and a 13th check digit', () => {
+    expect(nextCodeEan(['37044221099', '3700442210637'])).toBe('370044221064')
+  })
+  it('is null on a list with no complete code', () => {
+    expect(nextCodeEan([])).toBeNull()
+    expect(nextCodeEan(['37044221099', ''])).toBeNull()
+  })
+})
+
+describe('spColorisFromLibelle', () => {
+  it('drops the lab and sample numbers of an étude label (prod labels, 2026-09-25)', () => {
+    expect(spColorisFromLibelle('440 ROSE DESIR 63834/2')).toBe('440 ROSE DESIR')
+    expect(spColorisFromLibelle('556 saphir 63835/2')).toBe('556 SAPHIR')
+    expect(spColorisFromLibelle('440 ROSE DESIR/3/2')).toBe('440 ROSE DESIR')
+    expect(spColorisFromLibelle('765 Cacao 63491/ 1')).toBe('765 CACAO')
+    expect(spColorisFromLibelle('544 Nuit 63498')).toBe('544 NUIT')
+    expect(spColorisFromLibelle('458  Violet Byzantin 62239/4')).toBe('458 VIOLET BYZANTIN')
+  })
+})
+
+describe('hasCodeForColoris', () => {
+  it('finds the coloris by its number, leading zeros and case aside', () => {
+    expect(hasCodeForColoris('011 BLANC', CODES)).toBe(true)
+    expect(hasCodeForColoris('440 ROSE DESIR', CODES)).toBe(false)
+  })
+  it('checks every leading number (« 1002 499 rouge fragola »)', () => {
+    expect(hasCodeForColoris('1002 499 ROUGE FRAGOLA', [{ coloris: '499 ROUGE FRAGOLA' }])).toBe(true)
+  })
+  it('falls back to the folded label when there is no number', () => {
+    expect(hasCodeForColoris('Rose fumé', [{ coloris: 'ROSE FUME' }])).toBe(true)
+    expect(hasCodeForColoris('Vert', [{ coloris: 'ROSE FUME' }])).toBe(false)
+  })
+})
+
+describe('bainFromLibelle / articleClientFor', () => {
+  it('reads the bath from the lab + sample numbers', () => {
+    expect(bainFromLibelle('556 saphir 63835/2')).toBe('638352')
+    expect(bainFromLibelle('765 Cacao 63491/ 1')).toBe('634911')
+    expect(bainFromLibelle('440 ROSE DESIR/3/2')).toBe('')
+  })
+  it('keeps the article prefix of the template row', () => {
+    expect(articleClientFor({ coloris: '544 NUIT', article_client: 'LF 043 - 544 NUIT' }, '440 ROSE DESIR')).toBe('LF 043 - 440 ROSE DESIR')
+    expect(articleClientFor({ coloris: '556 SAPHIR', article_client: 'LF 043 - ' }, '440 ROSE DESIR')).toBe('LF 043 - 440 ROSE DESIR')
+    expect(articleClientFor(undefined, 'X')).toBe('')
   })
 })

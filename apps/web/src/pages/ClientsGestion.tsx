@@ -301,6 +301,8 @@ export function ClientsGestion() {
   // "Inclure rapports contrôle" toggle is separate from the rest of the Info
   // tab so it can be granted on its own.
   const canEditInfo = useHasPermission('edit_client_info')
+  // The Simone Pérèle code list alone (LIVA #1209); the client sheet right covers it too.
+  const canEditCodesSp = useHasPermission('gestion_codes_sp') || canEditInfo
   const canEditRapportQualite = useHasPermission('edit_client_rapport_qualite')
   const canEditCommercial = useHasPermission('edit_client_commercial')
   const canCrudContacts = useHasPermission('crud_client_contacts')
@@ -492,7 +494,7 @@ export function ClientsGestion() {
         detail={<DetailMain client={detail ?? null} isLoading={detailLoading && selectedId !== null}
           hasSelection={selectedId !== null} isEditing={isEditing} canManageTarifs={canManageTarifs}
           canManageRefs={canManageRefs} canManageColoris={canManageColoris}
-          canRetourMarchandise={canRetourMarchandise} canEditInfo={canEditInfo} />}
+          canRetourMarchandise={canRetourMarchandise} canEditCodesSp={canEditCodesSp} />}
         sidebar={selectedId !== null ? <DetailSidebar client={detail ?? null} isLoading={detailLoading}
           isEditing={isEditing} clientId={selectedId} onMutationSuccess={invalidateAll}
           onSubFormsDirtyChange={setSubFormsDirty} draft={draft} onPatch={patch}
@@ -1104,9 +1106,9 @@ const MAIN_TABS = [
 ] as const
 type MainTab = (typeof MAIN_TABS)[number]['key']
 
-function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarifs, canManageRefs, canManageColoris, canRetourMarchandise, canEditInfo }: {
+function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarifs, canManageRefs, canManageColoris, canRetourMarchandise, canEditCodesSp }: {
   client: ClientDetail | null; isLoading: boolean; hasSelection: boolean; isEditing: boolean; canManageTarifs: boolean
-  canManageRefs: boolean; canManageColoris: boolean; canRetourMarchandise: boolean; canEditInfo: boolean
+  canManageRefs: boolean; canManageColoris: boolean; canRetourMarchandise: boolean; canEditCodesSp: boolean
 }) {
   const [activeTab, setActiveTab] = useState<MainTab>('references')
   const { data: etiquetteClients } = useEtiquetteClients()
@@ -1158,7 +1160,7 @@ function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarif
           // selection action bar while the table scrolls internally.
           <div className="flex-1 min-h-0 flex flex-col px-1"><MarchandiseTab clientId={client.IDclient} clientNom={client.nom ?? ''} canRetour={canRetourMarchandise} /></div>
         )}
-        {activeTab === 'etiquettes' && withEtiquettes && <CodesSpTab editable={isEditing && canEditInfo} />}
+        {activeTab === 'etiquettes' && withEtiquettes && <CodesSpTab editable={isEditing && canEditCodesSp} />}
       </div>
     </div>
   )

@@ -182,3 +182,72 @@ export function defaultCommandeClient(refClient: string): string {
     .toUpperCase()
     .trim()
 }
+
+// ── Numbering of the SP codes (LIVA #1209) ─────────────────────────────────
+//
+// Malterre has no GS1 subscription and numbers the codes itself (Vincent,
+// 2026-09-24): a new coloris takes the highest code + 1. The codes also live
+// in Simone Pérèle's warehouse system, so a code is never reused.
+
+/** The 12 data digits a stored code compares on (a 13th digit is the check). */
+export function eanKey(stored: string): string {
+  return stored.replace(/\D/g, '').slice(0, 12)
+}
+
+/** Next free code: the highest complete (12-digit) code + 1, or null when the
+ *  list holds none to count from. Short codes (a lost 0) are ignored — they
+ *  are typing errors, not a range. */
+export function nextCodeEan(stored: string[]): string | null {
+  let max = -1
+  for (const s of stored) {
+    const k = eanKey(s)
+    if (k.length === 12) max = Math.max(max, Number(k))
+  }
+  if (max < 0 || max >= 999_999_999_999) return null
+  return String(max + 1).padStart(12, '0')
+}
+
+/** Every leading number of a coloris label: « 1002 499 rouge fragola » →
+ *  [1002, 499] (some étude labels carry an extra reference in front). */
+function leadingNumbers(s: string): number[] {
+  const m = /^\s*((?:\d+\s+)*\d+)(?:\s|$)/.exec(s)
+  return m ? m[1].trim().split(/\s+/).map(Number) : []
+}
+
+/** Whether the list already has a code for this coloris: same number (any of
+ *  the label's leading numbers), or the same folded label when it has none. */
+export function hasCodeForColoris(coloris: string, codes: Array<{ coloris: string }>): boolean {
+  const nums = leadingNumbers(coloris)
+  if (nums.length > 0) return codes.some((c) => { const n = colorisNumber(c.coloris); return n !== null && nums.includes(n) })
+  const target = fold(coloris)
+  return target !== '' && codes.some((c) => fold(c.coloris) === target)
+}
+
+/** The coloris as the SP list names it, from the label of an accepted étude:
+ *  « 440 ROSE DESIR 63834/2 » → « 440 ROSE DESIR ». The étude appends the
+ *  dyer's lab number and the sample number; the list keeps number + name,
+ *  upper case. */
+export function spColorisFromLibelle(libelle: string): string {
+  return libelle
+    .replace(/(\s*\/\s*\d+)+\s*$/, '')
+    .replace(/\s+\d{5,}\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase()
+}
+
+/** The dyer's bath number an accepted étude implies: lab number + sample
+ *  number, as Pierrot types it (« 556 saphir 63835/2 » → « 638352 »). */
+export function bainFromLibelle(libelle: string): string {
+  const m = /(\d{5,})\s*\/\s*(\d+)\s*$/.exec(libelle)
+  return m ? `${m[1]}${m[2]}` : ''
+}
+
+/** The client article of a new coloris, patterned on an existing row
+ *  (« LF 043 - 544 NUIT » → « LF 043 - 440 ROSE DESIR »). */
+export function articleClientFor(template: { coloris: string; article_client: string } | undefined, coloris: string): string {
+  if (!template) return ''
+  const a = template.article_client
+  const prefix = a.includes(' - ') ? a.slice(0, a.indexOf(' - ') + 3) : ''
+  return prefix ? `${prefix}${coloris}` : ''
+}

@@ -20,6 +20,7 @@ import {
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { userHasPermission } from '../lib/permissions.js'
+import { addCodeForAcceptedEtude } from '../lib/codes-sp.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 
 export const etudesColorisRouter: RouterType = Router()
@@ -1359,6 +1360,7 @@ etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, re
     // create a brand-new ref_fini_colori scoped to the étude's IDref_fini
     // with reference = "<libelle>/<sampleNumber>", point the étude at it,
     // update the étude's libelle to match, and auto-advance statut to 3.
+    let codeSp: Awaited<ReturnType<typeof addCodeForAcceptedEtude>> = null
     if (d.accepte === 1 && d.sampleNumber) {
       const sampleNumber = d.sampleNumber.trim()
       const etudeRows = await query<{
@@ -1366,8 +1368,9 @@ etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, re
         IDref_fini: number
         IDref_fini_colori: number
         IDsous_traitant: number
+        IDclient: number
       }>(
-        `SELECT IDetude_col, libelle, IDref_fini, IDref_fini_colori, IDsous_traitant
+        `SELECT IDetude_col, libelle, IDref_fini, IDref_fini_colori, IDsous_traitant, IDclient
          FROM etude_col WHERE IDetude_col = ${etudeId}`,
       )
       const fixedEtude = await fixEncoding(etudeRows, 'etude_col', 'IDetude_col', ['libelle'])
@@ -1418,6 +1421,9 @@ etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, re
           if (inserted[0]?.IDref_fini_colori) {
             newColoriId = Number(inserted[0].IDref_fini_colori)
           }
+          // A client with Simone Pérèle roll labels gets the new coloris'
+          // EAN at once (LIVA #1209) — the order must not wait on it.
+          codeSp = await addCodeForAcceptedEtude(Number(etu.IDclient) || 0, newLibelle)
         }
 
         await query(
@@ -1437,7 +1443,7 @@ etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, re
     await touchEtude(etudeId)
 
     const detail = await loadEtudeDetail(etudeId)
-    res.json(detail)
+    res.json(codeSp ? { ...detail, codeSp } : detail)
   } catch (err) {
     console.error('Error responding to soumission:', err)
     res.status(500).json({ error: 'Internal server error' })

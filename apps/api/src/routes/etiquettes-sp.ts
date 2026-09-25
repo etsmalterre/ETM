@@ -3,7 +3,8 @@
 //   GET    /clients                         clients with labels switched on
 //   PUT    /clients/:id        {enabled}    switch a client on/off (edit_client_info)
 //   GET    /codes                           the `code_sp` list (EAN per coloris)
-//   POST   /codes | PUT /codes/:id | DELETE /codes/:id      (edit_client_info)
+//   GET    /codes/next                      the code a new coloris would take (LIVA #1209)
+//   POST   /codes | PUT /codes/:id | DELETE /codes/:id      (edit_client_info or gestion_codes_sp)
 //   GET    /lignes/:ligneId                 everything the order-line tab shows
 //   PUT    /lignes/:ligneId                 save the batch fields + MATEL's measures
 //   GET    /lignes/:ligneId/:doc/pdf        doc = etiquettes | tableau, ?rolls=1,2
@@ -24,6 +25,7 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { resolveClientNames } from './expeditions.js'
 import { ean13FromStored, spLabelCodes } from '../lib/gs1-barcode.js'
+import { createCodeSp, updateCodeSp, peekNextCode, CodeEanPrisError } from '../lib/codes-sp.js'
 import {
   listEtiquetteClients, setEtiquetteClient, getLigneEtiquettes, getRollMesures, saveLigneEtiquettes,
   matchCodeSp, lotDigits, missingMesures, defaultCommandeClient, type RollMesure,
@@ -76,6 +78,26 @@ async function requireEditClient(req: Request, res: Response): Promise<boolean> 
   return true
 }
 
+/** The SP code list: the whole client sheet right, or the narrow key that
+ *  lets someone maintain the codes alone (LIVA #1209). */
+async function requireEditCodes(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return false }
+  const admin = isEffectiveAdmin(req)
+  const [info, codes] = await Promise.all([
+    userHasPermission(req.userId, admin, 'edit_client_info'),
+    userHasPermission(req.userId, admin, 'gestion_codes_sp'),
+  ])
+  if (!info && !codes) {
+    res.status(403).json({ error: 'permission denied: gestion_codes_sp' })
+    return false
+  }
+  return true
+}
+
+function sendCodePris(res: Response, err: CodeEanPrisError): void {
+  res.status(409).json({ error: 'ean_deja_utilise', message: err.message })
+}
+
 /** The EAN as typed: 12 data digits (the check digit is added at print, like
  *  the legacy), or 13 digits with a valid check digit — stored as 12. */
 const eanInput = z.string().transform((s) => s.replace(/\D/g, '')).refine(
@@ -101,19 +123,28 @@ etiquettesSpRouter.get('/codes', async (_req: Request, res: Response) => {
   }
 })
 
+etiquettesSpRouter.get('/codes/next', async (_req: Request, res: Response) => {
+  try {
+    res.json({ code_ean_13: await peekNextCode() })
+  } catch (err) {
+    console.error('Error computing next code_sp:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// `auto: true` = the user kept the pre-filled next code: the number is taken
+// again at insert time, so two people adding a coloris together never collide.
+const createBody = codeBody.extend({ auto: z.boolean().default(false) })
+
 etiquettesSpRouter.post('/codes', async (req: Request, res: Response) => {
   try {
-    if (!(await requireEditClient(req, res))) return
-    const p = codeBody.safeParse(req.body)
+    if (!(await requireEditCodes(req, res))) return
+    const p = createBody.safeParse(req.body)
     if (!p.success) { res.status(400).json({ error: 'Validation failed', message: p.error.issues[0]?.message, details: p.error.issues }); return }
-    const d = p.data
-    await query(
-      `INSERT INTO code_sp (coloris, code_ean_13, article_client, article_fournisseur, libelle_article, num_bain)
-       VALUES (${sqlText(d.coloris)}, ${sqlText(d.code_ean_13)}, ${sqlText(d.article_client)}, ${sqlText(d.article_fournisseur)}, ${sqlText(d.libelle_article)}, ${sqlText(d.num_bain)})`,
-    )
-    const idRows = await query<{ id: number }>(`SELECT MAX(IDcode_sp) AS id FROM code_sp`)
-    res.status(201).json({ IDcode_sp: Number(idRows[0]?.id) || 0 })
+    const { auto, ...d } = p.data
+    res.status(201).json(await createCodeSp(d, auto))
   } catch (err) {
+    if (err instanceof CodeEanPrisError) { sendCodePris(res, err); return }
     console.error('Error creating code_sp:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
@@ -123,18 +154,13 @@ etiquettesSpRouter.put('/codes/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!(await requireEditClient(req, res))) return
+    if (!(await requireEditCodes(req, res))) return
     const p = codeBody.safeParse(req.body)
     if (!p.success) { res.status(400).json({ error: 'Validation failed', message: p.error.issues[0]?.message, details: p.error.issues }); return }
-    const d = p.data
-    await query(
-      `UPDATE code_sp SET coloris = ${sqlText(d.coloris)}, code_ean_13 = ${sqlText(d.code_ean_13)},
-         article_client = ${sqlText(d.article_client)}, article_fournisseur = ${sqlText(d.article_fournisseur)},
-         libelle_article = ${sqlText(d.libelle_article)}, num_bain = ${sqlText(d.num_bain)}
-       WHERE IDcode_sp = ${id}`,
-    )
+    await updateCodeSp(id, p.data)
     res.json({ ok: true })
   } catch (err) {
+    if (err instanceof CodeEanPrisError) { sendCodePris(res, err); return }
     console.error('Error updating code_sp:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
@@ -144,7 +170,7 @@ etiquettesSpRouter.delete('/codes/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!(await requireEditClient(req, res))) return
+    if (!(await requireEditCodes(req, res))) return
     await query(`DELETE FROM code_sp WHERE IDcode_sp = ${id}`)
     res.json({ ok: true })
   } catch (err) {
