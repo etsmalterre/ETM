@@ -33,11 +33,19 @@
 // fait quoi » instead of « voici les couleurs ». The pills stay the colour key.
 // "Annuel" has no pills, so each bar carries its total above it (the number the
 // legend used to hold) and hovering gives the exact centime.
+//
+// ── One client (LIVA #1214) ──
+// The legacy "détail du CA" let one client be followed month by month over the
+// years. A client picker above the chart narrows every series to that client
+// (`?client=`); cleared, the chart is back to the company total. The picker's
+// list comes from the unfiltered call, whose cache stays warm, so clearing the
+// client never refetches.
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { TrendingUp, Loader2 } from 'lucide-react'
+import { TrendingUp, Loader2, X } from 'lucide-react'
 import { CardContent } from '@/components/ui/card'
+import { SearchableCombobox } from '@/components/ui/popover-select'
 import { useElementSize } from '@/hooks/useElementSize'
 import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
@@ -51,9 +59,15 @@ interface Serie {
   months: (number | null)[]
   total: number
 }
+interface CaClient {
+  IDclient: number
+  nom: string
+}
 interface EvolutionResponse {
   years: number[]
   series: Serie[]
+  /** Everyone billed over the window — only on the unfiltered call. */
+  clients?: CaClient[]
 }
 
 const MOIS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc']
@@ -101,13 +115,25 @@ export function EvolutionCaWidget() {
   const [hidden, setHidden] = useState<Set<number>>(new Set())
   const [hoverMonth, setHoverMonth] = useState<number | null>(null)
   const [hoverYear, setHoverYear] = useState<number | null>(null)
+  /** 0 = every client (the company total). */
+  const [clientId, setClientId] = useState(0)
 
-  const query = useQuery<EvolutionResponse>({
+  const totalQuery = useQuery<EvolutionResponse>({
     queryKey: ['ca-evolution'],
     queryFn: () => apiFetch('/rapports/ca-evolution'),
     staleTime: 0,
     refetchOnWindowFocus: false,
   })
+  const clientQuery = useQuery<EvolutionResponse>({
+    queryKey: ['ca-evolution', clientId],
+    queryFn: () => apiFetch(`/rapports/ca-evolution?client=${clientId}`),
+    enabled: clientId > 0,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  })
+  const query = clientId > 0 ? clientQuery : totalQuery
+  const clients = totalQuery.data?.clients ?? []
+  const clientNom = clients.find((c) => c.IDclient === clientId)?.nom ?? null
 
   const series = query.data?.series ?? []
   const visible = useMemo(
@@ -143,14 +169,21 @@ export function EvolutionCaWidget() {
     const vals = mode === 'mensuel'
       ? visible.flatMap((s) => s.months.filter((m): m is number => m != null))
       : series.map((s) => s.total)
-    return niceScale(0, Math.max(0, ...vals))
+    // One client can end a month NEGATIVE (an avoir larger than what was
+    // invoiced). The floor follows the data only when the dip would show: a
+    // −104 € month on a 150 k€ axis is under a pixel, and extending the axis
+    // for it cost a whole −50 k€ band. Smaller dips are drawn on the zero line
+    // (`y` clamps) — the tooltip still gives the exact figure.
+    const lo = Math.min(0, ...vals)
+    const hi = Math.max(0, ...vals)
+    return niceScale(lo < -0.02 * hi ? lo : 0, hi)
   }, [mode, visible, series])
 
   const innerW = Math.max(0, W - PAD.left - PAD.right)
   const innerH = Math.max(0, H - PAD.top - PAD.bottom)
   const span = scale.hi - scale.lo || 1
   const xMonth = (i: number) => PAD.left + (innerW * i) / 11
-  const y = (v: number) => PAD.top + innerH - (innerH * (v - scale.lo)) / span
+  const y = (v: number) => PAD.top + innerH - (innerH * (Math.max(v, scale.lo) - scale.lo)) / span
 
   // ── Tooltip ────────────────────────────────────────────────────────────
   // Replaces the legend that used to sit under the chart. Positioned in the
@@ -225,6 +258,34 @@ export function EvolutionCaWidget() {
       icon={TrendingUp}
       title="Évolution du CA"
       actions={
+        <div className="flex flex-shrink-0 items-center gap-1.5">
+        {/* Client picker — in the band with the other chart controls, like
+            the CA widget's year picker. Fed by the unfiltered call, so it
+            stays put while a client's series load. */}
+        {clients.length > 0 && (
+          <>
+            <SearchableCombobox
+              options={clients}
+              value={clientId}
+              onChange={setClientId}
+              getId={(c) => c.IDclient}
+              getPrimary={(c) => c.nom}
+              placeholder="Tous les clients"
+              size="sm"
+              inputClassName="text-left"
+            />
+            {clientId > 0 && (
+              <button
+                type="button"
+                onClick={() => setClientId(0)}
+                title="Revenir au CA de tous les clients"
+                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-white/70 transition-colors hover:bg-white/15 hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </>
+        )}
         <div className="flex flex-shrink-0 items-center gap-0.5 rounded-md bg-white/10 p-0.5">
           {(['mensuel', 'annuel'] as const).map((m) => (
             <button
@@ -239,6 +300,7 @@ export function EvolutionCaWidget() {
               {m}
             </button>
           ))}
+        </div>
         </div>
       }
     >
@@ -292,8 +354,8 @@ export function EvolutionCaWidget() {
                 width={W} height={H} className="block"
                 role="img"
                 aria-label={mode === 'mensuel'
-                  ? `Évolution mensuelle du chiffre d'affaires pour ${visible.map((s) => s.year).join(', ')}`
-                  : "Chiffre d'affaires par année"}
+                  ? `Évolution mensuelle du chiffre d'affaires${clientNom ? ` de ${clientNom}` : ''} pour ${visible.map((s) => s.year).join(', ')}`
+                  : `Chiffre d'affaires${clientNom ? ` de ${clientNom}` : ''} par année`}
                 onMouseLeave={() => { setHoverMonth(null); setHoverYear(null) }}
               >
                 {/* Recessive grid */}
@@ -477,9 +539,10 @@ export function EvolutionCaWidget() {
             {/* One hint line where the legend used to be — the year pills above
                 are the colour key, and the tooltip carries the figures. */}
             <p className="flex-shrink-0 text-[10px] text-muted-foreground">
+              {clientNom ? `CA facturé à ${clientNom}` : 'CA facturé'}
               {mode === 'mensuel'
-                ? 'CA facturé par mois · survolez le graphique pour le détail'
-                : 'CA facturé par année · survolez une barre pour le détail'}
+                ? ' par mois · survolez le graphique pour le détail'
+                : ' par année · survolez une barre pour le détail'}
             </p>
           </>
         )}

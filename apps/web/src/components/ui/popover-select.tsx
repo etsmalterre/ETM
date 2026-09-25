@@ -262,10 +262,14 @@ export interface SearchableComboboxProps<T> {
   placeholder: string
   /** `'sm'` matches the compact right-panel KV row (h-7, right-aligned, capped width). */
   size?: 'default' | 'sm'
+  /** Extra classes merged onto the input — e.g. `text-left` when an `sm`
+   *  combobox sits in a widget header beside left-aligned selects. */
+  inputClassName?: string
 }
 
 export function SearchableCombobox<T>({
   options, value, onChange, getId, getPrimary, getSecondary, disabled, loading, placeholder, size = 'default',
+  inputClassName,
 }: SearchableComboboxProps<T>) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -349,6 +353,7 @@ export function SearchableCombobox<T>({
           'w-full rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring cursor-text',
           isSm ? 'h-7 px-2 text-sm text-right' : 'h-9 px-3 text-sm',
           disabled && 'bg-zinc-100 text-muted-foreground cursor-not-allowed',
+          inputClassName,
         )}
       />
       {open && !disabled && pos && createPortal(

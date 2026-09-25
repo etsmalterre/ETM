@@ -836,18 +836,28 @@ function sumEuros(values: number[]): number {
  *  euros at the end: adding thousands of already-rounded float centimes drifts
  *  by a centime here and there, which is enough to make a monthly bucket
  *  disagree with the legacy report. */
-async function caForYear(societe: number, year: number, throughMmdd?: string | null): Promise<Map<number, CaClientAgg>> {
+async function caForYear(
+  societe: number,
+  year: number,
+  throughMmdd?: string | null,
+  clientId?: number,
+): Promise<Map<number, CaClientAgg>> {
   // `throughMmdd` cuts the year at a day of the year (the "cumul à date"
   // comparison). Dates are YYYYMMDD strings, so the plain string comparison is
   // also a chronological one — including on a 29/02 cutoff against a non-leap
   // year, where it correctly stops at 28/02.
   const end = `${year}${throughMmdd ?? '1231'}`
+  // `clientId` narrows the scan to one client (Évolution du CA per client,
+  // LIVA #1214) — same aggregation, so a client's figures still agree with its
+  // row in the CA table to the centime.
+  const clientFilter = clientId && clientId > 0 ? `AND f.IDclient = ${clientId}` : ''
   const rows = await query<CaLineRow>(
     `SELECT f.IDclient AS idc, f.TYPE AS t, f.DATE AS d, lf.quantite AS q, lf.prix AS p
        FROM facture f
        JOIN ligne_facture lf ON lf.IDfacture = f.IDfacture
       WHERE f.IDsociete = ${societe}
-        AND f.DATE >= '${year}0101' AND f.DATE <= '${end}'`,
+        AND f.DATE >= '${year}0101' AND f.DATE <= '${end}'
+        ${clientFilter}`,
   )
   const cents = new Map<number, { total: number; months: number[] }>()
   for (const r of rows) {
@@ -1000,6 +1010,12 @@ async function handleCaClients(scope: FinanceScope, req: Request, res: Response)
 // full per-client matrix (one row per client per year), and the widget needs
 // only the twelve monthly totals. Same `caForYear` aggregation underneath, so
 // the figures agree with the CA table to the centime.
+//
+// `?client=<IDclient>` (LIVA #1214) restricts every series to that client —
+// the legacy "détail du CA" let one client be followed month by month. Without
+// it the response also lists `clients`: everyone billed over the window, for
+// the widget's picker (the unfiltered call scans every invoice anyway, so the
+// list costs one name lookup, not another pass).
 const CA_EVOLUTION_MAX_YEARS = 10
 const CA_EVOLUTION_DEFAULT_YEARS = 5
 
@@ -1020,30 +1036,50 @@ async function handleCaEvolution(scope: FinanceScope, req: Request, res: Respons
     // Sequential, not Promise.all: each year is a full-year scan of `facture`
     // against the shared HFSQL server, and firing five at once is exactly the
     // kind of burst that makes the bridge unhappy for everyone.
-    const nowYear = new Date().getFullYear()
+    const askedClient = parseInt(String(req.query.client ?? ''), 10)
+    const clientId = Number.isInteger(askedClient) && askedClient > 0 ? askedClient : 0
+
+    const now = new Date()
+    const nowYear = now.getFullYear()
     const series: { year: number; months: (number | null)[]; total: number }[] = []
+    const billed = new Map<number, number>()
     for (const year of years) {
-      const agg = await caForYear(scope.societe, year)
+      const agg = await caForYear(scope.societe, year, null, clientId)
       const months: (number | null)[] = Array.from({ length: 12 }, (_, i) =>
         sumEuros([...agg.values()].map((a) => a.months[i])),
       )
       const total = sumEuros(months.map((m) => m ?? 0))
+      if (!clientId) {
+        for (const [idc, a] of agg) billed.set(idc, (billed.get(idc) ?? 0) + a.total)
+      }
 
       // For the CURRENT year, months after the last invoiced one are UNKNOWN,
       // not zero — emitting 0 would draw the line crashing to the axis for the
       // rest of the calendar. Past years keep their real zeros: a month with no
       // invoices genuinely earned nothing, and 2020's empty first nine months
-      // are a fact worth seeing.
+      // are a fact worth seeing. For ONE client the cut is the calendar month
+      // instead: a client with nothing invoiced since March has genuinely
+      // billed 0 in April–now, which is exactly what the reader came to see.
       if (year === nowYear) {
         let last = -1
-        for (let i = 0; i < 12; i++) if ((months[i] ?? 0) !== 0) last = i
+        if (clientId) last = now.getMonth()
+        else for (let i = 0; i < 12; i++) if ((months[i] ?? 0) !== 0) last = i
         for (let i = last + 1; i < 12; i++) months[i] = null
       }
 
       series.push({ year, months, total })
     }
 
-    res.json({ years, series })
+    let clients: { IDclient: number; nom: string }[] | undefined
+    if (!clientId) {
+      const ids = [...billed.entries()].filter(([, t]) => t !== 0).map(([id]) => id)
+      const names = await caClientNames(ids)
+      clients = ids
+        .map((id) => ({ IDclient: id, nom: names.get(id) || `#${id}` }))
+        .sort((a, b) => a.nom.localeCompare(b.nom, 'fr'))
+    }
+
+    res.json({ years, series, ...(clients ? { clients } : {}) })
   } catch (err) {
     console.error('[rapports/ca-evolution]', err)
     res.status(500).json({ error: (err as Error).message })
