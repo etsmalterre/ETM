@@ -27,7 +27,7 @@ import { buildFicheTechniquePdfData, renderFicheTechniquePdfBuffer } from './ref
 import { insertProspect, type ProspectFields } from './prospects.js'
 import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espace-client-acces.js'
 import { ficheClient } from '../lib/espace-fiche.js'
-import { commandeClient, listeCommandesClient } from '../lib/espace-commandes.js'
+import { commandeClient, confirmationCommandePdf, listeCommandesClient } from '../lib/espace-commandes.js'
 import { z } from 'zod'
 
 export const webserviceSiteRouter: RouterType = Router()
@@ -384,6 +384,18 @@ webserviceSiteRouter.get('/espace/clients/:id/commandes/:idCommande', handle(asy
   const commande = await commandeClient(id, idCommande)
   if (!commande) { fault(res, 404, 'Commande introuvable'); return }
   res.json(commande)
+}))
+
+/** The order confirmation PDF, as Malterre sends it — 404 when the order isn't this client's. */
+webserviceSiteRouter.get('/espace/clients/:id/commandes/:idCommande/confirmation.pdf', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idCommande = idParam(req.params.idCommande)
+  if (!id || !idCommande) { fault(res, 400, 'Identifiant invalide'); return }
+  const doc = await confirmationCommandePdf(id, idCommande)
+  if (!doc) { fault(res, 404, 'Commande introuvable'); return }
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `inline; filename="confirmation-commande-${doc.numero ?? idCommande}.pdf"`)
+  res.send(doc.pdf)
 }))
 
 webserviceSiteRouter.get('/_etat', (_req, res) => {

@@ -27,6 +27,8 @@ import {
   resolveRefLabel,
   resolveTransporteurNamesCC,
   uniteLabel,
+  buildClientPdfData,
+  renderClientPdfBuffer,
 } from '../routes/commandes-client.js'
 
 // ── Status (pure) ───────────────────────────────────────────
@@ -505,4 +507,17 @@ export async function commandeClient(idClient: number, idCommande: number): Prom
     expeditions: exp.expeditions,
     factures,
   }
+}
+
+/** The order confirmation PDF — the document Malterre sends the customer (Clients › Commandes « PDF »), or null when
+ *  the order isn't this client's. Same ownership rule as commandeClient. */
+export async function confirmationCommandePdf(idClient: number, idCommande: number): Promise<{ numero: string | null; pdf: Buffer } | null> {
+  const rows = await query<{ IDclient: number; IDsociete: number; IDcommande_ETM: number; donation: number | null }>(
+    `SELECT IDclient, IDsociete, IDcommande_ETM, donation FROM commande_client WHERE IDcommande_client = ${idCommande}`,
+  )
+  const h = rows[0]
+  if (!h || Number(h.IDclient) !== idClient || Number(h.IDsociete) !== 1 || Number(h.IDcommande_ETM) !== 0 || Number(h.donation) === 1) return null
+  const data = await buildClientPdfData(idCommande)
+  if (!data) return null
+  return { numero: data.numero || null, pdf: await renderClientPdfBuffer(data) }
 }

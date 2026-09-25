@@ -4699,7 +4699,7 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
   }
 }
 
-async function renderClientPdfBuffer(data: CommandeClientPdfData): Promise<Buffer> {
+export async function renderClientPdfBuffer(data: CommandeClientPdfData): Promise<Buffer> {
   return renderToBuffer(
     React.createElement(CommandeClientPdf, { data }) as unknown as React.ReactElement<
       import('@react-pdf/renderer').DocumentProps
