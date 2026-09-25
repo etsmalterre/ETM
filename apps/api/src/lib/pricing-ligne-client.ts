@@ -44,6 +44,8 @@ import {
   resolveLigneTarifMode, contratPrixForTrancheIdx,
   type ContratTarifInfo, type LigneTarifMode,
 } from './tarif-client.js'
+import { geom, pickTrancheIndex } from './roll-geometry.js'
+import { findPalierAssocie, type PalierAssocie } from './palier-associe.js'
 
 /** Flag the next-tranche commercial nudge when the extra quantity needed to reach
  *  the next (cheaper) band is ≤ this fraction of the entered quantity. */
@@ -95,6 +97,10 @@ export interface LignePriceResult {
   blocked: boolean
   /** French explanation of `blocked`, ready to display. */
   blocked_reason: string | null
+  /** Set when the price comes from a molleton line's band rather than this
+   *  line's own quantity (associated ref of the same coloris on the order —
+   *  LIVA #1217). null otherwise. */
+  palier_associe: PalierAssocie | null
 }
 
 const BASE: LignePriceResult = {
@@ -106,6 +112,7 @@ const BASE: LignePriceResult = {
   tarif_mode: 'standard', coefficient: 0,
   contrat_expire: false, contrat_date_expiration: '',
   blocked: false, blocked_reason: null,
+  palier_associe: null,
 }
 
 /** DD/MM/YYYY from a YYYYMMDD HFSQL date, '' when malformed. */
@@ -161,17 +168,6 @@ function modeFields(mode: LigneTarifMode | null): Pick<
   }
 }
 
-/** Largest tranche index (1..8) whose roll band ≤ nRolls; tranche 0 ("métrage")
- *  when below a single roll. */
-function pickTrancheIndex(nRolls: number): number {
-  if (nRolls < 1) return 0
-  let idx = 1
-  for (let i = 1; i < ROLL_MULT.length; i++) {
-    if (ROLL_MULT[i] <= nRolls) idx = i
-  }
-  return idx
-}
-
 /** Describe the next (cheaper) tariff band above tranche `idx`, given a per-tranche
  *  price function. Returns zeros when already at the top band or when the next
  *  band isn't strictly cheaper (defensive — bands are monotonically cheaper). */
@@ -204,22 +200,6 @@ function nextTranche(
   }
 }
 
-/** Roll geometry from a quantity and the per-roll size (same unit).
- *  Users type whole Ml/Kg while roll sizes are fractional (poids × rounded
- *  rendement), so "spot on" must tolerate the rounding: any quantity within 1%
- *  of a roll of a clean multiple counts as exact (rounded to the NEAREST roll
- *  count, not floored) — otherwise 171 Ml on 85,7 Ml rolls reads as "> 1
- *  rouleau" with a silly "plus que 0 Ml" nudge instead of a clean 2 rolls. */
-function geom(quantite: number, rollSize: number): { nRolls: number; cleanQty: number; exact: boolean } {
-  const rollsFloat = quantite / rollSize
-  const nearest = Math.round(rollsFloat)
-  if (nearest >= 1 && Math.abs(quantite - nearest * rollSize) <= rollSize * 0.01) {
-    return { nRolls: nearest, cleanQty: round2(nearest * rollSize), exact: true }
-  }
-  const nRolls = Math.floor(rollsFloat + 1e-6)
-  return { nRolls, cleanQty: round2(nRolls * rollSize), exact: false }
-}
-
 export async function calcLignePriceClient(p: {
   type: number
   IDreference: number
@@ -229,6 +209,11 @@ export async function calcLignePriceClient(p: {
   /** Owner of the commande — decides which tarif grid applies. Omitted only by
    *  callers that genuinely have no client (none today). */
   IDclient?: number
+  /** The order the line is on — lets an associated ref (a côte) take the band of
+   *  its molleton line of the same coloris (LIVA #1217). */
+  IDcommande_client?: number
+  /** The line being priced when it already exists, so it never pairs with itself. */
+  IDligne_commande_client?: number
 }): Promise<LignePriceResult> {
   // The client's tarif mode is resolved FIRST and independently of the quantity:
   // an expired contract must show (and block) as soon as the coloris is picked,
@@ -263,7 +248,18 @@ export async function calcLignePriceClient(p: {
     const rollSize = p.unite === 3 ? (rendement > 0 ? poids * rendement : 0) : poids
     if (!(rollSize > 0)) return base
     const { nRolls, cleanQty, exact } = geom(p.quantite, rollSize)
-    const idx = pickTrancheIndex(nRolls)
+    const ownIdx = pickTrancheIndex(nRolls)
+    // A côte ordered with its molleton takes the molleton's band when it is
+    // better than its own (legacy « Associée à »). Its own grid still prices it.
+    const palier = await findPalierAssocie({
+      IDclient: p.IDclient ?? 0,
+      IDcommande_client: p.IDcommande_client ?? 0,
+      IDligneExclue: p.IDligne_commande_client ?? 0,
+      IDref_fini: p.IDreference,
+      IDcolori: p.IDcolori,
+    })
+    const palierApplies = palier !== null && palier.trancheIdx > ownIdx
+    const idx = palierApplies ? palier.trancheIdx : ownIdx
     const standardAt = (j: number) => (p.unite === 3 ? tarif.tranches[j].moPrixDeVenteAuMl : tarif.tranches[j].moPrixDeVenteAuKg)
     // An active contract replaces the grid entirely — including the next-tranche
     // nudge, which may only offer bands that contract actually negotiated.
@@ -271,11 +267,14 @@ export async function calcLignePriceClient(p: {
     if (contrat && !contratAt) return { ...base, rollSize, nRolls, cleanQty, exact }
     const priceAt = contratAt ?? standardAt
     const prix = priceAt(idx)
-    const next = nextTranche(idx, rollSize, p.quantite, priceAt, prix)
+    // The band belongs to the molleton: ordering more côte would not move it, so
+    // no "order a bit more" nudge.
+    const next = palierApplies ? {} : nextTranche(idx, rollSize, p.quantite, priceAt, prix)
     return {
       ...base,
       prix, unite: p.unite, rollSize, nRolls, cleanQty, exact, trancheRolls: tarif.tranches[idx].rolls,
       ...next, priceable: true,
+      palier_associe: palierApplies ? palier : null,
     }
   }
 

@@ -47,6 +47,7 @@ import {
   generateCompteClient, loadTakenComptes, pickCompte, normalizeCompte, isValidCompte,
 } from '../lib/compte-client.js'
 import { normalizeSiren, isValidSiren } from '../lib/siren.js'
+import { parseAssocieeCsv } from '../lib/refs-associees.js'
 
 export const clientsRouter: RouterType = Router()
 
@@ -1472,9 +1473,7 @@ clientsRouter.get('/lookups/refs-associees', async (req: Request, res: Response)
     const rows = await query<Record<string, unknown>>(`SELECT associee FROM ref_fini WHERE IDref_fini = ${refFini}`)
     if (rows.length === 0) { res.json([]); return }
     // Legacy CSV is messy: leading "0", empty items, sometimes the ref itself.
-    const ids = [...new Set(String(rows[0].associee ?? '')
-      .split(',').map((s) => parseInt(s.trim(), 10))
-      .filter((n) => Number.isInteger(n) && n > 0 && n !== refFini))]
+    const ids = parseAssocieeCsv(rows[0].associee, refFini)
     if (ids.length === 0) { res.json([]); return }
     const finiMap = await mapRefFini(ids)
     res.json(ids.filter((x) => finiMap.has(x)).map((x) => ({

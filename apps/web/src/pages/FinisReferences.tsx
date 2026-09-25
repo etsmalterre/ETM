@@ -47,6 +47,7 @@ import {
   Tag,
   Users,
   Copy,
+  Link2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -96,6 +97,13 @@ interface Traitement {
   /** Catalog process order — the tab draws the steps in it. */
   ordre: number
   observation: string | null
+}
+
+/** A finished ref sold with this one (ref_fini.associee) — the côte of a molleton. */
+interface RefAssociee {
+  IDref_fini: number
+  reference: string
+  designation: string
 }
 
 interface EcruRef {
@@ -148,6 +156,7 @@ interface RefFiniDetail {
   coloris: Coloris[]
   coloris_mode: 'dye' | 'wash'
   traitements: Traitement[]
+  associees: RefAssociee[]
   stock_total_kg: number
   stock_total_m: number
   stock_lots: number
@@ -1245,11 +1254,13 @@ function TarifsPrintDialog({
 
 // ── Center panel: Classeur master tabs (§39) ───────────
 // One dataset at a time gets the full panel height — Spécifications is the
-// technical sheet, Coloris and Traitements are the two catalogs hanging off it.
+// technical sheet, Coloris and Traitements are the two catalogs hanging off it,
+// Associées the refs sold with it (LIVA #1217).
 const MAIN_TABS = [
   { key: 'specifications', label: 'Spécifications', icon: Package },
   { key: 'coloris', label: 'Coloris', icon: Palette },
   { key: 'traitements', label: 'Traitements', icon: Droplets },
+  { key: 'associees', label: 'Associées', icon: Link2 },
 ] as const
 type MainTab = (typeof MAIN_TABS)[number]['key']
 
@@ -1300,6 +1311,7 @@ function DetailMain({
   const counts: Partial<Record<MainTab, number>> = {
     coloris: detail.coloris.length,
     traitements: detail.traitements.length,
+    associees: detail.associees.length,
   }
 
   return (
@@ -1330,6 +1342,9 @@ function DetailMain({
         {activeTab === 'coloris' && <ColorisCard detail={detail} isEditing={isEditing} />}
         {activeTab === 'traitements' && (
           <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
+        )}
+        {activeTab === 'associees' && (
+          <AssocieesCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
         )}
       </div>
     </div>
@@ -1902,6 +1917,146 @@ function TraitementsCard({
         isPending={deleteMut.isPending}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => { if (deleteTarget) deleteMut.mutate(deleteTarget.IDtraitement) }}
+      />
+    </>
+  )
+}
+
+// ── Associées Card ─────────────────────────────────────
+// The finished refs sold with this one (`ref_fini.associee`, LIVA #1217) — the
+// côte of a molleton. Clients › Gestion offers exactly this list as the
+// « Références associées » checklist of a client's reference, and an order
+// prices the côte at the molleton's band. Adding and removing persist
+// immediately, like the treatments; removing is refused while a client still
+// carries the association (the server names them).
+
+function AssocieesCard({
+  detail, isEditing, onMutationSuccess,
+}: {
+  detail: RefFiniDetail; isEditing: boolean; onMutationSuccess: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [deleteTarget, setDeleteTarget] = useState<RefAssociee | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [addError, setAddError] = useState<string | null>(null)
+
+  // The left list's query — already cached, no extra fetch.
+  const { data: allRefs } = useRefsFini()
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['ref-fini', detail.IDref_fini] })
+    // The Clients › Gestion checklist reads this list.
+    queryClient.invalidateQueries({ queryKey: ['lookup-refs-associees', detail.IDref_fini] })
+    onMutationSuccess()
+  }, [queryClient, detail.IDref_fini, onMutationSuccess])
+
+  const addMut = useMutation({
+    mutationFn: (IDref_fini: number) =>
+      apiFetch(`/references-fini/${detail.IDref_fini}/associees`, {
+        method: 'POST',
+        body: JSON.stringify({ IDref_fini }),
+      }),
+    onMutate: () => setAddError(null),
+    onSuccess: invalidate,
+    onError: (err: Error & { body?: unknown }) => {
+      const msg = (err.body as { message?: string } | undefined)?.message
+      setAddError(msg ?? "Impossible d'associer cette référence.")
+    },
+  })
+  const deleteMut = useMutation({
+    mutationFn: (IDref_fini: number) =>
+      apiFetch(`/references-fini/${detail.IDref_fini}/associees/${IDref_fini}`, { method: 'DELETE' }),
+    onMutate: () => setDeleteError(null),
+    onSuccess: () => { invalidate(); setDeleteTarget(null) },
+    onError: (err: Error & { body?: unknown }) => {
+      const msg = (err.body as { message?: string } | undefined)?.message
+      setDeleteError(msg ?? "Impossible de retirer cette association.")
+    },
+  })
+
+  const linked = useMemo(() => new Set(detail.associees.map((a) => a.IDref_fini)), [detail.associees])
+  const options = useMemo(
+    () => (allRefs ?? []).filter((r) => r.IDref_fini !== detail.IDref_fini && !linked.has(r.IDref_fini)),
+    [allRefs, detail.IDref_fini, linked],
+  )
+
+  const closeDelete = () => { setDeleteTarget(null); setDeleteError(null) }
+
+  return (
+    <>
+      <Card className={cn('card-premium', isEditing && editSectionClass)}>
+        <CardContent className="pt-4 pb-3 space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Références vendues avec celle-ci (ex. la côte d'un molleton) : proposées dans la fiche client,
+            et tarifées au palier de quantité de la référence principale sur une même commande.
+          </p>
+          {detail.associees.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">Aucune référence associée</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {detail.associees.map((a) => (
+                <div key={a.IDref_fini} className={cn('group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3', 'border-l-amber-400/60')}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
+                        <Link2 className="h-3.5 w-3.5 text-amber-600" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{a.reference || `#${a.IDref_fini}`}</p>
+                        {a.designation && <p className="text-[11px] text-muted-foreground truncate">{a.designation}</p>}
+                      </div>
+                    </div>
+                    {isEditing && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                        title="Retirer cette association"
+                        onClick={() => { setDeleteError(null); setDeleteTarget(a) }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {isEditing && (
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-2 py-1.5">
+              <Plus className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <SearchableCombobox
+                  options={options}
+                  value={0}
+                  onChange={(id) => { if (id > 0) addMut.mutate(id) }}
+                  getId={(r) => r.IDref_fini}
+                  getPrimary={(r) => r.reference ?? `#${r.IDref_fini}`}
+                  getSecondary={(r) => r.designation}
+                  placeholder="Associer une référence…"
+                  loading={allRefs === undefined}
+                  disabled={addMut.isPending}
+                />
+              </div>
+              {addMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />}
+            </div>
+          )}
+          {addError && (
+            <span className="text-[11px] text-destructive flex items-center gap-1">
+              <AlertCircle className="h-3 w-3" />{addError}
+            </span>
+          )}
+        </CardContent>
+      </Card>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Retirer l'association"
+        description={deleteTarget ? `« ${deleteTarget.reference} » ne sera plus associée à cette référence.` : undefined}
+        confirmLabel="Retirer"
+        isPending={deleteMut.isPending}
+        error={deleteError}
+        onCancel={closeDelete}
+        onConfirm={() => { if (deleteTarget) deleteMut.mutate(deleteTarget.IDref_fini) }}
       />
     </>
   )

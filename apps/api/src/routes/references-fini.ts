@@ -7,6 +7,9 @@ import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
 import { loadClientsForRefFini } from '../lib/clients-ref-fini.js'
 import { loadTraitementCatalog, loadRefFiniTraitements, attachTraitement, detachTraitement } from '../lib/traitements.js'
 import { duplicateRefFini } from '../lib/duplicate-ref-fini.js'
+import {
+  loadRefAssociees, attachRefAssociee, detachRefAssociee, associationUtiliseeMessage,
+} from '../lib/refs-associees.js'
 import { batchRepair } from '../lib/batch-repair.js'
 import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } from '../lib/ref-fini-reference.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
@@ -375,6 +378,8 @@ referencesFiniRouter.get('/:id', async (req: Request, res: Response) => {
 
     // Traitements via traitement_ref_fini (ASCII junction) → traitement.
     const traitements = await loadRefFiniTraitements(id)
+    // Associated refs (ref_fini.associee CSV) — the côte sold with this molleton.
+    const associees = await loadRefAssociees(id)
 
     // Active stock aggregate (exclude shipped).
     let stock_total_kg = 0
@@ -398,6 +403,7 @@ referencesFiniRouter.get('/:id', async (req: Request, res: Response) => {
       coloris,
       coloris_mode,
       traitements,
+      associees,
       stock_total_kg,
       stock_total_m,
       stock_lots,
@@ -1055,6 +1061,62 @@ referencesFiniRouter.delete('/:id/traitements/:traitementId', async (req: Reques
     res.json(await loadRefFiniTraitements(id))
   } catch (err) {
     console.error('Error detaching ref_fini traitement:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/references-fini/:id/associees — associate another finished ref
+// (LIVA #1217). The CSV is a set: a second attach answers 409.
+referencesFiniRouter.post('/:id/associees', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = z.object({ IDref_fini: z.number().int().positive() }).safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed' }); return }
+
+    const result = await attachRefAssociee(id, parsed.data.IDref_fini)
+    if (result === 'ref_not_found') { res.status(404).json({ error: 'Ref fini not found' }); return }
+    if (result === 'associee_not_found') {
+      res.status(400).json({ error: "La référence choisie n'existe pas." })
+      return
+    }
+    if (result === 'elle_meme') {
+      res.status(400).json({ error: 'elle_meme', message: 'Une référence ne peut pas être associée à elle-même.' })
+      return
+    }
+    if (result === 'deja_associee') {
+      res.status(409).json({ error: 'deja_associee', message: 'Cette référence est déjà associée.' })
+      return
+    }
+    res.status(201).json(await loadRefAssociees(id))
+  } catch (err) {
+    console.error('Error attaching ref_fini associee:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/references-fini/:id/associees/:associeeId — refused (409
+// `association_utilisee`, with the clients) while a client's catalogue still
+// links it: Clients › Gestion only offers what this list holds, so the client
+// could never untick it again (Vincent 2026-09-25).
+referencesFiniRouter.delete('/:id/associees/:associeeId', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const associeeId = parseInt(req.params.associeeId, 10)
+    if (isNaN(id) || isNaN(associeeId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const result = await detachRefAssociee(id, associeeId)
+    if (result.status === 'ref_not_found') { res.status(404).json({ error: 'Ref fini not found' }); return }
+    if (result.status === 'utilisee') {
+      res.status(409).json({
+        error: 'association_utilisee',
+        message: associationUtiliseeMessage(result.clients),
+        clients: result.clients,
+      })
+      return
+    }
+    res.json(await loadRefAssociees(id))
+  } catch (err) {
+    console.error('Error detaching ref_fini associee:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

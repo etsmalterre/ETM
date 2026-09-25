@@ -26,6 +26,7 @@ import {
   Clock,
   Package,
   Link2,
+  ChevronRight,
   Unlink,
   Printer,
   AtSign,
@@ -334,7 +335,33 @@ interface LinePriceInfo {
   contrat_date_expiration: string
   blocked: boolean
   blocked_reason: string | null
+  /** Set when an associated ref (a côte) takes the band of its molleton line of
+   *  the same coloris on this order rather than its own (LIVA #1217). */
+  palier_associe: PalierAssocie | null
 }
+
+interface PalierAssocie {
+  IDligne_commande_client: number
+  reference: string
+  coloris: string
+  nRolls: number
+  trancheRolls: number
+}
+
+/** A côte line whose price changes after its molleton changed (LIVA #1217). */
+interface CoteARevoir {
+  IDligne_commande_client: number
+  reference: string
+  coloris: string
+  quantite: number
+  unite: number
+  prix_actuel: number
+  prix_nouveau: number
+  palier_associe: PalierAssocie | null
+}
+
+/** The (reference, coloris) of a fini line — what pairs a molleton with its côte. */
+type FiniPair = { IDref_fini: number; IDcolori: number }
 
 // ── Shared styling ─────────────────────────────────────
 
@@ -1218,9 +1245,31 @@ function LignesSection({
     onLinesDirtyChange(lineDialogOpen)
   }, [lineDialogOpen, onLinesDirtyChange])
 
+  // Côte lines whose price moves after their molleton changed (LIVA #1217) —
+  // shown in a dialog, written only on « Mettre à jour ».
+  const [cotesARevoir, setCotesARevoir] = useState<CoteARevoir[]>([])
+  const checkCotes = useCallback(async (molletons: FiniPair[]) => {
+    if (molletons.length === 0) return
+    try {
+      const rows = await apiFetch<CoteARevoir[]>(
+        `/commandes-client/${commande.IDcommande_client}/cotes-a-revoir`
+        + `?refs=${molletons.map((m) => m.IDref_fini).join(',')}&coloris=${molletons.map((m) => m.IDcolori).join(',')}`,
+      )
+      if (rows.length > 0) setCotesARevoir(rows)
+    } catch {
+      // A failed check never blocks the save that already happened.
+    }
+  }, [commande.IDcommande_client])
+
   const deleteLineMut = useMutation({
     mutationFn: (lineId: number) => apiFetch(`/commandes-client/lignes/${lineId}`, { method: 'DELETE' }),
-    onSuccess: onMutationSuccess,
+    onSuccess: (_data, lineId) => {
+      onMutationSuccess()
+      const gone = commande.lignes.find((l) => l.IDligne_commande_client === lineId)
+      if (gone && gone.type === 2 && gone.IDreference > 0 && gone.IDcolori > 0) {
+        void checkCotes([{ IDref_fini: gone.IDreference, IDcolori: gone.IDcolori }])
+      }
+    },
   })
 
   const startAddLine = () => { setEditingLine(null); setLineDialogOpen(true) }
@@ -1347,7 +1396,14 @@ function LignesSection({
         commande={commande}
         line={editingLine}
         onClose={() => { setLineDialogOpen(false); setEditingLine(null) }}
-        onSuccess={() => { setLineDialogOpen(false); setEditingLine(null); onMutationSuccess() }}
+        onSuccess={(molletons) => { setLineDialogOpen(false); setEditingLine(null); onMutationSuccess(); void checkCotes(molletons) }}
+      />
+
+      <RepriceCotesDialog
+        commandeId={commande.IDcommande_client}
+        cotes={cotesARevoir}
+        onClose={() => setCotesARevoir([])}
+        onApplied={() => { setCotesARevoir([]); onMutationSuccess() }}
       />
 
       <ConfirmDialog
@@ -1362,6 +1418,90 @@ function LignesSection({
         }}
       />
     </>
+  )
+}
+
+// ── Côte reprice prompt (LIVA #1217) ───────────────────
+// After a molleton line is added, changed or deleted, the côte lines of the same
+// coloris may fall in another band. Nothing is written without asking: a côte
+// priced by hand shows up here too, and « Ne pas modifier » keeps every price.
+
+function RepriceCotesDialog({
+  commandeId, cotes, onClose, onApplied,
+}: {
+  commandeId: number
+  cotes: CoteARevoir[]
+  onClose: () => void
+  onApplied: () => void
+}) {
+  const [error, setError] = useState<string | null>(null)
+  const applyMut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-client/${commandeId}/cotes-a-revoir`, {
+      method: 'POST',
+      body: JSON.stringify({ lignes: cotes.map((c) => c.IDligne_commande_client) }),
+    }),
+    onMutate: () => setError(null),
+    onSuccess: onApplied,
+    onError: (e: Error & { body?: unknown }) => {
+      setError((e.body as { message?: string } | undefined)?.message ?? 'Impossible de mettre à jour les prix.')
+    },
+  })
+  const open = cotes.length > 0
+  const uniteLabel = (u: number) => (u === 1 ? 'Kg' : u === 3 ? 'Ml' : '')
+  const plural = cotes.length > 1
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !applyMut.isPending) onClose() }}>
+      <DialogContent className="max-w-lg" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Link2 className="h-5 w-5 text-accent" />
+            {plural ? 'Mettre à jour le prix des côtes' : 'Mettre à jour le prix de la côte'}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Le molleton a changé : {plural ? 'ces lignes associées changent' : 'cette ligne associée change'} de palier.
+          </p>
+          <div className="space-y-2">
+            {cotes.map((c) => (
+              <div key={c.IDligne_commande_client} className={cn('rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3', 'border-l-amber-400/60')}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{c.reference}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {c.coloris} · {fmtNum(c.quantite)} {uniteLabel(c.unite)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-sm tabular-nums flex-shrink-0">
+                    <span className="text-muted-foreground line-through">{fmtNum(c.prix_actuel, 2)} €</span>
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="font-semibold">{fmtNum(c.prix_nouveau, 2)} €</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  {c.palier_associe
+                    ? `Palier ${c.palier_associe.trancheRolls} rouleaux du molleton ${c.palier_associe.reference}`
+                    : 'Palier de sa propre quantité — plus de molleton de ce coloris sur la commande'}
+                </p>
+              </div>
+            ))}
+          </div>
+          {error && (
+            <div className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span>{error}</span>
+            </div>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose} disabled={applyMut.isPending}>Ne pas modifier</Button>
+          <Button onClick={() => applyMut.mutate()} disabled={applyMut.isPending}>
+            {applyMut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+            Mettre à jour
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -5288,7 +5428,10 @@ function LineFormDialog({
   commande: CommandeDetail
   line: LigneCommande | null
   onClose: () => void
-  onSuccess: () => void
+  /** Called after a save with the fini (ref, coloris) pairs whose quantity
+   *  changed — before and after — so the caller can check the côtes paired
+   *  with them (LIVA #1217). Empty when nothing that moves a band changed. */
+  onSuccess: (molletons: FiniPair[]) => void
 }) {
   const isNew = line === null
   const [form, setForm] = useState<LineFormState>(emptyLineForm)
@@ -5319,7 +5462,8 @@ function LineFormDialog({
         IDVariation2: line.IDVariation2 || 0,
         quantite: line.quantite != null ? String(line.quantite) : '',
         unite: line.unite || 3,
-        prix: line.prix != null ? String(line.prix) : '',
+        // `prix` is a 4-byte REAL (13.36 reads back 13.359999…): show the centime.
+        prix: line.prix != null ? String(Math.round(Number(line.prix) * 100) / 100) : '',
         date_livraison: hfsqlDateToInput(line.date_livraison),
         commentaire: line.commentaire ?? '',
       })
@@ -5352,10 +5496,13 @@ function LineFormDialog({
   // runs as soon as a reference is picked, WITHOUT waiting for a quantity, so an
   // expired contract is announced before the user types anything.
   const { data: priceInfo, isPlaceholderData: priceIsStale } = useQuery<LinePriceInfo>({
-    queryKey: ['cc-line-price', commande.IDclient, form.type, form.IDreference, form.IDcolori, debouncedQuantite, form.unite],
+    // The order + line let a côte take the band of its molleton on the same order.
+    queryKey: ['cc-line-price', commande.IDclient, commande.IDcommande_client, line?.IDligne_commande_client ?? 0,
+      form.type, form.IDreference, form.IDcolori, debouncedQuantite, form.unite],
     queryFn: () => apiFetch(
       `/commandes-client/lookups/line-price?type=${form.type}&ref=${form.IDreference}&coloris=${form.IDcolori}`
-      + `&quantite=${encodeURIComponent(debouncedQuantite)}&unite=${form.unite}&client=${commande.IDclient}`,
+      + `&quantite=${encodeURIComponent(debouncedQuantite)}&unite=${form.unite}&client=${commande.IDclient}`
+      + `&commande=${commande.IDcommande_client}&ligne=${line?.IDligne_commande_client ?? 0}`,
     ),
     enabled: open && priceableType && form.IDreference > 0,
     // Keep the previous note/price visible while the next quantity recomputes, so
@@ -5472,7 +5619,23 @@ function LineFormDialog({
         ? apiFetch(`/commandes-client/${commande.IDcommande_client}/lignes`, { method: 'POST', body })
         : apiFetch(`/commandes-client/lignes/${line!.IDligne_commande_client}`, { method: 'PUT', body })
     },
-    onSuccess,
+    onSuccess: () => {
+      // A band only moves with the quantity, the unit, the reference or the coloris.
+      const moved = isNew || !line
+        || form.type !== line.type
+        || form.IDreference !== line.IDreference
+        || form.IDcolori !== line.IDcolori
+        || form.unite !== line.unite
+        || (Number(form.quantite) || 0) !== (Number(line.quantite) || 0)
+      const pairs: FiniPair[] = []
+      if (moved) {
+        if (form.type === 2) pairs.push({ IDref_fini: form.IDreference, IDcolori: form.IDcolori })
+        if (line && line.type === 2 && (line.IDreference !== form.IDreference || line.IDcolori !== form.IDcolori || form.type !== 2)) {
+          pairs.push({ IDref_fini: line.IDreference, IDcolori: line.IDcolori })
+        }
+      }
+      onSuccess(pairs.filter((m) => m.IDref_fini > 0 && m.IDcolori > 0))
+    },
     onError: (e: unknown) => {
       // 409 = the API's own contract guard (a stale form, or the contract
       // lapsed between opening the dialog and saving). apiFetch doesn't carry
@@ -5690,6 +5853,17 @@ function LineFormDialog({
               </p>
             )
           })()}
+          {/* Associated ref (a côte): priced at its molleton's band on this order. */}
+          {hasPriceInputs && !priceIsStale && priceInfo?.priceable && priceInfo.palier_associe && (
+            <p className="flex items-start gap-1.5 text-xs font-medium text-sky-700 -mt-1">
+              <Link2 className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+              <span>
+                Tarif au palier {priceInfo.palier_associe.trancheRolls} rouleaux du molleton{' '}
+                {priceInfo.palier_associe.reference} ({priceInfo.palier_associe.nRolls} rouleau
+                {priceInfo.palier_associe.nRolls > 1 ? 'x' : ''}, même coloris)
+              </span>
+            </p>
+          )}
           {/* Commercial nudge: within 15% of the next (cheaper) tariff tranche —
               Tricobot suggests the employee propose the round-up to the customer. */}
           {hasPriceInputs && priceInfo?.priceable && !priceInfo.exact && priceInfo.nearNextTranche && priceInfo.nextTranchePrix != null && (() => {

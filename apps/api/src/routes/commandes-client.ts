@@ -37,6 +37,7 @@ import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
 import { attachDonationSql, detachDonationSql, planDonationSet } from '../lib/donation-pieces.js'
 import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-ligne-client.js'
+import { cotesARevoir, appliquerReprix } from '../lib/reprix-associes.js'
 import { resolveLigneTarifMode } from '../lib/tarif-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
 import { loadClientTvaRate } from '../lib/tva.js'
@@ -657,7 +658,12 @@ commandesClientRouter.get('/lookups/line-price', async (req: Request, res: Respo
     const quantite = Number(req.query.quantite ?? 0) || 0
     const unite = parseInt(String(req.query.unite ?? ''), 10) || 0
     const IDclient = parseInt(String(req.query.client ?? ''), 10) || 0
-    const result = await calcLignePriceClient({ type, IDreference, IDcolori, quantite, unite, IDclient })
+    // The order (and the line itself on an edit) let a côte take its molleton's band.
+    const IDcommande_client = parseInt(String(req.query.commande ?? ''), 10) || 0
+    const IDligne_commande_client = parseInt(String(req.query.ligne ?? ''), 10) || 0
+    const result = await calcLignePriceClient({
+      type, IDreference, IDcolori, quantite, unite, IDclient, IDcommande_client, IDligne_commande_client,
+    })
     res.json({ ...result, unite_label: uniteLabel(unite) })
   } catch (err) {
     console.error('Error computing line price:', err)
@@ -2121,6 +2127,45 @@ commandesClientRouter.delete('/lignes/:lineId', async (req: Request, res: Respon
     res.json({ ok: true })
   } catch (err) {
     console.error('Error deleting ligne-commande-client:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/commandes-client/:id/cotes-a-revoir?refs=1744,1744&coloris=5242,5100
+// — after a molleton line was added, edited or deleted (the (ref, coloris)
+// pairs it had before and after), the côte lines of the same coloris whose auto
+// price now differs (LIVA #1217). The screen asks before anything is written.
+commandesClientRouter.get('/:id/cotes-a-revoir', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const ints = (v: unknown) => String(v ?? '').split(',').map((s) => parseInt(s, 10) || 0)
+    const refs = ints(req.query.refs)
+    const coloris = ints(req.query.coloris)
+    const molletons = refs
+      .map((IDref_fini, i) => ({ IDref_fini, IDcolori: coloris[i] ?? 0 }))
+      .filter((m) => m.IDref_fini > 0 && m.IDcolori > 0)
+      .slice(0, 10)
+    res.json(await cotesARevoir(id, molletons))
+  } catch (err) {
+    console.error('Error listing côte lines to reprice:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/commandes-client/:id/cotes-a-revoir { lignes: [id…] } — apply the
+// recomputed prices (each re-priced server-side, invoiced lines skipped).
+commandesClientRouter.post('/:id/cotes-a-revoir', async (req: Request, res: Response) => {
+  try {
+    if (!(await requireEditCommandes(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
+    const parsed = z.object({ lignes: z.array(z.number().int().positive()).min(1).max(100) }).safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed' }); return }
+    res.json({ updated: await appliquerReprix(id, parsed.data.lignes) })
+  } catch (err) {
+    console.error('Error repricing côte lines:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
