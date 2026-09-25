@@ -53,7 +53,7 @@ const mails: Constat[] = [
   {
     cle: 'seed:mail:1', controle: 'client_sans_reponse', domaine: 'mails', gravite: 'urgent',
     titre: '[Test] DUPONT TEXTILES — demande de délai sans réponse',
-    message: 'Le client demande un délai pour sa commande depuis 3 jours ouvrés, aucune réponse envoyée.', lien: null,
+    message: 'Le client demande un délai pour sa commande. Sans réponse depuis 3 jours ouvrés (isabelle). À faire : Confirmer le délai de livraison au client.', lien: null,
   },
   {
     cle: 'seed:mail:2', controle: 'commande_mail', domaine: 'commandes_client', gravite: 'attention',

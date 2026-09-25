@@ -22,9 +22,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowRight,
   Bot,
   CheckCheck,
   CheckCircle2,
+  ChevronDown,
   ChevronUp,
   CircleDashed,
   CircleDollarSign,
@@ -819,7 +821,7 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
         const Icon = m.icon
         return (
           <div key={`${r.runId}-${r.portee}-${i}`} onClick={() => onOpenRun(r.runId)} title="Ouvrir l’exécution"
-            className={cn('rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3 cursor-pointer hover:border-accent/40 transition-colors', m.border)}>
+            className={cn('rounded-lg border border-l-4 border-border/60 bg-zinc-100/80 p-3 cursor-pointer hover:border-accent/40 transition-colors', m.border)}>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 border', m.soft)}>
@@ -947,7 +949,7 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
       {agent.versions.map((v) => {
         const isActive = v.version === agent.activeVersion
         return (
-          <div key={v.version} className={cn('group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
+          <div key={v.version} className={cn('group rounded-lg border border-l-4 border-border/60 bg-zinc-100/80 p-3',
             isActive ? 'border-l-green-500/60' : 'border-l-border')}>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
@@ -1419,7 +1421,7 @@ function GuideNotationCard({ guide, textes }: { guide: GuideNotation; textes: Re
         const m = NOTE_META[n]
         const Icon = m.icon
         return (
-          <div key={n} className={cn('rounded-md border-l-4 border border-border/60 px-2.5 py-1.5', m.border, m.soft)}>
+          <div key={n} className={cn('rounded-md border border-l-4 border-border/60 px-2.5 py-1.5', m.border, m.soft)}>
             <p className={cn('text-xs font-semibold inline-flex items-center gap-1', m.text)}><Icon className="h-3.5 w-3.5" />{m.label}</p>
             <p className="text-xs mt-0.5">{textes[n]}</p>
             <p className="text-[11px] text-muted-foreground italic mt-0.5">Ex. : {guide.exemples[n]}</p>
@@ -1520,7 +1522,7 @@ function EvaluationLue({ evaluation, className }: { evaluation: Pick<Evaluation,
 
 /** Score one point of a Superviseur report, inside its card. Réussite saves
  *  in one click; partielle and échec open a comment first. */
-function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending }: {
+function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending, className = 'mt-2 ml-9' }: {
   /** The score given on THIS report. */
   avis: Evaluation | undefined
   /** A score given on an earlier report, carried forward. */
@@ -1530,6 +1532,7 @@ function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending 
   canEvaluate: boolean
   onSave: (note: Note | null, commentaire: string) => Promise<unknown>
   isPending: boolean
+  className?: string
 }) {
   const [brouillon, setBrouillon] = useState<Note | null>(null)
   const [commentaire, setCommentaire] = useState('')
@@ -1554,7 +1557,7 @@ function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending 
   const boutons = canEvaluate && (!decide || modif || brouillon !== null)
 
   return (
-    <div className="mt-2 ml-9 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+    <div className={cn('space-y-1.5', className)} onClick={(e) => e.stopPropagation()}>
       {actuel && !brouillon && (
         <div className="flex items-start gap-1.5 text-xs">
           <NotePill evaluation={actuel} className="flex-shrink-0" />
@@ -1695,7 +1698,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
               {controles.length > 0 && (
                 <div className="space-y-1.5">
                   {controles.map((c, i) => (
-                    <div key={i} className={cn('rounded-lg border-l-4 border border-border/60 p-2.5 text-sm flex gap-2',
+                    <div key={i} className={cn('rounded-lg border border-l-4 border-border/60 p-2.5 text-sm flex gap-2',
                       c.gravite === 'bloquant' ? 'border-l-destructive/60 bg-destructive/5 text-destructive' : 'border-l-amber-400/60 bg-amber-400/10 text-amber-800')}>
                       {c.gravite === 'bloquant' ? <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /> : <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />}
                       <span>{c.message}</span>
@@ -1976,83 +1979,123 @@ function ConstatCard({ c, avis, resolution, textes, canEvaluate, onSave, onResol
 }) {
   const [brouillon, setBrouillon] = useState<string | null>(null)
   const [erreur, setErreur] = useState<string | null>(null)
+  // A resolved point folds to its title + how it was settled; the detail
+  // stays one click away.
+  const [deplie, setDeplie] = useState(false)
   const res = resolution ?? c.resolution
+  const replie = !!res && !deplie
   const g = GRAVITE_META[c.gravite]
   const Icon = res ? CheckCircle2 : g.icon
   const j = joursDepuis(c.depuis)
+  const { contexte, action } = decouperMessage(c.message)
   const valider = () => {
     if (!brouillon?.trim()) return
     setErreur(null)
     onResolve(brouillon.trim()).then(() => setBrouillon(null)).catch((e: Error) => setErreur(e.message))
   }
   return (
-    <div className={cn('rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
+    <div className={cn('rounded-lg border border-l-4 border-border/60 bg-card shadow-sm overflow-hidden',
       res ? 'border-l-green-500/60' : estompe ? 'border-l-border opacity-80' : g.border)}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0', res ? 'bg-green-500/10' : estompe ? 'bg-muted' : g.iconBg)}>
-            <Icon className={cn('h-3.5 w-3.5', res ? 'text-green-600' : estompe ? 'text-muted-foreground' : g.iconCls)} />
+      <div className="p-3">
+        <div className="flex items-start gap-2.5">
+          <div className={cn('h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0', res ? 'bg-green-500/10' : estompe ? 'bg-muted' : g.iconBg)}>
+            <Icon className={cn('h-4 w-4', res ? 'text-green-600' : estompe ? 'text-muted-foreground' : g.iconCls)} />
           </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium truncate" title={c.titre}>{c.titre}</p>
-            <p className="text-[11px] text-muted-foreground truncate">{DOMAINE_LIBELLE[c.domaine] ?? c.domaine}</p>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold leading-snug line-clamp-2" title={c.titre}>{c.titre}</p>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+              <span>{DOMAINE_LIBELLE[c.domaine] ?? c.domaine}</span>
+              {c.etat === 'nouveau' && <Badge variant="outline" className="text-[10px] py-0 border-amber-500/40 bg-amber-500/10 text-amber-800">Nouveau</Badge>}
+              {c.etat === 'aggrave' && <Badge variant="outline" className="text-[10px] py-0 border-destructive/40 bg-destructive/10 text-destructive">Aggravé</Badge>}
+              {c.etat === 'ouvert' && (
+                <span className="inline-flex items-center gap-1 whitespace-nowrap"><Clock className="h-3 w-3" />ouvert depuis {j === 0 ? 'aujourd’hui' : `${j} j`}</span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-0.5 flex-shrink-0 -mt-0.5">
+            {res && (
+              <button type="button" onClick={() => setDeplie((v) => !v)} title={deplie ? 'Replier' : 'Voir le détail'}
+                className="h-7 w-7 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-zinc-100 transition-colors">
+                <ChevronDown className={cn('h-4 w-4 transition-transform', deplie && 'rotate-180')} />
+              </button>
+            )}
+            {c.lien && (
+              <Link to={c.lien} title="Ouvrir dans ETM"
+                className="h-7 w-7 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-accent hover:bg-accent/10 transition-colors">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Link>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          {c.etat === 'nouveau' && <Badge variant="outline" className="text-[10px] py-0 border-amber-500/40 bg-amber-500/10 text-amber-800">Nouveau</Badge>}
-          {c.etat === 'aggrave' && <Badge variant="outline" className="text-[10px] py-0 border-destructive/40 bg-destructive/10 text-destructive">Aggravé</Badge>}
-          {c.etat === 'ouvert' && <span className="text-[11px] text-muted-foreground whitespace-nowrap">depuis {j === 0 ? 'aujourd’hui' : `${j} j`}</span>}
+        {!replie && (
+          <div className="mt-2.5 ml-[42px] space-y-2">
+            {contexte && <p className="text-[13px] leading-relaxed text-muted-foreground">{contexte}</p>}
+            {action && (
+              <div className="flex items-start gap-2 rounded-md border border-accent/25 bg-accent/[0.07] px-2.5 py-1.5">
+                <ArrowRight className="h-3.5 w-3.5 text-amber-700 flex-shrink-0 mt-[3px]" />
+                <p className="text-[13px] leading-snug"><span className="font-semibold text-amber-800">À faire : </span>{action}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* What people did about it: how it was settled, its score, the two actions. */}
+      <div className="border-t border-border/50 bg-zinc-50 px-3 py-2 space-y-1.5">
+        {res && (
+          <div className="flex items-start gap-1.5 text-xs">
+            <CheckCheck className="h-3.5 w-3.5 text-green-700 flex-shrink-0 mt-px" />
+            <span className="min-w-0 flex-1">
+              <span className="font-semibold text-green-700">Résolu{resolution ? '' : ' sur un rapport précédent'} : </span>
+              <span>{res.commentaire}</span>
+              <span className="text-muted-foreground"> — {res.par.nom}, {fmtDateHeure(res.le)}</span>
+            </span>
+            {canEvaluate && (
+              <button type="button" className="flex-shrink-0 text-[11px] text-muted-foreground hover:text-destructive transition-colors" disabled={isPending}
+                onClick={() => { setErreur(null); onResolve(null).catch((e: Error) => setErreur(e.message)) }}>
+                Annuler
+              </button>
+            )}
+          </div>
+        )}
+        <div className="flex items-start gap-3">
+          {/* Folded résolu: its score (if any) still shows, the buttons wait for « Voir le détail ». */}
+          <PointEvaluation avis={avis} herite={c.avis} textes={textes} canEvaluate={canEvaluate && !replie} onSave={onSave} isPending={isPending} className="min-w-0 flex-1" />
           {canEvaluate && !res && brouillon === null && (
             <button type="button" onClick={() => { setBrouillon(''); setErreur(null) }} disabled={isPending}
               title="Le problème est réglé (appel, accord avec le client…) : expliquez comment"
-              className="h-6 px-2 rounded-md inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-green-700 hover:bg-green-500/10 transition-colors">
+              className="flex-shrink-0 h-7 px-2.5 rounded-md border border-green-600/30 bg-white inline-flex items-center gap-1 text-xs font-medium text-green-700 hover:bg-green-500/10 transition-colors">
               <CheckCheck className="h-3.5 w-3.5" />Marquer résolu
             </button>
           )}
-          {c.lien && (
-            <Link to={c.lien} title="Ouvrir dans ETM"
-              className="h-6 w-6 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-accent hover:bg-accent/10 transition-colors">
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Link>
-          )}
         </div>
-      </div>
-      <p className="text-sm mt-2 ml-9">{c.message}</p>
-      {res && (
-        <div className="mt-2 ml-9 rounded-md border border-green-500/30 bg-green-500/10 px-2.5 py-1.5 text-xs flex items-start gap-1.5">
-          <CheckCheck className="h-3.5 w-3.5 text-green-700 flex-shrink-0 mt-px" />
-          <span className="min-w-0 flex-1">
-            <span className="font-semibold text-green-700">Résolu{resolution ? '' : ' sur un rapport précédent'} : </span>
-            <span className="text-foreground">{res.commentaire}</span>
-            <span className="text-muted-foreground"> — {res.par.nom}, {fmtDateHeure(res.le)}</span>
-          </span>
-          {canEvaluate && (
-            <button type="button" className="flex-shrink-0 text-[11px] text-muted-foreground hover:text-destructive transition-colors" disabled={isPending}
-              onClick={() => { setErreur(null); onResolve(null).catch((e: Error) => setErreur(e.message)) }}>
-              Annuler
-            </button>
-          )}
-        </div>
-      )}
-      {brouillon !== null && (
-        <div className="mt-2 ml-9 space-y-1.5 max-w-xl">
-          <p className="text-[11px] text-muted-foreground">
-            Le point quitte la liste à traiter. Dites comment il a été réglé — l’agent s’en sert pour sa version suivante.
-          </p>
-          <textarea value={brouillon} onChange={(e) => setBrouillon(e.target.value)} rows={2} maxLength={2000} autoFocus
-            placeholder="Ex. : PE a eu le client au téléphone (obligatoire)" className={textareaClass} />
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => { setBrouillon(null); setErreur(null) }}>Annuler</Button>
-            <Button size="sm" disabled={isPending || !brouillon.trim()} onClick={valider}>
-              {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCheck className="h-3.5 w-3.5 mr-1.5" />}Marquer résolu
-            </Button>
+        {brouillon !== null && (
+          <div className="space-y-1.5 max-w-xl pt-1">
+            <p className="text-[11px] text-muted-foreground">
+              Le point quitte la liste à traiter. Dites comment il a été réglé — l’agent s’en sert pour sa version suivante.
+            </p>
+            <textarea value={brouillon} onChange={(e) => setBrouillon(e.target.value)} rows={2} maxLength={2000} autoFocus
+              placeholder="Ex. : PE a eu le client au téléphone (obligatoire)" className={textareaClass} />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => { setBrouillon(null); setErreur(null) }}>Annuler</Button>
+              <Button size="sm" disabled={isPending || !brouillon.trim()} onClick={valider}>
+                {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCheck className="h-3.5 w-3.5 mr-1.5" />}Marquer résolu
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
-      {erreur && <p className="mt-1 ml-9 text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</p>}
-      <PointEvaluation avis={avis} herite={c.avis} textes={textes} canEvaluate={canEvaluate} onSave={onSave} isPending={isPending} />
+        )}
+        {erreur && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</p>}
+      </div>
     </div>
   )
+}
+
+/** The mail check writes « <what happened> À faire : <action> » in one string:
+ *  split it so the action stands out. Other checks have no action part. */
+function decouperMessage(m: string): { contexte: string; action: string | null } {
+  const i = m.search(/À faire\s*:/)
+  if (i < 0) return { contexte: m.trim(), action: null }
+  return { contexte: m.slice(0, i).trim(), action: m.slice(i).replace(/^À faire\s*:\s*/, '').trim() || null }
 }
 
 /** The report in figures, one strip across the top of the dialog. A figure
@@ -2106,20 +2149,23 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
 
   const res = run?.resultat
   const constats = res?.constats ?? []
-  const neufs = constats.filter((c) => c.etat !== 'ouvert')
-  const ouverts = constats.filter((c) => c.etat === 'ouvert')
   const ecartes = res?.ecartes ?? []
   const fermes = res?.fermes ?? []
   const resolusAvant = res?.resolus ?? []
   const controles = res?.controles ?? []
   const avis = run?.avisPoints ?? {}
   const resolutions = run?.resolutionsPoints ?? {}
+  // A point marked résolu on this report leaves its section for « Résolus »,
+  // with the ones closed since the previous report.
+  const neufs = constats.filter((c) => c.etat !== 'ouvert' && !resolutions[c.cle])
+  const ouverts = constats.filter((c) => c.etat === 'ouvert' && !resolutions[c.cle])
+  const resolusRapport = constats.filter((c) => resolutions[c.cle])
   // A point scored on an earlier report counts as scored (score.ts, same rule as the list).
   const noteDe = (c: ConstatRun): Note | null => avis[c.cle]?.note ?? c.avis?.note ?? null
   const notes = constats.map(noteDe)
   const compte = (n: Note) => notes.filter((x) => x === n).length
   // Marked résolu here and not scored: dealt with, never « à évaluer » (score.ts bilanRun).
-  const resolusIci = constats.filter((c) => resolutions[c.cle]).length
+  const resolusIci = resolusRapport.length
   const aEvaluer = constats.filter((c) => noteDe(c) === null && !resolutions[c.cle]).length
   const nbResolus = fermes.length + resolusAvant.length + resolusIci
   const pct = constats.length ? Math.round(((constats.length - aEvaluer) / constats.length) * 100) : 0
@@ -2235,18 +2281,17 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
               {ouverts.length > 0 && <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Toujours ouverts</p>}
               {ouverts.map((c) => carte(c))}
 
-              {constats.length === 0 && !run.erreur && (
+              {neufs.length + ouverts.length === 0 && !run.erreur && (
                 <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
                   <CheckCircle2 className="h-10 w-10 mb-2 opacity-40" />
                   <p className="text-sm">Aucun point à traiter</p>
                 </div>
               )}
 
-              {(fermes.length > 0 || resolusAvant.length > 0) && (
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Résolus depuis le rapport précédent</p>
-              )}
+              {nbResolus > 0 && <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Résolus</p>}
+              {resolusRapport.map((c) => carte(c))}
               {fermes.map((f) => (
-                <div key={f.cle} className="rounded-lg border-l-4 border border-border/60 border-l-green-500/60 bg-zinc-100/80 p-2.5">
+                <div key={f.cle} className="rounded-lg border-l-4 border border-border/60 border-l-green-500/60 bg-card shadow-sm p-2.5">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
                     <span className="text-sm truncate flex-1" title={f.titre}>{f.titre}</span>
