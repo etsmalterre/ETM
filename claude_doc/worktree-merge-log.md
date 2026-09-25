@@ -9,6 +9,9 @@ other worktrees see what changed when they rebase. Format:
 ```
 
 <!-- entries below -->
+## 2026-09-25 — feat/coloris-sp-1209
+Simone Pérèle codes number themselves (LIVA #1209, Pierre-Emmanuel: order 3844 on a coloris missing from the SP list). `lib/codes-sp.ts` is now the only writer of `code_sp` rows: next code = highest complete 12-digit code + 1 (Malterre owns the codes, no GS1), a code held by another coloris is refused (409 `ean_deja_utilise`) on POST and PUT, allocation serialised in-process. Accepting an étude coloris (Finis › Études coloris) for a client with the labels switched on adds the coloris when no code carries its number — name without the lab/sample suffix, bath = lab + sample, article from the latest complete row — and the soumission drawer shows the created EAN « à transmettre à Simone Pérèle »; the acceptance never fails on it. « Ajouter un coloris » pre-fills `GET /etiquettes-sp/codes/next` and sends `auto: true` when kept (re-allocated at save). New default-closed key `gestion_codes_sp` (edit_client_info still covers it). Pure rules + tests in `lib/etiquettes-sp.ts`. Not checked in a browser (shared devtools browser busy); API verified on dev.
+
 ## 2026-09-25 — feat/eloise
 No code. Eloise left: prod `utilisateur` #16 (`pc-eloise`) deleted, her `"16"` entry removed from `data/permissions-trm.json` on 10.10.20.3 (backup `.bak-eloise-20260925`; the only side file naming her). Her PC is reused as `pc-reglage` and replaces the retired `PC-REGLEUR`, so Regleur #14 now carries `pc = 'pc-reglage'` (same id, same rights). The how-to for the next departure / PC swap is in `auth_permissions.md` § Authentication. `seed-edit-of-trm.ts` / `seed-edit-expeditions-trm.ts` still list `eloise` in `STATIONS` — dead, harmless.
 
