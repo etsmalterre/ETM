@@ -47,6 +47,9 @@ export interface TrmMenuDef {
   href: string
   label: string
   screens: readonly TrmScreenDef[]
+  /** false = the grandfathering script never hands this menu out: it is
+   *  granted person by person, never to the whole company (Paramètres). */
+  seed?: false
 }
 
 export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
@@ -131,6 +134,16 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
       { href: '/pointage/paie', label: 'Paie' },
       { href: '/pointage/salaries', label: 'Salariés' },
     ],
+  },
+  // Paramètres — same rule as ETM's (lib/screen-keys.ts): Utilisateurs is
+  // admin-only and stays out of the tree; Outils is gated server-side by this
+  // grant (trmUserCanOpenScreen, routes/import-sage.ts), no action key.
+  {
+    id: 'settings',
+    href: '/settings',
+    label: 'Paramètres',
+    screens: [{ href: '/settings/outils', label: 'Outils' }],
+    seed: false,
   },
 ] as const
 

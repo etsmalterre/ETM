@@ -49,7 +49,8 @@ async function main() {
   const write = process.argv.includes('--write')
   const argv = process.argv.slice(2)
   const onlyMenus = argv.flatMap((a, i) => (a === '--menu' && argv[i + 1] ? [argv[i + 1]] : []))
-  const allMenuKeys = TRM_SCREEN_MENUS.map((m) => trmMenuAccessKey(m.href))
+  // `seed: false` menus (Paramètres) are granted person by person, never to all.
+  const allMenuKeys = TRM_SCREEN_MENUS.filter((m) => m.seed !== false).map((m) => trmMenuAccessKey(m.href))
   for (const k of onlyMenus) {
     if (!allMenuKeys.includes(k)) {
       console.error(`--menu ${k} : clé inconnue. Menus TRM : ${allMenuKeys.join(', ')}`)

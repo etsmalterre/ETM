@@ -11,7 +11,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isKnownPermissionKey, type PermissionKey } from './permission-keys.js'
-import { isScreenAccessKey } from './screen-keys.js'
+import { isScreenAccessKey, menuAccessKey, screenHideKey } from './screen-keys.js'
 
 /** A key as stored: either an action key from the catalog, or a screen-access
  *  key (menu grant / screen hide — see screen-keys.ts). Both live flat in the
@@ -114,6 +114,21 @@ export async function userHasPermission(
   if (isAdmin) return true
   const granted = await getUserPermissions(userId)
   return granted.includes(key)
+}
+
+/** Whether a user may open a screen: holds its menu's grant (`screen_<menu>`)
+ *  and not its hide key. Admins always pass. The Écrans axis is a UI curtain
+ *  everywhere EXCEPT a route that deliberately makes it its guard — Paramètres
+ *  › Outils (routes/import-sage.ts), where seeing the screen is the right. */
+export async function userCanOpenScreen(
+  userId: number,
+  isAdmin: boolean,
+  menuHref: string,
+  screenHref: string,
+): Promise<boolean> {
+  if (isAdmin) return true
+  const granted = new Set(await getUserPermissions(userId))
+  return granted.has(menuAccessKey(menuHref)) && !granted.has(screenHideKey(screenHref))
 }
 
 /** Read all stored permissions (used by the admin /users endpoint). */

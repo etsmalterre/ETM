@@ -16,7 +16,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isKnownTrmPermissionKey, type TrmPermissionKey } from './permission-keys-trm.js'
-import { isTrmScreenAccessKey, trmMenuAccessKey } from './screen-keys-trm.js'
+import { isTrmScreenAccessKey, trmMenuAccessKey, trmScreenHideKey } from './screen-keys-trm.js'
 
 /** Storable = in the TRM action catalog OR a valid TRM screen-access key. */
 function isStorableTrmKey(k: string): boolean {
@@ -129,6 +129,20 @@ export async function trmUserHasMenu(
   if (isAdmin) return true
   const granted = await getTrmUserPermissions(userId)
   return granted.includes(trmMenuAccessKey(menuHref))
+}
+
+/** Whether a user may open a TRM screen: holds its menu's grant and not its
+ *  hide key. Admins always pass. Same exception as trmUserHasMenu, one level
+ *  down — Paramètres › Outils (routes/import-sage.ts). */
+export async function trmUserCanOpenScreen(
+  userId: number,
+  isAdmin: boolean,
+  menuHref: string,
+  screenHref: string,
+): Promise<boolean> {
+  if (isAdmin) return true
+  const granted = new Set(await getTrmUserPermissions(userId))
+  return granted.has(trmMenuAccessKey(menuHref)) && !granted.has(trmScreenHideKey(screenHref))
 }
 
 /** Read all stored TRM permissions (used by the admin /users endpoint). */

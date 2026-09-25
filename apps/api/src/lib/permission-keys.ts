@@ -374,15 +374,10 @@ export const PERMISSION_KEYS = [
     category: 'Rapports',
     parent: 'view_rapport_finance',
   },
-  // Paramètres > Outils. Gates the whole tool, reads included: the history
-  // and the preview show the balance, which names payroll accounts.
-  {
-    key: 'import_compta_sage',
-    label: 'Importer la balance Sage',
-    description:
-      'Affiche l’entrée « Outils » du menu Paramètres et autorise l’import hebdomadaire de la balance exportée de Sage, qui alimente Rapports > Finance et les widgets financiers. Ces données incluent les comptes de personnel.',
-    category: 'Paramètres',
-  },
+  // Paramètres > Outils has NO key: who sees the screen is the Écrans axis
+  // (menu `screen_settings`, lib/screen-keys.ts), and its routes check that
+  // grant server-side. A key only earns its place when several users see the
+  // same screen with different rights.
   {
     key: 'dashboard_charges',
     label: 'Widget « Charges » du tableau de bord',

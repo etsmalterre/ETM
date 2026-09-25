@@ -7,7 +7,7 @@ import { MobileNav } from './MobileNav'
 import { HeaderActionsProvider } from '@/contexts/HeaderActionsContext'
 import { usePermissions } from '@/contexts/PermissionsContext'
 import { useScreenAccess } from '@/hooks/useSubmenuFilter'
-import { mainNavigation, DASHBOARD_ROUTE_PREFIX } from '@/config/navigation'
+import { screenAccessMenus, DASHBOARD_ROUTE_PREFIX } from '@/config/navigation'
 
 interface AppShellProps {
   children?: ReactNode
@@ -33,13 +33,13 @@ function useScreenGuard(): { redirectTo: string | null; waiting: boolean } {
     const path = location.pathname.replace(/\/+$/, '') || '/'
 
     // Never gated: `/` and the user's other dashboards (the landing page every
-    // user keeps — its widgets have their own `dashboard_*` keys), and
-    // Paramètres, which enforces its own admin guard.
+    // user keeps — its widgets have their own `dashboard_*` keys). Paramètres
+    // IS gated: it is a menu of the Écrans axis like the others.
     if (path === '/' || path.startsWith(DASHBOARD_ROUTE_PREFIX)) return { redirectTo: null, waiting: false }
-    if (path === '/settings' || path.startsWith('/settings/')) return { redirectTo: null, waiting: false }
 
-    const menu = mainNavigation.find((m) => m.href === path)
-    const isScreen = mainNavigation.some((m) => m.submenus.some((s) => s.href === path))
+    const menus = screenAccessMenus()
+    const menu = menus.find((m) => m.href === path)
+    const isScreen = menus.some((m) => m.submenus.some((s) => s.href === path))
     if (!menu && !isScreen) return { redirectTo: null, waiting: false } // unknown route — not ours
 
     if (isLoading) return { redirectTo: null, waiting: true }

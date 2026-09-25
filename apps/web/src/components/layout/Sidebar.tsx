@@ -1,13 +1,12 @@
-import { useMemo } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { dashboardItem, settingsItem, type MainMenuItem } from '@/config/navigation'
+import { dashboardItem, type MainMenuItem } from '@/config/navigation'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ContextMenu, type ContextMenuItem } from '@/components/ui/context-menu'
 import { useUser } from '@/contexts/UserContext'
-import { useSubmenuFilter, useVisibleMainNavigation } from '@/hooks/useSubmenuFilter'
+import { useVisibleMainNavigation, useVisibleSettingsItem } from '@/hooks/useSubmenuFilter'
 
 interface SidebarProps {
   collapsed: boolean
@@ -87,23 +86,18 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
   useUser() // ensures the sidebar re-renders when the user context updates
-  const filterSubmenus = useSubmenuFilter()
 
   const handleNavigate = (href: string) => {
     navigate(href)
   }
 
-  // Paramètres goes through the same filter as every other menu: adminOnly
-  // entries need the EFFECTIVE admin (an admin impersonating someone sees
-  // exactly what they see), permission entries need their key (Outils ←
-  // import_compta_sage). The menu disappears when nothing is left. The admin
-  // can still switch back to themselves via the header avatar's "Changer
-  // d'utilisateur" button to regain access.
-  const visibleSettings = useMemo<MainMenuItem | null>(() => {
-    const visible = filterSubmenus(settingsItem.submenus)
-    if (visible.length === 0) return null
-    return { ...settingsItem, submenus: visible }
-  }, [filterSubmenus])
+  // Paramètres is a menu of the Écrans axis like every other (grant
+  // `screen_settings`, Outils hideable); Utilisateurs additionally needs the
+  // EFFECTIVE admin (an admin impersonating someone sees exactly what they
+  // see). The menu disappears when nothing is left. The admin can still
+  // switch back to themselves via the header avatar's "Changer d'utilisateur"
+  // button to regain access.
+  const visibleSettings = useVisibleSettingsItem()
 
   // Same treatment for the main items: a menu the user wasn't granted, or one
   // whose every screen is hidden, disappears entirely — and the ones that stay

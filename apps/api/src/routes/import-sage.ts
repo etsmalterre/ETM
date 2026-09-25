@@ -15,8 +15,10 @@
 //   GET    /:id/fichier      the stored export, as Sage wrote it
 //   DELETE /:id              undo the société's LATEST import
 //
-// Every route is gated by `import_compta_sage` in the app's own permission
-// store — reads included: the balance names payroll accounts.
+// Every route is gated by the screen itself — Écrans › Paramètres › Outils in
+// the app's own store (menu grant `screen_settings`, screen not hidden), reads
+// included: the balance names payroll accounts. Seeing the screen is the
+// right; there is deliberately no action key behind it.
 //
 // HFSQL: no transactions. The header row (`upload_compta`) is written LAST
 // and is what every reader keys on, so an import that dies half-way leaves
@@ -27,12 +29,9 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { query, queryRaw } from '../lib/hfsql-auto.js'
 import { dateDigits, esc, n } from '../lib/sst-shared.js'
-import {
-  ETM_PERMISSIONS,
-  TRM_PERMISSIONS,
-  requirePermission,
-  type PermissionScope,
-} from '../lib/clients-common.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import { userCanOpenScreen } from '../lib/permissions.js'
+import { trmUserCanOpenScreen } from '../lib/permissions-trm.js'
 import {
   EMPREINTE_NB_FICHIERS,
   aujourdhuiHfsql,
@@ -58,8 +57,8 @@ export interface ImportSageScope {
   /** Short names used in messages. */
   nom: string
   nomAutre: string
-  /** Which app's permission store answers. */
-  permissions: PermissionScope
+  /** Écrans › Paramètres › Outils, in the app's own store. Admins pass. */
+  canOpen(userId: number, admin: boolean): Promise<boolean>
   /** Accounts that must get a releve row at every import even when the file
    *  does not carry them (a 0 / 0 row). ETM: 603700, which the legacy stock
    *  step wrote at 0 € every week and which the finance screens need present
@@ -68,12 +67,15 @@ export interface ImportSageScope {
   comptesToujoursReleves: readonly number[]
 }
 
+const SETTINGS_MENU = '/settings'
+const OUTILS_SCREEN = '/settings/outils'
+
 export const IMPORT_SAGE_SCOPE_ETM: ImportSageScope = {
   societe: 1,
   autreSociete: 2,
   nom: 'ETS Malterre',
   nomAutre: 'Tricotage Malterre',
-  permissions: ETM_PERMISSIONS,
+  canOpen: (userId, admin) => userCanOpenScreen(userId, admin, SETTINGS_MENU, OUTILS_SCREEN),
   comptesToujoursReleves: [NUMERO_VARIATION_STOCK],
 }
 
@@ -82,11 +84,10 @@ export const IMPORT_SAGE_SCOPE_TRM: ImportSageScope = {
   autreSociete: 1,
   nom: 'Tricotage Malterre',
   nomAutre: 'ETS Malterre',
-  permissions: TRM_PERMISSIONS,
+  canOpen: (userId, admin) => trmUserCanOpenScreen(userId, admin, SETTINGS_MENU, OUTILS_SCREEN),
   comptesToujoursReleves: [],
 }
 
-const PERMISSION = 'import_compta_sage'
 
 // ── Reads ────────────────────────────────────────────────────────────────
 
@@ -331,7 +332,17 @@ function readFichier(req: Request, res: Response): Buffer | null {
 
 export function createImportSageRouter(scope: ImportSageScope): RouterType {
   const router: RouterType = Router()
-  const allowed = (req: Request, res: Response) => requirePermission(req, res, PERMISSION, scope.permissions)
+  const allowed = async (req: Request, res: Response): Promise<boolean> => {
+    if (req.userId === undefined) {
+      res.status(401).json({ error: 'not authenticated' })
+      return false
+    }
+    if (!(await scope.canOpen(req.userId, isEffectiveAdmin(req)))) {
+      res.status(403).json({ error: 'écran non accordé : Paramètres › Outils' })
+      return false
+    }
+    return true
+  }
 
   router.get('/', async (req, res) => {
     try {

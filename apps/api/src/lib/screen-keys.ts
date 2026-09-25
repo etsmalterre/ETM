@@ -47,6 +47,9 @@ export interface MenuDef {
   href: string
   label: string
   screens: readonly ScreenDef[]
+  /** false = the grandfathering script never hands this menu out: it is
+   *  granted person by person, never to the whole company (Paramètres). */
+  seed?: false
 }
 
 export const SCREEN_MENUS: readonly MenuDef[] = [
@@ -161,6 +164,19 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     href: '/agents-ia',
     label: 'Agents IA',
     screens: [{ href: '/agents-ia/agents', label: 'Agents' }],
+  },
+  // Paramètres sits at the bottom of the sidebar (`settingsItem`, outside
+  // `mainNavigation`) but is a menu of this axis like any other. Utilisateurs
+  // is admin-only and stays out of the tree — ticking it could open nothing.
+  // Outils is the one place where the curtain is also the lock: its routes
+  // check this grant server-side (userCanOpenScreen, routes/import-sage.ts) —
+  // the screen IS the right, there is no action key behind it.
+  {
+    id: 'settings',
+    href: '/settings',
+    label: 'Paramètres',
+    screens: [{ href: '/settings/outils', label: 'Outils' }],
+    seed: false,
   },
 ] as const
 

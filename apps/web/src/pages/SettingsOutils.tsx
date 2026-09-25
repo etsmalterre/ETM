@@ -30,7 +30,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
-import { useHasPermission, usePermissions } from '@/contexts/PermissionsContext'
+import { usePermissions } from '@/contexts/PermissionsContext'
+import { useScreenAccess } from '@/hooks/useSubmenuFilter'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
@@ -62,8 +63,6 @@ interface FichierChoisi {
   nom: string
   contenu_base64: string
 }
-
-const PERMISSION = 'import_compta_sage'
 
 /** Binary-safe base64 of a picked file (chunked: `btoa` on one huge string
  *  overflows the call stack). */
@@ -99,7 +98,9 @@ export function SettingsOutils({
 }: SettingsOutilsProps = {}) {
   // Every hook before the permission early-returns (§28.6).
   const { isLoading: permsLoading } = usePermissions()
-  const canImport = useHasPermission(PERMISSION)
+  // Seeing the screen is the right (Écrans › Paramètres › Outils) — the API
+  // checks the same grant. No action key.
+  const canImport = useScreenAccess().canOpen('/settings/outils')
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -165,8 +166,8 @@ export function SettingsOutils({
         <Lock className="h-12 w-12 opacity-30" />
         <p className="text-sm font-medium">Accès restreint</p>
         <p className="text-xs max-w-sm text-center">
-          L’import de la balance Sage donne accès à la balance comptable complète. Demandez la permission
-          « Importer la balance Sage » à un administrateur.
+          L’import de la balance Sage donne accès à la balance comptable complète. Demandez l’écran
+          « Paramètres › Outils » à un administrateur.
         </p>
       </div>
     )

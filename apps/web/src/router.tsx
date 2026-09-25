@@ -168,7 +168,7 @@ export const router = createBrowserRouter([
       { path: 'agents-ia', element: <Navigate to="/agents-ia/agents" replace /> },
       { path: 'agents-ia/agents', element: <AgentsIa /> },
 
-      // Settings — Utilisateurs is admin-only, Outils needs import_compta_sage;
+      // Settings — Utilisateurs is admin-only, Outils is granted in Écrans;
       // the index lands on the first one the viewer may open.
       { path: 'settings', element: <SettingsIndex /> },
       { path: 'settings/utilisateurs', element: <SettingsUtilisateurs /> },

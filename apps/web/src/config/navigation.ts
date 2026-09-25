@@ -112,19 +112,35 @@ export function visibleMainNavigation(opts: NavAccess): MainMenuItem[] {
   return out
 }
 
+/** Paramètres as this viewer sees it, or null when nothing is left. Same
+ *  rules as any other menu: the `screen_settings` grant, then its screens
+ *  (Utilisateurs stays admin-only on top of that). */
+export function visibleSettingsItem(opts: NavAccess): MainMenuItem | null {
+  if (!canOpenMenu(settingsItem.href, opts)) return null
+  const submenus = visibleSubmenus(settingsItem.submenus, opts)
+  return submenus.length > 0 ? { ...settingsItem, submenus } : null
+}
+
+/** Every menu of the Écrans axis: the main navigation plus Paramètres, which
+ *  the sidebar renders apart at the bottom. A function because `settingsItem`
+ *  and `mainNavigation` are declared further down this file. */
+export function screenAccessMenus(): MainMenuItem[] {
+  return [...mainNavigation, settingsItem]
+}
+
 /** Route of the first screen the viewer may open under a menu, or null. Used
  *  for the menu index redirect (`/clients` → its first visible screen), which
  *  must not land on a screen the user cannot see. */
 export function firstVisibleScreenHref(menuHref: string, opts: NavAccess): string | null {
-  const item = mainNavigation.find((m) => m.href === menuHref)
+  const item = screenAccessMenus().find((m) => m.href === menuHref)
   if (!item || !canOpenMenu(menuHref, opts)) return null
   return visibleSubmenus(item.submenus, opts)[0]?.href ?? null
 }
 
 /** Whether the viewer may open an exact screen route. */
 export function canOpenScreen(screenHref: string, opts: NavAccess): boolean {
-  const item = mainNavigation.find((m) => m.submenus.some((s) => s.href === screenHref))
-  if (!item) return true // not a nav screen (dashboard, settings, unknown) — not ours to gate
+  const item = screenAccessMenus().find((m) => m.submenus.some((s) => s.href === screenHref))
+  if (!item) return true // not a nav screen (dashboard, unknown) — not ours to gate
   if (!canOpenMenu(item.href, opts)) return false
   return visibleSubmenus(item.submenus, opts).some((s) => s.href === screenHref)
 }
@@ -160,9 +176,10 @@ export const settingsItem: MainMenuItem = {
   href: '/settings',
   submenus: [
     { title: 'Utilisateurs', href: '/settings/utilisateurs', adminOnly: true },
-    // Import de la balance Sage (legacy FEN_upload_compta). A permission, not
-    // adminOnly: Isabelle runs it every week.
-    { title: 'Outils', href: '/settings/outils', permission: 'import_compta_sage' },
+    // Import de la balance Sage (legacy FEN_upload_compta). Given like any
+    // screen, in Écrans (menu Paramètres) — Isabelle runs it every week. No
+    // action key: the API checks the same screen grant (routes/import-sage.ts).
+    { title: 'Outils', href: '/settings/outils' },
   ],
 }
 

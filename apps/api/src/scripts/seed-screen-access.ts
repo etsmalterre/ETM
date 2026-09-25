@@ -38,7 +38,8 @@ const FILE_PATH = path.resolve(__dirname, '../../data/permissions.json')
 
 async function main() {
   const write = process.argv.includes('--write')
-  const menuKeys = SCREEN_MENUS.map((m) => menuAccessKey(m.href))
+  // `seed: false` menus (Paramètres) are granted person by person, never to all.
+  const menuKeys = SCREEN_MENUS.filter((m) => m.seed !== false).map((m) => menuAccessKey(m.href))
 
   const users = await query<{ IDutilisateur: number; prenom: string | null; nom: string | null }>(
     'SELECT IDutilisateur, prenom, nom FROM utilisateur ORDER BY IDutilisateur',
