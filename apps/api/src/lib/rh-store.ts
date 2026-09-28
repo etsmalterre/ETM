@@ -120,6 +120,11 @@ export const MIGRATIONS: string[] = [
      FOR EACH ROW EXECUTE FUNCTION rh_ajout_seul();
    CREATE OR REPLACE TRIGGER evenement_piece_ajout_seul BEFORE UPDATE OR DELETE ON evenement_piece
      FOR EACH ROW EXECUTE FUNCTION rh_ajout_seul();`,
+  // Slot 4 — the share of a task that can be automated, in % (null = not
+  // assessed; lib/rh-charge.ts partAutomatisable() reads older rows from
+  // `automatisable`). 2026-09-28.
+  `ALTER TABLE charge_tache ADD COLUMN IF NOT EXISTS part_automatisable smallint
+     CHECK (part_automatisable BETWEEN 0 AND 100);`,
 ]
 
 function db(): Sql {
@@ -326,6 +331,7 @@ interface TacheRow {
   minutes_par_unite: string | null
   volume_saisi: string | null
   unite: string
+  part_automatisable: number | null
 }
 
 export async function listerVersions(idemploye: number): Promise<VersionResume[]> {
@@ -345,7 +351,7 @@ export async function versionsCompletes(idemploye: number): Promise<Array<Versio
   if (versions.length === 0) return []
   const taches = await s<TacheRow[]>`
     SELECT idversion, nom, description, methode, heures, automatisable, automatise, categorie,
-           indicateur, minutes_par_unite, volume_saisi, unite
+           indicateur, minutes_par_unite, volume_saisi, unite, part_automatisable
     FROM charge_tache WHERE idversion IN ${s(versions.map((v) => v.id))} ORDER BY idversion, ordre`
   const parVersion = new Map<number, TacheCharge[]>()
   for (const t of taches) {
@@ -362,6 +368,7 @@ export async function versionsCompletes(idemploye: number): Promise<Array<Versio
       minutesParUnite: t.minutes_par_unite == null ? null : Number(t.minutes_par_unite),
       volumeSaisi: t.volume_saisi == null ? null : Number(t.volume_saisi),
       unite: t.unite,
+      partAutomatisable: t.part_automatisable == null ? null : Number(t.part_automatisable),
     })
     parVersion.set(t.idversion, list)
   }
@@ -389,9 +396,11 @@ export async function enregistrerVersion(
     for (const x of taches) {
       await tx`
         INSERT INTO charge_tache (idversion, ordre, nom, description, methode, heures, automatisable,
-                                  automatise, categorie, indicateur, minutes_par_unite, volume_saisi, unite)
+                                  automatise, categorie, indicateur, minutes_par_unite, volume_saisi, unite,
+                                  part_automatisable)
         VALUES (${v.id}, ${ordre++}, ${x.nom}, ${x.description}, ${x.methode}, ${x.heures}, ${x.automatisable},
-                ${x.automatise}, ${x.categorie}, ${x.indicateur}, ${x.minutesParUnite}, ${x.volumeSaisi}, ${x.unite})`
+                ${x.automatise}, ${x.categorie}, ${x.indicateur}, ${x.minutesParUnite}, ${x.volumeSaisi}, ${x.unite},
+                ${x.partAutomatisable})`
     }
     return v.id
   }) as Promise<number>

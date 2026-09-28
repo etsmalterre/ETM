@@ -11,9 +11,13 @@
 //     when ETM counts it (lib/rh-indicateurs.ts), else ESTIMATED (typed, with
 //     a free unit: « appel », « point stock »…). A task with no natural unit
 //     (ménage, the structural slack) stays a FORFAIT: hours typed.
-//   • Three automation states: à automatiser (automatisable = 'oui'),
-//     automatisé, the rest. 'partiel' / 'inconnu' are kept in the data (the
-//     spreadsheet had them) but count as « the rest ».
+//   • Automation is a SHARE of each task (since 2026-09-28, Vincent: AI moved
+//     on, « oui / partiel / non » was too coarse): partAutomatisable in %, set
+//     per task; « à automatiser » = Σ hours × share of the tasks not yet
+//     automated; « automatisé » stays a flag on the whole task. A row saved
+//     before the share existed reads its old flag: oui = 100 %, partiel = 50 %,
+//     non / inconnu = 0 % (partAutomatisable()). `automatisable` is still
+//     written, derived from the share, for anything reading the old field.
 //   • The structural slack (« Improductivité structurelle », categorie
 //     'improductivite_structurelle') is NOT a task but a BUFFER kept at the end
 //     of the week (2026-09-28): the tasks should fill the contract up to it.
@@ -44,6 +48,20 @@ export interface TacheCharge {
   volumeSaisi: number | null
   /** Estimated task: its unit, singular (« appel »); '' otherwise. */
   unite: string
+  /** Share of the task that can be automated, 0–100 %; null = not assessed. */
+  partAutomatisable: number | null
+}
+
+/** The share (0–100) that counts: the typed one, else the old flag's reading. */
+export function partAutomatisable(t: Pick<TacheCharge, 'partAutomatisable' | 'automatisable'>): number {
+  if (t.partAutomatisable != null) return t.partAutomatisable
+  return t.automatisable === 'oui' ? 100 : t.automatisable === 'partiel' ? 50 : 0
+}
+
+/** The old four-value flag, derived from a share, for readers of the old field. */
+export function automatisableDepuisPart(part: number | null): Automatisable {
+  if (part == null) return 'inconnu'
+  return part === 0 ? 'non' : part === 100 ? 'oui' : 'partiel'
 }
 
 export type ModeTache = 'mesuree' | 'estimee' | 'forfait'
@@ -135,12 +153,17 @@ export function normaliserTache(raw: Partial<TacheCharge>): TacheCharge {
   const volume = raw.volumeSaisi != null && Number(raw.volumeSaisi) >= 0 ? round2(Number(raw.volumeSaisi)) : null
   // Estimated: minutes × a typed volume — its hours are that product, never typed.
   const estimee = cat === 'tache' && !indicateur && minutes != null && volume != null
+  // A share wins over the old flag (and rewrites it); the buffer has none.
+  const part = cat === 'tache' && raw.partAutomatisable != null && Number.isFinite(Number(raw.partAutomatisable))
+    ? Math.min(100, Math.max(0, Math.round(Number(raw.partAutomatisable))))
+    : null
   return {
     nom: String(raw.nom ?? '').trim(),
     description: String(raw.description ?? '').trim(),
     methode: String(raw.methode ?? '').trim(),
     heures: estimee ? heuresMesurees(minutes, volume) : Math.max(0, round2(Number(raw.heures) || 0)),
-    automatisable: cat === 'tache' ? auto : 'non',
+    automatisable: cat !== 'tache' ? 'non' : part != null ? automatisableDepuisPart(part) : auto,
+    partAutomatisable: part,
     automatise: cat === 'tache' ? !!raw.automatise : false,
     categorie: cat,
     indicateur,
@@ -153,8 +176,8 @@ export function normaliserTache(raw: Partial<TacheCharge>): TacheCharge {
 // ── Monthly view (RH › Charge de travail, since 2026-09-25) ──
 //
 // The screen shows ONE figure per task — its current value — and a monthly
-// curve. Three automation states only: à automatiser (automatisable = 'oui'),
-// automatisé, the rest. The structural slack is the buffer (`tampon`), kept
+// curve. Automation: « à automatiser » = hours × the task's share, « automatisé »
+// = whole tasks flagged done. The structural slack is the buffer (`tampon`), kept
 // apart: « non attribué » is what lies between the tasks and the buffer.
 
 /** `n` months ending with the month of `fin`, oldest first, as YYYY-MM. */
@@ -205,7 +228,7 @@ export function totauxSimples(taches: TacheCharge[], heures: number[]): TotauxSi
     if (estTampon(t)) { tampon += h; return }
     total += h
     if (t.automatise) automatise += h
-    else if (t.automatisable === 'oui') aAutomatiser += h
+    else aAutomatiser += (h * partAutomatisable(t)) / 100
   })
   return { taches: round2(total), aAutomatiser: round2(aAutomatiser), automatise: round2(automatise), tampon: round2(tampon) }
 }

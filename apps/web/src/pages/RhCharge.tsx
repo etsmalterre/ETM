@@ -48,9 +48,9 @@ import { cn } from '@/lib/utils'
 import {
   COULEURS,
   RAYURES_TAMPON,
+  partAutomatisable,
   equilibre,
   estTampon,
-  etatAuto,
   fmtDuree,
   fmtHeures,
   fmtMinutes,
@@ -65,7 +65,6 @@ import {
   todayIso,
   type ChargeResponse,
   type Employe,
-  type EtatAuto,
   type Equilibre,
   type EvolutionResponse,
   type Indicateur,
@@ -96,8 +95,18 @@ interface LigneDraft {
   /** mode estime: the unit, singular, and the units per week */
   uniteLibre: string
   volume: string
-  etat: EtatAuto
+  /** The whole task is already automated. */
+  automatise: boolean
+  /** Share that can be automated, 0–100 %; null = not assessed. */
+  part: number | null
   note: string
+}
+
+/** The share an older row stands for in the editor: its typed share, else its
+ *  old flag (oui 100 %, partiel 50 %, non 0 %); « inconnu » stays unassessed. */
+function partInitiale(t: TacheCharge): number | null {
+  if (t.partAutomatisable != null) return t.partAutomatisable
+  return t.automatisable === 'inconnu' ? null : partAutomatisable(t)
 }
 
 let nextUid = 1
@@ -115,7 +124,8 @@ function versDraft(t: TacheActuelle): LigneDraft {
     indicateur: mode === 'etm' ? t.indicateur! : '',
     uniteLibre: mode === 'estime' ? t.unite : '',
     volume: mode === 'estime' ? enTexte(t.volumeSaisi!) : '',
-    etat: etatAuto(t),
+    automatise: t.automatise,
+    part: partInitiale(t),
     note: noteDe(t),
   }
 }
@@ -147,9 +157,10 @@ function versTache(l: LigneDraft, volumes: Map<string, number>): TacheCharge {
     methode: '',
     heures,
     categorie: l.base.categorie,
-    automatise: l.etat === 'automatise',
-    // « — » keeps what the spreadsheet said (partiel / à évaluer / non).
-    automatisable: l.etat ? 'oui' : l.base.automatisable === 'oui' ? 'non' : l.base.automatisable,
+    automatise: l.automatise,
+    partAutomatisable: l.part,
+    // The API derives the old flag from the share; unassessed stays unknown.
+    automatisable: l.part == null ? 'inconnu' : l.part === 0 ? 'non' : l.part === 100 ? 'oui' : 'partiel',
     indicateur: l.mode === 'etm' ? l.indicateur : null,
     minutesParUnite: l.mode === 'forfait' ? null : minutes,
     volumeSaisi: l.mode === 'estime' ? nombre(l.volume) : null,
@@ -160,7 +171,7 @@ function versTache(l: LigneDraft, volumes: Map<string, number>): TacheCharge {
 const LIGNE_VIDE: TacheActuelle = {
   nom: '', description: '', methode: '', heures: 0, automatisable: 'inconnu', automatise: false,
   categorie: 'tache', indicateur: null, minutesParUnite: null, volumeSaisi: null, unite: '',
-  heuresActuelles: 0, volumeHebdo: null,
+  partAutomatisable: null, heuresActuelles: 0, volumeHebdo: null,
 }
 
 const TAMPON_VIDE: TacheActuelle = {
@@ -270,8 +281,8 @@ function RhChargeScreen() {
       const h = versTache(l, volumes).heures
       if (estTampon(l.base)) { t.tampon += h; continue }
       t.taches += h
-      if (l.etat === 'automatise') t.automatise += h
-      else if (l.etat === 'aAutomatiser') t.aAutomatiser += h
+      if (l.automatise) t.automatise += h
+      else t.aAutomatiser += (h * (l.part ?? 0)) / 100
     }
     return t
   }, [lignes, volumes])
@@ -567,10 +578,16 @@ function SemaineCard({ totaux, contrat, isEditing, tamponSaisi, onTampon }: {
 
 // ── Les tâches (lecture) ───────────────────────────────
 
-function EtatIcone({ etat }: { etat: EtatAuto }) {
-  if (etat === 'automatise') return <span title="Automatisé"><CheckCircle2 className="h-4 w-4" style={{ color: COULEURS.automatise }} /></span>
-  if (etat === 'aAutomatiser') return <span title="À automatiser"><Bot className="h-4 w-4" style={{ color: COULEURS.aAutomatiser }} /></span>
-  return <span className="h-4 w-4" />
+/** Right of a task row: « automatisé », or the share that can be automated. */
+function AutoIndic({ t }: { t: TacheCharge }) {
+  if (t.automatise) return <span className="inline-flex justify-end" title="Automatisé"><CheckCircle2 className="h-4 w-4" style={{ color: COULEURS.automatise }} /></span>
+  const part = partAutomatisable(t)
+  if (part <= 0) return <span />
+  return (
+    <span className="inline-flex items-center justify-end gap-1 text-xs font-semibold tabular-nums" style={{ color: COULEURS.aAutomatiser }} title={`${part} % automatisable`}>
+      <Bot className="h-3.5 w-3.5 flex-shrink-0" />{part} %
+    </span>
+  )
 }
 
 /** « 10 min × 8 commandes / sem. » — the row's one-line formula. */
@@ -671,35 +688,39 @@ function TachesCard({ taches, indicateurs, actuelle, dateReleve }: { taches: Tac
           const kpi = kpiTache(t, indicateurs, actuelle)
           const f = kpi ? formule(kpi) : 'forfait'
           const open = ouverte === t.nom
-          const etat = etatAuto(t)
-          const couleur = etat ? COULEURS[etat] : COULEURS.taches
+          const couleur = t.automatise ? COULEURS.automatise : COULEURS.taches
+          // The bar splits: the automatable share in red, the rest in blue.
+          const part = t.automatise ? 0 : partAutomatisable(t)
           return (
             <div key={t.nom}>
               <button
                 type="button"
                 onClick={() => setOuverte(open ? null : t.nom)}
                 className={cn(
-                  'w-full grid grid-cols-[minmax(0,12rem)_1fr_4rem_1.25rem] lg:grid-cols-[minmax(0,15rem)_1fr_4.5rem_minmax(0,12rem)_1.25rem] items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors',
+                  'w-full grid grid-cols-[minmax(0,12rem)_1fr_4rem_3.25rem] lg:grid-cols-[minmax(0,15rem)_1fr_4.5rem_minmax(0,12rem)_3.25rem] items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors',
                   open ? 'bg-accent/10' : 'hover:bg-accent/5',
                 )}
               >
                 <span className="text-sm truncate" title={t.nom}>{t.nom}</span>
                 <span className="h-2.5 rounded-full bg-zinc-100 overflow-hidden">
-                  <span className="block h-full rounded-full" style={{ width: `${(t.heuresActuelles / max) * 100}%`, background: couleur }} />
+                  <span className="flex h-full rounded-full overflow-hidden" style={{ width: `${(t.heuresActuelles / max) * 100}%` }}>
+                    {part > 0 && <span className="h-full" style={{ width: `${part}%`, background: COULEURS.aAutomatiser }} />}
+                    {part < 100 && <span className="h-full flex-1" style={{ background: couleur }} />}
+                  </span>
                 </span>
                 <span className="text-sm text-right tabular-nums font-medium whitespace-nowrap">{fmtDuree(t.heuresActuelles * 60)}</span>
                 <span className={cn('hidden lg:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground', !kpi && 'italic')} title={f}>
                   {kpi?.source === 'etm' && <Activity className="h-3 w-3 flex-shrink-0 text-accent-blue" />}
                   <span className="truncate">{f}</span>
                 </span>
-                <EtatIcone etat={etat} />
+                <AutoIndic t={t} />
               </button>
               {open && <DetailTache t={t} kpi={kpi} couleur={couleur} dateReleve={dateReleve} />}
             </div>
           )
         })}
         <div className="flex flex-wrap gap-x-4 gap-y-1 pt-2 mt-1 border-t border-border/50 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5"><Bot className="h-3.5 w-3.5" style={{ color: COULEURS.aAutomatiser }} />à automatiser</span>
+          <span className="inline-flex items-center gap-1.5"><Bot className="h-3.5 w-3.5" style={{ color: COULEURS.aAutomatiser }} />part automatisable (en rouge sur la barre)</span>
           <span className="inline-flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5" style={{ color: COULEURS.automatise }} />automatisé</span>
           <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5 text-accent-blue" />volume mesuré dans ETM (4 dernières semaines) ; sinon estimé</span>
         </div>
@@ -710,13 +731,20 @@ function TachesCard({ taches, indicateurs, actuelle, dateReleve }: { taches: Tac
 
 // ── Les tâches (édition) ───────────────────────────────
 
-const ETATS: Array<{ id: number; etat: EtatAuto; primary: string }> = [
-  { id: 1, etat: null, primary: '—' },
-  { id: 2, etat: 'aAutomatiser', primary: 'À automatiser' },
-  { id: 3, etat: 'automatise', primary: 'Automatisé' },
+// The share button: « — » (not assessed), 0 … 100 % in steps of 10, « Automatisé ».
+// Ids: 1 = not assessed, 2 + n = n × 10 %, 13 = automated. Never 0 (PopoverSelect's « none »).
+const ID_NON_EVALUE = 1
+const ID_AUTOMATISE = 13
+const PARTS = [
+  { id: ID_NON_EVALUE, primary: '—', description: 'Non évalué' },
+  ...Array.from({ length: 11 }, (_, n) => ({ id: n + 2, primary: `${n * 10} %` })),
+  { id: ID_AUTOMATISE, primary: 'Automatisé', description: 'La tâche est déjà entièrement automatisée' },
 ]
+const idPart = (l: LigneDraft) => (l.automatise ? ID_AUTOMATISE : l.part == null ? ID_NON_EVALUE : Math.round(l.part / 10) + 2)
+const partDepuisId = (id: number): Pick<LigneDraft, 'automatise' | 'part'> =>
+  id === ID_AUTOMATISE ? { automatise: true, part: 100 } : id === ID_NON_EVALUE ? { automatise: false, part: null } : { automatise: false, part: (id - 2) * 10 }
 
-const GRILLE_EDITEUR = 'md:grid-cols-[1fr_4.5rem_11rem_5.5rem_4rem_9rem_3.5rem]'
+const GRILLE_EDITEUR = 'md:grid-cols-[1fr_4.5rem_11rem_5.5rem_4rem_7.5rem_3.5rem]'
 
 function EditeurTaches({ lignes, setLignes, indicateurs, volumes }: {
   lignes: LigneDraft[]
@@ -754,7 +782,7 @@ function EditeurTaches({ lignes, setLignes, indicateurs, volumes }: {
       <CardContent className="space-y-1.5">
         <div className={cn('hidden md:grid gap-2 px-1 text-[11px] uppercase tracking-wide text-muted-foreground font-semibold', GRILLE_EDITEUR)}>
           <span>Tâche</span><span className="text-right">Temps</span><span>Unité</span>
-          <span className="text-right">Volume / sem.</span><span className="text-right">Charge</span><span>Automatisation</span><span />
+          <span className="text-right">Volume / sem.</span><span className="text-right">Charge</span><span title="Part de la tâche automatisable">Automatisable</span><span />
         </div>
         {lignes.filter((l) => !estTampon(l.base)).map((l) => {
           const open = ouverte === l.uid
@@ -816,9 +844,9 @@ function EditeurTaches({ lignes, setLignes, indicateurs, volumes }: {
                   size="sm"
                   widthClass="w-full"
                   hideEmpty
-                  value={ETATS.find((e) => e.etat === l.etat)!.id}
-                  onChange={(id) => patch(l.uid, { etat: ETATS.find((e) => e.id === id)!.etat })}
-                  options={ETATS.map(({ id, primary }) => ({ id, primary }))}
+                  value={idPart(l)}
+                  onChange={(id) => patch(l.uid, partDepuisId(id))}
+                  options={PARTS}
                 />
                 <div className="flex items-center justify-end gap-0.5">
                   <Button variant="ghost" size="icon" className={cn('h-7 w-7', l.note && 'text-accent')} title={open ? 'Fermer la note' : 'Note'} onClick={() => setOuverte(open ? null : l.uid)}>

@@ -36,6 +36,8 @@ export interface TacheCharge {
   volumeSaisi: number | null
   /** Estimated task: its unit, singular. */
   unite: string
+  /** Share of the task that can be automated, 0–100 %; null = not assessed. */
+  partAutomatisable: number | null
 }
 
 export interface TotauxCharge {
@@ -223,16 +225,23 @@ export function pctContrat(h: number, contrat: number): string {
   return contrat > 0 ? `${fmtNum((h / contrat) * 100, 0)} %` : ''
 }
 
-// ── The three automation states ─────────────────────────
-// À automatiser = automatisable 'oui'; 'partiel' / 'inconnu' (kept from the
-// spreadsheet) count as « the rest ». Colours validated with the dataviz
-// validator (#3B7DC9, #C2410C, #17915B: every check passes on white).
+// ── Automation: a share per task ────────────────────────
+// Since 2026-09-28 each task carries the % of it that can be automated
+// (mirror of apps/api/src/lib/rh-charge.ts partAutomatisable, tested there):
+// a row without a share reads its old flag, oui = 100 %, partiel = 50 %, else 0.
+// « Automatisé » stays a flag on the whole task. Colours validated with the
+// dataviz validator (#3B7DC9, #C2410C, #17915B: every check passes on white).
+
+export function partAutomatisable(t: Pick<TacheCharge, 'partAutomatisable' | 'automatisable'>): number {
+  if (t.partAutomatisable != null) return t.partAutomatisable
+  return t.automatisable === 'oui' ? 100 : t.automatisable === 'partiel' ? 50 : 0
+}
 
 export type EtatAuto = 'aAutomatiser' | 'automatise' | null
 
-export function etatAuto(t: Pick<TacheCharge, 'automatise' | 'automatisable'>): EtatAuto {
+export function etatAuto(t: Pick<TacheCharge, 'automatise' | 'automatisable' | 'partAutomatisable'>): EtatAuto {
   if (t.automatise) return 'automatise'
-  return t.automatisable === 'oui' ? 'aAutomatiser' : null
+  return partAutomatisable(t) > 0 ? 'aAutomatiser' : null
 }
 
 export const COULEURS = {

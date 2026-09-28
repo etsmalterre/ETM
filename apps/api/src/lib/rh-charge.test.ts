@@ -19,15 +19,38 @@ import {
 const tache = (x: Partial<TacheCharge> & { nom: string; heures: number }): TacheCharge => normaliserTache(x)
 
 describe('totaux d’un relevé', () => {
-  it('counts the tasks in three automation states, and the buffer apart', () => {
+  it('reads a relevé saved before the share existed: oui = 100 %, partiel = 50 %, the buffer apart', () => {
     const taches = [
       tache({ nom: 'Expéditions', heures: 10, automatisable: 'oui' }),
       tache({ nom: 'Tirelles', heures: 4, automatisable: 'non' }),
       tache({ nom: 'Pointage', heures: 1, automatisable: 'oui', automatise: true }),
-      tache({ nom: 'Pochettes', heures: 0.25, automatisable: 'partiel' }), // partiel = « the rest »
+      tache({ nom: 'Pochettes', heures: 0.25, automatisable: 'partiel' }),
       tache({ nom: 'Marge', heures: 2.8, categorie: 'improductivite_structurelle' }),
     ]
-    expect(totauxSimples(taches, taches.map((t) => t.heures))).toEqual({ taches: 15.25, aAutomatiser: 10, automatise: 1, tampon: 2.8 })
+    expect(totauxSimples(taches, taches.map((t) => t.heures))).toEqual({ taches: 15.25, aAutomatiser: 10.13, automatise: 1, tampon: 2.8 })
+  })
+
+  it('counts « à automatiser » as hours × the share of each task not yet automated', () => {
+    const taches = [
+      tache({ nom: 'Expéditions', heures: 10, partAutomatisable: 50 }),
+      tache({ nom: 'Tirelles', heures: 4, partAutomatisable: 10 }),
+      tache({ nom: 'Pointage', heures: 1, partAutomatisable: 100, automatise: true }), // automated: counted there only
+      tache({ nom: 'Ménage', heures: 4, partAutomatisable: 0 }),
+    ]
+    expect(totauxSimples(taches, taches.map((t) => t.heures))).toMatchObject({ aAutomatiser: 5.4, automatise: 1 })
+  })
+})
+
+describe('part automatisable', () => {
+  it('wins over the old flag, is clamped to 0–100 and rewrites the flag', () => {
+    expect(tache({ nom: 'a', heures: 1, automatisable: 'oui', partAutomatisable: 40 })).toMatchObject({ partAutomatisable: 40, automatisable: 'partiel' })
+    expect(tache({ nom: 'b', heures: 1, partAutomatisable: 140 })).toMatchObject({ partAutomatisable: 100, automatisable: 'oui' })
+    expect(tache({ nom: 'c', heures: 1, partAutomatisable: 0 })).toMatchObject({ automatisable: 'non' })
+    expect(tache({ nom: 'd', heures: 1, automatisable: 'partiel' })).toMatchObject({ partAutomatisable: null, automatisable: 'partiel' })
+  })
+
+  it('is never set on the buffer', () => {
+    expect(tache({ nom: 'Marge', heures: 2.8, categorie: 'improductivite_structurelle', partAutomatisable: 50 }).partAutomatisable).toBeNull()
   })
 })
 
