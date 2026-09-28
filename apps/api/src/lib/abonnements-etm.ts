@@ -29,7 +29,8 @@ export interface AbonnementEtm {
   description: string
   /** Mapped to an icon by the widget (iconFor). */
   icone: string
-  /** Offered only to users holding it — the cards carry actions this key guards. */
+  /** Offered only to users holding it — its sub-permission of
+   *  `dashboard_notifications` (lib/permission-keys.ts). */
   permission: PermissionKey
 }
 
@@ -39,7 +40,9 @@ export const ABONNEMENTS_ETM: readonly AbonnementEtm[] = [
     nom: 'Superviseur — points à traiter',
     description: 'Les points relevés chaque matin par l’agent Superviseur, à marquer « Traité » ou « Fausse alerte ».',
     icone: 'superviseur',
-    permission: 'evaluer_agents_ia',
+    // Also lets the widget's « Traité » / « Fausse alerte » through
+    // (routes/agents-ia.ts traiteurPoints), without the Agents IA scoring right.
+    permission: 'dashboard_notif_superviseur',
   },
 ]
 

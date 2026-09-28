@@ -32,6 +32,49 @@
 
 import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
 import { IS_WINDOWS, n } from './sst-shared.js'
+import type { PermissionKey } from './permission-keys.js'
+
+/** The sub-permission of `dashboard_notifications` that each subscription of
+ *  this app's catalog requires (Paramètres › Utilisateurs › Tableau de bord ›
+ *  Notifications). A subscription is offered, saved and fed only to a holder.
+ *  A catalog row with no entry here has no detector either — it can never
+ *  produce a card, so it stays offered to every widget user. */
+export const NOTIF_PERMISSIONS: Readonly<Record<number, PermissionKey>> = {
+  1: 'dashboard_notif_dossiers_qualite',
+  2: 'dashboard_notif_commandes_fil',
+  4: 'dashboard_notif_stock_fil_mini',
+  5: 'dashboard_notif_fil_non_affecte',
+  6: 'dashboard_notif_ecru_sans_fil',
+  7: 'dashboard_notif_ecru_sans_commande',
+  8: 'dashboard_notif_certificats_fil',
+}
+
+/** The catalog rows a user may subscribe to, given the keys they hold. */
+export function abonnementsPermis<T extends { id: number }>(
+  catalog: readonly T[],
+  detient: (key: PermissionKey) => boolean,
+): T[] {
+  return catalog.filter((a) => {
+    const key = NOTIF_PERMISSIONS[a.id]
+    return key === undefined || detient(key)
+  })
+}
+
+/** The legacy subscriptions to store when a user saves `voulus` in the
+ *  dialog: only offered ids are taken from the request; the ids they may not
+ *  see (a sub-permission since withdrawn) are carried over untouched, like
+ *  the ETM-only store does. */
+export function fusionnerAbonnements(
+  existants: readonly number[],
+  voulus: readonly number[],
+  offerts: readonly number[],
+): number[] {
+  const o = new Set(offerts)
+  return [...new Set([
+    ...existants.filter((id) => !o.has(id)),
+    ...voulus.filter((id) => o.has(id)),
+  ])].sort((a, b) => a - b)
+}
 
 /** ETM serves ETS Malterre. `abonnement_notif` is partitioned by IDsociete
  *  exactly like `client` / `commande_client`, and legacy filters the

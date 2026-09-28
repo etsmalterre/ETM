@@ -12,7 +12,8 @@
 // Everything is gated on `dashboard_notifications` on the API too, not just by
 // hiding the widget: the feed names client orders, quality dossiers and stock
 // levels, so a user without the widget must not be able to read it by guessing
-// the address.
+// the address. Each subscription also needs its own sub-permission (offreDe):
+// the dialog lists, the PUT accepts and the feed runs only what the user holds.
 //
 // ⚠️ Naming: /api/notifications (routes/notifications.ts) is a DIFFERENT
 // feature — per-user subscriptions to outgoing *emails*. This router owns the
@@ -21,13 +22,17 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { isEffectiveAdmin } from '../lib/auth.js'
-import { userHasPermission } from '../lib/permissions.js'
+import { userHasPermission, getUserPermissions } from '../lib/permissions.js'
+import type { PermissionKey } from '../lib/permission-keys.js'
 import {
   getAbonnementCatalog,
   getUserAbonnementIds,
   setUserAbonnementIds,
   detectForUser,
   invalidateDetectionCache,
+  NOTIF_PERMISSIONS,
+  abonnementsPermis,
+  fusionnerAbonnements,
   type Abonnement,
   type DetectedNotification,
 } from '../lib/abonnements.js'
@@ -62,21 +67,39 @@ async function requireWidgetUser(req: Request, res: Response): Promise<number | 
   return req.userId
 }
 
-/** The ETM-only subscriptions (lib/abonnements-etm.ts) this user may see. */
-async function offertsEtm(req: Request, userId: number): Promise<AbonnementEtm[]> {
+/** What this user may subscribe to: each subscription needs its
+ *  sub-permission of `dashboard_notifications` (NOTIF_PERMISSIONS for the
+ *  legacy catalog, `permission` for the ETM-only ones). Admins hold them all. */
+interface Offre {
+  legacy: Abonnement[]
+  etm: AbonnementEtm[]
+  detient: (key: PermissionKey) => boolean
+}
+
+async function offreDe(req: Request, userId: number, catalogLu?: Abonnement[]): Promise<Offre> {
   const admin = isEffectiveAdmin(req)
-  const ok = await Promise.all(ABONNEMENTS_ETM.map((a) => userHasPermission(userId, admin, a.permission)))
-  return ABONNEMENTS_ETM.filter((_, i) => ok[i])
+  const [catalog, granted] = await Promise.all([catalogLu ?? getAbonnementCatalog(), getUserPermissions(userId)])
+  const held = new Set<string>(granted)
+  const detient = (key: PermissionKey) => admin || held.has(key)
+  return {
+    legacy: abonnementsPermis(catalog, detient),
+    etm: ABONNEMENTS_ETM.filter((a) => detient(a.permission)),
+    detient,
+  }
 }
 
 const versCatalogue = (a: AbonnementEtm): Abonnement =>
   ({ id: a.id, nom: a.nom, description: a.description, icone: a.icone, implemented: true })
 
-/** This user's subscriptions, legacy + ETM-only (those still offered). */
-async function abonnementsDe(userId: number, offerts: AbonnementEtm[]): Promise<number[]> {
+/** This user's subscriptions, legacy + ETM-only — only those still offered:
+ *  a withdrawn sub-permission stops the feed even if the row is still stored. */
+async function abonnementsDe(userId: number, offre: Offre): Promise<number[]> {
   const [legacy, etm] = await Promise.all([getUserAbonnementIds(userId), getUserAbonnementsEtm(userId)])
-  const visibles = new Set(offerts.map((a) => a.id))
-  return [...legacy, ...etm.filter((id) => visibles.has(id))]
+  const visiblesEtm = new Set(offre.etm.map((a) => a.id))
+  return [
+    ...legacy.filter((id) => NOTIF_PERMISSIONS[id] === undefined || offre.detient(NOTIF_PERMISSIONS[id])),
+    ...etm.filter((id) => visiblesEtm.has(id)),
+  ]
 }
 
 // ── GET /api/abonnements ─────────────────────────────────
@@ -86,12 +109,9 @@ abonnementsRouter.get('/', async (req: Request, res: Response) => {
   const userId = await requireWidgetUser(req, res)
   if (userId === null) return
   try {
-    const offerts = await offertsEtm(req, userId)
-    const [catalog, subscribed] = await Promise.all([
-      getAbonnementCatalog(),
-      abonnementsDe(userId, offerts),
-    ])
-    res.json({ catalog: [...catalog, ...offerts.map(versCatalogue)], subscribed })
+    const offre = await offreDe(req, userId)
+    const subscribed = await abonnementsDe(userId, offre)
+    res.json({ catalog: [...offre.legacy, ...offre.etm.map(versCatalogue)], subscribed })
   } catch (err) {
     console.error('Error fetching abonnements:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -115,10 +135,15 @@ abonnementsRouter.put('/me', async (req: Request, res: Response) => {
   }
   try {
     // Legacy ids go to the shared HFSQL table, ETM-only ones to their own store.
-    const offerts = await offertsEtm(req, userId)
-    await setUserAbonnementIds(userId, parsed.data.subscribed.filter((id) => !estAbonnementEtm(id)))
-    await setUserAbonnementsEtm(userId, parsed.data.subscribed.filter(estAbonnementEtm), offerts.map((a) => a.id))
-    res.json({ subscribed: await abonnementsDe(userId, offerts) })
+    // Only offered ids are taken from the request; a subscription the user may
+    // no longer see keeps its stored row untouched (fusionnerAbonnements).
+    const offre = await offreDe(req, userId)
+    const voulusLegacy = parsed.data.subscribed.filter((id) => !estAbonnementEtm(id))
+    await setUserAbonnementIds(userId, fusionnerAbonnements(
+      await getUserAbonnementIds(userId), voulusLegacy, offre.legacy.map((a) => a.id),
+    ))
+    await setUserAbonnementsEtm(userId, parsed.data.subscribed.filter(estAbonnementEtm), offre.etm.map((a) => a.id))
+    res.json({ subscribed: await abonnementsDe(userId, offre) })
   } catch (err) {
     console.error('Error updating abonnements:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -136,7 +161,7 @@ abonnementsRouter.get('/notifications', async (req: Request, res: Response) => {
   const includeHidden = req.query.all === '1' || req.query.all === 'true'
   try {
     const catalog = await getAbonnementCatalog()
-    const subscribed = await abonnementsDe(userId, await offertsEtm(req, userId))
+    const subscribed = await abonnementsDe(userId, await offreDe(req, userId, catalog))
     const detected = await detectForUser(subscribed, catalog)
 
     // Prune entries whose alert no longer exists. Legacy deletes the

@@ -82,6 +82,8 @@ interface PermissionKeyDef {
   /** Sub-permission: rendered indented under its parent toggle, visible only
    *  while the parent is granted. */
   parent?: string
+  /** false → not granted when its parent is toggled on (a sensitive child). */
+  cascade?: boolean
 }
 
 /** Notification catalog entries share PermissionKeyDef's shape (minus `parent`)
@@ -323,11 +325,13 @@ export function SettingsUtilisateurs() {
             if (!selected) return
             const current = new Set(selected.granted)
             // Toggling a parent cascades to its sub-permissions: ON grants
-            // every child (the admin can then narrow), OFF removes them all.
-            const children = (keys ?? []).filter((k) => k.parent === key).map((k) => k.key)
+            // every child (the admin can then narrow) except a `cascade: false`
+            // one, ticked on its own; OFF removes them all.
+            const childDefs = (keys ?? []).filter((k) => k.parent === key)
+            const children = childDefs.map((k) => k.key)
             if (nextValue) {
               current.add(key)
-              for (const c of children) current.add(c)
+              for (const c of childDefs) if (c.cascade !== false) current.add(c.key)
             } else {
               current.delete(key)
               for (const c of children) current.delete(c)

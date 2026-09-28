@@ -79,9 +79,10 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
   // sans point de comparaison, donc ininterprétable au quotidien (décision
   // Vincent : « j'attends que le besoin s'exprime vraiment »).
   //
-  // Le remettre = RÉTABLIR CETTE SEULE ENTRÉE. Tout le reste est intact et
-  // testé : `ValorisationStockWidget.tsx`, l'endpoint
-  // `GET /rapports/stock/valorisation`, la permission `dashboard_stock_valorisation`
+  // Le remettre = RÉTABLIR CETTE ENTRÉE + la permission `dashboard_stock_valorisation`
+  // (retirée du catalogue le 2026-09-28, elle n'affichait rien) et rendre à
+  // l'endpoint `GET /rapports/stock/valorisation` ce contrôle au lieu de
+  // « admin seulement ». Le reste est intact et testé : `ValorisationStockWidget.tsx`
   // et le guard `check-valorisation-stock.ts`.
   //
   // ⚠️ Et surtout : `apps/api/src/lib/valorisation-stock.ts` N'EST PAS DU CODE

@@ -13,6 +13,8 @@
 // is granted (toggling the parent on grants every child; off removes them).
 // The API must check parent AND child on gated routes (children are stored
 // as plain flat keys — nothing enforces the hierarchy at the storage layer).
+// A child with `cascade: false` is NOT granted by toggling its parent on — it
+// is ticked on its own (a sensitive child, e.g. dashboard_notif_superviseur).
 
 export const PERMISSION_KEYS = [
   // Tableau de bord — one key per dashboard widget. Granting shows the widget
@@ -29,8 +31,69 @@ export const PERMISSION_KEYS = [
     key: 'dashboard_notifications',
     label: 'Notifications',
     description:
-      'Affiche le widget « Notifications » sur le tableau de bord : les alertes des abonnements auxquels l’utilisateur a souscrit (dossiers qualité à échéance, commandes de fil, stock mini, lots et pièces non affectés, certificats expirés). L’API refuse le flux sans ce droit — les alertes nomment des commandes clients et des niveaux de stock.',
+      'Affiche le widget « Notifications » sur le tableau de bord : les alertes des abonnements auxquels l’utilisateur a souscrit (dossiers qualité à échéance, commandes de fil, stock mini, lots et pièces non affectés, certificats expirés). L’API refuse le flux sans ce droit — les alertes nomment des commandes clients et des niveaux de stock. Chaque abonnement a son sous-droit : il n’est proposé dans « Liste des abonnements » qu’à qui le détient.',
     category: 'Tableau de bord',
+  },
+  // One sub-permission per subscription of the widget, keyed to its
+  // IDabonnement_notif in lib/abonnements.ts (NOTIF_PERMISSIONS) or to an
+  // ETM-only subscription in lib/abonnements-etm.ts. The API offers, saves and
+  // feeds a subscription only to a holder of its key.
+  {
+    key: 'dashboard_notif_dossiers_qualite',
+    label: 'Dossiers qualité à échéance',
+    description: 'Propose l’abonnement « Suivre les dossiers qualité qui arrivent à échéance » dans le widget Notifications. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
+    key: 'dashboard_notif_commandes_fil',
+    label: 'Commandes de fil à échéance',
+    description: 'Propose l’abonnement « Suivre les commandes de fil qui arrivent à échéance » dans le widget Notifications. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
+    key: 'dashboard_notif_stock_fil_mini',
+    label: 'Stock de fil au minimum',
+    description: 'Propose l’abonnement « Notification quand un stock de fil atteint son minimum » dans le widget Notifications. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
+    key: 'dashboard_notif_fil_non_affecte',
+    label: 'Stock de fil non affecté',
+    description: 'Propose l’abonnement « Notification quand un stock de fil n’est pas affecté à une commande » dans le widget Notifications. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
+    key: 'dashboard_notif_ecru_sans_fil',
+    label: 'Tombé métier sans fil affecté',
+    description: 'Propose l’abonnement « Notification quand un stock Tombé de métier n’a pas de fil affecté » dans le widget Notifications. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
+    key: 'dashboard_notif_ecru_sans_commande',
+    label: 'Tombé métier sans commande',
+    description: 'Propose l’abonnement « Notification quand un stock Tombé de métier n’a pas de commande affectée » dans le widget Notifications. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
+    key: 'dashboard_notif_certificats_fil',
+    label: 'Certificats fournisseur expirés',
+    description: 'Propose l’abonnement « Notification lorsque le certificat d’un fournisseur de fil est expiré » dans le widget Notifications. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
+    key: 'dashboard_notif_superviseur',
+    label: 'Superviseur — points à traiter',
+    description: 'Propose l’abonnement « Superviseur — points à traiter » dans le widget Notifications, et autorise « Traité » / « Fausse alerte » depuis le widget. Donnée sensible (le rapport lit les boîtes mail) : cocher « Notifications » ne l’accorde PAS, il se coche à part.',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+    cascade: false,
   },
   {
     key: 'dashboard_utilisation_fil',
@@ -81,18 +144,10 @@ export const PERMISSION_KEYS = [
       'Affiche le widget « Analyse financière » sur le tableau de bord : évolution du CA, de la marge brute et des charges fixes / variables sur l’année, et CA, marge brute et EBE du dernier relevé comptable. Donnée confidentielle — l’API refuse les chiffres sans ce droit. Indépendant de « Consulter le rapport finance », qui donne le détail compte par compte.',
     category: 'Tableau de bord',
   },
-  {
-    // ⚠️ Le widget a été retiré du tableau de bord le 2026-08-26 (voir le
-    // commentaire dans `components/dashboard/registry.tsx`). La clé RESTE : elle
-    // garde toujours l'endpoint `GET /rapports/stock/valorisation`, qui sert un
-    // poste de bilan. Le libellé dit explicitement qu'il n'y a rien à afficher,
-    // sinon un admin coche la case et se demande pourquoi rien n'apparaît.
-    key: 'dashboard_stock_valorisation',
-    label: 'Valorisation du stock (widget retiré)',
-    description:
-      'Le widget « Valorisation du stock » n’est plus affiché sur le tableau de bord depuis le 26/08/2026 — cocher ce droit ne fait donc apparaître aucune carte. Il donne encore accès à l’endpoint de valorisation (valeur d’achat et valeur dépréciée du stock, taux de provision, détail par type), donnée confidentielle car c’est un poste de bilan. À rétablir le jour où le widget revient.',
-    category: 'Tableau de bord',
-  },
+  // `dashboard_stock_valorisation` was removed on 2026-09-28: its widget has been
+  // off the dashboard since 2026-08-26 and the right showed nothing. Its endpoint
+  // `GET /rapports/stock/valorisation` is admin-only meanwhile — bring the key
+  // back with the widget (components/dashboard/registry.tsx).
   // Prospects — ticket #1112. Both keys are closed by default and no
   // grandfathering script was run (user decision, 2026-09-02): the screen is
   // read-only for everyone until an admin grants the keys — same rollout as

@@ -34,7 +34,8 @@
 // n'a pas été prise, et inventer un vert à 30 % dirait au lecteur une chose que
 // personne n'a arbitrée. La barre montre la proportion et le laisse juger.
 //
-// Gated server-side by `dashboard_stock_valorisation`.
+// Gated server-side: admin-only while the widget is off the dashboard (its key
+// `dashboard_stock_valorisation` comes back with it — see registry.tsx).
 
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, AlertTriangle, Info } from 'lucide-react'

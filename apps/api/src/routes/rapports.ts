@@ -37,7 +37,6 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { repairAliased } from './stock-fini.js'
 import { stripRtf } from '../lib/rtf-utils.js'
 import { n, dateDigits, addWorkingDays, isLineDone, lineStatutRank, esc } from '../lib/sst-shared.js'
-import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { createFinanceRouter, FINANCE_SCOPE_ETM } from '../lib/finance-common.js'
 import { valoriserStock } from '../lib/valorisation-stock.js'
@@ -1445,16 +1444,16 @@ rapportsRouter.use('/', createFinanceRouter(FINANCE_SCOPE_ETM))
 // (hence the Analyse financière widget) structurally cannot show.
 //
 // ETM-only on purpose: `stock_fini` carries no `IDsociete`, so this is NOT part
-// of the two-société finance factory above. Gated on its own key because it
-// exposes a balance-sheet figure.
+// of the two-société finance factory above. It exposes a balance-sheet figure;
+// its key `dashboard_stock_valorisation` left the catalog with the widget
+// (2026-09-28), so it is admin-only until the widget comes back with its key.
 //
 // The computation, its validation against the printed 31/12/2025 inventory, and
 // the reason it can only ever describe *now* live in lib/valorisation-stock.ts.
 rapportsRouter.get('/stock/valorisation', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
-    const allowed = await userHasPermission(req.userId, isEffectiveAdmin(req), 'dashboard_stock_valorisation')
-    if (!allowed) {
+    if (!isEffectiveAdmin(req)) {
       res.status(403).json({ error: 'forbidden', message: 'Accès à la valorisation du stock non autorisé.' })
       return
     }

@@ -89,6 +89,25 @@ async function evaluateur(req: Request, res: Response): Promise<number | null> {
   return id
 }
 
+/** 401 / 403 unless the caller may handle points from the Notifications
+ *  widget: the scoring right, or the widget with its Superviseur
+ *  sub-permission (dashboard_notifications + dashboard_notif_superviseur). */
+async function traiteurPoints(req: Request, res: Response): Promise<number | null> {
+  const id = session(req, res)
+  if (id === null) return null
+  const admin = isEffectiveAdmin(req)
+  const [evalue, widget, sousDroit] = await Promise.all([
+    userHasPermission(id, admin, 'evaluer_agents_ia'),
+    userHasPermission(id, admin, 'dashboard_notifications'),
+    userHasPermission(id, admin, 'dashboard_notif_superviseur'),
+  ])
+  if (!evalue && !(widget && sousDroit)) {
+    res.status(403).json({ error: 'permission denied: dashboard_notif_superviseur' })
+    return null
+  }
+  return id
+}
+
 /** The mode shown and accepted: an agent that does not offer « essai » (it
  *  would change nothing — Superviseur) runs the same in it as in « actif »,
  *  so a state left in essai from before reads as actif. */
@@ -497,9 +516,10 @@ const traitementBody = z.object({
 })
 
 /** Handle one point from the Notifications widget: « Traité » or « Fausse
- *  alerte » (lib/agents/superviseur/points.ts). Same right as scoring. */
+ *  alerte » (lib/agents/superviseur/points.ts). The scoring right, or the
+ *  widget's Superviseur sub-permission (traiteurPoints). */
 agentsIaRouter.put('/:slug/points/traitement', async (req, res) => {
-  const uid = await evaluateur(req, res)
+  const uid = await traiteurPoints(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
   if (!def) return
@@ -521,7 +541,7 @@ agentsIaRouter.put('/:slug/points/traitement', async (req, res) => {
 /** Every point the agent raised, open or closed, and how it was handled —
  *  the widget's « Historique ». */
 agentsIaRouter.get('/:slug/points/historique', async (req, res) => {
-  if ((await evaluateur(req, res)) === null) return
+  if ((await traiteurPoints(req, res)) === null) return
   const def = agentOu404(req, res)
   if (!def) return
   if (!def.pointsEvaluables) { res.json({ points: [] }); return }
