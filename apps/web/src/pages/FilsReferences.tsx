@@ -32,6 +32,8 @@ import {
   Palette,
   Factory,
   Tag,
+  FileText,
+  Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -41,7 +43,8 @@ import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { cn } from '@/lib/utils'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, API_URL } from '@/lib/api'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
 
@@ -2374,6 +2377,10 @@ function DetailSidebar({
   draft: HeaderDraft
   onDraftChange: (d: HeaderDraft) => void
 }) {
+  const [activeTab, setActiveTab] = useState<SidebarTab>('info')
+  // Land on Informations whenever another reference is selected.
+  useEffect(() => { setActiveTab('info') }, [detail?.IDref_fil])
+
   if (!detail) {
     return (
       <div className="w-96 flex-shrink-0 rounded-xl border flex items-center justify-center bg-zinc-100/80">
@@ -2384,14 +2391,31 @@ function DetailSidebar({
   return (
     <div className="w-96 flex-shrink-0 rounded-xl border flex flex-col overflow-hidden bg-zinc-100/80">
       <div className="flex border-b p-1 gap-1 rounded-t-xl bg-zinc-200/50">
-        <button
-          type="button"
-          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md transition-colors bg-accent text-accent-foreground shadow-sm"
-        >
-          <Info className="h-3.5 w-3.5" />
-          Informations
-        </button>
+        {SIDEBAR_TABS.map((t) => {
+          const Icon = t.icon
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setActiveTab(t.key)}
+              className={cn(
+                'flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md transition-colors',
+                activeTab === t.key
+                  ? 'bg-accent text-accent-foreground shadow-sm'
+                  : 'text-muted-foreground hover:bg-accent/10',
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {t.label}
+            </button>
+          )
+        })}
       </div>
+      {activeTab === 'documents' ? (
+        <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-transparent">
+          <DocsTab refFilId={detail.IDref_fil} isEditing={isEditing} />
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-transparent">
         {!isEditing && (
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
@@ -2467,6 +2491,418 @@ function DetailSidebar({
           )}
         </div>
       </div>
+      )}
     </div>
+  )
+}
+
+// ── Sidebar Tab: Documents ─────────────────────────────
+//
+// Fiche technique, certificats… of the yarn (ged rows keyed on IDref_fil —
+// apps/api/src/lib/ref-fil-documents.ts). Same three components as the
+// FilsCommandes DocsTab (mps_designer §34), without the per-lot linkage.
+
+type SidebarTab = 'info' | 'documents'
+const SIDEBAR_TABS: Array<{ key: SidebarTab; label: string; icon: typeof Info }> = [
+  { key: 'info', label: 'Informations', icon: Info },
+  { key: 'documents', label: 'Documents', icon: FileText },
+]
+
+interface RefFilDocument {
+  IDged: number
+  nom: string | null
+  commentaire: string | null
+  IDtype_doc: number
+  type_nom: string | null
+}
+
+interface RefFilDocType {
+  IDtype_doc: number
+  nom: string
+}
+
+const docTitle = (d: RefFilDocument) => d.nom?.trim() || `Document #${d.IDged}`
+
+function DocsTab({ refFilId, isEditing }: { refFilId: number; isEditing: boolean }) {
+  const queryClient = useQueryClient()
+  const docsQueryKey = ['ref-fil-docs', refFilId] as const
+
+  const { data, isLoading, error } = useQuery<RefFilDocument[]>({
+    queryKey: docsQueryKey,
+    queryFn: () => apiFetch(`/references-fil/${refFilId}/documents`),
+  })
+
+  const [viewDoc, setViewDoc] = useState<RefFilDocument | null>(null)
+  const [editingDoc, setEditingDoc] = useState<RefFilDocument | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [deleteDocConfirm, setDeleteDocConfirm] = useState<RefFilDocument | null>(null)
+
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['ref-fil-docs', refFilId] })
+  }, [queryClient, refFilId])
+
+  const deleteMut = useMutation({
+    mutationFn: (idged: number) =>
+      apiFetch(`/references-fil/${refFilId}/documents/${idged}`, { method: 'DELETE' }),
+    onSuccess: invalidate,
+  })
+
+  return (
+    <>
+      {isLoading && (
+        <div className="flex items-center justify-center py-6">
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
+        </div>
+      )}
+
+      {!!error && (
+        <div className="flex items-center gap-1.5 py-3 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5" />
+          <span>Erreur de chargement</span>
+        </div>
+      )}
+
+      {!isLoading && !error && !data?.length && (
+        <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+          <FileText className="h-10 w-10 mb-3 opacity-40" />
+          <p className="text-sm font-medium">Aucun document</p>
+          <p className="text-[11px] mt-1 text-center">
+            Fiches techniques, certificats et autres documents du fil apparaîtront ici.
+          </p>
+        </div>
+      )}
+
+      {!!data?.length && (
+        <div className="space-y-2">
+          {data.map((doc) => {
+            const title = docTitle(doc)
+            return (
+              <div
+                key={doc.IDged}
+                onClick={() => isEditing ? setEditingDoc(doc) : setViewDoc(doc)}
+                className={cn(
+                  'group p-3 rounded-lg border bg-card shadow-sm cursor-pointer hover:border-accent/40 transition-colors',
+                  isEditing && editSectionClass,
+                )}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
+                    <FileText className="h-3.5 w-3.5 text-amber-600" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate" title={title}>{title}</p>
+                    {!!doc.type_nom && (
+                      <p className="text-[11px] text-muted-foreground truncate">{doc.type_nom}</p>
+                    )}
+                  </div>
+                  {isEditing && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setDeleteDocConfirm(doc)
+                      }}
+                      title="Supprimer"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
+                {!!doc.commentaire?.trim() && (
+                  <div className="flex items-start gap-1.5 mt-2 ml-9">
+                    <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-muted-foreground italic whitespace-pre-line">{doc.commentaire.trim()}</p>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {isEditing && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full mt-2 text-muted-foreground hover:text-foreground"
+          onClick={() => setCreateOpen(true)}
+        >
+          <Plus className="h-4 w-4 mr-1.5" />Ajouter un document
+        </Button>
+      )}
+
+      <DocViewDialog refFilId={refFilId} doc={viewDoc} onClose={() => setViewDoc(null)} />
+
+      <DocCreateEditDialog
+        open={createOpen || editingDoc !== null}
+        refFilId={refFilId}
+        doc={editingDoc}
+        onClose={() => { setCreateOpen(false); setEditingDoc(null) }}
+        onSuccess={() => { setCreateOpen(false); setEditingDoc(null); invalidate() }}
+      />
+
+      <ConfirmDialog
+        open={deleteDocConfirm !== null}
+        title="Supprimer le document"
+        description={deleteDocConfirm ? `« ${docTitle(deleteDocConfirm)} » sera supprimé définitivement.` : undefined}
+        confirmLabel="Supprimer"
+        isPending={deleteMut.isPending}
+        onCancel={() => setDeleteDocConfirm(null)}
+        onConfirm={() => {
+          if (deleteDocConfirm) {
+            deleteMut.mutate(deleteDocConfirm.IDged, {
+              onSuccess: () => setDeleteDocConfirm(null),
+            })
+          }
+        }}
+      />
+    </>
+  )
+}
+
+function DocCreateEditDialog({
+  open, refFilId, doc, onClose, onSuccess,
+}: {
+  open: boolean
+  refFilId: number
+  doc: RefFilDocument | null // null = create mode
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const isNew = doc === null
+  const [nom, setNom] = useState('')
+  const [idTypeDoc, setIdTypeDoc] = useState<number>(0)
+  const [commentaire, setCommentaire] = useState('')
+  const [newFile, setNewFile] = useState<File | null>(null)
+  const [newFileUrl, setNewFileUrl] = useState<string | null>(null)
+  const [removeFichier, setRemoveFichier] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const { data: typeDocs } = useQuery<RefFilDocType[]>({
+    queryKey: ['ref-fil-types-doc'],
+    queryFn: () => apiFetch('/references-fil/lookups/types-doc'),
+    enabled: open,
+    staleTime: Infinity,
+  })
+
+  // Reset the form whenever the dialog opens (or the target doc changes).
+  useEffect(() => {
+    if (!open) return
+    setNom(doc?.nom ?? '')
+    setIdTypeDoc(doc?.IDtype_doc ?? 0)
+    setCommentaire(doc?.commentaire ?? '')
+    setNewFile(null)
+    if (newFileUrl) URL.revokeObjectURL(newFileUrl)
+    setNewFileUrl(null)
+    setRemoveFichier(false)
+    setError(null)
+    setIsSaving(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, doc?.IDged])
+
+  // A new document defaults to « Fiche technique » (the first type).
+  useEffect(() => {
+    if (open && isNew && idTypeDoc === 0 && typeDocs?.length) setIdTypeDoc(typeDocs[0].IDtype_doc)
+  }, [open, isNew, idTypeDoc, typeDocs])
+
+  // Clean up the blob URL when the dialog closes.
+  useEffect(() => {
+    if (!open && newFileUrl) {
+      URL.revokeObjectURL(newFileUrl)
+      setNewFileUrl(null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  const handleFilePick = (f: File) => {
+    if (newFileUrl) URL.revokeObjectURL(newFileUrl)
+    setNewFile(f)
+    setNewFileUrl(URL.createObjectURL(f))
+    setRemoveFichier(false)
+    // Name the document after its file unless the user already typed one.
+    if (!nom.trim()) setNom(f.name)
+  }
+
+  const handleRemoveFile = () => {
+    if (newFileUrl) URL.revokeObjectURL(newFileUrl)
+    setNewFile(null)
+    setNewFileUrl(null)
+    setRemoveFichier(true)
+  }
+
+  const handleSave = async () => {
+    if (isNew && !newFile) {
+      setError('Choisissez un fichier.')
+      return
+    }
+    setError(null)
+    setIsSaving(true)
+    try {
+      const formData = new FormData()
+      formData.append('nom', nom)
+      formData.append('commentaire', commentaire)
+      formData.append('IDtype_doc', String(idTypeDoc))
+      if (newFile) formData.append('fichier', newFile)
+      if (removeFichier && !newFile) formData.append('remove_fichier', '1')
+
+      const url = isNew
+        ? `${API_URL}/references-fil/${refFilId}/documents`
+        : `${API_URL}/references-fil/${refFilId}/documents/${doc!.IDged}`
+      // Raw fetch: apiFetch forces JSON, which would clobber the multipart boundary.
+      const res = await fetch(url, { method: isNew ? 'POST' : 'PUT', body: formData, credentials: 'include' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(body?.error || `Erreur HTTP ${res.status}`)
+      }
+      onSuccess()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Erreur inconnue')
+      setIsSaving(false)
+    }
+  }
+
+  // Preview: the freshly picked file, else the stored blob, else nothing.
+  const previewUrl = newFileUrl
+    ? newFileUrl
+    : !isNew && !removeFichier && doc
+      ? `${API_URL}/references-fil/${refFilId}/documents/${doc.IDged}/fichier#view=FitH`
+      : null
+
+  if (!open) return null
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-5xl h-[85vh] flex flex-col" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FileText className="h-4 w-4 text-accent" />
+            {isNew ? 'Ajouter un document' : 'Modifier le document'}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0 flex gap-4">
+          {/* Left: form fields */}
+          <div className="w-80 flex-shrink-0 overflow-y-auto space-y-3 px-1">
+            <LabeledInput label="Nom" value={nom} onChange={setNom} placeholder="Nom du fichier par défaut" />
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Type de document</label>
+              <PopoverSelect
+                options={(typeDocs ?? []).map((t) => ({ id: t.IDtype_doc, primary: t.nom }))}
+                value={idTypeDoc}
+                onChange={setIdTypeDoc}
+                hideEmpty
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
+              <textarea
+                value={commentaire}
+                onChange={(e) => setCommentaire(e.target.value)}
+                rows={4}
+                placeholder="Prix, délai, MOQ…"
+                className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+              />
+            </div>
+            {!!error && (
+              <div className="flex items-start gap-1.5 text-xs text-destructive">
+                <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                <span className="break-all">{error}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Right: viewer + file controls + action buttons */}
+          <div className="flex-1 min-w-0 flex flex-col gap-2">
+            <div className="flex-1 min-h-0 rounded-lg border border-border/60 bg-zinc-50 overflow-hidden">
+              {previewUrl ? (
+                <iframe src={previewUrl} className="w-full h-full" title="Document" />
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-muted-foreground">
+                  <FileText className="h-12 w-12 mb-2 opacity-30" />
+                  <p className="text-sm">Aucun fichier</p>
+                  <p className="text-[11px]">Choisissez un fichier ci-dessous</p>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  className="hidden"
+                  /* No `accept` filter: any file type (PDF, image, Excel…). */
+                  onClick={(e) => { (e.target as HTMLInputElement).value = '' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) handleFilePick(f)
+                  }}
+                />
+                <span className={cn(inputClass, 'inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/5 w-auto px-3')}>
+                  <Upload className="h-3.5 w-3.5" />
+                  {newFile ? newFile.name : 'Choisir un fichier'}
+                </span>
+              </label>
+              {(newFile || (!isNew && !removeFichier && doc)) && (
+                <Button variant="ghost" size="sm" className="h-8 px-2" onClick={handleRemoveFile} title="Retirer le fichier">
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <div className="flex items-center gap-2 ml-auto">
+                <Button variant="outline" size="sm" onClick={onClose} disabled={isSaving}>Annuler</Button>
+                <Button size="sm" onClick={handleSave} disabled={isSaving}>
+                  {isSaving && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+                  <Save className="h-3.5 w-3.5 mr-1.5" />
+                  Enregistrer
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function DocViewDialog({
+  refFilId, doc, onClose,
+}: { refFilId: number; doc: RefFilDocument | null; onClose: () => void }) {
+  const [fichierOk, setFichierOk] = useState<boolean | null>(null)
+
+  // HEAD pre-check: an empty blob answers 404 and must not open a blank iframe.
+  useEffect(() => {
+    if (!doc) { setFichierOk(null); return }
+    setFichierOk(null)
+    fetch(`${API_URL}/references-fil/${refFilId}/documents/${doc.IDged}/fichier`, {
+      method: 'HEAD',
+      credentials: 'include',
+    })
+      .then((r) => setFichierOk(r.ok))
+      .catch(() => setFichierOk(false))
+  }, [doc?.IDged, refFilId])
+
+  if (!doc) return null
+
+  return (
+    <Dialog open={!!doc} onOpenChange={() => onClose()}>
+      {fichierOk ? (
+        <div className="relative z-50 w-[60vw] max-w-3xl h-[95vh]" onClick={(e) => e.stopPropagation()}>
+          <iframe
+            src={`${API_URL}/references-fil/${refFilId}/documents/${doc.IDged}/fichier#view=FitH`}
+            className="w-full h-full rounded-lg"
+            title={docTitle(doc)}
+          />
+        </div>
+      ) : (
+        <DialogContent className="max-w-sm" onClose={onClose}>
+          <div className="flex items-center justify-center py-8 text-muted-foreground">
+            <div className="text-center space-y-2">
+              <FileText className="h-12 w-12 mx-auto opacity-30" />
+              <p className="text-sm">{fichierOk === null ? 'Chargement...' : 'Aucun document attaché'}</p>
+            </div>
+          </div>
+        </DialogContent>
+      )}
+    </Dialog>
   )
 }

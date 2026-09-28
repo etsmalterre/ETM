@@ -1,10 +1,20 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
-import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import multer from 'multer'
+import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { pickVal, stripKeys } from './stock.js'
 import { aggregateStockFilRows, resteALivrer } from '../lib/references-fil-agg.js'
+import {
+  REF_FIL_DOC_TYPES,
+  REF_FIL_DOC_TYPES_SQL,
+  DEFAULT_REF_FIL_DOC_TYPE,
+  ensureRefFilDocTypes,
+  isRefFilDocType,
+  refFilDocTypeLabel,
+} from '../lib/ref-fil-documents.js'
 
 export const referencesFilRouter: RouterType = Router()
+const upload = multer({ storage: multer.memoryStorage() })
 
 // ref_fil.recyclé and every asso_fil_matiere column is accented. Follow the
 // stock.ts pattern: branch on platform for writes, normalise reads via a
@@ -744,6 +754,15 @@ referencesFilRouter.delete('/:id', async (req: Request, res: Response) => {
       res.status(409).json({ error: 'Cette référence est utilisée par des commandes en cours ou passées.' })
       return
     }
+    // Guard: no attached documents (a supplier's fiche technique is not
+    // deleted as a side effect — the user removes it from the Documents tab).
+    const docs = await query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM ged WHERE IDreference = ${id} AND IDtype_doc IN (${REF_FIL_DOC_TYPES_SQL})`,
+    )
+    if (Number(docs[0]?.n ?? 0) > 0) {
+      res.status(409).json({ error: 'Cette référence possède encore des documents.' })
+      return
+    }
     await query(`DELETE FROM ref_fil WHERE IDref_fil = ${id}`)
     res.json({ ok: true })
   } catch (err) {
@@ -1244,3 +1263,175 @@ referencesFilRouter.delete('/:id/compositions/:assoId', async (req: Request, res
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+// ── Documents (GED) ─────────────────────────────────────
+//
+// Fiche technique, certificats… of the yarn itself. Rows live in `ged` with
+// IDreference = IDref_fil under the ref-fil-only types of
+// lib/ref-fil-documents.ts; every read and write is scoped by BOTH the id and
+// those types, so an IDged of another parent is a 404 here.
+
+const REF_FIL_DOC_SCOPE = (id: number) =>
+  `IDreference = ${id} AND IDtype_doc IN (${REF_FIL_DOC_TYPES_SQL})
+   AND IDcommande_client = 0 AND IDcommande_sous_traitant = 0`
+
+async function refFilDocExists(id: number, idged: number): Promise<boolean> {
+  const rows = await query(`SELECT IDged FROM ged WHERE IDged = ${idged} AND ${REF_FIL_DOC_SCOPE(id)}`)
+  return rows.length > 0
+}
+
+function parseDocType(raw: unknown): number | null {
+  const n = parseInt(String(raw ?? ''), 10)
+  if (isNaN(n) || n === 0) return DEFAULT_REF_FIL_DOC_TYPE
+  return isRefFilDocType(n) ? n : null
+}
+
+referencesFilRouter.get('/lookups/types-doc', (_req: Request, res: Response) => {
+  res.json(REF_FIL_DOC_TYPES.map((t) => ({ IDtype_doc: t.IDtype_doc, nom: t.libelle })))
+})
+
+referencesFilRouter.get('/:id/documents', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const rows = await query<{ IDged: number; nom: string | null; commentaire: string | null; IDtype_doc: number }>(
+      `SELECT IDged, nom, commentaire, IDtype_doc FROM ged WHERE ${REF_FIL_DOC_SCOPE(id)} ORDER BY IDged DESC`,
+    )
+    const fixed = await fixEncoding(rows, 'ged', 'IDged', ['nom', 'commentaire'])
+    res.json(fixed.map((r) => ({
+      IDged: r.IDged,
+      nom: r.nom,
+      commentaire: r.commentaire,
+      IDtype_doc: r.IDtype_doc,
+      type_nom: refFilDocTypeLabel(Number(r.IDtype_doc)),
+    })))
+  } catch (err) {
+    console.error('Error listing ref_fil documents:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+referencesFilRouter.get('/:id/documents/:idged/fichier', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const idged = parseInt(req.params.idged, 10)
+    if (isNaN(id) || isNaN(idged)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+    const rows = await queryRaw(`SELECT fichier FROM ged WHERE IDged = ${idged} AND ${REF_FIL_DOC_SCOPE(id)}`)
+    if (rows.length === 0) { res.status(404).json({ error: 'Document not found' }); return }
+    const fichier = rows[0].fichier
+    let buf: Buffer
+    if (fichier instanceof ArrayBuffer) buf = Buffer.from(fichier)
+    else if (Buffer.isBuffer(fichier)) buf = fichier
+    else { res.status(404).json({ error: 'No file attached' }); return }
+    // BinMemo IS NOT NULL is unreliable: an empty blob is a 404 so the UI's
+    // HEAD pre-check can hide the viewer.
+    if (buf.length === 0 || (buf.length === 1 && buf[0] === 0)) {
+      res.status(404).json({ error: 'No file attached' }); return
+    }
+
+    let contentType = 'application/octet-stream'
+    if (buf.length >= 4) {
+      const h = buf.subarray(0, 4)
+      if (h[0] === 0x25 && h[1] === 0x50 && h[2] === 0x44 && h[3] === 0x46) contentType = 'application/pdf'
+      else if (h[0] === 0x89 && h[1] === 0x50 && h[2] === 0x4E && h[3] === 0x47) contentType = 'image/png'
+      else if (h[0] === 0xFF && h[1] === 0xD8) contentType = 'image/jpeg'
+    }
+    res.setHeader('Content-Type', contentType)
+    res.setHeader('Content-Disposition', 'inline')
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.end(buf)
+  } catch (err) {
+    console.error('Error serving ref_fil document:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /:id/documents — multipart (nom, commentaire, IDtype_doc, fichier).
+// Metadata INSERT first, then the blob as a hex literal (no binary parameters).
+referencesFilRouter.post('/:id/documents', upload.single('fichier'), async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const typeDoc = parseDocType(req.body.IDtype_doc)
+    if (typeDoc === null) { res.status(400).json({ error: 'Type de document invalide' }); return }
+
+    const ref = await query(`SELECT IDref_fil FROM ref_fil WHERE IDref_fil = ${id}`)
+    if (ref.length === 0) { res.status(404).json({ error: 'Référence introuvable' }); return }
+
+    await ensureRefFilDocTypes()
+    const nom = (req.body.nom ?? '').toString().trim() || fileName(req.file)
+    await query(
+      `INSERT INTO ged (nom, commentaire, IDtype_doc, IDreference, IDcommande_client, IDcommande_sous_traitant, IDdossier)
+       VALUES (${sqlText(nom)}, ${sqlText((req.body.commentaire ?? '').toString())}, ${typeDoc}, ${id}, 0, 0, 0)`,
+    )
+    // No RETURNING: the newest row of this ref under this type is ours.
+    const newRows = await query<{ IDged: number }>(
+      `SELECT IDged FROM ged WHERE ${REF_FIL_DOC_SCOPE(id)} AND IDtype_doc = ${typeDoc} ORDER BY IDged DESC`,
+    )
+    if (newRows.length === 0) { res.status(500).json({ error: 'Insert lookup failed' }); return }
+    const newId = Number(newRows[0].IDged)
+
+    if (req.file && req.file.buffer.length > 0) {
+      await queryRaw(`UPDATE ged SET fichier = x'${req.file.buffer.toString('hex')}' WHERE IDged = ${newId}`)
+    }
+    res.status(201).json({ IDged: newId })
+  } catch (err) {
+    console.error('Error creating ref_fil document:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /:id/documents/:idged — metadata + optional file replace;
+// `remove_fichier=1` without a file clears the blob.
+referencesFilRouter.put('/:id/documents/:idged', upload.single('fichier'), async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const idged = parseInt(req.params.idged, 10)
+    if (isNaN(id) || isNaN(idged)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await refFilDocExists(id, idged))) { res.status(404).json({ error: 'Document not found' }); return }
+
+    const sets: string[] = []
+    if (req.body.nom !== undefined) sets.push(`nom = ${sqlText(String(req.body.nom))}`)
+    if (req.body.commentaire !== undefined) sets.push(`commentaire = ${sqlText(String(req.body.commentaire))}`)
+    if (req.body.IDtype_doc !== undefined) {
+      const typeDoc = parseDocType(req.body.IDtype_doc)
+      if (typeDoc === null) { res.status(400).json({ error: 'Type de document invalide' }); return }
+      sets.push(`IDtype_doc = ${typeDoc}`)
+    }
+    if (sets.length > 0) await query(`UPDATE ged SET ${sets.join(', ')} WHERE IDged = ${idged}`)
+
+    if (req.file && req.file.buffer.length > 0) {
+      await queryRaw(`UPDATE ged SET fichier = x'${req.file.buffer.toString('hex')}' WHERE IDged = ${idged}`)
+    } else if (req.body.remove_fichier === '1') {
+      await query(`UPDATE ged SET fichier = NULL WHERE IDged = ${idged}`)
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error updating ref_fil document:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+referencesFilRouter.delete('/:id/documents/:idged', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const idged = parseInt(req.params.idged, 10)
+    if (isNaN(id) || isNaN(idged)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await refFilDocExists(id, idged))) { res.status(404).json({ error: 'Document not found' }); return }
+    await query(`DELETE FROM ged WHERE IDged = ${idged}`)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error deleting ref_fil document:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** Default document name: the uploaded file's name. multer decodes the
+ *  multipart filename as Latin-1; browsers send UTF-8, so re-decode it. */
+function fileName(file: Express.Multer.File | undefined): string {
+  if (!file?.originalname) return ''
+  return Buffer.from(file.originalname, 'latin1').toString('utf8')
+}
