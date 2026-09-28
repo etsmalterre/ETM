@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Activity,
   AlertCircle,
   ArrowLeft,
   Bot,
@@ -47,9 +48,14 @@ import { cn } from '@/lib/utils'
 import {
   COULEURS,
   etatAuto,
+  fmtDuree,
   fmtHeures,
+  fmtMinutes,
+  fmtVolume,
   formatDateFr,
   initiales,
+  kpiTache,
+  pluriel,
   noteDe,
   nomComplet,
   photoUrl,
@@ -59,6 +65,7 @@ import {
   type EtatAuto,
   type EvolutionResponse,
   type Indicateur,
+  type KpiTache,
   type TacheActuelle,
   type TacheCharge,
   type TotauxCharge,
@@ -67,29 +74,43 @@ import {
 const inputClass = 'w-full h-8 px-2.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring'
 const editSectionClass = 'border-l-4 border-l-accent/70 bg-accent/[0.03]'
 
-/** One row of the editor: a number and its unit (h / semaine, or minutes per
- *  unit of an ETM indicator), an automation state, a note. */
+/** How a row counts its time: hours typed (forfait), or minutes per unit ×
+ *  a weekly volume — measured in ETM (etm) or typed (estime). */
+type ModeLigne = 'forfait' | 'etm' | 'estime'
+
+/** One row of the editor: the same three figures on every row — minutes per
+ *  unit × units per week — or hours for a forfait, an automation state, a note. */
 interface LigneDraft {
   uid: number
   base: TacheCharge
   nom: string
+  /** Hours per week on a forfait, minutes per unit otherwise. */
   valeur: string
-  /** '' = h / semaine, else an indicator key */
-  unite: string
+  mode: ModeLigne
+  /** mode etm: the indicator key */
+  indicateur: string
+  /** mode estime: the unit, singular, and the units per week */
+  uniteLibre: string
+  volume: string
   etat: EtatAuto
   note: string
 }
 
 let nextUid = 1
 
+const enTexte = (n: number) => String(n).replace('.', ',')
+
 function versDraft(t: TacheActuelle): LigneDraft {
-  const mesuree = !!t.indicateur && !!t.minutesParUnite
+  const mode: ModeLigne = t.indicateur && t.minutesParUnite ? 'etm' : t.minutesParUnite && t.volumeSaisi != null ? 'estime' : 'forfait'
   return {
     uid: nextUid++,
     base: t,
     nom: t.nom,
-    valeur: String(mesuree ? t.minutesParUnite : round1(t.heuresActuelles)).replace('.', ','),
-    unite: mesuree ? t.indicateur! : '',
+    valeur: enTexte(mode === 'forfait' ? round1(t.heuresActuelles) : t.minutesParUnite!),
+    mode,
+    indicateur: mode === 'etm' ? t.indicateur! : '',
+    uniteLibre: mode === 'estime' ? t.unite : '',
+    volume: mode === 'estime' ? enTexte(t.volumeSaisi!) : '',
     etat: etatAuto(t),
     note: noteDe(t),
   }
@@ -97,6 +118,7 @@ function versDraft(t: TacheActuelle): LigneDraft {
 
 const nombre = (s: string) => Number(s.replace(',', '.')) || 0
 const round1 = (h: number) => Math.round(h * 10) / 10
+const round2 = (h: number) => Math.round(h * 100) / 100
 
 /** Current weekly volume per indicator, read off the measured tasks on screen. */
 function volumesDe(taches: TacheActuelle[]): Map<string, number> {
@@ -106,11 +128,15 @@ function volumesDe(taches: TacheActuelle[]): Map<string, number> {
 }
 
 function versTache(l: LigneDraft, volumes: Map<string, number>): TacheCharge {
-  const mesuree = l.unite !== ''
   const minutes = nombre(l.valeur)
-  // A measured task keeps, as its relevé value, the hours it measures today.
-  const vol = mesuree ? volumes.get(l.unite) : undefined
-  const heures = mesuree ? (vol != null ? Math.round((minutes * vol / 60) * 100) / 100 : l.base.heures) : nombre(l.valeur)
+  let heures = nombre(l.valeur)
+  if (l.mode === 'etm') {
+    // A measured task keeps, as its relevé value, the hours it measures today.
+    const vol = volumes.get(l.indicateur)
+    heures = vol != null ? round2((minutes * vol) / 60) : l.base.heures
+  } else if (l.mode === 'estime') {
+    heures = round2((minutes * nombre(l.volume)) / 60)
+  }
   return {
     nom: l.nom.trim(),
     description: l.note.trim(),
@@ -120,14 +146,17 @@ function versTache(l: LigneDraft, volumes: Map<string, number>): TacheCharge {
     automatise: l.etat === 'automatise',
     // « — » keeps what the spreadsheet said (partiel / à évaluer / non).
     automatisable: l.etat ? 'oui' : l.base.automatisable === 'oui' ? 'non' : l.base.automatisable,
-    indicateur: mesuree ? l.unite : null,
-    minutesParUnite: mesuree ? minutes : null,
+    indicateur: l.mode === 'etm' ? l.indicateur : null,
+    minutesParUnite: l.mode === 'forfait' ? null : minutes,
+    volumeSaisi: l.mode === 'estime' ? nombre(l.volume) : null,
+    unite: l.mode === 'estime' ? l.uniteLibre.trim() : '',
   }
 }
 
 const LIGNE_VIDE: TacheActuelle = {
   nom: '', description: '', methode: '', heures: 0, automatisable: 'inconnu', automatise: false,
-  categorie: 'tache', indicateur: null, minutesParUnite: null, heuresActuelles: 0, volumeHebdo: null,
+  categorie: 'tache', indicateur: null, minutesParUnite: null, volumeSaisi: null, unite: '',
+  heuresActuelles: 0, volumeHebdo: null,
 }
 
 const PERIODES = [
@@ -284,12 +313,12 @@ function RhChargeScreen() {
               {isEditing ? (
                 <>
                   <SemaineCard totaux={totauxEdition} contrat={employe.heuresContrat} isEditing />
-                  <EditeurTaches lignes={lignes} setLignes={setLignes} indicateurs={indicateurs ?? []} />
+                  <EditeurTaches lignes={lignes} setLignes={setLignes} indicateurs={indicateurs ?? []} volumes={volumes} />
                 </>
               ) : version ? (
                 <>
                   <SemaineCard totaux={version.totaux} contrat={employe.heuresContrat} />
-                  <TachesCard taches={version.taches} indicateurs={indicateurs ?? []} actuelle={version.actuelle} />
+                  <TachesCard taches={version.taches} indicateurs={indicateurs ?? []} actuelle={version.actuelle} dateReleve={version.dateReleve} />
                   <EvolutionCard employe={employe} nbReleves={charge?.versions.length ?? 0} onHistorique={() => setHistoriqueOpen(true)} />
                 </>
               ) : (
@@ -434,14 +463,84 @@ function EtatIcone({ etat }: { etat: EtatAuto }) {
   return <span className="h-4 w-4" />
 }
 
-function formule(t: TacheActuelle, indicateurs: Indicateur[]): string | null {
-  if (!t.indicateur || !t.minutesParUnite || t.volumeHebdo == null) return null
-  const unite = indicateurs.find((i) => i.cle === t.indicateur)?.unite ?? 'unité'
-  const vol = fmtNum(t.volumeHebdo, t.volumeHebdo % 1 ? 1 : 0)
-  return `${fmtNum(t.minutesParUnite, t.minutesParUnite % 1 ? 1 : 0)} min × ${vol} ${unite}${t.volumeHebdo >= 2 ? 's' : ''} / sem.`
+/** « 10 min × 8 commandes / sem. » — the row's one-line formula. */
+function formule(k: KpiTache): string {
+  return `${fmtMinutes(k.minutes)} × ${fmtVolume(k.volume)} ${pluriel(k.unite, k.volume)} / sem.`
 }
 
-function TachesCard({ taches, indicateurs, actuelle }: { taches: TacheActuelle[]; indicateurs: Indicateur[]; actuelle: boolean }) {
+function KpiTuile({ valeur, legende, children, bordure }: {
+  valeur: string
+  legende: string
+  children?: React.ReactNode
+  /** Result tile: a left edge in the task's bar colour. */
+  bordure?: string
+}) {
+  return (
+    <div
+      className={cn('rounded-md border border-border/60 bg-white px-3 py-2 min-w-[7.5rem] shadow-sm', bordure && 'border-l-4')}
+      style={bordure ? { borderLeftColor: bordure } : undefined}
+    >
+      <p className="text-lg font-semibold tabular-nums leading-tight">{valeur}</p>
+      <p className="text-[11px] text-muted-foreground">{legende}</p>
+      {children}
+    </div>
+  )
+}
+
+const Operateur = ({ children }: { children: string }) => (
+  <span className="self-center text-lg text-muted-foreground/70 px-0.5" aria-hidden>{children}</span>
+)
+
+/** The pane under a task: its three figures, then what it covers and how it was estimated. */
+function DetailTache({ t, kpi, couleur, dateReleve }: { t: TacheActuelle; kpi: KpiTache | null; couleur: string; dateReleve: string }) {
+  // A measured task also shows the volume its relevé was typed with, when it differs.
+  const volumeReleve = kpi?.source === 'etm' ? (t.heures * 60) / kpi.minutes : null
+  const ecart = volumeReleve != null && kpi && Math.abs(volumeReleve - kpi.volume) >= 0.5
+  return (
+    <div className="mx-2 mb-2 mt-0.5 rounded-md bg-zinc-100/80 border border-border/60 p-3 space-y-3">
+      <div className="flex flex-wrap items-stretch gap-2">
+        {kpi ? (
+          <>
+            <KpiTuile valeur={fmtMinutes(kpi.minutes)} legende={`par ${kpi.unite}`} />
+            <Operateur>×</Operateur>
+            <KpiTuile valeur={`${fmtVolume(kpi.volume)} ${pluriel(kpi.unite, kpi.volume)}`} legende="par semaine">
+              {kpi.source === 'etm' ? (
+                <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-accent-blue" title="Moyenne des 4 dernières semaines complètes">
+                  <Activity className="h-3 w-3" />mesuré dans ETM
+                </p>
+              ) : (
+                <p className="mt-1 text-[11px] italic text-muted-foreground">{kpi.source === 'estime' ? 'estimé' : 'au relevé'}</p>
+              )}
+              {ecart && (
+                <p className="text-[11px] text-muted-foreground">relevé du {formatDateFr(dateReleve)} : {fmtVolume(volumeReleve!)}</p>
+              )}
+            </KpiTuile>
+            <Operateur>=</Operateur>
+            <KpiTuile valeur={fmtDuree(kpi.minutesSemaine)} legende="par semaine" bordure={couleur} />
+          </>
+        ) : (
+          <>
+            <KpiTuile valeur={fmtDuree(t.heuresActuelles * 60)} legende="par semaine · forfait" bordure={couleur} />
+            <p className="self-center text-xs text-muted-foreground max-w-sm">Temps fixe : la tâche n’a pas d’unité que l’on puisse compter.</p>
+          </>
+        )}
+      </div>
+      {t.description.trim() ? (
+        <p className="text-sm whitespace-pre-line">{t.description.trim()}</p>
+      ) : !t.methode.trim() && (
+        <p className="text-sm italic text-muted-foreground">Pas de note</p>
+      )}
+      {t.methode.trim() && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wide font-semibold text-muted-foreground">Estimation</p>
+          <p className="text-xs text-muted-foreground whitespace-pre-line mt-0.5">{t.methode.trim()}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TachesCard({ taches, indicateurs, actuelle, dateReleve }: { taches: TacheActuelle[]; indicateurs: Indicateur[]; actuelle: boolean; dateReleve: string }) {
   const [ouverte, setOuverte] = useState<string | null>(null)
   const triees = useMemo(() => [...taches].sort((a, b) => b.heuresActuelles - a.heuresActuelles), [taches])
   const max = Math.max(...triees.map((t) => t.heuresActuelles), 0.1)
@@ -451,14 +550,15 @@ function TachesCard({ taches, indicateurs, actuelle }: { taches: TacheActuelle[]
       <CardHeader className="flex flex-row items-center gap-2 pb-2 space-y-0">
         <ListChecks className="h-4 w-4 text-accent" />
         <CardTitle className="text-sm font-semibold">Tâches</CardTitle>
-        <span className="ml-auto text-xs text-muted-foreground">heures par semaine</span>
+        <span className="ml-auto text-xs text-muted-foreground">temps par semaine</span>
       </CardHeader>
       <CardContent className="space-y-0.5">
         {triees.map((t) => {
-          const f = actuelle ? formule(t, indicateurs) : null
-          const note = noteDe(t)
+          const kpi = kpiTache(t, indicateurs, actuelle)
+          const f = kpi ? formule(kpi) : 'forfait'
           const open = ouverte === t.nom
           const etat = etatAuto(t)
+          const couleur = etat ? COULEURS[etat] : COULEURS.taches
           return (
             <div key={t.nom}>
               <button
@@ -471,25 +571,23 @@ function TachesCard({ taches, indicateurs, actuelle }: { taches: TacheActuelle[]
               >
                 <span className="text-sm truncate" title={t.nom}>{t.nom}</span>
                 <span className="h-2.5 rounded-full bg-zinc-100 overflow-hidden">
-                  <span className="block h-full rounded-full" style={{ width: `${(t.heuresActuelles / max) * 100}%`, background: etat ? COULEURS[etat] : COULEURS.taches }} />
+                  <span className="block h-full rounded-full" style={{ width: `${(t.heuresActuelles / max) * 100}%`, background: couleur }} />
                 </span>
-                <span className="text-sm text-right tabular-nums font-medium">{fmtHeures(round1(t.heuresActuelles))}</span>
-                <span className="hidden lg:block text-xs text-muted-foreground truncate" title={f ?? undefined}>{f}</span>
+                <span className="text-sm text-right tabular-nums font-medium whitespace-nowrap">{fmtDuree(t.heuresActuelles * 60)}</span>
+                <span className={cn('hidden lg:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground', !kpi && 'italic')} title={f}>
+                  {kpi?.source === 'etm' && <Activity className="h-3 w-3 flex-shrink-0 text-accent-blue" />}
+                  <span className="truncate">{f}</span>
+                </span>
                 <EtatIcone etat={etat} />
               </button>
-              {open && (
-                <div className="mx-2 mb-2 mt-0.5 rounded-md bg-zinc-100/80 border border-border/60 px-3 py-2 text-xs space-y-1">
-                  {f && <p className="lg:hidden text-muted-foreground">{f}</p>}
-                  <p className="whitespace-pre-line">{note || <span className="italic text-muted-foreground">Pas de note</span>}</p>
-                </div>
-              )}
+              {open && <DetailTache t={t} kpi={kpi} couleur={couleur} dateReleve={dateReleve} />}
             </div>
           )
         })}
         <div className="flex flex-wrap gap-x-4 gap-y-1 pt-2 mt-1 border-t border-border/50 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1.5"><Bot className="h-3.5 w-3.5" style={{ color: COULEURS.aAutomatiser }} />à automatiser</span>
           <span className="inline-flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5" style={{ color: COULEURS.automatise }} />automatisé</span>
-          <span>« min × … » : temps calculé sur l’activité réelle des 4 dernières semaines</span>
+          <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5 text-accent-blue" />volume mesuré dans ETM (4 dernières semaines) ; sinon estimé</span>
         </div>
       </CardContent>
     </Card>
@@ -504,14 +602,33 @@ const ETATS: Array<{ id: number; etat: EtatAuto; primary: string }> = [
   { id: 3, etat: 'automatise', primary: 'Automatisé' },
 ]
 
-function EditeurTaches({ lignes, setLignes, indicateurs }: {
+const GRILLE_EDITEUR = 'md:grid-cols-[1fr_4.5rem_11rem_5.5rem_4rem_9rem_3.5rem]'
+
+function EditeurTaches({ lignes, setLignes, indicateurs, volumes }: {
   lignes: LigneDraft[]
   setLignes: React.Dispatch<React.SetStateAction<LigneDraft[]>>
   indicateurs: Indicateur[]
+  volumes: Map<string, number>
 }) {
   const [ouverte, setOuverte] = useState<number | null>(null)
   const patch = (uid: number, p: Partial<LigneDraft>) => setLignes((ls) => ls.map((l) => (l.uid === uid ? { ...l, ...p } : l)))
-  const unites = [{ id: 0, primary: 'h / semaine' }, ...indicateurs.map((i, k) => ({ id: k + 1, primary: `min par ${i.unite}`, description: i.label }))]
+  // 1 = forfait, 2..n+1 = an ETM indicator, n + 2 = a unit of one's own (volume
+  // typed). Never 0: PopoverSelect reads 0 as « nothing selected ».
+  const idForfait = 1
+  const idAutre = indicateurs.length + 2
+  const unites = [
+    { id: idForfait, primary: 'h / semaine', description: 'Forfait : la tâche n’a pas d’unité à compter' },
+    ...indicateurs.map((i, k) => ({ id: k + 2, primary: `min par ${i.unite}`, description: `${i.label} — volume mesuré dans ETM` })),
+    { id: idAutre, primary: 'min par … (autre unité)', description: 'Volume estimé, saisi à la main' },
+  ]
+  const choisirUnite = (l: LigneDraft, id: number) => {
+    if (id === idForfait) patch(l.uid, { mode: 'forfait', indicateur: '' })
+    else if (id === idAutre) patch(l.uid, { mode: 'estime', indicateur: '' })
+    else patch(l.uid, { mode: 'etm', indicateur: indicateurs[id - 2].cle })
+  }
+  const numerique = (uid: number, champ: 'valeur' | 'volume') => (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (/^\d*[.,]?\d*$/.test(e.target.value)) patch(uid, { [champ]: e.target.value })
+  }
 
   return (
     <Card className={cn('card-premium', editSectionClass)}>
@@ -521,30 +638,66 @@ function EditeurTaches({ lignes, setLignes, indicateurs }: {
         <span className="ml-auto text-xs text-muted-foreground">Enregistrer garde la charge d’avant dans l’historique</span>
       </CardHeader>
       <CardContent className="space-y-1.5">
-        <div className="hidden md:grid grid-cols-[1fr_5rem_11rem_9rem_3.5rem] gap-2 px-1 text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">
-          <span>Tâche</span><span className="text-right">Temps</span><span>Unité</span><span>Automatisation</span><span />
+        <div className={cn('hidden md:grid gap-2 px-1 text-[11px] uppercase tracking-wide text-muted-foreground font-semibold', GRILLE_EDITEUR)}>
+          <span>Tâche</span><span className="text-right">Temps</span><span>Unité</span>
+          <span className="text-right">Volume / sem.</span><span className="text-right">Charge</span><span>Automatisation</span><span />
         </div>
         {lignes.map((l) => {
           const open = ouverte === l.uid
-          const uniteId = l.unite ? indicateurs.findIndex((i) => i.cle === l.unite) + 1 : 0
+          const uniteId = l.mode === 'forfait' ? idForfait : l.mode === 'estime' ? idAutre : indicateurs.findIndex((i) => i.cle === l.indicateur) + 2
+          const volEtm = l.mode === 'etm' ? volumes.get(l.indicateur) : undefined
+          const heures = versTache(l, volumes).heures
           return (
             <div key={l.uid} className="group rounded-md">
-              <div className="grid grid-cols-1 md:grid-cols-[1fr_5rem_11rem_9rem_3.5rem] gap-2 items-center">
+              <div className={cn('grid grid-cols-1 gap-2 items-center', GRILLE_EDITEUR)}>
                 <input className={inputClass} value={l.nom} placeholder="Nom de la tâche" onChange={(e) => patch(l.uid, { nom: e.target.value })} />
                 <input
                   className={cn(inputClass, 'text-right tabular-nums')}
                   inputMode="decimal"
                   value={l.valeur}
-                  onChange={(e) => { if (/^\d*[.,]?\d*$/.test(e.target.value)) patch(l.uid, { valeur: e.target.value }) }}
+                  title={l.mode === 'forfait' ? 'Heures par semaine' : 'Minutes par unité'}
+                  onChange={numerique(l.uid, 'valeur')}
                 />
-                <PopoverSelect
-                  size="sm"
-                  widthClass="w-full"
-                  hideEmpty
-                  value={uniteId}
-                  onChange={(id) => patch(l.uid, { unite: id === 0 ? '' : indicateurs[id - 1].cle })}
-                  options={unites}
-                />
+                {l.mode === 'estime' ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-muted-foreground flex-shrink-0">min par</span>
+                    <input
+                      className={inputClass}
+                      value={l.uniteLibre}
+                      placeholder="appel, lot…"
+                      onChange={(e) => patch(l.uid, { uniteLibre: e.target.value })}
+                    />
+                    <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" title="Choisir une autre unité" onClick={() => patch(l.uid, { mode: 'forfait' })}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ) : (
+                  <PopoverSelect
+                    size="sm"
+                    widthClass="w-full"
+                    hideEmpty
+                    value={uniteId}
+                    onChange={(id) => choisirUnite(l, id)}
+                    options={unites}
+                  />
+                )}
+                {l.mode === 'estime' ? (
+                  <input
+                    className={cn(inputClass, 'text-right tabular-nums')}
+                    inputMode="decimal"
+                    value={l.volume}
+                    placeholder="0"
+                    title="Unités par semaine (estimation)"
+                    onChange={numerique(l.uid, 'volume')}
+                  />
+                ) : l.mode === 'etm' ? (
+                  <span className="inline-flex items-center justify-end gap-1 text-sm tabular-nums text-muted-foreground" title="Mesuré dans ETM : moyenne des 4 dernières semaines">
+                    <Activity className="h-3 w-3 text-accent-blue" />{volEtm != null ? fmtVolume(volEtm) : '—'}
+                  </span>
+                ) : (
+                  <span className="text-sm text-right text-muted-foreground">—</span>
+                )}
+                <span className="text-sm text-right tabular-nums font-medium whitespace-nowrap">{fmtDuree(heures * 60)}</span>
                 <PopoverSelect
                   size="sm"
                   widthClass="w-full"
@@ -583,7 +736,8 @@ function EditeurTaches({ lignes, setLignes, indicateurs }: {
           <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter une tâche
         </Button>
         <p className="text-[11px] text-muted-foreground pt-1">
-          Unité « min par commande… » : le temps suit alors chaque mois l’activité réelle enregistrée dans ETM.
+          Chaque tâche se compte en minutes par unité × unités par semaine. Unité mesurée dans ETM (commande, lot…) : le volume suit l’activité réelle ;
+          « autre unité » : volume estimé, saisi à la main ; « h / semaine » : forfait, pour une tâche sans unité.
         </p>
       </CardContent>
     </Card>

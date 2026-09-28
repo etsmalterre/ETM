@@ -32,6 +32,10 @@ export interface TacheCharge {
   categorie: Categorie
   indicateur: string | null
   minutesParUnite: number | null
+  /** Estimated task: units per week, typed. */
+  volumeSaisi: number | null
+  /** Estimated task: its unit, singular. */
+  unite: string
 }
 
 export interface TotauxCharge {
@@ -222,6 +226,66 @@ export const COULEURS = {
   automatise: '#17915B',
   nonAttribue: '#E4E4E7',
 } as const
+
+// ── The task's figures: min / unité × unités / sem. ─────
+
+export interface KpiTache {
+  /** Minutes per unit. */
+  minutes: number
+  /** Unit, singular. */
+  unite: string
+  /** Units per week. */
+  volume: number
+  /** etm = measured now (4 last weeks), estime = typed, releve = implied by an old relevé's hours. */
+  source: 'etm' | 'estime' | 'releve'
+  minutesSemaine: number
+}
+
+/** A forfait (hours only) has no figures: null. */
+export function kpiTache(
+  t: TacheActuelle,
+  indicateurs: Indicateur[],
+  actuelle: boolean,
+): KpiTache | null {
+  const minutes = t.minutesParUnite
+  if (!minutes || minutes <= 0) return null
+  if (t.indicateur) {
+    const unite = indicateurs.find((i) => i.cle === t.indicateur)?.unite ?? 'unité'
+    const mesure = actuelle && t.volumeHebdo != null
+    const volume = mesure ? t.volumeHebdo! : (t.heures * 60) / minutes
+    return { minutes, unite, volume, source: mesure ? 'etm' : 'releve', minutesSemaine: minutes * volume }
+  }
+  if (t.volumeSaisi == null) return null
+  return { minutes, unite: t.unite || 'unité', volume: t.volumeSaisi, source: 'estime', minutesSemaine: minutes * t.volumeSaisi }
+}
+
+/** 10 → « 10 min », 0,5 → « 30 s ». */
+export function fmtMinutes(m: number): string {
+  if (m < 1) return `${Math.round(m * 60)} s`
+  return `${fmtNum(m, m % 1 ? 1 : 0)} min`
+}
+
+/** 8 → « 8 », 8,33 → « 8,3 », 0,25 → « 0,25 ». */
+export function fmtVolume(v: number): string {
+  const r = Math.round(v * 100) / 100
+  return fmtNum(r, r % 1 === 0 ? 0 : r < 1 ? 2 : 1)
+}
+
+/** « commande » → « commandes », « mise à jour » → « mises à jour ». */
+export function pluriel(unite: string, n: number): string {
+  if (n < 2) return unite
+  const [premier, ...reste] = unite.split(' ')
+  return [/[sxz]$/.test(premier) ? premier : `${premier}s`, ...reste].join(' ')
+}
+
+/** 140 → « 2 h 20 », 45 → « 45 min ». */
+export function fmtDuree(minutes: number): string {
+  const m = Math.round(minutes)
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60)
+  const r = m % 60
+  return r ? `${h} h ${String(r).padStart(2, '0')}` : `${h} h`
+}
 
 /** One free-text note per task: the spreadsheet's description and method. */
 export function noteDe(t: Pick<TacheCharge, 'description' | 'methode'>): string {

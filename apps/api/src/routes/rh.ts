@@ -329,6 +329,8 @@ const TacheSchema = z.object({
   categorie: z.enum(['tache', 'improductivite_structurelle']),
   indicateur: z.string().nullable(),
   minutesParUnite: z.number().min(0).max(600).nullable(),
+  volumeSaisi: z.number().min(0).max(10000).nullable().default(null),
+  unite: z.string().max(40).default(''),
 })
 const VersionSchema = z.object({
   dateReleve: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

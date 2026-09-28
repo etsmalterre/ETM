@@ -5,10 +5,12 @@
 // can be automated and whether it already is. Kept deliberately simple (Vincent,
 // 2026-09-25: « sans que ce soit l'usine à gaz »):
 //
-//   • ONE figure per task, its current value. A task is either fixed (hours
-//     typed) or MEASURED: minutes per unit × a weekly volume ETM counts itself
-//     (lib/rh-indicateurs.ts) — the spreadsheet already reasoned that way
-//     (« 10 min/cmd × 14 cmd/semaine ») with a volume read once by hand.
+//   • ONE figure per task, its current value, always written the same way:
+//     minutes per unit × units per week = minutes per week (the spreadsheet
+//     reasoned so: « 10 min/cmd × 14 cmd/semaine »). The volume is MEASURED
+//     when ETM counts it (lib/rh-indicateurs.ts), else ESTIMATED (typed, with
+//     a free unit: « appel », « point stock »…). A task with no natural unit
+//     (ménage, the structural slack) stays a FORFAIT: hours typed.
 //   • Three automation states: à automatiser (automatisable = 'oui'),
 //     automatisé, the rest. 'partiel' / 'inconnu' are kept in the data (the
 //     spreadsheet had them) but count as « the rest ».
@@ -34,7 +36,19 @@ export interface TacheCharge {
   categorie: Categorie
   /** Measured task: key of lib/rh-indicateurs.ts, with minutes per unit. */
   indicateur: string | null
+  /** Minutes per unit — measured and estimated tasks; null on a forfait. */
   minutesParUnite: number | null
+  /** Estimated task: units per week, typed (null when measured or forfait). */
+  volumeSaisi: number | null
+  /** Estimated task: its unit, singular (« appel »); '' otherwise. */
+  unite: string
+}
+
+export type ModeTache = 'mesuree' | 'estimee' | 'forfait'
+
+export function modeTache(t: Pick<TacheCharge, 'indicateur' | 'minutesParUnite' | 'volumeSaisi'>): ModeTache {
+  if (estMesuree(t)) return 'mesuree'
+  return t.minutesParUnite != null && t.minutesParUnite > 0 && t.volumeSaisi != null ? 'estimee' : 'forfait'
 }
 
 export interface VersionCharge {
@@ -114,17 +128,23 @@ export function versionEnVigueur<V extends { dateReleve: string }>(versions: V[]
 export function normaliserTache(raw: Partial<TacheCharge>): TacheCharge {
   const auto = AUTOMATISABLE.includes(raw.automatisable as Automatisable) ? (raw.automatisable as Automatisable) : 'inconnu'
   const cat = CATEGORIES.includes(raw.categorie as Categorie) ? (raw.categorie as Categorie) : 'tache'
-  const minutes = raw.minutesParUnite != null && Number(raw.minutesParUnite) > 0 ? Number(raw.minutesParUnite) : null
+  const minutes = raw.minutesParUnite != null && Number(raw.minutesParUnite) > 0 ? round2(Number(raw.minutesParUnite)) : null
+  const indicateur = cat === 'tache' && raw.indicateur ? String(raw.indicateur) : null
+  const volume = raw.volumeSaisi != null && Number(raw.volumeSaisi) >= 0 ? round2(Number(raw.volumeSaisi)) : null
+  // Estimated: minutes × a typed volume — its hours are that product, never typed.
+  const estimee = cat === 'tache' && !indicateur && minutes != null && volume != null
   return {
     nom: String(raw.nom ?? '').trim(),
     description: String(raw.description ?? '').trim(),
     methode: String(raw.methode ?? '').trim(),
-    heures: Math.max(0, round2(Number(raw.heures) || 0)),
+    heures: estimee ? heuresMesurees(minutes, volume) : Math.max(0, round2(Number(raw.heures) || 0)),
     automatisable: cat === 'tache' ? auto : 'non',
     automatise: cat === 'tache' ? !!raw.automatise : false,
     categorie: cat,
-    indicateur: cat === 'tache' && raw.indicateur ? String(raw.indicateur) : null,
-    minutesParUnite: cat === 'tache' && raw.indicateur ? minutes : null,
+    indicateur,
+    minutesParUnite: indicateur || estimee ? minutes : null,
+    volumeSaisi: estimee ? volume : null,
+    unite: estimee ? String(raw.unite ?? '').trim().slice(0, 40) : '',
   }
 }
 

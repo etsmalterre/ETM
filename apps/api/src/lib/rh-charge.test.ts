@@ -6,6 +6,7 @@ import {
   heuresSemaine,
   lundiDe,
   lundiDeHfsql,
+  modeTache,
   moisListe,
   normaliserTache,
   totauxSimples,
@@ -53,6 +54,25 @@ describe('tâches mesurées', () => {
     expect(t).toMatchObject({ nom: 'Marge', automatisable: 'non', automatise: false, indicateur: null, minutesParUnite: null })
     expect(normaliserTache({ nom: 'x', heures: -1 }).heures).toBe(0)
     expect(normaliserTache({ nom: 'x', heures: 1, automatisable: '?' as never }).automatisable).toBe('inconnu')
+  })
+})
+
+describe('tâches estimées (volume saisi)', () => {
+  it('computes the hours from minutes × the typed volume, whatever hours were posted', () => {
+    const t = normaliserTache({ nom: 'Standard', heures: 9, minutesParUnite: 2, volumeSaisi: 50, unite: ' appel ' })
+    expect(t).toMatchObject({ heures: 1.67, minutesParUnite: 2, volumeSaisi: 50, unite: 'appel', indicateur: null })
+    expect(modeTache(t)).toBe('estimee')
+  })
+
+  it('keeps the three modes apart', () => {
+    const mesuree = normaliserTache({ nom: 'Saisie', heures: 2.3, indicateur: 'cmd', minutesParUnite: 10, volumeSaisi: 14, unite: 'x' })
+    expect(mesuree).toMatchObject({ heures: 2.3, volumeSaisi: null, unite: '' }) // an ETM measure wins over a typed volume
+    expect(modeTache(mesuree)).toBe('mesuree')
+    const forfait = normaliserTache({ nom: 'Ménage', heures: 4, minutesParUnite: 5 }) // minutes without a volume
+    expect(forfait).toMatchObject({ heures: 4, minutesParUnite: null, volumeSaisi: null })
+    expect(modeTache(forfait)).toBe('forfait')
+    const marge = normaliserTache({ nom: 'Marge', heures: 2.8, categorie: 'improductivite_structurelle', minutesParUnite: 5, volumeSaisi: 3 })
+    expect(modeTache(marge)).toBe('forfait')
   })
 })
 

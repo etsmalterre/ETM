@@ -76,11 +76,15 @@ export const MIGRATIONS: string[] = [
      action    text NOT NULL,
      detail    text
    );`,
-  // Suivi (lib/rh-suivi.ts): append-only evidence. The trigger refuses any
+  // Slot 2 — estimated tasks: minutes × a typed weekly volume, with a free unit.
+  // Applied to prod and rh_dev on 2026-09-28, before Suivi landed: keep it here.
+  `ALTER TABLE charge_tache ADD COLUMN IF NOT EXISTS volume_saisi numeric(10,2);
+   ALTER TABLE charge_tache ADD COLUMN IF NOT EXISTS unite text NOT NULL DEFAULT '';`,
+  // Slot 3 — Suivi (lib/rh-suivi.ts): append-only evidence. The trigger refuses any
   // UPDATE or DELETE, whoever connects — a correction is a new entry. The FK to
   // employe is RESTRICT: an employee with a suivi cannot be deleted.
-  // Idempotent on purpose: feat/rh-analysis claimed slot 2 in rh_dev at the same
-  // time, so this may end up at slot 3 over a database that already has it.
+  // Idempotent on purpose: feat/rh-analysis took slot 2 (prod and rh_dev), and
+  // rh_dev already holds these tables.
   `CREATE TABLE IF NOT EXISTS evenement (
      id               integer PRIMARY KEY,
      idemploye        integer NOT NULL REFERENCES employe (id) ON DELETE RESTRICT,
@@ -320,6 +324,8 @@ interface TacheRow {
   categorie: TacheCharge['categorie']
   indicateur: string | null
   minutes_par_unite: string | null
+  volume_saisi: string | null
+  unite: string
 }
 
 export async function listerVersions(idemploye: number): Promise<VersionResume[]> {
@@ -339,7 +345,7 @@ export async function versionsCompletes(idemploye: number): Promise<Array<Versio
   if (versions.length === 0) return []
   const taches = await s<TacheRow[]>`
     SELECT idversion, nom, description, methode, heures, automatisable, automatise, categorie,
-           indicateur, minutes_par_unite
+           indicateur, minutes_par_unite, volume_saisi, unite
     FROM charge_tache WHERE idversion IN ${s(versions.map((v) => v.id))} ORDER BY idversion, ordre`
   const parVersion = new Map<number, TacheCharge[]>()
   for (const t of taches) {
@@ -354,6 +360,8 @@ export async function versionsCompletes(idemploye: number): Promise<Array<Versio
       categorie: t.categorie,
       indicateur: t.indicateur,
       minutesParUnite: t.minutes_par_unite == null ? null : Number(t.minutes_par_unite),
+      volumeSaisi: t.volume_saisi == null ? null : Number(t.volume_saisi),
+      unite: t.unite,
     })
     parVersion.set(t.idversion, list)
   }
@@ -381,9 +389,9 @@ export async function enregistrerVersion(
     for (const x of taches) {
       await tx`
         INSERT INTO charge_tache (idversion, ordre, nom, description, methode, heures, automatisable,
-                                  automatise, categorie, indicateur, minutes_par_unite)
+                                  automatise, categorie, indicateur, minutes_par_unite, volume_saisi, unite)
         VALUES (${v.id}, ${ordre++}, ${x.nom}, ${x.description}, ${x.methode}, ${x.heures}, ${x.automatisable},
-                ${x.automatise}, ${x.categorie}, ${x.indicateur}, ${x.minutesParUnite})`
+                ${x.automatise}, ${x.categorie}, ${x.indicateur}, ${x.minutesParUnite}, ${x.volumeSaisi}, ${x.unite})`
     }
     return v.id
   }) as Promise<number>
