@@ -53,6 +53,9 @@ export interface DevisEtmPdfData {
   fraisPort: number
   /** TVA rate as a percentage (e.g. 20). */
   tvaRate: number
+  /** CGV acceptance mention printed under the totals (lib/cgv.ts
+   *  CGV_MENTION). ETS Malterre only — omitted = not printed. */
+  mentionCgv?: string
   lignes: Array<{
     ref_label: string | null
     colori_reference: string | null
@@ -197,6 +200,7 @@ const styles = StyleSheet.create({
   livraisonTitle: { fontSize: sizes.fontXs, color: colors.primary, fontWeight: 900, letterSpacing: 0.5, lineHeight: 1 },
 
   commentaireBottom: { marginTop: 24 },
+  mentionCgv: { marginTop: 14, fontSize: 7.5, color: colors.muted, lineHeight: 1.35, textAlign: 'justify' },
   commentaireBox: {
     flexShrink: 0,
     padding: 14,
@@ -386,6 +390,12 @@ export function DevisEtmPdf({ data }: { data: DevisEtmPdfData }) {
           <Text style={styles.commentaireText}>{data.commentaire.trim()}</Text>
         </View>
       )}
+
+      {/* CGV acceptance mention (ETS Malterre only, lib/cgv.ts) — makes the
+          attached CGV enforceable against the client. */}
+      {data.mentionCgv ? (
+        <Text style={styles.mentionCgv} wrap={false}>{data.mentionCgv}</Text>
+      ) : null}
 
       {/* Spacer grows to push the delivery address to the bottom of the page,
           just above the footer band. */}

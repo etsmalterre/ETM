@@ -44,6 +44,7 @@ import { loadProspectsLite, type ProspectLite } from './prospects.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { ADRESSE_A_DEFINIR } from '../lib/adresse-a-definir.js'
+import { CGV_MENTION, cgvAttachment } from '../lib/cgv.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const devisRouter: RouterType = Router()
@@ -1320,6 +1321,7 @@ export async function buildDevisPdfData(id: number): Promise<DevisEtmPdfData | n
     remise: Number(h.remise) || 0, // fraction
     fraisPort: Number(h.frais_port) || 0,
     tvaRate,
+    mentionCgv: CGV_MENTION,
     lignes,
   }
 }
@@ -1390,7 +1392,7 @@ async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | nu
       subject: `Devis N°${numero} — ETS Malterre`,
       body:
         `Bonjour,\n\n` +
-        `Veuillez trouver ci-joint notre devis N°${numero}.\n\n` +
+        `Veuillez trouver ci-joint notre devis N°${numero}, accompagné de nos conditions générales de vente.\n\n` +
         `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
         `Cordialement,\n` +
         `ETS Malterre`,
@@ -1428,7 +1430,7 @@ async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | nu
   const subject = `Devis N°${numero} — ETS Malterre`
   const body =
     `Bonjour,\n\n` +
-    `Veuillez trouver ci-joint notre devis N°${numero}.\n\n` +
+    `Veuillez trouver ci-joint notre devis N°${numero}, accompagné de nos conditions générales de vente.\n\n` +
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
     `Cordialement,\n` +
     `ETS Malterre`
@@ -1530,6 +1532,9 @@ devisRouter.post('/:id/email', async (req: Request, res: Response) => {
         const buffer = await renderDevisPdfBuffer(data)
         attachments.push({ filename: `devis-${data.numero}.pdf`, content: buffer, contentType: 'application/pdf' })
       }
+      // CGV ride along on every devis email, like the confirmation: the client
+      // must receive them before the sale for them to be enforceable.
+      attachments.push(await cgvAttachment())
       for (const a of parsed.data.extra_attachments ?? []) {
         attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
       }

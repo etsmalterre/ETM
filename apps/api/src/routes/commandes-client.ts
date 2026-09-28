@@ -32,7 +32,7 @@ import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { CommandeClientPdf, type CommandeClientPdfData } from '../lib/pdf/CommandeClientPdf.js'
 import { FacturePdf, type FacturePdfData } from '../lib/pdf/FacturePdf.js'
 import { formatSirenForDocument } from '../lib/siren.js'
-import { CgvPdf } from '../lib/pdf/CgvPdf.js'
+import { CGV_ATTACHMENT_FILENAME, CGV_MENTION, cgvAttachment, getCgvPdf } from '../lib/cgv.js'
 import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
 import { attachDonationSql, detachDonationSql, planDonationSet } from '../lib/donation-pieces.js'
@@ -4695,6 +4695,9 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     remise: Number(h.remise) || 0,
     fraisPort: Number(h.frais_port) || 0,
     tvaRate,
+    // ETS Malterre's CGV acceptance mention (lib/cgv.ts) — TRM's builder
+    // renders the same template without it.
+    mentionCgv: CGV_MENTION,
     lignes,
   }
 }
@@ -4708,23 +4711,9 @@ export async function renderClientPdfBuffer(data: CommandeClientPdfData): Promis
 }
 
 // ── CGV (conditions générales de vente) ──────────────────
-// Rendered from CgvPdf.tsx (the legal text lives there), always attached to
-// confirmation-de-commande emails and previewable in the send-email dialog.
-// The content is static per process lifetime, so render once and cache.
-const CGV_ATTACHMENT_FILENAME = 'CGV - ETS Malterre.pdf'
-let cgvPdfCache: Buffer | null = null
-
-async function getCgvPdf(): Promise<Buffer> {
-  if (!cgvPdfCache) {
-    cgvPdfCache = await renderToBuffer(
-      React.createElement(CgvPdf) as unknown as React.ReactElement<
-        import('@react-pdf/renderer').DocumentProps
-      >,
-    )
-  }
-  return cgvPdfCache
-}
-
+// Text in lib/pdf/CgvPdf.tsx, rendering + cache in lib/cgv.ts. Always attached
+// to confirmation-de-commande emails (and devis emails, routes/devis.ts);
+// previewable in the send-email dialog through this route.
 // Registered before /:id/pdf so the literal segment wins over the param route.
 commandesClientRouter.get('/cgv/pdf', async (_req: Request, res: Response) => {
   try {
@@ -5166,7 +5155,7 @@ commandesClientRouter.post('/:id/email', async (req: Request, res: Response) => 
         attachments.push({ filename: `confirmation-commande-${data.numero}.pdf`, content: buffer, contentType: 'application/pdf' })
       }
       // CGV ride along on every confirmation email.
-      attachments.push({ filename: CGV_ATTACHMENT_FILENAME, content: await getCgvPdf(), contentType: 'application/pdf' })
+      attachments.push(await cgvAttachment())
       for (const a of parsed.data.extra_attachments ?? []) {
         attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
       }

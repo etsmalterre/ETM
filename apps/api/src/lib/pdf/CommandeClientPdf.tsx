@@ -57,6 +57,9 @@ export interface CommandeClientPdfData {
   /** Legal entity signing the confirmation — drives the footer's SIRET / TVA /
    *  capital. Omitted = ETS Malterre; Tricotage Malterre passes `companyTrm`. */
   company?: CompanyInfo
+  /** CGV acceptance mention printed under the totals (lib/cgv.ts
+   *  CGV_MENTION). ETS Malterre only — omitted = not printed. */
+  mentionCgv?: string
   lignes: Array<{
     ref_label: string | null
     colori_reference: string | null
@@ -185,6 +188,7 @@ const styles = StyleSheet.create({
   grandValue: { fontSize: sizes.fontLg, color: colors.primary, fontWeight: 900, textAlign: 'right' },
 
   commentaireBottom: { marginTop: 24 },
+  mentionCgv: { marginTop: 14, fontSize: 7.5, color: colors.muted, lineHeight: 1.35, textAlign: 'justify' },
   commentaireBox: {
     flexShrink: 0,
     padding: 14,
@@ -383,6 +387,12 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
           <Text style={styles.commentaireText}>{data.commentaire.trim()}</Text>
         </View>
       )}
+
+      {/* CGV acceptance mention (ETS Malterre only, lib/cgv.ts) — makes the
+          attached CGV enforceable against the client. */}
+      {data.mentionCgv ? (
+        <Text style={styles.mentionCgv} wrap={false}>{data.mentionCgv}</Text>
+      ) : null}
 
       {/* Delivery address — pinned to the bottom of the last page, just above
           the footer band. */}

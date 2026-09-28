@@ -71,6 +71,7 @@ import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { buildXImportFile, type XImportEntry } from '../lib/ximport.js'
 import { requirePermission, ETM_PERMISSIONS, TRM_PERMISSIONS, type PermissionScope } from '../lib/clients-common.js'
 import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
+import { MENTIONS_PAIEMENT_FACTURE } from '../lib/cgv.js'
 import { loadDiversItems, resolveDiversPrix, type DiversItem } from './expeditions.js'
 import { groupFormelle, type FormelleCandidate, type FormelleCommande } from '../lib/facturation-groupes.js'
 import { MANUAL_MARK_PREFIX, buildManualMarkNotes, parseManualMarkNotes } from '../lib/envoi-manuel.js'
@@ -94,6 +95,10 @@ interface FacturesScope {
   company: CompanyInfo
   /** Trade name used in the email subject and the "from" display name. */
   brand: string
+  /** Late-payment mentions printed on a definitive invoice (C. com. L. 441-9),
+   *  or null. ETM's come from its CGV (lib/cgv.ts); TRM has no CGV here yet,
+   *  so none are printed on its invoices until its terms are decided. */
+  mentionsPaiement: string | null
   /** Which app's Paramètres > Utilisateurs grants `edit_factures`. The two
    *  stores are separate (see PermissionScope in lib/clients-common.ts), so
    *  this has to be part of the scope: the guard used to hardcode ETM's, which
@@ -107,6 +112,7 @@ const SCOPE_ETM: FacturesScope = {
   ecruShipmentFk: 'IDligne_expedition_ETM',
   company: companyEtm,
   brand: 'ETS Malterre',
+  mentionsPaiement: MENTIONS_PAIEMENT_FACTURE,
   permissions: ETM_PERMISSIONS,
 }
 
@@ -115,6 +121,7 @@ const SCOPE_TRM: FacturesScope = {
   ecruShipmentFk: 'IDligne_expedition_TRM',
   company: companyTrm,
   brand: 'Tricotage Malterre',
+  mentionsPaiement: null,
   permissions: TRM_PERMISSIONS,
 }
 
@@ -2230,6 +2237,9 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
     // client is asked to pay). Not branding — a Tricotage Malterre invoice
     // carrying ETM's bank details would be paid into the wrong account.
     company: scope.company,
+    // Invoice only — neither the proforma (not an invoice) nor an avoir
+    // (nothing to pay late).
+    mentionsPaiement: kind === 'def' && (Number(h.TYPE) || 1) === 1 ? scope.mentionsPaiement : null,
     lignes: lignes.map((l) => ({ designation: l.designation ?? '', quantite: l.quantite, unite: l.unite, prix: l.prix, montant: l.montant })),
   }
 }

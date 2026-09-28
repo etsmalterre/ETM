@@ -538,6 +538,10 @@ export function ClientsDevis() {
           loadDefaults={() => apiFetch(`/devis/${selectedId}/email-defaults`)}
           pdfUrl={`${API_URL}/devis/${selectedId}/pdf`}
           pdfAttachmentLabel={`devis-${selectedId}.pdf`}
+          // CGV ride along on every devis email (attached server-side).
+          extraServerAttachments={[
+            { id: 'cgv', label: 'CGV - ETS Malterre.pdf', url: `${API_URL}/commandes-client/cgv/pdf` },
+          ]}
           onSend={async (p) => {
             await postEmail(`${API_URL}/devis/${selectedId}/email`, p, { includeAttachPdf: true })
             // The send logs an envoi_email row server-side — refresh the

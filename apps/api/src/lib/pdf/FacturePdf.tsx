@@ -73,6 +73,9 @@ export interface FacturePdfData {
    *  legal document — this is not branding, it is whose SIRET and IBAN the
    *  client is told to pay. */
   company?: CompanyInfo
+  /** Late-payment mentions (C. com. L. 441-9) printed under the totals —
+   *  definitive ETM invoices only (routes/factures.ts scope). */
+  mentionsPaiement?: string | null
   lignes: Array<{
     designation: string
     quantite: number
@@ -196,6 +199,7 @@ const styles = StyleSheet.create({
   // invoice follows the metres actually knitted and shipped. Sits right under
   // the TTC row, same width and right inset as the totals block, so the
   // reader meets it as a caption of the price and not as small print.
+  mentionsPaiement: { marginTop: 14, fontSize: 7.5, color: colors.muted, lineHeight: 1.35, textAlign: 'justify' },
   proformaNoteWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
   proformaNote: {
     width: '45%',
@@ -409,6 +413,10 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
         </View>
       ) : null}
       </View>
+
+      {data.mentionsPaiement ? (
+        <Text style={styles.mentionsPaiement} wrap={false}>{data.mentionsPaiement}</Text>
+      ) : null}
 
       {/* Bank coordinates at the bottom of the last page, just above the
           footer — on the proforma (paid before delivery) AND the definitive
