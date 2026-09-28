@@ -9,13 +9,16 @@
 // Editing the text = bump CGV_VERSION in lib/cgv.ts — the devis and the
 // confirmation print that version in their acceptance mention.
 //
-// Single flowing column over as many pages as needed (the previous two-column
-// one-page layout could not flow: react-pdf columns never continue onto the
-// next page).
+// Layout: two cartouches (seller / document) over two columns of articles.
+// react-pdf never flows text from one column into the next, so the columns
+// are filled here (layoutCgv) from an estimate of each paragraph's height,
+// splitting a paragraph between words when a column is full. The estimate is
+// not a measure, so lib/cgv.ts renders, counts the pages and, when a column
+// overflowed (more pages than planned), lays out again with fuller margins.
 
 import React from 'react'
 import { View, Text, StyleSheet } from '@react-pdf/renderer'
-import { MalterreDocument } from './MalterreDocument.js'
+import { MalterreDocument, FactoryIcon, CalendarIcon, UserIcon, LandmarkIcon, TagIcon, CreditCardIcon } from './MalterreDocument.js'
 import { colors, sizes } from './theme.js'
 
 interface Article {
@@ -25,13 +28,6 @@ interface Article {
    *  « très apparente », art. 48 CPC). */
   bold?: number[]
 }
-
-const IDENTITE: Array<[string, string]> = [
-  ['Société', 'ETS MALTERRE — SARL au capital de 7 750 €'],
-  ['Siège social', 'ZI Route de Thennes — 80110 Moreuil — France'],
-  ['Identification', 'RCS Amiens 430 382 135 — SIRET 430 382 135 00019 — TVA FR 78 430 382 135'],
-  ['Contact', '03 22 35 36 66 — contact@etsmalterre.com'],
-]
 
 const AVERTISSEMENT =
   'IMPORTANT — Les présentes CGV sont réservées aux clients agissant à des fins professionnelles. Elles ne sont pas adaptées aux ventes conclues avec des consommateurs.'
@@ -128,99 +124,256 @@ const ARTICLES: Article[] = [
   },
 ]
 
+// ── Two-column pagination ────────────────────────────────
+
+// Geometry (pt). A4 = 595 × 842; MalterreDocument reserves a 96 pt header
+// band, 80 pt at the bottom and 36 pt on each side.
+const COLUMN_GAP = 16
+const COLUMN_WIDTH = (595 - 2 * 36 - COLUMN_GAP) / 2
+const PAGE_BODY_HEIGHT = 842 - 96 - 80
+/** Page 1 loses the content padding, the cartouches and the notice box. */
+const FIRST_PAGE_HEIGHT = PAGE_BODY_HEIGHT - 20 - 118 - 44
+/** Continuation pages open with a small gap under the header band. */
+const NEXT_PAGE_HEIGHT = PAGE_BODY_HEIGHT - 12
+/** Kept free at the bottom of every column: the estimate is not a measure. */
+const SAFETY = 10
+
+const BODY_SIZE = 7.2
+const BODY_LEADING = 1.38
+const PARA_GAP = 2.5
+const TITLE_SIZE = 7.8
+const TITLE_LEADING = 1.2
+const TITLE_GAP_ABOVE = 7
+const TITLE_GAP_BELOW = 2.5
+/** Average Lato glyph width in em, measured on this text (0.44) + margin for
+ *  the words that do not fit at the end of a line. Bold / caps run wider. */
+const EM_REGULAR = 0.475
+const EM_BOLD = 0.6
+
+type Chunk =
+  | { kind: 'title'; text: string }
+  | { kind: 'p'; text: string; bold: boolean }
+
+function lineCount(text: string, size: number, em: number): number {
+  const perLine = Math.floor(COLUMN_WIDTH / (size * em))
+  // Word-by-word fill, like the real line breaker.
+  let lines = 1
+  let used = 0
+  for (const w of text.split(' ')) {
+    const len = w.length + (used > 0 ? 1 : 0)
+    if (used + len > perLine) { lines++; used = w.length } else used += len
+  }
+  return lines
+}
+
+function chunkHeight(c: Chunk, first: boolean): number {
+  if (c.kind === 'title') {
+    return (first ? 0 : TITLE_GAP_ABOVE) + lineCount(c.text, TITLE_SIZE, EM_BOLD) * TITLE_SIZE * TITLE_LEADING + TITLE_GAP_BELOW
+  }
+  return lineCount(c.text, BODY_SIZE, c.bold ? EM_BOLD : EM_REGULAR) * BODY_SIZE * BODY_LEADING + PARA_GAP
+}
+
+/** Splits `text` so the head fits in `lines` lines; null when not even two
+ *  lines fit (no widow line at the bottom of a column). */
+function splitToFit(text: string, lines: number, em: number): [string, string] | null {
+  if (lines < 2) return null
+  const words = text.split(' ')
+  let lo = 1
+  let hi = words.length - 1
+  let best = 0
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (lineCount(words.slice(0, mid).join(' '), BODY_SIZE, em) <= lines) { best = mid; lo = mid + 1 } else hi = mid - 1
+  }
+  // Leave at least a few words for the next column.
+  if (best < 4 || words.length - best < 4) return null
+  return [words.slice(0, best).join(' '), words.slice(best).join(' ')]
+}
+
+/** Pages → [left column, right column] of chunks. */
+export type CgvPlan = Chunk[][][]
+
+/** Page plan filling each column to `fill` (0..1) of its estimated height. */
+export function layoutCgv(fill = 1): CgvPlan {
+  return layoutColumns(ARTICLES, fill)
+}
+
+function layoutColumns(articles: Article[], fill: number): CgvPlan {
+  const queue: Chunk[] = []
+  for (const a of articles) {
+    queue.push({ kind: 'title', text: a.title })
+    a.paragraphs.forEach((text, i) => queue.push({ kind: 'p', text, bold: a.bold?.includes(i) ?? false }))
+  }
+  const columns: Chunk[][] = []
+  let col: Chunk[] = []
+  const capacity = () => (columns.length < 2 ? FIRST_PAGE_HEIGHT : NEXT_PAGE_HEIGHT) * fill - SAFETY
+  let room = capacity()
+  const nextColumn = () => { columns.push(col); col = []; room = capacity() }
+
+  while (queue.length > 0) {
+    const c = queue.shift()!
+    const h = chunkHeight(c, col.length === 0)
+    if (c.kind === 'title') {
+      // Keep the title with at least two lines of its first paragraph.
+      const keep = h + 2 * BODY_SIZE * BODY_LEADING
+      if (keep > room && col.length > 0) { nextColumn() }
+      col.push(c)
+      room -= chunkHeight(c, col.length === 1)
+      continue
+    }
+    if (h <= room) { col.push(c); room -= h; continue }
+    const em = c.bold ? EM_BOLD : EM_REGULAR
+    const fit = Math.floor((room - PARA_GAP) / (BODY_SIZE * BODY_LEADING))
+    const parts = splitToFit(c.text, fit, em)
+    if (parts) {
+      col.push({ ...c, text: parts[0] })
+      queue.unshift({ ...c, text: parts[1] })
+    } else {
+      queue.unshift(c)
+    }
+    nextColumn()
+  }
+  if (col.length > 0) columns.push(col)
+  const pages: Chunk[][][] = []
+  for (let i = 0; i < columns.length; i += 2) pages.push([columns[i], columns[i + 1] ?? []])
+  return pages
+}
+
+// ── Styles ───────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  subtitle: {
-    fontSize: 8.5,
-    fontWeight: 700,
-    color: colors.primary,
-    marginBottom: 8,
-  },
-  identite: {
+  topRow: { flexDirection: 'row', gap: COLUMN_GAP, marginBottom: 10, alignItems: 'stretch' },
+  topRowSlot: { flex: 1, flexDirection: 'column' },
+  // Same cream cartouche as the confirmation de commande / devis.
+  card: {
+    flexGrow: 1,
+    backgroundColor: colors.bgCream,
     borderWidth: 0.75,
     borderColor: colors.borderStrong,
     borderStyle: 'solid',
-    borderRadius: 4,
-    paddingVertical: 5,
-    paddingHorizontal: 8,
-    marginBottom: 6,
-  },
-  identiteRow: { flexDirection: 'row', paddingVertical: 1 },
-  identiteLabel: { width: 70, fontSize: 7.5, fontWeight: 700, color: colors.muted },
-  identiteValue: { flex: 1, fontSize: 7.5, color: colors.text },
-  avertissement: {
-    backgroundColor: colors.bgCream,
     borderLeftWidth: 2,
     borderLeftColor: colors.gold,
     borderLeftStyle: 'solid',
-    paddingVertical: 5,
-    paddingHorizontal: 8,
+    borderRadius: 6,
+    padding: 10,
+  },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 5 },
+  cardTitle: { fontSize: sizes.fontXs, color: colors.primary, fontWeight: 900, letterSpacing: 0.5, lineHeight: 1 },
+  cardName: { fontSize: sizes.fontBase, fontWeight: 900, color: colors.text, marginBottom: 1 },
+  cardLine: { fontSize: sizes.fontBase, color: colors.text, lineHeight: 1.4 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
+  metaIconBox: { width: 14, height: 14, alignItems: 'center', justifyContent: 'center' },
+  metaLabel: { fontSize: sizes.fontBase, color: colors.muted, fontWeight: 700, flex: 1, lineHeight: 1 },
+  metaValue: { fontSize: sizes.fontBase, color: colors.text, fontWeight: 700, textAlign: 'right', lineHeight: 1 },
+  avertissement: {
+    backgroundColor: colors.bgMuted,
+    borderRadius: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     fontSize: 7.5,
     fontWeight: 700,
-    color: colors.text,
+    color: colors.primary,
     lineHeight: 1.35,
-    marginBottom: 8,
+    textAlign: 'center',
+    marginBottom: 10,
   },
-  article: {
-    marginTop: 7,
-  },
+  columns: { flexDirection: 'row', gap: COLUMN_GAP },
+  columnsNextPage: { paddingTop: 12 },
+  column: { width: COLUMN_WIDTH },
   articleTitle: {
-    fontSize: 8,
+    fontSize: TITLE_SIZE,
     fontWeight: 900,
     color: colors.primary,
     letterSpacing: 0.3,
-    lineHeight: 1.2,
-    marginBottom: 2.5,
+    lineHeight: TITLE_LEADING,
+    marginTop: TITLE_GAP_ABOVE,
+    marginBottom: TITLE_GAP_BELOW,
   },
+  firstInColumn: { marginTop: 0 },
   paragraph: {
-    fontSize: 7.4,
+    fontSize: BODY_SIZE,
     color: colors.text,
-    lineHeight: 1.4,
+    lineHeight: BODY_LEADING,
     textAlign: 'justify',
-    marginBottom: 2.5,
+    marginBottom: PARA_GAP,
   },
   bold: { fontWeight: 900 },
   version: {
-    marginTop: 10,
-    fontSize: 7,
+    marginTop: 8,
+    fontSize: 6.8,
     color: colors.muted,
     textAlign: 'right',
   },
 })
 
-export function CgvPdf({ version }: { version: string }) {
+function MetaRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <View style={styles.metaRow}>
+      <View style={styles.metaIconBox}>{icon}</View>
+      <Text style={styles.metaLabel}>{label}</Text>
+      <Text style={styles.metaValue}>{value}</Text>
+    </View>
+  )
+}
+
+function ChunkView({ chunk, first }: { chunk: Chunk; first: boolean }) {
+  if (chunk.kind === 'title') {
+    return <Text style={first ? [styles.articleTitle, styles.firstInColumn] : styles.articleTitle}>{chunk.text}</Text>
+  }
+  return <Text style={chunk.bold ? [styles.paragraph, styles.bold] : styles.paragraph}>{chunk.text}</Text>
+}
+
+export function CgvPdf({ version, plan }: { version: string; plan: CgvPlan }) {
+  const lastPage = plan.length - 1
+  // The version line closes the text: under the last non-empty column.
+  const lastColumn = plan[lastPage]?.[1]?.length ? 1 : 0
   return (
     <MalterreDocument
       // No accent on purpose — the uppercased É renders badly in the header font.
       documentType="Conditions Generales de Vente"
+      compactTitle
       reference={`VERSION ${version.toUpperCase()}`}
       documentDate=""
       title={`Conditions Générales de Vente - ETS Malterre - version ${version}`}
     >
-      <Text style={styles.subtitle}>
-        Ventes de produits textiles et articles techniques — Clients professionnels
-      </Text>
-      <View style={styles.identite} wrap={false}>
-        {IDENTITE.map(([label, value]) => (
-          <View key={label} style={styles.identiteRow}>
-            <Text style={styles.identiteLabel}>{label}</Text>
-            <Text style={styles.identiteValue}>{value}</Text>
+      <View style={styles.topRow} wrap={false}>
+        <View style={styles.topRowSlot}>
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <FactoryIcon />
+              <Text style={styles.cardTitle}>VENDEUR</Text>
+            </View>
+            <Text style={styles.cardName}>ETS MALTERRE</Text>
+            <Text style={styles.cardLine}>SARL au capital de 7 750 €</Text>
+            <Text style={styles.cardLine}>ZI Route de Thennes — 80110 Moreuil — France</Text>
+            <Text style={styles.cardLine}>03 22 35 36 66 — contact@etsmalterre.com</Text>
           </View>
-        ))}
+        </View>
+        <View style={styles.topRowSlot}>
+          <View style={styles.card}>
+            <MetaRow icon={<CalendarIcon />} label="Version" value={version.charAt(0).toUpperCase() + version.slice(1)} />
+            <MetaRow icon={<UserIcon size={11} />} label="Clientèle" value="Professionnels" />
+            <MetaRow icon={<LandmarkIcon />} label="RCS" value="Amiens 430 382 135" />
+            <MetaRow icon={<TagIcon />} label="SIRET" value="430 382 135 00019" />
+            <MetaRow icon={<CreditCardIcon />} label="N° TVA" value="FR 78 430 382 135" />
+          </View>
+        </View>
       </View>
-      <Text style={styles.avertissement}>{AVERTISSEMENT}</Text>
-      {ARTICLES.map((a) => (
-        <View key={a.title} style={styles.article}>
-          {/* Title glued to its first paragraph so it never ends a page alone. */}
-          <View wrap={false}>
-            <Text style={styles.articleTitle}>{a.title}</Text>
-            <Text style={[styles.paragraph, ...(a.bold?.includes(0) ? [styles.bold] : [])]}>{a.paragraphs[0]}</Text>
-          </View>
-          {a.paragraphs.slice(1).map((p, i) => (
-            <Text key={i} style={[styles.paragraph, ...(a.bold?.includes(i + 1) ? [styles.bold] : [])]}>{p}</Text>
+      <Text style={styles.avertissement} wrap={false}>
+        Ventes de produits textiles et articles techniques. {AVERTISSEMENT}
+      </Text>
+      {plan.map((cols, p) => (
+        <View key={p} style={p > 0 ? [styles.columns, styles.columnsNextPage] : styles.columns} {...(p > 0 ? { break: true } : {})} wrap={false}>
+          {cols.map((chunks, c) => (
+            <View key={c} style={styles.column}>
+              {chunks.map((chunk, i) => <ChunkView key={i} chunk={chunk} first={i === 0} />)}
+              {p === lastPage && c === lastColumn && (
+                <Text style={styles.version}>CGV ETS MALTERRE — version {version}</Text>
+              )}
+            </View>
           ))}
         </View>
       ))}
-      <Text style={styles.version}>CGV ETS MALTERRE — version {version}</Text>
     </MalterreDocument>
   )
 }

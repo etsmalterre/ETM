@@ -234,6 +234,8 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     width: 280,
   },
+  headerDocBlockWide: { width: 350 },
+  headerDocTypeCompact: { fontSize: 15, letterSpacing: 0.8 },
   headerDocTypeRow: {
     width: '100%',
   },
@@ -525,6 +527,9 @@ export interface MalterreDocumentProps {
   reference: string
   /** Free-text date (long form, e.g. "14 Avril 2026") */
   documentDate: string
+  /** Smaller, wider doc-type line so a long type (« Conditions Generales de
+   *  Vente ») stays on one line. Off by default. */
+  compactTitle?: boolean
   /** Top-left card — typically the supplier or client address. Optional:
    *  when both topLeftAddress and topRightInfo are omitted, the stock
    *  2-card top row is skipped and `children` gets the full content area. */
@@ -610,19 +615,21 @@ function PageHeader({
   reference,
   documentDate,
   fixed = false,
+  compactTitle = false,
 }: {
   documentType: string
   reference: string
   documentDate: string
   fixed?: boolean
+  compactTitle?: boolean
 }) {
   return (
     <View style={fixed ? styles.headerFixedWrap : undefined} fixed={fixed}>
       <View style={styles.header}>
         <Image src={LOGO_BUFFER} style={styles.logo} />
-        <View style={styles.headerDocBlock}>
+        <View style={compactTitle ? [styles.headerDocBlock, styles.headerDocBlockWide] : styles.headerDocBlock}>
           <View style={styles.headerDocTypeRow}>
-            <Text style={styles.headerDocType}>{documentType.toUpperCase()}</Text>
+            <Text style={compactTitle ? [styles.headerDocType, styles.headerDocTypeCompact] : styles.headerDocType}>{documentType.toUpperCase()}</Text>
           </View>
           <View style={styles.headerDocRefRow}>
             <Text style={styles.headerDocRef}>{reference}</Text>
@@ -688,6 +695,7 @@ export function MalterreDocument({
   documentType,
   reference,
   documentDate,
+  compactTitle,
   topLeftAddress,
   topRightInfo,
   title,
@@ -716,6 +724,7 @@ export function MalterreDocument({
           documentType={documentType}
           reference={reference}
           documentDate={documentDate}
+          compactTitle={compactTitle}
           fixed
         />
 
@@ -772,6 +781,7 @@ export function MalterreDocument({
               documentType={documentType}
               reference={reference}
               documentDate={documentDate}
+              compactTitle={compactTitle}
               fixed
             />
           )}

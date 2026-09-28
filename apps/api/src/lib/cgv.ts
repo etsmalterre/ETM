@@ -12,7 +12,7 @@
 
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
-import { CgvPdf } from './pdf/CgvPdf.js'
+import { CgvPdf, layoutCgv } from './pdf/CgvPdf.js'
 
 /** Version label of the CGV in force, printed on the PDF and in the mention. */
 export const CGV_VERSION = 'septembre 2026'
@@ -34,15 +34,35 @@ export const MENTIONS_PAIEMENT_FACTURE =
 export const CGV_ATTACHMENT_FILENAME = 'CGV - ETS Malterre.pdf'
 
 // The content is static per process lifetime, so render once and cache.
-let cgvPdfCache: Buffer | null = null
+let cgvPdfCache: Promise<Buffer> | null = null
 
-export async function getCgvPdf(): Promise<Buffer> {
-  if (!cgvPdfCache) {
-    cgvPdfCache = await renderToBuffer(
-      React.createElement(CgvPdf, { version: CGV_VERSION }) as unknown as React.ReactElement<
+function countPages(pdf: Buffer): number {
+  return pdf.toString('latin1').match(/\/Type\s*\/Page\b(?!s)/g)?.length ?? 0
+}
+
+/** Renders the two-column CGV. The column fill is an estimate (CgvPdf.tsx):
+ *  when a column overflowed, react-pdf adds pages beyond the plan, so lay out
+ *  again with less text per column until the page count matches. */
+async function renderCgv(): Promise<Buffer> {
+  let last: Buffer | null = null
+  // Fullest columns first (fewest pages); the estimate runs ~15 % high.
+  for (let fill = 1.15; fill >= 0.7; fill -= 0.03) {
+    const plan = layoutCgv(fill)
+    last = await renderToBuffer(
+      React.createElement(CgvPdf, { version: CGV_VERSION, plan }) as unknown as React.ReactElement<
         import('@react-pdf/renderer').DocumentProps
       >,
     )
+    if (countPages(last) === plan.length) return last
+  }
+  console.warn('CGV PDF: no column fill matched the page plan — serving the last render')
+  return last!
+}
+
+export function getCgvPdf(): Promise<Buffer> {
+  if (!cgvPdfCache) {
+    cgvPdfCache = renderCgv()
+    cgvPdfCache.catch(() => { cgvPdfCache = null })
   }
   return cgvPdfCache
 }
