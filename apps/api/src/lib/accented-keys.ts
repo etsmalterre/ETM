@@ -24,6 +24,43 @@
  * Always resolve these columns by case-insensitive PREFIX, never by name.
  */
 
+/** `terminé` → `termin`: where the Linux driver cuts the name. */
+function accentTrunc(name: string): string {
+  const m = name.match(/[^\x00-\x7F]/)
+  return m && m.index !== undefined ? name.slice(0, m.index) : name
+}
+
+const unaccent = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '')
+
+/**
+ * Read a column by its real HFSQL name, whatever the backend did to the key:
+ *   1. the name verbatim (Windows driver; `DATE` etc. case-insensitively);
+ *   2. unaccented, case-insensitive: `termine` (PostgreSQL, whose columns are
+ *      lowercase and unaccented — windev_migration decision D2);
+ *   3. the Linux truncation `termin` followed by its garbage (`terminl`,
+ *      `terminc`…), only when that prefix is 4+ characters and exactly ONE key
+ *      has it — `résolution` cuts to `r`, which would match `reference` too.
+ * Measured on prod 2026-09-28 (`scripts/pg-measure-keys.ts`): 77 columns of 43
+ * tables come back mangled through SELECT *, so steps 1–2 alone miss them.
+ */
+export function readCol(row: Record<string, unknown>, name: string): unknown {
+  if (name in row) return row[name]
+  const t = accentTrunc(name)
+  const lower = name.toLowerCase()
+  const plain = unaccent(name).toLowerCase()
+  const tLower = t.toLowerCase()
+  const keys = Object.keys(row)
+  for (const k of keys) {
+    const kl = k.toLowerCase()
+    if (kl === lower || kl === plain || kl === tLower) return row[k]
+  }
+  if (t !== name && t.length >= 4) {
+    const hits = keys.filter((k) => k.toLowerCase().startsWith(tLower))
+    if (hits.length === 1) return row[hits[0]]
+  }
+  return undefined
+}
+
 /** First value whose key matches `re`, or undefined. */
 export function pickVal(row: Record<string, unknown>, re: RegExp): unknown {
   const k = Object.keys(row).find((key) => re.test(key))

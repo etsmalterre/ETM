@@ -185,6 +185,11 @@ export async function fetchDefectsByEcru(ecruIds: number[]): Promise<Map<number,
       ),
     )
   }
+  // A roll's defects in id order, the same on HFSQL and PostgreSQL: HFSQL
+  // returns them in its index's internal order (a defect the visitage rewrote
+  // comes back out of place) and PostgreSQL in none. Sorted here, not in SQL,
+  // so the HFSQL plan of this hot query is untouched (#1156).
+  rows.sort((a, b) => Number(a.IDdefaut_qualite) - Number(b.IDdefaut_qualite))
   // Accent repair in ONE batched CONVERT over the corrupted rows ("Démaillage"
   // is on a third of them) instead of fixEncoding's per-row query each.
   const fixed = await repairAliased(rows as unknown as Record<string, unknown>[], 'defaut_qualite', 'IDdefaut_qualite', {

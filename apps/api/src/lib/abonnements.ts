@@ -32,6 +32,7 @@
 
 import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
 import { IS_WINDOWS, n } from './sst-shared.js'
+import { readCol } from './accented-keys.js'
 import type { PermissionKey } from './permission-keys.js'
 
 /** The sub-permission of `dashboard_notifications` that each subscription of
@@ -236,28 +237,6 @@ function trimStr(v: unknown): string {
   return (v ?? '').toString().trim()
 }
 
-/** `terminé` → `termin` — the Linux driver truncates an accented column name at
- *  its first non-ASCII char, in the returned key as well as in SQL text.
- *  (Canonical implementation: routes/dossiers-qualite.ts.) */
-function accentTrunc(name: string): string {
-  const m = name.match(/[^\x00-\x7F]/)
-  return m && m.index !== undefined ? name.slice(0, m.index) : name
-}
-
-/** Read a column by its real name, its accent-truncated twin, or a
- *  case-insensitive match (reserved words like DATE come back uppercased). */
-function readCol(row: Record<string, unknown>, name: string): unknown {
-  if (name in row) return row[name]
-  const t = accentTrunc(name)
-  if (t !== name && t in row) return row[t]
-  const lower = name.toLowerCase()
-  const tLower = t.toLowerCase()
-  for (const k of Object.keys(row)) {
-    const kl = k.toLowerCase()
-    if (kl === lower || kl === tLower) return row[k]
-  }
-  return undefined
-}
 
 /** `dossier_qualite` carries accented columns (echéance, terminé, IDSociétéFNC)
  *  that must never be NAMED in SQL on the Linux bridge — so both detectors that

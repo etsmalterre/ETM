@@ -19,6 +19,7 @@
 
 import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
 import { esc, n, IS_WINDOWS } from './sst-shared.js'
+import { readCol } from './accented-keys.js'
 
 /** SQL literal for user text. Pure ASCII → quoted; accented → Latin-1 hex
  *  literal (raw multi-byte UTF-8 in a SQL line corrupts the Linux bridge). */
@@ -56,27 +57,9 @@ export function rcToday(): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 }
 
-/** `archivé` → `archiv` — the Linux driver truncates an accented column name at
- *  its first non-ASCII char, in the returned key as well as in SQL text. */
-function accentTrunc(name: string): string {
-  const m = name.match(/[^\x00-\x7F]/)
-  return m && m.index !== undefined ? name.slice(0, m.index) : name
-}
-
-/** Read a column by its real name, its accent-truncated twin, or a
- *  case-insensitive match (reserved words like DATE come back uppercased). */
-export function rcReadCol(row: Record<string, unknown>, name: string): unknown {
-  if (name in row) return row[name]
-  const t = accentTrunc(name)
-  if (t !== name && t in row) return row[t]
-  const lower = name.toLowerCase()
-  const tLower = t.toLowerCase()
-  for (const k of Object.keys(row)) {
-    const kl = k.toLowerCase()
-    if (kl === lower || kl === tLower) return row[k]
-  }
-  return undefined
-}
+/** Accented columns (`archivé`…) come back mangled on Linux and unaccented on
+ *  PostgreSQL: one reader for all backends, lib/accented-keys.ts. */
+export const rcReadCol = readCol
 
 // ── Physical column order ────────────────────────────────
 // The RUNTIME `SELECT *` order, which the positional INSERT/rewrite on Linux

@@ -106,9 +106,37 @@ export function tokenize(sql: string): Token[] {
  * passes through. Throws on a construct it cannot translate, so a route
  * fails loudly in the shadow diff instead of returning something wrong.
  */
-export function translateSql(sql: string): string {
+export interface SortContext {
+  /** text column (lowercase) → the COLLATE clause HFSQL's order needs */
+  collate: Map<string, string>
+  /** the outer table's key, appended as the last ORDER BY item (HFSQL leaves
+   *  ties in record order) — empty when unknown */
+  tiebreak: string[]
+}
+
+export function translateSql(sql: string, sort: SortContext = { collate: new Map(), tiebreak: [] }): string {
   const toks = tokenize(sql)
   const out: string[] = []
+  // R14: HFSQL sorts a text column by the options of its index — byte by byte
+  // (« BUGIS » before « Barata »), ignoring case, or ignoring case, spaces and
+  // punctuation (« 128/1 < 128/101 < 128/13 < 128/2 < 128 blanc ») — measured
+  // per column on prod 2026-09-28 (scripts/pg-measure-sorts.ts). PostgreSQL's
+  // French order ignores case and punctuation everywhere, and citext sorts on
+  // lower(). An ORDER BY item that is a bare text column is sorted
+  // `::text COLLATE <its rule>`. Not under DISTINCT or UNION, where PostgreSQL
+  // only accepts output columns in ORDER BY.
+  //
+  // R15: HFSQL returns ties — and every row of a query without ORDER BY — in
+  // record order (envoi_email: 8 recipients of one send share a millisecond and
+  // come back by id; PostgreSQL returns them in any order). The outer SELECT's
+  // ORDER BY therefore ends with the table's key, and a SELECT without one gets
+  // `ORDER BY <key>`. Not with DISTINCT / UNION / GROUP BY / aggregates, where
+  // the key is not an output.
+  const plain = !/\b(DISTINCT|UNION)\b/i.test(sql)
+  const byteOrder = sort.collate.size > 0 && plain
+  const tiebreak = plain && /^\s*SELECT\b/i.test(sql) && !/\bGROUP\s+BY\b/i.test(sql)
+    && !/\b(COUNT|SUM|MIN|MAX|AVG)\s*\(/i.test(sql) ? sort.tiebreak : []
+  let outerOrdered = false
   // Pending LIMITs: TOP n moves to the end of its own SELECT, i.e. before the
   // parenthesis closing the depth it was opened at (or the end of the text).
   const limits: { depth: number; n: string }[] = []
@@ -116,13 +144,37 @@ export function translateSql(sql: string): string {
   // already carries ASC/DESC. HFSQL sorts NULL as the smallest value (first
   // ascending, last descending — measured on prod 2026-09-22, prospect.date);
   // PostgreSQL does the opposite, so every item gets its NULLS placement.
-  const orderBy = new Map<number, { dir: boolean }>()
+  type Clause = { dir: boolean; start: number; wrapped: boolean; text: boolean; items: string[] }
+  const orderBy = new Map<number, Clause>()
+  const wrapItem = (d: number) => {
+    const o = orderBy.get(d)
+    if (!o || o.start < 0 || o.wrapped) return
+    o.wrapped = true
+    const m = /^(\s*)((?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*))(\s*)$/.exec(out.slice(o.start).join(''))
+    if (m) o.items.push(m[3].toLowerCase())
+    const coll = m && byteOrder ? sort.collate.get(m[3].toLowerCase()) : undefined
+    if (m && coll) {
+      out.splice(o.start, out.length - o.start, `${m[1]}${m[2]}::text COLLATE ${coll}${m[4]}`)
+      o.text = true
+    }
+  }
   const endItem = (d: number) => {
     const o = orderBy.get(d)
+    wrapItem(d)
     if (o && !o.dir) out.push(' NULLS FIRST')
     if (o) o.dir = false
   }
-  const endOrderBy = (d: number) => { endItem(d); orderBy.delete(d) }
+  const endOrderBy = (d: number) => {
+    endItem(d)
+    const o = orderBy.get(d)
+    orderBy.delete(d)
+    // Record order for ties, on the outer query only (a subquery names other tables).
+    if (d === 0 && o) {
+      outerOrdered = true
+      const extra = tiebreak.filter(c => !o.items.includes(c.replace(/^\w+\./, '')))
+      if (extra.length) out.push(`, ${extra.join(', ')}`)
+    }
+  }
   const nextWord = (k: number) => toks.slice(k + 1).find(x => x.kind !== 'other' || !/^\s$/.test(x.text))
   let depth = 0
   for (let k = 0; k < toks.length; k++) {
@@ -134,7 +186,13 @@ export function translateSql(sql: string): string {
     if (t.kind === 'str') { out.push(hfsqlDateTimeLiteral(t.text)); continue }
     if (t.kind === 'other') {
       if (t.text === '(') depth++
-      if (t.text === ',' && orderBy.has(depth)) endItem(depth)
+      if (t.text === ',' && orderBy.has(depth)) {
+        endItem(depth)
+        out.push(t.text)
+        orderBy.get(depth)!.start = out.length
+        orderBy.get(depth)!.wrapped = false
+        continue
+      }
       if (t.text === ')') {
         if (orderBy.has(depth)) endOrderBy(depth)
         const i = limits.findIndex(l => l.depth === depth)
@@ -146,8 +204,13 @@ export function translateSql(sql: string): string {
     }
     const up = t.text.toUpperCase()
     if (up === 'ORDER' && nextWord(k)?.text.toUpperCase() === 'BY') {
-      orderBy.set(depth, { dir: false })
+      orderBy.set(depth, { dir: false, start: -1, wrapped: false, text: false, items: [] })
+    } else if (up === 'BY' && orderBy.get(depth)?.start === -1 && !orderBy.get(depth)!.wrapped) {
+      out.push(t.text)
+      orderBy.get(depth)!.start = out.length
+      continue
     } else if ((up === 'ASC' || up === 'DESC') && orderBy.has(depth)) {
+      wrapItem(depth)
       out.push(t.text)
       if (nextWord(k)?.text.toUpperCase() !== 'NULLS') out.push(up === 'ASC' ? ' NULLS FIRST' : ' NULLS LAST')
       orderBy.get(depth)!.dir = true
@@ -194,6 +257,12 @@ export function translateSql(sql: string): string {
   // End of text: close the ORDER BY items first, then the moved LIMITs.
   while (out.length && /^\s$/.test(out[out.length - 1])) out.pop()
   for (const d of [...orderBy.keys()].sort((a, b) => b - a)) endOrderBy(d)
+  // R15: no ORDER BY at all → the IN list's order, then record order. Never
+  // after a native LIMIT / OFFSET.
+  if (!outerOrdered && tiebreak.length && !/\b(LIMIT|OFFSET)\b/i.test(sql)) {
+    const inList = inListOrder(sql)
+    out.push(` ORDER BY ${[...(inList ? [inList] : []), ...tiebreak].join(', ')}`)
+  }
   for (const l of limits.reverse()) out.push(` LIMIT ${l.n}`)
   return out.join('')
 }
@@ -313,6 +382,128 @@ export function emptyDatesToNull(sql: string, schema: string, map: DateCols = DA
   return sql
 }
 
+/** Every table a statement names: FROM / JOIN / UPDATE / INTO, and the rest of
+ *  a comma list `FROM a x, b y`. */
+export function tablesIn(sql: string): string[] {
+  const out = new Set<string>()
+  for (const m of sql.matchAll(/\b(?:FROM|JOIN|UPDATE|INTO)\s+([A-Za-z_]\w*)/gi)) out.add(m[1].toLowerCase())
+  for (const m of sql.matchAll(/\bFROM\s+([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)?(?:\s*,\s*[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)?)+)/gi)) {
+    for (const part of m[1].split(',')) out.add(part.trim().split(/\s+/)[0].toLowerCase())
+  }
+  return [...out]
+}
+
+/** schema.table → its key and text columns (pg_migrate.py SORTCOLS, per run). */
+type SortCols = Record<string, { pk: string[]; text: string[] }>
+/** schema.table.column → the measured HFSQL rule (scripts/pg-measure-sorts.ts). */
+type SortRules = Record<string, string>
+const SORTCOLS: SortCols = loadJson('pg-sortcols.json', {})
+const SORTRULES: SortRules = loadJson('pg-sortrules.json', {})
+
+/** Rule → COLLATE clause. The hf_* collations are created by pg_migrate.py (R14). */
+const COLLATION: Record<string, string> = {
+  C: '"C"', ci: 'public.hf_ci', ci_ai: 'public.hf_ci_ai', cip_as: 'public.hf_cip_as', cip: 'public.hf_cip',
+}
+
+/**
+ * What translateSql needs to sort like HFSQL: for each text column of the
+ * tables `sql` names, its collation (the measured rule, byte order when never
+ * measured — HFSQL's default for a column without index options); and the key
+ * of the outer table, qualified by its alias when the query joins.
+ */
+export function sortContext(sql: string, schema: string, cols: SortCols = SORTCOLS, rules: SortRules = SORTRULES): SortContext {
+  const collate = new Map<string, string>()
+  const entry = (t: string) => cols[`${schema}.${t}`] ? [`${schema}.${t}`, cols[`${schema}.${t}`]] as const
+    : cols[`public.${t}`] ? [`public.${t}`, cols[`public.${t}`]] as const : undefined
+  for (const t of tablesIn(sql)) {
+    const e = entry(t)
+    if (!e) continue
+    for (const c of e[1].text) if (!collate.has(c)) collate.set(c, COLLATION[rules[`${e[0]}.${c}`] ?? 'C'] ?? '"C"')
+  }
+  let tiebreak: string[] = []
+  const top = outerLevel(sql)
+  const outer = /\bFROM\s+([A-Za-z_]\w*)(?:\s+(?:AS\s+)?(?!(?:WHERE|ORDER|GROUP|JOIN|INNER|LEFT|RIGHT|CROSS|LIMIT|HAVING|UNION)\b)([A-Za-z_]\w*))?/i.exec(top)
+  if (outer) {
+    const pk = entry(outer[1].toLowerCase())?.[1].pk ?? []
+    const joined = /\bJOIN\b|\bFROM\s+[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)?\s*,/i.test(top)
+    tiebreak = pk.map(c => (joined ? `${outer[2] ?? outer[1]}.${c}` : c))
+  }
+  return { collate, tiebreak }
+}
+
+/** The statement with every parenthesised part and string literal blanked
+ *  out (same length, same positions), so `FROM` / `JOIN` / `IN (` found in it
+ *  belong to the outer query. */
+function outerLevel(sql: string): string {
+  let depth = 0, quote = false, s = ''
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i]
+    if (quote) {
+      if (c === "'") { if (sql[i + 1] === "'") { i++; s += ' ' } else quote = false }
+      s += ' '
+      continue
+    }
+    if (c === "'") { quote = true; s += ' '; continue }
+    // The outer query's own brackets stay: `IN (`, `FROM (` remain visible.
+    if (c === '(') { depth++; s += depth === 1 ? c : ' '; continue }
+    if (c === ')') { s += depth === 1 ? c : ' '; depth--; continue }
+    s += depth === 0 ? c : ' '
+  }
+  return s
+}
+
+/**
+ * R15, measured on prod 2026-09-28: HFSQL returns `WHERE col IN (…)` rows in
+ * the order of the LIST (IN (426,425) → 426, 425), and the API relies on it
+ * without knowing (the yarn provenance lists the lots in the order it asked for
+ * them). For the outer query's first IN over a list of literals, the ORDER BY
+ * item that reproduces it: its position in the list. citext[] for strings, so
+ * the match ignores case like HFSQL's IN.
+ */
+export function inListOrder(sql: string): string | undefined {
+  const top = outerLevel(sql)
+  const m = /\bWHERE\b[\s\S]*?(?<![\w.])((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s+IN\s*\(/i.exec(top)
+  if (!m) return undefined
+  const open = m.index + m[0].length - 1
+  let depth = 0, quote = false, end = -1
+  for (let i = open; i < sql.length; i++) {
+    const c = sql[i]
+    if (quote) { if (c === "'") { if (sql[i + 1] === "'") i++; else quote = false } ; continue }
+    if (c === "'") quote = true
+    else if (c === '(') depth++
+    else if (c === ')') { depth--; if (depth === 0) { end = i; break } }
+  }
+  if (end < 0) return undefined
+  const list = sql.slice(open + 1, end).trim()
+  if (/^-?\d+(\.\d+)?(\s*,\s*-?\d+(\.\d+)?)*$/.test(list)) return `array_position(ARRAY[${list}]::numeric[], ${m[1]}::numeric)`
+  if (/^'(?:[^']|'')*'(\s*,\s*'(?:[^']|'')*')*$/.test(list)) return `array_position(ARRAY[${list}]::citext[], ${m[1]}::citext)`
+  return undefined
+}
+
+/**
+ * The read side of the same convention: the API tests « has a date » as
+ * `date_fin <> ''` and « no date » as `date_relance = ''` (commandes du jour
+ * answered 500 on it, 2026-09-28). On a date column of a table the query names:
+ *   col = ''            → col IS NULL
+ *   col <> '' / != ''   → col IS NOT NULL
+ *   col > ''            → col IS NOT NULL
+ * Runs after emptyDatesToNull, so an UPDATE's SET list is already NULL here and
+ * only comparisons are left. A '' inside a string literal is never touched.
+ */
+export function emptyDateComparisons(sql: string, schema: string, map: DateCols = DATECOLS): string {
+  if (!sql.includes("''")) return sql
+  const dates = new Set<string>()
+  for (const t of tablesIn(sql)) for (const d of dateColsOf(map, schema, t)) dates.add(d)
+  if (!dates.size) return sql
+  const re = /(?<![\w.'])((?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*))(\s*)(<>|!=|=|>)\s*''(?!')/g
+  return sql.replace(re, (whole, ref: string, col: string, _sp: string, op: string, at: number) => {
+    if (!dates.has(col.toLowerCase())) return whole
+    // Inside a string literal when an odd number of quotes precede the match.
+    if ((sql.slice(0, at).match(/'/g)?.length ?? 0) % 2 === 1) return whole
+    return `${ref} ${op === '=' ? 'IS NULL' : 'IS NOT NULL'}`
+  })
+}
+
 // ── Key restoration ──────────────────────────────────────────
 
 type KeyMap = Record<string, Record<string, string>>
@@ -407,7 +598,7 @@ export function createPgClient(connectionString: string = process.env.HFSQL_CONN
   }
 
   async function run(text: string): Promise<Record<string, unknown>[]> {
-    const translated = emptyDatesToNull(translateSql(text), schema)
+    const translated = emptyDateComparisons(emptyDatesToNull(translateSql(text, sortContext(text, schema)), schema), schema)
     const rows = await db().unsafe(translated)
     return rows as unknown as Record<string, unknown>[]
   }

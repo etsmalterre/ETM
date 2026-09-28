@@ -33,6 +33,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { query, queryRaw, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
 import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
+import { readCol } from '../lib/accented-keys.js'
 import { renderFncPdfBuffer, type FncPdfData } from '../lib/pdf/FncPdf.js'
 import { createRetourFromFnc } from '../lib/retour-client-trm.js'
 import { type EmailRecipientPayload } from './expeditions.js'
@@ -74,27 +75,6 @@ function trimStr(v: unknown): string {
   return (v ?? '').toString().trim()
 }
 
-/** `terminé` → `termin` — the Linux driver truncates an accented column name at
- *  its first non-ASCII char, both in the returned key and in any SQL text. */
-function accentTrunc(name: string): string {
-  const m = name.match(/[^\x00-\x7F]/)
-  return m && m.index !== undefined ? name.slice(0, m.index) : name
-}
-
-/** Read a column by its real name, its accent-truncated twin, or a
- *  case-insensitive match (reserved words like DATE come back uppercased). */
-function readCol(row: Record<string, unknown>, name: string): unknown {
-  if (name in row) return row[name]
-  const t = accentTrunc(name)
-  if (t !== name && t in row) return row[t]
-  const lower = name.toLowerCase()
-  const tLower = t.toLowerCase()
-  for (const k of Object.keys(row)) {
-    const kl = k.toLowerCase()
-    if (kl === lower || kl === tLower) return row[k]
-  }
-  return undefined
-}
 
 // ── dossier_qualite physical column order (positional INSERT on Linux) ──
 const DQ_COLUMNS = [
@@ -866,6 +846,9 @@ async function loadGedForCommandeFil(cmdIds: number[]) {
     : []
   const typeName = new Map((typeRows as any[]).map((t) => [n(t.IDtype_doc), trimStr(t.nom)]))
   const out = new Map<number, { IDged: number; nom: string; type_nom: string | null }[]>()
+  // Documents in id order (upload order) on both databases — HFSQL's own order
+  // here is its index's internal one, which PostgreSQL cannot reproduce.
+  ;(rows as any[]).sort((a, b) => n(a.IDged) - n(b.IDged))
   for (const r of rows as any[]) {
     const k = n(r.IDreference)
     const list = out.get(k) ?? []
@@ -892,6 +875,7 @@ async function loadGedForCommandeSst(cmdIds: number[]) {
     : []
   const typeName = new Map((typeRows as any[]).map((t) => [n(t.IDtype_doc), trimStr(t.nom)]))
   const out = new Map<number, { IDged: number; nom: string; type_nom: string | null }[]>()
+  ;(rows as any[]).sort((a, b) => n(a.IDged) - n(b.IDged)) // id order on both databases, as above
   for (const r of rows as any[]) {
     const k = n(r.IDcommande_sous_traitant)
     const list = out.get(k) ?? []

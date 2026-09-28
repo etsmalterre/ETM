@@ -15,8 +15,12 @@
 //   npx tsx src/scripts/shadow-diff.ts --suite=entreprises
 //   npx tsx src/scripts/shadow-diff.ts --paths=/api/entreprises,/api/entreprises/7
 //   options: --a=<url> --b=<url> --user=<IDutilisateur> --max-diffs=20 --limit=<ids per detail route>
+//            --dump=<dir>  write A, B and the real diffs of every differing route as JSON
+//   Also prints the time each side took: the routes where PostgreSQL is
+//   slower are the ones a user could notice after the cutover.
 
 import { createHash } from 'crypto'
+import { mkdirSync, writeFileSync } from 'fs'
 
 const args = process.argv.slice(2)
 const arg = (n: string) => args.find(a => a.startsWith(`--${n}=`))?.slice(n.length + 3)
@@ -25,6 +29,7 @@ const B = arg('b') ?? 'http://localhost:8083'
 const USER = arg('user')
 const MAX_DIFFS = Number(arg('max-diffs') ?? 12)
 const LIMIT = Number(arg('limit') ?? 25)
+const DUMP = arg('dump')
 
 type Json = unknown
 
@@ -434,8 +439,11 @@ async function main() {
 
   const counts: Record<Verdict, number> = { identical: 0, order: 0, harmless: 0, different: 0 }
   const byPattern = new Map<string, { n: number; example: Diff; url: string }>()
+  const times: { p: string; a: number; b: number }[] = []
+  if (DUMP) mkdirSync(DUMP, { recursive: true })
   for (const p of paths) {
     const [ra, rb] = await Promise.all([get(A, p, ca), get(B, p, cb)])
+    times.push({ p, a: ra.ms, b: rb.ms })
     const diffs: Diff[] = []
     if (ra.status !== rb.status) diffs.push({ path: '<status>', a: ra.status, b: rb.status })
     diff(ra.body, rb.body, '$', diffs)
@@ -444,6 +452,8 @@ async function main() {
     if (v === 'identical') continue
     const real = diffs.filter(d => !floatNoise(d.a, d.b) && !typographyOnly(d.a, d.b))
     console.log(`${v === 'different' ? '✗' : '~'} ${p}  ${v === 'order' ? 'same rows, other order' : v === 'harmless' ? 'float noise / HFSQL encoding defect only' : `${real.length} real diff(s)`}`)
+    if (DUMP && v !== 'harmless') writeFileSync(`${DUMP}/${p.replace(/[^\w.-]+/g, '_')}.json`,
+      JSON.stringify({ path: p, verdict: v, diffs: real.slice(0, 50), a: ra.body, b: rb.body }, null, 1))
     if (v !== 'different') continue
     for (const d of real) {
       const key = pattern(p.replace(/\/\d+/g, '/:id')) + '  ' + pattern(d.path)
@@ -460,6 +470,13 @@ async function main() {
     for (const [key, { n, example, url }] of [...byPattern].sort((x, y) => y[1].n - x[1].n).slice(0, MAX_DIFFS)) {
       console.log(`  ×${n}  ${key}\n        e.g. ${url} ${example.path}: A ${show(example.a)}  B ${show(example.b)}`)
     }
+  }
+  const sum = (k: 'a' | 'b') => times.reduce((t, x) => t + x[k], 0)
+  console.log(`\nTime: A ${(sum('a') / 1000).toFixed(1)} s, B ${(sum('b') / 1000).toFixed(1)} s over ${times.length} routes`)
+  const slower = times.filter(t => t.b > 300 && t.b > 2 * t.a).sort((x, y) => (y.b - y.a) - (x.b - x.a))
+  if (slower.length) {
+    console.log(`B at least twice as slow and over 300 ms (${slower.length}):`)
+    for (const t of slower.slice(0, MAX_DIFFS)) console.log(`  ${t.p}  A ${t.a} ms  B ${t.b} ms`)
   }
   process.exitCode = counts.different ? 1 : 0
 }

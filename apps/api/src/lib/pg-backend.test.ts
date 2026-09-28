@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { translateSql, keyResolver, pgDateToHfsql, pgTimestampToHfsql, emptyDatesToNull } from './pg-backend.js'
+import { translateSql, keyResolver, pgDateToHfsql, pgTimestampToHfsql, emptyDatesToNull, emptyDateComparisons, sortContext, inListOrder } from './pg-backend.js'
 
 describe('translateSql', () => {
   it('moves TOP n to a LIMIT at the end of its SELECT', () => {
@@ -74,6 +74,89 @@ describe('ORDER BY: NULL is the smallest value, as in HFSQL', () => {
   })
 })
 
+describe('ORDER BY on text: the HFSQL order of each column (R14)', () => {
+  const cols = {
+    'public.sous_traitant': { pk: ['idsous_traitant'], text: ['nom'] },
+    'public.client': { pk: ['idclient'], text: ['nom', 'ville'] },
+    'public.commande_client': { pk: ['idcommande_client'], text: ['reference'] },
+  }
+  const rules = { 'public.client.nom': 'cip_as' }
+  const ctx = (sql: string) => sortContext(sql, 'public', cols, rules)
+
+  it('builds the collations and the tie-break from the tables the query names', () => {
+    const c = ctx('SELECT nom FROM client ORDER BY nom')
+    expect(c.collate.get('nom')).toBe('public.hf_cip_as')
+    expect(c.collate.get('ville')).toBe('"C"') // never measured: byte order
+    expect(c.tiebreak).toEqual(['idclient'])
+    expect(ctx('SELECT c.nom FROM client c JOIN commande_client cc ON cc.IDclient = c.IDclient ORDER BY c.nom').tiebreak)
+      .toEqual(['c.idclient'])
+  })
+
+  it('sorts a bare text column with its collation and ends with the key', () => {
+    const sql = 'SELECT IDsous_traitant, nom FROM sous_traitant ORDER BY nom'
+    expect(translateSql(sql, ctx(sql)))
+      .toBe('SELECT IDsous_traitant, nom FROM sous_traitant ORDER BY nom::text COLLATE "C" NULLS FIRST, idsous_traitant')
+    const q = 'SELECT TOP 5 c.nom FROM client c WHERE c.nom <> \'\' ORDER BY c.nom DESC, IDclient'
+    expect(translateSql(q, ctx(q)))
+      .toBe('SELECT c.nom FROM client c WHERE c.nom <> \'\' ORDER BY c.nom::text COLLATE public.hf_cip_as DESC NULLS LAST, IDclient NULLS FIRST LIMIT 5')
+  })
+
+  it('leaves numbers, expressions, DISTINCT and UNION alone; no tie-break under GROUP BY', () => {
+    const num = 'SELECT * FROM client ORDER BY IDclient'
+    expect(translateSql(num, ctx(num))).toBe('SELECT * FROM client ORDER BY IDclient NULLS FIRST')
+    const expr = 'SELECT * FROM client ORDER BY UPPER(nom)'
+    expect(translateSql(expr, ctx(expr))).toBe('SELECT * FROM client ORDER BY UPPER(nom) NULLS FIRST, idclient')
+    const grp = 'SELECT nom, COUNT(*) FROM client GROUP BY nom ORDER BY nom'
+    expect(translateSql(grp, ctx(grp))).toBe('SELECT nom, COUNT(*) FROM client GROUP BY nom ORDER BY nom::text COLLATE public.hf_cip_as NULLS FIRST')
+    const dis = 'SELECT DISTINCT nom FROM client ORDER BY nom'
+    expect(translateSql(dis, ctx(dis))).toBe('SELECT DISTINCT nom FROM client ORDER BY nom NULLS FIRST')
+  })
+})
+
+describe('record order: ties and unordered queries come back by key, as in HFSQL (R15)', () => {
+  const cols = {
+    'public.envoi_email': { pk: ['idenvoi_email'], text: ['adresse'] },
+    'public.client': { pk: ['idclient'], text: ['nom'] },
+  }
+  const ctx = (sql: string) => sortContext(sql, 'public', cols, {})
+
+  it('ends every outer ORDER BY with the key', () => {
+    const q = 'SELECT * FROM envoi_email WHERE IDreference = 8966 ORDER BY DATE DESC'
+    expect(translateSql(q, ctx(q))).toBe('SELECT * FROM envoi_email WHERE IDreference = 8966 ORDER BY DATE DESC NULLS LAST, idenvoi_email')
+  })
+
+  it('orders a SELECT without ORDER BY by the key, before the moved TOP', () => {
+    const q = "SELECT TOP 3 adresse FROM envoi_email WHERE notes = 'x'"
+    expect(translateSql(q, ctx(q))).toBe("SELECT adresse FROM envoi_email WHERE notes = 'x' ORDER BY idenvoi_email LIMIT 3")
+  })
+
+  it('takes the key of the OUTER table, never one inside a subquery or a literal', () => {
+    const q = "SELECT (SELECT TOP 1 nom FROM client c WHERE c.IDclient = e.IDreference) AS n, adresse FROM envoi_email e JOIN client k ON k.IDclient = e.IDreference WHERE adresse <> 'FROM client'"
+    expect(sortContext(q, 'public', cols, {}).tiebreak).toEqual(['e.idenvoi_email'])
+  })
+
+  it('keeps the order of an IN list, as HFSQL does (measured: IN (426,425) → 426, 425)', () => {
+    const q = 'SELECT IDenvoi_email, adresse FROM envoi_email WHERE IDenvoi_email IN (426, 425)'
+    expect(translateSql(q, ctx(q))).toBe(
+      'SELECT IDenvoi_email, adresse FROM envoi_email WHERE IDenvoi_email IN (426, 425) ORDER BY array_position(ARRAY[426, 425]::numeric[], IDenvoi_email::numeric), idenvoi_email')
+    const s = "SELECT * FROM envoi_email WHERE IDtype_doc = 2 AND notes IN ('b','a''x')"
+    expect(inListOrder(s)).toBe("array_position(ARRAY['b','a''x']::citext[], notes::citext)")
+    // a list that is a subquery, or an IN inside a subquery, is not a literal list
+    expect(inListOrder('SELECT * FROM a WHERE x IN (SELECT y FROM b)')).toBeUndefined()
+    expect(inListOrder('SELECT * FROM a WHERE z = (SELECT 1 FROM b WHERE y IN (1,2))')).toBeUndefined()
+  })
+
+  it('leaves aggregates, GROUP BY, DISTINCT, writes and native LIMIT alone', () => {
+    for (const q of [
+      'SELECT COUNT(*) FROM envoi_email',
+      'SELECT IDtype_doc, COUNT(*) FROM envoi_email GROUP BY IDtype_doc',
+      'SELECT DISTINCT adresse FROM envoi_email',
+      'UPDATE envoi_email SET notes = 1 WHERE IDenvoi_email = 2',
+      'SELECT adresse FROM envoi_email LIMIT 5',
+    ]) expect(translateSql(q, ctx(q))).not.toContain('idenvoi_email')
+  })
+})
+
 describe("empty dates: HFSQL writes '', PostgreSQL wants NULL", () => {
   // The map the nightly copy generates; only these columns are ever touched.
   const cols = {
@@ -107,6 +190,25 @@ describe("empty dates: HFSQL writes '', PostgreSQL wants NULL", () => {
   it('leaves a positional INSERT alone when the value count does not match', () => {
     const sql = "INSERT INTO prospect VALUES (1, 'x')"
     expect(emptyDatesToNull(sql, 'public', cols)).toBe(sql)
+  })
+
+  it("turns a comparison with '' on a date column into IS [NOT] NULL", () => {
+    expect(emptyDateComparisons("SELECT TOP 1 date FROM prospect WHERE date <> '' AND date < '20260928'", 'public', cols))
+      .toBe("SELECT TOP 1 date FROM prospect WHERE date IS NOT NULL AND date < '20260928'")
+    expect(emptyDateComparisons("SELECT nom FROM prospect p WHERE p.date_relance = '' OR p.date_relance > ''", 'public', cols))
+      .toBe("SELECT nom FROM prospect p WHERE p.date_relance IS NULL OR p.date_relance IS NOT NULL")
+    expect(emptyDateComparisons("SELECT c.nom FROM prospect p JOIN client c ON c.IDclient = p.IDprospect WHERE c.date_creation != ''", 'public', cols))
+      .toBe("SELECT c.nom FROM prospect p JOIN client c ON c.IDclient = p.IDprospect WHERE c.date_creation IS NOT NULL")
+    expect(emptyDateComparisons("SELECT nom FROM prospect p, client c WHERE c.date_creation <> ''", 'public', cols))
+      .toBe("SELECT nom FROM prospect p, client c WHERE c.date_creation IS NOT NULL")
+  })
+
+  it("leaves text columns, and '' inside a literal, alone", () => {
+    const text = "SELECT nom FROM prospect WHERE nom <> ''"
+    expect(emptyDateComparisons(text, 'public', cols)).toBe(text)
+    const lit = "UPDATE prospect SET nom = 'date = '''' ok' WHERE date_relance <> ''"
+    expect(emptyDateComparisons(lit, 'public', cols))
+      .toBe("UPDATE prospect SET nom = 'date = '''' ok' WHERE date_relance IS NOT NULL")
   })
 })
 
