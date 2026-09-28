@@ -203,16 +203,23 @@ interface RunLigne {
   bilan: BilanPoints | null
 }
 
+const PROFIL_NOM: Record<string, string> = { matel: 'MATEL', bontemps: 'Bontemps', tad: 'TAD' }
+
 interface Controle { code: string; gravite: 'bloquant' | 'avertissement'; message: string }
 interface BlPiece { numero_piece: string; poids: number | null; metrage: number | null; observations: string }
 interface PieceResolue { numero_piece: string; statut: 'ok' | 'affectee_ailleurs' | 'inconnue' }
 
 interface RunComplet extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces'> {
   resultat: {
+    /** BL Ennoblisseur since 2026-09-28: which dyer, which document (absent before = MATEL BL). */
+    profil?: 'matel' | 'bontemps' | 'tad' | null
+    typeDocument?: 'bl' | 'mise_a_dispo' | null
     pages?: Array<{ nom: string; ocr: string | null; erreur: string | null }>
     extraction?: {
       numero_commande: string
       numero_bordereau: string
+      numero_of?: string
+      destinataire?: string
       ligne: number | null
       pieces: BlPiece[]
       nombre_pieces: number | null
@@ -1547,6 +1554,12 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const statutPiece = (numero: string, i: number) => res?.pieces[i]?.numero_piece === numero ? res.pieces[i].statut : res?.pieces.find((p) => p.numero_piece === numero)?.statut
   const pdfUrl = run && run.fichiers.length > 0 ? `${API_URL}/agents-ia/${slug}/runs/${run.id}/fichiers/${page}#view=FitH` : null
   const somme = (k: 'poids' | 'metrage') => e ? e.pieces.reduce((s, p) => s + (p[k] ?? 0), 0) : 0
+  // Runs before 2026-09-28 carry no profil: they were all MATEL BLs.
+  const profil = run?.resultat.profil ?? (e ? 'matel' : null)
+  const miseADispo = run?.resultat.typeDocument === 'mise_a_dispo'
+  const titre = !e ? 'Exécution'
+    : miseADispo ? `${PROFIL_NOM[profil ?? ''] ?? ''} · Mise à dispo${e.numero_of ? ` OF ${e.numero_of}` : ''}`
+    : `${profil && profil !== 'matel' ? `${PROFIL_NOM[profil]} · ` : ''}BL ${e.numero_bordereau || 'illisible'}`
 
   return (
     <Dialog open={runId !== null} onOpenChange={(o) => { if (!o) onClose() }}>
@@ -1554,7 +1567,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 flex-wrap">
             <FileText className="h-5 w-5 text-accent" />
-            {e?.numero_bordereau ? `BL ${e.numero_bordereau}` : 'Exécution'}
+            {titre}
             {run && <StatutPill statut={run.statut} className="text-xs py-0.5" />}
             {run && <span className="text-xs font-normal text-muted-foreground">{fmtDateHeure(run.createdAt)} · {SOURCE_LABEL[run.source]} · v{run.version}</span>}
           </DialogTitle>
@@ -1603,9 +1616,11 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
               )}
               {e && (
                 <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1">
+                  <KV label="Ennoblisseur" value={`${PROFIL_NOM[profil ?? ''] ?? '—'}${miseADispo ? ' — stock fini à disposition' : ''}`} />
                   <KV label="Commande" value={e.numero_commande || '—'} mono />
                   <KV label="Ligne de commande" value={res?.ligneId ? `#${res.ligneId}${e.ligne ? ` (imprimé : ligne ${e.ligne})` : ''}` : '—'} mono />
                   <KV label="Lot" value={res?.lot || '—'} mono />
+                  {profil && profil !== 'matel' && <KV label="Poids" value="non repris (Malterre pèse les rouleaux)" />}
                   <KV label="Totaux imprimés" value={`${e.nombre_pieces ?? '—'} pc · ${e.poids_total != null ? fmtNum(e.poids_total, 2) : '—'} kg · ${e.metrage_total != null ? fmtNum(e.metrage_total, 2) : '—'} m`} mono />
                   <KV label="Totaux lus" value={`${e.pieces.length} pc · ${fmtNum(somme('poids'), 2)} kg · ${fmtNum(somme('metrage'), 2)} m`} mono />
                 </div>

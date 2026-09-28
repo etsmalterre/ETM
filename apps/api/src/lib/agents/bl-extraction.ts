@@ -76,6 +76,10 @@ export interface BlExtraction {
   nombre_pieces: number | null
   poids_total: number | null
   metrage_total: number | null
+  /** TAD: « OF n° » — its lot (TA<OF>). '' elsewhere. */
+  numero_of: string
+  /** TAD: the company the goods were shipped to, '' when not printed. */
+  destinataire: string
 }
 
 const toNum = (v: unknown): number | null => {
@@ -120,7 +124,8 @@ export function normaliserExtraction(raw: unknown): BlExtraction {
     ligne: toInt(o.ligne),
     pieces: pieces.map((p) => {
       const r = (p && typeof p === 'object' ? p : {}) as Record<string, unknown>
-      const composants = composantsDe(String(r.numero_piece ?? ''))
+      // TAD prints the choice after a bar: « 3379/80|A ».
+      const composants = composantsDe(String(r.numero_piece ?? '').split('|')[0])
       return {
         numero_piece: composants.join('+'),
         composants,
@@ -132,6 +137,8 @@ export function normaliserExtraction(raw: unknown): BlExtraction {
     nombre_pieces: toInt(o.nombre_pieces),
     poids_total: toNum(o.poids_total),
     metrage_total: toNum(o.metrage_total),
+    numero_of: String(o.numero_of ?? '').replace(/\s/g, ''),
+    destinataire: String(o.destinataire ?? '').trim(),
   }
 }
 
@@ -145,11 +152,11 @@ export function lotDuBordereau(numeroBordereau: string): string {
 /** Indexes of the attachments that belong to the same BL, in order. A BL
  *  scanned as several PDFs (ged 10620 + 10621) carries one bordereau number
  *  on each page; an unreadable number stays on its own. */
-export function grouperPages(pages: readonly BlExtraction[]): number[][] {
+export function grouperPages(pages: readonly BlExtraction[], cle: (p: BlExtraction, i: number) => string = (p) => p.numero_bordereau): number[][] {
   const groupes: number[][] = []
   const parNumero = new Map<string, number[]>()
   pages.forEach((p, i) => {
-    const k = p.numero_bordereau
+    const k = cle(p, i)
     if (!k) { groupes.push([i]); return }
     const g = parNumero.get(k)
     if (g) g.push(i)
@@ -160,8 +167,8 @@ export function grouperPages(pages: readonly BlExtraction[]): number[][] {
 
 /** One extraction per BL: pieces concatenated, header from the first page
  *  that has it, printed totals from the page that carries them. */
-export function fusionnerPages(pages: readonly BlExtraction[]): BlExtraction[] {
-  return grouperPages(pages).map((idx) => {
+export function fusionnerPages(pages: readonly BlExtraction[], cle?: (p: BlExtraction, i: number) => string): BlExtraction[] {
+  return grouperPages(pages, cle).map((idx) => {
     const ps = idx.map((i) => pages[i])
     if (ps.length === 1) return ps[0]
     const premier = <T,>(f: (p: BlExtraction) => T | null | '') => ps.map(f).find((v) => v != null && v !== '') ?? null
@@ -174,6 +181,8 @@ export function fusionnerPages(pages: readonly BlExtraction[]): BlExtraction[] {
       nombre_pieces: dernier((p) => p.nombre_pieces),
       poids_total: dernier((p) => p.poids_total),
       metrage_total: dernier((p) => p.metrage_total),
+      numero_of: (premier((p) => p.numero_of) as string | null) ?? '',
+      destinataire: (premier((p) => p.destinataire) as string | null) ?? '',
     }
   })
 }
@@ -186,15 +195,29 @@ export interface Controle {
   message: string
 }
 
+/** What differs per dyer in the checks (bl-profils.ts reglesDe()). */
+export interface ReglesControle {
+  bordereauRe: RegExp
+  /** TAD: the OF number is the lot, it must be readable. */
+  ofRequis: boolean
+  /** The weight is written into the réception (MATEL). When it is not, a
+   *  missing or inconsistent weight only warns: the métrage is what matters. */
+  poidsUtile: boolean
+}
+
+export const REGLES_MATEL: ReglesControle = { bordereauRe: /^\d{6}[A-Z]?$/, ofRequis: false, poidsUtile: true }
+
 /** Checks on the extraction alone (no database). A « bloquant » check sends
  *  the BL to a human; an « avertissement » is shown but does not block. */
-export function controlerExtraction(e: BlExtraction): Controle[] {
+export function controlerExtraction(e: BlExtraction, regles: ReglesControle = REGLES_MATEL): Controle[] {
   const out: Controle[] = []
   const bloque = (code: string, message: string) => out.push({ code, gravite: 'bloquant', message })
   const avertit = (code: string, message: string) => out.push({ code, gravite: 'avertissement', message })
 
   if (!/^\d{4}$/.test(e.numero_commande)) bloque('commande_format', `Numéro de commande illisible (« ${e.numero_commande || '—'} »).`)
-  if (!/^\d{6}[A-Z]?$/.test(e.numero_bordereau)) bloque('bordereau_format', `Numéro de bordereau illisible (« ${e.numero_bordereau || '—'} »).`)
+  if (!regles.bordereauRe.test(e.numero_bordereau)) bloque('bordereau_format', `Numéro de bordereau illisible (« ${e.numero_bordereau || '—'} »).`)
+  if (regles.ofRequis && !/^\d{6}$/.test(e.numero_of)) bloque('of_format', `Numéro d’OF illisible (« ${e.numero_of || '—'} »).`)
+  const pesee = (code: string, message: string) => (regles.poidsUtile ? bloque : avertit)(code, message)
   if (e.pieces.length === 0) bloque('aucune_piece', 'Aucune pièce lue sur le BL.')
 
   // A piece the dyer cut in two is printed twice under the same number, one
@@ -215,7 +238,7 @@ export function controlerExtraction(e: BlExtraction): Controle[] {
       bloque('piece_format', `Numéro de pièce illisible (« ${p.numero_piece || '—'} »).`)
     }
     const coupee = coupees.has(p.numero_piece)
-    if (p.poids == null || p.poids < 0 || (p.poids === 0 && !coupee)) bloque('piece_poids', `Poids manquant pour la pièce ${p.numero_piece}.`)
+    if (p.poids == null || p.poids < 0 || (p.poids === 0 && !coupee)) pesee('piece_poids', `Poids manquant pour la pièce ${p.numero_piece}.`)
     if (p.metrage == null || p.metrage < 0) bloque('piece_metrage', `Métrage manquant pour la pièce ${p.numero_piece}.`)
     if (coupee && vus.has(p.composants[0])) continue
     for (const c of p.composants) {
@@ -231,13 +254,22 @@ export function controlerExtraction(e: BlExtraction): Controle[] {
   // disagrees is a strong signal, so it blocks.
   const somme = (k: 'poids' | 'metrage') => Math.round(e.pieces.reduce((s, p) => s + (p[k] ?? 0), 0) * 100) / 100
   if (e.poids_total != null && Math.abs(somme('poids') - e.poids_total) > 0.051) {
-    bloque('total_poids', `La somme des poids (${somme('poids')} kg) ne correspond pas au total imprimé (${e.poids_total} kg).`)
+    pesee('total_poids', `La somme des poids (${somme('poids')} kg) ne correspond pas au total imprimé (${e.poids_total} kg).`)
   }
-  if (e.metrage_total != null && Math.abs(somme('metrage') - e.metrage_total) > 0.051) {
+  // TAD's total counts the 1st choice only (ged 4645: 594,2 m printed + 81,8 m
+  // of 2nd choice = 676 m read); its prompt marks those pieces « 2e choix ».
+  const premierChoix = Math.round(e.pieces.filter((p) => !/^2e choix/i.test(p.observations)).reduce((s, p) => s + (p.metrage ?? 0), 0) * 100) / 100
+  if (e.metrage_total != null && Math.abs(somme('metrage') - e.metrage_total) > 0.051 && Math.abs(premierChoix - e.metrage_total) > 0.051) {
     bloque('total_metrage', `La somme des métrages (${somme('metrage')} m) ne correspond pas au total imprimé (${e.metrage_total} m).`)
   }
   if (e.nombre_pieces != null && e.nombre_pieces !== e.pieces.length) {
     avertit('total_nombre', `Le BL annonce ${e.nombre_pieces} pièce(s), ${e.pieces.length} ligne(s) lue(s).`)
+  }
+  // TAD may ship straight to a customer or a contrecolleur (BL 344642 → C2TEC,
+  // 2026-09-14): the réception is the same, but ETM still shows the rolls at
+  // the dyer's (magasin) until someone moves them.
+  if (e.destinataire && !/MALTERRE/i.test(e.destinataire)) {
+    avertit('livre_ailleurs', `Livré directement chez ${e.destinataire} : dans ETM les rouleaux restent au magasin de l’ennoblisseur — faire un transfert si besoin.`)
   }
   if (e.poids_total == null && e.metrage_total == null) {
     avertit('totaux_absents', 'Aucun total imprimé sur ce document (BL sur plusieurs pages ?) : les pièces n’ont pas pu être recoupées.')

@@ -3,9 +3,9 @@
 // store.ts). Adding an agent = one entry here + its pipeline module.
 
 import { isChatModel } from '../mistral.js'
+import { PROFILS } from './bl-profils.js'
 import {
   BL_ENNOBLISSEUR_BOITE,
-  BL_ENNOBLISSEUR_EXPEDITEURS,
   BL_ENNOBLISSEUR_SLUG,
   BL_ENNOBLISSEUR_VERSION_INITIALE,
   retirerEcritures as retirerBlEnnoblisseur,
@@ -91,16 +91,16 @@ export const AGENTS: readonly AgentDef[] = [
     slug: BL_ENNOBLISSEUR_SLUG,
     nom: 'BL Ennoblisseur',
     description:
-      'Lit les bordereaux de livraison envoyés par le teinturier MATEL et prépare la réception : chaque pièce (poids, métrage, observations) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande.',
+      `Lit les bordereaux de livraison des ennoblisseurs (${PROFILS.map((p) => p.nom).join(', ')}) et prépare la réception : chaque pièce (métrage, observations, et le poids pour MATEL) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande. Les autres pièces jointes de ces expéditeurs (palettes, plans de charge, factures, nos propres documents renvoyés) sont écartées sans alerte.`,
     declenchement: { type: 'releve', intervalleMs: 2 * 60_000 },
-    declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE}, mails de ${BL_ENNOBLISSEUR_EXPEDITEURS.join(', ')} avec une pièce jointe.`,
+    declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE} : mails avec pièce jointe venant des contacts de ${PROFILS.map((p) => p.nom).join(', ')} (Sous-traitants › Gestion › Contacts — une nouvelle adresse du même domaine est prise d’office). C’est le texte du PDF qui décide s’il s’agit d’un BL.${((essai) => (essai.length ? ` ${essai.join(' et ')} : en essai quel que soit le mode de l’agent, le temps de valider leur lecture.` : ''))(PROFILS.filter((p) => p.modeMax === 'essai').map((p) => p.nom))}`,
     ecritures: [
-      'Le PDF du BL dans les documents de la commande sous-traitant (type « BL retour ennoblisseur »).',
-      'Une ligne par pièce dans les données de réception (table data_bl_tricotbot), lot « MA » + numéro de BL.',
-      'Un libellé Gmail « ETM/BL traité » ou « ETM/BL à vérifier » sur le mail.',
+      'Le PDF dans les documents de la commande sous-traitant (type « BL retour ennoblisseur »), nommé comme le lot.',
+      'Une ligne par pièce dans les données de réception (table data_bl_tricotbot). Lot : « MA » + n° de BL (MATEL), « BON » + n° de BL (Bontemps), « TA » + n° d’OF (TAD, mise à dispo comme BL). Poids : celui du BL pour MATEL, aucun pour les autres (Malterre pèse).',
+      'Un libellé Gmail « ETM/BL traité » ou « ETM/BL à vérifier » sur le mail (mode actif seulement).',
     ],
     abstention:
-      'Rien n’est enregistré si un contrôle bloque : numéro de commande ou de bordereau illisible, commande inconnue ou pas chez MATEL, pièce introuvable ou affectée à une autre commande, somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « BL Ennoblisseur à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
+      'Rien n’est enregistré si un contrôle bloque : numéro de commande, de bordereau ou d’OF illisible, commande inconnue ou chez un autre ennoblisseur, pièce introuvable ou affectée à une autre commande, somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « BL Ennoblisseur à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
     evaluation: {
       reussite: 'Gardé tel quel : les pièces pré-remplies sont bonnes, rien n’a été retouché à la réception.',
       partielle: 'Gardé en corrigeant : la base est bonne, mais au moins une valeur a été corrigée à la main (poids, métrage, n° de pièce, ligne). Les pièces restent pré-remplies.',
@@ -110,7 +110,7 @@ export const AGENTS: readonly AgentDef[] = [
         exemples: {
           reussite: '12 pièces lues, poids et métrages identiques au BL papier.',
           partielle: 'Un poids lu 21,4 kg au lieu de 24,1 kg, corrigé dans le dialogue de réception.',
-          echec: 'Le BL a été rattaché à la mauvaise commande MATEL.',
+          echec: 'Le BL a été rattaché à la mauvaise commande.',
         },
         remarques: ['Une seule valeur corrigée suffit pour une partielle : dites laquelle dans le commentaire.'],
       },

@@ -393,6 +393,7 @@ const SCENARIOS: Scenario[] = [
       process.env.DB_BACKEND = 'pg'
       const { query } = await import('../lib/hfsql-auto.js')
       const { ecrireBl, retirerPieces } = await import('../lib/agents/bl-ennoblisseur-db.js')
+      const { profilDe } = await import('../lib/agents/bl-profils.js')
       // Any ennoblissement line (type 2) of a recent order.
       const [l] = await query<{ id: number; cmd: number }>(
         `SELECT TOP 1 IDligne_commande_sous_traitant AS id, IDcommande_sous_traitant AS cmd FROM ligne_commande_sous_traitant ORDER BY IDligne_commande_sous_traitant DESC`,
@@ -409,7 +410,7 @@ const SCENARIOS: Scenario[] = [
       const r = { commandeId: Number(l.cmd), sousTraitantId: null, lignes: [Number(l.id)], ligneId: Number(l.id), lot, pieces: [], dejaImportees: [], gedExistant: null, controles: [] }
       const pdf = Buffer.from(`%PDF-1.4 ${TAG} é`, 'latin1')
       const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-      const w = await ecrireBl(e as any, r as any, [pdf], today)
+      const w = await ecrireBl(e as any, r as any, [pdf], today, profilDe('matel')!)
       try {
         eq(w.lignesEcrites, 2, 'pieces written')
         eq(w.ids?.length, 2, 'their ids found back')

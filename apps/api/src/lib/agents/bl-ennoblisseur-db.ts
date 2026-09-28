@@ -3,7 +3,7 @@
 // WebDev service `localapi.malterre` used to do for n8n (load_bl_doc +
 // load_bl_data):
 //   - the PDF as a `ged` row of type 3 (« BL retour ennoblisseur ») on the order,
-//     named `MA<lot>.pdf`;
+//     named `<lot>.pdf` (MA109152.pdf, BON3976.pdf, TA530425.pdf — bl-profils.ts);
 //   - one `data_bl_tricotbot` row per piece — the table the réception dialog of
 //     Sous-traitants › Commandes pre-fills from (GET …/lignes/:id/tricobot).
 //
@@ -16,8 +16,8 @@ import { query } from '../hfsql-auto.js'
 import { esc } from '../sst-shared.js'
 import { sqlText } from '../clients-common.js'
 import { insertGedSst } from '../ged-sst.js'
-import { MATEL_IDSOUS_TRAITANT } from '../pricing-sst.js'
-import { lotDuBordereau, type BlExtraction, type Controle } from './bl-extraction.js'
+import type { BlExtraction, Controle } from './bl-extraction.js'
+import { nomGed, PROFILS, type ProfilEnnoblisseur, type TypeDocument } from './bl-profils.js'
 
 /** ged.IDtype_doc — « BL retour ennoblisseur » (whitelist in routes/commandes-sous-traitant.ts). */
 export const GED_TYPE_BL_ENNOBLISSEUR = 3
@@ -37,6 +37,8 @@ export interface Resolution {
   lignes: number[]
   ligneId: number | null
   lot: string
+  /** ged name without extension: the lot, `<lot>-dispo` for a TAD mise à dispo. */
+  nomGed: string
   pieces: PieceResolue[]
   /** Rows of this lot already in data_bl_tricotbot for the line, as cleDeLigne() keys. */
   dejaImportees: string[]
@@ -59,13 +61,18 @@ const chunks = <T,>(xs: readonly T[], n: number): T[][] => {
   return out
 }
 
+/** The weight written into data_bl_tricotbot: the dyer's for MATEL, 0 for the
+ *  others (Malterre weighs the rolls — the réception dialog keeps its own value
+ *  on a 0). Every dedupe key is built on it. */
+export const poidsEcrit = (profil: ProfilEnnoblisseur, poids: number | null) => (profil.ecritPoids ? poids ?? 0 : 0)
+
 /** Find the order, pick its line, check every piece. Read-only. */
-export async function resoudreBl(e: BlExtraction): Promise<Resolution> {
+export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument = 'bl'): Promise<Resolution> {
   const controles: Controle[] = []
   const bloque = (code: string, message: string) => controles.push({ code, gravite: 'bloquant', message })
-  const lot = lotDuBordereau(e.numero_bordereau)
+  const lot = profil.lot(e)
   const res: Resolution = {
-    commandeId: null, sousTraitantId: null, lignes: [], ligneId: null, lot,
+    commandeId: null, sousTraitantId: null, lignes: [], ligneId: null, lot, nomGed: lot ? nomGed(lot, type) : '',
     pieces: [], dejaImportees: [], gedExistant: null, controles,
   }
   const cmd = /^\d{4,6}$/.test(e.numero_commande) ? parseInt(e.numero_commande, 10) : NaN
@@ -80,8 +87,8 @@ export async function resoudreBl(e: BlExtraction): Promise<Resolution> {
   }
   res.commandeId = cmd
   res.sousTraitantId = Number(c.IDsous_traitant) || 0
-  if (res.sousTraitantId !== MATEL_IDSOUS_TRAITANT) {
-    bloque('commande_pas_matel', `La commande n° ${cmd} n’est pas une commande MATEL.`)
+  if (res.sousTraitantId !== profil.idSousTraitant) {
+    bloque('commande_autre_sst', `La commande n° ${cmd} n’est pas une commande ${profil.nom}.`)
   }
 
   const lignes = await query<{ IDligne_commande_sous_traitant: number }>(
@@ -159,9 +166,9 @@ export async function resoudreBl(e: BlExtraction): Promise<Resolution> {
     )
     res.dejaImportees = [...new Set(deja.map((d) => cleDeLigne(String(d.num_piece ?? ''), d.poids, d.metrage)))]
   }
-  if (lot) {
+  if (res.nomGed) {
     const [g] = await query<{ IDged: number }>(
-      `SELECT IDged FROM ged WHERE IDcommande_sous_traitant = ${cmd} AND IDtype_doc = ${GED_TYPE_BL_ENNOBLISSEUR} AND nom = '${esc(lot)}.pdf'`,
+      `SELECT IDged FROM ged WHERE IDcommande_sous_traitant = ${cmd} AND IDtype_doc = ${GED_TYPE_BL_ENNOBLISSEUR} AND nom = '${esc(res.nomGed)}.pdf'`,
     )
     res.gedExistant = g ? Number(g.IDged) : null
   }
@@ -183,12 +190,16 @@ export interface Ecriture {
  *  are skipped (a re-processed mail must never duplicate rows; a CORRECTED BL
  *  that changes a value is written — the réception dialog keeps the newest row
  *  per piece). */
-export async function ecrireBl(e: BlExtraction, r: Resolution, pdfs: readonly Buffer[], jourYmd: string): Promise<Ecriture> {
+export async function ecrireBl(
+  e: BlExtraction, r: Resolution, pdfs: readonly Buffer[], jourYmd: string, profil: ProfilEnnoblisseur,
+): Promise<Ecriture> {
   if (r.commandeId == null || r.ligneId == null || !r.lot) throw new Error('BL non résolu : rien à écrire')
+  // Resolutions stored before 2026-09-28 have no nomGed: the lot was the name.
+  const base = r.nomGed || r.lot
   // One ged per scanned page: `MA109152.pdf`, then `MA109152-2.pdf`…
   let gedId = r.gedExistant
   for (let i = 0; i < pdfs.length; i++) {
-    const nom = i === 0 ? `${r.lot}.pdf` : `${r.lot}-${i + 1}.pdf`
+    const nom = i === 0 ? `${base}.pdf` : `${base}-${i + 1}.pdf`
     if (i === 0 && r.gedExistant != null) continue
     if (i > 0) {
       const [g] = await query<{ IDged: number }>(
@@ -207,10 +218,11 @@ export async function ecrireBl(e: BlExtraction, r: Resolution, pdfs: readonly Bu
   const ids: number[] = []
   let n = 0
   for (const p of ordre) {
-    if (deja.has(cleDeLigne(p.numero_piece, p.poids, p.metrage))) continue
+    const poids = poidsEcrit(profil, p.poids)
+    if (deja.has(cleDeLigne(p.numero_piece, poids, p.metrage))) continue
     await query(
       `INSERT INTO data_bl_tricotbot (IDligne_commande_sous_traitant, lot, poids, metrage, observation, num_piece, DATE)
-       VALUES (${r.ligneId}, '${esc(r.lot)}', ${p.poids ?? 0}, ${p.metrage ?? 0}, ${sqlText(p.observations)}, '${esc(p.numero_piece)}', '${jourYmd}')`,
+       VALUES (${r.ligneId}, '${esc(r.lot)}', ${poids}, ${p.metrage ?? 0}, ${sqlText(p.observations)}, '${esc(p.numero_piece)}', '${jourYmd}')`,
     )
     n++
     // No RETURNING on HFSQL: the row just written is the newest of its piece
@@ -258,4 +270,15 @@ export async function retirerPieces(
     retirees += presents.length
   }
   return retirees
+}
+
+/** The e-mail addresses of the dyers the agent reads (Sous-traitants › Gestion ›
+ *  Contacts): a new MATEL address is picked up without touching the code. */
+export async function contactsEnnoblisseurs(): Promise<Array<{ mail: string; idSousTraitant: number }>> {
+  const rows = await query<{ mail: string | null; IDsous_traitant: number }>(
+    `SELECT mail, IDsous_traitant FROM contact WHERE IDsous_traitant IN (${PROFILS.map((p) => p.idSousTraitant).join(',')})`,
+  )
+  return rows
+    .map((r) => ({ mail: String(r.mail ?? '').trim(), idSousTraitant: Number(r.IDsous_traitant) }))
+    .filter((c) => c.mail.includes('@'))
 }
