@@ -6,10 +6,12 @@ import {
   visibleSettingsItem,
   canOpenScreen,
   firstVisibleScreenHref,
+  rhItem,
   type NavAccess,
   type SubMenuItem,
   type MainMenuItem,
 } from '@/config/navigation'
+import { useRhAcces } from '@/hooks/useRhAcces'
 
 /** The three permission reads every nav-filtering helper needs.
  *
@@ -36,10 +38,17 @@ export function useSubmenuFilter(): (submenus: SubMenuItem[]) => SubMenuItem[] {
 }
 
 /** The main navigation as the current viewer sees it — menus they hold the
- *  grant for, each with only the screens they may open, empty menus dropped. */
+ *  grant for, each with only the screens they may open, empty menus dropped.
+ *  RH is appended for the two people allowed into it (useRhAcces) — it is not
+ *  a grant of the Écrans axis. */
 export function useVisibleMainNavigation(): MainMenuItem[] {
   const opts = useNavAccessOpts()
-  return useMemo(() => visibleMainNavigation(opts), [opts])
+  const { data: rh } = useRhAcces()
+  const rhAutorise = !!rh?.autorise
+  return useMemo(() => {
+    const menus = visibleMainNavigation(opts)
+    return rhAutorise ? [...menus, rhItem] : menus
+  }, [opts, rhAutorise])
 }
 
 /** Paramètres as the current viewer sees it (menu grant + screens), or null. */

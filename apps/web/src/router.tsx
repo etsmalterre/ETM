@@ -81,6 +81,8 @@ import { RapportFinance } from '@/pages/RapportFinance'
 // Réseau pages
 import { Entreprises } from '@/pages/Entreprises'
 import { AgentsIa } from '@/pages/AgentsIa'
+import { RhEmployes } from '@/pages/RhEmployes'
+import { RhCharge } from '@/pages/RhCharge'
 
 // Settings
 import { SettingsUtilisateurs } from '@/pages/SettingsUtilisateurs'
@@ -167,6 +169,10 @@ export const router = createBrowserRouter([
       // Agents IA
       { path: 'agents-ia', element: <Navigate to="/agents-ia/agents" replace /> },
       { path: 'agents-ia/agents', element: <AgentsIa /> },
+      // RH — Vincent + Isabelle only, behind the code RH (components/rh/RhGate.tsx)
+      { path: 'rh', element: <Navigate to="/rh/employes" replace /> },
+      { path: 'rh/employes', element: <RhEmployes /> },
+      { path: 'rh/charge', element: <RhCharge /> },
 
       // Settings — Utilisateurs is admin-only, Outils is granted in Écrans;
       // the index lands on the first one the viewer may open.

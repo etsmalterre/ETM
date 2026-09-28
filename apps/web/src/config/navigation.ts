@@ -11,6 +11,7 @@ import {
   Globe,
   Settings,
   Bot,
+  IdCard,
 } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -183,6 +184,23 @@ export const settingsItem: MainMenuItem = {
   ],
 }
 
+// RH — NOT a menu of the Écrans axis: nobody can be granted it. It shows for
+// the two people named in apps/api/src/lib/rh-acces.ts (Vincent, Isabelle),
+// read from GET /rh/acces (hooks/useRhAcces.ts), and the API answers 404 to
+// anyone else plus 401 until the person has typed their code RH. Kept out of
+// `mainNavigation` on purpose, so check-screen-access / seed-screen-access and
+// the Écrans tree of Paramètres › Utilisateurs never see it.
+export const rhItem: MainMenuItem = {
+  id: 'rh',
+  title: 'RH',
+  icon: IdCard,
+  href: '/rh',
+  submenus: [
+    { title: 'Employés', href: '/rh/employes' },
+    { title: 'Charge de travail', href: '/rh/charge' },
+  ],
+}
+
 // Main navigation items (between dashboard and settings).
 // Order mirrors the legacy WinDev MPS main menu: Marketing, Clients,
 // Sous-traitants, Transferts, Fils, Tombé Métier, Finis, Divers, Qualité,
@@ -330,6 +348,9 @@ export function getActiveMenu(pathname: string): MainMenuItem | undefined {
   if (pathname === settingsItem.href || pathname.startsWith(settingsItem.href + '/')) {
     return settingsItem
   }
+  if (pathname === rhItem.href || pathname.startsWith(rhItem.href + '/')) {
+    return rhItem
+  }
   // Check main navigation
   return mainNavigation.find(
     (item) => pathname === item.href || pathname.startsWith(item.href + '/')
@@ -398,6 +419,10 @@ export const routeTitles: Record<string, string> = {
   // Agents IA
   '/agents-ia': 'Agents IA',
   '/agents-ia/agents': 'Agents',
+  // RH
+  '/rh': 'RH',
+  '/rh/employes': 'Employés',
+  '/rh/charge': 'Charge de travail',
   // Settings
   '/settings': 'Paramètres',
   '/settings/utilisateurs': 'Utilisateurs',
