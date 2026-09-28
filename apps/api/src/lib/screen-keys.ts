@@ -163,7 +163,10 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     id: 'agents-ia',
     href: '/agents-ia',
     label: 'Agents IA',
-    screens: [{ href: '/agents-ia/agents', label: 'Agents' }],
+    screens: [
+      { href: '/agents-ia/agents', label: 'Agents' },
+      { href: '/agents-ia/automates', label: 'Automates' },
+    ],
   },
   // RH — HR data (birthdays, photos, workload). Granted person by person
   // (seed: false), and here too the curtain is the lock: every /rh route

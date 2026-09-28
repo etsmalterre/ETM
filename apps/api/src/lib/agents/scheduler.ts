@@ -17,9 +17,15 @@
 //
 // One lock per agent shared by the tick and the manual run: two runs of the
 // same agent never overlap (they would process the same mail twice).
+//
+// The automates (lib/automates/, Agents IA › Automates) run on this same
+// engine: everything below works on a « tâche » (key, trigger, state, run),
+// agents are keyed by their slug, automates by `automate:<slug>` and
+// registered from index.ts (enregistrerTaches) — the automates code is never
+// imported here.
 
-import { AGENTS, agentDef, type Declenchement } from './catalog.js'
-import { lireEtat, marquerPlanification, nouvelIdRun, versionActive, type AgentRun, type Auteur } from './store.js'
+import { AGENTS, agentDef, type AgentDef, type Declenchement } from './catalog.js'
+import { lireEtat, marquerPlanification, nouvelIdRun, versionActive, type Auteur } from './store.js'
 import { gmailLectureErreur } from '../gmail-reader.js'
 import { jourParis, msHeureParis, partiesParis } from '../pointage-etat.js'
 
@@ -33,8 +39,56 @@ export interface Lancement {
   id: string
   debut: string
   fin: string | null
-  runs: Array<Pick<AgentRun, 'id' | 'statut' | 'resume'>>
+  runs: RunResume[]
   erreur: string | null
+}
+
+/** What a launch keeps of each run it produced. */
+export interface RunResume {
+  id: string
+  statut: string
+  resume: string
+}
+
+/** Anything the tick and « Lancer maintenant » can run: an agent or an automate. */
+export interface Tache {
+  cle: string
+  declenchement: Declenchement
+  lireEtat(): Promise<{ mode: string; dernierePlanification?: string | null }>
+  marquerPlanification(jour: string): Promise<unknown>
+  executer(par: Auteur | null): Promise<RunResume[]>
+}
+
+function tacheAgent(def: AgentDef): Tache {
+  return {
+    cle: def.slug,
+    declenchement: def.declenchement,
+    lireEtat: () => lireEtat(def.slug, def.versionInitiale),
+    marquerPlanification: (jour) => marquerPlanification(def.slug, def.versionInitiale, jour),
+    executer: async (par) => {
+      const state = await lireEtat(def.slug, def.versionInitiale)
+      return def.sonder(state, versionActive(state), par)
+    },
+  }
+}
+
+const tachesEnregistrees: Tache[] = []
+
+/** Called once from index.ts with the automates' tâches. */
+export function enregistrerTaches(taches: readonly Tache[]): void {
+  for (const t of taches) if (!tachesEnregistrees.some((x) => x.cle === t.cle)) tachesEnregistrees.push(t)
+}
+
+function toutesTaches(): Tache[] {
+  return [...AGENTS.map(tacheAgent), ...tachesEnregistrees]
+}
+
+function tacheOu(cle: string): Tache {
+  const def = agentDef(cle)
+  if (def) return tacheAgent(def)
+  const t = tachesEnregistrees.find((x) => x.cle === cle)
+  if (!t) throw new Error(`tâche inconnue : ${cle}`)
+  return t
 }
 
 export interface EtatSondage {
@@ -51,58 +105,69 @@ const enCours = new Set<string>()
 
 const etatVide = (): EtatSondage => ({ dernierSondage: null, dernierSucces: null, derniereErreur: null, dernierLancement: null, enCours: false })
 
-export function etatSondage(slug: string): EtatSondage {
-  return { ...(etats.get(slug) ?? etatVide()), enCours: enCours.has(slug) }
+export function etatSondage(cle: string): EtatSondage {
+  return { ...(etats.get(cle) ?? etatVide()), enCours: enCours.has(cle) }
 }
 
 export class SondageEnCoursError extends Error {
   constructor() {
-    super('Une exécution de cet agent est déjà en cours.')
+    super('Une exécution est déjà en cours.')
   }
 }
 
-/** Run one agent now. Throws SondageEnCoursError when already running. */
-export async function sonder(slug: string, par: Auteur | null): Promise<AgentRun[]> {
-  const def = agentDef(slug)
-  if (!def) throw new Error(`agent inconnu : ${slug}`)
-  if (enCours.has(slug)) throw new SondageEnCoursError()
-  enCours.add(slug)
-  const e: EtatSondage = etats.get(slug) ?? etatVide()
-  e.dernierSondage = new Date().toISOString()
-  etats.set(slug, e)
+/** Run `fn` under a tâche's lock (the one the tick and « Lancer maintenant »
+ *  take). Throws SondageEnCoursError when a run holds it. */
+export async function sousVerrou<T>(cle: string, fn: () => Promise<T>): Promise<T> {
+  if (enCours.has(cle)) throw new SondageEnCoursError()
+  enCours.add(cle)
   try {
-    const state = await lireEtat(slug, def.versionInitiale)
-    const runs = await def.sonder(state, versionActive(state), par)
+    return await fn()
+  } finally {
+    enCours.delete(cle)
+  }
+}
+
+/** Run one agent (by slug) or automate (by `automate:<slug>`) now. Throws
+ *  SondageEnCoursError when already running. */
+export async function sonder(cle: string, par: Auteur | null): Promise<RunResume[]> {
+  const t = tacheOu(cle)
+  if (enCours.has(cle)) throw new SondageEnCoursError()
+  enCours.add(cle)
+  const e: EtatSondage = etats.get(cle) ?? etatVide()
+  e.dernierSondage = new Date().toISOString()
+  etats.set(cle, e)
+  try {
+    const runs = await t.executer(par)
     e.dernierSucces = new Date().toISOString()
     e.derniereErreur = null
-    if (runs.length) console.log(`[agents] ${slug}: ${runs.length} run(s) — ${runs.map((r) => r.statut).join(', ')}`)
+    if (runs.length) console.log(`[agents] ${cle}: ${runs.length} run(s) — ${runs.map((r) => r.statut).join(', ')}`)
     return runs
   } catch (err) {
     e.derniereErreur = gmailLectureErreur(err)
     throw err
   } finally {
-    enCours.delete(slug)
+    enCours.delete(cle)
   }
 }
 
-/** Start one agent now in the background and return at once — the outcome
- *  lands in `etatSondage(slug).dernierLancement`. Throws SondageEnCoursError
+/** Start one tâche now in the background and return at once — the outcome
+ *  lands in `etatSondage(cle).dernierLancement`. Throws SondageEnCoursError
  *  (synchronously) when already running. */
-export function lancerSondage(slug: string, par: Auteur): Lancement {
-  if (!agentDef(slug)) throw new Error(`agent inconnu : ${slug}`)
-  if (enCours.has(slug)) throw new SondageEnCoursError()
-  const e = etats.get(slug) ?? etatVide()
-  etats.set(slug, e)
+export function lancerSondage(cle: string, par: Auteur): Lancement {
+  tacheOu(cle)
+  if (enCours.has(cle)) throw new SondageEnCoursError()
+  const e = etats.get(cle) ?? etatVide()
+  etats.set(cle, e)
   const l: Lancement = { id: nouvelIdRun(), debut: new Date().toISOString(), fin: null, runs: [], erreur: null }
   e.dernierLancement = l
-  sonder(slug, par)
+  sonder(cle, par)
     .then(
       (runs) => {
         l.runs = runs.map((r) => ({ id: r.id, statut: r.statut, resume: r.resume }))
       },
       (err) => {
         l.erreur = gmailLectureErreur(err)
-        console.error(`[agents] ${slug}: manual launch failed:`, l.erreur)
+        console.error(`[agents] ${cle}: manual launch failed:`, l.erreur)
       },
     )
     .then(() => {
@@ -137,22 +202,22 @@ const dernierReleve = new Map<string, number>()
 
 async function tick(): Promise<void> {
   const now = Date.now()
-  for (const def of AGENTS) {
+  for (const t of toutesTaches()) {
     try {
-      const state = await lireEtat(def.slug, def.versionInitiale)
-      if (state.mode === 'off' || enCours.has(def.slug)) continue
-      const d = def.declenchement
+      const state = await t.lireEtat()
+      if (state.mode === 'off' || enCours.has(t.cle)) continue
+      const d = t.declenchement
       if (d.type === 'releve') {
-        if (now - (dernierReleve.get(def.slug) ?? 0) < d.intervalleMs - 5_000) continue
-        dernierReleve.set(def.slug, now)
+        if (now - (dernierReleve.get(t.cle) ?? 0) < d.intervalleMs - 5_000) continue
+        dernierReleve.set(t.cle, now)
       } else {
         if (!quotidienDu(d, now, state.dernierePlanification)) continue
         // Journal first: at most once a day, even if the process dies mid-run.
-        await marquerPlanification(def.slug, def.versionInitiale, jourParis(now))
+        await t.marquerPlanification(jourParis(now))
       }
-      await sonder(def.slug, null)
+      await sonder(t.cle, null)
     } catch (err) {
-      if (!(err instanceof SondageEnCoursError)) console.error(`[agents] ${def.slug} tick failed:`, gmailLectureErreur(err))
+      if (!(err instanceof SondageEnCoursError)) console.error(`[agents] ${t.cle} tick failed:`, gmailLectureErreur(err))
     }
   }
 }

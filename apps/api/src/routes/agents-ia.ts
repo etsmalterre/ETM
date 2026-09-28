@@ -45,7 +45,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 
 // ── helpers ──────────────────────────────────────────────
 
-async function auteur(userId: number): Promise<Auteur> {
+/** Also used by routes/automates.ts (Agents IA › Automates). */
+export async function auteur(userId: number): Promise<Auteur> {
   try {
     const rows = await query<Record<string, unknown>>(
       `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${Math.trunc(userId)}`,
@@ -59,7 +60,7 @@ async function auteur(userId: number): Promise<Auteur> {
 }
 
 /** 401 without a session. */
-function session(req: Request, res: Response): number | null {
+export function session(req: Request, res: Response): number | null {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return null
@@ -67,8 +68,8 @@ function session(req: Request, res: Response): number | null {
   return req.userId
 }
 
-/** 401 / 403 unless the caller may pilot agents. */
-async function pilote(req: Request, res: Response): Promise<number | null> {
+/** 401 / 403 unless the caller may pilot agents (and automates). */
+export async function pilote(req: Request, res: Response): Promise<number | null> {
   const id = session(req, res)
   if (id === null) return null
   if (!(await userHasPermission(id, isEffectiveAdmin(req), 'edit_agents_ia'))) {

@@ -81,6 +81,7 @@ import { RapportFinance } from '@/pages/RapportFinance'
 // Réseau pages
 import { Entreprises } from '@/pages/Entreprises'
 import { AgentsIa } from '@/pages/AgentsIa'
+import { Automates } from '@/pages/Automates'
 import { RhEmployes } from '@/pages/RhEmployes'
 import { RhCharge } from '@/pages/RhCharge'
 
@@ -169,6 +170,7 @@ export const router = createBrowserRouter([
       // Agents IA
       { path: 'agents-ia', element: <Navigate to="/agents-ia/agents" replace /> },
       { path: 'agents-ia/agents', element: <AgentsIa /> },
+      { path: 'agents-ia/automates', element: <Automates /> },
       // RH — Vincent + Isabelle only, behind the code RH (components/rh/RhGate.tsx)
       { path: 'rh', element: <Navigate to="/rh/employes" replace /> },
       { path: 'rh/employes', element: <RhEmployes /> },

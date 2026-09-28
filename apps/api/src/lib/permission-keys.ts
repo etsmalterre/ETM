@@ -469,14 +469,15 @@ export const PERMISSION_KEYS = [
       'Autorise la validation / reprise des lots et la saisie des contrôles dans Qualité > Suivi des lots, ainsi que la création et la modification des dossiers de non-conformité dans Qualité > Dossiers. Sans cette permission, ces écrans sont en lecture seule.',
     category: 'Qualité',
   },
-  // Agents IA — reading the screen needs only the menu (screen_agents_ia);
-  // changing an agent (mode, prompt version, relaunch) needs this key, checked
-  // server-side on every write of /api/agents-ia.
+  // Agents IA — reading the screens needs only the menu (screen_agents_ia);
+  // changing an agent or an automate (mode, prompt version, relaunch, feedback)
+  // needs this key, checked server-side on every write of /api/agents-ia and
+  // /api/automates.
   {
     key: 'edit_agents_ia',
-    label: 'Piloter les agents IA',
+    label: 'Piloter les agents IA et les automates',
     description:
-      'Autorise, dans Agents IA, à mettre un agent en service, en essai ou à l’arrêt, à publier ou réactiver une version de son prompt, à relancer la lecture de la boîte mail et à retraiter une exécution. Sans ce droit l’écran est en lecture seule.',
+      'Autorise, dans Agents IA, à mettre un agent ou un automate en service, en essai ou à l’arrêt, à publier ou réactiver une version du prompt d’un agent, à relancer une exécution, à retraiter une exécution d’agent et à écrire les retours sur un automate. Sans ce droit les écrans sont en lecture seule.',
     category: 'Agents IA',
   },
   // Scoring is separate from piloting (decision 2026-09-23): the people who

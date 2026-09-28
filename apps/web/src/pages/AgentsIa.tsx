@@ -69,10 +69,22 @@ import { useHasPermission } from '@/contexts/PermissionsContext'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import {
+  callApi,
+  fmtDateCourte,
+  fmtDateHeure,
+  ilYA,
+  KV,
+  MODE_META,
+  ModeFooter,
+  useLancement,
+  type Mode,
+  type Lancement,
+  type Sondage,
+} from '@/components/agents-ia/commun'
 
 // ── Types (mirror routes/agents-ia.ts) ───────────────────
 
-type Mode = 'off' | 'essai' | 'actif'
 type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'deja_importe' | 'ignore' | 'erreur' | 'points_a_voir' | 'rien_a_signaler' | 'mail_envoye'
 type Source = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel'
 type Note = 'reussite' | 'partielle' | 'echec'
@@ -143,23 +155,7 @@ interface AgentVue {
     coutUsd: number
     dernierRun: string | null
   }
-  sondage: {
-    dernierSondage: string | null
-    dernierSucces: string | null
-    derniereErreur: string | null
-    dernierLancement: Lancement | null
-    enCours: boolean
-  }
-}
-
-/** A « Relever / Lancer maintenant »: the POST answers at once, the screen
- *  polls the agent until `fin` (a run can outlast the 60 s proxy timeout). */
-interface Lancement {
-  id: string
-  debut: string
-  fin: string | null
-  runs: Array<{ id: string; statut: Statut; resume: string }>
-  erreur: string | null
+  sondage: Sondage
 }
 
 interface AgentVersion {
@@ -256,34 +252,6 @@ interface Couts {
 
 // ── Helpers ──────────────────────────────────────────────
 
-/** fetch that keeps the API's French `error` message (apiFetch drops it). */
-async function callApi<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    credentials: 'include',
-    headers: init?.body instanceof FormData ? init?.headers : { 'Content-Type': 'application/json', ...init?.headers },
-  })
-  const text = await res.text()
-  const json = text ? JSON.parse(text) : null
-  if (!res.ok) throw new Error(json?.error || `Erreur HTTP ${res.status}`)
-  return json as T
-}
-
-const fmtDateHeure = (iso: string | null | undefined) =>
-  iso ? new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '—'
-
-function ilYA(iso: string | null | undefined): string {
-  if (!iso) return 'jamais'
-  const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
-  if (s < 60) return 'à l’instant'
-  if (s < 3600) return `il y a ${Math.round(s / 60)} min`
-  if (s < 86_400) return `il y a ${Math.round(s / 3600)} h`
-  return fmtDateHeure(iso)
-}
-
-const fmtDateCourte = (iso: string) =>
-  new Date(iso).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-
 /** Costs are tracked in USD (Mistral's price list); shown in € at a fixed indicative rate. */
 const EUR_PER_USD = 0.86
 
@@ -293,14 +261,6 @@ const fmtEur = (usd: number) => {
   if (eur <= 0) return '0,00 €'
   return eur < 0.01 ? '< 0,01 €' : `${fmtNum(eur, 2)} €`
 }
-
-// Per-agent mode descriptions come from the catalog (AgentVue.modes).
-const MODE_META: Record<Mode, { label: string; icon: ComponentType<{ className?: string }>; solid: string }> = {
-  off: { label: 'À l’arrêt', icon: CircleSlash, solid: 'bg-zinc-500 border-zinc-500' },
-  essai: { label: 'En essai', icon: FlaskConical, solid: 'bg-sky-600 border-sky-600' },
-  actif: { label: 'En service', icon: Power, solid: 'bg-success border-success' },
-}
-const MODE_ORDER: Mode[] = ['off', 'essai', 'actif']
 
 const STATUT_META: Record<Statut, { label: string; solid: string; icon: ComponentType<{ className?: string }> }> = {
   ecrit: { label: 'Enregistré', solid: 'bg-success border-success', icon: CheckCircle2 },
@@ -414,52 +374,37 @@ export function AgentsIa() {
     onError: (e: Error) => setActionMessage({ tone: 'error', text: e.message }),
   })
 
-  // The launch being waited for. Its polling query is keyed on the launch id,
-  // so it only ever sees answers fetched AFTER the POST — never a stale
-  // « not running » detail from before.
-  const [attente, setAttente] = useState<string | null>(null)
+  const lancement = useLancement<AgentDetail>({
+    detailKey: ['agent-ia', selectedSlug],
+    detailPath: selectedSlug ? `/agents-ia/${selectedSlug}` : null,
+    onFin: (l, suivi) => {
+      invalidate()
+      if (!l) {
+        setActionMessage({ tone: 'error', text: 'L’exécution a été interrompue (redémarrage du serveur ?). Relancez-la.' })
+        return
+      }
+      if (l.erreur) {
+        setActionMessage({ tone: 'error', text: l.erreur })
+        return
+      }
+      if (suivi.declenchement.type === 'quotidien') {
+        const run = l.runs[0]
+        setActionMessage(run ? { tone: run.statut === 'erreur' ? 'error' : 'ok', text: `Contrôle terminé : ${run.resume}.` } : { tone: 'ok', text: 'Aucun contrôle lancé.' })
+        if (run) setOpenRunId(run.id)
+        return
+      }
+      setActionMessage({ tone: 'ok', text: l.runs.length ? `${l.runs.length} nouveau(x) mail(s) traité(s).` : 'Aucun nouveau mail.' })
+    },
+  })
 
   const sonderMut = useMutation({
     mutationFn: () => callApi<{ lancement: Lancement }>(`/agents-ia/${selectedSlug}/sonder`, { method: 'POST' }),
-    onSuccess: (r) => setAttente(r.lancement.id),
+    onSuccess: (r) => lancement.attendre(r.lancement.id),
     onError: (e: Error) => { invalidate(); setActionMessage({ tone: 'error', text: e.message }) },
   })
 
-  const { data: suivi } = useQuery({
-    queryKey: ['agent-ia-lancement', selectedSlug, attente],
-    queryFn: () => apiFetch<AgentDetail>(`/agents-ia/${selectedSlug}`),
-    enabled: attente !== null && selectedSlug !== null,
-    refetchInterval: 2_000,
-    gcTime: 0,
-  })
-
-  useEffect(() => {
-    if (!suivi || attente === null) return
-    queryClient.setQueryData(['agent-ia', selectedSlug], suivi)
-    const l = suivi.sondage.dernierLancement
-    if (l?.id === attente && !l.fin) return
-    if (l?.id !== attente && suivi.sondage.enCours) return
-    setAttente(null)
-    invalidate()
-    if (!l || l.id !== attente) {
-      setActionMessage({ tone: 'error', text: 'L’exécution a été interrompue (redémarrage du serveur ?). Relancez-la.' })
-      return
-    }
-    if (l.erreur) {
-      setActionMessage({ tone: 'error', text: l.erreur })
-      return
-    }
-    if (suivi.declenchement.type === 'quotidien') {
-      const run = l.runs[0]
-      setActionMessage(run ? { tone: run.statut === 'erreur' ? 'error' : 'ok', text: `Contrôle terminé : ${run.resume}.` } : { tone: 'ok', text: 'Aucun contrôle lancé.' })
-      if (run) setOpenRunId(run.id)
-      return
-    }
-    setActionMessage({ tone: 'ok', text: l.runs.length ? `${l.runs.length} nouveau(x) mail(s) traité(s).` : 'Aucun nouveau mail.' })
-  }, [suivi, attente, selectedSlug, queryClient, invalidate])
-
   // Switching agents drops the wait; the run still finishes and lands in its list.
-  useEffect(() => { setActionMessage(null); setAttente(null) }, [selectedSlug])
+  useEffect(() => { setActionMessage(null); lancement.abandonner() }, [selectedSlug]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
@@ -468,7 +413,7 @@ export function AgentsIa() {
           error={error as Error | null} selectedSlug={selectedSlug} onSelect={setSelectedSlug}
           searchQuery={searchQuery} onSearchChange={setSearchQuery} />}
         detailHeader={<DetailHeader agent={detail ?? null} isLoading={detailLoading && selectedSlug !== null} canPilot={canPilot}
-          onSonder={() => { setActionMessage(null); sonderMut.mutate() }} isSondant={sonderMut.isPending || attente !== null || !!detail?.sondage.enCours}
+          onSonder={() => { setActionMessage(null); sonderMut.mutate() }} isSondant={sonderMut.isPending || lancement.enAttente || !!detail?.sondage.enCours}
           onEssai={() => setEssaiOpen(true)} message={actionMessage} onDismissMessage={() => setActionMessage(null)} />}
         detail={<DetailMain agent={detail ?? null} isLoading={detailLoading && selectedSlug !== null}
           hasSelection={selectedSlug !== null} canPilot={canPilot} onOpenRun={setOpenRunId} onChanged={invalidate} />}
@@ -1175,15 +1120,6 @@ function FonctionnementTab({ agent }: { agent: AgentDetail }) {
 
 // ── Right sidebar ────────────────────────────────────────
 
-function KV({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={cn('text-sm text-right truncate', mono && 'tabular-nums')}>{value}</span>
-    </div>
-  )
-}
-
 /** « Réussites / partielles / échecs » of the active version, then what is left to score. */
 function EvaluationsKV({ s }: { s: AgentVue['stats'] }) {
   const e = s.evaluations
@@ -1306,60 +1242,6 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
         </div>
       </div>
       <ModeFooter current={agent.mode} descriptions={agent.modes} onChange={onChangeMode} isChanging={isChangingMode} disabled={!canPilot} />
-    </div>
-  )
-}
-
-/** §29.4 multi-state status footer — the agent's mode. */
-function ModeFooter({ current, descriptions, onChange, isChanging, disabled }: {
-  current: Mode; descriptions: Partial<Record<Mode, string>>; onChange: (m: Mode) => void; isChanging: boolean; disabled: boolean
-}) {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const rootRef = useRef<HTMLDivElement>(null)
-  const meta = MODE_META[current]
-  const Icon = meta.icon
-  useEffect(() => {
-    if (!menuOpen) return
-    const onDown = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) setMenuOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [menuOpen])
-
-  return (
-    <div ref={rootRef} className="flex-shrink-0 relative">
-      <div className={cn('rounded-xl border shadow-sm overflow-hidden flex items-stretch h-11', meta.solid)}>
-        <div className="flex items-center gap-2 px-3 flex-1 text-white min-w-0">
-          <Icon className="h-4 w-4 flex-shrink-0" />
-          <span className="text-sm font-bold uppercase tracking-wide truncate">{meta.label}</span>
-        </div>
-        <button type="button" onClick={() => setMenuOpen((v) => !v)} disabled={disabled || isChanging}
-          title={disabled ? 'Droit « Piloter les agents IA » requis' : 'Changer le mode'}
-          className="px-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 disabled:bg-white/5 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold border-l border-white/25 flex items-center gap-1.5 transition-colors">
-          {isChanging ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronUp className={cn('h-3.5 w-3.5 transition-transform', menuOpen && 'rotate-180')} />}
-          Changer
-        </button>
-      </div>
-      {menuOpen && (
-        <div className="absolute bottom-full right-0 mb-1 w-full min-w-[220px] rounded-lg border bg-white shadow-lg overflow-hidden z-50">
-          {MODE_ORDER.filter((m) => descriptions[m]).map((m) => {
-            const mm = MODE_META[m]
-            const active = current === m
-            const MIcon = mm.icon
-            return (
-              <button key={m} type="button" onClick={() => { if (!active) onChange(m); setMenuOpen(false) }}
-                className={cn('w-full flex items-start gap-2 px-3 py-2 text-sm text-left transition-colors',
-                  active ? 'bg-accent/10 text-accent cursor-default' : 'hover:bg-zinc-100')}>
-                <MIcon className="h-4 w-4 mt-0.5" />
-                <span className="flex-1">
-                  <span className="block">{mm.label}</span>
-                  <span className="block text-[11px] text-muted-foreground">{descriptions[m]}</span>
-                </span>
-                {active && <CheckCircle2 className="h-4 w-4 ml-auto text-accent" />}
-              </button>
-            )
-          })}
-        </div>
-      )}
     </div>
   )
 }

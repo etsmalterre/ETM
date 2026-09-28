@@ -318,6 +318,7 @@ export const mainNavigation: MainMenuItem[] = [
     href: '/agents-ia',
     submenus: [
       { title: 'Agents', href: '/agents-ia/agents' },
+      { title: 'Automates', href: '/agents-ia/automates' },
     ],
   },
   // RH — a menu of the Écrans axis since 2026-09-28, granted person by person
@@ -414,6 +415,7 @@ export const routeTitles: Record<string, string> = {
   // Agents IA
   '/agents-ia': 'Agents IA',
   '/agents-ia/agents': 'Agents',
+  '/agents-ia/automates': 'Automates',
   // RH
   '/rh': 'RH',
   '/rh/employes': 'Employés',

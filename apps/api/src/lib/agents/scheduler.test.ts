@@ -21,7 +21,7 @@ vi.mock('./store.js', () => ({
   nouvelIdRun: () => `l-${Math.random().toString(36).slice(2)}`,
 }))
 
-const { etatSondage, lancerSondage, SondageEnCoursError } = await import('./scheduler.js')
+const { enregistrerTaches, etatSondage, lancerSondage, SondageEnCoursError, sousVerrou } = await import('./scheduler.js')
 
 const par = { id: 1, nom: 'Test' }
 const flush = () => new Promise((r) => setTimeout(r, 0))
@@ -64,5 +64,31 @@ describe('lancerSondage', () => {
     expect(l.erreur).toContain('Mistral en panne')
     expect(l.fin).not.toBeNull()
     expect(etatSondage('lent').enCours).toBe(false)
+  })
+})
+
+describe('registered tâches (Agents IA › Automates)', () => {
+  it('run through the same launch and lock as the agents', async () => {
+    let fini: (() => void) | null = null
+    enregistrerTaches([
+      {
+        cle: 'automate:test',
+        declenchement: { type: 'releve', intervalleMs: 3_600_000 },
+        lireEtat: async () => ({ mode: 'essai' }),
+        marquerPlanification: async () => undefined,
+        executer: () => new Promise((resolve) => (fini = () => resolve([{ id: 'r1', statut: 'simule', resume: 'ok' }]))),
+      },
+    ])
+    const l = lancerSondage('automate:test', par)
+    await flush()
+    await expect(sousVerrou('automate:test', async () => 1)).rejects.toThrow(SondageEnCoursError)
+    fini!()
+    await flush()
+    expect(l.runs).toEqual([{ id: 'r1', statut: 'simule', resume: 'ok' }])
+    expect(await sousVerrou('automate:test', async () => 1)).toBe(1)
+  })
+
+  it('an unknown key is refused', () => {
+    expect(() => lancerSondage('automate:inconnu', par)).toThrow(/inconnue/)
   })
 })

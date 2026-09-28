@@ -14,13 +14,14 @@
 //   - `startedAt` is stamped the first time the agent leaves « off » and never
 //     reset: the mailbox is only read from that instant (no historical backfill).
 //
-// Writes are serialised through one in-process queue (a single API process
-// runs the agents — see scheduler.ts) and land through tmp + rename.
+// Writes are serialised through one in-process queue shared with the automates
+// store (json-store.ts) and land through tmp + rename.
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { exclusive, readJson, writeJson } from './json-store.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const AGENTS_DIR = path.resolve(__dirname, '../../../data/agents')
@@ -156,30 +157,6 @@ export function normaliserRun(r: AgentRun): AgentRun {
 }
 
 // ── Plumbing ─────────────────────────────────────────────
-
-let queue: Promise<unknown> = Promise.resolve()
-/** Serialise every read-modify-write of the store. */
-function exclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const next = queue.then(fn, fn)
-  queue = next.catch(() => undefined)
-  return next
-}
-
-async function readJson<T>(file: string, fallback: T): Promise<T> {
-  try {
-    return JSON.parse(await fs.readFile(file, 'utf8')) as T
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return fallback
-    throw err
-  }
-}
-
-async function writeJson(file: string, data: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  await fs.writeFile(tmp, JSON.stringify(data, null, 1), 'utf8')
-  await fs.rename(tmp, file)
-}
 
 const runsFile = (slug: string) => path.join(AGENTS_DIR, `runs-${slug.replace(/[^a-z0-9-]/g, '')}.json`)
 
