@@ -530,6 +530,9 @@ export interface MalterreDocumentProps {
   /** Smaller, wider doc-type line so a long type (« Conditions Generales de
    *  Vente ») stays on one line. Off by default. */
   compactTitle?: boolean
+  /** Prints the reference line small, like the date, instead of the bold
+   *  16 pt line (a version label rather than a document number). */
+  subtleReference?: boolean
   /** Top-left card — typically the supplier or client address. Optional:
    *  when both topLeftAddress and topRightInfo are omitted, the stock
    *  2-card top row is skipped and `children` gets the full content area. */
@@ -616,12 +619,14 @@ function PageHeader({
   documentDate,
   fixed = false,
   compactTitle = false,
+  subtleReference = false,
 }: {
   documentType: string
   reference: string
   documentDate: string
   fixed?: boolean
   compactTitle?: boolean
+  subtleReference?: boolean
 }) {
   return (
     <View style={fixed ? styles.headerFixedWrap : undefined} fixed={fixed}>
@@ -632,7 +637,7 @@ function PageHeader({
             <Text style={compactTitle ? [styles.headerDocType, styles.headerDocTypeCompact] : styles.headerDocType}>{documentType.toUpperCase()}</Text>
           </View>
           <View style={styles.headerDocRefRow}>
-            <Text style={styles.headerDocRef}>{reference}</Text>
+            <Text style={subtleReference ? styles.headerDocDate : styles.headerDocRef}>{reference}</Text>
           </View>
           {documentDate ? (
             <View style={styles.headerDocDateRow}>
@@ -696,6 +701,7 @@ export function MalterreDocument({
   reference,
   documentDate,
   compactTitle,
+  subtleReference,
   topLeftAddress,
   topRightInfo,
   title,
@@ -725,6 +731,7 @@ export function MalterreDocument({
           reference={reference}
           documentDate={documentDate}
           compactTitle={compactTitle}
+          subtleReference={subtleReference}
           fixed
         />
 
@@ -782,6 +789,7 @@ export function MalterreDocument({
               reference={reference}
               documentDate={documentDate}
               compactTitle={compactTitle}
+          subtleReference={subtleReference}
               fixed
             />
           )}

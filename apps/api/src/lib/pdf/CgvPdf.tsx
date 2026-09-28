@@ -332,7 +332,8 @@ export function CgvPdf({ version, plan }: { version: string; plan: CgvPlan }) {
       // No accent on purpose — the uppercased É renders badly in the header font.
       documentType="Conditions Generales de Vente"
       compactTitle
-      reference={`VERSION ${version.toUpperCase()}`}
+      subtleReference
+      reference={`Version ${version}`}
       documentDate=""
       title={`Conditions Générales de Vente - ETS Malterre - version ${version}`}
     >
