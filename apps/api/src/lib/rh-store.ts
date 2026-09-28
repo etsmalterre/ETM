@@ -9,6 +9,7 @@
 
 import postgres from 'postgres'
 import type { TacheCharge, VersionCharge } from './rh-charge.js'
+import { hashEvenement, sha256, type EvenementScelle, type MaillonChaine } from './rh-suivi.js'
 
 type Sql = ReturnType<typeof postgres>
 
@@ -20,7 +21,8 @@ export class RhIndisponible extends Error {
 }
 
 // Append-only: never edit a shipped migration, add the next.
-const MIGRATIONS: string[] = [
+/** Exported for the dev scripts only. */
+export const MIGRATIONS: string[] = [
   `CREATE TABLE employe (
      id              serial PRIMARY KEY,
      prenom          text NOT NULL,
@@ -74,6 +76,46 @@ const MIGRATIONS: string[] = [
      action    text NOT NULL,
      detail    text
    );`,
+  // Suivi (lib/rh-suivi.ts): append-only evidence. The trigger refuses any
+  // UPDATE or DELETE, whoever connects — a correction is a new entry. The FK to
+  // employe is RESTRICT: an employee with a suivi cannot be deleted.
+  // Idempotent on purpose: feat/rh-analysis claimed slot 2 in rh_dev at the same
+  // time, so this may end up at slot 3 over a database that already has it.
+  `CREATE TABLE IF NOT EXISTS evenement (
+     id               integer PRIMARY KEY,
+     idemploye        integer NOT NULL REFERENCES employe (id) ON DELETE RESTRICT,
+     date_evenement   date NOT NULL,
+     type             text NOT NULL,
+     titre            text NOT NULL,
+     presents         text NOT NULL DEFAULT '',
+     contenu          text NOT NULL,
+     rectifie         integer REFERENCES evenement (id),
+     cree_le          timestamptz NOT NULL,
+     cree_par         text NOT NULL,
+     hash             text NOT NULL,
+     hash_precedent   text
+   );
+   CREATE SEQUENCE IF NOT EXISTS evenement_id_seq OWNED BY evenement.id;
+   CREATE INDEX IF NOT EXISTS evenement_employe ON evenement (idemploye);
+   CREATE TABLE IF NOT EXISTS evenement_piece (
+     id            serial PRIMARY KEY,
+     idevenement   integer NOT NULL REFERENCES evenement (id) ON DELETE RESTRICT,
+     ordre         integer NOT NULL,
+     nom           text NOT NULL,
+     type_mime     text NOT NULL,
+     taille        integer NOT NULL,
+     sha256        text NOT NULL,
+     contenu       bytea NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS evenement_piece_evenement ON evenement_piece (idevenement);
+   CREATE OR REPLACE FUNCTION rh_ajout_seul() RETURNS trigger LANGUAGE plpgsql AS $$
+   BEGIN
+     RAISE EXCEPTION 'rh: la table % est en ajout seul', TG_TABLE_NAME;
+   END $$;
+   CREATE OR REPLACE TRIGGER evenement_ajout_seul BEFORE UPDATE OR DELETE ON evenement
+     FOR EACH ROW EXECUTE FUNCTION rh_ajout_seul();
+   CREATE OR REPLACE TRIGGER evenement_piece_ajout_seul BEFORE UPDATE OR DELETE ON evenement_piece
+     FOR EACH ROW EXECUTE FUNCTION rh_ajout_seul();`,
 ]
 
 function db(): Sql {
@@ -351,4 +393,193 @@ export async function supprimerVersion(idemploye: number, idversion: number): Pr
   const s = await conn()
   const r = await s`DELETE FROM charge_version WHERE id = ${idversion} AND idemploye = ${idemploye}`
   return r.count > 0
+}
+
+// ── Suivi (append-only, lib/rh-suivi.ts) ─────────────────
+
+export interface PieceJointe {
+  id: number
+  nom: string
+  typeMime: string
+  taille: number
+  sha256: string
+}
+
+export interface Evenement extends Omit<EvenementScelle, 'pieces'> {
+  hash: string
+  pieces: PieceJointe[]
+  /** Ids of the rectificatifs that point at this entry. */
+  rectifiePar: number[]
+}
+
+export interface NouvelEvenement {
+  dateEvenement: string
+  type: string
+  titre: string
+  presents: string
+  contenu: string
+  rectifie: number | null
+}
+
+export interface NouvellePiece {
+  nom: string
+  typeMime: string
+  contenu: Buffer
+}
+
+interface EvenementRow {
+  id: number
+  idemploye: number
+  date_evenement: string
+  type: string
+  titre: string
+  presents: string
+  contenu: string
+  rectifie: number | null
+  cree_le: Date
+  cree_par: string
+  hash: string
+  hash_precedent: string | null
+}
+
+const COLONNES_EVENEMENT = `id, idemploye, to_char(date_evenement, 'YYYY-MM-DD') AS date_evenement, type, titre,
+  presents, contenu, rectifie, cree_le, cree_par, hash, hash_precedent`
+
+function scelle(r: EvenementRow, pieces: Array<{ nom: string; sha256: string }>): EvenementScelle {
+  return {
+    id: r.id,
+    idemploye: r.idemploye,
+    dateEvenement: r.date_evenement,
+    type: r.type,
+    titre: r.titre,
+    presents: r.presents,
+    contenu: r.contenu,
+    rectifie: r.rectifie,
+    creeLe: r.cree_le.toISOString(),
+    creePar: r.cree_par,
+    pieces,
+  }
+}
+
+async function piecesDe(s: Sql, ids: number[]): Promise<Map<number, PieceJointe[]>> {
+  const map = new Map<number, PieceJointe[]>()
+  if (ids.length === 0) return map
+  const rows = await s<Array<{ id: number; idevenement: number; nom: string; type_mime: string; taille: number; sha256: string }>>`
+    SELECT id, idevenement, nom, type_mime, taille, sha256 FROM evenement_piece
+    WHERE idevenement IN ${s(ids)} ORDER BY idevenement, ordre`
+  for (const r of rows) {
+    const list = map.get(r.idevenement) ?? []
+    list.push({ id: r.id, nom: r.nom, typeMime: r.type_mime, taille: r.taille, sha256: r.sha256 })
+    map.set(r.idevenement, list)
+  }
+  return map
+}
+
+/** An employee's suivi, newest event first. */
+export async function listerEvenements(idemploye: number): Promise<Evenement[]> {
+  const s = await conn()
+  const rows = await s.unsafe<EvenementRow[]>(
+    `SELECT ${COLONNES_EVENEMENT} FROM evenement WHERE idemploye = $1 ORDER BY date_evenement DESC, id DESC`,
+    [idemploye],
+  )
+  const pieces = await piecesDe(s, rows.map((r) => r.id))
+  return rows.map((r) => {
+    const p = pieces.get(r.id) ?? []
+    return {
+      ...scelle(r, p),
+      hash: r.hash,
+      pieces: p,
+      rectifiePar: rows.filter((x) => x.rectifie === r.id).map((x) => x.id),
+    }
+  })
+}
+
+export async function compterEvenements(idemploye: number): Promise<number> {
+  const s = await conn()
+  const [row] = await s<{ n: string }[]>`SELECT count(*) AS n FROM evenement WHERE idemploye = ${idemploye}`
+  return Number(row.n)
+}
+
+export class RectificatifInvalide extends Error {
+  constructor() { super('rh: rectifie hors de ce dossier') }
+}
+
+/** Seal and store an entry with its attachments, in one transaction. The
+ *  table lock serialises writers so the chain never forks. */
+export async function ajouterEvenement(
+  idemploye: number,
+  e: NouvelEvenement,
+  pieces: NouvellePiece[],
+  par: string,
+): Promise<{ id: number; hash: string }> {
+  const s = await conn()
+  return s.begin(async (t) => {
+    const tx = t as unknown as Sql
+    await tx`LOCK TABLE evenement IN EXCLUSIVE MODE`
+    if (e.rectifie !== null) {
+      const [orig] = await tx<{ idemploye: number }[]>`SELECT idemploye FROM evenement WHERE id = ${e.rectifie}`
+      if (!orig || orig.idemploye !== idemploye) throw new RectificatifInvalide()
+    }
+    const [dernier] = await tx<{ hash: string }[]>`SELECT hash FROM evenement ORDER BY id DESC LIMIT 1`
+    const [{ id }] = await tx<{ id: number }[]>`SELECT nextval('evenement_id_seq')::int AS id`
+    const creeLe = new Date()
+    const empreintes = pieces.map((p) => ({ ...p, sha256: sha256(p.contenu) }))
+    const precedent = dernier?.hash ?? null
+    const hash = hashEvenement({
+      id,
+      idemploye,
+      ...e,
+      creeLe: creeLe.toISOString(),
+      creePar: par,
+      pieces: empreintes.map((p) => ({ nom: p.nom, sha256: p.sha256 })),
+    }, precedent)
+    await tx`
+      INSERT INTO evenement (id, idemploye, date_evenement, type, titre, presents, contenu, rectifie,
+                             cree_le, cree_par, hash, hash_precedent)
+      VALUES (${id}, ${idemploye}, ${e.dateEvenement}, ${e.type}, ${e.titre}, ${e.presents}, ${e.contenu},
+              ${e.rectifie}, ${creeLe}, ${par}, ${hash}, ${precedent})`
+    let ordre = 0
+    for (const p of empreintes) {
+      await tx`
+        INSERT INTO evenement_piece (idevenement, ordre, nom, type_mime, taille, sha256, contenu)
+        VALUES (${id}, ${ordre++}, ${p.nom}, ${p.typeMime}, ${p.contenu.length}, ${p.sha256}, ${p.contenu})`
+    }
+    return { id, hash }
+  }) as Promise<{ id: number; hash: string }>
+}
+
+export async function lirePiece(
+  idemploye: number,
+  idevenement: number,
+  idpiece: number,
+): Promise<{ nom: string; typeMime: string; contenu: Buffer } | null> {
+  const s = await conn()
+  const [row] = await s<Array<{ nom: string; type_mime: string; contenu: Buffer }>>`
+    SELECT p.nom, p.type_mime, p.contenu FROM evenement_piece p
+    JOIN evenement e ON e.id = p.idevenement
+    WHERE p.id = ${idpiece} AND p.idevenement = ${idevenement} AND e.idemploye = ${idemploye}`
+  return row ? { nom: row.nom, typeMime: row.type_mime, contenu: row.contenu } : null
+}
+
+/** The whole chain, oldest first. Every attachment's bytes are re-hashed in
+ *  the database, so a swapped file is caught even when its row kept the old
+ *  sha256. */
+export async function chaineComplete(): Promise<{ maillons: MaillonChaine[]; piecesAlterees: number[] }> {
+  const s = await conn()
+  const rows = await s.unsafe<EvenementRow[]>(`SELECT ${COLONNES_EVENEMENT} FROM evenement ORDER BY id`)
+  const pieces = await s<Array<{ idevenement: number; nom: string; sha256: string; reel: string }>>`
+    SELECT idevenement, nom, sha256, encode(sha256(contenu), 'hex') AS reel
+    FROM evenement_piece ORDER BY idevenement, ordre`
+  const parEvt = new Map<number, Array<{ nom: string; sha256: string }>>()
+  const piecesAlterees = new Set<number>()
+  for (const p of pieces) {
+    if (p.reel !== p.sha256) piecesAlterees.add(p.idevenement)
+    const list = parEvt.get(p.idevenement) ?? []
+    list.push({ nom: p.nom, sha256: p.sha256 })
+    parEvt.set(p.idevenement, list)
+  }
+  return {
+    maillons: rows.map((r) => ({ evenement: scelle(r, parEvt.get(r.id) ?? []), hash: r.hash, hashPrecedent: r.hash_precedent })),
+    piecesAlterees: [...piecesAlterees],
+  }
 }

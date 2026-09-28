@@ -79,6 +79,55 @@ export interface Indicateur {
   unite: string
 }
 
+// ── Suivi (append-only record, apps/api/src/lib/rh-suivi.ts) ──
+
+export const TYPES_EVENEMENT = [
+  { cle: 'entretien', label: 'Entretien' },
+  { cle: 'information', label: 'Information / annonce' },
+  { cle: 'avertissement', label: 'Avertissement / sanction' },
+  { cle: 'formation', label: 'Formation' },
+  { cle: 'medical', label: 'Visite médicale' },
+  { cle: 'courrier', label: 'Courrier / email' },
+  { cle: 'note', label: 'Note' },
+  { cle: 'rectificatif', label: 'Rectificatif' },
+] as const
+
+export type TypeEvenement = (typeof TYPES_EVENEMENT)[number]['cle']
+
+export function libelleType(cle: string): string {
+  return TYPES_EVENEMENT.find((t) => t.cle === cle)?.label ?? cle
+}
+
+export interface PieceJointe {
+  id: number
+  nom: string
+  typeMime: string
+  taille: number
+  sha256: string
+}
+
+export interface Evenement {
+  id: number
+  idemploye: number
+  /** YYYY-MM-DD — when it happened */
+  dateEvenement: string
+  type: string
+  titre: string
+  presents: string
+  contenu: string
+  rectifie: number | null
+  rectifiePar: number[]
+  /** ISO, server time — when it was recorded */
+  creeLe: string
+  creePar: string
+  hash: string
+  pieces: PieceJointe[]
+}
+
+export function pieceUrl(idemploye: number, e: Pick<Evenement, 'id'>, p: Pick<PieceJointe, 'id'>): string {
+  return `${API_URL}/rh/employes/${idemploye}/evenements/${e.id}/pieces/${p.id}`
+}
+
 export function nomComplet(e: Pick<Employe, 'prenom' | 'nom'>): string {
   return [e.prenom, e.nom].filter(Boolean).join(' ')
 }

@@ -4,13 +4,11 @@
 // PostgreSQL database `rh` (apps/api/src/lib/rh-store.ts), never in HFSQL.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   CalendarDays,
   Cake,
-  ChartColumnStacked,
   IdCard,
   ImageIcon,
   Loader2,
@@ -33,6 +31,7 @@ import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { RhGate } from '@/components/rh/RhGate'
 import { EmployeList, filtrerEmployes, useEmployeSelection, useEmployes } from '@/components/rh/EmployeList'
+import { SuiviCard } from '@/components/rh/SuiviCard'
 import { apiFetch, API_URL } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
@@ -44,7 +43,6 @@ import {
   joursAvantAnniversaire,
   nomComplet,
   photoUrl,
-  type ChargeResponse,
   type Employe,
 } from '@/lib/rh'
 
@@ -267,7 +265,8 @@ function RhEmployesScreen() {
         title="Supprimer l’employé"
         description={detail ? `La fiche de ${nomComplet(detail)}, sa photo et tous ses relevés de charge seront supprimés. Cette action est irréversible.` : undefined}
         isPending={deleteMutation.isPending}
-        onCancel={() => setConfirmDelete(false)}
+        error={deleteMutation.error ? ((deleteMutation.error as Error & { body?: { message?: string } }).body?.message ?? 'La suppression a échoué.') : null}
+        onCancel={() => { setConfirmDelete(false); deleteMutation.reset() }}
         onConfirm={() => {
           if (selectedId === null) return
           setIsEditing(false)
@@ -505,7 +504,7 @@ function DetailMain({ employe, isLoading, hasSelection, isEditing, draft, onDraf
         </Card>
       </div>
 
-      {!isEditing && <ChargeResumeCard employe={employe} />}
+      {!isEditing && <SuiviCard employeId={employe.id} />}
     </div>
   )
 }
@@ -597,50 +596,6 @@ function PhotoBlock({ employe, isEditing, onChanged }: { employe: Employe; isEdi
       ) : !employe.photoMaj ? (
         <p className="text-xs text-muted-foreground italic">Pas encore de photo — « Modifier » pour en ajouter une.</p>
       ) : null}
-    </div>
-  )
-}
-
-function ChargeResumeCard({ employe }: { employe: Employe }) {
-  const navigate = useNavigate()
-  const { data, isLoading } = useQuery<ChargeResponse>({
-    queryKey: ['rh', 'charge', employe.id, 'courante'],
-    queryFn: () => apiFetch(`/rh/employes/${employe.id}/charge`),
-    retry: false,
-  })
-  const v = data?.version
-  return (
-    <Card className="card-premium">
-      <CardHeader className="flex flex-row items-center gap-2 pb-2 space-y-0">
-        <ChartColumnStacked className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Charge de travail</CardTitle>
-        <Button variant="ghost" size="sm" className="ml-auto h-7 text-accent hover:text-accent hover:bg-accent/10" onClick={() => navigate('/rh/charge')}>
-          Voir le détail
-        </Button>
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
-          <div className="h-10 bg-muted animate-pulse rounded" />
-        ) : !v ? (
-          <p className="text-sm text-muted-foreground italic">Aucune tâche renseignée pour l’instant.</p>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <MiniStat label="Tâches identifiées" value={fmtHeures(Math.round(v.totaux.taches * 10) / 10)} />
-            <MiniStat label="Non attribué" value={fmtHeures(Math.round(Math.max(0, employe.heuresContrat - v.totaux.taches) * 10) / 10)} />
-            <MiniStat label="À automatiser" value={fmtHeures(Math.round(v.totaux.aAutomatiser * 10) / 10)} />
-            <MiniStat label="Mise à jour le" value={formatDateFr(v.dateReleve)} />
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function MiniStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md bg-zinc-100/80 border border-border/60 px-3 py-2">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
-      <p className="text-sm font-semibold tabular-nums">{value}</p>
     </div>
   )
 }

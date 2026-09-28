@@ -18,6 +18,11 @@
 //   DELETE /api/rh/employes/:id/charge/:versionId
 //   GET    /api/rh/employes/:id/charge/evolution[?mois=12]
 //   GET    /api/rh/indicateurs
+//   GET    /api/rh/employes/:id/evenements              — suivi, newest first
+//   POST   /api/rh/employes/:id/evenements   multipart  — `donnees` (JSON) + `pieces` files; append-only
+//   GET    /api/rh/employes/:id/evenements/:eid/pieces/:pid
+//   GET    /api/rh/employes/:id/evenements/export.pdf
+//   GET    /api/rh/evenements/verification              — the whole chain, re-hashed
 
 import { Router, type Request, type Response, type NextFunction, type Router as RouterType } from 'express'
 import multer from 'multer'
@@ -51,7 +56,17 @@ import {
   versionsCompletes,
   enregistrerVersion,
   supprimerVersion,
+  listerEvenements,
+  compterEvenements,
+  ajouterEvenement,
+  lirePiece,
+  chaineComplete,
+  RectificatifInvalide,
 } from '../lib/rh-store.js'
+import { TYPES_EVENEMENT, verifierChaine } from '../lib/rh-suivi.js'
+import { renderToBuffer } from '@react-pdf/renderer'
+import React from 'react'
+import { SuiviRhPdf } from '../lib/pdf/SuiviRhPdf.js'
 import { normaliserTache, estMesuree, heuresSemaine, totauxSimples, evolutionMensuelle, moisListe, volumeLisse, lundiDe } from '../lib/rh-charge.js'
 import { INDICATEURS, volumesPour } from '../lib/rh-indicateurs.js'
 
@@ -193,6 +208,14 @@ rhRouter.put('/employes/:id', h(async (req, res) => {
 
 rhRouter.delete('/employes/:id', h(async (req, res) => {
   const id = idParam(req)
+  // A suivi is evidence: the database refuses to lose it (FK RESTRICT), say why first.
+  if (id && (await compterEvenements(id)) > 0) {
+    res.status(409).json({
+      error: 'suivi_existant',
+      message: 'Cet employé a un suivi RH : sa fiche ne peut pas être supprimée.',
+    })
+    return
+  }
   if (!id || !(await supprimerEmploye(id))) {
     res.status(404).json({ error: 'Not found' })
     return
@@ -360,6 +383,153 @@ rhRouter.get('/employes/:id/charge/evolution', h(async (req, res) => {
     points: evolutionMensuelle(versions, volumes, moisListe(new Date(), n), derniereSemaineComplete()),
     releves: versions.map((v) => ({ id: v.id, dateReleve: v.dateReleve })),
   })
+}))
+
+// ── Suivi (append-only evidence, lib/rh-suivi.ts) ────────
+// No PUT, no DELETE — on purpose, and the database refuses them anyway.
+
+const MAX_PIECE_BYTES = 15 * 1024 * 1024
+const uploadPieces = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_PIECE_BYTES, files: 10 } })
+
+const EvenementSchema = z.object({
+  dateEvenement: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  type: z.enum(TYPES_EVENEMENT.map((t) => t.cle) as [string, ...string[]]),
+  titre: z.string().trim().min(1).max(200),
+  presents: z.string().trim().max(500).default(''),
+  contenu: z.string().trim().min(1).max(20000),
+  rectifie: z.number().int().positive().nullable().default(null),
+})
+
+/** multer reads filenames as latin1; browsers send UTF-8. */
+const nomFichier = (f: Express.Multer.File) => Buffer.from(f.originalname, 'latin1').toString('utf8')
+
+rhRouter.get('/employes/:id/evenements', h(async (req, res) => {
+  const id = idParam(req)
+  if (!id || !(await lireEmploye(id))) {
+    res.status(404).json({ error: 'Not found' })
+    return
+  }
+  res.json(await listerEvenements(id))
+}))
+
+rhRouter.post('/employes/:id/evenements', (req, res, next) => {
+  uploadPieces.array('pieces', 10)(req, res, (err: unknown) => {
+    if (err) {
+      const trop = err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE'
+      res.status(400).json({
+        error: 'pieces_invalides',
+        message: trop ? 'Une pièce jointe dépasse 15 Mo.' : 'Pièces jointes refusées (10 au maximum).',
+      })
+      return
+    }
+    next()
+  })
+}, h(async (req, res) => {
+  const id = idParam(req)
+  let brut: unknown
+  try { brut = JSON.parse(String(req.body?.donnees ?? '')) } catch { brut = null }
+  const parsed = EvenementSchema.safeParse(brut)
+  if (!id || !parsed.success) {
+    res.status(400).json({ error: 'Validation failed', issues: parsed.success ? undefined : parsed.error.issues })
+    return
+  }
+  if (parsed.data.type === 'rectificatif' && parsed.data.rectifie === null) {
+    res.status(400).json({ error: 'rectifie_requis', message: 'Un rectificatif doit désigner l’événement qu’il corrige.' })
+    return
+  }
+  // Today in France, not UTC — just after midnight the UTC date is still yesterday.
+  const aujourdhui = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date())
+  if (parsed.data.dateEvenement > aujourdhui) {
+    res.status(400).json({ error: 'date_future', message: 'La date de l’événement ne peut pas être dans le futur.' })
+    return
+  }
+  if (!(await lireEmploye(id))) {
+    res.status(404).json({ error: 'Not found' })
+    return
+  }
+  const files = (req.files as Express.Multer.File[] | undefined) ?? []
+  const pieces = files
+    .filter((f) => f.buffer.length > 0)
+    .map((f) => ({ nom: nomFichier(f).slice(0, 200), typeMime: f.mimetype || 'application/octet-stream', contenu: f.buffer }))
+  try {
+    const r = await ajouterEvenement(id, parsed.data, pieces, req.personneRh!.label)
+    await journaliser(req.personneRh!.cle, 'ajout_evenement', `${id}:${r.id}:${r.hash}`)
+    res.status(201).json(r)
+  } catch (err) {
+    if (err instanceof RectificatifInvalide) {
+      res.status(400).json({ error: 'rectifie_invalide', message: 'L’événement à rectifier n’appartient pas à ce dossier.' })
+      return
+    }
+    throw err
+  }
+}))
+
+rhRouter.get('/employes/:id/evenements/export.pdf', h(async (req, res) => {
+  const id = idParam(req)
+  const employe = id ? await lireEmploye(id) : null
+  if (!employe) {
+    res.status(404).json({ error: 'Not found' })
+    return
+  }
+  const [evenements, chaine] = await Promise.all([listerEvenements(employe.id), chaineComplete()])
+  const v = verifierChaine(chaine.maillons)
+  const ok = v.ok && chaine.piecesAlterees.length === 0
+  const detail = !v.ok
+    ? `Rupture à l’événement N° ${v.idCasse} (${v.raison === 'contenu' ? 'contenu modifié' : 'événement manquant avant lui'}).`
+    : chaine.piecesAlterees.length > 0
+      ? `Pièce jointe modifiée sur l’événement N° ${chaine.piecesAlterees.join(', ')}.`
+      : `${v.nombre} événement${v.nombre > 1 ? 's' : ''} du registre recalculé${v.nombre > 1 ? 's' : ''} à l’export, chaîne intacte.`
+  const nom = [employe.prenom, employe.nom].filter(Boolean).join(' ')
+  const buf = await renderToBuffer(
+    React.createElement(SuiviRhPdf, {
+      data: {
+        employe: { nom, poste: employe.poste, dateEmbauche: employe.dateEmbauche },
+        evenements,
+        exportePar: req.personneRh!.label,
+        exporteLe: new Date().toISOString(),
+        verification: { ok, nombre: v.nombre, detail },
+      },
+    }) as unknown as React.ReactElement<import('@react-pdf/renderer').DocumentProps>,
+  )
+  await journaliser(req.personneRh!.cle, 'export_suivi', String(employe.id))
+  const slug = nom.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `inline; filename="suivi-${slug || employe.id}.pdf"`)
+  res.setHeader('Cache-Control', 'private, no-store')
+  res.removeHeader('X-Frame-Options')
+  res.removeHeader('Content-Security-Policy')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  res.end(buf)
+}))
+
+rhRouter.get('/employes/:id/evenements/:eid/pieces/:pid', h(async (req, res) => {
+  const id = idParam(req)
+  const eid = Number(req.params.eid)
+  const pid = Number(req.params.pid)
+  const piece = id && Number.isInteger(eid) && Number.isInteger(pid) ? await lirePiece(id, eid, pid) : null
+  if (!piece) {
+    res.status(404).json({ error: 'Not found' })
+    return
+  }
+  await journaliser(req.personneRh!.cle, 'consultation_piece', `${id}:${eid}:${pid}`)
+  // Only types a browser renders safely are shown inline; everything else downloads.
+  const inline = piece.typeMime === 'application/pdf' || /^image\/(png|jpeg|gif|webp)$/.test(piece.typeMime)
+  res.setHeader('Content-Type', inline ? piece.typeMime : 'application/octet-stream')
+  res.setHeader(
+    'Content-Disposition',
+    `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(piece.nom)}`,
+  )
+  res.setHeader('Cache-Control', 'private, no-store')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.removeHeader('X-Frame-Options')
+  res.removeHeader('Content-Security-Policy')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  res.end(piece.contenu)
+}))
+
+rhRouter.get('/evenements/verification', h(async (_req, res) => {
+  const chaine = await chaineComplete()
+  res.json({ ...verifierChaine(chaine.maillons), piecesAlterees: chaine.piecesAlterees })
 }))
 
 rhRouter.get('/indicateurs', (_req, res) => {
