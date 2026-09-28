@@ -25,7 +25,7 @@ import sharp from 'sharp'
 import { z } from 'zod'
 import {
   requireRh,
-  personneRhDeUtilisateur,
+  personneRhAutorisee,
   lireSessionRh,
   signerSessionRh,
   rhCookieOptions,
@@ -81,7 +81,7 @@ const idParam = (req: Request) => {
 // ── Lock ─────────────────────────────────────────────────
 
 rhRouter.get('/acces', h(async (req, res) => {
-  const personne = await personneRhDeUtilisateur(req.userId)
+  const personne = await personneRhAutorisee(req)
   if (!personne) {
     res.json({ autorise: false })
     return
@@ -93,7 +93,7 @@ rhRouter.get('/acces', h(async (req, res) => {
 }))
 
 rhRouter.post('/deverrouiller', h(async (req, res) => {
-  const personne = await personneRhDeUtilisateur(req.userId)
+  const personne = await personneRhAutorisee(req)
   if (!personne) {
     res.status(404).json({ error: 'Not found' })
     return

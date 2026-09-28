@@ -165,6 +165,19 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     label: 'Agents IA',
     screens: [{ href: '/agents-ia/agents', label: 'Agents' }],
   },
+  // RH — HR data (birthdays, photos, workload). Granted person by person
+  // (seed: false), and here too the curtain is the lock: every /rh route
+  // checks this grant (peutOuvrirRh, lib/rh-acces.ts) before the personal code.
+  {
+    id: 'rh',
+    href: '/rh',
+    label: 'RH',
+    screens: [
+      { href: '/rh/employes', label: 'Employés' },
+      { href: '/rh/charge', label: 'Charge de travail' },
+    ],
+    seed: false,
+  },
   // Paramètres sits at the bottom of the sidebar (`settingsItem`, outside
   // `mainNavigation`) but is a menu of this axis like any other. Utilisateurs
   // is admin-only and stays out of the tree — ticking it could open nothing.

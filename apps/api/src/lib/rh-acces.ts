@@ -4,8 +4,10 @@
 // the factory can pick « Isabelle Malterre » in the user picker. For HR data
 // (birthdays, photos, workload) that is not enough, so the menu has TWO locks:
 //
-//   1. a fixed list of people, by name (like isAdminUtilisateur in auth.ts) —
-//      not a permission, nothing Paramètres › Utilisateurs can hand out;
+//   1. the RH menu of the Écrans axis (`screen_rh`, Paramètres › Utilisateurs ›
+//      Écrans, never handed out by the seed scripts) — here the curtain IS the
+//      lock, like Paramètres › Outils: every /rh route checks it (peutOuvrirRh).
+//      Until 2026-09-28 it was a fixed list of two names, nothing grantable;
 //   2. a personal code per person, hashed in the `rh` PostgreSQL database and
 //      set ON THE SERVER only (scripts/rh-code.ts) — never through the app,
 //      since whoever picks « Vincent Malterre » in the picker becomes admin.
@@ -20,26 +22,55 @@
 import crypto from 'node:crypto'
 import type { Request, Response, NextFunction, RequestHandler } from 'express'
 import { query } from './hfsql-auto.js'
+import { isEffectiveAdmin } from './auth.js'
+import { getUserPermissions } from './permissions.js'
+import { menuAccessKey, screenHideKey } from './screen-keys.js'
 
 export interface PersonneRh {
-  /** Stable key stored in the database and in the cookie. */
+  /** Stable key stored in the database and in the cookie — one per PERSON,
+   *  not per `utilisateur` row (Isabelle has home + bureau, one code). */
   cle: string
-  prenom: string
-  nom: string
   label: string
 }
 
-/** The only people who may open RH. Matched on the `utilisateur` row's name,
- *  so every PC row of the same person (Isabelle has home + bureau) qualifies. */
-export const PERSONNES_RH: readonly PersonneRh[] = [
+/** The two people who held RH before it joined the Écrans axis: their keys
+ *  stay what the database already stores their code and journal under. */
+const CLES_HISTORIQUES = [
   { cle: 'vincent', prenom: 'vincent', nom: 'malterre', label: 'Vincent Malterre' },
   { cle: 'isabelle', prenom: 'isabelle', nom: 'malterre', label: 'Isabelle Malterre' },
-]
+] as const
 
+const ascii = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
+/** Who a `utilisateur` row is for RH — identity only, access is peutOuvrirRh.
+ *  Keyed by name so every PC row of a person shares one code. Any other
+ *  person gets `u-<prénom>-<nom>`: the `u-` prefix can never collide with a
+ *  historical key, and the key never holds a '.', which the cookie splits on. */
 export function personneRh(u: { prenom?: string | null; nom?: string | null }): PersonneRh | null {
-  const p = u.prenom?.trim().toLowerCase()
-  const n = u.nom?.trim().toLowerCase()
-  return PERSONNES_RH.find((x) => x.prenom === p && x.nom === n) ?? null
+  const prenom = (u.prenom ?? '').trim()
+  const nom = (u.nom ?? '').trim()
+  const p = prenom.toLowerCase()
+  const n = nom.toLowerCase()
+  const hist = CLES_HISTORIQUES.find((x) => x.prenom === p && x.nom === n)
+  if (hist) return { cle: hist.cle, label: hist.label }
+  const slug = ascii(`${prenom} ${nom}`)
+  if (!slug) return null
+  return { cle: `u-${slug}`, label: `${prenom} ${nom}`.trim() }
+}
+
+export const RH_MENU = '/rh'
+export const RH_ECRANS = ['/rh/employes', '/rh/charge'] as const
+
+/** The first lock: the RH menu granted in Écrans (admins always pass) with at
+ *  least one of its screens left visible — hiding both is revoking the menu,
+ *  the same rule the navigation applies. Read on every request, never cached:
+ *  a withdrawal takes effect at once. */
+export async function peutOuvrirRh(userId: number | undefined, admin: boolean): Promise<boolean> {
+  if (!userId) return false
+  if (admin) return true
+  const granted = new Set(await getUserPermissions(userId))
+  return granted.has(menuAccessKey(RH_MENU)) && RH_ECRANS.some((s) => !granted.has(screenHideKey(s)))
 }
 
 // ── Who is the current user (cached: one HFSQL read per user per 5 min) ──
@@ -57,6 +88,12 @@ export async function personneRhDeUtilisateur(userId: number | undefined): Promi
   const personne = rows[0] ? personneRh(rows[0]) : null
   cache.set(userId, { at: Date.now(), personne })
   return personne
+}
+
+/** The RH person behind this request, or null when they may not open RH. */
+export async function personneRhAutorisee(req: Request): Promise<PersonneRh | null> {
+  if (!(await peutOuvrirRh(req.userId, isEffectiveAdmin(req)))) return null
+  return personneRhDeUtilisateur(req.userId)
 }
 
 // ── Code hashing ─────────────────────────────────────────
@@ -144,11 +181,11 @@ declare global {
   }
 }
 
-/** 404 for anyone not on the list (the menu does not exist for them), 401
- *  `rh_verrouille` for the right person without a valid code session. */
+/** 404 for anyone without the RH menu in Écrans (it does not exist for them),
+ *  401 `rh_verrouille` for a granted person without a valid code session. */
 export function requireRh(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
-    personneRhDeUtilisateur(req.userId)
+    personneRhAutorisee(req)
       .then((personne) => {
         if (!personne) {
           res.status(404).json({ error: 'Not found' })

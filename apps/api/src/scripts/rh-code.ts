@@ -1,5 +1,5 @@
-// Set the code RH of one of the two people allowed into the RH menu
-// (lib/rh-acces.ts). Run ON THE SERVER, never exposed through the app:
+// Set the code RH of a person granted the RH menu (Paramètres › Utilisateurs ›
+// Écrans, lib/rh-acces.ts). Run ON THE SERVER, never exposed through the app:
 // whoever picks a name in the ETM user picker becomes that person, so a
 // code settable from the app would protect nothing.
 //
@@ -7,7 +7,11 @@
 //       → asks for the code twice, nothing echoed
 //   ... --personne vincent --generer
 //       → draws a random 8-digit code and prints it once
+//   ... --utilisateur 12 [--generer]
+//       → anyone else, by IDutilisateur (one code per person: every PC row
+//         of the same name shares it)
 //
+// The code alone opens nothing: the person also needs the RH menu in Écrans.
 // Dev: without NODE_ENV the script reads .env.development (rh_dev).
 
 import dotenv from 'dotenv'
@@ -16,8 +20,9 @@ dotenv.config({ path: '.env' })
 
 import crypto from 'node:crypto'
 import readline from 'node:readline'
-import { PERSONNES_RH, hacherCode, CODE_MIN_LENGTH } from '../lib/rh-acces.js'
+import { personneRh, personneRhDeUtilisateur, hacherCode, CODE_MIN_LENGTH, type PersonneRh } from '../lib/rh-acces.js'
 import { ecrireCode, journaliser, fermerRh } from '../lib/rh-store.js'
+import { closeConnection } from '../lib/hfsql-auto.js'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
@@ -42,10 +47,18 @@ function lireMasque(question: string): Promise<string> {
 }
 
 async function main() {
-  const cle = arg('personne')
-  const personne = PERSONNES_RH.find((p) => p.cle === cle)
+  const historiques: Record<string, PersonneRh | null> = {
+    vincent: personneRh({ prenom: 'Vincent', nom: 'Malterre' }),
+    isabelle: personneRh({ prenom: 'Isabelle', nom: 'Malterre' }),
+  }
+  const idUtilisateur = Number(arg('utilisateur'))
+  let personne: PersonneRh | null = historiques[arg('personne') ?? ''] ?? null
+  if (!personne && Number.isInteger(idUtilisateur) && idUtilisateur > 0) {
+    personne = await personneRhDeUtilisateur(idUtilisateur)
+    await closeConnection()
+  }
   if (!personne) {
-    console.error(`--personne ${PERSONNES_RH.map((p) => p.cle).join('|')} requis`)
+    console.error('--personne vincent|isabelle ou --utilisateur <IDutilisateur> requis')
     process.exit(1)
   }
 

@@ -122,13 +122,30 @@ describe('screen access — interaction with the action catalog', () => {
 })
 
 describe('screen access — the Laetitia case', () => {
-  it('grants everything but the 7 menus she does not need', () => {
+  it('grants everything but the 7 menus she does not need (and RH)', () => {
     const unwanted = [
       '/sous-traitants', '/transferts', '/fils',
-      '/tombe-metier', '/divers', '/rapports', '/reseau',
+      '/tombe-metier', '/divers', '/rapports', '/reseau', '/rh',
     ].map(menuAccessKey)
     const v = viewer(ALL_MENUS.filter((k) => !unwanted.includes(k)))
     expect(ids(visibleMainNavigation(v))).toEqual(['prospects', 'clients', 'finis', 'qualite', 'agents-ia'])
+  })
+})
+
+describe('RH — a menu of the Écrans axis (2026-09-28)', () => {
+  const RH = menuAccessKey('/rh')
+  const rhTitles = (v: NavAccess) =>
+    visibleMainNavigation(v).find((m) => m.id === 'rh')?.submenus.map((s) => s.title) ?? null
+
+  it('shows only to a holder of its grant', () => {
+    expect(rhTitles(viewer([]))).toBeNull()
+    expect(rhTitles(viewer([RH]))).toEqual(['Employés', 'Charge de travail'])
+  })
+
+  it('hides one screen, and drops the menu when both are hidden', () => {
+    expect(rhTitles(viewer([RH, screenHideKey('/rh/charge')]))).toEqual(['Employés'])
+    expect(canOpenScreen('/rh/charge', viewer([RH, screenHideKey('/rh/charge')]))).toBe(false)
+    expect(rhTitles(viewer([RH, screenHideKey('/rh/charge'), screenHideKey('/rh/employes')]))).toBeNull()
   })
 })
 

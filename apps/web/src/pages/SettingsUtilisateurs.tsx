@@ -737,11 +737,15 @@ function DetailBody({
 // Built from `mainNavigation` + Paramètres (`screenAccessMenus`) itself, so it
 // can never drift from the real nav (and the menu icons come for free).
 // Admin-only entries (Utilisateurs) are left out: ticking them could open
-// nothing. « Tout » never grants Paramètres — it is given person by person.
+// nothing. « Tout » never grants Paramètres nor RH — they are given person by
+// person (`seed: false` in apps/api/src/lib/screen-keys.ts).
 // Storage runs in two directions — a menu
 // is a grant, a screen is a hide — but the UI shows plain "visible" checkboxes
 // in both cases, so the admin never has to think about it. See the header
 // comment of apps/api/src/lib/screen-keys.ts for why.
+
+/** Menus of `mainNavigation` that « Tout » skips (Paramètres is not in it). */
+const MENUS_PERSONNE_PAR_PERSONNE = new Set(['/rh'])
 
 const ECRANS_MENUS: MainMenuItem[] = screenAccessMenus().map((m) => ({
   ...m,
@@ -782,7 +786,7 @@ function EcransTab({
 
   const setAllMenus = (next: boolean) => {
     onGrantedChange((s) => {
-      for (const m of next ? mainNavigation : ECRANS_MENUS) {
+      for (const m of next ? mainNavigation.filter((x) => !MENUS_PERSONNE_PAR_PERSONNE.has(x.href)) : ECRANS_MENUS) {
         if (next) s.add(menuAccessKey(m.href))
         else s.delete(menuAccessKey(m.href))
         for (const sub of m.submenus) s.delete(screenHideKey(sub.href))

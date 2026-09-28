@@ -184,22 +184,6 @@ export const settingsItem: MainMenuItem = {
   ],
 }
 
-// RH — NOT a menu of the Écrans axis: nobody can be granted it. It shows for
-// the two people named in apps/api/src/lib/rh-acces.ts (Vincent, Isabelle),
-// read from GET /rh/acces (hooks/useRhAcces.ts), and the API answers 404 to
-// anyone else plus 401 until the person has typed their code RH. Kept out of
-// `mainNavigation` on purpose, so check-screen-access / seed-screen-access and
-// the Écrans tree of Paramètres › Utilisateurs never see it.
-export const rhItem: MainMenuItem = {
-  id: 'rh',
-  title: 'RH',
-  icon: IdCard,
-  href: '/rh',
-  submenus: [
-    { title: 'Employés', href: '/rh/employes' },
-    { title: 'Charge de travail', href: '/rh/charge' },
-  ],
-}
 
 // Main navigation items (between dashboard and settings).
 // Order mirrors the legacy WinDev MPS main menu: Marketing, Clients,
@@ -336,6 +320,20 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Agents', href: '/agents-ia/agents' },
     ],
   },
+  // RH — a menu of the Écrans axis since 2026-09-28, granted person by person
+  // (`seed: false` in the API manifest). The grant is also the API's first lock
+  // (lib/rh-acces.ts peutOuvrirRh); the personal code RH is the second
+  // (RhGate, GET /rh/acces).
+  {
+    id: 'rh',
+    title: 'RH',
+    icon: IdCard,
+    href: '/rh',
+    submenus: [
+      { title: 'Employés', href: '/rh/employes' },
+      { title: 'Charge de travail', href: '/rh/charge' },
+    ],
+  },
 ]
 
 // Helper to find active menu based on current path
@@ -347,9 +345,6 @@ export function getActiveMenu(pathname: string): MainMenuItem | undefined {
   // Check settings
   if (pathname === settingsItem.href || pathname.startsWith(settingsItem.href + '/')) {
     return settingsItem
-  }
-  if (pathname === rhItem.href || pathname.startsWith(rhItem.href + '/')) {
-    return rhItem
   }
   // Check main navigation
   return mainNavigation.find(
