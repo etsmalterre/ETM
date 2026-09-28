@@ -47,6 +47,9 @@ import { fmtNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   COULEURS,
+  RAYURES_TAMPON,
+  equilibre,
+  estTampon,
   etatAuto,
   fmtDuree,
   fmtHeures,
@@ -63,6 +66,7 @@ import {
   type ChargeResponse,
   type Employe,
   type EtatAuto,
+  type Equilibre,
   type EvolutionResponse,
   type Indicateur,
   type KpiTache,
@@ -159,6 +163,10 @@ const LIGNE_VIDE: TacheActuelle = {
   heuresActuelles: 0, volumeHebdo: null,
 }
 
+const TAMPON_VIDE: TacheActuelle = {
+  ...LIGNE_VIDE, nom: 'Improductivité structurelle', automatisable: 'non', categorie: 'improductivite_structurelle',
+}
+
 const PERIODES = [
   { id: 6, primary: '6 derniers mois' },
   { id: 12, primary: '12 derniers mois' },
@@ -226,7 +234,10 @@ function RhChargeScreen() {
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const taches = lignes.filter((l) => l.nom.trim()).map((l) => versTache(l, volumes))
+      // A buffer set to 0 means « no buffer »: the row is dropped.
+      const taches = lignes
+        .filter((l) => l.nom.trim() && !(estTampon(l.base) && nombre(l.valeur) <= 0))
+        .map((l) => versTache(l, volumes))
       return apiFetch(`/rh/employes/${selectedId}/charge`, {
         method: 'POST',
         body: JSON.stringify({ dateReleve: todayIso(), note: '', taches }),
@@ -254,15 +265,34 @@ function RhChargeScreen() {
   }, [guard, setSelectedId])
 
   const totauxEdition = useMemo(() => {
-    const t = { taches: 0, aAutomatiser: 0, automatise: 0 }
+    const t = { taches: 0, aAutomatiser: 0, automatise: 0, tampon: 0 }
     for (const l of lignes) {
       const h = versTache(l, volumes).heures
+      if (estTampon(l.base)) { t.tampon += h; continue }
       t.taches += h
       if (l.etat === 'automatise') t.automatise += h
       else if (l.etat === 'aAutomatiser') t.aAutomatiser += h
     }
     return t
   }, [lignes, volumes])
+
+  // The buffer is edited on the week card, not as a task row: one forfait row
+  // of categorie « improductivite_structurelle », created on first input.
+  const tamponLigne = lignes.find((l) => estTampon(l.base))
+  const setTampon = useCallback((v: string) => {
+    setLignes((ls) => {
+      if (ls.some((l) => estTampon(l.base))) {
+        let premier = true
+        return ls.flatMap((l) => {
+          if (!estTampon(l.base)) return [l]
+          if (!premier) return [] // several buffer rows collapse into one
+          premier = false
+          return [{ ...l, valeur: v, mode: 'forfait' as const }]
+        })
+      }
+      return [...ls, { ...versDraft(TAMPON_VIDE), valeur: v }]
+    })
+  }, [])
 
   return (
     <>
@@ -312,7 +342,13 @@ function RhChargeScreen() {
               )}
               {isEditing ? (
                 <>
-                  <SemaineCard totaux={totauxEdition} contrat={employe.heuresContrat} isEditing />
+                  <SemaineCard
+                    totaux={totauxEdition}
+                    contrat={employe.heuresContrat}
+                    isEditing
+                    tamponSaisi={tamponLigne?.valeur ?? ''}
+                    onTampon={setTampon}
+                  />
                   <EditeurTaches lignes={lignes} setLignes={setLignes} indicateurs={indicateurs ?? []} volumes={volumes} />
                 </>
               ) : version ? (
@@ -412,44 +448,118 @@ function DetailHeader({ employe, version, isEditing, onRetour, onStartEdit, onCa
 
 // ── La semaine ─────────────────────────────────────────
 
-function SemaineCard({ totaux, contrat, isEditing }: { totaux: TotauxCharge; contrat: number; isEditing?: boolean }) {
-  const reste = contrat - totaux.taches
-  const echelle = Math.max(contrat, totaux.taches)
+const EQUILIBRE_META: Record<Equilibre, { label: string; classes: string; aide: string }> = {
+  sous_charge: {
+    label: 'Sous-chargé',
+    classes: 'bg-amber-500/10 text-amber-800 border-amber-500/30',
+    aide: 'Les tâches n’atteignent pas le tampon : il reste du temps à attribuer.',
+  },
+  equilibre: {
+    label: 'Bien chargé',
+    classes: 'bg-emerald-500/10 text-emerald-800 border-emerald-500/30',
+    aide: 'Les tâches remplissent la semaine jusqu’au tampon.',
+  },
+  surcharge: {
+    label: 'Surchargé',
+    classes: 'bg-red-500/10 text-red-700 border-red-500/30',
+    aide: 'Les tâches entament le tampon : risque de surcharge.',
+  },
+}
+
+/** The week: tasks fill the bar from the left; the buffer is a striped zone
+ *  pinned to the end of the contract. Filled up to the buffer = well loaded,
+ *  short of it = under-loaded, into it = overload (the stripes then sit over
+ *  the tasks). In edit mode the buffer is set here — it is not a task row. */
+function SemaineCard({ totaux, contrat, isEditing, tamponSaisi, onTampon }: {
+  totaux: TotauxCharge
+  contrat: number
+  isEditing?: boolean
+  /** Edit mode: the buffer as typed (hours per week). */
+  tamponSaisi?: string
+  onTampon?: (v: string) => void
+}) {
+  const capacite = Math.max(0, contrat - totaux.tampon)
+  const libre = capacite - totaux.taches
+  const echelle = Math.max(contrat, totaux.taches, 0.1)
   const autres = Math.max(0, totaux.taches - totaux.aAutomatiser - totaux.automatise)
   const parts = [
     { h: totaux.automatise, color: COULEURS.automatise, label: 'automatisé' },
     { h: totaux.aAutomatiser, color: COULEURS.aAutomatiser, label: 'à automatiser' },
     { h: autres, color: COULEURS.taches, label: 'autres tâches' },
-    { h: Math.max(0, reste), color: COULEURS.nonAttribue, label: 'non attribué' },
   ].filter((p) => p.h > 0.01)
+  const verdict = EQUILIBRE_META[equilibre(totaux.taches, contrat, totaux.tampon)]
+  const pct = (h: number) => `${(h / echelle) * 100}%`
 
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
       <CardContent className="pt-5 space-y-3">
-        <p className="text-base">
-          <span className="font-semibold tabular-nums">{fmtHeures(round1(totaux.taches))}</span> de tâches identifiées sur {fmtHeures(contrat)}
-          {' — '}
-          {reste >= 0 ? (
-            <><span className="font-semibold tabular-nums">{fmtHeures(round1(reste))}</span> non attribuées</>
-          ) : (
-            <span className="font-semibold text-destructive">{fmtHeures(round1(-reste))} de dépassement</span>
-          )}
-        </p>
-        <div className="flex h-6 w-full overflow-hidden rounded-md gap-0.5">
-          {parts.map((p) => (
+        <div className="flex items-start gap-3">
+          <p className="text-base flex-1 min-w-0">
+            <span className="font-semibold tabular-nums">{fmtHeures(round1(totaux.taches))}</span> de tâches identifiées sur {fmtHeures(contrat)}
+            {totaux.tampon > 0.01 && <> — <span className="tabular-nums">{fmtHeures(round1(totaux.tampon))}</span> de tampon</>}
+            {' — '}
+            {libre >= -0.1 ? (
+              <><span className="font-semibold tabular-nums">{fmtHeures(round1(Math.max(0, libre)))}</span> non attribuées</>
+            ) : (
+              <span className="font-semibold text-destructive">
+                {fmtHeures(round1(-libre))} {totaux.taches > contrat ? 'au-delà du contrat' : 'dans le tampon'}
+              </span>
+            )}
+          </p>
+          <Badge variant="outline" className={cn('flex-shrink-0 text-xs font-semibold', verdict.classes)} title={verdict.aide}>
+            {verdict.label}
+          </Badge>
+        </div>
+        <div className="relative h-6 w-full overflow-hidden rounded-md" style={{ background: COULEURS.nonAttribue }}>
+          <div className="absolute inset-y-0 left-0 flex gap-0.5" style={{ width: pct(totaux.taches) }}>
+            {parts.map((p) => (
+              <div
+                key={p.label}
+                className="h-full"
+                style={{ width: `${(p.h / totaux.taches) * 100}%`, background: p.color }}
+                title={`${p.label} : ${fmtHeures(round1(p.h))}`}
+              />
+            ))}
+          </div>
+          {totaux.tampon > 0.01 && (
             <div
-              key={p.label}
-              className="h-full first:rounded-l-md last:rounded-r-md"
-              style={{ width: `${(p.h / echelle) * 100}%`, background: p.color }}
-              title={`${p.label} : ${fmtHeures(round1(p.h))}`}
+              className="absolute inset-y-0 border-l-2"
+              style={{ left: pct(capacite), width: pct(Math.min(totaux.tampon, contrat)), background: RAYURES_TAMPON, borderColor: COULEURS.tampon }}
+              title={`tampon (improductivité structurelle) : ${fmtHeures(round1(totaux.tampon))}`}
             />
-          ))}
+          )}
+          {totaux.taches > contrat && (
+            <div className="absolute inset-y-0 w-0.5 bg-destructive" style={{ left: pct(contrat) }} title={`fin du contrat : ${fmtHeures(contrat)}`} />
+          )}
         </div>
         <p className="text-sm text-muted-foreground">
           dont <span className="font-semibold" style={{ color: COULEURS.aAutomatiser }}>{fmtHeures(round1(totaux.aAutomatiser))} à automatiser</span>
           {' · '}
           <span className="font-semibold" style={{ color: COULEURS.automatise }}>{fmtHeures(round1(totaux.automatise))} déjà automatisée{totaux.automatise >= 2 ? 's' : ''}</span>
+          {totaux.tampon > 0.01 && (
+            <>
+              {' · '}
+              <span className="inline-flex items-center gap-1.5 align-middle">
+                <span className="inline-block h-3 w-4 rounded-sm border" style={{ background: RAYURES_TAMPON, borderColor: COULEURS.tampon }} />
+                tampon
+              </span>
+            </>
+          )}
         </p>
+        {isEditing && onTampon && (
+          <div className="flex items-center gap-2 pt-1 border-t border-border/50">
+            <label htmlFor="rh-tampon" className="text-sm">Tampon (improductivité structurelle)</label>
+            <input
+              id="rh-tampon"
+              className={cn(inputClass, 'w-20 text-right tabular-nums')}
+              inputMode="decimal"
+              value={tamponSaisi ?? ''}
+              placeholder="0"
+              onChange={(e) => { if (/^\d*[.,]?\d*$/.test(e.target.value)) onTampon(e.target.value) }}
+            />
+            <span className="text-sm text-muted-foreground">h / semaine</span>
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -542,7 +652,11 @@ function DetailTache({ t, kpi, couleur, dateReleve }: { t: TacheActuelle; kpi: K
 
 function TachesCard({ taches, indicateurs, actuelle, dateReleve }: { taches: TacheActuelle[]; indicateurs: Indicateur[]; actuelle: boolean; dateReleve: string }) {
   const [ouverte, setOuverte] = useState<string | null>(null)
-  const triees = useMemo(() => [...taches].sort((a, b) => b.heuresActuelles - a.heuresActuelles), [taches])
+  // The buffer is not a task: it lives on the week bar only.
+  const triees = useMemo(
+    () => taches.filter((t) => !estTampon(t)).sort((a, b) => b.heuresActuelles - a.heuresActuelles),
+    [taches],
+  )
   const max = Math.max(...triees.map((t) => t.heuresActuelles), 0.1)
 
   return (
@@ -642,7 +756,7 @@ function EditeurTaches({ lignes, setLignes, indicateurs, volumes }: {
           <span>Tâche</span><span className="text-right">Temps</span><span>Unité</span>
           <span className="text-right">Volume / sem.</span><span className="text-right">Charge</span><span>Automatisation</span><span />
         </div>
-        {lignes.map((l) => {
+        {lignes.filter((l) => !estTampon(l.base)).map((l) => {
           const open = ouverte === l.uid
           const uniteId = l.mode === 'forfait' ? idForfait : l.mode === 'estime' ? idAutre : indicateurs.findIndex((i) => i.cle === l.indicateur) + 2
           const volEtm = l.mode === 'etm' ? volumes.get(l.indicateur) : undefined

@@ -14,8 +14,10 @@
 //   • Three automation states: à automatiser (automatisable = 'oui'),
 //     automatisé, the rest. 'partiel' / 'inconnu' are kept in the data (the
 //     spreadsheet had them) but count as « the rest ».
-//   • What is left of the contract is « non attribué », never typed. The old
-//     structural slack row is just a task (« Improductivité structurelle »).
+//   • The structural slack (« Improductivité structurelle », categorie
+//     'improductivite_structurelle') is NOT a task but a BUFFER kept at the end
+//     of the week (2026-09-28): the tasks should fill the contract up to it.
+//     What is left between the tasks and the buffer is « non attribué ».
 //   • Every save is kept as a dated relevé; the monthly curve takes, for each
 //     week, the relevé in force that week.
 
@@ -152,8 +154,8 @@ export function normaliserTache(raw: Partial<TacheCharge>): TacheCharge {
 //
 // The screen shows ONE figure per task — its current value — and a monthly
 // curve. Three automation states only: à automatiser (automatisable = 'oui'),
-// automatisé, the rest. The structural slack counts as a task (« Marge »):
-// what is left of the contract is simply « non attribué ».
+// automatisé, the rest. The structural slack is the buffer (`tampon`), kept
+// apart: « non attribué » is what lies between the tasks and the buffer.
 
 /** `n` months ending with the month of `fin`, oldest first, as YYYY-MM. */
 export function moisListe(fin: Date, n: number): string[] {
@@ -180,23 +182,46 @@ export function heuresSemaine(
 }
 
 export interface TotauxSimples {
-  /** Every row, the margin included. */
+  /** The tasks — the buffer excluded. */
   taches: number
   aAutomatiser: number
   automatise: number
+  /** The buffer (« improductivité structurelle », since 2026-09-28): not a
+   *  task but the slack kept at the end of the week. The tasks should fill
+   *  the contract up to it — short of it the week is under-loaded, into it
+   *  the employee is overloaded (Vincent). */
+  tampon: number
 }
+
+export const estTampon = (t: Pick<TacheCharge, 'categorie'>) => t.categorie === 'improductivite_structurelle'
 
 export function totauxSimples(taches: TacheCharge[], heures: number[]): TotauxSimples {
   let total = 0
   let aAutomatiser = 0
   let automatise = 0
+  let tampon = 0
   taches.forEach((t, i) => {
     const h = heures[i] ?? 0
+    if (estTampon(t)) { tampon += h; return }
     total += h
     if (t.automatise) automatise += h
     else if (t.automatisable === 'oui') aAutomatiser += h
   })
-  return { taches: round2(total), aAutomatiser: round2(aAutomatiser), automatise: round2(automatise) }
+  return { taches: round2(total), aAutomatiser: round2(aAutomatiser), automatise: round2(automatise), tampon: round2(tampon) }
+}
+
+/** Share of the capacity (contract − buffer) at or above which a week counts
+ *  as well loaded. Below it: under-loaded; above the capacity: overload. */
+export const SEUIL_BIEN_CHARGE = 0.9
+
+export type Equilibre = 'sous_charge' | 'equilibre' | 'surcharge'
+
+/** How the tasks sit against the buffer. A few minutes over the capacity are
+ *  rounding, not overload. */
+export function equilibre(taches: number, contrat: number, tampon: number): Equilibre {
+  const capacite = Math.max(0, contrat - tampon)
+  if (taches > capacite + 0.1) return 'surcharge'
+  return taches >= capacite * SEUIL_BIEN_CHARGE ? 'equilibre' : 'sous_charge'
 }
 
 export interface PointMensuel extends TotauxSimples {
@@ -229,13 +254,14 @@ export function evolutionMensuelle(
       if (l.slice(0, 7) === m && l <= derniereSemaineComplete) lundis.push(l)
     }
     if (lundis.length === 0) continue
-    const acc = { taches: 0, aAutomatiser: 0, automatise: 0 }
+    const acc = { taches: 0, aAutomatiser: 0, automatise: 0, tampon: 0 }
     for (const l of lundis) {
       const v = versionEnVigueur(versions, l)!
       const tot = totauxSimples(v.taches, heuresSemaine(v.taches, volumes, l))
       acc.taches += tot.taches
       acc.aAutomatiser += tot.aAutomatiser
       acc.automatise += tot.automatise
+      acc.tampon += tot.tampon
     }
     const finMois = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).toISOString().slice(0, 10)
     const prochainLundi = new Date(Date.parse(`${derniereSemaineComplete}T00:00:00Z`) + 7 * DAY_MS).toISOString().slice(0, 10)
@@ -244,6 +270,7 @@ export function evolutionMensuelle(
       taches: round2(acc.taches / lundis.length),
       aAutomatiser: round2(acc.aAutomatiser / lundis.length),
       automatise: round2(acc.automatise / lundis.length),
+      tampon: round2(acc.tampon / lundis.length),
       releves: versions.map((v) => v.dateReleve).filter((d) => d.slice(0, 7) === m).sort(),
       enCours: prochainLundi <= finMois,
       avantPremierReleve: finMois < premier,

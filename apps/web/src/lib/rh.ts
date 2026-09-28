@@ -39,10 +39,25 @@ export interface TacheCharge {
 }
 
 export interface TotauxCharge {
-  /** Every row, the margin included. */
+  /** The tasks — the buffer excluded. */
   taches: number
   aAutomatiser: number
   automatise: number
+  /** The buffer: « improductivité structurelle », kept at the end of the week. */
+  tampon: number
+}
+
+/** The buffer row (categorie improductivite_structurelle): not a task — the
+ *  slack at the end of the week the tasks should fill the contract up to. */
+export const estTampon = (t: Pick<TacheCharge, 'categorie'>) => t.categorie === 'improductivite_structurelle'
+
+/** Mirror of apps/api/src/lib/rh-charge.ts `equilibre` (tested there): well
+ *  loaded from 90 % of the capacity (contract − buffer), overloaded past it. */
+export type Equilibre = 'sous_charge' | 'equilibre' | 'surcharge'
+export function equilibre(taches: number, contrat: number, tampon: number): Equilibre {
+  const capacite = Math.max(0, contrat - tampon)
+  if (taches > capacite + 0.1) return 'surcharge'
+  return taches >= capacite * 0.9 ? 'equilibre' : 'sous_charge'
 }
 
 export interface TacheActuelle extends TacheCharge {
@@ -225,7 +240,13 @@ export const COULEURS = {
   aAutomatiser: '#C2410C',
   automatise: '#17915B',
   nonAttribue: '#E4E4E7',
+  /** The buffer's stripes (zinc-500). */
+  tampon: '#71717A',
 } as const
+
+/** The buffer zone of the week bar: diagonal stripes, so tasks running into it
+ *  stay visible underneath (that overlap IS the overload). */
+export const RAYURES_TAMPON = `repeating-linear-gradient(135deg, ${COULEURS.tampon}66 0 3px, transparent 3px 7px)`
 
 // ── The task's figures: min / unité × unités / sem. ─────
 

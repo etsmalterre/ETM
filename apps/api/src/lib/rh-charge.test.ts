@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   compterParSemaine,
+  equilibre,
   evolutionMensuelle,
   heuresMesurees,
   heuresSemaine,
@@ -18,7 +19,7 @@ import {
 const tache = (x: Partial<TacheCharge> & { nom: string; heures: number }): TacheCharge => normaliserTache(x)
 
 describe('totaux d’un relevé', () => {
-  it('counts every row, the margin included, in three automation states', () => {
+  it('counts the tasks in three automation states, and the buffer apart', () => {
     const taches = [
       tache({ nom: 'Expéditions', heures: 10, automatisable: 'oui' }),
       tache({ nom: 'Tirelles', heures: 4, automatisable: 'non' }),
@@ -26,7 +27,23 @@ describe('totaux d’un relevé', () => {
       tache({ nom: 'Pochettes', heures: 0.25, automatisable: 'partiel' }), // partiel = « the rest »
       tache({ nom: 'Marge', heures: 2.8, categorie: 'improductivite_structurelle' }),
     ]
-    expect(totauxSimples(taches, taches.map((t) => t.heures))).toEqual({ taches: 18.05, aAutomatiser: 10, automatise: 1 })
+    expect(totauxSimples(taches, taches.map((t) => t.heures))).toEqual({ taches: 15.25, aAutomatiser: 10, automatise: 1, tampon: 2.8 })
+  })
+})
+
+describe('équilibre de la semaine contre le tampon', () => {
+  // 35 h, 2,8 h of buffer → 32,2 h of capacity; well loaded from 90 % of it (28,98 h).
+  it('is under-loaded short of the buffer, balanced up to it, overloaded into it', () => {
+    expect(equilibre(11.6, 35, 2.8)).toBe('sous_charge')
+    expect(equilibre(29, 35, 2.8)).toBe('equilibre')
+    expect(equilibre(32.2, 35, 2.8)).toBe('equilibre')
+    expect(equilibre(32.28, 35, 2.8)).toBe('equilibre') // a few minutes over = rounding
+    expect(equilibre(33, 35, 2.8)).toBe('surcharge')
+  })
+
+  it('takes the whole contract as capacity when there is no buffer', () => {
+    expect(equilibre(34, 35, 0)).toBe('equilibre')
+    expect(equilibre(36, 35, 0)).toBe('surcharge')
   })
 })
 
