@@ -263,6 +263,12 @@ export function publierVersion(
   })
 }
 
+/** A shipped version is published once a stored version carries its prompt
+ *  and its note (a behaviour change may keep the prompt, BL v2). */
+export function estPublie(livre: VersionInitiale, versions: ReadonlyArray<{ prompt: string; note?: string | null }>): boolean {
+  return versions.some((x) => x.prompt.trim() === livre.prompt.trim() && (x.note ?? '').trim() === livre.note.trim())
+}
+
 export function activerVersion(slug: string, initiale: VersionInitiale, version: number): Promise<AgentState> {
   return modifierEtat(slug, initiale, (s) => {
     if (!s.versions.some((v) => v.version === version)) throw new Error(`version ${version} inconnue`)

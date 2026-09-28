@@ -22,6 +22,7 @@ import {
   lireRun,
   lireRuns,
   modifierRun,
+  estPublie,
   publierVersion,
   versionActive,
   type AgentMode,
@@ -219,7 +220,7 @@ agentsIaRouter.get('/:slug', async (req, res) => {
       activeVersion: state.activeVersion,
       versions: [...state.versions].reverse(),
       // The shipped prompt, until a stored version carries it.
-      promptLivre: def.promptLivre && !state.versions.some((x) => x.prompt.trim() === def.promptLivre!.prompt.trim()) ? def.promptLivre : null,
+      promptLivre: def.promptLivre && !estPublie(def.promptLivre, state.versions) ? def.promptLivre : null,
       modeles: def.modeles.map((m) => ({ id: m, label: CHAT_MODELS[m]?.label ?? m })),
     })
   } catch (err) {

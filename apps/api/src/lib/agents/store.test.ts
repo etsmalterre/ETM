@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normaliserRun, type AgentRun } from './store.js'
+import { estPublie, normaliserRun, type AgentRun } from './store.js'
 
 const par = { id: 1, nom: 'Vincent Malterre' }
 const run = (extra: Partial<AgentRun>): AgentRun => ({
@@ -25,5 +25,16 @@ describe('normaliserRun (thumbs / « échouée » before 2026-09-23)', () => {
 
   it('leaves an unscored run « à évaluer »', () => {
     expect(normaliserRun(run({})).evaluation).toBeUndefined()
+  })
+})
+
+describe('estPublie (the Prompt tab offers a shipped version until then)', () => {
+  const livre = { model: 'mistral-small-latest', prompt: 'P1', note: 'Version 2 — comportement' }
+  it('needs the same prompt AND note — a behaviour change may keep the prompt (BL v2)', () => {
+    expect(estPublie(livre, [{ prompt: 'P1', note: 'Version initiale' }])).toBe(false)
+    expect(estPublie(livre, [{ prompt: 'P1 ', note: 'Version initiale' }, { prompt: 'P1', note: 'Version 2 — comportement ' }])).toBe(true)
+  })
+  it('a new prompt is not published by an old version of the same note', () => {
+    expect(estPublie(livre, [{ prompt: 'P0', note: 'Version 2 — comportement' }])).toBe(false)
   })
 })

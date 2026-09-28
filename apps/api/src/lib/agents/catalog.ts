@@ -8,6 +8,7 @@ import {
   BL_ENNOBLISSEUR_BOITE,
   BL_ENNOBLISSEUR_SLUG,
   BL_ENNOBLISSEUR_VERSION_INITIALE,
+  BL_ENNOBLISSEUR_PROMPT_LIVRE,
   retirerEcritures as retirerBlEnnoblisseur,
   sonderBoite as sonderBlEnnoblisseur,
   traiterPdfs as traiterBlEnnoblisseur,
@@ -70,9 +71,11 @@ export interface AgentDef {
    *  leaves it out. */
   modes: Partial<Record<AgentMode, string>>
   versionInitiale: VersionInitiale
-  /** A prompt version shipped with the code (the result of reading the
-   *  « Retours »). Offered in the Prompt tab until a stored version carries
-   *  it — publishing stays a person's decision: a version's score starts at 0. */
+  /** A version shipped with the code (the result of reading the « Retours »,
+   *  or a behaviour change in the code). Offered in the Prompt tab until a
+   *  stored version carries it — same prompt AND note, `estPublie()`: a new
+   *  version may keep the prompt — publishing stays a person's decision: a
+   *  version's score starts at 0. */
   promptLivre?: VersionInitiale
   /** Chat models a version may use. */
   modeles: readonly string[]
@@ -119,6 +122,7 @@ export const AGENTS: readonly AgentDef[] = [
     pointsEvaluables: false,
     modes: { off: 'Ne lit pas la boîte mail.', essai: 'Lit et analyse, n’enregistre rien.', actif: 'Lit, analyse et enregistre.' },
     versionInitiale: BL_ENNOBLISSEUR_VERSION_INITIALE,
+    promptLivre: BL_ENNOBLISSEUR_PROMPT_LIVRE,
     modeles: MODELES_MISTRAL,
     sonder: sonderBlEnnoblisseur,
     traiter: traiterBlEnnoblisseur,
@@ -167,3 +171,4 @@ export const AGENTS: readonly AgentDef[] = [
 export function agentDef(slug: string): AgentDef | undefined {
   return AGENTS.find((a) => a.slug === slug)
 }
+

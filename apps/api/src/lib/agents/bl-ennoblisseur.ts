@@ -69,6 +69,15 @@ export const BL_ENNOBLISSEUR_VERSION_INITIALE: VersionInitiale = {
   note: 'Version initiale — benchmark du 22/09/2026 : 119/120 BL lus exactement (OCR Mistral + Mistral Small).',
 }
 
+/** v2 (2026-09-28): every dyer, BLs only (bl-profils.ts). MATEL's prompt is
+ *  unchanged — Bontemps and TAD ship their own with their profile — but the
+ *  agent's behaviour changed, so its runs are scored under a new version. */
+export const BL_ENNOBLISSEUR_PROMPT_LIVRE: VersionInitiale = {
+  model: 'mistral-small-latest',
+  prompt: BL_PROMPT_V1,
+  note: 'Version 2 — MATEL, Bontemps et TAD, BL uniquement : le texte du document décide de ce qui est un BL, le reste est écarté sans notification (prompt MATEL inchangé, ceux de Bontemps et TAD sont livrés avec leur profil).',
+}
+
 /** The mailbox n8n polled. Every dyer mails its BLs there (Bontemps asked to
  *  on 2026-09-28 — they used to write to Pierre-Emmanuel only). */
 export const BL_ENNOBLISSEUR_BOITE = process.env.AGENT_BL_BOITE?.trim() || 'contact@etsmalterre.com'
