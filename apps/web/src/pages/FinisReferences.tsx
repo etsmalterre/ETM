@@ -2169,7 +2169,7 @@ function EchantillonCard({ refId, archive }: { refId: number; archive: boolean }
       </div>
       <div className="flex items-start gap-3">
         <img
-          src={`${API_URL}/references-fini/${refId}/qr-echantillon.svg`}
+          src={`${API_URL}/references-fini/${refId}/qr-echantillon`}
           alt="QR code de la page échantillon"
           className="h-24 w-24 flex-shrink-0 rounded-md border border-border/60 bg-white"
         />

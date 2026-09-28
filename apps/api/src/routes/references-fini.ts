@@ -833,10 +833,13 @@ referencesFiniRouter.get('/:id/etiquette', async (req: Request, res: Response) =
   }
 })
 
-// GET /api/references-fini/:id/qr-echantillon.svg
+// GET /api/references-fini/:id/qr-echantillon
 // The QR printed on the sample tag (same payload as the étiquette), as SVG for
 // the fiche's sidebar. Pure function of the id: no database read.
-referencesFiniRouter.get('/:id/qr-echantillon.svg', async (req: Request, res: Response) => {
+// No `.svg` in the path: the prod nginx sites match static extensions with a
+// regex location, which outranks `location /api/` — a `.svg` URL never reaches
+// the API there (404 from nginx, while Vite's dev proxy passes it).
+referencesFiniRouter.get('/:id/qr-echantillon', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
