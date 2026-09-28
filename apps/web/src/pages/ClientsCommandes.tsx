@@ -5853,17 +5853,48 @@ function LineFormDialog({
               </p>
             )
           })()}
-          {/* Associated ref (a côte): priced at its molleton's band on this order. */}
-          {hasPriceInputs && !priceIsStale && priceInfo?.priceable && priceInfo.palier_associe && (
-            <p className="flex items-start gap-1.5 text-xs font-medium text-sky-700 -mt-1">
-              <Link2 className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+          {/* Associated ref (a côte): priced at its molleton's band on this order.
+              An existing line opens with its saved price kept, so after the
+              molleton changed the band price is not in the field yet: the note
+              then becomes the way to apply it (LIVA #1218) — re-locking the
+              price, which needs no déverrouiller permission since it is the
+              tariff price, not a manual one. */}
+          {hasPriceInputs && !priceIsStale && priceInfo?.priceable && priceInfo.palier_associe && (() => {
+            const palier = priceInfo.palier_associe
+            const label = (
               <span>
-                Tarif au palier {priceInfo.palier_associe.trancheRolls} rouleaux du molleton{' '}
-                {priceInfo.palier_associe.reference} ({priceInfo.palier_associe.nRolls} rouleau
-                {priceInfo.palier_associe.nRolls > 1 ? 'x' : ''}, même coloris)
+                Tarif au palier {palier.trancheRolls} rouleaux du molleton{' '}
+                {palier.reference} ({palier.nRolls} rouleau
+                {palier.nRolls > 1 ? 'x' : ''}, même coloris)
               </span>
-            </p>
-          )}
+            )
+            const canApply = !priceLocked && priceInfo.prix != null
+              && Math.round(priceInfo.prix * 100) !== Math.round((Number(form.prix) || 0) * 100)
+            if (!canApply) {
+              return (
+                <p className="flex items-start gap-1.5 text-xs font-medium text-sky-700 -mt-1">
+                  <Link2 className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+                  {label}
+                </p>
+              )
+            }
+            return (
+              <button
+                type="button"
+                onClick={() => setPriceLocked(true)}
+                title="Remplacer le prix de la ligne par le tarif au palier du molleton"
+                className="-mt-1 w-full flex items-start gap-1.5 rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-left text-xs font-medium text-sky-700 hover:bg-sky-500/20 transition-colors"
+              >
+                <Link2 className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+                <span className="flex-1 min-w-0">
+                  {label}
+                  <span className="block mt-0.5 font-semibold underline underline-offset-2">
+                    Appliquer ce tarif ({fmtNum(priceInfo.prix!, 2)} €)
+                  </span>
+                </span>
+              </button>
+            )
+          })()}
           {/* Commercial nudge: within 15% of the next (cheaper) tariff tranche —
               Tricobot suggests the employee propose the round-up to the customer. */}
           {hasPriceInputs && priceInfo?.priceable && !priceInfo.exact && priceInfo.nearNextTranche && priceInfo.nextTranchePrix != null && (() => {
