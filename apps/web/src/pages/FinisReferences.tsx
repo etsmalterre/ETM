@@ -48,6 +48,9 @@ import {
   Users,
   Copy,
   Link2,
+  QrCode,
+  ExternalLink,
+  Check,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -2138,6 +2141,78 @@ function ClientsCard({ refId }: { refId: number }) {
   )
 }
 
+// ── Échantillon card — the QR printed on the sample tag (LIVA #1222) ──
+
+/** Same payload as the étiquette's QR (`echantillonUrl()` on the API): the
+ *  public sample page a customer opens by scanning the swatch. */
+function echantillonUrl(id: number): string {
+  return `https://etsmalterre.fr/echantillon/?ID=${id}`
+}
+
+function EchantillonCard({ refId, archive }: { refId: number; archive: boolean }) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => { setCopied(false) }, [refId])
+  const url = echantillonUrl(refId)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+    } catch {
+      // Clipboard refused (insecure origin): the link stays selectable below.
+    }
+  }
+  return (
+    <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+      <div className="flex items-center gap-1.5">
+        <QrCode className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-semibold text-muted-foreground">Échantillon</p>
+      </div>
+      <div className="flex items-start gap-3">
+        <img
+          src={`${API_URL}/references-fini/${refId}/qr-echantillon.svg`}
+          alt="QR code de la page échantillon"
+          className="h-24 w-24 flex-shrink-0 rounded-md border border-border/60 bg-white"
+        />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">
+            Page publique de la référence : description, coloris, tarifs et fiche technique.
+          </p>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="block text-xs text-accent hover:underline break-all"
+          >
+            {url.replace('https://', '')}
+          </a>
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={copy} title="Copier le lien">
+              {copied ? <Check className="h-3.5 w-3.5 mr-1" /> : <Copy className="h-3.5 w-3.5 mr-1" />}
+              {copied ? 'Copié' : 'Copier'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => window.open(url, '_blank', 'noopener')}
+              title="Ouvrir la page"
+            >
+              <ExternalLink className="h-3.5 w-3.5 mr-1" />
+              Ouvrir
+            </Button>
+          </div>
+        </div>
+      </div>
+      {archive && (
+        <p className="text-[11px] text-amber-700 flex items-center gap-1.5">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+          Référence archivée : la page n'est pas publiée.
+        </p>
+      )}
+    </div>
+  )
+}
+
 // ── Tarif (cost-price) tab — port of the legacy FI_Tarifs / PrixDeVenteV4 ──
 
 interface TarifDetailLine {
@@ -2443,6 +2518,9 @@ function DetailSidebar({
             )}
           </div>
         )}
+
+        {/* QR du tag échantillon (#1222) — read-only, view mode */}
+        {!isEditing && <EchantillonCard refId={detail.IDref_fini} archive={!!detail.archive} />}
 
         {/* Métadonnées */}
         <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>

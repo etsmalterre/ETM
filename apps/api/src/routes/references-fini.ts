@@ -14,7 +14,8 @@ import { batchRepair } from '../lib/batch-repair.js'
 import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } from '../lib/ref-fini-reference.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
-import { EtiquetteRefFiniPdf, type EtiquetteRefFiniData } from '../lib/pdf/EtiquetteRefFiniPdf.js'
+import { EtiquetteRefFiniPdf, echantillonUrl, type EtiquetteRefFiniData } from '../lib/pdf/EtiquetteRefFiniPdf.js'
+import QRCode from 'qrcode'
 import { chooseCompositionRows, composeMatieres, repairMatiereLibelle } from '../lib/composition-matieres.js'
 
 export const referencesFiniRouter: RouterType = Router()
@@ -828,6 +829,24 @@ referencesFiniRouter.get('/:id/etiquette', async (req: Request, res: Response) =
     res.send(buffer)
   } catch (err) {
     console.error('Error rendering ref fini étiquette PDF:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/references-fini/:id/qr-echantillon.svg
+// The QR printed on the sample tag (same payload as the étiquette), as SVG for
+// the fiche's sidebar. Pure function of the id: no database read.
+referencesFiniRouter.get('/:id/qr-echantillon.svg', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const svg = await QRCode.toString(echantillonUrl(id), { type: 'svg', errorCorrectionLevel: 'M', margin: 1 })
+    res.setHeader('Content-Type', 'image/svg+xml')
+    res.setHeader('Cache-Control', 'public, max-age=86400')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.send(svg)
+  } catch (err) {
+    console.error('Error rendering échantillon QR:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
