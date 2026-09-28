@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { translateSql, keyResolver, pgDateToHfsql, pgTimestampToHfsql, emptyDatesToNull, emptyDateComparisons, sortContext, inListOrder } from './pg-backend.js'
+import { translateSql, keyResolver, pgDateToHfsql, pgTimestampToHfsql, emptyDatesToNull, emptyDateComparisons, sortContext, inListOrder, hexLiteralsAsText } from './pg-backend.js'
 
 describe('translateSql', () => {
   it('moves TOP n to a LIMIT at the end of its SELECT', () => {
@@ -241,5 +241,28 @@ describe('value shapes', () => {
     expect(pgDateToHfsql('2024-11-22')).toBe('20241122')
     expect(pgTimestampToHfsql('2020-10-21 00:00:00')).toBe('2020-10-21 00:00:00.000')
     expect(pgTimestampToHfsql('2026-09-22 17:22:10.5')).toBe('2026-09-22 17:22:10.500')
+  })
+})
+
+describe("x'…' literals: cp1252 text unless the column is a blob (R16)", () => {
+  const cols = {
+    'public.message_of': { pk: ['idmessage_of'], cols: ['idmessage_of', 'observation', 'idordre_fabrication'], text: ['observation'], blob: [] },
+    'public.ged': { pk: ['idged'], cols: ['idged', 'nom', 'document'], text: ['nom'], blob: ['document'] },
+  }
+  const T = (sql: string) => hexLiteralsAsText(translateSql(sql), 'public', cols)
+  const txt = (h: string) => `convert_from('\\x${h}'::bytea, 'WIN1252')`
+
+  it('decodes text everywhere in a statement with no blob column', () => {
+    expect(T("INSERT INTO message_of VALUES (1, x'e93f27', 2)")).toBe(`INSERT INTO message_of VALUES (1, ${txt('e93f27')}, 2)`)
+    expect(T("SELECT * FROM message_of WHERE observation LIKE x'25e925'")).toBe(`SELECT * FROM message_of WHERE observation LIKE ${txt('25e925')}`)
+  })
+
+  it('keeps a document as bytea and decodes the text beside it, by name or by position', () => {
+    expect(T("INSERT INTO ged (nom, document) VALUES (x'e9', x'255044')"))
+      .toBe(`INSERT INTO ged (nom, document) VALUES (${txt('e9')}, '\\x255044'::bytea)`)
+    expect(T("INSERT INTO ged VALUES (7, x'e9', x'255044')"))
+      .toBe(`INSERT INTO ged VALUES (7, ${txt('e9')}, '\\x255044'::bytea)`)
+    expect(T("UPDATE ged SET nom = x'e9', document = x'2550' WHERE IDged = 7"))
+      .toBe(`UPDATE ged SET nom = ${txt('e9')}, document = '\\x2550'::bytea WHERE IDged = 7`)
   })
 })

@@ -254,7 +254,209 @@ const SCENARIOS: Scenario[] = [
       }
     },
   },
+
+  // ── The workshop floor (TRM): the tablets, phones and recorder write all day ──
+
+  {
+    name: 'pointage',
+    what: 'the time-clock tablet: a day in, a break, a day out, on the pointage schema',
+    async run() {
+      // A throw-away salarié, so no real person's hours move.
+      const s = await POST('/api/pointage-admin/salaries', { nom: TAG, prenom: 'Test', login: 'ZZT', idMps: 0 })
+      okStatus(s, 'create salarié')
+      const id = Number(s.body?.id ?? s.body?.IDsalarie)
+      ok(id > 0, `salarié id in ${s.text.slice(0, 200)}`)
+      try {
+        // The dev API skips tablet enrolment (lib/pointage-dev.ts) — the SQL is the same.
+        let etat = (await GET(`/api/pointage/salaries/${id}`)).body
+        for (const action of ['debut_travail', 'debut_pause', 'fin_pause', 'fin_travail'] as const) {
+          const r = await POST(`/api/pointage/salaries/${id}/pointage`, { action, ligneId: etat?.ligne?.id ?? null })
+          okStatus(r, action)
+          etat = r.body.etat
+        }
+        eq(etat?.statut, 'hors_poste', 'status after fin_travail')
+        const j = await GET(`/api/pointage/salaries/${id}/journees`)
+        okStatus(j, 'read the days back')
+        ok(JSON.stringify(j.body).includes(new Date().toISOString().slice(0, 10).replace(/-/g, '')) || Array.isArray(j.body?.jours ?? j.body),
+          `today in ${j.text.slice(0, 200)}`)
+      } finally {
+        await DEL(`/api/pointage-admin/salaries/${id}`)
+      }
+    },
+  },
+
+  {
+    name: 'atelier-phone',
+    what: 'an enrolled phone: message on an OF (positional INSERT + DATETIME literal), consigne, then deleted',
+    async run() {
+      const phone = await enrolPhone()
+      try {
+        const bonnetiers = (await GET('/api/atelier/bonnetiers')).body as Array<{ IDbonnetier: number }>
+        ok(Array.isArray(bonnetiers) && bonnetiers.length, 'an active bonnetier')
+        const machines = (await reqAs(phone, 'GET', '/api/atelier/machines')).body as any[]
+        const of = machines.map(m => m.of?.IDordre_fabrication ?? m.of?.id).find((x: unknown) => Number(x) > 0)
+        ok(of, 'a machine with an OF in progress')
+        const who = bonnetiers[0].IDbonnetier
+
+        const m = await reqAs(phone, 'POST', `/api/atelier/of/${of}/messages`, { IDbonnetier: who, observation: `${TAG} é€’` })
+        okStatus(m, 'post message')
+        const list = (await reqAs(phone, 'GET', `/api/atelier/of/${of}/messages`)).body
+        // sqlText writes cp1252 bytes as x'…' (€ has no Latin-1 byte → « ? », ’ → « ' »,
+        // the same on HFSQL). R16: stored as text, never as the hex string.
+        const back = (list as any[]).find((x: any) => String(x.observation ?? x.texte ?? JSON.stringify(x)).includes(TAG))
+        ok(back, 'message read back')
+        ok(JSON.stringify(back).includes(`${TAG} é?'`), `accents intact: ${JSON.stringify(back).slice(0, 160)}`)
+        okStatus(await reqAs(phone, 'DELETE', `/api/atelier/of/${of}/messages/${m.body.id}`, { IDbonnetier: who }), 'delete message')
+        ok(!JSON.stringify((await reqAs(phone, 'GET', `/api/atelier/of/${of}/messages`)).body).includes(TAG), 'message gone')
+
+        // The consigne is the OF's observations: write it, read it, put it back.
+        const regleurs = (await GET('/api/atelier/bonnetiers?regleur=1')).body as Array<{ IDbonnetier: number }>
+        if (regleurs.length) {
+          // A régleur writes only from his own phone (fixed identity).
+          const own = await enrolPhone(regleurs[0].IDbonnetier)
+          try {
+            const before = (await reqAs(own, 'GET', `/api/atelier/of/${of}`)).body?.consigne ?? ''
+            okStatus(await reqAs(own, 'PUT', `/api/atelier/of/${of}/consigne`, { IDbonnetier: regleurs[0].IDbonnetier, consigne: `${TAG} réglé` }), 'write consigne')
+            eq((await reqAs(own, 'GET', `/api/atelier/of/${of}`)).body?.consigne, `${TAG} réglé`, 'consigne read back, accent intact')
+            okStatus(await reqAs(own, 'PUT', `/api/atelier/of/${of}/consigne`, { IDbonnetier: regleurs[0].IDbonnetier, consigne: before }), 'restore consigne')
+          } finally {
+            await revokePhone(own)
+          }
+        }
+      } finally {
+        await revokePhone(phone)
+      }
+    },
+  },
+
+  {
+    name: 'atelier-fin-de-piece',
+    what: 'the bonnetier\'s « Fin de pièce »: piece, events, stock — the write the workshop does most',
+    async run() {
+      const phone = await enrolPhone()
+      try {
+        const machines = (await reqAs(phone, 'GET', '/api/atelier/machines')).body as any[]
+        const bonnetiers = (await GET('/api/atelier/bonnetiers')).body as Array<{ IDbonnetier: number }>
+        let done = false
+        for (const m of machines) {
+          const of = Number(m.of?.IDordre_fabrication ?? m.of?.id)
+          if (!(of > 0)) continue
+          const before = (await reqAs(phone, 'GET', `/api/atelier/of/${of}`)).body
+          // « Fin de pièce » is offered on a started, running OF short of its last piece.
+          if (!before?.demarre || before.interrompu || before.finir_fil || before.produites + 1 >= before.nb_pieces) continue
+          const r = await reqAs(phone, 'POST', `/api/atelier/of/${of}/evenement`, { action: 'Fin de pièce', IDbonnetier: bonnetiers[0].IDbonnetier })
+          okStatus(r, `Fin de pièce on OF ${of}`)
+          const after = (await reqAs(phone, 'GET', `/api/atelier/of/${of}`)).body
+          eq(Number(after?.produites), Number(before?.produites) + 1, `pieces produced on OF ${of}`)
+          done = true
+          break
+        }
+        ok(done, 'an OF offering « Fin de pièce »')
+      } finally {
+        await revokePhone(phone)
+      }
+      // No undo route (a piece is a physical fact): the tables it touched are
+      // re-copied by the next pg_migrate run; the rehearsal is rebuilt at 02:00.
+    },
+  },
+
+  {
+    name: 'recorder',
+    what: 'the TRS collector: a stop and a restart on a machine (evenement_machine), then deleted',
+    async run() {
+      const token = process.env.RECORDER_TOKEN
+      ok(token, 'RECORDER_TOKEN in this script\'s environment, the same as the API\'s')
+      const machines = (await GET('/api/trs/atelier')).body?.machines as any[]
+      const idMachine = Number(machines?.[0]?.IDmachine ?? machines?.[0]?.id)
+      ok(idMachine > 0, 'a machine')
+      const post = (body: unknown) => fetch(`${B}/api/recorder/cycle`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-recorder-token': token! }, body: JSON.stringify(body),
+      }).then(async r => ({ status: r.status, text: await r.text() }))
+      const r = await post({ insert: [{ idMachine, etat: 0, commentaire: TAG }, { idMachine, etat: 1, commentaire: TAG }] })
+      ok(r.status >= 200 && r.status < 300, `cycle insert: HTTP ${r.status} ${r.text.slice(0, 200)}`)
+      const ids = (JSON.parse(r.text).inserted ?? []).map((x: { id: number }) => x.id)
+      eq(ids.length, 2, 'two events inserted')
+      ok(ids[1] > ids[0], 'keys from the sequence, increasing')
+      const d = await post({ delete: ids })
+      ok(d.status >= 200 && d.status < 300, `cycle delete: HTTP ${d.status} ${d.text.slice(0, 200)}`)
+    },
+  },
+
+  {
+    name: 'bl-agent',
+    what: 'the BL ennoblisseur agent (in-process job): PDF into ged + pieces into data_bl_tricotbot, then « échec » removes them',
+    async run() {
+      // In-process: the job runs inside the API, not behind a route. Same
+      // guards as the rest, on the connection string this time.
+      const url = process.env.PG_CONNECTION_STRING ?? ''
+      ok(/rehearsal/i.test(url.split('?')[0].split('/').pop() ?? ''), 'PG_CONNECTION_STRING on a rehearsal database (this scenario writes in-process)')
+      process.env.DB_BACKEND = 'pg'
+      const { query } = await import('../lib/hfsql-auto.js')
+      const { ecrireBl, retirerPieces } = await import('../lib/agents/bl-ennoblisseur-db.js')
+      // Any ennoblissement line (type 2) of a recent order.
+      const [l] = await query<{ id: number; cmd: number }>(
+        `SELECT TOP 1 IDligne_commande_sous_traitant AS id, IDcommande_sous_traitant AS cmd FROM ligne_commande_sous_traitant ORDER BY IDligne_commande_sous_traitant DESC`,
+      )
+      ok(l, 'a sub-contracting line')
+      const lot = TAG.slice(0, 20)
+      const e = {
+        numero_commande: String(l.cmd), numero_bordereau: TAG, ligne: 1, nombre_pieces: 2, poids_total: 40, metrage_total: 200,
+        pieces: [
+          { numero_piece: '9999/1', poids: 20, metrage: 100, observations: 'légère tâche €' },
+          { numero_piece: '9999/2', poids: 20, metrage: 100, observations: '' },
+        ],
+      }
+      const r = { commandeId: Number(l.cmd), sousTraitantId: null, lignes: [Number(l.id)], ligneId: Number(l.id), lot, pieces: [], dejaImportees: [], gedExistant: null, controles: [] }
+      const pdf = Buffer.from(`%PDF-1.4 ${TAG} é`, 'latin1')
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const w = await ecrireBl(e as any, r as any, [pdf], today)
+      try {
+        eq(w.lignesEcrites, 2, 'pieces written')
+        eq(w.ids?.length, 2, 'their ids found back')
+        const rows = await query<{ observation: string | null; DATE: string }>(
+          `SELECT observation, DATE FROM data_bl_tricotbot WHERE IDdata_bl_tricotbot IN (${w.ids!.join(',')})`,
+        )
+        ok(rows.some(x => x.observation === 'légère tâche ?'), `observation stored as text: ${JSON.stringify(rows)}`)
+        eq(String(rows[0].DATE), today, 'DATE as HFSQL returns it')
+        const [g] = await query<{ nom: string; fichier: unknown }>(`SELECT nom, fichier FROM ged WHERE IDged = ${w.gedId}`)
+        eq(g?.nom, `${lot}.pdf`, 'ged name')
+        ok(Buffer.isBuffer(g?.fichier) && (g.fichier as Buffer).equals(pdf), 'the PDF comes back byte for byte (bytea, not text)')
+        eq(await retirerPieces(e as any, r as any, w), 2, '« échec » removes both rows')
+      } finally {
+        await query(`DELETE FROM data_bl_tricotbot WHERE lot = '${lot}'`)
+        if (w.gedId) await query(`DELETE FROM ged WHERE IDged = ${w.gedId}`)
+      }
+    },
+  },
 ]
+
+// ── the enrolled phone of the atelier scenarios ──────────────
+
+/** Enrol a throw-away phone the way an admin does: a code, then the phone
+ *  posts it and receives its own cookie. */
+async function enrolPhone(IDbonnetier: number | null = null): Promise<string> {
+  const c = await POST('/api/atelier/appareils/codes', { IDutilisateur: Number(USER), libelle: TAG, IDbonnetier })
+  okStatus(c, 'enrolment code')
+  const r = await fetch(`${B}/api/atelier/appareils/enroler`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: c.body.code }),
+  })
+  ok(r.status === 201, `enrol: HTTP ${r.status}`)
+  const phone = (r.headers.getSetCookie?.() ?? []).map(x => x.split(';')[0]).join('; ')
+  ok(phone.includes('mps_appareil='), 'device cookie')
+  return phone
+}
+
+async function revokePhone(phone: string) {
+  const me = await reqAs(phone, 'GET', '/api/atelier/appareils/moi')
+  const id = Number(me.body?.id)
+  if (id > 0) await DEL(`/api/atelier/appareils/${id}`)
+}
+
+async function reqAs(asCookie: string, method: string, path: string, body?: unknown): Promise<Res> {
+  const saved = cookie
+  cookie = asCookie
+  try { return await req(method, path, body) } finally { cookie = saved }
+}
 
 // ── main ─────────────────────────────────────────────────────
 

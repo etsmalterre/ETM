@@ -382,6 +382,55 @@ export function emptyDatesToNull(sql: string, schema: string, map: DateCols = DA
   return sql
 }
 
+// ── x'…' literals: text or document (R16) ────────────────────
+
+const HEX_LITERAL = /'\\x([0-9a-fA-F]*)'::bytea/g
+
+/**
+ * R16. The API writes every accented text as x'…', the cp1252 bytes of the
+ * string (sqlText, CLAUDE.md § HFSQL), and documents / photos the same way.
+ * translateSql turns x'…' into a bytea literal, which is right for a document
+ * and wrong for text: written into a citext column it is stored as the string
+ * « \x5a5a…e93f27 » — every accented name, message or address typed after the
+ * cutover would have been garbage (found by the atelier-phone write test,
+ * 2026-09-28). Here each literal becomes convert_from(…, 'WIN1252') — the text
+ * HFSQL would have stored — unless the column it goes into is a blob: found by
+ * name (UPDATE SET, comparison) or by position in an INSERT (named, or
+ * positional in the copy's physical column order, pg-columns.json).
+ */
+export function hexLiteralsAsText(sql: string, schema: string, map: Columns = COLUMNS): string {
+  if (!sql.includes("'::bytea")) return sql
+  const asText = (hex: string) => `convert_from('\\x${hex}'::bytea, 'WIN1252')`
+  const entryOf = (t: string) => map[`${schema}.${t}`] ?? map[`public.${t}`]
+  const blobs = new Set(tablesIn(sql).flatMap(t => entryOf(t)?.blob ?? []))
+  if (!blobs.size) return sql.replace(HEX_LITERAL, (_m, hex: string) => asText(hex))
+
+  // Literal position → the column it is written to, for INSERT … VALUES.
+  const target = new Map<number, string>()
+  const ins = /^\s*INSERT\s+INTO\s+([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s*VALUES\s*\(/i.exec(sql)
+  if (ins) {
+    const names = ins[2] !== undefined
+      ? splitTop(ins[2]).map(s => s.trim().toLowerCase())
+      : entryOf(ins[1].toLowerCase())?.cols ?? []
+    let depth = 0, quote = false, idx = 0
+    for (let i = ins[0].length - 1; i < sql.length; i++) {
+      const c = sql[i]
+      if (quote) { if (c === "'") { if (sql[i + 1] === "'") i++; else quote = false } ; continue }
+      if (c === "'") {
+        if (depth === 1 && sql.startsWith("'\\x", i)) target.set(i, names[idx] ?? '')
+        quote = true
+      } else if (c === '(') { depth++; if (depth === 1) idx = 0 }
+      else if (c === ')') depth--
+      else if (c === ',' && depth === 1) idx++
+    }
+  }
+  return sql.replace(HEX_LITERAL, (whole: string, hex: string, at: number) => {
+    const col = target.get(at)
+      ?? /([A-Za-z_]\w*)\s*(?:=|<>|!=|\bLIKE)\s*$/i.exec(sql.slice(Math.max(0, at - 80), at))?.[1]
+    return col && blobs.has(col.toLowerCase()) ? whole : asText(hex)
+  })
+}
+
 /** Every table a statement names: FROM / JOIN / UPDATE / INTO, and the rest of
  *  a comma list `FROM a x, b y`. */
 export function tablesIn(sql: string): string[] {
@@ -393,11 +442,11 @@ export function tablesIn(sql: string): string[] {
   return [...out]
 }
 
-/** schema.table → its key and text columns (pg_migrate.py SORTCOLS, per run). */
-type SortCols = Record<string, { pk: string[]; text: string[] }>
+/** schema.table → key, columns in physical order, text and blob columns (pg_migrate.py COLUMNS, per run). */
+type Columns = Record<string, { pk: string[]; cols?: string[]; text: string[]; blob?: string[] }>
 /** schema.table.column → the measured HFSQL rule (scripts/pg-measure-sorts.ts). */
 type SortRules = Record<string, string>
-const SORTCOLS: SortCols = loadJson('pg-sortcols.json', {})
+const COLUMNS: Columns = loadJson('pg-columns.json', {})
 const SORTRULES: SortRules = loadJson('pg-sortrules.json', {})
 
 /** Rule → COLLATE clause. The hf_* collations are created by pg_migrate.py (R14). */
@@ -411,7 +460,7 @@ const COLLATION: Record<string, string> = {
  * measured — HFSQL's default for a column without index options); and the key
  * of the outer table, qualified by its alias when the query joins.
  */
-export function sortContext(sql: string, schema: string, cols: SortCols = SORTCOLS, rules: SortRules = SORTRULES): SortContext {
+export function sortContext(sql: string, schema: string, cols: Columns = COLUMNS, rules: SortRules = SORTRULES): SortContext {
   const collate = new Map<string, string>()
   const entry = (t: string) => cols[`${schema}.${t}`] ? [`${schema}.${t}`, cols[`${schema}.${t}`]] as const
     : cols[`public.${t}`] ? [`public.${t}`, cols[`public.${t}`]] as const : undefined
@@ -598,7 +647,8 @@ export function createPgClient(connectionString: string = process.env.HFSQL_CONN
   }
 
   async function run(text: string): Promise<Record<string, unknown>[]> {
-    const translated = emptyDateComparisons(emptyDatesToNull(translateSql(text, sortContext(text, schema)), schema), schema)
+    const translated = hexLiteralsAsText(
+      emptyDateComparisons(emptyDatesToNull(translateSql(text, sortContext(text, schema)), schema), schema), schema)
     const rows = await db().unsafe(translated)
     return rows as unknown as Record<string, unknown>[]
   }

@@ -1,0 +1,4183 @@
+{
+"pointage.hors_prod": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"date",
+"duree"
+],
+"pk": [
+"id"
+],
+"text": []
+},
+"pointage.lst_horaire": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"date",
+"debut",
+"debut_pause1",
+"fin_pause1",
+"debut_pause2",
+"fin_pause2",
+"fin",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": []
+},
+"pointage.lst_info_sal_annee": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"annee",
+"info",
+"commentaire",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": [
+"commentaire"
+]
+},
+"pointage.lst_lissage": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"annee",
+"num_semaine",
+"lundi_type",
+"lundi_total",
+"mardi_type",
+"mardi_total",
+"mercredi_type",
+"mercredi_total",
+"jeudi_type",
+"jeudi_total",
+"vendredi_type",
+"vendredi_total",
+"samedi_type",
+"samedi_total",
+"dimanche_type",
+"dimanche_total",
+"cumul_semaine",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": [
+"lundi_type",
+"mardi_type",
+"mercredi_type",
+"jeudi_type",
+"vendredi_type",
+"samedi_type",
+"dimanche_type"
+]
+},
+"pointage.lst_message": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"message",
+"date_fin",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": [
+"message"
+]
+},
+"pointage.lst_pointage": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"date",
+"debut",
+"debut_pause1",
+"fin_pause1",
+"debut_pause2",
+"fin_pause2",
+"fin",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": []
+},
+"pointage.lst_prev": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"annee",
+"num_semaine",
+"prev",
+"commentaire",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": [
+"commentaire"
+]
+},
+"pointage.lst_salarie": {
+"blob": [],
+"cols": [
+"id",
+"nom",
+"prenom",
+"login",
+"is_deleted",
+"id_mps",
+"useinratio"
+],
+"pk": [
+"id"
+],
+"text": [
+"nom",
+"prenom",
+"login"
+]
+},
+"pointage.pointage": {
+"blob": [],
+"cols": [
+"idpointage",
+"idbonnetier",
+"date",
+"en_poste"
+],
+"pk": [
+"idpointage"
+],
+"text": []
+},
+"public.abonnement_notif": {
+"blob": [],
+"cols": [
+"idabonnement_notif",
+"nom",
+"description",
+"icone",
+"idsociete"
+],
+"pk": [
+"idabonnement_notif"
+],
+"text": [
+"nom",
+"description",
+"icone"
+]
+},
+"public.abonnement_user": {
+"blob": [],
+"cols": [
+"idabonnement_user",
+"idutilisateur",
+"idabonnement"
+],
+"pk": [
+"idabonnement_user"
+],
+"text": []
+},
+"public.action_qualite": {
+"blob": [],
+"cols": [
+"idaction_qualite",
+"titre",
+"description",
+"date_creation",
+"termine"
+],
+"pk": [
+"idaction_qualite"
+],
+"text": [
+"titre",
+"description"
+]
+},
+"public.activite": {
+"blob": [],
+"cols": [
+"idactivite",
+"nom"
+],
+"pk": [
+"idactivite"
+],
+"text": [
+"nom"
+]
+},
+"public.adresse": {
+"blob": [],
+"cols": [
+"idadresse",
+"idclient",
+"idsous_traitant",
+"idfournisseur",
+"nom",
+"adresse1",
+"adresse2",
+"adresse3",
+"cp",
+"ville",
+"pays",
+"commentaire",
+"est_defaut",
+"est_defaut_facturation",
+"est_defaut_livraison",
+"est_visible",
+"identreprise"
+],
+"pk": [
+"idadresse"
+],
+"text": [
+"nom",
+"adresse1",
+"adresse2",
+"adresse3",
+"cp",
+"ville",
+"pays",
+"commentaire"
+]
+},
+"public.affectation_cmd_tricotage": {
+"blob": [],
+"cols": [
+"idaffectation_cmd_tricotage",
+"poids_affecte",
+"idligne_commande_sous_traitant",
+"idligne_commande_client"
+],
+"pk": [
+"idaffectation_cmd_tricotage"
+],
+"text": []
+},
+"public.ajeol": {
+"blob": [],
+"cols": [
+"idajeol",
+"idclient",
+"pourcentage",
+"annee",
+"mois",
+"num_commande",
+"ref",
+"metrage_commande",
+"metrage_facture",
+"num_facture",
+"montant_facture",
+"date_echeance",
+"montant_ajeol",
+"fre_reglee",
+"regle_ajeol",
+"date_reglement"
+],
+"pk": [
+"idajeol"
+],
+"text": [
+"ref",
+"date_reglement"
+]
+},
+"public.asso_action_mention": {
+"blob": [],
+"cols": [
+"idasso_action_mention",
+"idaction_qualite",
+"idmention_qualite"
+],
+"pk": [
+"idasso_action_mention"
+],
+"text": []
+},
+"public.asso_article_machine": {
+"blob": [],
+"cols": [
+"idasso_article_machine",
+"idref_article",
+"idmachine_confection"
+],
+"pk": [
+"idasso_article_machine"
+],
+"text": []
+},
+"public.asso_article_taille": {
+"blob": [],
+"cols": [
+"idasso_article_taille",
+"idref_article",
+"idunite_taille"
+],
+"pk": [
+"idasso_article_taille"
+],
+"text": []
+},
+"public.asso_article_textile": {
+"blob": [],
+"cols": [
+"idasso_article_textile",
+"idref_article",
+"idref_fini1",
+"idref_fini2",
+"idref_fini3"
+],
+"pk": [
+"idasso_article_textile"
+],
+"text": []
+},
+"public.asso_colorisfil_frs": {
+"blob": [],
+"cols": [
+"idasso_colorisfil_frs",
+"idfournisseur",
+"idcolori_fil"
+],
+"pk": [
+"idasso_colorisfil_frs"
+],
+"text": []
+},
+"public.asso_fil_lignecmdsst": {
+"blob": [],
+"cols": [
+"idasso_fil_lignecmdsst",
+"idstock_fil",
+"idligne_commande_sous_traitant",
+"quantite"
+],
+"pk": [
+"idasso_fil_lignecmdsst"
+],
+"text": []
+},
+"public.asso_fil_matiere": {
+"blob": [],
+"cols": [
+"idasso_fil_matiere",
+"idmatiere",
+"idref_fil",
+"pourcentage",
+"bio",
+"recycle"
+],
+"pk": [
+"idasso_fil_matiere"
+],
+"text": []
+},
+"public.asso_fil_of": {
+"blob": [],
+"cols": [
+"idordre_fabrication",
+"idref_fil",
+"idasso_fil_of",
+"pourcentage",
+"idcolori_fil",
+"idstock_fil"
+],
+"pk": [
+"idasso_fil_of"
+],
+"text": []
+},
+"public.asso_fil_stock_tm": {
+"blob": [],
+"cols": [
+"idasso_fil_stock_tm",
+"idstock_fil",
+"idstock_ecru"
+],
+"pk": [
+"idasso_fil_stock_tm"
+],
+"text": []
+},
+"public.asso_fil_tarif": {
+"blob": [],
+"cols": [
+"idasso_fil_tarif",
+"idref_tarif",
+"idref_fil",
+"pourcentage",
+"idcolori_fil",
+"prix"
+],
+"pk": [
+"idasso_fil_tarif"
+],
+"text": []
+},
+"public.asso_lot_dq": {
+"blob": [],
+"cols": [
+"idasso_lot_dq",
+"iddossier_qualite",
+"idsuivilot"
+],
+"pk": [
+"idasso_lot_dq"
+],
+"text": []
+},
+"public.asso_ref_catalogue_categorie": {
+"blob": [],
+"cols": [
+"idasso_ref_catalogue_categorie",
+"idref_catalogue",
+"idcategorie_produit"
+],
+"pk": [
+"idasso_ref_catalogue_categorie"
+],
+"text": []
+},
+"public.asso_tarif_client": {
+"blob": [],
+"cols": [
+"idasso_tarif_client",
+"idclient",
+"idref_tarif",
+"designation",
+"port_fixe",
+"port_pct",
+"remarques",
+"conditions_livraison",
+"conditions_validite",
+"conditions_reglement",
+"notes"
+],
+"pk": [
+"idasso_tarif_client"
+],
+"text": [
+"designation",
+"remarques",
+"conditions_livraison",
+"conditions_reglement",
+"notes"
+]
+},
+"public.asso_traitement_tarif": {
+"blob": [],
+"cols": [
+"idtraitement",
+"idasso_traitement_tarif",
+"idref_tarif",
+"metrage",
+"coeff",
+"pv_calcule",
+"pv_saisi",
+"date_saisie"
+],
+"pk": [
+"idasso_traitement_tarif"
+],
+"text": []
+},
+"public.asso_traitement_tarif_client": {
+"blob": [],
+"cols": [
+"idasso_tarif_client",
+"idtraitement",
+"idasso_traitement_tarif_client",
+"desig_client",
+"coeff",
+"pv_calcule",
+"pv_saisi",
+"date_saisie",
+"metrage"
+],
+"pk": [
+"idasso_traitement_tarif_client"
+],
+"text": [
+"desig_client"
+]
+},
+"public.bon_transfert": {
+"blob": [],
+"cols": [
+"idbon_transfert",
+"idmagasin_source",
+"idmagasin_destination",
+"idadresse_destination",
+"date",
+"commentaire",
+"est_valide",
+"idtransporteur",
+"type_matiere"
+],
+"pk": [
+"idbon_transfert"
+],
+"text": [
+"commentaire"
+]
+},
+"public.bonnetier": {
+"blob": [
+"photo"
+],
+"cols": [
+"idbonnetier",
+"prenom",
+"nom",
+"photo",
+"regleur",
+"archive",
+"date_entree",
+"preference",
+"observation",
+"telephone",
+"date_sortie",
+"observation_rh",
+"idrole_employe"
+],
+"pk": [
+"idbonnetier"
+],
+"text": [
+"prenom",
+"nom",
+"observation",
+"telephone",
+"observation_rh"
+]
+},
+"public.cage": {
+"blob": [],
+"cols": [
+"idcage",
+"emplacement",
+"magasin"
+],
+"pk": [
+"idcage"
+],
+"text": [
+"emplacement"
+]
+},
+"public.categorie_defaut": {
+"blob": [],
+"cols": [
+"idcategorie_defaut",
+"nom"
+],
+"pk": [
+"idcategorie_defaut"
+],
+"text": [
+"nom"
+]
+},
+"public.categorie_produit": {
+"blob": [],
+"cols": [
+"idcategorie_produit",
+"nom",
+"ordre"
+],
+"pk": [
+"idcategorie_produit"
+],
+"text": [
+"nom"
+]
+},
+"public.cause_defaut": {
+"blob": [],
+"cols": [
+"idcause_defaut",
+"nom",
+"lot",
+"poids",
+"metrage",
+"observation"
+],
+"pk": [
+"idcause_defaut"
+],
+"text": [
+"nom",
+"lot",
+"observation"
+]
+},
+"public.certificat": {
+"blob": [
+"fichier"
+],
+"cols": [
+"idcertificat",
+"fichier",
+"date_expiration",
+"nom",
+"numero_ref",
+"idfournisseur",
+"idsous_traitant",
+"debut_validite",
+"idtype_doc"
+],
+"pk": [
+"idcertificat"
+],
+"text": [
+"nom",
+"numero_ref"
+]
+},
+"public.chute_liage": {
+"blob": [],
+"cols": [
+"idchute_liage",
+"lfa1",
+"lfa2",
+"idcomposition_ecru1",
+"idcomposition_ecru2",
+"num_chute",
+"idref_ecru"
+],
+"pk": [
+"idchute_liage"
+],
+"text": []
+},
+"public.client": {
+"blob": [
+"clecomp"
+],
+"cols": [
+"idclient",
+"nom",
+"tel",
+"fax",
+"num_tva",
+"idtva",
+"idmode_paiement",
+"idecheance",
+"commentaire",
+"idtransporteur",
+"compte",
+"idcode_comptable",
+"rib",
+"domiciliation",
+"pct_ajeol",
+"est_visible",
+"idsociete",
+"bloque",
+"login",
+"mot_de_passe",
+"date_creation",
+"archive",
+"pct_remise",
+"client_interne",
+"clecomp",
+"dernier_contact",
+"journal_commercial",
+"idsecteur_activite",
+"idactivite",
+"inclurerapportqualite",
+"siren"
+],
+"pk": [
+"idclient"
+],
+"text": [
+"nom",
+"tel",
+"fax",
+"num_tva",
+"commentaire",
+"compte",
+"rib",
+"domiciliation",
+"login",
+"mot_de_passe",
+"journal_commercial",
+"siren"
+]
+},
+"public.code_comptable": {
+"blob": [],
+"cols": [
+"idcode_comptable",
+"numero",
+"est_visible",
+"libelle",
+"idsociete",
+"est_defaut"
+],
+"pk": [
+"idcode_comptable"
+],
+"text": [
+"numero",
+"libelle"
+]
+},
+"public.code_sp": {
+"blob": [],
+"cols": [
+"idcode_sp",
+"coloris",
+"code_ean_13",
+"article_client",
+"article_fournisseur",
+"libelle_article",
+"num_bain"
+],
+"pk": [
+"idcode_sp"
+],
+"text": [
+"coloris",
+"code_ean_13",
+"article_client",
+"article_fournisseur",
+"libelle_article",
+"num_bain"
+]
+},
+"public.colori_ecru": {
+"blob": [
+"photo"
+],
+"cols": [
+"idcolori_ecru",
+"idref_ecru",
+"reference",
+"commentaire",
+"idvignette_coloris",
+"suivis",
+"photo"
+],
+"pk": [
+"idcolori_ecru"
+],
+"text": [
+"reference",
+"commentaire"
+]
+},
+"public.colori_fil": {
+"blob": [],
+"cols": [
+"idcolori_fil",
+"reference",
+"idref_fil",
+"prix_kg",
+"stock_mini",
+"commentaire",
+"idfournisseur"
+],
+"pk": [
+"idcolori_fil"
+],
+"text": [
+"reference",
+"commentaire"
+]
+},
+"public.colori_fini": {
+"blob": [],
+"cols": [
+"idcolori_fini",
+"idgamme_coloris",
+"idcolori_ecru",
+"idref_fini_colori"
+],
+"pk": [
+"idcolori_fini"
+],
+"text": []
+},
+"public.coloris_guide_fil": {
+"blob": [],
+"cols": [
+"idcoloris_guide_fil",
+"idcolori_fil",
+"idguide_fil_rectiligne",
+"idcoloris_rectiligne"
+],
+"pk": [
+"idcoloris_guide_fil"
+],
+"text": []
+},
+"public.coloris_rectiligne": {
+"blob": [],
+"cols": [
+"idcoloris_rectiligne",
+"coloris",
+"idref_rectiligne"
+],
+"pk": [
+"idcoloris_rectiligne"
+],
+"text": [
+"coloris"
+]
+},
+"public.coloris_teint": {
+"blob": [],
+"cols": [
+"idcoloris_teint",
+"reference"
+],
+"pk": [
+"idcoloris_teint"
+],
+"text": [
+"reference"
+]
+},
+"public.coloristeint_reffini": {
+"blob": [],
+"cols": [
+"idcoloristeint_reffini",
+"idcoloris_teint",
+"idref_fini"
+],
+"pk": [
+"idcoloristeint_reffini"
+],
+"text": []
+},
+"public.coloristeint_teinturier": {
+"blob": [],
+"cols": [
+"idcoloristeint_teinturier",
+"idcoloris_teint",
+"idsous_traitant"
+],
+"pk": [
+"idcoloristeint_teinturier"
+],
+"text": []
+},
+"public.commande_client": {
+"blob": [],
+"cols": [
+"idcommande_client",
+"idclient",
+"idadresse_livraison",
+"idadresse_facturation",
+"ref_client",
+"idmode_paiement",
+"date_commande",
+"idecheance",
+"commentaire",
+"est_soldee",
+"idcommande_etm",
+"idsociete",
+"numero",
+"observations_facturation",
+"iddossier",
+"archive",
+"commentaire_interne",
+"expedie",
+"remise",
+"donation",
+"attente_paiement",
+"frais_port",
+"date_demande_paiement",
+"envoye_client"
+],
+"pk": [
+"idcommande_client"
+],
+"text": [
+"ref_client",
+"commentaire",
+"observations_facturation",
+"commentaire_interne"
+]
+},
+"public.commande_fil": {
+"blob": [],
+"cols": [
+"idcommande_fil",
+"idadresse_fournisseur",
+"idadresse_livraison",
+"idfournisseur",
+"date_commande",
+"idmode_paiement",
+"commentaire",
+"idecheance",
+"etat",
+"journal"
+],
+"pk": [
+"idcommande_fil"
+],
+"text": [
+"commentaire",
+"journal"
+]
+},
+"public.commande_previsionnelle": {
+"blob": [],
+"cols": [
+"idcommande_previsionnelle",
+"quantite",
+"idref_client_colori",
+"iddate_previsionnelle"
+],
+"pk": [
+"idcommande_previsionnelle"
+],
+"text": []
+},
+"public.commande_sous_traitant": {
+"blob": [],
+"cols": [
+"idcommande_sous_traitant",
+"idadresse_sous_traitant",
+"idadresse_livraison",
+"idsous_traitant",
+"date_commande",
+"commentaire",
+"est_soldee",
+"iddossier",
+"idcommande_client",
+"date_notif",
+"idligne_commande_client",
+"journal"
+],
+"pk": [
+"idcommande_sous_traitant"
+],
+"text": [
+"commentaire",
+"journal"
+]
+},
+"public.commentaire_formation": {
+"blob": [],
+"cols": [
+"idcommentaire_formation",
+"commentaire",
+"date",
+"idbonnetier",
+"iditem_formation"
+],
+"pk": [
+"idcommentaire_formation"
+],
+"text": [
+"commentaire"
+]
+},
+"public.competence": {
+"blob": [],
+"cols": [
+"idcompetence",
+"reference"
+],
+"pk": [
+"idcompetence"
+],
+"text": [
+"reference"
+]
+},
+"public.completion_item": {
+"blob": [],
+"cols": [
+"idcompletion_item",
+"iditem_formation",
+"idbonnetier",
+"date"
+],
+"pk": [
+"idcompletion_item"
+],
+"text": []
+},
+"public.composition_ecru": {
+"blob": [],
+"cols": [
+"idcolori_ecru",
+"idcomposition_ecru",
+"pourcentage",
+"commentaire",
+"idref_ecru",
+"idref_fil",
+"idcolori_fil"
+],
+"pk": [
+"idcomposition_ecru"
+],
+"text": [
+"commentaire"
+]
+},
+"public.compte_compta": {
+"blob": [],
+"cols": [
+"idcompte_compta",
+"libelle",
+"numero",
+"frais_variable",
+"id_societe",
+"description"
+],
+"pk": [
+"idcompte_compta"
+],
+"text": [
+"libelle",
+"description"
+]
+},
+"public.conformite_action": {
+"blob": [],
+"cols": [
+"idconfomite_action",
+"idligne_commande_sous_traitant",
+"idmention_qualite",
+"sconformite"
+],
+"pk": [
+"idconfomite_action"
+],
+"text": [
+"sconformite"
+]
+},
+"public.conso_fil": {
+"blob": [],
+"cols": [
+"date_debut",
+"date_fin",
+"conso"
+],
+"pk": [],
+"text": []
+},
+"public.contact": {
+"blob": [],
+"cols": [
+"idcontact",
+"idclient",
+"idsous_traitant",
+"idfournisseur",
+"nom",
+"tel",
+"mail",
+"commentaire",
+"envoi_bl",
+"est_visible",
+"envoi_facture",
+"envoi_commande",
+"est_defaut",
+"prenom",
+"identreprise",
+"envoi_soumission",
+"envoi_bt"
+],
+"pk": [
+"idcontact"
+],
+"text": [
+"nom",
+"tel",
+"mail",
+"commentaire",
+"prenom"
+]
+},
+"public.contexte": {
+"blob": [],
+"cols": [
+"idcontexte",
+"nom"
+],
+"pk": [
+"idcontexte"
+],
+"text": [
+"nom"
+]
+},
+"public.contexture": {
+"blob": [],
+"cols": [
+"idcontexture",
+"nom"
+],
+"pk": [
+"idcontexture"
+],
+"text": [
+"nom"
+]
+},
+"public.contrat_tarif": {
+"blob": [],
+"cols": [
+"idcontrat_tarif",
+"date_debut",
+"date_expiration",
+"idref_client_colori",
+"archive"
+],
+"pk": [
+"idcontrat_tarif"
+],
+"text": []
+},
+"public.controle_titrage": {
+"blob": [],
+"cols": [
+"idcontrole_titrage",
+"titrage",
+"nb_fil",
+"nb_brin",
+"idstock_fil",
+"idunite_titrage",
+"date"
+],
+"pk": [
+"idcontrole_titrage"
+],
+"text": []
+},
+"public.coupe_article": {
+"blob": [],
+"cols": [
+"idcoupe_article",
+"reference",
+"nombre",
+"idref_article"
+],
+"pk": [
+"idcoupe_article"
+],
+"text": [
+"reference"
+]
+},
+"public.coupe_textile_modele": {
+"blob": [],
+"cols": [
+"idcoupe_textile_modele",
+"idcoupe_article",
+"idtextile_modele"
+],
+"pk": [
+"idcoupe_textile_modele"
+],
+"text": []
+},
+"public.data_bl_tricotbot": {
+"blob": [],
+"cols": [
+"iddata_bl_tricotbot",
+"idligne_commande_sous_traitant",
+"lot",
+"poids",
+"metrage",
+"observation",
+"num_piece",
+"date"
+],
+"pk": [
+"iddata_bl_tricotbot"
+],
+"text": [
+"lot",
+"observation",
+"num_piece"
+]
+},
+"public.date_previsionnelle": {
+"blob": [],
+"cols": [
+"iddate_previsionnelle",
+"date",
+"idclient"
+],
+"pk": [
+"iddate_previsionnelle"
+],
+"text": []
+},
+"public.debug_log": {
+"blob": [],
+"cols": [
+"iddebug_log",
+"terminal",
+"utilisateur",
+"description",
+"code_erreur",
+"date",
+"appli"
+],
+"pk": [
+"iddebug_log"
+],
+"text": [
+"terminal",
+"utilisateur",
+"description",
+"code_erreur",
+"appli"
+]
+},
+"public.defaut_qualite": {
+"blob": [],
+"cols": [
+"iddefaut_qualite",
+"reference",
+"description",
+"date",
+"type_spotteur",
+"idspotteur",
+"type_reference",
+"type_defaut",
+"traite",
+"taille_cm",
+"recupere",
+"nombre"
+],
+"pk": [
+"iddefaut_qualite"
+],
+"text": [
+"reference",
+"description",
+"type_defaut"
+]
+},
+"public.defaut_textile": {
+"blob": [],
+"cols": [
+"iddefaut_textile",
+"nom",
+"idcategorie_defaut"
+],
+"pk": [
+"iddefaut_textile"
+],
+"text": [
+"nom"
+]
+},
+"public.desiderata": {
+"blob": [],
+"cols": [
+"iddesiderata",
+"date",
+"description",
+"idbonnetier",
+"justifie",
+"declare"
+],
+"pk": [
+"iddesiderata"
+],
+"text": [
+"description"
+]
+},
+"public.designation_client": {
+"blob": [],
+"cols": [
+"idclient",
+"iddesignation_client",
+"designation",
+"idref_fini",
+"idref_ecru",
+"archive",
+"date_modification",
+"associee",
+"cache",
+"soumettre",
+"unite",
+"fil_non_facture"
+],
+"pk": [
+"iddesignation_client"
+],
+"text": [
+"designation",
+"associee",
+"fil_non_facture"
+]
+},
+"public.devis_etm": {
+"blob": [],
+"cols": [
+"iddevis_etm",
+"idclient",
+"idadresse_livraison",
+"idadresse_facturation",
+"ref_client",
+"idmode_paiement",
+"date",
+"idecheance",
+"commentaire",
+"est_soldee",
+"idcommande_etm",
+"numero",
+"observations_facturation",
+"archive",
+"commentaire_interne",
+"remise",
+"date_expiration",
+"idprospect",
+"frais_port"
+],
+"pk": [
+"iddevis_etm"
+],
+"text": [
+"ref_client",
+"commentaire",
+"observations_facturation",
+"commentaire_interne"
+]
+},
+"public.doc_qualite": {
+"blob": [
+"fichier"
+],
+"cols": [
+"iddoc_qualite",
+"fichier",
+"nom",
+"iddossier_qualite",
+"idprospect",
+"idsuivilot"
+],
+"pk": [
+"iddoc_qualite"
+],
+"text": [
+"nom"
+]
+},
+"public.dossier": {
+"blob": [],
+"cols": [
+"iddossier",
+"nom",
+"commentaire",
+"est_termine"
+],
+"pk": [
+"iddossier"
+],
+"text": [
+"nom",
+"commentaire"
+]
+},
+"public.dossier_qualite": {
+"blob": [],
+"cols": [
+"iddossier_qualite",
+"action",
+"description",
+"date",
+"echeance",
+"resolution",
+"idclient",
+"idsuivilot",
+"defaut_qualite",
+"termine",
+"idaction_qualite",
+"type_reference",
+"idreference",
+"journal",
+"reference",
+"idsocietefnc",
+"messagefnc",
+"reponsefnc",
+"envoifnc",
+"iddefaut_textile"
+],
+"pk": [
+"iddossier_qualite"
+],
+"text": [
+"action",
+"description",
+"resolution",
+"defaut_qualite",
+"type_reference",
+"journal",
+"reference",
+"messagefnc",
+"reponsefnc"
+]
+},
+"public.echeance": {
+"blob": [],
+"cols": [
+"idecheance",
+"libelle",
+"type",
+"nb_jours",
+"est_visible",
+"est_defaut",
+"jour"
+],
+"pk": [
+"idecheance"
+],
+"text": [
+"libelle"
+]
+},
+"public.entreprise": {
+"blob": [],
+"cols": [
+"identreprise",
+"nom",
+"commentaire"
+],
+"pk": [
+"identreprise"
+],
+"text": [
+"nom",
+"commentaire"
+]
+},
+"public.entreprise_competence": {
+"blob": [],
+"cols": [
+"idcompetence",
+"identreprise"
+],
+"pk": [
+"identreprise",
+"idcompetence"
+],
+"text": []
+},
+"public.envoi_email": {
+"blob": [],
+"cols": [
+"idenvoi_email",
+"date",
+"adresse",
+"societe",
+"idreference",
+"invalide",
+"notes",
+"idtype_doc"
+],
+"pk": [
+"idenvoi_email"
+],
+"text": [
+"adresse",
+"societe",
+"notes"
+]
+},
+"public.etat_stock_fini": {
+"blob": [],
+"cols": [
+"idetat_stock_fini",
+"libelle"
+],
+"pk": [
+"idetat_stock_fini"
+],
+"text": [
+"libelle"
+]
+},
+"public.etude_col": {
+"blob": [],
+"cols": [
+"idref_fini_colori",
+"idetude_col",
+"idclient",
+"idref_fini",
+"idsous_traitant",
+"libelle",
+"num_commande",
+"desig_client",
+"date_reception_type",
+"statut_col",
+"commentaire",
+"date_derniere_action",
+"journal"
+],
+"pk": [
+"idetude_col"
+],
+"text": [
+"libelle",
+"num_commande",
+"desig_client",
+"commentaire",
+"date_derniere_action",
+"journal"
+]
+},
+"public.evenement_machine": {
+"blob": [],
+"cols": [
+"idevenement_machine",
+"idmachine",
+"date",
+"nb_tour",
+"commentaire",
+"meta",
+"etat"
+],
+"pk": [
+"idevenement_machine"
+],
+"text": [
+"commentaire",
+"meta"
+]
+},
+"public.evenement_piece": {
+"blob": [],
+"cols": [
+"idevenement_piece",
+"evenement",
+"idpiece_production",
+"date",
+"idbonnetier",
+"observation",
+"idstock_ecru",
+"appareil"
+],
+"pk": [
+"idevenement_piece"
+],
+"text": [
+"evenement",
+"observation",
+"appareil"
+]
+},
+"public.expediteur": {
+"blob": [],
+"cols": [
+"idexpediteur",
+"nom",
+"mail",
+"compte",
+"password",
+"smtp",
+"port",
+"signature",
+"idsociete",
+"est_defaut"
+],
+"pk": [
+"idexpediteur"
+],
+"text": [
+"nom",
+"mail",
+"compte",
+"password",
+"smtp",
+"port",
+"signature"
+]
+},
+"public.expedition": {
+"blob": [],
+"cols": [
+"idadresse",
+"idexpedition",
+"idcommande_client",
+"date",
+"affiche_observations",
+"est_facture",
+"est_valide",
+"idtransporteur",
+"idsociete",
+"envoye_client",
+"envoye_sst",
+"donation",
+"idcontact",
+"observation_bl",
+"inclurerapportqualite"
+],
+"pk": [
+"idexpedition"
+],
+"text": [
+"observation_bl"
+]
+},
+"public.expedition_divers": {
+"blob": [],
+"cols": [
+"idadresse",
+"idexpedition_divers",
+"idclient",
+"est_facture",
+"ref_client",
+"date",
+"est_valide",
+"idtransporteur",
+"idcommande_client"
+],
+"pk": [
+"idexpedition_divers"
+],
+"text": [
+"ref_client"
+]
+},
+"public.facture": {
+"blob": [],
+"cols": [
+"idadresse",
+"idfacture",
+"idclient",
+"date",
+"idmode_paiement",
+"idtva",
+"num_tva",
+"idecheance",
+"type",
+"idsociete",
+"numero",
+"idcode_comptable",
+"idexpedition_divers",
+"idcommande_client"
+],
+"pk": [
+"idfacture"
+],
+"text": [
+"num_tva"
+]
+},
+"public.facture_prov": {
+"blob": [],
+"cols": [
+"idadresse",
+"idfacture_prov",
+"idclient",
+"date",
+"idmode_paiement",
+"idtva",
+"num_tva",
+"idecheance",
+"type",
+"idsociete",
+"numero",
+"idcode_comptable",
+"idexpedition_divers"
+],
+"pk": [
+"idfacture_prov"
+],
+"text": [
+"num_tva"
+]
+},
+"public.fil_incorpore": {
+"blob": [],
+"cols": [
+"idfil_incorpore",
+"idordre_fabrication",
+"idstock_fil",
+"poids"
+],
+"pk": [
+"idfil_incorpore"
+],
+"text": []
+},
+"public.fil_ref_echantillon": {
+"blob": [],
+"cols": [
+"idfil_ref_echantillon",
+"pourcentage",
+"idref_echantillon",
+"idcolori_fil",
+"idref_fil"
+],
+"pk": [
+"idfil_ref_echantillon"
+],
+"text": []
+},
+"public.fournisseur": {
+"blob": [],
+"cols": [
+"idfournisseur",
+"nom",
+"tel",
+"fax",
+"commentaire",
+"est_visible",
+"idsociete"
+],
+"pk": [
+"idfournisseur"
+],
+"text": [
+"nom",
+"tel",
+"fax",
+"commentaire"
+]
+},
+"public.fourniture_confection": {
+"blob": [],
+"cols": [
+"idfourniture_confection",
+"reference"
+],
+"pk": [
+"idfourniture_confection"
+],
+"text": [
+"reference"
+]
+},
+"public.fourniture_fournisseur": {
+"blob": [],
+"cols": [
+"idfourniture_fournisseur",
+"idfournisseur",
+"idfourniture_confection"
+],
+"pk": [
+"idfourniture_fournisseur"
+],
+"text": []
+},
+"public.fourniture_option": {
+"blob": [],
+"cols": [
+"idfourniture_option",
+"idoption_confection",
+"idfourniture_confection"
+],
+"pk": [
+"idfourniture_option"
+],
+"text": []
+},
+"public.gamme_coloris": {
+"blob": [],
+"cols": [
+"idgamme_coloris",
+"nom",
+"idteinture",
+"gots",
+"qtesuivis",
+"idref_catalogue"
+],
+"pk": [
+"idgamme_coloris"
+],
+"text": [
+"nom"
+]
+},
+"public.gamme_coloris_fini": {
+"blob": [],
+"cols": [
+"idgamme_coloris_fini",
+"idref_fini",
+"idgamme_coloris"
+],
+"pk": [
+"idgamme_coloris_fini"
+],
+"text": []
+},
+"public.ged": {
+"blob": [
+"fichier"
+],
+"cols": [
+"idged",
+"nom",
+"fichier",
+"commentaire",
+"iddossier",
+"idcommande_client",
+"idcommande_sous_traitant",
+"idtype_doc",
+"idreference"
+],
+"pk": [
+"idged"
+],
+"text": [
+"nom",
+"commentaire"
+]
+},
+"public.guide_fil_rectiligne": {
+"blob": [],
+"cols": [
+"idguide_fil_rectiligne",
+"idref_rectiligne",
+"idref_fil",
+"nb_fil",
+"pourcentage",
+"montage"
+],
+"pk": [
+"idguide_fil_rectiligne"
+],
+"text": []
+},
+"public.hors_prod": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"date",
+"duree"
+],
+"pk": [
+"id"
+],
+"text": []
+},
+"public.inventaire_compta": {
+"blob": [],
+"cols": [
+"idinventaire_compta",
+"idtype_stock",
+"date",
+"prix_achat",
+"valeur_deprecie",
+"quantite",
+"unite"
+],
+"pk": [
+"idinventaire_compta"
+],
+"text": []
+},
+"public.item_formation": {
+"blob": [],
+"cols": [
+"iditem_formation",
+"item",
+"ordre"
+],
+"pk": [
+"iditem_formation"
+],
+"text": [
+"item"
+]
+},
+"public.ligne_cmd_confection": {
+"blob": [],
+"cols": [
+"idligne_cmd_confection",
+"idcommande_client",
+"idref_article",
+"idmodel_article",
+"commentaire"
+],
+"pk": [
+"idligne_cmd_confection"
+],
+"text": [
+"commentaire"
+]
+},
+"public.ligne_commande_client": {
+"blob": [],
+"cols": [
+"idcommande_client",
+"idligne_commande_client",
+"quantite",
+"prix",
+"date_livraison",
+"idligne_commande_etm",
+"idcolori",
+"unite",
+"type",
+"idreference",
+"poids",
+"commentaire",
+"iddesignation_client",
+"delai_annonce",
+"delai_reel",
+"idvariation1",
+"idvariation2",
+"deverrouiller",
+"planning_depart",
+"planning_fin",
+"idmachine_planning"
+],
+"pk": [
+"idligne_commande_client"
+],
+"text": [
+"commentaire",
+"deverrouiller"
+]
+},
+"public.ligne_commande_sous_traitant": {
+"blob": [],
+"cols": [
+"idcommande_sous_traitant",
+"idligne_commande_sous_traitant",
+"type",
+"quantite",
+"date_livraison",
+"commentaire",
+"unite",
+"idreference",
+"prix",
+"idcoloris",
+"date_delai",
+"date_reception",
+"date_notif",
+"num_facture",
+"sstatut"
+],
+"pk": [
+"idligne_commande_sous_traitant"
+],
+"text": [
+"commentaire",
+"num_facture",
+"sstatut"
+]
+},
+"public.ligne_devis_etm": {
+"blob": [],
+"cols": [
+"iddevis_etm",
+"idref_ecru",
+"idligne_devis_etm",
+"quantite",
+"prix",
+"date_livraison",
+"laize_demandee",
+"idcolori",
+"unite",
+"type",
+"idreference",
+"poids",
+"commentaire",
+"iddesignation_client",
+"idref_catalogue",
+"delai_annonce",
+"delai_reel",
+"poids_demande",
+"rendement_demande",
+"idvariation1",
+"idvariation2",
+"deverrouiller"
+],
+"pk": [
+"idligne_devis_etm"
+],
+"text": [
+"commentaire",
+"deverrouiller"
+]
+},
+"public.ligne_expedition": {
+"blob": [],
+"cols": [
+"idligne_expedition",
+"idexpedition",
+"idligne_commande_client",
+"est_facture"
+],
+"pk": [
+"idligne_expedition"
+],
+"text": []
+},
+"public.ligne_expedition_divers": {
+"blob": [],
+"cols": [
+"idligne_expedition_divers",
+"idexpedition_divers",
+"detail_ligne"
+],
+"pk": [
+"idligne_expedition_divers"
+],
+"text": [
+"detail_ligne"
+]
+},
+"public.ligne_facture": {
+"blob": [],
+"cols": [
+"idligne_expedition",
+"idligne_facture",
+"idfacture",
+"designation",
+"quantite",
+"unite",
+"prix"
+],
+"pk": [
+"idligne_facture"
+],
+"text": [
+"designation",
+"unite"
+]
+},
+"public.ligne_facture_prov": {
+"blob": [],
+"cols": [
+"idligne_expedition",
+"idligne_facture_prov",
+"idfacture_prov",
+"designation",
+"quantite",
+"unite",
+"prix"
+],
+"pk": [
+"idligne_facture_prov"
+],
+"text": [
+"designation",
+"unite"
+]
+},
+"public.lst_horaire": {
+"blob": [],
+"cols": [
+"id",
+"id_salarie",
+"date",
+"debut",
+"debut_pause1",
+"fin_pause1",
+"debut_pause2",
+"fin_pause2",
+"fin",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": []
+},
+"public.lst_salarie": {
+"blob": [],
+"cols": [
+"id",
+"nom",
+"prenom",
+"login",
+"is_deleted",
+"id_mps",
+"useinratio"
+],
+"pk": [
+"id"
+],
+"text": [
+"nom",
+"prenom",
+"login"
+]
+},
+"public.lst_unite": {
+"blob": [],
+"cols": [
+"id",
+"libelle",
+"is_deleted"
+],
+"pk": [
+"id"
+],
+"text": [
+"libelle"
+]
+},
+"public.machine": {
+"blob": [],
+"cols": [
+"idmachine",
+"nom",
+"commentaire",
+"date_maintenance",
+"observation_maintenace",
+"nett_cylindre",
+"nett_plateau",
+"nett_platines",
+"double_fonture",
+"comm_nett_cylindre",
+"comm_nett_plateau",
+"comm_nett_platines",
+"chg_aiguilles",
+"chg_platines",
+"comm_chg_aiguilles",
+"comm_chg_platines",
+"connecte",
+"iddernier_evenement",
+"emplacement",
+"archive",
+"adresse_automate",
+"jauge",
+"diametre",
+"nb_chutes_max",
+"elasthanne",
+"nb_chutes",
+"pulsonique",
+"comm_pulsonque",
+"vitesse"
+],
+"pk": [
+"idmachine"
+],
+"text": [
+"nom",
+"commentaire",
+"observation_maintenace",
+"comm_nett_cylindre",
+"comm_nett_plateau",
+"comm_nett_platines",
+"comm_chg_aiguilles",
+"comm_chg_platines",
+"emplacement",
+"comm_pulsonque"
+]
+},
+"public.machine_confection": {
+"blob": [],
+"cols": [
+"idmachine_confection",
+"type_machine"
+],
+"pk": [
+"idmachine_confection"
+],
+"text": [
+"type_machine"
+]
+},
+"public.machine_data": {
+"blob": [],
+"cols": [
+"idmachine_data",
+"date",
+"machine",
+"description",
+"adresseip"
+],
+"pk": [
+"idmachine_data"
+],
+"text": [
+"machine",
+"description",
+"adresseip"
+]
+},
+"public.maj_appli": {
+"blob": [],
+"cols": [
+"version_appli_bonnetier",
+"version_appli_competence",
+"version_appli_regleur"
+],
+"pk": [],
+"text": [
+"version_appli_bonnetier",
+"version_appli_competence",
+"version_appli_regleur"
+]
+},
+"public.matiere_premiere": {
+"blob": [],
+"cols": [
+"idmatiere_premiere",
+"libelle"
+],
+"pk": [
+"idmatiere_premiere"
+],
+"text": [
+"libelle"
+]
+},
+"public.mention_qualite": {
+"blob": [],
+"cols": [
+"idmention_qualite",
+"idtype_sst",
+"idsous_traitant",
+"mention",
+"idreference",
+"idcoloris",
+"idaction_qualite"
+],
+"pk": [
+"idmention_qualite"
+],
+"text": [
+"mention"
+]
+},
+"public.message_of": {
+"blob": [],
+"cols": [
+"idmessage_of",
+"observation",
+"idordre_fabrication",
+"idbonnetier",
+"date"
+],
+"pk": [
+"idmessage_of"
+],
+"text": [
+"observation"
+]
+},
+"public.mode_paiement": {
+"blob": [],
+"cols": [
+"idmode_paiement",
+"libelle",
+"est_visible",
+"est_defaut"
+],
+"pk": [
+"idmode_paiement"
+],
+"text": [
+"libelle"
+]
+},
+"public.model_article": {
+"blob": [],
+"cols": [
+"idmodel_article",
+"designation",
+"idref_article"
+],
+"pk": [
+"idmodel_article"
+],
+"text": [
+"designation"
+]
+},
+"public.notif_token": {
+"blob": [],
+"cols": [
+"idnotif_token",
+"id_terminal",
+"token",
+"nom_terminal"
+],
+"pk": [
+"idnotif_token"
+],
+"text": [
+"id_terminal",
+"token",
+"nom_terminal"
+]
+},
+"public.notifutilisateur": {
+"blob": [],
+"cols": [
+"idnotifutilisateur",
+"hash",
+"titre",
+"description",
+"icone",
+"visible",
+"idsociete",
+"idabonnement_notif"
+],
+"pk": [
+"idnotifutilisateur"
+],
+"text": [
+"hash",
+"titre",
+"description",
+"icone"
+]
+},
+"public.obs_ref_ecru": {
+"blob": [],
+"cols": [
+"idobs_ref_ecru",
+"idref_ecru",
+"idmachine",
+"idcolori_ecru",
+"observation",
+"date"
+],
+"pk": [
+"idobs_ref_ecru"
+],
+"text": [
+"observation"
+]
+},
+"public.of_confection": {
+"blob": [],
+"cols": [
+"idof_confection",
+"idligne_cmd_confection"
+],
+"pk": [
+"idof_confection"
+],
+"text": []
+},
+"public.offre_fil": {
+"blob": [],
+"cols": [
+"idoffre_fil",
+"idref_fil",
+"idfournisseur",
+"prix",
+"unite",
+"quantite",
+"date",
+"idcolori_fil",
+"observation"
+],
+"pk": [
+"idoffre_fil"
+],
+"text": [
+"observation"
+]
+},
+"public.operation_maintenance": {
+"blob": [],
+"cols": [
+"idoperation_maintenance",
+"nom",
+"date_derniere",
+"frequence"
+],
+"pk": [
+"idoperation_maintenance"
+],
+"text": [
+"nom"
+]
+},
+"public.option_article": {
+"blob": [],
+"cols": [
+"idoption_article",
+"idref_article",
+"idoption_confection"
+],
+"pk": [
+"idoption_article"
+],
+"text": []
+},
+"public.option_confection": {
+"blob": [],
+"cols": [
+"idoption_confection",
+"reference"
+],
+"pk": [
+"idoption_confection"
+],
+"text": [
+"reference"
+]
+},
+"public.option_ligne_cmd_confection": {
+"blob": [],
+"cols": [
+"idoption_ligne_cmd_confection",
+"idligne_cmd_confection",
+"idoption_confection"
+],
+"pk": [
+"idoption_ligne_cmd_confection"
+],
+"text": []
+},
+"public.ordre_fabrication": {
+"blob": [],
+"cols": [
+"idordre_fabrication",
+"quantite",
+"idligne_commande_client",
+"poids_piece",
+"ouvert_visiteuse",
+"maille_ouverture",
+"observations",
+"date_creation",
+"visitage",
+"est_actif",
+"est_termine",
+"idmachine",
+"nb_tour_cpt",
+"nb_tour_1_chute",
+"priorite",
+"finir_fil",
+"nb_pieces",
+"demarrage_prod",
+"arret_prod",
+"productivite",
+"productivite_matin",
+"productivite_am",
+"productivite_nuit",
+"interruption_prod",
+"auto_activation",
+"idref_ecru",
+"idcolori_ecru",
+"nettoyage",
+"raison_modif",
+"prioritaire",
+"planning_depart",
+"planning_fin",
+"vitesse",
+"sonneter"
+],
+"pk": [
+"idordre_fabrication"
+],
+"text": [
+"observations",
+"raison_modif"
+]
+},
+"public.origine_matiere": {
+"blob": [],
+"cols": [
+"idorigine_matiere",
+"pays",
+"ville",
+"latitude",
+"longitude",
+"idref_fil",
+"idfournisseur",
+"idmatiere_premiere"
+],
+"pk": [
+"idorigine_matiere"
+],
+"text": [
+"pays",
+"ville"
+]
+},
+"public.partenaire": {
+"blob": [],
+"cols": [
+"idpartenaire",
+"societe",
+"journal",
+"avis"
+],
+"pk": [
+"idpartenaire"
+],
+"text": [
+"societe",
+"journal"
+]
+},
+"public.patronage": {
+"blob": [
+"fichier"
+],
+"cols": [
+"idpatronage",
+"idunite_taille",
+"fichier",
+"type",
+"idref_article",
+"observation"
+],
+"pk": [
+"idpatronage"
+],
+"text": [
+"type",
+"observation"
+]
+},
+"public.photo_defaut": {
+"blob": [
+"photo"
+],
+"cols": [
+"idphoto_defaut",
+"photo",
+"iddefaut_qualite"
+],
+"pk": [
+"idphoto_defaut"
+],
+"text": []
+},
+"public.photo_produit": {
+"blob": [
+"photo",
+"vignette"
+],
+"cols": [
+"idphoto_produit",
+"photo",
+"idref_fini",
+"idcoloris",
+"couleur",
+"idcontexture",
+"vignette"
+],
+"pk": [
+"idphoto_produit"
+],
+"text": [
+"couleur"
+]
+},
+"public.piece_composant": {
+"blob": [],
+"cols": [
+"idpiece_composant",
+"numero",
+"idtype_composant",
+"idcouleur",
+"laize",
+"poids",
+"idmagasin",
+"idetat",
+"id_commande_fournisseur",
+"commentaire",
+"idligne_commande_collage",
+"id119",
+"longueur_frs",
+"longueur_colleur",
+"longueur_mf",
+"idpvc"
+],
+"pk": [
+"idpiece_composant"
+],
+"text": [
+"numero",
+"commentaire"
+]
+},
+"public.piece_echantillon": {
+"blob": [],
+"cols": [
+"idpiece_echantillon",
+"numero",
+"date",
+"poids",
+"longueur",
+"laize",
+"idref_echantillon",
+"idmachine"
+],
+"pk": [
+"idpiece_echantillon"
+],
+"text": [
+"numero"
+]
+},
+"public.piece_production": {
+"blob": [],
+"cols": [
+"idpiece_production",
+"idordre_fabrication",
+"bonnetier_debut",
+"bonnetier_controle",
+"bonnetier_fin",
+"date_debut",
+"date_controle",
+"date_fin",
+"observations",
+"poids",
+"visiteur",
+"date_visitage",
+"bonnetier_interruption",
+"date_interruption",
+"numero"
+],
+"pk": [
+"idpiece_production"
+],
+"text": [
+"observations",
+"visiteur"
+]
+},
+"public.piece_transfert": {
+"blob": [],
+"cols": [
+"idbon_transfert",
+"idpiece_transfert",
+"idpiece_ecru",
+"idpiece_fini",
+"idstock_fil"
+],
+"pk": [
+"idpiece_transfert"
+],
+"text": []
+},
+"public.planning_bonnetier": {
+"blob": [],
+"cols": [
+"idplanning_bonnetier",
+"date_debut",
+"date_fin",
+"idbonnetier"
+],
+"pk": [
+"idplanning_bonnetier"
+],
+"text": []
+},
+"public.plus_moins_value_kg": {
+"blob": [],
+"cols": [
+"idplus_moins_value_kg",
+"idref_tarif",
+"description",
+"montant"
+],
+"pk": [
+"idplus_moins_value_kg"
+],
+"text": [
+"description"
+]
+},
+"public.plus_moins_value_kg_client": {
+"blob": [],
+"cols": [
+"idasso_tarif_client",
+"idplus_moins_value_kg_client",
+"description",
+"montant"
+],
+"pk": [
+"idplus_moins_value_kg_client"
+],
+"text": [
+"description"
+]
+},
+"public.pointage": {
+"blob": [],
+"cols": [
+"idpointage",
+"idbonnetier",
+"date",
+"en_poste"
+],
+"pk": [
+"idpointage"
+],
+"text": []
+},
+"public.prix_gamme_colori": {
+"blob": [],
+"cols": [
+"idprix_gamme_colori",
+"prix_publie",
+"idtranche_tarifaire",
+"idgamme_coloris",
+"prix_calcule",
+"date_maj"
+],
+"pk": [
+"idprix_gamme_colori"
+],
+"text": []
+},
+"public.produit_fournisseur": {
+"blob": [],
+"cols": [
+"idproduit_fournisseur",
+"reference",
+"designation",
+"idfourniture_fournisseur"
+],
+"pk": [
+"idproduit_fournisseur"
+],
+"text": [
+"reference",
+"designation"
+]
+},
+"public.prospect": {
+"blob": [],
+"cols": [
+"idprospect",
+"prenom",
+"nom",
+"email",
+"societe",
+"adresse",
+"code_postal",
+"ville",
+"pays",
+"telephone",
+"status_catalogue",
+"date",
+"observation",
+"notes_interne",
+"expe_catalogue",
+"tracking_number",
+"idtransporteur",
+"traite",
+"idclient"
+],
+"pk": [
+"idprospect"
+],
+"text": [
+"prenom",
+"nom",
+"email",
+"societe",
+"adresse",
+"code_postal",
+"ville",
+"pays",
+"telephone",
+"observation",
+"notes_interne",
+"tracking_number"
+]
+},
+"public.quizz": {
+"blob": [],
+"cols": [
+"idquizz",
+"iddefaut_textile",
+"date",
+"listecausecorrect",
+"actif",
+"listecauseerreur",
+"reference"
+],
+"pk": [
+"idquizz"
+],
+"text": [
+"listecausecorrect",
+"listecauseerreur",
+"reference"
+]
+},
+"public.recommandation": {
+"blob": [],
+"cols": [
+"idrecommandation",
+"date",
+"societe",
+"contact",
+"besoin",
+"identreprise"
+],
+"pk": [
+"idrecommandation"
+],
+"text": [
+"societe",
+"contact",
+"besoin"
+]
+},
+"public.ref_article": {
+"blob": [],
+"cols": [
+"idref_article",
+"reference",
+"description",
+"observation",
+"en_developpement"
+],
+"pk": [
+"idref_article"
+],
+"text": [
+"reference",
+"description",
+"observation"
+]
+},
+"public.ref_catalogue": {
+"blob": [],
+"cols": [
+"idref_catalogue",
+"description",
+"idref_fini",
+"nom_commercial",
+"date_modification",
+"ordre"
+],
+"pk": [
+"idref_catalogue"
+],
+"text": [
+"description",
+"nom_commercial"
+]
+},
+"public.ref_client_colori": {
+"blob": [],
+"cols": [
+"idref_client_colori",
+"iddesignation_client",
+"idref_fini_colori",
+"idcolori_ecru",
+"lst_tranche",
+"contrat",
+"idphoto_produit",
+"archive",
+"prevision"
+],
+"pk": [
+"idref_client_colori"
+],
+"text": [
+"lst_tranche"
+]
+},
+"public.ref_divers": {
+"blob": [],
+"cols": [
+"idref_divers",
+"designation",
+"prix_unitaire",
+"observations",
+"unite",
+"archive",
+"stypevariation1",
+"stypevariation2"
+],
+"pk": [
+"idref_divers"
+],
+"text": [
+"designation",
+"observations",
+"stypevariation1",
+"stypevariation2"
+]
+},
+"public.ref_divers_expedie": {
+"blob": [],
+"cols": [
+"idligne_expedition_divers",
+"idref_divers_expedie",
+"designation",
+"quantite",
+"unite",
+"prix",
+"idref_divers",
+"idvariation1",
+"idvariation2"
+],
+"pk": [
+"idref_divers_expedie"
+],
+"text": [
+"designation"
+]
+},
+"public.ref_divers_variation": {
+"blob": [],
+"cols": [
+"idref_divers_variation",
+"prix",
+"unite",
+"idref_divers",
+"designation",
+"niveau"
+],
+"pk": [
+"idref_divers_variation"
+],
+"text": [
+"designation"
+]
+},
+"public.ref_echantillon": {
+"blob": [],
+"cols": [
+"idref_echantillon",
+"idcontexture",
+"jauge",
+"diametre",
+"lfa1",
+"lfa2",
+"lfa3",
+"lfa4",
+"commentaire",
+"idclient",
+"archive"
+],
+"pk": [
+"idref_echantillon"
+],
+"text": [
+"commentaire"
+]
+},
+"public.ref_ecru": {
+"blob": [],
+"cols": [
+"idref_ecru",
+"idclient",
+"reference_client",
+"poids",
+"ouvert_visiteuse",
+"maille_ouverture",
+"prix",
+"commentaire",
+"reference",
+"designation",
+"composition",
+"date_maj_ft",
+"lfa_tour_1",
+"lfa_tour_2",
+"lfa_tour_3",
+"lfa_tour_4",
+"poulies_1",
+"poulies_2",
+"poulies_3",
+"poulies_4",
+"ecarteur",
+"laize_tbm",
+"poids_m2_tbm",
+"rendement",
+"tombe_metier",
+"observations",
+"archive",
+"idcontexture",
+"jauge",
+"diametre",
+"bio",
+"recycle",
+"sonneter",
+"nb_chutes",
+"nb_aiguilles",
+"vitesse_cible"
+],
+"pk": [
+"idref_ecru"
+],
+"text": [
+"reference_client",
+"commentaire",
+"reference",
+"designation",
+"composition",
+"lfa_tour_1",
+"lfa_tour_2",
+"lfa_tour_3",
+"lfa_tour_4",
+"poulies_1",
+"poulies_2",
+"poulies_3",
+"poulies_4",
+"tombe_metier",
+"observations"
+]
+},
+"public.ref_ecru_machine": {
+"blob": [],
+"cols": [
+"idref_ecru",
+"idref_ecru_machine",
+"repere_1",
+"repere_2",
+"repere_3",
+"repere_4",
+"repere_5",
+"hauteur_pl",
+"abattage",
+"trs_10kg_chute",
+"nb_chutes",
+"idmachine"
+],
+"pk": [
+"idref_ecru_machine"
+],
+"text": [
+"repere_1",
+"repere_2",
+"repere_3",
+"repere_4",
+"repere_5",
+"hauteur_pl",
+"abattage"
+]
+},
+"public.ref_fil": {
+"blob": [],
+"cols": [
+"idref_fil",
+"reference",
+"prix_kg",
+"commentaire",
+"bio",
+"recycle",
+"titrage",
+"nb_fil",
+"nb_brin",
+"idunite_titrage"
+],
+"pk": [
+"idref_fil"
+],
+"text": [
+"reference",
+"commentaire"
+]
+},
+"public.ref_fil_certif": {
+"blob": [],
+"cols": [
+"idref_fil_certif",
+"idref_fil",
+"idcertificat"
+],
+"pk": [
+"idref_fil_certif"
+],
+"text": []
+},
+"public.ref_fil_commande": {
+"blob": [],
+"cols": [
+"idref_fil_commande",
+"idcommande_fil",
+"idref_fil",
+"quantite",
+"unite",
+"prix_unitaire",
+"date_livraison",
+"idcolori_fil",
+"etat",
+"date_notif"
+],
+"pk": [
+"idref_fil_commande"
+],
+"text": []
+},
+"public.ref_fini": {
+"blob": [],
+"cols": [
+"idref_ecru",
+"idref_fini",
+"reference",
+"designation",
+"laizeht_moy",
+"unite",
+"poids_moy",
+"rendement",
+"finition",
+"observations",
+"freinte",
+"conditionnement",
+"laizeutile_moy",
+"laizeht_min",
+"laizeht_max",
+"laizeutile_min",
+"laizeutile_max",
+"poids_min",
+"poids_max",
+"stab_hauteur",
+"stab_largeur",
+"allongementh_min",
+"allongementh_moy",
+"allongementh_max",
+"allongementl_min",
+"allongementl_moy",
+"allongementl_max",
+"responsable",
+"datecreation",
+"datemodification",
+"idcolori_ecru",
+"avec_teinture",
+"archive",
+"catalogue_prive",
+"controle_sst_rendement",
+"controle_sst_stab",
+"controle_sst_allongement",
+"en_developpement",
+"associee",
+"site",
+"description_commercial",
+"observation_technique",
+"temp_lavage"
+],
+"pk": [
+"idref_fini"
+],
+"text": [
+"reference",
+"designation",
+"observations",
+"conditionnement",
+"responsable",
+"associee",
+"description_commercial",
+"observation_technique"
+]
+},
+"public.ref_fini_colori": {
+"blob": [
+"photo"
+],
+"cols": [
+"idref_fini_colori",
+"idref_fini",
+"idsous_traitant",
+"reference",
+"laize",
+"poids",
+"rendement",
+"observations",
+"finition",
+"idteinture",
+"idvignette_coloris",
+"suivis",
+"photo",
+"gots",
+"lotref",
+"soumettre"
+],
+"pk": [
+"idref_fini_colori"
+],
+"text": [
+"reference",
+"observations",
+"lotref"
+]
+},
+"public.ref_rectiligne": {
+"blob": [],
+"cols": [
+"idref_rectiligne",
+"reference",
+"archive",
+"programme",
+"nb_aiguilles",
+"prix",
+"designation",
+"unite",
+"commentaire",
+"nb_guide_fil"
+],
+"pk": [
+"idref_rectiligne"
+],
+"text": [
+"reference",
+"programme",
+"designation",
+"commentaire"
+]
+},
+"public.ref_tarif": {
+"blob": [],
+"cols": [
+"idref_tarif",
+"reference",
+"designation",
+"laize",
+"poids",
+"rendement",
+"prix_tricotage",
+"plus_moins_poids",
+"plus_moins_laize",
+"freinte",
+"port_fixe",
+"port_pct",
+"remarques",
+"conditionnement",
+"carac_tech",
+"conditions_livraison",
+"conditions_validite",
+"conditions_reglement",
+"notes",
+"ok_tarif",
+"idteinture",
+"poids_rouleau",
+"avec_teinture",
+"poids_teinture",
+"commentaire",
+"multiplicateur"
+],
+"pk": [
+"idref_tarif"
+],
+"text": [
+"reference",
+"designation",
+"remarques",
+"conditionnement",
+"carac_tech",
+"conditions_livraison",
+"conditions_reglement",
+"notes",
+"commentaire"
+]
+},
+"public.releve_compta": {
+"blob": [],
+"cols": [
+"idreleve_compta",
+"idcompte_compta",
+"date",
+"debit",
+"credit"
+],
+"pk": [
+"idreleve_compta"
+],
+"text": []
+},
+"public.reponse_soumission": {
+"blob": [],
+"cols": [
+"idreponse_soumission",
+"date",
+"reponse",
+"idcommande_sous_traitant",
+"idclient",
+"lot"
+],
+"pk": [
+"idreponse_soumission"
+],
+"text": [
+"lot"
+]
+},
+"public.resolution_qualite": {
+"blob": [],
+"cols": [
+"idresolution_qualite",
+"libelle",
+"id_societe"
+],
+"pk": [
+"idresolution_qualite"
+],
+"text": [
+"libelle"
+]
+},
+"public.resultat_quizz": {
+"blob": [],
+"cols": [
+"idresultat_quizz",
+"idquizz",
+"idbonnetier",
+"idcategorie_defaut",
+"succes",
+"sais_reparer",
+"date",
+"idcause_defaut"
+],
+"pk": [
+"idresultat_quizz"
+],
+"text": []
+},
+"public.retour_client": {
+"blob": [],
+"cols": [
+"idretour_client",
+"message_client",
+"reponse",
+"impact_prime",
+"idclient",
+"date",
+"type_reference",
+"reference",
+"archive",
+"defaut",
+"iddossier_qualite",
+"iddefaut_textile",
+"journal",
+"message_resp_atelier",
+"idresolution_qualite",
+"idbonnetier",
+"idmachine"
+],
+"pk": [
+"idretour_client"
+],
+"text": [
+"message_client",
+"reponse",
+"type_reference",
+"reference",
+"defaut",
+"journal",
+"message_resp_atelier"
+]
+},
+"public.retour_client_confection": {
+"blob": [],
+"cols": [
+"idretour_client_confection",
+"observation",
+"idclient",
+"idref_article",
+"version",
+"tailles"
+],
+"pk": [
+"idretour_client_confection"
+],
+"text": [
+"observation",
+"version",
+"tailles"
+]
+},
+"public.role_employe": {
+"blob": [],
+"cols": [
+"idrole_employe",
+"role"
+],
+"pk": [
+"idrole_employe"
+],
+"text": [
+"role"
+]
+},
+"public.schema_liage": {
+"blob": [],
+"cols": [
+"idschema_liage",
+"idref_ecru",
+"num_symbole",
+"idsymbole_liage",
+"idchute_liage"
+],
+"pk": [
+"idschema_liage"
+],
+"text": []
+},
+"public.secteur_activite": {
+"blob": [],
+"cols": [
+"idsecteur_activite",
+"nom"
+],
+"pk": [
+"idsecteur_activite"
+],
+"text": [
+"nom"
+]
+},
+"public.societe": {
+"blob": [],
+"cols": [
+"idsociete",
+"nom"
+],
+"pk": [
+"idsociete"
+],
+"text": [
+"nom"
+]
+},
+"public.soum_col": {
+"blob": [],
+"cols": [
+"idsoum_col",
+"idetude_col",
+"date_soum",
+"type_soum",
+"observation",
+"date_reponse",
+"accepte"
+],
+"pk": [
+"idsoum_col"
+],
+"text": [
+"type_soum",
+"observation",
+"date_reponse"
+]
+},
+"public.sous_traitant": {
+"blob": [],
+"cols": [
+"idsous_traitant",
+"nom",
+"tel",
+"fax",
+"commentaire",
+"est_visible",
+"idtype_sst"
+],
+"pk": [
+"idsous_traitant"
+],
+"text": [
+"nom",
+"tel",
+"fax",
+"commentaire"
+]
+},
+"public.stat_stock_fil": {
+"blob": [],
+"cols": [
+"idstat_stock_fil",
+"idclient",
+"date",
+"stocktotal",
+"stockplus6",
+"stockplus12"
+],
+"pk": [
+"idstat_stock_fil"
+],
+"text": []
+},
+"public.stock_divers": {
+"blob": [],
+"cols": [
+"idstock_divers",
+"idref_divers",
+"quantite",
+"unite",
+"idvariation1",
+"idvariation2"
+],
+"pk": [
+"idstock_divers"
+],
+"text": []
+},
+"public.stock_ecru": {
+"blob": [],
+"cols": [
+"idcolori_ecru",
+"idordre_fabrication",
+"idref_ecru",
+"idstock_ecru",
+"lot",
+"numero",
+"num_piece_of",
+"poids",
+"metrage",
+"second_choix",
+"visiteur",
+"observations",
+"date_saisie",
+"idmagasin",
+"idsociete",
+"idref_commande_source",
+"idref_commande_affectation",
+"idligne_expedition_trm",
+"idligne_expedition_etm",
+"idpiece_production",
+"idproprietaire",
+"idligne_commande_client",
+"info_dev",
+"idligne_commande_trm",
+"idcommande_donation"
+],
+"pk": [
+"idstock_ecru"
+],
+"text": [
+"lot",
+"numero",
+"visiteur",
+"observations",
+"info_dev"
+]
+},
+"public.stock_fil": {
+"blob": [
+"certif_bio",
+"certif_recycle"
+],
+"cols": [
+"idstock_fil",
+"idclient",
+"idref_fil",
+"idfournisseur",
+"stock",
+"stock_initial",
+"lot",
+"emplacement",
+"date_entree",
+"commentaire",
+"idcolori_fil",
+"idref_fil_commande",
+"certif_bio",
+"certif_recycle",
+"lot_frs",
+"idmagasin",
+"termine",
+"niveau",
+"dernier_pointage",
+"dernier_mouvement",
+"controle",
+"observation_freinte"
+],
+"pk": [
+"idstock_fil"
+],
+"text": [
+"lot",
+"emplacement",
+"commentaire",
+"lot_frs",
+"observation_freinte"
+]
+},
+"public.stock_fil_ged": {
+"blob": [],
+"cols": [
+"idstock_fil_ged",
+"idged",
+"idstock_fil"
+],
+"pk": [
+"idstock_fil_ged"
+],
+"text": []
+},
+"public.stock_fini": {
+"blob": [],
+"cols": [
+"idligne_expedition",
+"idstock_fini",
+"numero",
+"idstock_ecru",
+"poids",
+"metrage",
+"lot",
+"observations",
+"second_choix",
+"idref_commande_source",
+"idmagasin",
+"idref_fini",
+"idcoloris",
+"date_saisie",
+"idetat_stock_fini",
+"destockage",
+"idligne_commande_client",
+"idproprietaire",
+"idcommande_donation",
+"conteneur",
+"emplacement",
+"don",
+"pointage",
+"observation_sst"
+],
+"pk": [
+"idstock_fini"
+],
+"text": [
+"numero",
+"lot",
+"observations",
+"conteneur",
+"emplacement",
+"observation_sst"
+]
+},
+"public.stock_fini_source": {
+"blob": [],
+"cols": [
+"idstock_fini_source",
+"idstock_fini",
+"idstock_ecru"
+],
+"pk": [
+"idstock_fini_source"
+],
+"text": []
+},
+"public.stock_mini": {
+"blob": [],
+"cols": [
+"idstock_mini",
+"idreference",
+"idcoloris",
+"type",
+"qte_min",
+"idsous_traitant",
+"unite"
+],
+"pk": [
+"idstock_mini"
+],
+"text": []
+},
+"public.stock_rectiligne": {
+"blob": [],
+"cols": [
+"idstock_rectiligne",
+"idref_rectiligne",
+"idcoloris_rectiligne",
+"quantite",
+"unite"
+],
+"pk": [
+"idstock_rectiligne"
+],
+"text": []
+},
+"public.suivilot": {
+"blob": [],
+"cols": [
+"idref_fini_colori",
+"idcommande_sous_traitant",
+"idsuivilot",
+"idsous_traitant",
+"date",
+"lot",
+"laize_demandee",
+"poids_demande",
+"rendement_demande",
+"laize_tirelle",
+"poids_tirelle",
+"rendement_sst",
+"stabl_tirelle",
+"stabh_tirelle",
+"observations",
+"prix",
+"quantite_receptionnee",
+"metrage_receptionne",
+"prix_convenu",
+"idref_fini",
+"idcoloris",
+"stabl_demandee",
+"stabh_demandee",
+"stabl_sst",
+"stabh_sst",
+"rendement_tirelle",
+"poids_sst",
+"laize_sst",
+"idligne_commande_sous_traitant",
+"emplacement_tirelle",
+"fin_archivage",
+"idetatlot",
+"defauts",
+"description_defaut",
+"date_defaut",
+"freinte_demandee",
+"approuve_qualite",
+"test"
+],
+"pk": [
+"idsuivilot"
+],
+"text": [
+"lot",
+"observations",
+"emplacement_tirelle",
+"defauts",
+"description_defaut",
+"test"
+]
+},
+"public.symbole_liage": {
+"blob": [],
+"cols": [
+"idsymbole_liage",
+"icone"
+],
+"pk": [
+"idsymbole_liage"
+],
+"text": [
+"icone"
+]
+},
+"public.tache": {
+"blob": [],
+"cols": [
+"idtache",
+"idsociete",
+"description",
+"idreference",
+"idcontexte",
+"date_creation"
+],
+"pk": [
+"idtache"
+],
+"text": [
+"description"
+]
+},
+"public.taille_ligne_cmd_confection": {
+"blob": [],
+"cols": [
+"idtaille_ligne_cmd_confection",
+"idligne_cmd_confection",
+"idunite_taille",
+"nombre"
+],
+"pk": [
+"idtaille_ligne_cmd_confection"
+],
+"text": []
+},
+"public.tarif_coloris": {
+"blob": [],
+"cols": [
+"idtarif_coloris",
+"idcoloris",
+"prix_publie",
+"prix_calcule",
+"prochain_prix",
+"tranche_tarifaire",
+"idref_catalogue",
+"date_calcul",
+"iddesignation_client",
+"date_expiration"
+],
+"pk": [
+"idtarif_coloris"
+],
+"text": []
+},
+"public.tarif_divers": {
+"blob": [],
+"cols": [
+"idtarif_divers",
+"prix",
+"idvariation1",
+"idvariation2",
+"idref_divers"
+],
+"pk": [
+"idtarif_divers"
+],
+"text": []
+},
+"public.tarif_trm": {
+"blob": [],
+"cols": [
+"idtarif_trm",
+"identifiant",
+"nombre"
+],
+"pk": [
+"idtarif_trm"
+],
+"text": [
+"identifiant"
+]
+},
+"public.teinture": {
+"blob": [],
+"cols": [
+"idteinture",
+"designation_interne",
+"designation_externe",
+"prix_gots",
+"simple_teinture"
+],
+"pk": [
+"idteinture"
+],
+"text": [
+"designation_interne",
+"designation_externe"
+]
+},
+"public.test_competence": {
+"blob": [],
+"cols": [
+"idtest_competence",
+"commentaire",
+"succes",
+"date",
+"idbonnetier",
+"idtype_test"
+],
+"pk": [
+"idtest_competence"
+],
+"text": [
+"commentaire"
+]
+},
+"public.textile_ligne_cmd_confection": {
+"blob": [],
+"cols": [
+"idtextile_ligne_cmd_confection",
+"idligne_cmd_confection",
+"idref_fini",
+"idcoloris"
+],
+"pk": [
+"idtextile_ligne_cmd_confection"
+],
+"text": []
+},
+"public.textile_modele": {
+"blob": [],
+"cols": [
+"idtextile_modele",
+"idmodel_article",
+"idref_fini"
+],
+"pk": [
+"idtextile_modele"
+],
+"text": []
+},
+"public.traitement": {
+"blob": [],
+"cols": [
+"idtraitement",
+"ordre",
+"observation",
+"is_deleted",
+"teinture",
+"designation"
+],
+"pk": [
+"idtraitement"
+],
+"text": [
+"observation",
+"designation"
+]
+},
+"public.traitement_ref_fini": {
+"blob": [],
+"cols": [
+"idtraitement_ref_fini",
+"idref_fini",
+"idtraitement"
+],
+"pk": [
+"idtraitement_ref_fini"
+],
+"text": []
+},
+"public.tranche_tarif_ennoblissement": {
+"blob": [],
+"cols": [
+"idtranche_tarif_ennoblissement",
+"quantite_mini",
+"quantite_maxi",
+"prix",
+"idtraitement",
+"idteinture",
+"idsous_traitant",
+"listetraitements"
+],
+"pk": [
+"idtranche_tarif_ennoblissement"
+],
+"text": [
+"listetraitements"
+]
+},
+"public.tranche_tarifaire": {
+"blob": [],
+"cols": [
+"idtranche_tarifaire",
+"qtemin",
+"qtemax",
+"idref_catalogue",
+"nb_rouleaux",
+"idref_client_colori",
+"coefficient",
+"prix_saisi",
+"idcontrat_tarif"
+],
+"pk": [
+"idtranche_tarifaire"
+],
+"text": []
+},
+"public.transporteur": {
+"blob": [],
+"cols": [
+"idtransporteur",
+"nom",
+"tel",
+"fax",
+"mail",
+"commentaire",
+"est_visible",
+"destinatairefax"
+],
+"pk": [
+"idtransporteur"
+],
+"text": [
+"nom",
+"tel",
+"fax",
+"mail",
+"commentaire",
+"destinatairefax"
+]
+},
+"public.tva": {
+"blob": [],
+"cols": [
+"idtva",
+"compte",
+"est_visible",
+"libelle_compte",
+"valeur",
+"est_defaut",
+"idsociete"
+],
+"pk": [
+"idtva"
+],
+"text": [
+"compte",
+"libelle_compte"
+]
+},
+"public.type_defaut": {
+"blob": [],
+"cols": [
+"idtype_defaut",
+"nom"
+],
+"pk": [
+"idtype_defaut"
+],
+"text": [
+"nom"
+]
+},
+"public.type_doc": {
+"blob": [],
+"cols": [
+"idtype_doc",
+"nom"
+],
+"pk": [
+"idtype_doc"
+],
+"text": [
+"nom"
+]
+},
+"public.type_evenement": {
+"blob": [],
+"cols": [
+"idtype_evenement",
+"description"
+],
+"pk": [
+"idtype_evenement"
+],
+"text": [
+"description"
+]
+},
+"public.type_partenaire": {
+"blob": [],
+"cols": [
+"idtype_partenaire",
+"reference"
+],
+"pk": [
+"idtype_partenaire"
+],
+"text": [
+"reference"
+]
+},
+"public.type_sst": {
+"blob": [],
+"cols": [
+"idtype_sst",
+"type"
+],
+"pk": [
+"idtype_sst"
+],
+"text": [
+"type"
+]
+},
+"public.type_stock": {
+"blob": [],
+"cols": [
+"idtype_stock",
+"reference"
+],
+"pk": [
+"idtype_stock"
+],
+"text": [
+"reference"
+]
+},
+"public.type_test": {
+"blob": [],
+"cols": [
+"idtype_test",
+"nom",
+"frequence"
+],
+"pk": [
+"idtype_test"
+],
+"text": [
+"nom"
+]
+},
+"public.unite_taille": {
+"blob": [],
+"cols": [
+"idunite_taille",
+"libelle"
+],
+"pk": [
+"idunite_taille"
+],
+"text": [
+"libelle"
+]
+},
+"public.unite_titrage": {
+"blob": [],
+"cols": [
+"idunite_titrage",
+"nomenclature"
+],
+"pk": [
+"idunite_titrage"
+],
+"text": [
+"nomenclature"
+]
+},
+"public.upload_compta": {
+"blob": [
+"fichier"
+],
+"cols": [
+"idupload_compta",
+"date",
+"fichier",
+"produits",
+"charges",
+"frais_fixe",
+"frais_variable",
+"provisions",
+"id_societe"
+],
+"pk": [
+"idupload_compta"
+],
+"text": []
+},
+"public.utilisateur": {
+"blob": [],
+"cols": [
+"idutilisateur",
+"pc",
+"prenom",
+"nom",
+"idexpediteur"
+],
+"pk": [
+"idutilisateur"
+],
+"text": [
+"pc",
+"prenom",
+"nom"
+]
+},
+"public.vignette_coloris": {
+"blob": [
+"image"
+],
+"cols": [
+"idvignette_coloris",
+"image",
+"label"
+],
+"pk": [
+"idvignette_coloris"
+],
+"text": [
+"label"
+]
+}
+}

@@ -1770,6 +1770,11 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         lotAgg.metrage += Number(r.metrage) || 0
         piecesByLine.set(lid, acc)
       }
+      // Lots by number on both databases (HFSQL's own order here is its
+      // index's internal one, which PostgreSQL cannot reproduce).
+      for (const acc of piecesByLine.values()) {
+        acc.fini_lots.sort((a, b) => a.lot.localeCompare(b.lot, 'fr', { numeric: true }))
+      }
     }
 
     const lignesEnriched = fixedLignes.map((l) => {

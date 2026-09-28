@@ -578,6 +578,9 @@ export async function resolveProvenanceFils(
   }>(
     `SELECT IDstock_fil, IDref_fil, IDfournisseur, IDref_fil_commande FROM stock_fil WHERE IDstock_fil IN (${stockFilIds.join(',')})`,
   )
+  // Yarn lots in id order on both databases: HFSQL hands the asso rows back in
+  // its index's internal order, which PostgreSQL cannot reproduce.
+  lots.sort((a, b) => Number(a.IDstock_fil) - Number(b.IDstock_fil))
 
   // ref_fil designation (accented → repair)
   const refFilIds = Array.from(new Set(lots.map((l) => Number(l.IDref_fil)).filter((x) => x > 0)))
