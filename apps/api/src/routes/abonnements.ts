@@ -32,6 +32,16 @@ import {
   type DetectedNotification,
 } from '../lib/abonnements.js'
 import { getUserHidden, setUserHidden, toggleUserHidden } from '../lib/notification-hidden.js'
+import {
+  ABONNEMENTS_ETM,
+  ABONNEMENT_SUPERVISEUR,
+  estAbonnementEtm,
+  getUserAbonnementsEtm,
+  setUserAbonnementsEtm,
+  type AbonnementEtm,
+} from '../lib/abonnements-etm.js'
+import { pointsATraiter } from '../lib/agents/superviseur/points.js'
+import { DOMAINE_LIBELLE } from '../lib/agents/superviseur/types.js'
 
 export const abonnementsRouter: RouterType = Router()
 
@@ -52,6 +62,23 @@ async function requireWidgetUser(req: Request, res: Response): Promise<number | 
   return req.userId
 }
 
+/** The ETM-only subscriptions (lib/abonnements-etm.ts) this user may see. */
+async function offertsEtm(req: Request, userId: number): Promise<AbonnementEtm[]> {
+  const admin = isEffectiveAdmin(req)
+  const ok = await Promise.all(ABONNEMENTS_ETM.map((a) => userHasPermission(userId, admin, a.permission)))
+  return ABONNEMENTS_ETM.filter((_, i) => ok[i])
+}
+
+const versCatalogue = (a: AbonnementEtm): Abonnement =>
+  ({ id: a.id, nom: a.nom, description: a.description, icone: a.icone, implemented: true })
+
+/** This user's subscriptions, legacy + ETM-only (those still offered). */
+async function abonnementsDe(userId: number, offerts: AbonnementEtm[]): Promise<number[]> {
+  const [legacy, etm] = await Promise.all([getUserAbonnementIds(userId), getUserAbonnementsEtm(userId)])
+  const visibles = new Set(offerts.map((a) => a.id))
+  return [...legacy, ...etm.filter((id) => visibles.has(id))]
+}
+
 // ── GET /api/abonnements ─────────────────────────────────
 // The subscription catalog for this app's société, plus the ids this user has
 // ticked — everything the "Liste des abonnements" dialog needs in one round trip.
@@ -59,11 +86,12 @@ abonnementsRouter.get('/', async (req: Request, res: Response) => {
   const userId = await requireWidgetUser(req, res)
   if (userId === null) return
   try {
+    const offerts = await offertsEtm(req, userId)
     const [catalog, subscribed] = await Promise.all([
       getAbonnementCatalog(),
-      getUserAbonnementIds(userId),
+      abonnementsDe(userId, offerts),
     ])
-    res.json({ catalog, subscribed })
+    res.json({ catalog: [...catalog, ...offerts.map(versCatalogue)], subscribed })
   } catch (err) {
     console.error('Error fetching abonnements:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -86,8 +114,11 @@ abonnementsRouter.put('/me', async (req: Request, res: Response) => {
     return
   }
   try {
-    await setUserAbonnementIds(userId, parsed.data.subscribed)
-    res.json({ subscribed: await getUserAbonnementIds(userId) })
+    // Legacy ids go to the shared HFSQL table, ETM-only ones to their own store.
+    const offerts = await offertsEtm(req, userId)
+    await setUserAbonnementIds(userId, parsed.data.subscribed.filter((id) => !estAbonnementEtm(id)))
+    await setUserAbonnementsEtm(userId, parsed.data.subscribed.filter(estAbonnementEtm), offerts.map((a) => a.id))
+    res.json({ subscribed: await abonnementsDe(userId, offerts) })
   } catch (err) {
     console.error('Error updating abonnements:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -105,7 +136,7 @@ abonnementsRouter.get('/notifications', async (req: Request, res: Response) => {
   const includeHidden = req.query.all === '1' || req.query.all === 'true'
   try {
     const catalog = await getAbonnementCatalog()
-    const subscribed = await getUserAbonnementIds(userId)
+    const subscribed = await abonnementsDe(userId, await offertsEtm(req, userId))
     const detected = await detectForUser(subscribed, catalog)
 
     // Prune entries whose alert no longer exists. Legacy deletes the
@@ -127,7 +158,12 @@ abonnementsRouter.get('/notifications', async (req: Request, res: Response) => {
 
     const hiddenSet = new Set(kept)
     const all = detected.map((d) => ({ ...d, hidden: hiddenSet.has(d.key) }))
-    const rows = includeHidden ? all : all.filter((d) => !d.hidden)
+    const rows = [
+      // Superviseur points first: a handful of things to act on, never hidden
+      // (handling one takes it off the list — the eye would mean nothing).
+      ...(subscribed.includes(ABONNEMENT_SUPERVISEUR) ? await pointsSuperviseur() : []),
+      ...(includeHidden ? all : all.filter((d) => !d.hidden)),
+    ]
 
     res.json({
       rows,
@@ -184,5 +220,32 @@ abonnementsRouter.post('/refresh', async (req: Request, res: Response) => {
   invalidateDetectionCache()
   res.json({ ok: true })
 })
+
+/** The Superviseur's points still to handle, as widget cards (lib/agents/superviseur/points.ts). */
+async function pointsSuperviseur() {
+  try {
+    return (await pointsATraiter()).map((p) => ({
+      key: `${ABONNEMENT_SUPERVISEUR}:${p.cle}`,
+      abonnementId: ABONNEMENT_SUPERVISEUR,
+      titre: p.titre,
+      description: p.message,
+      icone: 'superviseur',
+      hidden: false,
+      superviseur: {
+        runId: p.runId,
+        cle: p.cle,
+        gravite: p.gravite,
+        domaine: DOMAINE_LIBELLE[p.domaine] ?? p.domaine,
+        nouveau: p.etat !== 'ouvert',
+        depuis: p.depuis,
+        lien: p.lien,
+      },
+    }))
+  } catch (err) {
+    // Like a failing detector: no cards rather than a blank widget.
+    console.error('Superviseur points for the notification feed failed:', err)
+    return []
+  }
+}
 
 export type { Abonnement, DetectedNotification }

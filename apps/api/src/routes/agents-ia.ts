@@ -35,6 +35,8 @@ import { etatSondage, lancerSondage, prochainQuotidien, SondageEnCoursError } fr
 import type { ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
 import { enregistrerAvis, enregistrerResolution, lireAvis, lireResolutions } from '../lib/agents/superviseur/avis.js'
 import { bilanRun, notesDuBilan, scorePoints } from '../lib/agents/superviseur/score.js'
+import { synchroniserHistorique, traiterPoint, TraitementInvalide } from '../lib/agents/superviseur/points.js'
+import { lireHistorique } from '../lib/agents/superviseur/historique.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur } from '../lib/gmail-reader.js'
 
@@ -136,7 +138,7 @@ function allege(r: AgentRun) {
     // Superviseur
     nbNouveaux: sup.constats ? sup.constats.filter((c) => c.etat !== 'ouvert').length : null,
     nbOuverts: sup.constats ? sup.constats.filter((c) => c.etat === 'ouvert').length : null,
-    nbFermes: sup.fermes ? sup.fermes.length + (sup.resolus?.length ?? 0) : null,
+    nbFermes: sup.fermes ? sup.fermes.length : null,
     nbEcartes: sup.ecartes ? sup.ecartes.length : null,
     /** How the report's points stand (scored on it, or carried from earlier). */
     bilan: bilanRun(r),
@@ -427,6 +429,7 @@ agentsIaRouter.put('/:slug/runs/:id/points', async (req, res) => {
     const index = await lireAvis()
     if (avis) await enregistrerAvis(cle, { ...avis, runId: run.id, titre: point.titre, empreinte: point.empreinte })
     else if (!index[cle] || index[cle].runId === run.id) await enregistrerAvis(cle, null)
+    if (r) await synchroniserHistorique(point, r)
     res.json(r)
   } catch (err) {
     console.error('[agents-ia] avis point failed:', err)
@@ -474,10 +477,59 @@ agentsIaRouter.put('/:slug/runs/:id/points/resolution', async (req, res) => {
     const index = await lireResolutions()
     if (resolution) await enregistrerResolution(cle, { ...resolution, runId: run.id, titre: point.titre, empreinte: point.empreinte })
     else if (!index[cle] || index[cle].runId === run.id || carries) await enregistrerResolution(cle, null)
+    if (r) await synchroniserHistorique(point, r)
     res.json(r)
   } catch (err) {
     console.error('[agents-ia] resolution point failed:', err)
     res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
+  }
+})
+
+const traitementBody = z.object({
+  /** Omitted = the current report (an undo from the history). */
+  runId: z.string().min(1).max(100).nullable().default(null),
+  cle: z.string().min(1).max(500),
+  /** null undoes the handling. */
+  issue: z.enum(['traite', 'fausse_alerte']).nullable(),
+  /** « Le point pouvait être mieux » — makes a traité a partielle. */
+  aAmeliorer: z.boolean().default(false),
+  commentaire: z.string().trim().max(2000).default(''),
+})
+
+/** Handle one point from the Notifications widget: « Traité » or « Fausse
+ *  alerte » (lib/agents/superviseur/points.ts). Same right as scoring. */
+agentsIaRouter.put('/:slug/points/traitement', async (req, res) => {
+  const uid = await evaluateur(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  if (!def.pointsEvaluables) { res.status(409).json({ error: 'cet agent ne produit pas de points à traiter' }); return }
+  const p = traitementBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'traitement invalide' }); return }
+  const { runId, cle, issue, aAmeliorer, commentaire } = p.data
+  try {
+    const t = await traiterPoint(runId, cle, issue, aAmeliorer, commentaire, await auteur(uid))
+    if (t === undefined) { res.status(404).json({ error: 'point introuvable dans ce rapport' }); return }
+    res.json({ traitement: t })
+  } catch (err) {
+    if (err instanceof TraitementInvalide) { res.status(400).json({ error: err.message }); return }
+    console.error('[agents-ia] traitement point failed:', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
+  }
+})
+
+/** Every point the agent raised, open or closed, and how it was handled —
+ *  the widget's « Historique ». */
+agentsIaRouter.get('/:slug/points/historique', async (req, res) => {
+  if ((await evaluateur(req, res)) === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  if (!def.pointsEvaluables) { res.json({ points: [] }); return }
+  try {
+    res.json({ points: (await lireHistorique()).slice(0, 500) })
+  } catch (err) {
+    console.error('[agents-ia] historique points failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
   }
 })
 
@@ -501,10 +553,14 @@ agentsIaRouter.get('/:slug/retours', async (req, res) => {
       if (r.evaluation) retours.push({ ...base, portee: 'execution', titre: r.resume, ...r.evaluation, retrait: r.evaluation.retrait ?? null })
       const sup = r.resultat as Partial<ResultatSuperviseur>
       const titres = new Map([...(sup.constats ?? []), ...(sup.ecartes ?? []), ...(sup.resolus ?? [])].map((c) => [c.cle, c.titre]))
+      // A plain « Traité » (dashboard widget) is a réussite with no comment and
+      // a résolu with no explanation: nothing to learn from, left out.
       for (const [cle, a] of Object.entries(r.avisPoints ?? {})) {
+        if (!a.commentaire) continue
         retours.push({ ...base, portee: 'point', titre: titres.get(cle) ?? cle, ...a, retrait: null })
       }
       for (const [cle, x] of Object.entries(r.resolutionsPoints ?? {})) {
+        if (!x.commentaire || x.commentaire === r.avisPoints?.[cle]?.commentaire) continue
         resolutions.push({ runId: r.id, runLe: r.createdAt, titre: titres.get(cle) ?? cle, ...x })
       }
     }

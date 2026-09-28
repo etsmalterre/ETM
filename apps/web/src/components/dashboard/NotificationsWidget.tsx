@@ -12,7 +12,7 @@ import { useMemo, useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Bell, BellOff, Settings, RotateCw, Loader2,
-  ShieldCheck, CheckCircle2, Eye, EyeOff, Save, X,
+  ShieldCheck, CheckCircle2, Eye, EyeOff, Save, X, ClipboardCheck, History,
 } from 'lucide-react'
 import { CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -26,6 +26,11 @@ import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { WidgetFrame, useWidgetChrome } from './WidgetFrame'
+import { HistoriqueDialog, SuperviseurPointCard, TraitementDialog, type PointSuperviseur } from './SuperviseurPoints'
+
+/** ETM-only subscription (apps/api/src/lib/abonnements-etm.ts): the agent
+ *  Superviseur's points, handled right on their card. */
+const ABONNEMENT_SUPERVISEUR = 100001
 
 interface Abonnement {
   id: number
@@ -41,6 +46,8 @@ interface NotificationRow {
   description: string
   icone: string
   hidden: boolean
+  /** Set on a Superviseur point: the card carries Traité / Fausse alerte. */
+  superviseur?: PointSuperviseur
 }
 interface FeedResponse {
   rows: NotificationRow[]
@@ -61,6 +68,7 @@ function iconFor(icone: string): ComponentType<{ className?: string }> {
   if (icone.startsWith('bobine')) return BobineIcon
   if (icone.startsWith('tricot')) return TmRollIcon
   if (icone.startsWith('certificat')) return ShieldCheck
+  if (icone === 'superviseur') return ClipboardCheck
   return Bell
 }
 
@@ -77,6 +85,8 @@ export function NotificationsWidget() {
   const [showAll, setShowAll] = useState(false)
   const [typeFilter, setTypeFilter] = useState(0) // 0 = tous
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [historiqueOpen, setHistoriqueOpen] = useState(false)
+  const [aTraiter, setATraiter] = useState<{ titre: string; point: PointSuperviseur; issue: 'traite' | 'fausse_alerte' } | null>(null)
 
   const catalogQuery = useQuery<CatalogResponse>({
     queryKey: ['abonnements'],
@@ -135,6 +145,7 @@ export function NotificationsWidget() {
   const hiddenCount = feedQuery.data?.hidden_count ?? 0
   const subscribedCount = feedQuery.data?.subscribed_count ?? 0
   const unimplemented = feedQuery.data?.unimplemented ?? []
+  const suitSuperviseur = (catalogQuery.data?.subscribed ?? []).includes(ABONNEMENT_SUPERVISEUR)
 
   return (
     <>
@@ -202,6 +213,17 @@ export function NotificationsWidget() {
                 {hiddenCount}
               </button>
             )}
+            {suitSuperviseur && !isEditing && (
+              <button
+                type="button"
+                onClick={() => setHistoriqueOpen(true)}
+                title="Historique des points du Superviseur"
+                className="inline-flex h-6 flex-shrink-0 items-center gap-1 rounded-md border border-border/60 bg-white px-1.5 text-xs text-muted-foreground transition-colors hover:border-accent/40 hover:text-accent"
+              >
+                <History className="h-3 w-3" />
+                Historique
+              </button>
+            )}
             {typeOptions.length > 1 && (
               <div className="ml-auto">
                 <PopoverSelect
@@ -255,7 +277,15 @@ export function NotificationsWidget() {
               </div>
             )}
 
-            {shown.map((row) => (
+            {shown.map((row) => row.superviseur ? (
+              <SuperviseurPointCard
+                key={row.key}
+                titre={row.titre}
+                description={row.description}
+                point={row.superviseur}
+                onTraiter={(issue) => setATraiter({ titre: row.titre, point: row.superviseur!, issue })}
+              />
+            ) : (
               <NotificationCard
                 key={row.key}
                 row={row}
@@ -289,6 +319,8 @@ export function NotificationsWidget() {
         subscribed={catalogQuery.data?.subscribed ?? []}
         isLoading={catalogQuery.isLoading}
       />
+      <TraitementDialog cible={aTraiter} onClose={() => setATraiter(null)} />
+      <HistoriqueDialog open={historiqueOpen} onClose={() => setHistoriqueOpen(false)} />
     </>
   )
 }
@@ -446,6 +478,11 @@ function AbonnementsDialog({
                     <div className="min-w-0">
                       <p className="text-sm font-medium">{a.nom}</p>
                       <p className="text-[11px] text-muted-foreground">{a.description}</p>
+                      {a.id === ABONNEMENT_SUPERVISEUR && (
+                        <p className="mt-0.5 text-[11px] italic text-muted-foreground/80">
+                          Propre à ETM : n’apparaît pas dans l’application MPS historique.
+                        </p>
+                      )}
                       {!a.implemented && (
                         <p className="mt-0.5 text-[11px] italic text-muted-foreground/80">
                           Détection pas encore portée dans MPS&nbsp;NG.

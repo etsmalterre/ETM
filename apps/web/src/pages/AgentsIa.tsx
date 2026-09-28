@@ -2127,6 +2127,7 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
   // One scoring guide for the whole report, never one per point.
   const [showGuide, setShowGuide] = useState(false)
   const [showEcartes, setShowEcartes] = useState(false)
+  const [showResolusAvant, setShowResolusAvant] = useState(false)
   useEffect(() => { setShowControles(false); setShowEcartes(false) }, [runId])
 
   const { data: run, isLoading } = useQuery({
@@ -2167,7 +2168,9 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
   // Marked résolu here and not scored: dealt with, never « à évaluer » (score.ts bilanRun).
   const resolusIci = resolusRapport.length
   const aEvaluer = constats.filter((c) => noteDe(c) === null && !resolutions[c.cle]).length
-  const nbResolus = fermes.length + resolusAvant.length + resolusIci
+  // What changed on THIS report: points handled earlier that the check still
+  // finds come back every morning, so they are folded away and not counted.
+  const nbResolus = fermes.length + resolusIci
   const pct = constats.length ? Math.round(((constats.length - aEvaluer) / constats.length) * 100) : 0
 
   const carte = (c: ConstatRun, estompe = false) => (
@@ -2217,7 +2220,7 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
               { key: 'echec', label: 'Fausses alertes', value: fmtNum(compte('echec')), tone: compte('echec') > 0 ? NOTE_META.echec.text : undefined,
                 sub: ecartes.length > 0 ? `${fmtNum(ecartes.length)} écartée${ecartes.length > 1 ? 's' : ''} avant` : undefined },
               { key: 'fermes', label: 'Résolus', value: fmtNum(nbResolus), tone: nbResolus > 0 ? NOTE_META.reussite.text : undefined,
-                sub: `${fmtNum(fermes.length)} constatés · ${fmtNum(resolusAvant.length + resolusIci)} à la main` },
+                sub: `${fmtNum(fermes.length)} constatés · ${fmtNum(resolusIci)} à la main` },
             ]} />
 
             <div className="flex-shrink-0 flex items-center justify-between gap-3 text-xs text-muted-foreground px-1">
@@ -2306,7 +2309,18 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
                   )}
                 </div>
               ))}
-              {resolusAvant.map((c) => carte(c))}
+
+              {resolusAvant.length > 0 && (
+                <div className="pt-1">
+                  <button type="button" onClick={() => setShowResolusAvant((v) => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5">
+                    <CheckCheck className="h-3.5 w-3.5" />
+                    {showResolusAvant
+                      ? 'Masquer les points traités auparavant'
+                      : `Traités auparavant, toujours détectés (${resolusAvant.length}) — le contrôle ne voit pas comment ils ont été réglés`}
+                  </button>
+                  {showResolusAvant && <div className="mt-2 space-y-2">{resolusAvant.map((c) => carte(c))}</div>}
+                </div>
+              )}
 
               {ecartes.length > 0 && (
                 <div className="pt-1">

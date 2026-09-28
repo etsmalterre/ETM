@@ -26,6 +26,7 @@
 import { ajouterRun, nouvelIdRun, type AgentRun, type AgentState, type AgentVersion, type Auteur, type RunStatut, type VersionInitiale } from '../store.js'
 import { appliquerSuivi, lireAvis, lireResolutions, purgerAvis, purgerResolutions, type Resolution } from './avis.js'
 import { comparer, ecrireMemoire, lireMemoire, type ConstatRun } from './constats.js'
+import { journaliserRun } from './historique.js'
 import { CONTROLES } from './controles/index.js'
 import { TRI_PROMPT_V1, TRI_PROMPT_V2 } from './prompt.js'
 import type { Constat, Domaine } from './types.js'
@@ -135,6 +136,16 @@ export async function executer(state: AgentState, version: AgentVersion, par: Au
     }
     const { listes, ecartes, resolus } = appliquerSuivi(cmp.constats, avisIndex, resolutionsIndex)
     const absent = new Map(CONTROLES.map((c) => [c.id, c.raisonAbsent]))
+    const raisonFermeture = (cle: string, controle: string) =>
+      raisons.get(cle) ?? absent.get(controle) ?? 'Le contrôle ne le signale plus.'
+    // The points' history (historique.ts) follows the memory: scheduled runs only.
+    if (planifie) {
+      await journaliserRun(
+        cmp.constats,
+        cmp.fermes.map((f) => ({ cle: f.constat.cle, depuis: f.depuis, raison: raisonFermeture(f.constat.cle, f.constat.controle) })),
+        nowIso,
+      )
+    }
 
     let statut: RunStatut = listes.length > 0 ? 'points_a_voir' : 'rien_a_signaler'
     let erreur: string | undefined
@@ -157,7 +168,7 @@ export async function executer(state: AgentState, version: AgentVersion, par: Au
           titre: f.constat.titre,
           domaine: f.constat.domaine,
           depuis: f.depuis,
-          raison: raisons.get(f.constat.cle) ?? absent.get(f.constat.controle) ?? 'Le contrôle ne le signale plus.',
+          raison: raisonFermeture(f.constat.cle, f.constat.controle),
           ...(r ? { resolution: { commentaire: r.commentaire, par: r.par, le: r.le } } : {}),
         }
       }),
@@ -166,7 +177,8 @@ export async function executer(state: AgentState, version: AgentVersion, par: Au
     const resume = [
       pluriel(neufs, 'nouveau point', 'nouveaux points'),
       pluriel(ouverts, 'toujours ouvert', 'toujours ouverts'),
-      pluriel(cmp.fermes.length + resolus.length, 'résolu', 'résolus'),
+      // Points handled earlier and still found are not news: not counted.
+      pluriel(cmp.fermes.length, 'résolu', 'résolus'),
       ecartes.length ? pluriel(ecartes.length, 'écarté', 'écartés') : null,
       enErreur.size ? pluriel(enErreur.size, 'contrôle en erreur', 'contrôles en erreur') : null,
     ]
