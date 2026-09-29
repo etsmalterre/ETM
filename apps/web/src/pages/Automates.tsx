@@ -16,6 +16,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   AlertTriangle,
+  BellOff,
   BookOpen,
   Camera,
   CheckCircle2,
@@ -479,6 +480,19 @@ interface VueCanal {
   md: string
   plages: string[]
   autres: Record<string, string[]>
+  /** v2: push switched off by a person — left alone. Absent on v1 runs. */
+  coupee?: boolean
+}
+
+/** Switched off by hand in the Reolink app (v1 runs carry no `coupee`). */
+const estCoupee = (c: VueCanal) => c.coupee ?? c.enable === 0
+
+function CoupeeNote() {
+  return (
+    <p className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
+      <BellOff className="h-3 w-3 flex-shrink-0" />Coupée à la main — laissée telle quelle
+    </p>
+  )
 }
 
 interface EtatVideo {
@@ -519,15 +533,25 @@ function CibleCard({ cible, titre }: { cible: EtatVideo['cible']; titre: string 
 
 function VideoEtat({ etat }: { etat: EtatVideo }) {
   const ecarts = etat.cameras.filter((c) => !c.conforme).length
+  const coupees = etat.cameras.filter(estCoupee)
+  const suivies = etat.cameras.length - coupees.length
   return (
     <>
       <CibleCard cible={etat.cible} titre="Alertes demandées par le planning (7 prochains jours)" />
       <div className={cn('flex items-center gap-2 text-sm rounded-md px-3 py-1.5',
         ecarts ? 'bg-amber-500/10 text-amber-800' : 'bg-success/10 text-success')}>
         {ecarts ? <AlertTriangle className="h-4 w-4 flex-shrink-0" /> : <CheckCircle2 className="h-4 w-4 flex-shrink-0" />}
-        {ecarts ? `${ecarts} caméra(s) sur ${etat.cameras.length} ne suivent pas encore le planning.` : `Les ${etat.cameras.length} caméras suivent le planning.`}
+        {ecarts
+          ? `${ecarts} caméra(s) sur ${suivies} ne suivent pas encore le planning.`
+          : suivies === etat.cameras.length ? `Les ${suivies} caméras suivent le planning.` : `${suivies} caméra(s) sur ${etat.cameras.length} suivent le planning.`}
         <span className="ml-auto text-xs opacity-70">lu {ilYA(etat.lu)}</span>
       </div>
+      {coupees.length > 0 && (
+        <div className="flex items-center gap-2 text-sm rounded-md px-3 py-1.5 bg-zinc-200/60 text-muted-foreground">
+          <BellOff className="h-4 w-4 flex-shrink-0" />
+          <span>Notifications coupées à la main (application Reolink), l’automate n’y touche pas : {coupees.map((c) => c.nom).join(', ')}.</span>
+        </div>
+      )}
       <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-zinc-200/60 border-b border-border/60">
@@ -542,7 +566,7 @@ function VideoEtat({ etat }: { etat: EtatVideo }) {
               <tr key={c.canal} className="border-b border-border/40 last:border-0 align-top">
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-2"><Camera className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" /><span className="font-medium">{c.nom}</span></div>
-                  {(!c.enable || !c.scheduleEnable) && <p className="text-[11px] text-destructive mt-0.5">{!c.enable ? 'Notifications coupées' : 'Planning désactivé'}</p>}
+                  {estCoupee(c) ? <CoupeeNote /> : !c.scheduleEnable && <p className="text-[11px] text-destructive mt-0.5">Planning désactivé</p>}
                 </td>
                 <td className="px-3 py-2">
                   <Plages plages={c.plages} />
@@ -551,7 +575,9 @@ function VideoEtat({ etat }: { etat: EtatVideo }) {
                   ))}
                 </td>
                 <td className="px-3 py-2 text-right">
-                  {c.conforme
+                  {estCoupee(c)
+                    ? <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><BellOff className="h-3.5 w-3.5" />ignorée</span>
+                    : c.conforme
                     ? <span className="inline-flex items-center gap-1 text-xs text-success"><CheckCircle2 className="h-3.5 w-3.5" />à jour</span>
                     : <span className="inline-flex items-center gap-1 text-xs text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />différent</span>}
                 </td>
@@ -599,8 +625,14 @@ function VideoRun({ run }: { run: AutomateRun }) {
               ))}
             </ul>
           )}
-          {r.canaux.length > changes.length && changes.length > 0 && (
-            <p className="text-[11px] text-muted-foreground mt-2">Déjà à jour : {r.canaux.filter((c) => !c.change).map((c) => c.nom).join(', ')}.</p>
+          {changes.length > 0 && r.canaux.some((c) => !c.change && !estCoupee(c)) && (
+            <p className="text-[11px] text-muted-foreground mt-2">Déjà à jour : {r.canaux.filter((c) => !c.change && !estCoupee(c)).map((c) => c.nom).join(', ')}.</p>
+          )}
+          {r.canaux.some((c) => !c.change && estCoupee(c)) && (
+            <p className="flex items-center gap-1 text-[11px] text-muted-foreground mt-2">
+              <BellOff className="h-3 w-3 flex-shrink-0" />
+              Coupées à la main, laissées telles quelles : {r.canaux.filter((c) => !c.change && estCoupee(c)).map((c) => c.nom).join(', ')}.
+            </p>
           )}
         </div>
       )}

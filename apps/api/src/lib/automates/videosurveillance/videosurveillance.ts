@@ -5,23 +5,29 @@
 // A run: read planning_bonnetier (one flat SELECT) → NVR session: online
 // channels + their push settings (the snapshot kept in the run) → target MD
 // table → channels that differ → essai: report only; actif: SetPushV20 on those
-// channels (only MD + enable/scheduleEnable change; AI tables kept as read),
-// re-read and check.
+// channels (only MD + scheduleEnable change; AI tables kept as read),
+// re-read and check. ⚠️ A channel whose push a person switched off (`enable`
+// = 0, Reolink app) is never written — v2, regles.ts `coupeeALaMain`.
 
 import { createHash } from 'node:crypto'
 import { query } from '../../hfsql-auto.js'
 import { parseDtParisMs } from '../../pointage-etat.js'
 import { avecSession, canaux, ecrirePush, lirePush, plagesLisibles, ReolinkError, type PushCanal, type Session } from '../../reolink.js'
-import { calculerCible, conforme, lundiParis, tableFixe, type Cible, type Poste } from './regles.js'
+import { calculerCible, conforme, coupeeALaMain, lundiParis, tableFixe, type Cible, type Poste } from './regles.js'
 import type { Issue } from '../catalog.js'
 
 export const SLUG = 'videosurveillance'
-export const VERSION = 1
+export const VERSION = 2
 export const VERSIONS = [
   {
     version: 1,
     date: '2026-09-28',
     note: 'Première version : notifications « mouvement » sur toutes les caméras quand aucune équipe de l’atelier TRM n’est planifiée (une heure de marge avant et après chaque équipe). Semaine sans planning → planning fixe du vendredi 18 h au lundi 5 h.',
+  },
+  {
+    version: 2,
+    date: '2026-09-29',
+    note: 'Une caméra dont les notifications ont été coupées à la main (application Reolink) n’est plus réactivée : l’automate la laisse telle quelle et la signale, jusqu’à ce que quelqu’un rallume ses notifications.',
   },
 ] as const
 
@@ -58,12 +64,14 @@ interface VueCanal {
   plages: string[]
   /** The other detections' push ranges, when any is set (AI_PEOPLE…). */
   autres: Record<string, string[]>
+  /** Push switched off by a person: left alone. */
+  coupee: boolean
 }
 
 function vueCanal(canal: number, nom: string, push: PushCanal): VueCanal {
   const autres: Record<string, string[]> = {}
   for (const [evt, t] of Object.entries(push.schedule.table)) if (evt !== 'MD' && t.includes('1')) autres[evt] = plagesLisibles(t)
-  return { canal, nom, enable: push.enable, scheduleEnable: push.scheduleEnable, md: push.schedule.table.MD, plages: plagesLisibles(push.schedule.table.MD), autres }
+  return { canal, nom, enable: push.enable, scheduleEnable: push.scheduleEnable, md: push.schedule.table.MD, plages: plagesLisibles(push.schedule.table.MD), autres, coupee: coupeeALaMain(push) }
 }
 
 const vueCible = (c: Cible) => ({ md: c.table, plages: plagesLisibles(c.table), semainesNonPlanifiees: c.semainesNonPlanifiees })
@@ -71,7 +79,7 @@ const vueCible = (c: Cible) => ({ md: c.table, plages: plagesLisibles(c.table), 
 const fmtLundi = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 
 /** Read the NVR, bring every channel to `table`, record everything in `resultat`. */
-async function appliquer(s: Session, table: string, mode: 'essai' | 'actif', resultat: Record<string, unknown>): Promise<{ changes: VueCanal[]; total: number }> {
+async function appliquer(s: Session, table: string, mode: 'essai' | 'actif', resultat: Record<string, unknown>): Promise<{ changes: VueCanal[]; total: number; coupees: string[] }> {
   const liste = await canaux(s)
   if (!liste.length) throw new ReolinkError('NVR : aucune caméra en ligne.')
   const avant = await lirePush(s, liste.map((c) => c.canal))
@@ -80,7 +88,7 @@ async function appliquer(s: Session, table: string, mode: 'essai' | 'actif', res
   for (const c of liste) {
     const push = avant.get(c.canal)!
     if (conforme(push, table)) continue
-    aChanger.set(c.canal, { ...push, enable: 1, scheduleEnable: 1, schedule: { ...push.schedule, table: { ...push.schedule.table, MD: table } } })
+    aChanger.set(c.canal, { ...push, scheduleEnable: 1, schedule: { ...push.schedule, table: { ...push.schedule.table, MD: table } } })
   }
   resultat.canaux = liste.map((c) => ({ ...vueCanal(c.canal, c.nom, avant.get(c.canal)!), change: aChanger.has(c.canal) }))
   if (mode === 'actif' && aChanger.size) {
@@ -90,8 +98,17 @@ async function appliquer(s: Session, table: string, mode: 'essai' | 'actif', res
     resultat.apres = Object.fromEntries(apres)
     if (rates.length) throw new ReolinkError(`NVR : écriture non prise en compte sur ${rates.join(', ')}.`)
   }
-  return { changes: liste.filter((c) => aChanger.has(c.canal)).map((c) => vueCanal(c.canal, c.nom, avant.get(c.canal)!)), total: liste.length }
+  return {
+    changes: liste.filter((c) => aChanger.has(c.canal)).map((c) => vueCanal(c.canal, c.nom, avant.get(c.canal)!)),
+    total: liste.length,
+    coupees: liste.filter((c) => coupeeALaMain(avant.get(c.canal)!)).map((c) => c.nom),
+  }
 }
+
+/** Every summary names the cameras switched off by hand, so one left off
+ *  after the cleaning does not go unnoticed. */
+const noteCoupees = (coupees: string[]) =>
+  coupees.length ? ` Notifications coupées à la main, laissées telles quelles : ${coupees.join(', ')}.` : ''
 
 export async function executer(mode: 'essai' | 'actif', resultat: Record<string, unknown>): Promise<Issue> {
   const now = Date.now()
@@ -99,17 +116,19 @@ export async function executer(mode: 'essai' | 'actif', resultat: Record<string,
   resultat.planning = { postes: postes.map((p) => ({ debut: new Date(p.debutMs).toISOString(), fin: new Date(p.finMs).toISOString() })) }
   const cible = calculerCible(postes, now)
   resultat.cible = vueCible(cible)
-  const { changes, total } = await avecSession((s) => appliquer(s, cible.table, mode, resultat))
+  const { changes, total, coupees } = await avecSession((s) => appliquer(s, cible.table, mode, resultat))
   const repli = cible.semainesNonPlanifiees.length
     ? ` Semaine du ${cible.semainesNonPlanifiees.map(fmtLundi).join(', du ')} sans planning : planning fixe.`
     : ''
   const empreinte = createHash('sha1').update(cible.table + changes.map((c) => c.canal).join(',')).digest('hex').slice(0, 12)
-  if (!changes.length) return { statut: 'inchange', resume: `Les ${total} caméras sont déjà à jour.${repli}`, empreinte }
+  const actives = total - coupees.length
+  const aJour = actives === total ? `Les ${total} caméras sont déjà à jour.` : `${actives} caméra(s) sur ${total} déjà à jour.`
+  if (!changes.length) return { statut: 'inchange', resume: `${aJour}${noteCoupees(coupees)}${repli}`, empreinte }
   const quoi = changes.length === total ? `les ${total} caméras` : `${changes.length} caméra(s) sur ${total}`
   const alertes = `Alertes : ${cible.table.includes('1') ? plagesLisibles(cible.table).join(', ') : 'aucune'}.`
   return mode === 'actif'
-    ? { statut: 'applique', resume: `Planning mis à jour sur ${quoi}. ${alertes}${repli}` }
-    : { statut: 'simule', resume: `Changerait ${quoi}. ${alertes}${repli}`, empreinte }
+    ? { statut: 'applique', resume: `Planning mis à jour sur ${quoi}. ${alertes}${noteCoupees(coupees)}${repli}` }
+    : { statut: 'simule', resume: `Changerait ${quoi}. ${alertes}${noteCoupees(coupees)}${repli}`, empreinte }
 }
 
 /** Leaving « actif »: the fixed schedule back once — a computed week left on
@@ -117,10 +136,10 @@ export async function executer(mode: 'essai' | 'actif', resultat: Record<string,
 export async function remettreFixe(resultat: Record<string, unknown>): Promise<Issue> {
   const table = tableFixe()
   resultat.cible = { md: table, plages: plagesLisibles(table), semainesNonPlanifiees: [] }
-  const { changes, total } = await avecSession((s) => appliquer(s, table, 'actif', resultat))
+  const { changes, total, coupees } = await avecSession((s) => appliquer(s, table, 'actif', resultat))
   return changes.length
-    ? { statut: 'applique', resume: `Planning fixe remis sur ${changes.length} caméra(s) sur ${total} (vendredi 18 h → lundi 5 h).` }
-    : { statut: 'inchange', resume: `Les ${total} caméras avaient déjà le planning fixe.` }
+    ? { statut: 'applique', resume: `Planning fixe remis sur ${changes.length} caméra(s) sur ${total} (vendredi 18 h → lundi 5 h).${noteCoupees(coupees)}` }
+    : { statut: 'inchange', resume: `Les caméras avaient déjà le planning fixe.${noteCoupees(coupees)}` }
 }
 
 /** « État » tab: the NVR as it is now, and what the planning asks for now. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculerCible, lundiParis, tableFixe, type Poste } from './regles.js'
+import { calculerCible, conforme, coupeeALaMain, lundiParis, tableFixe, type Poste } from './regles.js'
 import { indexHeure, plagesLisibles, semaineDepuisLundi } from '../../reolink.js'
 import { msHeureParis } from '../../pointage-etat.js'
 
@@ -94,5 +94,23 @@ describe('calculerCible', () => {
     expect(table).toMatch(/^[01]{168}$/)
     expect(table[indexHeure(7, 2)]).toBe('1')
     expect(table[indexHeure(1, 6)]).toBe('0')
+  })
+})
+
+describe('conforme — push switched off by hand (v2)', () => {
+  const cible = tableFixe()
+  const autre = '0'.repeat(168)
+  const push = (enable: number, scheduleEnable: number, md: string) => ({ enable, scheduleEnable, schedule: { table: { MD: md, AI_PEOPLE: autre } } })
+
+  it('a channel switched off by a person is never written, whatever its schedule', () => {
+    expect(coupeeALaMain(push(0, 1, autre))).toBe(true)
+    expect(conforme(push(0, 1, autre), cible)).toBe(true)
+    expect(conforme(push(0, 0, autre), cible)).toBe(true)
+  })
+
+  it('a channel switched on gets the target schedule', () => {
+    expect(conforme(push(1, 1, cible), cible)).toBe(true)
+    expect(conforme(push(1, 1, autre), cible)).toBe(false)
+    expect(conforme(push(1, 0, cible), cible)).toBe(false)
   })
 })

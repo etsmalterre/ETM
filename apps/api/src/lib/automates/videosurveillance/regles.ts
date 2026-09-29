@@ -79,7 +79,14 @@ export function calculerCible(postes: readonly Poste[], nowMs: number): Cible {
   return { table: table.join(''), semainesNonPlanifiees: [...nonPlanifiees].sort() }
 }
 
-/** Does a channel's push setting already match the target? */
-export function conforme(push: { enable: number; scheduleEnable: number; schedule: { table: Record<string, string> } }, cible: string): boolean {
-  return push.enable === 1 && push.scheduleEnable === 1 && push.schedule.table.MD === cible
+type PushLu = { enable: number; scheduleEnable: number; schedule: { table: Record<string, string> } }
+
+/** Push switched off by a person (Reolink app on a phone — a spider web in
+ *  front of a lens…): the automate never turns it back on and leaves the
+ *  camera as it is until someone switches it on again (v2, Retour of 2026-09-28). */
+export const coupeeALaMain = (push: PushLu): boolean => push.enable === 0
+
+/** Nothing to write on this channel: already at the target, or switched off by a person. */
+export function conforme(push: PushLu, cible: string): boolean {
+  return coupeeALaMain(push) || (push.scheduleEnable === 1 && push.schedule.table.MD === cible)
 }

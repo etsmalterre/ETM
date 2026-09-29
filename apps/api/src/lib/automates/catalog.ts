@@ -55,7 +55,8 @@ export const AUTOMATES: readonly AutomateDef[] = [
       'Le réglage des notifications de chaque caméra en ligne sur le NVR Reolink (10.10.40.10).',
     ],
     ecritures: [
-      'Sur le NVR : le planning hebdomadaire des notifications « mouvement » de chaque caméra (notifications activées, planning activé). Les autres détections (personne, véhicule, animal) ne sont pas modifiées.',
+      'Sur le NVR : le planning hebdomadaire des notifications « mouvement » de chaque caméra (planning activé). Les autres détections (personne, véhicule, animal) ne sont pas modifiées.',
+      'Jamais l’interrupteur des notifications d’une caméra : une caméra coupée à la main dans l’application Reolink reste coupée, l’automate la signale sans y toucher.',
       'Avant chaque écriture, le réglage complet de chaque caméra est gardé dans l’exécution.',
     ],
     abstention:
