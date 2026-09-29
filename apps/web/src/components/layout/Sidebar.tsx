@@ -7,6 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { ContextMenu, type ContextMenuItem } from '@/components/ui/context-menu'
 import { useUser } from '@/contexts/UserContext'
 import { useVisibleMainNavigation, useVisibleSettingsItem } from '@/hooks/useSubmenuFilter'
+import { AppLogo } from './AppLogo'
 
 interface SidebarProps {
   collapsed: boolean
@@ -114,16 +115,8 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
         className
       )}
     >
-      {/* Logo */}
-      <div className="flex h-14 items-center border-b border-white/10 px-3">
-        {import.meta.env.DEV ? (
-          <img src="/logo-dev.webp" alt="MPS DEV" className="h-12 w-auto mx-auto rounded" />
-        ) : collapsed ? (
-          <img src="/logo-small.png" alt="MPS" className="h-8 w-auto mx-auto" />
-        ) : (
-          <img src="/logo-full.png" alt="MPS" className="h-10 w-auto mx-auto" />
-        )}
-      </div>
+      {/* Logo + app tag; the logo switches to the other app (#1231) */}
+      <AppLogo app="etm" collapsed={collapsed} />
 
       {/* Navigation */}
       <ScrollArea className="flex-1 py-4">

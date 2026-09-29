@@ -216,7 +216,7 @@ Full text and incident history: `claude_doc/frontend_rules.md`.
 
 **"+ Nouveau" button**: bottom of every master-detail left list, **view mode only** (`{!isEditing && ...}`). Either inline-creates a placeholder row or opens a small initial-data modal (pick per whether the row needs data up front). After save: `setSelectedId(newId)` + auto-enter edit. `FilsStock` exempt (table layout). Full rules: `mps_designer §5`.
 
-**Sidebar logo**: `public/logo-full.png` (expanded, `h-10 mx-auto`) / `public/logo-small.png` (collapsed, `h-8 mx-auto`).
+**Sidebar logo**: one shared component `components/layout/AppLogo.tsx` (`<AppLogo app="etm"|"trm">`, TRM imports it via `@etm`) — Malterre logo + company tagline « ETS MALTERRE » / « TRICOTAGE MALTERRE » (ETM / TRM when collapsed), the only in-app cue of which app you're in (#1231). Same colours in both apps by decision (one company planned); ⚠️ never a link to the other app — users run them as installed PWAs.
 
 ## Versioning
 
