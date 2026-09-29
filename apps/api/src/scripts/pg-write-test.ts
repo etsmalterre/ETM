@@ -262,15 +262,18 @@ const SCENARIOS: Scenario[] = [
     what: 'the time-clock tablet: a day in, a break, a day out, on the pointage schema',
     async run() {
       // A throw-away salarié, so no real person's hours move.
-      const s = await POST('/api/pointage-admin/salaries', { nom: TAG, prenom: 'Test', login: 'ZZT', idMps: 0 })
+      // Login unique per run (3 chars max): a deleted salarié keeps his login taken.
+      const s = await POST('/api/pointage-admin/salaries', { nom: TAG, prenom: 'Test', login: `Z${TAG.slice(-2)}`, idMps: 0 })
       okStatus(s, 'create salarié')
       const id = Number(s.body?.id ?? s.body?.IDsalarie)
       ok(id > 0, `salarié id in ${s.text.slice(0, 200)}`)
+      // A really enrolled tablet: the dev API skips enrolment (lib/pointage-dev.ts),
+      // a staging or prod instance does not — only the tablet clocks anyone in.
+      const tablet = await enrolTablet()
       try {
-        // The dev API skips tablet enrolment (lib/pointage-dev.ts) — the SQL is the same.
-        let etat = (await GET(`/api/pointage/salaries/${id}`)).body
+        let etat = (await reqAs(tablet, 'GET', `/api/pointage/salaries/${id}`)).body
         for (const action of ['debut_travail', 'debut_pause', 'fin_pause', 'fin_travail'] as const) {
-          const r = await POST(`/api/pointage/salaries/${id}/pointage`, { action, ligneId: etat?.ligne?.id ?? null })
+          const r = await reqAs(tablet, 'POST', `/api/pointage/salaries/${id}/pointage`, { action, ligneId: etat?.ligne?.id ?? null })
           okStatus(r, action)
           etat = r.body.etat
         }
@@ -281,6 +284,8 @@ const SCENARIOS: Scenario[] = [
           `today in ${j.text.slice(0, 200)}`)
       } finally {
         await DEL(`/api/pointage-admin/salaries/${id}`)
+        const me = await reqAs(tablet, 'GET', '/api/pointage/appareil/moi')
+        if (Number(me.body?.id) > 0) await DEL(`/api/atelier/appareils/${Number(me.body.id)}`)
       }
     },
   },
@@ -445,6 +450,20 @@ async function enrolPhone(IDbonnetier: number | null = null): Promise<string> {
   const phone = (r.headers.getSetCookie?.() ?? []).map(x => x.split(';')[0]).join('; ')
   ok(phone.includes('mps_appareil='), 'device cookie')
   return phone
+}
+
+/** Same for the pointage tablet: a 'pointeuse' code, consumed on the tablet's
+ *  own route, which answers with its own cookie. */
+async function enrolTablet(): Promise<string> {
+  const c = await POST('/api/atelier/appareils/codes', { type: 'pointeuse', IDutilisateur: Number(USER), libelle: TAG })
+  okStatus(c, 'tablet enrolment code')
+  const r = await fetch(`${B}/api/pointage/appareil/enroler`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: c.body.code }),
+  })
+  ok(r.status === 201, `enrol tablet: HTTP ${r.status}`)
+  const tablet = (r.headers.getSetCookie?.() ?? []).map(x => x.split(';')[0]).join('; ')
+  ok(tablet.includes('mps_pointeuse='), 'tablet cookie')
+  return tablet
 }
 
 async function revokePhone(phone: string) {
