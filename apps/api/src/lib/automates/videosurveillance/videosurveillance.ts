@@ -5,19 +5,20 @@
 // A run: read planning_bonnetier (one flat SELECT) → NVR session: online
 // channels + their push settings (the snapshot kept in the run) → target MD
 // table → channels that differ → essai: report only; actif: SetPushV20 on those
-// channels (only MD + scheduleEnable change; AI tables kept as read),
-// re-read and check. ⚠️ A channel whose push a person switched off (`enable`
-// = 0, Reolink app) is never written — v2, regles.ts `coupeeALaMain`.
+// channels (scheduleEnable + the table of every detection a person left on;
+// a detection switched off stays off — v3, `tablesCibles`), re-read and check.
+// ⚠️ A channel whose push a person switched off (`enable` = 0, Reolink app) is
+// never written — v2, regles.ts `coupeeALaMain`.
 
 import { createHash } from 'node:crypto'
 import { query } from '../../hfsql-auto.js'
 import { parseDtParisMs } from '../../pointage-etat.js'
 import { avecSession, canaux, ecrirePush, lirePush, plagesLisibles, ReolinkError, type PushCanal, type Session } from '../../reolink.js'
-import { calculerCible, conforme, coupeeALaMain, lundiParis, tableFixe, type Cible, type Poste } from './regles.js'
+import { calculerCible, conforme, coupeeALaMain, detectionsActives, lundiParis, tableFixe, tablesCibles, type Cible, type Poste } from './regles.js'
 import type { Issue } from '../catalog.js'
 
 export const SLUG = 'videosurveillance'
-export const VERSION = 2
+export const VERSION = 3
 export const VERSIONS = [
   {
     version: 1,
@@ -28,6 +29,11 @@ export const VERSIONS = [
     version: 2,
     date: '2026-09-29',
     note: 'Une caméra dont les notifications ont été coupées à la main (application Reolink) n’est plus réactivée : l’automate la laisse telle quelle et la signale, jusqu’à ce que quelqu’un rallume ses notifications.',
+  },
+  {
+    version: 3,
+    date: '2026-09-30',
+    note: 'L’automate ne règle plus que les horaires. Les détections choisies dans l’application Reolink (mouvement, personne, véhicule, animal) sont respectées : une détection décochée n’est jamais rallumée, et toutes les détections cochées suivent le planning.',
   },
 ] as const
 
@@ -60,18 +66,16 @@ interface VueCanal {
   nom: string
   enable: number
   scheduleEnable: number
-  md: string
-  plages: string[]
-  /** The other detections' push ranges, when any is set (AI_PEOPLE…). */
-  autres: Record<string, string[]>
-  /** Push switched off by a person: left alone. */
+  /** v3: the push ranges of each detection a person left on (MD, AI_PEOPLE…).
+   *  v1/v2 runs carry `md` / `plages` / `autres` instead. */
+  detections: Record<string, string[]>
+  /** Push switched off by a person (or every detection unticked): left alone. */
   coupee: boolean
 }
 
 function vueCanal(canal: number, nom: string, push: PushCanal): VueCanal {
-  const autres: Record<string, string[]> = {}
-  for (const [evt, t] of Object.entries(push.schedule.table)) if (evt !== 'MD' && t.includes('1')) autres[evt] = plagesLisibles(t)
-  return { canal, nom, enable: push.enable, scheduleEnable: push.scheduleEnable, md: push.schedule.table.MD, plages: plagesLisibles(push.schedule.table.MD), autres, coupee: coupeeALaMain(push) }
+  const detections = Object.fromEntries(detectionsActives(push).map((evt) => [evt, plagesLisibles(push.schedule.table[evt])]))
+  return { canal, nom, enable: push.enable, scheduleEnable: push.scheduleEnable, detections, coupee: coupeeALaMain(push) }
 }
 
 const vueCible = (c: Cible) => ({ md: c.table, plages: plagesLisibles(c.table), semainesNonPlanifiees: c.semainesNonPlanifiees })
@@ -88,7 +92,7 @@ async function appliquer(s: Session, table: string, mode: 'essai' | 'actif', res
   for (const c of liste) {
     const push = avant.get(c.canal)!
     if (conforme(push, table)) continue
-    aChanger.set(c.canal, { ...push, scheduleEnable: 1, schedule: { ...push.schedule, table: { ...push.schedule.table, MD: table } } })
+    aChanger.set(c.canal, { ...push, scheduleEnable: 1, schedule: { ...push.schedule, table: tablesCibles(push, table) } })
   }
   resultat.canaux = liste.map((c) => ({ ...vueCanal(c.canal, c.nom, avant.get(c.canal)!), change: aChanger.has(c.canal) }))
   if (mode === 'actif' && aChanger.size) {

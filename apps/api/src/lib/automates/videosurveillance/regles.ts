@@ -81,12 +81,34 @@ export function calculerCible(postes: readonly Poste[], nowMs: number): Cible {
 
 type PushLu = { enable: number; scheduleEnable: number; schedule: { table: Record<string, string> } }
 
-/** Push switched off by a person (Reolink app on a phone — a spider web in
- *  front of a lens…): the automate never turns it back on and leaves the
- *  camera as it is until someone switches it on again (v2, Retour of 2026-09-28). */
-export const coupeeALaMain = (push: PushLu): boolean => push.enable === 0
+// ⚠️ v3 (2026-09-30, Retour of Vincent): the automate owns the TIME WINDOW, the
+// person owns WHAT is notified. The Reolink app keeps one table per detection
+// (MD = any motion, AI_PEOPLE, AI_VEHICLE, AI_DOG_CAT); narrowing the alerts to
+// people + vehicles (a spider web in front of the parking camera) empties MD
+// and fills the AI tables. v2 wrote MD alone, so it switched motion back on at
+// every run and left the AI tables on a frozen copy of the window.
 
-/** Nothing to write on this channel: already at the target, or switched off by a person. */
+/** The detections a person left on: tables with at least one hour on. A table
+ *  with none is a detection switched off — never written, never turned back on. */
+export const detectionsActives = (push: PushLu): string[] =>
+  Object.entries(push.schedule.table).filter(([, t]) => t.includes('1')).map(([evt]) => evt).sort()
+
+/** Push switched off by a person (Reolink app on a phone): the whole push (v2,
+ *  Retour of 2026-09-28) or every detection unticked (v3). Left as it is until
+ *  someone switches it back on. */
+export const coupeeALaMain = (push: PushLu): boolean => push.enable === 0 || detectionsActives(push).length === 0
+
+/** The tables to write: the target window on every detection left on, the
+ *  others as read. */
+export function tablesCibles(push: PushLu, cible: string): Record<string, string> {
+  const actives = new Set(detectionsActives(push))
+  return Object.fromEntries(Object.entries(push.schedule.table).map(([evt, t]) => [evt, actives.has(evt) ? cible : t]))
+}
+
+/** Nothing to write on this channel: already at the target, switched off by a
+ *  person, or a target with no hour on — writing it would empty every table and
+ *  erase which detections the person chose. */
 export function conforme(push: PushLu, cible: string): boolean {
-  return coupeeALaMain(push) || (push.scheduleEnable === 1 && push.schedule.table.MD === cible)
+  if (coupeeALaMain(push) || !cible.includes('1')) return true
+  return push.scheduleEnable === 1 && detectionsActives(push).every((evt) => push.schedule.table[evt] === cible)
 }

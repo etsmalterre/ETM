@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculerCible, conforme, coupeeALaMain, lundiParis, tableFixe, type Poste } from './regles.js'
+import { calculerCible, conforme, coupeeALaMain, detectionsActives, lundiParis, tableFixe, tablesCibles, type Poste } from './regles.js'
 import { indexHeure, plagesLisibles, semaineDepuisLundi } from '../../reolink.js'
 import { msHeureParis } from '../../pointage-etat.js'
 
@@ -110,7 +110,41 @@ describe('conforme — push switched off by hand (v2)', () => {
 
   it('a channel switched on gets the target schedule', () => {
     expect(conforme(push(1, 1, cible), cible)).toBe(true)
-    expect(conforme(push(1, 1, autre), cible)).toBe(false)
     expect(conforme(push(1, 0, cible), cible)).toBe(false)
+  })
+})
+
+describe('detections chosen by a person (v3)', () => {
+  const cible = tableFixe()
+  const vide = '0'.repeat(168)
+  const ancienne = '1'.repeat(24) + '0'.repeat(144)
+  const push = (tables: Record<string, string>, enable = 1) => ({ enable, scheduleEnable: 1, schedule: { table: tables } })
+  // The parking camera on 2026-09-29: motion unticked, people + vehicles kept.
+  const parking = push({ MD: vide, AI_PEOPLE: ancienne, AI_VEHICLE: ancienne, AI_DOG_CAT: vide })
+
+  it('a detection left on is one with any hour on', () => {
+    expect(detectionsActives(parking)).toEqual(['AI_PEOPLE', 'AI_VEHICLE'])
+  })
+
+  it('writes the window on the detections left on, never turns another one back on', () => {
+    expect(conforme(parking, cible)).toBe(false)
+    expect(tablesCibles(parking, cible)).toEqual({ MD: vide, AI_PEOPLE: cible, AI_VEHICLE: cible, AI_DOG_CAT: vide })
+    // …and once written, the channel is at the target: motion stays off.
+    expect(conforme(push(tablesCibles(parking, cible)), cible)).toBe(true)
+  })
+
+  it('every detection must follow the window', () => {
+    expect(conforme(push({ MD: cible, AI_PEOPLE: ancienne }), cible)).toBe(false)
+    expect(conforme(push({ MD: cible, AI_PEOPLE: cible, AI_VEHICLE: vide }), cible)).toBe(true)
+  })
+
+  it('every detection unticked = switched off by hand', () => {
+    const rien = push({ MD: vide, AI_PEOPLE: vide })
+    expect(coupeeALaMain(rien)).toBe(true)
+    expect(conforme(rien, cible)).toBe(true)
+  })
+
+  it('a target with no hour on is never written (it would erase the choice)', () => {
+    expect(conforme(parking, vide)).toBe(true)
   })
 })

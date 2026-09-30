@@ -45,7 +45,7 @@ export const AUTOMATES: readonly AutomateDef[] = [
     slug: videosurveillance.SLUG,
     nom: 'Vidéosurveillance',
     description:
-      'Active les notifications de détection de mouvement des caméras quand l’usine est fermée, d’après le planning de l’atelier TRM : aucune équipe planifiée = usine fermée = alertes sur les téléphones liés au NVR Reolink.',
+      'Active les notifications des caméras (les détections choisies dans l’application Reolink) quand l’usine est fermée, d’après le planning de l’atelier TRM : aucune équipe planifiée = usine fermée = alertes sur les téléphones liés au NVR Reolink.',
     version: videosurveillance.VERSION,
     versions: videosurveillance.VERSIONS,
     declenchement: { type: 'releve', intervalleMs: 60 * 60_000 },
@@ -55,7 +55,8 @@ export const AUTOMATES: readonly AutomateDef[] = [
       'Le réglage des notifications de chaque caméra en ligne sur le NVR Reolink (10.10.40.10).',
     ],
     ecritures: [
-      'Sur le NVR : le planning hebdomadaire des notifications « mouvement » de chaque caméra (planning activé). Les autres détections (personne, véhicule, animal) ne sont pas modifiées.',
+      'Sur le NVR : les horaires des notifications de chaque caméra (planning activé), sur chaque détection laissée cochée (mouvement, personne, véhicule, animal).',
+      'Jamais le choix des détections : une détection décochée dans l’application Reolink (par exemple « mouvement » pour ne garder que personnes et véhicules) reste décochée.',
       'Jamais l’interrupteur des notifications d’une caméra : une caméra coupée à la main dans l’application Reolink reste coupée, l’automate la signale sans y toucher.',
       'Avant chaque écriture, le réglage complet de chaque caméra est gardé dans l’exécution.',
     ],

@@ -477,15 +477,51 @@ interface VueCanal {
   nom: string
   enable: number
   scheduleEnable: number
-  md: string
-  plages: string[]
-  autres: Record<string, string[]>
-  /** v2: push switched off by a person — left alone. Absent on v1 runs. */
+  /** v3: push ranges of each detection a person left on (MD, AI_PEOPLE…). */
+  detections?: Record<string, string[]>
+  /** v1/v2 runs: motion ranges + the other detections'. */
+  md?: string
+  plages?: string[]
+  autres?: Record<string, string[]>
+  /** v2+: push switched off by a person (v3: or every detection unticked) — left alone. Absent on v1 runs. */
   coupee?: boolean
 }
 
 /** Switched off by hand in the Reolink app (v1 runs carry no `coupee`). */
 const estCoupee = (c: VueCanal) => c.coupee ?? c.enable === 0
+
+/** Push ranges per detection left on, whatever the run version. */
+function detectionsDe(c: VueCanal): Record<string, string[]> {
+  if (c.detections) return c.detections
+  const out: Record<string, string[]> = {}
+  if (c.plages?.length) out.MD = c.plages
+  return { ...out, ...(c.autres ?? {}) }
+}
+
+/** A camera's detections: one window when they all share it (the usual case
+ *  once the automate has run), one line per detection otherwise. */
+function Detections({ c }: { c: VueCanal }) {
+  const d = Object.entries(detectionsDe(c)).sort(([a], [b]) => ORDRE_EVENEMENTS.indexOf(a) - ORDRE_EVENEMENTS.indexOf(b))
+  if (!d.length) return <span className="text-muted-foreground italic">aucune détection</span>
+  if (d.every(([, p]) => p.join() === d[0][1].join())) {
+    return (
+      <>
+        <Plages plages={d[0][1]} />
+        <p className="text-[11px] text-muted-foreground mt-1">{d.map(([e]) => EVENEMENTS[e] ?? e).join(', ')}</p>
+      </>
+    )
+  }
+  return (
+    <div className="space-y-1">
+      {d.map(([evt, p]) => (
+        <div key={evt} className="flex items-baseline gap-2">
+          <span className="text-[11px] text-muted-foreground flex-shrink-0 w-16">{EVENEMENTS[evt] ?? evt}</span>
+          <Plages plages={p} />
+        </div>
+      ))}
+    </div>
+  )
+}
 
 function CoupeeNote() {
   return (
@@ -503,6 +539,7 @@ interface EtatVideo {
 }
 
 const EVENEMENTS: Record<string, string> = { AI_PEOPLE: 'Personne', AI_VEHICLE: 'Véhicule', AI_DOG_CAT: 'Animal', MD: 'Mouvement' }
+const ORDRE_EVENEMENTS = ['MD', 'AI_PEOPLE', 'AI_VEHICLE', 'AI_DOG_CAT']
 const fmtLundi = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 
 function Plages({ plages, vide = 'jamais' }: { plages: string[]; vide?: string }) {
@@ -549,7 +586,7 @@ function VideoEtat({ etat }: { etat: EtatVideo }) {
       {coupees.length > 0 && (
         <div className="flex items-center gap-2 text-sm rounded-md px-3 py-1.5 bg-zinc-200/60 text-muted-foreground">
           <BellOff className="h-4 w-4 flex-shrink-0" />
-          <span>Notifications coupées à la main (application Reolink), l’automate n’y touche pas : {coupees.map((c) => c.nom).join(', ')}.</span>
+          <span>Notifications (ou toutes les détections) coupées à la main dans l’application Reolink, l’automate n’y touche pas : {coupees.map((c) => c.nom).join(', ')}.</span>
         </div>
       )}
       <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
@@ -557,7 +594,7 @@ function VideoEtat({ etat }: { etat: EtatVideo }) {
           <thead className="bg-zinc-200/60 border-b border-border/60">
             <tr className="text-xs uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-2.5 text-left font-semibold">Caméra</th>
-              <th className="px-3 py-2.5 text-left font-semibold">Alertes mouvement sur le NVR</th>
+              <th className="px-3 py-2.5 text-left font-semibold">Alertes sur le NVR</th>
               <th className="px-3 py-2.5 text-right font-semibold">Planning</th>
             </tr>
           </thead>
@@ -569,10 +606,7 @@ function VideoEtat({ etat }: { etat: EtatVideo }) {
                   {estCoupee(c) ? <CoupeeNote /> : !c.scheduleEnable && <p className="text-[11px] text-destructive mt-0.5">Planning désactivé</p>}
                 </td>
                 <td className="px-3 py-2">
-                  <Plages plages={c.plages} />
-                  {Object.entries(c.autres).map(([evt, p]) => (
-                    <p key={evt} className="text-[11px] text-muted-foreground mt-1">{EVENEMENTS[evt] ?? evt} : {p.join(', ')}</p>
-                  ))}
+                  <Detections c={c} />
                 </td>
                 <td className="px-3 py-2 text-right">
                   {estCoupee(c)
@@ -618,7 +652,7 @@ function VideoRun({ run }: { run: AutomateRun }) {
                   <p className="font-medium">{c.nom}</p>
                   <div className="flex items-baseline gap-2 text-xs mt-0.5">
                     <span className="text-muted-foreground flex-shrink-0 w-12">avant</span>
-                    <Plages plages={c.plages} />
+                    <Detections c={c} />
                   </div>
                   {(!c.enable || !c.scheduleEnable) && <p className="text-[11px] text-muted-foreground ml-14">{!c.enable ? 'notifications coupées' : 'planning désactivé'}</p>}
                 </li>
