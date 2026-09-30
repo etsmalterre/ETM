@@ -30,11 +30,8 @@ export function LoginScreen() {
 
   return (
     <AuthLayout>
-      <h1 className="text-3xl sm:text-4xl font-heading font-bold text-primary tracking-tight mb-8 text-center">
-        {mode === 'poste' ? 'Enrôler ce poste' : 'Connexion'}
-      </h1>
       {mode === 'poste' ? <PosteForm /> : <LoginForm />}
-      <div className="mt-6 flex flex-col items-center gap-2">
+      <div className="mt-5 flex flex-col items-center gap-2">
         {mode === 'login' ? (
           <button
             type="button"
@@ -92,7 +89,7 @@ function LoginForm() {
   }
 
   return (
-    <AuthCard icon={<KeyRound className="h-[18px] w-[18px]" />} title="ETM · TRM" subtitle="Identifiez-vous pour continuer">
+    <AuthCard icon={<KeyRound className="h-5 w-5" />} title="Connexion" subtitle="ETM · TRM — identifiez-vous pour continuer">
       {/* method / action / name are what password managers (Dashlane…) key on
           to offer « save these credentials » — the submit never leaves the page.
           data-autofill="allow" exempts it from lib/disable-autofill.ts. */}
@@ -164,7 +161,7 @@ function PosteForm() {
   }
 
   return (
-    <AuthCard icon={<MonitorSmartphone className="h-[18px] w-[18px]" />} title="Poste d’atelier" subtitle="Code à 6 chiffres donné par un administrateur">
+    <AuthCard icon={<MonitorSmartphone className="h-5 w-5" />} title="Enrôler ce poste" subtitle="Code à 6 chiffres donné par un administrateur">
       <form className="space-y-3" onSubmit={submit}>
         <p className="text-sm text-muted-foreground">
           Le code se génère dans Paramètres › Utilisateurs, sur le compte du poste. Il est valable 10 minutes et ne sert qu’une fois.

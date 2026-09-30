@@ -121,20 +121,17 @@ export function ForcedPasswordChange() {
   const nom = [user?.prenom, user?.nom].filter(Boolean).join(' ')
   return (
     <AuthLayout>
-      <h1 className="text-3xl sm:text-4xl font-heading font-bold text-primary tracking-tight mb-3 text-center">
-        Choisissez votre mot de passe
-      </h1>
-      <p className="text-sm text-muted-foreground mb-8 max-w-md text-center">
-        Le mot de passe que vous venez d’utiliser est provisoire. Choisissez-en un
-        que vous seul connaissez avant de continuer.
-      </p>
-      <AuthCard icon={<KeyRound className="h-[18px] w-[18px]" />} title="Nouveau mot de passe" subtitle={nom}>
+      <AuthCard icon={<KeyRound className="h-5 w-5" />} title="Choisissez votre mot de passe" subtitle={nom}>
+        <p className="text-sm text-muted-foreground">
+          Le mot de passe que vous venez d’utiliser est provisoire. Choisissez-en un
+          que vous seul connaissez avant de continuer.
+        </p>
         <ChangePasswordForm onDone={() => void refresh()} />
       </AuthCard>
       <button
         type="button"
         onClick={() => void logout()}
-        className="mt-6 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-accent transition-colors"
+        className="mt-5 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-accent transition-colors"
       >
         <LogOut className="h-3.5 w-3.5" />
         Se déconnecter

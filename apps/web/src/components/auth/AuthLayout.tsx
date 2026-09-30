@@ -1,28 +1,55 @@
 // Fullscreen frame of the auth screens (login, enrolment, forced password
-// change, name picker): the gold band mirroring the Malterre PDF header, then
-// the content centered below. Shared with TRM through `@etm`.
+// change, name picker). Shared with TRM through `@etm`.
+//
+// Split layout (2026-09-30): a navy brand panel — the sidebar's surface, logo,
+// gold rule — on the left from `lg`, the content vertically centered on the
+// right. Below `lg` the panel shrinks to a navy band on top. One title per
+// screen: it lives in the card (or the screen's own heading), never twice.
 
 import type { ReactNode } from 'react'
 
 export function AuthLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="fixed inset-0 flex flex-col overflow-auto bg-background">
-      <div className="flex-shrink-0 bg-gold px-6 sm:px-10 py-6 sm:py-8 flex items-center justify-between gap-4">
-        <img src="/logo-full.png" alt="ETS Malterre" className="h-12 sm:h-16" />
-        <div className="text-right text-white">
-          <div className="text-xs uppercase tracking-widest opacity-90">Bonnetterie · Tricotage</div>
-          <div className="text-xl sm:text-2xl font-heading font-bold mt-1">ETS MALTERRE</div>
-        </div>
-      </div>
-      <div className="flex-shrink-0 h-[2px] bg-primary" />
-      <div className="flex-1 flex flex-col items-center justify-start py-12 sm:py-16 px-4 sm:px-8">
+    <div className="fixed inset-0 flex flex-col lg:flex-row overflow-auto bg-background">
+      <BrandPanel />
+      <main className="flex-1 min-h-0 flex flex-col items-center justify-center px-4 py-10 sm:px-8 lg:overflow-auto">
         {children}
-      </div>
+      </main>
     </div>
   )
 }
 
-/** The white card holding an auth form, navy band on top (§43 treatment). */
+function BrandPanel() {
+  return (
+    <aside className="flex-shrink-0 bg-gradient-to-b from-primary via-primary/95 to-primary/90 text-white lg:w-[40%] lg:max-w-xl border-b-2 border-gold lg:border-b-0 lg:border-r-2">
+      {/* Phone / tablet: one compact band */}
+      <div className="lg:hidden flex items-center justify-between gap-4 px-5 py-4">
+        <img src="/logo-full.png" alt="ETS Malterre" className="h-10" />
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-widest text-gold">Bonneterie · Tricotage</div>
+          <div className="text-base font-heading font-bold tracking-tight">ETS MALTERRE</div>
+        </div>
+      </div>
+
+      {/* Desktop: full-height panel */}
+      <div className="hidden lg:flex h-full flex-col justify-between px-12 py-12 xl:px-16">
+        <img src="/logo-full.png" alt="ETS Malterre" className="h-16 w-auto self-start" />
+        <div>
+          <div className="text-xs uppercase tracking-[0.25em] text-gold">Bonneterie · Tricotage</div>
+          <div className="mt-3 text-4xl xl:text-5xl font-heading font-bold tracking-tight">ETS MALTERRE</div>
+          <div className="mt-6 h-1 w-24 rounded-full bg-gradient-to-r from-gold via-gold to-gold/30" />
+          <p className="mt-6 max-w-xs text-sm leading-relaxed text-white/70">
+            Commandes, stocks, production et expéditions — ETM et TRM, un seul compte.
+          </p>
+        </div>
+        <div className="text-xs text-white/50">Moreuil · Somme</div>
+      </div>
+    </aside>
+  )
+}
+
+/** The white card holding an auth form: gold icon tile + one title, then the
+ *  form. No coloured band — the brand panel already carries the navy. */
 export function AuthCard({ icon, title, subtitle, children }: {
   icon: ReactNode
   title: string
@@ -30,17 +57,18 @@ export function AuthCard({ icon, title, subtitle, children }: {
   children: ReactNode
 }) {
   return (
-    <div className="w-full max-w-sm rounded-xl border bg-card shadow-md overflow-hidden">
-      <div className="flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
-        <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+    <div className="w-full max-w-sm rounded-xl border border-border/60 bg-card shadow-lg">
+      <div className="flex items-center gap-3 px-6 pt-6">
+        <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
           {icon}
         </div>
         <div className="min-w-0">
-          <h2 className="text-base font-heading font-bold tracking-tight text-primary-foreground">{title}</h2>
-          {subtitle && <p className="text-xs text-white/70 truncate">{subtitle}</p>}
+          <h1 className="text-xl font-heading font-bold tracking-tight text-primary">{title}</h1>
+          {subtitle && <p className="text-xs text-muted-foreground truncate">{subtitle}</p>}
         </div>
       </div>
-      <div className="p-5 space-y-3 bg-zinc-100/80">{children}</div>
+      <div className="mx-6 mt-4 h-px bg-border/60" />
+      <div className="p-6 pt-5 space-y-3">{children}</div>
     </div>
   )
 }
