@@ -5,6 +5,7 @@
 //   GET    /api/auth/config        — what the login screen offers (public)
 //   POST   /api/auth/login         — { identifiant, motDePasse } → session cookie
 //                                    ({ IDutilisateur } only while AUTH_PICKER=1)
+//   POST   /api/auth/dev-login     — session as `vincent`, developer's machine only
 //   POST   /api/auth/poste         — { code } → enrols this PC as a station account
 //   GET    /api/auth/me            — current user (401 when none)
 //   POST   /api/auth/logout        — ends this session
@@ -42,6 +43,7 @@ import { attenteConnexion, journaliserConnexion } from '../lib/login-throttle.js
 import { consommerCodePoste } from '../lib/postes.js'
 import { APPS, appsDe, appsParUtilisateur, type AppCode } from '../lib/utilisateur-apps.js'
 import type { TypeCompte } from '../lib/types-compte.js'
+import { DEV_LOGIN_IDENTIFIANT, devLoginActif, devLoginAutorise } from '../lib/dev-login.js'
 
 export const authRouter: RouterType = Router()
 
@@ -96,7 +98,25 @@ async function ouvrirSession(
 
 // ── GET /config ──────────────────────────────────────────────
 authRouter.get('/config', (_req, res) => {
-  res.json({ picker: pickerActif() })
+  res.json({ picker: pickerActif(), devLogin: devLoginActif() })
+})
+
+// ── POST /dev-login — developer's machine only (lib/dev-login.ts) ──
+authRouter.post('/dev-login', async (req: Request, res: Response) => {
+  if (!devLoginAutorise(req)) { res.status(404).json({ error: 'not found' }); return }
+  try {
+    const [c] = await mpsPg()<Compte[]>`
+      SELECT idutilisateur, prenom, nom, idexpediteur, identifiant, email, type_compte,
+             est_admin, actif, doit_changer_mdp, password_hash
+      FROM utilisateur WHERE identifiant = ${DEV_LOGIN_IDENTIFIANT} LIMIT 1`
+    if (!c || !c.actif) { res.status(404).json({ error: 'user not found' }); return }
+    await journaliserConnexion({ identifiant: c.identifiant ?? `#${c.idutilisateur}`, idutilisateur: c.idutilisateur, ip: clientIp(req), succes: true, motif: 'dev' })
+    await ouvrirSession(req, res, c)
+    res.json({ ...publicUser(c), isAdmin: c.est_admin, doitChangerMdp: false })
+  } catch (err) {
+    console.error('Error in /auth/dev-login:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
 })
 
 // ── POST /login ──────────────────────────────────────────────

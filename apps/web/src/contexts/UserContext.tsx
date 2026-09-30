@@ -58,6 +58,8 @@ interface UserContextValue {
   login: (identifiant: string, motDePasse: string) => Promise<void>
   /** Name picker — only while the server's AUTH_PICKER transition flag is on. */
   loginPicker: (id: number) => Promise<void>
+  /** Developer's machine only: a session as `vincent` (API lib/dev-login.ts). */
+  loginDev: () => Promise<void>
   /** Enrol this PC as a station account with an admin's one-time code. */
   /** `app`: the app whose login screen enrols the PC — recorded on it. */
   enrolerPoste: (code: string, app: AppCode) => Promise<void>
@@ -99,6 +101,11 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     await refresh()
   }, [refresh])
 
+  const loginDev = useCallback(async () => {
+    await apiFetch('/auth/dev-login', { method: 'POST' })
+    await refresh()
+  }, [refresh])
+
   const enrolerPoste = useCallback(async (code: string, app: AppCode) => {
     await apiFetch('/auth/poste', { method: 'POST', body: JSON.stringify({ code, app }) })
     await refresh()
@@ -115,7 +122,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   return (
-    <UserContext.Provider value={{ user, isLoading, login, loginPicker, enrolerPoste, logout, refresh }}>
+    <UserContext.Provider value={{ user, isLoading, login, loginPicker, loginDev, enrolerPoste, logout, refresh }}>
       {children}
     </UserContext.Provider>
   )

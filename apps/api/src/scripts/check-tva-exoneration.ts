@@ -13,8 +13,11 @@
  *     the catalog rate, and an unknown/unset client to the ETM default.
  *  2. buildClientPdfData / buildProformaPdfData / buildDevisPdfData carry that
  *     rate (0 for an exonerated client, 20 for a normal one).
- *  3. tvaRowLabel formats the rate (it is only rendered when > 0 — an
- *     exonerated document drops the TVA and TTC rows and ends at TOTAL HT).
+ *  3. The totals block keeps « TVA (0 %) » and « TOTAL TTC » at 0 % and an
+ *     exonerated document prints its exemption line under them (LIVA #1248 —
+ *     before it the block collapsed to TOTAL HT with no legal reason); a
+ *     taxed document prints no such line.
+ *  4. tvaRowLabel formats the rate, 0 included.
  *
  * Read-only — never writes.
  */
@@ -50,12 +53,13 @@ function pdfStrings(node: unknown, out: string[] = []): string[] {
   return out
 }
 
-/** The totals block: TVA row present? grand-total label? */
+/** The totals block: TVA row present? grand-total label? exemption line? */
 function totalsShape(strings: string[]) {
   return {
     hasTva: strings.some((s) => s.startsWith('TVA (')),
     grandLabel: strings.find((s) => s.startsWith('TOTAL ')) ?? '(none)',
     subTotalRows: strings.filter((s) => s === 'Total HT').length,
+    hasMention: strings.some((s) => /^(Exonération de TVA|Vente en franchise|Autoliquidation)/.test(s)),
   }
 }
 
@@ -104,11 +108,15 @@ async function main() {
       // …and the totals block that rate produces.
       const exo = expected === 0
       const cmdShape = totalsShape(pdfStrings(CommandeClientPdf({ data: cmdData! })))
-      check(`commande ${cmd.numero} (${kind}) TVA row`, cmdShape.hasTva, !exo)
-      check(`commande ${cmd.numero} (${kind}) grand label`, cmdShape.grandLabel, exo ? 'TOTAL HT' : 'TOTAL TTC')
+      check(`commande ${cmd.numero} (${kind}) TVA row`, cmdShape.hasTva, true)
+      check(`commande ${cmd.numero} (${kind}) grand label`, cmdShape.grandLabel, 'TOTAL TTC')
+      check(`commande ${cmd.numero} (${kind}) mention printed`, cmdShape.hasMention, !!cmdData?.mentionTva)
+      if (exo) console.log(`      mention: ${cmdData?.mentionTva ?? '(none — French client without a chosen mention)'}`)
+      else check(`commande ${cmd.numero} (${kind}) no mention when taxed`, cmdData?.mentionTva ?? null, null)
       const proShape = totalsShape(pdfStrings(FacturePdf({ data: proData! })))
-      check(`proforma ${cmd.numero} (${kind}) TVA row`, proShape.hasTva, !exo)
-      check(`proforma ${cmd.numero} (${kind}) grand label`, proShape.grandLabel, exo ? 'TOTAL HT' : 'TOTAL TTC')
+      check(`proforma ${cmd.numero} (${kind}) TVA row`, proShape.hasTva, true)
+      check(`proforma ${cmd.numero} (${kind}) grand label`, proShape.grandLabel, 'TOTAL TTC')
+      check(`proforma ${cmd.numero} (${kind}) mention`, proData?.mentionTva ?? null, cmdData?.mentionTva ?? null)
     } else {
       console.log(`SKIP  no ${kind} commande_client in the data`)
     }
@@ -123,15 +131,17 @@ async function main() {
       const devData = await buildDevisPdfData(Number(dev.IDDevis_etm))
       check(`devis ${dev.numero} (${kind}) tvaRate`, devData?.tvaRate, expected)
       const devShape = totalsShape(pdfStrings(DevisEtmPdf({ data: devData! })))
-      check(`devis ${dev.numero} (${kind}) TVA row`, devShape.hasTva, expected !== 0)
-      check(`devis ${dev.numero} (${kind}) grand label`, devShape.grandLabel, expected === 0 ? 'TOTAL HT' : 'TOTAL TTC')
+      check(`devis ${dev.numero} (${kind}) TVA row`, devShape.hasTva, true)
+      check(`devis ${dev.numero} (${kind}) grand label`, devShape.grandLabel, 'TOTAL TTC')
+      check(`devis ${dev.numero} (${kind}) mention`, devShape.hasMention, !!devData?.mentionTva)
+      if (expected !== 0) check(`devis ${dev.numero} (${kind}) no mention when taxed`, devData?.mentionTva ?? null, null)
     } else {
       console.log(`SKIP  no ${kind} devis_etm in the data`)
     }
   }
 
-  // ── 3. totals-row label (only rendered when the rate is > 0 — an
-  //       exonerated document drops the TVA and TTC rows entirely) ───────
+  // ── 4. totals-row label ───────────────────────────────────────────────
+  check('label at 0 %', tvaRowLabel(0), 'TVA (0 %)')
   check('label at 20 %', tvaRowLabel(20), 'TVA (20 %)')
   check('label at 5,5 %', tvaRowLabel(5.5), 'TVA (5,5 %)')
 

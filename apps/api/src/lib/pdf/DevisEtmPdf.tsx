@@ -53,6 +53,9 @@ export interface DevisEtmPdfData {
   fraisPort: number
   /** TVA rate as a percentage (e.g. 20). */
   tvaRate: number
+  /** Legal reason printed under the totals of a 0 % document (LIVA #1248,
+   *  lib/tva-mention.ts). Null on a document that carries VAT. */
+  mentionTva?: string | null
   /** CGV acceptance mention printed under the totals (lib/cgv.ts
    *  CGV_MENTION). ETS Malterre only — omitted = not printed. */
   mentionCgv?: string
@@ -154,6 +157,8 @@ const styles = StyleSheet.create({
   coloriProminent: { fontSize: 10.5, color: colors.text, fontWeight: 700, marginTop: 3, lineHeight: 1.3 },
 
   totalsWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8 },
+  mentionTvaWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 5 },
+  mentionTva: { width: '52%', paddingHorizontal: 14, fontSize: 9, color: colors.text, fontWeight: 700, lineHeight: 1.35, textAlign: 'right' },
   totals: {
     width: '52%',
     borderWidth: 0.75,
@@ -262,8 +267,6 @@ export function DevisEtmPdf({ data }: { data: DevisEtmPdfData }) {
   const fraisPort = Number(data.fraisPort) || 0
   const netHT = totalHT - remiseAmount + fraisPort
   const tvaRate = Number(data.tvaRate) || 0
-  // Client flagged "Exonération" in Clients › Gestion (export customers).
-  const exonere = tvaRate === 0
   const tva = netHT * (tvaRate / 100)
   const ttc = netHT + tva
   const remisePctLabel = fmtNum(remiseFraction * 100, remiseFraction * 100 % 1 === 0 ? 0 : 1)
@@ -347,15 +350,10 @@ export function DevisEtmPdf({ data }: { data: DevisEtmPdfData }) {
 
       <View style={styles.totalsWrapper} wrap={false}>
         <View style={styles.totals}>
-          {/* Exonerated client: no VAT, so the block collapses to TOTAL HT.
-              The sub-total row is then printed only when a remise or frais de
-              port makes it differ from the grand total. */}
-          {(!exonere || remiseAmount > 0 || fraisPort > 0) && (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total HT</Text>
-              <Text style={styles.totalValue}>{`${fmtNum(totalHT, 2)} €`}</Text>
-            </View>
-          )}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Total HT</Text>
+            <Text style={styles.totalValue}>{`${fmtNum(totalHT, 2)} €`}</Text>
+          </View>
           {remiseAmount > 0 && (
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>{`Remise (${remisePctLabel} %)`}</Text>
@@ -368,18 +366,23 @@ export function DevisEtmPdf({ data }: { data: DevisEtmPdfData }) {
               <Text style={styles.totalValue}>{`${fmtNum(fraisPort, 2)} €`}</Text>
             </View>
           )}
-          {!exonere && (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>{tvaRowLabel(tvaRate)}</Text>
-              <Text style={styles.totalValue}>{`${fmtNum(tva, 2)} €`}</Text>
-            </View>
-          )}
+          {/* Kept at 0 % too (LIVA #1248), with the exemption's reason
+              printed under the block. */}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>{tvaRowLabel(tvaRate)}</Text>
+            <Text style={styles.totalValue}>{`${fmtNum(tva, 2)} €`}</Text>
+          </View>
           <View style={styles.grandRow}>
-            <Text style={styles.grandLabel}>{exonere ? 'TOTAL HT' : 'TOTAL TTC'}</Text>
-            <Text style={styles.grandValue}>{`${fmtNum(exonere ? netHT : ttc, 2)} €`}</Text>
+            <Text style={styles.grandLabel}>TOTAL TTC</Text>
+            <Text style={styles.grandValue}>{`${fmtNum(ttc, 2)} €`}</Text>
           </View>
         </View>
       </View>
+      {data.mentionTva ? (
+        <View style={styles.mentionTvaWrapper} wrap={false}>
+          <Text style={styles.mentionTva}>{data.mentionTva}</Text>
+        </View>
+      ) : null}
 
       {data.commentaire && data.commentaire.trim() && (
         <View style={[styles.commentaireBox, styles.commentaireBottom]} wrap={false}>

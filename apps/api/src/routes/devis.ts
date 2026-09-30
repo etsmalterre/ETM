@@ -35,7 +35,7 @@ import React from 'react'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { DevisEtmPdf, type DevisEtmPdfData } from '../lib/pdf/DevisEtmPdf.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
-import { loadClientTvaRate } from '../lib/tva.js'
+import { loadClientTvaRate, loadMentionTva } from '../lib/tva.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf } from '../lib/rtf-utils.js'
@@ -1321,6 +1321,7 @@ export async function buildDevisPdfData(id: number): Promise<DevisEtmPdfData | n
     remise: Number(h.remise) || 0, // fraction
     fraisPort: Number(h.frais_port) || 0,
     tvaRate,
+    mentionTva: await loadMentionTva(tvaRate, (adrFac ?? adrLiv)?.pays as string | null | undefined, IDclient),
     mentionCgv: CGV_MENTION,
     lignes,
   }

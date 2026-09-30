@@ -76,6 +76,7 @@ import { loadDiversItems, resolveDiversPrix, type DiversItem } from './expeditio
 import { groupFormelle, type FormelleCandidate, type FormelleCommande } from '../lib/facturation-groupes.js'
 import { MANUAL_MARK_PREFIX, buildManualMarkNotes, parseManualMarkNotes } from '../lib/envoi-manuel.js'
 import { normalizePays } from '../lib/pays.js'
+import { loadMentionTva } from '../lib/tva.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -1153,6 +1154,10 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
     const tva = tvaMap.get(Number(h.IDtva)) ?? { valeur: 0, libelle: '' }
     const totalHt = round2(lignes.reduce((s, l) => s + l.montant, 0))
     const tvaAmount = round2(totalHt * (tva.valeur / 100))
+    // LIVA #1248 — the line the PDF prints under the totals at 0 %; null at
+    // 0 % means a French client with no mention légale chosen, which the
+    // screen flags so the invoice is not sent without its legal reason.
+    const mentionTva = await loadMentionTva(tva.valeur, (adr as { pays?: string | null } | null)?.pays, IDclient)
 
     res.json({
       id,
@@ -1181,6 +1186,8 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
       total_ht: totalHt,
       total_tva: tvaAmount,
       total_ttc: round2(totalHt + tvaAmount),
+      mention_tva: mentionTva,
+      mention_tva_manquante: tva.valeur === 0 && !mentionTva,
       // Same rule as the list (see loadEnvoyeIds) — the header's « Marquer
       // comme envoyée » button hangs off it.
       est_envoye: kind === 'def' ? (envoyeIds.has(id) ? 1 : 0) : 1,
@@ -2233,6 +2240,9 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
     echeance: echeance?.libelle ?? null,
     echeanceDate: computeDateEcheance(h.DATE, echeance),
     tvaRate: tva.valeur,
+    // The billing country is the facture's own address (a snapshot); the
+    // French mention is the client's current choice (lib/tva-mention.ts).
+    mentionTva: await loadMentionTva(tva.valeur, a?.pays, IDclient),
     // The issuing société's legal identity (footer SIRET/TVA + the IBAN the
     // client is asked to pay). Not branding — a Tricotage Malterre invoice
     // carrying ETM's bank details would be paid into the wrong account.

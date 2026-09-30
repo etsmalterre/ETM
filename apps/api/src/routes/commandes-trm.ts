@@ -57,7 +57,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 import { CommandeClientPdf, type CommandeClientPdfData } from '../lib/pdf/CommandeClientPdf.js'
 import { companyTrm } from '../lib/pdf/theme.js'
-import { loadClientTvaRate } from '../lib/tva.js'
+import { loadClientTvaRate, loadMentionTva } from '../lib/tva.js'
 import { formatHfsqlDateLongFr, logEnvoiEmails, maxId, newIdAfterInsert, todayDigits, type EmailRecipientPayload } from './expeditions.js'
 import { requireEditExpeditions, stampShippedPieces } from './expeditions-trm.js'
 import { createSerialLock } from '../lib/serial-lock.js'
@@ -2214,6 +2214,7 @@ export async function buildTrmConfirmationPdfData(id: number): Promise<CommandeC
     remise: Number(h.remise) || 0,
     fraisPort: Number(h.frais_port) || 0,
     tvaRate,
+    mentionTva: await loadMentionTva(tvaRate, (adrFac ?? adrLiv)?.pays, IDclient),
     company: companyTrm,
     lignes,
   }

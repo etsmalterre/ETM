@@ -1,14 +1,15 @@
 // Login screen — identifiant (or email) + password. Two secondary paths below
 // the form: enrolling this PC as a station (« Poste », a one-time code from
 // Paramètres › Utilisateurs) and, only while the server's AUTH_PICKER
-// transition flag is on, the old name picker.
+// transition flag is on, the old name picker. On a developer's machine only,
+// « dev · Se connecter comme Vincent » (dev build + API lib/dev-login.ts).
 //
 // No « mot de passe oublié » on purpose (2026-09-30): an administrator resets
 // passwords from Paramètres › Utilisateurs.
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, KeyRound, Loader2, LogIn, MonitorSmartphone, Users } from 'lucide-react'
+import { AlertCircle, Code2, KeyRound, Loader2, LogIn, MonitorSmartphone, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { messageErreur, useAppCode, useUser } from '@/contexts/UserContext'
@@ -19,7 +20,9 @@ type Mode = 'login' | 'poste' | 'picker'
 
 export function LoginScreen() {
   const [mode, setMode] = useState<Mode>('login')
-  const { data: config } = useQuery<{ picker: boolean }>({
+  const { loginDev } = useUser()
+  const [devErreur, setDevErreur] = useState<string | null>(null)
+  const { data: config } = useQuery<{ picker: boolean; devLogin?: boolean }>({
     queryKey: ['auth', 'config'],
     queryFn: () => apiFetch('/auth/config'),
     staleTime: 60_000,
@@ -61,6 +64,18 @@ export function LoginScreen() {
             Choisir mon nom (transition)
           </button>
         )}
+        {/* import.meta.env.DEV: compiled out of production bundles. */}
+        {import.meta.env.DEV && config?.devLogin && (
+          <button
+            type="button"
+            onClick={() => { setDevErreur(null); loginDev().catch((e) => setDevErreur(messageErreur(e, 'Connexion dev refusée.'))) }}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-accent transition-colors"
+          >
+            <Code2 className="h-3.5 w-3.5" />
+            dev · Se connecter comme Vincent
+          </button>
+        )}
+        {devErreur && <p className="text-xs text-destructive">{devErreur}</p>}
       </div>
     </AuthLayout>
   )

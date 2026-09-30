@@ -22,6 +22,8 @@
 // No tarifs / références / marchandise sub-views here: the TRM window has none.
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
+import * as fs from 'node:fs/promises'
+import multer from 'multer'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { IS_WINDOWS, esc } from '../lib/sst-shared.js'
@@ -34,6 +36,10 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { loadTakenComptes, pickCompte, normalizeCompte, isValidCompte } from '../lib/compte-client.js'
 import { isRectiligneType } from '../lib/sst-line-kind.js'
 import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
+import { MENTIONS_FRANCE, MENTION_UE, MENTION_EXPORT, zoneTva, texteMentionClient, type MentionClient } from '../lib/tva-mention.js'
+import {
+  getExoneration, setMentionClient, addAttestation, getAttestationFile, deleteAttestation, ATTESTATION_TYPES,
+} from '../lib/tva-exoneration-store.js'
 
 export const clientsTrmRouter: RouterType = Router()
 
@@ -89,6 +95,23 @@ async function isTrmClient(id: number): Promise<boolean> {
     `SELECT IDclient FROM client WHERE IDclient = ${id} AND IDsociete = ${SOCIETE_TRM}`,
   )
   return rows.length > 0
+}
+
+/** Country of the client's default billing address (else its default
+ *  address, else its first) — what a new facture will be addressed to. */
+function billingPays(adresses: Record<string, unknown>[]): string {
+  const a = adresses.find((x) => Number(x.est_defaut_facturation) === 1)
+    ?? adresses.find((x) => Number(x.est_defaut) === 1)
+    ?? adresses[0]
+  return a ? String(a.pays ?? '') : ''
+}
+
+async function loadBillingPays(id: number): Promise<string> {
+  const rows = await query<Record<string, unknown>>(
+    `SELECT IDadresse, pays, est_defaut, est_defaut_facturation FROM adresse WHERE IDclient = ${id} ORDER BY IDadresse`,
+  )
+  const fixed = await fixEncoding(rows, 'adresse', 'IDadresse', ['pays'])
+  return billingPays(fixed as Record<string, unknown>[])
 }
 
 // ════════════════════════════════════════════════════════
@@ -183,6 +206,12 @@ clientsTrmRouter.get('/lookups/tva', async (_req: Request, res: Response) => {
   }
 })
 
+// The mentions légales offered for a French client at 0 % (LIVA #1248,
+// lib/tva-mention.ts). Static — served so the fiche and the PDFs share one list.
+clientsTrmRouter.get('/lookups/mentions-exoneration', (_req: Request, res: Response) => {
+  res.json(MENTIONS_FRANCE.map((m) => ({ code: m.code, libelle: m.libelle, texte: m.texte })))
+})
+
 // code_comptable is partitioned too (TRM's « Vente à façon » = 701103).
 clientsTrmRouter.get('/lookups/codes-comptables', async (_req: Request, res: Response) => {
   try {
@@ -273,7 +302,17 @@ clientsTrmRouter.get('/:id', async (req: Request, res: Response) => {
     const fixedAdresses = await fixEncoding(adresses, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays', 'commentaire'])
     const fixedContacts = await fixEncoding(contacts, 'contact', 'IDcontact', ['nom', 'prenom', 'tel', 'mail', 'commentaire'])
 
-    res.json({ ...client, archive, bloque, adresses: fixedAdresses, contacts: fixedContacts })
+    const exoneration = await getExoneration(id)
+    const zone = zoneTva(billingPays(fixedAdresses as Record<string, unknown>[]))
+    res.json({
+      ...client, archive, bloque, adresses: fixedAdresses, contacts: fixedContacts,
+      // LIVA #1248 — where the billing address sends the goods VAT-wise, the
+      // mention chosen for a French client at 0 %, and its attestations.
+      zone_tva: zone,
+      mention_zone: zone === 'ue' ? MENTION_UE : zone === 'hors_ue' ? MENTION_EXPORT : null,
+      mention_exoneration: exoneration.mention,
+      attestations_tva: exoneration.attestations,
+    })
   } catch (err) {
     console.error('Error fetching TRM client:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -307,6 +346,11 @@ const clientBody = z.object({
   IDtransporteur: z.number().int().optional(),
   /** « Attente paiement facture » — stored in the accented `client.bloqué`. */
   bloque: z.union([z.boolean(), z.number()]).optional(),
+  /** Mention légale of a French client at 0 % (LIVA #1248). Absent = keep. */
+  mention_exoneration: z.object({
+    code: z.enum(MENTIONS_FRANCE.map((m) => m.code) as [string, ...string[]]),
+    texte: z.string().max(300),
+  }).nullable().optional(),
 })
 
 // POST /api/clients-trm — create a client on the TRM ledger.
@@ -404,6 +448,32 @@ clientsTrmRouter.put('/:id', async (req: Request, res: Response) => {
       }
     }
 
+    // LIVA #1248 — a French client at 0 % must say why on its invoices: the
+    // mention légale is required (a foreign client gets its article from the
+    // billing country, lib/tva-mention.ts). Checked on the values being saved.
+    let mention: MentionClient | null | undefined
+    if (canInfo && b.mention_exoneration !== undefined) {
+      mention = b.mention_exoneration
+        ? { code: b.mention_exoneration.code as MentionClient['code'], texte: b.mention_exoneration.texte.trim() }
+        : null
+    }
+    if (canInfo) {
+      const tvaRows = await query<{ valeur: number | null }>(
+        `SELECT valeur FROM tva WHERE IDtva = ${intOf(b.IDtva)} AND IDsociete = ${SOCIETE_TRM}`,
+      )
+      const exonere = tvaRows.length > 0 && (Number(tvaRows[0].valeur) || 0) === 0
+      if (exonere && zoneTva(await loadBillingPays(id)) === 'france') {
+        const effective = mention !== undefined ? mention : (await getExoneration(id)).mention
+        if (!texteMentionClient(effective)) {
+          res.status(400).json({
+            error: 'mention_exoneration_requise',
+            message: 'Un client français exonéré de TVA doit avoir une mention légale : elle est imprimée sous les totaux de ses factures.',
+          })
+          return
+        }
+      }
+    }
+
     const sets = [`nom = ${sqlText(b.nom)}`]
     if (canInfo) {
       sets.push(
@@ -429,10 +499,77 @@ clientsTrmRouter.put('/:id', async (req: Request, res: Response) => {
     // positional-reinsert helper, and MUST run after the UPDATE above (it
     // re-reads the row it reinserts).
     if (canInfo) await setClientFlag(id, 'bloque', flag(b.bloque) as 0 | 1)
+    if (mention !== undefined) await setMentionClient(id, mention)
 
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating TRM client:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Attestations d'exonération de TVA (LIVA #1248) ──
+// The documents a French client at 0 % sends to justify it (SOFILETA: a
+// yearly « attestation d'achat en franchise »). Kept with the fiche, written
+// immediately like a contact or an address, under the Info scope.
+
+const uploadAttestation = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
+
+clientsTrmRouter.post('/:id/attestations-tva', uploadAttestation.single('fichier'), async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await requirePermission(req, res, 'edit_client_info', TRM_PERMISSIONS))) return
+    if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
+    const f = req.file
+    if (!f || f.size === 0) { res.status(400).json({ error: 'fichier manquant', message: 'Aucun fichier reçu.' }); return }
+    if (!ATTESTATION_TYPES[f.mimetype]) {
+      res.status(400).json({ error: 'type_non_supporte', message: 'Formats acceptés : PDF, JPEG ou PNG.' })
+      return
+    }
+    // multer hands the original name as latin1 bytes.
+    const nom = Buffer.from(f.originalname, 'latin1').toString('utf8').slice(0, 200)
+    const doc = await addAttestation(id, { nom, contentType: f.mimetype, buffer: f.buffer }, req.userId)
+    res.status(201).json(doc)
+  } catch (err) {
+    console.error('Error uploading TVA attestation:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+clientsTrmRouter.get('/:id/attestations-tva/:docId', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
+    const found = await getAttestationFile(id, String(req.params.docId))
+    if (!found) { res.status(404).json({ error: 'Document not found' }); return }
+    const buf = await fs.readFile(found.path)
+    res.setHeader('Content-Type', found.doc.contentType)
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(found.doc.nom)}`)
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.end(buf)
+  } catch (err) {
+    console.error('Error serving TVA attestation:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+clientsTrmRouter.delete('/:id/attestations-tva/:docId', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await requirePermission(req, res, 'edit_client_info', TRM_PERMISSIONS))) return
+    if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
+    if (!(await deleteAttestation(id, String(req.params.docId)))) { res.status(404).json({ error: 'Document not found' }); return }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error deleting TVA attestation:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

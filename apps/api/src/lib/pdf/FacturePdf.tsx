@@ -59,6 +59,9 @@ export interface FacturePdfData {
   echeanceDate?: string | null
   /** TVA rate as a percentage (e.g. 20). */
   tvaRate: number
+  /** Legal reason printed under the totals of a 0 % document (LIVA #1248,
+   *  lib/tva-mention.ts). Null on a document that carries VAT. */
+  mentionTva?: string | null
   /** Optional absolute discount in € (commande-based proformas). Rendered as
    *  a negative totals row when > 0; regular factures never pass it. */
   remise?: number
@@ -201,6 +204,16 @@ const styles = StyleSheet.create({
   // reader meets it as a caption of the price and not as small print.
   mentionsPaiement: { marginTop: 14, fontSize: 7.5, color: colors.muted, lineHeight: 1.35, textAlign: 'justify' },
   proformaNoteWrapper: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
+  mentionTva: {
+    width: '45%',
+    paddingLeft: 14,
+    paddingRight: 16,
+    fontSize: 8.5,
+    color: colors.text,
+    fontWeight: 700,
+    lineHeight: 1.35,
+    textAlign: 'right',
+  },
   proformaNote: {
     width: '45%',
     paddingLeft: 14,
@@ -271,8 +284,6 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
   const fraisPort = Number(data.fraisPort) || 0
   const netHT = r2(totalHT - remise + fraisPort)
   const tvaRate = Number(data.tvaRate) || 0
-  // Client flagged "Exonération" in Clients › Gestion (export customers).
-  const exonere = tvaRate === 0
   const tva = r2(netHT * (tvaRate / 100))
   const ttc = r2(netHT + tva)
 
@@ -370,15 +381,10 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
       <View wrap={false}>
       <View style={styles.totalsWrapper}>
         <View style={styles.totals}>
-          {/* Exonerated client: no VAT, so the block collapses to TOTAL HT.
-              The sub-total row is then printed only when a remise or frais de
-              port makes it differ from the grand total. */}
-          {(!exonere || remise > 0 || fraisPort > 0) ? (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total HT</Text>
-              <Text style={styles.totalValue}>{`${fmtNum(totalHT, 2)} €`}</Text>
-            </View>
-          ) : null}
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Total HT</Text>
+            <Text style={styles.totalValue}>{`${fmtNum(totalHT, 2)} €`}</Text>
+          </View>
           {remise > 0 ? (
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Remise</Text>
@@ -391,22 +397,24 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
               <Text style={styles.totalValue}>{`${fmtNum(fraisPort, 2)} €`}</Text>
             </View>
           ) : null}
-          {!exonere ? (
-            <View style={[styles.totalRow, styles.totalRowDivided]}>
-              <Text style={styles.totalLabel}>{tvaRowLabel(tvaRate)}</Text>
-              <Text style={styles.totalValue}>{`${fmtNum(tva, 2)} €`}</Text>
-            </View>
-          ) : null}
+          {/* Kept at 0 % too (LIVA #1248): an invoice ending on TOTAL HT read
+              as unfinished to the client — the 0 % line and the TTC total are
+              what every ERP prints, with the exemption's reason under them. */}
+          <View style={[styles.totalRow, styles.totalRowDivided]}>
+            <Text style={styles.totalLabel}>{tvaRowLabel(tvaRate)}</Text>
+            <Text style={styles.totalValue}>{`${fmtNum(tva, 2)} €`}</Text>
+          </View>
           <View style={styles.grandRow}>
-            <Text style={styles.grandLabel}>
-              {exonere
-                ? (isAvoir ? 'TOTAL AVOIR HT' : 'TOTAL HT')
-                : (isAvoir ? 'TOTAL AVOIR TTC' : 'TOTAL TTC')}
-            </Text>
-            <Text style={styles.grandValue}>{`${fmtNum(exonere ? netHT : ttc, 2)} €`}</Text>
+            <Text style={styles.grandLabel}>{isAvoir ? 'TOTAL AVOIR TTC' : 'TOTAL TTC'}</Text>
+            <Text style={styles.grandValue}>{`${fmtNum(ttc, 2)} €`}</Text>
           </View>
         </View>
       </View>
+      {data.mentionTva ? (
+        <View style={styles.proformaNoteWrapper}>
+          <Text style={styles.mentionTva}>{data.mentionTva}</Text>
+        </View>
+      ) : null}
       {isProforma ? (
         <View style={styles.proformaNoteWrapper}>
           <Text style={styles.proformaNote}>{PROFORMA_NOTE}</Text>

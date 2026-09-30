@@ -31,6 +31,7 @@ import {
   CalendarDays,
   MailCheck,
   Undo2,
+  AlertTriangle,
 } from 'lucide-react'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -130,6 +131,10 @@ interface FactureDetail {
   total_ttc: number
   /** Same rule as the list row's flag (definitive only, proformas always 1). */
   est_envoye: number
+  /** LIVA #1248 — legal reason printed under the totals at 0 %. */
+  mention_tva?: string | null
+  /** 0 % for a French client with no mention légale chosen. */
+  mention_tva_manquante?: boolean
 }
 
 interface GenerateSummary {
@@ -1512,32 +1517,37 @@ function LignesSection({
 
         {/* Totals footer */}
         <div className="flex-shrink-0 mt-3 pt-3 border-t border-border/60">
-          {/* An exonerated client (Clients › Gestion) carries no VAT, so the
-              block collapses to the HT total — same as the PDF. */}
+          {/* Kept at 0 % too, like the PDF (LIVA #1248). */}
           <div className="flex flex-col items-end gap-1 text-sm tabular-nums">
-            {!(facture.tva_rate > 0) ? null : (
-              <>
-                <div className="flex items-center gap-6">
-                  <span className="text-muted-foreground text-xs uppercase tracking-wide">Total HT</span>
-                  <span className="w-32 text-right font-medium">{fmtNum(facture.total_ht, 2)} €</span>
-                </div>
-                <div className="flex items-center gap-6">
-                  <span className="text-muted-foreground text-xs uppercase tracking-wide">TVA ({tvaRateLabel(facture.tva_rate)})</span>
-                  <span className="w-32 text-right">{fmtNum(facture.total_tva, 2)} €</span>
-                </div>
-              </>
-            )}
-            <div className={cn('flex items-center gap-6', facture.tva_rate > 0 && 'mt-0.5 pt-1.5 border-t border-border/60')}>
+            <div className="flex items-center gap-6">
+              <span className="text-muted-foreground text-xs uppercase tracking-wide">Total HT</span>
+              <span className="w-32 text-right font-medium">{fmtNum(facture.total_ht, 2)} €</span>
+            </div>
+            <div className="flex items-center gap-6">
+              <span className="text-muted-foreground text-xs uppercase tracking-wide">TVA ({tvaRateLabel(facture.tva_rate)})</span>
+              <span className="w-32 text-right">{fmtNum(facture.total_tva, 2)} €</span>
+            </div>
+            <div className="flex items-center gap-6 mt-0.5 pt-1.5 border-t border-border/60">
               <span className={cn('text-xs uppercase tracking-wide font-bold', isAvoir ? 'text-destructive' : 'text-primary')}>
-                {facture.tva_rate > 0
-                  ? (isAvoir ? 'Total Avoir TTC' : 'Total TTC')
-                  : (isAvoir ? 'Total Avoir HT' : 'Total HT')}
+                {isAvoir ? 'Total Avoir TTC' : 'Total TTC'}
               </span>
               <span className={cn('w-32 text-right text-base font-bold', isAvoir ? 'text-destructive' : 'text-accent')}>
-                {fmtNum(signed(facture.tva_rate > 0 ? facture.total_ttc : facture.total_ht, facture.type), 2)} €
+                {fmtNum(signed(facture.total_ttc, facture.type), 2)} €
               </span>
             </div>
+            {facture.mention_tva && (
+              <p className="text-xs text-muted-foreground italic">{facture.mention_tva}</p>
+            )}
           </div>
+          {facture.mention_tva_manquante && (
+            <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+              <span>
+                TVA à 0 % sans motif : la facture n'indiquera pas pourquoi elle est exonérée.
+                Corrigez la fiche du client (son taux de TVA ou l'adresse de facturation) avant de l'envoyer.
+              </span>
+            </div>
+          )}
         </div>
       </div>
 

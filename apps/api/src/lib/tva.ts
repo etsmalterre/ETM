@@ -16,6 +16,8 @@
 // from the facture row — an old invoice keeps the rate it was issued with.
 
 import { query } from './hfsql-auto.js'
+import { mentionTva } from './tva-mention.js'
+import { getMentionClient } from './tva-exoneration-store.js'
 
 /** ETM's own société id (1 = ETM, 2 = TRM, 3 = Confection). */
 const ID_SOCIETE_ETM = 1
@@ -50,4 +52,18 @@ export async function loadClientTvaRate(IDclient: number): Promise<number> {
     } catch { /* fall through to the default rate */ }
   }
   return loadDefaultTvaRate()
+}
+
+/** The exemption line printed under the totals of a client document (LIVA
+ *  #1248): null when the document carries VAT, else the article picked from
+ *  the document's billing country, or — for a French client — the mention
+ *  chosen on its fiche (lib/tva-mention.ts). The client's choice is read at
+ *  render time, like the SIREN: it describes the client, not the document. */
+export async function loadMentionTva(
+  tvaRate: number,
+  pays: string | null | undefined,
+  IDclient: number,
+): Promise<string | null> {
+  if ((Number(tvaRate) || 0) !== 0) return null
+  return mentionTva({ tvaRate, pays, client: await getMentionClient(Number(IDclient) || 0) })
 }

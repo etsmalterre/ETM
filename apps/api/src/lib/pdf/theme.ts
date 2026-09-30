@@ -53,11 +53,10 @@ export const company = {
   },
 } as const
 
-/** Label of the TVA row in a totals block, e.g. "TVA (20 %)" / "TVA (5,5 %)".
- *  Only ever called with a rate > 0: a client flagged "Exonération" in
- *  Clients › Gestion (export customers) drops the TVA and TTC rows entirely,
- *  leaving the block at TOTAL HT — see the commande / devis / facture totals
- *  blocks, which share this helper so they can't drift apart. */
+/** Label of the TVA row in a totals block, e.g. "TVA (20 %)" / "TVA (5,5 %)" /
+ *  "TVA (0 %)". The row is printed at 0 % too since LIVA #1248 — the exemption's
+ *  reason goes under the totals (lib/tva-mention.ts). Shared by the commande /
+ *  devis / facture totals blocks so they can't drift apart. */
 export function tvaRowLabel(rate: number): string {
   const r = Number(rate) || 0
   const decimals = r % 1 === 0 ? 0 : 1

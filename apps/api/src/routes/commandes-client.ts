@@ -41,7 +41,7 @@ import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-lig
 import { cotesARevoir, appliquerReprix } from '../lib/reprix-associes.js'
 import { resolveLigneTarifMode } from '../lib/tarif-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
-import { loadClientTvaRate } from '../lib/tva.js'
+import { loadClientTvaRate, loadMentionTva } from '../lib/tva.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
@@ -4711,6 +4711,7 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     remise: Number(h.remise) || 0,
     fraisPort: Number(h.frais_port) || 0,
     tvaRate,
+    mentionTva: await loadMentionTva(tvaRate, (adrFac ?? adrLiv)?.pays as string | null | undefined, IDclient),
     // ETS Malterre's CGV acceptance mention (lib/cgv.ts) — TRM's builder
     // renders the same template without it.
     mentionCgv: CGV_MENTION,
@@ -4835,6 +4836,7 @@ export async function buildProformaPdfData(id: number): Promise<FacturePdfData |
     echeance: base.echeance,
     echeanceDate: computeDateEcheance(todayYmd, echRule),
     tvaRate,
+    mentionTva: base.mentionTva,
     remise: base.remise,
     fraisPort: base.fraisPort,
     lignes: base.lignes.map((l) => ({
