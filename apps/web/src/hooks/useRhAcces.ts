@@ -2,14 +2,16 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { useUser } from '@/contexts/UserContext'
 
-/** GET /rh/acces — whether the current user is one of the two people allowed
- *  into RH (apps/api/src/lib/rh-acces.ts) and whether they typed their code.
+/** GET /rh/acces — whether the current user may open RH (apps/api/src/lib/rh-acces.ts)
+ *  and whether they unlocked it (password, or the code RH for an account without one).
  *  Anyone else gets `{ autorise: false }` and never sees the menu. */
 export interface RhAcces {
   autorise: boolean
   personne?: string
   deverrouille?: boolean
   codeDefini?: boolean
+  /** What unlocks RH: the account password, or (account without one yet) the code RH. */
+  methode?: 'mot_de_passe' | 'code'
   configure?: boolean
 }
 

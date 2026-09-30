@@ -1,10 +1,13 @@
-// Top-level gate that sits above the router. While the user context is
-// loading, shows a fullscreen spinner. If no user is identified, shows the
-// fullscreen picker. Otherwise renders the app.
+// Top-level gate above the router. While /auth/me loads: a spinner. No
+// session: the login screen. A temporary password: the forced change. Else
+// the app — plus, while an admin looks through another account, a pill to
+// come back. Name kept for main.tsx (ETM and TRM mount it the same way).
 
 import { Loader2 } from 'lucide-react'
 import { useUser } from '@/contexts/UserContext'
-import { UserPicker } from './UserPicker'
+import { LoginScreen } from './LoginScreen'
+import { ForcedPasswordChange } from './ChangePasswordForm'
+import { VoirCommeBandeau } from './VoirComme'
 
 export function UserPickerGate({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useUser()
@@ -17,7 +20,16 @@ export function UserPickerGate({ children }: { children: React.ReactNode }) {
     )
   }
 
-  if (!user) return <UserPicker />
+  if (!user) return <LoginScreen />
+  if (user.doitChangerMdp) return <ForcedPasswordChange />
 
-  return <>{children}</>
+  return (
+    <>
+      {children}
+      {user.voirComme && <VoirCommeBandeau />}
+    </>
+  )
 }
+
+/** Alias with the name the auth rework gave it. */
+export const AuthGate = UserPickerGate

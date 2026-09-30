@@ -12,7 +12,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, Loader2, AlertCircle, Shield, Check, Mail, Save, Bell,
   Image as ImageIcon, PenLine, Trash2, User as UserIcon, ChevronDown,
-  Monitor, Copy,
+  Monitor, Copy, Plus,
 } from 'lucide-react'
 import { apiFetch, API_URL } from '@/lib/api'
 import { useUser } from '@/contexts/UserContext'
@@ -28,6 +28,8 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { userPhotoUrl } from '@/components/profile/ProfileModal'
 import { mainNavigation, menuAccessKey, screenAccessMenus, screenHideKey, type MainMenuItem } from '@/config/navigation'
 import { cn } from '@/lib/utils'
+import { CompteSidebar, COMPTES_KEY, type Compte } from '@/components/comptes/CompteSidebar'
+import { NouveauCompteDialog } from '@/components/comptes/NouveauCompteDialog'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -138,6 +140,7 @@ export function SettingsUtilisateurs() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [copyOpen, setCopyOpen] = useState(false)
+  const [nouveauOpen, setNouveauOpen] = useState(false)
 
   // ── Data ───────────────────────────────────────
   const { data: users, isLoading, isError, error } = useQuery<PermissionUser[]>({
@@ -145,6 +148,14 @@ export function SettingsUtilisateurs() {
     queryFn: () => apiFetch<PermissionUser[]>('/permissions/users'),
     enabled: viewerIsAdmin,
   })
+
+  // Accounts (identifiant, password, active…) — the right panel and the list badges.
+  const { data: comptes } = useQuery<Compte[]>({
+    queryKey: COMPTES_KEY,
+    queryFn: () => apiFetch<Compte[]>('/comptes'),
+    enabled: viewerIsAdmin,
+  })
+  const compteById = useMemo(() => new Map((comptes ?? []).map((c) => [c.IDutilisateur, c])), [comptes])
 
   const { data: keys } = useQuery<PermissionKeyDef[]>({
     queryKey: ['perm-keys'],
@@ -283,8 +294,8 @@ export function SettingsUtilisateurs() {
     <MasterDetailLayout
       hasSelection={selectedId !== null}
       onBack={() => setSelectedId(null)}
-      sidebarTitle="Informations"
-      sidebar={null}
+      sidebarTitle="Compte"
+      sidebar={selected ? <CompteSidebar userId={selected.IDutilisateur} /> : null}
       list={
         <UserList
           rows={filtered}
@@ -295,6 +306,8 @@ export function SettingsUtilisateurs() {
           onSelect={setSelectedId}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          compteById={compteById}
+          onNouveau={() => setNouveauOpen(true)}
         />
       }
       detailHeader={<DetailHeader user={selected} />}
@@ -351,6 +364,17 @@ export function SettingsUtilisateurs() {
     {/* Copy every right from another user — the pragmatic stand-in for roles
         on a small team: no shared object to drift, just a starting point the
         admin then adjusts. */}
+    <NouveauCompteDialog
+      open={nouveauOpen}
+      onClose={() => setNouveauOpen(false)}
+      onCreated={(c) => {
+        setNouveauOpen(false)
+        queryClient.invalidateQueries({ queryKey: ['perm-users'] })
+        queryClient.invalidateQueries({ queryKey: COMPTES_KEY })
+        setSelectedId(c.IDutilisateur)
+      }}
+    />
+
     <CopyRightsDialog
       open={copyOpen}
       onClose={() => setCopyOpen(false)}
@@ -375,6 +399,7 @@ function UserList({
   rows, isLoading, isError, error,
   selectedId, onSelect,
   searchQuery, onSearchChange,
+  compteById, onNouveau,
 }: {
   rows: PermissionUser[]
   isLoading: boolean
@@ -384,6 +409,8 @@ function UserList({
   onSelect: (id: number) => void
   searchQuery: string
   onSearchChange: (q: string) => void
+  compteById: Map<number, Compte>
+  onNouveau: () => void
 }) {
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
@@ -420,13 +447,16 @@ function UserList({
         ) : rows.map((u) => {
           const isSelected = selectedId === u.IDutilisateur
           const role = roleLabel(u.roleHint)
-          const isVin = isVincent(u)
+          const compte = compteById.get(u.IDutilisateur)
+          const isAdmin = compte ? compte.estAdmin : isVincent(u)
+          const inactif = compte ? !compte.actif : false
           return (
             <div
               key={u.IDutilisateur}
               onClick={() => onSelect(u.IDutilisateur)}
               className={cn(
                 'p-3 border rounded-lg cursor-pointer transition-all bg-white flex items-center gap-3',
+                inactif && 'opacity-60',
                 isSelected
                   ? 'border-accent ring-1 ring-accent'
                   : 'border-border hover:border-accent/50'
@@ -438,12 +468,14 @@ function UserList({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <p className="text-sm font-medium truncate">{displayName(u)}</p>
-                  {isVin && (
+                  {isAdmin && (
                     <Shield className="h-3 w-3 text-accent flex-shrink-0" />
                   )}
                 </div>
-                {role && (
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">{role}</p>
+                {(inactif || role || compte?.typeCompte === 'poste') && (
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">
+                    {inactif ? 'Désactivé' : role ?? 'Poste d’atelier'}
+                  </p>
                 )}
               </div>
               {u.granted.length > 0 && (
@@ -456,12 +488,13 @@ function UserList({
         })}
       </div>
 
-      {/* Footer count */}
-      {rows.length > 0 && (
-        <div className="p-3 border-t text-xs text-muted-foreground rounded-b-lg bg-zinc-200/50">
-          {rows.length} utilisateur{rows.length !== 1 ? 's' : ''}
-        </div>
-      )}
+      {/* Footer: count + Nouveau (§5 — no edit mode on this screen, so always shown) */}
+      <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
+        <span>{rows.length} utilisateur{rows.length !== 1 ? 's' : ''}</span>
+        <Button size="sm" variant="ghost" className="text-accent hover:text-accent hover:bg-accent/10" onClick={onNouveau}>
+          <Plus className="h-3.5 w-3.5 mr-1" />Nouveau
+        </Button>
+      </div>
     </div>
   )
 }

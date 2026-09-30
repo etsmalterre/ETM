@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Menu, Maximize2, Minimize2, LogOut, CircleUser, MessageSquarePlus, RefreshCw } from 'lucide-react'
+import { Menu, Maximize2, Minimize2, CircleUser, MessageSquarePlus, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/ui/avatar'
 import { getActiveMenu } from '@/config/navigation'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { updateServiceWorkerAndWait } from '@/lib/sw-refresh'
-import { useUser, canSwitchUser } from '@/contexts/UserContext'
+import { useUser } from '@/contexts/UserContext'
+import { useAccountMenu } from '@/components/auth/UserMenuActions'
 import { useHeaderActionsSlot } from '@/contexts/HeaderActionsContext'
 import { ProfileModal, userPhotoUrl, type UserProfileMe } from '@/components/profile/ProfileModal'
 import { TicketModal } from '@/components/tickets/TicketModal'
@@ -28,8 +29,8 @@ export function Header({ onMenuClick }: HeaderProps) {
   const filterSubmenus = useSubmenuFilter()
   const headerActionsSlot = useHeaderActionsSlot()
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const { user, logout } = useUser()
-  const allowSwitch = canSwitchUser(user)
+  const { user } = useUser()
+  const accountMenu = useAccountMenu()
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -287,7 +288,7 @@ export function Header({ onMenuClick }: HeaderProps) {
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-bold text-primary truncate">{userDisplay}</p>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Utilisateur actif</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">{user.identifiant ?? (user.typeCompte === 'poste' ? 'Poste' : 'Utilisateur actif')}</p>
                 </div>
               </div>
               <button
@@ -297,15 +298,7 @@ export function Header({ onMenuClick }: HeaderProps) {
                 <CircleUser className="h-3 w-3" />
                 Mon profil
               </button>
-              {allowSwitch && (
-                <button
-                  onClick={() => { setUserMenuOpen(false); void logout() }}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-accent/10 hover:text-accent transition-colors"
-                >
-                  <LogOut className="h-3 w-3" />
-                  Changer d'utilisateur
-                </button>
-              )}
+              {accountMenu.items(() => setUserMenuOpen(false))}
               <button
                 onClick={() => void refreshApp()}
                 disabled={refreshing}
@@ -325,6 +318,7 @@ export function Header({ onMenuClick }: HeaderProps) {
       </div>
 
       <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
+      {accountMenu.dialogs}
       <TicketModal
         open={ticketOpen}
         onOpenChange={setTicketOpen}

@@ -40,6 +40,8 @@ import {
   noterEchec,
   noterSucces,
 } from '../lib/rh-acces.js'
+import { mpsPg } from '../lib/mps-pg.js'
+import { verifierMotDePasse } from '../lib/passwords.js'
 import {
   RhIndisponible,
   rhConfigure,
@@ -69,6 +71,14 @@ import React from 'react'
 import { SuiviRhPdf } from '../lib/pdf/SuiviRhPdf.js'
 import { normaliserTache, estMesuree, heuresSemaine, totauxSimples, evolutionMensuelle, moisListe, volumeLisse, lundiDe } from '../lib/rh-charge.js'
 import { INDICATEURS, volumesPour } from '../lib/rh-indicateurs.js'
+
+/** The password hash of the account RH is opened as, or null. */
+async function hashDuCompte(userId: number | undefined): Promise<string | null> {
+  if (userId === undefined) return null
+  const [row] = await mpsPg()<{ password_hash: string | null }[]>`
+    SELECT password_hash FROM utilisateur WHERE idutilisateur = ${userId}`
+  return row?.password_hash ?? null
+}
 
 export const rhRouter: RouterType = Router()
 
@@ -103,8 +113,11 @@ rhRouter.get('/acces', h(async (req, res) => {
   }
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
   const deverrouille = lireSessionRh(cookies[RH_COOKIE_NAME]) === personne.cle
-  const codeDefini = rhConfigure() ? (await lireCode(personne.cle)) !== null : false
-  res.json({ autorise: true, personne: personne.label, deverrouille, codeDefini, configure: rhConfigure() })
+  // Since password login (2026-09-30) the account password unlocks RH; the
+  // server-set code RH remains only for an account without a password yet.
+  const methode = (await hashDuCompte(req.userId)) ? 'mot_de_passe' : 'code'
+  const codeDefini = methode === 'mot_de_passe' || (rhConfigure() ? (await lireCode(personne.cle)) !== null : false)
+  res.json({ autorise: true, personne: personne.label, deverrouille, codeDefini, methode, configure: rhConfigure() })
 }))
 
 rhRouter.post('/deverrouiller', h(async (req, res) => {
@@ -119,6 +132,21 @@ rhRouter.post('/deverrouiller', h(async (req, res) => {
       error: 'trop_d_essais',
       message: `Trop d’essais. Réessayez dans ${Math.ceil(attente / 60_000)} min.`,
     })
+    return
+  }
+  const hash = await hashDuCompte(req.userId)
+  if (hash) {
+    const motDePasse = String(req.body?.motDePasse ?? '')
+    if (!motDePasse || !(await verifierMotDePasse(motDePasse, hash))) {
+      noterEchec(personne.cle)
+      await journaliser(personne.cle, 'echec_mot_de_passe', req.ip)
+      res.status(403).json({ error: 'mot_de_passe_invalide', message: 'Mot de passe incorrect.' })
+      return
+    }
+    noterSucces(personne.cle)
+    await journaliser(personne.cle, 'deverrouillage', req.ip)
+    res.cookie(RH_COOKIE_NAME, signerSessionRh(personne.cle), rhCookieOptions())
+    res.json({ ok: true })
     return
   }
   const code = String(req.body?.code ?? '')

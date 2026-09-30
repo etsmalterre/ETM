@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { HeaderActions } from '@/contexts/HeaderActionsContext'
 import { useRhAcces, RH_ACCES_KEY } from '@/hooks/useRhAcces'
 import { apiFetch } from '@/lib/api'
+import { cn } from '@/lib/utils'
 
 /** Wraps every RH screen. Three outcomes:
  *   • not one of the two people (lib/rh-acces.ts on the API) → home, the menu
@@ -45,7 +46,7 @@ export function RhGate({ children }: { children: ReactNode }) {
     )
   }
   if (!acces.autorise) return <Navigate to="/" replace />
-  if (!acces.deverrouille) return <EcranVerrouille personne={acces.personne ?? ''} codeDefini={!!acces.codeDefini} configure={acces.configure !== false} />
+  if (!acces.deverrouille) return <EcranVerrouille personne={acces.personne ?? ''} codeDefini={!!acces.codeDefini} configure={acces.configure !== false} parMotDePasse={acces.methode === 'mot_de_passe'} />
 
   return (
     <>
@@ -66,13 +67,13 @@ export function RhGate({ children }: { children: ReactNode }) {
   )
 }
 
-function EcranVerrouille({ personne, codeDefini, configure }: { personne: string; codeDefini: boolean; configure: boolean }) {
+function EcranVerrouille({ personne, codeDefini, configure, parMotDePasse }: { personne: string; codeDefini: boolean; configure: boolean; parMotDePasse: boolean }) {
   const queryClient = useQueryClient()
   const [code, setCode] = useState('')
   const [erreur, setErreur] = useState<string | null>(null)
 
   const deverrouiller = useMutation({
-    mutationFn: () => apiFetch('/rh/deverrouiller', { method: 'POST', body: JSON.stringify({ code }) }),
+    mutationFn: () => apiFetch('/rh/deverrouiller', { method: 'POST', body: JSON.stringify(parMotDePasse ? { motDePasse: code } : { code }) }),
     onSuccess: () => {
       setCode('')
       queryClient.invalidateQueries({ queryKey: RH_ACCES_KEY })
@@ -114,18 +115,23 @@ function EcranVerrouille({ personne, codeDefini, configure }: { personne: string
           ) : (
             <>
               <p className="text-sm text-muted-foreground">
-                Ces informations sont personnelles. Saisissez votre code RH pour continuer.
+                {parMotDePasse
+                  ? 'Ces informations sont personnelles. Saisissez à nouveau votre mot de passe pour continuer.'
+                  : 'Ces informations sont personnelles. Saisissez votre code RH pour continuer.'}
               </p>
               <input
                 type="password"
-                inputMode="numeric"
-                autoComplete="off"
+                inputMode={parMotDePasse ? undefined : 'numeric'}
+                autoComplete={parMotDePasse ? 'current-password' : 'off'}
                 autoFocus
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                placeholder="Code RH"
-                aria-label="Code RH"
-                className="w-full h-10 px-3 text-center text-lg tracking-[0.3em] placeholder:tracking-normal placeholder:text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder={parMotDePasse ? 'Mot de passe' : 'Code RH'}
+                aria-label={parMotDePasse ? 'Mot de passe' : 'Code RH'}
+                className={cn(
+                  'w-full h-10 px-3 rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring',
+                  parMotDePasse ? 'text-sm' : 'text-center text-lg tracking-[0.3em] placeholder:tracking-normal placeholder:text-sm',
+                )}
               />
             </>
           )}

@@ -73,6 +73,41 @@ CREATE TABLE permission (
 ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'utilisateur_fusion, permission')}
 `,
   },
+  {
+    // Server-side sessions (lib/sessions.ts) and the login journal
+    // (lib/login-throttle.ts). A session of type 'poste' is an enrolled
+    // station PC (Visitage…): no expiry, revocable like any other.
+    name: '0002_sessions',
+    sql: `
+CREATE TABLE session (
+  id text PRIMARY KEY,                -- sha256 hex of the cookie token, never the token
+  idutilisateur bigint NOT NULL REFERENCES utilisateur (idutilisateur) ON DELETE CASCADE,
+  voir_comme bigint REFERENCES utilisateur (idutilisateur) ON DELETE SET NULL,
+  type text NOT NULL DEFAULT 'navigateur' CHECK (type IN ('navigateur', 'poste')),
+  libelle text,
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  vu_le timestamptz NOT NULL DEFAULT now(),
+  expire_le timestamptz,              -- NULL = enrolled poste, no expiry
+  ip text,
+  user_agent text,
+  revoque_le timestamptz
+);
+CREATE INDEX session_utilisateur ON session (idutilisateur);
+
+CREATE TABLE connexion (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  le timestamptz NOT NULL DEFAULT now(),
+  identifiant text NOT NULL,
+  idutilisateur bigint,
+  ip text,
+  succes boolean NOT NULL,
+  motif text
+);
+CREATE INDEX connexion_identifiant_le ON connexion (lower(identifiant), le);
+CREATE INDEX connexion_ip_le ON connexion (ip, le);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'session, connexion')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

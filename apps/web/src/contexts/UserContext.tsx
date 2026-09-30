@@ -1,10 +1,10 @@
-// User context — holds the currently identified user (via cookie) and
-// exposes login / logout. Wraps the whole app inside main.tsx so any
-// component can call useUser() to read the current identity.
+// User context — the account behind this browser's session (password login
+// since 2026-09-30, apps/api/src/routes/auth.ts). Wraps the whole app inside
+// main.tsx so any component can call useUser(). Shared with the TRM web app,
+// whose contexts/UserContext.tsx re-exports this module through `@etm`.
 //
-// On mount: calls GET /api/auth/me. If the cookie is present and valid, the
-// user is attached. If 401 (no cookie or invalid), the user stays null and
-// UserPickerGate renders the picker.
+// On mount: GET /api/auth/me. A valid session → the user; 401 → null, and
+// AuthGate shows the login screen.
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { apiFetch } from '@/lib/api'
@@ -13,20 +13,33 @@ export interface CurrentUser {
   IDutilisateur: number
   prenom: string | null
   nom: string | null
-  pc?: string | null
   IDexpediteur?: number | null
-  /** True when the session was originally established by an admin user
-   *  (currently Vincent Malterre). Persists across user switches via a
-   *  separate admin cookie on the server, so an admin can always switch
-   *  back to themselves after impersonating someone else. */
+  identifiant?: string | null
+  email?: string | null
+  /** 'poste' = a station account (Visitage…) on an enrolled PC. */
+  typeCompte?: 'personne' | 'poste'
+  /** The session belongs to an admin — stays true while they « Voir comme »
+   *  someone else, so the header keeps the way back. */
   isAdmin?: boolean
+  /** An admin set a temporary password: the app asks for a new one first. */
+  doitChangerMdp?: boolean
+  sessionType?: 'navigateur' | 'poste' | null
+  /** Set while an admin looks at the app as this user: the admin's own identity. */
+  voirComme?: { IDutilisateur: number; prenom: string | null; nom: string | null } | null
 }
 
 interface UserContextValue {
   user: CurrentUser | null
   isLoading: boolean
-  login: (id: number) => Promise<void>
+  /** Identifiant (or email) + password. Throws the API error (err.body.message). */
+  login: (identifiant: string, motDePasse: string) => Promise<void>
+  /** Name picker — only while the server's AUTH_PICKER transition flag is on. */
+  loginPicker: (id: number) => Promise<void>
+  /** Enrol this PC as a station account with an admin's one-time code. */
+  enrolerPoste: (code: string) => Promise<void>
   logout: () => Promise<void>
+  /** Re-read /auth/me (after a password change, « Voir comme »…). */
+  refresh: () => Promise<void>
 }
 
 const UserContext = createContext<UserContextValue | undefined>(undefined)
@@ -35,52 +48,50 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(true)
 
-  // Initial boot: ask the API who we are. 401 means "no valid cookie" and
-  // should silently drop us to the picker — not throw.
-  useEffect(() => {
-    let cancelled = false
-    apiFetch<CurrentUser>('/auth/me')
-      .then((u) => {
-        if (!cancelled) setUser(u)
-      })
-      .catch((err: Error & { status?: number }) => {
-        if (cancelled) return
-        if (err.status === 401) {
-          setUser(null)
-        } else {
-          // Network error, server down, etc. — treat the same as not-authed
-          // so the picker appears; a retry will happen if the user re-picks.
-          console.warn('auth/me failed:', err)
-          setUser(null)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false)
-      })
-    return () => { cancelled = true }
+  const refresh = useCallback(async () => {
+    try {
+      setUser(await apiFetch<CurrentUser>('/auth/me'))
+    } catch (err) {
+      if ((err as { status?: number }).status !== 401) console.warn('auth/me failed:', err)
+      setUser(null)
+    }
   }, [])
 
-  const login = useCallback(async (IDutilisateur: number) => {
-    const u = await apiFetch<CurrentUser>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ IDutilisateur }),
+  useEffect(() => {
+    let cancelled = false
+    refresh().finally(() => {
+      if (!cancelled) setIsLoading(false)
     })
-    setUser(u)
-  }, [])
+    return () => { cancelled = true }
+  }, [refresh])
+
+  const login = useCallback(async (identifiant: string, motDePasse: string) => {
+    await apiFetch('/auth/login', { method: 'POST', body: JSON.stringify({ identifiant, motDePasse }) })
+    await refresh()
+  }, [refresh])
+
+  const loginPicker = useCallback(async (IDutilisateur: number) => {
+    await apiFetch('/auth/login', { method: 'POST', body: JSON.stringify({ IDutilisateur }) })
+    await refresh()
+  }, [refresh])
+
+  const enrolerPoste = useCallback(async (code: string) => {
+    await apiFetch('/auth/poste', { method: 'POST', body: JSON.stringify({ code }) })
+    await refresh()
+  }, [refresh])
 
   const logout = useCallback(async () => {
     try {
       await apiFetch('/auth/logout', { method: 'POST' })
     } catch (err) {
-      // Best-effort — even if the API call fails, clear the client state so
-      // the UI drops back to the picker.
+      // Best-effort — even if the API call fails, drop back to the login screen.
       console.warn('logout failed:', err)
     }
     setUser(null)
   }, [])
 
   return (
-    <UserContext.Provider value={{ user, isLoading, login, logout }}>
+    <UserContext.Provider value={{ user, isLoading, login, loginPicker, enrolerPoste, logout, refresh }}>
       {children}
     </UserContext.Provider>
   )
@@ -92,12 +103,13 @@ export function useUser(): UserContextValue {
   return ctx
 }
 
-/** Whether the current session is allowed to switch to a different user.
- *  Driven by the `isAdmin` flag on the current user, which the server sets
- *  to true when the session was originally established by an admin user
- *  (currently Vincent Malterre). The flag persists across user switches via
- *  a separate admin cookie, so an admin who impersonates another user can
- *  still see the "Changer d'utilisateur" button and switch back. */
+/** Whether the session may « Voir comme » another account: its owner is an
+ *  admin (true even while looking through someone else). */
 export function canSwitchUser(user: CurrentUser | null): boolean {
   return user?.isAdmin === true
+}
+
+/** The French error message an auth call failed with. */
+export function messageErreur(err: unknown, defaut: string): string {
+  return (err as { body?: { message?: string } })?.body?.message ?? defaut
 }

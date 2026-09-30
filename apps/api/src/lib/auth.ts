@@ -8,10 +8,18 @@
 // Verification uses a constant-time comparison so tampered cookies can't be
 // fingerprinted via timing.
 
-import type { Request, Response, NextFunction, RequestHandler } from 'express'
+import type { Request, Response, NextFunction, RequestHandler, CookieOptions } from 'express'
 import crypto from 'node:crypto'
 import { resoudreAppareil, type AppareilAtelier } from './appareils-atelier.js'
 import { chargerFusion, idCourant } from './utilisateur-fusion.js'
+import {
+  SESSION_DUREE_MS,
+  creerSession,
+  definirVoirComme,
+  resoudreSession,
+  type SessionResolue,
+  type TypeSession,
+} from './sessions.js'
 
 // Read the secret lazily — ESM hoists imports to the top of the file, so
 // dotenv.config() in index.ts runs AFTER this module is first evaluated.
@@ -140,39 +148,133 @@ export function cookieOptions(): {
   }
 }
 
-/** Best-effort middleware: if a valid cookie is present, attaches req.userId
- *  (and req.adminId if the admin cookie is also valid). Never sends a 401 —
- *  routes that need to know whether the user is identified can check
- *  req.userId / req.adminId themselves. */
-export function attachUser(): RequestHandler {
-  return (req: Request, _res: Response, next: NextFunction) => {
-    attach(req).catch((err) => console.error('attachUser failed', err)).finally(() => next())
+// ── Sessions (password login, 2026-09-30) ────────────────────
+// The cookie carries a random token resolved against the `session` table
+// (lib/sessions.ts). In production AUTH_COOKIE_DOMAIN=.intra.etsmalterre.com
+// shares it between etm.intra… and trm.intra…: one login for both apps.
+export const SESSION_COOKIE_NAME = process.env.AUTH_SESSION_COOKIE_NAME ?? `${COOKIE_NAME}_session`
+
+export function sessionCookieOptions(type: TypeSession = 'navigateur'): CookieOptions {
+  return {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    secure: process.env.NODE_ENV === 'production',
+    ...(process.env.AUTH_COOKIE_DOMAIN ? { domain: process.env.AUTH_COOKIE_DOMAIN } : {}),
+    // A poste keeps its cookie for good (revocation is server-side); a browser
+    // cookie outlives the session a little, the server decides.
+    maxAge: type === 'poste' ? COOKIE_MAX_AGE_SECONDS * 1000 : SESSION_DUREE_MS + 24 * 3600_000,
   }
 }
 
-async function attach(req: Request): Promise<void> {
+export function clearSessionCookie(res: Response): void {
+  const { maxAge: _m, ...opts } = sessionCookieOptions()
+  res.clearCookie(SESSION_COOKIE_NAME, opts)
+}
+
+/** Transition flags, read at call time (production .env):
+ *  - AUTH_LEGACY_COOKIES=1: a browser still holding the picker's `mps_uid`
+ *    cookie is given a session for that account on its next request, so
+ *    nobody is logged out the day passwords ship. Turn off once everyone
+ *    has a password.
+ *  - AUTH_PICKER=1: the name picker still logs in (POST /auth/login with
+ *    { IDutilisateur }). Emergency fallback only — it is the hole passwords close. */
+export const legacyCookiesActifs = () => process.env.AUTH_LEGACY_COOKIES === '1'
+export const pickerActif = () => process.env.AUTH_PICKER === '1'
+
+export function clientIp(req: Request): string | null {
+  const fwd = req.headers['x-forwarded-for']
+  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim()
+  return first || req.socket.remoteAddress || null
+}
+
+/** Best-effort middleware: attaches req.userId / req.adminId / req.session
+ *  from the session cookie (or an enrolled phone's cookie). Never sends a
+ *  401 — routes that need an identified user check req.userId themselves. */
+export function attachUser(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    attach(req, res).catch((err) => console.error('attachUser failed', err)).finally(() => next())
+  }
+}
+
+function appliquerSession(req: Request, s: SessionResolue): void {
+  req.session = s
+  req.userId = s.voirComme ?? s.idutilisateur
+  // adminId = the admin who OWNS the session. isEffectiveAdmin() stays
+  // "admin acting as themselves": false while they look through someone else.
+  if (s.estAdmin) req.adminId = s.idutilisateur
+}
+
+async function attach(req: Request, res: Response): Promise<void> {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
-  const id = verifyUserCookie(cookies[COOKIE_NAME])
-  const adminId = verifyUserCookie(cookies[ADMIN_COOKIE_NAME])
-  // A cookie may still name a per-PC row folded into its person's account
-  // (scripts/comptes-import.ts): it acts as that account.
-  if (id !== null || adminId !== null) await chargerFusion()
-  if (id !== null) req.userId = idCourant(id)
-  if (adminId !== null) req.adminId = idCourant(adminId)
+
+  const jeton = cookies[SESSION_COOKIE_NAME]
+  const session = jeton ? await resoudreSession(jeton) : null
+  if (session) {
+    appliquerSession(req, session)
+  } else if (legacyCookiesActifs()) {
+    await convertirCookieHistorique(req, res, cookies)
+  }
 
   // An enrolled atelier phone. Only requests that carry the cookie pay the
   // store lookup (a cached file, an fs.stat). The phone acts as its
-  // enrolment account, but never over a user cookie already present.
+  // enrolment account, but never over a user session already present.
   const rawAppareil = cookies[APPAREIL_COOKIE_NAME]
   if (!rawAppareil) return
   try {
     const appareil = await resoudreAppareil(rawAppareil)
     if (appareil) {
       req.appareil = appareil
-      if (req.userId === undefined) req.userId = appareil.IDutilisateur
+      if (req.userId === undefined) req.userId = idCourant(appareil.IDutilisateur)
     }
   } catch (err) {
     console.error('attachUser: appareil lookup failed', err)
+  }
+}
+
+/** The picker's signed cookies (`mps_uid` + `mps_uid_admin`) → a session.
+ *  An admin who was impersonating keeps doing so (voir_comme). The cookie
+ *  may name a per-PC row folded into its person (utilisateur_fusion). */
+const conversions = new Map<string, Promise<string>>()
+
+async function convertirCookieHistorique(req: Request, res: Response, cookies: Record<string, string>): Promise<void> {
+  const id = verifyUserCookie(cookies[COOKIE_NAME])
+  if (id === null) return
+  await chargerFusion()
+  const adminCookie = verifyUserCookie(cookies[ADMIN_COOKIE_NAME])
+  const utilisateur = idCourant(id)
+  const admin = adminCookie !== null ? idCourant(adminCookie) : null
+  const proprietaire = admin ?? utilisateur
+  try {
+    // A page load fires several API calls at once, all carrying the old
+    // cookie before the first answer sets the new one: they share ONE
+    // conversion instead of each opening a session.
+    const cle = `${cookies[COOKIE_NAME]}|${cookies[ADMIN_COOKIE_NAME] ?? ''}`
+    let enCours = conversions.get(cle)
+    if (!enCours) {
+      enCours = creerSession({
+        idutilisateur: proprietaire,
+        libelle: 'Reprise du choix de nom',
+        ip: clientIp(req),
+        userAgent: req.headers['user-agent'] ?? null,
+      })
+      conversions.set(cle, enCours)
+      setTimeout(() => conversions.delete(cle), 60_000).unref?.()
+    }
+    const jeton = await enCours
+    const s = await resoudreSession(jeton)
+    if (!s) return // account deactivated or deleted
+    if (admin !== null && utilisateur !== admin && s.estAdmin) {
+      await definirVoirComme(s.id, utilisateur)
+      s.voirComme = utilisateur
+    }
+    res.cookie(SESSION_COOKIE_NAME, jeton, sessionCookieOptions())
+    res.clearCookie(COOKIE_NAME, cookieOptions())
+    res.clearCookie(ADMIN_COOKIE_NAME, cookieOptions())
+    appliquerSession(req, s)
+  } catch (err) {
+    // Deleted account (FK) or database hiccup: the browser simply logs in.
+    console.error('attachUser: legacy cookie conversion failed', err)
   }
 }
 
@@ -224,6 +326,8 @@ declare global {
        *  enrolled atelier phone (lib/appareils-atelier.ts). Every atelier
        *  write requires it — see gateSaisie() in routes/atelier.ts. */
       appareil?: AppareilAtelier
+      /** The session behind req.userId (lib/sessions.ts); absent for a phone or an anonymous request. */
+      session?: SessionResolue
     }
   }
 }
