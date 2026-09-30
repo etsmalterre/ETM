@@ -312,8 +312,8 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
         {rolls.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
             <Barcode className="h-8 w-8 mb-2 opacity-50" />
-            <p className="text-sm font-medium">Aucun rouleau affecté</p>
-            <p className="text-xs mt-1">Affectez les rouleaux à la ligne pour préparer leurs étiquettes.</p>
+            <p className="text-sm font-medium">Aucune pièce finie reçue pour cette ligne</p>
+            <p className="text-xs mt-1">Les étiquettes se préparent une fois le BL de l'ennoblisseur réceptionné.</p>
           </div>
         ) : (
           <div className="rounded-lg border bg-card shadow-sm overflow-x-auto">
