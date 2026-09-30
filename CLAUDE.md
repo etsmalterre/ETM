@@ -188,6 +188,7 @@ One or two lines per rule. **The incident, the measurements, the canonical file 
 
 Full text and incident history: `claude_doc/frontend_rules.md`.
 
+- ⚠️ **`lib/disable-autofill.ts` stamps « ignore me » for every password manager on EVERY field** (ETM and TRM copies): a credential form must sit in a `data-autofill="allow"` container (login + change-password), or Dashlane never sees it.
 - **Hooks before early returns** — violating this crashes production builds (React #310).
 - ⚠️ **Never `preventDefault()` on a controlled checkbox click** — the browser reverts the tick after React sets it (#1207); Shift+click lists use a button-as-checkbox.
 - **`useElementSize` returns a CALLBACK ref, deliberately** — a `useRef` + effect never attaches on a conditionally rendered target. Don't simplify it back.
