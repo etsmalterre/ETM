@@ -3,9 +3,11 @@
 // they can be pinned by a test without a database. The route's header carries
 // the recovered legacy SQL and the deltas; this file only computes.
 
-/** Widest range served, in days. Beyond that the roll read stops being a
- *  dashboard query (a year of TRM ≈ 8 000 rolls — fine; ten would not be). */
-export const RAPPORT_PRODUCTION_MAX_DAYS = 400
+/** Widest range served, in days — ten years, a guard against absurd dates
+ *  rather than a load limit: TRM's whole history (since Oct 2020, ~48 000
+ *  rolls / 3 000 OFs) reads in ~0.3 s on the dev copy (LIVA #1234,
+ *  2026-09-30 — it was 400 days, and a five-year « Personnalisée » errored). */
+export const RAPPORT_PRODUCTION_MAX_DAYS = 3660
 
 /** `YYYY-MM-DDTHH:mm[:ss]` (the browser's datetime-local shape, local time)
  *  → the compact 14-char HFSQL DATETIME literal both drivers accept in a
