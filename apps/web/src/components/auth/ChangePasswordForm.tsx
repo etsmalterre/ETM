@@ -24,6 +24,7 @@ function ChangePasswordForm({ onDone, onCancel, cancelLabel = 'Annuler' }: {
   const [erreur, setErreur] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [ok, setOk] = useState(false)
+  const { user } = useUser()
 
   const tropCourt = nouveau.length > 0 && nouveau.trim().length < LONGUEUR_MIN
   const different = confirmation.length > 0 && confirmation !== nouveau
@@ -46,15 +47,18 @@ function ChangePasswordForm({ onDone, onCancel, cancelLabel = 'Annuler' }: {
   }
 
   return (
-    <form className="space-y-3" onSubmit={submit}>
+    <form className="space-y-3" method="post" action="/mot-de-passe" onSubmit={submit}>
+      {/* Tells the password manager WHICH saved login the new password replaces. */}
+      <input type="text" name="username" autoComplete="username" value={user?.identifiant ?? user?.email ?? ''}
+        readOnly hidden />
       <div className="space-y-1">
         <label htmlFor="mdp-actuel" className="text-xs font-medium text-muted-foreground">Mot de passe actuel</label>
-        <input id="mdp-actuel" type="password" autoFocus autoComplete="current-password" value={actuel}
+        <input id="mdp-actuel" name="current-password" type="password" autoFocus autoComplete="current-password" value={actuel}
           onChange={(e) => setActuel(e.target.value)} className={authInputClass} />
       </div>
       <div className="space-y-1">
         <label htmlFor="mdp-nouveau" className="text-xs font-medium text-muted-foreground">Nouveau mot de passe</label>
-        <input id="mdp-nouveau" type="password" autoComplete="new-password" value={nouveau}
+        <input id="mdp-nouveau" name="new-password" type="password" autoComplete="new-password" value={nouveau}
           onChange={(e) => setNouveau(e.target.value)} className={authInputClass} />
         <p className={tropCourt ? 'text-[11px] text-destructive' : 'text-[11px] text-muted-foreground'}>
           Au moins {LONGUEUR_MIN} caractères. Une phrase de plusieurs mots est idéale.
@@ -62,7 +66,7 @@ function ChangePasswordForm({ onDone, onCancel, cancelLabel = 'Annuler' }: {
       </div>
       <div className="space-y-1">
         <label htmlFor="mdp-confirmation" className="text-xs font-medium text-muted-foreground">Confirmer le nouveau mot de passe</label>
-        <input id="mdp-confirmation" type="password" autoComplete="new-password" value={confirmation}
+        <input id="mdp-confirmation" name="new-password-confirmation" type="password" autoComplete="new-password" value={confirmation}
           onChange={(e) => setConfirmation(e.target.value)} className={authInputClass} />
         {different && <p className="text-[11px] text-destructive">Les deux saisies ne correspondent pas.</p>}
       </div>
