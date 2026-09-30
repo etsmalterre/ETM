@@ -73,6 +73,7 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { ADRESSE_A_DEFINIR_REFUS, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable } from '../lib/fini-expediable.js'
+import { rechercherExpeditionsDivers, rechercherExpeditionsFormelles, type RechercheEtat } from '../lib/expeditions-recherche.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -536,23 +537,32 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
   try {
     const kind = parseKind(String(req.query.bucket ?? 'formelle')) ?? 'formelle'
     const q = String(req.query.q ?? '').trim()
-    const state = String(req.query.state ?? 'all') // 'all' | 'facture' | 'nonfacture'
+    const stateRaw = String(req.query.state ?? 'all')
+    const state: RechercheEtat = stateRaw === 'facture' || stateRaw === 'nonfacture' ? stateRaw : 'all'
     const limitRaw = parseInt(String(req.query.limit ?? ''), 10)
     const limit = isNaN(limitRaw) ? 200 : Math.min(Math.max(limitRaw, 1), 500)
-    const fetchCap = q ? 800 : limit
 
-    // Cursor pagination (load more): only ids strictly below `before`. Ignored while searching.
+    // Cursor pagination (load more): only ids strictly below `before`, searching or not.
     const beforeRaw = parseInt(String(req.query.before ?? ''), 10)
-    const beforeId = !q && !isNaN(beforeRaw) && beforeRaw > 0 ? beforeRaw : null
+    const beforeId = !isNaN(beforeRaw) && beforeRaw > 0 ? beforeRaw : null
 
     // Invoiced filter — HFSQL keeps empty flags at 0 (or NULL), never trust IS NULL alone.
     const stateSql = state === 'nonfacture' ? ' AND (est_facture IS NULL OR est_facture = 0)' : state === 'facture' ? ' AND est_facture = 1' : ''
 
+    // A search matches in the database over every year (LIVA #1247) and
+    // hands back one page of ids; the rows are then built as for the list.
+    const recherche = { q, etat: state, limit, before: beforeId }
+
     if (kind === 'formelle') {
       const beforeSql = beforeId !== null ? ` AND IDexpedition < ${beforeId}` : ''
+      const found = q ? await rechercherExpeditionsFormelles(recherche) : null
+      if (found && found.length === 0) { res.json([]); return }
       const heads = await query<any>(
-        `SELECT TOP ${fetchCap} IDexpedition, IDcommande_client, IDadresse, IDtransporteur, DATE AS dexp, est_facture, donation ` +
-          `FROM expedition WHERE IDsociete = 1${stateSql}${beforeSql} ORDER BY IDexpedition DESC`,
+        found
+          ? `SELECT IDexpedition, IDcommande_client, IDadresse, IDtransporteur, DATE AS dexp, est_facture, donation ` +
+              `FROM expedition WHERE IDexpedition IN (${found.join(',')}) ORDER BY IDexpedition DESC`
+          : `SELECT TOP ${limit} IDexpedition, IDcommande_client, IDadresse, IDtransporteur, DATE AS dexp, est_facture, donation ` +
+              `FROM expedition WHERE IDsociete = 1${stateSql}${beforeSql} ORDER BY IDexpedition DESC`,
       )
       const cmdIds = heads.map((h: any) => Number(h.IDcommande_client)).filter(Boolean)
       const cmdRows = cmdIds.length
@@ -566,7 +576,7 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
         resolveTransporteurNames(heads.map((h: any) => Number(h.IDtransporteur))),
         formelleRollAggregates(heads.map((h: any) => Number(h.IDexpedition))),
       ])
-      let result = heads.map((h: any) => {
+      const result = heads.map((h: any) => {
         const id = Number(h.IDexpedition)
         const cmd = cmdMap.get(Number(h.IDcommande_client)) ?? { numero: null, IDclient: 0 }
         const agg = aggs.get(id) ?? { nb_rolls: 0, poids: 0, metrage: 0 }
@@ -586,21 +596,20 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
           nb_rolls: agg.nb_rolls, total_poids: agg.poids, total_metrage: agg.metrage,
         }
       })
-      if (q) {
-        const nq = norm(q)
-        result = result.filter((r: any) =>
-          String(r.id).includes(q) || (r.commande_numero != null && String(r.commande_numero).includes(q)) || norm(r.client_nom).includes(nq),
-        )
-      }
-      res.json(result.slice(0, limit))
+      res.json(result)
       return
     }
 
     // divers (no IDsociete)
     const beforeSql = beforeId !== null ? ` AND IDexpedition_divers < ${beforeId}` : ''
+    const found = q ? await rechercherExpeditionsDivers(recherche) : null
+    if (found && found.length === 0) { res.json([]); return }
     const heads = await query<any>(
-      `SELECT TOP ${fetchCap} IDexpedition_divers, IDclient, ref_client, IDtransporteur, DATE AS dexp, est_facture ` +
-        `FROM expedition_divers WHERE 1 = 1${stateSql}${beforeSql} ORDER BY IDexpedition_divers DESC`,
+      found
+        ? `SELECT IDexpedition_divers, IDclient, ref_client, IDtransporteur, DATE AS dexp, est_facture ` +
+            `FROM expedition_divers WHERE IDexpedition_divers IN (${found.join(',')}) ORDER BY IDexpedition_divers DESC`
+        : `SELECT TOP ${limit} IDexpedition_divers, IDclient, ref_client, IDtransporteur, DATE AS dexp, est_facture ` +
+            `FROM expedition_divers WHERE 1 = 1${stateSql}${beforeSql} ORDER BY IDexpedition_divers DESC`,
     )
     const ids = heads.map((h: any) => Number(h.IDexpedition_divers)).filter(Boolean)
     const lineRows = ids.length
@@ -612,7 +621,7 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
       resolveClientNames(heads.map((h: any) => Number(h.IDclient))),
       resolveTransporteurNames(heads.map((h: any) => Number(h.IDtransporteur))),
     ])
-    let result = heads.map((h: any) => {
+    const result = heads.map((h: any) => {
       const id = Number(h.IDexpedition_divers)
       const IDclient = Number(h.IDclient) || 0
       const refClient = (h.ref_client ?? '').toString().trim()
@@ -625,11 +634,7 @@ expeditionsRouter.get('/', async (req: Request, res: Response) => {
         nb_lignes: lineCount.get(id) ?? 0,
       }
     })
-    if (q) {
-      const nq = norm(q)
-      result = result.filter((r: any) => String(r.id).includes(q) || norm(r.client_nom).includes(nq))
-    }
-    res.json(result.slice(0, limit))
+    res.json(result)
   } catch (err) {
     console.error('Error fetching expeditions:', err)
     res.status(500).json({ error: 'Internal server error' })

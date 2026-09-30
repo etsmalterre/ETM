@@ -251,7 +251,8 @@ export function ClientsExpeditions() {
     return () => clearTimeout(t)
   }, [searchQuery])
 
-  // Infinite list: pages of 200, cursor = last row id (API `before`). Search returns a single page.
+  // Infinite list: pages of 200, cursor = last row id (API `before`) — a search
+  // pages the same way, over every year (LIVA #1247).
   const {
     data: rowPages, isLoading, isError, error, isFetching,
     fetchNextPage, hasNextPage, isFetchingNextPage,
@@ -261,7 +262,7 @@ export function ClientsExpeditions() {
       apiFetch(`/expeditions?bucket=${bucket}&state=${stateFilter}&q=${encodeURIComponent(debouncedQuery)}&limit=${LIST_PAGE_SIZE}${pageParam ? `&before=${pageParam}` : ''}`),
     initialPageParam: 0,
     getNextPageParam: (lastPage: ExpeditionListRow[]) =>
-      debouncedQuery || lastPage.length < LIST_PAGE_SIZE ? undefined : lastPage[lastPage.length - 1].id,
+      lastPage.length < LIST_PAGE_SIZE ? undefined : lastPage[lastPage.length - 1].id,
   })
 
   const { data: detail, isLoading: detailLoading } = useQuery<ExpeditionDetail>({
