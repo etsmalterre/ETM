@@ -94,8 +94,9 @@ function LoginForm() {
   return (
     <AuthCard icon={<KeyRound className="h-[18px] w-[18px]" />} title="ETM · TRM" subtitle="Identifiez-vous pour continuer">
       {/* method / action / name are what password managers (Dashlane…) key on
-          to offer « save these credentials » — the submit never leaves the page. */}
-      <form className="space-y-3" method="post" action="/login" onSubmit={submit}>
+          to offer « save these credentials » — the submit never leaves the page.
+          data-autofill="allow" exempts it from lib/disable-autofill.ts. */}
+      <form className="space-y-3" method="post" action="/login" data-autofill="allow" onSubmit={submit}>
         <div className="space-y-1">
           <label htmlFor="login-identifiant" className="text-xs font-medium text-muted-foreground">Identifiant ou adresse e-mail</label>
           <input

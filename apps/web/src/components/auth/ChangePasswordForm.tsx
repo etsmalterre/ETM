@@ -47,7 +47,7 @@ function ChangePasswordForm({ onDone, onCancel, cancelLabel = 'Annuler' }: {
   }
 
   return (
-    <form className="space-y-3" method="post" action="/mot-de-passe" onSubmit={submit}>
+    <form className="space-y-3" method="post" action="/mot-de-passe" data-autofill="allow" onSubmit={submit}>
       {/* Tells the password manager WHICH saved login the new password replaces. */}
       <input type="text" name="username" autoComplete="username" value={user?.identifiant ?? user?.email ?? ''}
         readOnly hidden />

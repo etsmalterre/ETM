@@ -1,8 +1,12 @@
 /**
  * Globally disable browser + password-manager autocomplete on every input,
- * textarea and select in the app. ETM has no login/credential fields —
- * all forms collect business data (stock, certificates, addresses, etc.)
- * and Dashlane/LastPass/1Password popups just get in the way.
+ * textarea and select in the app: business forms (stock, certificates,
+ * addresses, etc.) where Dashlane/LastPass/1Password popups just get in the way.
+ *
+ * EXCEPT inside a `data-autofill="allow"` container — the login and
+ * change-password forms (password login since 2026-09-30), where the password
+ * manager is exactly what we want. Stamping them made Dashlane skip the login
+ * screen entirely.
  *
  * Approach: a single MutationObserver that stamps the ignore attributes
  * on every form control at insert time. Handles both the initial render
@@ -25,6 +29,7 @@ const ATTRS: Array<[string, string]> = [
 ]
 
 function stamp(el: Element): void {
+  if (el.closest('[data-autofill="allow"]')) return
   for (const [name, value] of ATTRS) {
     if (!el.hasAttribute(name)) el.setAttribute(name, value)
   }
