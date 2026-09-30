@@ -46,6 +46,8 @@ export interface NouvelleSession {
   idutilisateur: number
   type?: TypeSession
   libelle?: string | null
+  /** A POSTE: the app it enrolled on (migration 0005). */
+  app?: 'etm' | 'trm' | null
   ip?: string | null
   userAgent?: string | null
 }
@@ -56,8 +58,8 @@ export async function creerSession(s: NouvelleSession): Promise<string> {
   const type = s.type ?? 'navigateur'
   const expire = type === 'poste' ? null : new Date(Date.now() + SESSION_DUREE_MS)
   await mpsPg()`
-    INSERT INTO session (id, idutilisateur, type, libelle, expire_le, ip, user_agent)
-    VALUES (${hacherJeton(jeton)}, ${s.idutilisateur}, ${type}, ${s.libelle ?? null}, ${expire},
+    INSERT INTO session (id, idutilisateur, type, libelle, app, expire_le, ip, user_agent)
+    VALUES (${hacherJeton(jeton)}, ${s.idutilisateur}, ${type}, ${s.libelle ?? null}, ${s.app ?? null}, ${expire},
             ${s.ip ?? null}, ${s.userAgent?.slice(0, 300) ?? null})`
   return jeton
 }
@@ -134,6 +136,8 @@ export interface SessionListee {
   ref: string
   type: TypeSession
   libelle: string | null
+  /** The app a POSTE enrolled on; null = not recorded (before 2026-09-30) or a browser. */
+  app: 'etm' | 'trm' | null
   creeLe: string
   vuLe: string
   expireLe: string | null
@@ -144,10 +148,10 @@ export interface SessionListee {
 export async function listerSessions(idutilisateur: number, type?: TypeSession): Promise<SessionListee[]> {
   const sql = mpsPg()
   const rows = await sql<{
-    id: string; type: TypeSession; libelle: string | null; cree_le: Date; vu_le: Date
+    id: string; type: TypeSession; libelle: string | null; app: 'etm' | 'trm' | null; cree_le: Date; vu_le: Date
     expire_le: Date | null; ip: string | null; user_agent: string | null
   }[]>`
-    SELECT id, type, libelle, cree_le, vu_le, expire_le, ip, user_agent FROM session
+    SELECT id, type, libelle, app, cree_le, vu_le, expire_le, ip, user_agent FROM session
     WHERE idutilisateur = ${idutilisateur} AND revoque_le IS NULL
       AND (expire_le IS NULL OR expire_le > now())
       ${type ? sql`AND type = ${type}` : sql``}
@@ -156,6 +160,7 @@ export async function listerSessions(idutilisateur: number, type?: TypeSession):
     ref: r.id.slice(0, 12),
     type: r.type,
     libelle: r.libelle,
+    app: r.app,
     creeLe: r.cree_le.toISOString(),
     vuLe: r.vu_le.toISOString(),
     expireLe: r.expire_le?.toISOString() ?? null,

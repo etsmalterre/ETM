@@ -7,7 +7,11 @@
 //   - POINTEUSES (pointage.intra…) — the wall tablet clocking the salariés.
 // Phones and pointeuses carry their own cookie (lib/appareils-atelier.ts).
 // One list, one « Enrôler » button that asks the type; a code enrols only its
-// own type. Revoking kills the device's cookie — only someone on site can
+// own type, and only under the account kind it fits (API lib/types-compte.ts):
+// a PC under a poste, a phone or a pointeuse under an « appareils » account —
+// or a TRM member person, for the régleurs' own phones until they move. Each
+// device says which app it runs: atelier, pointeuse, or the ERP a PC enrolled
+// on (recorded since 2026-09-30 — older PCs say « non enregistrée »). Revoking kills the device's cookie — only someone on site can
 // enrol it again. Being enrolled is what lets a device write: there is no
 // separate right to grant.
 //
@@ -41,6 +45,8 @@ interface BonnetierRef { IDbonnetier: number; prenom: string; nom: string }
 interface PostePc {
   ref: string
   libelle: string | null
+  /** Where it enrolled; null = before the app was recorded. */
+  app: 'etm' | 'trm' | null
   creeLe: string
   vuLe: string
   ip: string | null
@@ -81,6 +87,10 @@ interface Ligne {
   creeLe: string
   vuLe: string | null
   detail: string | null
+  /** The app it runs, as shown: « Application atelier », « ERP TRM »… */
+  application: string
+  /** True when the app was not recorded (older PC enrolments). */
+  applicationInconnue: boolean
   /** Rename / revoke target: the session ref of a PC, the id of a phone. */
   ref: string | number
 }
@@ -124,14 +134,20 @@ const KINDS: Record<Kind, {
   },
 }
 
-/** What can be enrolled under this account: a PC only under a station
- *  account (the API refuses a person's), phones and pointeuses only under a
- *  TRM member (they record TRM production / TRM hours). */
+/** What can be enrolled under this account — the API's rule
+ *  (lib/types-compte.ts enrolementsPossibles), which refuses anything else:
+ *  a PC only under a poste; phones and pointeuses under an appareils account,
+ *  or under a person member of TRM (a régleur's own phone). Never a phone
+ *  under a poste: it would carry the poste's screens and rights. */
 function typesPossibles(compte: Compte): Kind[] {
-  const out: Kind[] = []
-  if (compte.typeCompte === 'poste') out.push('pc')
-  if (compte.apps.includes('trm')) out.push('atelier', 'pointeuse')
-  return out
+  if (compte.typeCompte === 'poste') return ['pc']
+  if (compte.typeCompte === 'appareils') return ['atelier', 'pointeuse']
+  return compte.apps.includes('trm') ? ['atelier', 'pointeuse'] : []
+}
+
+const APPLICATIONS: Record<'atelier' | 'pointeuse', string> = {
+  atelier: 'Application atelier',
+  pointeuse: 'Application pointeuse',
 }
 
 // ── Helpers ────────────────────────────────────────────
@@ -186,6 +202,8 @@ function lignesDe(data: AppareilsPayload): Ligne[] {
     creeLe: p.creeLe,
     vuLe: p.vuLe,
     detail: [navigateurDe(p.userAgent), p.ip].filter(Boolean).join(' · ') || null,
+    application: p.app ? `ERP ${p.app.toUpperCase()}` : 'Application non enregistrée',
+    applicationInconnue: !p.app,
     ref: p.ref,
   }))
   const tels: Ligne[] = data.telephones.map((t) => ({
@@ -196,6 +214,8 @@ function lignesDe(data: AppareilsPayload): Ligne[] {
     creeLe: t.creeLe,
     vuLe: t.vuLe,
     detail: null,
+    application: APPLICATIONS[t.type],
+    applicationInconnue: false,
     ref: t.id,
   }))
   const ordre: Record<Kind, number> = { pc: 0, pointeuse: 1, atelier: 2 }
@@ -310,8 +330,10 @@ export function AppareilsTab({ compte }: { compte: Compte }) {
 
           <p className="text-xs text-muted-foreground">
             {types.length === 0
-              ? 'Rien ne s’enrôle sous ce compte : un PC s’enrôle sous un compte de poste, un téléphone ou une pointeuse sous un compte membre de TRM.'
-              : 'Un appareil enrôlé agit sous ce compte, avec ses écrans et ses permissions, sans mot de passe. Le révoquer le déconnecte aussitôt : il faudra un nouveau code, saisi sur place, pour l’enrôler à nouveau.'}
+              ? 'Rien ne s’enrôle sous ce compte : un PC s’enrôle sous un compte de poste, un téléphone ou une pointeuse sous un compte d’appareils d’atelier.'
+              : compte.typeCompte === 'appareils'
+                ? 'Un appareil enrôlé ici n’ouvre que sa propre application (atelier ou pointeuse), jamais l’ERP : ce compte n’a ni écrans ni droits. Le révoquer le déconnecte aussitôt : il faudra un nouveau code, saisi sur place, pour l’enrôler à nouveau.'
+                : 'Un appareil enrôlé agit sous ce compte, avec ses écrans et ses permissions, sans mot de passe. Le révoquer le déconnecte aussitôt : il faudra un nouveau code, saisi sur place, pour l’enrôler à nouveau.'}
           </p>
         </div>
       </div>
@@ -414,7 +436,8 @@ function LigneAppareil({ ligne: l, userId, now, onRenomme, onRevoquer }: {
           </div>
         )}
         <p className="text-xs text-muted-foreground mt-0.5 truncate">
-          Enrôlé le {fmtDate(l.creeLe)} à {fmtHeure(l.creeLe)} · {depuis(l.vuLe, now)}{l.detail ? ` · ${l.detail}` : ''}
+          <span className={cn('font-medium', l.applicationInconnue ? 'italic' : 'text-primary')}>{l.application}</span>
+          {' · '}Enrôlé le {fmtDate(l.creeLe)} à {fmtHeure(l.creeLe)} · {depuis(l.vuLe, now)}{l.detail ? ` · ${l.detail}` : ''}
         </p>
         {renommer.error && <p className="text-xs text-destructive mt-0.5">{messageErreur(renommer.error, 'Renommage impossible.')}</p>}
       </div>

@@ -11,7 +11,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, KeyRound, Loader2, LogIn, MonitorSmartphone, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
-import { messageErreur, useUser } from '@/contexts/UserContext'
+import { messageErreur, useAppCode, useUser } from '@/contexts/UserContext'
 import { AuthCard, AuthLayout, authInputClass } from './AuthLayout'
 import { UserPicker } from './UserPicker'
 
@@ -140,6 +140,7 @@ function LoginForm() {
 
 function PosteForm() {
   const { enrolerPoste } = useUser()
+  const app = useAppCode()
   const [code, setCode] = useState('')
   const [erreur, setErreur] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -151,7 +152,7 @@ function PosteForm() {
     setErreur(null)
     setPending(true)
     try {
-      await enrolerPoste(c)
+      await enrolerPoste(c, app)
     } catch (err) {
       setCode('')
       setErreur(messageErreur(err, 'L’enrôlement a échoué.'))

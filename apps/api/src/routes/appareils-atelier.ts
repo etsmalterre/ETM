@@ -47,6 +47,9 @@ import {
   type AppareilPublic,
 } from '../lib/appareils-atelier.js'
 import { selectBonnetiers } from '../lib/production-trm.js'
+import { mpsPg } from '../lib/mps-pg.js'
+import { APPS, appsDe } from '../lib/utilisateur-apps.js'
+import { enrolementsPossibles, type TypeCompte } from '../lib/types-compte.js'
 
 export const appareilsAtelierRouter: RouterType = Router()
 
@@ -195,6 +198,17 @@ appareilsAtelierRouter.post('/codes', async (req: Request, res: Response) => {
         res.status(400).json({ error: 'regleur_requis', message: 'L’identité fixe doit être un régleur actif.' })
         return
       }
+    }
+    // Under which account (lib/types-compte.ts): an appareils account, or a
+    // person member of TRM — never a poste, whose screens the device would carry.
+    const [compte] = await mpsPg()<{ type_compte: TypeCompte; actif: boolean }[]>`
+      SELECT type_compte, actif FROM utilisateur WHERE idutilisateur = ${IDutilisateur}`
+    if (!compte?.actif || !enrolementsPossibles(compte.type_compte, (await appsDe(IDutilisateur)) ?? APPS).includes(type)) {
+      res.status(409).json({
+        error: 'compte_inadapte',
+        message: 'Un téléphone ou une pointeuse s’enrôle sous un compte d’appareils actif (ou, pour un régleur, sous son propre compte membre de TRM).',
+      })
+      return
     }
     const c = creerCode({ type, IDutilisateur, IDbonnetier, libelle, creePar: req.userId! })
     res.status(201).json({ code: c.code, expireLe: new Date(c.expireLe).toISOString(), ttlMs: CODE_TTL_MS })

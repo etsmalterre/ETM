@@ -16,8 +16,9 @@ export interface CurrentUser {
   IDexpediteur?: number | null
   identifiant?: string | null
   email?: string | null
-  /** 'poste' = a station account (Visitage…) on an enrolled PC. */
-  typeCompte?: 'personne' | 'poste'
+  /** 'poste' = a station account (Visitage…) on an enrolled PC; 'appareils'
+   *  = atelier phones / pointeuses — member of no app, the gate refuses it. */
+  typeCompte?: 'personne' | 'poste' | 'appareils'
   /** The session belongs to an admin — stays true while they « Voir comme »
    *  someone else, so the header keeps the way back. */
   isAdmin?: boolean
@@ -58,7 +59,8 @@ interface UserContextValue {
   /** Name picker — only while the server's AUTH_PICKER transition flag is on. */
   loginPicker: (id: number) => Promise<void>
   /** Enrol this PC as a station account with an admin's one-time code. */
-  enrolerPoste: (code: string) => Promise<void>
+  /** `app`: the app whose login screen enrols the PC — recorded on it. */
+  enrolerPoste: (code: string, app: AppCode) => Promise<void>
   logout: () => Promise<void>
   /** Re-read /auth/me (after a password change, « Voir comme »…). */
   refresh: () => Promise<void>
@@ -97,8 +99,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     await refresh()
   }, [refresh])
 
-  const enrolerPoste = useCallback(async (code: string) => {
-    await apiFetch('/auth/poste', { method: 'POST', body: JSON.stringify({ code }) })
+  const enrolerPoste = useCallback(async (code: string, app: AppCode) => {
+    await apiFetch('/auth/poste', { method: 'POST', body: JSON.stringify({ code, app }) })
     await refresh()
   }, [refresh])
 

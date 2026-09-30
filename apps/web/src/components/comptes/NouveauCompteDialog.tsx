@@ -1,5 +1,7 @@
 // « + Nouveau » of Paramètres › Utilisateurs: creates an account (a person, or
-// a station account for an enrolled PC) in THIS app, or brings in an account
+// a station account for an enrolled PC) in THIS app, an « appareils » account
+// (atelier phones, pointeuses — member of no app, API lib/types-compte.ts),
+// or brings in an account
 // of the other app (« Compte existant » — Nicolas works for both companies:
 // one account, member of both). The password is set afterwards from the
 // account panel — it is shown once there.
@@ -35,7 +37,8 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
   const [identifiant, setIdentifiant] = useState('')
   const [identifiantTouche, setIdentifiantTouche] = useState(false)
   const [email, setEmail] = useState('')
-  const [type, setType] = useState<1 | 2 | 3>(1)
+  // 1 personne, 2 poste, 3 compte existant, 4 appareils.
+  const [type, setType] = useState<1 | 2 | 3 | 4>(1)
   const [existantId, setExistantId] = useState(0)
   useEffect(() => {
     if (!open) {
@@ -43,7 +46,7 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
     }
   }, [open])
   const autres = comptes
-    .filter((c) => c.actif && !c.apps.includes(app))
+    .filter((c) => c.actif && c.typeCompte !== 'appareils' && !c.apps.includes(app))
     .sort((a, b) => nomDe(a).localeCompare(nomDe(b), 'fr'))
   const existant = autres.find((c) => c.IDutilisateur === existantId) ?? null
   // The identifiant follows the first name until the admin types their own.
@@ -62,8 +65,9 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
             nom: nom.trim(),
             identifiant: identifiant.trim().toLowerCase(),
             email: email.trim(),
-            typeCompte: type === 2 ? 'poste' : 'personne',
-            apps: [app],
+            typeCompte: type === 2 ? 'poste' : type === 4 ? 'appareils' : 'personne',
+            // Devices run their own app: the account belongs to none.
+            apps: type === 4 ? [] : [app],
           }),
         }),
     onSuccess: onCreated,
@@ -71,7 +75,7 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
 
   const valide = type === 3
     ? existant !== null
-    : prenom.trim().length > 0 && identifiant.trim().length >= 2 && (type === 2 || nom.trim().length > 0)
+    : prenom.trim().length > 0 && identifiant.trim().length >= 2 && (type !== 1 || nom.trim().length > 0)
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
@@ -87,11 +91,12 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
             <label className="text-xs font-medium text-muted-foreground">Type</label>
             <PopoverSelect
               value={type}
-              onChange={(v) => setType(v === 2 ? 2 : v === 3 ? 3 : 1)}
+              onChange={(v) => setType(v === 2 || v === 3 || v === 4 ? v : 1)}
               hideEmpty
               options={[
                 { id: 1, primary: 'Personne', description: 'Se connecte avec un identifiant et un mot de passe.' },
-                { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code.' },
+                { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code. Ses écrans et ses droits sont ceux du compte.' },
+                { id: 4, primary: 'Appareils d’atelier', description: 'Téléphones et pointeuses qui ont leur propre application. Aucun accès à l’ERP.' },
                 { id: 3, primary: 'Compte existant', description: 'Une personne qui a déjà un compte dans l’autre application.' },
               ]}
             />
@@ -115,11 +120,11 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
             </div>
           ) : (<>
           <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">{type === 2 ? 'Nom du poste' : 'Prénom'}</label>
+            <label className="text-xs font-medium text-muted-foreground">{type === 2 ? 'Nom du poste' : type === 4 ? 'Nom' : 'Prénom'}</label>
             <input autoFocus value={prenom} onChange={(e) => setPrenom(e.target.value)} className={inputClass} />
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Nom{type === 2 ? ' (facultatif)' : ''}</label>
+            <label className="text-xs font-medium text-muted-foreground">{type === 4 ? 'Complément' : 'Nom'}{type !== 1 ? ' (facultatif)' : ''}</label>
             <input value={nom} onChange={(e) => setNom(e.target.value)} className={inputClass} />
           </div>
           <div className="space-y-1">
@@ -140,8 +145,10 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
           )}
           <p className="col-span-full text-[11px] text-muted-foreground">
             {type === 2
-              ? 'Ensuite, générez un code d’enrôlement depuis le panneau Compte et saisissez-le sur le PC.'
-              : 'Ensuite, définissez son mot de passe depuis le panneau Compte, puis ses écrans et ses droits.'}
+              ? 'Ensuite, donnez-lui ses écrans et ses droits, puis enrôlez le PC depuis l’onglet Appareils.'
+              : type === 4
+                ? 'Ensuite, enrôlez les téléphones et les pointeuses depuis l’onglet Appareils. Ce compte n’appartient à aucune application : il n’a ni écrans ni droits.'
+                : 'Ensuite, définissez son mot de passe depuis le panneau Compte, puis ses écrans et ses droits.'}
           </p>
           </>)}
         </div>

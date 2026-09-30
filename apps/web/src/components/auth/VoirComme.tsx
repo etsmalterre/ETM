@@ -18,7 +18,7 @@ interface CompteListe {
   IDutilisateur: number
   prenom: string | null
   nom: string | null
-  typeCompte: 'personne' | 'poste'
+  typeCompte: 'personne' | 'poste' | 'appareils'
   apps?: AppCode[]
 }
 

@@ -5,6 +5,7 @@
 //
 //   GET    /api/comptes                        — every account, with its `apps` (each app's screen lists its members)
 //   POST   /api/comptes                        — create { prenom, nom, identifiant, email?, typeCompte, apps }
+//                                                 (an 'appareils' account: apps [] — lib/types-compte.ts)
 //   PATCH  /api/comptes/:id                    — { prenom?, nom?, identifiant?, email?, actif?, estAdmin?, apps? }
 //   POST   /api/comptes/:id/mot-de-passe       — { motDePasse? , doitChanger? } → { motDePasse } shown once
 //   DELETE /api/comptes/:id/mot-de-passe       — no password any more (and every session ends)
@@ -28,6 +29,7 @@ import { annulerCodePoste, codesPosteEnAttente, genererCodePoste } from '../lib/
 import { listerAppareils, listerCodes, typeAppareil } from '../lib/appareils-atelier.js'
 import { selectBonnetiers } from '../lib/production-trm.js'
 import { APPS, appsDe, appsParUtilisateur, ecrireApps, oublierApps, refusApps, type AppCode } from '../lib/utilisateur-apps.js'
+import { refusAppsDuType, TYPES_COMPTE, type TypeCompte } from '../lib/types-compte.js'
 
 export const comptesRouter: RouterType = Router()
 
@@ -37,7 +39,7 @@ interface LigneCompte {
   nom: string | null
   identifiant: string | null
   email: string | null
-  type_compte: 'personne' | 'poste'
+  type_compte: TypeCompte
   est_admin: boolean
   actif: boolean
   a_mot_de_passe: boolean
@@ -143,9 +145,9 @@ const creerBody = z.object({
   nom: z.string().trim().max(60).default(''),
   identifiant: identifiantSchema,
   email: emailSchema.default(''),
-  typeCompte: z.enum(['personne', 'poste']).default('personne'),
-  /** The app whose screen creates it — never implicit. */
-  apps: z.array(z.enum(APPS as [AppCode, ...AppCode[]])).min(1),
+  typeCompte: z.enum(TYPES_COMPTE as [TypeCompte, ...TypeCompte[]]).default('personne'),
+  /** The app whose screen creates it — never implicit. None for an appareils account. */
+  apps: z.array(z.enum(APPS as [AppCode, ...AppCode[]])),
 })
 
 comptesRouter.post('/', async (req, res) => {
@@ -156,6 +158,8 @@ comptesRouter.post('/', async (req, res) => {
     return
   }
   const b = parsed.data
+  const refus = refusAppsDuType(b.typeCompte, b.apps)
+  if (refus) { res.status(400).json({ error: 'apps_refusees', message: refus }); return }
   try {
     const sql = mpsPg()
     const id = await sql.begin(async (t) => {
@@ -210,9 +214,17 @@ comptesRouter.patch('/:id', async (req, res) => {
   if (b.actif !== undefined) sets.actif = b.actif
   if (b.estAdmin !== undefined) sets.est_admin = b.estAdmin
   try {
-    if (b.apps !== undefined) {
-      const refus = refusApps((await appsDe(id)) ?? APPS, b.apps, id === req.userId)
-      if (refus) { res.status(409).json({ error: 'apps_refusees', message: refus }); return }
+    if (b.apps !== undefined || b.estAdmin) {
+      const [c] = await lister(id)
+      if (!c) { res.status(404).json({ error: 'not found' }); return }
+      if (b.estAdmin && c.type_compte === 'appareils') {
+        res.status(409).json({ error: 'appareils_sans_droits', message: 'Un compte d’appareils ne peut pas être administrateur.' })
+        return
+      }
+      if (b.apps !== undefined) {
+        const refus = refusApps((await appsDe(id)) ?? APPS, b.apps, id === req.userId, c.type_compte)
+        if (refus) { res.status(409).json({ error: 'apps_refusees', message: refus }); return }
+      }
     }
     const sql = mpsPg()
     const trouve = await sql.begin(async (t) => {
@@ -353,7 +365,8 @@ comptesRouter.get('/:id/appareils', async (req, res) => {
       return x ? { IDbonnetier: x.id, prenom: x.prenom, nom: x.nom } : { IDbonnetier: b, prenom: '?', nom: '' }
     }
     res.json({
-      postes: postes.map((p) => ({ ref: p.ref, libelle: p.libelle, creeLe: p.creeLe, vuLe: p.vuLe, ip: p.ip, userAgent: p.userAgent })),
+      // `app`: where the PC enrolled (null = before migration 0005, not recorded).
+      postes: postes.map((p) => ({ ref: p.ref, libelle: p.libelle, app: p.app, creeLe: p.creeLe, vuLe: p.vuLe, ip: p.ip, userAgent: p.userAgent })),
       telephones: telephones.map((a) => ({
         id: a.id, type: typeAppareil(a), libelle: a.libelle, bonnetier: nom(a.IDbonnetier), creeLe: a.creeLe, vuLe: a.vuLe,
       })),

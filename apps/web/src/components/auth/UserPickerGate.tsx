@@ -25,7 +25,8 @@ export function UserPickerGate({ app, children }: { app: AppCode; children: Reac
     )
   }
 
-  if (!user) return <LoginScreen />
+  // The login screen reads the app too: a PC enrolled from it records which one.
+  if (!user) return <AppCodeProvider value={app}><LoginScreen /></AppCodeProvider>
   if (user.doitChangerMdp) return <ForcedPasswordChange />
 
   return (

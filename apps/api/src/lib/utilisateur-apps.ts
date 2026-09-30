@@ -20,6 +20,7 @@
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { oublierPermissions, type PermissionApp } from './permission-store.js'
+import { refusAppsDuType, type TypeCompte } from './types-compte.js'
 
 export type AppCode = PermissionApp
 export const APPS: readonly AppCode[] = ['etm', 'trm']
@@ -77,12 +78,17 @@ export async function membres(app: AppCode): Promise<Set<number> | null> {
 
 /** Why a membership change is refused, or null. `soiMeme`: the admin edits
  *  their own account — leaving an app from its own screen would lock them out
- *  of it mid-click. An account always keeps one app: to shut someone out of
+ *  of it mid-click. An account always keeps one app — except an 'appareils'
+ *  account, which holds none (lib/types-compte.ts): to shut someone out of
  *  both, deactivate the account. */
-export function refusApps(avant: readonly AppCode[], apres: readonly AppCode[], soiMeme: boolean): string | null {
-  if (apres.length === 0) {
-    return 'Un compte appartient au moins à une application. Pour lui retirer tout accès, désactivez le compte.'
-  }
+export function refusApps(
+  avant: readonly AppCode[],
+  apres: readonly AppCode[],
+  soiMeme: boolean,
+  typeCompte: TypeCompte = 'personne',
+): string | null {
+  const refus = refusAppsDuType(typeCompte, apres)
+  if (refus) return refus
   if (soiMeme && avant.some((a) => !apres.includes(a))) {
     return 'Vous ne pouvez pas vous retirer vous-même d’une application.'
   }

@@ -18,4 +18,9 @@ describe('refusApps', () => {
   it('lets an admin join an app on their own account', () => {
     expect(refusApps(['etm'], ['etm', 'trm'], true)).toBeNull()
   })
+
+  it('an appareils account holds no app — and cannot join one', () => {
+    expect(refusApps(['trm'], [], false, 'appareils')).toBeNull()
+    expect(refusApps([], ['trm'], false, 'appareils')).toMatch(/aucune application/)
+  })
 })

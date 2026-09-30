@@ -168,6 +168,23 @@ WHERE est_admin
         'visitage|', 'regleur|', 'mickael|grivelet');
 `,
   },
+  {
+    // A third kind of account (plan ~/.claude/plans/comptes-appareils.md):
+    // 'appareils' holds devices that run their OWN app — atelier phones,
+    // pointeuses. No password, no login, member of no app, no rights: a
+    // device cookie acts as its account on every route (lib/auth.ts), so the
+    // account must carry nothing into the ERP.
+    // `session.app`: the app a POSTE session was enrolled on (NULL = before
+    // this migration, not recorded).
+    name: '0005_comptes_appareils',
+    sql: `
+ALTER TABLE utilisateur
+  DROP CONSTRAINT utilisateur_type_compte_check,
+  ADD CONSTRAINT utilisateur_type_compte_check CHECK (type_compte IN ('personne', 'poste', 'appareils'));
+ALTER TABLE session
+  ADD COLUMN app text CHECK (app IN ('etm', 'trm'));
+`,
+  },
 ]
 
 export interface MigrationStatus {

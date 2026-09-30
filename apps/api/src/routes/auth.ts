@@ -40,7 +40,8 @@ import {
 import { hacherMotDePasse, motDePasseRefuse, verifierMotDePasse } from '../lib/passwords.js'
 import { attenteConnexion, journaliserConnexion } from '../lib/login-throttle.js'
 import { consommerCodePoste } from '../lib/postes.js'
-import { APPS, appsDe, appsParUtilisateur } from '../lib/utilisateur-apps.js'
+import { APPS, appsDe, appsParUtilisateur, type AppCode } from '../lib/utilisateur-apps.js'
+import type { TypeCompte } from '../lib/types-compte.js'
 
 export const authRouter: RouterType = Router()
 
@@ -51,7 +52,7 @@ interface Compte {
   idexpediteur: number | null
   identifiant: string | null
   email: string | null
-  type_compte: 'personne' | 'poste'
+  type_compte: TypeCompte
   est_admin: boolean
   actif: boolean
   doit_changer_mdp: boolean
@@ -79,11 +80,14 @@ function publicUser(c: Compte) {
   }
 }
 
-async function ouvrirSession(req: Request, res: Response, c: Compte, type: TypeSession = 'navigateur', libelle: string | null = null): Promise<void> {
+async function ouvrirSession(
+  req: Request, res: Response, c: Compte, type: TypeSession = 'navigateur', libelle: string | null = null, app: AppCode | null = null,
+): Promise<void> {
   const jeton = await creerSession({
     idutilisateur: c.idutilisateur,
     type,
     libelle,
+    app,
     ip: clientIp(req),
     userAgent: req.headers['user-agent'] ?? null,
   })
@@ -122,7 +126,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
         return
       }
       const c = await compte(parsed.data.IDutilisateur)
-      if (!c || !c.actif) { res.status(404).json({ error: 'user not found' }); return }
+      if (!c || !c.actif || c.type_compte === 'appareils') { res.status(404).json({ error: 'user not found' }); return }
       await journaliserConnexion({ identifiant: `#${c.idutilisateur}`, idutilisateur: c.idutilisateur, ip, succes: true, motif: 'picker' })
       await ouvrirSession(req, res, c)
       res.json({ ...publicUser(c), isAdmin: c.est_admin, doitChangerMdp: false })
@@ -153,7 +157,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
       idutilisateur: c?.idutilisateur ?? null,
       ip,
       succes: ok,
-      motif: ok ? undefined : !c ? 'inconnu' : !c.actif ? 'inactif' : c.type_compte !== 'personne' ? 'poste' : !c.password_hash ? 'sans_mdp' : 'mdp',
+      motif: ok ? undefined : !c ? 'inconnu' : !c.actif ? 'inactif' : c.type_compte !== 'personne' ? c.type_compte : !c.password_hash ? 'sans_mdp' : 'mdp',
     })
     if (!ok) {
       res.status(401).json({ error: 'identifiants_invalides', message: REFUS })
@@ -171,6 +175,8 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 // ── POST /poste — enrol this PC as a station account ─────────
 authRouter.post('/poste', async (req: Request, res: Response) => {
   const code = typeof req.body?.code === 'string' ? req.body.code.replace(/\s/g, '') : ''
+  // The app whose login screen enrolled the PC (Appareils tab shows it).
+  const app = (APPS as readonly string[]).includes(req.body?.app) ? (req.body.app as AppCode) : null
   const ip = clientIp(req)
   try {
     const attente = await attenteConnexion('poste', ip)
@@ -186,7 +192,7 @@ authRouter.post('/poste', async (req: Request, res: Response) => {
       res.status(401).json({ error: 'code_invalide', message: 'Code invalide ou expiré.' })
       return
     }
-    await ouvrirSession(req, res, c, 'poste', cible.libelle)
+    await ouvrirSession(req, res, c, 'poste', cible.libelle, app)
     res.json({ ...publicUser(c), isAdmin: false, doitChangerMdp: false })
   } catch (err) {
     console.error('Error in /auth/poste:', err)
@@ -290,7 +296,8 @@ authRouter.get('/users', async (req: Request, res: Response) => {
   }
   try {
     const rows = await mpsPg()<{ idutilisateur: number; prenom: string | null; nom: string | null; type_compte: string }[]>`
-      SELECT idutilisateur, prenom, nom, type_compte FROM utilisateur WHERE actif ORDER BY idutilisateur`
+      SELECT idutilisateur, prenom, nom, type_compte FROM utilisateur
+      WHERE actif AND type_compte <> 'appareils' ORDER BY idutilisateur`
     const apps = await appsParUtilisateur()
     const payload = rows
       .map((r) => ({
@@ -326,7 +333,8 @@ authRouter.post('/voir-comme', async (req: Request, res: Response) => {
   try {
     if (cible !== null) {
       const c = await compte(cible)
-      if (!c || !c.actif) { res.status(404).json({ error: 'user not found' }); return }
+      // An appareils account has nothing to see: it opens no app.
+      if (!c || !c.actif || c.type_compte === 'appareils') { res.status(404).json({ error: 'user not found' }); return }
     }
     await definirVoirComme(s.id, cible)
     res.json({ ok: true })

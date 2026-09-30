@@ -5,7 +5,9 @@
 //                to (ETM / TRM — API lib/utilisateur-apps.ts);
 //   • Sessions — the browsers logged in, and recent login attempts.
 // Enrolled PCs, phones and pointeuses are in the centre « Appareils » tab
-// (AppareilsTab.tsx), not here.
+// (AppareilsTab.tsx), not here. An « appareils » account (API
+// lib/types-compte.ts) has no password, no administrator switch and no app:
+// its card says so instead of offering switches that mean nothing.
 // Everything acts immediately (no edit mode), like the permission toggles of
 // the centre panel.
 
@@ -23,13 +25,24 @@ import { apiFetch } from '@/lib/api'
 import { APP_NAMES, messageErreur, useAppCode, type AppCode } from '@/contexts/UserContext'
 import { cn } from '@/lib/utils'
 
+/** personne = a person; poste = a PC that uses an app (its Écrans /
+ *  Permissions apply); appareils = phones / pointeuses running their own app,
+ *  member of no app, no rights. */
+export type TypeCompte = 'personne' | 'poste' | 'appareils'
+
+export const TYPE_COMPTE_LABELS: Record<TypeCompte, string> = {
+  personne: 'Personne',
+  poste: 'Poste',
+  appareils: 'Appareils d’atelier',
+}
+
 export interface Compte {
   IDutilisateur: number
   prenom: string | null
   nom: string | null
   identifiant: string | null
   email: string | null
-  typeCompte: 'personne' | 'poste'
+  typeCompte: TypeCompte
   estAdmin: boolean
   actif: boolean
   aMotDePasse: boolean
@@ -92,6 +105,7 @@ const MOTIFS: Record<string, string> = {
   inactif: 'compte désactivé',
   sans_mdp: 'aucun mot de passe défini',
   poste: 'compte de poste',
+  appareils: 'compte d’appareils',
   changement_mdp: 'ancien mot de passe incorrect',
   picker: 'choix du nom',
   enrolement: 'enrôlement du poste',
@@ -196,6 +210,8 @@ function CompteTab({ compte }: { compte: Compte }) {
 
   const identifiantModifie = identifiant.trim().toLowerCase() !== (compte.identifiant ?? '')
   const estPoste = compte.typeCompte === 'poste'
+  const estAppareils = compte.typeCompte === 'appareils'
+  const sansMdp = compte.typeCompte !== 'personne'
 
   return (
     <>
@@ -225,7 +241,7 @@ function CompteTab({ compte }: { compte: Compte }) {
                 {patch.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
               </Button>
             </div>
-            {!estPoste && (
+            {!sansMdp && (
               <p className="text-[11px] text-muted-foreground">
                 {compte.email ? <>Il peut aussi se connecter avec <span className="font-medium">{compte.email}</span>.</> : 'Sans adresse e-mail : l’identifiant seul.'}
               </p>
@@ -233,7 +249,7 @@ function CompteTab({ compte }: { compte: Compte }) {
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-xs text-muted-foreground">Type</span>
-            <Badge variant="outline" className="text-[10px]">{estPoste ? 'Poste & appareils' : 'Personne'}</Badge>
+            <Badge variant="outline" className="text-[10px]">{TYPE_COMPTE_LABELS[compte.typeCompte]}</Badge>
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-xs text-muted-foreground">Dernière connexion</span>
@@ -243,15 +259,17 @@ function CompteTab({ compte }: { compte: Compte }) {
         {patch.error && <p className="mt-2 text-xs text-destructive">{messageErreur(patch.error, 'Enregistrement impossible.')}</p>}
       </div>
 
-      {/* Mot de passe — a station account has none: its devices are enrolled by code */}
-      {estPoste ? (
+      {/* Mot de passe — a station or appareils account has none: its devices are enrolled by code */}
+      {sansMdp ? (
         <div className={cardClass}>
           <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-            <MonitorSmartphone className="h-3.5 w-3.5" />Sans mot de passe
+            {estAppareils ? <Smartphone className="h-3.5 w-3.5" /> : <MonitorSmartphone className="h-3.5 w-3.5" />}Sans mot de passe
           </p>
           <p className="text-[11px] text-muted-foreground">
-            Un compte de poste ne se connecte pas avec un mot de passe : ses PC, téléphones et pointeuses
-            s’enrôlent avec un code à usage unique, dans l’onglet <span className="font-medium">Appareils</span>.
+            {estPoste
+              ? 'Un compte de poste ne se connecte pas avec un mot de passe : ses PC s’enrôlent avec un code à usage unique, dans l’onglet '
+              : 'Un compte d’appareils ne se connecte jamais à l’ERP : ses téléphones et pointeuses s’enrôlent avec un code à usage unique, dans l’onglet '}
+            <span className="font-medium">Appareils</span>.
           </p>
           <p className="mt-2 text-sm flex items-center gap-1.5">
             <Smartphone className="h-3.5 w-3.5 text-muted-foreground" />
@@ -299,7 +317,7 @@ function CompteTab({ compte }: { compte: Compte }) {
           <ShieldCheck className="h-3.5 w-3.5" />Accès
         </p>
         <div className="space-y-3">
-          {!estPoste && (
+          {!sansMdp && (
             <SwitchRow
               label="Administrateur"
               detail="Tous les droits, Paramètres › Utilisateurs, « Voir comme »."
@@ -310,7 +328,11 @@ function CompteTab({ compte }: { compte: Compte }) {
           )}
           <SwitchRow
             label="Compte actif"
-            detail={compte.actif ? 'Peut se connecter.' : 'Désactivé : connexion refusée, sessions fermées.'}
+            detail={compte.actif
+              ? (estAppareils ? 'Peut recevoir de nouveaux appareils.' : 'Peut se connecter.')
+              : (estAppareils
+                ? 'Désactivé : plus aucun enrôlement. Les appareils déjà enrôlés se révoquent un par un (onglet Appareils).'
+                : 'Désactivé : connexion refusée, sessions fermées.')}
             value={compte.actif}
             disabled={patch.isPending}
             onChange={(v) => (v ? patch.mutate({ actif: true }) : setConfirmDesactiver(true))}
@@ -323,6 +345,12 @@ function CompteTab({ compte }: { compte: Compte }) {
         <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
           <AppWindow className="h-3.5 w-3.5" />Applications
         </p>
+        {estAppareils ? (
+          <p className="text-[11px] text-muted-foreground">
+            Aucune : ses appareils ont leur propre application (atelier, pointeuse). Un appareil enrôlé
+            ici n’ouvre ni ETM ni TRM et n’y a aucun droit.
+          </p>
+        ) : (
         <div className="space-y-3">
           {APP_ORDER.map((a) => (
             <SwitchRow
@@ -337,6 +365,7 @@ function CompteTab({ compte }: { compte: Compte }) {
             />
           ))}
         </div>
+        )}
         {appsMut.error && <p className="mt-2 text-xs text-destructive">{messageErreur(appsMut.error, 'Enregistrement impossible.')}</p>}
       </div>
 
@@ -353,7 +382,9 @@ function CompteTab({ compte }: { compte: Compte }) {
       <ConfirmDialog
         open={confirmDesactiver}
         title="Désactiver le compte"
-        description={`${nomDe(compte)} ne pourra plus se connecter et ses sessions ouvertes sont fermées. Son historique est conservé ; le compte peut être réactivé.`}
+        description={estAppareils
+          ? `Plus aucun appareil ne pourra être enrôlé sous ${nomDe(compte)}. Ceux déjà enrôlés continuent de fonctionner jusqu’à leur révocation. Le compte peut être réactivé.`
+          : `${nomDe(compte)} ne pourra plus se connecter et ses sessions ouvertes sont fermées. Son historique est conservé ; le compte peut être réactivé.`}
         confirmLabel="Désactiver"
         isPending={patch.isPending}
         onCancel={() => setConfirmDesactiver(false)}
