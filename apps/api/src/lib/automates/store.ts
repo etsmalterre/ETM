@@ -27,7 +27,7 @@ const RUNS_MAX = 3000
 
 export type AutomateMode = AgentMode
 
-/** applique = written to the device; simule = essai, would have written;
+/** applique = written to the device (a report: sent); simule = essai, would have written;
  *  inchange = nothing to change; erreur = the run failed (device, DB…). */
 export type AutomateStatut = 'applique' | 'simule' | 'inchange' | 'erreur'
 
@@ -77,15 +77,28 @@ export interface AutomateRun {
 
 const etatVide = (): AutomateState => ({ mode: 'off', modeChangedAt: null, modeChangedBy: null, dernierControle: null, retours: [] })
 
+/** What an automate starts from before its first stored state (catalog.ts
+ *  `etatInitial`): an automate that takes over a job already running in
+ *  production (the pointage reports) starts « actif » with the old timer's
+ *  last day instead of « off » — else the job would silently stop at deploy. */
+const initiaux = new Map<string, () => Partial<AutomateState>>()
+
+export function declarerEtatInitial(slug: string, init: () => Partial<AutomateState>): void {
+  initiaux.set(slug, init)
+}
+
+const depart = (slug: string, stocke: AutomateState | undefined): AutomateState =>
+  stocke ? { ...etatVide(), ...stocke } : { ...etatVide(), ...initiaux.get(slug)?.() }
+
 export async function lireEtat(slug: string): Promise<AutomateState> {
   const all = await readJson<Record<string, AutomateState>>(STATE_FILE, {})
-  return { ...etatVide(), ...all[slug] }
+  return depart(slug, all[slug])
 }
 
 function modifierEtat(slug: string, fn: (s: AutomateState) => void): Promise<AutomateState> {
   return exclusive(async () => {
     const all = await readJson<Record<string, AutomateState>>(STATE_FILE, {})
-    const s = { ...etatVide(), ...all[slug] }
+    const s = depart(slug, all[slug])
     fn(s)
     all[slug] = s
     await writeJson(STATE_FILE, all)

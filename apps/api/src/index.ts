@@ -62,7 +62,6 @@ import { permissionsRouter } from './routes/permissions.js'
 import { permissionsTrmRouter } from './routes/permissions-trm.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { notificationsTrmRouter } from './routes/notifications-trm.js'
-import { demarrerRapportsPointage } from './lib/rapports-pointage-envoi.js'
 import { agentsIaRouter } from './routes/agents-ia.js'
 import { rhRouter } from './routes/rh.js'
 import { webserviceSiteRouter } from './routes/webservice-site.js'
@@ -231,7 +230,7 @@ app.use('/api/retours-client-trm', retoursClientTrmRouter)
 // Agents IA (menu Agents IA) — the BL Ennoblisseur agent and its successors, lib/agents/.
 app.use('/api/agents-ia', agentsIaRouter)
 // Agents IA › Automates — deterministic scripts on the agents' engine,
-// lib/automates/ (first: Vidéosurveillance, the Reolink NVR push schedule).
+// lib/automates/ (Vidéosurveillance, the two pointage report emails).
 enregistrerTaches(tachesAutomates())
 app.use('/api/automates', automatesRouter)
 // RH (Vincent + Isabelle only, behind a code RH) — lib/rh-acces.ts, PostgreSQL `rh`.
@@ -243,9 +242,8 @@ app.use('/api/site', webserviceSiteRouter)
 
 app.listen(PORT, () => {
   console.log(`MPS API running on port ${PORT} [${env}]`)
-  // The daily pointage report + weekly balance emails (production only).
-  demarrerRapportsPointage()
-  // The Agents IA mailbox polls and the automates (production only).
+  // The Agents IA mailbox polls and the automates — the pointage report
+  // emails included since 2026-09-30 (production only).
   demarrerAgents()
 })
 

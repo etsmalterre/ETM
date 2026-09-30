@@ -11,9 +11,15 @@ export const cleTache = (slug: string) => `automate:${slug}`
 
 /** Is this run worth keeping? A person's launch, a write and an error always;
  *  an hourly « nothing to change » never; an hourly essai proposal only when
- *  it differs from the last one kept (else the same diff lands every hour). */
-export function aGarder(run: Pick<AutomateRun, 'source' | 'statut' | 'empreinte'>, dernierSimule: Pick<AutomateRun, 'empreinte'> | undefined): boolean {
-  if (run.source !== 'planifie') return true
+ *  it differs from the last one kept (else the same diff lands every hour).
+ *  A daily automate (the pointage reports) keeps every run: one a day is cheap,
+ *  and « nothing sent today » is exactly what the screen must show. */
+export function aGarder(
+  run: Pick<AutomateRun, 'source' | 'statut' | 'empreinte'>,
+  dernierSimule: Pick<AutomateRun, 'empreinte'> | undefined,
+  quotidien = false,
+): boolean {
+  if (run.source !== 'planifie' || quotidien) return true
   if (run.statut === 'applique' || run.statut === 'erreur') return true
   if (run.statut === 'simule') return !dernierSimule || dernierSimule.empreinte !== run.empreinte
   return false
@@ -54,7 +60,7 @@ export async function executerAutomate(def: AutomateDef, source: AutomateRun['so
     run.source === 'planifie' && run.statut === 'simule'
       ? (await lireRuns(def.slug)).filter((r) => r.statut === 'simule').at(-1)
       : undefined
-  if (aGarder(run, dernierSimule)) await ajouterRun(run)
+  if (aGarder(run, dernierSimule, def.declenchement.type === 'quotidien')) await ajouterRun(run)
   if (erreur) throw new Error(erreur)
   return [{ id: run.id, statut: run.statut, resume: run.resume }]
 }

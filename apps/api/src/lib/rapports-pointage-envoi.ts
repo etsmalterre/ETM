@@ -1,31 +1,19 @@
 /**
- * The two scheduled pointage reports (TRM notifications) — reads, recipients,
- * sending and the in-process timer. Replaces the n8n workflows « pointage »
- * and « Bilan des Heures Annualisées » (retired 2026-09-22), which read the
- * WebDev localapi (get_pointage / get_planning / get_bilan_horaire).
+ * The two scheduled pointage reports (TRM notifications) — reads, recipients
+ * and sending. Replaces the n8n workflows « pointage » and « Bilan des Heures
+ * Annualisées » (retired 2026-09-22), which read the WebDev localapi
+ * (get_pointage / get_planning / get_bilan_horaire).
  *
- * Schedule (the n8n one): the daily report Monday to Friday at 09:00, the
- * weekly balance on Tuesday at 09:00, Paris time.
- *
- * The timer lives in the API process — no cron, no systemd unit, it ships with
- * /etm_deploy like any route. A journal (data/rapports-pointage-envois.json)
- * records the day each report went out, written BEFORE sending, so:
- *   - a restart never sends twice (at most once per day);
- *   - an API that was down at 09:00 sends as soon as it is back the same day
- *     (the tick checks « due and not yet sent today », not « it is 09:00 »).
- * It never catches up a previous day.
- *
- * ⚠️ Only the production API runs the timer (NODE_ENV=production), so a dev or
- * worktree API never mails real people. RAPPORTS_POINTAGE=off disables it in
- * production too; RAPPORTS_POINTAGE=on forces it anywhere (tests only).
- * The admin « Envoyer un test » route sends to the caller alone, in any env.
+ * The schedule is NOT here: since 2026-09-30 both reports are automates
+ * (Agents IA › Automates, lib/automates/rapports-pointage/) on the agents'
+ * engine — daily report Monday to Friday at 09:00, weekly balance on Tuesday
+ * at 09:00, Paris time, production only, at most once a day with same-day
+ * catch-up. The admin « Envoyer un test » route (notifications-trm.ts) sends
+ * to the caller alone, in any env.
  */
-import * as fs from 'node:fs/promises'
-import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { query } from './hfsql-auto.js'
 import { lignesPeriode, listerSalaries, soldeHeures, tousLesSalaries } from './pointage.js'
-import { jourParis, msHeureParis, partiesParis, semaineDeReference, type LigneHoraire } from './pointage-etat.js'
+import { jourParis, msHeureParis, semaineDeReference, type LigneHoraire } from './pointage-etat.js'
 import { lundiIso } from './pointage-admin.js'
 import { analyserJournee, horaireDe, joursCouverts, ordreRapport, prenomAffiche, type Plage, type SalarieRapport } from './rapport-pointage.js'
 import { contenuBilanHeures, contenuRapportPointage, type JourRapport } from './rapport-pointage-email.js'
@@ -158,23 +146,35 @@ export async function peutRecevoir(userId: number, key: TrmNotificationKey): Pro
   return !!u && isAdminUtilisateur(u)
 }
 
+export interface Destinataires {
+  /** Addresses the report goes to (deduplicated). */
+  adresses: string[]
+  /** Subscribers left out, with why — shown in the automate's run. */
+  ecartes: Array<{ nom: string; raison: string }>
+}
+
 /** Subscribers of `key` who may receive it and have an address. */
-export async function destinataires(key: TrmNotificationKey): Promise<string[]> {
+export async function destinataires(key: TrmNotificationKey): Promise<Destinataires> {
   const ids = await trmNotifications.subscribersOf(key)
   const emails = await getAllUserEmails()
-  const out: string[] = []
+  const adresses: string[] = []
+  const ecartes: Array<{ id: number; raison: string }> = []
   for (const id of ids) {
-    if (!emails[id]) {
-      console.warn(`[rapports-pointage] ${key}: subscriber ${id} has no email address`)
-      continue
-    }
-    if (!(await peutRecevoir(id, key))) {
-      console.warn(`[rapports-pointage] ${key}: subscriber ${id} lacks ${trmNotificationDef(key).requires}, skipped`)
-      continue
-    }
-    out.push(emails[id])
+    if (!emails[id]) ecartes.push({ id, raison: 'pas d’adresse e-mail' })
+    else if (!(await peutRecevoir(id, key))) ecartes.push({ id, raison: 'n’a plus accès au menu Pointage' })
+    else adresses.push(emails[id])
   }
-  return [...new Set(out)]
+  const noms = new Map<number, string>()
+  if (ecartes.length) {
+    const rows = await query<{ IDutilisateur: number; prenom: string | null; nom: string | null }>(
+      `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur IN (${ecartes.map((e) => Math.trunc(e.id)).join(',')})`,
+    )
+    for (const u of rows) noms.set(Number(u.IDutilisateur), [u.prenom, u.nom].filter(Boolean).join(' ').trim())
+  }
+  return {
+    adresses: [...new Set(adresses)],
+    ecartes: ecartes.map((e) => ({ nom: noms.get(e.id) || `utilisateur ${e.id}`, raison: e.raison })),
+  }
 }
 
 /** One send per recipient (like notify()). Returns how many went out. */
@@ -199,97 +199,4 @@ export async function envoyerRapport(r: Rapport, a: string[]): Promise<number> {
     }
   }
   return ok
-}
-
-// ── Schedule + journal ───────────────────────────────────
-
-interface Planif {
-  key: TrmNotificationKey
-  /** ISO weekdays, 1 = Monday. */
-  jours: readonly number[]
-  heure: number
-}
-
-export const PLANIFICATION: readonly Planif[] = [
-  { key: 'notif_rapport_pointage', jours: [1, 2, 3, 4, 5], heure: 9 },
-  { key: 'notif_bilan_heures', jours: [2], heure: 9 },
-]
-
-/** Is `p` due at `nowMs` (Paris) given the day it last went out? */
-export function estDu(p: Planif, nowMs: number, dernierEnvoi: string | undefined): boolean {
-  const t = partiesParis(nowMs)
-  const jourSemaine = new Date(Date.UTC(t.y, t.mo - 1, t.d)).getUTCDay() || 7
-  return p.jours.includes(jourSemaine) && t.h >= p.heure && dernierEnvoi !== ymd(t.y, t.mo, t.d)
-}
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const JOURNAL = path.resolve(__dirname, '../../data/rapports-pointage-envois.json')
-
-async function lireJournal(): Promise<Record<string, string>> {
-  try {
-    return JSON.parse(await fs.readFile(JOURNAL, 'utf8')) as Record<string, string>
-  } catch {
-    return {}
-  }
-}
-
-async function ecrireJournal(j: Record<string, string>): Promise<void> {
-  await fs.mkdir(path.dirname(JOURNAL), { recursive: true })
-  await fs.writeFile(`${JOURNAL}.tmp`, JSON.stringify(j, null, 2), 'utf8')
-  await fs.rename(`${JOURNAL}.tmp`, JOURNAL)
-}
-
-let enCours = false
-
-async function tick(): Promise<void> {
-  if (enCours) return
-  enCours = true
-  try {
-    const now = Date.now()
-    const journal = await lireJournal()
-    for (const p of PLANIFICATION) {
-      if (!estDu(p, now, journal[p.key])) continue
-      // Journal first: at most once a day, even if the process dies mid-send.
-      journal[p.key] = jourParis(now)
-      await ecrireJournal(journal)
-      try {
-        const a = await destinataires(p.key)
-        if (!a.length) {
-          console.log(`[rapports-pointage] ${p.key}: no recipient`)
-          continue
-        }
-        const r = await construireRapport(p.key, now)
-        if (!r) {
-          console.log(`[rapports-pointage] ${p.key}: nothing to report`)
-          continue
-        }
-        const ok = await envoyerRapport(r, a)
-        console.log(`[rapports-pointage] ${p.key}: sent ${ok}/${a.length}`)
-      } catch (err) {
-        console.error(`[rapports-pointage] ${p.key} failed:`, err)
-      }
-    }
-  } catch (err) {
-    console.error('[rapports-pointage] tick failed:', err)
-  } finally {
-    enCours = false
-  }
-}
-
-export function planificateurActif(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env.RAPPORTS_POINTAGE?.trim().toLowerCase()
-  if (v === 'off') return false
-  if (v === 'on') return true
-  return env.NODE_ENV === 'production'
-}
-
-/** Start the once-a-minute tick. Called once from index.ts. */
-export function demarrerRapportsPointage(): void {
-  if (!planificateurActif()) {
-    console.log('[rapports-pointage] scheduler off (not production)')
-    return
-  }
-  console.log(`[rapports-pointage] scheduler on, sending as ${EXPEDITEUR}`)
-  setTimeout(() => void tick(), 30_000)
-  setInterval(() => void tick(), 60_000).unref()
 }

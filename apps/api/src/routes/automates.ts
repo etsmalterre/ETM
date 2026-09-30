@@ -11,7 +11,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { auteur, pilote, session } from './agents-ia.js'
 import { AGENT_MODES } from '../lib/agents/store.js'
-import { etatSondage, lancerSondage, planificateurAgentsActif, SondageEnCoursError, sousVerrou } from '../lib/agents/scheduler.js'
+import { etatSondage, lancerSondage, planificateurAgentsActif, prochainQuotidien, SondageEnCoursError, sousVerrou } from '../lib/agents/scheduler.js'
 import { AUTOMATES, automateDef, type AutomateDef } from '../lib/automates/catalog.js'
 import { cleTache, executerAutomate } from '../lib/automates/execution.js'
 import { ajouterRetour, changerMode, lireEtat, lireRun, lireRuns, supprimerRetour, type AutomateRun } from '../lib/automates/store.js'
@@ -37,11 +37,13 @@ async function vueAutomate(def: AutomateDef) {
   const runs = await lireRuns(def.slug)
   const depuis7j = Date.now() - 7 * 86_400_000
   const sondage = etatSondage(cleTache(def.slug))
-  const intervalle = def.declenchement.type === 'releve' ? def.declenchement.intervalleMs : null
+  const d = def.declenchement
   const prochain =
-    state.mode !== 'off' && planificateurAgentsActif() && intervalle
-      ? new Date((sondage.dernierSondage ? Date.parse(sondage.dernierSondage) : Date.now()) + intervalle).toISOString()
-      : null
+    state.mode === 'off' || !planificateurAgentsActif()
+      ? null
+      : d.type === 'quotidien'
+        ? prochainQuotidien(d, Date.now(), state.dernierePlanification)
+        : new Date((sondage.dernierSondage ? Date.parse(sondage.dernierSondage) : Date.now()) + d.intervalleMs).toISOString()
   return {
     slug: def.slug,
     nom: def.nom,

@@ -8,8 +8,9 @@
 // API: /api/automates (apps/api/src/routes/automates.ts). Reads need only a
 // session; every write needs `edit_agents_ia`, checked server-side too.
 //
-// First automate: Vidéosurveillance (Reolink NVR push schedule from the TRM
-// atelier planning) — its run and live-state views are VideoRun / VideoEtat.
+// Vidéosurveillance (Reolink NVR push schedule from the TRM atelier planning)
+// has its run and live-state views, VideoRun / VideoEtat; the two pointage
+// report emails (rapport-pointage, bilan-heures) share RapportRun.
 
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -28,6 +29,7 @@ import {
   History,
   Info,
   Loader2,
+  Mail,
   MessagesSquare,
   Play,
   RefreshCw,
@@ -684,6 +686,61 @@ function VideoRun({ run }: { run: AutomateRun }) {
   )
 }
 
+interface ResultatRapport {
+  sujet?: string
+  apercu?: string
+  destinataires?: string[]
+  envoyes?: string[]
+  echecs?: string[]
+  ecartes?: Array<{ nom: string; raison: string }>
+}
+
+/** A pointage report run: subject, one-line summary, who got it. Never the
+ *  report body (the salariés' hours) — the API does not keep it. */
+function RapportRun({ run }: { run: AutomateRun }) {
+  const r = (run.resultat ?? {}) as ResultatRapport
+  const echecs = new Set(r.echecs ?? [])
+  const envoye = run.mode === 'actif' && run.source !== 'arret'
+  if (!r.sujet && !r.destinataires?.length && !r.ecartes?.length) return null
+  return (
+    <>
+      {r.sujet && (
+        <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
+          <div className="flex items-center gap-2 mb-1"><Mail className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold truncate">{r.sujet}</h3></div>
+          {r.apercu && <p className="text-sm text-muted-foreground">{r.apercu}</p>}
+        </div>
+      )}
+      {(r.destinataires || r.ecartes) && (
+        <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Send className="h-4 w-4 text-accent" />
+            <h3 className="text-sm font-semibold">Destinataires</h3>
+            <span className="ml-auto text-xs text-muted-foreground">{r.destinataires?.length ?? 0}</span>
+          </div>
+          {!r.destinataires?.length ? <p className="text-sm text-muted-foreground italic">Aucun abonné autorisé.</p> : (
+            <ul className="space-y-1">
+              {r.destinataires.map((a) => (
+                <li key={a} className="flex items-center gap-2 text-sm">
+                  <span className="truncate">{a}</span>
+                  {envoye && r.envoyes && (echecs.has(a)
+                    ? <span className="ml-auto flex items-center gap-1 text-xs text-destructive flex-shrink-0"><XCircle className="h-3.5 w-3.5" />échec</span>
+                    : <span className="ml-auto flex items-center gap-1 text-xs text-success flex-shrink-0"><CheckCircle2 className="h-3.5 w-3.5" />envoyé</span>)}
+                </li>
+              ))}
+            </ul>
+          )}
+          {!!r.ecartes?.length && (
+            <p className="flex items-start gap-1 text-[11px] text-muted-foreground mt-2">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+              <span>Abonnés écartés : {r.ecartes.map((e) => `${e.nom} (${e.raison})`).join(', ')}. Les abonnements se gèrent dans TRM › Paramètres › Utilisateurs › Notifications.</span>
+            </p>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
 // ── Run dialog (§18.D banded « bilan ») ──────────────────
 
 function RunDialog({ slug, runId, onClose }: { slug: string; runId: string | null; onClose: () => void }) {
@@ -725,10 +782,11 @@ function RunDialog({ slug, runId, onClose }: { slug: string; runId: string | nul
                 <div className="flex items-center gap-2 mb-1"><StatutPill statut={run.statut} /></div>
                 <p className={cn('text-sm', run.statut === 'erreur' && 'text-destructive')}>{run.resume}</p>
                 {run.mode !== 'actif' && run.source !== 'arret' && run.statut !== 'erreur' && (
-                  <p className="text-[11px] text-muted-foreground mt-1">Essai : rien n’a été écrit sur l’appareil.</p>
+                  <p className="text-[11px] text-muted-foreground mt-1">Essai : rien n’a été écrit ni envoyé.</p>
                 )}
               </div>
               {slug === 'videosurveillance' && <VideoRun run={run} />}
+              {(slug === 'rapport-pointage' || slug === 'bilan-heures') && <RapportRun run={run} />}
             </>
           )}
         </div>

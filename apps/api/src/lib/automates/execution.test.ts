@@ -18,6 +18,11 @@ describe('aGarder — which runs an hourly automate keeps', () => {
     expect(aGarder({ source: 'planifie', statut: 'inchange' }, undefined)).toBe(false)
   })
 
+  it('keeps every run of a daily automate, « nothing sent » included', () => {
+    expect(aGarder({ source: 'planifie', statut: 'inchange' }, undefined, true)).toBe(true)
+    expect(aGarder({ source: 'planifie', statut: 'simule', empreinte: 'a' }, { empreinte: 'a' }, true)).toBe(true)
+  })
+
   it('keeps an hourly essai proposal once, until it changes', () => {
     expect(aGarder({ source: 'planifie', statut: 'simule', empreinte: 'a' }, undefined)).toBe(true)
     expect(aGarder({ source: 'planifie', statut: 'simule', empreinte: 'a' }, { empreinte: 'a' })).toBe(false)

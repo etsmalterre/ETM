@@ -5,8 +5,9 @@
 // execution.ts. Adding an automate = one entry here + its module.
 
 import type { Declenchement } from '../agents/catalog.js'
-import type { AutomateMode, AutomateStatut } from './store.js'
+import { declarerEtatInitial, type AutomateMode, type AutomateState, type AutomateStatut } from './store.js'
 import * as videosurveillance from './videosurveillance/videosurveillance.js'
+import * as rapportsPointage from './rapports-pointage/rapports-pointage.js'
 
 /** What one run produced. `resultat` is filled as the run goes, so a run that
  *  throws half-way still keeps what it read (and the snapshot it took). */
@@ -38,6 +39,8 @@ export interface AutomateDef {
   quitterActif?(resultat: Record<string, unknown>): Promise<Issue>
   /** Live view of what the automate drives (« État » tab). Read-only. */
   etat?(): Promise<unknown>
+  /** State before the first one is stored (default: « off »), store.ts. */
+  etatInitial?: () => Partial<AutomateState>
 }
 
 export const AUTOMATES: readonly AutomateDef[] = [
@@ -71,7 +74,63 @@ export const AUTOMATES: readonly AutomateDef[] = [
     quitterActif: videosurveillance.remettreFixe,
     etat: videosurveillance.etat,
   },
+  {
+    slug: rapportsPointage.SLUG_RAPPORT,
+    nom: 'Rapport de pointage',
+    description:
+      'Envoie chaque matin de semaine le pointage de la veille (le lundi : vendredi, samedi et dimanche) aux abonnés : début, pauses et fin de chaque salarié, avec les pointages à vérifier.',
+    version: rapportsPointage.VERSION,
+    versions: rapportsPointage.versions('Le rapport de pointage'),
+    declenchement: { type: 'quotidien', heure: 9, jours: [1, 2, 3, 4, 5] },
+    declencheur: 'Du lundi au vendredi à 9 h (heure de Paris). Si l’API était arrêtée à 9 h, il part dès son retour le même jour ; jamais deux fois le même jour, jamais le lendemain.',
+    lit: [
+      'Les pointages de la veille (base Pointage), le planning de l’atelier TRM (Planning atelier) et l’horaire de chaque salarié.',
+      'Les abonnés : TRM › Paramètres › Utilisateurs › Notifications, « Rapport de pointage ».',
+    ],
+    ecritures: [
+      'Un e-mail par abonné, envoyé par tricotbot@etsmalterre.com (« TRM - Pointage »).',
+      'Seulement aux abonnés qui ont accès au menu Pointage de TRM et une adresse e-mail ; les autres sont nommés dans l’exécution.',
+      'L’exécution garde le sujet, le résumé chiffré et les adresses, jamais le contenu du rapport (les heures des salariés).',
+    ],
+    abstention: 'Aucun salarié pointé ni planifié sur la période : aucun e-mail. Aucun abonné autorisé : aucun e-mail, l’exécution le dit.',
+    modes: {
+      off: 'N’envoie rien.',
+      essai: 'Prépare le rapport à l’heure prévue et dit à qui il l’enverrait, n’envoie rien.',
+      actif: 'Envoie le rapport aux abonnés. « Lancer maintenant » le renvoie à tous les abonnés.',
+    },
+    executer: rapportsPointage.executeur('notif_rapport_pointage'),
+    etatInitial: rapportsPointage.etatInitial('notif_rapport_pointage'),
+  },
+  {
+    slug: rapportsPointage.SLUG_BILAN,
+    nom: 'Bilan des heures annualisées',
+    description:
+      'Envoie chaque mardi aux abonnés le solde annuel de chaque salarié (heures lissées − heures prévues − variables), arrêté à la semaine précédente.',
+    version: rapportsPointage.VERSION,
+    versions: rapportsPointage.versions('Le bilan des heures annualisées'),
+    declenchement: { type: 'quotidien', heure: 9, jours: [2] },
+    declencheur: 'Le mardi à 9 h (heure de Paris). Si l’API était arrêtée à 9 h, il part dès son retour le même jour ; jamais deux fois le même jour.',
+    lit: [
+      'Le lissage des heures de chaque salarié (base Pointage) pour la semaine précédente.',
+      'Les abonnés : TRM › Paramètres › Utilisateurs › Notifications, « Bilan des heures annualisées ».',
+    ],
+    ecritures: [
+      'Un e-mail par abonné, envoyé par tricotbot@etsmalterre.com (« TRM - Pointage »).',
+      'Seulement aux abonnés qui ont accès au menu Pointage de TRM et une adresse e-mail ; les autres sont nommés dans l’exécution.',
+      'L’exécution garde le sujet, le résumé chiffré et les adresses, jamais les soldes des salariés.',
+    ],
+    abstention: 'Aucun salarié avec un lissage pour la semaine précédente : aucun e-mail. Aucun abonné autorisé : aucun e-mail, l’exécution le dit.',
+    modes: {
+      off: 'N’envoie rien.',
+      essai: 'Prépare le bilan à l’heure prévue et dit à qui il l’enverrait, n’envoie rien.',
+      actif: 'Envoie le bilan aux abonnés. « Lancer maintenant » le renvoie à tous les abonnés.',
+    },
+    executer: rapportsPointage.executeur('notif_bilan_heures'),
+    etatInitial: rapportsPointage.etatInitial('notif_bilan_heures'),
+  },
 ]
+
+for (const a of AUTOMATES) if (a.etatInitial) declarerEtatInitial(a.slug, a.etatInitial)
 
 export function automateDef(slug: string): AutomateDef | undefined {
   return AUTOMATES.find((a) => a.slug === slug)
