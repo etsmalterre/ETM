@@ -1,8 +1,4 @@
-import dotenv from 'dotenv'
-
-const env = process.env.NODE_ENV || 'development'
-dotenv.config({ path: `.env.${env}` })
-dotenv.config({ path: '.env' }) // fallback / overrides
+import './load-env.js'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
@@ -241,7 +237,7 @@ app.use('/api/rh', rhRouter)
 app.use('/api/site', webserviceSiteRouter)
 
 app.listen(PORT, () => {
-  console.log(`MPS API running on port ${PORT} [${env}]`)
+  console.log(`MPS API running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`)
   // The Agents IA mailbox polls and the automates — the pointage report
   // emails included since 2026-09-30 (production only).
   demarrerAgents()
