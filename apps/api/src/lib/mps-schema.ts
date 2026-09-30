@@ -33,7 +33,47 @@ export function grantApi(privileges: string, objects: string): string {
 END $$;`
 }
 
-export const MIGRATIONS: Migration[] = []
+export const MIGRATIONS: Migration[] = [
+  {
+    // User management (plan ~/.claude/plans/user-management.md): one account
+    // per person with a password, station accounts for enrolled postes, the
+    // record of merged per-PC rows, and the permission stores (ex
+    // data/permissions.json + permissions-trm.json).
+    name: '0001_comptes_utilisateurs',
+    sql: `
+ALTER TABLE utilisateur
+  ADD COLUMN identifiant citext,
+  ADD COLUMN email citext,
+  ADD COLUMN type_compte text NOT NULL DEFAULT 'personne',
+  ADD COLUMN est_admin boolean NOT NULL DEFAULT false,
+  ADD COLUMN actif boolean NOT NULL DEFAULT true,
+  ADD COLUMN password_hash text,
+  ADD COLUMN doit_changer_mdp boolean NOT NULL DEFAULT false,
+  ADD COLUMN mdp_modifie_le timestamptz,
+  ADD COLUMN derniere_connexion timestamptz,
+  ADD CONSTRAINT utilisateur_type_compte_check CHECK (type_compte IN ('personne', 'poste'));
+CREATE UNIQUE INDEX utilisateur_identifiant_key ON utilisateur (identifiant);
+CREATE UNIQUE INDEX utilisateur_email_key ON utilisateur (email);
+
+-- A per-PC row folded into its person's account: kept so an old cookie, a
+-- data file or a late reference to the old id still resolves.
+CREATE TABLE utilisateur_fusion (
+  ancien_id bigint PRIMARY KEY,
+  idutilisateur bigint NOT NULL REFERENCES utilisateur (idutilisateur),
+  fusionne_le timestamptz NOT NULL DEFAULT now()
+);
+
+-- Action keys and screen-access keys (menu grants, screen hides), per app.
+CREATE TABLE permission (
+  idutilisateur bigint NOT NULL REFERENCES utilisateur (idutilisateur) ON DELETE CASCADE,
+  app text NOT NULL CHECK (app IN ('etm', 'trm')),
+  cle text NOT NULL,
+  PRIMARY KEY (idutilisateur, app, cle)
+);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'utilisateur_fusion, permission')}
+`,
+  },
+]
 
 export interface MigrationStatus {
   applied: string[]

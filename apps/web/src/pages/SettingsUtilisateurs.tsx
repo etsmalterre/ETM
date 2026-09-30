@@ -308,7 +308,11 @@ export function SettingsUtilisateurs() {
             setEmailMut.mutate({ id: selected.IDutilisateur, email })
           }}
           isSavingEmail={setEmailMut.isPending}
-          emailSaveError={setEmailMut.error instanceof Error ? setEmailMut.error.message : null}
+          emailSaveError={
+            setEmailMut.error instanceof Error
+              ? ((setEmailMut.error as Error & { body?: { message?: string } }).body?.message ?? setEmailMut.error.message)
+              : null
+          }
           keys={keys ?? []}
           notifKeys={notifKeys ?? []}
           subscribed={selected ? subscribedByUserId.get(selected.IDutilisateur) ?? [] : []}

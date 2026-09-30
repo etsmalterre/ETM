@@ -11,6 +11,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express'
 import crypto from 'node:crypto'
 import { resoudreAppareil, type AppareilAtelier } from './appareils-atelier.js'
+import { chargerFusion, idCourant } from './utilisateur-fusion.js'
 
 // Read the secret lazily — ESM hoists imports to the top of the file, so
 // dotenv.config() in index.ts runs AFTER this module is first evaluated.
@@ -145,29 +146,33 @@ export function cookieOptions(): {
  *  req.userId / req.adminId themselves. */
 export function attachUser(): RequestHandler {
   return (req: Request, _res: Response, next: NextFunction) => {
-    const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
-    const id = verifyUserCookie(cookies[COOKIE_NAME])
-    if (id !== null) req.userId = id
-    const adminId = verifyUserCookie(cookies[ADMIN_COOKIE_NAME])
-    if (adminId !== null) req.adminId = adminId
+    attach(req).catch((err) => console.error('attachUser failed', err)).finally(() => next())
+  }
+}
 
-    // An enrolled atelier phone. Only requests that carry the cookie pay the
-    // store lookup (a cached file, an fs.stat). The phone acts as its
-    // enrolment account, but never over a user cookie already present.
-    const rawAppareil = cookies[APPAREIL_COOKIE_NAME]
-    if (!rawAppareil) {
-      next()
-      return
+async function attach(req: Request): Promise<void> {
+  const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
+  const id = verifyUserCookie(cookies[COOKIE_NAME])
+  const adminId = verifyUserCookie(cookies[ADMIN_COOKIE_NAME])
+  // A cookie may still name a per-PC row folded into its person's account
+  // (scripts/comptes-import.ts): it acts as that account.
+  if (id !== null || adminId !== null) await chargerFusion()
+  if (id !== null) req.userId = idCourant(id)
+  if (adminId !== null) req.adminId = idCourant(adminId)
+
+  // An enrolled atelier phone. Only requests that carry the cookie pay the
+  // store lookup (a cached file, an fs.stat). The phone acts as its
+  // enrolment account, but never over a user cookie already present.
+  const rawAppareil = cookies[APPAREIL_COOKIE_NAME]
+  if (!rawAppareil) return
+  try {
+    const appareil = await resoudreAppareil(rawAppareil)
+    if (appareil) {
+      req.appareil = appareil
+      if (req.userId === undefined) req.userId = appareil.IDutilisateur
     }
-    resoudreAppareil(rawAppareil)
-      .then((appareil) => {
-        if (appareil) {
-          req.appareil = appareil
-          if (req.userId === undefined) req.userId = appareil.IDutilisateur
-        }
-      })
-      .catch((err) => console.error('attachUser: appareil lookup failed', err))
-      .finally(() => next())
+  } catch (err) {
+    console.error('attachUser: appareil lookup failed', err)
   }
 }
 

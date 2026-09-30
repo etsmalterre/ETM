@@ -9,8 +9,8 @@
  * user the menu keys they don't already have, which keeps them exactly where
  * they were; the admin then removes the menus a given person doesn't need.
  *
- * MUST RUN ON THE SERVER — apps/api/data/permissions.json is gitignored and
- * lives next to the running API, so a local run seeds the local file only.
+ * Writes the `permission` table of the database PG_CONNECTION_STRING names —
+ * run it on the API host for production (was data/permissions.json until 2026-09-30).
  *
  * Idempotent: re-running adds nothing. Safe to re-run after a new menu ships,
  * which is the intended way to hand that menu to everyone at once.
@@ -19,22 +19,17 @@
  *  - Screens are NOT seeded. Granting a menu already means all of its screens
  *    (they are removed one by one via `hide_*` keys), so there is nothing to
  *    hand out per screen.
- *  - Every `utilisateur` row is seeded, NOT the deduped picker list: permissions
- *    are stored per IDutilisateur, and a person with several rows must be
- *    covered on all of them or they'd lose their menus after logging in as one
- *    of the duplicates.
+ *  - Every `utilisateur` row is seeded (one per person since the account merge
+ *    of scripts/comptes-import.ts).
  *  - Existing action permissions are untouched, and a user who already holds
  *    some menus keeps whatever hide keys they have.
  */
-import * as fs from 'node:fs/promises'
-import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import '../load-env.js'
 import { query, closeConnection } from '../lib/hfsql-auto.js'
+import { closeMpsPg } from '../lib/mps-pg.js'
 import { getUserPermissions, setUserPermissions } from '../lib/permissions.js'
 import { SCREEN_MENUS, menuAccessKey } from '../lib/screen-keys.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const FILE_PATH = path.resolve(__dirname, '../../data/permissions.json')
 
 async function main() {
   const write = process.argv.includes('--write')
@@ -74,20 +69,6 @@ async function main() {
     return
   }
 
-  // Backup before the first write. The lib writes atomically (.tmp + rename)
-  // per user, but this script touches every user in a row.
-  try {
-    const raw = await fs.readFile(FILE_PATH, 'utf8')
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const backup = `${FILE_PATH}.bak-${stamp}`
-    await fs.writeFile(backup, raw, 'utf8')
-    console.log(`Sauvegarde: ${backup}`)
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException
-    if (e.code === 'ENOENT') console.log('Pas de permissions.json existant — création.')
-    else throw err
-  }
-
   for (const p of toChange) {
     const current = await getUserPermissions(p.id)
     await setUserPermissions(p.id, [...current, ...p.missing])
@@ -101,4 +82,4 @@ main()
     console.error(err)
     process.exitCode = 1
   })
-  .finally(() => closeConnection())
+  .finally(() => Promise.all([closeConnection(), closeMpsPg()]))

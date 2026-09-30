@@ -15,6 +15,7 @@ import {
   getUserEmail,
   setUserEmail,
   getAllUserEmails,
+  EmailDejaUtilise,
 } from '../lib/user-emails.js'
 
 export const userEmailsRouter: RouterType = Router()
@@ -115,6 +116,10 @@ userEmailsRouter.put('/users/:id', async (req: Request, res: Response) => {
     await setUserEmail(id, email)
     res.json({ IDutilisateur: id, email: await getUserEmail(id) })
   } catch (err) {
+    if (err instanceof EmailDejaUtilise) {
+      res.status(409).json({ error: 'email_deja_utilise', message: 'Cette adresse est déjà celle d’un autre compte.' })
+      return
+    }
     console.error('Error updating user email:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
