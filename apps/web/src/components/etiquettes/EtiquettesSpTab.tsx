@@ -116,10 +116,11 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
     for (const r of data.rolls) {
       const m = r.mesure
       d[r.id] = {
-        brut: toText(m?.brut),
-        // The net length MATEL declared on its delivery note is already on the
-        // roll — offered until the tableau says otherwise.
-        net: toText(m?.net ?? (r.metrage > 0 ? r.metrage : null)),
+        // The roll's length in ETM is the one on MATEL's delivery note: the
+        // GROSS length (LIVA #1242 — it was offered as the net). The net
+        // (brut minus the defects) is only on MATEL's tableau, typed by hand.
+        brut: toText(m?.brut ?? (r.metrage > 0 ? r.metrage : null)),
+        net: toText(m?.net),
         laizeCm: toText(m?.laizeCm), tare: toText(m?.tare), poids: toText(m?.poids),
       }
     }
@@ -138,7 +139,7 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
 
   const [saveState, setSaveState] = useState<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle')
   const lastSavedRef = useRef<string | null>(null)
-  /** The draft as first shown. Opening the tab saves nothing; but the net
+  /** The draft as first shown. Opening the tab saves nothing; but the gross
    *  lengths pre-filled from ETM are not on the server yet, so lastSavedRef
    *  stays null and the first print/send saves them. */
   const initialJsonRef = useRef<string | null>(null)
