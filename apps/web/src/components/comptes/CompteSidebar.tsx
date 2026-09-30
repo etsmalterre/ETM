@@ -1,18 +1,19 @@
 // Paramètres › Utilisateurs — right panel: the ACCOUNT of the selected person
 // (password login since 2026-09-30, API routes/comptes.ts). Two tabs:
-//   • Compte   — identifiant, password (set / generate, shown once), poste
-//                enrolment code for a station account, administrator and
-//                active switches, and the apps it belongs to (ETM / TRM —
-//                API lib/utilisateur-apps.ts);
-//   • Sessions — the browsers / postes logged in, and recent login attempts.
+//   • Compte   — identifiant, password (set / generate, shown once),
+//                administrator and active switches, and the apps it belongs
+//                to (ETM / TRM — API lib/utilisateur-apps.ts);
+//   • Sessions — the browsers logged in, and recent login attempts.
+// Enrolled PCs, phones and pointeuses are in the centre « Appareils » tab
+// (AppareilsTab.tsx), not here.
 // Everything acts immediately (no edit mode), like the permission toggles of
 // the centre panel.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle, AppWindow, CheckCircle2, Copy, History, KeyRound, Loader2, Monitor, MonitorSmartphone,
-  Save, ShieldCheck, Trash2, UserCog, Wand2, XCircle,
+  Save, ShieldCheck, Smartphone, Trash2, UserCog, Wand2, XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -35,7 +36,10 @@ export interface Compte {
   doitChangerMdp: boolean
   mdpModifieLe: string | null
   derniereConnexion: string | null
+  /** Live browser sessions (enrolled PCs are counted in `appareils`). */
   sessions: number
+  /** Enrolled PCs + phones + pointeuses — the « Appareils » tab. */
+  appareils: number
   /** The apps it belongs to — each app's Utilisateurs screen lists its members. */
   apps: AppCode[]
 }
@@ -44,7 +48,7 @@ const APP_ORDER: AppCode[] = ['etm', 'trm']
 
 interface SessionRow {
   ref: string
-  type: 'navigateur' | 'poste'
+  type: 'navigateur'
   libelle: string | null
   creeLe: string
   vuLe: string
@@ -229,7 +233,7 @@ function CompteTab({ compte }: { compte: Compte }) {
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-xs text-muted-foreground">Type</span>
-            <Badge variant="outline" className="text-[10px]">{estPoste ? 'Poste d’atelier' : 'Personne'}</Badge>
+            <Badge variant="outline" className="text-[10px]">{estPoste ? 'Poste & appareils' : 'Personne'}</Badge>
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-xs text-muted-foreground">Dernière connexion</span>
@@ -239,9 +243,21 @@ function CompteTab({ compte }: { compte: Compte }) {
         {patch.error && <p className="mt-2 text-xs text-destructive">{messageErreur(patch.error, 'Enregistrement impossible.')}</p>}
       </div>
 
-      {/* Mot de passe / enrôlement */}
+      {/* Mot de passe — a station account has none: its devices are enrolled by code */}
       {estPoste ? (
-        <EnrolementPosteCard compte={compte} />
+        <div className={cardClass}>
+          <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+            <MonitorSmartphone className="h-3.5 w-3.5" />Sans mot de passe
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            Un compte de poste ne se connecte pas avec un mot de passe : ses PC, téléphones et pointeuses
+            s’enrôlent avec un code à usage unique, dans l’onglet <span className="font-medium">Appareils</span>.
+          </p>
+          <p className="mt-2 text-sm flex items-center gap-1.5">
+            <Smartphone className="h-3.5 w-3.5 text-muted-foreground" />
+            {compte.appareils === 0 ? 'Aucun appareil enrôlé' : `${compte.appareils} appareil${compte.appareils > 1 ? 's' : ''} enrôlé${compte.appareils > 1 ? 's' : ''}`}
+          </p>
+        </div>
       ) : (
         <div className={cardClass}>
           <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
@@ -529,63 +545,6 @@ function MotDePasseDialog({ compte, open, onClose, onDone }: {
   )
 }
 
-// ── Poste: one-time enrolment code ─────────────────────────────
-
-function EnrolementPosteCard({ compte }: { compte: Compte }) {
-  const [libelle, setLibelle] = useState('')
-  const [code, setCode] = useState<{ code: string; expire: string } | null>(null)
-  const [restant, setRestant] = useState(0)
-  const timer = useRef<number | null>(null)
-  useEffect(() => { setCode(null); setLibelle('') }, [compte.IDutilisateur])
-  useEffect(() => {
-    if (!code) return
-    const tick = () => setRestant(Math.max(0, Math.round((new Date(code.expire).getTime() - Date.now()) / 1000)))
-    tick()
-    timer.current = window.setInterval(tick, 1000)
-    return () => { if (timer.current) window.clearInterval(timer.current) }
-  }, [code])
-
-  const mut = useMutation({
-    mutationFn: () => apiFetch<{ code: string; expire: string }>(`/comptes/${compte.IDutilisateur}/code-poste`, {
-      method: 'POST', body: JSON.stringify({ libelle: libelle.trim() }),
-    }),
-    onSuccess: setCode,
-  })
-
-  return (
-    <div className={cardClass}>
-      <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-        <MonitorSmartphone className="h-3.5 w-3.5" />Enrôler un PC
-      </p>
-      <p className="text-[11px] text-muted-foreground mb-2">
-        Un compte de poste n’a pas de mot de passe : le PC reçoit un code à usage unique, saisi une fois
-        sur l’écran de connexion (« Poste d’atelier »). Le PC reste connecté jusqu’à ce que vous fermiez sa session.
-      </p>
-      {code && restant > 0 ? (
-        <div className="rounded-md border border-accent/40 bg-accent/5 p-3 text-center">
-          <p className="text-3xl font-mono font-bold tracking-[0.3em] tabular-nums">{code.code}</p>
-          <p className="text-[11px] text-muted-foreground mt-1">
-            Valable encore {Math.floor(restant / 60)} min {String(restant % 60).padStart(2, '0')} s · usage unique
-          </p>
-        </div>
-      ) : (
-        <div className="flex gap-1.5">
-          <input
-            value={libelle}
-            onChange={(e) => setLibelle(e.target.value)}
-            placeholder="Nom du PC (ex. PC visitage)"
-            className={inputClass}
-          />
-          <Button size="sm" className="h-8 flex-shrink-0" disabled={!libelle.trim() || mut.isPending || !compte.actif} onClick={() => mut.mutate()}>
-            {mut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Code'}
-          </Button>
-        </div>
-      )}
-      {mut.error && <p className="mt-2 text-xs text-destructive">{messageErreur(mut.error, 'Génération impossible.')}</p>}
-    </div>
-  )
-}
-
 // ── Sessions ───────────────────────────────────────────────────
 
 function SessionsTab({ compte }: { compte: Compte }) {
@@ -613,28 +572,28 @@ function SessionsTab({ compte }: { compte: Compte }) {
     <>
       {isLoading && <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-accent" /></div>}
       {sessions && sessions.length === 0 && (
-        <p className="text-sm text-muted-foreground italic px-1">Aucune session ouverte.</p>
+        <p className="text-sm text-muted-foreground italic px-1">
+          {compte.typeCompte === 'poste' ? 'Aucun navigateur connecté — les PC enrôlés sont dans l’onglet Appareils.' : 'Aucune session ouverte.'}
+        </p>
       )}
       {sessions?.map((s) => (
         <div key={s.ref} className={cn('group', cardClass)}>
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-start gap-2 min-w-0">
               <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
-                {s.type === 'poste'
-                  ? <MonitorSmartphone className="h-3.5 w-3.5 text-amber-600" />
-                  : <Monitor className="h-3.5 w-3.5 text-amber-600" />}
+                <Monitor className="h-3.5 w-3.5 text-amber-600" />
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-medium truncate">
-                  {s.type === 'poste' ? (s.libelle ?? 'Poste') : navigateurDe(s.userAgent)}
+                  {navigateurDe(s.userAgent)}
                   {s.courante && <Badge variant="secondary" className="ml-1.5 text-[10px] py-0">Cette session</Badge>}
                 </p>
                 <p className="text-[11px] text-muted-foreground truncate">
                   Vu le {fmtDateHeure(s.vuLe)}{s.ip ? ` · ${s.ip}` : ''}
                 </p>
                 <p className="text-[11px] text-muted-foreground truncate">
-                  {s.type === 'poste' ? `Enrôlé le ${fmtDateHeure(s.creeLe)}` : `Ouverte le ${fmtDateHeure(s.creeLe)}`}
-                  {s.libelle && s.type !== 'poste' ? ` · ${s.libelle}` : ''}
+                  Ouverte le {fmtDateHeure(s.creeLe)}
+                  {s.libelle ? ` · ${s.libelle}` : ''}
                 </p>
               </div>
             </div>
@@ -643,7 +602,7 @@ function SessionsTab({ compte }: { compte: Compte }) {
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6 text-destructive hover:text-destructive flex-shrink-0"
-                title={s.type === 'poste' ? 'Désenrôler ce poste' : 'Fermer cette session'}
+                title="Fermer cette session"
                 disabled={revoquer.isPending}
                 onClick={() => revoquer.mutate(s.ref)}
               >
@@ -684,7 +643,7 @@ function SessionsTab({ compte }: { compte: Compte }) {
       <ConfirmDialog
         open={confirmTout}
         title="Fermer toutes les sessions"
-        description={`${nomDe(compte)} sera déconnecté partout${compte.typeCompte === 'poste' ? ', et les PC enrôlés devront l’être à nouveau' : ''}.`}
+        description={`${nomDe(compte)} sera déconnecté de tous ses navigateurs. Les appareils enrôlés ne sont pas touchés.`}
         confirmLabel="Fermer"
         isPending={toutRevoquer.isPending}
         onCancel={() => setConfirmTout(false)}

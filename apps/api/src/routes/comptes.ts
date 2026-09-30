@@ -8,9 +8,13 @@
 //   PATCH  /api/comptes/:id                    — { prenom?, nom?, identifiant?, email?, actif?, estAdmin?, apps? }
 //   POST   /api/comptes/:id/mot-de-passe       — { motDePasse? , doitChanger? } → { motDePasse } shown once
 //   DELETE /api/comptes/:id/mot-de-passe       — no password any more (and every session ends)
-//   GET    /api/comptes/:id/sessions           — live sessions
-//   DELETE /api/comptes/:id/sessions[/:ref]    — end one / all
+//   GET    /api/comptes/:id/sessions           — live BROWSER sessions (enrolled PCs are under appareils)
+//   DELETE /api/comptes/:id/sessions           — end every browser session
+//   DELETE /api/comptes/:id/sessions/:ref      — end one session, or unenrol one PC
+//   GET    /api/comptes/:id/appareils          — everything enrolled under it: PCs, phones, pointeuses + pending codes
+//   PATCH  /api/comptes/:id/postes/:ref        — { libelle } rename an enrolled PC
 //   POST   /api/comptes/:id/code-poste         — { libelle } → one-time code enrolling a PC (station account)
+//   DELETE /api/comptes/:id/code-poste/:code   — cancel it
 //   GET    /api/comptes/:id/connexions         — last login attempts
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
@@ -19,8 +23,10 @@ import { z } from 'zod'
 import { mpsPg } from '../lib/mps-pg.js'
 import { requireAdmin } from '../lib/auth.js'
 import { genererMotDePasse, hacherMotDePasse, motDePasseRefuse } from '../lib/passwords.js'
-import { listerSessions, revoquerParRef, revoquerSessionsDe } from '../lib/sessions.js'
-import { genererCodePoste } from '../lib/postes.js'
+import { listerSessions, renommerPoste, revoquerParRef, revoquerSessionsDe } from '../lib/sessions.js'
+import { annulerCodePoste, codesPosteEnAttente, genererCodePoste } from '../lib/postes.js'
+import { listerAppareils, listerCodes, typeAppareil } from '../lib/appareils-atelier.js'
+import { selectBonnetiers } from '../lib/production-trm.js'
 import { APPS, appsDe, appsParUtilisateur, ecrireApps, oublierApps, refusApps, type AppCode } from '../lib/utilisateur-apps.js'
 
 export const comptesRouter: RouterType = Router()
@@ -38,13 +44,16 @@ interface LigneCompte {
   doit_changer_mdp: boolean
   mdp_modifie_le: Date | null
   derniere_connexion: Date | null
+  /** Live BROWSER sessions. */
   sessions: number
+  /** Live POSTE sessions (enrolled PCs). */
+  postes: number
 }
 
 const iso = (d: Date | null) => d?.toISOString() ?? null
 
 /** `apps` null = membership unknown (migration 0004 pending): both apps. */
-function versJson(r: LigneCompte, apps: Map<number, AppCode[]> | null) {
+function versJson(r: LigneCompte, apps: Map<number, AppCode[]> | null, telephones: Map<number, number>) {
   return {
     IDutilisateur: r.idutilisateur,
     prenom: r.prenom,
@@ -59,6 +68,8 @@ function versJson(r: LigneCompte, apps: Map<number, AppCode[]> | null) {
     mdpModifieLe: iso(r.mdp_modifie_le),
     derniereConnexion: iso(r.derniere_connexion),
     sessions: r.sessions,
+    /** Enrolled PCs + phones + pointeuses — the « Appareils » tab. */
+    appareils: r.postes + (telephones.get(r.idutilisateur) ?? 0),
     apps: apps ? apps.get(r.idutilisateur) ?? [] : APPS,
   }
 }
@@ -66,7 +77,14 @@ function versJson(r: LigneCompte, apps: Map<number, AppCode[]> | null) {
 /** One account as JSON, or null when it does not exist. */
 async function unCompte(id: number) {
   const [c] = await lister(id)
-  return c ? versJson(c, await appsParUtilisateur()) : null
+  return c ? versJson(c, await appsParUtilisateur(), await telephonesParCompte()) : null
+}
+
+/** Phones + pointeuses enrolled per account (lib/appareils-atelier.ts store). */
+async function telephonesParCompte(): Promise<Map<number, number>> {
+  const m = new Map<number, number>()
+  for (const a of await listerAppareils()) m.set(a.IDutilisateur, (m.get(a.IDutilisateur) ?? 0) + 1)
+  return m
 }
 
 async function lister(id?: number): Promise<LigneCompte[]> {
@@ -75,8 +93,10 @@ async function lister(id?: number): Promise<LigneCompte[]> {
     SELECT u.idutilisateur, u.prenom, u.nom, u.identifiant, u.email, u.type_compte, u.est_admin,
            u.actif, u.password_hash IS NOT NULL AS a_mot_de_passe, u.doit_changer_mdp,
            u.mdp_modifie_le, u.derniere_connexion,
-           (SELECT count(*)::int FROM session s WHERE s.idutilisateur = u.idutilisateur
-              AND s.revoque_le IS NULL AND (s.expire_le IS NULL OR s.expire_le > now())) AS sessions
+           (SELECT count(*)::int FROM session s WHERE s.idutilisateur = u.idutilisateur AND s.type = 'navigateur'
+              AND s.revoque_le IS NULL AND (s.expire_le IS NULL OR s.expire_le > now())) AS sessions,
+           (SELECT count(*)::int FROM session s WHERE s.idutilisateur = u.idutilisateur AND s.type = 'poste'
+              AND s.revoque_le IS NULL) AS postes
     FROM utilisateur u
     ${id !== undefined ? sql`WHERE u.idutilisateur = ${id}` : sql``}
     ORDER BY u.actif DESC, u.nom NULLS LAST, u.prenom`
@@ -109,8 +129,8 @@ const emailSchema = z.string().trim().toLowerCase().max(200)
 comptesRouter.get('/', async (req, res) => {
   if (!requireAdmin(req, res)) return
   try {
-    const apps = await appsParUtilisateur()
-    res.json((await lister()).map((c) => versJson(c, apps)))
+    const [apps, telephones] = await Promise.all([appsParUtilisateur(), telephonesParCompte()])
+    res.json((await lister()).map((c) => versJson(c, apps, telephones)))
   } catch (err) {
     console.error('Error listing comptes:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -275,7 +295,7 @@ comptesRouter.get('/:id/sessions', async (req, res) => {
   const id = idParam(req, res)
   if (id === null) return
   try {
-    const list = await listerSessions(id)
+    const list = await listerSessions(id, 'navigateur')
     res.json(list.map((x) => ({ ...x, courante: !!req.session?.id.startsWith(x.ref) })))
   } catch (err) {
     console.error('Error listing sessions:', err)
@@ -288,7 +308,8 @@ comptesRouter.delete('/:id/sessions', async (req, res) => {
   const id = idParam(req, res)
   if (id === null) return
   try {
-    const n = await revoquerSessionsDe(id, req.session?.idutilisateur === id ? req.session.id : undefined)
+    // Browsers only: an enrolled PC is unenrolled from the Appareils tab, one by one.
+    const n = await revoquerSessionsDe(id, req.session?.idutilisateur === id ? req.session.id : undefined, 'navigateur')
     res.json({ revoquees: n })
   } catch (err) {
     console.error('Error revoking sessions:', err)
@@ -306,6 +327,67 @@ comptesRouter.delete('/:id/sessions/:ref', async (req, res) => {
     res.json({ ok: true })
   } catch (err) {
     console.error('Error revoking session:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── GET /:id/appareils ───────────────────────────────────────
+// One list per account, whatever the device: enrolled PCs (POSTE sessions,
+// lib/postes.ts) and phones / pointeuses (lib/appareils-atelier.ts, renamed
+// and revoked through /api/atelier/appareils), with their pending codes.
+comptesRouter.get('/:id/appareils', async (req, res) => {
+  if (!requireAdmin(req, res)) return
+  const id = idParam(req, res)
+  if (id === null) return
+  try {
+    const [postes, telephones] = await Promise.all([
+      listerSessions(id, 'poste'),
+      listerAppareils().then((l) => l.filter((a) => a.IDutilisateur === id)),
+    ])
+    const codesTel = listerCodes().filter((c) => c.IDutilisateur === id)
+    const fixes = [...telephones.map((a) => a.IDbonnetier), ...codesTel.map((c) => c.IDbonnetier)]
+    const bonnetiers = fixes.some((b) => b !== null) ? await selectBonnetiers() : []
+    const nom = (b: number | null) => {
+      if (b === null) return null
+      const x = bonnetiers.find((y) => y.id === b)
+      return x ? { IDbonnetier: x.id, prenom: x.prenom, nom: x.nom } : { IDbonnetier: b, prenom: '?', nom: '' }
+    }
+    res.json({
+      postes: postes.map((p) => ({ ref: p.ref, libelle: p.libelle, creeLe: p.creeLe, vuLe: p.vuLe, ip: p.ip, userAgent: p.userAgent })),
+      telephones: telephones.map((a) => ({
+        id: a.id, type: typeAppareil(a), libelle: a.libelle, bonnetier: nom(a.IDbonnetier), creeLe: a.creeLe, vuLe: a.vuLe,
+      })),
+      codes: [
+        ...codesPosteEnAttente(id).map((c) => ({ type: 'pc' as const, code: c.code, libelle: c.libelle, bonnetier: null, expireLe: c.expire })),
+        ...codesTel.map((c) => ({
+          type: c.type, code: c.code, libelle: c.libelle, bonnetier: nom(c.IDbonnetier), expireLe: new Date(c.expireLe).toISOString(),
+        })),
+      ].sort((a, b) => a.expireLe.localeCompare(b.expireLe)),
+    })
+  } catch (err) {
+    console.error('Error listing appareils:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── PATCH /:id/postes/:ref ───────────────────────────────────
+comptesRouter.patch('/:id/postes/:ref', async (req, res) => {
+  if (!requireAdmin(req, res)) return
+  const id = idParam(req, res)
+  if (id === null) return
+  const libelle = typeof req.body?.libelle === 'string' ? req.body.libelle.trim().slice(0, 80) : ''
+  if (!libelle) {
+    res.status(400).json({ error: 'libelle_requis', message: 'Donnez un nom au poste.' })
+    return
+  }
+  try {
+    if (!(await renommerPoste(id, String(req.params.ref), libelle))) {
+      res.status(404).json({ error: 'poste not found' })
+      return
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error renaming poste:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -347,4 +429,11 @@ comptesRouter.get('/:id/connexions', async (req, res) => {
     console.error('Error listing connexions:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
+})
+
+comptesRouter.delete('/:id/code-poste/:code', (req, res) => {
+  if (!requireAdmin(req, res)) return
+  const id = idParam(req, res)
+  if (id === null) return
+  res.json({ ok: true, supprime: annulerCodePoste(id, String(req.params.code)) })
 })

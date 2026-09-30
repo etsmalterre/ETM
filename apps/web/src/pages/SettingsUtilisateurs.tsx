@@ -1,9 +1,12 @@
 // Paramètres › Utilisateurs — admin-only page managing the app's users: the
 // ONE screen of both apps, shared with TRM through `@etm` (TRM's router mounts
 // it with its own props). Built on the canonical 3-panel MasterDetailLayout:
-// searchable user list on the left, a header + a Classeur-style master-tabbed
-// centre (Profil = email / photo / signature cards, Écrans, Permissions,
-// Notifications), the account (password, sessions, apps) on the right.
+// searchable user list on the left in two sections (Personnes / Postes &
+// appareils — `type_compte`), a header + a Classeur-style master-tabbed centre
+// (Profil = email / photo / signature cards, Écrans, Permissions,
+// Notifications, Appareils), the account (password, sessions, apps) on the
+// right. A station account shows only what applies to it: Écrans, Permissions,
+// Appareils — no profile, no password, no e-mails.
 //
 // Each company has its own users (API lib/utilisateur-apps.ts): the list shows
 // the members of the app this bundle is (`useAppCode()`, set by AuthGate);
@@ -12,8 +15,10 @@
 //
 // Per-app differences are PROPS, defaulting to ETM (TRM CLAUDE.md § Shared
 // screens): the permission catalog + store (`permissionsPath`), the
-// Notifications tab, extra tabs (TRM: Appareils). `@/` imports resolve to the
-// host app's src — navigation (Écrans tab), PermissionsContext — while the
+// Notifications tab, extra tabs. Appareils (PCs, phones, pointeuses enrolled
+// under an account) is built in since 2026-09-30 — an extra tab with a
+// built-in key is ignored, so TRM's old one cannot show twice. `@/` imports
+// resolve to the host app's src — navigation (Écrans tab), PermissionsContext — while the
 // account components are imported relatively, from ETM.
 //
 // Permissions are toggled inline (no edit mode). Each toggle immediately PUTs
@@ -25,7 +30,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, Loader2, AlertCircle, Shield, Check, Mail, Save, Bell,
   Image as ImageIcon, PenLine, Trash2, User as UserIcon, ChevronDown,
-  Monitor, Copy, Plus, type LucideIcon,
+  Monitor, MonitorSmartphone, Smartphone, Copy, Plus, type LucideIcon,
 } from 'lucide-react'
 import { apiFetch, API_URL } from '@/lib/api'
 import { useAppCode, useUser } from '@/contexts/UserContext'
@@ -43,6 +48,7 @@ import { cn } from '@/lib/utils'
 // Relative on purpose: TRM mounts this file, and its `@/` has no comptes/.
 import { CompteSidebar, COMPTES_KEY, type Compte } from '../components/comptes/CompteSidebar'
 import { NouveauCompteDialog } from '../components/comptes/NouveauCompteDialog'
+import { AppareilsTab } from '../components/comptes/AppareilsTab'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -120,7 +126,7 @@ export interface NotificationsTabProps {
   permissionKeys: PermissionKeyDef[]
 }
 
-/** A master tab one app adds after Notifications (TRM: Appareils). */
+/** A master tab one app adds after the built-in ones. */
 export interface ExtraTab {
   key: string
   label: string
@@ -258,11 +264,13 @@ export function SettingsUtilisateurs({
     },
   })
 
+  // In the order the list renders it: people first, then station accounts.
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return users
-    const q = searchQuery.toLowerCase()
-    return users.filter((u) => displayName(u).toLowerCase().includes(q))
-  }, [users, searchQuery])
+    const q = searchQuery.trim().toLowerCase()
+    const hits = q ? users.filter((u) => displayName(u).toLowerCase().includes(q)) : users
+    const estPoste = (u: PermissionUser) => compteById.get(u.IDutilisateur)?.typeCompte === 'poste'
+    return [...hits.filter((u) => !estPoste(u)), ...hits.filter(estPoste)]
+  }, [users, searchQuery, compteById])
 
   // Keep the selection valid against the search-filtered list: narrowing the
   // search re-targets the top row instead of leaving the previous user on screen.
@@ -335,10 +343,11 @@ export function SettingsUtilisateurs({
           onNouveau={() => setNouveauOpen(true)}
         />
       }
-      detailHeader={<DetailHeader user={selected} />}
+      detailHeader={<DetailHeader user={selected} compte={selected ? compteById.get(selected.IDutilisateur) ?? null : null} />}
       detail={
         <DetailBody
           user={selected}
+          compte={selected ? compteById.get(selected.IDutilisateur) ?? null : null}
           profile={selected ? profileByUserId.get(selected.IDutilisateur) ?? null : null}
           currentEmail={selected ? emailByUserId.get(selected.IDutilisateur) ?? '' : ''}
           onSaveEmail={(email) => {
@@ -414,6 +423,12 @@ export function SettingsUtilisateurs({
 
 // ── Left Panel: List ───────────────────────────────────
 
+// The two kinds of account, listed apart: who works, and where they work from.
+const SECTIONS: Array<{ type: Compte['typeCompte']; label: string; icon: LucideIcon }> = [
+  { type: 'personne', label: 'Personnes', icon: UserIcon },
+  { type: 'poste', label: 'Postes & appareils', icon: MonitorSmartphone },
+]
+
 function UserList({
   rows, isLoading, isError, error,
   selectedId, onSelect,
@@ -463,7 +478,17 @@ function UserList({
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
             <p className="text-sm">Aucun utilisateur</p>
           </div>
-        ) : rows.map((u) => {
+        ) : SECTIONS.map((section) => {
+          const inSection = rows.filter((u) => (compteById.get(u.IDutilisateur)?.typeCompte ?? 'personne') === section.type)
+          if (inSection.length === 0) return null
+          const SectionIcon = section.icon
+          return (
+            <div key={section.type} className="space-y-2">
+              <p className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+                <SectionIcon className="h-3 w-3" />{section.label}
+                <span className="ml-auto tabular-nums">{inSection.length}</span>
+              </p>
+              {inSection.map((u) => {
           const isSelected = selectedId === u.IDutilisateur
           const role = roleLabel(u.roleHint)
           const compte = compteById.get(u.IDutilisateur)
@@ -481,9 +506,15 @@ function UserList({
                   : 'border-border hover:border-accent/50'
               )}
             >
-              <div className="h-8 w-8 rounded-full bg-gold flex items-center justify-center text-gold-foreground text-xs font-bold flex-shrink-0">
-                {initials(u)}
-              </div>
+              {compte?.typeCompte === 'poste' ? (
+                <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary flex-shrink-0">
+                  <MonitorSmartphone className="h-4 w-4" />
+                </div>
+              ) : (
+                <div className="h-8 w-8 rounded-full bg-gold flex items-center justify-center text-gold-foreground text-xs font-bold flex-shrink-0">
+                  {initials(u)}
+                </div>
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <p className="text-sm font-medium truncate">{displayName(u)}</p>
@@ -494,6 +525,7 @@ function UserList({
                 {(inactif || role || compte?.typeCompte === 'poste') && (
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">
                     {inactif ? 'Désactivé' : role ?? 'Poste d’atelier'}
+                    {!inactif && compte?.typeCompte === 'poste' && ` · ${compte.appareils} appareil${compte.appareils > 1 ? 's' : ''}`}
                   </p>
                 )}
               </div>
@@ -502,6 +534,9 @@ function UserList({
                   {u.granted.length}
                 </span>
               )}
+            </div>
+          )
+              })}
             </div>
           )
         })}
@@ -520,15 +555,22 @@ function UserList({
 
 // ── Center: Detail Header ──────────────────────────────
 
-function DetailHeader({ user }: { user: PermissionUser | null }) {
+function DetailHeader({ user, compte }: { user: PermissionUser | null; compte: Compte | null }) {
   if (!user) return null
   const isVin = isVincent(user)
+  const estPoste = compte?.typeCompte === 'poste'
   return (
     <div className="flex-shrink-0 pt-0.5">
       <div className="flex items-center gap-3">
-        <div className="h-12 w-12 rounded-full bg-gold flex items-center justify-center text-gold-foreground font-heading font-bold shadow-sm">
-          {initials(user)}
-        </div>
+        {estPoste ? (
+          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center text-primary shadow-sm">
+            <MonitorSmartphone className="h-6 w-6" />
+          </div>
+        ) : (
+          <div className="h-12 w-12 rounded-full bg-gold flex items-center justify-center text-gold-foreground font-heading font-bold shadow-sm">
+            {initials(user)}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-heading font-bold tracking-tight truncate">
@@ -541,7 +583,11 @@ function DetailHeader({ user }: { user: PermissionUser | null }) {
               </span>
             )}
           </div>
-          {user.roleHint && (
+          {estPoste ? (
+            <p className="text-xs text-muted-foreground mt-1">
+              Poste & appareils{roleLabel(user.roleHint) ? ` — ${roleLabel(user.roleHint)}` : ''}
+            </p>
+          ) : user.roleHint && (
             <p className="text-xs text-muted-foreground mt-1">{user.roleHint}</p>
           )}
         </div>
@@ -556,20 +602,32 @@ function DetailHeader({ user }: { user: PermissionUser | null }) {
 // Écrans sits before Permissions: which screens exist for this user is the
 // question you answer first — an action permission on a screen they can't open
 // is dead weight.
+// Appareils closes the row: what is enrolled under the account (PCs, phones,
+// pointeuses). A station account has no profile and receives no e-mail, so it
+// shows Écrans, Permissions, Appareils only; a person shows Appareils when
+// something can be enrolled under them (a TRM member) or already is.
 const MAIN_TABS: Array<{ key: string; label: string; icon: LucideIcon }> = [
   { key: 'profil', label: 'Profil', icon: UserIcon },
   { key: 'ecrans', label: 'Écrans', icon: Monitor },
   { key: 'permissions', label: 'Permissions', icon: Shield },
   { key: 'notifications', label: 'Notifications', icon: Bell },
+  { key: 'appareils', label: 'Appareils', icon: Smartphone },
 ]
 
+function tabsDuCompte(compte: Compte | null): string[] {
+  if (compte?.typeCompte === 'poste') return ['ecrans', 'permissions', 'appareils']
+  const avecAppareils = !!compte && (compte.apps.includes('trm') || compte.appareils > 0)
+  return ['profil', 'ecrans', 'permissions', 'notifications', ...(avecAppareils ? ['appareils'] : [])]
+}
+
 function DetailBody({
-  user, profile, currentEmail, onSaveEmail, isSavingEmail, emailSaveError,
+  user, compte, profile, currentEmail, onSaveEmail, isSavingEmail, emailSaveError,
   keys, isUpdating, onToggle,
   NotificationsTab, extraTabs,
   onGrantedChange, onCopyRights,
 }: {
   user: PermissionUser | null
+  compte: Compte | null
   profile: UserProfileRow | null
   currentEmail: string
   onSaveEmail: (email: string) => void
@@ -583,11 +641,17 @@ function DetailBody({
   onGrantedChange: (mutateSet: (s: Set<string>) => void) => void
   onCopyRights: () => void
 }) {
-  const [activeTab, setActiveTab] = useState('profil')
-  const tabs = [...MAIN_TABS, ...extraTabs]
+  const visibles = tabsDuCompte(compte)
+  const tabs = [
+    ...MAIN_TABS.filter((t) => visibles.includes(t.key)),
+    ...extraTabs.filter((t) => !MAIN_TABS.some((m) => m.key === t.key)),
+  ]
+  const [tabChoisi, setActiveTab] = useState(visibles[0])
+  // A tab the selected account does not have falls back to its first one.
+  const activeTab = tabs.some((t) => t.key === tabChoisi) ? tabChoisi : visibles[0]
 
   // Land back on the main-info tab whenever the selection changes.
-  useEffect(() => { setActiveTab('profil') }, [user?.IDutilisateur])
+  useEffect(() => { setActiveTab(tabsDuCompte(compte)[0]) }, [user?.IDutilisateur]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Group keys by category. Hooks must run before the early return below,
   // so this useMemo lives here even though `user` may be null.
@@ -643,17 +707,17 @@ function DetailBody({
         })}
         {/* Copies profil-independent rights (écrans + permissions) from
             another user — applies whatever tab is open, hence its place in
-            the tab strip rather than inside one tab. */}
+            the tab strip rather than inside one tab. Icon only: with
+            Appareils the five tabs fill the centre panel at 1400–1800 px. */}
         {!isVin && (
           <Button
             variant="outline"
-            size="sm"
-            className="ml-auto"
-            title="Copier tous les droits d’un autre utilisateur"
+            size="icon"
+            className="ml-auto h-8 w-8 flex-shrink-0"
+            title="Copier les droits de… — tous les droits d’un autre utilisateur"
             onClick={onCopyRights}
           >
-            <Copy className="h-3.5 w-3.5 mr-1.5" />
-            Copier les droits de…
+            <Copy className="h-3.5 w-3.5" />
           </Button>
         )}
       </div>
@@ -739,7 +803,9 @@ function DetailBody({
           />
         )}
 
-        {extraTabs.map((t) => activeTab === t.key && (
+        {activeTab === 'appareils' && compte && <AppareilsTab compte={compte} />}
+
+        {extraTabs.filter((t) => !MAIN_TABS.some((m) => m.key === t.key)).map((t) => activeTab === t.key && (
           <div key={t.key}>{t.render({ IDutilisateur: user.IDutilisateur, name: displayName(user) })}</div>
         ))}
       </div>

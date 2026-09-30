@@ -212,6 +212,11 @@ async function attach(req: Request, res: Response): Promise<void> {
   const session = jeton ? await resoudreSession(jeton) : null
   if (session) {
     appliquerSession(req, session)
+    // A poste's cookie is re-sent with the long lifetime (same token): a
+    // session turned into a poste in place keeps working past 31 days.
+    if (session.type === 'poste' && session.renouvele) {
+      res.cookie(SESSION_COOKIE_NAME, jeton, sessionCookieOptions('poste'))
+    }
   } else if (legacyCookiesActifs()) {
     await convertirCookieHistorique(req, res, cookies)
   }

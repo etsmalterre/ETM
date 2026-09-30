@@ -43,3 +43,21 @@ export function consommerCodePoste(code: string): { idutilisateur: number; libel
   codes.delete(code.trim())
   return { idutilisateur: v.idutilisateur, libelle: v.libelle }
 }
+
+/** The codes still pending for one account (Paramètres › Utilisateurs ›
+ *  Appareils shows them next to the phones' codes, with a countdown). */
+export function codesPosteEnAttente(idutilisateur: number): Array<{ code: string; libelle: string; expire: string }> {
+  const now = Date.now()
+  purger(now)
+  return [...codes.entries()]
+    .filter(([, v]) => v.idutilisateur === idutilisateur)
+    .sort(([, a], [, b]) => a.expire - b.expire)
+    .map(([code, v]) => ({ code, libelle: v.libelle, expire: new Date(v.expire).toISOString() }))
+}
+
+/** Cancels a pending code of this account. */
+export function annulerCodePoste(idutilisateur: number, code: string): boolean {
+  const v = codes.get(code)
+  if (!v || v.idutilisateur !== idutilisateur) return false
+  return codes.delete(code)
+}

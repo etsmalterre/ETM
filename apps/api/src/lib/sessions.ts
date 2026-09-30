@@ -28,6 +28,11 @@ export interface SessionResolue {
   /** The OWNER's flags (not the impersonated account's). */
   estAdmin: boolean
   doitChangerMdp: boolean
+  /** Set on the call that slid `vu_le` (at most every TOUCH_MS): the moment a
+   *  POSTE re-sends its long-lived cookie. A browser session turned into a
+   *  poste in place (scripts/postes-appareils-fix.ts) still carries a 31-day
+   *  cookie until then. */
+  renouvele?: boolean
 }
 
 interface EntreeCache { at: number; session: SessionResolue | null; vuLe: number }
@@ -90,6 +95,7 @@ export async function resoudreSession(jeton: string): Promise<SessionResolue | n
       UPDATE session SET vu_le = now(),
         expire_le = CASE WHEN type = 'poste' THEN NULL ELSE ${new Date(now + SESSION_DUREE_MS)} END
       WHERE id = ${id}`.catch((err) => console.error('sessions: touch failed', err))
+    return session ? { ...session, renouvele: true } : null
   }
   return session
 }
@@ -104,12 +110,15 @@ export async function revoquerSession(id: string): Promise<void> {
   oublierCache(id)
 }
 
-/** Revokes every live session of an account (password reset, deactivation),
- *  optionally sparing one (the caller's own, after changing their password). */
-export async function revoquerSessionsDe(idutilisateur: number, sauf?: string): Promise<number> {
-  const rows = await mpsPg()`
+/** Revokes every live session of an account (password reset, deactivation) —
+ *  or only those of one `type` — optionally sparing one (the caller's own,
+ *  after changing their password). */
+export async function revoquerSessionsDe(idutilisateur: number, sauf?: string, type?: TypeSession): Promise<number> {
+  const sql = mpsPg()
+  const rows = await sql`
     UPDATE session SET revoque_le = now()
     WHERE idutilisateur = ${idutilisateur} AND revoque_le IS NULL AND id <> ${sauf ?? ''}
+      ${type ? sql`AND type = ${type}` : sql``}
     RETURNING id`
   oublierCache()
   return rows.length
@@ -132,14 +141,16 @@ export interface SessionListee {
   userAgent: string | null
 }
 
-export async function listerSessions(idutilisateur: number): Promise<SessionListee[]> {
-  const rows = await mpsPg()<{
+export async function listerSessions(idutilisateur: number, type?: TypeSession): Promise<SessionListee[]> {
+  const sql = mpsPg()
+  const rows = await sql<{
     id: string; type: TypeSession; libelle: string | null; cree_le: Date; vu_le: Date
     expire_le: Date | null; ip: string | null; user_agent: string | null
   }[]>`
     SELECT id, type, libelle, cree_le, vu_le, expire_le, ip, user_agent FROM session
     WHERE idutilisateur = ${idutilisateur} AND revoque_le IS NULL
       AND (expire_le IS NULL OR expire_le > now())
+      ${type ? sql`AND type = ${type}` : sql``}
     ORDER BY vu_le DESC`
   return rows.map((r) => ({
     ref: r.id.slice(0, 12),
@@ -151,6 +162,16 @@ export async function listerSessions(idutilisateur: number): Promise<SessionList
     ip: r.ip,
     userAgent: r.user_agent,
   }))
+}
+
+/** Renames an enrolled PC (a POSTE session of the account named by its ref). */
+export async function renommerPoste(idutilisateur: number, ref: string, libelle: string): Promise<boolean> {
+  if (!/^[0-9a-f]{12}$/.test(ref)) return false
+  const rows = await mpsPg()`
+    UPDATE session SET libelle = ${libelle}
+    WHERE idutilisateur = ${idutilisateur} AND type = 'poste' AND revoque_le IS NULL AND left(id, 12) = ${ref}
+    RETURNING id`
+  return rows.length > 0
 }
 
 /** Revokes the session of an account whose id starts with `ref` (a listing's ref). */
