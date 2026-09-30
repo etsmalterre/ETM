@@ -2,7 +2,7 @@ import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
 import { batchRepair } from './batch-repair.js'
 import { pickVal } from './accented-keys.js'
 import { sqlText } from './clients-common.js'
-import { IS_WINDOWS } from './sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from './sst-shared.js'
 import { createSerialLock } from './serial-lock.js'
 import { referenceKey } from './ref-fini-reference.js'
 import { LINE_TYPE_RECTILIGNE } from './sst-line-kind.js'
@@ -216,7 +216,7 @@ export async function rectiligneReferenceTaken(reference: string, exceptId = 0):
 
 /** Flip archivé (Windows: named UPDATE; Linux: positional rewrite). */
 export async function setRectiligneArchive(id: number, value: 0 | 1): Promise<boolean> {
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     await query(`UPDATE ref_rectiligne SET archivé = ${value} WHERE IDref_rectiligne = ${id}`)
     return true
   }

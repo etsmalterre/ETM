@@ -19,7 +19,8 @@ const upload = multer({ storage: multer.memoryStorage() })
 // ref_fil.recyclé and every asso_fil_matiere column is accented. Follow the
 // stock.ts pattern: branch on platform for writes, normalise reads via a
 // post-processor so HTTP payloads only ever contain ASCII keys.
-import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
+import { readCol } from '../lib/accented-keys.js'
 
 /** Escape a string for use in SQL (single quotes doubled) */
 function esc(value: string): string {
@@ -513,8 +514,8 @@ function buildRefFilSets(body: z.infer<typeof refFilBody>): string[] {
   sets.push(`nb_brin = ${body.nb_brin ?? 0}`)
   sets.push(`IDunite_titrage = ${body.IDunite_titrage ?? 0}`)
   sets.push(`bio = ${body.bio ? 1 : 0}`)
-  // recyclé is accented — Windows only. On Linux the set is skipped.
-  if (IS_WINDOWS) sets.push(`recyclé = ${body.recycle ? 1 : 0}`)
+  // recyclé is accented — skipped only on the Linux HFSQL bridge.
+  if (canNameAccented()) sets.push(`recyclé = ${body.recycle ? 1 : 0}`)
   return sets
 }
 
@@ -618,7 +619,7 @@ referencesFilRouter.get('/:id/utilisation', async (req: Request, res: Response) 
         IDref_ecru: Number(r.IDref_ecru) || 0,
         reference: ((r.reference ?? '') as string) || '',
         designation: ((r.designation ?? '') as string) || '',
-        archived: Number(r['archivé'] ?? (r as Record<string, unknown>).archiv ?? 0) === 1,
+        archived: Number(readCol(r, 'archivé') ?? 0) === 1,
       }))
       const eFixed = (await fixEncoding(
         shaped, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'],
@@ -686,7 +687,7 @@ referencesFilRouter.post('/', async (req: Request, res: Response) => {
       String(b.IDunite_titrage ?? 0),
       String(b.bio ? 1 : 0),
     ]
-    if (IS_WINDOWS) {
+    if (canNameAccented()) {
       cols.push('recyclé')
       vals.push(String(b.recycle ? 1 : 0))
     }
@@ -717,7 +718,7 @@ referencesFilRouter.put('/:id', async (req: Request, res: Response) => {
     }
     const sets = buildRefFilSets(parsed.data)
     await query(`UPDATE ref_fil SET ${sets.join(', ')} WHERE IDref_fil = ${id}`)
-    res.json({ ok: true, _linux_recycle_skipped: !IS_WINDOWS })
+    res.json({ ok: true, _linux_recycle_skipped: !canNameAccented() })
   } catch (err) {
     console.error('Error updating ref_fil:', err)
     res.status(500).json({ error: 'Internal server error' })

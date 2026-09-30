@@ -18,7 +18,7 @@
 //  - no memo-BINARY column, so `SELECT *` is safe on the Windows ODBC driver.
 
 import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
-import { esc, n, IS_WINDOWS } from './sst-shared.js'
+import { esc, n, IS_WINDOWS, canNameAccented } from './sst-shared.js'
 import { readCol } from './accented-keys.js'
 
 /** SQL literal for user text. Pure ASCII → quoted; accented → Latin-1 hex
@@ -221,7 +221,7 @@ export async function insertRetour(seed: RetourSeed): Promise<number> {
  * which has to do it for four columns — here there is exactly one.)
  */
 export async function patchArchive(id: number, archive: 0 | 1): Promise<void> {
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     await query(`UPDATE retour_client SET archivé = ${archive} WHERE IDretour_client = ${id}`)
     return
   }

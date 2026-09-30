@@ -14,7 +14,8 @@ export const referencesEcruRouter: RouterType = Router()
 // server). So:
 //   • reads  — SELECT * (Windows returns accented keys verbatim; Linux truncates).
 //              normalizeRefEcru() resolves each by a case-insensitive prefix regex.
-//   • writes — Windows SETs the accented columns directly; Linux SKIPs diamètre /
+//   • writes — Windows and PostgreSQL SET the accented columns directly (canNameAccented());
+//              the Linux HFSQL bridge SKIPped diamètre /
 //              recyclé in the main PUT (a documented, pre-existing limitation,
 //              same as references-fil.ts skips recyclé). The Archiver action flips
 //              archivé via a delete + positional-reinsert preserving the ASCII PK
@@ -25,7 +26,7 @@ export const referencesEcruRouter: RouterType = Router()
 // NB: `SELECT *` works on ref_ecru but FAILS (0 rows) on colori_ecru — that table
 // is only ever read with an explicit column list.
 
-import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 
 /** Escape a string for SQL (single quotes doubled). */
 function esc(value: string): string {
@@ -717,7 +718,7 @@ function buildRefEcruSets(b: RefEcruBody): string[] {
   sets.push(`ouvert_visiteuse = ${b.ouvert_visiteuse ? 1 : 0}`)
   sets.push(`sonneter = ${b.sonneter ? 1 : 0}`)
   sets.push(`date_maj_ft = '${todayHfsql()}'`)
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     sets.push(`diamètre = ${toNumOrNull(b.diametre) ?? 0}`)
     sets.push(`recyclé = ${b.recycle ? 1 : 0}`)
   }
@@ -806,7 +807,7 @@ referencesEcruRouter.put('/:id', async (req: Request, res: Response) => {
     }
     const sets = buildRefEcruSets(parsed.data)
     await query(`UPDATE ref_ecru SET ${sets.join(', ')} WHERE IDref_ecru = ${id}`)
-    res.json({ ok: true, _linux_accented_skipped: !IS_WINDOWS })
+    res.json({ ok: true, _linux_accented_skipped: !canNameAccented() })
   } catch (err) {
     console.error('Error updating ref_ecru:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -829,7 +830,7 @@ const TEXT_COL_IDX = new Set([2, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
  *  physical order survive the mangled accented keys), flip the archive slot,
  *  delete and positional-reinsert preserving the PK. */
 async function setArchive(id: number, value: 0 | 1): Promise<void> {
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     await query(`UPDATE ref_ecru SET archivé = ${value} WHERE IDref_ecru = ${id}`)
     return
   }

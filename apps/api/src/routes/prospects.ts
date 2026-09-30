@@ -38,7 +38,7 @@ async function ensureCanEdit(req: Request, res: Response): Promise<boolean> {
 //     `normalizeProspectRow` folds the returned keys to canonical ASCII keys.
 //   • Writes name the accented columns only on Windows; on Linux those three
 //     fields are skipped (same limitation stock.ts ships for `terminé`).
-import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -474,7 +474,7 @@ prospectsRouter.put('/:id', async (req: Request, res: Response) => {
     // whole row positionally, preserving the PK. Reads are clean (b64text), so no
     // corrupted value is written back; the original row is restored if the
     // re-insert fails so a botched rewrite can never lose data.
-    if (!IS_WINDOWS && (d.prenom !== undefined || d.societe !== undefined || d.traite !== undefined)) {
+    if (!canNameAccented() && (d.prenom !== undefined || d.societe !== undefined || d.traite !== undefined)) {
       const cur = await loadProspectDetail(id)
       if (!cur) { res.status(404).json({ error: 'Demande not found' }); return }
       const c = cur as unknown as ProspectFields & { IDprospect: number }
@@ -533,7 +533,7 @@ prospectsRouter.put('/:id', async (req: Request, res: Response) => {
     if (d.tracking_number !== undefined) sets.push(`tracking_number = ${sqlText(d.tracking_number)}`)
     if (d.IDtransporteur !== undefined) sets.push(`IDtransporteur = ${n(d.IDtransporteur)}`)
     // Accented columns: writable only on the Windows ODBC driver.
-    if (IS_WINDOWS) {
+    if (canNameAccented()) {
       if (d.prenom !== undefined) sets.push(`prénom = ${sqlText(d.prenom)}`)
       if (d.societe !== undefined) sets.push(`société = ${sqlText(d.societe)}`)
       if (d.traite !== undefined) sets.push(`traité = ${n(d.traite) ? 1 : 0}`)

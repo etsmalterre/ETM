@@ -62,7 +62,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, queryRaw, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
-import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
+import { esc, n, IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { selectMachines, machineLabel, resolveMachineLabels } from '../lib/production-trm.js'
 import {
   TRM_SOCIETE,
@@ -924,7 +924,7 @@ retoursClientTrmRouter.get('/:id/documents', async (req: Request, res: Response)
     const row = await readRetour(id)
     if (!row) { res.status(404).json({ error: 'Retour client not found' }); return }
     if (row.IDdossier_qualite === 0) { res.json({ documents: [], degraded: false }); return }
-    if (!IS_WINDOWS) { res.json({ documents: [], degraded: true }); return }
+    if (!canNameAccented()) { res.json({ documents: [], degraded: true }); return }
 
     const rows = await fixEncoding(
       await query<any>(
@@ -952,7 +952,7 @@ retoursClientTrmRouter.get('/:id/documents/:docId/fichier', async (req: Request,
     const id = parseInt(req.params.id, 10)
     const docId = parseInt(req.params.docId, 10)
     if (isNaN(id) || isNaN(docId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!IS_WINDOWS) { res.status(404).json({ error: 'No file attached' }); return }
+    if (!canNameAccented()) { res.status(404).json({ error: 'No file attached' }); return }
 
     const row = await readRetour(id)
     if (!row || row.IDdossier_qualite === 0) { res.status(404).json({ error: 'Document not found' }); return }

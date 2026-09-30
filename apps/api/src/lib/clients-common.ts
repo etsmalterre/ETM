@@ -16,7 +16,7 @@
 
 import type { Request, Response, Router as RouterType } from 'express'
 import { query, queryB64Text } from './hfsql-auto.js'
-import { IS_WINDOWS, esc } from './sst-shared.js'
+import { IS_WINDOWS, esc, canNameAccented } from './sst-shared.js'
 import { userHasPermission } from './permissions.js'
 import type { PermissionKey } from './permission-keys.js'
 import { trmUserHasPermission } from './permissions-trm.js'
@@ -228,7 +228,7 @@ export type ClientFlag = keyof typeof CLIENT_FLAG_COLUMNS
  *  must do that UPDATE *first* — this re-reads the row it reinserts. */
 export async function setClientFlag(id: number, which: ClientFlag, value: 0 | 1): Promise<boolean> {
   const col = CLIENT_FLAG_COLUMNS[which]
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     const exists = await query<{ IDclient: number }>(`SELECT IDclient FROM client WHERE IDclient = ${id}`)
     if (exists.length === 0) return false
     await query(`UPDATE client SET ${col.sql} = ${value} WHERE IDclient = ${id}`)

@@ -46,7 +46,7 @@ import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
-import { IS_WINDOWS, esc, n, dateDigits as dateStr, addWorkingDays } from '../lib/sst-shared.js'
+import { IS_WINDOWS, esc, n, dateDigits as dateStr, addWorkingDays, canNameAccented } from '../lib/sst-shared.js'
 import { resolveSstAdresses } from '../lib/sst-adresses.js'
 import { createKnitOrder, TRICOTAGE_MALTERRE_ID } from './commandes-sous-traitant.js'
 import { computeDateEcheance, loadEcheanceRule } from './factures.js'
@@ -5099,7 +5099,7 @@ async function logEnvoiEmails(idTypeDoc: number, idReference: number, recipients
     const addr = String(raw).trim()
     if (!addr) continue
     try {
-      if (IS_WINDOWS) {
+      if (canNameAccented()) {
         await query(
           `INSERT INTO envoi_email (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
            VALUES ('${ts}', ${sqlText(addr)}, ${sqlText(societe || '')}, ${idReference}, 0, ${sqlText(notes)}, ${idTypeDoc})`,

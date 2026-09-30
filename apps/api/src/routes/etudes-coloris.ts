@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
-import { pickVal } from '../lib/accented-keys.js'
+import { pickVal, readCol } from '../lib/accented-keys.js'
 import {
   DemandeEtudeColorisPdf,
   type DemandeEtudeColorisPdfData,
@@ -57,7 +57,7 @@ async function ensureCanEdit(req: Request, res: Response): Promise<boolean> {
 // post-filter in JS on Linux. The bridge truncates the column name on the
 // way out (last char dropped) so `archivé` arrives as `archiv`. Pattern
 // canonicalised in `apps/api/src/routes/stock.ts`.
-import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 
 // `envoi_email.invalidé` is an accented column. Naming it in SQL is FATAL on the
 // Linux iODBC bridge: the truncated `invalid` reaches the server → [01000] →
@@ -1057,7 +1057,7 @@ etudesColorisRouter.get('/:id/history', async (req: Request, res: Response) => {
         kind: 'etude',
         date: (r.DATE as string | null) ?? null,
         adresse: r.adresse ?? null,
-        societe: r['société'] ?? null,
+        societe: (readCol(r, 'société') as string | null) ?? null,
         soumissionId: null,
         soumissionObservation: null,
       })
@@ -1070,7 +1070,7 @@ etudesColorisRouter.get('/:id/history', async (req: Request, res: Response) => {
         kind: 'soumission',
         date: (r.DATE as string | null) ?? null,
         adresse: r.adresse ?? null,
-        societe: r['société'] ?? null,
+        societe: (readCol(r, 'société') as string | null) ?? null,
         soumissionId: sid,
         soumissionObservation: ctx?.observation ?? null,
       })
@@ -1733,7 +1733,7 @@ async function logEnvoiEmails(
     const addr = esc(String(raw).trim())
     if (!addr) continue
     try {
-      if (IS_WINDOWS) {
+      if (canNameAccented()) {
         await query(
           `INSERT INTO envoi_email
              (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
@@ -1859,7 +1859,7 @@ etudesColorisRouter.get('/soumissions/:soumId/envois', async (req: Request, res:
         IDenvoi_email: Number(r.IDenvoi_email),
         date: r.DATE ?? null,
         adresse: r.adresse ?? null,
-        societe: r['société'] ?? null,
+        societe: (readCol(r, 'société') as string | null) ?? null,
       })),
     )
   } catch (err) {

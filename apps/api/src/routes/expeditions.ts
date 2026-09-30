@@ -61,7 +61,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { repairAliased } from './stock-fini.js'
-import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
+import { esc, n, dateDigits as dateStr, IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { BonLivraisonPdf, type BonLivraisonPdfData, type BlArticle, type BlLot, type BlPiece } from '../lib/pdf/BonLivraisonPdf.js'
 import { BonLivraisonDiversPdf, type BonLivraisonDiversPdfData, type BlDiversCarton } from '../lib/pdf/BonLivraisonDiversPdf.js'
@@ -2979,7 +2979,7 @@ export async function logEnvoiEmails(idReference: number, recipients: string[], 
     const addr = String(raw).trim()
     if (!addr) continue
     try {
-      if (IS_WINDOWS) {
+      if (canNameAccented()) {
         await query(
           `INSERT INTO envoi_email (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
            VALUES ('${ts}', ${sqlText(addr)}, ${sqlText(societe || '')}, ${idReference}, 0, ${sqlText(notes)}, ${typeDoc})`,

@@ -28,7 +28,7 @@ function esc(value: string): string {
 //
 // Each path defines its own SELECT/JOINS strings below. The `normalizeStockRow`
 // post-processor then maps both shapes to the same canonical ASCII keys.
-import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 
 const STOCK_SELECT = IS_WINDOWS
   ? `sf.IDstock_fil, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.IDMagasin, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.dernier_mouvement, sf.dernier_pointage, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, sf.commentaire, sf.observation_freinte, rf.reference AS ref_fil, rf.titrage, rf.bio, rf.recyclé AS recycle, cf.reference AS colori_reference, f.nom AS fournisseur_nom, st.nom AS magasin_nom`
@@ -400,8 +400,9 @@ stockRouter.post('/fil', async (req: Request, res: Response) => {
     }
 
     // Accented columns terminé/controlé cannot be named in the INSERT column list
-    // on the Linux bridge. Only include them on Windows.
-    const insertSql = IS_WINDOWS
+    // on the Linux HFSQL bridge (HFSQL zero-filled them). PostgreSQL has no such
+    // default — left out, they would be NULL — so name them wherever possible.
+    const insertSql = canNameAccented()
       ? `INSERT INTO stock_fil (IDfournisseur, IDref_fil, IDcolori_fil, stock, stock_initial, lot, lot_frs, emplacement, date_entree, commentaire, niveau, terminé, controlé) VALUES (${IDfournisseur}, ${IDref_fil}, ${IDcolori_fil}, ${stock_initial}, ${stock_initial}, '${esc(lot)}', '${esc(lot_frs)}', '${esc(emplacement)}', '${esc(date_entree)}', '${esc(commentaire)}', ${parseInt(String(niveau), 10) || 1}, 0, 0)`
       : `INSERT INTO stock_fil (IDfournisseur, IDref_fil, IDcolori_fil, stock, stock_initial, lot, lot_frs, emplacement, date_entree, commentaire, niveau) VALUES (${IDfournisseur}, ${IDref_fil}, ${IDcolori_fil}, ${stock_initial}, ${stock_initial}, '${esc(lot)}', '${esc(lot_frs)}', '${esc(emplacement)}', '${esc(date_entree)}', '${esc(commentaire)}', ${parseInt(String(niveau), 10) || 1})`
     await query(insertSql)
@@ -442,11 +443,11 @@ stockRouter.patch('/fil/:id', async (req: Request, res: Response) => {
     if (typeof body.emplacement === 'string') sets.push(`emplacement = '${esc(body.emplacement)}'`)
     if (typeof body.niveau === 'number') sets.push(`niveau = ${parseInt(String(body.niveau), 10)}`)
     if (body.termine !== undefined) {
-      if (IS_WINDOWS) sets.push(`terminé = ${body.termine ? 1 : 0}`)
+      if (canNameAccented()) sets.push(`terminé = ${body.termine ? 1 : 0}`)
       else skipped.push('termine')
     }
     if (body.controle !== undefined) {
-      if (IS_WINDOWS) sets.push(`controlé = ${body.controle ? 1 : 0}`)
+      if (canNameAccented()) sets.push(`controlé = ${body.controle ? 1 : 0}`)
       else skipped.push('controle')
     }
     if (typeof body.dernier_pointage === 'string') {

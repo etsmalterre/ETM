@@ -39,7 +39,7 @@ import { loadClientTvaRate } from '../lib/tva.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { stripRtf } from '../lib/rtf-utils.js'
-import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
+import { IS_WINDOWS, esc, n, dateDigits as dateStr, canNameAccented } from '../lib/sst-shared.js'
 import { loadProspectsLite, type ProspectLite } from './prospects.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -1474,7 +1474,7 @@ async function logEnvoiEmails(idReference: number, recipients: string[], societe
     const addr = String(raw).trim()
     if (!addr) continue
     try {
-      if (IS_WINDOWS) {
+      if (canNameAccented()) {
         await query(
           `INSERT INTO envoi_email (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
            VALUES ('${ts}', ${sqlText(addr)}, ${sqlText(societe || '')}, ${idReference}, 0, '', ${TYPE_DOC_DEVIS})`,

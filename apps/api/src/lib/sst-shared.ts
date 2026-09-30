@@ -26,6 +26,20 @@
  *  on Linux, where the platform test is already false, so nothing depends on it. */
 export const IS_WINDOWS = process.platform === 'win32' && process.env.DB_BACKEND !== 'pg'
 
+/** Can a query NAME an accented column (`SET recyclé = 1`, `INSERT (…, terminé)`,
+ *  `WHERE IDdossier_qualité = 3`)?
+ *  Yes on the Windows HFSQL driver and on PostgreSQL (the adapter unaccents
+ *  identifiers, migration D2); no only on the Linux HFSQL bridge, which rejects
+ *  them — the reason those writes were skipped there. Production has run on
+ *  PostgreSQL since 2026-09-29, so a write gated on IS_WINDOWS alone silently
+ *  saved nothing (Fils › Références « recyclé »…). Gate writes on this, never on
+ *  IS_WINDOWS. PostgreSQL hands an accented key back UNACCENTED (`recycle`),
+ *  which `row['recyclé']` misses: a read gated on this resolves its keys with
+ *  readCol() (lib/accented-keys.ts); other reads keep IS_WINDOWS + prefix readers.
+ *  Columns an INSERT leaves out are NULL on PostgreSQL, not HFSQL's 0.
+ *  A function, not a constant: DB_BACKEND comes from .env, loaded after imports. */
+export const canNameAccented = (): boolean => IS_WINDOWS || process.env.DB_BACKEND === 'pg'
+
 /** Escape a string for an HFSQL SQL literal (single-quote doubling). HFSQL
  *  has no parameterized queries, so every interpolated string must go
  *  through this. */

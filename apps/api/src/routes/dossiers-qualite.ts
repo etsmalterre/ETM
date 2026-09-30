@@ -32,7 +32,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, queryRaw, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
-import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
+import { esc, n, IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { readCol } from '../lib/accented-keys.js'
 import { renderFncPdfBuffer, type FncPdfData } from '../lib/pdf/FncPdf.js'
 import { createRetourFromFnc } from '../lib/retour-client-trm.js'
@@ -491,7 +491,7 @@ async function patchAccented(
   if (patch.IDsociete_fnc !== undefined) sets.push(`IDSociétéFNC = ${n(patch.IDsociete_fnc)}`)
   if (sets.length === 0) return
 
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     await query(`UPDATE dossier_qualite SET ${sets.join(', ')} WHERE IDdossier_qualite = ${id}`)
     return
   }
@@ -723,8 +723,9 @@ dossiersQualiteRouter.delete(
 // doc_qualite's PK *and* its dossier FK are both accented (IDdoc_qualité,
 // IDdossier_qualité), so on Linux there is no way to scope a query to one
 // dossier — SELECT * would drag all 87 MB of blobs across the bridge. The tab is
-// therefore fully functional on the Windows/ODBC path and reports `degraded` on
-// the Linux bridge instead of pretending the dossier has no documents.
+// therefore fully functional on Windows ODBC and PostgreSQL (canNameAccented())
+// and reports `degraded` on the Linux bridge instead of pretending the dossier
+// has no documents.
 
 interface DocQualiteRow {
   IDdoc_qualite: number
@@ -736,7 +737,7 @@ dossiersQualiteRouter.get('/:id/documents', async (req: Request, res: Response) 
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!IS_WINDOWS) { res.json({ documents: [], degraded: true }); return }
+    if (!canNameAccented()) { res.json({ documents: [], degraded: true }); return }
 
     const rows = await fixEncoding(
       await query<any>(
@@ -761,7 +762,7 @@ dossiersQualiteRouter.get('/:id/documents/:docId/fichier', async (req: Request, 
     const id = parseInt(req.params.id, 10)
     const docId = parseInt(req.params.docId, 10)
     if (isNaN(id) || isNaN(docId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (!IS_WINDOWS) { res.status(404).json({ error: 'No file attached' }); return }
+    if (!canNameAccented()) { res.status(404).json({ error: 'No file attached' }); return }
 
     const rows = (await queryRaw(
       `SELECT fichier FROM doc_qualite WHERE IDdoc_qualité = ${docId} AND IDdossier_qualité = ${id}`,

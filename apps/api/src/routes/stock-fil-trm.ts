@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
-import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import {
   sqlText,
   numOf,
@@ -265,7 +265,7 @@ const STOCK_FIL_BLOB_COLS = /^certif/i
  *  certif blobs are empty (they are on every row today — probed 2026-08) and
  *  must run its plain-column UPDATEs FIRST (this re-reads the row). */
 async function setStockFilTermine(id: number, value: 0 | 1): Promise<boolean> {
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     const exists = await query<{ IDstock_fil: number }>(
       `SELECT IDstock_fil FROM stock_fil WHERE IDstock_fil = ${id}`,
     )
@@ -668,12 +668,12 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
       const cols =
         `IDclient, IDfournisseur, IDref_fil, IDcolori_fil, stock, stock_initial, lot, lot_frs, ` +
         `emplacement, niveau, date_entree, dernier_mouvement, dernier_pointage, commentaire, ` +
-        `IDMagasin, IDref_fil_commande` + (IS_WINDOWS ? ', terminé, controlé' : '')
+        `IDMagasin, IDref_fil_commande` + (canNameAccented() ? ', terminé, controlé' : '')
       const vals =
         `${IDclient}, ${IDfournisseur}, ${IDref_fil}, ${IDcolori_fil}, ${stock_initial}, ${stock_initial}, ` +
         `'${lot}', ${sqlText(lot_frs)}, ${sqlText(emplacement)}, ${niveau}, '${date_entree}', ` +
         `'${date_entree}', '${dernier_pointage}', ${sqlText(commentaire)}, 1, 0` +
-        (IS_WINDOWS ? ', 0, 0' : '')
+        (canNameAccented() ? ', 0, 0' : '')
       try {
         await query(`INSERT INTO stock_fil (${cols}) VALUES (${vals})`)
         const created = await query<{ IDstock_fil: number }>(
@@ -820,7 +820,7 @@ stockFilTrmRouter.post('/fil-trm/:id/diviser', async (req: Request, res: Respons
       const cols =
         `IDclient, IDfournisseur, IDref_fil, IDcolori_fil, stock, stock_initial, lot, lot_frs, ` +
         `emplacement, niveau, date_entree, dernier_mouvement, dernier_pointage, commentaire, ` +
-        `IDMagasin, IDref_fil_commande` + (IS_WINDOWS ? ', terminé, controlé' : '')
+        `IDMagasin, IDref_fil_commande` + (canNameAccented() ? ', terminé, controlé' : '')
       const vals =
         `${numOf(source.IDclient)}, ${numOf(source.IDfournisseur)}, ${numOf(source.IDref_fil)}, ` +
         `${numOf(source.IDcolori_fil)}, ${x}, ${x}, '${lot}', ${sqlText(String(source.lot_frs ?? ''))}, ` +
@@ -829,7 +829,7 @@ stockFilTrmRouter.post('/fil-trm/:id/diviser', async (req: Request, res: Respons
         `'${dateDigitsOnly(source.dernier_mouvement) || dateDigitsOnly(source.date_entree) || todayDigits()}', ` +
         `'${dateDigitsOnly(source.dernier_pointage) || dateDigitsOnly(source.date_entree) || todayDigits()}', ` +
         `${sqlText(String(source.commentaire ?? ''))}, ${numOf(source.IDMagasin)}, ${numOf(source.IDref_fil_commande)}` +
-        (IS_WINDOWS ? ', 0, 0' : '')
+        (canNameAccented() ? ', 0, 0' : '')
       try {
         await query(`INSERT INTO stock_fil (${cols}) VALUES (${vals})`)
         const created = await query<{ IDstock_fil: number }>(
@@ -947,7 +947,7 @@ stockFilTrmRouter.post('/fil-trm/:id/archiver', async (req: Request, res: Respon
     // The Linux flag flip re-emits the certif blob slots empty. Every row holds
     // empty blobs today (probed 2026-08); refuse the rare future exception
     // rather than silently destroying a certificate.
-    if (!IS_WINDOWS) {
+    if (!canNameAccented()) {
       const certifs = await certifLengths(id)
       if (certifs.bio > 1 || certifs.recycle > 1) {
         res.status(409).json({ error: 'certificat_bloque' })

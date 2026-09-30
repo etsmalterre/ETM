@@ -42,7 +42,7 @@ import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { formatCompositionLabel, type CompositionEcruRow } from '../lib/composition-label.js'
 import { resolveSstAdresses } from '../lib/sst-adresses.js'
 import { insertGedSst } from '../lib/ged-sst.js'
-import { pickVal } from '../lib/accented-keys.js'
+import { pickVal, readCol } from '../lib/accented-keys.js'
 import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
@@ -65,6 +65,7 @@ import {
   isLineDone,
   lineStatutRank,
   sstDelaiSets,
+  canNameAccented,
 } from '../lib/sst-shared.js'
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
@@ -90,13 +91,13 @@ const SOUMIS_INVALIDE_SQL_PREDICATE = IS_WINDOWS
   : ''
 
 /** JS-level filter that removes invalidated soumis rows from a result set
- *  that omitted the SQL predicate (Linux path). Uses both the truncated
- *  (`invalid`, what the bridge surfaces) and intact (`invalidé`) column
- *  keys so the helper is also safe to call on Windows-shaped rows. Pass a
- *  SELECT * row set. */
+ *  that omitted the SQL predicate (Linux path). Reads `invalidé` through
+ *  readCol(): the Linux bridge truncates the key, PostgreSQL unaccents it
+ *  (`invalide` — an exact-key read missed it and invalidated soumissions
+ *  still counted as soumis). Pass a SELECT * row set. */
 function filterActiveSoumisRows<T extends Record<string, unknown>>(rows: T[]): T[] {
   return rows.filter((r) => {
-    const flag = Number((r as any).invalid ?? (r as any)['invalidé'] ?? 0)
+    const flag = Number(readCol(r, 'invalidé') ?? 0)
     return flag === 0
   })
 }
@@ -2932,7 +2933,7 @@ async function logEnvoiEmails(
     const addr = String(raw).trim()
     if (!addr) continue
     try {
-      if (IS_WINDOWS) {
+      if (canNameAccented()) {
         await query(
           `INSERT INTO envoi_email
              (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
@@ -3948,7 +3949,7 @@ commandesSousTraitantRouter.get('/:id/historique', async (req: Request, res: Res
         notes: null,
       }
       const email = (r.adresse ?? '').toString().trim()
-      const societe = (r['société'] ?? '').toString().trim() || null
+      const societe = (readCol(r, 'société') ?? '').toString().trim() || null
       if (email) event.recipients.push({ email, societe })
       if (!event.notes) {
         const n = (r.notes ?? '').toString().trim()
@@ -4694,9 +4695,9 @@ async function loadEnnoblisseurLineContext(
  *  - `IDColoris` / `IDref_fini_colori` come from the LINE, not the
  *    écru's `IDcolori_ecru` — fini lines reference `ref_fini_colori`.
  *  - Accented columns (`stabL_demandée`, `stabH_demandée`,
- *    `freinte_demandée`, `approuvé_qualité`) are omitted on Linux
- *    because the bridge rejects them in INSERT clauses. HFSQL fills
- *    its own defaults there.
+ *    `freinte_demandée`, `approuvé_qualité`) are omitted only on the
+ *    Linux HFSQL bridge, which rejects them in INSERT clauses (HFSQL
+ *    zero-filled them). PostgreSQL names them (canNameAccented()).
  *  - Failures are logged but never bubble up: the stock_fini reception
  *    is the user's primary action, and a missing suivilot row is a
  *    secondary annoyance, not data loss.
@@ -4771,14 +4772,14 @@ async function upsertSuivilot(opts: {
       String(opts.ligneId),
       '1',
     ]
-    // Accented columns — only on Windows. Linux will get HFSQL's column
-    // defaults (typically 0 / NULL) and the user can backfill via the
-    // legacy app if those values are needed.
-    if (IS_WINDOWS) {
+    // Accented columns — skipped only on the Linux HFSQL bridge (HFSQL then
+    // zero-filled them). L = largeur, H = hauteur, as the legacy writes them
+    // (213 rows checked 2026-09-30; the old Windows branch had them crossed).
+    if (canNameAccented()) {
       baseCols.push('stabL_demandée', 'stabH_demandée', 'freinte_demandée', 'approuvé_qualité')
       baseVals.push(
-        String(n(ref.stab_hauteur)),
         String(n(ref.stab_largeur)),
+        String(n(ref.stab_hauteur)),
         String(n(ref.freinte)),
         '0',
       )

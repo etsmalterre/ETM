@@ -35,7 +35,7 @@ export const referencesDiversRouter: RouterType = Router()
 //     always alias when selected.
 //   • Empty FK columns store 0, never NULL — variation ids use 0 as "none".
 
-import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 
 /** Upper bound on rows pre-created when switching a reference to per-variation
  *  pricing. Above it the grid opens blank and fills in on demand. */
@@ -583,7 +583,7 @@ const REF_DIVERS_TEXT_IDX = new Set([1, 3, 6, 7])
  *  stay in physical order even when the accented key is mangled), flip the
  *  archive slot, delete + positional reinsert preserving the PK. */
 async function setArchive(id: number, value: 0 | 1): Promise<void> {
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     await query(`UPDATE ref_divers SET archivé = ${value} WHERE IDref_divers = ${id}`)
     return
   }

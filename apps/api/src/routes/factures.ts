@@ -67,7 +67,7 @@ import { FacturePdf, type FacturePdfData } from '../lib/pdf/FacturePdf.js'
 import { loadClientSirenForDocument } from '../lib/siren.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
-import { IS_WINDOWS, esc, n, dateDigits as dateStr } from '../lib/sst-shared.js'
+import { IS_WINDOWS, esc, n, dateDigits as dateStr, canNameAccented } from '../lib/sst-shared.js'
 import { buildXImportFile, type XImportEntry } from '../lib/ximport.js'
 import { requirePermission, ETM_PERMISSIONS, TRM_PERMISSIONS, type PermissionScope } from '../lib/clients-common.js'
 import { company as companyEtm, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
@@ -2353,7 +2353,7 @@ router.get('/:kind/:id/email-defaults', async (req: Request, res: Response) => {
  *  there (CLAUDE.md § Accents and encoding). */
 async function insertEnvoiEmailRow(idReference: number, adresse: string, societe: string, notes: string): Promise<void> {
   const ts = nowHfsqlDatetime()
-  if (IS_WINDOWS) {
+  if (canNameAccented()) {
     await query(
       `INSERT INTO envoi_email (DATE, adresse, société, IDreference, invalidé, notes, IDtype_doc)
        VALUES ('${ts}', ${sqlText(adresse)}, ${sqlText(societe || '')}, ${idReference}, 0, ${sqlText(notes)}, ${TYPE_DOC_FACTURE})`,
