@@ -50,6 +50,7 @@ import {
   FileSignature,
   Percent,
   Barcode,
+  Ban,
 } from 'lucide-react'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -148,7 +149,11 @@ interface RollLite {
   etat_label: string | null
   /** Roll already shipped — affectation locked, no "Retirer" action. */
   expedie: boolean
+  /** Only « Validé » fini rolls can be shipped (#1235); écru is always true. */
+  expediable: boolean
 }
+
+const ROLL_NON_VALIDE_TITLE = 'Seuls les rouleaux validés peuvent être expédiés'
 
 interface AffectationPayload {
   kind: 'ecru' | 'fini' | 'none'
@@ -2217,9 +2222,10 @@ function AffectationDrawer({
   // section heading so it always matches the rows below.
   const linkedQty = linked.reduce((s, r) => s + (dim === 'metrage' ? (Number(r.metrage) || 0) : (Number(r.poids) || 0)), 0)
 
-  // Shippable = affected rolls not already on an expedition. The selection is
+  // Shippable = affected rolls not already on an expedition, and validated
+  // (#1235 — a roll en contrôle / en reprise never ships). The selection is
   // re-filtered against the live payload so a refetch can't leave stale ids.
-  const shippable = linked.filter((r) => !r.expedie)
+  const shippable = linked.filter((r) => !r.expedie && r.expediable)
   const shipSelected = shippable.filter((r) => shipSel.has(r.id))
   const shipQty = shipSelected.reduce((s, r) => s + (dim === 'metrage' ? (Number(r.metrage) || 0) : (Number(r.poids) || 0)), 0)
   // The two selections are mutually exclusive: ticking a roll in one list
@@ -2390,8 +2396,9 @@ function AffectationDrawer({
                       onEditObs={soldee || !obsEditMode ? undefined : () => setEditObsRoll(roll)}
                       onAction={() => unlinkMut.mutate(roll.id)}
                       isBusy={unlinkMut.isPending && unlinkMut.variables === roll.id}
-                      selected={!soldee && !roll.expedie && shipSel.has(roll.id)}
-                      onToggleSelect={soldee || roll.expedie ? undefined : (shiftKey) => toggleShip(roll.id, shiftKey)} />
+                      selected={!soldee && !roll.expedie && roll.expediable && shipSel.has(roll.id)}
+                      onToggleSelect={soldee || roll.expedie || !roll.expediable ? undefined : (shiftKey) => toggleShip(roll.id, shiftKey)}
+                      selectBlockedReason={!soldee && !roll.expedie && !roll.expediable ? ROLL_NON_VALIDE_TITLE : undefined} />
                   ))}
                 </div>
               </section>
@@ -2636,7 +2643,8 @@ function AffectationDrawer({
       description={`Créer une expédition avec ${shipSelected.length} rouleau${shipSelected.length > 1 ? 'x' : ''} (${fmtNum(shipQty, 1)} ${uniteLabel}) pour cette commande ?`}
       confirmLabel="Expédier"
       isPending={shipMut.isPending}
-      onCancel={() => setConfirmShip(false)}
+      error={shipMut.error ? ((shipMut.error as Error & { body?: { message?: string } }).body?.message ?? "L'expédition a échoué.") : null}
+      onCancel={() => { setConfirmShip(false); shipMut.reset() }}
       onConfirm={() => shipMut.mutate(shipSelected.map((r) => r.id))}
     />
     {createTricoLocation && (
@@ -2734,7 +2742,7 @@ function SupplyTable<T extends { id: number }>({
 }
 
 function RollRow({
-  roll, dim, action, onAction, isBusy, kind = 'ecru', onEditObs, selected, onToggleSelect, readOnly = false,
+  roll, dim, action, onAction, isBusy, kind = 'ecru', onEditObs, selected, onToggleSelect, selectBlockedReason, readOnly = false,
 }: {
   roll: RollLite
   dim: 'metrage' | 'poids'
@@ -2753,6 +2761,9 @@ function RollRow({
    *  so the caller can implement Shift+click range selection (§44). */
   selected?: boolean
   onToggleSelect?: (shiftKey: boolean) => void
+  /** In a selectable list, a row that cannot be picked shows a greyed box in
+   *  the checkbox slot with this reason as its tooltip (keeps rows aligned). */
+  selectBlockedReason?: string
   /** Commande terminée: display only — no action button. */
   readOnly?: boolean
 }) {
@@ -2791,6 +2802,14 @@ function RollRow({
           >
             {selected && <CheckCircle2 className="h-3.5 w-3.5" />}
           </button>
+        )}
+        {!onToggleSelect && selectBlockedReason && (
+          <span
+            title={selectBlockedReason}
+            className="h-5 w-5 rounded flex items-center justify-center flex-shrink-0 border border-input bg-muted cursor-not-allowed"
+          >
+            <Ban className="h-3 w-3 text-muted-foreground/70" />
+          </span>
         )}
         <div className={cn(
           'h-10 w-10 rounded-md flex items-center justify-center flex-shrink-0',

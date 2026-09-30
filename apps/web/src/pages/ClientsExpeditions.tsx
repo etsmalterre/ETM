@@ -30,6 +30,7 @@ import {
   FileText,
   Lock,
   Receipt,
+  Ban,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -46,6 +47,7 @@ import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches } from '@/lib/cache-sync'
+import { EtatPill } from '@/lib/etat-stock-fini'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -189,6 +191,8 @@ interface RollLite {
   second_choix: number | null
   observations: string | null
   etat_label: string | null
+  /** Only « Validé » fini rolls can be shipped (#1235); écru is always true. */
+  expediable: boolean
 }
 interface RollPayload {
   kind: 'ecru' | 'fini' | 'none'
@@ -1365,6 +1369,12 @@ function RollDrawer({
             <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
           </div>
         )}
+        {!!linkMut.error && (
+          <div className="flex items-center gap-2 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            <span>{(linkMut.error as Error & { body?: { message?: string } }).body?.message ?? "L'ajout du rouleau a échoué."}</span>
+          </div>
+        )}
         {!isLoading && !isError && onExp.length === 0 && dispo.length === 0 && (
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
             <EmptyIcon className="h-8 w-8 mb-2 opacity-50" />
@@ -1440,7 +1450,6 @@ function RollRow({
           <span className="text-sm font-semibold truncate">{roll.numero || `Rouleau ${roll.id}`}</span>
           {roll.lot && <span className="text-xs text-muted-foreground truncate">· Lot {roll.lot}</span>}
           {!!roll.second_choix && <Badge variant="secondary" className="text-[10px] py-0 px-1.5">2nd choix</Badge>}
-          {roll.etat_label && <Badge variant="outline" className="text-[10px] py-0 px-1.5">{roll.etat_label}</Badge>}
         </div>
         <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground tabular-nums">
           <span className="font-medium text-foreground">{fmtNum(primary, 1)} {primaryLabel}</span>
@@ -1449,13 +1458,23 @@ function RollRow({
           {roll.magasin_nom && <span className="flex items-center gap-0.5 truncate"><MapPin className="h-2.5 w-2.5" />{roll.magasin_nom}</span>}
         </div>
       </div>
-      {!disabled && (
+      {!disabled && (action === 'link' && !roll.expediable ? (
+        // #1235 — only validated rolls ship; the span carries the tooltip a
+        // disabled button would swallow.
+        <span title="Seuls les rouleaux validés peuvent être expédiés" className="flex-shrink-0 cursor-not-allowed">
+          <Button size="sm" variant="default" disabled className="pointer-events-none">
+            <Ban className="h-3.5 w-3.5 mr-1.5" />Ajouter
+          </Button>
+        </span>
+      ) : (
         <Button size="sm" variant={action === 'link' ? 'default' : 'outline'} onClick={onAction} disabled={isBusy} className="flex-shrink-0">
           {isBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
             : action === 'link' ? <Link2 className="h-3.5 w-3.5 mr-1.5" /> : <Unlink className="h-3.5 w-3.5 mr-1.5" />}
           {action === 'link' ? 'Ajouter' : 'Retirer'}
         </Button>
-      )}
+      ))}
+      {/* État anchored at the far right, solid on roll cards (§37). */}
+      <EtatPill libelle={roll.etat_label} variant="solid" className="flex-shrink-0" />
     </div>
   )
 }

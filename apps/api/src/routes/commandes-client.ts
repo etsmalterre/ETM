@@ -36,6 +36,7 @@ import { CGV_ATTACHMENT_FILENAME, CGV_MENTION, cgvAttachment, getCgvPdf } from '
 import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
 import { attachDonationSql, detachDonationSql, planDonationSet } from '../lib/donation-pieces.js'
+import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable } from '../lib/fini-expediable.js'
 import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-ligne-client.js'
 import { cotesARevoir, appliquerReprix } from '../lib/reprix-associes.js'
 import { resolveLigneTarifMode } from '../lib/tarif-client.js'
@@ -2223,6 +2224,8 @@ interface RollLite {
   /** Roll already shipped (état Expédié / expedition line set) — the
    *  affectation is locked, unlink is refused. */
   expedie: boolean
+  /** Fini: only « Validé » rolls ship (#1235). Écru carries no état → true. */
+  expediable: boolean
 }
 
 const ETAT_FINI_LABELS: Record<number, string> = {
@@ -2352,6 +2355,7 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
       observation_sst: null,
       etat_label: null,
       expedie: (Number(r.IDligne_expedition_ETM) || 0) > 0,
+      expediable: true,
     })
     base.linked = linkedFixed.map(toRoll)
     base.available = availFixed.map(toRoll)
@@ -2397,6 +2401,7 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
     observations: r.observations ?? null,
     observation_sst: r.observation_sst ?? null,
     etat_label: ETAT_FINI_LABELS[Number(r.IDetat_stock_fini)] ?? null,
+    expediable: isFiniExpediable(r.IDetat_stock_fini),
     expedie: Number(r.IDetat_stock_fini) === 4 || (Number(r.IDligne_expedition) || 0) > 0,
   })
   base.linked = linkedFixed.map(toRoll)
@@ -2919,6 +2924,7 @@ async function fetchEnnoRollsPayload(ctx: ClientLineContext, sstLineId: number) 
     observation_sst: null,
     etat_label: null,
     expedie: false,
+    expediable: true,
   })
   const linked = linkedFixed.map(toRoll)
   const available = availFixed.map(toRoll)
@@ -3123,6 +3129,7 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
     observation_sst: null,
     etat_label: null,
     expedie: false,
+    expediable: true,
     reserved_elsewhere:
       (Number(x.IDligne_commande_client) || 0) > 0 && Number(x.IDligne_commande_client) !== ctx.ligneId,
     reserved_to_line: Number(x.IDligne_commande_client) === ctx.ligneId,
@@ -3972,7 +3979,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
     const inIds = parsed.data.stockIds.join(',')
     const rollRows = ctx.kind === 'fini'
       ? await query<any>(
-          `SELECT IDstock_fini AS id, IDligne_commande_client AS lcc, IDligne_expedition AS le
+          `SELECT IDstock_fini AS id, IDligne_commande_client AS lcc, IDligne_expedition AS le, IDetat_stock_fini, numero
              FROM stock_fini WHERE IDstock_fini IN (${inIds})`,
         )
       : await query<any>(
@@ -3981,6 +3988,15 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
         )
     const usable = rollRows.filter((r: any) => Number(r.lcc) === ligneId && (Number(r.le) || 0) === 0)
     if (usable.length === 0) { res.status(400).json({ error: 'Aucun rouleau expédiable dans la sélection' }); return }
+    // Only validated fini rolls ship (#1235): refuse the whole request rather
+    // than silently leave some behind, so the user sees which ones to untick.
+    if (ctx.kind === 'fini') {
+      const nonValides = usable.filter((r: any) => !isFiniExpediable(r.IDetat_stock_fini))
+      if (nonValides.length > 0) {
+        res.status(409).json(finiNonValideRefus(nonValides.map((r: any) => String(r.numero ?? r.id))))
+        return
+      }
+    }
 
     // Header defaults: livraison address from the commande, carrier from the
     // client. donation inherits the commande's flag so material shipped from a
@@ -4018,7 +4034,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
       if (ctx.kind === 'fini') {
         await query(
           `UPDATE stock_fini SET IDligne_expedition = ${leId}
-            WHERE IDstock_fini = ${sid} AND IDligne_commande_client = ${ligneId}
+            WHERE IDstock_fini = ${sid} AND IDligne_commande_client = ${ligneId} AND ${FINI_EXPEDIABLE_SQL}
               AND (IDligne_expedition IS NULL OR IDligne_expedition = 0)`,
         )
       } else {

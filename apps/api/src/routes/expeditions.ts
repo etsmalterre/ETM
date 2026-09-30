@@ -72,6 +72,7 @@ import { company } from '../lib/pdf/theme.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { ADRESSE_A_DEFINIR_REFUS, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
+import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable } from '../lib/fini-expediable.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -283,6 +284,8 @@ interface RollLite {
   id: number; numero: string | null; lot: string | null; poids: number | null; metrage: number | null
   coloris_reference: string | null; magasin_nom: string | null; second_choix: number | null
   observations: string | null; etat_label: string | null
+  /** Fini: only « Validé » rolls ship (#1235). Écru carries no état → true. */
+  expediable: boolean
 }
 const ETAT_FINI_LABELS: Record<number, string> = {
   1: 'En Contrôle', 2: 'En Reprise', 3: 'Validé', 4: 'Expédié', 5: 'Attente décision',
@@ -1123,6 +1126,7 @@ async function buildRollPayload(expId: number, ctx: LineCtx) {
       coloris_reference: col.get(Number(r.IDColoris)) ?? null, magasin_nom: mag.get(Number(r.IDmagasin)) ?? null,
       second_choix: Number(r.second_choix) || 0, observations: r.observations ?? null,
       etat_label: ETAT_FINI_LABELS[Number(r.IDetat_stock_fini)] ?? null,
+      expediable: isFiniExpediable(r.IDetat_stock_fini),
     })
     base.onExp = onFixed.map(toRoll)
     base.dispo = dispoFixed.map(toRoll)
@@ -1150,7 +1154,7 @@ async function buildRollPayload(expId: number, ctx: LineCtx) {
     id: Number(r.IDstock_ecru), numero: r.numero ?? null, lot: r.lot ?? null,
     poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
     coloris_reference: col.get(Number(r.IDcolori_ecru)) ?? null, magasin_nom: mag.get(Number(r.IDmagasin)) ?? null,
-    second_choix: Number(r.second_choix) || 0, observations: r.observations ?? null, etat_label: null,
+    second_choix: Number(r.second_choix) || 0, observations: r.observations ?? null, etat_label: null, expediable: true,
   })
   base.onExp = onFixed.map(toRoll)
   base.dispo = dispoFixed.map(toRoll)
@@ -1182,6 +1186,17 @@ expeditionsRouter.put('/formelle/:id/lignes/:lccId/rolls/:stockId', async (req: 
     const ctx = await loadLineCtx(lccId)
     if (!ctx || ctx.kind === 'none') { res.status(404).json({ error: 'Ligne non expédiable' }); return }
 
+    // Only validated fini rolls ship (#1235) — checked before the lazy
+    // ligne_expedition insert below so a refusal leaves no empty line behind.
+    if (ctx.kind === 'fini') {
+      const pre = await query<{ IDligne_expedition: number | null; IDetat_stock_fini: number | null; numero: string | null }>(
+        `SELECT IDligne_expedition, IDetat_stock_fini, numero FROM stock_fini WHERE IDstock_fini = ${stockId}`,
+      )
+      if (pre.length > 0 && (Number(pre[0].IDligne_expedition) || 0) === 0 && !isFiniExpediable(pre[0].IDetat_stock_fini)) {
+        res.status(409).json(finiNonValideRefus([String(pre[0].numero ?? stockId)])); return
+      }
+    }
+
     // Ensure a ligne_expedition exists for (expedition, commande line).
     let leId = await findLigneExpedition(id, lccId)
     if (leId === 0) {
@@ -1198,7 +1213,8 @@ expeditionsRouter.put('/formelle/:id/lignes/:lccId/rolls/:stockId', async (req: 
       if ((Number(roll[0].IDligne_commande_client) || 0) !== lccId) { res.status(400).json({ error: 'Rouleau non affecté à cette ligne' }); return }
       const cur = Number(roll[0].IDligne_expedition) || 0
       if (cur !== 0 && cur !== leId) { res.status(409).json({ error: 'Rouleau déjà expédié' }); return }
-      await query(`UPDATE stock_fini SET IDligne_expedition = ${leId} WHERE IDstock_fini = ${stockId}`)
+      // The état guard in the WHERE is the race backstop of the pre-check above.
+      await query(`UPDATE stock_fini SET IDligne_expedition = ${leId} WHERE IDstock_fini = ${stockId} AND ${FINI_EXPEDIABLE_SQL}`)
     } else {
       const roll = await query<{ IDligne_commande_client: number | null; IDligne_expedition_ETM: number | null }>(
         `SELECT IDligne_commande_client, IDligne_expedition_ETM FROM stock_ecru WHERE IDstock_ecru = ${stockId}`,
