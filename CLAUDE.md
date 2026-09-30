@@ -50,7 +50,7 @@ Full design system in `.claude/skills/mps_designer/SKILL.md`.
 | Monorepo | pnpm + Turborepo, Vitest |
 | API | Express |
 | Database | HFSQL Client/Server via `odbc` npm package |
-| Auth | Cookie-based (HMAC-signed, no JWT lib) — `cookie-parser`. ⚠️ `POST /auth/login` authenticates nothing (any `IDutilisateur`); atelier phones carry a third, revocable cookie `mps_appareil` (`lib/appareils-atelier.ts`, `req.appareil`) and every atelier write requires it, never `mps_uid` alone |
+| Auth | **Password login over server-side sessions** (since 2026-09-30): one `utilisateur` row per person (`identifiant` or email + scrypt password, set by an admin — no « oublié »), station PCs enrolled by a one-time code (`type_compte = 'poste'`), table `session` (cookie = token, DB = sha256), « Voir comme » for admins, login slow-down never a lock. One login for ETM + TRM (`AUTH_COOKIE_DOMAIN`). Atelier phones / pointeuse keep their own revocable device cookies (`lib/appareils-atelier.ts`, `req.appareil`). Details + deploy runbook: `claude_doc/auth_permissions.md` |
 | PDF | `@react-pdf/renderer` (server-side, Lato fonts bundled) |
 | Excel | `xlsx` (SheetJS) — **client-side**, lazy `await import('xlsx')` so it's a separate chunk; API returns JSON, browser builds the `.xlsx` |
 | Email | Gmail API via `googleapis` + domain-wide delegation |
@@ -104,6 +104,8 @@ Load these on demand when working on the matching topic:
 | `claude_doc/worktrees.md` | Parallel dev with git worktrees, **multi-project** (ETM `300N`/`808N` + TRM `517N`, disjoint slots): slot model (incl. reserved **slot 0** = serve `master` via `/serve-main`), the `/new-feature-worktree [ng\|trm]` · `/feature-checkpoint` · `/feature-complete` · `/worktree-status` skills (project auto-detected from the invoking repo; run TRM worktrees from the TRM checkout), concurrency-safe shared registry, merge discipline, **§Shared-API changes**: TRM features needing endpoints use a *paired NG worktree* (API lands via NG's pipeline; deploy ownership: `/etm_deploy` = shared API + NG web → `etm.intra.etsmalterre.com`, `/trm_deploy` = TRM web only → `trm.intra.etsmalterre.com`) |
 
 ## HFSQL rules (footguns — always apply)
+
+> ⚠️ **Since the cutover (2026-09-29) HFSQL and WinDev are retired — the API runs on PostgreSQL `mps` only.** Rules below about DDL (« never CREATE TABLE », `.fic`/`.ndx` copies) and about the legacy writing live no longer bind: **schema changes are allowed**, as append-only migrations in `lib/mps-schema.ts` applied by `scripts/mps-migrate.ts` with the owner role (`MPS_PG_OWNER_URL`; the API role owns nothing). New code talks to PostgreSQL natively through `lib/mps-pg.ts` (parameterised). The HFSQL-shaped rules still describe how the ~2 700 legacy queries behave through `lib/pg-backend.ts` until they are rewritten. Dev runs on the copy `mps_dev` (`claude_doc/dev_setup.md`).
 
 One or two lines per rule. **The incident, the measurements, the canonical file and the guard script for each are in `claude_doc/hfsql_odbc.md` § Footguns** — read that entry before touching the area, and add the story of a new footgun there with a one-liner here.
 

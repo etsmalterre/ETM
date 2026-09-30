@@ -106,6 +106,7 @@ CREATE TABLE connexion (
 CREATE INDEX connexion_identifiant_le ON connexion (lower(identifiant), le);
 CREATE INDEX connexion_ip_le ON connexion (ip, le);
 ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'session, connexion')}
+${grantApi('USAGE, SELECT', 'SEQUENCE connexion_id_seq')}
 `,
   },
 ]
@@ -124,9 +125,11 @@ async function ensureTable(s: Sql): Promise<void> {
   )`
 }
 
+/** Read-only: works with the API role too (which may not CREATE, even
+ *  « IF NOT EXISTS » — PostgreSQL checks the right before the existence). */
 export async function migrationStatus(s: Sql, list: Migration[] = MIGRATIONS): Promise<MigrationStatus> {
-  await ensureTable(s)
-  const rows = await s<{ name: string }[]>`SELECT name FROM schema_migration`
+  const [{ existe }] = await s<{ existe: boolean }[]>`SELECT to_regclass('schema_migration') IS NOT NULL AS existe`
+  const rows = existe ? await s<{ name: string }[]>`SELECT name FROM schema_migration` : []
   const done = new Set(rows.map((r) => r.name))
   const known = new Set(list.map((m) => m.name))
   return {
