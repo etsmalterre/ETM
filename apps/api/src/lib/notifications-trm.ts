@@ -5,6 +5,7 @@ import { createNotificationStore } from './notifications.js'
 import { isKnownTrmNotificationKey, type TrmNotificationKey } from './notification-keys-trm.js'
 
 export const trmNotifications = createNotificationStore<TrmNotificationKey>(
+  'trm',
   'notifications-trm.json',
   isKnownTrmNotificationKey,
 )

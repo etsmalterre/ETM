@@ -21,13 +21,30 @@ export interface PermissionStore {
 
 const CACHE_MS = 30_000
 
+/** Every store's cache reset, for a membership change (lib/utilisateur-apps.ts). */
+const oublis: Array<() => void> = []
+export function oublierPermissions(): void {
+  for (const f of oublis) f()
+}
+
 export function createPermissionStore(app: PermissionApp, isStorable: (k: string) => boolean): PermissionStore {
   let cache: { at: number; byUser: Map<number, string[]> } | null = null
+  oublis.push(() => { cache = null })
 
+  // Members of the app only (table utilisateur_app): an account that left the
+  // app keeps its rows — re-joining restores them — but holds none of them.
   async function load(): Promise<Map<number, string[]>> {
     if (cache && Date.now() - cache.at < CACHE_MS) return cache.byUser
-    const rows = await mpsPg()<{ idutilisateur: number; cle: string }[]>`
-      SELECT idutilisateur, cle FROM permission WHERE app = ${app} ORDER BY idutilisateur, cle`
+    const sql = mpsPg()
+    const rows = await sql<{ idutilisateur: number; cle: string }[]>`
+      SELECT p.idutilisateur, p.cle FROM permission p
+      JOIN utilisateur_app m ON m.idutilisateur = p.idutilisateur AND m.app = p.app
+      WHERE p.app = ${app} ORDER BY p.idutilisateur, p.cle`.catch((err: unknown) => {
+      // Migration 0004 not applied yet: every row, as before membership.
+      if ((err as { code?: string })?.code !== '42P01') throw err
+      return sql<{ idutilisateur: number; cle: string }[]>`
+        SELECT idutilisateur, cle FROM permission WHERE app = ${app} ORDER BY idutilisateur, cle`
+    })
     const byUser = new Map<number, string[]>()
     for (const r of rows) {
       const list = byUser.get(r.idutilisateur)

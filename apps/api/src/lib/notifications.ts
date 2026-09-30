@@ -17,6 +17,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isKnownNotificationKey, type NotificationKey } from './notification-keys.js'
+import { membres, type AppCode } from './utilisateur-apps.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -36,11 +37,13 @@ export interface NotificationStore<K extends string> {
   setUserNotifications(userId: number, keys: readonly K[]): Promise<void>
   /** Every stored subscription (used by the admin /users endpoint). */
   getAllNotifications(): Promise<Record<number, K[]>>
-  /** IDutilisateur of every user subscribed to a key. */
+  /** IDutilisateur of every user subscribed to a key — members of the app
+   *  only: leaving an app stops its emails (lib/utilisateur-apps.ts). */
   subscribersOf(key: K): Promise<number[]>
 }
 
 export function createNotificationStore<K extends string>(
+  app: AppCode,
   fileName: string,
   isKnown: (k: string) => k is K,
 ): NotificationStore<K> {
@@ -96,9 +99,10 @@ export function createNotificationStore<K extends string>(
     },
     async subscribersOf(key) {
       const out: number[] = []
+      const membresApp = await membres(app)
       for (const [k, v] of Object.entries((await load()).users)) {
         const id = Number(k)
-        if (Number.isFinite(id) && v.includes(key)) out.push(id)
+        if (Number.isFinite(id) && v.includes(key) && (!membresApp || membresApp.has(id))) out.push(id)
       }
       return out
     },
@@ -107,7 +111,7 @@ export function createNotificationStore<K extends string>(
 
 // ── ETM's store ──────────────────────────────────────────
 
-const etmStore = createNotificationStore<NotificationKey>('notifications.json', isKnownNotificationKey)
+const etmStore = createNotificationStore<NotificationKey>('etm', 'notifications.json', isKnownNotificationKey)
 
 export const getUserNotifications = etmStore.getUserNotifications
 export const setUserNotifications = etmStore.setUserNotifications

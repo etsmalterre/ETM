@@ -12,13 +12,14 @@ import { Eye, Loader2, Search, Undo2 } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { useUser } from '@/contexts/UserContext'
+import { useAppCode, useUser, type AppCode } from '@/contexts/UserContext'
 
 interface CompteListe {
   IDutilisateur: number
   prenom: string | null
   nom: string | null
   typeCompte: 'personne' | 'poste'
+  apps?: AppCode[]
 }
 
 async function voirComme(id: number | null): Promise<void> {
@@ -31,6 +32,7 @@ const nomDe = (c: { prenom: string | null; nom: string | null }) =>
 
 export function VoirCommeDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user } = useUser()
+  const app = useAppCode()
   const [recherche, setRecherche] = useState('')
   const [enCours, setEnCours] = useState<number | null>(null)
   const { data, isLoading } = useQuery<CompteListe[]>({
@@ -41,7 +43,9 @@ export function VoirCommeDialog({ open, onClose }: { open: boolean; onClose: () 
   })
   const moi = user?.voirComme?.IDutilisateur ?? user?.IDutilisateur
   const q = recherche.trim().toLowerCase()
-  const comptes = (data ?? []).filter((c) => c.IDutilisateur !== moi && (!q || nomDe(c).toLowerCase().includes(q)))
+  // This app's members only: looking through a non-member ends on the gate's refusal.
+  const comptes = (data ?? []).filter((c) =>
+    c.IDutilisateur !== moi && (!c.apps || c.apps.includes(app)) && (!q || nomDe(c).toLowerCase().includes(q)))
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>

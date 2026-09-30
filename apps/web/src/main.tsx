@@ -44,7 +44,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <StaleBundleReload />
       <UserProvider>
         <PermissionsProvider>
-          <UserPickerGate>
+          <UserPickerGate app="etm">
             <RouterProvider router={router} />
           </UserPickerGate>
         </PermissionsProvider>

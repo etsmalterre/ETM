@@ -26,6 +26,28 @@ export interface CurrentUser {
   sessionType?: 'navigateur' | 'poste' | null
   /** Set while an admin looks at the app as this user: the admin's own identity. */
   voirComme?: { IDutilisateur: number; prenom: string | null; nom: string | null } | null
+  /** The apps this account belongs to — AuthGate refuses a non-member. */
+  apps?: AppCode[]
+}
+
+/** Which app this bundle is: ETM (ETS Malterre) or TRM (Tricotage Malterre). */
+export type AppCode = 'etm' | 'trm'
+
+export const APP_NAMES: Record<AppCode, string> = {
+  etm: 'ETS Malterre',
+  trm: 'Tricotage Malterre',
+}
+
+// Set once by AuthGate (main.tsx passes the app), read by the shared auth
+// components that must know which app they sit in (« Voir comme » lists the
+// app's members only).
+const AppCodeContext = createContext<AppCode | undefined>(undefined)
+export const AppCodeProvider = AppCodeContext.Provider
+
+export function useAppCode(): AppCode {
+  const app = useContext(AppCodeContext)
+  if (!app) throw new Error('useAppCode must be used below AuthGate')
+  return app
 }
 
 interface UserContextValue {

@@ -1,21 +1,34 @@
-// Settings > Utilisateurs — admin-only page for managing per-user permissions.
-// Built on the canonical 3-panel MasterDetailLayout: searchable user list on
-// the left, a header + a Classeur-style master-tabbed centre (Profil = email /
-// photo / signature cards, Permissions = toggle cards per category).
+// Paramètres › Utilisateurs — admin-only page managing the app's users: the
+// ONE screen of both apps, shared with TRM through `@etm` (TRM's router mounts
+// it with its own props). Built on the canonical 3-panel MasterDetailLayout:
+// searchable user list on the left, a header + a Classeur-style master-tabbed
+// centre (Profil = email / photo / signature cards, Écrans, Permissions,
+// Notifications), the account (password, sessions, apps) on the right.
+//
+// Each company has its own users (API lib/utilisateur-apps.ts): the list shows
+// the members of the app this bundle is (`useAppCode()`, set by AuthGate);
+// the Compte panel adds or removes an account from either app, « + Nouveau »
+// creates one in this app or brings in an account of the other.
+//
+// Per-app differences are PROPS, defaulting to ETM (TRM CLAUDE.md § Shared
+// screens): the permission catalog + store (`permissionsPath`), the
+// Notifications tab, extra tabs (TRM: Appareils). `@/` imports resolve to the
+// host app's src — navigation (Écrans tab), PermissionsContext — while the
+// account components are imported relatively, from ETM.
 //
 // Permissions are toggled inline (no edit mode). Each toggle immediately PUTs
-// the new grant set to /api/permissions/users/:id and refreshes the list.
+// the new grant set to <permissionsPath>/users/:id and refreshes the list.
 
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback, type ComponentType, type ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, Loader2, AlertCircle, Shield, Check, Mail, Save, Bell,
   Image as ImageIcon, PenLine, Trash2, User as UserIcon, ChevronDown,
-  Monitor, Copy, Plus,
+  Monitor, Copy, Plus, type LucideIcon,
 } from 'lucide-react'
 import { apiFetch, API_URL } from '@/lib/api'
-import { useUser } from '@/contexts/UserContext'
+import { useAppCode, useUser } from '@/contexts/UserContext'
 import { usePermissions } from '@/contexts/PermissionsContext'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
@@ -25,11 +38,11 @@ import { Avatar } from '@/components/ui/avatar'
 import { SignaturePreview } from '@/components/ui/signature-preview'
 import { SearchableCombobox } from '@/components/ui/popover-select'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { userPhotoUrl } from '@/components/profile/ProfileModal'
 import { mainNavigation, menuAccessKey, screenAccessMenus, screenHideKey, type MainMenuItem } from '@/config/navigation'
 import { cn } from '@/lib/utils'
-import { CompteSidebar, COMPTES_KEY, type Compte } from '@/components/comptes/CompteSidebar'
-import { NouveauCompteDialog } from '@/components/comptes/NouveauCompteDialog'
+// Relative on purpose: TRM mounts this file, and its `@/` has no comptes/.
+import { CompteSidebar, COMPTES_KEY, type Compte } from '../components/comptes/CompteSidebar'
+import { NouveauCompteDialog } from '../components/comptes/NouveauCompteDialog'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -76,7 +89,7 @@ interface UserProfileRow {
   photoVersion: number | null
 }
 
-interface PermissionKeyDef {
+export interface PermissionKeyDef {
   key: string
   label: string
   description: string
@@ -93,6 +106,37 @@ interface PermissionKeyDef {
 interface NotificationSubscriptionRow {
   IDutilisateur: number
   subscribed: string[]
+}
+
+/** What the Notifications tab receives — ETM's own by default, TRM injects
+ *  its reports tab (preview, test send, subscriptions requiring a right). */
+export interface NotificationsTabProps {
+  user: { IDutilisateur: number; prenom: string | null; nom: string | null }
+  currentEmail: string
+  /** The selected user is an administrator (every right, no toggle). */
+  isVin: boolean
+  /** The selected user's stored keys in this app (permissions + écrans). */
+  grantedSet: Set<string>
+  permissionKeys: PermissionKeyDef[]
+}
+
+/** A master tab one app adds after Notifications (TRM: Appareils). */
+export interface ExtraTab {
+  key: string
+  label: string
+  icon: LucideIcon
+  render: (user: { IDutilisateur: number; name: string }) => ReactNode
+}
+
+export interface SettingsUtilisateursProps {
+  /** Permission catalog + store of this app: `/permissions` (ETM), `/permissions-trm`. */
+  permissionsPath?: string
+  NotificationsTab?: ComponentType<NotificationsTabProps>
+  extraTabs?: ExtraTab[]
+}
+
+function userPhotoUrl(userId: number, photoVersion: number | null): string {
+  return `${API_URL}/user-profiles/users/${userId}/photo?v=${photoVersion ?? 0}`
 }
 
 // Maps the lowercase pc value to a human-readable role label (same as picker).
@@ -129,8 +173,13 @@ function isVincent(u: PermissionUser): boolean {
 
 // ── Page ───────────────────────────────────────────────
 
-export function SettingsUtilisateurs() {
+export function SettingsUtilisateurs({
+  permissionsPath = '/permissions',
+  NotificationsTab = EtmNotificationsTab,
+  extraTabs = [],
+}: SettingsUtilisateursProps = {}) {
   const { user } = useUser()
+  const app = useAppCode()
   // Only EFFECTIVE admins (admin acting as themselves) can access this page.
   // When an admin impersonates another user, this drops to false and the
   // route guard below redirects to /. The admin must switch back to
@@ -143,23 +192,31 @@ export function SettingsUtilisateurs() {
   const [nouveauOpen, setNouveauOpen] = useState(false)
 
   // ── Data ───────────────────────────────────────
-  const { data: users, isLoading, isError, error } = useQuery<PermissionUser[]>({
-    queryKey: ['perm-users'],
-    queryFn: () => apiFetch<PermissionUser[]>('/permissions/users'),
+  const { data: allUsers, isLoading: usersLoading, isError, error } = useQuery<PermissionUser[]>({
+    queryKey: ['perm-users', permissionsPath],
+    queryFn: () => apiFetch<PermissionUser[]>(`${permissionsPath}/users`),
     enabled: viewerIsAdmin,
   })
 
-  // Accounts (identifiant, password, active…) — the right panel and the list badges.
-  const { data: comptes } = useQuery<Compte[]>({
+  // Accounts (identifiant, password, active, apps…) — the right panel, the
+  // list badges, and which accounts are this app's members.
+  const { data: comptes, isLoading: comptesLoading } = useQuery<Compte[]>({
     queryKey: COMPTES_KEY,
     queryFn: () => apiFetch<Compte[]>('/comptes'),
     enabled: viewerIsAdmin,
   })
   const compteById = useMemo(() => new Map((comptes ?? []).map((c) => [c.IDutilisateur, c])), [comptes])
+  const isLoading = usersLoading || comptesLoading
+
+  // This app's members only — the other company's users live in its own screen.
+  const users = useMemo(
+    () => (allUsers ?? []).filter((u) => compteById.get(u.IDutilisateur)?.apps.includes(app)),
+    [allUsers, compteById, app],
+  )
 
   const { data: keys } = useQuery<PermissionKeyDef[]>({
-    queryKey: ['perm-keys'],
-    queryFn: () => apiFetch<PermissionKeyDef[]>('/permissions/keys'),
+    queryKey: ['perm-keys', permissionsPath],
+    queryFn: () => apiFetch<PermissionKeyDef[]>(`${permissionsPath}/keys`),
     staleTime: Infinity,
   })
 
@@ -190,37 +247,6 @@ export function SettingsUtilisateurs() {
     return map
   }, [profiles])
 
-  // Notification subscriptions — same shape as permissions, separate store
-  // (see api/src/lib/notification-keys.ts for why they aren't permissions).
-  const { data: notifKeys } = useQuery<PermissionKeyDef[]>({
-    queryKey: ['notif-keys'],
-    queryFn: () => apiFetch<PermissionKeyDef[]>('/notifications/keys'),
-    staleTime: Infinity,
-  })
-
-  const { data: notifRows } = useQuery<NotificationSubscriptionRow[]>({
-    queryKey: ['notif-users'],
-    queryFn: () => apiFetch<NotificationSubscriptionRow[]>('/notifications/users'),
-    enabled: viewerIsAdmin,
-  })
-
-  const subscribedByUserId = useMemo(() => {
-    const map = new Map<number, string[]>()
-    if (notifRows) for (const r of notifRows) map.set(r.IDutilisateur, r.subscribed)
-    return map
-  }, [notifRows])
-
-  const updateNotifMut = useMutation({
-    mutationFn: ({ id, subscribed }: { id: number; subscribed: string[] }) =>
-      apiFetch<{ IDutilisateur: number; subscribed: string[] }>(
-        `/notifications/users/${id}`,
-        { method: 'PUT', body: JSON.stringify({ subscribed }) },
-      ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notif-users'] })
-    },
-  })
-
   const setEmailMut = useMutation({
     mutationFn: ({ id, email }: { id: number; email: string }) =>
       apiFetch<{ IDutilisateur: number; email: string | null }>(
@@ -233,7 +259,6 @@ export function SettingsUtilisateurs() {
   })
 
   const filtered = useMemo(() => {
-    if (!users) return []
     if (!searchQuery.trim()) return users
     const q = searchQuery.toLowerCase()
     return users.filter((u) => displayName(u).toLowerCase().includes(q))
@@ -252,16 +277,16 @@ export function SettingsUtilisateurs() {
   const updateMut = useMutation({
     mutationFn: ({ id, granted }: { id: number; granted: string[] }) =>
       apiFetch<{ IDutilisateur: number; granted: string[] }>(
-        `/permissions/users/${id}`,
+        `${permissionsPath}/users/${id}`,
         { method: 'PUT', body: JSON.stringify({ granted }) },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['perm-users'] })
+      queryClient.invalidateQueries({ queryKey: ['perm-users', permissionsPath] })
     },
   })
 
   const selected = useMemo(() => {
-    if (!users || selectedId === null) return null
+    if (selectedId === null) return null
     return users.find((u) => u.IDutilisateur === selectedId) ?? null
   }, [users, selectedId])
 
@@ -327,16 +352,8 @@ export function SettingsUtilisateurs() {
               : null
           }
           keys={keys ?? []}
-          notifKeys={notifKeys ?? []}
-          subscribed={selected ? subscribedByUserId.get(selected.IDutilisateur) ?? [] : []}
-          isUpdatingNotif={updateNotifMut.isPending}
-          onToggleNotif={(key, nextValue) => {
-            if (!selected) return
-            const current = new Set(subscribedByUserId.get(selected.IDutilisateur) ?? [])
-            if (nextValue) current.add(key)
-            else current.delete(key)
-            updateNotifMut.mutate({ id: selected.IDutilisateur, subscribed: Array.from(current) })
-          }}
+          NotificationsTab={NotificationsTab}
+          extraTabs={extraTabs}
           isUpdating={updateMut.isPending}
           onToggle={(key, nextValue) => {
             if (!selected) return
@@ -366,10 +383,12 @@ export function SettingsUtilisateurs() {
         admin then adjusts. */}
     <NouveauCompteDialog
       open={nouveauOpen}
+      app={app}
+      comptes={comptes ?? []}
       onClose={() => setNouveauOpen(false)}
       onCreated={(c) => {
         setNouveauOpen(false)
-        queryClient.invalidateQueries({ queryKey: ['perm-users'] })
+        queryClient.invalidateQueries({ queryKey: ['perm-users', permissionsPath] })
         queryClient.invalidateQueries({ queryKey: COMPTES_KEY })
         setSelectedId(c.IDutilisateur)
       }}
@@ -379,7 +398,7 @@ export function SettingsUtilisateurs() {
       open={copyOpen}
       onClose={() => setCopyOpen(false)}
       target={selected}
-      users={users ?? []}
+      users={users}
       isSaving={updateMut.isPending}
       onConfirm={(source) => {
         if (!selected) return
@@ -537,18 +556,17 @@ function DetailHeader({ user }: { user: PermissionUser | null }) {
 // Écrans sits before Permissions: which screens exist for this user is the
 // question you answer first — an action permission on a screen they can't open
 // is dead weight.
-const MAIN_TABS = [
+const MAIN_TABS: Array<{ key: string; label: string; icon: LucideIcon }> = [
   { key: 'profil', label: 'Profil', icon: UserIcon },
   { key: 'ecrans', label: 'Écrans', icon: Monitor },
   { key: 'permissions', label: 'Permissions', icon: Shield },
   { key: 'notifications', label: 'Notifications', icon: Bell },
-] as const
-type MainTab = (typeof MAIN_TABS)[number]['key']
+]
 
 function DetailBody({
   user, profile, currentEmail, onSaveEmail, isSavingEmail, emailSaveError,
   keys, isUpdating, onToggle,
-  notifKeys, subscribed, isUpdatingNotif, onToggleNotif,
+  NotificationsTab, extraTabs,
   onGrantedChange, onCopyRights,
 }: {
   user: PermissionUser | null
@@ -560,14 +578,13 @@ function DetailBody({
   keys: PermissionKeyDef[]
   isUpdating: boolean
   onToggle: (key: string, nextValue: boolean) => void
-  notifKeys: PermissionKeyDef[]
-  subscribed: string[]
-  isUpdatingNotif: boolean
-  onToggleNotif: (key: string, nextValue: boolean) => void
+  NotificationsTab: ComponentType<NotificationsTabProps>
+  extraTabs: ExtraTab[]
   onGrantedChange: (mutateSet: (s: Set<string>) => void) => void
   onCopyRights: () => void
 }) {
-  const [activeTab, setActiveTab] = useState<MainTab>('profil')
+  const [activeTab, setActiveTab] = useState('profil')
+  const tabs = [...MAIN_TABS, ...extraTabs]
 
   // Land back on the main-info tab whenever the selection changes.
   useEffect(() => { setActiveTab('profil') }, [user?.IDutilisateur])
@@ -583,16 +600,6 @@ function DetailBody({
     }
     return Array.from(g.entries())
   }, [keys])
-
-  const notifGrouped = useMemo(() => {
-    const g = new Map<string, PermissionKeyDef[]>()
-    for (const k of notifKeys) {
-      const cat = k.category || 'Général'
-      if (!g.has(cat)) g.set(cat, [])
-      g.get(cat)!.push(k)
-    }
-    return Array.from(g.entries())
-  }, [notifKeys])
 
   if (!user) return (
     <div className="flex-1 flex items-center justify-center">
@@ -615,7 +622,7 @@ function DetailBody({
     <div className="flex-1 min-h-0 flex flex-col">
       {/* Master tabs — header-submenu style pills on the natural background */}
       <div className="flex-shrink-0 flex items-center gap-1 border-b border-border/60 pb-2">
-        {MAIN_TABS.map((t) => {
+        {tabs.map((t) => {
           const Icon = t.icon
           const active = activeTab === t.key
           return (
@@ -723,49 +730,108 @@ function DetailBody({
         )}
 
         {activeTab === 'notifications' && (
-          <>
-            {/* Notifications are opt-in for everyone — there is no admin
-                bypass, hence isVin={false} on the sections below. */}
-            <div className="flex items-start gap-3 p-3 rounded-lg border border-border/60 bg-white shadow-sm">
-              <Bell className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-semibold">Notifications par email</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Cet utilisateur reçoit un email à chaque évènement activé ci-dessous, à l’adresse
-                  définie dans l’onglet « Profil ». Les administrateurs ne sont pas abonnés
-                  automatiquement.
-                </p>
-              </div>
-            </div>
-
-            {subscribed.length > 0 && !currentEmail.trim() && (
-              <div className="flex items-start gap-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
-                <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-bold text-amber-800">Aucune adresse email définie</p>
-                  <p className="text-xs text-amber-800/80 mt-0.5">
-                    Les notifications activées ci-dessous ne seront envoyées à personne tant qu’une
-                    adresse n’est pas renseignée dans l’onglet « Profil ».
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {notifGrouped.map(([category, items]) => (
-              <CategorySection
-                key={category}
-                category={category}
-                items={items}
-                isVin={false}
-                isUpdating={isUpdatingNotif}
-                grantedSet={new Set(subscribed)}
-                onToggle={onToggleNotif}
-              />
-            ))}
-          </>
+          <NotificationsTab
+            user={user}
+            currentEmail={currentEmail}
+            isVin={isVin}
+            grantedSet={grantedSet}
+            permissionKeys={keys}
+          />
         )}
+
+        {extraTabs.map((t) => activeTab === t.key && (
+          <div key={t.key}>{t.render({ IDutilisateur: user.IDutilisateur, name: displayName(user) })}</div>
+        ))}
       </div>
     </div>
+  )
+}
+
+// ── Notifications tab (ETM) ─────────────────────────────
+// ETM's email subscriptions — same shape as permissions, separate store (see
+// api/src/lib/notification-keys.ts for why they aren't permissions). Opt-in
+// for everyone: no admin bypass, hence isVin={false} on the sections.
+
+function EtmNotificationsTab({ user, currentEmail }: NotificationsTabProps) {
+  const queryClient = useQueryClient()
+  const { data: notifKeys } = useQuery<PermissionKeyDef[]>({
+    queryKey: ['notif-keys'],
+    queryFn: () => apiFetch<PermissionKeyDef[]>('/notifications/keys'),
+    staleTime: Infinity,
+  })
+  const { data: notifRows } = useQuery<NotificationSubscriptionRow[]>({
+    queryKey: ['notif-users'],
+    queryFn: () => apiFetch<NotificationSubscriptionRow[]>('/notifications/users'),
+  })
+  const subscribed = useMemo(
+    () => notifRows?.find((r) => r.IDutilisateur === user.IDutilisateur)?.subscribed ?? [],
+    [notifRows, user.IDutilisateur],
+  )
+  const updateMut = useMutation({
+    mutationFn: (next: string[]) =>
+      apiFetch<{ IDutilisateur: number; subscribed: string[] }>(
+        `/notifications/users/${user.IDutilisateur}`,
+        { method: 'PUT', body: JSON.stringify({ subscribed: next }) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notif-users'] })
+    },
+  })
+
+  const notifGrouped = useMemo(() => {
+    const g = new Map<string, PermissionKeyDef[]>()
+    for (const k of notifKeys ?? []) {
+      const cat = k.category || 'Général'
+      if (!g.has(cat)) g.set(cat, [])
+      g.get(cat)!.push(k)
+    }
+    return Array.from(g.entries())
+  }, [notifKeys])
+
+  return (
+    <>
+      <div className="flex items-start gap-3 p-3 rounded-lg border border-border/60 bg-white shadow-sm">
+        <Bell className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm font-semibold">Notifications par email</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Cet utilisateur reçoit un email à chaque évènement activé ci-dessous, à l’adresse
+            définie dans l’onglet « Profil ». Les administrateurs ne sont pas abonnés
+            automatiquement.
+          </p>
+        </div>
+      </div>
+
+      {subscribed.length > 0 && !currentEmail.trim() && (
+        <div className="flex items-start gap-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
+          <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-bold text-amber-800">Aucune adresse email définie</p>
+            <p className="text-xs text-amber-800/80 mt-0.5">
+              Les notifications activées ci-dessous ne seront envoyées à personne tant qu’une
+              adresse n’est pas renseignée dans l’onglet « Profil ».
+            </p>
+          </div>
+        </div>
+      )}
+
+      {notifGrouped.map(([category, items]) => (
+        <CategorySection
+          key={category}
+          category={category}
+          items={items}
+          isVin={false}
+          isUpdating={updateMut.isPending}
+          grantedSet={new Set(subscribed)}
+          onToggle={(key, nextValue) => {
+            const next = new Set(subscribed)
+            if (nextValue) next.add(key)
+            else next.delete(key)
+            updateMut.mutate(Array.from(next))
+          }}
+        />
+      ))}
+    </>
   )
 }
 
@@ -1181,7 +1247,7 @@ function EmailEditor({
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Adresse utilisée pour envoyer les emails (bon de commande, etc.) depuis l'application.
+          Adresse utilisée pour envoyer les emails (bons de commande, avis d'expédition…) depuis l'application.
           Laisser vide pour désactiver l'envoi d'email par cet utilisateur.
         </p>
         {!looksValid && trimmed !== '' && (
@@ -1537,7 +1603,7 @@ function SigField({
 
 // ── Toggle switch (styled checkbox) ───────────────────
 
-function ToggleSwitch({
+export function ToggleSwitch({
   checked, disabled, onChange,
 }: {
   checked: boolean

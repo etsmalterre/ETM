@@ -40,6 +40,7 @@ import {
 import { hacherMotDePasse, motDePasseRefuse, verifierMotDePasse } from '../lib/passwords.js'
 import { attenteConnexion, journaliserConnexion } from '../lib/login-throttle.js'
 import { consommerCodePoste } from '../lib/postes.js'
+import { APPS, appsDe, appsParUtilisateur } from '../lib/utilisateur-apps.js'
 
 export const authRouter: RouterType = Router()
 
@@ -215,6 +216,11 @@ authRouter.get('/me', async (req: Request, res: Response) => {
       isAdmin: req.adminId !== undefined,
       doitChangerMdp: s ? s.doitChangerMdp && !s.voirComme : false,
       sessionType: s?.type ?? null,
+      // The apps this account belongs to: each app's gate refuses a
+      // non-member (lib/utilisateur-apps.ts). While an admin « voit comme »,
+      // those of the account looked through.
+      // Absent while membership is unknown (migration 0004 pending): the gate lets through.
+      apps: (await appsDe(c.idutilisateur)) ?? undefined,
       voirComme: proprietaire
         ? { IDutilisateur: proprietaire.idutilisateur, prenom: proprietaire.prenom, nom: proprietaire.nom }
         : null,
@@ -285,12 +291,14 @@ authRouter.get('/users', async (req: Request, res: Response) => {
   try {
     const rows = await mpsPg()<{ idutilisateur: number; prenom: string | null; nom: string | null; type_compte: string }[]>`
       SELECT idutilisateur, prenom, nom, type_compte FROM utilisateur WHERE actif ORDER BY idutilisateur`
+    const apps = await appsParUtilisateur()
     const payload = rows
       .map((r) => ({
         IDutilisateur: r.idutilisateur,
         prenom: r.prenom,
         nom: r.nom,
         typeCompte: r.type_compte,
+        apps: apps ? apps.get(r.idutilisateur) ?? [] : APPS,
         // Kept for the picker's role labels (UserPicker ROLE_LABELS).
         roleHint: r.type_compte === 'poste' ? (r.prenom ?? '').toLowerCase() : null,
       }))

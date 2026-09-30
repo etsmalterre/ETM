@@ -2,7 +2,8 @@
 // (password login since 2026-09-30, API routes/comptes.ts). Two tabs:
 //   • Compte   — identifiant, password (set / generate, shown once), poste
 //                enrolment code for a station account, administrator and
-//                active switches;
+//                active switches, and the apps it belongs to (ETM / TRM —
+//                API lib/utilisateur-apps.ts);
 //   • Sessions — the browsers / postes logged in, and recent login attempts.
 // Everything acts immediately (no edit mode), like the permission toggles of
 // the centre panel.
@@ -10,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertCircle, CheckCircle2, Copy, History, KeyRound, Loader2, Monitor, MonitorSmartphone,
+  AlertCircle, AppWindow, CheckCircle2, Copy, History, KeyRound, Loader2, Monitor, MonitorSmartphone,
   Save, ShieldCheck, Trash2, UserCog, Wand2, XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -18,7 +19,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { apiFetch } from '@/lib/api'
-import { messageErreur } from '@/contexts/UserContext'
+import { APP_NAMES, messageErreur, useAppCode, type AppCode } from '@/contexts/UserContext'
 import { cn } from '@/lib/utils'
 
 export interface Compte {
@@ -35,7 +36,11 @@ export interface Compte {
   mdpModifieLe: string | null
   derniereConnexion: string | null
   sessions: number
+  /** The apps it belongs to — each app's Utilisateurs screen lists its members. */
+  apps: AppCode[]
 }
+
+const APP_ORDER: AppCode[] = ['etm', 'trm']
 
 interface SessionRow {
   ref: string
@@ -153,15 +158,33 @@ function CompteTab({ compte }: { compte: Compte }) {
   const [mdpDialog, setMdpDialog] = useState(false)
   const [confirmSansMdp, setConfirmSansMdp] = useState(false)
   const [confirmDesactiver, setConfirmDesactiver] = useState(false)
+  const [confirmQuitter, setConfirmQuitter] = useState(false)
+  const app = useAppCode()
 
   const patch = useMutation({
-    mutationFn: (body: Partial<{ identifiant: string; actif: boolean; estAdmin: boolean }>) =>
+    mutationFn: (body: Partial<{ identifiant: string; actif: boolean; estAdmin: boolean; apps: AppCode[] }>) =>
       apiFetch(`/comptes/${compte.IDutilisateur}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: () => {
       invalider()
       queryClient.invalidateQueries({ queryKey: ['permissions'] })
     },
   })
+  // Its own mutation so a refusal (409 apps_refusees) shows under its card.
+  const appsMut = useMutation({
+    mutationFn: (apps: AppCode[]) =>
+      apiFetch(`/comptes/${compte.IDutilisateur}`, { method: 'PATCH', body: JSON.stringify({ apps }) }),
+    onSuccess: () => {
+      invalider()
+      queryClient.invalidateQueries({ queryKey: ['perm-users'] })
+    },
+  })
+  useEffect(() => { appsMut.reset() }, [compte.IDutilisateur]) // eslint-disable-line react-hooks/exhaustive-deps
+  const basculerApp = (a: AppCode, membre: boolean) => {
+    // Leaving THIS app takes the account off this very list: confirm first.
+    if (!membre && a === app) { setConfirmQuitter(true); return }
+    const apps = membre ? [...compte.apps, a] : compte.apps.filter((x) => x !== a)
+    appsMut.mutate(APP_ORDER.filter((x) => apps.includes(x)))
+  }
   const retirerMdp = useMutation({
     mutationFn: () => apiFetch(`/comptes/${compte.IDutilisateur}/mot-de-passe`, { method: 'DELETE' }),
     onSuccess: () => { invalider(); setConfirmSansMdp(false) },
@@ -279,6 +302,28 @@ function CompteTab({ compte }: { compte: Compte }) {
         </div>
       </div>
 
+      {/* Applications — one login, but each company has its own users */}
+      <div className={cardClass}>
+        <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+          <AppWindow className="h-3.5 w-3.5" />Applications
+        </p>
+        <div className="space-y-3">
+          {APP_ORDER.map((a) => (
+            <SwitchRow
+              key={a}
+              label={`${APP_NAMES[a]} (${a.toUpperCase()})`}
+              detail={compte.apps.includes(a)
+                ? (a === app ? 'Membre — cette application.' : 'Membre.')
+                : 'Pas d’accès : l’application lui est refusée.'}
+              value={compte.apps.includes(a)}
+              disabled={appsMut.isPending}
+              onChange={(v) => basculerApp(a, v)}
+            />
+          ))}
+        </div>
+        {appsMut.error && <p className="mt-2 text-xs text-destructive">{messageErreur(appsMut.error, 'Enregistrement impossible.')}</p>}
+      </div>
+
       <MotDePasseDialog compte={compte} open={mdpDialog} onClose={() => setMdpDialog(false)} onDone={invalider} />
       <ConfirmDialog
         open={confirmSansMdp}
@@ -297,6 +342,19 @@ function CompteTab({ compte }: { compte: Compte }) {
         isPending={patch.isPending}
         onCancel={() => setConfirmDesactiver(false)}
         onConfirm={() => patch.mutate({ actif: false }, { onSuccess: () => setConfirmDesactiver(false) })}
+      />
+      <ConfirmDialog
+        open={confirmQuitter}
+        title={`Retirer de ${APP_NAMES[app]}`}
+        description={`${nomDe(compte)} n’aura plus accès à cette application et disparaîtra de cette liste. Ses droits y sont conservés et reviennent s’il y est de nouveau ajouté (« + Nouveau » › Compte existant).`}
+        confirmLabel="Retirer"
+        isPending={appsMut.isPending}
+        error={appsMut.error ? messageErreur(appsMut.error, 'Enregistrement impossible.') : undefined}
+        onCancel={() => setConfirmQuitter(false)}
+        onConfirm={() => appsMut.mutate(
+          compte.apps.filter((x) => x !== app),
+          { onSuccess: () => setConfirmQuitter(false) },
+        )}
       />
     </>
   )

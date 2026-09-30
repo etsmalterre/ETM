@@ -132,6 +132,42 @@ ${grantApi('SELECT, INSERT', 'stock_fini_mesure_journal')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE stock_fini_mesure_journal_id_seq')}
 `,
   },
+  {
+    // Which company's app an account belongs to (lib/utilisateur-apps.ts):
+    // ETM (ETS Malterre), TRM (Tricotage Malterre), or both. One login for
+    // the two apps, but each has its own members — a non-member is refused at
+    // the app's gate and holds none of its rights.
+    //
+    // Seed (decision 2026-09-30): TRM = the allowlist the TRM admin screen
+    // filtered on until now (TRM_STAFF), plus anyone already holding a TRM
+    // right, so nobody loses one on deploy. ETM = everyone except the
+    // TRM-only accounts: the Visitage and Regleur station accounts and
+    // Mickaël Grivelet. Administrators belong to both. Names compared
+    // lowercase and accent-folded (« Mickaël » = « mickael »).
+    name: '0004_utilisateur_app',
+    sql: `
+CREATE TABLE utilisateur_app (
+  idutilisateur bigint NOT NULL REFERENCES utilisateur (idutilisateur) ON DELETE CASCADE,
+  app text NOT NULL CHECK (app IN ('etm', 'trm')),
+  PRIMARY KEY (idutilisateur, app)
+);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'utilisateur_app')}
+
+INSERT INTO utilisateur_app (idutilisateur, app)
+SELECT idutilisateur, 'trm' FROM utilisateur
+WHERE est_admin
+   OR translate(lower(trim(coalesce(prenom, '')) || '|' || trim(coalesce(nom, ''))), 'àâäéèêëîïôöùûüç', 'aaaeeeeiioouuuc') IN (
+        'visitage|', 'regleur|', 'vincent|malterre', 'nicolas|antonino', 'mickael|grivelet',
+        'isabelle|malterre', 'laetitia|tellier', 'pierre-emmanuel|roux')
+   OR idutilisateur IN (SELECT idutilisateur FROM permission WHERE app = 'trm');
+
+INSERT INTO utilisateur_app (idutilisateur, app)
+SELECT idutilisateur, 'etm' FROM utilisateur
+WHERE est_admin
+   OR translate(lower(trim(coalesce(prenom, '')) || '|' || trim(coalesce(nom, ''))), 'àâäéèêëîïôöùûüç', 'aaaeeeeiioouuuc') NOT IN (
+        'visitage|', 'regleur|', 'mickael|grivelet');
+`,
+  },
 ]
 
 export interface MigrationStatus {

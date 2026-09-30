@@ -1,15 +1,17 @@
 // « + Nouveau » of Paramètres › Utilisateurs: creates an account (a person, or
-// a station account for an enrolled PC). The password is set afterwards from
-// the account panel — it is shown once there.
+// a station account for an enrolled PC) in THIS app, or brings in an account
+// of the other app (« Compte existant » — Nicolas works for both companies:
+// one account, member of both). The password is set afterwards from the
+// account panel — it is shown once there.
 
 import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { AlertCircle, Loader2, UserPlus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { PopoverSelect } from '@/components/ui/popover-select'
+import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { apiFetch } from '@/lib/api'
-import { messageErreur } from '@/contexts/UserContext'
+import { APP_NAMES, messageErreur, type AppCode } from '@/contexts/UserContext'
 import type { Compte } from './CompteSidebar'
 
 const inputClass = 'w-full h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring'
@@ -17,8 +19,14 @@ const inputClass = 'w-full h-9 px-3 text-sm rounded-md border border-input bg-ba
 const slug = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
   .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
-export function NouveauCompteDialog({ open, onClose, onCreated }: {
+const nomDe = (c: Compte) => [c.prenom?.trim(), c.nom?.trim()].filter(Boolean).join(' ') || '—'
+
+export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: {
   open: boolean
+  /** The app whose screen creates it: the new account is its member. */
+  app: AppCode
+  /** Every account — « Compte existant » offers the active non-members. */
+  comptes: Compte[]
   onClose: () => void
   onCreated: (c: Compte) => void
 }) {
@@ -27,28 +35,43 @@ export function NouveauCompteDialog({ open, onClose, onCreated }: {
   const [identifiant, setIdentifiant] = useState('')
   const [identifiantTouche, setIdentifiantTouche] = useState(false)
   const [email, setEmail] = useState('')
-  const [type, setType] = useState<1 | 2>(1)
+  const [type, setType] = useState<1 | 2 | 3>(1)
+  const [existantId, setExistantId] = useState(0)
   useEffect(() => {
-    if (!open) { setPrenom(''); setNom(''); setIdentifiant(''); setIdentifiantTouche(false); setEmail(''); setType(1) }
+    if (!open) {
+      setPrenom(''); setNom(''); setIdentifiant(''); setIdentifiantTouche(false); setEmail(''); setType(1); setExistantId(0)
+    }
   }, [open])
+  const autres = comptes
+    .filter((c) => c.actif && !c.apps.includes(app))
+    .sort((a, b) => nomDe(a).localeCompare(nomDe(b), 'fr'))
+  const existant = autres.find((c) => c.IDutilisateur === existantId) ?? null
   // The identifiant follows the first name until the admin types their own.
   useEffect(() => { if (!identifiantTouche) setIdentifiant(slug(prenom)) }, [prenom, identifiantTouche])
 
   const mut = useMutation({
-    mutationFn: () => apiFetch<Compte>('/comptes', {
-      method: 'POST',
-      body: JSON.stringify({
-        prenom: prenom.trim(),
-        nom: nom.trim(),
-        identifiant: identifiant.trim().toLowerCase(),
-        email: email.trim(),
-        typeCompte: type === 2 ? 'poste' : 'personne',
-      }),
-    }),
+    mutationFn: () => type === 3 && existant
+      ? apiFetch<Compte>(`/comptes/${existant.IDutilisateur}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ apps: [...existant.apps, app] }),
+        })
+      : apiFetch<Compte>('/comptes', {
+          method: 'POST',
+          body: JSON.stringify({
+            prenom: prenom.trim(),
+            nom: nom.trim(),
+            identifiant: identifiant.trim().toLowerCase(),
+            email: email.trim(),
+            typeCompte: type === 2 ? 'poste' : 'personne',
+            apps: [app],
+          }),
+        }),
     onSuccess: onCreated,
   })
 
-  const valide = prenom.trim().length > 0 && identifiant.trim().length >= 2 && (type === 2 || nom.trim().length > 0)
+  const valide = type === 3
+    ? existant !== null
+    : prenom.trim().length > 0 && identifiant.trim().length >= 2 && (type === 2 || nom.trim().length > 0)
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
@@ -64,14 +87,33 @@ export function NouveauCompteDialog({ open, onClose, onCreated }: {
             <label className="text-xs font-medium text-muted-foreground">Type</label>
             <PopoverSelect
               value={type}
-              onChange={(v) => setType(v === 2 ? 2 : 1)}
+              onChange={(v) => setType(v === 2 ? 2 : v === 3 ? 3 : 1)}
               hideEmpty
               options={[
                 { id: 1, primary: 'Personne', description: 'Se connecte avec un identifiant et un mot de passe.' },
                 { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code.' },
+                { id: 3, primary: 'Compte existant', description: 'Une personne qui a déjà un compte dans l’autre application.' },
               ]}
             />
           </div>
+          {type === 3 ? (
+            <div className="space-y-1 col-span-full">
+              <label className="text-xs font-medium text-muted-foreground">Compte</label>
+              <SearchableCombobox
+                options={autres}
+                value={existantId}
+                onChange={setExistantId}
+                getId={(c) => c.IDutilisateur}
+                getPrimary={nomDe}
+                getSecondary={(c) => c.apps.map((a) => a.toUpperCase()).join(' · ') || undefined}
+                placeholder="Rechercher un compte"
+              />
+              <p className="text-[11px] text-muted-foreground pt-1">
+                Même identifiant, même mot de passe : il accédera aussi à {APP_NAMES[app]}. Donnez-lui
+                ensuite ses écrans et ses droits ici — ceux de l’autre application ne changent pas.
+              </p>
+            </div>
+          ) : (<>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">{type === 2 ? 'Nom du poste' : 'Prénom'}</label>
             <input autoFocus value={prenom} onChange={(e) => setPrenom(e.target.value)} className={inputClass} />
@@ -101,6 +143,7 @@ export function NouveauCompteDialog({ open, onClose, onCreated }: {
               ? 'Ensuite, générez un code d’enrôlement depuis le panneau Compte et saisissez-le sur le PC.'
               : 'Ensuite, définissez son mot de passe depuis le panneau Compte, puis ses écrans et ses droits.'}
           </p>
+          </>)}
         </div>
         {mut.error && (
           <p className="mt-3 text-xs text-destructive flex items-start gap-1">
@@ -112,7 +155,7 @@ export function NouveauCompteDialog({ open, onClose, onCreated }: {
           <Button variant="outline" onClick={onClose}>Annuler</Button>
           <Button onClick={() => mut.mutate()} disabled={!valide || mut.isPending}>
             {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5 mr-1.5" />}
-            Créer
+            {type === 3 ? 'Ajouter' : 'Créer'}
           </Button>
         </DialogFooter>
       </DialogContent>
