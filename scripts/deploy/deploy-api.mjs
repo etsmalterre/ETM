@@ -119,7 +119,7 @@ if (r.code !== 0) die(`deploy failed on the host (exit ${r.code}) — stamp NOT 
 step('smoke — every client through its nginx')
 const probes = [
   ['https://etm.intra.etsmalterre.com/api/fournisseurs', ['200']],
-  ['https://trm.intra.etsmalterre.com/api/auth/users', ['200']],
+  ['https://trm.intra.etsmalterre.com/api/auth/config', ['200']],
   ['https://atelier.intra.etsmalterre.com/api/health', ['200']],
   ['https://trs.intra.etsmalterre.com/api/trs/atelier', ['200']],
   ['https://pointage.intra.etsmalterre.com/api/health', ['200']],
