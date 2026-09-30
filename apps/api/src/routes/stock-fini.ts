@@ -4,6 +4,7 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { pickVal } from '../lib/accented-keys.js'
 import { userHasPermission } from '../lib/permissions.js'
+import { ecrireMesures, lireMesures, MesuresRefusees, nomUtilisateur, RouleauIntrouvable } from '../lib/stock-fini-mesures.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { copyFiniSources, deleteFiniSources, loadFiniSources } from '../lib/fini-sources.js'
@@ -740,6 +741,29 @@ stockFiniRouter.get('/fini/:id/label', async (req: Request, res: Response) => {
   }
 })
 
+// GET /api/stock/fini/:id/mesures - may this roll's poids / métrage be
+//   corrected now (and why not), plus the journal of past corrections, newest
+//   first (LIVA #1245). Read-only, not permission-gated: the journal is shown
+//   to anyone who can open the roll.
+stockFiniRouter.get('/fini/:id/mesures', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid ID' })
+      return
+    }
+    const out = await lireMesures(id)
+    if (!out) {
+      res.status(404).json({ error: 'Stock fini not found' })
+      return
+    }
+    res.json(out)
+  } catch (err) {
+    console.error('Error reading stock_fini mesures:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // PATCH /api/stock/fini/batch - batch-edit ("Édition groupée") emplacement
 //   and/or observations across many rolls at once. Body:
 //     { ids: number[], emplacement?: string, observations?: string }
@@ -809,6 +833,7 @@ type EditSubKey =
   | 'edit_stock_fini_etat'
   | 'edit_stock_fini_affectation'
   | 'edit_stock_fini_notes'
+  | 'edit_stock_fini_mesures'
 
 async function loadEditSubPermissions(
   userId: number,
@@ -819,18 +844,23 @@ async function loadEditSubPermissions(
     edit_stock_fini_etat: await userHasPermission(userId, isAdmin, 'edit_stock_fini_etat'),
     edit_stock_fini_affectation: await userHasPermission(userId, isAdmin, 'edit_stock_fini_affectation'),
     edit_stock_fini_notes: await userHasPermission(userId, isAdmin, 'edit_stock_fini_notes'),
+    edit_stock_fini_mesures: await userHasPermission(userId, isAdmin, 'edit_stock_fini_mesures'),
   }
 }
 
 // PATCH /api/stock/fini/:id - whitelist edit
-//   poids, metrage, IDref_fini, IDColoris, IDref_commande_source, IDstock_ecru,
+//   IDref_fini, IDColoris, IDref_commande_source, IDstock_ecru,
 //   IDligne_expedition, IDligne_commande_client are NOT editable here — they
-//   belong to the sst reception / shipment flows.
+//   belong to the sst reception / shipment flows. poids / metrage are, only
+//   under edit_stock_fini_mesures on a roll in stock received 60+ days ago,
+//   journaled (LIVA #1245, lib/stock-fini-mesures.ts) — written FIRST so a
+//   refusal (409) leaves the other fields untouched.
 //   Field groups map to the edit_stock_fini_* sub-permissions:
 //     stockage    → emplacement, conteneur, pointage
 //     etat        → second_choix, IDetat_stock_fini
 //     affectation → don, destockage
 //     notes       → observations, observation_sst
+//     mesures     → poids, metrage
 stockFiniRouter.patch('/fini/:id', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) {
@@ -867,6 +897,19 @@ stockFiniRouter.patch('/fini/:id', async (req: Request, res: Response) => {
     if (body.don !== undefined || body.destockage !== undefined) {
       if (!sub.edit_stock_fini_affectation) { deny('edit_stock_fini_affectation'); return }
     }
+    const mesures: { poids?: number; metrage?: number } = {}
+    if (body.poids !== undefined || body.metrage !== undefined) {
+      if (!sub.edit_stock_fini_mesures) { deny('edit_stock_fini_mesures'); return }
+      for (const k of ['poids', 'metrage'] as const) {
+        if (body[k] === undefined) continue
+        const v = Number(body[k])
+        if (!Number.isFinite(v) || v < 0 || v > 100000) {
+          res.status(400).json({ error: `${k} must be a non-negative number` })
+          return
+        }
+        mesures[k] = v
+      }
+    }
 
     if (typeof body.observations === 'string') sets.push(`observations = ${sqlText(body.observations)}`)
     if (typeof body.observation_sst === 'string') sets.push(`observation_sst = ${sqlText(body.observation_sst)}`)
@@ -889,12 +932,31 @@ stockFiniRouter.patch('/fini/:id', async (req: Request, res: Response) => {
       else sets.push(`pointage = '${esc(d)}'`)
     }
 
-    if (sets.length === 0) {
+    const hasMesures = mesures.poids !== undefined || mesures.metrage !== undefined
+    if (sets.length === 0 && !hasMesures) {
       res.status(400).json({ error: 'No editable fields provided' })
       return
     }
 
-    await query(`UPDATE stock_fini SET ${sets.join(', ')} WHERE IDstock_fini = ${id}`)
+    if (hasMesures) {
+      try {
+        await ecrireMesures(id, mesures, { idutilisateur: req.userId, nom: await nomUtilisateur(req.userId) })
+      } catch (err) {
+        if (err instanceof RouleauIntrouvable) {
+          res.status(404).json({ error: 'Stock fini not found' })
+          return
+        }
+        if (err instanceof MesuresRefusees) {
+          res.status(409).json({ error: `mesures_${err.verdict.raison}`, message: err.verdict.message })
+          return
+        }
+        throw err
+      }
+    }
+
+    if (sets.length > 0) {
+      await query(`UPDATE stock_fini SET ${sets.join(', ')} WHERE IDstock_fini = ${id}`)
+    }
 
     // Fetch fresh row in the same shape as GET /fini/:id
     const rows = await query<StockFini>(

@@ -109,6 +109,29 @@ ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'session, connexion')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE connexion_id_seq')}
 `,
   },
+  {
+    // LIVA #1245: journal of every poids / métrage correction on a finished
+    // roll (lib/stock-fini-mesures.ts). Append-only by use: the API only
+    // INSERTs and SELECTs it. `auteur` is the name at the time, kept even if
+    // the account is later renamed or merged.
+    name: '0003_stock_fini_mesure_journal',
+    sql: `
+CREATE TABLE stock_fini_mesure_journal (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idstock_fini bigint NOT NULL,
+  le timestamptz NOT NULL DEFAULT now(),
+  idutilisateur bigint NOT NULL,
+  auteur text NOT NULL,
+  poids_avant numeric(12, 2) NOT NULL,
+  poids_apres numeric(12, 2) NOT NULL,
+  metrage_avant numeric(12, 2) NOT NULL,
+  metrage_apres numeric(12, 2) NOT NULL
+);
+CREATE INDEX stock_fini_mesure_journal_roll ON stock_fini_mesure_journal (idstock_fini, le);
+${grantApi('SELECT, INSERT', 'stock_fini_mesure_journal')}
+${grantApi('USAGE, SELECT', 'SEQUENCE stock_fini_mesure_journal_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

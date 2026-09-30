@@ -32,6 +32,7 @@ import {
   FileSpreadsheet,
   Columns3,
   Merge,
+  History,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -51,7 +52,7 @@ import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { EtatPill } from '@/lib/etat-stock-fini'
-import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
+import { STOCK_QUERY_FRESHNESS, invalidateStockCaches } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { useUser } from '@/contexts/UserContext'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
@@ -162,6 +163,36 @@ interface StockFiniProvenance {
   /** Grouped roll (LIVA #1149): the écru pieces the dyer joined into this
    *  one roll. Empty on a plain roll. */
   composants?: Array<{ IDstock_ecru: number; numero: string }>
+}
+
+// LIVA #1245 — may this roll's poids / métrage be corrected now, and the
+// journal of past corrections (GET /stock/fini/:id/mesures).
+interface MesuresModifiables {
+  ok: boolean
+  raison?: 'expedie' | 'donne' | 'trop_recent' | 'date_inconnue'
+  message?: string
+}
+interface JournalMesure {
+  id: number
+  le: string
+  auteur: string
+  poids_avant: number
+  poids_apres: number
+  metrage_avant: number
+  metrage_apres: number
+}
+interface StockFiniMesures {
+  modifiable: MesuresModifiables
+  journal: JournalMesure[]
+}
+
+function useStockFiniMesures(id: number | null) {
+  return useQuery<StockFiniMesures>({
+    queryKey: ['stock-fini', 'mesures', id],
+    queryFn: () => apiFetch<StockFiniMesures>(`/stock/fini/${id}/mesures`),
+    enabled: id !== null,
+    ...STOCK_QUERY_FRESHNESS,
+  })
 }
 
 function useStockFiniProvenance(id: number | null) {
@@ -2145,11 +2176,18 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
   const hasEtat = useHasPermission('edit_stock_fini_etat')
   const hasAffectation = useHasPermission('edit_stock_fini_affectation')
   const hasNotes = useHasPermission('edit_stock_fini_notes')
+  const hasMesures = useHasPermission('edit_stock_fini_mesures')
+  const { data: mesures } = useStockFiniMesures(id)
+  const queryClient = useQueryClient()
   const canEditStockage = canEdit && hasStockage
   const canEditEtat = canEdit && hasEtat
   const canEditAffectation = canEdit && hasAffectation
   const canEditNotes = canEdit && hasNotes
-  const canEditAny = canEditStockage || canEditEtat || canEditAffectation || canEditNotes
+  // Poids & métrage: the right AND the roll old enough / still in stock —
+  // the API re-checks both (409 mesures_*).
+  const canEditMesures = canEdit && hasMesures
+  const mesuresOuvertes = canEditMesures && !!mesures?.modifiable.ok
+  const canEditAny = canEditStockage || canEditEtat || canEditAffectation || canEditNotes || mesuresOuvertes
   const drawerRef = useRef<HTMLDivElement>(null)
   const [searchParams] = useSearchParams()
   const embed = searchParams.get('embed') === 'true'
@@ -2163,6 +2201,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
   const [editSecondChoix, setEditSecondChoix] = useState(false)
   const [editDestockage, setEditDestockage] = useState(false)
   const [editDon, setEditDon] = useState(false)
+  const [editPoids, setEditPoids] = useState('')
+  const [editMetrage, setEditMetrage] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const originalDraftRef = useRef<{
@@ -2174,6 +2214,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     secondChoix: boolean
     destockage: boolean
     don: boolean
+    poids: string
+    metrage: string
   } | null>(null)
 
   useEffect(() => {
@@ -2205,6 +2247,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
       secondChoix: !!detail.second_choix,
       destockage: !!detail.destockage,
       don: !!detail.don,
+      poids: detail.poids != null ? String(round2cell(detail.poids)) : '',
+      metrage: detail.metrage != null ? String(round2cell(detail.metrage)) : '',
     }
     setEditObservations(snapshot.observations)
     setEditObservationSst(snapshot.observation_sst)
@@ -2214,14 +2258,31 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     setEditSecondChoix(snapshot.secondChoix)
     setEditDestockage(snapshot.destockage)
     setEditDon(snapshot.don)
+    setEditPoids(snapshot.poids)
+    setEditMetrage(snapshot.metrage)
     originalDraftRef.current = snapshot
     setSaveError(null)
     setIsEditing(true)
   }, [detail])
 
+  const parseMesure = (v: string) => Number(v.trim().replace(',', '.'))
+  const mesuresInvalides =
+    mesuresOuvertes &&
+    [editPoids, editMetrage].some((v) => v.trim() === '' || !Number.isFinite(parseMesure(v)) || parseMesure(v) < 0)
+  // Only the changed measures travel — an untouched roll writes no journal row.
+  const mesuresChangees = (() => {
+    const o = originalDraftRef.current
+    if (!mesuresOuvertes || !o || mesuresInvalides) return {}
+    const out: { poids?: number; metrage?: number } = {}
+    if (editPoids !== o.poids) out.poids = parseMesure(editPoids)
+    if (editMetrage !== o.metrage) out.metrage = parseMesure(editMetrage)
+    return out
+  })()
+
   const saveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch(`/stock/fini/${id}`, {
+    mutationFn: () => {
+      if (mesuresInvalides) return Promise.reject(new Error('mesures_invalides'))
+      return apiFetch(`/stock/fini/${id}`, {
         method: 'PATCH',
         // Only send the field groups the user may edit — the API 403s on any
         // field whose edit_stock_fini_* sub-permission is missing.
@@ -2238,14 +2299,23 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
             : {}),
           ...(canEditEtat ? { second_choix: editSecondChoix } : {}),
           ...(canEditAffectation ? { destockage: editDestockage, don: editDon } : {}),
+          ...mesuresChangees,
         }),
-      }),
+      })
+    },
     onMutate: () => setSaveError(null),
     onSuccess: () => {
       onMutationSuccess()
+      // A corrected weight moves every kg total that reads this roll.
+      if (Object.keys(mesuresChangees).length > 0) invalidateStockCaches(queryClient)
       setIsEditing(false)
     },
-    onError: () => setSaveError("L'enregistrement a échoué. Réessayez ou contactez l'administrateur."),
+    onError: (err: Error & { body?: unknown }) => {
+      const msg = (err.body as { message?: unknown } | undefined)?.message
+      if (err.message === 'mesures_invalides') setSaveError('Poids et métrage : saisissez des nombres positifs.')
+      else if (typeof msg === 'string') setSaveError(msg)
+      else setSaveError("L'enregistrement a échoué. Réessayez ou contactez l'administrateur.")
+    },
   })
 
   const isDirty = useMemo(() => {
@@ -2260,6 +2330,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     if (editSecondChoix !== o.secondChoix) return true
     if (editDestockage !== o.destockage) return true
     if (editDon !== o.don) return true
+    if (editPoids !== o.poids) return true
+    if (editMetrage !== o.metrage) return true
     return false
   }, [
     isEditing,
@@ -2271,6 +2343,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     editSecondChoix,
     editDestockage,
     editDon,
+    editPoids,
+    editMetrage,
   ])
 
   useEffect(() => { onDirtyChange(isDirty) }, [isDirty, onDirtyChange])
@@ -2426,12 +2500,64 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
           ) : (
             <>
               {/* Stock card */}
-              <DrawerCard icon={<Package className="h-4 w-4 text-accent" />} title="Stock">
+              <DrawerCard icon={<Package className="h-4 w-4 text-accent" />} title="Stock" highlight={isEditing && mesuresOuvertes}>
                 <div className="space-y-1.5">
-                  <KV label="Poids" value={<span className="font-semibold tabular-nums">{formatKg(detail.poids)}</span>} />
-                  <KV label="Métrage" value={<span className="tabular-nums">{formatMeters(detail.metrage)}</span>} />
+                  <KV
+                    label="Poids"
+                    value={
+                      isEditing && mesuresOuvertes ? (
+                        <MesureInput value={editPoids} onChange={setEditPoids} unit="kg" />
+                      ) : (
+                        <span className="font-semibold tabular-nums">{formatKg(detail.poids)}</span>
+                      )
+                    }
+                  />
+                  <KV
+                    label="Métrage"
+                    value={
+                      isEditing && mesuresOuvertes ? (
+                        <MesureInput value={editMetrage} onChange={setEditMetrage} unit="m" />
+                      ) : (
+                        <span className="tabular-nums">{formatMeters(detail.metrage)}</span>
+                      )
+                    }
+                  />
                   {!!detail.designation && (
                     <KV label="Désignation" value={detail.designation} />
+                  )}
+                  {/* Why the measures stay locked — only to whoever holds the right */}
+                  {isEditing && canEditMesures && mesures && !mesures.modifiable.ok && (
+                    <p className="flex items-start gap-1.5 pt-1 text-[11px] text-muted-foreground">
+                      <AlertCircle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+                      <span>{mesures.modifiable.message}</span>
+                    </p>
+                  )}
+                  {/* Journal of corrections (LIVA #1245) — visible to everyone */}
+                  {!!mesures && mesures.journal.length > 0 && (
+                    <div className="pt-2 mt-1 border-t border-border/40 space-y-1.5">
+                      <p className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-semibold text-muted-foreground">
+                        <History className="h-3 w-3" />
+                        Corrections
+                      </p>
+                      {mesures.journal.map((j) => (
+                        <div key={j.id} className="text-[11px] leading-snug">
+                          <div className="flex items-baseline justify-between gap-2 text-muted-foreground">
+                            <span className="truncate">{j.auteur}</span>
+                            <span className="flex-shrink-0 tabular-nums">
+                              {new Date(j.le).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}
+                            </span>
+                          </div>
+                          <div className="tabular-nums">
+                            {j.poids_avant !== j.poids_apres && (
+                              <span className="mr-3">{fmtNum(j.poids_avant, 2)} → <span className="font-semibold">{fmtNum(j.poids_apres, 2)} kg</span></span>
+                            )}
+                            {j.metrage_avant !== j.metrage_apres && (
+                              <span>{fmtNum(j.metrage_avant, 2)} → <span className="font-semibold">{fmtNum(j.metrage_apres, 2)} m</span></span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
               </DrawerCard>
@@ -2688,6 +2814,22 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
 }
 
 // ── Drawer card primitives ─────────────────────────────
+
+/** Poids / métrage input in a KV value slot (§27.5): h-7, right-aligned, unit after. */
+function MesureInput({ value, onChange, unit }: { value: string; onChange: (v: string) => void; unit: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <input
+        type="text"
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 w-24 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right tabular-nums"
+      />
+      <span className="text-xs text-muted-foreground">{unit}</span>
+    </span>
+  )
+}
 
 function DrawerCard({
   icon,

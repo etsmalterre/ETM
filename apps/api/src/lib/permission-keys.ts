@@ -380,6 +380,18 @@ export const PERMISSION_KEYS = [
     category: 'Finis',
     parent: 'edit_stock_fini',
   },
+  // LIVA #1245: correcting poids / métrage departs from the dyer's BL, so it
+  // is ticked person by person (cascade: false) and only on rolls received
+  // 60+ days ago, every change journaled (lib/stock-fini-mesures.ts).
+  {
+    key: 'edit_stock_fini_mesures',
+    label: 'Poids & métrage',
+    description:
+      'Autorise la correction du poids et du métrage d’un rouleau en stock reçu depuis plus de 60 jours (inventaire). Chaque correction est journalisée sur le rouleau. Cocher « Éditer un rouleau » ne l’accorde PAS, il se coche à part.',
+    category: 'Finis',
+    parent: 'edit_stock_fini',
+    cascade: false,
+  },
   {
     key: 'surteindre_stock_fini',
     label: 'Surteindre des rouleaux finis',
