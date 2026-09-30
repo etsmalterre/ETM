@@ -172,6 +172,18 @@ export function missingMesures(m: RollMesure | undefined | null): string[] {
   return out
 }
 
+/** The length a roll must carry in stock once MATEL's measures are in (LIVA
+ *  #1246): Simone Pérèle is billed the NET length, and the BL, the avis and
+ *  the invoice all sum `stock_fini.metrage` (the gross one from MATEL's BL
+ *  until then). Only a COMPLETE roll counts — the tab saves as you type, and
+ *  the net is typed before laize and poids, so a half-typed net never reaches
+ *  the stock. Returns the net to write, or null when there is nothing to do. */
+export function netAAppliquer(m: RollMesure | undefined | null, metrageStock: number): number | null {
+  if (!m || missingMesures(m).length > 0) return null
+  const net = Math.round(Number(m.net) * 100) / 100
+  return net === Math.round((Number(metrageStock) || 0) * 100) / 100 ? null : net
+}
+
 /** The order number as the label prints it, from `commande_client.ref_client`
  *  as typed in ETM: « Commande A3-57378 du 16/10/2025 » → « A3-57378 DU
  *  16/10/2025 » (the legacy labels are upper case and start at the number). */

@@ -170,3 +170,52 @@ export async function nomUtilisateur(idutilisateur: number): Promise<string> {
   const n = rows[0] ? `${rows[0].prenom ?? ''} ${rows[0].nom ?? ''}`.trim() : ''
   return n || `Utilisateur ${idutilisateur}`
 }
+
+// ── Net length of a labelled roll (LIVA #1246) ─────────────────────────────
+//
+// Simone Pérèle is billed the NET length MATEL writes on the tableau de
+// métrage (lib/etiquettes-sp.ts `netAAppliquer`), and every shipping document
+// sums `stock_fini.metrage`. So the net, once the roll's measures are complete,
+// replaces the BL's gross length on the roll — journaled like a correction.
+// The gross length stays in the label data. None of the #1245 rules apply
+// (a fresh roll is exactly the case), but:
+//   - a roll whose shipment is on an invoice (provisional or definitive) is
+//     left alone: the invoice froze its quantity, a change would only make
+//     the BL disagree with it;
+//   - a donated roll is out of stock.
+
+export type NetEtiquette = 'applique' | 'inchange' | 'facture' | 'donne' | 'introuvable'
+
+export async function appliquerNetEtiquette(
+  id: number,
+  net: number,
+  auteur: { idutilisateur: number; nom: string },
+): Promise<NetEtiquette> {
+  return mpsPg().begin(async (t) => {
+    const tx = t as unknown as Sql
+    const rows = await tx<{ poids: number; metrage: number; idligne_expedition: number; idcommande_donation: number }[]>`
+      SELECT poids, metrage, idligne_expedition, idcommande_donation
+      FROM stock_fini WHERE idstock_fini = ${id} FOR UPDATE`
+    if (rows.length === 0) return 'introuvable'
+    const r = rows[0]
+    if ((Number(r.idcommande_donation) || 0) > 0) return 'donne'
+    const le = Number(r.idligne_expedition) || 0
+    if (le > 0) {
+      const [def, prov] = await Promise.all([
+        tx`SELECT 1 FROM ligne_facture WHERE idligne_expedition = ${le} LIMIT 1`,
+        tx`SELECT 1 FROM ligne_facture_prov WHERE idligne_expedition = ${le} LIMIT 1`,
+      ])
+      if (def.length > 0 || prov.length > 0) return 'facture'
+    }
+    const avant = r2(Number(r.metrage) || 0)
+    const apres = r2(net)
+    if (avant === apres) return 'inchange'
+    const poids = r2(Number(r.poids) || 0)
+    await tx`UPDATE stock_fini SET metrage = ${apres} WHERE idstock_fini = ${id}`
+    await tx`
+      INSERT INTO stock_fini_mesure_journal
+        (idstock_fini, idutilisateur, auteur, poids_avant, poids_apres, metrage_avant, metrage_apres)
+      VALUES (${id}, ${auteur.idutilisateur}, ${`${auteur.nom} · net MATEL (étiquettes)`}, ${poids}, ${poids}, ${avant}, ${apres})`
+    return 'applique'
+  }) as Promise<NetEtiquette>
+}

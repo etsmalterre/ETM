@@ -7,7 +7,7 @@
 // or send MATEL the labels. Rules and storage: apps/api/src/lib/etiquettes-sp.ts.
 
 import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle, AtSign, Barcode, Check, ChevronUp, ClipboardList, Loader2, Printer, Truck,
 } from 'lucide-react'
@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { PopoverSelect } from '@/components/ui/popover-select'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { apiFetch, API_URL } from '@/lib/api'
+import { invalidateStockCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { fmtNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -39,6 +40,8 @@ interface CodeSp {
   num_bain: string
   ean13: string | null
 }
+interface SaveResponse { ok: boolean; net?: { appliques: string[]; factures: string[] } }
+
 interface LinePayload {
   ligneId: number
   coloris: string
@@ -146,11 +149,28 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
   const pendingRef = useRef<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const queryClient = useQueryClient()
+  /** Rolls whose net could not become their billed length: already invoiced. */
+  const [netFactures, setNetFactures] = useState<string[]>([])
+  /** A complete roll's net replaces its length in stock (LIVA #1246) — the
+   *  BL and the invoice bill it. Refresh what shows that length. */
+  const afterSave = (res: SaveResponse | undefined) => {
+    const net = res?.net
+    if (!net) return
+    setNetFactures((prev) => [...new Set([...prev, ...net.factures])])
+    if (net.appliques.length === 0) return
+    invalidateStockCaches(queryClient)
+    queryClient.invalidateQueries({ queryKey: ['commande-client'] })
+    queryClient.invalidateQueries({ queryKey: ['commande-client-supply'] })
+    queryClient.invalidateQueries({ queryKey: ['commande-client-line-expeditions'] })
+    queryClient.invalidateQueries({ queryKey: ['etiquettes-sp-ligne', ligneId] })
+  }
+
   const save = async (json: string) => {
     if (json === lastSavedRef.current) return
     setSaveState('saving')
     try {
-      await apiFetch(`/etiquettes-sp/lignes/${ligneId}`, { method: 'PUT', body: json })
+      afterSave(await apiFetch(`/etiquettes-sp/lignes/${ligneId}`, { method: 'PUT', body: json }))
       lastSavedRef.current = json
       if (pendingRef.current === json) pendingRef.current = null
       setSaveState('saved')
@@ -177,7 +197,7 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
     if (timerRef.current) clearTimeout(timerRef.current)
     const json = pendingRef.current
     if (json && json !== lastSavedRef.current) {
-      apiFetch(`/etiquettes-sp/lignes/${ligneId}`, { method: 'PUT', body: json }).catch(() => {})
+      apiFetch(`/etiquettes-sp/lignes/${ligneId}`, { method: 'PUT', body: json }).then(afterSave).catch(() => {})
     }
   }, [ligneId])
 
@@ -332,7 +352,7 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
                     </button>
                   </th>
                   <th className="px-2 py-2 text-left font-semibold">Pièce</th>
-                  <th className="px-1 py-2 text-right font-semibold" title="Métrage connu d'ETM (bon de livraison MATEL)">ETM</th>
+                  <th className="px-1 py-2 text-right font-semibold" title="Métrage du rouleau dans ETM, celui du BL et de la facture : le brut du BL MATEL, remplacé par le net une fois toutes les mesures saisies">ETM</th>
                   {FIELDS.map((f) => (
                     <th key={f.key} className="px-1 py-2 text-right font-semibold w-[58px]" title={f.hint}>
                       {f.label}{f.unit && <span className="normal-case font-normal"> ({f.unit})</span>}
@@ -401,6 +421,11 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
               {saveState === 'saving' || saveState === 'pending' ? 'Enregistrement…'
                 : saveState === 'error' ? <span className="text-destructive">Échec de l'enregistrement</span>
                 : <span title="La saisie est enregistrée automatiquement">Enregistré</span>}
+              {netFactures.length > 0 && (
+                <span className="block text-amber-700 truncate" title={`Déjà facturé : le métrage facturé reste le brut pour ${netFactures.join(', ')}`}>
+                  Déjà facturé, métrage non modifié : {netFactures.join(', ')}
+                </span>
+              )}
             </span>
           )}
         </div>

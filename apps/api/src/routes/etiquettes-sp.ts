@@ -19,7 +19,7 @@ import React from 'react'
 import { renderToBuffer, type DocumentProps } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { sqlText } from '../lib/clients-common.js'
-import { userHasPermission } from '../lib/permissions.js'
+import { userHasPermission, userCanOpenScreen } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
@@ -28,8 +28,9 @@ import { ean13FromStored, spLabelCodes } from '../lib/gs1-barcode.js'
 import { createCodeSp, updateCodeSp, peekNextCode, CodeEanPrisError } from '../lib/codes-sp.js'
 import {
   listEtiquetteClients, setEtiquetteClient, getLigneEtiquettes, getRollMesures, saveLigneEtiquettes,
-  matchCodeSp, lotDigits, missingMesures, defaultCommandeClient, type RollMesure,
+  matchCodeSp, lotDigits, missingMesures, defaultCommandeClient, netAAppliquer, type RollMesure,
 } from '../lib/etiquettes-sp.js'
+import { appliquerNetEtiquette, nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { EtiquettesSpPdf, type SpLabelData } from '../lib/pdf/EtiquettesSpPdf.js'
 import { TableauMetragePdf, type TableauMetrageData } from '../lib/pdf/TableauMetragePdf.js'
 
@@ -361,6 +362,11 @@ etiquettesSpRouter.put('/lignes/:ligneId', async (req: Request, res: Response) =
     const ligneId = parseInt(req.params.ligneId, 10)
     if (isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    // The save now writes the roll's length in stock (#1246): whoever cannot
+    // open Clients › Commandes cannot reach this tab, so cannot save either.
+    if (!(await userCanOpenScreen(req.userId, isEffectiveAdmin(req), '/clients', '/clients/commandes'))) {
+      res.status(403).json({ error: 'permission denied: /clients/commandes' }); return
+    }
     const p = saveBody.safeParse(req.body)
     if (!p.success) { res.status(400).json({ error: 'Validation failed', details: p.error.issues }); return }
     const ctx = await loadLine(ligneId, res)
@@ -377,7 +383,24 @@ etiquettesSpRouter.put('/lignes/:ligneId', async (req: Request, res: Response) =
     if (p.data.IDcode_sp > 0 && p.data.bain) {
       await query(`UPDATE code_sp SET num_bain = ${sqlText(p.data.bain)} WHERE IDcode_sp = ${p.data.IDcode_sp}`)
     }
-    res.json({ ok: true })
+    // A complete roll now carries its NET length in stock, so the BL and the
+    // invoice bill the net (LIVA #1246, lib/stock-fini-mesures.ts).
+    const stock = new Map(ctx.rolls.map((r) => [r.id, r]))
+    const todo = p.data.rolls
+      .map((r) => ({ r, net: netAAppliquer(r, stock.get(r.id)?.metrage ?? 0) }))
+      .filter((x): x is { r: typeof x.r; net: number } => x.net !== null)
+    const appliques: string[] = []
+    const factures: string[] = []
+    if (todo.length > 0) {
+      const auteur = { idutilisateur: req.userId, nom: await nomUtilisateur(req.userId) }
+      for (const { r, net } of todo) {
+        const verdict = await appliquerNetEtiquette(r.id, net, auteur)
+        const numero = stock.get(r.id)?.numero ?? String(r.id)
+        if (verdict === 'applique') appliques.push(numero)
+        else if (verdict === 'facture') factures.push(numero)
+      }
+    }
+    res.json({ ok: true, net: { appliques, factures } })
   } catch (err) {
     console.error('Error saving etiquettes line:', err)
     res.status(500).json({ error: 'Internal server error' })

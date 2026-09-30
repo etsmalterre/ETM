@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchCodeSp, defaultCommandeClient, missingMesures, lotDigits, nextCodeEan, spColorisFromLibelle, hasCodeForColoris, bainFromLibelle, articleClientFor } from './etiquettes-sp.js'
+import { matchCodeSp, defaultCommandeClient, missingMesures, netAAppliquer, lotDigits, nextCodeEan, spColorisFromLibelle, hasCodeForColoris, bainFromLibelle, articleClientFor } from './etiquettes-sp.js'
 
 // A slice of the real code_sp list (dev base, 2026-09-24).
 const CODES = [
@@ -43,6 +43,26 @@ describe('missingMesures', () => {
   })
   it('refuses a net length above the gross one', () => {
     expect(missingMesures({ brut: 100, net: 101, laizeCm: 160, tare: 0, poids: 19 })).toEqual(['net supérieur au brut'])
+  })
+})
+
+describe('netAAppliquer (LIVA #1246)', () => {
+  // Roll 3505/22 of the ticket: 106,5 Ml on MATEL's BL, billed gross.
+  const complet = { brut: 106.5, net: 104.2, laizeCm: 160, tare: 5, poids: 21.7 }
+  it('gives the net once the roll is complete and the stock still holds another length', () => {
+    expect(netAAppliquer(complet, 106.5)).toBe(104.2)
+  })
+  it('does nothing while a measure is missing — the net is typed before laize and poids', () => {
+    expect(netAAppliquer({ ...complet, laizeCm: null, poids: null }, 106.5)).toBeNull()
+    expect(netAAppliquer({ ...complet, net: 10, poids: null }, 106.5)).toBeNull()
+    expect(netAAppliquer(null, 106.5)).toBeNull()
+  })
+  it('never writes a net above the gross one', () => {
+    expect(netAAppliquer({ ...complet, net: 1042 }, 106.5)).toBeNull()
+  })
+  it('does nothing when the stock already holds the net (to the centimetre)', () => {
+    expect(netAAppliquer(complet, 104.2)).toBeNull()
+    expect(netAAppliquer(complet, 104.2000001)).toBeNull()
   })
 })
 
