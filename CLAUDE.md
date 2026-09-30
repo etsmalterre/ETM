@@ -231,6 +231,7 @@ Full text and incident history: `claude_doc/frontend_rules.md`.
 
 ## Conventions
 
+- ⚠️ **Landing a worktree is the user's call**: never run `/feature-complete` (or its steps by hand — push to master, `down.mjs --remove`) unless Vincent typed it; « fix it on prod » is not it. Finish, say it's ready, stop.
 - **Code**: English. **UI**: French. **Comments**: English.
 - **"check last screenshot"** → read the latest file in `%USERPROFILE%\Pictures\Screenshots` (i.e. `C:\Users\<current-user>\Pictures\Screenshots` — `vince` on the factory PC, `malte` on the laptop)
 - **Related project**: ETM follows the architecture of **MFProd_NG** (`C:\dev\etsmalterre\mfprod\mfprod_erp`) — same tech stack, same layout patterns, different branding (gold vs orange) and domain (textile vs fencing).

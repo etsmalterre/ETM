@@ -1,4 +1,19 @@
+---
+name: feature-complete
+description: Land the current feature worktree on master (commit, rebase, push, tear down). USER-ONLY — run only when Vincent types /feature-complete.
+disable-model-invocation: true
+---
+
 # Feature Complete Skill
+
+## Only when the user types it
+
+⚠️ **A session never runs `/feature-complete` on its own** — not after a fix, not because the
+user said « also on prod », « ship it » or « deploy », not to free a slot. Only Vincent typing
+`/feature-complete` starts it (the frontmatter sets `disable-model-invocation`, so the Skill tool
+refuses it anyway). When the work is done, say it is ready and stop. If a prod fix is asked for
+before the branch lands, say that it needs `/feature-complete` first and wait.
+(2026-09-30: the #1242 session landed and removed its worktree unasked.)
 
 ## When to use
 
