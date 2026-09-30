@@ -26,6 +26,19 @@ Mechanics:
 4. Deploy the MPS API + ETM web, then TRM web (TRM's branch builds only once ETM's landed); start; smoke ETM, TRM, atelier phones, pointeuse, visitage.
 5. `mots-de-passe.ts --identifiant vincent --mot-de-passe …` for the admin; the batch for the others; enrol the visitage PC; later `AUTH_LEGACY_COOKIES` off.
 
+### After the deploy — guide Vincent through the password handout (Claude on master: follow this)
+
+Decisions (2026-09-30): Vincent sets every password himself, carries them on a USB stick into each person's Dashlane, no forced change; Mickaël has no Dashlane (memorable passphrase) and **no email** (never Nicolas's); Pierrot's identifiant stays `pierre-emmanuel`. Enrolled devices must never need re-enrolling: atelier phones / pointeuse keep their device cookies, and the Visitage / réglage PCs became sessions of their station accounts through the legacy-cookie conversion on their first request after the deploy (they stay in while used at least once every 30 days).
+
+Run everything on the API host (`10.10.20.3`, `~/mps_api/apps/api`, `NODE_ENV=production`) — the scripts read `.env.production`. Dry run first each time, `--write` only once Vincent has read it.
+
+1. **Vincent's own password** — he chooses it: `npx tsx src/scripts/mots-de-passe.ts --identifiant vincent --mot-de-passe "<his choice>" --write`. He logs in at https://etm.intra.etsmalterre.com with it (his browser was converted, so he is already in — check « Changer mon mot de passe » appears in the profile menu), and TRM on the same session.
+2. **The batch for the USB stick** — every active person without a password: `npx tsx src/scripts/mots-de-passe.ts --tous` (dry run lists who), then `--tous --fichier /tmp/etm-mdp.txt --write` and `scp` it to his PC (or he prefers Paramètres › Utilisateurs › Compte › « Réinitialiser » person by person — generated, shown once, copy button). **Exclude Mickaël** from the batch if Vincent wants a passphrase for him: set Mickaël first with `--identifiant mickael --mot-de-passe "<four words>"`, then run `--tous`. Delete `/tmp/etm-mdp.txt` on the server right after the copy, and remind him to wipe the USB file once the Dashlanes are filled.
+3. **Setting a password ends that account's sessions** — each person has to log in once with the new password. Tell Vincent to do it at their PC with them (Dashlane fills it). Do the batch when it suits the factory, not all at 8:00.
+4. **Station PCs**: check Paramètres › Utilisateurs › Visitage / Regleur › Sessions shows the converted PC (« Reprise du choix de nom »). If a station PC was not used since the deploy (no session yet): select the account, Compte › « Enrôler un PC » → name it → code → on that PC, login screen › « Poste d'atelier » → type the code.
+5. **Closing the transition** once every person has logged in with a password (Paramètres › Utilisateurs: each account « Défini le … » + a recent « Dernière connexion »): remove `AUTH_LEGACY_COOKIES=1` from the API host `.env.production` and restart `mps-api`. Leave `AUTH_PICKER` unset (emergency fallback only).
+6. Update `~/.claude/plans/user-management.md` (step 3 → done) and the memory `user-management-plan`.
+
 ## Permissions (per-user, PostgreSQL `permission` table)
 
 Per-user action permissions managed from the admin-only **Settings → Utilisateurs** screen. **Default closed** — non-admins with no permission record cannot perform gated actions. **Effective admins (Vincent acting as himself, NOT impersonating)** bypass all checks automatically.
