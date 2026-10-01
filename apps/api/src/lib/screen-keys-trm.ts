@@ -101,7 +101,6 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
     label: 'Atelier',
     screens: [
       { href: '/atelier/maintenance', label: 'Maintenance' },
-      { href: '/atelier/bonnetier', label: 'Bonnetier' },
       { href: '/atelier/planning', label: 'Planning' },
     ],
   },
