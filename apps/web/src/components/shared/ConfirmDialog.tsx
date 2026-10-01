@@ -20,6 +20,9 @@ interface ConfirmDialogProps {
   /** Why the last confirm was refused (the server's message). Shown under
    *  the description; the dialog stays open so the user can read it. */
   error?: string | null
+  /** Keeps the confirm button disabled — the action is known to be refused
+   *  (e.g. the server already said the row is in use). */
+  confirmDisabled?: boolean
   onConfirm: () => void
   onCancel: () => void
 }
@@ -33,6 +36,7 @@ export function ConfirmDialog({
   variant = 'destructive',
   isPending = false,
   error = null,
+  confirmDisabled = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -66,7 +70,7 @@ export function ConfirmDialog({
           <Button
             variant={isDestructive ? 'destructive' : 'default'}
             onClick={onConfirm}
-            disabled={isPending}
+            disabled={isPending || confirmDisabled}
           >
             {isPending ? (
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />

@@ -8,6 +8,11 @@ import { loadClientsForRefFini } from '../lib/clients-ref-fini.js'
 import { loadTraitementCatalog, loadRefFiniTraitements, attachTraitement, detachTraitement } from '../lib/traitements.js'
 import { duplicateRefFini } from '../lib/duplicate-ref-fini.js'
 import {
+  usagesColorisFini, messageUsages, supprimerColorisFini, ColorisIntrouvable, ColorisUtilise,
+} from '../lib/coloris-fini-suppression.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import {
   loadRefAssociees, attachRefAssociee, detachRefAssociee, associationUtiliseeMessage,
 } from '../lib/refs-associees.js'
 import { batchRepair } from '../lib/batch-repair.js'
@@ -1083,6 +1088,48 @@ referencesFiniRouter.delete('/:id/traitements/:traitementId', async (req: Reques
     res.json(await loadRefFiniTraitements(id))
   } catch (err) {
     console.error('Error detaching ref_fini traitement:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/references-fini/:id/coloris/:colorisId/usages — what holds a dyed
+// coloris; empty = it may be deleted. Read by the delete dialog before it
+// offers « Supprimer » (lib/coloris-fini-suppression.ts).
+referencesFiniRouter.get('/:id/coloris/:colorisId/usages', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const colorisId = parseInt(req.params.colorisId, 10)
+    if (isNaN(id) || isNaN(colorisId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const usages = await usagesColorisFini(id, colorisId)
+    res.json({ usages, message: usages.length > 0 ? messageUsages(usages) : null })
+  } catch (err) {
+    console.error('Error reading coloris usages:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/references-fini/:id/coloris/:colorisId — delete an UNUSED dyed
+// coloris, under delete_coloris_fini. A used one answers 409 with the list.
+referencesFiniRouter.delete('/:id/coloris/:colorisId', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const colorisId = parseInt(req.params.colorisId, 10)
+    if (isNaN(id) || isNaN(colorisId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'delete_coloris_fini'))) {
+      res.status(403).json({ error: 'forbidden', message: 'Vous n’avez pas le droit de supprimer un coloris.' })
+      return
+    }
+    const reference = await supprimerColorisFini(id, colorisId)
+    console.info(`[references-fini] coloris ${colorisId} « ${reference} » of ref_fini ${id} deleted by user ${req.userId}`)
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof ColorisIntrouvable) { res.status(404).json({ error: 'Coloris introuvable' }); return }
+    if (err instanceof ColorisUtilise) {
+      res.status(409).json({ error: 'coloris_utilise', message: err.message, usages: err.usages })
+      return
+    }
+    console.error('Error deleting ref_fini coloris:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

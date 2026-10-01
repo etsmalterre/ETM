@@ -58,6 +58,7 @@ import { Badge } from '@/components/ui/badge'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
+import { useHasPermission } from '@/contexts/PermissionsContext'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { cn } from '@/lib/utils'
@@ -1673,10 +1674,44 @@ function SpecsCard({
   )
 }
 
-// ── Coloris Card (read-only, polymorphic) ──────────────
+// ── Coloris Card (polymorphic; dyed coloris deletable when unused) ──
+
+interface ColorisUsages {
+  usages: Array<{ quoi: string; n: number; exemples: string[] }>
+  message: string | null
+}
 
 function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: boolean }) {
   const dyed = detail.coloris_mode === 'dye'
+  const queryClient = useQueryClient()
+  // Only the dyed catalog belongs to this ref — a wash-only fini lists the
+  // écru's coloris, which live in Tombé Métier.
+  const canDelete = useHasPermission('delete_coloris_fini') && dyed
+  const [deleteTarget, setDeleteTarget] = useState<Coloris | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  // The dialog asks the server what holds the coloris BEFORE offering
+  // « Supprimer », so a used one is explained, not attempted.
+  const { data: usages, isFetching: usagesLoading } = useQuery<ColorisUsages>({
+    queryKey: ['ref-fini-coloris-usages', detail.IDref_fini, deleteTarget?.id],
+    queryFn: () => apiFetch(`/references-fini/${detail.IDref_fini}/coloris/${deleteTarget!.id}/usages`),
+    enabled: deleteTarget !== null,
+    staleTime: 0,
+  })
+  const deleteMut = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/references-fini/${detail.IDref_fini}/coloris/${id}`, { method: 'DELETE' }),
+    onMutate: () => setDeleteError(null),
+    onSuccess: () => {
+      setDeleteTarget(null)
+      queryClient.invalidateQueries({ queryKey: ['ref-fini', detail.IDref_fini] })
+      queryClient.invalidateQueries({ queryKey: ['refs-fini'] })
+    },
+    onError: (err: Error & { body?: { message?: string } }) => {
+      setDeleteError(err.body?.message ?? 'Impossible de supprimer ce coloris.')
+    },
+  })
+  const closeDelete = () => { setDeleteTarget(null); setDeleteError(null) }
+  const showDelete = isEditing && canDelete
   const [q, setQ] = useState('')
   // Reset the filter when the selection changes — a term typed for one ref
   // silently emptying the next one's table reads as "no coloris".
@@ -1693,6 +1728,7 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
   const hasGots = detail.coloris.some((c) => !!c.gots)
 
   return (
+    <>
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
       <CardContent className="pt-4 pb-3 space-y-3">
         {/* Caption row: mode badge, counts, filter */}
@@ -1738,11 +1774,12 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
                   {dyed && <th className="px-3 py-2 text-left font-semibold">Teinture</th>}
                   {hasNotes && <th className="px-3 py-2 text-left font-semibold">Note</th>}
                   <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">Stock</th>
+                  {showDelete && <th className="w-10 px-2 py-2" />}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((c) => (
-                  <tr key={c.id} className="border-b border-border/40 last:border-b-0 hover:bg-accent/5 transition-colors">
+                  <tr key={c.id} className="group border-b border-border/40 last:border-b-0 hover:bg-accent/5 transition-colors">
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <Palette className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
@@ -1766,6 +1803,19 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
                         <span className="text-muted-foreground/40">—</span>
                       )}
                     </td>
+                    {showDelete && (
+                      <td className="px-2 py-1 text-right">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Supprimer ce coloris"
+                          onClick={() => { setDeleteError(null); setDeleteTarget(c) }}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -1774,10 +1824,28 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
         )}
         <p className="text-[11px] text-muted-foreground/70 italic flex items-center gap-1.5">
           <Lock className="h-3 w-3" />
-          Les coloris se gèrent dans Finis › Études coloris.
+          {showDelete
+            ? 'Les coloris se créent dans Finis › Études coloris. Seul un coloris utilisé nulle part peut être supprimé.'
+            : 'Les coloris se gèrent dans Finis › Études coloris.'}
         </p>
       </CardContent>
     </Card>
+    <ConfirmDialog
+      open={deleteTarget !== null}
+      title="Supprimer le coloris"
+      description={
+        !deleteTarget ? undefined
+          : usagesLoading || !usages ? `Vérification de l’utilisation de « ${deleteTarget.reference ?? ''} »…`
+          : usages.message ? `« ${deleteTarget.reference ?? ''} » ne peut pas être supprimé.`
+          : `« ${deleteTarget.reference ?? ''} » n’est utilisé nulle part. Il sera supprimé définitivement de cette référence.`
+      }
+      error={deleteError ?? usages?.message ?? null}
+      confirmDisabled={usagesLoading || !usages || !!usages.message}
+      isPending={deleteMut.isPending}
+      onCancel={closeDelete}
+      onConfirm={() => { if (deleteTarget) deleteMut.mutate(deleteTarget.id) }}
+    />
+    </>
   )
 }
 

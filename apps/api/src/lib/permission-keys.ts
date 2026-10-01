@@ -399,6 +399,16 @@ export const PERMISSION_KEYS = [
       'Autorise la surteinture : supprime des rouleaux finis et renvoie leurs tombés de métier en teinture dans Finis > Stock.',
     category: 'Finis',
   },
+  // Deleting a dyed coloris that nothing uses (an étude accepted on the wrong
+  // sample) — LIVA #1254, lib/coloris-fini-suppression.ts.
+  // Closed by default; a used coloris is refused whoever asks.
+  {
+    key: 'delete_coloris_fini',
+    label: 'Supprimer un coloris',
+    description:
+      'Autorise la suppression d’un coloris teint dans Finis › Références › Coloris, uniquement s’il n’est utilisé nulle part (aucun rouleau, aucune ligne de commande, de devis ou de sous-traitance, aucune désignation ou étude). Un coloris utilisé reste, quel que soit le droit.',
+    category: 'Finis',
+  },
   // Études coloris — ONE key covering every write on the screen (étude,
   // statut, soumissions, réponse du sous-traitant, envois email). Ticket #1092.
   // The screen had no write gate at all before this, so the key is closed by

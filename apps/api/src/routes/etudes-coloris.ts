@@ -21,6 +21,7 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { addCodeForAcceptedEtude } from '../lib/codes-sp.js'
+import { libelleAcceptation, usagesColorisFini } from '../lib/coloris-fini-suppression.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 
 export const etudesColorisRouter: RouterType = Router()
@@ -1377,18 +1378,39 @@ etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, re
       const etu = (fixedEtude[0] as any) ?? null
       if (etu) {
         const currentLibelle = ((etu.libelle as string | null) ?? '').trim()
-        // Avoid doubling the suffix if the user re-accepts on the same
-        // soumission (idempotent-ish): only append when the libelle doesn't
-        // already end with "/<sampleNumber>".
-        const suffix = `/${sampleNumber}`
-        const newLibelle = currentLibelle.endsWith(suffix)
-          ? currentLibelle
-          : `${currentLibelle}${suffix}`
         const idRefFini = Number(etu.IDref_fini) || 0
         const idSousTraitant = Number(etu.IDsous_traitant) || 0
         let newColoriId = Number(etu.IDref_fini_colori) || 0
 
-        if (idRefFini > 0) {
+        // Already accepted = the étude points at a coloris of its ref named
+        // exactly like the étude (its own earlier acceptance, not a coloris
+        // picked by hand). Then the new sample REPLACES the old « /n »
+        // instead of stacking « …/1/2 », and the old coloris is renamed
+        // rather than left behind — unless something already holds it.
+        let dejaAccepte = false
+        if (newColoriId > 0 && idRefFini > 0) {
+          const prevRows = await query<{ IDref_fini_colori: number; IDref_fini: number; reference: string | null }>(
+            `SELECT IDref_fini_colori, IDref_fini, reference FROM ref_fini_colori WHERE IDref_fini_colori = ${newColoriId}`,
+          )
+          const prev = ((await fixEncoding(prevRows, 'ref_fini_colori', 'IDref_fini_colori', ['reference'])) as any[])[0]
+          dejaAccepte = !!prev
+            && Number(prev.IDref_fini) === idRefFini
+            && ((prev.reference as string | null) ?? '').trim() === currentLibelle
+        }
+        const newLibelle = libelleAcceptation(currentLibelle, sampleNumber, dejaAccepte)
+        const reuseColori = dejaAccepte && (
+          newLibelle === currentLibelle
+          || (await usagesColorisFini(idRefFini, newColoriId, { ignorerEtude: etudeId })).length === 0
+        )
+
+        if (reuseColori) {
+          if (newLibelle !== currentLibelle) {
+            await query(
+              `UPDATE ref_fini_colori SET reference = ${sqlText(newLibelle)} WHERE IDref_fini_colori = ${newColoriId}`,
+            )
+          }
+          codeSp = await addCodeForAcceptedEtude(Number(etu.IDclient) || 0, newLibelle)
+        } else if (idRefFini > 0) {
           // Default the coloris' dye (IDteinture) from the ref's avec_teinture.
           // avec_teinture already encodes the simple/double/no-dye choice, so a
           // newly-accepted coloris defaults to the "Tous Coloris" tier of the
