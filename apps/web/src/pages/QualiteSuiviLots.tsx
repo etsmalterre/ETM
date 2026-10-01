@@ -93,6 +93,7 @@ interface PieceRow {
 }
 
 interface ClientInfo {
+  IDcommande_client: number
   IDclient: number
   nom: string
   numero: string | null
@@ -137,7 +138,9 @@ interface SuiviLotDetail {
   rendement_mini: number | null
   rendement_maxi: number | null
   ref_bounds: RefBounds
-  client: ClientInfo | null
+  /** Client orders served by the lot, read from its pieces (#1249) — several
+   *  when one sst order feeds more than one client order. */
+  clients: ClientInfo[]
 }
 
 interface RefBounds {
@@ -1188,13 +1191,17 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
 
           {/* Absorbed from the former "Client" sidebar tab (removed — it only
               duplicated the client name already shown here). */}
-          <RecapGroup icon={Building2} title="Commande client">
-            {detail.client ? (
-              <>
-                <RecapField label="Client final" value={detail.client.nom || '—'} />
-                <RecapField label="Commande N°" value={detail.client.numero || '—'} mono />
-                <RecapField label="Réf. client" value={detail.client.ref_client || '—'} />
-              </>
+          <RecapGroup icon={Building2} title={detail.clients.length > 1 ? 'Commandes client' : 'Commande client'}>
+            {detail.clients.length > 0 ? (
+              <div className="divide-y divide-border/40">
+                {detail.clients.map((c) => (
+                  <div key={c.IDcommande_client} className="py-1.5 first:pt-0 last:pb-0">
+                    <RecapField label="Client final" value={c.nom || '—'} />
+                    <RecapField label="Commande N°" value={c.numero || '—'} mono />
+                    <RecapField label="Réf. client" value={c.ref_client || '—'} />
+                  </div>
+                ))}
+              </div>
             ) : (
               <p className="text-sm text-muted-foreground italic">Aucune commande client rattachée</p>
             )}
