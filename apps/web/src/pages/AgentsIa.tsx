@@ -70,6 +70,7 @@ import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
+  BaseApiProvider,
   callApi,
   fmtDateCourte,
   fmtDateHeure,
@@ -77,6 +78,7 @@ import {
   KV,
   MODE_META,
   ModeFooter,
+  useBaseApi,
   useLancement,
   type Mode,
   type Lancement,
@@ -328,7 +330,10 @@ function StatutPill({ statut, className }: { statut: Statut; className?: string 
 
 // ── Page ─────────────────────────────────────────────────
 
-export function AgentsIa() {
+/** `basePath`: the API router of this app's agents — ETM's by default, TRM
+ *  passes `/agents-ia-trm` (its own menu, its own agents and permissions). */
+export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}) {
+  const base = basePath
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const canPilot = useHasPermission('edit_agents_ia')
@@ -341,7 +346,7 @@ export function AgentsIa() {
 
   const { data: agents, isLoading, isError, error } = useQuery({
     queryKey: ['agents-ia'],
-    queryFn: () => apiFetch<AgentVue[]>('/agents-ia'),
+    queryFn: () => apiFetch<AgentVue[]>(base),
     refetchInterval: 30_000,
   })
 
@@ -356,7 +361,7 @@ export function AgentsIa() {
 
   const { data: detail, isLoading: detailLoading } = useQuery({
     queryKey: ['agent-ia', selectedSlug],
-    queryFn: () => apiFetch<AgentDetail>(`/agents-ia/${selectedSlug}`),
+    queryFn: () => apiFetch<AgentDetail>(`${base}/${selectedSlug}`),
     enabled: selectedSlug !== null,
     refetchInterval: 30_000,
   })
@@ -376,14 +381,14 @@ export function AgentsIa() {
   }, [queryClient, selectedSlug])
 
   const modeMut = useMutation({
-    mutationFn: (mode: Mode) => callApi(`/agents-ia/${selectedSlug}`, { method: 'PATCH', body: JSON.stringify({ mode }) }),
+    mutationFn: (mode: Mode) => callApi(`${base}/${selectedSlug}`, { method: 'PATCH', body: JSON.stringify({ mode }) }),
     onSuccess: invalidate,
     onError: (e: Error) => setActionMessage({ tone: 'error', text: e.message }),
   })
 
   const lancement = useLancement<AgentDetail>({
     detailKey: ['agent-ia', selectedSlug],
-    detailPath: selectedSlug ? `/agents-ia/${selectedSlug}` : null,
+    detailPath: selectedSlug ? `${base}/${selectedSlug}` : null,
     onFin: (l, suivi) => {
       invalidate()
       if (!l) {
@@ -405,7 +410,7 @@ export function AgentsIa() {
   })
 
   const sonderMut = useMutation({
-    mutationFn: () => callApi<{ lancement: Lancement }>(`/agents-ia/${selectedSlug}/sonder`, { method: 'POST' }),
+    mutationFn: () => callApi<{ lancement: Lancement }>(`${base}/${selectedSlug}/sonder`, { method: 'POST' }),
     onSuccess: (r) => lancement.attendre(r.lancement.id),
     onError: (e: Error) => { invalidate(); setActionMessage({ tone: 'error', text: e.message }) },
   })
@@ -414,7 +419,7 @@ export function AgentsIa() {
   useEffect(() => { setActionMessage(null); lancement.abandonner() }, [selectedSlug]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <>
+    <BaseApiProvider value={base}>
       <MasterDetailLayout
         list={<AgentList agents={filtered} total={agents?.length ?? 0} isLoading={isLoading} isError={isError}
           error={error as Error | null} selectedSlug={selectedSlug} onSelect={setSelectedSlug}
@@ -442,7 +447,7 @@ export function AgentsIa() {
         <EssaiDialog open={essaiOpen} slug={selectedSlug} onClose={() => setEssaiOpen(false)}
           onDone={(runId) => { setEssaiOpen(false); invalidate(); if (runId) setOpenRunId(runId) }} />
       )}
-    </>
+    </BaseApiProvider>
   )
 }
 
@@ -635,11 +640,12 @@ function NoteIcon({ evaluation }: { evaluation: Evaluation | null | undefined })
 }
 
 function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: string) => void }) {
+  const base = useBaseApi()
   const [filtre, setFiltre] = useState('tout')
   const query = RUN_FILTERS.find((f) => f.key === filtre)?.query ?? ''
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-runs', slug, filtre],
-    queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`/agents-ia/${slug}/runs${query}`),
+    queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`${base}/${slug}/runs${query}`),
     refetchInterval: 30_000,
   })
 
@@ -717,12 +723,13 @@ const RETOUR_FILTERS: Array<{ key: 'a_revoir' | 'tout'; label: string }> = [
 ]
 
 function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: string) => void }) {
+  const base = useBaseApi()
   const [version, setVersion] = useState(agent.activeVersion)
   const [filtre, setFiltre] = useState<'a_revoir' | 'tout'>('a_revoir')
   useEffect(() => { setVersion(agent.activeVersion) }, [agent.slug, agent.activeVersion])
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-retours', agent.slug, version],
-    queryFn: () => apiFetch<{ version: number; retours: Retour[]; resolutions?: RetourResolution[] }>(`/agents-ia/${agent.slug}/retours?version=${version}`),
+    queryFn: () => apiFetch<{ version: number; retours: Retour[]; resolutions?: RetourResolution[] }>(`${base}/${agent.slug}/retours?version=${version}`),
   })
   const tous = data?.retours ?? []
   const resolutions = data?.resolutions ?? []
@@ -832,11 +839,12 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
 // ── Prompt (versions) ────────────────────────────────────
 
 function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilot: boolean; onChanged: () => void }) {
+  const base = useBaseApi()
   const [draftOpen, setDraftOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const active = agent.versions.find((v) => v.version === agent.activeVersion) ?? agent.versions[0]
   const activerMut = useMutation({
-    mutationFn: (version: number) => callApi(`/agents-ia/${agent.slug}/versions/${version}/activer`, { method: 'POST' }),
+    mutationFn: (version: number) => callApi(`${base}/${agent.slug}/versions/${version}/activer`, { method: 'POST' }),
     onSuccess: () => { setError(null); onChanged() },
     onError: (e: Error) => setError(e.message),
   })
@@ -845,7 +853,7 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
   const [confirmLivre, setConfirmLivre] = useState(false)
   const prochaine = Math.max(0, ...agent.versions.map((v) => v.version)) + 1
   const publierLivreMut = useMutation({
-    mutationFn: () => callApi(`/agents-ia/${agent.slug}/versions`, { method: 'POST', body: JSON.stringify(livre) }),
+    mutationFn: () => callApi(`${base}/${agent.slug}/versions`, { method: 'POST', body: JSON.stringify(livre) }),
     onSuccess: () => { setError(null); setConfirmLivre(false); onChanged() },
     onError: (e: Error) => { setConfirmLivre(false); setError(e.message) },
   })
@@ -942,6 +950,7 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
 function NouvelleVersionDialog({ open, agent, base, onClose, onDone }: {
   open: boolean; agent: AgentDetail; base: AgentVersion; onClose: () => void; onDone: () => void
 }) {
+  const api = useBaseApi()
   const [prompt, setPrompt] = useState(base.prompt)
   const [model, setModel] = useState(base.model)
   const [note, setNote] = useState('')
@@ -950,14 +959,14 @@ function NouvelleVersionDialog({ open, agent, base, onClose, onDone }: {
     if (open) { setPrompt(base.prompt); setModel(base.model); setNote(''); setError(null) }
   }, [open, base])
   const mut = useMutation({
-    mutationFn: () => callApi(`/agents-ia/${agent.slug}/versions`, { method: 'POST', body: JSON.stringify({ prompt, model, note }) }),
+    mutationFn: () => callApi(`${api}/${agent.slug}/versions`, { method: 'POST', body: JSON.stringify({ prompt, model, note }) }),
     onSuccess: onDone,
     onError: (e: Error) => setError(e.message),
   })
   // What people said about the version being replaced — the reason to write a new one.
   const { data: retoursData } = useQuery({
     queryKey: ['agent-ia-retours', agent.slug, base.version],
-    queryFn: () => apiFetch<{ retours: Retour[] }>(`/agents-ia/${agent.slug}/retours?version=${base.version}`),
+    queryFn: () => apiFetch<{ retours: Retour[] }>(`${api}/${agent.slug}/retours?version=${base.version}`),
     enabled: open,
   })
   const aPrendre = (retoursData?.retours ?? []).filter((r) => r.note !== 'reussite' || r.commentaire)
@@ -1033,9 +1042,10 @@ function NouvelleVersionDialog({ open, agent, base, onClose, onDone }: {
 // ── Coûts ────────────────────────────────────────────────
 
 function CoutsTab({ slug }: { slug: string }) {
+  const base = useBaseApi()
   const { data, isLoading } = useQuery({
     queryKey: ['agent-ia-couts', slug],
-    queryFn: () => apiFetch<Couts>(`/agents-ia/${slug}/couts?jours=30`),
+    queryFn: () => apiFetch<Couts>(`${base}/${slug}/couts?jours=30`),
   })
   if (isLoading || !data) return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
   const jours = data.parJour.filter((j) => j.runs > 0).reverse()
@@ -1517,6 +1527,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   agent: AgentDetail; runId: string | null; canPilot: boolean; canEvaluate: boolean; onClose: () => void
   onOpenRun: (id: string) => void; onChanged: () => void
 }) {
+  const base = useBaseApi()
   const slug = agent.slug
   const queryClient = useQueryClient()
   const [page, setPage] = useState(0)
@@ -1527,18 +1538,18 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['agent-ia-run', slug, runId],
-    queryFn: () => apiFetch<RunComplet>(`/agents-ia/${slug}/runs/${runId}`),
+    queryFn: () => apiFetch<RunComplet>(`${base}/${slug}/runs/${runId}`),
     enabled: runId !== null,
   })
 
   const retraiterMut = useMutation({
-    mutationFn: () => callApi<{ runs: RunLigne[] }>(`/agents-ia/${slug}/runs/${runId}/retraiter`, { method: 'POST' }),
+    mutationFn: () => callApi<{ runs: RunLigne[] }>(`${base}/${slug}/runs/${runId}/retraiter`, { method: 'POST' }),
     onSuccess: (r) => { onChanged(); if (r.runs[0]) onOpenRun(r.runs[0].id) },
     onError: (e: Error) => setError(e.message),
   })
   const evaluationMut = useMutation({
     mutationFn: (v: { note: Note | null; commentaire: string }) =>
-      callApi(`/agents-ia/${slug}/runs/${runId}/evaluation`, { method: 'PUT', body: JSON.stringify(v) }),
+      callApi(`${base}/${slug}/runs/${runId}/evaluation`, { method: 'PUT', body: JSON.stringify(v) }),
     onSuccess: () => { setEvalError(null); onChanged(); queryClient.invalidateQueries({ queryKey: ['agent-ia-run', slug, runId] }) },
     onError: (e: Error) => setEvalError(e.message),
   })
@@ -1552,7 +1563,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const res = run?.resultat.resolution ?? null
   const controles = run?.resultat.controles ?? []
   const statutPiece = (numero: string, i: number) => res?.pieces[i]?.numero_piece === numero ? res.pieces[i].statut : res?.pieces.find((p) => p.numero_piece === numero)?.statut
-  const pdfUrl = run && run.fichiers.length > 0 ? `${API_URL}/agents-ia/${slug}/runs/${run.id}/fichiers/${page}#view=FitH` : null
+  const pdfUrl = run && run.fichiers.length > 0 ? `${API_URL}${base}/${slug}/runs/${run.id}/fichiers/${page}#view=FitH` : null
   const somme = (k: 'poids' | 'metrage') => e ? e.pieces.reduce((s, p) => s + (p[k] ?? 0), 0) : 0
   // Runs before 2026-09-28 carry no profil: they were all MATEL BLs.
   const profil = run?.resultat.profil ?? (e ? 'matel' : null)
@@ -1790,11 +1801,12 @@ const SUP_FILTERS: Array<{ key: string; label: string; query: string }> = [
 ]
 
 function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: string) => void }) {
+  const base = useBaseApi()
   const [filtre, setFiltre] = useState('tout')
   const q = SUP_FILTERS.find((f) => f.key === filtre)?.query ?? ''
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-runs', slug, filtre],
-    queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`/agents-ia/${slug}/runs${q}`),
+    queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`${base}/${slug}/runs${q}`),
     refetchInterval: 30_000,
   })
   const num = (v: number | null) => (v === null ? '—' : fmtNum(v))
@@ -2018,6 +2030,7 @@ function KpiStrip({ items }: {
 function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }: {
   agent: AgentDetail; runId: string | null; canEvaluate: boolean; onClose: () => void; onChanged: () => void
 }) {
+  const base = useBaseApi()
   const slug = agent.slug
   const queryClient = useQueryClient()
   const [showControles, setShowControles] = useState(false)
@@ -2029,19 +2042,19 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['agent-ia-run', slug, runId],
-    queryFn: () => apiFetch<RunSuperviseur>(`/agents-ia/${slug}/runs/${runId}`),
+    queryFn: () => apiFetch<RunSuperviseur>(`${base}/${slug}/runs/${runId}`),
     enabled: runId !== null,
   })
   const rafraichir = () => { onChanged(); queryClient.invalidateQueries({ queryKey: ['agent-ia-run', slug, runId] }) }
 
   const pointMut = useMutation({
     mutationFn: (v: { cle: string; note: Note | null; commentaire: string }) =>
-      callApi(`/agents-ia/${slug}/runs/${runId}/points`, { method: 'PUT', body: JSON.stringify(v) }),
+      callApi(`${base}/${slug}/runs/${runId}/points`, { method: 'PUT', body: JSON.stringify(v) }),
     onSuccess: rafraichir,
   })
   const resolutionMut = useMutation({
     mutationFn: (v: { cle: string; commentaire: string | null }) =>
-      callApi(`/agents-ia/${slug}/runs/${runId}/points/resolution`, { method: 'PUT', body: JSON.stringify(v) }),
+      callApi(`${base}/${slug}/runs/${runId}/points/resolution`, { method: 'PUT', body: JSON.stringify(v) }),
     onSuccess: rafraichir,
   })
 
@@ -2241,6 +2254,7 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
 function EssaiDialog({ open, slug, onClose, onDone }: {
   open: boolean; slug: string; onClose: () => void; onDone: (runId: string | null) => void
 }) {
+  const base = useBaseApi()
   const [file, setFile] = useState<File | null>(null)
   const [idged, setIdged] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -2250,7 +2264,7 @@ function EssaiDialog({ open, slug, onClose, onDone }: {
       const fd = new FormData()
       if (file) fd.append('fichier', file)
       else fd.append('idged', idged.trim())
-      return callApi<{ runs: RunLigne[] }>(`/agents-ia/${slug}/essai`, { method: 'POST', body: fd })
+      return callApi<{ runs: RunLigne[] }>(`${base}/${slug}/essai`, { method: 'POST', body: fd })
     },
     onSuccess: (r) => onDone(r.runs[0]?.id ?? null),
     onError: (e: Error) => setError(e.message),

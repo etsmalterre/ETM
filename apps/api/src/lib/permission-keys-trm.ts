@@ -301,6 +301,24 @@ export const TRM_PERMISSION_KEYS = [
       'Affiche l’entrée « TRS » du menu Production et autorise la lecture du tableau de bord d’équipe : timeline et TRS de chaque métier, pièces produites, visitées et déclassées, bonnetiers pointés et leurs heures. Lecture seule ; fermé par défaut.',
     category: 'Production',
   },
+  // Agents IA — TRM's menu (its automates: the pointage report emails). Same
+  // two keys as ETM's, in TRM's store: reading needs only the menu
+  // (screen_agents_ia); every write of /api/agents-ia-trm and
+  // /api/automates-trm checks these (lib/agents/app-scope.ts AGENTS_IA_TRM).
+  {
+    key: 'edit_agents_ia',
+    label: 'Piloter les agents IA et les automates',
+    description:
+      'Autorise, dans Agents IA, à mettre un agent ou un automate en service, en essai ou à l’arrêt (par exemple le rapport de pointage par e-mail), à le relancer et à écrire les retours sur un automate. Sans ce droit les écrans sont en lecture seule.',
+    category: 'Agents IA',
+  },
+  {
+    key: 'evaluer_agents_ia',
+    label: 'Évaluer les agents IA',
+    description:
+      'Autorise, dans Agents IA, à noter chaque exécution d’un agent (réussite, partielle ou échec, avec un commentaire obligatoire hors réussite). Ces retours servent à écrire la version suivante du prompt.',
+    category: 'Agents IA',
+  },
   // `view_pointage` (« Consulter le pointage ») and `edit_pointage` (« Corriger
   // le pointage ») were removed on 2026-09-23 (LIVA #1196): they only
   // duplicated the grant of the menu « Pointage », which is now the one guard

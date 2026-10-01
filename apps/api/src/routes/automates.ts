@@ -1,6 +1,11 @@
-// Agents IA › Automates — /api/automates. The screen Agents IA › Automates
-// (apps/web pages/Automates.tsx) reads and pilots the automates of
-// lib/automates/.
+// Agents IA › Automates — /api/automates (ETM) and /api/automates-trm (TRM).
+// The screen Agents IA › Automates (ETM apps/web pages/Automates.tsx, imported
+// by TRM) reads and pilots the automates of lib/automates/.
+//
+// One route set, mounted once per app (createAutomatesRouter): each mount lists
+// only its app's automates and checks its app's permission store
+// (lib/agents/app-scope.ts) — the two pointage reports are TRM's, so ETM's
+// mount answers 404 for them.
 //
 // Same guards as /api/agents-ia (helpers imported from there): reads need a
 // session (the menu `screen_agents_ia` is the curtain); every write needs
@@ -11,17 +16,23 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { auteur, pilote, session } from './agents-ia.js'
 import { AGENT_MODES } from '../lib/agents/store.js'
+import { avecScope, scopeDe, type AgentsIaScope } from '../lib/agents/app-scope.js'
 import { etatSondage, lancerSondage, planificateurAgentsActif, prochainQuotidien, SondageEnCoursError, sousVerrou } from '../lib/agents/scheduler.js'
-import { AUTOMATES, automateDef, type AutomateDef } from '../lib/automates/catalog.js'
+import { automateDef, automatesDe, type AutomateDef } from '../lib/automates/catalog.js'
 import { cleTache, executerAutomate } from '../lib/automates/execution.js'
 import { ajouterRetour, changerMode, lireEtat, lireRun, lireRuns, supprimerRetour, type AutomateRun } from '../lib/automates/store.js'
 
-export const automatesRouter: RouterType = Router()
+const routes: RouterType = Router()
+
+/** The router of one app's « Agents IA › Automates » (index.ts mounts ETM's and TRM's). */
+export function createAutomatesRouter(scope: AgentsIaScope): RouterType {
+  return Router().use(avecScope(scope), routes)
+}
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 function automateOu404(req: Request, res: Response): AutomateDef | null {
-  const def = automateDef(req.params.slug)
+  const def = automateDef(req.params.slug, scopeDe(res).app)
   if (!def) res.status(404).json({ error: 'automate inconnu' })
   return def ?? null
 }
@@ -75,17 +86,17 @@ async function vueAutomate(def: AutomateDef) {
 
 // ── reads ────────────────────────────────────────────────
 
-automatesRouter.get('/', async (req, res) => {
+routes.get('/', async (req, res) => {
   if (session(req, res) === null) return
   try {
-    res.json(await Promise.all(AUTOMATES.map(vueAutomate)))
+    res.json(await Promise.all(automatesDe(scopeDe(res).app).map(vueAutomate)))
   } catch (err) {
     console.error('[automates] list failed:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
 
-automatesRouter.get('/:slug', async (req, res) => {
+routes.get('/:slug', async (req, res) => {
   if (session(req, res) === null) return
   const def = automateOu404(req, res)
   if (!def) return
@@ -97,7 +108,7 @@ automatesRouter.get('/:slug', async (req, res) => {
   }
 })
 
-automatesRouter.get('/:slug/runs', async (req, res) => {
+routes.get('/:slug/runs', async (req, res) => {
   if (session(req, res) === null) return
   const def = automateOu404(req, res)
   if (!def) return
@@ -111,7 +122,7 @@ automatesRouter.get('/:slug/runs', async (req, res) => {
   }
 })
 
-automatesRouter.get('/:slug/runs/:id', async (req, res) => {
+routes.get('/:slug/runs/:id', async (req, res) => {
   if (session(req, res) === null) return
   const def = automateOu404(req, res)
   if (!def) return
@@ -121,7 +132,7 @@ automatesRouter.get('/:slug/runs/:id', async (req, res) => {
 })
 
 /** Live view of the device (read-only; logs in and out of the NVR). */
-automatesRouter.get('/:slug/etat', async (req, res) => {
+routes.get('/:slug/etat', async (req, res) => {
   if (session(req, res) === null) return
   const def = automateOu404(req, res)
   if (!def) return
@@ -134,7 +145,7 @@ automatesRouter.get('/:slug/etat', async (req, res) => {
   }
 })
 
-automatesRouter.get('/:slug/retours', async (req, res) => {
+routes.get('/:slug/retours', async (req, res) => {
   if (session(req, res) === null) return
   const def = automateOu404(req, res)
   if (!def) return
@@ -148,7 +159,7 @@ const modeBody = z.object({ mode: z.enum(AGENT_MODES as unknown as ['off', 'essa
 
 /** Leaving « actif » puts the device back in its fixed state once (under the
  *  automate's lock); the mode changes first so the tick cannot write again. */
-automatesRouter.patch('/:slug', async (req, res) => {
+routes.patch('/:slug', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = automateOu404(req, res)
@@ -176,7 +187,7 @@ automatesRouter.patch('/:slug', async (req, res) => {
 
 /** « Lancer maintenant »: answers 202 at once; the screen polls GET /:slug
  *  until `sondage.dernierLancement.fin`. Off → runs as an essai (writes nothing). */
-automatesRouter.post('/:slug/lancer', async (req, res) => {
+routes.post('/:slug/lancer', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = automateOu404(req, res)
@@ -192,7 +203,7 @@ automatesRouter.post('/:slug/lancer', async (req, res) => {
 
 const retourBody = z.object({ texte: z.string().trim().min(1).max(4000), version: z.number().int().positive().optional() })
 
-automatesRouter.post('/:slug/retours', async (req, res) => {
+routes.post('/:slug/retours', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = automateOu404(req, res)
@@ -205,7 +216,7 @@ automatesRouter.post('/:slug/retours', async (req, res) => {
   res.status(201).json({ retour })
 })
 
-automatesRouter.delete('/:slug/retours/:id', async (req, res) => {
+routes.delete('/:slug/retours/:id', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = automateOu404(req, res)

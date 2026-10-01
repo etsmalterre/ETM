@@ -3,7 +3,7 @@
 // engine server-side (lib/agents/scheduler.ts), same mode pill, same
 // « Lancer maintenant » that answers at once and is polled until it ends.
 
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, ChevronUp, CircleSlash, FlaskConical, Loader2, Power } from 'lucide-react'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -26,6 +26,16 @@ export interface Sondage {
   derniereErreur: string | null
   dernierLancement: Lancement | null
   enCours: boolean
+}
+
+/** The API router a screen talks to. Each app has its own « Agents IA » menu
+ *  over its own mount: ETM `/agents-ia` + `/automates` (the defaults), TRM
+ *  `/agents-ia-trm` + `/automates-trm`, passed as the page's `basePath` prop.
+ *  The page provides it; its tabs and dialogs read it with `useBaseApi()`. */
+const BaseApiContext = createContext<string>('')
+export const BaseApiProvider = BaseApiContext.Provider
+export function useBaseApi(): string {
+  return useContext(BaseApiContext)
 }
 
 /** fetch that keeps the API's French `error` message (apiFetch drops it). */

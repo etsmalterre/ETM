@@ -135,6 +135,18 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
       { href: '/pointage/salaries', label: 'Salariés' },
     ],
   },
+  // Agents IA — TRM's own agents and automates (lib/agents/app-scope.ts): the
+  // two pointage report emails since 2026-10-01. Granted person by person.
+  {
+    id: 'agents-ia',
+    href: '/agents-ia',
+    label: 'Agents IA',
+    screens: [
+      { href: '/agents-ia/agents', label: 'Agents' },
+      { href: '/agents-ia/automates', label: 'Automates' },
+    ],
+    seed: false,
+  },
   // Paramètres — same rule as ETM's (lib/screen-keys.ts): Utilisateurs is
   // admin-only and stays out of the tree; Outils is gated server-side by this
   // grant (trmUserCanOpenScreen, routes/import-sage.ts), no action key.

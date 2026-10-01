@@ -8,6 +8,7 @@ import type { Declenchement } from '../agents/catalog.js'
 import { declarerEtatInitial, type AutomateMode, type AutomateState, type AutomateStatut } from './store.js'
 import * as videosurveillance from './videosurveillance/videosurveillance.js'
 import * as rapportsPointage from './rapports-pointage/rapports-pointage.js'
+import { deLApp, type AppIa } from '../agents/app-scope.js'
 
 /** What one run produced. `resultat` is filled as the run goes, so a run that
  *  throws half-way still keeps what it read (and the snapshot it took). */
@@ -20,6 +21,8 @@ export interface Issue {
 
 export interface AutomateDef {
   slug: string
+  /** The app whose « Agents IA › Automates » shows it (lib/agents/app-scope.ts). Absent = ETM. */
+  app?: AppIa
   nom: string
   description: string
   /** The code version — bump it (and add a `versions` line) with every behaviour change. */
@@ -76,6 +79,8 @@ export const AUTOMATES: readonly AutomateDef[] = [
   },
   {
     slug: rapportsPointage.SLUG_RAPPORT,
+    // TRM's pointage, TRM's subscribers: piloted from TRM's Agents IA (2026-10-01).
+    app: 'trm',
     nom: 'Rapport de pointage',
     description:
       'Envoie chaque matin de semaine le pointage de la veille (le lundi : vendredi, samedi et dimanche) aux abonnés : début, pauses et fin de chaque salarié, avec les pointages à vérifier.',
@@ -103,6 +108,7 @@ export const AUTOMATES: readonly AutomateDef[] = [
   },
   {
     slug: rapportsPointage.SLUG_BILAN,
+    app: 'trm',
     nom: 'Bilan des heures annualisées',
     description:
       'Envoie chaque mardi aux abonnés le solde annuel de chaque salarié (heures lissées − heures prévues − variables), arrêté à la semaine précédente.',
@@ -132,6 +138,11 @@ export const AUTOMATES: readonly AutomateDef[] = [
 
 for (const a of AUTOMATES) if (a.etatInitial) declarerEtatInitial(a.slug, a.etatInitial)
 
-export function automateDef(slug: string): AutomateDef | undefined {
-  return AUTOMATES.find((a) => a.slug === slug)
+/** `app` given: only that app's automate (the routers); absent: any. */
+export function automateDef(slug: string, app?: AppIa): AutomateDef | undefined {
+  return AUTOMATES.find((a) => a.slug === slug && (!app || deLApp(a, app)))
+}
+
+export function automatesDe(app: AppIa): AutomateDef[] {
+  return AUTOMATES.filter((a) => deLApp(a, app))
 }

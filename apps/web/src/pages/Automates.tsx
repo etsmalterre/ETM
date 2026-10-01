@@ -8,9 +8,11 @@
 // API: /api/automates (apps/api/src/routes/automates.ts). Reads need only a
 // session; every write needs `edit_agents_ia`, checked server-side too.
 //
-// Vidéosurveillance (Reolink NVR push schedule from the TRM atelier planning)
-// has its run and live-state views, VideoRun / VideoEtat; the two pointage
-// report emails (rapport-pointage, bilan-heures) share RapportRun.
+// Shared with TRM (imported through `@etm`, `basePath="/automates-trm"`): each
+// app lists only its own automates. ETM's Vidéosurveillance (Reolink NVR push
+// schedule from the TRM atelier planning) has its run and live-state views,
+// VideoRun / VideoEtat; TRM's two pointage report emails (rapport-pointage,
+// bilan-heures) share RapportRun.
 
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -52,6 +54,7 @@ import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
+  BaseApiProvider,
   callApi,
   fmtDateCourte,
   fmtDateHeure,
@@ -59,6 +62,7 @@ import {
   KV,
   MODE_META,
   ModeFooter,
+  useBaseApi,
   useLancement,
   type Lancement,
   type Mode,
@@ -133,7 +137,10 @@ function StatutPill({ statut }: { statut: Statut }) {
 
 // ── Page ─────────────────────────────────────────────────
 
-export function Automates() {
+/** `basePath`: the API router of this app's automates — ETM's by default, TRM
+ *  passes `/automates-trm` (its own menu, its own automates and permissions). */
+export function Automates({ basePath = '/automates' }: { basePath?: string } = {}) {
+  const base = basePath
   const queryClient = useQueryClient()
   const canPilot = useHasPermission('edit_agents_ia')
   const [searchQuery, setSearchQuery] = useState('')
@@ -143,7 +150,7 @@ export function Automates() {
 
   const { data: automates, isLoading, isError, error } = useQuery({
     queryKey: ['automates'],
-    queryFn: () => apiFetch<AutomateVue[]>('/automates'),
+    queryFn: () => apiFetch<AutomateVue[]>(base),
     refetchInterval: 30_000,
   })
 
@@ -157,7 +164,7 @@ export function Automates() {
   const detailKey = useMemo(() => ['automate', selectedSlug] as const, [selectedSlug])
   const { data: detail, isLoading: detailLoading } = useQuery({
     queryKey: detailKey,
-    queryFn: () => apiFetch<AutomateVue>(`/automates/${selectedSlug}`),
+    queryFn: () => apiFetch<AutomateVue>(`${base}/${selectedSlug}`),
     enabled: selectedSlug !== null,
     refetchInterval: 30_000,
   })
@@ -170,7 +177,7 @@ export function Automates() {
   }, [queryClient, selectedSlug])
 
   const modeMut = useMutation({
-    mutationFn: (mode: Mode) => callApi<{ automate: AutomateVue; avertissement: string | null }>(`/automates/${selectedSlug}`, { method: 'PATCH', body: JSON.stringify({ mode }) }),
+    mutationFn: (mode: Mode) => callApi<{ automate: AutomateVue; avertissement: string | null }>(`${base}/${selectedSlug}`, { method: 'PATCH', body: JSON.stringify({ mode }) }),
     onSuccess: (r) => {
       invalidate()
       if (r.avertissement) setActionMessage({ tone: 'error', text: r.avertissement })
@@ -180,7 +187,7 @@ export function Automates() {
 
   const lancement = useLancement<AutomateVue>({
     detailKey,
-    detailPath: selectedSlug ? `/automates/${selectedSlug}` : null,
+    detailPath: selectedSlug ? `${base}/${selectedSlug}` : null,
     onFin: (l) => {
       invalidate()
       if (!l) { setActionMessage({ tone: 'error', text: 'L’exécution a été interrompue (redémarrage du serveur ?). Relancez-la.' }); return }
@@ -191,7 +198,7 @@ export function Automates() {
   })
 
   const lancerMut = useMutation({
-    mutationFn: () => callApi<{ lancement: Lancement }>(`/automates/${selectedSlug}/lancer`, { method: 'POST' }),
+    mutationFn: () => callApi<{ lancement: Lancement }>(`${base}/${selectedSlug}/lancer`, { method: 'POST' }),
     onSuccess: (r) => lancement.attendre(r.lancement.id),
     onError: (e: Error) => { invalidate(); setActionMessage({ tone: 'error', text: e.message }) },
   })
@@ -199,7 +206,7 @@ export function Automates() {
   useEffect(() => { setActionMessage(null); lancement.abandonner() }, [selectedSlug]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <>
+    <BaseApiProvider value={base}>
       <MasterDetailLayout
         list={<AutomateList automates={filtered} total={automates?.length ?? 0} isLoading={isLoading} isError={isError}
           error={error as Error | null} selectedSlug={selectedSlug} onSelect={setSelectedSlug}
@@ -217,7 +224,7 @@ export function Automates() {
         onBack={() => setSelectedSlug(null)}
       />
       {selectedSlug && <RunDialog slug={selectedSlug} runId={openRunId} onClose={() => setOpenRunId(null)} />}
-    </>
+    </BaseApiProvider>
   )
 }
 
@@ -383,11 +390,12 @@ const RUN_FILTERS: Array<{ key: string; label: string; query: string }> = [
 ]
 
 function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: string) => void }) {
+  const base = useBaseApi()
   const [filtre, setFiltre] = useState('tout')
   const query = RUN_FILTERS.find((f) => f.key === filtre)?.query ?? ''
   const { data, isLoading, isError } = useQuery({
     queryKey: ['automate-runs', slug, filtre],
-    queryFn: () => apiFetch<{ runs: AutomateRun[] }>(`/automates/${slug}/runs${query}`).then((r) => r.runs),
+    queryFn: () => apiFetch<{ runs: AutomateRun[] }>(`${base}/${slug}/runs${query}`).then((r) => r.runs),
     refetchInterval: 30_000,
   })
 
@@ -450,9 +458,10 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
 // ── État (live, read-only) ───────────────────────────────
 
 function EtatTab({ slug }: { slug: string }) {
+  const base = useBaseApi()
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['automate-etat', slug],
-    queryFn: () => callApi<{ etat: unknown }>(`/automates/${slug}/etat`).then((r) => r.etat),
+    queryFn: () => callApi<{ etat: unknown }>(`${base}/${slug}/etat`).then((r) => r.etat),
     staleTime: 0,
     refetchOnWindowFocus: false,
   })
@@ -744,9 +753,10 @@ function RapportRun({ run }: { run: AutomateRun }) {
 // ── Run dialog (§18.D banded « bilan ») ──────────────────
 
 function RunDialog({ slug, runId, onClose }: { slug: string; runId: string | null; onClose: () => void }) {
+  const base = useBaseApi()
   const { data: run, isLoading, isError } = useQuery({
     queryKey: ['automate-run', slug, runId],
-    queryFn: () => apiFetch<{ run: AutomateRun }>(`/automates/${slug}/runs/${runId}`).then((r) => r.run),
+    queryFn: () => apiFetch<{ run: AutomateRun }>(`${base}/${slug}/runs/${runId}`).then((r) => r.run),
     enabled: runId !== null,
   })
   const m = run ? STATUT_META[run.statut] : null
@@ -803,6 +813,7 @@ function RunDialog({ slug, runId, onClose }: { slug: string; runId: string | nul
 const textareaClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y'
 
 function RetoursTab({ automate, canPilot }: { automate: AutomateVue; canPilot: boolean }) {
+  const base = useBaseApi()
   const queryClient = useQueryClient()
   const { user } = useUser()
   const [texte, setTexte] = useState('')
@@ -811,19 +822,19 @@ function RetoursTab({ automate, canPilot }: { automate: AutomateVue; canPilot: b
   const key = ['automate-retours', automate.slug]
   const { data: retours, isLoading } = useQuery({
     queryKey: key,
-    queryFn: () => apiFetch<{ retours: Retour[] }>(`/automates/${automate.slug}/retours`).then((r) => r.retours),
+    queryFn: () => apiFetch<{ retours: Retour[] }>(`${base}/${automate.slug}/retours`).then((r) => r.retours),
   })
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: key })
     queryClient.invalidateQueries({ queryKey: ['automate', automate.slug] })
   }
   const ajouterMut = useMutation({
-    mutationFn: () => callApi(`/automates/${automate.slug}/retours`, { method: 'POST', body: JSON.stringify({ texte }) }),
+    mutationFn: () => callApi(`${base}/${automate.slug}/retours`, { method: 'POST', body: JSON.stringify({ texte }) }),
     onSuccess: () => { setTexte(''); setErreur(null); refresh() },
     onError: (e: Error) => setErreur(e.message),
   })
   const supprimerMut = useMutation({
-    mutationFn: (id: string) => callApi(`/automates/${automate.slug}/retours/${id}`, { method: 'DELETE' }),
+    mutationFn: (id: string) => callApi(`${base}/${automate.slug}/retours/${id}`, { method: 'DELETE' }),
     onSuccess: () => { setASupprimer(null); refresh() },
     onError: (e: Error) => { setASupprimer(null); setErreur(e.message) },
   })

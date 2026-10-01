@@ -59,11 +59,12 @@ import { permissionsRouter } from './routes/permissions.js'
 import { permissionsTrmRouter } from './routes/permissions-trm.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { notificationsTrmRouter } from './routes/notifications-trm.js'
-import { agentsIaRouter } from './routes/agents-ia.js'
+import { createAgentsIaRouter } from './routes/agents-ia.js'
 import { rhRouter } from './routes/rh.js'
 import { webserviceSiteRouter } from './routes/webservice-site.js'
 import { demarrerAgents, enregistrerTaches } from './lib/agents/scheduler.js'
-import { automatesRouter } from './routes/automates.js'
+import { createAutomatesRouter } from './routes/automates.js'
+import { AGENTS_IA_ETM, AGENTS_IA_TRM } from './lib/agents/app-scope.js'
 import { tachesAutomates } from './lib/automates/execution.js'
 import { abonnementsRouter } from './routes/abonnements.js'
 import { userEmailsRouter } from './routes/user-emails.js'
@@ -226,11 +227,15 @@ app.use('/api/maintenance-trm', maintenanceTrmRouter)
 // FNC, answered here and republished onto the dossier. Consumed by the TRM web app.
 app.use('/api/retours-client-trm', retoursClientTrmRouter)
 // Agents IA (menu Agents IA) — the BL Ennoblisseur agent and its successors, lib/agents/.
-app.use('/api/agents-ia', agentsIaRouter)
+// Each app has its own menu: one route set per screen, mounted once per app,
+// listing only that app's agents / automates (lib/agents/app-scope.ts).
+app.use('/api/agents-ia', createAgentsIaRouter(AGENTS_IA_ETM))
+app.use('/api/agents-ia-trm', createAgentsIaRouter(AGENTS_IA_TRM))
 // Agents IA › Automates — deterministic scripts on the agents' engine,
-// lib/automates/ (Vidéosurveillance, the two pointage report emails).
+// lib/automates/ (ETM: Vidéosurveillance; TRM: the two pointage report emails).
 enregistrerTaches(tachesAutomates())
-app.use('/api/automates', automatesRouter)
+app.use('/api/automates', createAutomatesRouter(AGENTS_IA_ETM))
+app.use('/api/automates-trm', createAutomatesRouter(AGENTS_IA_TRM))
 // RH (Vincent + Isabelle only, behind a code RH) — lib/rh-acces.ts, PostgreSQL `rh`.
 app.use('/api/rh', rhRouter)
 // The website (etsmalterre.fr customer space + QR sample page) — replaces the

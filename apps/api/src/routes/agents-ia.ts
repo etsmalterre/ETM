@@ -1,5 +1,10 @@
-// « Agents IA » — /api/agents-ia. The screen Agents IA › Agents (apps/web
-// pages/agents-ia/AgentsIa.tsx) reads and pilots the agents of lib/agents/.
+// « Agents IA » — /api/agents-ia (ETM) and /api/agents-ia-trm (TRM). The
+// screen Agents IA › Agents (ETM apps/web pages/AgentsIa.tsx, imported by TRM)
+// reads and pilots the agents of lib/agents/.
+//
+// One route set, mounted once per app (createAgentsIaRouter): each mount lists
+// only its app's agents and checks its app's permission store
+// (lib/agents/app-scope.ts) — an agent of the other app answers 404.
 //
 // Reads need a session only (the menu `screen_agents_ia` is the curtain);
 // every write needs `edit_agents_ia`, checked here — there is no global auth
@@ -9,9 +14,9 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import multer from 'multer'
 import { z } from 'zod'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
-import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
-import { AGENTS, agentDef, type AgentDef } from '../lib/agents/catalog.js'
+import { agentDef, agentsDe, type AgentDef } from '../lib/agents/catalog.js'
+import { avecScope, scopeDe, type AgentsIaScope, type DroitIa } from '../lib/agents/app-scope.js'
 import {
   AGENT_MODES,
   NOTES,
@@ -41,7 +46,13 @@ import { lireHistorique } from '../lib/agents/superviseur/historique.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur } from '../lib/gmail-reader.js'
 
-export const agentsIaRouter: RouterType = Router()
+const routes: RouterType = Router()
+
+/** The router of one app's « Agents IA › Agents » (index.ts mounts ETM's and TRM's). */
+export function createAgentsIaRouter(scope: AgentsIaScope): RouterType {
+  return Router().use(avecScope(scope), routes)
+}
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
 
 // ── helpers ──────────────────────────────────────────────
@@ -69,11 +80,16 @@ export function session(req: Request, res: Response): number | null {
   return req.userId
 }
 
+/** Whether the caller holds a right in the store of the mount's app. */
+function aLeDroit(req: Request, res: Response, id: number, droit: DroitIa): Promise<boolean> {
+  return scopeDe(res).aLeDroit(id, isEffectiveAdmin(req), droit)
+}
+
 /** 401 / 403 unless the caller may pilot agents (and automates). */
 export async function pilote(req: Request, res: Response): Promise<number | null> {
   const id = session(req, res)
   if (id === null) return null
-  if (!(await userHasPermission(id, isEffectiveAdmin(req), 'edit_agents_ia'))) {
+  if (!(await aLeDroit(req, res, id, 'edit_agents_ia'))) {
     res.status(403).json({ error: 'permission denied: edit_agents_ia' })
     return null
   }
@@ -84,7 +100,7 @@ export async function pilote(req: Request, res: Response): Promise<number | null
 async function evaluateur(req: Request, res: Response): Promise<number | null> {
   const id = session(req, res)
   if (id === null) return null
-  if (!(await userHasPermission(id, isEffectiveAdmin(req), 'evaluer_agents_ia'))) {
+  if (!(await aLeDroit(req, res, id, 'evaluer_agents_ia'))) {
     res.status(403).json({ error: 'permission denied: evaluer_agents_ia' })
     return null
   }
@@ -97,11 +113,10 @@ async function evaluateur(req: Request, res: Response): Promise<number | null> {
 async function traiteurPoints(req: Request, res: Response): Promise<number | null> {
   const id = session(req, res)
   if (id === null) return null
-  const admin = isEffectiveAdmin(req)
   const [evalue, widget, sousDroit] = await Promise.all([
-    userHasPermission(id, admin, 'evaluer_agents_ia'),
-    userHasPermission(id, admin, 'dashboard_notifications'),
-    userHasPermission(id, admin, 'dashboard_notif_superviseur'),
+    aLeDroit(req, res, id, 'evaluer_agents_ia'),
+    aLeDroit(req, res, id, 'dashboard_notifications'),
+    aLeDroit(req, res, id, 'dashboard_notif_superviseur'),
   ])
   if (!evalue && !(widget && sousDroit)) {
     res.status(403).json({ error: 'permission denied: dashboard_notif_superviseur' })
@@ -118,7 +133,7 @@ function modeAffiche(def: AgentDef, mode: AgentMode): AgentMode {
 }
 
 function agentOu404(req: Request, res: Response): AgentDef | null {
-  const def = agentDef(req.params.slug)
+  const def = agentDef(req.params.slug, scopeDe(res).app)
   if (!def) res.status(404).json({ error: 'agent inconnu' })
   return def ?? null
 }
@@ -199,17 +214,17 @@ async function vueAgent(def: AgentDef) {
 
 // ── agents ───────────────────────────────────────────────
 
-agentsIaRouter.get('/', async (req, res) => {
+routes.get('/', async (req, res) => {
   if (session(req, res) === null) return
   try {
-    res.json(await Promise.all(AGENTS.map(vueAgent)))
+    res.json(await Promise.all(agentsDe(scopeDe(res).app).map(vueAgent)))
   } catch (err) {
     console.error('[agents-ia] list failed:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
 
-agentsIaRouter.get('/:slug', async (req, res) => {
+routes.get('/:slug', async (req, res) => {
   if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return
@@ -231,7 +246,7 @@ agentsIaRouter.get('/:slug', async (req, res) => {
 
 const modeBody = z.object({ mode: z.enum(AGENT_MODES as [string, ...string[]]) })
 
-agentsIaRouter.patch('/:slug', async (req, res) => {
+routes.patch('/:slug', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -256,7 +271,7 @@ const versionBody = z.object({
   note: z.string().trim().max(500).default(''),
 })
 
-agentsIaRouter.post('/:slug/versions', async (req, res) => {
+routes.post('/:slug/versions', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -273,7 +288,7 @@ agentsIaRouter.post('/:slug/versions', async (req, res) => {
   }
 })
 
-agentsIaRouter.post('/:slug/versions/:version/activer', async (req, res) => {
+routes.post('/:slug/versions/:version/activer', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -289,7 +304,7 @@ agentsIaRouter.post('/:slug/versions/:version/activer', async (req, res) => {
 
 // ── runs ─────────────────────────────────────────────────
 
-agentsIaRouter.get('/:slug/runs', async (req, res) => {
+routes.get('/:slug/runs', async (req, res) => {
   if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return
@@ -313,7 +328,7 @@ agentsIaRouter.get('/:slug/runs', async (req, res) => {
   }
 })
 
-agentsIaRouter.get('/:slug/runs/:id', async (req, res) => {
+routes.get('/:slug/runs/:id', async (req, res) => {
   if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return
@@ -322,7 +337,7 @@ agentsIaRouter.get('/:slug/runs/:id', async (req, res) => {
   res.json(r)
 })
 
-agentsIaRouter.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
+routes.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
   if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return
@@ -341,7 +356,7 @@ agentsIaRouter.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
 
 /** Re-run the stored PDFs with the ACTIVE version. Writes only when the agent
  *  is « actif » (e.g. after the affectation was fixed); otherwise a dry run. */
-agentsIaRouter.post('/:slug/runs/:id/retraiter', async (req, res) => {
+routes.post('/:slug/runs/:id/retraiter', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -387,7 +402,7 @@ const evaluationBody = z.object({
 
 const COMMENTAIRE_REQUIS = 'Expliquez en commentaire ce qui n’allait pas : c’est ce qui sert à améliorer l’agent.'
 
-agentsIaRouter.put('/:slug/runs/:id/evaluation', async (req, res) => {
+routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
   const uid = await evaluateur(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -423,7 +438,7 @@ const avisPointBody = evaluationBody.extend({ cle: z.string().min(1).max(500) })
 /** Score one point of a Superviseur report. Kept on the run (feedback for the
  *  next version) and in the Superviseur's index, so the next reports set a
  *  point scored « échec » aside (lib/agents/superviseur/avis.ts). */
-agentsIaRouter.put('/:slug/runs/:id/points', async (req, res) => {
+routes.put('/:slug/runs/:id/points', async (req, res) => {
   const uid = await evaluateur(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -469,7 +484,7 @@ const resolutionBody = z.object({
  *  the run (feedback for the next version) and in the Superviseur's index, so
  *  the next reports list it under « Résolus » while the check still returns it
  *  (lib/agents/superviseur/avis.ts). Same right as scoring a point. */
-agentsIaRouter.put('/:slug/runs/:id/points/resolution', async (req, res) => {
+routes.put('/:slug/runs/:id/points/resolution', async (req, res) => {
   const uid = await evaluateur(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -520,7 +535,7 @@ const traitementBody = z.object({
 /** Handle one point from the Notifications widget: « Traité » or « Fausse
  *  alerte » (lib/agents/superviseur/points.ts). The scoring right, or the
  *  widget's Superviseur sub-permission (traiteurPoints). */
-agentsIaRouter.put('/:slug/points/traitement', async (req, res) => {
+routes.put('/:slug/points/traitement', async (req, res) => {
   const uid = await traiteurPoints(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -542,7 +557,7 @@ agentsIaRouter.put('/:slug/points/traitement', async (req, res) => {
 
 /** Every point the agent raised, open or closed, and how it was handled —
  *  the widget's « Historique ». */
-agentsIaRouter.get('/:slug/points/historique', async (req, res) => {
+routes.get('/:slug/points/historique', async (req, res) => {
   if ((await traiteurPoints(req, res)) === null) return
   const def = agentOu404(req, res)
   if (!def) return
@@ -556,7 +571,7 @@ agentsIaRouter.get('/:slug/points/historique', async (req, res) => {
 })
 
 /** Every comment given on a version — what the next prompt is written from. */
-agentsIaRouter.get('/:slug/retours', async (req, res) => {
+routes.get('/:slug/retours', async (req, res) => {
   if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return
@@ -597,7 +612,7 @@ agentsIaRouter.get('/:slug/retours', async (req, res) => {
 
 // ── actions ──────────────────────────────────────────────
 
-agentsIaRouter.post('/:slug/sonder', async (req, res) => {
+routes.post('/:slug/sonder', async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -618,7 +633,7 @@ agentsIaRouter.post('/:slug/sonder', async (req, res) => {
 
 /** Manual test on one PDF — uploaded, or taken from an sst order's ged
  *  (`idged`). Always a dry run: never writes, whatever the agent's mode. */
-agentsIaRouter.post('/:slug/essai', upload.single('fichier'), async (req, res) => {
+routes.post('/:slug/essai', upload.single('fichier'), async (req, res) => {
   const uid = await pilote(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
@@ -654,7 +669,7 @@ agentsIaRouter.post('/:slug/essai', upload.single('fichier'), async (req, res) =
 
 // ── costs ────────────────────────────────────────────────
 
-agentsIaRouter.get('/:slug/couts', async (req, res) => {
+routes.get('/:slug/couts', async (req, res) => {
   if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return

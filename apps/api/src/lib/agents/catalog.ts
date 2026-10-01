@@ -25,6 +25,7 @@ import {
 import { CONTROLES } from './superviseur/controles/index.js'
 import type { AgentMode, AgentRun, AgentState, AgentVersion, Auteur, VersionInitiale } from './store.js'
 import type { Contexte } from './bl-ennoblisseur.js'
+import { deLApp, type AppIa } from './app-scope.js'
 
 /** What starts an agent: a mailbox poll every N ms, or once a day at an hour (Paris). */
 export type Declenchement =
@@ -33,6 +34,8 @@ export type Declenchement =
 
 export interface AgentDef {
   slug: string
+  /** The app whose « Agents IA » menu shows it (lib/agents/app-scope.ts). Absent = ETM. */
+  app?: AppIa
   nom: string
   description: string
   declenchement: Declenchement
@@ -168,7 +171,12 @@ export const AGENTS: readonly AgentDef[] = [
   },
 ]
 
-export function agentDef(slug: string): AgentDef | undefined {
-  return AGENTS.find((a) => a.slug === slug)
+/** `app` given: only that app's agent (the routers); absent: any (the engine). */
+export function agentDef(slug: string, app?: AppIa): AgentDef | undefined {
+  return AGENTS.find((a) => a.slug === slug && (!app || deLApp(a, app)))
+}
+
+export function agentsDe(app: AppIa): AgentDef[] {
+  return AGENTS.filter((a) => deLApp(a, app))
 }
 
