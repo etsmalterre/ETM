@@ -215,6 +215,45 @@ CREATE TABLE planning_prod_ligne (
 ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'planning_prod_reglage, planning_prod_ligne')}
 `,
   },
+  {
+    // TRM Atelier › Maintenance (Mickaël, 2026-10-01). operation_maintenance
+    // held three ATELIER-WIDE dated items (Ventilateurs, Couronnes, Fuites
+    // d'air); the first two and the air leaks are really per métier, and the
+    // atelier keeps items of its own (air leaks of the building, more to come).
+    //  - operation_maintenance.portee: 'metier' = one date per métier (rows of
+    //    operation_maintenance_metier; date_derniere unused), 'atelier' = the
+    //    row's own date_derniere. archive hides an item without losing it.
+    //  - The three legacy items become per-métier, every métier starting from
+    //    the atelier-wide date they had; « Fuites d'air » is ALSO re-created as
+    //    an atelier item with the same date and frequency.
+    name: '0007_maintenance_trm',
+    sql: `
+ALTER TABLE operation_maintenance
+  ADD COLUMN portee text NOT NULL DEFAULT 'atelier' CHECK (portee IN ('atelier', 'metier')),
+  ADD COLUMN archive boolean NOT NULL DEFAULT false;
+CREATE TABLE operation_maintenance_metier (
+  idoperation_maintenance bigint NOT NULL,
+  idmachine bigint NOT NULL,
+  date_derniere date,
+  commentaire text,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (idoperation_maintenance, idmachine)
+);
+UPDATE operation_maintenance SET portee = 'metier'
+  WHERE nom IN ('Ventilateurs', 'Couronnes', 'Fuites d''air');
+INSERT INTO operation_maintenance (idoperation_maintenance, nom, date_derniere, frequence, portee)
+  SELECT (SELECT COALESCE(MAX(idoperation_maintenance), 0) + 1 FROM operation_maintenance),
+         nom, date_derniere, frequence, 'atelier'
+  FROM operation_maintenance WHERE nom = 'Fuites d''air' AND portee = 'metier'
+  ORDER BY idoperation_maintenance LIMIT 1;
+INSERT INTO operation_maintenance_metier (idoperation_maintenance, idmachine, date_derniere)
+  SELECT o.idoperation_maintenance, m.idmachine, o.date_derniere
+  FROM operation_maintenance o CROSS JOIN machine m
+  WHERE o.portee = 'metier';
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'operation_maintenance, operation_maintenance_metier')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

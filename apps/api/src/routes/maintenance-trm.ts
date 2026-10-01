@@ -1,335 +1,260 @@
-// Atelier > Maintenance — TRM knitting-machine upkeep (legacy FI_Maintenance.wdw).
+// Atelier > Maintenance — TRM knitting-machine upkeep (port of the legacy
+// FI_Maintenance.wdw, reworked with Mickaël on 2026-10-01).
 //
 // Like the ordre_fabrication family, `machine` and `operation_maintenance` have
 // NO IDsociete column: the knitting machines ARE Tricotage Malterre. There is
 // nothing to scope, and nothing here is shared with an ETM screen.
 //
-// ── How the legacy spec was recovered ──────────────────────────────────────
-// FI_Maintenance.wdw is PCS-compressed and, unlike FI_Prime, has no generated
-// Android twin. The spec came out of WinDev's COMPILE CACHE instead:
-//   C:\Mes Projets\MPS\MPS.cpl\<user>\00000000\FI_Maintenance.4C33DFB6.wdw.{wcw,wbw}
-// There, string literals / identifiers / real literals survive but INTEGER
-// literals and function names do not — so every threshold below was solved from
-// live data against a screenshot, never read from the code. See §Constants.
+// Native PostgreSQL (lib/mps-pg.ts) since the 2026-10-01 rework — the HFSQL
+// accent folding the first version needed is gone with HFSQL.
 //
-// ── Column map (screen field → machine column) ─────────────────────────────
-//   Description                 → commentaire       ⚠️ NOT `nom` (2E: nom='2E',
-//                                                      commentaire='Terrot')
+// ── What a métier carries ──────────────────────────────────────────────────
+//   Description                 → machine.commentaire  ⚠️ NOT `nom` (2E: nom='2E',
+//                                                        commentaire='Terrot')
 //   Simple / Double Fonture     → double_fonture
 //   Rouloir · Dernière visite   → date_maintenance
 //   Rouloir · Commentaire       → observation_maintenace   (typo is the real name)
-//   Nettoyage des platines      → nett_platines  / comm_nett_platines
-//   Nettoyage du cylindre       → nett_cylindre  / comm_nett_cylindre
-//   Nettoyage du plateau        → nett_plateau   / comm_nett_plateau
-//   Changement des aiguilles    → chg_aiguilles  / comm_chg_aiguilles
-//   Changement des platines     → chg_platines   / comm_chg_platines
-//   Pulsoniques                 → pulsonique     / comm_pulsonque  (typo too)
+//   Garniture (six items)       → nett_platines / nett_cylindre / nett_plateau /
+//                                 chg_aiguilles / chg_platines / pulsonique, each
+//                                 with comm_* (the pulsonique one is comm_pulsonque)
+//   Entretiens périodiques      → operation_maintenance (portee = 'metier') ×
+//                                 operation_maintenance_metier (one date per
+//                                 métier) — Ventilateurs, Couronnes, Fuites d'air
+// And for each of them, the kg knitted since (lib/maintenance-trm.ts).
 //
-// ── HFSQL rules that apply here ────────────────────────────────────────────
-//  - `machine` carries THREE accented columns — `connecté`, `archivé`,
-//    `diamètre`. They are never named in SQL (the Linux bridge rejects accented
-//    identifiers): reads go through SELECT * + key folding (queryB64Text on
-//    Linux, fixEncoding on Windows), and `archivé` is filtered in JS.
-//    SELECT * is safe on Windows here because `machine` holds no memo-binary
-//    column — unlike stock_fil / client, where it silently returns zero rows.
-//  - Every column this router WRITES is pure ASCII, so a plain named UPDATE is
-//    legal. No delete + positional reinsert (the setClientFlag dance) needed.
-//  - The write statement names ONLY the maintenance columns. `nom`, `Jauge`,
-//    `diamètre`, `nb_chutes*`, `vitesse`, `elasthanne`, `adresse_automate`,
-//    `connecté`, `archivé`, `IDDernier_evenement` belong to
-//    FEN_Gestion_des_machines (not ported) — unnamed keeps the stored value,
-//    named would zero it.
-//  - `operation_maintenance` is all-ASCII with no reserved word
-//    (`date_derniere`, not `date`) → plain named UPDATE.
+// The atelier keeps its own dated items (portee = 'atelier': the building's air
+// leaks, more to come) — /operations, listed apart from any métier.
+//
+// The machine UPDATE names ONLY the maintenance columns. `nom`, `jauge`,
+// `diametre`, `nb_chutes*`, `vitesse`, `elasthanne`, `adresse_automate`,
+// `connecte`, `archive` belong to FEN_Gestion_des_machines (not ported).
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
+import type { Sql } from 'postgres'
 import { z } from 'zod'
-import { query, queryB64Text, fixEncoding } from '../lib/hfsql-auto.js'
-import { esc, n, IS_WINDOWS } from '../lib/sst-shared.js'
+import { mpsPg } from '../lib/mps-pg.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
+import {
+  etatPeriodique,
+  etatRouloir,
+  indexKg,
+  kgDepuis,
+  monthsSince,
+  pireEtat,
+  round2,
+  type KgIndex,
+  type MaintenanceEtat,
+} from '../lib/maintenance-trm.js'
 
 export const maintenanceTrmRouter: RouterType = Router()
 
-
-// ════════════════════════════════════════════════════════
-//  Constants — recovered from live data, NOT from the code
-// ════════════════════════════════════════════════════════
-
 /**
- * Kg of finished production after which a métier's rouloir needs its next
- * visit. The legacy `PoidsRestantRouloir` procedure survives in the compile
- * cache as SQL, but its threshold is an integer literal and integer literals do
- * NOT survive:
- *
- *   SELECT SUM(ordre_fabrication.quantite) AS total FROM ordre_fabrication
- *   WHERE est_termine = 1 AND IDmachine = {pIDMachine}
- *     AND date_creation > {pDate}
- *
- * 15 000 was solved by reconstructing the fourteen "Rouloir dans N Kgs" values
- * legible on a 2026-08-26 screenshot of the legacy window — all fourteen come
- * back to the exact displayed integer (worst delta 0 Kg). The reconciliation is
- * replayed by `src/scripts/probe-maintenance-trm.ts`, which is what makes this
- * a measurement rather than a guess.
- *
- * ⚠️ This is a module constant and applies to EVERY métier and every past
- * visit: changing it silently rewrites the whole screen's history, the same
- * class of caveat as the Prime barème rates.
+ * Kg knitted after which a métier's rouloir needs its next visit. Measured in
+ * 2026-08 against the legacy screen (14/14 « Rouloir dans N Kgs » values), when
+ * the counter still summed OF quantities; since 2026-10-01 it applies to the
+ * weighed rolls (lib/maintenance-trm.ts), within ~10 % of the old measure.
+ * ⚠️ A module constant applied to every past visit: if it ever changes, date
+ * it like BAREMES_PRIME (lib/bareme-prime-trm.ts), never edit it in place.
  */
 export const MAINTENANCE_ROULOIR_SEUIL_KG = 15_000
 
-/**
- * Attention thresholds for the list liseré, as a fraction of the seuil.
- *
- * Recovered by grouping the 30 cards of the same screenshot by tag colour:
- *   red    ⇔ restant = 0        ⇔ produit ≥ 15 000  (2E, 3G, 3J)
- *   orange ⇔ 610 … 4 650 restant ⇔ produit ≥ 10 000  (3H, 3K, 3F, 2J, 1J, 1G)
- *   green  ⇔ ≥ 5 170 restant     ⇔ produit < 10 000  (3I, 2F, 2D, 2H, 2I, …)
- *
- * That reproduces the screenshot 30/30, but note the orange/green boundary is
- * only pinned to the interval ]4 650 ; 5 170] — 10 000 Kg (2/3 of the seuil) is
- * the round number inside it, not a proven value. ⚠️ APPROXIMATION.
- */
-const ROULOIR_RATIO_PROCHE = 2 / 3
+// The six garniture items, in the legacy form's top-to-bottom order.
+const GARNITURE = [
+  { key: 'nettPlatines', date: 'nett_platines', comm: 'comm_nett_platines' },
+  { key: 'nettCylindre', date: 'nett_cylindre', comm: 'comm_nett_cylindre' },
+  { key: 'nettPlateau', date: 'nett_plateau', comm: 'comm_nett_plateau' },
+  { key: 'chgAiguilles', date: 'chg_aiguilles', comm: 'comm_chg_aiguilles' },
+  { key: 'chgPlatines', date: 'chg_platines', comm: 'comm_chg_platines' },
+  { key: 'pulsonique', date: 'pulsonique', comm: 'comm_pulsonque' },
+] as const
 
-// ── Small helpers (same contract as of-trm.ts / commandes-trm.ts) ──
+type GarnitureKey = (typeof GARNITURE)[number]['key']
 
-/** SQL literal for a user-supplied text value. Pure-ASCII → quoted literal;
- *  accented values → Latin-1 hex literal (the Linux bridge corrupts raw
- *  multi-byte UTF-8 embedded in a SQL line). Maintenance comments really do
- *  carry accents ("Changement roulement poignée…"), so this path is live. */
-function sqlText(value: string | null | undefined): string {
-  const v = (value ?? '').toString()
-  if (v === '') return "''"
-  if (/^[\x09\x0A\x0D\x20-\x7E]*$/.test(v)) return `'${esc(v)}'`
-  const ascii = v
-    .replace(/[‘’‚′]/g, "'")
-    .replace(/[“”„″]/g, '"')
-    .replace(/[–—−]/g, '-')
-    .replace(/…/g, '...')
-    .replace(/ /g, ' ')
-  const bytes = Buffer.from(
-    Array.from(ascii, (ch) => {
-      const c = ch.codePointAt(0) ?? 0x3f
-      return c <= 0xff ? c : 0x3f
-    }),
-  )
-  return `x'${bytes.toString('hex')}'`
+const ymd = (col: string) => `to_char(${col}, 'YYYYMMDD') AS ${col}`
+
+function text(v: unknown): string | null {
+  const s = String(v ?? '').replace(/\0/g, '').trim()
+  return s === '' ? null : s
 }
 
-/** HFSQL DATE literal: 'YYYYMMDD' or '' for "not set" (what the base holds). */
-function sqlDate(value: string | null | undefined): string {
-  const v = (value ?? '').toString().trim()
-  return /^\d{8}$/.test(v) ? `'${v}'` : "''"
+function hf(v: unknown): string | null {
+  const s = String(v ?? '').trim()
+  return /^\d{8}$/.test(s) && s !== '00000000' && s > '19000101' ? s : null
 }
 
-/** Normalise an HFSQL DATE read back out: '' / '00000000' / null → null. */
-function readDate(value: unknown): string | null {
-  const v = String(value ?? '').trim()
-  return /^\d{8}$/.test(v) && v !== '00000000' ? v : null
+/** 'YYYYMMDD' → 'YYYY-MM-DD' for a PG date parameter, or null. */
+function pgDate(v: string | null | undefined): string | null {
+  return v && /^\d{8}$/.test(v) ? `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}` : null
 }
 
-/** Normalise an HFSQL text column: trims, '' → null. */
-function readText(value: unknown): string | null {
-  const v = String(value ?? '').replace(/\0/g, '').trim()
-  return v === '' ? null : v
-}
-
-function round2(x: number): number {
-  return Math.round((Number(x) || 0) * 100) / 100
-}
-
-/** Key folding: on the Linux bridge accented column names come back mangled,
- *  so accented columns are located by pattern, never by exact key. */
-function rawGet(row: Record<string, unknown>, re: RegExp): unknown {
-  const k = Object.keys(row).find((key) => re.test(key))
-  return k === undefined ? undefined : row[k]
-}
-
-/** Today as an HFSQL DATE string, in local time (the workshop's day). */
 function todayHf(): string {
   const d = new Date()
   const p = (x: number) => String(x).padStart(2, '0')
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
 }
 
-/** Whole months elapsed between an HFSQL DATE and today, floored at 0.
- *  Matches the legacy's "Il y a N mois" label. */
-function monthsSince(hfDate: string | null): number | null {
-  if (!hfDate) return null
-  const y = Number(hfDate.slice(0, 4))
-  const m = Number(hfDate.slice(4, 6))
-  const d = Number(hfDate.slice(6, 8))
-  const now = new Date()
-  let months = (now.getFullYear() - y) * 12 + (now.getMonth() + 1 - m)
-  if (now.getDate() < d) months -= 1
-  return Math.max(0, months)
-}
-
 // ════════════════════════════════════════════════════════
 //  Readers
 // ════════════════════════════════════════════════════════
 
-interface MachineRaw {
-  id: number
-  emplacement: string
-  nom: string
-  description: string | null
-  doubleFonture: boolean
-  archive: boolean
-  dateMaintenance: string | null
-  observationMaintenance: string | null
-  nettCylindre: string | null
-  nettPlateau: string | null
-  nettPlatines: string | null
-  commNettCylindre: string | null
-  commNettPlateau: string | null
-  commNettPlatines: string | null
-  chgAiguilles: string | null
-  chgPlatines: string | null
-  commChgAiguilles: string | null
-  commChgPlatines: string | null
-  pulsonique: string | null
-  commPulsonique: string | null
-  jauge: number
-  diametre: number
-  nbChutes: number
-  nbChutesMax: number
-  elasthanne: boolean
-  vitesse: number
-  adresseAutomate: number | null
-  connecte: boolean
+type Row = Record<string, unknown>
+
+async function selectMachines(sql: Sql, id?: number): Promise<Row[]> {
+  const cols = [
+    'idmachine', 'emplacement', 'nom', 'commentaire', 'double_fonture', 'archive',
+    ymd('date_maintenance'), 'observation_maintenace',
+    ...GARNITURE.flatMap((g) => [ymd(g.date), g.comm]),
+    'jauge', 'diametre', 'nb_chutes', 'nb_chutes_max', 'elasthanne', 'vitesse',
+    'adresse_automate', 'connecte',
+  ].join(', ')
+  return id === undefined
+    ? sql.unsafe(`SELECT ${cols} FROM machine`)
+    : sql.unsafe(`SELECT ${cols} FROM machine WHERE idmachine = $1`, [id])
 }
 
-/** Every machine row, both platforms. No WHERE on `archivé` — accented. */
-async function selectMachines(): Promise<MachineRaw[]> {
-  const sql = 'SELECT * FROM machine'
-  const raws = IS_WINDOWS
-    ? await fixEncoding(await query<Record<string, unknown>>(sql), 'machine', 'IDmachine', [
-        'nom',
-        'emplacement',
-        'commentaire',
-        'observation_maintenace',
-        'comm_nett_cylindre',
-        'comm_nett_plateau',
-        'comm_nett_platines',
-        'comm_chg_aiguilles',
-        'comm_chg_platines',
-        'comm_pulsonque',
-      ])
-    : await queryB64Text<Record<string, unknown>>(sql)
+interface Operation {
+  id: number
+  nom: string
+  portee: 'atelier' | 'metier'
+  frequenceMois: number
+  date: string | null
+}
 
-  return raws.map((r) => ({
-    id: n(r.IDmachine),
-    emplacement: String(r.emplacement ?? '').trim(),
-    nom: String(r.nom ?? '').trim(),
-    description: readText(r.commentaire),
-    doubleFonture: n(r.double_fonture) === 1,
-    archive: n(rawGet(r, /^archiv/i) ?? 0) === 1,
-    dateMaintenance: readDate(r.date_maintenance),
-    observationMaintenance: readText(r.observation_maintenace),
-    nettCylindre: readDate(r.nett_cylindre),
-    nettPlateau: readDate(r.nett_plateau),
-    nettPlatines: readDate(r.nett_platines),
-    commNettCylindre: readText(r.comm_nett_cylindre),
-    commNettPlateau: readText(r.comm_nett_plateau),
-    commNettPlatines: readText(r.comm_nett_platines),
-    chgAiguilles: readDate(r.chg_aiguilles),
-    chgPlatines: readDate(r.chg_platines),
-    commChgAiguilles: readText(r.comm_chg_aiguilles),
-    commChgPlatines: readText(r.comm_chg_platines),
-    pulsonique: readDate(r.pulsonique),
-    commPulsonique: readText(r.comm_pulsonque),
-    jauge: n(rawGet(r, /^jauge$/i)),
-    diametre: n(rawGet(r, /^diam/i)),
-    nbChutes: n(r.nb_chutes),
-    nbChutesMax: n(r.nb_chutes_max),
-    elasthanne: n(r.elasthanne) === 1,
-    vitesse: n(r.vitesse),
-    adresseAutomate: r.adresse_automate == null ? null : n(r.adresse_automate),
-    connecte: n(rawGet(r, /^connect/i) ?? 0) === 1,
+async function selectOperations(sql: Sql): Promise<Operation[]> {
+  const rows = await sql<Row[]>`
+    SELECT idoperation_maintenance, nom::text AS nom, portee, frequence,
+           to_char(date_derniere, 'YYYYMMDD') AS date_derniere
+    FROM operation_maintenance WHERE NOT archive
+    ORDER BY idoperation_maintenance`
+  return rows.map((r) => ({
+    id: Number(r.idoperation_maintenance),
+    nom: text(r.nom) ?? '',
+    portee: r.portee === 'metier' ? 'metier' : 'atelier',
+    frequenceMois: Number(r.frequence) || 0,
+    date: hf(r.date_derniere),
   }))
 }
 
-/**
- * Kg of finished production per machine since its own last rouloir visit.
- *
- * ONE grouped pass over ordre_fabrication folded in JS, deliberately: the
- * legacy runs `PoidsRestantRouloir` per machine, which here would be 30 bridge
- * round-trips for a list endpoint. Same predicate, same arithmetic.
- *
- * No IDsociete filter anywhere — the OF tables have no such column.
- */
-async function produitDepuisVisite(machines: MachineRaw[]): Promise<Map<number, number>> {
-  const visite = new Map<number, string>()
-  for (const m of machines) if (m.dateMaintenance) visite.set(m.id, m.dateMaintenance)
-
-  const rows = await query<Record<string, unknown>>(
-    'SELECT IDmachine, date_creation, quantite FROM ordre_fabrication WHERE est_termine = 1',
-  )
-  const out = new Map<number, number>()
+/** (op, machine) → its date + comment. */
+async function selectOperationsMetier(sql: Sql, idmachine?: number) {
+  const rows = idmachine === undefined
+    ? await sql<Row[]>`SELECT idoperation_maintenance, idmachine, to_char(date_derniere, 'YYYYMMDD') AS d, commentaire FROM operation_maintenance_metier`
+    : await sql<Row[]>`SELECT idoperation_maintenance, idmachine, to_char(date_derniere, 'YYYYMMDD') AS d, commentaire FROM operation_maintenance_metier WHERE idmachine = ${idmachine}`
+  const out = new Map<string, { date: string | null; commentaire: string | null }>()
   for (const r of rows) {
-    const id = n(r.IDmachine)
-    const since = visite.get(id)
-    if (!since) continue
-    const created = String(r.date_creation ?? '').trim()
-    // String compare is valid on YYYYMMDD, and matches the legacy's `>`.
-    if (!/^\d{8}$/.test(created) || created <= since) continue
-    out.set(id, (out.get(id) ?? 0) + n(r.quantite))
+    out.set(`${Number(r.idoperation_maintenance)}:${Number(r.idmachine)}`, { date: hf(r.d), commentaire: text(r.commentaire) })
   }
   return out
 }
 
-type RouloirEtat = 'due' | 'proche' | 'ok'
-
-function rouloirEtat(ratio: number, hasVisite: boolean): RouloirEtat {
-  // No recorded visit at all = the counter is meaningless, so it can't be "due".
-  if (!hasVisite) return 'ok'
-  if (ratio >= 1) return 'due'
-  if (ratio >= ROULOIR_RATIO_PROCHE) return 'proche'
-  return 'ok'
+/** Weighed rolls per métier and day — one grouped pass for the whole parc. */
+async function selectKg(sql: Sql, idmachine?: number): Promise<Map<number, KgIndex>> {
+  const rows = idmachine === undefined
+    ? await sql<Row[]>`
+        SELECT o.idmachine, to_char(s.date_saisie, 'YYYYMMDD') AS jour, SUM(s.poids) AS kg
+        FROM stock_ecru s JOIN ordre_fabrication o ON o.idordre_fabrication = s.idordre_fabrication
+        WHERE s.idordre_fabrication > 0 AND s.date_saisie IS NOT NULL
+        GROUP BY 1, 2`
+    : await sql<Row[]>`
+        SELECT o.idmachine, to_char(s.date_saisie, 'YYYYMMDD') AS jour, SUM(s.poids) AS kg
+        FROM stock_ecru s JOIN ordre_fabrication o ON o.idordre_fabrication = s.idordre_fabrication
+        WHERE s.idordre_fabrication > 0 AND s.date_saisie IS NOT NULL AND o.idmachine = ${idmachine}
+        GROUP BY 1, 2`
+  const per = new Map<number, { jour: string; kg: number }[]>()
+  for (const r of rows) {
+    const id = Number(r.idmachine)
+    if (!per.has(id)) per.set(id, [])
+    per.get(id)!.push({ jour: String(r.jour ?? ''), kg: Number(r.kg) || 0 })
+  }
+  return new Map([...per].map(([id, list]) => [id, indexKg(list)]))
 }
 
-function shapeMetier(m: MachineRaw, produitKg: number) {
-  const ratio = MAINTENANCE_ROULOIR_SEUIL_KG > 0 ? produitKg / MAINTENANCE_ROULOIR_SEUIL_KG : 0
+function shapeMetier(
+  m: Row,
+  kg: KgIndex | undefined,
+  ops: Operation[],
+  opsMetier: Map<string, { date: string | null; commentaire: string | null }>,
+) {
+  const id = Number(m.idmachine)
+  const visite = hf(m.date_maintenance)
+  const produitKg = kgDepuis(kg, visite) ?? 0
+  const ratio = produitKg / MAINTENANCE_ROULOIR_SEUIL_KG
+  const rouloirEtat = etatRouloir(ratio, visite !== null)
+
+  const garniture = Object.fromEntries(
+    GARNITURE.map((g) => {
+      const date = hf(m[g.date])
+      return [g.key, { date, commentaire: text(m[g.comm]), kgDepuis: kgDepuis(kg, date) }]
+    }),
+  ) as Record<GarnitureKey, { date: string | null; commentaire: string | null; kgDepuis: number | null }>
+
+  const entretiens = ops
+    .filter((o) => o.portee === 'metier')
+    .map((o) => {
+      const slot = opsMetier.get(`${o.id}:${id}`) ?? { date: null, commentaire: null }
+      const mois = monthsSince(slot.date)
+      const { ratio: r, etat } = etatPeriodique(mois, o.frequenceMois)
+      return {
+        id: o.id,
+        nom: o.nom,
+        frequenceMois: o.frequenceMois,
+        date: slot.date,
+        commentaire: slot.commentaire,
+        moisEcoules: mois,
+        ratio: r,
+        etat,
+        kgDepuis: kgDepuis(kg, slot.date),
+      }
+    })
+
+  const etat = pireEtat([rouloirEtat, ...entretiens.map((e) => e.etat)])
+  const aFaire = [
+    ...(rouloirEtat === 'due' ? ['Rouloir'] : []),
+    ...entretiens.filter((e) => e.etat === 'due').map((e) => e.nom),
+  ]
+
   return {
-    id: m.id,
-    emplacement: m.emplacement,
-    nom: m.nom,
-    description: m.description,
-    doubleFonture: m.doubleFonture,
-    archive: m.archive,
+    id,
+    emplacement: text(m.emplacement) ?? '',
+    nom: text(m.nom) ?? '',
+    description: text(m.commentaire),
+    doubleFonture: Number(m.double_fonture) === 1,
+    archive: Number(m.archive) === 1,
+    etat: etat as MaintenanceEtat,
+    aFaire,
     rouloir: {
-      derniereVisite: m.dateMaintenance,
-      commentaire: m.observationMaintenance,
+      derniereVisite: visite,
+      commentaire: text(m.observation_maintenace),
       produitKg: round2(produitKg),
       restantKg: round2(Math.max(0, MAINTENANCE_ROULOIR_SEUIL_KG - produitKg)),
       ratio: round2(ratio),
-      etat: rouloirEtat(ratio, m.dateMaintenance !== null),
+      etat: rouloirEtat,
     },
-    // Order is the legacy form's, top to bottom — keep it, the workshop reads
-    // this screen the way it reads the machine.
-    garniture: {
-      nettPlatines: { date: m.nettPlatines, commentaire: m.commNettPlatines },
-      nettCylindre: { date: m.nettCylindre, commentaire: m.commNettCylindre },
-      nettPlateau: { date: m.nettPlateau, commentaire: m.commNettPlateau },
-      chgAiguilles: { date: m.chgAiguilles, commentaire: m.commChgAiguilles },
-      chgPlatines: { date: m.chgPlatines, commentaire: m.commChgPlatines },
-      pulsonique: { date: m.pulsonique, commentaire: m.commPulsonique },
-    },
+    garniture,
+    entretiens,
     // Read-only: these belong to FEN_Gestion_des_machines, never written here.
     caracteristiques: {
-      jauge: m.jauge,
-      diametre: m.diametre,
-      nbChutes: m.nbChutes,
-      nbChutesMax: m.nbChutesMax,
-      elasthanne: m.elasthanne,
-      vitesse: m.vitesse,
-      adresseAutomate: m.adresseAutomate,
-      connecte: m.connecte,
+      jauge: Number(m.jauge) || 0,
+      diametre: Number(m.diametre) || 0,
+      nbChutes: Number(m.nb_chutes) || 0,
+      nbChutesMax: Number(m.nb_chutes_max) || 0,
+      elasthanne: Number(m.elasthanne) === 1,
+      vitesse: Number(m.vitesse) || 0,
+      adresseAutomate: m.adresse_automate == null ? null : Number(m.adresse_automate),
+      connecte: Number(m.connecte) === 1,
     },
   }
 }
+
+async function loadMetier(sql: Sql, id: number) {
+  const [m] = await selectMachines(sql, id)
+  if (!m) return null
+  const [kg, ops, opsMetier] = await Promise.all([selectKg(sql, id), selectOperations(sql), selectOperationsMetier(sql, id)])
+  return shapeMetier(m, kg.get(id), ops, opsMetier)
+}
+
+const RANG_ETAT: Record<string, number> = { due: 0, proche: 1, ok: 2, inconnu: 3 }
 
 // ════════════════════════════════════════════════════════
 //  GET /metiers — the left list + every fiche in one payload
@@ -337,18 +262,23 @@ function shapeMetier(m: MachineRaw, produitKg: number) {
 
 maintenanceTrmRouter.get('/metiers', async (_req: Request, res: Response) => {
   try {
-    const machines = (await selectMachines()).filter((m) => !m.archive)
-    const produit = await produitDepuisVisite(machines)
-
+    const sql = mpsPg()
+    const [machines, kg, ops, opsMetier] = await Promise.all([
+      selectMachines(sql),
+      selectKg(sql),
+      selectOperations(sql),
+      selectOperationsMetier(sql),
+    ])
     const metiers = machines
-      .map((m) => shapeMetier(m, produit.get(m.id) ?? 0))
-      // Legacy order: most urgent first (least kg left), then by métier code.
+      .filter((m) => Number(m.archive) !== 1)
+      .map((m) => shapeMetier(m, kg.get(Number(m.idmachine)), ops, opsMetier))
+      // Most urgent first: worst state, then least rouloir kg left, then code.
       .sort(
         (a, b) =>
+          RANG_ETAT[a.etat] - RANG_ETAT[b.etat] ||
           a.rouloir.restantKg - b.rouloir.restantKg ||
           a.emplacement.localeCompare(b.emplacement, 'fr'),
       )
-
     res.json({ seuilRouloirKg: MAINTENANCE_ROULOIR_SEUIL_KG, metiers })
   } catch (err) {
     console.error('GET /maintenance-trm/metiers failed:', err)
@@ -357,78 +287,11 @@ maintenanceTrmRouter.get('/metiers', async (_req: Request, res: Response) => {
 })
 
 // ════════════════════════════════════════════════════════
-//  GET /metiers/:id/production — what the rouloir counter counts
-// ════════════════════════════════════════════════════════
-
-maintenanceTrmRouter.get('/metiers/:id/production', async (req: Request, res: Response) => {
-  try {
-    const id = Number(req.params.id)
-    if (!Number.isFinite(id) || id <= 0) {
-      res.status(400).json({ error: 'invalid id' })
-      return
-    }
-    const machine = (await selectMachines()).find((m) => m.id === id)
-    if (!machine) {
-      res.status(404).json({ error: 'métier introuvable' })
-      return
-    }
-    if (!machine.dateMaintenance) {
-      res.json({ derniereVisite: null, totalKg: 0, ofs: [] })
-      return
-    }
-
-    // `orf` alias, never `of` — too close to SQL keyword territory for the
-    // HFSQL parser (the of-trm.ts convention).
-    // NB: ordre_fabrication has NO `numero` column — an OF is identified by its
-    // id, which is exactly how Production › Ordres de fabrication labels it
-    // ("OF 1234").
-    const rows = await query<Record<string, unknown>>(
-      `SELECT orf.IDordre_fabrication AS id, orf.date_creation AS date_creation,
-              orf.quantite AS quantite, orf.IDref_ecru AS idref
-       FROM ordre_fabrication orf
-       WHERE orf.est_termine = 1 AND orf.IDmachine = ${id}
-         AND orf.date_creation > '${machine.dateMaintenance}'`,
-    )
-
-    const refIds = [...new Set(rows.map((r) => n(r.idref)).filter((x) => x > 0))]
-    const refs = new Map<number, string>()
-    if (refIds.length > 0) {
-      const raw = await query<Record<string, unknown>>(
-        `SELECT IDref_ecru, reference FROM ref_ecru WHERE IDref_ecru IN (${refIds.join(',')})`,
-      )
-      for (const r of await fixEncoding(raw, 'ref_ecru', 'IDref_ecru', ['reference'])) {
-        refs.set(n(r.IDref_ecru), String(r.reference ?? '').trim())
-      }
-    }
-
-    const ofs = rows
-      .map((r) => ({
-        id: n(r.id),
-        dateCreation: readDate(r.date_creation),
-        quantiteKg: round2(n(r.quantite)),
-        reference: refs.get(n(r.idref)) ?? null,
-      }))
-      .sort((a, b) => (b.dateCreation ?? '').localeCompare(a.dateCreation ?? '') || b.id - a.id)
-
-    res.json({
-      derniereVisite: machine.dateMaintenance,
-      totalKg: round2(ofs.reduce((s, o) => s + o.quantiteKg, 0)),
-      seuilRouloirKg: MAINTENANCE_ROULOIR_SEUIL_KG,
-      ofs,
-    })
-  } catch (err) {
-    console.error('GET /maintenance-trm/metiers/:id/production failed:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-// ════════════════════════════════════════════════════════
 //  Write guard
 // ════════════════════════════════════════════════════════
 
-/** Guard for every write path (métier fiche + operation reset). Reads stay open
- *  to anyone holding the Atelier menu, same split as edit_commandes_client.
- *  Sends the 401/403 itself and returns false when the caller is not allowed. */
+/** Guard for every write path. Reads stay open to anyone holding the Atelier
+ *  menu. Sends the 401/403 itself and returns false when not allowed. */
 async function requireEditMaintenance(req: Request, res: Response): Promise<boolean> {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
@@ -442,42 +305,71 @@ async function requireEditMaintenance(req: Request, res: Response): Promise<bool
   return true
 }
 
+function parseId(raw: string | undefined): number | null {
+  const id = Number(raw)
+  return Number.isInteger(id) && id > 0 ? id : null
+}
+
+/** 404 / 409 for a métier that cannot be written; null when it can. */
+async function machineEcrivable(sql: Sql, id: number, res: Response): Promise<boolean> {
+  const [m] = await sql<{ archive: number }[]>`SELECT archive FROM machine WHERE idmachine = ${id}`
+  if (!m) {
+    res.status(404).json({ error: 'métier introuvable' })
+    return false
+  }
+  if (Number(m.archive) === 1) {
+    res.status(409).json({
+      error: 'machine_archivee',
+      message: "Ce métier est archivé : sa fiche de maintenance n'est plus modifiable.",
+    })
+    return false
+  }
+  return true
+}
+
+async function upsertOperationMetier(
+  sql: Sql,
+  opId: number,
+  idmachine: number,
+  date: string | null,
+  commentaire: string | null,
+  userId: number,
+) {
+  await sql`
+    INSERT INTO operation_maintenance_metier
+      (idoperation_maintenance, idmachine, date_derniere, commentaire, modifie_le, modifie_par)
+    VALUES (${opId}, ${idmachine}, ${pgDate(date)}, ${commentaire}, now(), ${userId})
+    ON CONFLICT (idoperation_maintenance, idmachine) DO UPDATE
+      SET date_derniere = EXCLUDED.date_derniere, commentaire = EXCLUDED.commentaire,
+          modifie_le = now(), modifie_par = EXCLUDED.modifie_par`
+}
+
 // ════════════════════════════════════════════════════════
 //  PUT /metiers/:id — the fiche
 // ════════════════════════════════════════════════════════
 
-const hfDate = z
-  .string()
-  .regex(/^\d{8}$/, 'attendu YYYYMMDD')
-  .nullable()
-
-const operationBody = z.object({
-  date: hfDate.optional().default(null),
-  commentaire: z.string().max(4000).nullable().optional().default(null),
-})
+const hfDate = z.string().regex(/^\d{8}$/, 'attendu YYYYMMDD').nullable()
+const comment = z.string().max(4000).nullable().optional().default(null)
+const slotBody = z.object({ date: hfDate.optional().default(null), commentaire: comment })
 
 const metierBody = z.object({
-  description: z.string().max(4000).nullable().optional().default(null),
+  description: comment,
   doubleFonture: z.boolean(),
-  rouloir: z.object({
-    derniereVisite: hfDate.optional().default(null),
-    commentaire: z.string().max(4000).nullable().optional().default(null),
-  }),
-  garniture: z.object({
-    nettPlatines: operationBody,
-    nettCylindre: operationBody,
-    nettPlateau: operationBody,
-    chgAiguilles: operationBody,
-    chgPlatines: operationBody,
-    pulsonique: operationBody,
-  }),
+  rouloir: z.object({ derniereVisite: hfDate.optional().default(null), commentaire: comment }),
+  garniture: z.object(
+    Object.fromEntries(GARNITURE.map((g) => [g.key, slotBody])) as Record<GarnitureKey, typeof slotBody>,
+  ),
+  entretiens: z
+    .array(z.object({ id: z.number().int().positive(), date: hfDate.optional().default(null), commentaire: comment }))
+    .optional()
+    .default([]),
 })
 
 maintenanceTrmRouter.put('/metiers/:id', async (req: Request, res: Response) => {
   if (!(await requireEditMaintenance(req, res))) return
   try {
-    const id = Number(req.params.id)
-    if (!Number.isFinite(id) || id <= 0) {
+    const id = parseId(req.params.id)
+    if (id === null) {
       res.status(400).json({ error: 'invalid id' })
       return
     }
@@ -487,58 +379,46 @@ maintenanceTrmRouter.put('/metiers/:id', async (req: Request, res: Response) => 
       return
     }
     const body = parsed.data
+    const sql = mpsPg()
+    if (!(await machineEcrivable(sql, id, res))) return
 
-    const machines = await selectMachines()
-    const current = machines.find((m) => m.id === id)
-    if (!current) {
-      res.status(404).json({ error: 'métier introuvable' })
-      return
-    }
-    if (current.archive) {
-      res.status(409).json({
-        error: 'machine_archivee',
-        message: "Ce métier est archivé : sa fiche de maintenance n'est plus modifiable.",
-      })
+    const ops = await selectOperations(sql)
+    const metierOps = new Set(ops.filter((o) => o.portee === 'metier').map((o) => o.id))
+    const unknown = body.entretiens.find((e) => !metierOps.has(e.id))
+    if (unknown) {
+      res.status(400).json({ error: 'operation_inconnue', message: `Entretien ${unknown.id} inconnu.` })
       return
     }
 
     const g = body.garniture
-    // Named UPDATE — every column below is ASCII. The accented ones and the
-    // FEN_Gestion_des_machines ones are deliberately absent: unnamed keeps the
-    // stored value, named would overwrite it.
-    await query(
-      `UPDATE machine SET
-         commentaire            = ${sqlText(body.description)},
-         double_fonture         = ${body.doubleFonture ? 1 : 0},
-         date_maintenance       = ${sqlDate(body.rouloir.derniereVisite)},
-         observation_maintenace = ${sqlText(body.rouloir.commentaire)},
-         nett_platines          = ${sqlDate(g.nettPlatines.date)},
-         comm_nett_platines     = ${sqlText(g.nettPlatines.commentaire)},
-         nett_cylindre          = ${sqlDate(g.nettCylindre.date)},
-         comm_nett_cylindre     = ${sqlText(g.nettCylindre.commentaire)},
-         nett_plateau           = ${sqlDate(g.nettPlateau.date)},
-         comm_nett_plateau      = ${sqlText(g.nettPlateau.commentaire)},
-         chg_aiguilles          = ${sqlDate(g.chgAiguilles.date)},
-         comm_chg_aiguilles     = ${sqlText(g.chgAiguilles.commentaire)},
-         chg_platines           = ${sqlDate(g.chgPlatines.date)},
-         comm_chg_platines      = ${sqlText(g.chgPlatines.commentaire)},
-         pulsonique             = ${sqlDate(g.pulsonique.date)},
-         comm_pulsonque         = ${sqlText(g.pulsonique.commentaire)}
-       WHERE IDmachine = ${id}`,
-    )
-
-    // Return the refreshed métier (the §31.6 pattern) — the rouloir counter
-    // moves whenever the visit date does, and the caller must not recompute it.
-    const after = (await selectMachines()).find((m) => m.id === id)
-    if (!after) {
-      res.status(500).json({ error: 'Internal server error' })
-      return
-    }
-    const produit = await produitDepuisVisite([after])
-    res.json({
-      seuilRouloirKg: MAINTENANCE_ROULOIR_SEUIL_KG,
-      metier: shapeMetier(after, produit.get(id) ?? 0),
+    const nul = (s: string | null) => (s && s.trim() !== '' ? s.trim() : null)
+    await sql.begin(async (tx) => {
+      const t = tx as unknown as Sql // postgres.js typing: TransactionSql loses its call signatures
+      await t`
+        UPDATE machine SET
+          commentaire            = ${nul(body.description)},
+          double_fonture         = ${body.doubleFonture ? 1 : 0},
+          date_maintenance       = ${pgDate(body.rouloir.derniereVisite)},
+          observation_maintenace = ${nul(body.rouloir.commentaire)},
+          nett_platines          = ${pgDate(g.nettPlatines.date)},
+          comm_nett_platines     = ${nul(g.nettPlatines.commentaire)},
+          nett_cylindre          = ${pgDate(g.nettCylindre.date)},
+          comm_nett_cylindre     = ${nul(g.nettCylindre.commentaire)},
+          nett_plateau           = ${pgDate(g.nettPlateau.date)},
+          comm_nett_plateau      = ${nul(g.nettPlateau.commentaire)},
+          chg_aiguilles          = ${pgDate(g.chgAiguilles.date)},
+          comm_chg_aiguilles     = ${nul(g.chgAiguilles.commentaire)},
+          chg_platines           = ${pgDate(g.chgPlatines.date)},
+          comm_chg_platines      = ${nul(g.chgPlatines.commentaire)},
+          pulsonique             = ${pgDate(g.pulsonique.date)},
+          comm_pulsonque         = ${nul(g.pulsonique.commentaire)}
+        WHERE idmachine = ${id}`
+      for (const e of body.entretiens) {
+        await upsertOperationMetier(t, e.id, id, e.date, nul(e.commentaire), req.userId!)
+      }
     })
+
+    res.json({ seuilRouloirKg: MAINTENANCE_ROULOIR_SEUIL_KG, metier: await loadMetier(sql, id) })
   } catch (err) {
     console.error('PUT /maintenance-trm/metiers/:id failed:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -546,77 +426,184 @@ maintenanceTrmRouter.put('/metiers/:id', async (req: Request, res: Response) => 
 })
 
 // ════════════════════════════════════════════════════════
-//  Operations d'entretien atelier (operation_maintenance)
+//  « Effectué ce jour » on one item of one métier
 // ════════════════════════════════════════════════════════
 
-/**
- * The three atelier-wide upkeep operations (Ventilateurs / Couronnes / Fuites
- * d'air). No IDmachine column — these are the workshop's, not a métier's.
- *
- * Rendered dynamically on purpose: the legacy hard-wired exactly three gauges
- * (JAUGE_Ventilateur / JAUGE_Couronne / JAUGE_FuiteAir), so a fourth row added
- * in the base would have been invisible there. Here it just shows up.
- *
- * `frequence` is in MONTHS — confirmed against the legacy screenshot
- * (Ventilateurs, dernière 24/10/2025, frequence 3, label "Il y a 10 mois").
- */
-async function selectOperations() {
-  const rows = await fixEncoding(
-    await query<Record<string, unknown>>(
-      'SELECT IDoperation_maintenance, nom, date_derniere, frequence FROM operation_maintenance',
-    ),
-    'operation_maintenance',
-    'IDoperation_maintenance',
-    ['nom'],
-  )
-  return rows
-    .map((r) => {
-      const derniere = readDate(r.date_derniere)
-      const frequence = n(r.frequence)
-      const mois = monthsSince(derniere)
-      // Unbounded on purpose: the legacy needle just pinned to the right and
-      // said nothing. The screen shows the overshoot in words.
-      const ratio = frequence > 0 && mois !== null ? round2(mois / frequence) : null
-      return {
-        id: n(r.IDoperation_maintenance),
-        nom: String(r.nom ?? '').trim(),
-        derniereMaintenance: derniere,
-        frequenceMois: frequence,
-        moisEcoules: mois,
-        ratio,
-        etat: ratio === null ? 'inconnu' : ratio >= 1 ? 'due' : ratio >= ROULOIR_RATIO_PROCHE ? 'proche' : 'ok',
+const faitBody = z.object({
+  /** 'rouloir', a garniture key, or an entretien id. */
+  item: z.union([z.literal('rouloir'), z.enum(GARNITURE.map((g) => g.key) as [GarnitureKey, ...GarnitureKey[]]), z.number().int().positive()]),
+})
+
+maintenanceTrmRouter.post('/metiers/:id/fait', async (req: Request, res: Response) => {
+  if (!(await requireEditMaintenance(req, res))) return
+  try {
+    const id = parseId(req.params.id)
+    const parsed = faitBody.safeParse(req.body)
+    if (id === null || !parsed.success) {
+      res.status(400).json({ error: 'Validation failed' })
+      return
+    }
+    const sql = mpsPg()
+    if (!(await machineEcrivable(sql, id, res))) return
+    const today = pgDate(todayHf())
+    const item = parsed.data.item
+    if (item === 'rouloir') {
+      await sql`UPDATE machine SET date_maintenance = ${today} WHERE idmachine = ${id}`
+    } else if (typeof item === 'string') {
+      const col = GARNITURE.find((g) => g.key === item)!.date
+      await sql.unsafe(`UPDATE machine SET ${col} = $1 WHERE idmachine = $2`, [today, id])
+    } else {
+      const op = (await selectOperations(sql)).find((o) => o.id === item && o.portee === 'metier')
+      if (!op) {
+        res.status(404).json({ error: 'opération introuvable' })
+        return
       }
-    })
-    .sort((a, b) => a.id - b.id)
+      // Keeps the stored comment: « done today » is about the date only.
+      const current = (await selectOperationsMetier(sql, id)).get(`${item}:${id}`)
+      await upsertOperationMetier(sql, item, id, todayHf(), current?.commentaire ?? null, req.userId!)
+    }
+    res.json({ seuilRouloirKg: MAINTENANCE_ROULOIR_SEUIL_KG, metier: await loadMetier(sql, id) })
+  } catch (err) {
+    console.error('POST /maintenance-trm/metiers/:id/fait failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  The item catalogue + the atelier's own items
+// ════════════════════════════════════════════════════════
+
+async function operationsPayload(sql: Sql) {
+  const operations = (await selectOperations(sql)).map((o) => {
+    const mois = o.portee === 'atelier' ? monthsSince(o.date) : null
+    const { ratio, etat } = o.portee === 'atelier' ? etatPeriodique(mois, o.frequenceMois) : { ratio: null, etat: 'inconnu' }
+    return {
+      id: o.id,
+      nom: o.nom,
+      portee: o.portee,
+      frequenceMois: o.frequenceMois,
+      derniereMaintenance: o.portee === 'atelier' ? o.date : null,
+      moisEcoules: mois,
+      ratio,
+      etat,
+    }
+  })
+  return { operations }
 }
 
 maintenanceTrmRouter.get('/operations', async (_req: Request, res: Response) => {
   try {
-    res.json({ operations: await selectOperations() })
+    res.json(await operationsPayload(mpsPg()))
   } catch (err) {
     console.error('GET /maintenance-trm/operations failed:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
 
-/** "Mise a Zéro" in the legacy: stamp the operation as done today. */
-maintenanceTrmRouter.post('/operations/:id/reset', async (req: Request, res: Response) => {
+const operationBody = z.object({
+  nom: z.string().trim().min(1).max(100),
+  frequenceMois: z.number().int().min(1).max(120),
+  portee: z.enum(['atelier', 'metier']),
+}).strict()
+
+maintenanceTrmRouter.post('/operations', async (req: Request, res: Response) => {
   if (!(await requireEditMaintenance(req, res))) return
+  const parsed = operationBody.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+    return
+  }
   try {
-    const id = Number(req.params.id)
-    if (!Number.isFinite(id) || id <= 0) {
-      res.status(400).json({ error: 'invalid id' })
+    const sql = mpsPg()
+    const { nom, frequenceMois, portee } = parsed.data
+    const [dup] = await sql`SELECT 1 FROM operation_maintenance WHERE NOT archive AND portee = ${portee} AND nom = ${nom}`
+    if (dup) {
+      res.status(409).json({ error: 'operation_existante', message: `« ${nom} » existe déjà.` })
       return
     }
-    const existing = (await selectOperations()).find((o) => o.id === id)
-    if (!existing) {
+    await sql.begin(async (tx) => {
+      const t = tx as unknown as Sql
+      await t`LOCK TABLE operation_maintenance IN EXCLUSIVE MODE`
+      await t`
+        INSERT INTO operation_maintenance (idoperation_maintenance, nom, date_derniere, frequence, portee)
+        SELECT COALESCE(MAX(idoperation_maintenance), 0) + 1, ${nom}, NULL, ${frequenceMois}, ${portee}
+        FROM operation_maintenance`
+    })
+    res.status(201).json(await operationsPayload(sql))
+  } catch (err) {
+    console.error('POST /maintenance-trm/operations failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+maintenanceTrmRouter.put('/operations/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditMaintenance(req, res))) return
+  const id = parseId(req.params.id)
+  const parsed = operationBody.omit({ portee: true }).safeParse(req.body)
+  if (id === null || !parsed.success) {
+    res.status(400).json({ error: 'Validation failed' })
+    return
+  }
+  try {
+    const sql = mpsPg()
+    const r = await sql`
+      UPDATE operation_maintenance SET nom = ${parsed.data.nom}, frequence = ${parsed.data.frequenceMois}
+      WHERE idoperation_maintenance = ${id} AND NOT archive`
+    if (r.count === 0) {
       res.status(404).json({ error: 'opération introuvable' })
       return
     }
-    await query(
-      `UPDATE operation_maintenance SET date_derniere = '${todayHf()}' WHERE IDoperation_maintenance = ${id}`,
-    )
-    res.json({ operations: await selectOperations() })
+    res.json(await operationsPayload(sql))
+  } catch (err) {
+    console.error('PUT /maintenance-trm/operations/:id failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** Archives (never deletes): the per-métier dates stay in the base. */
+maintenanceTrmRouter.delete('/operations/:id', async (req: Request, res: Response) => {
+  if (!(await requireEditMaintenance(req, res))) return
+  const id = parseId(req.params.id)
+  if (id === null) {
+    res.status(400).json({ error: 'invalid id' })
+    return
+  }
+  try {
+    const sql = mpsPg()
+    const r = await sql`UPDATE operation_maintenance SET archive = true WHERE idoperation_maintenance = ${id} AND NOT archive`
+    if (r.count === 0) {
+      res.status(404).json({ error: 'opération introuvable' })
+      return
+    }
+    res.json(await operationsPayload(sql))
+  } catch (err) {
+    console.error('DELETE /maintenance-trm/operations/:id failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** « Effectué ce jour » on an atelier item. A per-métier item is done métier
+ *  by métier (POST /metiers/:id/fait), never all at once. */
+maintenanceTrmRouter.post('/operations/:id/reset', async (req: Request, res: Response) => {
+  if (!(await requireEditMaintenance(req, res))) return
+  const id = parseId(req.params.id)
+  if (id === null) {
+    res.status(400).json({ error: 'invalid id' })
+    return
+  }
+  try {
+    const sql = mpsPg()
+    const op = (await selectOperations(sql)).find((o) => o.id === id)
+    if (!op) {
+      res.status(404).json({ error: 'opération introuvable' })
+      return
+    }
+    if (op.portee !== 'atelier') {
+      res.status(409).json({ error: 'operation_par_metier', message: 'Cet entretien se fait métier par métier.' })
+      return
+    }
+    await sql`UPDATE operation_maintenance SET date_derniere = ${pgDate(todayHf())} WHERE idoperation_maintenance = ${id}`
+    res.json(await operationsPayload(sql))
   } catch (err) {
     console.error('POST /maintenance-trm/operations/:id/reset failed:', err)
     res.status(500).json({ error: 'Internal server error' })

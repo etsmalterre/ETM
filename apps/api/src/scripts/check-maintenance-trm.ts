@@ -80,8 +80,10 @@ async function main() {
   check('métiers returned', metiers.length > 0, metiers.length)
   check('no archived métier in the list', metiers.every((m) => m.archive === false))
   check(
-    'sorted by kg remaining, ascending',
-    metiers.every((m, i) => i === 0 || metiers[i - 1].rouloir.restantKg <= m.rouloir.restantKg),
+    'sorted by state, then kg remaining',
+    metiers.every(
+      (m, i) => i === 0 || metiers[i - 1].etat !== m.etat || metiers[i - 1].rouloir.restantKg <= m.rouloir.restantKg,
+    ),
   )
   const shapeOk = metiers.every(
     (m) =>
@@ -104,27 +106,10 @@ async function main() {
     ),
   )
 
-  // ── GET /metiers/:id/production ──────────────────────
-  // Pick a métier that has actually produced since its visit, so the sum is
-  // non-trivial.
-  const withProd = metiers.find((m) => m.rouloir.produitKg > 0 && m.rouloir.derniereVisite)
-  check('a métier with production since its visit exists', !!withProd)
-  if (withProd) {
-    const prod = await api(`/maintenance-trm/metiers/${withProd.id}/production`)
-    check('GET /metiers/:id/production 200', prod.status === 200, prod.status)
-    check('OFs returned', (prod.json?.ofs ?? []).length > 0, prod.json?.ofs?.length)
-    // THE auditable claim: the drawer's rows add up to the list's counter.
-    const delta = Math.abs((prod.json?.totalKg ?? 0) - withProd.rouloir.produitKg)
-    check(
-      `production total matches the rouloir counter (${withProd.emplacement})`,
-      delta < 0.02,
-      { drawer: prod.json?.totalKg, list: withProd.rouloir.produitKg },
-    )
-    check(
-      'every OF is dated after the last visit',
-      (prod.json?.ofs ?? []).every((o: any) => !o.dateCreation || o.dateCreation > withProd.rouloir.derniereVisite),
-    )
-  }
+  check(
+    'entretiens per métier, each with kgDepuis',
+    metiers.every((m) => Array.isArray(m.entretiens) && m.entretiens.every((e: any) => 'kgDepuis' in e)),
+  )
 
   // ── Permission gate ──────────────────────────────────
   const target = metiers[0]
