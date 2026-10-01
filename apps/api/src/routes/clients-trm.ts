@@ -29,7 +29,7 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { IS_WINDOWS, esc } from '../lib/sst-shared.js'
 import {
   sqlText, numOf, strOf, pick, todayDigits, flag, intOf, floatOf,
-  requirePermission, TRM_PERMISSIONS, repairNames, countClientActivity, setClientFlag, readClientFlag,
+  requirePermission, TRM_PERMISSIONS, repairNames, countClientActivity, clientHasActivityBody, setClientFlag, readClientFlag,
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -582,7 +582,7 @@ clientsTrmRouter.get('/:id/deletability', async (req: Request, res: Response) =>
     const id = parseInt(req.params.id, 10)
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
     const activity = await countClientActivity(id)
-    res.json({ ...activity, deletable: activity.commandes === 0 && activity.marchandises === 0 })
+    res.json(activity)
   } catch (err) {
     console.error('Error checking TRM client deletability:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -628,12 +628,8 @@ clientsTrmRouter.delete('/:id', async (req: Request, res: Response) => {
     if (!(await requirePermission(req, res, 'delete_client', TRM_PERMISSIONS))) return
     if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
     const activity = await countClientActivity(id)
-    if (activity.commandes > 0 || activity.marchandises > 0) {
-      res.status(409).json({
-        error: 'client_has_activity',
-        message: 'Ce client a des commandes ou de la marchandise et ne peut pas être supprimé. Archivez-le à la place.',
-        ...activity,
-      })
+    if (!activity.deletable) {
+      res.status(409).json(clientHasActivityBody(activity))
       return
     }
     await query(`DELETE FROM client WHERE IDclient = ${id}`)

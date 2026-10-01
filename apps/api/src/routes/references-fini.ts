@@ -747,7 +747,7 @@ export async function buildFicheTarifsPdfData(
       if (!anyTranche) continue
       sectionRows.push({
         rlx: anyTranche.isMetrage ? '< 1' : String(anyTranche.rolls),
-        ml: anyTranche.isMetrage ? `< ${anyTranche.qte_ml}` : String(anyTranche.qte_ml),
+        qte: anyTranche.isMetrage ? `< ${anyTranche.qte_ml}` : String(anyTranche.qte_ml),
         prices: group.map((g) => {
           const t = g.tranches[i]
           return t && t.moPrixDeVenteAuMl > 0 ? t.moPrixDeVenteAuMl : null
@@ -761,6 +761,8 @@ export async function buildFicheTarifsPdfData(
       laize,
       poids,
       bio,
+      // The ref's own fiche tarifs is the catalogue price — by the Ml.
+      unit: 'Ml',
       colorisLabels: group.map((g) => g.label),
       rows: sectionRows,
     })

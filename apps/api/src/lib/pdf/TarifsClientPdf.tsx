@@ -9,8 +9,10 @@
 // right) above a quantity-tranche price grid with one price column per selected
 // coloris. The two quantity columns are tinted as an "axis panel" so the eye
 // separates the tranche axis from the price matrix. Prices are the
-// PrixDeVenteV4 €/Ml values (calcTarifRefFini), filtered by the
-// ref_client_colori.lst_tranche indices — matching the legacy figures exactly.
+// PrixDeVenteV4 values (calcTarifRefFini), filtered by the
+// ref_client_colori.lst_tranche indices — matching the legacy figures exactly —
+// in the section's unit: €/Ml, or €/Kg for a reference the client buys by the
+// Kg (LIVA #1253).
 
 import React from 'react'
 import { View, Text, StyleSheet } from '@react-pdf/renderer'
@@ -30,15 +32,17 @@ export interface TarifsSectionData {
   poids: number | null
   /** Organic cotton flag (ref_ecru.bio) */
   bio: boolean
+  /** Unit of the quantity column and of every price in the section */
+  unit: 'Kg' | 'Ml'
   /** One label per selected coloris — the table's price columns */
   colorisLabels: string[]
   /** Tranche rows (union of the coloris' lst_tranche indices, ascending) */
   rows: Array<{
     /** "< 1", "1", "2", … "30" */
     rlx: string
-    /** "< 44", "44", "89", … */
-    ml: string
-    /** €/Ml per coloris column — null renders an empty cell */
+    /** "< 44", "44", "89", … — in the section's unit */
+    qte: string
+    /** € per unit, per coloris column — null renders an empty cell */
     prices: Array<number | null>
   }>
 }
@@ -263,7 +267,12 @@ const styles = StyleSheet.create({
 
 // ── Component ────────────────────────────────────────────
 
+const UNIT_LONG: Record<TarifsSectionData['unit'], string> = { Ml: '€ / mètre linéaire', Kg: '€ / kilo' }
+
 export function TarifsClientPdf({ data }: { data: TarifsClientPdfData }) {
+  // Usually one unit for the whole fiche; a mix names both, and every section's
+  // quantity column carries its own.
+  const units = (['Ml', 'Kg'] as const).filter((u) => data.sections.some((s) => s.unit === u))
   return (
     <MalterreDocument
       documentType="Tarifs"
@@ -271,12 +280,16 @@ export function TarifsClientPdf({ data }: { data: TarifsClientPdfData }) {
       documentDate={data.dateDocument}
       title={`Fiche Tarifs ${data.clientNom}`}
     >
-      {/* Conditions strip — HT / mètre linéaire + validity, once at the top */}
+      {/* Conditions strip — HT / unit + validity, once at the top */}
       <View style={styles.intro}>
         <View style={styles.introItem}>
           <TagIcon size={11} />
           <Text style={styles.introLabel}>
-            Prix Hors Taxes en <Text style={styles.introStrong}>€ / mètre linéaire</Text> (Ml)
+            Prix Hors Taxes en {units.map((u, i) => (
+              <React.Fragment key={u}>
+                {i > 0 ? ' ou ' : ''}<Text style={styles.introStrong}>{UNIT_LONG[u]}</Text> ({u})
+              </React.Fragment>
+            ))}
           </Text>
         </View>
         {data.validUntil ? (
@@ -321,7 +334,7 @@ export function TarifsClientPdf({ data }: { data: TarifsClientPdfData }) {
           <View style={styles.table}>
             <View style={styles.headerRow}>
               <Text style={[styles.headerCell, styles.headerCellAxis, styles.colQty]}>Qté (Rlx)</Text>
-              <Text style={[styles.headerCell, styles.headerCellAxis, styles.colQty, styles.colQtyDivider]}>Qté (Ml)</Text>
+              <Text style={[styles.headerCell, styles.headerCellAxis, styles.colQty, styles.colQtyDivider]}>Qté ({s.unit})</Text>
               {s.colorisLabels.map((label, ci) => (
                 <Text key={ci} style={[styles.headerCell, styles.colPrice]}>{label}</Text>
               ))}
@@ -331,7 +344,7 @@ export function TarifsClientPdf({ data }: { data: TarifsClientPdfData }) {
               return (
                 <View key={ri} style={last ? styles.rowLast : styles.row}>
                   <Text style={[styles.cell, styles.cellAxis, styles.colQty]}>{r.rlx}</Text>
-                  <Text style={[styles.cell, styles.cellAxis, styles.colQty, styles.colQtyDivider]}>{r.ml}</Text>
+                  <Text style={[styles.cell, styles.cellAxis, styles.colQty, styles.colQtyDivider]}>{r.qte}</Text>
                   {r.prices.map((p, ci) => (
                     <Text key={ci} style={[styles.cell, styles.cellPrice, styles.colPrice]}>
                       {p != null ? `${fmtNum(p, 2)} €` : ''}

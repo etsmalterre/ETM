@@ -593,7 +593,11 @@ export function ClientsGestion() {
 // "deletion impossible" explanation. The API enforces the same rule
 // server-side (409 client_has_activity).
 
-interface Deletability { commandes: number; marchandises: number; deletable: boolean }
+interface Deletability {
+  commandes: number; marchandises: number; deletable: boolean
+  /** Everything still pointing at the client (orders, invoices, consigned yarn…). */
+  liens?: { table: string; label: string; n: number }[]
+}
 
 function DeleteOrArchiveDialog({ open, clientId, isDeleting, isArchiving, onCancel, onDelete, onArchive }: {
   open: boolean; clientId: number | null; isDeleting: boolean; isArchiving: boolean
@@ -614,7 +618,7 @@ function DeleteOrArchiveDialog({ open, clientId, isDeleting, isArchiving, onCanc
       open={open}
       title={archiveMode ? 'Archiver le client' : 'Supprimer le client'}
       description={archiveMode
-        ? 'Le client n’apparaîtra plus dans la liste « En cours ». Vous pourrez le désarchiver à tout moment.'
+        ? `${data?.liens?.length ? `Ce client ne peut pas être supprimé : il est encore utilisé (${data.liens.map((l) => `${l.n} ${l.label}`).join(', ')}). ` : ''}Le client n’apparaîtra plus dans la liste « En cours ». Vous pourrez le désarchiver à tout moment.`
         : 'Cette action supprimera le client, ses contacts et ses adresses. Elle est irréversible.'}
       variant={archiveMode ? 'default' : 'destructive'}
       confirmLabel={archiveMode ? 'Archiver' : 'Supprimer'}
@@ -1724,10 +1728,12 @@ interface RefColoris {
   tarif_mode: TarifMode; coefficient: number; contrats: ContratTarif[]; contrat_actif: ContratTarif | null; contrat_expire: boolean
 }
 interface ClientReference { IDdesignation_client: number; client_ref: string; IDref_fini: number; IDref_ecru: number; ref_interne: string; designation: string; avec_teinture: number; soumettre: number; unite: number; fil_non_facture: number[]; associees: number[]; coloris: RefColoris[] }
-/** Unit every price of a reference is negotiated and displayed in: €/Ml on an
- *  ennobli (fini), €/Kg on a tombé de métier — always sold by the Kg (#1144). */
+/** Unit every price of a reference is negotiated and displayed in: €/Kg on a
+ *  tombé de métier — always sold by the Kg (#1144) — and on an ennobli the
+ *  client buys by the Kg (its « Unité » set to Kg — Sigvaris, #1253), €/Ml on
+ *  any other ennobli. Mirrors `prixUnitOf` in the API's lib/tarif-client.ts. */
 type PrixUnit = 'Kg' | 'Ml'
-const prixUnitOf = (r: ClientReference): PrixUnit => (r.IDref_fini > 0 ? 'Ml' : 'Kg')
+const prixUnitOf = (r: ClientReference): PrixUnit => (r.IDref_fini > 0 && r.unite !== 1 ? 'Ml' : 'Kg')
 
 interface RefAssocieeLookup { IDref_fini: number; reference: string; designation: string }
 
@@ -2422,7 +2428,11 @@ function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs,
       queryClient.invalidateQueries({ queryKey: ['client-references', clientId] })
       onClose()
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Erreur lors de l\'enregistrement'),
+    // The server's French reason when it gives one (e.g. 409 unite_contrat, #1253).
+    onError: (e: unknown) => setError(
+      (e as { body?: { message?: string } })?.body?.message
+        ?? (e instanceof Error ? e.message : 'Erreur lors de l\'enregistrement'),
+    ),
   })
 
   const canSave = nom.trim().length > 0 && refId > 0 && !saveMut.isPending
@@ -2615,15 +2625,19 @@ function CostLine({ label, value }: { label: string; value: string }) {
 }
 
 /** §35 toggle-pill row for one negotiated tranche (15 / 30 rouleaux). */
-function TrancheToggleRow({ label, tranche, value, onChange, disabled }: {
-  label: string; tranche: TarifTranche | null; value: boolean; onChange: (v: boolean) => void; disabled: boolean
+function TrancheToggleRow({ label, tranche, unit, value, onChange, disabled }: {
+  label: string; tranche: TarifTranche | null; unit: PrixUnit; value: boolean; onChange: (v: boolean) => void; disabled: boolean
 }) {
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border/60 bg-white shadow-sm">
       <div className="min-w-0 flex-1">
         <p className="text-xs font-semibold">{label}</p>
         <p className="text-[10px] text-muted-foreground mt-0.5">
-          {tranche ? `${fmtNum(tranche.qte_ml)} Ml · ${fmtNum(tranche.moPrixDeVenteAuMl, 2)} €/Ml` : '—'}
+          {tranche
+            ? unit === 'Kg'
+              ? `${fmtNum(tranche.qte_kg, 1)} Kg · ${fmtNum(tranche.moPrixDeVenteAuKg, 2)} €/Kg`
+              : `${fmtNum(tranche.qte_ml)} Ml · ${fmtNum(tranche.moPrixDeVenteAuMl, 2)} €/Ml`
+            : '—'}
           {' · '}{value ? 'proposée au client' : 'non proposée'}
         </p>
       </div>
@@ -2670,11 +2684,12 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
     : allTranches.filter((_, i) => enabledIdx.includes(i))
   const current = tranches[Math.min(selectedTranche, Math.max(tranches.length - 1, 0))] ?? null
   const eurKg = (v: number) => `${fmtNum(v, 2)} €/Kg`
-  // A tombé de métier is priced and sold by the Kg: quantities and prices show
-  // in Kg, and a contract price is €/Kg as is (#1144).
+  // Quantities and prices show in the reference's selling unit, and a contract
+  // price is in that unit as is: Kg on a tombé de métier (#1144) and on an
+  // ennobli sold by the Kg (#1253), Ml otherwise.
   const isEcru = data?.kind === 'ecru'
   const unit: PrixUnit = data?.prix_unit ?? 'Ml'
-  const qteOf = (t: TarifTranche) => (isEcru ? t.qte_kg : t.qte_ml)
+  const qteOf = (t: TarifTranche) => (unit === 'Kg' ? t.qte_kg : t.qte_ml)
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="max-w-lg" onClose={onClose}>
@@ -2764,7 +2779,7 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                               {fmtNum(t.prixContrat, 2)} €
                             </span>
                           ) : (
-                            <>{fmtNum(isEcru ? t.moPrixDeVenteAuKg : t.moPrixDeVenteAuMl, 2)} €</>
+                            <>{fmtNum(unit === 'Kg' ? t.moPrixDeVenteAuKg : t.moPrixDeVenteAuMl, 2)} €</>
                           )}
                         </td>
                       </tr>
@@ -2777,11 +2792,11 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                 // on the 15-roll cost basis (bulk dye/treatment bands, -5%
                 // tricotage) — the coefficient is then DERIVED from the fixed
                 // contract price against those bulk costs ("Coeff Calculé").
-                const isContrat = current.prixContrat != null && (isEcru || (data?.rendement ?? 0) > 0)
+                const isContrat = current.prixContrat != null && (unit === 'Kg' || (data?.rendement ?? 0) > 0)
                 const basis = isContrat ? (allTranches.find((t) => !t.isMetrage && t.rolls === 15) ?? current) : current
                 const rdt = Math.round((data?.rendement ?? 0) * 100) / 100
-                // An écru contract IS a €/Kg figure; a fini one is €/Ml → Kg through the rendement.
-                const pvKgContrat = isContrat ? (isEcru ? current.prixContrat! : current.prixContrat! * rdt) : 0
+                // A Kg contract IS a €/Kg figure; a €/Ml one goes → Kg through the rendement.
+                const pvKgContrat = isContrat ? (unit === 'Kg' ? current.prixContrat! : current.prixContrat! * rdt) : 0
                 const coefDerive = isContrat
                   ? Math.round(100 * (1 - basis.moRevient / (pvKgContrat * (1 - basis.tauxFraisDePort))))
                   : 0
@@ -2803,7 +2818,7 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                       <>
                         <CostLine label="Coefficient (calculé du contrat)" value={String(coefDerive)} />
                         <CostLine label={`Prix de vente au Kg · port ${Math.round(basis.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(pvKgContrat, 2)} €/Kg`} />
-                        {!isEcru && <CostLine label={`Prix de vente au Ml · port ${Math.round(basis.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(current.prixContrat!, 2)} €/Ml`} />}
+                        {unit === 'Ml' && <CostLine label={`Prix de vente au Ml · port ${Math.round(basis.tauxFraisDePort * 100)}% inclus`} value={`${fmtNum(current.prixContrat!, 2)} €/Ml`} />}
                       </>
                     ) : (
                       <>
@@ -2912,7 +2927,7 @@ function TarifModeDialog({ open, onClose, clientId, target }: {
   }, [open, target])
 
   const rccId = target?.coloris.IDref_client_colori ?? 0
-  // Same computation the view dialog shows — here it feeds the Ml / €/Ml info
+  // Same computation the view dialog shows — here it feeds the quantity / price info
   // on the 15/30 toggle rows (cache-shared with the view dialog).
   const tarifQ = useQuery<TarifResult>({
     queryKey: ['client-tarif', clientId, rccId],
@@ -3079,9 +3094,9 @@ function TarifModeDialog({ open, onClose, clientId, target }: {
           {mode !== 'contrat' && (
             <div className="pt-2 space-y-2">
               <p className="text-xs font-semibold text-accent uppercase tracking-wide">Tranches négociées</p>
-              <TrancheToggleRow label="15 rouleaux" tranche={allTranches[7] ?? null} value={t15}
+              <TrancheToggleRow label="15 rouleaux" tranche={allTranches[7] ?? null} unit={unit} value={t15}
                 onChange={setT15} disabled={saveMut.isPending} />
-              <TrancheToggleRow label="30 rouleaux" tranche={allTranches[8] ?? null} value={t30}
+              <TrancheToggleRow label="30 rouleaux" tranche={allTranches[8] ?? null} unit={unit} value={t30}
                 onChange={setT30} disabled={saveMut.isPending} />
             </div>
           )}

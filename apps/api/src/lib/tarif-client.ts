@@ -132,10 +132,21 @@ export async function fetchTarifModes(rccs: { id: number; contrat: number }[]): 
   return out
 }
 
+/** Unit every price of a client reference is negotiated and shown in. A tombé
+ *  de métier is always sold by the Kg (#1144); a fini by the Ml, unless its
+ *  designation is marked sold by the Kg (`designation_client.unite = 1` —
+ *  Sigvaris, LIVA #1253). Its contract prices are in that unit too. */
+export type PrixUnit = 'Kg' | 'Ml'
+export function prixUnitOf(d: { IDref_fini: number; unite: number }): PrixUnit {
+  return d.IDref_fini > 0 && d.unite !== 1 ? 'Ml' : 'Kg'
+}
+
 // ── Order-line resolution (client × line reference × coloris → tarif mode) ──
 
 export interface LigneTarifMode extends TarifModeInfo {
   IDref_client_colori: number
+  /** Unit of the pair's contract prices — its designation's `prixUnitOf`. */
+  prix_unit: PrixUnit
   /** Newest contract on the pair, active or not — the expiry date the UI shows. */
   dernier_contrat: ContratTarifInfo | null
 }
@@ -198,9 +209,11 @@ export async function resolveLigneTarifMode(p: {
   const rccId = numOf(match.IDref_client_colori)
   const mode = (await fetchTarifModes([{ id: rccId, contrat: numOf(match.contrat) }])).get(rccId)
   if (!mode) return null
+  const desig = dRows.find((r) => numOf(r.IDdesignation_client) === numOf(match.IDdesignation_client))
   return {
     ...mode,
     IDref_client_colori: rccId,
+    prix_unit: prixUnitOf({ IDref_fini: numOf(desig?.IDref_fini), unite: numOf(desig?.unite) }),
     // contrats is sorted newest-first by fetchTarifModes.
     dernier_contrat: mode.contrats[0] ?? null,
   }

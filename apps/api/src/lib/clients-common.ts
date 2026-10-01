@@ -16,6 +16,7 @@
 
 import type { Request, Response, Router as RouterType } from 'express'
 import { query, queryB64Text } from './hfsql-auto.js'
+import { mpsPg } from './mps-pg.js'
 import { IS_WINDOWS, esc, canNameAccented } from './sst-shared.js'
 import { userHasPermission } from './permissions.js'
 import type { PermissionKey } from './permission-keys.js'
@@ -183,17 +184,76 @@ export async function repairNames(rows: { IDclient: number; nom: string | null }
 
 // ── Delete-vs-archive ──────────────────────────────────
 
-/** A client with commandes or marchandise (client-owned finished rolls) can
- *  never be hard-deleted — only archived. Marchandise shipped to the client
- *  always hangs off a commande_client, so the two counts cover everything the
- *  history sub-views show. Deliberately NOT scoped by IDsociete: a client row
- *  is owned by exactly one ledger, so its activity is all in that ledger. */
-export async function countClientActivity(id: number): Promise<{ commandes: number; marchandises: number }> {
-  const [cc, sf] = await Promise.all([
-    query<{ nb: number }>(`SELECT COUNT(*) AS nb FROM commande_client WHERE IDclient = ${id}`),
-    query<{ nb: number }>(`SELECT COUNT(*) AS nb FROM stock_fini WHERE IDProprietaire = ${id}`),
-  ])
-  return { commandes: numOf(cc[0]?.nb), marchandises: numOf(sf[0]?.nb) }
+/** Tables the delete itself removes with the client — never a blocker. */
+const CLIENT_OWNED_TABLES = new Set(['client', 'contact', 'adresse'])
+
+/** French label of a table that still points at a client, for the 409 message. */
+const CLIENT_LIEN_LABELS: Record<string, string> = {
+  commande_client: 'commandes',
+  facture: 'factures',
+  facture_prov: 'factures provisoires',
+  devis_etm: 'devis',
+  designation_client: 'références',
+  stock_fil: 'lots de fil confiés',
+  stat_stock_fil: 'mouvements de fil confié',
+  'stock_ecru.idproprietaire': 'pièces écru',
+  'stock_fini.idproprietaire': 'rouleaux finis',
+  dossier_qualite: 'dossiers qualité',
+  retour_client: 'retours client',
+  etude_col: 'études coloris',
+  expedition_divers: 'expéditions divers',
+  prospect: 'prospects',
+}
+
+export interface ClientActivity {
+  commandes: number
+  marchandises: number
+  /** Every row anywhere in `mps` still pointing at the client (the delete
+   *  removes contacts and addresses itself), by table. */
+  liens: Array<{ table: string; label: string; n: number }>
+  deletable: boolean
+}
+
+/** A client anything still points at can never be hard-deleted — only
+ *  archived. Asks the catalog for EVERY `idclient` column (plus the owner
+ *  columns of écru / fini stock) instead of a hand-kept list: until LIVA #1252
+ *  only commandes and finished rolls were checked, so a TRM client holding
+ *  80 kg of consigned yarn (stock_fil.IDclient) passed as « empty » and could
+ *  be deleted, orphaning the yarn. Deliberately NOT scoped by IDsociete: a
+ *  client row is owned by exactly one ledger, so its activity is all there. */
+export async function countClientActivity(id: number): Promise<ClientActivity> {
+  const sql = mpsPg()
+  const cols = await sql<{ table_name: string; column_name: string }[]>`
+    SELECT c.table_name, c.column_name FROM information_schema.columns c
+    JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+    WHERE c.table_schema = current_schema() AND t.table_type = 'BASE TABLE'
+      AND (c.column_name = 'idclient'
+        OR (c.column_name = 'idproprietaire' AND c.table_name IN ('stock_ecru', 'stock_fini')))`
+  const targets = cols.filter((c) => !CLIENT_OWNED_TABLES.has(c.table_name))
+  const counts = await Promise.all(targets.map(async (c) => {
+    const [row] = await sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM ${sql(c.table_name)} WHERE ${sql(c.column_name)} = ${id}`
+    const key = c.column_name === 'idclient' ? c.table_name : `${c.table_name}.${c.column_name}`
+    return { table: key, label: CLIENT_LIEN_LABELS[key] ?? c.table_name, n: row?.n ?? 0 }
+  }))
+  const liens = counts.filter((c) => c.n > 0).sort((a, b) => b.n - a.n)
+  const nOf = (key: string) => liens.find((l) => l.table === key)?.n ?? 0
+  return {
+    commandes: nOf('commande_client'),
+    marchandises: nOf('stock_fini.idproprietaire'),
+    liens,
+    deletable: liens.length === 0,
+  }
+}
+
+/** The 409 body of a refused client delete — names what still points at it. */
+export function clientHasActivityBody(activity: ClientActivity) {
+  const detail = activity.liens.map((l) => `${l.n} ${l.label}`).join(', ')
+  return {
+    error: 'client_has_activity',
+    message: `Ce client est encore utilisé (${detail}) et ne peut pas être supprimé. Archivez-le à la place.`,
+    ...activity,
+  }
 }
 
 // ── Accented boolean flags (archivé / bloqué) ──────────

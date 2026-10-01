@@ -42,7 +42,7 @@ import {
 } from './pricing-fini-tarif.js'
 import {
   resolveLigneTarifMode, contratPrixForTrancheIdx,
-  type ContratTarifInfo, type LigneTarifMode,
+  type ContratTarifInfo, type LigneTarifMode, type PrixUnit,
 } from './tarif-client.js'
 import { geom, pickTrancheIndex } from './roll-geometry.js'
 import { findPalierAssocie, type PalierAssocie } from './palier-associe.js'
@@ -127,30 +127,26 @@ export function expiredContractMessage(mode: LigneTarifMode): string {
 }
 
 /** Per-tranche price function of an ACTIVE contract, in the line's unit.
- *  `prix_saisi` is negotiated in the reference's selling unit: **€/Ml on a fini,
- *  €/Kg on an écru** — a tombé de métier is always sold by the Kg (Vincent,
+ *  `prix_saisi` is negotiated in the reference's selling unit (`prixUnitOf`):
+ *  **€/Kg on an écru** — a tombé de métier is always sold by the Kg (Vincent,
  *  2026-09-10; LIVA #1144: Gant Maille's 10,01 €/Kg contract on ref 254 was
- *  being multiplied by the rendement into 28,23 €/Kg). A line in the other unit
+ *  being multiplied by the rendement into 28,23 €/Kg) — and on a fini sold by
+ *  the Kg (LIVA #1253), **€/Ml on any other fini**. A line in the other unit
  *  converts through the rendement (1 kg = rendement Ml). Returns null when the
  *  contract prices nothing, or when the conversion has no rendement to work
  *  with: the line then falls through to manual entry rather than silently
  *  billing the standard grid. */
-function contratPriceFn(
-  contrat: ContratTarifInfo, unite: number, rendement: number, kind: 'fini' | 'ecru',
+export function contratPriceFn(
+  contrat: ContratTarifInfo, unite: number, rendement: number, base: PrixUnit,
 ): ((j: number) => number) | null {
   if (contratPrixForTrancheIdx(contrat, 8) == null) return null
-  if (kind === 'ecru') {
-    if (unite === 3 && !(rendement > 0)) return null
-    return (j: number) => {
-      const kg = contratPrixForTrancheIdx(contrat, j) ?? 0
-      return round2(unite === 1 ? kg : kg / rendement)
-    }
-  }
-  if (unite === 1 && !(rendement > 0)) return null
-  return (j: number) => {
-    const ml = contratPrixForTrancheIdx(contrat, j) ?? 0
-    return round2(unite === 3 ? ml : ml * rendement)
-  }
+  const at = (j: number) => contratPrixForTrancheIdx(contrat, j) ?? 0
+  const lineUnit: PrixUnit = unite === 1 ? 'Kg' : 'Ml'
+  if (lineUnit === base) return (j: number) => round2(at(j))
+  if (!(rendement > 0)) return null
+  return base === 'Kg'
+    ? (j: number) => round2(at(j) / rendement)
+    : (j: number) => round2(at(j) * rendement)
 }
 
 /** The tarif-mode fields of the result, derived from the resolved mode. */
@@ -263,7 +259,7 @@ export async function calcLignePriceClient(p: {
     const standardAt = (j: number) => (p.unite === 3 ? tarif.tranches[j].moPrixDeVenteAuMl : tarif.tranches[j].moPrixDeVenteAuKg)
     // An active contract replaces the grid entirely — including the next-tranche
     // nudge, which may only offer bands that contract actually negotiated.
-    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, 'fini') : null
+    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, mode?.prix_unit ?? 'Ml') : null
     if (contrat && !contratAt) return { ...base, rollSize, nRolls, cleanQty, exact }
     const priceAt = contratAt ?? standardAt
     const prix = priceAt(idx)
@@ -290,7 +286,7 @@ export async function calcLignePriceClient(p: {
     const { nRolls, cleanQty, exact } = geom(p.quantite, rollSize)
     const idx = pickTrancheIndex(nRolls)
     const standardAt = (j: number) => (p.unite === 3 ? tarif.tranches[j].moPrixDeVenteAuMl : tarif.tranches[j].moPrixDeVenteAuKg)
-    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, 'ecru') : null
+    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, 'Kg') : null
     if (contrat && !contratAt) return { ...base, rollSize, nRolls, cleanQty, exact }
     const priceAt = contratAt ?? standardAt
     const prix = priceAt(idx)

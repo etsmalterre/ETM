@@ -31,12 +31,12 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 // Shared with the TRM ledger (routes/clients-trm.ts) — see lib/clients-common.ts.
 import {
   sqlText, numOf, strOf, pick, todayDigits, dateDigitsOnly, flag, intOf, floatOf,
-  requirePermission, ETM_PERMISSIONS, repairNames, countClientActivity, setClientFlag,
+  requirePermission, ETM_PERMISSIONS, repairNames, countClientActivity, clientHasActivityBody, setClientFlag,
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
 import { calcTarifRefFini, calcTarifRefEcru } from '../lib/pricing-fini-tarif.js'
 import {
-  NB_RLX_TO_TRANCHE_IDX, DEFAULT_TRANCHE_IDX, parseLstTrancheIdx, fetchTarifModes,
+  NB_RLX_TO_TRANCHE_IDX, DEFAULT_TRANCHE_IDX, parseLstTrancheIdx, fetchTarifModes, prixUnitOf,
 } from '../lib/tarif-client.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
 import { sendMail } from '../lib/gmail.js'
@@ -51,9 +51,28 @@ import { parseAssocieeCsv } from '../lib/refs-associees.js'
 
 export const clientsRouter: RouterType = Router()
 
+/** ETM's ledger. The `client` table also holds TRM's (2) and Confection's (3)
+ *  customers — TRM's Sigvaris row owns the consigned yarn — and they must
+ *  neither be listed nor opened here (LIVA #1252: Isabelle saw TRM's SIGVARIS
+ *  as an « empty » duplicate of ETM's and asked to delete it). */
+const SOCIETE_ETM = 1
 
-
-
+// Every /:id route answers 404 for a client of another company — one gate for
+// the fiche, its writes, its sub-views and the shared contact/adresse routes.
+clientsRouter.param('id', async (_req: Request, res: Response, next, raw: string) => {
+  const id = parseInt(raw, 10)
+  if (isNaN(id) || id <= 0) { next(); return } // each handler answers 400 itself
+  try {
+    const rows = await query<{ IDsociete: number }>(`SELECT IDsociete FROM client WHERE IDclient = ${id}`)
+    if (rows.length > 0 && numOf(rows[0].IDsociete) !== SOCIETE_ETM) {
+      res.status(404).json({ error: 'Client not found' })
+      return
+    }
+    next()
+  } catch (err) {
+    next(err)
+  }
+})
 
 // ── Detail column list (Windows path — no accented names) ──
 
@@ -98,7 +117,7 @@ function shapeClient(r: Record<string, unknown>) {
 // ════════════════════════════════════════════════════════
 //  LIST  — GET /api/clients
 // ════════════════════════════════════════════════════════
-// Returns every visible client + an `archive` flag so the FE can offer the
+// Returns every visible ETM client + an `archive` flag so the FE can offer the
 // En cours / Archivé / Tous filter without ever naming `archivé` in a SELECT.
 clientsRouter.get('/', async (_req: Request, res: Response) => {
   try {
@@ -106,16 +125,16 @@ clientsRouter.get('/', async (_req: Request, res: Response) => {
     const archivedSet = new Set<number>()
     if (IS_WINDOWS) {
       rows = await query<Record<string, unknown>>(
-        `SELECT IDclient, nom, tel, est_visible, client_interne FROM client WHERE est_visible = 1 ORDER BY nom`,
+        `SELECT IDclient, nom, tel, est_visible, client_interne FROM client WHERE est_visible = 1 AND IDsociete = ${SOCIETE_ETM} ORDER BY nom`,
       )
       // WHERE tolerates the accented name on Windows ODBC (unlike a SELECT list).
       const arch = await query<{ IDclient: number }>(
-        `SELECT IDclient FROM client WHERE est_visible = 1 AND archivé = 1`,
+        `SELECT IDclient FROM client WHERE est_visible = 1 AND IDsociete = ${SOCIETE_ETM} AND archivé = 1`,
       )
       for (const a of arch) archivedSet.add(Number(a.IDclient))
     } else {
       rows = await query<Record<string, unknown>>(
-        `SELECT * FROM client WHERE est_visible = 1 ORDER BY nom`,
+        `SELECT * FROM client WHERE est_visible = 1 AND IDsociete = ${SOCIETE_ETM} ORDER BY nom`,
       )
     }
     const shaped = rows.map((r) => ({
@@ -518,7 +537,7 @@ clientsRouter.get('/:id/deletability', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
     const activity = await countClientActivity(id)
-    res.json({ ...activity, deletable: activity.commandes === 0 && activity.marchandises === 0 })
+    res.json(activity)
   } catch (err) {
     console.error('Error checking client deletability:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -566,12 +585,8 @@ clientsRouter.delete('/:id', async (req: Request, res: Response) => {
     if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (!(await requireDeleteClientPermission(req, res))) return
     const activity = await countClientActivity(id)
-    if (activity.commandes > 0 || activity.marchandises > 0) {
-      res.status(409).json({
-        error: 'client_has_activity',
-        message: 'Ce client a des commandes ou de la marchandise et ne peut pas être supprimé. Archivez-le à la place.',
-        ...activity,
-      })
+    if (!activity.deletable) {
+      res.status(409).json(clientHasActivityBody(activity))
       return
     }
     await query(`DELETE FROM client WHERE IDclient = ${id}`)
@@ -1109,6 +1124,16 @@ clientsRouter.put('/:id/references/:did', async (req: Request, res: Response) =>
     if (rows.length === 0) { res.status(404).json({ error: 'Reference not found' }); return }
     const original = normalizeDesignationRow(rows[0])
 
+    // A contract's prices are typed in the reference's selling unit: flipping
+    // Ml ↔ Kg under one would silently re-read 12 €/Ml as 12 €/Kg (#1253).
+    if (prixUnitOf(original) !== prixUnitOf(b) && await designationHasContrat(did)) {
+      res.status(409).json({
+        error: 'unite_contrat',
+        message: 'Cette référence a des contrats tarifaires négociés dans son unité actuelle : l’unité de vente ne peut pas changer.',
+      })
+      return
+    }
+
     // Replace the row (accented fil_non_facturé can't be named in an UPDATE);
     // archivé / caché / associee are preserved from the original.
     const updated: DesignationRow = {
@@ -1141,6 +1166,19 @@ clientsRouter.put('/:id/references/:did', async (req: Request, res: Response) =>
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+/** Whether any coloris of a client reference carries a contract (any state). */
+async function designationHasContrat(did: number): Promise<boolean> {
+  const rcc = await query<{ IDref_client_colori: number }>(
+    `SELECT IDref_client_colori FROM ref_client_colori WHERE IDdesignation_client = ${did}`,
+  )
+  const ids = rcc.map((r) => numOf(r.IDref_client_colori)).filter((n) => n > 0)
+  if (ids.length === 0) return false
+  const ct = await query<{ nb: number }>(
+    `SELECT COUNT(*) AS nb FROM contrat_tarif WHERE IDref_client_colori IN (${ids.join(',')})`,
+  )
+  return numOf(ct[0]?.nb) > 0
+}
 
 /** Catalog coloris ids selectable for a client reference, in whichever rcc
  *  column applies (mirrors /commandes-client/lookups/colori-fini | colori-ecru). */
@@ -1534,9 +1572,11 @@ async function fetchClientRcc(clientId: number, rccId: number): Promise<{
   IDref_ecru: number
   IDref_fini_colori: number
   IDcolori_ecru: number
+  /** designation_client.unite — 1 = sold by the Kg (see prixUnitOf). */
+  unite: number
 } | null> {
   const rows = await query<Record<string, unknown>>(
-    `SELECT rcc.IDref_client_colori, rcc.contrat, rcc.lst_tranche, rcc.IDref_fini_colori, rcc.IDcolori_ecru, dc.IDref_fini, dc.IDref_ecru ` +
+    `SELECT rcc.IDref_client_colori, rcc.contrat, rcc.lst_tranche, rcc.IDref_fini_colori, rcc.IDcolori_ecru, dc.IDref_fini, dc.IDref_ecru, dc.unite ` +
       `FROM ref_client_colori rcc ` +
       `INNER JOIN designation_client dc ON dc.IDdesignation_client = rcc.IDdesignation_client ` +
       `WHERE rcc.IDref_client_colori = ${rccId} AND dc.IDclient = ${clientId}`,
@@ -1551,6 +1591,7 @@ async function fetchClientRcc(clientId: number, rccId: number): Promise<{
     IDref_ecru: numOf(r.IDref_ecru),
     IDref_fini_colori: numOf(r.IDref_fini_colori),
     IDcolori_ecru: numOf(r.IDcolori_ecru),
+    unite: numOf(r.unite),
   }
 }
 
@@ -1558,8 +1599,10 @@ async function fetchClientRcc(clientId: number, rccId: number): Promise<{
 // client's tarif mode: coefficient fixe recomputes every tranche with the fixed
 // margin; an ACTIVE contrat surfaces its negotiated price as `prixContrat` on the
 // matching tranches (expired contracts fall back to the standard calculation).
-// A fini designation prices through `calcTarifRefFini` in €/Ml; a tombé-de-métier
-// one through `calcTarifRefEcru` in €/Kg (`prix_unit` says which — LIVA #1144).
+// A fini designation prices through `calcTarifRefFini`, a tombé-de-métier one
+// through `calcTarifRefEcru`; `prix_unit` says which unit the screen shows and
+// the contract is negotiated in — €/Kg on an écru (#1144) and on a fini sold by
+// the Kg (#1253), €/Ml otherwise.
 clientsRouter.get('/:id/coloris/:rccId/tarif', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -1600,7 +1643,7 @@ clientsRouter.get('/:id/coloris/:rccId/tarif', async (req: Request, res: Respons
       tranches: tarif.tranches.map((t, i) => ({ ...t, prixContrat: contratPrixByIdx.get(i) ?? null })),
       tranche_idx: parseLstTrancheIdx(rcc.lst_tranche),
       // Unit of every price on this breakdown, contract ones included.
-      prix_unit: rcc.IDref_fini > 0 ? 'Ml' : 'Kg',
+      prix_unit: prixUnitOf(rcc),
       tarif_mode: mode.tarif_mode,
       coefficient: mode.coefficient,
       contrats: mode.contrats,
@@ -2000,7 +2043,8 @@ registerContactAdresseRoutes(clientsRouter, ETM_PERMISSIONS)
 // ════════════════════════════════════════════════════════
 // Port of the legacy Choix_Matiere_Tarif → "Fiche Tarif" report. The client
 // picks (référence × coloris) pairs (= ref_client_colori rows); each pair's
-// €/Ml prices come from calcTarifRefFini (PrixDeVenteV4), keeping only the
+// prices come from calcTarifRefFini (PrixDeVenteV4) in the designation's
+// selling unit (€/Ml, or €/Kg when sold by the Kg — #1253), keeping only the
 // tranches listed in ref_client_colori.lst_tranche ("0,1,2,3,4,5,6" = indices
 // into the 9-tranche array: <1,1,2,3,4,5,10,15,30 rolls).
 //
@@ -2142,7 +2186,7 @@ async function buildTarifsPdfData(clientId: number, rccIds: number[]): Promise<T
     let trancheIdx = parseLstTrancheIdx(strOf(r.lst_tranche))
 
     // Client tarif mode overrides: an ACTIVE contrat prints exactly its
-    // negotiated tranches at their €/Ml; coefficient fixe recomputes every
+    // negotiated tranches at their price (in the designation's unit); coefficient fixe recomputes every
     // tranche with the fixed margin. An EXPIRED contrat means the ref is not
     // sellable until a new contract is signed — never print standard prices
     // for it, drop the coloris from the fiche entirely.
@@ -2180,6 +2224,8 @@ async function buildTarifsPdfData(clientId: number, rccIds: number[]): Promise<T
     const finiId = numOf(desig.IDref_fini)
     const fini = finiById.get(finiId)!
     const ecru = ecruById.get(fini.IDref_ecru)
+    const unit = prixUnitOf({ IDref_fini: finiId, unite: numOf(desig.unite) })
+    const qteOf = (t: { qte_ml: number; qte_kg: number }) => fmtQteTarif(unit === 'Kg' ? t.qte_kg : t.qte_ml)
 
     const tarifs = await Promise.all(
       cols.map((c) => calcTarifRefFini(finiId, c.colorisId, c.coefficient > 0 ? { coefficient: c.coefficient / 100 } : undefined)),
@@ -2195,13 +2241,14 @@ async function buildTarifsPdfData(clientId: number, rccIds: number[]): Promise<T
       if (!anyTranche) continue
       rows.push({
         rlx: anyTranche.isMetrage ? '< 1' : String(anyTranche.rolls),
-        ml: anyTranche.isMetrage ? `< ${anyTranche.qte_ml}` : String(anyTranche.qte_ml),
+        qte: anyTranche.isMetrage ? `< ${qteOf(anyTranche)}` : qteOf(anyTranche),
         prices: cols.map((c, ci) => {
           if (!c.trancheIdx.includes(i)) return null
           const contrat = c.contratPrix?.get(i)
           if (contrat !== undefined) return contrat
           const t = tarifs[ci].tranches[i]
-          return t && t.moPrixDeVenteAuMl > 0 ? t.moPrixDeVenteAuMl : null
+          const prix = t ? (unit === 'Kg' ? t.moPrixDeVenteAuKg : t.moPrixDeVenteAuMl) : 0
+          return prix > 0 ? prix : null
         }),
       })
     }
@@ -2213,6 +2260,7 @@ async function buildTarifsPdfData(clientId: number, rccIds: number[]): Promise<T
       laize: fini.laize,
       poids: fini.poids,
       bio: ecru?.bio ?? false,
+      unit,
       colorisLabels: cols.map((c) => c.label),
       rows,
     })
@@ -2228,6 +2276,12 @@ async function buildTarifsPdfData(clientId: number, rccIds: number[]): Promise<T
     validUntil: formatDateShortFr(validUntil),
     sections,
   }
+}
+
+/** A tranche quantity as printed: whole Ml, Kg to one decimal at most
+ *  (a roll weighs e.g. 22,5 kg), French comma. */
+function fmtQteTarif(v: number): string {
+  return String(Math.round(v * 10) / 10).replace('.', ',')
 }
 
 async function renderTarifsPdfBuffer(data: TarifsClientPdfData): Promise<Buffer> {
