@@ -1,6 +1,7 @@
 // « + Nouveau » of Paramètres › Utilisateurs: creates an account (a person, or
 // a station account for an enrolled PC) in THIS app, an « appareils » account
-// (atelier phones, pointeuses — member of no app, API lib/types-compte.ts),
+// (atelier phones, pointeuses — member of no app, API lib/types-compte.ts;
+// offered in TRM only, the only screen that lists it),
 // or brings in an account
 // of the other app (« Compte existant » — Nicolas works for both companies:
 // one account, member of both). The password is set afterwards from the
@@ -96,7 +97,8 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
               options={[
                 { id: 1, primary: 'Personne', description: 'Se connecte avec un identifiant et un mot de passe.' },
                 { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code. Ses écrans et ses droits sont ceux du compte.' },
-                { id: 4, primary: 'Appareils d’atelier', description: 'Téléphones et pointeuses qui ont leur propre application. Aucun accès à l’ERP.' },
+                // Devices are TRM's: ETM's screen does not list such an account.
+                ...(app === 'trm' ? [{ id: 4 as const, primary: 'Appareils d’atelier', description: 'Téléphones et pointeuses qui ont leur propre application. Aucun accès à l’ERP.' }] : []),
                 { id: 3, primary: 'Compte existant', description: 'Une personne qui a déjà un compte dans l’autre application.' },
               ]}
             />

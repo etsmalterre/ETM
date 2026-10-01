@@ -12,8 +12,10 @@
 //
 // Each company has its own users (API lib/utilisateur-apps.ts): the list shows
 // the members of the app this bundle is (`useAppCode()`, set by AuthGate) —
-// plus every « appareils » account, in ETM and in TRM alike: it is a member of
-// neither, and hiding it from both would leave its devices unmanageable;
+// plus, in TRM only, every « appareils » account: it is a member of neither
+// app, but its devices (atelier phones, pointeuses, TRS) are all TRM's, so
+// ETM's list never shows it (2026-10-01 — it was noise there, and a phone
+// could be revoked from the wrong app);
 // the Compte panel adds or removes an account from either app, « + Nouveau »
 // creates one in this app or brings in an account of the other.
 //
@@ -219,11 +221,12 @@ export function SettingsUtilisateurs({
   const isLoading = usersLoading || comptesLoading
 
   // This app's members only — the other company's users live in its own
-  // screen. Appareils accounts belong to no app: both screens list them.
+  // screen. Appareils accounts belong to no app; their devices are TRM's, so
+  // only TRM's screen lists them.
   const users = useMemo(
     () => (allUsers ?? []).filter((u) => {
       const c = compteById.get(u.IDutilisateur)
-      return !!c && (c.apps.includes(app) || c.typeCompte === 'appareils')
+      return !!c && (c.apps.includes(app) || (c.typeCompte === 'appareils' && app === 'trm'))
     }),
     [allUsers, compteById, app],
   )
