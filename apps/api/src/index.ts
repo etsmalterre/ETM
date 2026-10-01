@@ -41,6 +41,7 @@ import { rapportsTrmRouter } from './routes/rapports-trm.js'
 import { importSageRouter, importSageTrmRouter } from './routes/import-sage.js'
 import { planningAtelierRouter } from './routes/planning-atelier.js'
 import { ofTrmRouter } from './routes/of-trm.js'
+import { planningProdTrmRouter } from './routes/planning-prod-trm.js'
 import { recorderRouter } from './routes/recorder.js'
 import { visitageTrmRouter } from './routes/visitage-trm.js'
 import { atelierRouter } from './routes/atelier.js'
@@ -196,6 +197,8 @@ app.use('/api/outils-trm/import-sage', importSageTrmRouter)
 app.use('/api/planning-atelier', planningAtelierRouter)
 // TRM production orders (Gestion des OF) — consumed by the TRM web app.
 app.use('/api/of-trm', ofTrmRouter)
+// TRM Production › Planning (LIVA #1250) — commande lines on the métiers' timeline.
+app.use('/api/planning-prod-trm', planningProdTrmRouter)
 // TRS data collector (repo C:devetsmalterreTRS) - the ONLY writer of
 // evenement_machine, replacing the WinDev Data_Recorder_V2 daemon on 10.10.11.2.
 // Guarded by a shared secret (RECORDER_TOKEN), not a user session.

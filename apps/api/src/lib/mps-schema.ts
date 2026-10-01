@@ -185,6 +185,36 @@ ALTER TABLE session
   ADD COLUMN app text CHECK (app IN ('etm', 'trm'));
 `,
   },
+  {
+    // TRM Production › Planning (LIVA #1250, lib/planning-prod-trm.ts). Dates
+    // are computed on every read and never stored: these tables keep only
+    // what a person chose.
+    //  - planning_prod_reglage: the one atelier-wide working régime used past
+    //    the filled bonnetier planning (single row, id = 1).
+    //  - planning_prod_ligne: a commande line someone placed by hand — its
+    //    métier and its place among the lines (not OFs) of that métier. No
+    //    row = placed automatically. Replaces the legacy
+    //    ligne_commande_client.IDmachine_planning / planning_depart /
+    //    planning_fin, left untouched.
+    name: '0006_planning_prod_trm',
+    sql: `
+CREATE TABLE planning_prod_reglage (
+  id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  regime text NOT NULL DEFAULT '3x8' CHECK (regime IN ('3x8', '2x8', '2x7', 'custom')),
+  horaires jsonb,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par bigint NOT NULL DEFAULT 0
+);
+CREATE TABLE planning_prod_ligne (
+  idligne_commande_client bigint PRIMARY KEY,
+  idmachine bigint NOT NULL,
+  rang integer NOT NULL DEFAULT 0,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par bigint NOT NULL DEFAULT 0
+);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'planning_prod_reglage, planning_prod_ligne')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -269,6 +269,16 @@ export const TRM_PERMISSION_KEYS = [
   // rest on purpose: it re-ranks the métier and can flip the next OF active,
   // which is the most consequential button on the screen, not a lesser one.
   {
+    key: 'edit_planning_prod',
+    label: 'Édition du planning de production',
+    description:
+      'Autorise, dans Production > Planning, à placer une commande sur un autre métier ou à un autre rang (glisser-déposer), à la remettre en placement automatique, et à choisir le régime de travail (3×8, 2×8, 2×7 ou horaires personnalisés) utilisé au-delà du planning des bonnetiers. Déplacer un OF déjà créé demande en plus « Édition des ordres de fabrication ». Sans ce droit le planning reste consultable.',
+    category: 'Production',
+  },
+  // Production > Planning (LIVA #1250) is above: placing a commande line by
+  // hand and the atelier-wide régime. Moving an existing OF from the planning
+  // stays under edit_of below — it is the régleur's queue.
+  {
     key: 'edit_of',
     label: 'Édition des ordres de fabrication',
     description:
