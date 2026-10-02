@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { consumedEcruIds } from '../lib/fini-sources.js'
+import { etatEcruChezSst, type SstLineInfo } from '../lib/ecru-etat-sst.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 
 // Gestion route for the `sous_traitant` entity (subcontractor management).
@@ -164,8 +165,10 @@ sousTraitantsRouter.get('/:id/rolls', async (req: Request, res: Response) => {
       poids: number | null; metrage: number | null
       IDref_ecru: number | null; IDcolori_ecru: number | null
       date_saisie: string | null; second_choix: number | null
+      IDref_commande_affectation: number | null
     }>(
-      `SELECT IDstock_ecru, numero, lot, poids, metrage, IDref_ecru, IDcolori_ecru, date_saisie, second_choix
+      `SELECT IDstock_ecru, numero, lot, poids, metrage, IDref_ecru, IDcolori_ecru, date_saisie, second_choix,
+              IDref_commande_affectation
        FROM stock_ecru
        WHERE IDmagasin = ${id}
        ORDER BY date_saisie DESC, IDstock_ecru DESC`,
@@ -195,17 +198,44 @@ sousTraitantsRouter.get('/:id/rolls', async (req: Request, res: Response) => {
       for (const x of await fixEncoding(r, 'colori_ecru', 'IDcolori_ecru', ['reference'])) colEcruMap.set(Number(x.IDcolori_ecru), (x.reference ?? '').toString().trim())
     }
 
-    const ecru = ecruLive.map((r) => ({
-      id: Number(r.IDstock_ecru),
-      reference: refEcruMap.get(Number(r.IDref_ecru)) || null,
-      coloris: colEcruMap.get(Number(r.IDcolori_ecru)) || null,
-      lot: (r.lot ?? '').toString().trim() || null,
-      numero: (r.numero ?? '').toString().trim() || null,
-      poids: r.poids == null ? null : Number(r.poids),
-      metrage: r.metrage == null ? null : Number(r.metrage),
-      date_saisie: r.date_saisie ?? null,
-      second_choix: Number(r.second_choix) || 0,
-    }))
+    // État: derived from the sst line the piece is affected to (#1256,
+    // lib/ecru-etat-sst.ts). Flat IN lookups, no JOIN.
+    const lineIds = Array.from(new Set(ecruLive.map((r) => Number(r.IDref_commande_affectation)).filter((n) => n > 0)))
+    const lineMap = new Map<number, SstLineInfo>()
+    const orderSstMap = new Map<number, number>()
+    if (lineIds.length > 0) {
+      const lines = await query<{ IDligne_commande_sous_traitant: number; IDcommande_sous_traitant: number; sstatut: string | null }>(
+        `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant, sstatut
+         FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant IN (${lineIds.join(',')})`,
+      )
+      for (const l of lines) {
+        lineMap.set(Number(l.IDligne_commande_sous_traitant), { IDcommande_sous_traitant: Number(l.IDcommande_sous_traitant), sstatut: l.sstatut })
+      }
+      const orderIds = Array.from(new Set(lines.map((l) => Number(l.IDcommande_sous_traitant)).filter((n) => n > 0)))
+      if (orderIds.length > 0) {
+        const orders = await query<{ IDcommande_sous_traitant: number; IDsous_traitant: number }>(
+          `SELECT IDcommande_sous_traitant, IDsous_traitant FROM commande_sous_traitant
+           WHERE IDcommande_sous_traitant IN (${orderIds.join(',')})`,
+        )
+        for (const o of orders) orderSstMap.set(Number(o.IDcommande_sous_traitant), Number(o.IDsous_traitant))
+      }
+    }
+
+    const ecru = ecruLive.map((r) => {
+      const line = lineMap.get(Number(r.IDref_commande_affectation))
+      return {
+        ...etatEcruChezSst(id, line, line ? orderSstMap.get(line.IDcommande_sous_traitant) : undefined),
+        id: Number(r.IDstock_ecru),
+        reference: refEcruMap.get(Number(r.IDref_ecru)) || null,
+        coloris: colEcruMap.get(Number(r.IDcolori_ecru)) || null,
+        lot: (r.lot ?? '').toString().trim() || null,
+        numero: (r.numero ?? '').toString().trim() || null,
+        poids: r.poids == null ? null : Number(r.poids),
+        metrage: r.metrage == null ? null : Number(r.metrage),
+        date_saisie: r.date_saisie ?? null,
+        second_choix: Number(r.second_choix) || 0,
+      }
+    })
 
     // ── Fini rolls on site (not shipped) ─────────────────
     // Reuse the canonical stock_fini joins + accent repair so coloris obeys the

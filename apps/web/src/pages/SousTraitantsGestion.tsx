@@ -43,6 +43,7 @@ import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
 import { EtatPill } from '@/lib/etat-stock-fini'
+import { Link } from 'react-router-dom'
 
 // IDtype_sst value for "Ennoblisseur" (dyer/finisher) — see type_sst catalog.
 const ENNOBLISSEUR_TYPE = 2
@@ -120,6 +121,8 @@ interface RollRow {
   date_saisie: string | null
   second_choix: number
   etat_libelle?: string | null
+  /** Écru only: the open sst order the piece is being processed under (#1256). */
+  commande_sst?: number | null
 }
 
 interface RollsPayload {
@@ -603,6 +606,27 @@ function RollKindPill({ kind }: { kind: RollKind }) {
   )
 }
 
+// État of an écru piece at the sst, derived server-side from its sst line
+// (#1256): « En traitement » links to the open order, « En stock » = stored on
+// site with no open order (neutral — MATEL is also an écru depot). Same pill
+// markup as EtatPill (soft).
+function EcruEtatPill({ libelle, commandeSst }: { libelle: string; commandeSst: number | null }) {
+  const pill = 'inline-flex items-center rounded-full border font-medium px-2 py-0.5 text-[10px]'
+  if (commandeSst) {
+    return (
+      <Link to={`/sous-traitants/commandes?commande=${commandeSst}`} title={`Commande N° ${commandeSst}`}
+        className={cn(pill, 'bg-sky-100 text-sky-800 border-sky-200 hover:bg-sky-200 transition-colors')}>
+        {libelle}
+      </Link>
+    )
+  }
+  return (
+    <span title="Stockée sur le site, aucune commande en cours" className={cn(pill, 'bg-zinc-100 text-zinc-700 border-zinc-200')}>
+      {libelle}
+    </span>
+  )
+}
+
 type RollTypeFilter = 'tous' | 'ecru' | 'fini'
 
 function RollsSection({ sousTraitantId, className }: { sousTraitantId: number; className?: string }) {
@@ -719,7 +743,9 @@ function RollsSection({ sousTraitantId, className }: { sousTraitantId: number; c
                         {!!r.second_choix && <span className="ml-1 text-[10px] text-amber-600">2e</span>}
                       </td>
                       <td className="px-2.5 py-1.5 truncate">
-                        {r.kind === 'fini' && r.etat_libelle ? (
+                        {r.kind === 'ecru' && r.etat_libelle ? (
+                          <EcruEtatPill libelle={r.etat_libelle} commandeSst={r.commande_sst ?? null} />
+                        ) : r.kind === 'fini' && r.etat_libelle ? (
                           <EtatPill libelle={r.etat_libelle} />
                         ) : <span className="text-muted-foreground">—</span>}
                       </td>
