@@ -59,7 +59,6 @@ import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
 import { permissionsTrmRouter } from './routes/permissions-trm.js'
 import { notificationsRouter } from './routes/notifications.js'
-import { notificationsTrmRouter } from './routes/notifications-trm.js'
 import { createAgentsIaRouter } from './routes/agents-ia.js'
 import { rhRouter } from './routes/rh.js'
 import { webserviceSiteRouter } from './routes/webservice-site.js'
@@ -141,7 +140,6 @@ app.use('/api/permissions', permissionsRouter)
 app.use('/api/permissions-trm', permissionsTrmRouter)
 app.use('/api/notifications', notificationsRouter)
 // TRM's own subscriptions (Paramètres › Utilisateurs › Notifications of the TRM app)
-app.use('/api/notifications-trm', notificationsTrmRouter)
 app.use('/api/abonnements', abonnementsRouter)
 app.use('/api/user-emails', userEmailsRouter)
 app.use('/api/user-profiles', userProfilesRouter)

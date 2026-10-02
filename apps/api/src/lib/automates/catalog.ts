@@ -9,6 +9,8 @@ import { declarerEtatInitial, type AutomateMode, type AutomateState, type Automa
 import * as videosurveillance from './videosurveillance/videosurveillance.js'
 import * as rapportsPointage from './rapports-pointage/rapports-pointage.js'
 import { deLApp, type AppIa } from '../agents/app-scope.js'
+import { abonnementRapport } from '../rapports-pointage-envoi.js'
+import type { AbonnementAutomate } from './abonnement.js'
 
 /** What one run produced. `resultat` is filled as the run goes, so a run that
  *  throws half-way still keeps what it read (and the snapshot it took). */
@@ -42,6 +44,8 @@ export interface AutomateDef {
   quitterActif?(resultat: Record<string, unknown>): Promise<Issue>
   /** Live view of what the automate drives (« État » tab). Read-only. */
   etat?(): Promise<unknown>
+  /** It mails subscribers: the « Destinataires » tab edits them (abonnement.ts). */
+  abonnement?: AbonnementAutomate
   /** State before the first one is stored (default: « off »), store.ts. */
   etatInitial?: () => Partial<AutomateState>
 }
@@ -83,27 +87,28 @@ export const AUTOMATES: readonly AutomateDef[] = [
     app: 'trm',
     nom: 'Rapport de pointage',
     description:
-      'Envoie chaque matin de semaine le pointage de la veille (le lundi : vendredi, samedi et dimanche) aux abonnés : début, pauses et fin de chaque salarié, avec les pointages à vérifier.',
-    version: rapportsPointage.VERSION,
-    versions: rapportsPointage.versions('Le rapport de pointage'),
+      'Envoie chaque matin de semaine les pointages à vérifier de la veille (le lundi : vendredi, samedi et dimanche) aux abonnés : seulement les salariés concernés, avec leur début, leurs pauses et leur fin. Aucun e-mail quand tout est conforme.',
+    version: rapportsPointage.VERSION_RAPPORT,
+    versions: rapportsPointage.VERSIONS_RAPPORT,
     declenchement: { type: 'quotidien', heure: 9, jours: [1, 2, 3, 4, 5] },
     declencheur: 'Du lundi au vendredi à 9 h (heure de Paris). Si l’API était arrêtée à 9 h, il part dès son retour le même jour ; jamais deux fois le même jour, jamais le lendemain.',
     lit: [
       'Les pointages de la veille (base Pointage), le planning de l’atelier TRM (Planning atelier) et l’horaire de chaque salarié.',
-      'Les abonnés : TRM › Paramètres › Utilisateurs › Notifications, « Rapport de pointage ».',
+      'Les abonnés : l’onglet « Destinataires » de cet automate.',
     ],
     ecritures: [
       'Un e-mail par abonné, envoyé par tricotbot@etsmalterre.com (« TRM - Pointage »).',
       'Seulement aux abonnés qui ont accès au menu Pointage de TRM et une adresse e-mail ; les autres sont nommés dans l’exécution.',
       'L’exécution garde le sujet, le résumé chiffré et les adresses, jamais le contenu du rapport (les heures des salariés).',
     ],
-    abstention: 'Aucun salarié pointé ni planifié sur la période : aucun e-mail. Aucun abonné autorisé : aucun e-mail, l’exécution le dit.',
+    abstention: 'Aucun pointage à vérifier sur la période (tout est conforme, ou personne n’a pointé) : aucun e-mail, l’exécution dit « Rien à signaler ». Aucun abonné autorisé : aucun e-mail, l’exécution le dit.',
     modes: {
       off: 'N’envoie rien.',
       essai: 'Prépare le rapport à l’heure prévue et dit à qui il l’enverrait, n’envoie rien.',
       actif: 'Envoie le rapport aux abonnés. « Lancer maintenant » le renvoie à tous les abonnés.',
     },
     executer: rapportsPointage.executeur('notif_rapport_pointage'),
+    abonnement: abonnementRapport('notif_rapport_pointage'),
     etatInitial: rapportsPointage.etatInitial('notif_rapport_pointage'),
   },
   {
@@ -118,7 +123,7 @@ export const AUTOMATES: readonly AutomateDef[] = [
     declencheur: 'Le mardi à 9 h (heure de Paris). Si l’API était arrêtée à 9 h, il part dès son retour le même jour ; jamais deux fois le même jour.',
     lit: [
       'Le lissage des heures de chaque salarié (base Pointage) pour la semaine précédente.',
-      'Les abonnés : TRM › Paramètres › Utilisateurs › Notifications, « Bilan des heures annualisées ».',
+      'Les abonnés : l’onglet « Destinataires » de cet automate.',
     ],
     ecritures: [
       'Un e-mail par abonné, envoyé par tricotbot@etsmalterre.com (« TRM - Pointage »).',
@@ -132,6 +137,7 @@ export const AUTOMATES: readonly AutomateDef[] = [
       actif: 'Envoie le bilan aux abonnés. « Lancer maintenant » le renvoie à tous les abonnés.',
     },
     executer: rapportsPointage.executeur('notif_bilan_heures'),
+    abonnement: abonnementRapport('notif_bilan_heures'),
     etatInitial: rapportsPointage.etatInitial('notif_bilan_heures'),
   },
 ]

@@ -1,5 +1,6 @@
 // Catalog of the email notifications a TRM user can subscribe to, managed from
-// the TRM app's Paramètres > Utilisateurs › Notifications tab.
+// the « Destinataires » tab of each automate that sends one (TRM › Agents IA ›
+// Automates, since 2026-10-02; Paramètres › Utilisateurs › Notifications before).
 //
 // TRM's own catalog and store (data/notifications-trm.json), separate from
 // ETM's (lib/notification-keys.ts) for the same reason the permissions are: the
@@ -7,7 +8,7 @@
 //
 // Adding a notification: append an entry here, then send it — scheduled reports
 // through lib/rapports-pointage-envoi.ts, event notifications with the store's
-// subscribersOf(). The frontend tab renders this catalog as-is.
+// subscribersOf().
 //
 // `requires` names the stored TRM key a subscriber must hold — an action
 // permission or a menu grant (`screen_<menu>`). The pointage reports carry

@@ -143,7 +143,9 @@ export interface ExtraTab {
 export interface SettingsUtilisateursProps {
   /** Permission catalog + store of this app: `/permissions` (ETM), `/permissions-trm`. */
   permissionsPath?: string
-  NotificationsTab?: ComponentType<NotificationsTabProps>
+  /** null: no Notifications tab (TRM since 2026-10-02 — its report e-mails are
+   *  chosen in each automate's « Destinataires » tab). */
+  NotificationsTab?: ComponentType<NotificationsTabProps> | null
   extraTabs?: ExtraTab[]
 }
 
@@ -640,11 +642,11 @@ const MAIN_TABS: Array<{ key: string; label: string; icon: LucideIcon }> = [
   { key: 'appareils', label: 'Appareils', icon: Smartphone },
 ]
 
-function tabsDuCompte(compte: Compte | null): string[] {
+function tabsDuCompte(compte: Compte | null, avecNotifications = true): string[] {
   if (compte?.typeCompte === 'appareils') return ['appareils']
   if (compte?.typeCompte === 'poste') return ['ecrans', 'permissions', 'appareils']
   const avecAppareils = !!compte && (compte.apps.includes('trm') || compte.appareils > 0)
-  return ['profil', 'ecrans', 'permissions', 'notifications', ...(avecAppareils ? ['appareils'] : [])]
+  return ['profil', 'ecrans', 'permissions', ...(avecNotifications ? ['notifications'] : []), ...(avecAppareils ? ['appareils'] : [])]
 }
 
 function DetailBody({
@@ -663,12 +665,12 @@ function DetailBody({
   keys: PermissionKeyDef[]
   isUpdating: boolean
   onToggle: (key: string, nextValue: boolean) => void
-  NotificationsTab: ComponentType<NotificationsTabProps>
+  NotificationsTab: ComponentType<NotificationsTabProps> | null
   extraTabs: ExtraTab[]
   onGrantedChange: (mutateSet: (s: Set<string>) => void) => void
   onCopyRights: () => void
 }) {
-  const visibles = tabsDuCompte(compte)
+  const visibles = tabsDuCompte(compte, !!NotificationsTab)
   const tabs = [
     ...MAIN_TABS.filter((t) => visibles.includes(t.key)),
     // An appareils account holds nothing an app's extra tab could edit.
@@ -679,7 +681,7 @@ function DetailBody({
   const activeTab = tabs.some((t) => t.key === tabChoisi) ? tabChoisi : visibles[0]
 
   // Land back on the main-info tab whenever the selection changes.
-  useEffect(() => { setActiveTab(tabsDuCompte(compte)[0]) }, [user?.IDutilisateur]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setActiveTab(tabsDuCompte(compte, !!NotificationsTab)[0]) }, [user?.IDutilisateur]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Group keys by category. Hooks must run before the early return below,
   // so this useMemo lives here even though `user` may be null.
@@ -821,7 +823,7 @@ function DetailBody({
           </>
         )}
 
-        {activeTab === 'notifications' && (
+        {activeTab === 'notifications' && NotificationsTab && (
           <NotificationsTab
             user={user}
             currentEmail={currentEmail}

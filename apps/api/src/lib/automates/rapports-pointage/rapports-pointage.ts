@@ -4,8 +4,8 @@
 // own in-process timer from 2026-09-22 to 2026-09-30; they now run on the
 // agents' engine like every automate, so the screen shows what went out.
 //
-// Who receives them is NOT decided here: TRM › Paramètres › Utilisateurs ›
-// Notifications (subscription + the Pointage menu grant). A run records the
+// Who receives them is NOT decided here: the automate's « Destinataires » tab
+// (abonnement.ts, since 2026-10-02; the Pointage menu grant). A run records the
 // subject, the one-line summary (counts, no names), the addresses and the
 // subscribers left out — NEVER the report body: whoever may open Agents IA
 // need not have the Pointage menu, and the body lists every salarié's hours.
@@ -31,6 +31,17 @@ export const versions = (quoi: string) =>
       note: `${quoi} passe dans les automates : mêmes règles, même horaire, mêmes destinataires qu’avant (minuteur de l’API depuis le 22/09, n8n avant). Chaque envoi est maintenant visible ici.`,
     },
   ] as const
+
+/** The daily report moved on its own on 2026-10-02 (the balance did not). */
+export const VERSION_RAPPORT = 2
+export const VERSIONS_RAPPORT = [
+  ...versions('Le rapport de pointage'),
+  {
+    version: 2,
+    date: '2026-10-02',
+    note: 'N’envoie plus que les pointages à vérifier : seuls les salariés concernés sont listés, et aucun e-mail ne part quand tout est conforme. Les destinataires se choisissent dans l’onglet « Destinataires » (avant : Paramètres › Utilisateurs › Notifications).',
+  },
+] as const
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /** The old timer's journal (key → YYYYMMDD of the last send), read once so the
@@ -66,7 +77,13 @@ export function executeur(key: TrmNotificationKey) {
     resultat.destinataires = adresses
     resultat.ecartes = ecartes
     const r = await construireRapport(key, now)
-    if (!r) return { statut: 'inchange', resume: 'Rien à envoyer : aucun salarié concerné sur la période.' }
+    if (!r) {
+      // The daily report goes out only when a pointage needs checking (2026-10-02).
+      const resume = key === 'notif_rapport_pointage'
+        ? 'Rien à signaler : aucun pointage à vérifier, pas d’e-mail.'
+        : 'Rien à envoyer : aucun salarié concerné sur la période.'
+      return { statut: 'inchange', resume }
+    }
     resultat.sujet = r.subject
     resultat.apercu = sansGras(r.content.intro ?? '')
     const noteEcartes = ecartes.length ? ` Non envoyé à : ${ecartes.map((e) => `${e.nom} (${e.raison})`).join(', ')}.` : ''

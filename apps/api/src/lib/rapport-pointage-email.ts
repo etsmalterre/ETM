@@ -4,7 +4,7 @@
  * Malterre notification card (lib/notification-email.ts, skill
  * malterre_email_report). Design validated by Vincent on 2026-09-22:
  *   - daily: a red « À vérifier » note that says what is wrong in words, then
- *     one line per salarié — start, pause 1, pause 2, end as app-style pills,
+ *     one line per salarié to check (only those since 2026-10-02) — start, pause 1, pause 2, end as app-style pills,
  *     total pause — red only where something is wrong;
  *   - a day-hours salarié's lunch (clocked out, clocked back in) sits in the
  *     pause columns in its own blue pill (2026-09-22, Nicolas: the row showed
@@ -144,36 +144,40 @@ export interface JourRapport {
   lignes: LigneRapport[]
 }
 
-/** The daily report. `jours` holds the covered days that have at least one line
- *  (a Monday report covers Friday to Sunday). Returns null when nobody clocked
- *  in: no email is sent for an empty day. */
+/** The daily report. `jours` holds the covered days (a Monday report covers
+ *  Friday to Sunday). Since 2026-10-02 it lists the salariés to check ONLY
+ *  (Vincent: the rules are trusted, a daily « rien à signaler » goes unread),
+ *  each with its whole line, the wrong times in red. Returns null when there
+ *  is nothing to check: no email, the automate's run says so. */
 export function contenuRapportPointage(jours: JourRapport[]): { subject: string; content: NotificationEmailContent } | null {
   const pleins = jours.filter((j) => j.lignes.length)
-  if (!pleins.length) return null
+  const aVoir = pleins
+    .map((j) => ({ jour: j.jour, lignes: j.lignes.filter((l) => l.alertes.length) }))
+    .filter((j) => j.lignes.length)
+  if (!aVoir.length) return null
+  // A report over several days names each day, even when only one has something to check.
   const plusieurs = pleins.length > 1
-  const toutes = pleins.flatMap((j) => j.lignes)
-  const nAVoir = toutes.filter((l) => l.alertes.length).length
+  const nAVoir = aVoir.reduce((n, j) => n + j.lignes.length, 0)
   const periode = plusieurs
     ? `du ${jourLong(pleins[0].jour)} au ${jourLong(pleins[pleins.length - 1].jour)}`
     : jourLong(pleins[0].jour)
   const sections: EmailSection[] = []
-  for (const j of pleins) {
+  for (const j of aVoir) {
     const note = noteAVerifier(j.lignes, plusieurs ? j.jour : null)
     if (note) sections.push(note)
   }
-  for (const j of pleins) sections.push(tableJour(j.lignes, plusieurs ? majuscule(jourLong(j.jour)) : null))
+  for (const j of aVoir) sections.push(tableJour(j.lignes, plusieurs ? majuscule(jourLong(j.jour)) : null))
 
-  const salaries = new Set(toutes.filter((l) => l.debut !== null).map((l) => l.salarie.id)).size
-  const bilan = nAVoir
-    ? `${nAVoir} ${nAVoir > 1 ? 'pointages à vérifier' : 'pointage à vérifier'}`
-    : 'rien à signaler'
+  const salaries = new Set(pleins.flatMap((j) => j.lignes).filter((l) => l.debut !== null).map((l) => l.salarie.id)).size
   return {
     subject: `Rapport de pointage - ${majuscule(periode)}`,
     content: {
       appName: 'TRM',
       title: 'Rapport de pointage',
-      tone: nAVoir ? 'alert' : 'info',
-      intro: `**${majuscule(periode)}** · ${salaries} ${salaries > 1 ? 'salariés pointés' : 'salarié pointé'}, ${bilan}.`,
+      tone: 'alert',
+      intro:
+        `**${majuscule(periode)}** · ${nAVoir} ${nAVoir > 1 ? 'pointages à vérifier' : 'pointage à vérifier'} ` +
+        `sur ${salaries} ${salaries > 1 ? 'salariés pointés' : 'salarié pointé'}. Les pointages conformes ne sont pas listés.`,
       rows: [],
       footerNote: '',
       sections,

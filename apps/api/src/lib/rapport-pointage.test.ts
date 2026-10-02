@@ -150,6 +150,30 @@ describe('email content', () => {
     expect(contenuRapportPointage([{ jour: '20260920', lignes: [] }])).toBeNull()
   })
 
+  it('lists only the salariés to check, and sends nothing when every pointage is in order', () => {
+    const ok = analyserJournee(sal('Bon'), [ligne(sec(9, 0), sec(12, 0)), ligne(sec(14, 0), sec(18, 0))], null, heure)
+    const ko = analyserJournee(sal('Retardataire'), [ligne(sec(9, 30), sec(12, 0)), ligne(sec(14, 0), sec(18, 0))], null, heure)
+    expect(ok.alertes).toEqual([])
+    expect(contenuRapportPointage([{ jour: '20260921', lignes: [ok] }])).toBeNull()
+    const r = contenuRapportPointage([{ jour: '20260921', lignes: [ok, ko] }])!
+    const table = r.content.sections!.at(-1)!
+    expect(table.text).toContain('Retardataire')
+    expect(table.text).not.toContain('Bon')
+    expect(r.content.intro).toContain('1 pointage à vérifier sur 2 salariés pointés')
+  })
+
+  it('a Monday report keeps its whole period but shows only the days to check', () => {
+    const ok = analyserJournee(sal('Bon'), [ligne(sec(9, 0), sec(12, 0)), ligne(sec(14, 0), sec(18, 0))], null, heure)
+    const ko = analyserJournee(sal('Retardataire'), [ligne(sec(9, 30), sec(12, 0)), ligne(sec(14, 0), sec(18, 0))], null, heure)
+    const r = contenuRapportPointage([
+      { jour: '20260918', lignes: [ok] },
+      { jour: '20260919', lignes: [ko] },
+      { jour: '20260920', lignes: [] },
+    ])!
+    expect(r.subject).toBe('Rapport de pointage - Du vendredi 18 septembre au samedi 19 septembre')
+    expect(r.content.sections!.map((s) => s.text.split('\n')[0])).toEqual(['À VÉRIFIER · SAMEDI 19 SEPTEMBRE', 'SAMEDI 19 SEPTEMBRE'])
+  })
+
   it('names the day and counts what to check, with no em or en dash anywhere', () => {
     const l = analyserJournee(sal('Daunovan'), [ligne(sec(5, 50))], { debut: ms(6, 0), fin: ms(13, 0) }, heure)
     const r = contenuRapportPointage([{ jour: '20260921', lignes: [l] }])!

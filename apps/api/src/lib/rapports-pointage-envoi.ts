@@ -8,8 +8,10 @@
  * (Agents IA › Automates, lib/automates/rapports-pointage/) on the agents'
  * engine — daily report Monday to Friday at 09:00, weekly balance on Tuesday
  * at 09:00, Paris time, production only, at most once a day with same-day
- * catch-up. The admin « Envoyer un test » route (notifications-trm.ts) sends
- * to the caller alone, in any env.
+ * catch-up. Who receives them, the preview and « M’envoyer un test » (to the
+ * caller alone, in any env) are the automates' « Destinataires » tab
+ * (abonnementRapport below, routes/automates.ts); the old
+ * /api/notifications-trm routes are gone (2026-10-02).
  */
 import { query } from './hfsql-auto.js'
 import { lignesPeriode, listerSalaries, soldeHeures, tousLesSalaries } from './pointage.js'
@@ -24,6 +26,9 @@ import { trmNotifications } from './notifications-trm.js'
 import { trmNotificationDef, type TrmNotificationKey } from './notification-keys-trm.js'
 import { getTrmUserPermissions } from './permissions-trm.js'
 import { isAdminUtilisateur } from './auth.js'
+import { mpsPg } from './mps-pg.js'
+import { membres } from './utilisateur-apps.js'
+import { AbonnementRefuse, type AbonnementAutomate, type CandidatDestinataire } from './automates/abonnement.js'
 
 /** The mailbox the reports come from — the one n8n used, so recipients keep
  *  their filters. Impersonated through the Gmail domain-wide delegation. */
@@ -199,4 +204,62 @@ export async function envoyerRapport(r: Rapport, a: string[]): Promise<number> {
     }
   }
   return ok
+}
+
+// ── « Destinataires » tab of the automates (lib/automates/abonnement.ts) ──
+
+/**
+ * Who receives `key`, edited from the automate's own page since 2026-10-02
+ * (Paramètres › Utilisateurs › Notifications before). Same store, same rule:
+ * a subscriber must hold the Pointage menu (the report carries working hours).
+ * The tab lists TRM's active person accounts who hold it, plus anyone still
+ * subscribed without it (so they can be switched off).
+ */
+export function abonnementRapport(key: TrmNotificationKey): AbonnementAutomate {
+  return {
+    regle: `Seuls les comptes TRM qui ont le menu « Pointage » (Paramètres › Utilisateurs › Écrans) peuvent recevoir ce rapport : il contient les heures des salariés.`,
+    async candidats() {
+      const [rows, abonnes, membresTrm] = await Promise.all([
+        mpsPg()<{ idutilisateur: number; prenom: string | null; nom: string | null; email: string | null }[]>`
+          SELECT idutilisateur, prenom, nom, email FROM utilisateur
+          WHERE actif AND type_compte = 'personne' ORDER BY prenom, nom`,
+        trmNotifications.subscribersOf(key),
+        membres('trm'),
+      ])
+      const abonne = new Set(abonnes)
+      const out: CandidatDestinataire[] = []
+      for (const r of rows) {
+        const id = r.idutilisateur
+        if (membresTrm && !membresTrm.has(id)) continue
+        const autorise = await peutRecevoir(id, key)
+        if (!autorise && !abonne.has(id)) continue
+        out.push({
+          id,
+          nom: [r.prenom, r.nom].map((v) => (v ?? '').trim()).filter(Boolean).join(' ') || `Utilisateur ${id}`,
+          email: r.email?.trim() || null,
+          abonne: abonne.has(id),
+          autorise,
+        })
+      }
+      return out
+    },
+    async changer(userId, abonne) {
+      const avant = await trmNotifications.getUserNotifications(userId)
+      if (abonne && !avant.includes(key) && !(await peutRecevoir(userId, key))) {
+        throw new AbonnementRefuse(`Ce compte n’a pas le menu « Pointage » de TRM : accordez-le d’abord dans Paramètres › Utilisateurs › Écrans.`)
+      }
+      const apres = abonne ? [...new Set([...avant, key])] : avant.filter((k) => k !== key)
+      await trmNotifications.setUserNotifications(userId, apres)
+    },
+    peutLire: (userId) => peutRecevoir(userId, key),
+    async apercu(nowMs) {
+      const r = await construireRapport(key, nowMs)
+      return r ? { sujet: r.subject, html: apercuHtml(r) } : null
+    },
+    async envoyerTest(nowMs, email) {
+      const r = await construireRapport(key, nowMs)
+      if (!r) return null
+      return (await envoyerRapport({ ...r, subject: `[Test] ${r.subject}` }, [email])) > 0
+    },
+  }
 }
