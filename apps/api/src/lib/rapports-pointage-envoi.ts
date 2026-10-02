@@ -217,7 +217,7 @@ export async function envoyerRapport(r: Rapport, a: string[]): Promise<number> {
  */
 export function abonnementRapport(key: TrmNotificationKey): AbonnementAutomate {
   return {
-    regle: `Seuls les comptes TRM qui ont le menu « Pointage » (Paramètres › Utilisateurs › Écrans) peuvent recevoir ce rapport : il contient les heures des salariés.`,
+    regle: `Liste : les comptes TRM qui ont le menu « Pointage » (Paramètres › Utilisateurs › Écrans), le rapport contenant les heures des salariés. Activez ceux qui doivent le recevoir.`,
     async candidats() {
       const [rows, abonnes, membresTrm] = await Promise.all([
         mpsPg()<{ idutilisateur: number; prenom: string | null; nom: string | null; email: string | null }[]>`

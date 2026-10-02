@@ -834,6 +834,10 @@ function DestinatairesPanel({ slug, canPilot }: { slug: string; canPilot: boolea
   const { data, isLoading, isError } = useQuery({
     queryKey: key,
     queryFn: () => apiFetch<VueDestinataires>(`${base}/${slug}/destinataires`),
+    // Who may be listed is granted elsewhere (Paramètres › Utilisateurs ›
+    // Écrans): never trust the app-wide 5 min staleTime here, refetch on every
+    // opening of the tab and on window focus.
+    staleTime: 0,
   })
   const changerMut = useMutation({
     mutationFn: ({ id, abonne }: { id: number; abonne: boolean }) =>
