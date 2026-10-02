@@ -4917,6 +4917,9 @@ interface StockEcruLite {
   // every unaffected roll of the ref).
   IDligne_commande_client?: number
   client_nom?: string | null
+  /** commande_client.numero of that client line — a client often has several
+   *  orders open, the name alone sent people to the wrong one (LIVA #1258). */
+  commande_numero?: number | null
 }
 
 interface StockFiniLite {
@@ -4952,6 +4955,8 @@ interface StockFiniLite {
    *  ligne_commande_client → commande_client → client. Inherited from
    *  the source écru's reservation at reception time. */
   client_nom?: string | null
+  /** commande_client.numero of that reservation (LIVA #1258). */
+  commande_numero?: number | null
 }
 
 async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
@@ -4999,6 +5004,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   // ligne_commande_client → commande_client → client manually and
   // assemble the name map.
   const clientByLcc = new Map<number, string>()
+  const commandeNumByLcc = new Map<number, number>()
   const lccIds = Array.from(new Set([
     ...linkedFixed.map((r) => Number(r.IDligne_commande_client) || 0),
     ...finiFixed.map((r) => Number((r as any).IDligne_commande_client) || 0),
@@ -5013,12 +5019,16 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
       lccRows.map((r) => Number(r.IDcommande_client) || 0).filter((x) => x > 0)
     ))
     const clientIdByCC = new Map<number, number>()
+    const numeroByCC = new Map<number, number>()
     if (ccIds.length > 0) {
-      const ccRows = await query<{ IDcommande_client: number; IDclient: number }>(
-        `SELECT IDcommande_client, IDclient FROM commande_client
+      const ccRows = await query<{ IDcommande_client: number; IDclient: number; numero: number | null }>(
+        `SELECT IDcommande_client, IDclient, numero FROM commande_client
          WHERE IDcommande_client IN (${ccIds.join(',')})`,
       )
-      for (const r of ccRows) clientIdByCC.set(Number(r.IDcommande_client), Number(r.IDclient))
+      for (const r of ccRows) {
+        clientIdByCC.set(Number(r.IDcommande_client), Number(r.IDclient))
+        if (Number(r.numero) > 0) numeroByCC.set(Number(r.IDcommande_client), Number(r.numero))
+      }
     }
     const clientIds = Array.from(new Set(Array.from(clientIdByCC.values()).filter((x) => x > 0)))
     const nameById = new Map<number, string>()
@@ -5030,6 +5040,8 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
       for (const r of fixedCl) nameById.set(Number(r.IDclient), (r.nom ?? '').trim())
     }
     for (const r of lccRows) {
+      const num = numeroByCC.get(Number(r.IDcommande_client))
+      if (num) commandeNumByLcc.set(Number(r.IDligne_commande_client), num)
       const cid = clientIdByCC.get(Number(r.IDcommande_client))
       if (cid && cid > 0) {
         const nm = nameById.get(cid)
@@ -5102,6 +5114,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   const linked = linkedFixed.map((r) => ({
     ...r,
     client_nom: clientByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
+    commande_numero: commandeNumByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
     defects: defectsByEcruId.get(Number(r.IDstock_ecru) || 0) ?? [],
   }))
   available = available.map((r) => ({
@@ -5136,6 +5149,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
     return {
       ...r,
       client_nom: lcc > 0 ? (clientByLcc.get(lcc) ?? null) : null,
+      commande_numero: lcc > 0 ? (commandeNumByLcc.get(lcc) ?? null) : null,
       source_ecru_ids: sources,
       source_numeros: sources.map((id) => componentNumero.get(id) ?? `#${id}`),
     }

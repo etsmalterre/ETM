@@ -1,4 +1,7 @@
 # Worktree merge log
+## 2026-10-02 — feat/affectation-1258
+**Sous-traitants › Commandes: the client badge on a roll names the client ORDER too (LIVA #1258, Pierre-Emmanuel).** Not a bug: the 4 écru pieces of MATEL 9065 were reserved to LEMAHIEU order 3874 (line 329D, washed écru), not 3891, whose Ennoblissement tab rightly showed 0 — but the badge said only « LEMAHIEU » while the client had four orders open. `fetchPiecesPayload()` now also reads `commande_client.numero` in the same chain walk and returns `commande_numero` on linked écru and received fini rolls; the shared `ClientReservationBadge` shows « LEMAHIEU · N° 3874 » (tooltip names the order). Verified: API + web tsc clean, dev API returns 3874 on 9065's rolls; badge not eyeballed in the browser. Reply posted on #1258 (en cours) also flagging the real question: those rolls are being dyed noir (329B) while 3874 counts on them in écru.
+
 ## 2026-10-02 — pointage (paired with TRM-pointage)
 
 - **Rapport de pointage v2 — anomalies only.** `contenuRapportPointage` keeps only the salariés with an alert (whole line, wrong times red) and the days that have one; returns null when everything is in order → no email, the run says « Rien à signaler ». `analyserJours()` untouched (the pointage tablet still shows days in order). Bilan des heures unchanged.

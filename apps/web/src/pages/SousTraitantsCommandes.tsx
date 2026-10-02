@@ -328,6 +328,8 @@ interface StockEcruLite {
   // comment on the same field for the full join chain.
   IDligne_commande_client?: number
   client_nom?: string | null
+  /** N° of the client order the roll is reserved to (LIVA #1258). */
+  commande_numero?: number | null
 }
 interface StockFiniLite {
   IDstock_fini: number
@@ -358,6 +360,7 @@ interface StockFiniLite {
    *  inherited from the source écru's `IDligne_commande_client` at
    *  reception time. Shown as a `Building2` badge on the card. */
   client_nom?: string | null
+  commande_numero?: number | null
 }
 interface PiecesPayload {
   ecruLinked: StockEcruLite[]
@@ -3961,6 +3964,24 @@ function TricoteurReceptionDialog({
   )
 }
 
+/** Client-reservation tag on a roll card. Carries the order number: a client
+ *  often has several orders open and the name alone sent people looking on
+ *  the wrong one (LIVA #1258). */
+function ClientReservationBadge({ clientNom, commandeNumero }: { clientNom?: string | null; commandeNumero?: number | null }) {
+  if (!clientNom) return null
+  return (
+    <Badge
+      variant="secondary"
+      className="text-xs py-1 px-2 gap-1 flex-shrink-0"
+      title={commandeNumero ? `Rouleau réservé à la commande N° ${commandeNumero} de ${clientNom}` : 'Rouleau réservé à ce client'}
+    >
+      <Building2 className="h-3 w-3" />
+      {clientNom}
+      {!!commandeNumero && <span className="font-normal text-muted-foreground">· N° {commandeNumero}</span>}
+    </Badge>
+  )
+}
+
 function EcruRollRow({
   roll, action, onAction, isBusy, hideAction,
   selectable = false, selected = false, onSelectToggle, received = false,
@@ -4037,16 +4058,7 @@ function EcruRollRow({
         </div>
         {/* Client-reservation tag — sits at the right end of the header
             row, just left of the action button. */}
-        {!!roll.client_nom && (
-          <Badge
-            variant="secondary"
-            className="text-xs py-1 px-2 gap-1 flex-shrink-0"
-            title="Rouleau réservé à ce client"
-          >
-            <Building2 className="h-3 w-3" />
-            {roll.client_nom}
-          </Badge>
-        )}
+        <ClientReservationBadge clientNom={roll.client_nom} commandeNumero={roll.commande_numero} />
         {!hideAction && (
           action === 'unlink' ? (
             <Button
@@ -4197,16 +4209,7 @@ function FiniRollRow({
           )}
         </div>
         <EtatFiniBadge etat={roll.IDetat_stock_fini} />
-        {!!roll.client_nom && (
-          <Badge
-            variant="secondary"
-            className="text-xs py-1 px-2 gap-1 flex-shrink-0"
-            title="Rouleau réservé à ce client"
-          >
-            <Building2 className="h-3 w-3" />
-            {roll.client_nom}
-          </Badge>
-        )}
+        <ClientReservationBadge clientNom={roll.client_nom} commandeNumero={roll.commande_numero} />
         {!disabled && (
           <Button
             variant="ghost"
