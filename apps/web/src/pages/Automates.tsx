@@ -1,6 +1,6 @@
 // Agents IA › Automates — the « Classeur » layout (mps_designer §39), same
 // shell as Agents IA › Agents: automates in the left list, master tabs in the
-// center (Exécutions / État / Destinataires / Retours / Fonctionnement), overview in the right
+// center (Exécutions / État / Retours / Fonctionnement), overview in the right
 // sidebar with the automate's mode as the §29.4 status footer.
 //
 // An automate is a DETERMINISTIC script (no LLM): its version is the code
@@ -337,7 +337,6 @@ function DetailHeader({ automate, isLoading, canPilot, onLancer, isLancant, mess
 const MAIN_TABS = [
   { key: 'executions', label: 'Exécutions', icon: History },
   { key: 'etat', label: 'État', icon: Eye },
-  { key: 'destinataires', label: 'Destinataires', icon: Users },
   { key: 'retours', label: 'Retours', icon: MessagesSquare },
   { key: 'fonctionnement', label: 'Fonctionnement', icon: Workflow },
 ] as const
@@ -360,7 +359,7 @@ function DetailMain({ automate, isLoading, hasSelection, canPilot, onOpenRun }: 
   if (isLoading || !automate) {
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
   }
-  const tabs = MAIN_TABS.filter((t) => (t.key !== 'etat' || automate.aUnEtat) && (t.key !== 'destinataires' || automate.aDesDestinataires))
+  const tabs = MAIN_TABS.filter((t) => t.key !== 'etat' || automate.aUnEtat)
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="flex-shrink-0 flex items-center gap-1 border-b border-border/60 pb-2 overflow-x-auto">
@@ -379,7 +378,6 @@ function DetailMain({ automate, isLoading, hasSelection, canPilot, onOpenRun }: 
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1">
         {activeTab === 'executions' && <ExecutionsTab slug={automate.slug} onOpenRun={onOpenRun} />}
         {activeTab === 'etat' && <EtatTab slug={automate.slug} />}
-        {activeTab === 'destinataires' && <DestinatairesTab slug={automate.slug} canPilot={canPilot} />}
         {activeTab === 'retours' && <RetoursTab automate={automate} canPilot={canPilot} />}
         {activeTab === 'fonctionnement' && <FonctionnementTab automate={automate} />}
       </div>
@@ -815,18 +813,18 @@ function RunDialog({ slug, runId, onClose }: { slug: string; runId: string | nul
   )
 }
 
-// ── Destinataires (automates that mail subscribers) ──────
+// ── Destinataires (sidebar tab, automates that mail subscribers) ──
 // Who receives the e-mail, chosen here since 2026-10-02 (TRM's pointage
 // reports were chosen in Paramètres › Utilisateurs › Notifications before).
 // The API lists who may receive it (`regle` says the condition) plus anyone
 // still subscribed without the right, so they can be switched off. Switches
-// need `edit_agents_ia`; « Aperçu » and « M’envoyer un test » need the right
+// need `edit_agents_ia`; « Voir l’e-mail » and « M’envoyer un test » need the right
 // to read the report itself (`peutLire`), checked by the API too.
 
 interface CandidatDestinataire { id: number; nom: string; email: string | null; abonne: boolean; autorise: boolean }
 interface VueDestinataires { regle: string; candidats: CandidatDestinataire[]; peutLire: boolean }
 
-function DestinatairesTab({ slug, canPilot }: { slug: string; canPilot: boolean }) {
+function DestinatairesPanel({ slug, canPilot }: { slug: string; canPilot: boolean }) {
   const base = useBaseApi()
   const queryClient = useQueryClient()
   const [erreur, setErreur] = useState<string | null>(null)
@@ -861,7 +859,7 @@ function DestinatairesTab({ slug, canPilot }: { slug: string; canPilot: boolean 
       <div className="rounded-lg border border-border/60 bg-card shadow-sm">
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/60">
           <Send className="h-4 w-4 text-accent" />
-          <h3 className="text-sm font-semibold">Qui reçoit l’e-mail</h3>
+          <h3 className="text-sm font-semibold">Abonnés</h3>
           <Badge variant="secondary" className="ml-auto text-xs tabular-nums">{abonnes}/{data.candidats.length}</Badge>
         </div>
         {!data.candidats.length ? (
@@ -873,19 +871,19 @@ function DestinatairesTab({ slug, canPilot }: { slug: string; canPilot: boolean 
               const disabled = !canPilot || verrou || changerMut.isPending
               return (
                 <li key={c.id}>
-                  <label className={cn('flex items-center gap-3 px-3 py-2.5', disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-accent/5')}>
+                  <label className={cn('flex items-center gap-2.5 px-3 py-2', disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-accent/5')}>
                     <ToggleSwitch checked={c.abonne} disabled={disabled} onChange={(abonne) => changerMut.mutate({ id: c.id, abonne })} />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium truncate">{c.nom}</p>
                       {c.email
                         ? <p className="text-xs text-muted-foreground truncate">{c.email}</p>
                         : <p className="text-xs text-amber-700 flex items-center gap-1"><AlertTriangle className="h-3 w-3 flex-shrink-0" />Pas d’adresse e-mail : ne recevra rien</p>}
+                      {!c.autorise && (
+                        <p className="text-xs text-amber-800 flex items-center gap-1" title="Ce compte n’a plus le droit de lire ce rapport : il est écarté à chaque envoi.">
+                          <Lock className="h-3 w-3 flex-shrink-0" />N’a plus le droit : écarté à chaque envoi
+                        </p>
+                      )}
                     </div>
-                    {!c.autorise && (
-                      <span className="flex items-center gap-1 text-xs text-amber-800 flex-shrink-0" title="Ce compte n’a plus le droit de lire ce rapport : il est écarté à chaque envoi.">
-                        <Lock className="h-3 w-3" />n’a plus le droit
-                      </span>
-                    )}
                     {changerMut.isPending && changerMut.variables?.id === c.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent flex-shrink-0" />}
                   </label>
                 </li>
@@ -908,12 +906,12 @@ function DestinatairesTab({ slug, canPilot }: { slug: string; canPilot: boolean 
 
       {data.peutLire && (
         <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-          <div className="flex items-center gap-2 mb-1"><Mail className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">L’e-mail tel qu’il partirait maintenant</h3></div>
-          <p className="text-xs text-muted-foreground mb-2">L’aperçu s’ouvre dans un nouvel onglet ; le test part à votre adresse seulement, même si l’automate est en essai.</p>
+          <div className="flex items-center gap-2 mb-1"><Mail className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">L’e-mail d’aujourd’hui</h3></div>
+          <p className="text-xs text-muted-foreground mb-2">Tel qu’il partirait maintenant. Le test part à votre adresse seulement, même en essai.</p>
           <div className="flex flex-wrap items-center gap-1">
             <a href={`${API_URL}${base}/${slug}/apercu`} target="_blank" rel="noreferrer"
               className="inline-flex items-center h-8 px-3 text-xs font-medium rounded-md transition-colors hover:bg-accent/10 hover:text-accent">
-              <Eye className="h-3.5 w-3.5 mr-1.5" />Aperçu
+              <Eye className="h-3.5 w-3.5 mr-1.5" />Voir l’e-mail
             </a>
             <Button variant="ghost" size="sm" className="h-8 text-xs hover:bg-accent/10 hover:text-accent" disabled={testMut.isPending}
               onClick={() => { setTest(null); testMut.mutate() }}>
@@ -1045,9 +1043,18 @@ function FonctionnementTab({ automate }: { automate: AutomateVue }) {
 
 // ── Right sidebar ────────────────────────────────────────
 
+const SIDE_TABS = [
+  { key: 'apercu', label: 'Aperçu', icon: Info },
+  { key: 'destinataires', label: 'Destinataires', icon: Users },
+] as const
+
 function DetailSidebar({ automate, canPilot, onChangeMode, isChangingMode, onOpenRun }: {
   automate: AutomateVue | null; canPilot: boolean; onChangeMode: (m: Mode) => void; isChangingMode: boolean; onOpenRun: (id: string) => void
 }) {
+  // « Destinataires » sits here, not in the center: a short settings list
+  // attached to the automate, like a fiche's contacts (§8), next to its mode.
+  const [onglet, setOnglet] = useState<'apercu' | 'destinataires'>('apercu')
+  useEffect(() => { setOnglet('apercu') }, [automate?.slug])
   if (!automate) {
     return (
       <div className="w-96 flex-shrink-0 bg-muted/30 rounded-xl border p-4 space-y-4">
@@ -1062,10 +1069,23 @@ function DetailSidebar({ automate, canPilot, onChangeMode, isChangingMode, onOpe
     <div className="w-96 flex-shrink-0 flex flex-col gap-3 min-h-0">
       <div className="flex-1 min-h-0 rounded-xl border flex flex-col overflow-hidden bg-zinc-100/80">
         <div className="flex border-b p-1 gap-1 rounded-t-xl bg-zinc-200/50">
-          <div className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md bg-accent text-accent-foreground shadow-sm">
-            <Info className="h-3.5 w-3.5" />Aperçu
-          </div>
+          {SIDE_TABS.filter((t) => t.key === 'apercu' || automate.aDesDestinataires).map((t) => {
+            const Icon = t.icon
+            const actif = (automate.aDesDestinataires ? onglet : 'apercu') === t.key
+            return (
+              <button key={t.key} type="button" onClick={() => setOnglet(t.key)}
+                className={cn('flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md transition-colors',
+                  actif ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10')}>
+                <Icon className="h-3.5 w-3.5" />{t.label}
+              </button>
+            )
+          })}
         </div>
+        {automate.aDesDestinataires && onglet === 'destinataires' ? (
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-transparent">
+            <DestinatairesPanel slug={automate.slug} canPilot={canPilot} />
+          </div>
+        ) : (
         <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-transparent">
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
             <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><Clock className="h-3.5 w-3.5" />Contrôles</p>
@@ -1095,6 +1115,7 @@ function DetailSidebar({ automate, canPilot, onChangeMode, isChangingMode, onOpe
             )}
           </div>
         </div>
+        )}
       </div>
       <ModeFooter current={automate.mode} descriptions={automate.modes} onChange={onChangeMode} isChanging={isChangingMode} disabled={!canPilot} />
     </div>
