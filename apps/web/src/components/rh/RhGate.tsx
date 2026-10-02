@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Loader2, Lock, LockKeyhole, Unlock } from 'lucide-react'
+import { AlertCircle, Code2, Loader2, Lock, LockKeyhole, Unlock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { HeaderActions } from '@/contexts/HeaderActionsContext'
 import { useRhAcces, RH_ACCES_KEY } from '@/hooks/useRhAcces'
@@ -46,7 +46,7 @@ export function RhGate({ children }: { children: ReactNode }) {
     )
   }
   if (!acces.autorise) return <Navigate to="/" replace />
-  if (!acces.deverrouille) return <EcranVerrouille personne={acces.personne ?? ''} codeDefini={!!acces.codeDefini} configure={acces.configure !== false} parMotDePasse={acces.methode === 'mot_de_passe'} />
+  if (!acces.deverrouille) return <EcranVerrouille personne={acces.personne ?? ''} codeDefini={!!acces.codeDefini} configure={acces.configure !== false} parMotDePasse={acces.methode === 'mot_de_passe'} devDeverrouillage={!!acces.devDeverrouillage} />
 
   return (
     <>
@@ -67,7 +67,7 @@ export function RhGate({ children }: { children: ReactNode }) {
   )
 }
 
-function EcranVerrouille({ personne, codeDefini, configure, parMotDePasse }: { personne: string; codeDefini: boolean; configure: boolean; parMotDePasse: boolean }) {
+function EcranVerrouille({ personne, codeDefini, configure, parMotDePasse, devDeverrouillage }: { personne: string; codeDefini: boolean; configure: boolean; parMotDePasse: boolean; devDeverrouillage: boolean }) {
   const queryClient = useQueryClient()
   const [code, setCode] = useState('')
   const [erreur, setErreur] = useState<string | null>(null)
@@ -82,6 +82,12 @@ function EcranVerrouille({ personne, codeDefini, configure, parMotDePasse }: { p
       setCode('')
       setErreur(err.body?.message ?? 'Le déverrouillage a échoué.')
     },
+  })
+
+  const deverrouillerDev = useMutation({
+    mutationFn: () => apiFetch('/rh/dev-deverrouiller', { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: RH_ACCES_KEY }),
+    onError: () => setErreur('Déverrouillage dev refusé.'),
   })
 
   const bloque = !configure || !codeDefini
@@ -146,6 +152,18 @@ function EcranVerrouille({ personne, codeDefini, configure, parMotDePasse }: { p
               {deverrouiller.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Unlock className="h-3.5 w-3.5 mr-1.5" />}
               Déverrouiller
             </Button>
+          )}
+          {/* import.meta.env.DEV: compiled out of production bundles. */}
+          {import.meta.env.DEV && devDeverrouillage && configure && (
+            <button
+              type="button"
+              onClick={() => { setErreur(null); deverrouillerDev.mutate() }}
+              disabled={deverrouillerDev.isPending}
+              className="w-full flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-accent transition-colors"
+            >
+              <Code2 className="h-3.5 w-3.5" />
+              dev · Déverrouiller comme Vincent
+            </button>
           )}
           <p className="text-[11px] text-muted-foreground text-center">
             L’accès reste ouvert 12 h sur cet ordinateur, ou jusqu’à « Verrouiller ».

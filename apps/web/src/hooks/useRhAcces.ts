@@ -13,6 +13,8 @@ export interface RhAcces {
   /** What unlocks RH: the account password, or (account without one yet) the code RH. */
   methode?: 'mot_de_passe' | 'code'
   configure?: boolean
+  /** Developer's machine only: « dev · Déverrouiller comme Vincent » (API lib/dev-login.ts). */
+  devDeverrouillage?: boolean
 }
 
 export const RH_ACCES_KEY = ['rh', 'acces'] as const

@@ -6,6 +6,7 @@
 //
 //   GET    /api/rh/acces                         — anyone: may I, and am I unlocked?
 //   POST   /api/rh/deverrouiller   { code }      — sets the mps_rh cookie
+//   POST   /api/rh/dev-deverrouiller             — same as Vincent, developer's machine only (lib/dev-login.ts)
 //   POST   /api/rh/verrouiller                   — clears it
 //   GET    /api/rh/employes
 //   POST   /api/rh/employes        { prenom, nom }
@@ -41,6 +42,7 @@ import {
   noterSucces,
 } from '../lib/rh-acces.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { devLoginAutorise } from '../lib/dev-login.js'
 import { verifierMotDePasse } from '../lib/passwords.js'
 import {
   RhIndisponible,
@@ -117,7 +119,22 @@ rhRouter.get('/acces', h(async (req, res) => {
   // server-set code RH remains only for an account without a password yet.
   const methode = (await hashDuCompte(req.userId)) ? 'mot_de_passe' : 'code'
   const codeDefini = methode === 'mot_de_passe' || (rhConfigure() ? (await lireCode(personne.cle)) !== null : false)
-  res.json({ autorise: true, personne: personne.label, deverrouille, codeDefini, methode, configure: rhConfigure() })
+  // Dev convenience, same gate as « dev · Se connecter comme Vincent » (lib/dev-login.ts).
+  const devDeverrouillage = personne.cle === 'vincent' && devLoginAutorise(req)
+  res.json({ autorise: true, personne: personne.label, deverrouille, codeDefini, methode, configure: rhConfigure(), devDeverrouillage })
+}))
+
+// The RH twin of /auth/dev-login: an RH session for `vincent` without typing the
+// password — developer's machine only (NODE_ENV, database not `mps`, loopback).
+rhRouter.post('/dev-deverrouiller', h(async (req, res) => {
+  const personne = await personneRhAutorisee(req)
+  if (!personne || personne.cle !== 'vincent' || !devLoginAutorise(req)) {
+    res.status(404).json({ error: 'Not found' })
+    return
+  }
+  await journaliser(personne.cle, 'deverrouillage_dev', req.ip)
+  res.cookie(RH_COOKIE_NAME, signerSessionRh(personne.cle), rhCookieOptions())
+  res.json({ ok: true })
 }))
 
 rhRouter.post('/deverrouiller', h(async (req, res) => {

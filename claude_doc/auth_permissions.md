@@ -95,5 +95,7 @@ session can drive the browser without ever typing a password). `POST /api/auth/d
 gate in `apps/api/src/lib/dev-login.ts` (tested): NODE_ENV not `production` **and** the database
 is not `mps` **and** the request's socket is loopback (never a forwarded header). `/auth/config`
 returns `devLogin`, and the button is also behind `import.meta.env.DEV`, so it is absent from
-production bundles. Journaled in `connexion` with `motif = 'dev'`. A TRM worktree sees it through
+production bundles. Journaled in `connexion` with `motif = 'dev'`. **RH lock twin** (2026-10-02):
+« dev · Déverrouiller comme Vincent » on the RH lock screen, `POST /api/rh/dev-deverrouiller`, same
+gate + person `vincent` only (`/rh/acces` returns `devDeverrouillage`), journaled `deverrouillage_dev`. A TRM worktree sees it through
 `@etm` — repoint `ETM_WEB_SRC` to a paired NG worktree until it lands on ETM master.
