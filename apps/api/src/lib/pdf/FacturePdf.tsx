@@ -71,6 +71,10 @@ export interface FacturePdfData {
    *  shown as an "N° commande" meta row so the client can link the proforma
    *  back to their order despite the offset proforma numero. */
   refCommande?: string
+  /** Avoir only: the invoice it credits (LIVA #1257) — a credit note must
+   *  cite the invoice it corrects. `date` is long-form French like
+   *  `dateFacture`. Absent on an avoir typed by hand. */
+  factureOrigine?: { numero: string; date: string } | null
   /** Issuing société's legal identity (footer + bank card). Defaults to ETS
    *  Malterre; Tricotage Malterre invoices pass `companyTrm`. An invoice is a
    *  legal document — this is not branding, it is whose SIRET and IBAN the
@@ -306,6 +310,15 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
                 <View style={styles.comboMetaIconBox}><TagIcon /></View>
                 <Text style={styles.comboMetaLabel}>N° commande</Text>
                 <Text style={styles.comboMetaValue}>{`N°${data.refCommande}`}</Text>
+              </View>
+            ) : null}
+            {isAvoir && data.factureOrigine ? (
+              <View style={styles.comboMetaRow}>
+                <View style={styles.comboMetaIconBox}><TagIcon /></View>
+                <Text style={styles.comboMetaLabel}>Facture d'origine</Text>
+                <Text style={styles.comboMetaValue}>
+                  {`N°${data.factureOrigine.numero}${data.factureOrigine.date ? ` du ${data.factureOrigine.date}` : ''}`}
+                </Text>
               </View>
             ) : null}
             {data.siren ? (

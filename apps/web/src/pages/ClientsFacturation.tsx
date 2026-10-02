@@ -135,6 +135,9 @@ interface FactureDetail {
   mention_tva?: string | null
   /** 0 % for a French client with no mention légale chosen. */
   mention_tva_manquante?: boolean
+  /** LIVA #1257 — the definitive invoice an avoir credits (set by « Faire un
+   *  avoir »). Null on an invoice and on an avoir typed by hand. */
+  facture_origine?: { id: number; numero: number; date: string | null } | null
 }
 
 interface GenerateSummary {
@@ -471,6 +474,21 @@ export function ClientsFacturation() {
     guard.guardAction(() => { setIsEditing(false); setTypeFilter(t); setSelectedId(null) })
   }, [guard])
 
+  // An avoir's « Facture d'origine » link: same move as the Rapports deep
+  // link — the search matches a numero exactly, so the list holds that one
+  // invoice (whatever its age vs the 200-row cap) and it stays selected.
+  const handleOpenFacture = useCallback((f: { id: number; numero: number }) => {
+    guard.guardAction(() => {
+      setIsEditing(false)
+      setBucket('def')
+      setNonEnvoyeOn(false)
+      setTypeFilter('all')
+      setSearchQuery(String(f.numero))
+      setDebouncedQuery(String(f.numero))
+      setSelectedId(f.id)
+    })
+  }, [guard])
+
   const allRows = factures ?? []
   // "Non envoyé" (red) count within the current view — definitive bucket only.
   const nonEnvoyeCount = bucket === 'def' ? allRows.filter((f) => !f.est_envoye).length : 0
@@ -560,6 +578,7 @@ export function ClientsFacturation() {
             editIDTva={editIDTva} onEditIDTvaChange={setEditIDTva}
             editNumTva={editNumTva} onEditNumTvaChange={setEditNumTva}
             editIDAdresse={editIDAdresse} onEditIDAdresseChange={setEditIDAdresse}
+            onOpenFacture={handleOpenFacture}
           />
         ) : null}
         sidebarTitle="Informations"
@@ -1744,6 +1763,7 @@ function DetailSidebar({
   editIDTva, onEditIDTvaChange,
   editNumTva, onEditNumTvaChange,
   editIDAdresse, onEditIDAdresseChange,
+  onOpenFacture,
 }: {
   facture: FactureDetail | null
   isLoading: boolean
@@ -1755,6 +1775,7 @@ function DetailSidebar({
   editIDTva: number; onEditIDTvaChange: (v: number) => void
   editNumTva: string; onEditNumTvaChange: (v: string) => void
   editIDAdresse: number; onEditIDAdresseChange: (v: number) => void
+  onOpenFacture: (f: { id: number; numero: number }) => void
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('info')
 
@@ -1825,6 +1846,7 @@ function DetailSidebar({
               editIDTva={editIDTva} onEditIDTvaChange={onEditIDTvaChange}
               editNumTva={editNumTva} onEditNumTvaChange={onEditNumTvaChange}
               editIDAdresse={editIDAdresse} onEditIDAdresseChange={onEditIDAdresseChange}
+              onOpenFacture={onOpenFacture}
             />
           )}
           {activeTab === 'historique' && <HistoriqueTab kind={facture.kind} factureId={facture.id} />}
@@ -1845,6 +1867,7 @@ function InfoTab({
   editIDTva, onEditIDTvaChange,
   editNumTva, onEditNumTvaChange,
   editIDAdresse, onEditIDAdresseChange,
+  onOpenFacture,
 }: {
   facture: FactureDetail
   isEditing: boolean
@@ -1859,6 +1882,7 @@ function InfoTab({
   editIDTva: number; onEditIDTvaChange: (v: number) => void
   editNumTva: string; onEditNumTvaChange: (v: string) => void
   editIDAdresse: number; onEditIDAdresseChange: (v: number) => void
+  onOpenFacture: (f: { id: number; numero: number }) => void
 }) {
   const smallInput = 'h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[150px]'
   const tvaDisplay = facture.tva_rate != null ? tvaRateLabel(facture.tva_rate) : '—'
@@ -1885,6 +1909,21 @@ function InfoTab({
         ) : (
           <span className={cn('px-1.5 py-0.5 rounded text-[11px] font-medium', typeChip(facture.type).classes)}>{typeChip(facture.type).label}</span>
         )} />
+        {/* LIVA #1257 — set by « Faire un avoir », never edited; hidden while
+            the draft is being switched to a Facture. */}
+        {facture.facture_origine && (!isEditing || editType === 2) && (
+          <KV label="Facture d'origine" value={
+            <button
+              type="button"
+              onClick={() => onOpenFacture(facture.facture_origine!)}
+              title="Ouvrir la facture"
+              className="text-accent-blue hover:underline tabular-nums"
+            >
+              {`N°${facture.facture_origine.numero}`}
+              {facture.facture_origine.date ? ` du ${formatHfsqlDate(facture.facture_origine.date)}` : ''}
+            </button>
+          } />
+        )}
         <KV label="Date" value={isEditing ? (
           <input type="date" value={editDate} onChange={(e) => onEditDateChange(e.target.value)}
             className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right" />

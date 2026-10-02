@@ -279,6 +279,23 @@ function displayNumero(kind: Kind, id: number, numero: unknown): number | null {
   return numero != null ? Number(numero) : null
 }
 
+/** LIVA #1257 — the definitive invoice an avoir credits (`IDfacture_origine`,
+ *  set by « Faire un avoir »). Null when the document names none (an invoice,
+ *  an avoir typed by hand, every avoir older than the column) or when the id
+ *  does not resolve inside this société. */
+async function loadFactureOrigine(
+  scope: FacturesScope,
+  h: { TYPE?: unknown; IDfacture_origine?: unknown },
+): Promise<{ id: number; numero: number; date: string | null } | null> {
+  const id = Number(h.IDfacture_origine) || 0
+  if (Number(h.TYPE) !== 2 || id <= 0) return null
+  const rows = await query<{ numero: number; DATE: string | null }>(
+    `SELECT numero, DATE FROM facture WHERE IDfacture = ${id} AND IDsociete = ${scope.societe}`,
+  )
+  if (rows.length === 0) return null
+  return { id, numero: Number(rows[0].numero), date: rows[0].DATE ?? null }
+}
+
 /** Next numero for the given ledger, within this société. MAX+1 matches the
  *  legacy allocator; concurrent POSTs retry on collision. facture and
  *  facture_prov keep separate sequences, and so does each société. */
@@ -1140,7 +1157,7 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
     if (Number(h.IDsociete) !== scope.societe) { res.status(404).json(NOT_FOUND); return }
     const IDclient = Number(h.IDclient) || 0
 
-    const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, codeComptable, envoyeIds] = await Promise.all([
+    const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, codeComptable, envoyeIds, factureOrigine] = await Promise.all([
       resolveClientNames([IDclient]),
       loadAdresse(Number(h.IDadresse) || 0),
       loadFactureLines(kind, id),
@@ -1149,6 +1166,7 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
       loadEcheanceRule(Number(h.IDecheance) || 0),
       loadCodeComptableLabel(Number(h.IDcode_comptable) || 0),
       loadEnvoyeIds(kind, [id]),
+      loadFactureOrigine(scope, h),
     ])
 
     const tva = tvaMap.get(Number(h.IDtva)) ?? { valeur: 0, libelle: '' }
@@ -1191,6 +1209,8 @@ router.get('/:kind/:id', async (req: Request, res: Response) => {
       // Same rule as the list (see loadEnvoyeIds) — the header's « Marquer
       // comme envoyée » button hangs off it.
       est_envoye: kind === 'def' ? (envoyeIds.has(id) ? 1 : 0) : 1,
+      // LIVA #1257 — the invoice this avoir credits (null otherwise).
+      facture_origine: factureOrigine,
     })
   } catch (err) {
     console.error('Error fetching facture detail:', err)
@@ -1959,10 +1979,10 @@ async function convertProforma(id: number): Promise<{ IDfacture: number; numero:
       await query(
         `INSERT INTO facture
            (IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
-            DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers, IDcommande_client)
+            DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers, IDcommande_client, IDfacture_origine)
          VALUES
            (${scope.societe}, ${newNumero}, ${n(p.IDclient)}, ${n(p.IDadresse)}, ${n(p.IDmode_paiement)}, ${n(p.IDecheance)},
-            '${date}', ${n(p.IDtva)}, ${sqlText(numTva)}, ${type}, ${n(p.IDcode_comptable)}, ${n(p.IDexpedition_divers)}, 0)`,
+            '${date}', ${n(p.IDtva)}, ${sqlText(numTva)}, ${type}, ${n(p.IDcode_comptable)}, ${n(p.IDexpedition_divers)}, 0, ${n(p.IDfacture_origine)})`,
       )
       inserted = true
     } catch (e) { lastErr = e }
@@ -2071,6 +2091,8 @@ router.post('/def/:id/avoir', async (req: Request, res: Response) => {
     const numTva = (f.num_tva ?? '').toString()
 
     // Allocate a proforma numero (vestigial internal sequence) with retry.
+    // IDfacture_origine names the credited invoice (LIVA #1257): the avoir
+    // prints « Facture d'origine » and the conversion carries it over.
     // IDexpedition_divers is deliberately NOT copied: the avoir credits an
     // invoice, it does not invoice the shipment a second time — carrying the
     // back-pointer over would make deleting the avoir reopen a shipment that
@@ -2084,10 +2106,10 @@ router.post('/def/:id/avoir', async (req: Request, res: Response) => {
         await query(
           `INSERT INTO facture_prov
              (IDsociete, numero, IDclient, IDadresse, IDmode_paiement, IDecheance,
-              DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers)
+              DATE, IDtva, num_tva, TYPE, IDcode_comptable, IDexpedition_divers, IDfacture_origine)
            VALUES
              (${scope.societe}, ${newNumero}, ${n(f.IDclient)}, ${n(f.IDadresse)}, ${n(f.IDmode_paiement)}, ${n(f.IDecheance)},
-              '${todayDigits()}', ${n(f.IDtva)}, ${sqlText(numTva)}, 2, ${n(f.IDcode_comptable)}, 0)`,
+              '${todayDigits()}', ${n(f.IDtva)}, ${sqlText(numTva)}, 2, ${n(f.IDcode_comptable)}, 0, ${id})`,
         )
         inserted = true
       } catch (e) { lastErr = e }
@@ -2208,7 +2230,7 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
   if (Number(h.IDsociete) !== scope.societe) return null
   const IDclient = Number(h.IDclient) || 0
 
-  const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, siren] = await Promise.all([
+  const [clientNames, adr, lignes, tvaMap, modePaiement, echeance, siren, factureOrigine] = await Promise.all([
     resolveClientNames([IDclient]),
     loadAdresse(Number(h.IDadresse) || 0),
     loadFactureLines(kind, id),
@@ -2218,6 +2240,7 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
     // LIVA #1130 — the SIREN is read from the client, not stored on the
     // facture (see loadClientSirenForDocument for why no snapshot is needed).
     loadClientSirenForDocument(query, IDclient),
+    loadFactureOrigine(scope, h),
   ])
   const tva = tvaMap.get(Number(h.IDtva)) ?? { valeur: 0, libelle: '' }
 
@@ -2235,6 +2258,9 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
     clientNom: clientNames.get(IDclient) ?? '',
     siren,
     numTva: (h.num_tva ?? '').toString() || null,
+    factureOrigine: factureOrigine
+      ? { numero: String(factureOrigine.numero), date: formatHfsqlDateLongFr(factureOrigine.date) }
+      : null,
     adresseFacturation: cleanAddr,
     modePaiement,
     echeance: echeance?.libelle ?? null,

@@ -102,3 +102,21 @@ describe('FacturePdf proforma mention (LIVA #1164)', () => {
     )
   })
 })
+
+// LIVA #1257 — an avoir made from an invoice cites it (a credit note must name
+// the invoice it corrects); an avoir typed by hand has none and prints nothing.
+describe("FacturePdf facture d'origine (LIVA #1257)", () => {
+  const lignes = lignes9228().slice(0, 1)
+  const origine = { numero: '9257', date: '25 septembre 2026' }
+  it("prints the credited invoice on an avoir", () => {
+    const avoir = collectStrings(FacturePdf({ data: { ...base, lignes, type: 2, factureOrigine: origine } })).join('\n')
+    expect(avoir).toContain("Facture d'origine")
+    expect(avoir).toContain('N°9257 du 25 septembre 2026')
+  })
+  it('prints nothing on a hand-made avoir, nor on an invoice', () => {
+    const manuel = collectStrings(FacturePdf({ data: { ...base, lignes, type: 2, factureOrigine: null } })).join('\n')
+    expect(manuel).not.toContain("Facture d'origine")
+    const facture = collectStrings(FacturePdf({ data: { ...base, lignes, factureOrigine: origine } })).join('\n')
+    expect(facture).not.toContain("Facture d'origine")
+  })
+})

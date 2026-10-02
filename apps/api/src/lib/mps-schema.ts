@@ -254,6 +254,18 @@ INSERT INTO operation_maintenance_metier (idoperation_maintenance, idmachine, da
 ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'operation_maintenance, operation_maintenance_metier')}
 `,
   },
+  {
+    // LIVA #1257 — an avoir names the invoice it credits (a credit note must
+    // cite the invoice it corrects). idfacture_origine = the definitive
+    // facture « Faire un avoir » started from, set on the proforma avoir and
+    // carried over when it is converted. 0 = none (an avoir typed by hand,
+    // every avoir made before this migration).
+    name: '0008_avoir_facture_origine',
+    sql: `
+ALTER TABLE facture_prov ADD COLUMN idfacture_origine bigint NOT NULL DEFAULT 0;
+ALTER TABLE facture ADD COLUMN idfacture_origine bigint NOT NULL DEFAULT 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {
