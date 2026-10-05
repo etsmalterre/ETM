@@ -9,10 +9,11 @@
 // `notifutilisateur.visible = 0` hid a card for the whole company).
 
 import { useMemo, useState, type ComponentType } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Bell, BellOff, Settings, RotateCw, Loader2,
-  ShieldCheck, CheckCircle2, Eye, EyeOff, Save, X, ClipboardCheck, History,
+  ShieldCheck, CheckCircle2, Eye, EyeOff, Save, X, ClipboardCheck, History, ReceiptText, ChevronRight,
 } from 'lucide-react'
 import { CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -48,6 +49,9 @@ interface NotificationRow {
   hidden: boolean
   /** Set on a Superviseur point: the card carries Traité / Fausse alerte. */
   superviseur?: PointSuperviseur
+  /** A card handled on its own screen (an invoice with a gap → Sous-traitants
+   *  › Factures): clicking it opens that screen, and it is never hidden. */
+  lien?: string
 }
 interface FeedResponse {
   rows: NotificationRow[]
@@ -69,6 +73,7 @@ function iconFor(icone: string): ComponentType<{ className?: string }> {
   if (icone.startsWith('tricot')) return TmRollIcon
   if (icone.startsWith('certificat')) return ShieldCheck
   if (icone === 'superviseur') return ClipboardCheck
+  if (icone === 'facture_sst') return ReceiptText
   return Bell
 }
 
@@ -340,6 +345,34 @@ function NotificationCard({
   isPending: boolean
 }) {
   const Icon = iconFor(row.icone)
+  const navigate = useNavigate()
+  if (row.lien) {
+    const lien = row.lien
+    // Handled on its own screen: the whole card is the way there.
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => navigate(lien)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(lien) } }}
+        title="Ouvrir dans Sous-traitants › Factures"
+        className="group cursor-pointer rounded-lg border border-border/60 border-l-4 border-l-destructive/60 bg-zinc-100/80 p-3 transition-colors hover:border-accent/40"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-destructive/10">
+              <Icon className="h-3.5 w-3.5 text-destructive/80" />
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium" title={row.titre}>{row.titre}</p>
+              <p className="truncate text-[11px] text-muted-foreground" title={row.description}>{row.description}</p>
+            </div>
+          </div>
+          <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground group-hover:text-accent" />
+        </div>
+      </div>
+    )
+  }
   return (
     <div
       className={cn(

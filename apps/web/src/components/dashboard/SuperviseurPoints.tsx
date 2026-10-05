@@ -2,8 +2,9 @@
 // The agent Superviseur's morning points are handled HERE, one by one, not in
 // its reports (decision 2026-09-28 — Agents IA is the admin side). A point
 // ends one of two ways, and only what can be improved is written:
-//   - « Traité »        → réussite; « Le point pouvait être mieux » opens a
-//                         required comment for Tricobot (→ partielle);
+//   - « Traité »        → réussite (silence: Tricobot was right); the
+//                         Tricobot button « Tricobot s'est trompé ? » opens a
+//                         required comment (→ échec, binary scale 2026-10-02);
 //   - « Fausse alerte » → échec, comment required.
 // API: PUT /agents-ia/superviseur/points/traitement, GET …/points/historique
 // (apps/api/src/lib/agents/superviseur/points.ts, historique.ts).
@@ -12,18 +13,19 @@ import { useMemo, useState, type ComponentType } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertCircle, AlertTriangle, ArrowRight, CheckCheck, CircleDashed, Clock, ExternalLink,
+  AlertCircle, AlertTriangle, ArrowRight, CheckCheck, Clock, ExternalLink,
   History, Info, Loader2, RotateCcw, X, XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
+import { TricobotBouton } from '@/components/tricobot/TricobotRetour'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 type Gravite = 'urgent' | 'attention' | 'info'
 type Issue = 'traite' | 'fausse_alerte'
-type Note = 'reussite' | 'partielle' | 'echec'
+type Note = 'reussite' | 'echec'
 
 export interface PointSuperviseur {
   runId: string
@@ -139,8 +141,8 @@ export function SuperviseurPointCard({ titre, description, point, onTraiter }: {
 }
 
 // ── « Traité » / « Fausse alerte » confirmation ──────────
-// §18.A dialog. « Traité » asks nothing by default; the §35 switch « Le point
-// pouvait être mieux » opens the comment for Tricobot, then required.
+// §18.A dialog. « Traité » asks nothing by default (silence = Tricobot was
+// right); the Tricobot button opens the comment for him, then required.
 
 export function TraitementDialog({ cible, onClose }: {
   cible: { titre: string; point: PointSuperviseur; issue: Issue } | null
@@ -186,22 +188,10 @@ export function TraitementDialog({ cible, onClose }: {
         <div className="mt-4 space-y-3">
           <p className="text-sm font-medium leading-snug">{cible?.titre}</p>
 
-          {!fausse && (
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-white px-3 py-2.5 shadow-sm">
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold">Le point pouvait être mieux</p>
-                <p className="mt-0.5 text-[10px] text-muted-foreground">Mauvaise cause, mauvais client, mal formulé, déjà connu…</p>
-              </div>
-              <button type="button" role="switch" aria-checked={aAmeliorer} aria-label="Le point pouvait être mieux"
-                onClick={() => { setAAmeliorer((v) => !v); setErreur('') }}
-                className={cn(
-                  'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                  aAmeliorer ? 'bg-accent shadow-inner' : 'bg-zinc-300 hover:bg-zinc-400/80',
-                )}>
-                <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
-                  aAmeliorer ? 'translate-x-[18px]' : 'translate-x-0.5')} />
-              </button>
+          {!fausse && !aAmeliorer && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-muted-foreground">Mauvaise cause, mauvais client, mal formulé, déjà connu… ?</p>
+              <TricobotBouton onClick={() => { setAAmeliorer(true); setErreur('') }} />
             </div>
           )}
 
@@ -209,7 +199,11 @@ export function TraitementDialog({ cible, onClose }: {
             <div className="space-y-1">
               <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <TricobotMascot className="h-5 w-5" />
-                {fausse ? 'Pourquoi est-ce une fausse alerte ?' : 'Qu’est-ce qui pouvait être mieux ?'}
+                {fausse ? 'Pourquoi est-ce une fausse alerte ?' : 'Qu’est-ce que Tricobot aurait dû dire ?'}
+                {!fausse && (
+                  <button type="button" onClick={() => { setAAmeliorer(false); setCommentaire('') }}
+                    className="ml-auto text-[11px] text-muted-foreground hover:text-foreground">Non, il avait juste</button>
+                )}
               </label>
               <textarea autoFocus rows={3} value={commentaire} onChange={(e) => { setCommentaire(e.target.value); setErreur('') }}
                 placeholder="Un mot pour Tricobot : c’est ce qui sert à l’améliorer."
@@ -251,11 +245,14 @@ const FILTRES = [
 ] as const
 type Filtre = (typeof FILTRES)[number]['key']
 
-const ISSUE_META: Record<Note, { label: string; cls: string; icon: ComponentType<{ className?: string }> }> = {
-  reussite: { label: 'Traité', cls: 'border-green-500/30 bg-green-500/10 text-green-700', icon: CheckCheck },
-  partielle: { label: 'Traité · pouvait être mieux', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-800', icon: CircleDashed },
-  echec: { label: 'Fausse alerte', cls: 'border-destructive/30 bg-destructive/10 text-destructive', icon: XCircle },
+// Keyed on how the point was handled, not on the score alone: a point
+// « Traité » with Tricobot corrected and a false alarm are both échecs.
+const ISSUE_META: Record<'traite' | 'corrige' | 'fausse_alerte', { label: string; cls: string; icon: ComponentType<{ className?: string }> }> = {
+  traite: { label: 'Traité', cls: 'border-green-500/30 bg-green-500/10 text-green-700', icon: CheckCheck },
+  corrige: { label: 'Traité · Tricobot corrigé', cls: 'border-destructive/30 bg-destructive/5 text-destructive', icon: TricobotMascot },
+  fausse_alerte: { label: 'Fausse alerte', cls: 'border-destructive/30 bg-destructive/10 text-destructive', icon: XCircle },
 }
+const issueDe = (t: Traitement) => t.issue === 'fausse_alerte' ? 'fausse_alerte' : t.note === 'echec' ? 'corrige' : 'traite'
 
 export function HistoriqueDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient()
@@ -324,7 +321,7 @@ export function HistoriqueDialog({ open, onClose }: { open: boolean; onClose: ()
           {points.map((p) => {
             const g = GRAVITE_META[p.gravite]
             const t = p.traitement
-            const m = t ? ISSUE_META[t.note] : null
+            const m = t ? ISSUE_META[issueDe(t)] : null
             const MIcon = m?.icon
             return (
               <div key={p.id} className="rounded-lg border border-border/60 bg-card p-3 shadow-sm">

@@ -30,6 +30,11 @@ export const LAVAGE_IDTRAITEMENT = 285
 /** "BNO/PAT" treatment — traitement.IDtraitement = 302. */
 export const BNO_PAT_IDTRAITEMENT = 302
 
+/** « Coloration Simple Teinture » (« Tous Coloris ») — teinture.IDteinture = 7,
+ *  the « ST » of MATEL's invoices. The base of a wash-only fini whose
+ *  treatments cost nothing (see _calcCore). */
+export const SIMPLE_TEINTURE_IDTEINTURE = 7
+
 // Bands for MultiplicateurMatel. Sorted by threshold ASC. A `null` threshold
 // sentinel matches "everything above the last numeric threshold" (the legacy
 // `cas > 8` branch). Linear scan picks the FIRST entry whose threshold
@@ -59,6 +64,18 @@ export function multiplicateurMatel(rendement: number): number {
   }
   // Unreachable — the null-threshold sentinel always matches.
   return 1
+}
+
+/** The rendement band of MATEL's grid a fabric falls in — (de, a], de = null
+ *  for the first band, a = null for the last — and its multiplier. Shown to
+ *  explain the « × 1,03 » (Sous-traitants › Factures, ETM price tooltip). */
+export function bandeMatel(rendement: number): { de: number | null; a: number | null; multiplicateur: number } {
+  let de: number | null = null
+  for (const band of MATEL_BANDS) {
+    if (band.threshold === null || rendement <= band.threshold) return { de, a: band.threshold, multiplicateur: band.multiplier }
+    de = band.threshold
+  }
+  return { de, a: null, multiplicateur: 1 }
 }
 
 // Internal shape of a tranche_tarif_ennoblissement row after we've narrowed
@@ -185,6 +202,7 @@ async function _calcCore(input: {
 
   const combinations: TrancheRow[] = []
   let dyeOnly: TrancheRow | null = null
+  let simpleTeinture: TrancheRow | null = null
   const singleByTrt = new Map<number, TrancheRow>()
   for (const r of allBands) {
     const list = (r.ListeTraitements ?? '').trim()
@@ -192,6 +210,7 @@ async function _calcCore(input: {
       combinations.push({ ...r, ListeTraitements: list })
     } else if (Number(r.IDteinture) > 0 && Number(r.IDtraitement) === 0) {
       if (Number(r.IDteinture) === nIDTeinture) dyeOnly = r
+      if (Number(r.IDteinture) === SIMPLE_TEINTURE_IDTEINTURE) simpleTeinture = r
     } else if (Number(r.IDtraitement) > 0) {
       singleByTrt.set(Number(r.IDtraitement), r)
     }
@@ -272,6 +291,21 @@ async function _calcCore(input: {
       applied_prix: appliedP,
       matel_applied: matelApplies,
     })
+  }
+
+  // A wash-only fini (no dye) whose treatments all cost 0 € — e.g. 027B
+  // écru, Rame + Vaporisage at 0 € — is billed by MATEL as « ST »: Coloration
+  // Simple Teinture, by weight band (5,30 at 244–252 kg, 13,98 at 21,5 kg on
+  // its 2026 invoices, exactly this tariff). The legacy priced it 0 €, which
+  // also left the agent Factures Ennoblisseur nothing to check (decision
+  // Vincent 2026-10-02). Only when nothing else carries a price: a wash-only
+  // ref whose Lavage is priced (029B, 284B) keeps its treatments alone.
+  if (avecTeinture === 0 && baseEntry === null && moPrix === 0 && simpleTeinture) {
+    const st: TrancheRow = simpleTeinture
+    const rawBase = Number(st.prix) || 0
+    const applied = IDsous_traitant === MATEL_IDSOUS_TRAITANT ? rawBase * matelMultiplier : rawBase
+    moPrix = applied
+    baseEntry = { kind: 'dye-only', IDtranche: Number(st.IDtranche_tarif_ennoblissement), IDteinture: SIMPLE_TEINTURE_IDTEINTURE, raw_prix: rawBase, applied_prix: applied }
   }
 
   const total = round2(moPrix)

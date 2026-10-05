@@ -17,6 +17,7 @@
 // running API), like the findings memory.
 
 import * as fs from 'node:fs/promises'
+import { noteBinaire } from '../store.js'
 import * as path from 'node:path'
 import { AGENTS_DIR, type Auteur, type Note } from '../store.js'
 import type { ConstatRun } from './constats.js'
@@ -150,6 +151,8 @@ export function journaliserTraitement(c: ConstatRun, traitement: Traitement | nu
 /** Newest activity first. */
 export async function lireHistorique(): Promise<PointHistorique[]> {
   const j = await lire()
+  // Old « partielle » handlings read under the binary scale.
+  for (const e of Object.values(j)) if (e.traitement) e.traitement = { ...e.traitement, note: noteBinaire(e.traitement.note) }
   const activite = (e: PointHistorique) => [e.fermeLe, e.traitement?.le, e.vuLe].filter(Boolean).sort().pop() as string
   return Object.values(j).sort((a, b) => activite(b).localeCompare(activite(a)))
 }

@@ -20,21 +20,21 @@ export interface BilanPoints {
   points: number
   evalues: number
   reussite: number
-  partielle: number
   echec: number
   aEvaluer: number
 }
 
 export interface ScorePoints extends BilanPoints {
-  /** (réussite + partielle) / évalués, 0..1 — null while nothing is scored. */
+  /** réussites / évalués, 0..1 — null while nothing is scored. */
   precision: number | null
 }
 
 type AvisLu = Pick<Evaluation, 'note' | 'le'>
 
-const vide = (): BilanPoints => ({ points: 0, evalues: 0, reussite: 0, partielle: 0, echec: 0, aEvaluer: 0 })
+const vide = (): BilanPoints => ({ points: 0, evalues: 0, reussite: 0, echec: 0, aEvaluer: 0 })
 
-function compter(notes: Array<Note | null>): BilanPoints {
+/** Shared with the other agents scored point by point (factures-sst/points.ts). */
+export function compter(notes: Array<Note | null>): BilanPoints {
   const b = vide()
   b.points = notes.length
   for (const n of notes) {
@@ -66,7 +66,6 @@ export function notesDuBilan(b: BilanPoints | null): Set<string> {
   const s = new Set<string>()
   if (!b) return s
   if (b.reussite) s.add('reussite')
-  if (b.partielle) s.add('partielle')
   if (b.echec) s.add('echec')
   if (b.aEvaluer) s.add('a_evaluer')
   return s
@@ -85,5 +84,5 @@ export function scorePoints(runs: AgentRun[]): ScorePoints {
     }
   }
   const b = compter([...dernier.values()].map((a) => a?.note ?? null))
-  return { ...b, precision: b.evalues ? (b.reussite + b.partielle) / b.evalues : null }
+  return { ...b, precision: b.evalues ? b.reussite / b.evalues : null }
 }

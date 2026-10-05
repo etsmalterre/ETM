@@ -326,7 +326,7 @@ export const TRM_PERMISSION_KEYS = [
     key: 'evaluer_agents_ia',
     label: 'Évaluer les agents IA',
     description:
-      'Autorise, dans Agents IA, à noter chaque exécution d’un agent (réussite, partielle ou échec, avec un commentaire obligatoire hors réussite). Ces retours servent à écrire la version suivante du prompt.',
+      'Réservé aux retours à Tricobot. Les agents IA ne se notent jamais dans Agents IA : chaque retour (juste, ou corrigé avec un pourquoi) se donne là où le travail se fait.',
     category: 'Agents IA',
   },
   // `view_pointage` (« Consulter le pointage ») and `edit_pointage` (« Corriger

@@ -25,7 +25,7 @@
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { AGENTS_DIR, type Auteur, type Evaluation } from '../store.js'
+import { AGENTS_DIR, type Auteur, type Evaluation, noteBinaire } from '../store.js'
 import type { ConstatRun } from './constats.js'
 
 interface Suivi {
@@ -125,7 +125,9 @@ function indexFichier<T>(nom: string) {
 const avisIndex = indexFichier<AvisPoint>('superviseur-avis.json')
 const resolutionsIndex = indexFichier<ResolutionPoint>('superviseur-resolutions.json')
 
-export const lireAvis = avisIndex.lire
+/** Scores carried from earlier reports, read under the binary scale. */
+export const lireAvis = async (): Promise<Record<string, AvisPoint>> =>
+  Object.fromEntries(Object.entries(await avisIndex.lire()).map(([k, a]) => [k, { ...a, note: noteBinaire(a.note) }]))
 export const enregistrerAvis = avisIndex.enregistrer
 export const purgerAvis = avisIndex.purger
 export const lireResolutions = resolutionsIndex.lire

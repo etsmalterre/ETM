@@ -219,6 +219,7 @@ export const mainNavigation: MainMenuItem[] = [
     href: '/sous-traitants',
     submenus: [
       { title: 'Commandes', href: '/sous-traitants/commandes' },
+      { title: 'Factures', href: '/sous-traitants/factures' },
       { title: 'Gestion', href: '/sous-traitants/gestion' },
     ],
   },
@@ -370,6 +371,7 @@ export const routeTitles: Record<string, string> = {
   // Sous-traitants
   '/sous-traitants': 'Sous-traitants',
   '/sous-traitants/commandes': 'Commandes',
+  '/sous-traitants/factures': 'Factures',
   '/sous-traitants/gestion': 'Gestion',
   // Transferts
   '/transferts': 'Transferts',

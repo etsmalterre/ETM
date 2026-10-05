@@ -19,14 +19,14 @@ import { agentDef, agentsDe, type AgentDef } from '../lib/agents/catalog.js'
 import { avecScope, scopeDe, type AgentsIaScope, type DroitIa } from '../lib/agents/app-scope.js'
 import {
   AGENT_MODES,
-  NOTES,
   activerVersion,
   changerMode,
+  changerOption,
+  optionDe,
   lireEtat,
   lireFichier,
   lireRun,
   lireRuns,
-  modifierRun,
   estPublie,
   publierVersion,
   versionActive,
@@ -38,10 +38,9 @@ import {
   type Note,
 } from '../lib/agents/store.js'
 import { etatSondage, lancerSondage, prochainQuotidien, SondageEnCoursError } from '../lib/agents/scheduler.js'
-import type { ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
-import { enregistrerAvis, enregistrerResolution, lireAvis, lireResolutions } from '../lib/agents/superviseur/avis.js'
-import { bilanRun, notesDuBilan, scorePoints } from '../lib/agents/superviseur/score.js'
-import { synchroniserHistorique, traiterPoint, TraitementInvalide } from '../lib/agents/superviseur/points.js'
+import { SUPERVISEUR_SLUG, type ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
+import { notesDuBilan } from '../lib/agents/superviseur/score.js'
+import { traiterPoint, TraitementInvalide } from '../lib/agents/superviseur/points.js'
 import { lireHistorique } from '../lib/agents/superviseur/historique.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur } from '../lib/gmail-reader.js'
@@ -96,17 +95,6 @@ export async function pilote(req: Request, res: Response): Promise<number | null
   return id
 }
 
-/** 401 / 403 unless the caller may score runs (a right separate from piloting). */
-async function evaluateur(req: Request, res: Response): Promise<number | null> {
-  const id = session(req, res)
-  if (id === null) return null
-  if (!(await aLeDroit(req, res, id, 'evaluer_agents_ia'))) {
-    res.status(403).json({ error: 'permission denied: evaluer_agents_ia' })
-    return null
-  }
-  return id
-}
-
 /** 401 / 403 unless the caller may handle points from the Notifications
  *  widget: the scoring right, or the widget with its Superviseur
  *  sub-permission (dashboard_notifications + dashboard_notif_superviseur). */
@@ -149,13 +137,12 @@ function statistiques(def: AgentDef, runs: AgentRun[], state: AgentState) {
     parStatut,
     evaluations: {
       reussite: note('reussite'),
-      partielle: note('partielle'),
       echec: note('echec'),
       aEvaluer: actifs.filter((r) => !r.evaluation).length,
     },
     /** Point-scored agents (Superviseur): the score of every finding the
      *  version raised — the number a prompt version is judged on. */
-    points: def.pointsEvaluables ? scorePoints(actifs) : null,
+    points: def.points ? def.points.score(actifs) : null,
     coutUsd: actifs.reduce((s, r) => s + (r.coutUsd || 0), 0),
     dernierRun: runs.length ? runs[runs.length - 1].createdAt : null,
   }
@@ -166,18 +153,22 @@ function allege(r: AgentRun) {
   const { resultat, avisPoints: _avis, resolutionsPoints: _res, ...rest } = r
   const res = resultat as { extraction?: { pieces?: unknown[]; numero_bordereau?: string; numero_commande?: string } }
   const sup = resultat as Partial<ResultatSuperviseur>
+  // Factures Ennoblisseur: the same three columns carry the invoice number, its gaps and its lots.
+  const fac = resultat as { extraction?: { numero_facture?: string }; verification?: { lignes?: Array<{ verdict: string; lotEtm: string }> } | null }
+  const lignesFac = fac.verification?.lignes
   return {
     ...rest,
-    bordereau: res.extraction?.numero_bordereau ?? null,
-    commande: res.extraction?.numero_commande ?? null,
-    nbPieces: res.extraction?.pieces?.length ?? null,
+    bordereau: res.extraction?.numero_bordereau ?? fac.extraction?.numero_facture ?? null,
+    commande: res.extraction?.numero_commande
+      ?? (lignesFac ? String(lignesFac.filter((l) => l.verdict === 'ecart' || l.verdict === 'non_rapproche').length) : null),
+    nbPieces: res.extraction?.pieces?.length ?? (lignesFac ? new Set(lignesFac.filter((l) => l.lotEtm).map((l) => l.lotEtm)).size : null),
     // Superviseur
     nbNouveaux: sup.constats ? sup.constats.filter((c) => c.etat !== 'ouvert').length : null,
     nbOuverts: sup.constats ? sup.constats.filter((c) => c.etat === 'ouvert').length : null,
     nbFermes: sup.fermes ? sup.fermes.length : null,
     nbEcartes: sup.ecartes ? sup.ecartes.length : null,
     /** How the report's points stand (scored on it, or carried from earlier). */
-    bilan: bilanRun(r),
+    bilan: agentDef(r.slug)?.points?.bilan(r) ?? null,
   }
 }
 
@@ -192,12 +183,13 @@ async function vueAgent(def: AgentDef) {
     ecritures: def.ecritures,
     abstention: def.abstention,
     declenchement: def.declenchement,
-    evaluation: { reussite: def.evaluation.reussite, partielle: def.evaluation.partielle, echec: def.evaluation.echec },
+    evaluation: { reussite: def.evaluation.reussite, echec: def.evaluation.echec },
     guideNotation: def.evaluation.guide,
     pointsEvaluables: def.pointsEvaluables,
     modes: def.modes,
     peutTester: !!def.traiter,
     controles: def.controles ?? [],
+    options: (def.options ?? []).map((o) => ({ ...o, valeur: optionDe(state, o.cle, o.defaut) })),
     prochaineExecution:
       def.declenchement.type === 'quotidien' && state.mode !== 'off'
         ? prochainQuotidien(def.declenchement, Date.now(), state.dernierePlanification)
@@ -263,6 +255,26 @@ routes.patch('/:slug', async (req, res) => {
   }
 })
 
+const optionBody = z.object({ cle: z.string().min(1).max(100), valeur: z.boolean() })
+
+/** Switch one of the agent's options (piloting right, like the mode). */
+routes.patch('/:slug/options', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  const p = optionBody.safeParse(req.body)
+  if (!p.success || !(def.options ?? []).some((o) => o.cle === p.data.cle)) { res.status(400).json({ error: 'option inconnue' }); return }
+  try {
+    await changerOption(def.slug, def.versionInitiale, p.data.cle, p.data.valeur)
+    console.log(`[agents-ia] ${def.slug}: option ${p.data.cle} = ${p.data.valeur} by user ${uid}`)
+    res.json(await vueAgent(def))
+  } catch (err) {
+    console.error('[agents-ia] option failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ── prompt versions ──────────────────────────────────────
 
 const versionBody = z.object({
@@ -310,12 +322,12 @@ routes.get('/:slug/runs', async (req, res) => {
   if (!def) return
   try {
     const statut = typeof req.query.statut === 'string' && req.query.statut ? req.query.statut.split(',') : null
-    // ?note=partielle,echec — any of reussite / partielle / echec, or a_evaluer
+    // ?note=echec — any of reussite / echec, or a_evaluer
     // for the runs nobody scored. A point-scored agent (Superviseur) is read
     // through its points: a report matches when one of its points does.
     const notes = typeof req.query.note === 'string' && req.query.note ? req.query.note.split(',') : null
     const notesDuRun = (r: AgentRun): Set<string> =>
-      def.pointsEvaluables ? notesDuBilan(bilanRun(r)) : new Set([r.evaluation ? r.evaluation.note : 'a_evaluer'])
+      def.points ? notesDuBilan(def.points.bilan(r)) : new Set([r.evaluation ? r.evaluation.note : 'a_evaluer'])
     const parNote = (r: AgentRun) => !notes || notes.some((n) => notesDuRun(r).has(n))
     const runs = (await lireRuns(def.slug))
       .filter((r) => (!statut || statut.includes(r.statut)) && parNote(r))
@@ -388,138 +400,16 @@ routes.post('/:slug/runs/:id/retraiter', async (req, res) => {
 })
 
 // ── scores ───────────────────────────────────────────────
-// Every score is réussite / partielle / échec. Only réussite goes without a
-// comment — the comment is what the next prompt version is written from.
-// WHAT is scored depends on the agent: a run (BL Ennoblisseur — one run, one
-// BL; an échec takes back its pre-filled pieces, AgentDef.evaluation.retirer)
-// or each point of the run (Superviseur — the report is the morning's batch,
-// never scored as a whole; superviseur/score.ts).
+// Agents IA never scores (decision Vincent 2026-10-02): every score is given
+// where the work is done, as « Tricobot » feedback — réussite by silence,
+// échec with a why (lib/agents/retours.ts). BL Ennoblisseur: at the réception
+// of the rolls (routes/tricobot.ts); Superviseur: the dashboard widget
+// (below); Factures Ennoblisseur: Sous-traitants › Factures. This screen only
+// shows the scores.
 
-const evaluationBody = z.object({
-  note: z.enum(NOTES as [Note, ...Note[]]).nullable(),
-  commentaire: z.string().trim().max(2000).default(''),
-})
-
-const COMMENTAIRE_REQUIS = 'Expliquez en commentaire ce qui n’allait pas : c’est ce qui sert à améliorer l’agent.'
-
-routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
-  const uid = await evaluateur(req, res)
-  if (uid === null) return
-  const def = agentOu404(req, res)
-  if (!def) return
-  if (def.pointsEvaluables) { res.status(409).json({ error: 'cet agent s’évalue point par point, pas par rapport' }); return }
-  const p = evaluationBody.safeParse(req.body)
-  if (!p.success) { res.status(400).json({ error: 'évaluation invalide' }); return }
-  const { note, commentaire } = p.data
-  if (note && note !== 'reussite' && !commentaire) { res.status(400).json({ error: COMMENTAIRE_REQUIS }); return }
-  try {
-    const avant = await lireRun(def.slug, req.params.id)
-    if (!avant) { res.status(404).json({ error: 'exécution introuvable' }); return }
-    // A removal happens once and is never undone: re-scoring keeps its record.
-    let retrait = avant.evaluation?.retrait ?? null
-    if (note === 'echec' && def.evaluation.retirer) retrait = (await def.evaluation.retirer(avant)) ?? retrait
-    const par = await auteur(uid)
-    const r = await modifierRun(def.slug, req.params.id, (run) => {
-      // Carries what retirer() recorded (BL: ecriture.retire), which also
-      // survives clearing the score.
-      run.resultat = avant.resultat
-      run.evaluation = note ? { note, commentaire, par, le: new Date().toISOString(), retrait } : null
-    })
-    if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
-    res.json(r)
-  } catch (err) {
-    console.error('[agents-ia] evaluation failed:', err)
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
-  }
-})
-
-const avisPointBody = evaluationBody.extend({ cle: z.string().min(1).max(500) })
-
-/** Score one point of a Superviseur report. Kept on the run (feedback for the
- *  next version) and in the Superviseur's index, so the next reports set a
- *  point scored « échec » aside (lib/agents/superviseur/avis.ts). */
-routes.put('/:slug/runs/:id/points', async (req, res) => {
-  const uid = await evaluateur(req, res)
-  if (uid === null) return
-  const def = agentOu404(req, res)
-  if (!def) return
-  if (!def.pointsEvaluables) { res.status(409).json({ error: 'cet agent ne produit pas de points à évaluer' }); return }
-  const p = avisPointBody.safeParse(req.body)
-  if (!p.success) { res.status(400).json({ error: 'évaluation invalide' }); return }
-  const { cle, note, commentaire } = p.data
-  if (note && note !== 'reussite' && !commentaire) { res.status(400).json({ error: COMMENTAIRE_REQUIS }); return }
-  try {
-    const run = await lireRun(def.slug, req.params.id)
-    if (!run) { res.status(404).json({ error: 'exécution introuvable' }); return }
-    const sup = run.resultat as Partial<ResultatSuperviseur>
-    const point = [...(sup.constats ?? []), ...(sup.ecartes ?? [])].find((c) => c.cle === cle)
-    if (!point) { res.status(404).json({ error: 'point introuvable dans ce rapport' }); return }
-    const avis: Evaluation | null = note ? { note, commentaire, par: await auteur(uid), le: new Date().toISOString() } : null
-    const r = await modifierRun(def.slug, run.id, (x) => {
-      const points = { ...(x.avisPoints ?? {}) }
-      if (avis) points[cle] = avis
-      else delete points[cle]
-      x.avisPoints = points
-    })
-    // Clearing a score from an old report must not wipe a newer one.
-    const index = await lireAvis()
-    if (avis) await enregistrerAvis(cle, { ...avis, runId: run.id, titre: point.titre, empreinte: point.empreinte })
-    else if (!index[cle] || index[cle].runId === run.id) await enregistrerAvis(cle, null)
-    if (r) await synchroniserHistorique(point, r)
-    res.json(r)
-  } catch (err) {
-    console.error('[agents-ia] avis point failed:', err)
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
-  }
-})
-
-const resolutionBody = z.object({
-  cle: z.string().min(1).max(500),
-  /** Why it is resolved; null undoes the résolu. */
-  commentaire: z.string().trim().max(2000).nullable(),
-})
-
-/** Mark one point of a Superviseur report résolu, with why — what ETM and the
- *  mailboxes cannot see (a phone call, an agreement with the client). Kept on
- *  the run (feedback for the next version) and in the Superviseur's index, so
- *  the next reports list it under « Résolus » while the check still returns it
- *  (lib/agents/superviseur/avis.ts). Same right as scoring a point. */
-routes.put('/:slug/runs/:id/points/resolution', async (req, res) => {
-  const uid = await evaluateur(req, res)
-  if (uid === null) return
-  const def = agentOu404(req, res)
-  if (!def) return
-  if (!def.pointsEvaluables) { res.status(409).json({ error: 'cet agent ne produit pas de points à résoudre' }); return }
-  const p = resolutionBody.safeParse(req.body)
-  if (!p.success) { res.status(400).json({ error: 'résolution invalide' }); return }
-  const { cle, commentaire } = p.data
-  if (commentaire !== null && !commentaire) { res.status(400).json({ error: 'Expliquez pourquoi le point est résolu.' }); return }
-  try {
-    const run = await lireRun(def.slug, req.params.id)
-    if (!run) { res.status(404).json({ error: 'exécution introuvable' }); return }
-    const sup = run.resultat as Partial<ResultatSuperviseur>
-    const carries = (sup.resolus ?? []).find((c) => c.cle === cle)
-    const point = [...(sup.constats ?? []), ...(sup.ecartes ?? [])].find((c) => c.cle === cle) ?? carries
-    if (!point) { res.status(404).json({ error: 'point introuvable dans ce rapport' }); return }
-    const resolution = commentaire ? { commentaire, par: await auteur(uid), le: new Date().toISOString() } : null
-    const r = await modifierRun(def.slug, run.id, (x) => {
-      const points = { ...(x.resolutionsPoints ?? {}) }
-      if (resolution) points[cle] = resolution
-      else delete points[cle]
-      x.resolutionsPoints = points
-    })
-    // Undoing on an old report must not wipe a newer résolu — unless this
-    // report shows the point as résolu carried from earlier (that IS the one).
-    const index = await lireResolutions()
-    if (resolution) await enregistrerResolution(cle, { ...resolution, runId: run.id, titre: point.titre, empreinte: point.empreinte })
-    else if (!index[cle] || index[cle].runId === run.id || carries) await enregistrerResolution(cle, null)
-    if (r) await synchroniserHistorique(point, r)
-    res.json(r)
-  } catch (err) {
-    console.error('[agents-ia] resolution point failed:', err)
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
-  }
-})
+// A point is never scored here: Agents IA is the admin side. The Superviseur's
+// points are handled from the dashboard widget (PUT /:slug/points/traitement),
+// an invoice's lines on Sous-traitants › Factures (routes/factures-sst.ts).
 
 const traitementBody = z.object({
   /** Omitted = the current report (an undo from the history). */
@@ -527,7 +417,7 @@ const traitementBody = z.object({
   cle: z.string().min(1).max(500),
   /** null undoes the handling. */
   issue: z.enum(['traite', 'fausse_alerte']).nullable(),
-  /** « Le point pouvait être mieux » — makes a traité a partielle. */
+  /** « Le point pouvait être mieux » — makes a traité an échec (binary scale). */
   aAmeliorer: z.boolean().default(false),
   commentaire: z.string().trim().max(2000).default(''),
 })
@@ -540,7 +430,7 @@ routes.put('/:slug/points/traitement', async (req, res) => {
   if (uid === null) return
   const def = agentOu404(req, res)
   if (!def) return
-  if (!def.pointsEvaluables) { res.status(409).json({ error: 'cet agent ne produit pas de points à traiter' }); return }
+  if (def.slug !== SUPERVISEUR_SLUG) { res.status(409).json({ error: 'cet agent ne produit pas de points à traiter' }); return }
   const p = traitementBody.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'traitement invalide' }); return }
   const { runId, cle, issue, aAmeliorer, commentaire } = p.data
@@ -561,7 +451,7 @@ routes.get('/:slug/points/historique', async (req, res) => {
   if ((await traiteurPoints(req, res)) === null) return
   const def = agentOu404(req, res)
   if (!def) return
-  if (!def.pointsEvaluables) { res.json({ points: [] }); return }
+  if (def.slug !== SUPERVISEUR_SLUG) { res.json({ points: [] }); return }
   try {
     res.json({ points: (await lireHistorique()).slice(0, 500) })
   } catch (err) {
@@ -588,8 +478,7 @@ routes.get('/:slug/retours', async (req, res) => {
       if (r.version !== version) continue
       const base = { runId: r.id, runLe: r.createdAt, source: r.source }
       if (r.evaluation) retours.push({ ...base, portee: 'execution', titre: r.resume, ...r.evaluation, retrait: r.evaluation.retrait ?? null })
-      const sup = r.resultat as Partial<ResultatSuperviseur>
-      const titres = new Map([...(sup.constats ?? []), ...(sup.ecartes ?? []), ...(sup.resolus ?? [])].map((c) => [c.cle, c.titre]))
+      const titres = new Map((def.points?.duRun(r) ?? []).map((p) => [p.cle, p.titre]))
       // A plain « Traité » (dashboard widget) is a réussite with no comment and
       // a résolu with no explanation: nothing to learn from, left out.
       for (const [cle, a] of Object.entries(r.avisPoints ?? {})) {

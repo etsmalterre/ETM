@@ -49,6 +49,7 @@ import { cleDeLigne, contactsEnnoblisseurs, ecrireBl, poidsEcrit, resoudreBl, re
 import {
   ajouterRun,
   enregistrerFichier as enregistrerFichierRun,
+  lireRuns,
   messagesTraites,
   nouvelIdRun,
   type AgentMode,
@@ -409,4 +410,22 @@ export async function prevenir(runs: AgentRun[]): Promise<void> {
       },
     })
   }
+}
+
+// ── Tricobot feedback at réception ───────────────────────
+
+const lotNormal = (l: string) => l.toUpperCase().replace(/s+/g, '')
+
+/** The run that wrote the pre-filled pieces of this lot on this order line —
+ *  the latest written one (a corrected BL re-read writes again). Its
+ *  feedback is given when the rolls are received (routes/tricobot.ts). */
+export async function runDuLot(ligneId: number, lot: string): Promise<AgentRun | null> {
+  const cible = lotNormal(lot)
+  const runs = await lireRuns(BL_ENNOBLISSEUR_SLUG)
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const r = runs[i]
+    const res = r.resultat as unknown as Partial<ResultatBl>
+    if (r.statut === 'ecrit' && res.resolution?.ligneId === ligneId && lotNormal(res.resolution.lot ?? '') === cible) return r
+  }
+  return null
 }

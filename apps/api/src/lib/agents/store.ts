@@ -57,6 +57,8 @@ export interface AgentState {
   /** Daily agents: the Paris day (YYYYMMDD) of the last scheduled run, written
    *  BEFORE the run so a crash mid-run never runs it twice the same day. */
   dernierePlanification?: string | null
+  /** The agent's options a pilot switched (AgentDef.options), absent = its default. */
+  options?: Record<string, boolean>
 }
 
 // ── Runs ─────────────────────────────────────────────────
@@ -83,12 +85,17 @@ export interface RunFichier {
   taille: number
 }
 
-/** How a user scored a run, or one point of a Superviseur report. « réussite »
- *  never needs a comment; « partielle » and « échec » do — that comment is what
- *  the next prompt version is written from. What an échec does beyond being
- *  recorded is the agent's own business (AgentDef.echec in catalog.ts). */
-export type Note = 'reussite' | 'partielle' | 'echec'
-export const NOTES: readonly Note[] = ['reussite', 'partielle', 'echec']
+/** Tricobot's feedback on one item an agent produced (decision Vincent
+ *  2026-10-02 — « partielle » dropped): « réussite » = nobody had anything to
+ *  say when handling it (silence), « échec » = a person corrected it, with why —
+ *  that comment is what the next prompt version is written from. Users only
+ *  see « Tricobot »; the score goes to the agent behind the item. */
+export type Note = 'reussite' | 'echec'
+export const NOTES: readonly Note[] = ['reussite', 'echec']
+
+/** A score as stored before 2026-10-02 may be « partielle »: a person had
+ *  something to correct, so it reads as « échec » under the binary scale. */
+export const noteBinaire = (n: string | null | undefined): Note => (n === 'reussite' ? 'reussite' : 'echec')
 
 export interface Evaluation {
   note: Note
@@ -142,8 +149,14 @@ export interface AgentRun {
 /** A stored run in today's shape: a legacy verdict becomes an evaluation
  *  (correct → réussite, incorrect → échec — the échec removed nothing then). */
 export function normaliserRun(r: AgentRun): AgentRun {
-  if (!r.verdict) return r
-  const { verdict, ...rest } = r
+  // Scores stored under the old three-level scale read as binary.
+  const binaire = (e: Evaluation): Evaluation => (e.note === 'reussite' || e.note === 'echec' ? e : { ...e, note: noteBinaire(e.note) })
+  const avisPoints = r.avisPoints
+    ? Object.fromEntries(Object.entries(r.avisPoints).map(([k, e]) => [k, binaire(e)]))
+    : r.avisPoints
+  const base: AgentRun = { ...r, avisPoints, evaluation: r.evaluation ? binaire(r.evaluation) : r.evaluation }
+  if (!base.verdict) return base
+  const { verdict, ...rest } = base
   return {
     ...rest,
     evaluation: rest.evaluation ?? {
@@ -242,6 +255,17 @@ export function changerMode(slug: string, initiale: VersionInitiale, mode: Agent
     s.modeChangedBy = par
     if (mode !== 'off' && !s.startedAt) s.startedAt = s.modeChangedAt
   })
+}
+
+export function changerOption(slug: string, initiale: VersionInitiale, cle: string, valeur: boolean): Promise<AgentState> {
+  return modifierEtat(slug, initiale, (s) => {
+    s.options = { ...(s.options ?? {}), [cle]: valeur }
+  })
+}
+
+/** An option's value: what a pilot set, else the agent's default. */
+export function optionDe(s: AgentState, cle: string, defaut: boolean): boolean {
+  return s.options?.[cle] ?? defaut
 }
 
 export function marquerPlanification(slug: string, initiale: VersionInitiale, jour: string): Promise<AgentState> {

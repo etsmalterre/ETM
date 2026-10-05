@@ -65,7 +65,8 @@ export class TraitementInvalide extends Error {}
 
 /** The score a handling gives the point. Throws when a comment is missing. */
 export function noteDuTraitement(issue: Issue, aAmeliorer: boolean, commentaire: string): Note {
-  const note: Note = issue === 'fausse_alerte' ? 'echec' : aAmeliorer ? 'partielle' : 'reussite'
+  // Binary since 2026-10-02: a point that « pouvait être mieux » was not right.
+  const note: Note = issue === 'fausse_alerte' || aAmeliorer ? 'echec' : 'reussite'
   if (note !== 'reussite' && !commentaire.trim()) {
     throw new TraitementInvalide(issue === 'fausse_alerte'
       ? 'Dites pourquoi c’est une fausse alerte : c’est ce qui sert à améliorer l’agent.'
@@ -114,20 +115,4 @@ export async function traiterPoint(
   const traitement: Traitement | null = issue && note ? { issue, note, commentaire: texte, par, le } : null
   await journaliserTraitement(point, traitement)
   return traitement
-}
-
-/** Keep the history in step when the report view (Agents IA) scores or
- *  resolves a point: résolu → traité (its score, réussite by default), an
- *  échec alone → fausse alerte, anything else → not handled. */
-export async function synchroniserHistorique(c: ConstatRun, run: AgentRun): Promise<void> {
-  const res = run.resolutionsPoints?.[c.cle]
-  const a = run.avisPoints?.[c.cle]
-  let t: Traitement | null = null
-  if (res) {
-    const note = a?.note ?? 'reussite'
-    t = { issue: note === 'echec' ? 'fausse_alerte' : 'traite', note, commentaire: [res.commentaire, a?.commentaire].filter(Boolean).join(' — '), par: res.par, le: res.le }
-  } else if (a?.note === 'echec') {
-    t = { issue: 'fausse_alerte', note: 'echec', commentaire: a.commentaire, par: a.par, le: a.le }
-  }
-  await journaliserTraitement(c, t)
 }

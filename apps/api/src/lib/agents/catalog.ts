@@ -23,6 +23,18 @@ import {
   executer as executerSuperviseur,
 } from './superviseur/superviseur.js'
 import { CONTROLES } from './superviseur/controles/index.js'
+import {
+  FACTURES_SST_BOITE,
+  FACTURES_SST_SLUG,
+  FACTURES_SST_VERSION_INITIALE,
+  sonderBoite as sonderFacturesSst,
+  traiterPdfs as traiterFacturesSst,
+  OPTION_CONFIRMATION,
+} from './factures-sst/agent.js'
+import { FOURNISSEURS } from './factures-sst/extraction.js'
+import { bilanFacture, pointsFacture, scoreFactures } from './factures-sst/points.js'
+import { bilanRun, scorePoints, type BilanPoints, type ScorePoints } from './superviseur/score.js'
+import type { ResultatSuperviseur } from './superviseur/superviseur.js'
 import type { AgentMode, AgentRun, AgentState, AgentVersion, Auteur, VersionInitiale } from './store.js'
 import type { Contexte } from './bl-ennoblisseur.js'
 import { deLApp, type AppIa } from './app-scope.js'
@@ -47,28 +59,35 @@ export interface AgentDef {
   abstention: string
   /** What each score means for this agent, shown beside the three buttons —
    *  of the run dialog, or of each point when `pointsEvaluables`. Every score
-   *  is the same (store.ts `Note`): réussite needs no comment, partielle and
+   *  is the same (store.ts `Note`, binary since 2026-10-02): réussite = nobody
+   *  had anything to say, échec = a person corrected it, with why. Formerly
    *  échec need one. */
   evaluation: {
     reussite: string
-    partielle: string
     echec: string
     /** The scoring guide opened beside the buttons: the one question that
      *  decides, then per score a concrete example from this agent's work. */
     guide: {
       question: string
-      exemples: Record<'reussite' | 'partielle' | 'echec', string>
+      exemples: Record<'reussite' | 'echec', string>
       /** Edge cases people get wrong, one line each. */
       remarques: string[]
     }
-    /** An échec removes what the run wrote (partielle keeps it for the user
+    /** An échec removes what the run wrote (kept for the user
      *  to correct). Returns the French line stored on the evaluation, or null
      *  when there was nothing to remove. Absent = an échec removes nothing. */
     retirer?(run: AgentRun): Promise<string | null>
   }
-  /** Superviseur: what is scored is each point of the report, never the run
-   *  (avis.ts, score.ts) — PUT /runs/:id/evaluation answers 409. */
+  /** What is scored is each point of a run, never the run (Superviseur: the
+   *  points of its report; Factures: the lines of the invoice) — PUT
+   *  /runs/:id/evaluation answers 409. Requires `points`. */
   pointsEvaluables: boolean
+  /** The points of a run, how one run's points stand, and a version's score. */
+  points?: {
+    duRun(run: AgentRun): Array<{ cle: string; titre: string }>
+    bilan(run: AgentRun): BilanPoints | null
+    score(runs: AgentRun[]): ScorePoints
+  }
   /** One line per mode the agent offers, for the status footer menu. An agent
    *  whose « essai » would change nothing (Superviseur: it writes nothing)
    *  leaves it out. */
@@ -86,6 +105,8 @@ export interface AgentDef {
   sonder(state: AgentState, version: AgentVersion, par: Auteur | null): Promise<AgentRun[]>
   /** Run PDFs through the pipeline outside the mailbox (manual test, retraitement) — agents that read PDFs only. */
   traiter?(pdfs: Array<{ nom: string; contenu: Buffer }>, ctx: Contexte): Promise<AgentRun[]>
+  /** Switches a pilot sets in Agents IA (configuration, never a score). */
+  options?: ReadonlyArray<{ cle: string; libelle: string; description: string; defaut: boolean }>
   /** The checks it runs, listed in the « Fonctionnement » tab (Superviseur). */
   controles?: ReadonlyArray<{ id: string; libelle: string; description: string }>
 }
@@ -109,16 +130,14 @@ export const AGENTS: readonly AgentDef[] = [
       'Rien n’est enregistré si un contrôle bloque : numéro de commande, de bordereau ou d’OF illisible, commande inconnue ou chez un autre ennoblisseur, pièce introuvable ou affectée à une autre commande, somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « BL Ennoblisseur à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
     evaluation: {
       reussite: 'Gardé tel quel : les pièces pré-remplies sont bonnes, rien n’a été retouché à la réception.',
-      partielle: 'Gardé en corrigeant : la base est bonne, mais au moins une valeur a été corrigée à la main (poids, métrage, n° de pièce, ligne). Les pièces restent pré-remplies.',
       echec: 'Tout jeté : inutilisable (mauvaise commande, pièces inventées ou manquantes en nombre). Les pièces pré-remplies sont retirées de la réception ; le PDF reste dans les documents de la commande.',
       guide: {
-        question: 'Est-ce que je garde ce qu’il a écrit ? Tel quel → réussite. En corrigeant → partielle. Je jette tout → échec.',
+        question: 'Est-ce que je garde ce qu’il a écrit tel quel ? Oui → réussite. J’ai dû corriger quoi que ce soit → échec, en disant quoi.',
         exemples: {
           reussite: '12 pièces lues, poids et métrages identiques au BL papier.',
-          partielle: 'Un poids lu 21,4 kg au lieu de 24,1 kg, corrigé dans le dialogue de réception.',
           echec: 'Le BL a été rattaché à la mauvaise commande.',
         },
-        remarques: ['Une seule valeur corrigée suffit pour une partielle : dites laquelle dans le commentaire.'],
+        remarques: ['Une seule valeur corrigée suffit pour un échec : dites laquelle dans le commentaire.'],
       },
       retirer: retirerBlEnnoblisseur,
     },
@@ -129,6 +148,52 @@ export const AGENTS: readonly AgentDef[] = [
     modeles: MODELES_MISTRAL,
     sonder: sonderBlEnnoblisseur,
     traiter: traiterBlEnnoblisseur,
+  },
+  {
+    slug: FACTURES_SST_SLUG,
+    nom: 'Factures Ennoblisseur',
+    description:
+      'Contrôle les factures des ennoblisseurs comme le faisait Pierre-Emmanuel avec « Lire facture » dans l’ancien Suivi lots : pour chaque lot facturé, le poids envoyé, le rendement et les traitements qui donnent le prix, comparés au tarif ETM du sous-traitant. La facture est enregistrée une seule fois dans Sous-traitants › Factures et rattachée à chaque commande qu’elle facture. Seules les factures avec un écart demandent une intervention.',
+    declenchement: { type: 'releve', intervalleMs: 5 * 60_000 },
+    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que BL Ennoblisseur) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}.`,
+    ecritures: [
+      'La facture et son PDF dans Sous-traitants › Factures, une ligne par ligne imprimée, chaque lot rattaché à sa ligne de commande sous-traitant (avec le poids ETM, le prix attendu et le verdict).',
+      'Le n° de facture sur les lignes de commande facturées, là où il est vide (comme dans l’ancien Suivi lots) — seulement si la lecture est fiable.',
+      'Une carte « Factures sous-traitants — écarts » dans le widget Notifications du tableau de bord pour chaque facture à traiter (toutes tant que l’option « Confirmation » est active, sinon celles avec un écart).',
+    ],
+    abstention:
+      'Deux verdicts par ligne. « Conforme » : l’agent avait tout (lot, commande, tarif ETM de la référence, coloris, traitements, rendement, poids des pièces) et c’est juste — ou facturé en dessous. « Écart » sinon : réel (facturé au-dessus du tarif au-delà de 1 % / 2 centimes, poids supérieur aux pièces dans ETM, lot déjà facturé) ou non vérifié (lot introuvable, tarif ETM absent ou incomplet, pièces pas toutes dans ETM). Chaque écart passe par une personne ; un écart non vérifié doit être confirmé ou levé avant de clore. Une lecture incohérente (lignes ≠ total) met toute la facture en écart et ne pointe pas les commandes. Les avoirs envoyés à part ne sont pas traités.',
+    // Each LINE of the invoice is scored, never the invoice (points.ts).
+    evaluation: {
+      reussite: 'Juste : le verdict sur cette ligne est le bon — l’écart est réel, ou la ligne est bien correcte.',
+      echec: 'Faux : écart signalé à tort, lot qui existe bien dans ETM, ou écart manqué sur une ligne dite conforme. Dites pourquoi.',
+      guide: {
+        question: 'Sur cette ligne, est-ce que j’aurais dit la même chose que Tricobot ? Oui → rien à faire (réussite). Non, même en partie → je le corrige ou je clique sur Tricobot, en disant pourquoi (échec).',
+        exemples: {
+          reussite: 'FA2865, lot 108406 : facturé 5,64 au lieu de 5,00 — MATEL a fait la remise.',
+          echec: '« Lot introuvable » alors que le lot est bien dans Suivi lots sous un autre nom.',
+        },
+        remarques: [
+          'La note se donne dans Sous-traitants › Factures en traitant la facture, jamais ici : valider confirme les lignes non touchées (réussite), « C’est conforme » / « Signaler un écart » contredit l’agent (échec), l’icône Tricobot signale une explication fausse (échec).',
+          'Un écart « non vérifié » levé (c’est conforme) ne note pas l’agent : il ne pouvait pas savoir ; confirmé, c’est une réussite.',
+          'Un écart vrai mais accepté (geste, prix négocié) reste une réussite : l’agent avait raison de le montrer.',
+          'Un tarif ETM faux se corrige dans le tarif du sous-traitant ; notez la ligne en échec en le disant, pour qu’on le sache.',
+        ],
+      },
+    },
+    pointsEvaluables: true,
+    points: { duRun: pointsFacture, bilan: bilanFacture, score: scoreFactures },
+    options: [{
+      cle: OPTION_CONFIRMATION,
+      libelle: 'Confirmation de toutes les factures',
+      description: 'Activé : chaque facture, même conforme, arrive « à traiter » dans Sous-traitants › Factures pour qu’une personne la valide — c’est ainsi que l’agent est noté pendant la période de confiance. Désactivé : seules les factures avec un écart, un lot introuvable ou des prix non contrôlés demandent une intervention.',
+      defaut: true,
+    }],
+    modes: { off: 'Ne lit pas la boîte mail.', essai: 'Lit et contrôle, n’enregistre rien.', actif: 'Lit, contrôle, enregistre la facture et signale les écarts.' },
+    versionInitiale: FACTURES_SST_VERSION_INITIALE,
+    modeles: MODELES_MISTRAL,
+    sonder: sonderFacturesSst,
+    traiter: traiterFacturesSst,
   },
   {
     slug: SUPERVISEUR_SLUG,
@@ -143,13 +208,11 @@ export const AGENTS: readonly AgentDef[] = [
     // Each POINT is scored, never the report (the report is the morning's batch).
     evaluation: {
       reussite: 'Vrai et utile : il fallait bien le traiter (j’ai agi, ou j’aurais dû agir).',
-      partielle: 'Vrai sujet, mais mal dit (mauvaise cause, mauvais chiffre, mauvais client ou mauvaise personne) ou déjà connu : j’ai dû vérifier moi-même pour comprendre.',
       echec: 'Rien à faire : c’est faux, ou c’est normal. Le point est écarté des prochains rapports tant qu’il reste identique.',
       guide: {
-        question: 'Si j’avais ignoré ce point, est-ce que ça aurait posé un problème ? Oui → réussite ou partielle. Non → échec.',
+        question: 'Si j’avais ignoré ce point, est-ce que ça aurait posé un problème ? Oui, et il était bien dit → Traité (réussite). Mal dit, ou rien à faire → Fausse alerte ou « pouvait être mieux » (échec).',
         exemples: {
           reussite: '« Commande sans délai » : c’était vrai, je l’ai corrigée.',
-          partielle: 'Il signale un retard fil, alors que c’est la teinture qui bloque.',
           echec: 'Un avis signalé « non facturé » qui est en fait une donation.',
         },
         remarques: [
@@ -159,6 +222,14 @@ export const AGENTS: readonly AgentDef[] = [
       },
     },
     pointsEvaluables: true,
+    points: {
+      duRun: (run) => {
+        const sup = run.resultat as Partial<ResultatSuperviseur>
+        return [...(sup.constats ?? []), ...(sup.ecartes ?? []), ...(sup.resolus ?? [])].map((c) => ({ cle: c.cle, titre: c.titre }))
+      },
+      bilan: bilanRun,
+      score: scorePoints,
+    },
     modes: {
       off: 'Ne fait aucun contrôle.',
       actif: 'Contrôle chaque nuit et prépare le rapport du matin.',

@@ -4,20 +4,21 @@
 // mode as the §29.4 status footer (Arrêt / Essai / En service).
 //
 // API: /api/agents-ia (apps/api/src/routes/agents-ia.ts). Reads need only a
-// session; piloting needs `edit_agents_ia`, scoring needs `evaluer_agents_ia`
-// — both checked server-side too.
+// session; piloting needs `edit_agents_ia` — checked server-side too.
 //
-// Every run is scored the same way: réussite / partielle / échec, a comment
-// required except for réussite (EvaluationPanel). The Superviseur's report
-// scores each of its points too. The « Retours » tab gathers every comment of
-// a version — what the next prompt is written from.
+// Nothing is scored here (decision Vincent 2026-10-02): scores are given
+// where the work is done, as « Tricobot » feedback — réussite by silence,
+// échec with a why (BL: at the réception of the rolls; Superviseur: the
+// dashboard widget; Factures: Sous-traitants › Factures). This screen shows
+// them; the « Retours » tab gathers every why of a version — what the next
+// prompt is written from.
 //
 // A BL run opens in a side-by-side dialog (what the agent read on the left,
 // the PDF on the right); a Superviseur run opens on its report. The email
 // sent for a BL « à vérifier » links here with ?agent=<slug>&run=<id>.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -28,7 +29,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  CircleDashed,
   CircleDollarSign,
   CircleSlash,
   Clock,
@@ -42,16 +42,17 @@ import {
   Info,
   ListChecks,
   Loader2,
-  CircleHelp,
   Mail,
   MessageSquare,
   MessagesSquare,
   Play,
   Power,
+  ReceiptText,
   RefreshCw,
   RotateCcw,
   ScrollText,
   Search,
+  Settings2,
   ShieldCheck,
   Upload,
   Workflow,
@@ -68,6 +69,7 @@ import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
+import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { cn } from '@/lib/utils'
 import {
   BaseApiProvider,
@@ -89,7 +91,7 @@ import {
 
 type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'deja_importe' | 'ignore' | 'erreur' | 'points_a_voir' | 'rien_a_signaler' | 'mail_envoye'
 type Source = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel'
-type Note = 'reussite' | 'partielle' | 'echec'
+type Note = 'reussite' | 'echec'
 
 interface Auteur { id: number; nom: string }
 
@@ -108,12 +110,11 @@ interface BilanPoints {
   points: number
   evalues: number
   reussite: number
-  partielle: number
   echec: number
   aEvaluer: number
 }
 interface ScorePoints extends BilanPoints {
-  /** (réussite + partielle) / évalués, 0..1 — null while nothing is scored. */
+  /** réussite / évalués, 0..1 — null while nothing is scored. */
   precision: number | null
 }
 
@@ -124,7 +125,11 @@ interface GuideNotation {
   remarques: string[]
 }
 
+/** A switch a pilot sets on the agent (configuration, never a score). */
+interface OptionAgent { cle: string; libelle: string; description: string; defaut: boolean; valeur: boolean }
+
 interface AgentVue {
+  options?: OptionAgent[]
   slug: string
   nom: string
   description: string
@@ -295,10 +300,9 @@ const NOTE_META: Record<Note, {
   hover: string
 }> = {
   reussite: { label: 'Réussite', icon: CheckCircle2, solid: 'bg-success border-success', soft: 'bg-green-500/10 border-green-500/30', text: 'text-green-700', border: 'border-l-green-500/60', hover: 'hover:bg-green-500/10' },
-  partielle: { label: 'Partielle', icon: CircleDashed, solid: 'bg-amber-500 border-amber-500', soft: 'bg-amber-500/10 border-amber-500/30', text: 'text-amber-800', border: 'border-l-amber-400/60', hover: 'hover:bg-amber-500/10' },
   echec: { label: 'Échec', icon: XCircle, solid: 'bg-destructive border-destructive', soft: 'bg-destructive/10 border-destructive/30', text: 'text-destructive', border: 'border-l-destructive/60', hover: 'hover:bg-destructive/10' },
 }
-const NOTE_ORDER: Note[] = ['reussite', 'partielle', 'echec']
+const NOTE_ORDER: Note[] = ['reussite', 'echec']
 
 /** The run's score, or « À évaluer » when nobody scored it yet. */
 function NotePill({ evaluation, className }: { evaluation: Evaluation | null | undefined; className?: string }) {
@@ -385,6 +389,11 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
     onSuccess: invalidate,
     onError: (e: Error) => setActionMessage({ tone: 'error', text: e.message }),
   })
+  const optionMut = useMutation({
+    mutationFn: (v: { cle: string; valeur: boolean }) => callApi(`${base}/${selectedSlug}/options`, { method: 'PATCH', body: JSON.stringify(v) }),
+    onSuccess: invalidate,
+    onError: (e: Error) => setActionMessage({ tone: 'error', text: e.message }),
+  })
 
   const lancement = useLancement<AgentDetail>({
     detailKey: ['agent-ia', selectedSlug],
@@ -430,16 +439,20 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
         detail={<DetailMain agent={detail ?? null} isLoading={detailLoading && selectedSlug !== null}
           hasSelection={selectedSlug !== null} canPilot={canPilot} onOpenRun={setOpenRunId} onChanged={invalidate} />}
         sidebar={selectedSlug !== null ? <DetailSidebar agent={detail ?? null} canPilot={canPilot}
-          onChangeMode={(m) => modeMut.mutate(m)} isChangingMode={modeMut.isPending} /> : null}
+          onChangeMode={(m) => modeMut.mutate(m)} isChangingMode={modeMut.isPending}
+          onChangeOption={(cle, valeur) => optionMut.mutate({ cle, valeur })} isChangingOption={optionMut.isPending} /> : null}
         sidebarTitle="Aperçu"
         hasSelection={selectedSlug !== null}
         onBack={() => setSelectedSlug(null)}
       />
-      {selectedSlug && detail?.slug === selectedSlug && detail.pointsEvaluables && (
-        <SuperviseurRunDialog agent={detail} runId={openRunId} canEvaluate={canEvaluate} onClose={() => setOpenRunId(null)}
-          onChanged={invalidate} />
+      {selectedSlug && detail?.slug === selectedSlug && detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && (
+        <SuperviseurRunDialog agent={detail} runId={openRunId} onClose={() => setOpenRunId(null)} />
       )}
-      {selectedSlug && detail?.slug === selectedSlug && !detail.pointsEvaluables && (
+      {selectedSlug && detail?.slug === selectedSlug && detail.slug === FACTURES_SST_SLUG && (
+        <FactureRunDialog agent={detail} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)}
+          onOpenRun={setOpenRunId} onChanged={invalidate} />
+      )}
+      {selectedSlug && detail?.slug === selectedSlug && !detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && (
         <RunDialog agent={detail} runId={openRunId} canPilot={canPilot} canEvaluate={canEvaluate} onClose={() => setOpenRunId(null)}
           onOpenRun={setOpenRunId} onChanged={invalidate} />
       )}
@@ -604,7 +617,7 @@ function DetailMain({ agent, isLoading, hasSelection, canPilot, onOpenRun, onCha
         })}
       </div>
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1">
-        {activeTab === 'executions' && (agent.pointsEvaluables
+        {activeTab === 'executions' && (agent.pointsEvaluables && agent.slug !== FACTURES_SST_SLUG
           ? <SuperviseurExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />
           : <ExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />)}
         {activeTab === 'retours' && <RetoursTab agent={agent} onOpenRun={onOpenRun} />}
@@ -624,7 +637,7 @@ const RUN_FILTERS: Array<{ key: string; label: string; query: string }> = [
   { key: 'ecrit', label: 'Enregistrées', query: '?statut=ecrit' },
   { key: 'simule', label: 'Simulées', query: '?statut=simule' },
   { key: 'a_evaluer', label: 'À évaluer', query: '?note=a_evaluer' },
-  { key: 'mal', label: 'Partielles / échecs', query: '?note=partielle,echec' },
+  { key: 'mal', label: 'Échecs', query: '?note=echec' },
 ]
 
 /** The score as one icon, for tight table cells (full label in the title). */
@@ -643,6 +656,8 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
   const base = useBaseApi()
   const [filtre, setFiltre] = useState('tout')
   const query = RUN_FILTERS.find((f) => f.key === filtre)?.query ?? ''
+  // The three document columns: a BL (bordereau, order, pieces) or an invoice (number, gaps, lots).
+  const colonnes = slug === FACTURES_SST_SLUG ? ['Facture', 'Écarts', 'Lots'] : ['BL', 'Cde', 'Pc']
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-runs', slug, filtre],
     queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`${base}/${slug}/runs${query}`),
@@ -678,9 +693,9 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
             <thead className="bg-zinc-200/60 border-b border-border/60">
               <tr className="text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2.5 text-left font-semibold">Date</th>
-                <th className="px-3 py-2.5 text-left font-semibold">BL</th>
-                <th className="px-3 py-2.5 text-left font-semibold">Cde</th>
-                <th className="px-3 py-2.5 text-right font-semibold">Pc</th>
+                <th className="px-3 py-2.5 text-left font-semibold">{colonnes[0]}</th>
+                <th className="px-3 py-2.5 text-left font-semibold">{colonnes[1]}</th>
+                <th className="px-3 py-2.5 text-right font-semibold">{colonnes[2]}</th>
                 <th className="px-3 py-2.5 text-left font-semibold">Statut</th>
                 <th className="px-3 py-2.5 text-right font-semibold">Coût</th>
               </tr>
@@ -701,7 +716,7 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
                   <td className="px-3 py-1.5">
                     <span className="inline-flex items-center gap-1 max-w-full">
                       <StatutPill statut={r.statut} />
-                      <NoteIcon evaluation={r.evaluation} />
+                      {r.bilan ? <BilanMini b={r.bilan} /> : <NoteIcon evaluation={r.evaluation} />}
                     </span>
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtEur(r.coutUsd)}</td>
@@ -733,7 +748,7 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
   })
   const tous = data?.retours ?? []
   const resolutions = data?.resolutions ?? []
-  // « À prendre en compte » = what says something: every partielle or échec,
+  // « À prendre en compte » = what says something: every échec,
   // and a réussite only when someone bothered to comment it.
   const retours = filtre === 'tout' ? tous : tous.filter((r) => r.note !== 'reussite' || r.commentaire)
   const compte = (n: Note) => tous.filter((r) => r.note === n).length
@@ -765,7 +780,7 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
         </div>
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Chaque évaluation partielle ou en échec porte un commentaire : c’est la liste à relire avant de publier la version suivante du prompt.
+        Chaque correction de Tricobot porte un pourquoi : c’est la liste à relire avant de publier la version suivante du prompt.
         {agent.pointsEvaluables && ' Les points du rapport évalués un par un y figurent aussi.'}
       </p>
       {isLoading ? <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
@@ -1137,15 +1152,14 @@ function FonctionnementTab({ agent }: { agent: AgentDetail }) {
 
 // ── Right sidebar ────────────────────────────────────────
 
-/** « Réussites / partielles / échecs » of the active version, then what is left to score. */
+/** « Réussites / échecs » of the active version, then what is left to score. */
 function EvaluationsKV({ s }: { s: AgentVue['stats'] }) {
   const e = s.evaluations
   return (
     <>
-      <KV label="Réussites / partielles / échecs" mono value={
+      <KV label="Réussites / échecs" mono value={
         <>
           <span className={NOTE_META.reussite.text}>{fmtNum(e.reussite)}</span>{' / '}
-          <span className={cn(e.partielle > 0 && 'font-semibold', NOTE_META.partielle.text)}>{fmtNum(e.partielle)}</span>{' / '}
           <span className={cn(e.echec > 0 && 'font-semibold', NOTE_META.echec.text)}>{fmtNum(e.echec)}</span>
         </>
       } />
@@ -1158,14 +1172,13 @@ function EvaluationsKV({ s }: { s: AgentVue['stats'] }) {
  *  was worth raising. */
 function PointsKV({ p }: { p: ScorePoints }) {
   const pct = p.precision === null ? null : Math.round(p.precision * 100)
-  const tone = pct === null ? 'text-muted-foreground' : pct >= 80 ? NOTE_META.reussite.text : pct >= 50 ? NOTE_META.partielle.text : NOTE_META.echec.text
+  const tone = pct === null ? 'text-muted-foreground' : pct >= 80 ? NOTE_META.reussite.text : pct >= 50 ? 'text-amber-800' : NOTE_META.echec.text
   return (
     <>
       <KV label="Points signalés" value={fmtNum(p.points)} mono />
-      <KV label="Confirmés / partiels / fausses alertes" mono value={
+      <KV label="Réussites / échecs" mono value={
         <>
           <span className={NOTE_META.reussite.text}>{fmtNum(p.reussite)}</span>{' / '}
-          <span className={cn(p.partielle > 0 && 'font-semibold', NOTE_META.partielle.text)}>{fmtNum(p.partielle)}</span>{' / '}
           <span className={cn(p.echec > 0 && 'font-semibold', NOTE_META.echec.text)}>{fmtNum(p.echec)}</span>
         </>
       } />
@@ -1175,8 +1188,9 @@ function PointsKV({ p }: { p: ScorePoints }) {
   )
 }
 
-function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
+function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode, onChangeOption, isChangingOption }: {
   agent: AgentDetail | null; canPilot: boolean; onChangeMode: (m: Mode) => void; isChangingMode: boolean
+  onChangeOption: (cle: string, valeur: boolean) => void; isChangingOption: boolean
 }) {
   if (!agent) {
     return (
@@ -1244,9 +1258,13 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
             <KV label="Déjà importées" value={fmtNum(n('deja_importe'))} mono />
             <KV label="À vérifier" value={<span className={cn(n('a_verifier') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('a_verifier'))}</span>} mono />
             <KV label="Erreurs" value={<span className={cn(n('erreur') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('erreur'))}</span>} mono />
-            <EvaluationsKV s={s} />
+            {s.points ? <PointsKV p={s.points} /> : <EvaluationsKV s={s} />}
             <KV label="Coût" value={fmtEur(s.coutUsd)} mono />
-            <p className="text-[11px] text-muted-foreground pt-1">Les tests manuels ne comptent pas. Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.</p>
+            <p className="text-[11px] text-muted-foreground pt-1">
+              {s.points
+                ? 'Chaque ligne est notée par la personne qui traite la facture, dans Sous-traitants › Factures. Précision = lignes justes sur lignes évaluées.'
+                : 'Chaque lecture est notée à la réception des rouleaux : reçus tels que Tricobot les a lus = réussite, une valeur corrigée = échec. Les tests manuels ne comptent pas.'} Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.
+            </p>
           </div>
           </>)}
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
@@ -1256,6 +1274,36 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
               <p className="text-[11px] text-muted-foreground">Changé par {agent.modeChangedBy.nom} le {fmtDateHeure(agent.modeChangedAt)}</p>
             )}
           </div>
+          {(agent.options ?? []).length > 0 && (
+            <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2.5">
+              <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><Settings2 className="h-3.5 w-3.5" />Réglages</p>
+              {(agent.options ?? []).map((o) => (
+                <div key={o.cle} className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold">{o.libelle}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{o.description}</p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={o.valeur}
+                    aria-label={o.libelle}
+                    disabled={!canPilot || isChangingOption}
+                    title={canPilot ? undefined : 'Droit « Piloter les agents IA » requis'}
+                    onClick={() => onChangeOption(o.cle, !o.valeur)}
+                    className={cn(
+                      'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors mt-0.5',
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                      'disabled:opacity-50 disabled:cursor-not-allowed',
+                      o.valeur ? 'bg-accent shadow-inner' : 'bg-zinc-300 hover:bg-zinc-400/80',
+                    )}
+                  >
+                    <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out', o.valeur ? 'translate-x-[18px]' : 'translate-x-0.5')} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
       <ModeFooter current={agent.mode} descriptions={agent.modes} onChange={onChangeMode} isChanging={isChangingMode} disabled={!canPilot} />
@@ -1263,12 +1311,9 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode }: {
   )
 }
 
-// ── Scoring ──────────────────────────────────────────────
-// One scale for every agent: réussite / partielle / échec. Réussite needs no
-// comment; the other two do — the comment is what the next prompt version is
-// written from (onglet Retours). What an échec removes is the agent's own
-// business, so the panel only confirms it when the caller says it removes
-// something (BL: the pre-filled pieces).
+// ── Scores (read-only) ───────────────────────────────────
+// One scale for every agent: réussite / échec (binary since 2026-10-02),
+// given where the work is done — never here.
 
 const textareaClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y'
 
@@ -1295,118 +1340,6 @@ function NoteButtons({ value, onChange, disabled, size = 'md', titles }: {
   )
 }
 
-/** « Comment noter ? » — a link under a run's score buttons (BL) that unfolds
- *  the agent's scoring guide inline. A Superviseur report has ONE such button
- *  at the top of the report, never one per point. */
-function GuideNotationToggle({ guide, textes }: { guide: GuideNotation; textes: Record<Note, string> }) {
-  const [ouvert, setOuvert] = useState(false)
-  return (
-    <div className="space-y-1.5">
-      <button type="button" onClick={() => setOuvert((v) => !v)} aria-expanded={ouvert}
-        className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-accent transition-colors">
-        <CircleHelp className="h-3.5 w-3.5" />
-        {ouvert ? 'Masquer le guide de notation' : 'Comment noter ?'}
-      </button>
-      {ouvert && <GuideNotationCard guide={guide} textes={textes} />}
-    </div>
-  )
-}
-
-function GuideNotationCard({ guide, textes }: { guide: GuideNotation; textes: Record<Note, string> }) {
-  return (
-    <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-2">
-      <p className="text-xs font-semibold">{guide.question}</p>
-      {NOTE_ORDER.map((n) => {
-        const m = NOTE_META[n]
-        const Icon = m.icon
-        return (
-          <div key={n} className={cn('rounded-md border border-l-4 border-border/60 px-2.5 py-1.5', m.border, m.soft)}>
-            <p className={cn('text-xs font-semibold inline-flex items-center gap-1', m.text)}><Icon className="h-3.5 w-3.5" />{m.label}</p>
-            <p className="text-xs mt-0.5">{textes[n]}</p>
-            <p className="text-[11px] text-muted-foreground italic mt-0.5">Ex. : {guide.exemples[n]}</p>
-          </div>
-        )
-      })}
-      {guide.remarques.length > 0 && (
-        <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-muted-foreground">
-          {guide.remarques.map((r) => <li key={r}>{r}</li>)}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-/** Score a whole run. */
-function EvaluationPanel({ evaluation, textes, guide, canEvaluate, confirmEchec, onSave, isPending, error, titre }: {
-  evaluation: Evaluation | null | undefined
-  textes: Record<Note, string>
-  guide: GuideNotation
-  canEvaluate: boolean
-  /** Text of the confirmation shown before an échec that removes something; null = none. */
-  confirmEchec: string | null
-  onSave: (note: Note | null, commentaire: string) => void
-  isPending: boolean
-  error: string | null
-  titre: string
-}) {
-  const [note, setNote] = useState<Note | null>(evaluation?.note ?? null)
-  const [commentaire, setCommentaire] = useState(evaluation?.commentaire ?? '')
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  useEffect(() => { setNote(evaluation?.note ?? null); setCommentaire(evaluation?.commentaire ?? '') }, [evaluation?.le, evaluation?.note, evaluation?.commentaire])
-  // Close the confirmation once the save it guarded has gone through.
-  useEffect(() => { if (!isPending) setConfirmOpen(false) }, [isPending])
-
-  const texte = commentaire.trim()
-  const manqueCommentaire = note !== null && note !== 'reussite' && !texte
-  const inchange = note === (evaluation?.note ?? null) && texte === (evaluation?.commentaire ?? '')
-  const enregistrer = () => {
-    if (note === 'echec' && confirmEchec && evaluation?.note !== 'echec') setConfirmOpen(true)
-    else onSave(note, texte)
-  }
-
-  return (
-    <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-2">
-      <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><MessageSquare className="h-3.5 w-3.5" />{titre}</p>
-      {!canEvaluate ? (
-        evaluation ? <EvaluationLue evaluation={evaluation} /> : <p className="text-xs text-muted-foreground italic">Pas encore évaluée — droit « Évaluer les agents IA » requis pour le faire.</p>
-      ) : (
-        <>
-          <NoteButtons value={note} onChange={setNote} disabled={isPending} titles={textes} />
-          {note && <p className="text-[11px] text-muted-foreground">{textes[note]}</p>}
-          <GuideNotationToggle guide={guide} textes={textes} />
-          {note && (
-            <textarea value={commentaire} onChange={(e) => setCommentaire(e.target.value)} rows={2} maxLength={2000}
-              placeholder={note === 'reussite' ? 'Commentaire (facultatif)' : 'Qu’est-ce qui n’allait pas ? (obligatoire — c’est ce qui sert à améliorer l’agent)'}
-              className={textareaClass} />
-          )}
-          {evaluation && (
-            <p className="text-[11px] text-muted-foreground">
-              Évaluée « {NOTE_META[evaluation.note].label.toLowerCase()} » par {evaluation.par.nom}, {fmtDateHeure(evaluation.le)}
-            </p>
-          )}
-          <div className="flex items-center gap-2">
-            <div className="ml-auto flex items-center gap-2 flex-shrink-0">
-              {evaluation && (
-                <Button variant="ghost" size="sm" disabled={isPending} onClick={() => onSave(null, '')} title="Retirer l’évaluation (ce qu’un échec a retiré n’est pas remis)">
-                  Effacer
-                </Button>
-              )}
-              <Button size="sm" disabled={isPending || !note || manqueCommentaire || inchange} onClick={enregistrer}
-                title={manqueCommentaire ? 'Un commentaire est obligatoire pour une évaluation partielle ou en échec' : undefined}>
-                {isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Enregistrer
-              </Button>
-            </div>
-          </div>
-          {evaluation?.retrait && <p className="text-[11px] text-muted-foreground">{evaluation.retrait}</p>}
-        </>
-      )}
-      {error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4 flex-shrink-0" />{error}</div>}
-      <ConfirmDialog open={confirmOpen} title="Évaluer en échec" description={confirmEchec ?? undefined} confirmLabel="Évaluer en échec"
-        isPending={isPending} onCancel={() => setConfirmOpen(false)} onConfirm={() => onSave(note, texte)} />
-    </div>
-  )
-}
-
 /** A score, read-only: pill, comment, who and when. */
 function EvaluationLue({ evaluation, className }: { evaluation: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'> & { retrait?: string | null }; className?: string }) {
   return (
@@ -1420,7 +1353,7 @@ function EvaluationLue({ evaluation, className }: { evaluation: Pick<Evaluation,
 }
 
 /** Score one point of a Superviseur report, inside its card. Réussite saves
- *  in one click; partielle and échec open a comment first. */
+ *  in one click; échec opens a comment first. Read-only in Agents IA. */
 function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending, className = 'mt-2 ml-9' }: {
   /** The score given on THIS report. */
   avis: Evaluation | undefined
@@ -1533,8 +1466,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const [page, setPage] = useState(0)
   const [showOcr, setShowOcr] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [evalError, setEvalError] = useState<string | null>(null)
-  useEffect(() => { setPage(0); setShowOcr(false); setError(null); setEvalError(null) }, [runId])
+  useEffect(() => { setPage(0); setShowOcr(false); setError(null) }, [runId])
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['agent-ia-run', slug, runId],
@@ -1547,18 +1479,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
     onSuccess: (r) => { onChanged(); if (r.runs[0]) onOpenRun(r.runs[0].id) },
     onError: (e: Error) => setError(e.message),
   })
-  const evaluationMut = useMutation({
-    mutationFn: (v: { note: Note | null; commentaire: string }) =>
-      callApi(`${base}/${slug}/runs/${runId}/evaluation`, { method: 'PUT', body: JSON.stringify(v) }),
-    onSuccess: () => { setEvalError(null); onChanged(); queryClient.invalidateQueries({ queryKey: ['agent-ia-run', slug, runId] }) },
-    onError: (e: Error) => setEvalError(e.message),
-  })
-  // An échec takes back the pieces this BL pre-filled — only while they are there.
   const ecriture = run?.resultat.ecriture ?? null
-  const confirmEchec = run?.statut === 'ecrit' && ecriture && !ecriture.retire
-    ? `Les ${ecriture.lignesEcrites} pièce(s) pré-remplies par ce BL seront retirées de la réception : le dialogue de réception ne les proposera plus. Le PDF reste dans les documents de la commande. « Retraiter » peut les réécrire.`
-    : null
-
   const e = run?.resultat.extraction ?? null
   const res = run?.resultat.resolution ?? null
   const controles = run?.resultat.controles ?? []
@@ -1695,9 +1616,228 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                 {pdfUrl ? <iframe key={pdfUrl} src={pdfUrl} className="w-full h-full" title="BL" />
                 : <div className="h-full flex flex-col items-center justify-center text-muted-foreground"><FileText className="h-12 w-12 opacity-30" /><p className="text-sm">Aucun PDF</p></div>}
               </div>
-              <EvaluationPanel titre="Évaluer cette lecture" evaluation={run.evaluation} textes={agent.evaluation} guide={agent.guideNotation}
-                canEvaluate={canEvaluate} confirmEchec={confirmEchec} isPending={evaluationMut.isPending} error={evalError}
-                onSave={(note, commentaire) => evaluationMut.mutate({ note, commentaire })} />
+              <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><TricobotMascot className="h-4 w-4" />Retour Tricobot</p>
+                {run.evaluation
+                  ? <EvaluationLue evaluation={run.evaluation} />
+                  : <p className="text-xs text-muted-foreground italic">Pas encore de retour : il est donné à la réception des rouleaux (Sous-traitants › Commandes).</p>}
+              </div>
+              {canPilot && run.fichiers.length > 0 && (
+                <div className="flex justify-end">
+                  <Button variant="outline" size="sm" disabled={retraiterMut.isPending} onClick={() => retraiterMut.mutate()}
+                    title="Relancer la lecture avec la version active (enregistre si l’agent est en service)">
+                    {retraiterMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1.5" />}Retraiter
+                  </Button>
+                </div>
+              )}
+              {error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{error}</div>}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Factures Ennoblisseur (one run = one invoice) ────────
+// The run shows what the agent read and decided on one dyer invoice; the
+// invoice itself is handled on Sous-traitants › Factures, where a run in
+// « actif » stored it.
+
+const FACTURES_SST_SLUG = 'factures-ennoblisseur'
+
+type VerdictFacture = 'conforme' | 'ecart' | 'info'
+interface ControleFacture { code: string; gravite: 'bloquant' | 'avertissement' | 'info'; message: string }
+interface ResultatFacture {
+  fournisseur: string | null
+  pages?: Array<{ nom: string; ocr: string | null; erreur: string | null }>
+  extraction: { numero_facture: string; date_facture: string; total_ht: number | null; total_ttc: number | null; type_document: string } | null
+  verification: {
+    statut: 'conforme' | 'ecarts'
+    ecartMontant: number
+    controles: ControleFacture[]
+    lignes: Array<{
+      lotEtm: string
+      verdict: VerdictFacture
+      nature: 'reel' | 'non_verifie' | null
+      ecartMontant: number
+      controles: ControleFacture[]
+      ligne: { description: string; quantite: number | null; unite: string; prix_unitaire: number | null; montant: number | null; genre: string }
+      etm: { prixAttendu: number | null; poids: number | null; idcommande: number } | null
+    }>
+  } | null
+  statutFacture: 'conforme' | 'ecarts' | null
+  ecriture: { idFacture: number; numFactureEcrits: number[]; retire?: { le: string } } | null
+}
+
+const VERDICT_FACTURE: Record<VerdictFacture, { label: string; cls: string }> = {
+  ecart: { label: 'Écart', cls: 'text-destructive font-semibold' },
+  conforme: { label: 'Conforme', cls: 'text-green-700' },
+  info: { label: '—', cls: 'text-muted-foreground' },
+}
+const STATUT_FACTURE_LABEL: Record<string, string> = { conforme: 'Conforme', ecarts: 'Écarts' }
+const FOURNISSEUR_NOM: Record<string, string> = { matel: 'MATEL', bontemps: 'Bontemps', tad: 'TAD' }
+
+/** Read-only: the lines are scored on Sous-traitants › Factures by the person
+ *  who checks the invoice (decision Vincent 2026-10-02), shown here as given. */
+function FactureRunDialog({ agent, runId, canPilot, onClose, onOpenRun, onChanged }: {
+  agent: AgentDetail; runId: string | null; canPilot: boolean; onClose: () => void
+  onOpenRun: (id: string) => void; onChanged: () => void
+}) {
+  const base = useBaseApi()
+  const slug = agent.slug
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [toutes, setToutes] = useState(false)
+  const [showOcr, setShowOcr] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { setToutes(false); setShowOcr(false); setError(null) }, [runId])
+
+  const { data: run, isLoading } = useQuery({
+    queryKey: ['agent-ia-run', slug, runId],
+    queryFn: () => apiFetch<Omit<RunComplet, 'resultat'> & { resultat: ResultatFacture; avisPoints?: Record<string, Evaluation> }>(`${base}/${slug}/runs/${runId}`),
+    enabled: runId !== null,
+  })
+  const retraiterMut = useMutation({
+    mutationFn: () => callApi<{ runs: RunLigne[] }>(`${base}/${slug}/runs/${runId}/retraiter`, { method: 'POST' }),
+    onSuccess: (r) => { onChanged(); if (r.runs[0]) onOpenRun(r.runs[0].id) },
+    onError: (e: Error) => setError(e.message),
+  })
+
+  const res = run?.resultat
+  const f = res?.extraction ?? null
+  const v = res?.verification ?? null
+  const ecriture = res?.ecriture ?? null
+  const pdfUrl = run && run.fichiers.length > 0 ? `${API_URL}${base}/${slug}/runs/${run.id}/fichiers/0#view=FitH` : null
+  // Keyed like the server (lib/agents/factures-sst/points.ts clePoint): invoice | position | lot.
+  const numero = f?.numero_facture || '?'
+  const cleDe = (i: number, lot: string) => `${numero}|${i}|${lot}`
+  const avisPoints = run?.avisPoints ?? {}
+  const souleve = (vd: VerdictFacture) => vd === 'ecart'
+  const lignes = v ? v.lignes.map((l, i) => ({ l, i })).filter(({ l, i }) => l.ligne.genre === 'lot' && (toutes || souleve(l.verdict) || avisPoints[cleDe(i, l.lotEtm)])) : []
+  const aEvaluer = v ? v.lignes.filter((l) => l.ligne.genre === 'lot' && souleve(l.verdict)) : []
+  const lecture = (v?.controles ?? []).filter((c) => c.gravite === 'bloquant')
+  const nbEvalues = Object.keys(avisPoints).length
+  const lots = v ? new Set(v.lignes.filter((l) => l.lotEtm).map((l) => l.lotEtm)).size : 0
+  const titre = f ? `${FOURNISSEUR_NOM[res?.fournisseur ?? ''] ?? ''} · Facture ${f.numero_facture || 'illisible'}` : 'Exécution'
+
+  return (
+    <Dialog open={runId !== null} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-6xl w-[94vw] h-[88vh] flex flex-col" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 flex-wrap">
+            <ReceiptText className="h-5 w-5 text-accent" />
+            {titre}
+            {run && <StatutPill statut={run.statut} className="text-xs py-0.5" />}
+            {run && <span className="text-xs font-normal text-muted-foreground">{fmtDateHeure(run.createdAt)} · {SOURCE_LABEL[run.source]} · v{run.version}</span>}
+          </DialogTitle>
+        </DialogHeader>
+        {isLoading || !run ? (
+          <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
+        ) : (
+          <div className="mt-4 flex-1 min-h-0 flex flex-col md:flex-row gap-4">
+            <div className="md:w-[50%] flex-shrink-0 min-h-0 overflow-y-auto space-y-3 px-1 scrollbar-transparent">
+              {run.message && (
+                <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1">
+                  <KV label="Mail" value={run.message.sujet || '—'} />
+                  <KV label="De" value={run.message.de} />
+                  <KV label="Reçu" value={fmtDateHeure(run.message.date)} />
+                </div>
+              )}
+              {run.erreur && (
+                <div className="rounded-lg border-l-4 border-l-destructive/60 border border-border/60 bg-destructive/5 p-3 text-sm text-destructive flex gap-2">
+                  <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /><span className="break-words">{run.erreur}</span>
+                </div>
+              )}
+              {lecture.length > 0 && (
+                <div className="rounded-lg border border-l-4 border-border/60 border-l-destructive/60 bg-destructive/5 p-2.5 text-sm">
+                  <p className="text-xs font-semibold text-destructive mb-1">Lecture à vérifier</p>
+                  {lecture.map((c, i) => <p key={i} className="text-destructive">{c.message}</p>)}
+                </div>
+              )}
+              {(v?.controles ?? []).filter((c) => c.gravite === 'avertissement').map((c, i) => (
+                <div key={i} className={cn('rounded-lg border border-l-4 border-border/60 p-2.5 text-sm flex gap-2',
+                  c.gravite === 'bloquant' ? 'border-l-destructive/60 bg-destructive/5 text-destructive' : 'border-l-amber-400/60 bg-amber-400/10 text-amber-800')}>
+                  {c.gravite === 'bloquant' ? <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /> : <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />}
+                  <span>{c.message}</span>
+                </div>
+              ))}
+              {ecriture && (
+                ecriture.retire ? (
+                  <div className="rounded-lg border-l-4 border-l-border border border-border/60 bg-zinc-100/80 p-3 text-sm text-muted-foreground flex gap-2">
+                    <EyeOff className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <span>Facture enregistrée, puis retirée le {fmtDateHeure(ecriture.retire.le)} (évaluation en échec).</span>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border-l-4 border-l-green-500/60 border border-border/60 bg-green-500/5 p-3 text-sm text-green-700 flex items-start gap-2">
+                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <span className="flex-1">Facture enregistrée{ecriture.numFactureEcrits.length ? `, n° reporté sur ${ecriture.numFactureEcrits.length} ligne(s) de commande` : ''}.</span>
+                    <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-accent hover:text-accent hover:bg-accent/10 flex-shrink-0"
+                      onClick={() => navigate(`/sous-traitants/factures?facture=${ecriture.idFacture}`)}>
+                      Ouvrir<ExternalLink className="h-3 w-3 ml-1" />
+                    </Button>
+                  </div>
+                )
+              )}
+              {f && (
+                <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1">
+                  <KV label="Ennoblisseur" value={FOURNISSEUR_NOM[res?.fournisseur ?? ''] ?? '—'} />
+                  <KV label="Facture" value={`${f.numero_facture || '—'}${f.date_facture ? ` du ${f.date_facture.split('-').reverse().join('/')}` : ''}`} mono />
+                  <KV label="Total HT" value={f.total_ht != null ? `${fmtNum(f.total_ht, 2)} €` : '—'} mono />
+                  {v && <KV label="Verdict" value={`${STATUT_FACTURE_LABEL[v.statut] ?? v.statut} · ${lots} lot(s)${v.ecartMontant > 0 ? ` · ${fmtNum(v.ecartMontant, 2)} € en trop` : ''}`} />}
+                </div>
+              )}
+              {v && v.lignes.length > 0 && (
+                <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                  <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/60 bg-zinc-200/60">
+                    <span className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">
+                      {toutes ? 'Toutes les lignes' : 'Lignes à évaluer'}
+                      <span className="ml-2 normal-case tracking-normal font-normal tabular-nums">{nbEvalues} évaluée{nbEvalues > 1 ? 's' : ''} · {aEvaluer.length} signalée{aEvaluer.length > 1 ? 's' : ''}</span>
+                    </span>
+                    <button type="button" onClick={() => setToutes((x) => !x)} className="text-xs text-muted-foreground hover:text-foreground">
+                      {toutes ? 'Seulement à voir' : `Toutes (${v.lignes.length})`}
+                    </button>
+                  </div>
+                  {lignes.length === 0 ? (
+                    <p className="px-3 py-3 text-sm text-muted-foreground italic">Aucune ligne signalée.</p>
+                  ) : (
+                    <div className="divide-y divide-border/40">
+                      {lignes.map(({ l, i }) => (
+                        <div key={i} className="px-2 py-2 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium tabular-nums w-24 truncate" title={l.lotEtm || l.ligne.description}>{l.lotEtm || l.ligne.description}</span>
+                            <span className="tabular-nums text-muted-foreground">{l.ligne.quantite != null ? `${fmtNum(l.ligne.quantite, 2)} ${l.ligne.unite}` : ''}</span>
+                            <span className="tabular-nums">{l.ligne.prix_unitaire != null ? `${fmtNum(l.ligne.prix_unitaire, 2)} €` : ''}{l.etm?.prixAttendu != null ? <span className="text-muted-foreground"> / {fmtNum(l.etm.prixAttendu, 2)}</span> : null}</span>
+                            <span className={cn('ml-auto', VERDICT_FACTURE[l.verdict].cls)}>{VERDICT_FACTURE[l.verdict].label}{l.verdict === 'ecart' && l.nature === 'non_verifie' ? ' (non vérifié)' : ''}</span>
+                          </div>
+                          {l.controles.filter((c) => c.gravite !== 'info').map((c, j) => <p key={j} className="text-[11px] text-muted-foreground mt-0.5">{c.message}</p>)}
+                          <PointEvaluation avis={avisPoints[cleDe(i, l.lotEtm)]} herite={undefined} textes={agent.evaluation} canEvaluate={false}
+                            onSave={async () => undefined} isPending={false} className="mt-1.5" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {(res?.pages ?? []).some((p) => p.ocr) && (
+                <div>
+                  <button type="button" onClick={() => setShowOcr((x) => !x)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+                    {showOcr ? 'Masquer le texte lu (OCR)' : 'Afficher le texte lu (OCR)'}
+                  </button>
+                  {showOcr && (
+                    <pre className="mt-2 text-[11px] whitespace-pre-wrap font-mono bg-zinc-100/80 rounded-md p-3 max-h-80 overflow-auto scrollbar-transparent">
+                      {(res?.pages ?? []).map((p) => p.ocr ?? '').join('\n\n')}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex-1 min-w-0 min-h-[300px] flex flex-col gap-2">
+              <div className="flex-1 min-h-0 rounded-lg border border-border/60 bg-zinc-50 overflow-hidden">
+                {pdfUrl ? <iframe key={pdfUrl} src={pdfUrl} className="w-full h-full" title="Facture" />
+                : <div className="h-full flex flex-col items-center justify-center text-muted-foreground"><FileText className="h-12 w-12 opacity-30" /><p className="text-sm">Aucun PDF</p></div>}
+              </div>
+              <p className="text-[11px] text-muted-foreground px-1">Les lignes se notent dans Sous-traitants › Factures, en traitant la facture.</p>
               {canPilot && run.fichiers.length > 0 && (
                 <div className="flex justify-end">
                   <Button variant="outline" size="sm" disabled={retraiterMut.isPending} onClick={() => retraiterMut.mutate()}
@@ -1768,6 +1908,18 @@ const GRAVITE_META: Record<Gravite, { border: string; iconBg: string; iconCls: s
 }
 
 /** « 3 / 10 » points scored, then how — one icon per score present. */
+/** One line in a list row: how many of the run's points are scored. */
+function BilanMini({ b }: { b: BilanPoints }) {
+  if (b.points === 0) return null
+  const fini = b.aEvaluer === 0
+  return (
+    <span className={cn('inline-flex items-center gap-0.5 text-[11px] tabular-nums whitespace-nowrap', fini ? 'text-green-700' : 'text-muted-foreground')}
+      title={`${b.evalues} point(s) évalué(s) sur ${b.points}`}>
+      {fini ? <CheckCheck className="h-3 w-3" /> : <Clock className="h-3 w-3" />}{b.evalues}/{b.points}
+    </span>
+  )
+}
+
 function BilanCell({ b }: { b: BilanPoints | null }) {
   if (!b || b.points === 0) return <span className="text-muted-foreground">—</span>
   const fini = b.aEvaluer === 0
@@ -1796,7 +1948,7 @@ function joursDepuis(iso: string): number {
 const SUP_FILTERS: Array<{ key: string; label: string; query: string }> = [
   { key: 'tout', label: 'Tous', query: '' },
   { key: 'a_evaluer', label: 'À évaluer', query: '?note=a_evaluer' },
-  { key: 'mal', label: 'Partiels / échecs', query: '?note=partielle,echec' },
+  { key: 'mal', label: 'Échecs', query: '?note=echec' },
   { key: 'erreurs', label: 'Erreurs', query: '?statut=erreur' },
 ]
 
@@ -1872,22 +2024,17 @@ function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun
   )
 }
 
-function ConstatCard({ c, avis, resolution, textes, canEvaluate, onSave, onResolve, isPending, estompe }: {
+/** One point of a report, as it stands: its score and résolu come from the
+ *  dashboard widget, where Isabelle handles it — nothing is decided here. */
+function ConstatCard({ c, avis, resolution, textes, estompe }: {
   c: ConstatRun
   avis: Evaluation | undefined
   /** Marked résolu on THIS report (a carried one is `c.resolution`). */
   resolution: Resolution | undefined
   textes: Record<Note, string>
-  canEvaluate: boolean
-  onSave: (note: Note | null, commentaire: string) => Promise<unknown>
-  /** Mark résolu with why, or undo it (null). */
-  onResolve: (commentaire: string | null) => Promise<unknown>
-  isPending: boolean
   /** Set aside (false alarm): shown quieter. */
   estompe?: boolean
 }) {
-  const [brouillon, setBrouillon] = useState<string | null>(null)
-  const [erreur, setErreur] = useState<string | null>(null)
   // A resolved point folds to its title + how it was settled; the detail
   // stays one click away.
   const [deplie, setDeplie] = useState(false)
@@ -1897,11 +2044,6 @@ function ConstatCard({ c, avis, resolution, textes, canEvaluate, onSave, onResol
   const Icon = res ? CheckCircle2 : g.icon
   const j = joursDepuis(c.depuis)
   const { contexte, action } = decouperMessage(c.message)
-  const valider = () => {
-    if (!brouillon?.trim()) return
-    setErreur(null)
-    onResolve(brouillon.trim()).then(() => setBrouillon(null)).catch((e: Error) => setErreur(e.message))
-  }
   return (
     <div className={cn('rounded-lg border border-l-4 border-border/60 bg-card shadow-sm overflow-hidden',
       res ? 'border-l-green-500/60' : estompe ? 'border-l-border opacity-80' : g.border)}>
@@ -1949,52 +2091,22 @@ function ConstatCard({ c, avis, resolution, textes, canEvaluate, onSave, onResol
         )}
       </div>
 
-      {/* What people did about it: how it was settled, its score, the two actions. */}
-      <div className="border-t border-border/50 bg-zinc-50 px-3 py-2 space-y-1.5">
-        {res && (
-          <div className="flex items-start gap-1.5 text-xs">
-            <CheckCheck className="h-3.5 w-3.5 text-green-700 flex-shrink-0 mt-px" />
-            <span className="min-w-0 flex-1">
-              <span className="font-semibold text-green-700">Résolu{resolution ? '' : ' sur un rapport précédent'} : </span>
-              <span>{res.commentaire}</span>
-              <span className="text-muted-foreground"> — {res.par.nom}, {fmtDateHeure(res.le)}</span>
-            </span>
-            {canEvaluate && (
-              <button type="button" className="flex-shrink-0 text-[11px] text-muted-foreground hover:text-destructive transition-colors" disabled={isPending}
-                onClick={() => { setErreur(null); onResolve(null).catch((e: Error) => setErreur(e.message)) }}>
-                Annuler
-              </button>
-            )}
-          </div>
-        )}
-        <div className="flex items-start gap-3">
-          {/* Folded résolu: its score (if any) still shows, the buttons wait for « Voir le détail ». */}
-          <PointEvaluation avis={avis} herite={c.avis} textes={textes} canEvaluate={canEvaluate && !replie} onSave={onSave} isPending={isPending} className="min-w-0 flex-1" />
-          {canEvaluate && !res && brouillon === null && (
-            <button type="button" onClick={() => { setBrouillon(''); setErreur(null) }} disabled={isPending}
-              title="Le problème est réglé (appel, accord avec le client…) : expliquez comment"
-              className="flex-shrink-0 h-7 px-2.5 rounded-md border border-green-600/30 bg-white inline-flex items-center gap-1 text-xs font-medium text-green-700 hover:bg-green-500/10 transition-colors">
-              <CheckCheck className="h-3.5 w-3.5" />Marquer résolu
-            </button>
-          )}
-        </div>
-        {brouillon !== null && (
-          <div className="space-y-1.5 max-w-xl pt-1">
-            <p className="text-[11px] text-muted-foreground">
-              Le point quitte la liste à traiter. Dites comment il a été réglé — l’agent s’en sert pour sa version suivante.
-            </p>
-            <textarea value={brouillon} onChange={(e) => setBrouillon(e.target.value)} rows={2} maxLength={2000} autoFocus
-              placeholder="Ex. : PE a eu le client au téléphone (obligatoire)" className={textareaClass} />
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => { setBrouillon(null); setErreur(null) }}>Annuler</Button>
-              <Button size="sm" disabled={isPending || !brouillon.trim()} onClick={valider}>
-                {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCheck className="h-3.5 w-3.5 mr-1.5" />}Marquer résolu
-              </Button>
+      {/* What people did about it (from the widget): how it was settled, its score. */}
+      {(res || avis || c.avis) && (
+        <div className="border-t border-border/50 bg-zinc-50 px-3 py-2 space-y-1.5">
+          {res && (
+            <div className="flex items-start gap-1.5 text-xs">
+              <CheckCheck className="h-3.5 w-3.5 text-green-700 flex-shrink-0 mt-px" />
+              <span className="min-w-0 flex-1">
+                <span className="font-semibold text-green-700">Résolu{resolution ? '' : ' sur un rapport précédent'} : </span>
+                <span>{res.commentaire}</span>
+                <span className="text-muted-foreground"> — {res.par.nom}, {fmtDateHeure(res.le)}</span>
+              </span>
             </div>
-          </div>
-        )}
-        {erreur && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</p>}
-      </div>
+          )}
+          <PointEvaluation avis={avis} herite={c.avis} textes={textes} canEvaluate={false} onSave={async () => undefined} isPending={false} className="min-w-0" />
+        </div>
+      )}
     </div>
   )
 }
@@ -2027,15 +2139,15 @@ function KpiStrip({ items }: {
 
 /** The report is the morning's batch of points: the KPIs say how it stands,
  *  each point is scored on its own — the report as a whole never is. */
-function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }: {
-  agent: AgentDetail; runId: string | null; canEvaluate: boolean; onClose: () => void; onChanged: () => void
+/** Read-only: Agents IA watches the agent, it never scores it — Isabelle
+ *  handles (and so scores) the points from the dashboard Notifications widget
+ *  (decision Vincent 2026-10-02). */
+function SuperviseurRunDialog({ agent, runId, onClose }: {
+  agent: AgentDetail; runId: string | null; onClose: () => void
 }) {
   const base = useBaseApi()
   const slug = agent.slug
-  const queryClient = useQueryClient()
   const [showControles, setShowControles] = useState(false)
-  // One scoring guide for the whole report, never one per point.
-  const [showGuide, setShowGuide] = useState(false)
   const [showEcartes, setShowEcartes] = useState(false)
   const [showResolusAvant, setShowResolusAvant] = useState(false)
   useEffect(() => { setShowControles(false); setShowEcartes(false) }, [runId])
@@ -2044,18 +2156,6 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
     queryKey: ['agent-ia-run', slug, runId],
     queryFn: () => apiFetch<RunSuperviseur>(`${base}/${slug}/runs/${runId}`),
     enabled: runId !== null,
-  })
-  const rafraichir = () => { onChanged(); queryClient.invalidateQueries({ queryKey: ['agent-ia-run', slug, runId] }) }
-
-  const pointMut = useMutation({
-    mutationFn: (v: { cle: string; note: Note | null; commentaire: string }) =>
-      callApi(`${base}/${slug}/runs/${runId}/points`, { method: 'PUT', body: JSON.stringify(v) }),
-    onSuccess: rafraichir,
-  })
-  const resolutionMut = useMutation({
-    mutationFn: (v: { cle: string; commentaire: string | null }) =>
-      callApi(`${base}/${slug}/runs/${runId}/points/resolution`, { method: 'PUT', body: JSON.stringify(v) }),
-    onSuccess: rafraichir,
   })
 
   const res = run?.resultat
@@ -2084,10 +2184,7 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
   const pct = constats.length ? Math.round(((constats.length - aEvaluer) / constats.length) * 100) : 0
 
   const carte = (c: ConstatRun, estompe = false) => (
-    <ConstatCard key={c.cle} c={c} avis={avis[c.cle]} resolution={resolutions[c.cle]} textes={agent.evaluation} canEvaluate={canEvaluate} estompe={estompe}
-      isPending={(pointMut.isPending && pointMut.variables?.cle === c.cle) || (resolutionMut.isPending && resolutionMut.variables?.cle === c.cle)}
-      onSave={(note, commentaire) => pointMut.mutateAsync({ cle: c.cle, note, commentaire })}
-      onResolve={(commentaire) => resolutionMut.mutateAsync({ cle: c.cle, commentaire })} />
+    <ConstatCard key={c.cle} c={c} avis={avis[c.cle]} resolution={resolutions[c.cle]} textes={agent.evaluation} estompe={estompe} />
   )
 
   return (
@@ -2126,7 +2223,6 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
                   </div>
                 ) },
               { key: 'reussite', label: 'Confirmés', value: fmtNum(compte('reussite')), tone: compte('reussite') > 0 ? NOTE_META.reussite.text : undefined },
-              { key: 'partielle', label: 'Partiels', value: fmtNum(compte('partielle')), tone: compte('partielle') > 0 ? NOTE_META.partielle.text : undefined },
               { key: 'echec', label: 'Fausses alertes', value: fmtNum(compte('echec')), tone: compte('echec') > 0 ? NOTE_META.echec.text : undefined,
                 sub: ecartes.length > 0 ? `${fmtNum(ecartes.length)} écartée${ecartes.length > 1 ? 's' : ''} avant` : undefined },
               { key: 'fermes', label: 'Résolus', value: fmtNum(nbResolus), tone: nbResolus > 0 ? NOTE_META.reussite.text : undefined,
@@ -2135,16 +2231,9 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
 
             <div className="flex-shrink-0 flex items-center justify-between gap-3 text-xs text-muted-foreground px-1">
               <div className="min-w-0 flex items-center gap-3">
-                {constats.length > 0 && (
-                  <button type="button" onClick={() => setShowGuide((v) => !v)} aria-expanded={showGuide}
-                    className={cn('flex-shrink-0 inline-flex items-center gap-1 font-medium transition-colors', showGuide ? 'text-accent' : 'hover:text-accent')}>
-                    <CircleHelp className="h-3.5 w-3.5" />{showGuide ? 'Masquer le guide de notation' : 'Comment noter ?'}
-                  </button>
-                )}
                 <span className="min-w-0 truncate">
                   {constats.length === 0 ? ''
-                    : !canEvaluate ? 'Droit « Évaluer les agents IA » requis pour noter les points.'
-                    : aEvaluer > 0 ? ''
+                    : aEvaluer > 0 ? 'Les points se traitent — et se notent — dans le widget Notifications du tableau de bord.'
                     : 'Tous les points sont évalués.'}
                 </span>
               </div>
@@ -2154,7 +2243,6 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto space-y-3 px-1 pb-1 scrollbar-transparent">
-              {showGuide && constats.length > 0 && <GuideNotationCard guide={agent.guideNotation} textes={agent.evaluation} />}
               {showControles && (
                 controles.length === 0 ? (
                   <p className="text-xs text-muted-foreground italic">Aucun contrôle n’est encore en place.</p>
@@ -2187,7 +2275,6 @@ function SuperviseurRunDialog({ agent, runId, canEvaluate, onClose, onChanged }:
                   <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /><span className="break-words">{run.erreur}</span>
                 </div>
               )}
-              {pointMut.error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{(pointMut.error as Error).message}</div>}
 
               {neufs.length > 0 && <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Nouveaux points</p>}
               {neufs.map((c) => carte(c))}

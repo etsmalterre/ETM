@@ -77,6 +77,7 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     label: 'Sous-traitants',
     screens: [
       { href: '/sous-traitants/commandes', label: 'Commandes' },
+      { href: '/sous-traitants/factures', label: 'Factures' },
       { href: '/sous-traitants/gestion', label: 'Gestion' },
     ],
   },

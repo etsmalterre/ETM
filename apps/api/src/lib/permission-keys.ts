@@ -96,6 +96,13 @@ export const PERMISSION_KEYS = [
     cascade: false,
   },
   {
+    key: 'dashboard_notif_factures_sst',
+    label: 'Factures sous-traitants — écarts',
+    description: 'Propose l’abonnement « Factures sous-traitants — écarts » dans le widget Notifications : une carte par facture d’ennoblisseur où l’agent « Factures Ennoblisseur » a trouvé un écart, à traiter dans Sous-traitants › Factures. Sous-droit de « Notifications ».',
+    category: 'Tableau de bord',
+    parent: 'dashboard_notifications',
+  },
+  {
     key: 'dashboard_utilisation_fil',
     label: 'Utilisation fil',
     description:
@@ -510,7 +517,7 @@ export const PERMISSION_KEYS = [
     key: 'evaluer_agents_ia',
     label: 'Évaluer les agents IA',
     description:
-      'Autorise, dans Agents IA, à noter chaque exécution (réussite, partielle ou échec, avec un commentaire obligatoire hors réussite) et chaque point du rapport du Superviseur. Ces retours servent à écrire la version suivante du prompt. Un échec peut retirer ce que l’agent a enregistré : sur BL Ennoblisseur, les pièces pré-remplies pour la réception.',
+      'Autorise à traiter les points du Superviseur depuis le widget Notifications sans l’abonnement du widget. Les agents IA ne se notent jamais dans Agents IA : chaque retour à Tricobot (juste, ou corrigé avec un pourquoi) se donne là où le travail se fait — réception des rouleaux, factures sous-traitants, widget Notifications.',
     category: 'Agents IA',
   },
 ] as const

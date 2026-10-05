@@ -14,14 +14,14 @@ const run = (id: string, constats: ConstatRun[], extra: Partial<AgentRun> = {}, 
   resultat: { constats, ecartes, fermes: [], controles: [], memoireMiseAJour: true },
   ...extra,
 })
-const avis = (note: 'reussite' | 'partielle' | 'echec', le = '2026-09-23T08:00:00.000Z') => ({ note, commentaire: '', par, le })
+const avis = (note: 'reussite' | 'echec', le = '2026-09-23T08:00:00.000Z') => ({ note, commentaire: '', par, le })
 
 describe('bilanRun', () => {
   it('counts the points of one report by their score', () => {
     const r = run('r1', [point('a'), point('b'), point('c'), point('d')], {
-      avisPoints: { a: avis('reussite'), b: avis('partielle'), c: avis('echec') },
+      avisPoints: { a: avis('reussite'), b: avis('echec'), c: avis('echec') },
     })
-    expect(bilanRun(r)).toEqual({ points: 4, evalues: 3, reussite: 1, partielle: 1, echec: 1, aEvaluer: 1 })
+    expect(bilanRun(r)).toEqual({ points: 4, evalues: 3, reussite: 1, echec: 2, aEvaluer: 1 })
   })
 
   it('takes a score carried from an earlier report as given', () => {
@@ -31,13 +31,13 @@ describe('bilanRun', () => {
 
   it('is null for a run without findings, empty for a clean report', () => {
     expect(bilanRun(run('r3', [], { resultat: {} }))).toBeNull()
-    expect(bilanRun(run('r4', []))).toEqual({ points: 0, evalues: 0, reussite: 0, partielle: 0, echec: 0, aEvaluer: 0 })
+    expect(bilanRun(run('r4', []))).toEqual({ points: 0, evalues: 0, reussite: 0, echec: 0, aEvaluer: 0 })
   })
 })
 
 describe('notesDuBilan', () => {
   it('lists the notes present and a_evaluer while a point is unscored', () => {
-    expect([...notesDuBilan({ points: 3, evalues: 2, reussite: 1, partielle: 0, echec: 1, aEvaluer: 1 })].sort())
+    expect([...notesDuBilan({ points: 3, evalues: 2, reussite: 1, echec: 1, aEvaluer: 1 })].sort())
       .toEqual(['a_evaluer', 'echec', 'reussite'])
     expect(notesDuBilan(null).size).toBe(0)
   })
@@ -45,10 +45,10 @@ describe('notesDuBilan', () => {
 
 describe('scorePoints', () => {
   it('scores each distinct finding once, by its latest avis', () => {
-    const lundi = run('r1', [point('a'), point('b')], { avisPoints: { a: avis('partielle', '2026-09-21T08:00:00.000Z') } })
+    const lundi = run('r1', [point('a'), point('b')], { avisPoints: { a: avis('echec', '2026-09-21T08:00:00.000Z') } })
     const mardi = run('r2', [point('a', { etat: 'ouvert' }), point('c')], { avisPoints: { a: avis('reussite', '2026-09-22T08:00:00.000Z') } })
     const s = scorePoints([lundi, mardi])
-    expect(s).toEqual({ points: 3, evalues: 1, reussite: 1, partielle: 0, echec: 0, aEvaluer: 2, precision: 1 })
+    expect(s).toEqual({ points: 3, evalues: 1, reussite: 1, echec: 0, aEvaluer: 2, precision: 1 })
   })
 
   it('counts a point set aside as the false alarm it is', () => {

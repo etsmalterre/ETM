@@ -59,9 +59,9 @@ describe('estTraite', () => {
 })
 
 describe('noteDuTraitement', () => {
-  it('traité = réussite with no comment; « pouvait être mieux » = partielle; fausse alerte = échec', () => {
+  it('traité = réussite with no comment; « pouvait être mieux » and fausse alerte = échec (binary)', () => {
     expect(noteDuTraitement('traite', false, '')).toBe('reussite')
-    expect(noteDuTraitement('traite', true, 'mauvais client')).toBe('partielle')
+    expect(noteDuTraitement('traite', true, 'mauvais client')).toBe('echec')
     expect(noteDuTraitement('fausse_alerte', false, 'déjà réglé')).toBe('echec')
   })
 

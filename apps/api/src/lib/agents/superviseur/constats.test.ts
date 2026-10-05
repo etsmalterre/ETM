@@ -70,20 +70,19 @@ describe('dedoublonner', () => {
 
 describe('appliquerSuivi', () => {
   const par = { id: 7, nom: 'Isabelle' }
-  const avis = (note: 'reussite' | 'partielle' | 'echec', commentaire = ''): IndexAvis[string] =>
+  const avis = (note: 'reussite' | 'echec', commentaire = ''): IndexAvis[string] =>
     ({ note, commentaire, par, le: J1, runId: 'r1', titre: 't' })
 
   it('sets aside the points scored « échec » and keeps the others, with their score', () => {
     const r = comparer(memoireVide(), [c('1'), c('2'), c('3'), c('4')], J2)
     const { listes, ecartes } = appliquerSuivi(r.constats, {
       'test:1': avis('echec', 'Déjà livré, fausse alerte'),
-      'test:2': avis('partielle', 'Bon point, mauvaise quantité'),
       'test:3': avis('reussite'),
     })
     expect(ecartes.map((x) => x.cle)).toEqual(['test:1'])
     expect(ecartes[0].avis?.commentaire).toBe('Déjà livré, fausse alerte')
     expect(listes.map((x) => [x.cle, x.avis?.note ?? null])).toEqual([
-      ['test:2', 'partielle'],
+      ['test:2', null],
       ['test:3', 'reussite'],
       ['test:4', null],
     ])

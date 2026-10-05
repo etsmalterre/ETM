@@ -40,6 +40,7 @@ import { getUserHidden, setUserHidden, toggleUserHidden } from '../lib/notificat
 import {
   ABONNEMENTS_ETM,
   ABONNEMENT_SUPERVISEUR,
+  ABONNEMENT_FACTURES_SST,
   estAbonnementEtm,
   getUserAbonnementsEtm,
   setUserAbonnementsEtm,
@@ -47,6 +48,7 @@ import {
 } from '../lib/abonnements-etm.js'
 import { pointsATraiter } from '../lib/agents/superviseur/points.js'
 import { DOMAINE_LIBELLE } from '../lib/agents/superviseur/types.js'
+import { facturesATraiter } from './factures-sst.js'
 
 export const abonnementsRouter: RouterType = Router()
 
@@ -187,6 +189,8 @@ abonnementsRouter.get('/notifications', async (req: Request, res: Response) => {
       // Superviseur points first: a handful of things to act on, never hidden
       // (handling one takes it off the list — the eye would mean nothing).
       ...(subscribed.includes(ABONNEMENT_SUPERVISEUR) ? await pointsSuperviseur() : []),
+      // Same for the invoices with a gap: handled on Sous-traitants › Factures.
+      ...(subscribed.includes(ABONNEMENT_FACTURES_SST) ? await cartesFacturesSst() : []),
       ...(includeHidden ? all : all.filter((d) => !d.hidden)),
     ]
 
@@ -269,6 +273,33 @@ async function pointsSuperviseur() {
   } catch (err) {
     // Like a failing detector: no cards rather than a blank widget.
     console.error('Superviseur points for the notification feed failed:', err)
+    return []
+  }
+}
+
+/** The dyers' invoices waiting for a person (all of them while the agent's
+ *  « confirmation » option is on), as widget cards. */
+async function cartesFacturesSst() {
+  try {
+    const eur = (v: number) => v.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return (await facturesATraiter()).map((f) => {
+      const parts: string[] = []
+      if (f.nb_ecarts) parts.push(`${f.nb_ecarts} écart${f.nb_ecarts > 1 ? 's' : ''} (${eur(f.ecart_montant)} € facturés en trop)`)
+      if (f.nb_non_verifies) parts.push(`${f.nb_non_verifies} ligne${f.nb_non_verifies > 1 ? 's' : ''} à vérifier`)
+      if (!parts.length) parts.push(f.statut === 'conforme' ? 'aucun écart — à valider' : 'lecture à vérifier')
+      const date = f.date_facture ? ` du ${f.date_facture.split('-').reverse().join('/')}` : ''
+      return {
+        key: `${ABONNEMENT_FACTURES_SST}:${f.id}`,
+        abonnementId: ABONNEMENT_FACTURES_SST,
+        titre: `${f.sous_traitant} — facture ${f.numero}${date}`,
+        description: parts.join(' · '),
+        icone: 'facture_sst',
+        hidden: false,
+        lien: `/sous-traitants/factures?facture=${f.id}`,
+      }
+    })
+  } catch (err) {
+    console.error('Invoice cards for the notification feed failed:', err)
     return []
   }
 }

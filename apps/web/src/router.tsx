@@ -44,6 +44,7 @@ import { ClientsGestion } from '@/pages/ClientsGestion'
 // Sous-traitants pages (real)
 import { SousTraitantsCommandes } from '@/pages/SousTraitantsCommandes'
 import { SousTraitantsGestion } from '@/pages/SousTraitantsGestion'
+import { SousTraitantsFactures } from '@/pages/SousTraitantsFactures'
 
 // Transferts pages (real)
 import { TransfertsRouleaux } from '@/pages/TransfertsRouleaux'
@@ -115,6 +116,7 @@ export const router = createBrowserRouter([
       // Sous-traitants
       { path: 'sous-traitants', element: <Navigate to="/sous-traitants/commandes" replace /> },
       { path: 'sous-traitants/commandes', element: <SousTraitantsCommandes /> },
+      { path: 'sous-traitants/factures', element: <SousTraitantsFactures /> },
       { path: 'sous-traitants/gestion', element: <SousTraitantsGestion /> },
 
       // Transferts

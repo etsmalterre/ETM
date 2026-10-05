@@ -70,6 +70,10 @@ export interface OptionalServerAttachment {
 interface SendEmailDialogProps {
   open: boolean
   onClose: () => void
+  /** Header title — default « Envoyer un email ». */
+  title?: string
+  /** A quiet alternative left of Annuler (e.g. « Réclamer sans email »). */
+  secondaryAction?: { label: string; onClick: () => void }
 
   /** Free-text context chip shown in the dialog header (e.g. fournisseur name). */
   contextLabel?: string
@@ -97,6 +101,8 @@ interface SendEmailDialogProps {
 export function SendEmailDialog({
   open,
   onClose,
+  title = 'Envoyer un email',
+  secondaryAction,
   contextLabel,
   queryKey,
   loadDefaults,
@@ -488,7 +494,7 @@ export function SendEmailDialog({
         <div className="flex-shrink-0 px-6 py-4 border-b bg-gradient-to-r from-gold/25 via-gold/10 to-transparent">
           <DialogTitle className="flex items-center gap-2">
             <AtSign className="h-5 w-5 text-accent" />
-            <span>Envoyer un email</span>
+            <span>{title}</span>
             {contextLabel && (
               <span className="text-muted-foreground font-normal text-base truncate">— {contextLabel}</span>
             )}
@@ -703,6 +709,12 @@ export function SendEmailDialog({
                     </div>
                   )}
                   <div className="flex justify-end gap-2 items-center">
+                    {secondaryAction && (
+                      <Button variant="ghost" size="sm" onClick={secondaryAction.onClick} disabled={isSending}
+                        className="mr-auto text-muted-foreground hover:text-foreground">
+                        {secondaryAction.label}
+                      </Button>
+                    )}
                     {import.meta.env.DEV && (
                       <Button
                         variant="outline"

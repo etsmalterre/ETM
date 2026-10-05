@@ -19,8 +19,15 @@ describe('normaliserRun (thumbs / « échouée » before 2026-09-23)', () => {
   })
 
   it('never overrides an evaluation already given', () => {
-    const e = { note: 'partielle' as const, commentaire: 'poids', par, le: 'z' }
+    const e = { note: 'echec' as const, commentaire: 'poids', par, le: 'z' }
     expect(normaliserRun(run({ evaluation: e, verdict: { valeur: 'correct', commentaire: '', par, le: 'x' } })).evaluation).toEqual(e)
+  })
+
+  it('reads an old « partielle » as an échec (binary scale since 2026-10-02)', () => {
+    const old = { note: 'partielle', commentaire: 'poids', par, le: 'z' } as unknown as import('./store.js').Evaluation
+    const r = normaliserRun(run({ evaluation: old, avisPoints: { k: old } }))
+    expect(r.evaluation?.note).toBe('echec')
+    expect(r.avisPoints?.k.note).toBe('echec')
   })
 
   it('leaves an unscored run « à évaluer »', () => {

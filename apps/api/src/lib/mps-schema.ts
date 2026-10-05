@@ -266,6 +266,107 @@ ALTER TABLE facture_prov ADD COLUMN idfacture_origine bigint NOT NULL DEFAULT 0;
 ALTER TABLE facture ADD COLUMN idfacture_origine bigint NOT NULL DEFAULT 0;
 `,
   },
+  {
+    // Named 0008/0009 before 0008_avoir_facture_origine landed on master (same
+    // day): names are the bookkeeping keys, so they stay — order is what counts.
+    // Agent « Factures Ennoblisseur » (LIVA #1255, lib/agents/factures-sst/):
+    // a dyer's invoice covers many sst orders, so it is stored ONCE with its
+    // PDF, and each of its lines points at the sst order line it bills. Lines
+    // that bill no order (packaging, transport, « remise ») stay on the
+    // invoice. `verdict` / `controles` are the agent's check at import;
+    // `verdict_final` / `avis_*` what the person who checked the invoice
+    // decided on each line (the agent's score, given on Sous-traitants ›
+    // Factures, never in Agents IA); `traite_*` who closed the invoice;
+    // `cloture_*` how a réclamation ended (the dyer's credit note, explanation).
+    name: '0008_factures_sous_traitant',
+    sql: `
+CREATE TABLE facture_sst (
+  idfacture_sst bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idsous_traitant bigint NOT NULL,
+  numero text NOT NULL,
+  date_facture date,
+  date_echeance date,
+  total_ht numeric(12,2),
+  total_ttc numeric(12,2),
+  pdf bytea,
+  pdf_nom text,
+  message_id text,
+  run_id text,
+  statut text NOT NULL CHECK (statut IN ('conforme', 'ecarts')),
+  ecart_montant numeric(12,2) NOT NULL DEFAULT 0,
+  controles jsonb NOT NULL DEFAULT '[]',
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  traitement text CHECK (traitement IN ('validee', 'reclamee', 'reclamation_close')),
+  traite_le timestamptz,
+  traite_par bigint,
+  traite_par_nom text,
+  traite_commentaire text,
+  cloture_le timestamptz,
+  cloture_par bigint,
+  cloture_par_nom text,
+  cloture_commentaire text,
+  UNIQUE (idsous_traitant, numero)
+);
+CREATE INDEX facture_sst_a_traiter ON facture_sst (statut) WHERE traite_le IS NULL;
+CREATE TABLE ligne_facture_sst (
+  idligne_facture_sst bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idfacture_sst bigint NOT NULL REFERENCES facture_sst ON DELETE CASCADE,
+  ordre integer NOT NULL,
+  genre text NOT NULL CHECK (genre IN ('lot', 'emballage', 'transport', 'remise', 'autre')),
+  designation text NOT NULL DEFAULT '',
+  traitements text NOT NULL DEFAULT '',
+  qualite text NOT NULL DEFAULT '',
+  lot text NOT NULL DEFAULT '',
+  numero_commande text NOT NULL DEFAULT '',
+  quantite numeric(12,3),
+  unite text NOT NULL DEFAULT '',
+  pieces numeric(10,2),
+  prix_unitaire numeric(12,4),
+  montant numeric(12,2),
+  idligne_commande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idcommande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idsuivilot bigint NOT NULL DEFAULT 0,
+  poids_etm numeric(12,3),
+  pieces_etm integer,
+  prix_attendu numeric(12,4),
+  ecart_montant numeric(12,2) NOT NULL DEFAULT 0,
+  verdict text NOT NULL CHECK (verdict IN ('conforme', 'ecart', 'info')),
+  nature text CHECK (nature IN ('reel', 'non_verifie')),
+  controles jsonb NOT NULL DEFAULT '[]',
+  verdict_final text CHECK (verdict_final IN ('conforme', 'ecart')),
+  avis_note text CHECK (avis_note IN ('reussite', 'echec')),
+  avis_commentaire text,
+  avis_par bigint,
+  avis_par_nom text,
+  avis_le timestamptz
+);
+CREATE INDEX ligne_facture_sst_facture ON ligne_facture_sst (idfacture_sst, ordre);
+CREATE INDEX ligne_facture_sst_lcsst ON ligne_facture_sst (idligne_commande_sous_traitant) WHERE idligne_commande_sous_traitant > 0;
+CREATE INDEX ligne_facture_sst_cmd ON ligne_facture_sst (idcommande_sous_traitant) WHERE idcommande_sous_traitant > 0;
+CREATE INDEX ligne_facture_sst_lot ON ligne_facture_sst (lot) WHERE lot <> '';
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'facture_sst, ligne_facture_sst')}
+`,
+  },
+  {
+    // The history of a dyer's invoice (Sous-traitants › Factures, « Historique »):
+    // Tricobot's check, each person's decision, the réclamation email, how the
+    // dispute ended. Append-only — the API role may not UPDATE or DELETE it.
+    name: '0009_facture_sst_historique',
+    sql: `
+CREATE TABLE facture_sst_historique (
+  idhistorique bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idfacture_sst bigint NOT NULL REFERENCES facture_sst ON DELETE CASCADE,
+  le timestamptz NOT NULL DEFAULT now(),
+  type text NOT NULL CHECK (type IN ('recue', 'ligne', 'validee', 'reclamee', 'reclamation_close', 'rouverte')),
+  par bigint,
+  par_nom text,
+  resume text NOT NULL DEFAULT '',
+  details jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX facture_sst_historique_facture ON facture_sst_historique (idfacture_sst, le);
+${grantApi('SELECT, INSERT', 'facture_sst_historique')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

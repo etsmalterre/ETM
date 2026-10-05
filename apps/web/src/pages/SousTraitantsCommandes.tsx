@@ -16,6 +16,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { FacturesCommande } from '@/components/sst/FacturesCommande'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -73,6 +74,7 @@ import { useResponsiveLayout } from '@/hooks/useResponsiveLayout'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
+import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { RollNotes } from '@/components/shared/RollNotes'
 import { cn } from '@/lib/utils'
@@ -848,6 +850,29 @@ export function SousTraitantsCommandes() {
     [commandesPages, urgencyFilterActive],
   )
 
+  // A deep-linked order must also show selected in the LEFT list, not only in
+  // the detail: scroll its card into view once the list holds it; when the
+  // loaded list doesn't (closed order, past the first page), search for its
+  // number across every status so it appears selected (2026-10-05, links from
+  // Sous-traitants › Factures).
+  const deepLinkRef = useRef<number | null>(linkedCommandeId)
+  const deepLinkSearchedRef = useRef(false)
+  useEffect(() => {
+    const id = deepLinkRef.current
+    if (id === null || !commandes || isLoading) return
+    // After switching to the search, wait for ITS results (the input is debounced).
+    if (deepLinkSearchedRef.current && debouncedSearch !== String(id)) return
+    if (commandes.some((c) => c.IDcommande_sous_traitant === id)) {
+      deepLinkRef.current = null
+      requestAnimationFrame(() => document.querySelector(`[data-sst-commande="${id}"]`)?.scrollIntoView({ block: 'center' }))
+      return
+    }
+    if (deepLinkSearchedRef.current) { deepLinkRef.current = null; return }
+    deepLinkSearchedRef.current = true
+    setStatusFilter('all')
+    setSearchQuery(String(id))
+  }, [commandes, isLoading, debouncedSearch])
+
   // Urgency counts — drives the two header pills (number of open commandes
   // currently rendering red / amber across every phase). Polled separately
   // from the list so flipping filters doesn't refetch the counters; the
@@ -1449,6 +1474,7 @@ function CommandeList({
           return (
             <div
               key={row.IDcommande_sous_traitant}
+              data-sst-commande={row.IDcommande_sous_traitant}
               onClick={() => onSelect(row.IDcommande_sous_traitant)}
               className={cn(
                 'p-3 border rounded-lg cursor-pointer transition-all bg-white',
@@ -4532,6 +4558,28 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   // text. A "found nothing" result still sets state='done' (the run did
   // complete), so the colour can't key off `tricobotState`.
   const [tricobotMsgError, setTricobotMsgError] = useState(false)
+  // What Tricobot wrote into each roll (« Former Tricobot », 2026-10-02):
+  // received unchanged = he read the BL right; any value the person changes
+  // is a correction sent back to the BL Ennoblisseur agent on submit
+  // (PUT /tricobot/bl-reception). Only the values he actually filled.
+  const [tricobotFill, setTricobotFill] = useState<Record<number, {
+    piece: string; lot: string; poids?: string; metrage?: string; observation_sst?: string
+  }>>({})
+  const [tricobotPourquoi, setTricobotPourquoi] = useState('')
+  const tricobotCorrections = useMemo(() => {
+    const out: Array<{ lot: string; texte: string }> = []
+    const nombre = (a: string | undefined, b: string) => a !== undefined && Math.abs(Number(a) - Number(b.replace(',', '.'))) > 0.05
+    for (const [idKey, f] of Object.entries(tricobotFill)) {
+      const row = rows[Number(idKey)]
+      if (!row) continue
+      if (f.lot && f.lot.toUpperCase().replace(/\s+/g, '') !== row.lot.toUpperCase().replace(/\s+/g, '')) out.push({ lot: f.lot, texte: `${f.piece} lot ${f.lot} → ${row.lot || '(vide)'}` })
+      // A roll cut in two is the person's decision, not a misread weight.
+      if (!row.split && nombre(f.poids, row.poids)) out.push({ lot: f.lot, texte: `${f.piece} poids ${f.poids} → ${row.poids || '(vide)'} kg` })
+      if (!row.split && nombre(f.metrage, row.metrage)) out.push({ lot: f.lot, texte: `${f.piece} métrage ${f.metrage} → ${row.metrage || '(vide)'} Ml` })
+      if (f.observation_sst !== undefined && f.observation_sst !== row.observation_sst.trim()) out.push({ lot: f.lot, texte: `${f.piece} observation « ${f.observation_sst} » → « ${row.observation_sst.trim()} »` })
+    }
+    return out
+  }, [tricobotFill, rows])
 
   // Merging shrinks the list: keep the pointer inside it.
   const safeIndex = Math.min(currentIndex, Math.max(0, rolls.length - 1))
@@ -4817,6 +4865,19 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
         if (hit) matches.push({ rollId: r.id, hit })
       }
       const filled = matches.length
+      const fill: typeof tricobotFill = {}
+      for (const { rollId, hit } of matches) {
+        const poidsNum = Number(hit.poids)
+        const metrageNum = Number(hit.metrage)
+        fill[rollId] = {
+          piece: (hit.num_piece ?? '').trim(),
+          lot: (hit.lot ?? '').trim(),
+          ...(poidsNum > 0 ? { poids: poidsNum.toFixed(1) } : {}),
+          ...(metrageNum > 0 ? { metrage: metrageNum.toFixed(1) } : {}),
+          ...((hit.observation ?? '').trim() ? { observation_sst: (hit.observation ?? '').trim() } : {}),
+        }
+      }
+      setTricobotFill(fill)
       if (filled > 0) {
         setRows((prev) => {
           const next = { ...prev }
@@ -4974,6 +5035,19 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
             setDoneCount((n) => n + 1)
           }
         }
+      }
+      // Tricobot's feedback, per BL lot he read. Best effort: the rolls are
+      // received, a lost feedback must never look like a failed réception.
+      const lotsLus = [...new Set(Object.values(tricobotFill).map((f) => f.lot).filter(Boolean))]
+      if (lotsLus.length > 0) {
+        apiFetch('/tricobot/bl-reception', {
+          method: 'PUT',
+          body: JSON.stringify({
+            ligneId: ligne.IDligne_commande_sous_traitant,
+            lots: lotsLus.map((lot) => ({ lot, corrections: tricobotCorrections.filter((c) => c.lot === lot).map((c) => c.texte) })),
+            commentaire: tricobotPourquoi.trim(),
+          }),
+        }).catch((e) => console.warn('[tricobot] feedback not recorded', e))
       }
       if (lastPayload) onSuccess(lastPayload)
     } catch (err) {
@@ -5357,6 +5431,28 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
 
         {/* Footer */}
         <div className="flex-shrink-0 px-6 py-3 border-t bg-zinc-200/50">
+          {tricobotCorrections.length > 0 && (
+            <div className="mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[11px]">
+              <div className="flex items-start gap-1.5">
+                <TricobotMascot className="h-5 w-5 flex-shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-destructive">
+                    Vous corrigez Tricobot sur {tricobotCorrections.length} valeur{tricobotCorrections.length > 1 ? 's' : ''} — il s’en servira pour s’améliorer.
+                  </p>
+                  <p className="text-muted-foreground truncate" title={tricobotCorrections.map((c) => c.texte).join('\n')}>
+                    {tricobotCorrections.map((c) => c.texte).join(' · ')}
+                  </p>
+                  <input
+                    type="text"
+                    value={tricobotPourquoi}
+                    onChange={(e) => setTricobotPourquoi(e.target.value)}
+                    placeholder="Pourquoi ? (facultatif) — ex. le BL MATEL donne le poids brut"
+                    className="mt-1.5 w-full h-7 px-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           {!!error && (
             <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
@@ -5981,7 +6077,11 @@ function DetailSidebar({
             />
           )}
           {activeTab === 'docs' && (
-            <DocsTab commande={commande} isEditing={isEditing} />
+            <>
+              {/* The dyer invoices billing this order (agent Factures Ennoblisseur, LIVA #1255). */}
+              <FacturesCommande commandeId={commande.IDcommande_sous_traitant} />
+              <DocsTab commande={commande} isEditing={isEditing} />
+            </>
           )}
           {activeTab === 'historique' && (
             <HistoriqueTab commandeId={commande.IDcommande_sous_traitant} />

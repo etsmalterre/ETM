@@ -22,6 +22,8 @@ const FILE_PATH = path.resolve(__dirname, '../../data/abonnements-etm.json')
 
 /** Agent Superviseur — the points of its morning report, to handle. */
 export const ABONNEMENT_SUPERVISEUR = 100001
+/** Agent Factures Ennoblisseur — the dyers' invoices with a gap, to handle (LIVA #1255). */
+export const ABONNEMENT_FACTURES_SST = 100002
 
 export interface AbonnementEtm {
   id: number
@@ -43,6 +45,13 @@ export const ABONNEMENTS_ETM: readonly AbonnementEtm[] = [
     // Also lets the widget's « Traité » / « Fausse alerte » through
     // (routes/agents-ia.ts traiteurPoints), without the Agents IA scoring right.
     permission: 'dashboard_notif_superviseur',
+  },
+  {
+    id: ABONNEMENT_FACTURES_SST,
+    nom: 'Factures sous-traitants — écarts',
+    description: 'Les factures des ennoblisseurs où l’agent « Factures Ennoblisseur » a trouvé un écart (prix, poids, lot introuvable) ou n’a pas pu contrôler les prix, à traiter dans Sous-traitants › Factures.',
+    icone: 'facture_sst',
+    permission: 'dashboard_notif_factures_sst',
   },
 ]
 
