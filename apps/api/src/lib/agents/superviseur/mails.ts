@@ -14,6 +14,7 @@ import { query } from '../../hfsql-auto.js'
 import { chatJson } from '../../mistral.js'
 import { AGENTS_DIR } from '../store.js'
 import { collecterEntetes, lireFil, type EnteteMessage } from './boites.js'
+import { sansCitation } from '../../gmail-reader.js'
 import { construireAnnuaire, type AnnuaireClients } from './reponses.js'
 import { noms } from './controles/noms.js'
 import { SUPERVISEUR_BOITES } from './boites-liste.js'
@@ -92,17 +93,8 @@ export function entetesDuRun(nowMs: number): Promise<{ entetes: EnteteMessage[];
 
 // ── Conversation text for Mistral ────────────────────────
 
-/** Drop the quoted history a reply carries (it is in the earlier messages). */
-export function sansCitation(texte: string): string {
-  const lignes = texte.split(/\r?\n/)
-  const out: string[] = []
-  for (const l of lignes) {
-    if (/^\s*(Le .{3,120} a écrit\s*:|On .{3,120} wrote\s*:|-{2,}\s*(Original|Message d'origine|Forwarded)|De\s*:\s|From\s*:\s|_{8,})/i.test(l)) break
-    if (/^\s*>/.test(l)) continue
-    out.push(l)
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
-}
+// Shared with the Triage (a pure text helper of gmail-reader.ts).
+export { sansCitation }
 
 /** `jusquaMs`: only the messages that existed then (replay of a past evening). */
 export async function texteConversation(boite: string, threadId: string, maxMessages = 6, maxParMessage = 1500, jusquaMs = Infinity): Promise<string> {

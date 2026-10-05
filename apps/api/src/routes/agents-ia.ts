@@ -43,7 +43,9 @@ import { notesDuBilan } from '../lib/agents/superviseur/score.js'
 import { traiterPoint, TraitementInvalide } from '../lib/agents/superviseur/points.js'
 import { lireHistorique } from '../lib/agents/superviseur/historique.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
-import { gmailLectureErreur } from '../lib/gmail-reader.js'
+import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reader.js'
+import { corrigerTriage, CorrectionInvalide, TRIAGE_BOITE, TRIAGE_SLUG } from '../lib/agents/triage/agent.js'
+import { CATEGORIES } from '../lib/agents/triage/categories.js'
 
 const routes: RouterType = Router()
 
@@ -132,14 +134,18 @@ function statistiques(def: AgentDef, runs: AgentRun[], state: AgentState) {
   const parStatut: Record<string, number> = {}
   for (const r of actifs) parStatut[r.statut] = (parStatut[r.statut] ?? 0) + 1
   const note = (n: Note) => actifs.filter((r) => r.evaluation?.note === n).length
+  // Correct by default (Triage): an uncorrected run is a réussite, never « à évaluer ».
+  const evalues = def.confianceParDefaut ? actifs.filter((r) => r.statut !== 'erreur') : actifs
   return {
     total: actifs.length,
     parStatut,
-    evaluations: {
-      reussite: note('reussite'),
-      echec: note('echec'),
-      aEvaluer: actifs.filter((r) => !r.evaluation).length,
-    },
+    evaluations: def.confianceParDefaut
+      ? { reussite: evalues.length - note('echec'), echec: note('echec'), aEvaluer: 0 }
+      : {
+          reussite: note('reussite'),
+          echec: note('echec'),
+          aEvaluer: actifs.filter((r) => !r.evaluation).length,
+        },
     /** Point-scored agents (Superviseur): the score of every finding the
      *  version raised — the number a prompt version is judged on. */
     points: def.points ? def.points.score(actifs) : null,
@@ -169,6 +175,8 @@ function allege(r: AgentRun) {
     nbEcartes: sup.ecartes ? sup.ecartes.length : null,
     /** How the report's points stand (scored on it, or carried from earlier). */
     bilan: agentDef(r.slug)?.points?.bilan(r) ?? null,
+    // Triage: categories, sender, hand-offs.
+    ...(agentDef(r.slug)?.ligne?.(r) ?? {}),
   }
 }
 
@@ -329,8 +337,11 @@ routes.get('/:slug/runs', async (req, res) => {
     const notesDuRun = (r: AgentRun): Set<string> =>
       def.points ? notesDuBilan(def.points.bilan(r)) : new Set([r.evaluation ? r.evaluation.note : 'a_evaluer'])
     const parNote = (r: AgentRun) => !notes || notes.some((n) => notesDuRun(r).has(n))
+    // Triage: ?categorie=qualite — the runs whose categories (as they stand) include it.
+    const cat = typeof req.query.categorie === 'string' && req.query.categorie ? req.query.categorie : null
+    const parCategorie = (r: AgentRun) => !cat || ((r.resultat as { categories?: string[] }).categories ?? []).includes(cat)
     const runs = (await lireRuns(def.slug))
-      .filter((r) => (!statut || statut.includes(r.statut)) && parNote(r))
+      .filter((r) => (!statut || statut.includes(r.statut)) && parNote(r) && parCategorie(r))
       .reverse()
     const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '200'), 10) || 200))
     res.json({ total: runs.length, runs: runs.slice(0, limit).map(allege) })
@@ -399,13 +410,107 @@ routes.post('/:slug/runs/:id/retraiter', async (req, res) => {
   }
 })
 
+// ── Triage ───────────────────────────────────────────────
+// The Triage's work IS the triage, so it is corrected here (decision Vincent
+// 2026-10-05) — the one agent scored from Agents IA. Correct by default: a
+// correction is an échec with why (lib/agents/triage/agent.ts corrigerTriage).
+
+function triageOu409(def: AgentDef, res: Response): boolean {
+  if (def.slug === TRIAGE_SLUG) return true
+  res.status(409).json({ error: 'réservé à l’agent Triage' })
+  return false
+}
+
+/** The categories, in order, with the agent behind each (the screen's picker and chips). */
+routes.get('/:slug/categories', async (req, res) => {
+  if (session(req, res) === null) return
+  const def = agentOu404(req, res)
+  if (!def || !triageOu409(def, res)) return
+  res.json(CATEGORIES.map((c) => ({ ...c, cibleNom: c.cible ? agentDef(c.cible)?.nom ?? c.cible : null })))
+})
+
+/** The mail of a Triage run and its thread, read live from Gmail (the run
+ *  stores no body). Bodies cut at 20 000 characters. */
+routes.get('/:slug/runs/:id/mail', async (req, res) => {
+  if (session(req, res) === null) return
+  const def = agentOu404(req, res)
+  if (!def || !triageOu409(def, res)) return
+  const r = await lireRun(def.slug, req.params.id)
+  if (!r?.message?.threadId) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  try {
+    const fil = await lireFil(TRIAGE_BOITE, r.message.threadId)
+    res.json({
+      messageId: r.message.id,
+      messages: fil.map((m) => ({
+        id: m.id, de: m.de, a: m.a, cc: m.cc, sujet: m.sujet, date: m.date, envoye: m.envoye,
+        texte: m.texte.length > 20_000 ? `${m.texte.slice(0, 20_000)}…` : m.texte,
+        piecesJointes: m.piecesJointes.map((p, n) => ({ n, nom: p.nom, mimeType: p.mimeType, taille: p.taille })),
+      })),
+    })
+  } catch (err) {
+    console.error('[agents-ia] triage mail failed:', err)
+    res.status(502).json({ error: gmailLectureErreur(err) })
+  }
+})
+
+/** One attachment of a message of the run's thread, streamed from Gmail. */
+routes.get('/:slug/runs/:id/mail/:messageId/pieces/:n', async (req, res) => {
+  if (session(req, res) === null) return
+  const def = agentOu404(req, res)
+  if (!def || !triageOu409(def, res)) return
+  const r = await lireRun(def.slug, req.params.id)
+  if (!r?.message?.threadId) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  try {
+    // Only a message of THIS run's thread: the route never reads the mailbox at large.
+    const m = (await lireFil(TRIAGE_BOITE, r.message.threadId)).find((x) => x.id === req.params.messageId)
+    const p = m?.piecesJointes[parseInt(req.params.n, 10)]
+    if (!m || !p) { res.status(404).json({ error: 'pièce jointe introuvable' }); return }
+    const buf = await lirePieceJointe(TRIAGE_BOITE, m.id, p.attachmentId)
+    res.setHeader('Content-Type', p.mimeType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(p.nom)}"`)
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.send(buf)
+  } catch (err) {
+    console.error('[agents-ia] triage attachment failed:', err)
+    res.status(502).json({ error: gmailLectureErreur(err) })
+  }
+})
+
+const categoriesBody = z.object({
+  categories: z.array(z.string().min(1).max(60)).min(1).max(CATEGORIES.length),
+  commentaire: z.string().trim().max(2000).default(''),
+})
+
+/** Correct a run's categories (piloting right — Vincent only for now). The
+ *  labels move, a new category's agent gets the mail; the answer lists what
+ *  an agent already did for a category now removed (never undone). */
+routes.put('/:slug/runs/:id/categories', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def || !triageOu409(def, res)) return
+  const p = categoriesBody.safeParse(req.body)
+  if (!p.success || p.data.categories.some((c) => !CATEGORIES.some((x) => x.cle === c))) { res.status(400).json({ error: 'catégories invalides' }); return }
+  try {
+    const r = await corrigerTriage(req.params.id, p.data.categories, p.data.commentaire, await auteur(uid))
+    if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
+    res.json({ run: r.run, dejaTraites: r.dejaTraites })
+  } catch (err) {
+    if (err instanceof CorrectionInvalide) { res.status(400).json({ error: err.message }); return }
+    console.error('[agents-ia] triage correction failed:', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
+  }
+})
+
 // ── scores ───────────────────────────────────────────────
 // Agents IA never scores (decision Vincent 2026-10-02): every score is given
 // where the work is done, as « Tricobot » feedback — réussite by silence,
 // échec with a why (lib/agents/retours.ts). BL Ennoblisseur: at the réception
 // of the rolls (routes/tricobot.ts); Superviseur: the dashboard widget
 // (below); Factures Ennoblisseur: Sous-traitants › Factures. This screen only
-// shows the scores.
+// shows the scores — except the Triage, corrected here (« Triage » above).
 
 // A point is never scored here: Agents IA is the admin side. The Superviseur's
 // points are handled from the dashboard widget (PUT /:slug/points/traitement),

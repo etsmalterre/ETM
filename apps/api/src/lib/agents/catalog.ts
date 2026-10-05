@@ -23,6 +23,10 @@ import {
   executer as executerSuperviseur,
 } from './superviseur/superviseur.js'
 import { CONTROLES } from './superviseur/controles/index.js'
+import { resultatTriage, sonderBoite as sonderTriage, TRIAGE_BOITE, TRIAGE_SLUG, TRIAGE_VERSION_INITIALE } from './triage/agent.js'
+import { CATEGORIES } from './triage/categories.js'
+import { DESTINATAIRES } from './triage/transmission.js'
+import { OPTION_VIA_TRIAGE_DEF } from './triage/constantes.js'
 import {
   FACTURES_SST_BOITE,
   FACTURES_SST_SLUG,
@@ -109,11 +113,68 @@ export interface AgentDef {
   options?: ReadonlyArray<{ cle: string; libelle: string; description: string; defaut: boolean }>
   /** The checks it runs, listed in the « Fonctionnement » tab (Superviseur). */
   controles?: ReadonlyArray<{ id: string; libelle: string; description: string }>
+  /** Correct by default (Triage): a run nobody corrected counts as a réussite
+   *  in the stats — nobody confirms a triage, a person only corrects one. */
+  confianceParDefaut?: boolean
+  /** Extra fields of a run for the Exécutions list (routes/agents-ia.ts `allege`). */
+  ligne?(run: AgentRun): Record<string, unknown>
 }
 
 const MODELES_MISTRAL = ['mistral-small-latest', 'mistral-medium-latest', 'mistral-large-latest', 'ministral-8b-latest'].filter(isChatModel)
 
 export const AGENTS: readonly AgentDef[] = [
+  {
+    slug: TRIAGE_SLUG,
+    nom: 'Triage',
+    description:
+      `L’agent de tête de la boîte ${TRIAGE_BOITE} : chaque mail reçu prend une ou plusieurs catégories (BL ennoblisseur, facture sous-traitant, commande client, qualité, transport…), un libellé Gmail sous « ETM/ », et part vers l’agent qui le traite — les BL vers BL Ennoblisseur, les factures des ennoblisseurs vers Factures Ennoblisseur. Son tri est tenu pour juste tant que personne ne le corrige.`,
+    declenchement: { type: 'releve', intervalleMs: 60_000 },
+    declencheur: `Relève chaque minute la boîte ${TRIAGE_BOITE} : tous les mails reçus (jamais ceux qu’elle envoie), depuis sa mise en route et au plus les 7 derniers jours, du plus ancien au plus récent. L’expéditeur est reconnu dans les contacts d’ETM (clients, sous-traitants, fournisseurs, transporteurs, prospects) ; le modèle lit l’objet, le corps, les noms des pièces jointes et les deux messages précédents du fil.`,
+    ecritures: [
+      `Un libellé Gmail par catégorie sur le mail : « ETM/Transport », « ETM/Qualité »… ; pour un BL ou une facture d’ennoblisseur, un niveau de plus avec l’ennoblisseur (« ETM/BL ennoblisseur/MATEL » — reconnu dans le PDF par l’agent qui le lit, sinon par l’expéditeur, « Inconnu » à défaut). Mode actif seulement.`,
+      `Le mail transmis à l’agent de sa catégorie (${CATEGORIES.filter((c) => c.cible).map((c) => `${c.libelle} → ${DESTINATAIRES[c.cible!]?.nom ?? c.cible}`).join(', ')}), quand cet agent est en service avec l’option « Mails transmis par le Triage ». Cet agent lit et enregistre selon son propre mode.`,
+    ],
+    abstention:
+      'En essai, il trie et garde l’exécution, sans libellé ni transmission. Un mail dont le tri échoue (Gmail ou Mistral indisponible) est retenté aux relevés suivants, 3 fois au plus ; une transmission en erreur aussi, pendant 3 jours. Corriger les catégories d’un mail (Exécutions) déplace ses libellés et transmet le mail à l’agent d’une nouvelle catégorie — ce qu’un agent a déjà fait pour une catégorie retirée n’est pas défait.',
+    evaluation: {
+      reussite: 'Juste par défaut : personne n’a corrigé ses catégories.',
+      echec: 'Corrigé : une personne a changé les catégories du mail dans Exécutions, en disant pourquoi.',
+      guide: {
+        question: 'Est-ce que ce mail serait arrivé au bon service, au bon agent ? Oui → rien à faire (réussite). Non → « Corriger le tri », en disant pourquoi (échec).',
+        exemples: {
+          reussite: '« BL métrages 109235 » de MATEL → BL ennoblisseur (MATEL), transmis à BL Ennoblisseur.',
+          echec: 'Une demande de certificat Oeko-Tex classée « Suivi client » au lieu de « Qualité ».',
+        },
+        remarques: [
+          'Le tri se corrige ici, dans Exécutions — c’est là que se fait son travail.',
+          'Revenir aux catégories qu’il avait choisies retire la correction.',
+          'La sous-catégorie (l’ennoblisseur, le client) ne se corrige pas : elle vient de l’expéditeur et du PDF — corrigez la fiche contact si elle est fausse.',
+        ],
+      },
+    },
+    pointsEvaluables: false,
+    confianceParDefaut: true,
+    modes: {
+      off: 'Ne lit pas la boîte mail.',
+      essai: 'Trie les mails, sans libellé ni transmission.',
+      actif: 'Trie, pose les libellés Gmail et transmet aux agents.',
+    },
+    versionInitiale: TRIAGE_VERSION_INITIALE,
+    modeles: MODELES_MISTRAL,
+    sonder: sonderTriage,
+    ligne: (run) => {
+      const res = resultatTriage(run)
+      return {
+        categories: res.categories ?? [],
+        sousCategories: res.sousCategories ?? {},
+        expediteur: res.expediteur ?? null,
+        // A correction stands (a withdrawn one leaves the history, not the score).
+        corrige: run.evaluation?.note === 'echec',
+        transmissions: (res.transmissions ?? []).map((t) => ({ agent: t.agent, nom: t.nom, statut: t.statut, runs: t.runs.map((r) => r.id) })),
+        extrait: res.extrait ?? '',
+      }
+    },
+  },
   {
     slug: BL_ENNOBLISSEUR_SLUG,
     nom: 'BL Ennoblisseur',
@@ -148,6 +209,7 @@ export const AGENTS: readonly AgentDef[] = [
     modeles: MODELES_MISTRAL,
     sonder: sonderBlEnnoblisseur,
     traiter: traiterBlEnnoblisseur,
+    options: [OPTION_VIA_TRIAGE_DEF],
   },
   {
     slug: FACTURES_SST_SLUG,
@@ -188,7 +250,7 @@ export const AGENTS: readonly AgentDef[] = [
       libelle: 'Confirmation de toutes les factures',
       description: 'Activé : chaque facture, même conforme, arrive « à traiter » dans Sous-traitants › Factures pour qu’une personne la valide — c’est ainsi que l’agent est noté pendant la période de confiance. Désactivé : seules les factures avec un écart, un lot introuvable ou des prix non contrôlés demandent une intervention.',
       defaut: true,
-    }],
+    }, OPTION_VIA_TRIAGE_DEF],
     modes: { off: 'Ne lit pas la boîte mail.', essai: 'Lit et contrôle, n’enregistre rien.', actif: 'Lit, contrôle, enregistre la facture et signale les écarts.' },
     versionInitiale: FACTURES_SST_VERSION_INITIALE,
     modeles: MODELES_MISTRAL,

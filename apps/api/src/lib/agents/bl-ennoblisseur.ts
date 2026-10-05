@@ -19,7 +19,8 @@
 
 import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
-import { listerMessages, lireMessage, lirePieceJointe, assurerLibelle, ajouterLibelle } from '../gmail-reader.js'
+import { listerMessages, lireMessage, lirePieceJointe, assurerLibelle, ajouterLibelle, type MessageInfo } from '../gmail-reader.js'
+import { OPTION_VIA_TRIAGE } from './triage/constantes.js'
 import {
   BL_PROMPT_V1,
   controlerExtraction,
@@ -52,6 +53,7 @@ import {
   lireRuns,
   messagesTraites,
   nouvelIdRun,
+  optionDe,
   type AgentMode,
   type AgentRun,
   type AgentState,
@@ -331,9 +333,11 @@ async function contacts(): Promise<Array<{ mail: string; idSousTraitant: number 
   return contactsCache.contacts
 }
 
-/** Read the new mails of the dyers since the agent started. Returns the runs made. */
+/** Read the new mails of the dyers since the agent started. Returns the runs
+ *  made. Nothing when the Triage hands this agent its mail (OPTION_VIA_TRIAGE). */
 export async function sonderBoite(state: AgentState, version: AgentVersion, lancePar: Auteur | null = null): Promise<AgentRun[]> {
   if (state.mode === 'off' || !state.startedAt) return []
+  if (optionDe(state, OPTION_VIA_TRIAGE, false)) return []
   const cs = await contacts()
   const termes = termesExpediteurs(cs.map((c) => c.mail))
   if (termes.length === 0) return []
@@ -345,29 +349,40 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
   const tous: AgentRun[] = []
   for (const id of nouveaux) {
     const m = await lireMessage(BL_ENNOBLISSEUR_BOITE, id)
-    const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
-    const sst = sousTraitantExpediteur(m.de, cs)
-    const pjs = m.piecesJointes.filter(estPieceCandidate)
-    if (pjs.length === 0) {
-      const run: AgentRun = {
-        id: nouvelIdRun(), slug: BL_ENNOBLISSEUR_SLUG, createdAt: new Date().toISOString(), source: 'gmail', mode: state.mode,
-        lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
-        resultat: {}, resume: `Aucun PDF à lire dans « ${m.sujet} »`, coutUsd: 0, dureeMs: 0,
-      }
-      await ajouterRun(run)
-      tous.push(run)
-      continue
-    }
-    const pdfs = await Promise.all(pjs.map(async (p) => ({ nom: p.nom, contenu: await lirePieceJointe(BL_ENNOBLISSEUR_BOITE, m.id, p.attachmentId) })))
-    const runs = await traiterPdfs(pdfs, {
-      mode: state.mode, version, source: 'gmail', message, lancePar,
-      profilAttendu: sst != null ? profilDuSousTraitant(sst)?.cle ?? null : null,
-    })
-    tous.push(...runs)
-    await etiqueter(m.id, runs)
+    tous.push(...(await traiterMessage(m, { mode: state.mode, version, source: 'gmail', lancePar })))
   }
-  await prevenir(tous)
   return tous
+}
+
+/** One mail of contact@ through the pipeline: its candidate PDFs, the Gmail
+ *  label, the « à vérifier » email. Every mail leaves at least one run (an
+ *  « ignoré » one when there is no PDF to read), so it is never read twice.
+ *  Called by this agent's own poll and by the Triage (source « triage »). */
+export async function traiterMessage(
+  m: MessageInfo,
+  ctx: { mode: AgentMode; version: AgentVersion; source: RunSource; lancePar: Auteur | null },
+): Promise<AgentRun[]> {
+  const { mode, version, source, lancePar } = ctx
+  const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
+  const pjs = m.piecesJointes.filter(estPieceCandidate)
+  if (pjs.length === 0) {
+    const run: AgentRun = {
+      id: nouvelIdRun(), slug: BL_ENNOBLISSEUR_SLUG, createdAt: new Date().toISOString(), source, mode,
+      lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
+      resultat: {}, resume: `Aucun PDF à lire dans « ${m.sujet} »`, coutUsd: 0, dureeMs: 0,
+    }
+    await ajouterRun(run)
+    return [run]
+  }
+  const sst = sousTraitantExpediteur(m.de, await contacts())
+  const pdfs = await Promise.all(pjs.map(async (p) => ({ nom: p.nom, contenu: await lirePieceJointe(BL_ENNOBLISSEUR_BOITE, m.id, p.attachmentId) })))
+  const runs = await traiterPdfs(pdfs, {
+    mode, version, source, message, lancePar,
+    profilAttendu: sst != null ? profilDuSousTraitant(sst)?.cle ?? null : null,
+  })
+  await etiqueter(m.id, runs)
+  await prevenir(runs)
+  return runs
 }
 
 /** Label the mail, from its « actif » runs only: « traité » when every

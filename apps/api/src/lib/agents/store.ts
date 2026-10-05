@@ -70,13 +70,17 @@ export type RunStatut =
   | 'deja_importe' // every piece already in data_bl_tricotbot with the same values
   | 'ignore' // nothing to read (no PDF attachment)
   | 'erreur' // an exception (API down, HFSQL…)
+  // Triage (a mail of contact@ given its categories, handed to the agents behind them):
+  | 'trie'
   // Superviseur (a nightly report read in Agents IA):
   | 'points_a_voir' // the report lists at least one point
   | 'rien_a_signaler' // nothing to look at
   // Superviseur until 2026-09-23, when it still mailed its report — history only:
   | 'mail_envoye'
 
-export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel'
+/** « triage »: a mail the Triage agent handed over (lib/agents/triage/). */
+/** « triage »: a mail the Triage agent handed over (lib/agents/triage/). */
+export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel' | 'triage' | 'triage'
 
 export interface RunFichier {
   nom: string

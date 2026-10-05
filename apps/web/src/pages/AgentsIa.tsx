@@ -13,6 +13,9 @@
 // them; the « Retours » tab gathers every why of a version — what the next
 // prompt is written from.
 //
+// One exception: the Triage (components/agents-ia/Triage.tsx), whose work IS
+// the triage — it is corrected in its own run dialog (« Corriger le tri »).
+//
 // A BL run opens in a side-by-side dialog (what the agent read on the left,
 // the PDF on the right); a Superviseur run opens on its report. The email
 // sent for a BL « à vérifier » links here with ?agent=<slug>&run=<id>.
@@ -86,11 +89,12 @@ import {
   type Lancement,
   type Sondage,
 } from '@/components/agents-ia/commun'
+import { TRIAGE_SLUG, TriageExecutionsTab, TriageRunDialog } from '@/components/agents-ia/Triage'
 
 // ── Types (mirror routes/agents-ia.ts) ───────────────────
 
-type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'deja_importe' | 'ignore' | 'erreur' | 'points_a_voir' | 'rien_a_signaler' | 'mail_envoye'
-type Source = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel'
+type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'deja_importe' | 'ignore' | 'erreur' | 'points_a_voir' | 'rien_a_signaler' | 'mail_envoye' | 'trie'
+type Source = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel' | 'triage' | 'triage'
 type Note = 'reussite' | 'echec'
 
 interface Auteur { id: number; nom: string }
@@ -287,6 +291,8 @@ const STATUT_META: Record<Statut, { label: string; solid: string; icon: Componen
   rien_a_signaler: { label: 'Rien à signaler', solid: 'bg-success border-success', icon: CheckCircle2 },
   // Superviseur runs from before 2026-09-23, when the report was mailed.
   mail_envoye: { label: 'Mail envoyé', solid: 'bg-amber-500 border-amber-500', icon: Mail },
+  // Triage: a mail given its categories.
+  trie: { label: 'Trié', solid: 'bg-success border-success', icon: CheckCircle2 },
 }
 
 // One hue per score, everywhere (list pills, buttons, the Retours tab).
@@ -319,7 +325,7 @@ function NotePill({ evaluation, className }: { evaluation: Evaluation | null | u
 }
 
 const SOURCE_LABEL: Record<Source, string> = {
-  gmail: 'Mail', essai_manuel: 'Test', retraitement: 'Retraitement', planifie: 'Planifiée', manuel: 'Manuelle',
+  gmail: 'Mail', essai_manuel: 'Test', retraitement: 'Retraitement', planifie: 'Planifiée', manuel: 'Manuelle', triage: 'Triage',
 }
 
 function StatutPill({ statut, className }: { statut: Statut; className?: string }) {
@@ -445,6 +451,10 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
         hasSelection={selectedSlug !== null}
         onBack={() => setSelectedSlug(null)}
       />
+      {selectedSlug && detail?.slug === selectedSlug && detail.slug === TRIAGE_SLUG && (
+        <TriageRunDialog slug={detail.slug} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)}
+          onOuvrirRunAgent={(agent, runId) => { setSelectedSlug(agent); setOpenRunId(runId) }} onChanged={invalidate} />
+      )}
       {selectedSlug && detail?.slug === selectedSlug && detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && (
         <SuperviseurRunDialog agent={detail} runId={openRunId} onClose={() => setOpenRunId(null)} />
       )}
@@ -452,7 +462,7 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
         <FactureRunDialog agent={detail} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)}
           onOpenRun={setOpenRunId} onChanged={invalidate} />
       )}
-      {selectedSlug && detail?.slug === selectedSlug && !detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && (
+      {selectedSlug && detail?.slug === selectedSlug && !detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && detail.slug !== TRIAGE_SLUG && (
         <RunDialog agent={detail} runId={openRunId} canPilot={canPilot} canEvaluate={canEvaluate} onClose={() => setOpenRunId(null)}
           onOpenRun={setOpenRunId} onChanged={invalidate} />
       )}
@@ -617,7 +627,9 @@ function DetailMain({ agent, isLoading, hasSelection, canPilot, onOpenRun, onCha
         })}
       </div>
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1">
-        {activeTab === 'executions' && (agent.pointsEvaluables && agent.slug !== FACTURES_SST_SLUG
+        {activeTab === 'executions' && (agent.slug === TRIAGE_SLUG
+          ? <TriageExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />
+          : agent.pointsEvaluables && agent.slug !== FACTURES_SST_SLUG
           ? <SuperviseurExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />
           : <ExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />)}
         {activeTab === 'retours' && <RetoursTab agent={agent} onOpenRun={onOpenRun} />}

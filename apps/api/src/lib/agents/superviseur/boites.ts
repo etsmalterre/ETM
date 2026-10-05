@@ -10,6 +10,8 @@
 
 import * as fs from 'node:fs'
 import { google, type gmail_v1 } from 'googleapis'
+// A pure text helper only — never the gmail-reader client (its scope can modify).
+import { htmlVersTexte } from '../../gmail-reader.js'
 
 type JwtClient = InstanceType<typeof google.auth.JWT>
 
@@ -72,20 +74,6 @@ export interface MessageFil {
 
 function b64(s: string | null | undefined): string {
   return s ? Buffer.from(s, 'base64url').toString('utf8') : ''
-}
-
-function htmlVersTexte(html: string): string {
-  return html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<br\s*\/?>|<\/p>|<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n+/g, '\n\n')
-    .trim()
 }
 
 function parcourir(part: gmail_v1.Schema$MessagePart | undefined, acc: { plain: string; html: string; pjs: MessageFil['piecesJointes'] }): void {

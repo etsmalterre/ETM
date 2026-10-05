@@ -17,7 +17,8 @@
 // Mode « essai » reads and checks everything and writes nothing.
 
 import { ocrPdf, chatJson } from '../../mistral.js'
-import { listerMessages, lireMessage, lirePieceJointe } from '../../gmail-reader.js'
+import { listerMessages, lireMessage, lirePieceJointe, type MessageInfo } from '../../gmail-reader.js'
+import { OPTION_VIA_TRIAGE } from '../triage/constantes.js'
 import { contactsEnnoblisseurs } from '../bl-ennoblisseur-db.js'
 import { requeteExpediteurs, sousTraitantExpediteur, termesExpediteurs } from '../bl-profils.js'
 import { BL_ENNOBLISSEUR_BOITE } from '../bl-ennoblisseur.js'
@@ -26,6 +27,7 @@ import {
   enregistrerFichier as enregistrerFichierRun,
   messagesTraites,
   nouvelIdRun,
+  optionDe,
   type AgentMode,
   type AgentRun,
   type AgentState,
@@ -203,6 +205,7 @@ async function contacts(): Promise<Array<{ mail: string; idSousTraitant: number 
 /** Read the dyers' new invoice mails since the agent started. */
 export async function sonderBoite(state: AgentState, version: AgentVersion, lancePar: Auteur | null = null): Promise<AgentRun[]> {
   if (state.mode === 'off' || !state.startedAt) return []
+  if (optionDe(state, OPTION_VIA_TRIAGE, false)) return []
   const cs = await contacts()
   const termes = termesExpediteurs(cs.map((c) => c.mail))
   if (termes.length === 0) return []
@@ -216,25 +219,37 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
   const tous: AgentRun[] = []
   for (const id of nouveaux) {
     const m = await lireMessage(FACTURES_SST_BOITE, id)
-    const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
-    const pjs = m.piecesJointes.filter(estFactureCandidate)
-    if (pjs.length === 0) {
-      const run: AgentRun = {
-        id: nouvelIdRun(), slug: FACTURES_SST_SLUG, createdAt: new Date().toISOString(), source: 'gmail', mode: state.mode,
-        lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
-        resultat: {}, resume: `Aucune facture jointe à « ${m.sujet} »`, coutUsd: 0, dureeMs: 0,
-      }
-      await ajouterRun(run)
-      tous.push(run)
-      continue
-    }
-    const pdfs = await Promise.all(pjs.map(async (p) => ({ nom: p.nom, contenu: await lirePieceJointe(FACTURES_SST_BOITE, m.id, p.attachmentId) })))
-    tous.push(...(await traiterPdfs(pdfs, {
-      mode: state.mode, version, source: 'gmail', message, lancePar,
-      sousTraitantExpediteur: sousTraitantExpediteur(m.de, cs),
-    })))
+    tous.push(...(await traiterMessage(m, { mode: state.mode, version, source: 'gmail', lancePar })))
   }
   return tous
+}
+
+/** One mail through the pipeline; at least one run per mail (« ignoré » when
+ *  no attachment is an invoice). Called by this agent's own poll and by the
+ *  Triage (source « triage »): a mail the Triage calls an invoice is read even
+ *  when no file name looks like one (« scan.pdf ») — the OCR decides. */
+export async function traiterMessage(
+  m: MessageInfo,
+  ctx: { mode: AgentMode; version: AgentVersion; source: RunSource; lancePar: Auteur | null },
+): Promise<AgentRun[]> {
+  const { mode, version, source, lancePar } = ctx
+  const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
+  let pjs = m.piecesJointes.filter(estFactureCandidate)
+  if (pjs.length === 0 && source === 'triage') pjs = m.piecesJointes.filter((p) => p.mimeType === 'application/pdf' || /\.pdf$/i.test(p.nom))
+  if (pjs.length === 0) {
+    const run: AgentRun = {
+      id: nouvelIdRun(), slug: FACTURES_SST_SLUG, createdAt: new Date().toISOString(), source, mode,
+      lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
+      resultat: {}, resume: `Aucune facture jointe à « ${m.sujet} »`, coutUsd: 0, dureeMs: 0,
+    }
+    await ajouterRun(run)
+    return [run]
+  }
+  const pdfs = await Promise.all(pjs.map(async (p) => ({ nom: p.nom, contenu: await lirePieceJointe(FACTURES_SST_BOITE, m.id, p.attachmentId) })))
+  return traiterPdfs(pdfs, {
+    mode, version, source, message, lancePar,
+    sousTraitantExpediteur: sousTraitantExpediteur(m.de, await contacts()),
+  })
 }
 
 export { fournisseurDe }

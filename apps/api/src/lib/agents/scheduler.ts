@@ -15,8 +15,9 @@
 //     in state.json BEFORE the run (at most once a day even if the process dies
 //     mid-run; after a restart later the same day it catches up).
 //
-// One lock per agent shared by the tick and the manual run: two runs of the
-// same agent never overlap (they would process the same mail twice).
+// One lock per agent shared by the tick, the manual run and the Triage's
+// hand-off (verrous.ts): two runs of the same agent never overlap (they would
+// process the same mail twice).
 //
 // The automates (lib/automates/, Agents IA › Automates) run on this same
 // engine: everything below works on a « tâche » (key, trigger, state, run),
@@ -27,6 +28,9 @@
 import { AGENTS, agentDef, type AgentDef, type Declenchement } from './catalog.js'
 import { lireEtat, marquerPlanification, nouvelIdRun, versionActive, type Auteur } from './store.js'
 import { gmailLectureErreur } from '../gmail-reader.js'
+import { estVerrouille, prendreVerrou, rendreVerrou, SondageEnCoursError, sousVerrou } from './verrous.js'
+
+export { SondageEnCoursError, sousVerrou }
 import { jourParis, msHeureParis, partiesParis } from '../pointage-etat.js'
 
 const TICK_MS = 60_000
@@ -101,38 +105,18 @@ export interface EtatSondage {
 }
 
 const etats = new Map<string, EtatSondage>()
-const enCours = new Set<string>()
 
 const etatVide = (): EtatSondage => ({ dernierSondage: null, dernierSucces: null, derniereErreur: null, dernierLancement: null, enCours: false })
 
 export function etatSondage(cle: string): EtatSondage {
-  return { ...(etats.get(cle) ?? etatVide()), enCours: enCours.has(cle) }
-}
-
-export class SondageEnCoursError extends Error {
-  constructor() {
-    super('Une exécution est déjà en cours.')
-  }
-}
-
-/** Run `fn` under a tâche's lock (the one the tick and « Lancer maintenant »
- *  take). Throws SondageEnCoursError when a run holds it. */
-export async function sousVerrou<T>(cle: string, fn: () => Promise<T>): Promise<T> {
-  if (enCours.has(cle)) throw new SondageEnCoursError()
-  enCours.add(cle)
-  try {
-    return await fn()
-  } finally {
-    enCours.delete(cle)
-  }
+  return { ...(etats.get(cle) ?? etatVide()), enCours: estVerrouille(cle) }
 }
 
 /** Run one agent (by slug) or automate (by `automate:<slug>`) now. Throws
  *  SondageEnCoursError when already running. */
 export async function sonder(cle: string, par: Auteur | null): Promise<RunResume[]> {
   const t = tacheOu(cle)
-  if (enCours.has(cle)) throw new SondageEnCoursError()
-  enCours.add(cle)
+  prendreVerrou(cle)
   const e: EtatSondage = etats.get(cle) ?? etatVide()
   e.dernierSondage = new Date().toISOString()
   etats.set(cle, e)
@@ -146,7 +130,7 @@ export async function sonder(cle: string, par: Auteur | null): Promise<RunResume
     e.derniereErreur = gmailLectureErreur(err)
     throw err
   } finally {
-    enCours.delete(cle)
+    rendreVerrou(cle)
   }
 }
 
@@ -155,7 +139,7 @@ export async function sonder(cle: string, par: Auteur | null): Promise<RunResume
  *  (synchronously) when already running. */
 export function lancerSondage(cle: string, par: Auteur): Lancement {
   tacheOu(cle)
-  if (enCours.has(cle)) throw new SondageEnCoursError()
+  if (estVerrouille(cle)) throw new SondageEnCoursError()
   const e = etats.get(cle) ?? etatVide()
   etats.set(cle, e)
   const l: Lancement = { id: nouvelIdRun(), debut: new Date().toISOString(), fin: null, runs: [], erreur: null }
@@ -205,7 +189,7 @@ async function tick(): Promise<void> {
   for (const t of toutesTaches()) {
     try {
       const state = await t.lireEtat()
-      if (state.mode === 'off' || enCours.has(t.cle)) continue
+      if (state.mode === 'off' || estVerrouille(t.cle)) continue
       const d = t.declenchement
       if (d.type === 'releve') {
         if (now - (dernierReleve.get(t.cle) ?? 0) < d.intervalleMs - 5_000) continue
