@@ -33,13 +33,18 @@ export const versions = (quoi: string) =>
   ] as const
 
 /** The daily report moved on its own on 2026-10-02 (the balance did not). */
-export const VERSION_RAPPORT = 2
+export const VERSION_RAPPORT = 3
 export const VERSIONS_RAPPORT = [
   ...versions('Le rapport de pointage'),
   {
     version: 2,
     date: '2026-10-02',
     note: 'N’envoie plus que les pointages à vérifier : seuls les salariés concernés sont listés, et aucun e-mail ne part quand tout est conforme. Les destinataires se choisissent dans l’onglet « Destinataires » (avant : Paramètres › Utilisateurs › Notifications).',
+  },
+  {
+    version: 3,
+    date: '2026-10-05',
+    note: 'Un départ jusqu’à 10 min avant l’heure prévue n’est plus signalé (5 min avant). Une pause de midi plus courte ou plus longue de plus de 10 min que l’horaire est signalée ; elle est jugée à part du départ, jamais compensée. Retard à l’arrivée et au retour de midi : toujours 5 min.',
   },
 ] as const
 
