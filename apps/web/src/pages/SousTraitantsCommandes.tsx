@@ -332,6 +332,8 @@ interface StockEcruLite {
   client_nom?: string | null
   /** N° of the client order the roll is reserved to (LIVA #1258). */
   commande_numero?: number | null
+  /** The reservation is for another article/coloris than this dyer line (LIVA #1261). */
+  reservation_hors_teinture?: boolean
 }
 interface StockFiniLite {
   IDstock_fini: number
@@ -2852,6 +2854,28 @@ function PiecesDrawer({
     },
   })
 
+  // Release a piece's client reservation, the piece staying on this line.
+  // The client order cannot do it when the reservation no longer fits this
+  // dyer line — its Ennoblissement tab never lists it (LIVA #1261).
+  const [releaseTarget, setReleaseTarget] = useState<StockEcruLite | null>(null)
+  const releaseReservationMut = useMutation({
+    mutationFn: (stockEcruId: number) => apiFetch(
+      `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/ecru/${stockEcruId}/reservation`,
+      { method: 'DELETE' }
+    ),
+    onSuccess: (payload: PiecesPayload) => {
+      queryClient.setQueryData(queryKey, payload)
+      // The client order's gauge and Ennoblissement tab read the reservation.
+      queryClient.invalidateQueries({ queryKey: ['commandes-client'] })
+      queryClient.invalidateQueries({ queryKey: ['commande-client'] })
+      queryClient.invalidateQueries({ queryKey: ['commande-client-supply'] })
+      queryClient.invalidateQueries({ queryKey: ['commande-client-pieces'] })
+      invalidateStockCaches(queryClient)
+      setReleaseTarget(null)
+      onSuccess()
+    },
+  })
+
   const editFiniMut = useMutation({
     mutationFn: (vars: { stockFiniId: number; observations: string; observation_sst: string }) => apiFetch(
       `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/fini/${vars.stockFiniId}`,
@@ -3101,6 +3125,7 @@ function PiecesDrawer({
                         selected={selectedEcruIds.has(roll.IDstock_ecru)}
                         onSelectToggle={(shiftKey) => handleEcruClick(roll.IDstock_ecru, shiftKey ?? false)}
                         received={received}
+                        onReleaseReservation={!commandeSoldee && !received ? () => setReleaseTarget(roll) : undefined}
                       />
                     )
                   })}
@@ -3119,6 +3144,19 @@ function PiecesDrawer({
                 onClose={() => setShowLinkEcruDialog(false)}
               />
             )}
+            <ConfirmDialog
+              open={releaseTarget !== null}
+              title="Retirer la réservation client"
+              description={releaseTarget
+                ? `La pièce ${releaseTarget.numero ?? ''} ne sera plus réservée à ${releaseTarget.client_nom ?? 'ce client'}`
+                  + `${releaseTarget.commande_numero ? ` (commande N° ${releaseTarget.commande_numero})` : ''}. Elle reste sur cette commande d’ennoblissement.`
+                : undefined}
+              confirmLabel="Retirer"
+              isPending={releaseReservationMut.isPending}
+              error={mutationMessage(releaseReservationMut.error)}
+              onCancel={() => { setReleaseTarget(null); releaseReservationMut.reset() }}
+              onConfirm={() => { if (releaseTarget) releaseReservationMut.mutate(releaseTarget.IDstock_ecru) }}
+            />
           </>
           )
         })()}
@@ -3993,25 +4031,48 @@ function TricoteurReceptionDialog({
 /** Client-reservation tag on a roll card. Carries the order number: a client
  *  often has several orders open and the name alone sent people looking on
  *  the wrong one (LIVA #1258). */
-function ClientReservationBadge({ clientNom, commandeNumero }: { clientNom?: string | null; commandeNumero?: number | null }) {
+function ClientReservationBadge({ clientNom, commandeNumero, misfit = false, onRelease }: {
+  clientNom?: string | null
+  commandeNumero?: number | null
+  /** Reserved for another article/coloris than this dyer line makes (LIVA #1261). */
+  misfit?: boolean
+  /** Shown as a ✕ inside the badge: releases the client reservation. */
+  onRelease?: () => void
+}) {
   if (!clientNom) return null
+  const reserved = commandeNumero ? `Rouleau réservé à la commande N° ${commandeNumero} de ${clientNom}` : 'Rouleau réservé à ce client'
   return (
     <Badge
-      variant="secondary"
-      className="text-xs py-1 px-2 gap-1 flex-shrink-0"
-      title={commandeNumero ? `Rouleau réservé à la commande N° ${commandeNumero} de ${clientNom}` : 'Rouleau réservé à ce client'}
+      variant={misfit ? 'outline' : 'secondary'}
+      className={cn(
+        'text-xs py-1 px-2 gap-1 flex-shrink-0',
+        misfit && 'border-destructive/40 bg-destructive/10 text-destructive',
+      )}
+      title={misfit ? `${reserved}, pour une autre référence ou un autre coloris que cette teinture` : reserved}
     >
-      <Building2 className="h-3 w-3" />
+      {misfit ? <AlertTriangle className="h-3 w-3" /> : <Building2 className="h-3 w-3" />}
       {clientNom}
-      {!!commandeNumero && <span className="font-normal text-muted-foreground">· N° {commandeNumero}</span>}
+      {!!commandeNumero && <span className={cn('font-normal', misfit ? 'text-destructive/80' : 'text-muted-foreground')}>· N° {commandeNumero}</span>}
+      {onRelease && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onRelease() }}
+          title="Retirer la réservation client"
+          className="ml-0.5 -mr-1 rounded-full p-0.5 hover:bg-destructive/20 hover:text-destructive transition-colors"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
     </Badge>
   )
 }
 
 function EcruRollRow({
   roll, action, onAction, isBusy, hideAction,
-  selectable = false, selected = false, onSelectToggle, received = false,
+  selectable = false, selected = false, onSelectToggle, received = false, onReleaseReservation,
 }: {
+  /** Releases the client reservation from the dyer order (LIVA #1261). */
+  onReleaseReservation?: () => void
   roll: StockEcruLite
   action: 'link' | 'unlink'
   onAction: () => void
@@ -4084,7 +4145,12 @@ function EcruRollRow({
         </div>
         {/* Client-reservation tag — sits at the right end of the header
             row, just left of the action button. */}
-        <ClientReservationBadge clientNom={roll.client_nom} commandeNumero={roll.commande_numero} />
+        <ClientReservationBadge
+          clientNom={roll.client_nom}
+          commandeNumero={roll.commande_numero}
+          misfit={!received && !!roll.reservation_hors_teinture}
+          onRelease={onReleaseReservation}
+        />
         {!hideAction && (
           action === 'unlink' ? (
             <Button
@@ -5592,7 +5658,9 @@ function LinkEcruDialog({
       await onBulkLink(Array.from(selected))
       onClose()
     } catch (e: any) {
-      setError(e instanceof Error ? e.message : 'Erreur')
+      // The server's French reason (e.g. a piece reserved for another
+      // article, LIVA #1261) beats « API 409 ».
+      setError(e?.body?.message ?? (e instanceof Error ? e.message : 'Erreur'))
     } finally {
       setBusy(false)
     }

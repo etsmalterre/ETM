@@ -5656,10 +5656,13 @@ function LineFormDialog({
       onSuccess(pairs.filter((m) => m.IDref_fini > 0 && m.IDcolori > 0))
     },
     onError: (e: unknown) => {
-      // 409 = the API's own contract guard (a stale form, or the contract
-      // lapsed between opening the dialog and saving). apiFetch doesn't carry
-      // the server's message, so restate it here.
+      // The server's own French reason first (pieces reserved to the line
+      // block a reference/coloris change, LIVA #1261). A bare 409 is the
+      // contract guard (a stale form, or the contract lapsed between opening
+      // the dialog and saving): restate it here.
       const status = (e as { status?: number } | null)?.status
+      const serverMessage = (e as { body?: { message?: string } } | null)?.body?.message
+      if (serverMessage) { setError(serverMessage); return }
       if (status === 409) {
         setError(priceInfo?.blocked_reason
           ?? 'Contrat expiré — cette référence n’est plus disponible tant qu’un nouveau contrat n’a pas été établi.')

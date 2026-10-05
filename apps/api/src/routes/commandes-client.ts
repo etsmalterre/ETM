@@ -56,6 +56,9 @@ import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow } from '../lib/ennoblissement-supply.js'
+import {
+  ECRU_AT_DYER_MESSAGE, RESERVATION_MISFIT_ERROR, ecruStillAtDyer, findReservationMisfits, misfitMessage, reservationFitsDyeLine,
+} from '../lib/reservation-teinture.js'
 import { adresseADefinirRow, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -2087,6 +2090,31 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
         // `prix` is a 4-byte REAL: compare at the centime, never raw floats.
         (d.prix !== undefined && Math.round(Number(d.prix) * 100) !== Math.round((Number(row.prix) || 0) * 100))
       if (commercialChange && await refuseIfContratExpire(res, commandeId, next)) return
+
+      // Pieces reserved to the line were picked for its article + coloris; a
+      // new one would leave them promised to a product nobody ordered
+      // (LIVA #1261). Dyed écru is history (its fini roll carries the link).
+      const productChange =
+        next.type !== curType ||
+        next.IDreference !== (Number(row.IDreference) || 0) ||
+        next.IDcolori !== (Number(row.IDcolori) || 0)
+      if (productChange) {
+        const [finiN, ecruRows] = await Promise.all([
+          query<{ n: number }>(`SELECT COUNT(*) AS n FROM stock_fini WHERE IDligne_commande_client = ${lineId}`),
+          query<{ IDstock_ecru: number }>(`SELECT IDstock_ecru FROM stock_ecru WHERE IDligne_commande_client = ${lineId}`),
+        ])
+        const ecruIds = ecruRows.map((r) => Number(r.IDstock_ecru))
+        const consumed = await consumedEcruIds(ecruIds)
+        const reserved = (Number(finiN[0]?.n) || 0) + ecruIds.filter((id) => !consumed.has(id)).length
+        if (reserved > 0) {
+          res.status(409).json({
+            error: 'pieces_reservees',
+            message: `${reserved} pièce${reserved > 1 ? 's sont réservées' : ' est réservée'} à cette ligne : `
+              + 'retirez les réservations avant de changer la référence ou le coloris.',
+          })
+          return
+        }
+      }
     }
 
     const sets: string[] = []
@@ -2686,6 +2714,9 @@ commandesClientRouter.put('/:id/lignes/:ligneId/pieces/ecru/:stockId', async (re
     if (refuseIfDonated(res, rollRows[0].IDcommande_donation)) return
     const current = Number(rollRows[0].IDligne_commande_client) || 0
     if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
+    if ((await ecruStillAtDyer([stockId])).length > 0) {
+      res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: ECRU_AT_DYER_MESSAGE }); return
+    }
     await query(`UPDATE stock_ecru SET IDligne_commande_client = ${ligneId} WHERE IDstock_ecru = ${stockId}`)
     res.json(await fetchAffectationPayload(ctx))
   } catch (err) {
@@ -2809,6 +2840,9 @@ commandesClientRouter.post('/:id/lignes/:ligneId/pieces/:kind/affecter', async (
       if (refuseIfDonated(res, r.IDcommande_donation)) return
       const current = Number(r.IDligne_commande_client) || 0
       if (current !== 0 && current !== ligneId) { res.status(409).json({ error: `Roll ${sid} already reserved to another line` }); return }
+    }
+    if (kindParam === 'ecru' && (await ecruStillAtDyer(stockIds)).length > 0) {
+      res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: ECRU_AT_DYER_MESSAGE }); return
     }
     await query(`UPDATE ${table} SET IDligne_commande_client = ${ligneId} WHERE ${pk} IN (${idList})`)
     res.json(await fetchAffectationPayload(ctx))
@@ -2981,6 +3015,16 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/ennoblissement/:sstLineId
     if ((await consumedEcruIds([stockId])).has(stockId)) { res.status(409).json(ECRU_CONSUMED_ERROR); return }
     const current = Number(rollRows[0].IDligne_commande_client) || 0
     if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
+    // The dyer line must make this line's article + coloris (LIVA #1261) —
+    // the tab only lists those, but the route is the gate.
+    const dyeRows = await query<{ IDreference: number | null; IDColoris: number | null }>(
+      `SELECT IDreference, IDColoris FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${sstLineId}`,
+    )
+    const dye = { ref: Number(dyeRows[0]?.IDreference) || 0, coloris: Number(dyeRows[0]?.IDColoris) || 0 }
+    if (!reservationFitsDyeLine({ type: ctx.typeKind, ref: ctx.refId, coloris: ctx.coloriId }, dye)) {
+      res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: 'Cette commande d’ennoblissement teint une autre référence ou un autre coloris que la ligne.' })
+      return
+    }
     await query(`UPDATE stock_ecru SET IDligne_commande_client = ${ligneId} WHERE IDstock_ecru = ${stockId}`)
     res.json(await fetchEnnoRollsPayload(ctx, sstLineId))
   } catch (err) {
@@ -4529,6 +4573,13 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
         (Number(r.IDcommande_donation) || 0) === 0,
     )
     if (usable.length === 0) { res.status(400).json({ error: 'No usable rolls in selection' }); return }
+    // A roll already promised to a line of another article/coloris keeps that
+    // reservation here — it would be dyed into the wrong product (LIVA #1261).
+    const misfits = await findReservationMisfits(usable.map((r) => Number(r.IDstock_ecru)), { ref: ctx.refId, coloris: ctx.coloriId })
+    if (misfits.length > 0) {
+      res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: misfitMessage(misfits, 'Ennoblissement refusé') })
+      return
+    }
     const totalPoids = usable.reduce((s, r) => s + (Number(r.poids) || 0), 0)
     // Which of the usable rolls get the client-line reservation (legacy's
     // « lien » icon in FEN_Ennoblir, LIVA #1115). Default: all of them.

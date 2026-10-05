@@ -29,6 +29,9 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import {
+  RESERVATION_MISFIT_ERROR, ecruIdsOnDyeLine, findReservationMisfits, loadClientLineKeys, misfitMessage, reservationFitsDyeLine,
+} from '../lib/reservation-teinture.js'
+import {
   CommandeSoustraitantPdf,
   type CommandeSoustraitantPdfData,
 } from '../lib/pdf/CommandeSoustraitantPdf.js'
@@ -4446,6 +4449,17 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     const nextColoris = d.IDColoris !== undefined ? d.IDColoris : (Number(cur.IDColoris) || 0)
     if ((d.IDreference !== undefined || d.IDColoris !== undefined) && refuseIfNoColoris(res, nextColoris)) return
 
+    // Re-colouring (or re-referencing) a dyer line drags its pieces along:
+    // their client reservations must still fit the new product (LIVA #1261).
+    const nextRef = d.IDreference !== undefined ? d.IDreference : (Number(cur.IDreference) || 0)
+    if (nextRef !== (Number(cur.IDreference) || 0) || nextColoris !== (Number(cur.IDColoris) || 0)) {
+      const misfits = await findReservationMisfits(await ecruIdsOnDyeLine(lineId), { ref: nextRef, coloris: nextColoris })
+      if (misfits.length > 0) {
+        res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: misfitMessage(misfits, 'Modification refusée') })
+        return
+      }
+    }
+
     // Rectiligne line (type 4): re-check the reference/coloris pair whenever
     // either moves, and a new reference brings its own price and unit unless
     // the caller set a price (legacy « référence » combo behaviour).
@@ -4920,6 +4934,8 @@ interface StockEcruLite {
   /** commande_client.numero of that client line — a client often has several
    *  orders open, the name alone sent people to the wrong one (LIVA #1258). */
   commande_numero?: number | null
+  /** The client line is for another article/coloris than this dyer line (LIVA #1261). */
+  reservation_hors_teinture?: boolean
 }
 
 interface StockFiniLite {
@@ -5111,10 +5127,18 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
     }
   }
 
+  // A reservation for another article/coloris than this dyer line makes
+  // (LIVA #1261) — the badge turns red so it gets released from here.
+  const lccKeys = await loadClientLineKeys(linkedFixed.map((r) => Number(r.IDligne_commande_client) || 0))
+  const dye = { ref: ctx.IDref_fini, coloris: ctx.IDColoris }
   const linked = linkedFixed.map((r) => ({
     ...r,
     client_nom: clientByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
     commande_numero: commandeNumByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
+    reservation_hors_teinture: (() => {
+      const key = lccKeys.get(Number(r.IDligne_commande_client) || 0)
+      return !!key && !reservationFitsDyeLine(key, dye)
+    })(),
     defects: defectsByEcruId.get(Number(r.IDstock_ecru) || 0) ?? [],
   }))
   available = available.map((r) => ({
@@ -6116,6 +6140,13 @@ commandesSousTraitantRouter.put(
         res.status(409).json({ error: 'Stock ecru is already linked to another line' })
         return
       }
+      // A piece promised to a client line of another article/coloris would
+      // be dyed into something that client did not order (LIVA #1261).
+      const misfits = await findReservationMisfits([stockEcruId], { ref: ctx.IDref_fini, coloris: ctx.IDColoris })
+      if (misfits.length > 0) {
+        res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: misfitMessage(misfits, 'Affectation refusée') })
+        return
+      }
 
       await query(
         `UPDATE stock_ecru SET IDref_commande_affectation = ${ligneId} WHERE IDstock_ecru = ${stockEcruId}`,
@@ -6156,6 +6187,44 @@ commandesSousTraitantRouter.delete(
       res.json(await fetchPiecesPayload(ctx, ligneId))
     } catch (err) {
       console.error('Error unlinking ecru from line:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
+
+// Release a piece's CLIENT reservation from the dyer order (LIVA #1261). The
+// client order's Ennoblissement tab only lists dyer lines of its own article,
+// so a reservation that no longer fits the dyer line can only be undone here.
+// The piece stays on the dyer line.
+commandesSousTraitantRouter.delete(
+  '/:commandeId/lignes/:ligneId/pieces/ecru/:stockEcruId/reservation',
+  async (req: Request, res: Response) => {
+    try {
+      const commandeId = parseInt(req.params.commandeId, 10)
+      const ligneId = parseInt(req.params.ligneId, 10)
+      const stockEcruId = parseInt(req.params.stockEcruId, 10)
+      if (isNaN(commandeId) || isNaN(ligneId) || isNaN(stockEcruId)) {
+        res.status(400).json({ error: 'Invalid ID' }); return
+      }
+      const ctx = await loadEnnoblisseurLineContext(commandeId, ligneId)
+      if (!ctx) { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
+      if (refuseIfTerminee(res, await loadCommandeSoldee(commandeId))) return
+
+      const rows = await query<{ IDref_commande_affectation: number | null; IDligne_expedition_ETM: number | null }>(
+        `SELECT IDref_commande_affectation, IDligne_expedition_ETM FROM stock_ecru WHERE IDstock_ecru = ${stockEcruId}`,
+      )
+      if (rows.length === 0 || (Number(rows[0].IDref_commande_affectation) || 0) !== ligneId) {
+        res.status(404).json({ error: 'Stock ecru not on this line' }); return
+      }
+      // Same lock as the client side: a shipped écru's affectation belongs to the expedition.
+      if ((Number(rows[0].IDligne_expedition_ETM) || 0) > 0) {
+        res.status(409).json({ error: 'Roll already shipped — affectation locked', message: 'Pièce déjà expédiée : la réservation ne peut plus être retirée.' })
+        return
+      }
+      await query(`UPDATE stock_ecru SET IDligne_commande_client = 0 WHERE IDstock_ecru = ${stockEcruId}`)
+      res.json(await fetchPiecesPayload(ctx, ligneId))
+    } catch (err) {
+      console.error('Error releasing client reservation from sst line:', err)
       res.status(500).json({ error: 'Internal server error' })
     }
   },
