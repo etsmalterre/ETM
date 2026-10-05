@@ -38,10 +38,11 @@ describe('shift worker (in the planning)', () => {
     expect(r.alertes[0]).toBe('arrivée 05:06 au lieu de 05:00 (6 min de retard)')
   })
 
-  it('flags leaving more than 5 min early', () => {
-    const r = analyserJournee(sal('A'), [ligne(sec(5, 0), sec(11, 50))], prevu, heure)
+  it('tolerates leaving 10 min early, flags 11 (2026-10-05)', () => {
+    expect(analyserJournee(sal('A'), [ligne(sec(5, 0), sec(11, 50))], prevu, heure).alertes).toEqual([])
+    const r = analyserJournee(sal('A'), [ligne(sec(5, 0), sec(11, 49))], prevu, heure)
     expect(r.rouge.fin).toBe(true)
-    expect(r.alertes).toEqual(['départ 11:50 au lieu de 12:00 (10 min plus tôt)'])
+    expect(r.alertes).toEqual(['départ 11:49 au lieu de 12:00 (11 min plus tôt)'])
   })
 
   it('flags arriving more than 10 min early and leaving more than 10 min late (2026-09-24)', () => {
@@ -50,6 +51,13 @@ describe('shift worker (in the planning)', () => {
     expect(r.alertes).toEqual(['arrivée 04:49 au lieu de 05:00 (11 min d’avance)', 'départ 12:11 au lieu de 12:00 (11 min plus tard)'])
     expect(r.rouge.debut).toBe(true)
     expect(r.rouge.fin).toBe(true)
+  })
+
+  it('02/10: Daunovan 16 min early and Marie 21 min of pause are still flagged', () => {
+    const d = analyserJournee(sal('Daunovan'), [ligne(sec(12, 44), sec(20, 2), [sec(18, 54), sec(19, 14)])], { debut: ms(13, 0), fin: ms(20, 0) }, heure)
+    expect(d.alertes).toEqual(['arrivée 12:44 au lieu de 13:00 (16 min d’avance)'])
+    const m = analyserJournee(sal('Marie'), [ligne(sec(13, 50), sec(21, 1), [sec(18, 2), sec(18, 23)])], { debut: ms(14, 0), fin: ms(21, 0) }, heure)
+    expect(m.alertes).toEqual(['21 min de pause pour 20 prévues'])
   })
 
   it('flags pauses over 20 min, the gap between two lines counting as pause', () => {
@@ -122,6 +130,28 @@ describe('day worker (not in the planning), expected 09:00-12:00 / 14:00-18:00',
     const r = analyserJournee(sal('A'), [ligne(sec(8, 45), sec(11, 40)), ligne(sec(13, 40), sec(18, 15))], null, heure)
     expect(r.alertes).toEqual(['arrivée 08:45 au lieu de 09:00 (15 min d’avance)', 'départ 18:15 au lieu de 18:00 (15 min plus tard)'])
     expect(r.rouge.repas).toBe(false)
+  })
+
+  it('a lunch 10 min short and a departure 8 min early are in order (Mickael, 02/10)', () => {
+    const r = analyserJournee(sal('Mickael'), [ligne(sec(8, 58), sec(12, 0)), ligne(sec(13, 50), sec(17, 52))], null, heure, horaireDe(20))
+    expect(r.alertes).toEqual([])
+    expect(r.rouge).toEqual({ debut: false, fin: false, pause: false, repas: false })
+  })
+
+  it('flags a lunch more than 10 min short, and a departure 11 min early, each on its own', () => {
+    const r = analyserJournee(sal('A'), [ligne(sec(9, 0), sec(12, 0)), ligne(sec(13, 49), sec(17, 49))], null, heure)
+    expect(r.alertes).toEqual(['repas de 1 h 49 au lieu de 2 h 00 (11 min de moins)', 'départ 17:49 au lieu de 18:00 (11 min plus tôt)'])
+    expect(r.rouge.repas).toBe(true)
+    expect(r.rouge.fin).toBe(true)
+  })
+
+  it('flags a lunch more than 10 min long even when back on time, and says so instead of the late return', () => {
+    const tot = analyserJournee(sal('A'), [ligne(sec(9, 0), sec(11, 49)), ligne(sec(14, 0), sec(18, 0))], null, heure)
+    expect(tot.alertes).toEqual(['repas de 2 h 11 au lieu de 2 h 00 (11 min de plus)'])
+    expect(tot.rouge.repas).toBe(true)
+    expect(analyserJournee(sal('A'), [ligne(sec(9, 0), sec(11, 50)), ligne(sec(14, 0), sec(18, 0))], null, heure).alertes).toEqual([])
+    const tard = analyserJournee(sal('A'), [ligne(sec(9, 0), sec(12, 0)), ligne(sec(14, 20), sec(18, 0))], null, heure)
+    expect(tard.alertes).toEqual(['repas de 2 h 20 au lieu de 2 h 00 (20 min de plus)'])
   })
 
   it('one line across noon means the lunch was never clocked', () => {

@@ -12,9 +12,12 @@
  *         pause in all;
  *       · day hours = everyone else, judged against their fixed schedule
  *         (`HORAIRES_FIXES`, 09:00-12:00 / 14:00-18:00 when not listed).
- *   - a 5 min tolerance on every arrival / departure (n8n flagged 06:01);
+ *   - a 5 min tolerance on a late arrival (n8n flagged 06:01), 10 min on an
+ *     early departure (2026-10-05);
  *   - arriving more than 10 min early or leaving more than 10 min late is
  *     flagged too (2026-09-24: overlap the company pays for and does not need);
+ *   - a day-hours lunch more than 10 min shorter or longer than its schedule
+ *     is flagged (2026-10-05);
  *   - a clock-out missing between two clock-ins is flagged (n8n kept only the
  *     day's first start and last end, so a forgotten lunch clock-out was
  *     invisible and inflated the day);
@@ -24,13 +27,20 @@
  */
 import type { LigneHoraire } from './pointage-etat.js'
 
-/** Minutes of slack on every expected arrival / departure. */
+/** Minutes of slack on a late arrival and on a late return from lunch. */
 export const TOLERANCE_MIN = 5
 /** Minutes a salarié may arrive before / leave after the expected time. Past
  *  that, the overlap is time the company pays for and does not need
- *  (Vincent, 2026-09-24) — flagged red like a lateness. Start and end of the
- *  day only: the lunch keeps the late-return rule alone. */
+ *  (Vincent, 2026-09-24) — flagged red like a lateness. */
 export const DEBORD_MAX_MIN = 10
+/** Minutes a salarié may leave before the expected end (Vincent, 2026-10-05:
+ *  Mickael left 8 min early after a lunch 10 min short, both in order; 11
+ *  would have been flagged). Judged on its own, never offset by the lunch. */
+export const DEPART_AVANCE_MAX_MIN = 10
+/** Minutes a day-hours lunch may run shorter or longer than its schedule
+ *  (`reprise − midi`), 2026-10-05: a short lunch is overlap like an early
+ *  arrival, a long one is time off work. */
+export const REPAS_ECART_MAX_MIN = 10
 /** Pause allowed to a shift worker over the whole shift. */
 export const PAUSE_EQUIPE_MAX_MIN = 20
 /** A day-hours schedule: morning start, lunch out, lunch back, evening end, « HH:MM ». */
@@ -169,9 +179,11 @@ export function analyserJournee(
 
   const tol = TOLERANCE_MIN * MIN
   const debord = DEBORD_MAX_MIN * MIN
+  const avance = DEPART_AVANCE_MAX_MIN * MIN
   const retard = (reel: number, attendu: number) => `${Math.round((reel - attendu) / MIN)} min`
-  // Start and end of the day: late / early beyond the tolerance, and too early /
-  // too late beyond DEBORD_MAX_MIN, against the planning row or the schedule.
+  // Start and end of the day, against the planning row or the schedule: late
+  // beyond TOLERANCE_MIN, leaving early beyond DEPART_AVANCE_MAX_MIN, too early /
+  // too late beyond DEBORD_MAX_MIN.
   const controlerArrivee = (reel: number, attendu: number) => {
     if (reel > attendu + tol) alertes.push(`arrivée ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(reel, attendu)} de retard)`)
     else if (reel < attendu - debord) alertes.push(`arrivée ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(attendu, reel)} d’avance)`)
@@ -179,7 +191,7 @@ export function analyserJournee(
     rouge.debut = true
   }
   const controlerDepart = (reel: number, attendu: number) => {
-    if (reel < attendu - tol) alertes.push(`départ ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(attendu, reel)} plus tôt)`)
+    if (reel < attendu - avance) alertes.push(`départ ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(attendu, reel)} plus tôt)`)
     else if (reel > attendu + debord) alertes.push(`départ ${hhmm(reel)} au lieu de ${hhmm(attendu)} (${retard(reel, attendu)} plus tard)`)
     else return
     rouge.fin = true
@@ -203,10 +215,18 @@ export function analyserJournee(
     })
     if (traverse) alertes.push('pause de midi non pointée')
     // Back from lunch: the first line that starts after noon, when the morning was worked.
-    const apresMidi = tri.find((l) => arrondiMinute(l.debut)! >= midi)
-    if (apresMidi && debut < midi) {
-      const d = arrondiMinute(apresMidi.debut)!
-      if (d > reprise + tol) {
+    const iApresMidi = tri.findIndex((l) => arrondiMinute(l.debut)! >= midi)
+    if (iApresMidi >= 0 && debut < midi) {
+      const d = arrondiMinute(tri[iApresMidi].debut)!
+      // The lunch = the gap before that line; none when its clock-out was forgotten.
+      const sortie = iApresMidi > 0 ? arrondiMinute(tri[iApresMidi - 1].fin) : null
+      const prevuMin = Math.round((reprise - midi) / MIN)
+      const ecart = sortie !== null && d > sortie ? Math.round((d - sortie) / MIN) - prevuMin : 0
+      if (Math.abs(ecart) > REPAS_ECART_MAX_MIN) {
+        // Says more than the late-return line, which it replaces when the lunch ran long.
+        alertes.push(`repas de ${dureeTexte(prevuMin + ecart)} au lieu de ${dureeTexte(prevuMin)} (${Math.abs(ecart)} min ${ecart < 0 ? 'de moins' : 'de plus'})`)
+        rouge.repas = true
+      } else if (d > reprise + tol) {
         alertes.push(`reprise ${hhmm(d)} au lieu de ${horaire.reprise} (${retard(d, reprise)} de retard)`)
         rouge.repas = true
       }
