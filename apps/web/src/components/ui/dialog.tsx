@@ -65,6 +65,10 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
           className
         )}
         onClick={(e) => e.stopPropagation()}
+        // Load-bearing: drawers recognise their portalled dialogs by this role
+        // (see alert-dialog.tsx).
+        role="dialog"
+        aria-modal="true"
         {...props}
       >
         {onClose && (

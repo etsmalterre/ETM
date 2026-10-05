@@ -48,6 +48,12 @@ const AlertDialogContent = React.forwardRef<HTMLDivElement, AlertDialogContentPr
     return (
       <div
         ref={ref}
+        // The role is load-bearing, not decoration: a drawer's outside-click
+        // handler recognises its portalled dialogs by it. Without it a press
+        // on « Supprimer » closed the drawer first and the click was lost
+        // (TRM LIVA #1260).
+        role="alertdialog"
+        aria-modal="true"
         className={cn(
           'relative z-50 w-full max-w-lg rounded-lg border bg-background p-6 shadow-lg animate-in fade-in-0 zoom-in-95',
           className
