@@ -40,7 +40,7 @@ interface CodeSp {
   num_bain: string
   ean13: string | null
 }
-interface SaveResponse { ok: boolean; net?: { appliques: string[]; factures: string[] } }
+interface SaveResponse { ok: boolean; net?: { appliques: string[]; factures: string[]; sousNonFactures?: string[] } }
 
 interface LinePayload {
   ligneId: number
@@ -152,12 +152,15 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
   const queryClient = useQueryClient()
   /** Rolls whose net could not become their billed length: already invoiced. */
   const [netFactures, setNetFactures] = useState<string[]>([])
+  /** Rolls whose net is shorter than their « Ml non facturés »: left at the gross length. */
+  const [netSousNf, setNetSousNf] = useState<string[]>([])
   /** A complete roll's net replaces its length in stock (LIVA #1246) — the
    *  BL and the invoice bill it. Refresh what shows that length. */
   const afterSave = (res: SaveResponse | undefined) => {
     const net = res?.net
     if (!net) return
     setNetFactures((prev) => [...new Set([...prev, ...net.factures])])
+    setNetSousNf((prev) => [...new Set([...prev, ...(net.sousNonFactures ?? [])])])
     if (net.appliques.length === 0) return
     invalidateStockCaches(queryClient)
     queryClient.invalidateQueries({ queryKey: ['commande-client'] })
@@ -424,6 +427,11 @@ export function EtiquettesSpTab({ ligneId }: { ligneId: number }) {
               {netFactures.length > 0 && (
                 <span className="block text-amber-700 truncate" title={`Déjà facturé : le métrage facturé reste le brut pour ${netFactures.join(', ')}`}>
                   Déjà facturé, métrage non modifié : {netFactures.join(', ')}
+                </span>
+              )}
+              {netSousNf.length > 0 && (
+                <span className="block text-amber-700 truncate" title={`Le net MATEL est plus court que les Ml non facturés du rouleau : le métrage brut est conservé pour ${netSousNf.join(', ')}`}>
+                  Net inférieur aux Ml non facturés, métrage non modifié : {netSousNf.join(', ')}
                 </span>
               )}
             </span>

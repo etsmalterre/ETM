@@ -391,6 +391,8 @@ etiquettesSpRouter.put('/lignes/:ligneId', async (req: Request, res: Response) =
       .filter((x): x is { r: typeof x.r; net: number } => x.net !== null)
     const appliques: string[] = []
     const factures: string[] = []
+    // Net below the roll's « Ml non facturés »: not applied (lib/ml-non-factures.ts).
+    const sousNonFactures: string[] = []
     if (todo.length > 0) {
       const auteur = { idutilisateur: req.userId, nom: await nomUtilisateur(req.userId) }
       for (const { r, net } of todo) {
@@ -398,9 +400,10 @@ etiquettesSpRouter.put('/lignes/:ligneId', async (req: Request, res: Response) =
         const numero = stock.get(r.id)?.numero ?? String(r.id)
         if (verdict === 'applique') appliques.push(numero)
         else if (verdict === 'facture') factures.push(numero)
+        else if (verdict === 'sous_non_factures') sousNonFactures.push(numero)
       }
     }
-    res.json({ ok: true, net: { appliques, factures } })
+    res.json({ ok: true, net: { appliques, factures, sousNonFactures } })
   } catch (err) {
     console.error('Error saving etiquettes line:', err)
     res.status(500).json({ error: 'Internal server error' })

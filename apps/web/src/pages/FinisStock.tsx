@@ -58,6 +58,17 @@ import { useUser } from '@/contexts/UserContext'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
 import {
+  ML_NON_FACTURES_PERMISSION,
+  MlNonFacturesBadge,
+  MlNonFacturesInputs,
+  MlNonFacturesJournal,
+  MlNonFacturesMention,
+  erreurMlNonFactures,
+  parseMlNonFactures,
+  saveMlNonFactures,
+  useMlNonFactures,
+} from '@/components/shared/MlNonFactures'
+import {
   SmartSearchInput,
   filterRowsByChips,
   type SearchChip,
@@ -90,6 +101,9 @@ interface StockFiniRow {
   pointage: string | null
   emplacement: string | null
   conteneur: string | null
+  /** « Ml non facturés » (components/shared/MlNonFactures.tsx). */
+  ml_non_factures?: number | string | null
+  ml_non_factures_motif?: string | null
   ref_fini: string | null
   designation: string | null
   coloris_reference: string | null
@@ -212,7 +226,7 @@ function formatKg(v: number | null): string {
 
 function formatMeters(v: number | null): string {
   if (v == null) return '—'
-  return `${v.toFixed(1)} m`
+  return `${v.toFixed(1)} Ml`
 }
 
 function formatGrammage(v: number | null): string {
@@ -259,7 +273,7 @@ const EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'grammage', label: 'Grammage (g/m²)', width: 14, value: (r) => r.grammage ?? '' },
   { key: 'numero', label: 'Numéro', width: 10, value: (r) => r.numero || '' },
   { key: 'poids', label: 'Poids (kg)', width: 10, value: (r) => round2cell(r.poids) },
-  { key: 'metrage', label: 'Métrage (m)', width: 11, value: (r) => round2cell(r.metrage) },
+  { key: 'metrage', label: 'Métrage (Ml)', width: 11, value: (r) => round2cell(r.metrage) },
   { key: 'lot', label: 'Lot', width: 12, value: (r) => r.lot || '' },
   { key: 'client', label: 'Client', width: 22, value: (r) => r.client_nom || '' },
   { key: 'magasin', label: 'Magasin', width: 14, value: (r) => r.magasin_nom || '' },
@@ -1187,7 +1201,7 @@ function CutRollDialog({
             <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 px-1 text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
               <span>Numéro</span>
               <span className="w-24 text-right">Poids (kg)</span>
-              <span className="w-24 text-right">Métrage (m)</span>
+              <span className="w-24 text-right">Métrage (Ml)</span>
               <span className="w-6" />
             </div>
 
@@ -1901,7 +1915,7 @@ function CreateFiniRollDialog({
           </div>
 
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Métrage (m)</label>
+            <label className="text-xs text-muted-foreground mb-1 block">Métrage (Ml)</label>
             <input
               type="number"
               step="0.1"
@@ -2025,7 +2039,12 @@ const StockRow = memo(function StockRow({
       <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{formatGrammage(row.grammage)}</td>
       <td className="px-2 py-1.5 tabular-nums truncate text-muted-foreground">{row.numero ?? '—'}</td>
       <td className="px-2 py-1.5 text-right tabular-nums">{formatKg(row.poids)}</td>
-      <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{formatMeters(row.metrage)}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+        <span className="inline-flex items-center justify-end gap-1 max-w-full whitespace-nowrap">
+          <MlNonFacturesBadge iconOnly ml={Number(row.ml_non_factures)} motif={row.ml_non_factures_motif} />
+          {formatMeters(row.metrage)}
+        </span>
+      </td>
       <td className="px-2 py-1.5 tabular-nums truncate">{row.lot ?? '—'}</td>
       <td className="px-2 py-1.5 truncate" title={row.client_nom ?? undefined}>{row.client_nom ?? '—'}</td>
       <td className="px-2 py-1.5 truncate text-muted-foreground">{row.magasin_nom ?? '—'}</td>
@@ -2103,7 +2122,16 @@ const StockFiniCard = memo(function StockFiniCard({
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 mt-2">
         <CardKV label="Numéro" value={row.numero ?? '—'} mono />
         <CardKV label="Poids" value={formatKg(row.poids)} mono strong />
-        <CardKV label="Métrage" value={row.metrage != null ? `${fmtNum(row.metrage, 1)} Ml` : '—'} mono />
+        <CardKV
+          label="Métrage"
+          value={
+            <span className="inline-flex items-center gap-1">
+              {row.metrage != null ? `${fmtNum(row.metrage, 1)} Ml` : '—'}
+              <MlNonFacturesBadge ml={Number(row.ml_non_factures)} motif={row.ml_non_factures_motif} />
+            </span>
+          }
+          mono
+        />
         <CardKV label="Lot" value={row.lot ?? '—'} mono />
         <CardKV label="Client" value={row.client_nom ?? '—'} />
         <CardKV label="Emplacement" value={row.emplacement ?? '—'} />
@@ -2187,7 +2215,12 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
   // the API re-checks both (409 mesures_*).
   const canEditMesures = canEdit && hasMesures
   const mesuresOuvertes = canEditMesures && !!mesures?.modifiable.ok
-  const canEditAny = canEditStockage || canEditEtat || canEditAffectation || canEditNotes || mesuresOuvertes
+  // Ml non facturés: its own right, NOT under edit_stock_fini (a commercial
+  // gesture), and only while the roll is not invoiced (409 otherwise).
+  const hasMlNf = useHasPermission(ML_NON_FACTURES_PERMISSION)
+  const { data: mlNf } = useMlNonFactures(id)
+  const mlNfOuvert = hasMlNf && !!mlNf?.modifiable.ok
+  const canEditAny = canEditStockage || canEditEtat || canEditAffectation || canEditNotes || mesuresOuvertes || mlNfOuvert
   const drawerRef = useRef<HTMLDivElement>(null)
   const [searchParams] = useSearchParams()
   const embed = searchParams.get('embed') === 'true'
@@ -2203,6 +2236,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
   const [editDon, setEditDon] = useState(false)
   const [editPoids, setEditPoids] = useState('')
   const [editMetrage, setEditMetrage] = useState('')
+  const [editMlNf, setEditMlNf] = useState('')
+  const [editMlNfMotif, setEditMlNfMotif] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const originalDraftRef = useRef<{
@@ -2216,6 +2251,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     don: boolean
     poids: string
     metrage: string
+    mlNf: string
+    mlNfMotif: string
   } | null>(null)
 
   useEffect(() => {
@@ -2249,6 +2286,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
       don: !!detail.don,
       poids: detail.poids != null ? String(round2cell(detail.poids)) : '',
       metrage: detail.metrage != null ? String(round2cell(detail.metrage)) : '',
+      mlNf: Number(detail.ml_non_factures) > 0 ? String(round2cell(Number(detail.ml_non_factures))) : '',
+      mlNfMotif: detail.ml_non_factures_motif ?? '',
     }
     setEditObservations(snapshot.observations)
     setEditObservationSst(snapshot.observation_sst)
@@ -2260,6 +2299,8 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     setEditDon(snapshot.don)
     setEditPoids(snapshot.poids)
     setEditMetrage(snapshot.metrage)
+    setEditMlNf(snapshot.mlNf)
+    setEditMlNfMotif(snapshot.mlNfMotif)
     originalDraftRef.current = snapshot
     setSaveError(null)
     setIsEditing(true)
@@ -2279,40 +2320,62 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     return out
   })()
 
+  // Ml non facturés: checked against the length being saved (a corrected
+  // métrage, else the roll's), written by its own route only when changed.
+  const metrageCible = mesuresOuvertes && !mesuresInvalides ? parseMesure(editMetrage) : Number(detail?.metrage) || 0
+  const mlNfErreur = isEditing && mlNfOuvert ? erreurMlNonFactures(editMlNf, editMlNfMotif, metrageCible) : null
+  const mlNfChange = (() => {
+    const o = originalDraftRef.current
+    if (!mlNfOuvert || !o) return false
+    return parseMlNonFactures(editMlNf) !== parseMlNonFactures(o.mlNf)
+      || (parseMlNonFactures(editMlNf) > 0 && editMlNfMotif.trim() !== o.mlNfMotif.trim())
+  })()
+
   const saveMutation = useMutation({
-    mutationFn: () => {
-      if (mesuresInvalides) return Promise.reject(new Error('mesures_invalides'))
-      return apiFetch(`/stock/fini/${id}`, {
-        method: 'PATCH',
-        // Only send the field groups the user may edit — the API 403s on any
-        // field whose edit_stock_fini_* sub-permission is missing.
-        body: JSON.stringify({
-          ...(canEditNotes
-            ? { observations: editObservations, observation_sst: editObservationSst }
-            : {}),
-          ...(canEditStockage
-            ? {
-                emplacement: editEmplacement,
-                conteneur: editConteneur,
-                pointage: editPointage ? inputDateToHfsql(editPointage) : '',
-              }
-            : {}),
-          ...(canEditEtat ? { second_choix: editSecondChoix } : {}),
-          ...(canEditAffectation ? { destockage: editDestockage, don: editDon } : {}),
-          ...mesuresChangees,
-        }),
-      })
+    mutationFn: async () => {
+      if (mesuresInvalides) throw new Error('mesures_invalides')
+      if (mlNfErreur) throw new Error('ml_nf_invalide')
+      // Only send the field groups the user may edit — the API 403s on any
+      // field whose edit_stock_fini_* sub-permission is missing.
+      const patch = {
+        ...(canEditNotes
+          ? { observations: editObservations, observation_sst: editObservationSst }
+          : {}),
+        ...(canEditStockage
+          ? {
+              emplacement: editEmplacement,
+              conteneur: editConteneur,
+              pointage: editPointage ? inputDateToHfsql(editPointage) : '',
+            }
+          : {}),
+        ...(canEditEtat ? { second_choix: editSecondChoix } : {}),
+        ...(canEditAffectation ? { destockage: editDestockage, don: editDon } : {}),
+        ...mesuresChangees,
+      }
+      const writePatch = () => Object.keys(patch).length > 0
+        ? apiFetch(`/stock/fini/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+        : Promise.resolve()
+      const writeMlNf = () => mlNfChange ? saveMlNonFactures(id!, editMlNf, editMlNfMotif, 'rouleau') : Promise.resolve()
+      // Each write checks the other's current value (métrage ≥ Ml non
+      // facturés): lengthen the roll first when the new figure needs it.
+      if (parseMlNonFactures(editMlNf) > (Number(detail?.metrage) || 0)) {
+        await writePatch(); await writeMlNf()
+      } else {
+        await writeMlNf(); await writePatch()
+      }
     },
     onMutate: () => setSaveError(null),
     onSuccess: () => {
       onMutationSuccess()
       // A corrected weight moves every kg total that reads this roll.
       if (Object.keys(mesuresChangees).length > 0) invalidateStockCaches(queryClient)
+      if (mlNfChange) queryClient.invalidateQueries({ queryKey: ['stock-fini', 'ml-non-factures', id] })
       setIsEditing(false)
     },
     onError: (err: Error & { body?: unknown }) => {
       const msg = (err.body as { message?: unknown } | undefined)?.message
       if (err.message === 'mesures_invalides') setSaveError('Poids et métrage : saisissez des nombres positifs.')
+      else if (err.message === 'ml_nf_invalide') setSaveError(mlNfErreur)
       else if (typeof msg === 'string') setSaveError(msg)
       else setSaveError("L'enregistrement a échoué. Réessayez ou contactez l'administrateur.")
     },
@@ -2332,8 +2395,11 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
     if (editDon !== o.don) return true
     if (editPoids !== o.poids) return true
     if (editMetrage !== o.metrage) return true
+    if (editMlNf !== o.mlNf || editMlNfMotif !== o.mlNfMotif) return true
     return false
   }, [
+    editMlNf,
+    editMlNfMotif,
     isEditing,
     editObservations,
     editObservationSst,
@@ -2500,7 +2566,7 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
           ) : (
             <>
               {/* Stock card */}
-              <DrawerCard icon={<Package className="h-4 w-4 text-accent" />} title="Stock" highlight={isEditing && mesuresOuvertes}>
+              <DrawerCard icon={<Package className="h-4 w-4 text-accent" />} title="Stock" highlight={isEditing && (mesuresOuvertes || mlNfOuvert)}>
                 <div className="space-y-1.5">
                   <KV
                     label="Poids"
@@ -2516,12 +2582,37 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                     label="Métrage"
                     value={
                       isEditing && mesuresOuvertes ? (
-                        <MesureInput value={editMetrage} onChange={setEditMetrage} unit="m" />
+                        <MesureInput value={editMetrage} onChange={setEditMetrage} unit="Ml" />
                       ) : (
                         <span className="tabular-nums">{formatMeters(detail.metrage)}</span>
                       )
                     }
                   />
+                  {/* Ml non facturés — shown to everyone, edited under its own right */}
+                  {isEditing && mlNfOuvert ? (
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-xs text-muted-foreground pt-1.5">Ml non facturés</span>
+                      <div className="w-[220px]">
+                        <MlNonFacturesInputs alignEnd ml={editMlNf} motif={editMlNfMotif} onMl={setEditMlNf} onMotif={setEditMlNfMotif} />
+                      </div>
+                    </div>
+                  ) : Number(detail.ml_non_factures) > 0 ? (
+                    <div className="flex justify-end">
+                      <MlNonFacturesMention ml={Number(detail.ml_non_factures)} motif={detail.ml_non_factures_motif} className="text-right" />
+                    </div>
+                  ) : null}
+                  {isEditing && mlNfErreur && (
+                    <p className="flex items-start gap-1.5 text-[11px] text-destructive">
+                      <AlertCircle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+                      <span>{mlNfErreur}</span>
+                    </p>
+                  )}
+                  {isEditing && hasMlNf && mlNf && !mlNf.modifiable.ok && (
+                    <p className="flex items-start gap-1.5 pt-1 text-[11px] text-muted-foreground">
+                      <AlertCircle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+                      <span>{mlNf.modifiable.message}</span>
+                    </p>
+                  )}
                   {!!detail.designation && (
                     <KV label="Désignation" value={detail.designation} />
                   )}
@@ -2552,13 +2643,14 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                               <span className="mr-3">{fmtNum(j.poids_avant, 2)} → <span className="font-semibold">{fmtNum(j.poids_apres, 2)} kg</span></span>
                             )}
                             {j.metrage_avant !== j.metrage_apres && (
-                              <span>{fmtNum(j.metrage_avant, 2)} → <span className="font-semibold">{fmtNum(j.metrage_apres, 2)} m</span></span>
+                              <span>{fmtNum(j.metrage_avant, 2)} → <span className="font-semibold">{fmtNum(j.metrage_apres, 2)} Ml</span></span>
                             )}
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
+                  {!!mlNf && <MlNonFacturesJournal journal={mlNf.journal} />}
                 </div>
               </DrawerCard>
 
@@ -2818,15 +2910,17 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
 /** Poids / métrage input in a KV value slot (§27.5): h-7, right-aligned, unit after. */
 function MesureInput({ value, onChange, unit }: { value: string; onChange: (v: string) => void; unit: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5">
+    // Unit inside the field, right-aligned after the figure (same as the
+    // « Ml non facturés » input of the same card).
+    <span className="relative inline-flex">
       <input
         type="text"
         inputMode="decimal"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-7 w-24 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right tabular-nums"
+        className="h-7 w-24 pl-2 pr-8 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right tabular-nums"
       />
-      <span className="text-xs text-muted-foreground">{unit}</span>
+      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">{unit}</span>
     </span>
   )
 }

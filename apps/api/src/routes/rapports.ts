@@ -44,6 +44,7 @@ import { allConsumedEcruIds } from '../lib/fini-sources.js'
 import { facturesRapportEtm } from './factures.js'
 import { isRectiligneType } from '../lib/sst-line-kind.js'
 import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
+import { partFacturee } from '../lib/ml-non-factures.js'
 
 export const rapportsRouter: RouterType = Router()
 
@@ -542,7 +543,8 @@ rapportsRouter.get('/commandes-sst', async (req: Request, res: Response) => {
 // ligne_commande_client → ligne_expedition → ligne_facture. Proformas
 // (ligne_facture_prov) are drafts and do NOT reduce the outstanding amount.
 // Negative values are normal and meaningful: more was shipped and invoiced
-// than was ordered.
+// than was ordered. The « Ml non facturés » of shipped fini rolls
+// (lib/ml-non-factures.ts) are subtracted too: they will never be invoiced.
 
 /**
  * Batched accent repair for plainly-named text columns.
@@ -816,8 +818,10 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
     }
 
     // ── 5) Rolls reserved to each line (fini + écru), one flat query each.
-    interface Agg { expMetrage: number; expPoids: number; affMetrage: number; affPoids: number; sstMetrage: number; sstPoids: number }
-    const newAgg = (): Agg => ({ expMetrage: 0, expPoids: 0, affMetrage: 0, affPoids: 0, sstMetrage: 0, sstPoids: 0 })
+    // nf* = what the shipped fini rolls will never bill (« Ml non facturés »,
+    // lib/ml-non-factures.ts), in Ml and in its Kg share.
+    interface Agg { expMetrage: number; expPoids: number; affMetrage: number; affPoids: number; sstMetrage: number; sstPoids: number; nfMetrage: number; nfPoids: number }
+    const newAgg = (): Agg => ({ expMetrage: 0, expPoids: 0, affMetrage: 0, affPoids: 0, sstMetrage: 0, sstPoids: 0, nfMetrage: 0, nfPoids: 0 })
     const aggByLine = new Map<number, Agg>()
     const acc = (lid: number): Agg => {
       const a = aggByLine.get(lid) ?? newAgg()
@@ -836,7 +840,7 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
     const finiReserved = await inChunks(lineIds, (c) =>
       query<any>(
         `SELECT IDstock_fini, IDligne_commande_client, metrage, poids,
-                IDligne_expedition, IDetat_stock_fini
+                IDligne_expedition, IDetat_stock_fini, ml_non_factures
          FROM stock_fini WHERE IDligne_commande_client IN (${c})`,
       ),
     )
@@ -849,6 +853,8 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
       // Shipped = état Expédié (4) or attached to an expedition line.
       if (n(r.IDetat_stock_fini) === 4 || n(r.IDligne_expedition) > 0) {
         a.expMetrage += metrage; a.expPoids += poids
+        a.nfMetrage += metrage - partFacturee(r, 'metrage')
+        a.nfPoids += poids - partFacturee(r, 'poids')
       } else {
         a.affMetrage += metrage; a.affPoids += poids
       }
@@ -1063,7 +1069,9 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
       const qte = n(l.quantite)
       const prix = n(l.prix)
       const totalHt = round2(qte * prix)
-      const totalHtNonFacture = round2(totalHt - (invoicedByLine.get(lineId) ?? 0))
+      // Ml non facturés on shipped rolls will never be invoiced: not outstanding.
+      const nonFactureHt = typeKind === 2 ? round2(pick(agg.nfMetrage, agg.nfPoids) * prix) : 0
+      const totalHtNonFacture = round2(totalHt - (invoicedByLine.get(lineId) ?? 0) - nonFactureHt)
 
       const delai = dateDigits(l.date_livraison) || null
       const estSoldee = hdr?.est_soldee ?? 0

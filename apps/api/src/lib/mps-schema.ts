@@ -434,6 +434,34 @@ CREATE INDEX point_sst_ligne_point ON point_sst_ligne (idpoint_sst, section, ord
 ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'point_sst, point_sst_ligne')}
 `,
   },
+  {
+    // « Ml non facturés » on a finished roll (decision Vincent 2026-10-06,
+    // lib/ml-non-factures.ts): a commercial gesture on part of a roll (a
+    // stained stretch…) without lying about its length — `metrage` stays the
+    // physical truth, the invoice bills metrage − ml_non_factures. Every
+    // change journaled; the API role may only INSERT / SELECT the journal.
+    name: '0010_ml_non_factures',
+    sql: `
+ALTER TABLE stock_fini
+  ADD COLUMN ml_non_factures numeric(12, 2) NOT NULL DEFAULT 0,
+  ADD COLUMN ml_non_factures_motif text;
+CREATE TABLE stock_fini_ml_non_facture_journal (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idstock_fini bigint NOT NULL,
+  le timestamptz NOT NULL DEFAULT now(),
+  idutilisateur bigint NOT NULL,
+  auteur text NOT NULL,
+  ml_avant numeric(12, 2) NOT NULL,
+  ml_apres numeric(12, 2) NOT NULL,
+  motif_avant text,
+  motif_apres text,
+  origine text NOT NULL DEFAULT 'rouleau'
+);
+CREATE INDEX stock_fini_ml_non_facture_journal_roll ON stock_fini_ml_non_facture_journal (idstock_fini, le);
+${grantApi('SELECT, INSERT', 'stock_fini_ml_non_facture_journal')}
+${grantApi('USAGE, SELECT', 'SEQUENCE stock_fini_ml_non_facture_journal_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

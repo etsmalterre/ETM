@@ -268,12 +268,30 @@ opens `BatchReceptionDialog` in `mode='reprise'` (discriminated union):
 - Pre-fills lot/poids/metrage/observations from the existing fini rows
 - Submits PATCH per fini (not POST) with the edited values
 - Resets `IDetat_stock_fini` back to `1` (En contrôle) server-side
-- "Couper en deux" works here too (added 2026-07-02): the existing row is
-  PATCHed into piece 1 (renamed `<base>-1`) and piece 2 POSTs as a new
-  `stock_fini` row (`<base>-2`) via the create endpoint, passing the
-  original's `IDstock_ecru` / `IDColoris` / `IDmagasin` so both halves
-  match apart from poids/metrage (create mode instead splits the écru
-  into two POSTed rows)
+- « Couper » works here too, under the STOCK numbering rule (#1135,
+  `lib/roll-cut.ts`, decision 2026-10-06): the existing row keeps its numero
+  (PATCH) and every other piece POSTs as a new `stock_fini` row with
+  `numero_coupe_de` — the server gives it the next free `<base>-N`
+  (`3571/1-2` cut → `3571/1-3`), the dialog only previews it — passing the
+  original's `IDstock_ecru` / `IDColoris` / `IDmagasin`. Create mode
+  (reception of an écru) keeps `<numero>-1`, `-2`, … as the legacy did.
+- **Couper = pieces appended to the list (2026-10-06, Vincent; replaced the
+  side-by-side « Couper en deux » toggle of 2026-07-02).** « Couper » on a
+  roll inserts `<numero>-2` right after it (the roll becomes `-1`);
+  « Ajouter une pièce » adds `-3`, … ; « Retirer la pièce » removes an added
+  one (the last removal restores the roll's numero). Each piece is an
+  ordinary wizard step with its OWN lot, poids, métrage, commentaire, défaut
+  and Ml non facturés (the toggle shared notes and gave piece 2 no défaut).
+  Piece 1 keeps the roll's id (its values and Tricobot's fill carry over),
+  the others carry negative synthetic ids (`cuts` state, `buildSteps()`).
+  **Weight: an orange warning, never a block**, when the pieces weigh more
+  than the écru (reprise: than the roll) — editor line, preview weights and
+  footer. Measured on the dev copy: 26 of 109 cut écru received since 2025
+  had finis heavier than the écru, so a block would have refused one cut in
+  four. **Tricobot cuts by himself** when the BL lists `<numero>-1`,
+  `<numero>-2` (and no whole `<numero>`): one piece per BL line, in N
+  order; a roll the person cut AFTER Tricobot read it whole is not scored
+  as a misread poids / métrage.
 - Tricobot works here too (added 2026-07-02): matches BL `num_piece`
   against the **fini** numeros (create mode matches écru numeros), and
   only non-empty BL values overwrite the pre-filled fields. The tricobot
@@ -351,7 +369,7 @@ prints `3510/11+3510/2` with one weight and one length. In `BatchReceptionDialog
   = merge the range between the current step and the clicked row (§44, the
   current step is the anchor). The merge is immediate — rows collapse, the
   header / footer counts follow — and « Séparer » (card button or the row's ✕)
-  undoes it. A cut half is never mergeable; merging drops any « Couper en deux ».
+  undoes it. A piece of a cut roll is never mergeable; merging drops any cut.
 - Leader's card: `Merge` icon, numero = `mergedNumero(members)` (BL form when
   ≤ 20 chars, `3510/11+2` otherwise — `apps/web/src/lib/roll-merge.ts`, twin of
   the API's), subtitle `N pièces fusionnées : A + B · poids écru Σ`, weight

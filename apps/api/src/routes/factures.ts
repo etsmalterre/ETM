@@ -77,6 +77,7 @@ import { groupFormelle, type FormelleCandidate, type FormelleCommande } from '..
 import { MANUAL_MARK_PREFIX, buildManualMarkNotes, parseManualMarkNotes } from '../lib/envoi-manuel.js'
 import { normalizePays } from '../lib/pays.js'
 import { loadMentionTva } from '../lib/tva.js'
+import { mentionNonFactures, quantiteFacturee } from '../lib/ml-non-factures.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -1343,13 +1344,16 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       const refId = Number(lcc.IDreference) || 0
       const colId = Number(lcc.IDcolori) || 0
 
-      // Shipped quantity = Σ of the rolls' poids (Kg) or metrage (Ml).
+      // Shipped quantity = Σ of the rolls' poids (Kg) or metrage (Ml), less
+      // each fini roll's « Ml non facturés » (lib/ml-non-factures.ts — a Kg
+      // line deducts the same share of the weight), named under the line.
       const dim = Number(lcc.unite) === 3 ? 'metrage' : 'poids'
       const rollRows = kind === 'fini'
-        ? await query<any>(`SELECT poids, metrage FROM stock_fini WHERE IDligne_expedition = ${leId}`)
+        ? await query<any>(`SELECT numero, poids, metrage, ml_non_factures, ml_non_factures_motif FROM stock_fini WHERE IDligne_expedition = ${leId} ORDER BY numero`)
         : await query<any>(`SELECT poids, metrage FROM stock_ecru WHERE ${scope.ecruShipmentFk} = ${leId}`)
       if (rollRows.length === 0) return null
-      const qty = Math.round(rollRows.reduce((s: number, r: any) => s + (Number(r[dim]) || 0), 0) * 100) / 100
+      const qty = quantiteFacturee(rollRows, dim)
+      const nonFactures = kind === 'fini' ? mentionNonFactures(rollRows, dim) : []
 
       // Article label — mirrors the legacy generated designations:
       //   fini → "REF - COLORIS DESIGNATION", écru → "REF COLORIS".
@@ -1406,6 +1410,7 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       if (cmd.ref_client) cmdLine += `${cmdLine ? ' ' : ''}V/Commande : ${cmd.ref_client}`
       if (cmdLine) parts.push(cmdLine)
       parts.push(`Avis : ${expId}`)
+      parts.push(...nonFactures)
 
       return {
         leId,

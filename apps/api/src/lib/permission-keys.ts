@@ -399,6 +399,17 @@ export const PERMISSION_KEYS = [
     parent: 'edit_stock_fini',
     cascade: false,
   },
+  // « Ml non facturés » on a roll (decision Vincent 2026-10-06,
+  // lib/ml-non-factures.ts): a commercial gesture, not a measurement, so its
+  // own key, closed by default, checked on every road that writes it (sst
+  // reception, Clients › Commandes, Finis › Stock).
+  {
+    key: 'edit_ml_non_factures',
+    label: 'Ml non facturés',
+    description:
+      'Autorise la saisie des mètres d’un rouleau fini qui ne seront pas facturés au client (taches, défaut…) avec leur motif — à la réception sous-traitant, depuis une commande client ou dans Finis > Stock. Le métrage du rouleau reste le métrage réel ; la facture déduit ces mètres et l’imprime sous la ligne. Refusé sur un rouleau déjà facturé. Chaque changement est journalisé.',
+    category: 'Finis',
+  },
   {
     key: 'surteindre_stock_fini',
     label: 'Surteindre des rouleaux finis',

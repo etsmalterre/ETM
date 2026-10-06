@@ -51,7 +51,9 @@ import {
   Percent,
   Barcode,
   Ban,
+  BadgeEuro,
 } from 'lucide-react'
+import { ML_NON_FACTURES_PERMISSION, MlNonFacturesDialog, MlNonFacturesMention } from '@/components/shared/MlNonFactures'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
@@ -146,6 +148,9 @@ interface RollLite {
   observations: string | null
   /** Fini only — the ennoblisseur's defect report (stock_fini.observation_sst). */
   observation_sst: string | null
+  /** Fini only — « Ml non facturés » + motif (components/shared/MlNonFactures). */
+  ml_non_factures?: number
+  ml_non_factures_motif?: string | null
   etat_label: string | null
   /** Roll already shipped — affectation locked, no "Retirer" action. */
   expedie: boolean
@@ -2124,6 +2129,10 @@ function AffectationDrawer({
   const canEditObs = useHasPermission('edit_observations_rouleaux')
   const [obsEditMode, setObsEditMode] = useState(false)
   const [editObsRoll, setEditObsRoll] = useState<RollLite | null>(null)
+  // « Ml non facturés » of a fini roll — the dialog shows it to everyone and
+  // edits it under edit_ml_non_factures (the API re-checks).
+  const canEditMlNf = useHasPermission(ML_NON_FACTURES_PERMISSION)
+  const [mlNfRoll, setMlNfRoll] = useState<RollLite | null>(null)
   const obsMut = useMutation({
     mutationFn: ({ stockId, observations }: { stockId: number; observations: string }) =>
       apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/pieces/${kind}/${stockId}/observations`, {
@@ -2306,7 +2315,7 @@ function AffectationDrawer({
   // Obs edit toggle rides the first section heading row of the Affectation
   // tab (title left, action right — §23 header pattern) instead of claiming
   // its own band. -my-1 keeps the taller button from inflating the row.
-  const obsToggle = canEditObs && !soldee ? (
+  const obsToggle = (canEditObs || canEditMlNf) && !soldee ? (
     <button
       type="button"
       onClick={() => setObsEditMode((v) => !v)}
@@ -2393,7 +2402,9 @@ function AffectationDrawer({
                     <RollRow key={roll.id} roll={roll} dim={dim} action="unlink"
                       kind={kind === 'fini' ? 'fini' : 'ecru'}
                       readOnly={soldee}
-                      onEditObs={soldee || !obsEditMode ? undefined : () => setEditObsRoll(roll)}
+                      onEditObs={soldee || !obsEditMode || !canEditObs ? undefined : () => setEditObsRoll(roll)}
+                      onOpenMlNf={kind === 'fini' ? () => setMlNfRoll(roll) : undefined}
+                      mlNfEditable={canEditMlNf && obsEditMode && !soldee}
                       onAction={() => unlinkMut.mutate(roll.id)}
                       isBusy={unlinkMut.isPending && unlinkMut.variables === roll.id}
                       selected={!soldee && !roll.expedie && roll.expediable && shipSel.has(roll.id)}
@@ -2418,7 +2429,9 @@ function AffectationDrawer({
                   {available.map((roll) => (
                     <RollRow key={roll.id} roll={roll} dim={dim}
                       kind={kind === 'fini' ? 'fini' : 'ecru'}
-                      onEditObs={obsEditMode ? () => setEditObsRoll(roll) : undefined}
+                      onEditObs={obsEditMode && canEditObs ? () => setEditObsRoll(roll) : undefined}
+                      onOpenMlNf={kind === 'fini' ? () => setMlNfRoll(roll) : undefined}
+                      mlNfEditable={canEditMlNf && obsEditMode}
                       selected={linkSel.has(roll.id)}
                       onToggleSelect={(shiftKey) => toggleLink(roll.id, shiftKey)} />
                   ))}
@@ -2579,6 +2592,14 @@ function AffectationDrawer({
         onSave={(observations) => obsMut.mutate({ stockId: editObsRoll.id, observations })}
       />
     )}
+    <MlNonFacturesDialog
+      roll={mlNfRoll ? { id: mlNfRoll.id, numero: mlNfRoll.numero, metrage: Number(mlNfRoll.metrage) || 0 } : null}
+      onClose={() => setMlNfRoll(null)}
+      onSaved={() => queryClient.invalidateQueries({ queryKey })}
+      // Editable only from the « Modifier les observations » mode; outside it
+      // the amber icon just shows the value and its history.
+      readOnly={!obsEditMode || soldee}
+    />
     {ennoTarget && (
       <EnnoblissementAffectationDialog
         commandeId={commandeId}
@@ -2743,8 +2764,15 @@ function SupplyTable<T extends { id: number }>({
 
 function RollRow({
   roll, dim, action, onAction, isBusy, kind = 'ecru', onEditObs, selected, onToggleSelect, selectBlockedReason, readOnly = false,
+  onOpenMlNf, mlNfEditable = false,
 }: {
   roll: RollLite
+  /** Fini: opens the « Ml non facturés » dialog. The amber icon shows whenever
+   *  the roll carries some; in « Modifier les observations » mode a grey icon
+   *  also shows on every empty roll for whoever holds edit_ml_non_factures
+   *  (`mlNfEditable`). */
+  onOpenMlNf?: () => void
+  mlNfEditable?: boolean
   dim: 'metrage' | 'poids'
   /** Per-row action button. Omit action/onAction for checkbox-only rows
    *  (batch selection lists — the batch button lives in the section header). */
@@ -2777,6 +2805,7 @@ function RollRow({
   const defautText = (roll.observation_sst ?? '').trim()
   const isSecondChoix = Number(roll.second_choix) > 0
   const hasDefect = isSecondChoix || defautText.length > 0
+  const mlNf = Number(roll.ml_non_factures) || 0
   return (
     <div
       // When the row is selectable, the whole card is the click target —
@@ -2831,6 +2860,9 @@ function RollRow({
                 line's coloris, so repeating it per row is pure noise. */}
             {roll.magasin_nom && <span className="flex items-center gap-0.5 truncate"><MapPin className="h-2.5 w-2.5" />{roll.magasin_nom}</span>}
           </div>
+          {mlNf > 0 && (
+            <MlNonFacturesMention ml={mlNf} motif={roll.ml_non_factures_motif} className="mt-1 text-[11px]" />
+          )}
         </div>
         {hasDefect && (
           <Tooltip
@@ -2856,6 +2888,21 @@ function RollRow({
               <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
             </span>
           </Tooltip>
+        )}
+        {onOpenMlNf && (mlNf > 0 || mlNfEditable) && (
+          <button
+            type="button"
+            title={mlNf > 0 ? 'Ml non facturés' : 'Saisir des Ml non facturés'}
+            onClick={(e) => { e.stopPropagation(); onOpenMlNf() }}
+            className={cn(
+              'h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors cursor-pointer',
+              mlNf > 0
+                ? 'border border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100'
+                : 'text-muted-foreground hover:text-amber-600 hover:bg-amber-50',
+            )}
+          >
+            <BadgeEuro className="h-3.5 w-3.5" />
+          </button>
         )}
         {/* Observations: single affordance replacing the old pencil — gray
             ghost when empty (click to add), blue framed when filled (hover

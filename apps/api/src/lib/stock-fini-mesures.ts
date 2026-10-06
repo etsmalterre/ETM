@@ -20,10 +20,11 @@
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { parseDtMs } from './production-trm.js'
+import { metrageCompatible } from './ml-non-factures.js'
 
 export const MESURES_AGE_MIN_JOURS = 60
 
-export type RefusMesures = 'expedie' | 'donne' | 'trop_recent' | 'date_inconnue'
+export type RefusMesures = 'expedie' | 'donne' | 'trop_recent' | 'date_inconnue' | 'sous_non_factures'
 
 export type MesuresModifiables =
   | { ok: true }
@@ -140,8 +141,8 @@ export async function ecrireMesures(
 ): Promise<boolean> {
   return mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql // postgres.js typing: TransactionSql loses its call signatures
-    const rows = await tx<(EtatRouleau & { poids: number; metrage: number })[]>`
-      SELECT date_saisie, idetat_stock_fini, idligne_expedition, idcommande_donation, poids, metrage
+    const rows = await tx<(EtatRouleau & { poids: number; metrage: number; ml_non_factures: number })[]>`
+      SELECT date_saisie, idetat_stock_fini, idligne_expedition, idcommande_donation, poids, metrage, ml_non_factures
       FROM stock_fini WHERE idstock_fini = ${id} FOR UPDATE`
     if (rows.length === 0) throw new RouleauIntrouvable()
     const verdict = mesuresModifiables(normalise(rows[0]))
@@ -152,6 +153,16 @@ export async function ecrireMesures(
     const poidsApres = valeurs.poids === undefined ? poidsAvant : r2(valeurs.poids)
     const metrageApres = valeurs.metrage === undefined ? metrageAvant : r2(valeurs.metrage)
     if (poidsApres === poidsAvant && metrageApres === metrageAvant) return false
+    // A roll carrying « Ml non facturés » (lib/ml-non-factures.ts) may not
+    // shrink below them: the invoice would bill a negative part.
+    const mlNf = Number(rows[0].ml_non_factures) || 0
+    if (!metrageCompatible(metrageApres, mlNf)) {
+      throw new MesuresRefusees({
+        ok: false,
+        raison: 'sous_non_factures',
+        message: `Ce rouleau porte ${mlNf} Ml non facturés : son métrage ne peut pas descendre en dessous. Corrigez d’abord les Ml non facturés.`,
+      })
+    }
 
     await tx`UPDATE stock_fini SET poids = ${poidsApres}, metrage = ${metrageApres} WHERE idstock_fini = ${id}`
     await tx`
@@ -184,7 +195,7 @@ export async function nomUtilisateur(idutilisateur: number): Promise<string> {
 //     the BL disagree with it;
 //   - a donated roll is out of stock.
 
-export type NetEtiquette = 'applique' | 'inchange' | 'facture' | 'donne' | 'introuvable'
+export type NetEtiquette = 'applique' | 'inchange' | 'facture' | 'donne' | 'introuvable' | 'sous_non_factures'
 
 export async function appliquerNetEtiquette(
   id: number,
@@ -193,8 +204,8 @@ export async function appliquerNetEtiquette(
 ): Promise<NetEtiquette> {
   return mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql
-    const rows = await tx<{ poids: number; metrage: number; idligne_expedition: number; idcommande_donation: number }[]>`
-      SELECT poids, metrage, idligne_expedition, idcommande_donation
+    const rows = await tx<{ poids: number; metrage: number; idligne_expedition: number; idcommande_donation: number; ml_non_factures: number }[]>`
+      SELECT poids, metrage, idligne_expedition, idcommande_donation, ml_non_factures
       FROM stock_fini WHERE idstock_fini = ${id} FOR UPDATE`
     if (rows.length === 0) return 'introuvable'
     const r = rows[0]
@@ -210,6 +221,9 @@ export async function appliquerNetEtiquette(
     const avant = r2(Number(r.metrage) || 0)
     const apres = r2(net)
     if (avant === apres) return 'inchange'
+    // Never below the roll's « Ml non facturés » (lib/ml-non-factures.ts):
+    // left at the gross length and reported, rather than billing a negative part.
+    if (!metrageCompatible(apres, Number(r.ml_non_factures) || 0)) return 'sous_non_factures'
     const poids = r2(Number(r.poids) || 0)
     await tx`UPDATE stock_fini SET metrage = ${apres} WHERE idstock_fini = ${id}`
     await tx`

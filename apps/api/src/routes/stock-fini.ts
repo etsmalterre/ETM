@@ -5,6 +5,13 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { pickVal } from '../lib/accented-keys.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { ecrireMesures, lireMesures, MesuresRefusees, nomUtilisateur, RouleauIntrouvable } from '../lib/stock-fini-mesures.js'
+import {
+  ecrireMlNonFactures,
+  lireMlNonFactures,
+  metrageCompatible,
+  MlNonFacturesRefuse,
+  RouleauIntrouvable as MlRouleauIntrouvable,
+} from '../lib/ml-non-factures.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { copyFiniSources, deleteFiniSources, loadFiniSources } from '../lib/fini-sources.js'
@@ -59,7 +66,7 @@ function sqlText(value: string | null | undefined): string {
 // IDColoris is a colori_ecru id (joined as `ce`); 1/2 = dyed → it's a
 // ref_fini_colori id (joined as `rfc`). The id spaces collide numerically, so
 // we select BOTH labels + avec_teinture and pick the right one in repairAllJoins.
-const STOCK_FINI_SELECT = `sf.IDstock_fini, sf.IDref_fini, sf.IDColoris, sf.IDetat_stock_fini, sf.IDligne_commande_client, sf.IDref_commande_source, sf.IDstock_ecru, sf.IDmagasin, sf.IDligne_expedition, sf.IDProprietaire, sf.IDcommande_donation, sf.poids, sf.metrage, sf.lot, sf.numero, sf.observations, sf.observation_sst, sf.second_choix, sf.date_saisie, sf.destockage, sf.don, sf.pointage, sf.emplacement, sf.conteneur, rf.reference AS ref_fini, rf.designation, rf.avec_teinture, rfc.reference AS coloris_dyed, ce.reference AS coloris_wash, esf.libelle AS etat_libelle, st.nom AS magasin_nom`
+const STOCK_FINI_SELECT = `sf.IDstock_fini, sf.IDref_fini, sf.IDColoris, sf.IDetat_stock_fini, sf.IDligne_commande_client, sf.IDref_commande_source, sf.IDstock_ecru, sf.IDmagasin, sf.IDligne_expedition, sf.IDProprietaire, sf.IDcommande_donation, sf.poids, sf.metrage, sf.lot, sf.numero, sf.observations, sf.observation_sst, sf.second_choix, sf.date_saisie, sf.destockage, sf.don, sf.pointage, sf.emplacement, sf.conteneur, sf.ml_non_factures, sf.ml_non_factures_motif, rf.reference AS ref_fini, rf.designation, rf.avec_teinture, rfc.reference AS coloris_dyed, ce.reference AS coloris_wash, esf.libelle AS etat_libelle, st.nom AS magasin_nom`
 
 const STOCK_FINI_JOINS = `FROM stock_fini sf LEFT JOIN ref_fini rf ON sf.IDref_fini = rf.IDref_fini LEFT JOIN ref_fini_colori rfc ON sf.IDColoris = rfc.IDref_fini_colori LEFT JOIN colori_ecru ce ON sf.IDColoris = ce.IDcolori_ecru LEFT JOIN etat_stock_fini esf ON sf.IDetat_stock_fini = esf.IDetat_stock_fini LEFT JOIN sous_traitant st ON sf.IDmagasin = st.IDsous_traitant`
 
@@ -764,6 +771,76 @@ stockFiniRouter.get('/fini/:id/mesures', async (req: Request, res: Response) => 
   }
 })
 
+// GET /api/stock/fini/:id/ml-non-factures - the roll's « Ml non facturés »,
+//   whether it may change now (refused once invoiced / donated) and its
+//   journal, newest first (lib/ml-non-factures.ts). Read-only, not gated:
+//   everyone who can open the roll sees the gesture.
+stockFiniRouter.get('/fini/:id/ml-non-factures', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid ID' })
+      return
+    }
+    const out = await lireMlNonFactures(id)
+    if (!out) {
+      res.status(404).json({ error: 'Stock fini not found' })
+      return
+    }
+    res.json(out)
+  } catch (err) {
+    console.error('Error reading stock_fini ml non factures:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/stock/fini/:id/ml-non-factures - body { ml_non_factures, motif,
+//   origine? }. Gated by edit_ml_non_factures ALONE (not edit_stock_fini):
+//   the same write serves Finis › Stock and the pieces of a client order line.
+//   409 `ml_non_factures_facture` / `_donne` on a roll that may not change,
+//   400 `ml_non_factures_saisie` on a bad value. Journaled.
+stockFiniRouter.put('/fini/:id/ml-non-factures', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) {
+      res.status(401).json({ error: 'not authenticated' })
+      return
+    }
+    if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'edit_ml_non_factures'))) {
+      res.status(403).json({ error: 'permission denied: edit_ml_non_factures' })
+      return
+    }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid ID' })
+      return
+    }
+    const body = req.body ?? {}
+    const origine = body.origine === 'commande' ? 'commande' : 'rouleau'
+    try {
+      await ecrireMlNonFactures(
+        id,
+        { ml: body.ml_non_factures, motif: body.motif },
+        { idutilisateur: req.userId, nom: await nomUtilisateur(req.userId) },
+        origine,
+      )
+    } catch (err) {
+      if (err instanceof MlRouleauIntrouvable) {
+        res.status(404).json({ error: 'Stock fini not found' })
+        return
+      }
+      if (err instanceof MlNonFacturesRefuse) {
+        res.status(err.raison === 'saisie' ? 400 : 409).json({ error: `ml_non_factures_${err.raison}`, message: err.message })
+        return
+      }
+      throw err
+    }
+    res.json(await lireMlNonFactures(id))
+  } catch (err) {
+    console.error('Error writing stock_fini ml non factures:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // PATCH /api/stock/fini/batch - batch-edit ("Édition groupée") emplacement
 //   and/or observations across many rolls at once. Body:
 //     { ids: number[], emplacement?: string, observations?: string }
@@ -1334,8 +1411,8 @@ stockFiniRouter.post('/fini/:id/cut', async (req: Request, res: Response) => {
       return
     }
 
-    const origRows = await query<{ poids: number | null; metrage: number | null; numero: string | null; IDligne_expedition: number | null }>(
-      `SELECT poids, metrage, numero, IDligne_expedition FROM stock_fini WHERE IDstock_fini = ${id}`,
+    const origRows = await query<{ poids: number | null; metrage: number | null; numero: string | null; IDligne_expedition: number | null; ml_non_factures: number | null }>(
+      `SELECT poids, metrage, numero, IDligne_expedition, ml_non_factures FROM stock_fini WHERE IDstock_fini = ${id}`,
     )
     if (origRows.length === 0) {
       res.status(404).json({ error: 'Stock fini not found' })
@@ -1344,6 +1421,16 @@ stockFiniRouter.post('/fini/:id/cut', async (req: Request, res: Response) => {
     const orig = origRows[0]
     if (Number(orig.IDligne_expedition) > 0) {
       res.status(400).json({ error: 'Roll already shipped' })
+      return
+    }
+    // The « Ml non facturés » stay on the piece that keeps the numero (piece
+    // 0); it must remain at least that long (lib/ml-non-factures.ts).
+    const mlNf = Number(orig.ml_non_factures) || 0
+    if (!metrageCompatible(norm[0].metrage, mlNf)) {
+      res.status(409).json({
+        error: 'ml_non_factures_decoupe',
+        message: `Ce rouleau porte ${mlNf} Ml non facturés : la pièce qui garde le numéro doit mesurer au moins ${mlNf} Ml.`,
+      })
       return
     }
 

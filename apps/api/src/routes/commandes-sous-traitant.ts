@@ -80,6 +80,11 @@ import {
   normalizeRefRectiligne,
 } from '../lib/rectiligne.js'
 import { uniteLabel } from './expeditions.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
+import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
+import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -5007,7 +5012,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   const finiRowsRaw = await query<StockFiniLite & { IDligne_commande_client?: number | null }>(
     `SELECT IDstock_fini, numero, lot, poids, metrage, IDref_fini, IDColoris,
             IDstock_ecru, IDmagasin, date_saisie, observations, observation_sst, second_choix,
-            IDetat_stock_fini, IDligne_commande_client
+            IDetat_stock_fini, IDligne_commande_client, ml_non_factures, ml_non_factures_motif
      FROM stock_fini
      WHERE IDref_commande_source = ${ligneId}
      ORDER BY date_saisie DESC, IDstock_fini DESC`,
@@ -6244,6 +6249,16 @@ const finiBody = z.object({
   IDmagasin: z.number().int().nonnegative().optional(),
   observations: z.string().optional(),
   observation_sst: z.string().optional(),
+  /** « Ml non facturés » typed at reception (lib/ml-non-factures.ts): the
+   *  métrage stays the dyer's figure, this part is not billed. Needs
+   *  edit_ml_non_factures when > 0. */
+  ml_non_factures: z.number().nonnegative().optional(),
+  ml_non_factures_motif: z.string().max(500).optional(),
+  /** Reprise « Couper » (2026-10-06): this new roll is a piece cut off the
+   *  stock_fini row given here — its numero is the next free `<base>-N`, the
+   *  stock rule of lib/roll-cut.ts (#1135), computed HERE so two pieces never
+   *  share a number; the body's `numero` is only the dialog's preview. */
+  numero_coupe_de: z.number().int().positive().optional(),
 })
 
 commandesSousTraitantRouter.post(
@@ -6264,6 +6279,34 @@ commandesSousTraitantRouter.post(
         return
       }
       const d = parsed.data
+
+      // Reprise « Couper »: the piece takes the next free suffix of the cut
+      // roll's base (`3571/1-2` cut → `3571/1-3`), never the preview's guess.
+      if (d.numero_coupe_de) {
+        const src = await query<{ numero: string | null; IDref_commande_source: number | null }>(
+          `SELECT numero, IDref_commande_source FROM stock_fini WHERE IDstock_fini = ${d.numero_coupe_de}`,
+        )
+        if (src.length === 0 || (Number(src[0].IDref_commande_source) || 0) !== ligneId) {
+          res.status(400).json({ error: 'numero_coupe_de must be a roll of this line' }); return
+        }
+        const base = cutBase((src[0].numero ?? '').trim() || `#${d.numero_coupe_de}`)
+        const siblings = await query<{ numero: string | null }>(
+          `SELECT numero FROM stock_fini WHERE numero LIKE ${sqlText(`${base}-%`)}`,
+        )
+        d.numero = childNumero(base, nextCutIndex(base, siblings.map((r) => r.numero ?? '')))
+      }
+
+      // « Ml non facturés »: checked BEFORE the roll is created, so a refusal
+      // leaves nothing half-written.
+      const mlNf = d.ml_non_factures ?? 0
+      if (mlNf > 0) {
+        if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+        if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'edit_ml_non_factures'))) {
+          res.status(403).json({ error: 'permission denied: edit_ml_non_factures' }); return
+        }
+        const v = validerSaisie(mlNf, d.ml_non_factures_motif, d.metrage ?? 0)
+        if (!v.ok) { res.status(400).json({ error: 'ml_non_factures_saisie', message: `${d.numero} : ${v.message}` }); return }
+      }
 
       // stock_fini.IDColoris is the produced fini's coloris (a ref_fini_colori).
       // The authoritative source is the LINE's IDColoris (the ennoblisseur was
@@ -6371,7 +6414,7 @@ commandesSousTraitantRouter.post(
       // IDetat_stock_fini = 1 → "En Contrôle" (per etat_stock_fini
       // label table). New receptions need inspection before being
       // validated/shipped, so they enter at state 1.
-      const beforeRows = sources.length > 0
+      const beforeRows = sources.length > 0 || mlNf > 0
         ? await query<{ m: number | null }>(`SELECT MAX(IDstock_fini) AS m FROM stock_fini`)
         : []
       await query(
@@ -6385,7 +6428,7 @@ commandesSousTraitantRouter.post(
                  ${idMagasin}, ${ligneId}, ${sqlText(d.observations)}, ${sqlText(d.observation_sst)}, '${dateSaisie}',
                  0, 0, 0, 0, 0, ${inheritedLcc}, 0, 1)`,
       )
-      if (sources.length > 0) {
+      if (sources.length > 0 || mlNf > 0) {
         // Find the row just inserted (no RETURNING on HFSQL): the newest row of
         // this line above the pre-insert MAX.
         const before = Number(beforeRows[0]?.m) || 0
@@ -6395,8 +6438,18 @@ commandesSousTraitantRouter.post(
            ORDER BY IDstock_fini DESC`,
         )
         const newId = Number(newRows[0]?.IDstock_fini) || 0
-        if (newId > 0) await insertFiniSources(newId, sources)
-        else console.error(`[fini-sources] new stock_fini row not found after insert (ligne ${ligneId}, numero ${d.numero})`)
+        if (newId > 0) {
+          if (sources.length > 0) await insertFiniSources(newId, sources)
+          // Written through the journaled path, like any later change.
+          if (mlNf > 0) {
+            await ecrireMlNonFactures(
+              newId,
+              { ml: mlNf, motif: d.ml_non_factures_motif },
+              { idutilisateur: req.userId!, nom: await nomUtilisateur(req.userId!) },
+              'reception',
+            )
+          }
+        } else console.error(`[fini-reception] new stock_fini row not found after insert (ligne ${ligneId}, numero ${d.numero})`)
       }
 
       // Track the lot in suivilot if it isn't already. Idempotent per

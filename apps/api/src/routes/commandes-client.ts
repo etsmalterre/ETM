@@ -2248,6 +2248,9 @@ interface RollLite {
   observations: string | null
   /** Fini only — the ennoblisseur's defect report (stock_fini.observation_sst). */
   observation_sst: string | null
+  /** Fini only — « Ml non facturés » + motif (lib/ml-non-factures.ts). */
+  ml_non_factures?: number
+  ml_non_factures_motif?: string | null
   etat_label: string | null
   /** Roll already shipped (état Expédié / expedition line set) — the
    *  affectation is locked, unlink is refused. */
@@ -2397,12 +2400,12 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
   const avecTeinture = Number(refRows[0]?.avec_teinture) || 0
   const [linkedRaw, availRaw] = await Promise.all([
     query<any>(
-      `SELECT IDstock_fini, numero, lot, poids, metrage, IDColoris, IDmagasin, second_choix, observations, observation_sst, IDetat_stock_fini, IDligne_expedition
+      `SELECT IDstock_fini, numero, lot, poids, metrage, IDColoris, IDmagasin, second_choix, observations, observation_sst, IDetat_stock_fini, IDligne_expedition, ml_non_factures, ml_non_factures_motif
        FROM stock_fini WHERE IDligne_commande_client = ${ctx.ligneId}
        ORDER BY date_saisie DESC, IDstock_fini DESC`,
     ),
     query<any>(
-      `SELECT IDstock_fini, numero, lot, poids, metrage, IDColoris, IDmagasin, second_choix, observations, observation_sst, IDetat_stock_fini, IDligne_expedition
+      `SELECT IDstock_fini, numero, lot, poids, metrage, IDColoris, IDmagasin, second_choix, observations, observation_sst, IDetat_stock_fini, IDligne_expedition, ml_non_factures, ml_non_factures_motif
        FROM stock_fini
        WHERE IDref_fini = ${ctx.refId}
          AND (${ctx.coloriId} = 0 OR IDColoris = ${ctx.coloriId})
@@ -2428,6 +2431,8 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
     second_choix: Number(r.second_choix) || 0,
     observations: r.observations ?? null,
     observation_sst: r.observation_sst ?? null,
+    ml_non_factures: Number(r.ml_non_factures) || 0,
+    ml_non_factures_motif: r.ml_non_factures_motif ?? null,
     etat_label: ETAT_FINI_LABELS[Number(r.IDetat_stock_fini)] ?? null,
     expediable: isFiniExpediable(r.IDetat_stock_fini),
     expedie: Number(r.IDetat_stock_fini) === 4 || (Number(r.IDligne_expedition) || 0) > 0,

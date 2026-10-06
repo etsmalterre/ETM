@@ -62,6 +62,7 @@ import {
   Factory,
   Merge,
   Spline,
+  BadgeEuro,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -77,9 +78,19 @@ import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { RollNotes } from '@/components/shared/RollNotes'
+import { useHasPermission } from '@/contexts/PermissionsContext'
+import {
+  ML_NON_FACTURES_PERMISSION,
+  MlNonFacturesInputs,
+  MlNonFacturesMention,
+  erreurMlNonFactures,
+  parseMlNonFactures,
+  saveMlNonFactures,
+} from '@/components/shared/MlNonFactures'
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { mergedNumero, splitMergedNumero } from '@/lib/roll-merge'
+import { childNumero, cutBase, nextCutIndex } from '@/lib/roll-cut'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateLotQualityCaches, invalidateStockCaches, STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
@@ -357,6 +368,9 @@ interface StockFiniLite {
   /** Ennoblisseur's note (separate from the visiteur's). Surfaced as a
    *  second italic line so the source of each comment stays clear. */
   observation_sst: string | null
+  /** « Ml non facturés » + motif (components/shared/MlNonFactures). */
+  ml_non_factures?: number | string | null
+  ml_non_factures_motif?: string | null
   /** Workflow state — labels from etat_stock_fini:
    *    1=En Contrôle, 2=En Reprise, 3=Validé, 4=Expédié, 5=Attente de décision. */
   IDetat_stock_fini: number | null
@@ -3251,6 +3265,7 @@ function PiecesDrawer({
           commandeId={commandeId}
           ligne={ligne}
           finiRolls={finiReceived.filter((r) => selectedFiniIds.has(r.IDstock_fini))}
+          numerosExistants={finiReceived.map((r) => r.numero ?? '')}
           onClose={() => setShowBatchReprise(false)}
           onSuccess={(payload) => {
             queryClient.setQueryData(queryKey, payload)
@@ -4333,6 +4348,7 @@ function FiniRollRow({
           ]}
           defautText={roll.observation_sst}
         />
+        <MlNonFacturesMention ml={Number(roll.ml_non_factures)} motif={roll.ml_non_factures_motif} className="mt-1.5" />
       </div>
     </div>
   )
@@ -4428,13 +4444,18 @@ function EditFiniRollDialog({
  *  earlier successes stay persisted and the dialog stops on the error
  *  so the user can fix and retry the remainder.
  *
- *  Couper en deux: the dyer sometimes returns a single roll cut into two
- *  physical pieces. Toggling `split` on a roll turns it into two fini
- *  rows on submit — `<numero>-1` (poids / metrage) and `<numero>-2`
- *  (poids2 / metrage2). In create mode both rows POST and point at the
- *  same source écru; in reprise mode the existing stock_fini row is
- *  PATCHed into piece 1 (renamed) and piece 2 POSTs as a new row keeping
- *  the original's écru / coloris / magasin. Matches legacy FEN_Coupe_Fini.
+ *  Couper (decision Vincent 2026-10-06, replaces the side-by-side « Couper
+ *  en deux » toggle): the dyer sometimes returns one roll cut into several
+ *  physical pieces. « Couper » appends a piece to the wizard right after
+ *  the roll — `<numero>-1`, `<numero>-2`, … — and each piece is an ordinary
+ *  step with its own lot / poids / métrage / notes / Ml non facturés. All
+ *  pieces point at the same source écru; when their weights add up to more
+ *  than the écru weight an orange warning shows, never a block (the dyed
+ *  roll is often heavier: 26 of 109 cut écru since 2025). In create mode
+ *  every piece POSTs; in reprise mode the existing stock_fini row is PATCHed
+ *  into piece 1 (renamed) and the others POST as new rows keeping the
+ *  original's écru / coloris / magasin. Matches legacy FEN_Coupe_Fini.
+ *  Tricobot cuts by itself when the BL lists `<numero>-1`, `<numero>-2`.
  */
 interface BatchReceptionRow {
   lot: string
@@ -4442,11 +4463,10 @@ interface BatchReceptionRow {
   metrage: string
   observations: string
   observation_sst: string
-  /** When true the roll yields two fini rows on submit (see couper note). */
-  split: boolean
-  /** Poids / metrage of the second piece — only read when `split`. */
-  poids2: string
-  metrage2: string
+  /** « Ml non facturés » of this roll / piece + motif: the métrage stays the
+   *  dyer's figure, this part is not billed to the client. */
+  mlNf: string
+  mlNfMotif: string
 }
 
 type BatchReceptionProps = {
@@ -4458,8 +4478,15 @@ type BatchReceptionProps = {
    *  grouped roll (`PiecesPayload.fusion_disponible`). */
   fusionEnabled?: boolean
 } & (
-  | { mode?: 'create'; ecruRolls: StockEcruLite[]; finiRolls?: undefined }
-  | { mode: 'reprise'; finiRolls: StockFiniLite[]; ecruRolls?: undefined }
+  | { mode?: 'create'; ecruRolls: StockEcruLite[]; finiRolls?: undefined; numerosExistants?: undefined }
+  | {
+      mode: 'reprise'
+      finiRolls: StockFiniLite[]
+      ecruRolls?: undefined
+      /** Every fini numero of the line — the « Couper » preview's next free
+       *  suffix (the server recomputes it on write). */
+      numerosExistants: string[]
+    }
 )
 
 // Natural ascending comparator by roll numéro — "3377/1, 3377/2, 3377/22"
@@ -4479,6 +4506,12 @@ function foldSearch(s: string): string {
 function BatchReceptionDialog(props: BatchReceptionProps) {
   const { commandeId, ligne, onClose, onSuccess } = props
   const isReprise = props.mode === 'reprise'
+  // « Ml non facturés » typed next to the métrage, so the métrage Tricobot
+  // read stays the roll's real length (decision Vincent 2026-10-06).
+  const canEditMlNf = useHasPermission(ML_NON_FACTURES_PERMISSION)
+  // Rolls whose « Ml non facturés » panel the user opened with the € button
+  // next to the métrage. A roll that already carries some keeps it open.
+  const [mlNfOuverts, setMlNfOuverts] = useState<Set<number>>(new Set())
   // Grouped rolls: create mode only, and only when the server has the table.
   const canMerge = !isReprise && props.fusionEnabled === true
 
@@ -4501,6 +4534,14 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     /** Grouped roll (LIVA #1149): the écru pieces merged into this one
      *  physical roll, leader first. Undefined on a plain roll. */
     members?: Array<{ id: number; numero: string | null; poidsRef: number | null }>
+    /** Cut roll: the id of the roll this piece comes from (piece 1 keeps
+     *  that id, the others carry a negative synthetic id), its rank and the
+     *  number of pieces. Undefined on an uncut roll. */
+    cutOf?: number
+    piece?: number
+    pieceCount?: number
+    /** Numero of the roll before the cut (pieces are `<base>-N`). */
+    baseNumero?: string
   }
   const baseRolls: WizardRoll[] = (
     isReprise
@@ -4525,23 +4566,68 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     for (const m of members) if (m !== leader) memberOf.set(m, leader)
   }
   const baseById = new Map(baseRolls.map((r) => [r.id, r]))
-  const rolls: WizardRoll[] = baseRolls
-    .filter((r) => !memberOf.has(r.id))
-    .map((r) => {
-      const memberIds = groups[r.id]
-      if (!memberIds || memberIds.length < 2) return r
-      const members = memberIds
-        .map((id) => baseById.get(id))
-        .filter((m): m is WizardRoll => !!m)
-        .map((m) => ({ id: m.id, numero: m.numero, poidsRef: m.poidsRef }))
-      const poidsRef = members.reduce((s, m) => s + (m.poidsRef ?? 0), 0)
-      return {
-        ...r,
-        numero: mergedNumero(members.map((m) => m.numero || `#${m.id}`)),
-        poidsRef: poidsRef > 0 ? Math.round(poidsRef * 10) / 10 : null,
-        members,
+
+  // Couper: `cuts` maps a roll id to the synthetic ids of its extra pieces,
+  // in order (pieces 2, 3, …); piece 1 keeps the roll's own id, so its
+  // values and Tricobot's fill carry over. Synthetic ids are negative and
+  // never reused, so a removed piece's row can't leak into a new one.
+  const [cuts, setCuts] = useState<Record<number, number[]>>({})
+  const nextPieceId = useRef(-1)
+  const newPieceId = () => nextPieceId.current--
+
+  /** The wizard steps for a given merge + cut state: one step per fini roll
+   *  that will be received (a cut roll expands into its pieces). */
+  const buildSteps = (g: Record<number, number[]>, c: Record<number, number[]>): WizardRoll[] => {
+    const hidden = new Set<number>()
+    for (const [leaderKey, members] of Object.entries(g)) {
+      for (const m of members) if (m !== Number(leaderKey)) hidden.add(m)
+    }
+    const out: WizardRoll[] = []
+    // Reprise numbering = the stock cut rule (#1135): the roll keeps its
+    // numero, each added piece takes the next free `<base>-N`; `used` grows
+    // as pieces are numbered so two cut rolls of one base never collide.
+    const used = isReprise ? [...(props.numerosExistants ?? [])] : []
+    for (const r of baseRolls) {
+      if (hidden.has(r.id)) continue
+      const memberIds = g[r.id]
+      if (memberIds && memberIds.length >= 2) {
+        const members = memberIds
+          .map((id) => baseById.get(id))
+          .filter((m): m is WizardRoll => !!m)
+          .map((m) => ({ id: m.id, numero: m.numero, poidsRef: m.poidsRef }))
+        const poidsRef = members.reduce((s, m) => s + (m.poidsRef ?? 0), 0)
+        out.push({
+          ...r,
+          numero: mergedNumero(members.map((m) => m.numero || `#${m.id}`)),
+          poidsRef: poidsRef > 0 ? Math.round(poidsRef * 10) / 10 : null,
+          members,
+        })
+        continue
       }
-    })
+      const extras = c[r.id] ?? []
+      if (extras.length === 0) { out.push(r); continue }
+      const pieceCount = extras.length + 1
+      if (isReprise) {
+        const own = (r.numero || `#${r.id}`).trim()
+        const base = cutBase(own)
+        out.push({ ...r, cutOf: r.id, piece: 1, pieceCount, baseNumero: own })
+        extras.forEach((id, k) => {
+          const numero = childNumero(base, nextCutIndex(base, used))
+          used.push(numero)
+          out.push({ ...r, id, numero, cutOf: r.id, piece: k + 2, pieceCount, baseNumero: own })
+        })
+        continue
+      }
+      // Reception of an écru: `<numero>-1`, `-2`, … (legacy FEN_Coupe_Fini).
+      // Trimmed to 18 so `<base>-N` fits the 20-char stock_fini.numero.
+      const baseNumero = (r.numero || `#${r.id}`).slice(0, 18)
+      ;[r.id, ...extras].forEach((id, k) => {
+        out.push({ ...r, id, numero: `${baseNumero}-${k + 1}`, cutOf: r.id, piece: k + 1, pieceCount, baseNumero })
+      })
+    }
+    return out
+  }
+  const rolls: WizardRoll[] = buildSteps(groups, cuts)
 
   // Référence fini and Magasin are no longer user-editable here; both
   // default once and apply to the whole batch. IDref_fini is taken from
@@ -4565,9 +4651,8 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
           metrage: metrage > 0 ? metrage.toFixed(1) : '',
           observations: r.observations ?? '',
           observation_sst: r.observation_sst ?? '',
-          split: false,
-          poids2: '',
-          metrage2: '',
+          mlNf: Number(r.ml_non_factures) > 0 ? String(Number(r.ml_non_factures)) : '',
+          mlNfMotif: r.ml_non_factures_motif ?? '',
         }
       }
     } else {
@@ -4583,9 +4668,8 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
           metrage: '',
           observations: '',
           observation_sst: '',
-          split: false,
-          poids2: '',
-          metrage2: '',
+          mlNf: '',
+          mlNfMotif: '',
         }
       }
     }
@@ -4647,13 +4731,16 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
       const row = rows[Number(idKey)]
       if (!row) continue
       if (f.lot && f.lot.toUpperCase().replace(/\s+/g, '') !== row.lot.toUpperCase().replace(/\s+/g, '')) out.push({ lot: f.lot, texte: `${f.piece} lot ${f.lot} → ${row.lot || '(vide)'}` })
-      // A roll cut in two is the person's decision, not a misread weight.
-      if (!row.split && nombre(f.poids, row.poids)) out.push({ lot: f.lot, texte: `${f.piece} poids ${f.poids} → ${row.poids || '(vide)'} kg` })
-      if (!row.split && nombre(f.metrage, row.metrage)) out.push({ lot: f.lot, texte: `${f.piece} métrage ${f.metrage} → ${row.metrage || '(vide)'} Ml` })
+      // A roll the person cut after Tricobot read it whole is their
+      // decision, not a misread weight (a piece the BL itself lists is read
+      // per piece and stays comparable).
+      const coupeParLaPersonne = (cuts[Number(idKey)]?.length ?? 0) > 0 && !/-\d+$/.test(f.piece)
+      if (!coupeParLaPersonne && nombre(f.poids, row.poids)) out.push({ lot: f.lot, texte: `${f.piece} poids ${f.poids} → ${row.poids || '(vide)'} kg` })
+      if (!coupeParLaPersonne && nombre(f.metrage, row.metrage)) out.push({ lot: f.lot, texte: `${f.piece} métrage ${f.metrage} → ${row.metrage || '(vide)'} Ml` })
       if (f.observation_sst !== undefined && f.observation_sst !== row.observation_sst.trim()) out.push({ lot: f.lot, texte: `${f.piece} observation « ${f.observation_sst} » → « ${row.observation_sst.trim()} »` })
     }
     return out
-  }, [tricobotFill, rows])
+  }, [tricobotFill, rows, cuts])
 
   // Merging shrinks the list: keep the pointer inside it.
   const safeIndex = Math.min(currentIndex, Math.max(0, rolls.length - 1))
@@ -4662,21 +4749,14 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   const canPrev = safeIndex > 0
   const canNext = safeIndex < rolls.length - 1
 
-  /** Index of `leaderId` in the wizard list that `nextGroups` would produce. */
-  const indexAfterRegroup = (leaderId: number, nextGroups: Record<number, number[]>): number => {
-    const hidden = new Set<number>()
-    for (const [leaderKey, members] of Object.entries(nextGroups)) {
-      const leader = Number(leaderKey)
-      for (const m of members) if (m !== leader) hidden.add(m)
-    }
-    const visible = baseRolls.filter((r) => !hidden.has(r.id)).map((r) => r.id)
-    return Math.max(0, visible.indexOf(leaderId))
-  }
+  /** Index of step `id` in the wizard list a merge / cut state would produce. */
+  const indexIn = (id: number, g: Record<number, number[]>, c: Record<number, number[]>): number =>
+    Math.max(0, buildSteps(g, c).findIndex((s) => s.id === id))
 
   /** Merge `ids` (plain rolls or leaders of other groups) into the roll
    *  `leaderId`, in the given order. The leader's step keeps its lot / notes;
    *  its weight becomes the écru sum (the dyer's figure overwrites it), and a
-   *  « Couper en deux » on either side is dropped — a joined roll is one roll. */
+   *  cut on either side is dropped — a joined roll is one roll. */
   const mergeInto = (leaderId: number, ids: number[]) => {
     if (!canMerge) return
     const targets = ids.filter((id) => id !== leaderId && baseById.has(id))
@@ -4690,19 +4770,58 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     }
     nextGroups[leaderId] = members
     const poidsSum = members.reduce((s, id) => s + (baseById.get(id)?.poidsRef ?? 0), 0)
+    const nextCuts = { ...cuts }
+    for (const m of members) delete nextCuts[m]
     setGroups(nextGroups)
+    setCuts(nextCuts)
     setRows((prev) => ({
       ...prev,
       [leaderId]: {
         ...prev[leaderId],
         poids: poidsSum > 0 ? poidsSum.toFixed(1) : prev[leaderId]?.poids ?? '',
-        split: false,
-        poids2: '',
-        metrage2: '',
       },
     }))
     setVisited((prev) => new Set(prev).add(leaderId))
-    setCurrentIndex(indexAfterRegroup(leaderId, nextGroups))
+    setCurrentIndex(indexIn(leaderId, nextGroups, nextCuts))
+  }
+
+  /** Couper: append a piece after the last piece of roll `rollId` and open
+   *  it. The new piece starts with the roll's lot and empty measures. */
+  const cutRoll = (rollId: number) => {
+    const id = newPieceId()
+    const nextCuts = { ...cuts, [rollId]: [...(cuts[rollId] ?? []), id] }
+    setCuts(nextCuts)
+    setRows((prev) => ({
+      ...prev,
+      [id]: {
+        lot: prev[rollId]?.lot ?? '', poids: '', metrage: '',
+        observations: '', observation_sst: '', mlNf: '', mlNfMotif: '',
+      },
+    }))
+    setVisited((prev) => new Set(prev).add(id))
+    setCurrentIndex(indexIn(id, groups, nextCuts))
+    focusMetrageNextTick()
+  }
+
+  /** Remove an added piece (never piece 1, which is the roll itself). The
+   *  pieces after it move up a number; the last one removed restores the
+   *  roll's own numero. */
+  const removePiece = (rollId: number, pieceId: number) => {
+    const extras = (cuts[rollId] ?? []).filter((id) => id !== pieceId)
+    const nextCuts = { ...cuts }
+    if (extras.length > 0) nextCuts[rollId] = extras; else delete nextCuts[rollId]
+    setCuts(nextCuts)
+    setRows((prev) => {
+      const next = { ...prev }
+      delete next[pieceId]
+      return next
+    })
+    setMlNfOuverts((prev) => {
+      const next = new Set(prev)
+      next.delete(pieceId)
+      return next
+    })
+    setCurrentIndex(indexIn(rollId, groups, nextCuts))
   }
 
   /** Undo a merge: the members come back as their own steps, the leader's
@@ -4718,7 +4837,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
       ...prev,
       [leaderId]: { ...prev[leaderId], poids: own > 0 ? own.toFixed(1) : '' },
     }))
-    setCurrentIndex(indexAfterRegroup(leaderId, nextGroups))
+    setCurrentIndex(indexIn(leaderId, nextGroups, cuts))
   }
 
   /** Click on a preview row. Plain click = jump to that step. Ctrl/⌘+click
@@ -4726,10 +4845,12 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
    *  = merge every roll between the current step and the clicked one, in list
    *  order (§44 range idiom; the current step is the anchor). */
   const handlePreviewClick = (wizardIndex: number, ecruId: number, mods: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
-    if (!current || !canMerge || wizardIndex === safeIndex) { goTo(wizardIndex); return }
+    // A piece of a cut roll is not a whole piece: it never merges.
+    if (!current || !canMerge || wizardIndex === safeIndex || current.cutOf !== undefined
+      || rolls[wizardIndex]?.cutOf !== undefined) { goTo(wizardIndex); return }
     if (mods.shiftKey) {
       const [lo, hi] = wizardIndex < safeIndex ? [wizardIndex, safeIndex] : [safeIndex, wizardIndex]
-      const ids = rolls.slice(lo, hi + 1).map((r) => r.id).filter((id) => id !== current.id)
+      const ids = rolls.slice(lo, hi + 1).filter((r) => r.cutOf === undefined).map((r) => r.id).filter((id) => id !== current.id)
       mergeInto(current.id, ids)
       return
     }
@@ -4741,13 +4862,14 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   }
 
   // Fini-level preview: one entry per stock_fini row that will be created
-  // (or PATCHed in reprise). A split roll expands into two entries —
-  // `<base>-1` and `<base>-2` — so the bottom list shows the operator
-  // exactly the rolls they'll receive (3 écru with one cut → 4 finis).
-  // `wizardIndex` points back at the écru editor step the entry belongs to.
+  // (or PATCHed in reprise) — the wizard steps themselves, a cut roll being
+  // one step per piece — so the bottom list shows the operator exactly the
+  // rolls they'll receive (3 écru with one cut → 4 finis).
+  // `wizardIndex` points back at the editor step the entry belongs to.
   type FiniPreview = {
     key: string
     wizardIndex: number
+    /** The step id (écru id, fini id in reprise, synthetic id of a piece). */
     ecruId: number
     numero: string
     lot: string
@@ -4756,44 +4878,48 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     complete: boolean
     hasObs: boolean
     hasDef: boolean
-    half: 0 | 1 | 2
+    /** Rank of the piece in a cut roll (0 = uncut). */
+    piece: number
     /** Number of écru pieces merged into this roll (0 = plain roll). */
     merged: number
+    /** The cut roll's pieces weigh more than the écru (warning only). */
+    tropLourd: boolean
   }
+
+  // Couper: the pieces of a roll should not weigh more than the écru they
+  // came from — an orange warning, never a block (a dyed roll is often
+  // heavier than its écru: 26 of the 109 cut écru received since 2025).
+  // Reprise compares with the roll's current weight.
+  type PoidsCoupe = { reference: number; total: number; numero: string }
+  const poidsCoupes = new Map<number, PoidsCoupe>()
+  for (const r of rolls) {
+    if (r.cutOf === undefined) continue
+    const acc = poidsCoupes.get(r.cutOf) ?? { reference: r.poidsRef ?? 0, total: 0, numero: r.baseNumero ?? '' }
+    acc.total += Number(rows[r.id]?.poids) || 0
+    poidsCoupes.set(r.cutOf, acc)
+  }
+  const coupeTropLourde = (cutOf: number | undefined): PoidsCoupe | null => {
+    if (cutOf === undefined) return null
+    const c = poidsCoupes.get(cutOf)
+    return c && c.reference > 0 && c.total > c.reference + 0.05 ? c : null
+  }
+  const coupesTropLourdes = [...poidsCoupes.values()].filter((c) => c.reference > 0 && c.total > c.reference + 0.05)
+
   const finiPreview: FiniPreview[] = []
   rolls.forEach((r, i) => {
     const row = rows[r.id]
     if (!row) return
     const lot = (row.lot ?? '').trim()
-    const lotOk = lot.length > 0
-    const hasObs = (row.observations ?? '').trim().length > 0
-    const hasDef = (row.observation_sst ?? '').trim().length > 0
-    const baseNum = r.numero || `#${r.id}`
-    if (r.members) {
-      finiPreview.push({
-        key: `${r.id}`, wizardIndex: i, ecruId: r.id, numero: baseNum,
-        lot, poids: Number(row.poids) || 0, metrage: Number(row.metrage) || 0,
-        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 0, merged: r.members.length,
-      })
-    } else if (row.split) {
-      const base = baseNum.slice(0, 18)
-      finiPreview.push({
-        key: `${r.id}-1`, wizardIndex: i, ecruId: r.id, numero: `${base}-1`,
-        lot, poids: Number(row.poids) || 0, metrage: Number(row.metrage) || 0,
-        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 1, merged: 0,
-      })
-      finiPreview.push({
-        key: `${r.id}-2`, wizardIndex: i, ecruId: r.id, numero: `${base}-2`,
-        lot, poids: Number(row.poids2) || 0, metrage: Number(row.metrage2) || 0,
-        complete: lotOk && Number(row.metrage2) > 0, hasObs, hasDef, half: 2, merged: 0,
-      })
-    } else {
-      finiPreview.push({
-        key: `${r.id}`, wizardIndex: i, ecruId: r.id, numero: baseNum,
-        lot, poids: Number(row.poids) || 0, metrage: Number(row.metrage) || 0,
-        complete: lotOk && Number(row.metrage) > 0, hasObs, hasDef, half: 0, merged: 0,
-      })
-    }
+    finiPreview.push({
+      key: `${r.id}`, wizardIndex: i, ecruId: r.id, numero: r.numero || `#${r.id}`,
+      lot, poids: Number(row.poids) || 0, metrage: Number(row.metrage) || 0,
+      complete: lot.length > 0 && Number(row.metrage) > 0,
+      hasObs: (row.observations ?? '').trim().length > 0,
+      hasDef: (row.observation_sst ?? '').trim().length > 0,
+      piece: r.piece ?? 0,
+      merged: r.members?.length ?? 0,
+      tropLourd: coupeTropLourde(r.cutOf) !== null,
+    })
   })
   // Every fini must have a non-empty lot AND a positive metrage before the
   // operator can submit. Without this guard the server happily accepts
@@ -4804,7 +4930,18 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   const completeCount = finiPreview.reduce((n, e) => n + (e.complete ? 1 : 0), 0)
   const allRowsComplete = finiCount > 0 && completeCount === finiCount
   const totalMetrage = finiPreview.reduce((s, e) => s + e.metrage, 0)
-  const canSubmit = idRefFini > 0 && rolls.length > 0 && !submitting && allRowsComplete
+  // « Ml non facturés »: same rule as the API (≤ the roll or piece métrage,
+  // a motif when > 0). The first bad roll blocks submit.
+  const mlNfErreur = (() => {
+    for (const r of rolls) {
+      const row = rows[r.id]
+      if (!row) continue
+      const e = erreurMlNonFactures(row.mlNf, row.mlNfMotif, Number(row.metrage) || 0)
+      if (e) return `${r.numero || `Rouleau ${r.id}`} — ${e}`
+    }
+    return null
+  })()
+  const canSubmit = idRefFini > 0 && rolls.length > 0 && !submitting && allRowsComplete && !mlNfErreur
 
   const updateCurrent = (patch: Partial<BatchReceptionRow>) => {
     if (!current) return
@@ -4912,9 +5049,14 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               next[leader] = {
                 ...next[leader],
                 poids: poidsSum > 0 ? poidsSum.toFixed(1) : next[leader]?.poids ?? '',
-                split: false, poids2: '', metrage2: '',
               }
             }
+            return next
+          })
+          // A joined roll is one roll: drop any cut on its pieces.
+          setCuts((prev) => {
+            const next = { ...prev }
+            for (const members of Object.values(nextGroups)) for (const m of members) delete next[m]
             return next
           })
           setCurrentIndex((i) => {
@@ -4932,13 +5074,35 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
         const leader = Number(leaderKey)
         for (const m of members) if (m !== leader) hiddenNow.add(m)
       }
+      // A roll the BL lists as pieces (`3571/1-1`, `3571/1-2`, …) is cut by
+      // Tricobot himself: one piece per BL line, in the BL's order of N.
+      // An exact match on the whole roll wins over pieces.
+      const nextCuts: Record<number, number[]> = { ...cuts }
+      for (const members of Object.values(nextGroups)) for (const m of members) delete nextCuts[m]
+      const newPieces: number[] = []
+      const matchedRolls = new Set<number>(grouped)
       for (const r of baseRolls) {
         if (hiddenNow.has(r.id) || grouped.has(r.id)) continue
         const np = (r.numero ?? '').trim()
-        const hit = np ? byNumero.get(np) : undefined
-        if (hit) matches.push({ rollId: r.id, hit })
+        if (!np) continue
+        const hit = byNumero.get(np)
+        if (hit) { matches.push({ rollId: r.id, hit }); matchedRolls.add(r.id); continue }
+        const pieces = [...byNumero.entries()]
+          .filter(([key]) => key.startsWith(`${np}-`) && /^\d+$/.test(key.slice(np.length + 1)))
+          .sort(([a], [b]) => Number(a.slice(np.length + 1)) - Number(b.slice(np.length + 1)))
+        if (pieces.length === 0) continue
+        const extras = [...(nextCuts[r.id] ?? [])]
+        while (extras.length < pieces.length - 1) {
+          const id = newPieceId()
+          extras.push(id)
+          newPieces.push(id)
+        }
+        if (extras.length > 0) nextCuts[r.id] = extras
+        pieces.forEach(([, pieceHit], k) => matches.push({ rollId: k === 0 ? r.id : extras[k - 1], hit: pieceHit }))
+        matchedRolls.add(r.id)
       }
-      const filled = matches.length
+      setCuts(nextCuts)
+      const filled = matchedRolls.size
       const fill: typeof tricobotFill = {}
       for (const { rollId, hit } of matches) {
         const poidsNum = Number(hit.poids)
@@ -4955,6 +5119,9 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
       if (filled > 0) {
         setRows((prev) => {
           const next = { ...prev }
+          for (const id of newPieces) {
+            next[id] = { lot: '', poids: '', metrage: '', observations: '', observation_sst: '', mlNf: '', mlNfMotif: '' }
+          }
           for (const { rollId, hit } of matches) {
             const poidsNum = Number(hit.poids)
             const metrageNum = Number(hit.metrage)
@@ -4972,14 +5139,16 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
         })
       }
       setTricobotState('done')
-      const missing = baseRolls.length - hiddenNow.size - filled
+      // Counted in tombés de métier: a roll cut into pieces is one roll found.
+      const total = baseRolls.length - hiddenNow.size
+      const missing = total - filled
       setTricobotMsgError(filled === 0)
       setTricobotMessage(
         filled === 0
           ? `Tricobot n'a trouvé aucun rouleau correspondant dans la base.`
           : missing === 0
             ? `Tricobot a trouvé les ${filled} rouleaux 🎉`
-            : `Tricobot a trouvé ${filled} rouleau${filled > 1 ? 'x' : ''} sur ${rolls.length} · ${missing} restant${missing > 1 ? 's' : ''} à compléter manuellement`,
+            : `Tricobot a trouvé ${filled} rouleau${filled > 1 ? 'x' : ''} sur ${total} · ${missing} restant${missing > 1 ? 's' : ''} à compléter manuellement`,
       )
     } catch (err) {
       setTricobotState('idle')
@@ -4998,116 +5167,100 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
       return isNaN(x) ? 0 : x
     }
     try {
+      // « Ml non facturés » travel with each roll / piece, only from whoever
+      // holds the right — the API 403s otherwise.
+      const mlNfBody = (row: BatchReceptionRow) => canEditMlNf && parseMlNonFactures(row.mlNf) > 0
+        ? { ml_non_factures: parseMlNonFactures(row.mlNf), ml_non_factures_motif: row.mlNfMotif.trim() }
+        : {}
+      const postFini = async (body: Record<string, unknown>) =>
+        apiFetch<PiecesPayload>(
+          `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/fini`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+        )
       if (isReprise) {
-        // Reprise: PATCH each fini roll with the edited values. The
-        // server resets IDetat_stock_fini back to 1 (En contrôle) so the
-        // visiteur can re-validate after the correction.
+        // Reprise: PATCH each fini roll with the edited values. The server
+        // resets IDetat_stock_fini back to 1 (En contrôle) so the visiteur
+        // can re-validate after the correction.
         //
-        // Split ("Couper en deux"): the sst sometimes returns a reprise
-        // roll cut into two physical pieces. The existing row becomes
-        // piece 1 (renamed `<base>-1`) via the same PATCH; piece 2 POSTs
-        // as a new stock_fini row (`<base>-2`) carrying the original's
-        // source écru plus explicit coloris/magasin overrides so both
-        // halves stay identical apart from poids/metrage.
-        for (const r of finiRolls) {
-          const row = rows[r.IDstock_fini]
-          const base = (r.numero || `#${r.IDstock_fini}`).slice(0, 18)
-          const payload = await apiFetch<PiecesPayload>(
-            `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/fini/${r.IDstock_fini}`,
-            {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                ...(row.split ? { numero: `${base}-1` } : {}),
-                lot: row.lot,
-                poids: num(row.poids),
-                metrage: num(row.metrage),
-                observations: row.observations,
-                observation_sst: row.observation_sst,
-                // Reset to En contrôle for re-validation.
-                IDetat_stock_fini: 1,
-              }),
-            },
-          )
-          lastPayload = payload
-          setDoneCount((n) => n + 1)
-          if (row.split) {
+        // Couper: the sst sometimes returns a reprise roll cut into pieces.
+        // Stock rule (#1135): the existing row KEEPS its numero (same PATCH);
+        // every other piece POSTs as a new stock_fini row numbered by the
+        // server (`numero_coupe_de` → next free `<base>-N`), carrying the
+        // original's source écru plus explicit coloris/magasin overrides.
+        const finiById = new Map(finiRolls.map((f) => [f.IDstock_fini, f]))
+        for (const step of rolls) {
+          const row = rows[step.id]
+          const f = finiById.get(step.cutOf ?? step.id)
+          if (!row || !f) continue
+          if (step.cutOf === undefined || step.piece === 1) {
             lastPayload = await apiFetch<PiecesPayload>(
-              `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/fini`,
+              `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/fini/${f.IDstock_fini}`,
               {
-                method: 'POST',
+                method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  numero: `${base}-2`,
                   lot: row.lot,
-                  poids: num(row.poids2),
-                  metrage: num(row.metrage2),
-                  IDstock_ecru: r.IDstock_ecru || 0,
-                  IDref_fini: r.IDref_fini || idRefFini,
-                  IDColoris: r.IDColoris || 0,
-                  IDmagasin: r.IDmagasin || 0,
+                  poids: num(row.poids),
+                  metrage: num(row.metrage),
                   observations: row.observations,
                   observation_sst: row.observation_sst,
+                  // Reset to En contrôle for re-validation.
+                  IDetat_stock_fini: 1,
                 }),
               },
             )
-            setDoneCount((n) => n + 1)
+            // Ml non facturés changed on a re-received roll: its own journaled route.
+            const nfAvant = Number(f.ml_non_factures) || 0
+            if (canEditMlNf && (parseMlNonFactures(row.mlNf) !== nfAvant
+              || (nfAvant > 0 && row.mlNfMotif.trim() !== (f.ml_non_factures_motif ?? '').trim()))) {
+              await saveMlNonFactures(f.IDstock_fini, row.mlNf, row.mlNfMotif, 'rouleau')
+            }
+          } else {
+            lastPayload = await postFini({
+              numero: step.numero, // preview only — the server numbers it
+              numero_coupe_de: f.IDstock_fini,
+              lot: row.lot,
+              poids: num(row.poids),
+              metrage: num(row.metrage),
+              IDstock_ecru: f.IDstock_ecru || 0,
+              IDref_fini: f.IDref_fini || idRefFini,
+              IDColoris: f.IDColoris || 0,
+              IDmagasin: f.IDmagasin || 0,
+              observations: row.observations,
+              observation_sst: row.observation_sst,
+              ...mlNfBody(row),
+            })
           }
+          setDoneCount((n) => n + 1)
         }
       } else {
-        const postFini = async (body: Record<string, unknown>) =>
-          apiFetch<PiecesPayload>(
-            `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/fini`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            },
-          )
-        for (const r of rolls) {
-          const row = rows[r.id]
-          const shared = {
+        for (const step of rolls) {
+          const row = rows[step.id]
+          if (!row) continue
+          const body: Record<string, unknown> = {
             lot: row.lot,
-            IDstock_ecru: r.id,
+            // Every piece of a cut roll points at the same source écru.
+            IDstock_ecru: step.cutOf ?? step.id,
             IDref_fini: idRefFini,
             IDmagasin: idMagasin || 0,
             observations: row.observations,
             observation_sst: row.observation_sst,
+            // `<base>-N` already fits (base trimmed to 18) for a piece.
+            numero: (step.numero || `#${step.id}`).slice(0, 20),
+            poids: num(row.poids),
+            metrage: num(row.metrage),
+            ...mlNfBody(row),
           }
-          if (r.members) {
-            // Fusionner: several écru → ONE fini roll numbered as the dyer
-            // prints it; the server records every component in
-            // stock_fini_source so each piece reads as consumed.
-            lastPayload = await postFini({
-              ...shared,
-              numero: (r.numero || `#${r.id}`).slice(0, 20),
-              IDstock_ecru_sources: r.members.map((m) => m.id),
-              poids: num(row.poids), metrage: num(row.metrage),
-            })
-            setDoneCount((n) => n + 1)
-          } else if (row.split) {
-            // Couper en deux: one écru → two fini rolls `<base>-1` /
-            // `<base>-2`, both pointing at the same source écru. Base is
-            // trimmed to 18 so the suffix fits the 20-char numero column.
-            const base = (r.numero || `#${r.id}`).slice(0, 18)
-            lastPayload = await postFini({
-              ...shared, numero: `${base}-1`,
-              poids: num(row.poids), metrage: num(row.metrage),
-            })
-            setDoneCount((n) => n + 1)
-            lastPayload = await postFini({
-              ...shared, numero: `${base}-2`,
-              poids: num(row.poids2), metrage: num(row.metrage2),
-            })
-            setDoneCount((n) => n + 1)
-          } else {
-            lastPayload = await postFini({
-              ...shared,
-              numero: (r.numero || `#${r.id}`).slice(0, 20),
-              poids: num(row.poids), metrage: num(row.metrage),
-            })
-            setDoneCount((n) => n + 1)
-          }
+          // Fusionner: several écru → ONE fini roll numbered as the dyer
+          // prints it; the server records every component in
+          // stock_fini_source so each piece reads as consumed.
+          if (step.members) body.IDstock_ecru_sources = step.members.map((m) => m.id)
+          lastPayload = await postFini(body)
+          setDoneCount((n) => n + 1)
         }
       }
       // Tricobot's feedback, per BL lot he read. Best effort: the rolls are
@@ -5135,9 +5288,33 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
 
   if (!current || !currentRow) return null
 
-  // Base numero for the current roll's two halves when split. Trimmed to
-  // 18 chars so `<base>-2` fits the 20-char stock_fini.numero column.
-  const splitBase = (current.numero || `#${current.id}`).slice(0, 18)
+  // « Ml non facturés »: a € button right of the métrage opens the panel; grey while empty, amber once filled — a filled roll
+  // keeps its panel open so the value is never hidden.
+  // The current piece's cut weighs more than its écru (warning only).
+  const coupeCourante = coupeTropLourde(current.cutOf)
+  const mlNfRempli = parseMlNonFactures(currentRow.mlNf) > 0
+  const mlNfVisible = mlNfRempli || mlNfOuverts.has(current.id)
+  const mlNfButton = canEditMlNf ? (
+    <button
+      type="button"
+      onClick={() => setMlNfOuverts((prev) => {
+        const next = new Set(prev)
+        if (next.has(current.id)) next.delete(current.id); else next.add(current.id)
+        return next
+      })}
+      title={mlNfRempli ? 'Ml non facturés' : 'Saisir des Ml non facturés (le métrage reste le métrage réel)'}
+      className={cn(
+        'h-8 w-8 flex-shrink-0 rounded-md flex items-center justify-center transition-colors cursor-pointer border',
+        mlNfRempli
+          ? 'border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100'
+          : mlNfVisible
+            ? 'border-amber-300 bg-white text-amber-600'
+            : 'border-input bg-white text-muted-foreground hover:text-amber-600 hover:bg-amber-50',
+      )}
+    >
+      <BadgeEuro className="h-4 w-4" />
+    </button>
+  ) : null
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !submitting) onClose() }}>
@@ -5240,12 +5417,36 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                     {current.members.length} pièces fusionnées : {current.members.map((m) => m.numero || `#${m.id}`).join(' + ')}
                     {current.poidsRef != null && current.poidsRef > 0 && ` · poids écru ${fmtNum(current.poidsRef, 1)} kg`}
                   </p>
+                ) : current.cutOf !== undefined ? (
+                  // A piece of a cut roll: which piece, and how the pieces'
+                  // weights add up against the roll they come from.
+                  <p className={cn(
+                    'text-[10px] mt-0.5 tabular-nums truncate',
+                    coupeCourante ? 'text-amber-700 font-medium' : 'text-muted-foreground',
+                  )}>
+                    Pièce {current.piece}/{current.pieceCount} de {current.baseNumero}
+                    {current.poidsRef != null && current.poidsRef > 0 && (
+                      <> · pièces {fmtNum(poidsCoupes.get(current.cutOf)?.total ?? 0, 1)} kg / {isReprise ? 'rouleau' : 'écru'} {fmtNum(current.poidsRef, 1)} kg</>
+                    )}
+                  </p>
                 ) : current.poidsRef != null && current.poidsRef > 0 && (
                   <p className="text-[10px] text-muted-foreground mt-0.5 tabular-nums">
                     {isReprise ? 'Poids actuel' : 'Poids écru'}: {fmtNum(current.poidsRef, 1)} kg
                   </p>
                 )}
               </div>
+              {current.cutOf !== undefined && (current.piece ?? 1) > 1 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive flex-shrink-0"
+                  onClick={() => removePiece(current.cutOf!, current.id)}
+                  title="Retirer cette pièce de la coupe"
+                >
+                  <X className="h-3.5 w-3.5 mr-1" />
+                  Retirer la pièce
+                </Button>
+              )}
               {current.members && (
                 <Button
                   variant="ghost"
@@ -5260,11 +5461,10 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               )}
             </div>
 
-            {/* Lot (shared across both halves when split) + the
-                couper-en-deux toggle — available in both modes. Create
-                mode splits the écru into two POSTed fini rows; reprise
-                mode splits the existing fini row (PATCH piece 1 + POST
-                piece 2 — see handleSubmit). */}
+            {/* Lot + Couper. Couper appends a piece of this roll to the list
+                (`<numero>-1`, `-2`, …) — each piece is then an ordinary step.
+                Create mode POSTs every piece; reprise PATCHes the existing
+                roll into piece 1 and POSTs the others (see handleSubmit). */}
             <div className="flex items-end gap-3">
               <div className="flex-1 min-w-0">
                 <LabeledInput
@@ -5275,96 +5475,73 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                 />
               </div>
               {/* A joined roll is one roll: no cut on a group. */}
-              {!current.members && <button
-                type="button"
-                role="switch"
-                aria-checked={currentRow.split}
-                onClick={() => updateCurrent({ split: !currentRow.split })}
-                title="Le rouleau a été coupé en deux par l'ennoblisseur"
-                className={cn(
-                  'flex items-center gap-2 h-8 flex-shrink-0 rounded-md border px-2.5 text-xs font-medium transition-colors',
-                  currentRow.split
-                    ? 'border-accent bg-accent/10 text-accent'
-                    : 'border-border/60 bg-white text-muted-foreground hover:border-accent/40',
-                )}
-              >
-                <Scissors className="h-3.5 w-3.5" />
-                Couper en deux
-                <span
-                  className={cn(
-                    'relative inline-flex h-4 w-7 items-center rounded-full transition-colors',
-                    currentRow.split ? 'bg-accent shadow-inner' : 'bg-zinc-300',
-                  )}
+              {!current.members && (
+                <button
+                  type="button"
+                  onClick={() => cutRoll(current.cutOf ?? current.id)}
+                  title={current.cutOf !== undefined
+                    ? `Ajouter une pièce à ${current.baseNumero}`
+                    : "Le rouleau a été coupé par l'ennoblisseur : ajouter une pièce à la liste"}
+                  className="flex items-center gap-2 h-8 flex-shrink-0 rounded-md border border-border/60 bg-white px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-accent/40 hover:text-accent"
                 >
-                  <span
-                    className={cn(
-                      'inline-block h-3 w-3 rounded-full bg-white shadow transition-transform duration-200 ease-out',
-                      currentRow.split ? 'translate-x-[14px]' : 'translate-x-0.5',
-                    )}
-                  />
-                </span>
-              </button>}
+                  <Scissors className="h-3.5 w-3.5" />
+                  {current.cutOf !== undefined ? 'Ajouter une pièce' : 'Couper'}
+                </button>
+              )}
             </div>
 
-            {currentRow.split ? (
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-md border border-border/60 bg-white p-2.5 space-y-2">
-                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold truncate">
-                    Rouleau 1 · {splitBase}-1
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <LabeledInput
-                      label="Poids (kg)"
-                      type="number"
-                      value={currentRow.poids}
-                      onChange={(v) => updateCurrent({ poids: v })}
-                    />
-                    <LabeledInput
-                      label="Métrage (Ml)"
-                      type="number"
-                      value={currentRow.metrage}
-                      onChange={(v) => updateCurrent({ metrage: v })}
-                      inputRef={metrageInputRef}
-                    />
-                  </div>
+            <div className="grid grid-cols-2 gap-2">
+              <LabeledInput
+                label="Poids (kg)"
+                type="number"
+                value={currentRow.poids}
+                onChange={(v) => updateCurrent({ poids: v })}
+              />
+              <div className="flex items-end gap-1.5">
+                <div className="flex-1 min-w-0">
+                  <LabeledInput
+                    label="Métrage (Ml)"
+                    type="number"
+                    value={currentRow.metrage}
+                    onChange={(v) => updateCurrent({ metrage: v })}
+                    inputRef={metrageInputRef}
+                  />
                 </div>
-                <div className="rounded-md border border-border/60 bg-white p-2.5 space-y-2">
-                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold truncate">
-                    Rouleau 2 · {splitBase}-2
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <LabeledInput
-                      label="Poids (kg)"
-                      type="number"
-                      value={currentRow.poids2}
-                      onChange={(v) => updateCurrent({ poids2: v })}
-                    />
-                    <LabeledInput
-                      label="Métrage (Ml)"
-                      type="number"
-                      value={currentRow.metrage2}
-                      onChange={(v) => updateCurrent({ metrage2: v })}
-                    />
-                  </div>
-                </div>
+                {mlNfButton}
               </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                <LabeledInput
-                  label="Poids (kg)"
-                  type="number"
-                  value={currentRow.poids}
-                  onChange={(v) => updateCurrent({ poids: v })}
-                />
-                <LabeledInput
-                  label="Métrage (Ml)"
-                  type="number"
-                  value={currentRow.metrage}
-                  onChange={(v) => updateCurrent({ metrage: v })}
-                  inputRef={metrageInputRef}
-                />
-              </div>
+            </div>
+
+            {/* The pieces of a cut roll weigh more than its écru: warn,
+                never block (the dyed roll is often heavier). */}
+            {coupeCourante && (
+              <p className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800">
+                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+                <span>
+                  Les pièces de {coupeCourante.numero} pèsent {fmtNum(coupeCourante.total, 1)} kg
+                  pour {fmtNum(coupeCourante.reference, 1)} kg {isReprise ? 'de rouleau' : "d'écru"} — vérifiez les poids.
+                </span>
+              </p>
             )}
+
+            {/* Ml non facturés — opened by the € button. Keep the métrage the
+                dyer measured; type here what the client will not pay. */}
+            {canEditMlNf ? mlNfVisible && (
+              <div className="rounded-md border border-amber-300/60 bg-amber-50/50 px-2.5 py-2 space-y-1">
+                <label className="text-[10px] font-medium text-amber-800 flex items-center gap-1">
+                  <BadgeEuro className="h-3 w-3" />
+                  Ml non facturés — le métrage reste le métrage réel
+                </label>
+                <MlNonFacturesInputs
+                  compact
+                  ml={currentRow.mlNf}
+                  motif={currentRow.mlNfMotif}
+                  onMl={(v) => updateCurrent({ mlNf: v })}
+                  onMotif={(v) => updateCurrent({ mlNfMotif: v })}
+                />
+              </div>
+            ) : parseMlNonFactures(currentRow.mlNf) > 0 ? (
+              <MlNonFacturesMention ml={parseMlNonFactures(currentRow.mlNf)} motif={currentRow.mlNfMotif} />
+            ) : null}
 
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
@@ -5433,8 +5610,8 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               const hasData =
                 e.lot.length > 0 || e.metrage > 0 || e.hasObs || e.hasDef
               // A row can be merged INTO the current step when it is another
-              // step of a create batch (a cut half is not a whole piece).
-              const mergeable = canMerge && !isCurrent && e.half === 0 && !!current
+              // step of a create batch (a piece of a cut roll is not a whole piece).
+              const mergeable = canMerge && !isCurrent && e.piece === 0 && current?.cutOf === undefined && !!current
               return (
                 <div
                   key={e.key}
@@ -5460,7 +5637,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                     {e.complete && !isCurrent ? <Check className="h-3 w-3" /> : idx + 1}
                   </div>
                   <span className="font-semibold truncate flex-shrink-0 max-w-[170px] flex items-center gap-1">
-                    {e.half !== 0 && (
+                    {e.piece > 0 && (
                       <Scissors className="h-3 w-3 text-accent flex-shrink-0" />
                     )}
                     {e.merged > 0 && (
@@ -5471,7 +5648,11 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                   <div className="flex items-center gap-2 tabular-nums text-muted-foreground min-w-0 flex-1 truncate">
                     {e.merged > 0 && <span className="text-accent">{e.merged} pièces</span>}
                     {e.lot && <span className="truncate">{e.merged > 0 ? '· ' : ''}lot {e.lot}</span>}
-                    {e.poids > 0 && <span>· {fmtNum(e.poids, 1)} kg</span>}
+                    {e.poids > 0 && (
+                      <span className={cn(e.tropLourd && 'text-amber-700 font-medium')} title={e.tropLourd ? "Les pièces de cette coupe pèsent plus que l'écru" : undefined}>
+                        · {fmtNum(e.poids, 1)} kg
+                      </span>
+                    )}
                     {e.metrage > 0 && <span>· {fmtNum(e.metrage, 1)} Ml</span>}
                     {!hasData && e.merged === 0 && <span className="italic">— en attente</span>}
                   </div>
@@ -5533,6 +5714,22 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
             <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
               <span className="break-all">{error}</span>
+            </div>
+          )}
+          {!!mlNfErreur && (
+            <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+              <span>{mlNfErreur}</span>
+            </div>
+          )}
+          {/* Warning only — the réception stays possible. */}
+          {coupesTropLourdes.length > 0 && (
+            <div className="mb-2 flex items-start gap-1.5 text-xs text-amber-700">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+              <span>
+                Pièces plus lourdes que {isReprise ? 'le rouleau' : "l'écru"} :{' '}
+                {coupesTropLourdes.map((c) => `${c.numero} (${fmtNum(c.total, 1)} / ${fmtNum(c.reference, 1)} kg)`).join(', ')}
+              </span>
             </div>
           )}
           <div className="flex items-center gap-3">
