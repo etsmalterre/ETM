@@ -462,6 +462,36 @@ ${grantApi('SELECT, INSERT', 'stock_fini_ml_non_facture_journal')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE stock_fini_ml_non_facture_journal_id_seq')}
 `,
   },
+  {
+    // Who did what in ETM / TRM (lib/journal-activite.ts, 2026-10-06): one row
+    // per write request of an identified account, plus every 5xx answer. Read
+    // by the agent « Rapport d'activité ». `idutilisateur` is the person
+    // behind the session (an admin's « Voir comme » goes in `voir_comme`).
+    // Rows older than a year are deleted (purgerJournal), so DELETE is granted.
+    name: '0011_journal_activite',
+    sql: `
+CREATE TABLE journal_activite (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  le timestamptz NOT NULL DEFAULT now(),
+  idutilisateur bigint NOT NULL,
+  voir_comme bigint,
+  appareil text,
+  methode text NOT NULL,
+  chemin text NOT NULL,
+  statut smallint NOT NULL,
+  duree_ms integer NOT NULL,
+  origine text,
+  ecran text,
+  corps text,
+  erreur text,
+  ip text
+);
+CREATE INDEX journal_activite_utilisateur_le ON journal_activite (idutilisateur, le);
+CREATE INDEX journal_activite_le ON journal_activite (le);
+${grantApi('SELECT, INSERT, DELETE', 'journal_activite')}
+${grantApi('USAGE, SELECT', 'SEQUENCE journal_activite_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

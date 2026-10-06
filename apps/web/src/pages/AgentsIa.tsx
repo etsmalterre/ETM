@@ -425,7 +425,8 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
       }
       if (suivi.declenchement.type === 'quotidien') {
         const run = l.runs[0]
-        setActionMessage(run ? { tone: run.statut === 'erreur' ? 'error' : 'ok', text: `Contrôle terminé : ${run.resume}.` } : { tone: 'ok', text: 'Aucun contrôle lancé.' })
+        const quoi = suivi.pointsEvaluables ? 'Contrôle' : 'Rapport'
+        setActionMessage(run ? { tone: run.statut === 'erreur' ? 'error' : 'ok', text: `${quoi} terminé : ${run.resume}` } : { tone: 'ok', text: 'Aucune exécution lancée.' })
         if (run) setOpenRunId(run.id)
         return
       }
@@ -549,6 +550,7 @@ function DetailHeader({ agent, isLoading, canPilot, onSonder, isSondant, onEssai
   const quotidien = agent.declenchement.type === 'quotidien'
   const sonderTitle = !canPilot ? 'Droit « Piloter les agents IA » requis'
     : agent.mode === 'off' ? 'L’agent est à l’arrêt : passez-le en essai ou en service'
+    : quotidien && !agent.pointsEvaluables ? (agent.mode === 'actif' ? 'Envoyer le rapport maintenant (depuis la veille au soir)' : 'Préparer le rapport maintenant, sans l’envoyer')
     : quotidien ? 'Lancer les contrôles maintenant — aperçu seulement : la liste des points n’est pas modifiée'
     : 'Relever la boîte mail maintenant'
   return (

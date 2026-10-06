@@ -23,6 +23,15 @@ import {
   executer as executerSuperviseur,
 } from './superviseur/superviseur.js'
 import { CONTROLES } from './superviseur/controles/index.js'
+import {
+  DESTINATAIRES as RAPPORT_ACTIVITE_DESTINATAIRES,
+  HEURE_RAPPORT as RAPPORT_ACTIVITE_HEURE,
+  PERSONNE_SUIVIE,
+  RAPPORT_ACTIVITE_JOURS,
+  RAPPORT_ACTIVITE_SLUG,
+  RAPPORT_ACTIVITE_VERSION_INITIALE,
+  executer as executerRapportActivite,
+} from './rapport-activite/agent.js'
 import { resultatTriage, sonderBoite as sonderTriage, TRIAGE_BOITE, TRIAGE_SLUG, TRIAGE_VERSION_INITIALE } from './triage/agent.js'
 import { CATEGORIES } from './triage/categories.js'
 import { DESTINATAIRES } from './triage/transmission.js'
@@ -301,6 +310,41 @@ export const AGENTS: readonly AgentDef[] = [
     modeles: MODELES_MISTRAL,
     sonder: executerSuperviseur,
     controles: CONTROLES.map((c) => ({ id: c.id, libelle: c.libelle, description: c.description })),
+  },
+  {
+    slug: RAPPORT_ACTIVITE_SLUG,
+    nom: 'Rapport d’activité',
+    description: `Envoie chaque soir à ${RAPPORT_ACTIVITE_HEURE} h le compte rendu de l’activité de ${PERSONNE_SUIVIE} depuis la veille au soir : connexions, actions dans ETM et TRM, mails envoyés et reçus, et les points à vérifier — techniques (erreurs, actions refusées, saisie douteuse) et de comportement (ton d’un mail, engagement sans trace dans ETM, client sans réponse).`,
+    declenchement: { type: 'quotidien', heure: RAPPORT_ACTIVITE_HEURE, jours: RAPPORT_ACTIVITE_JOURS },
+    declencheur: `Chaque jour à ${RAPPORT_ACTIVITE_HEURE} h (heure de Paris), sur la période depuis la veille ${RAPPORT_ACTIVITE_HEURE} h. Lit le journal d’activité d’ETM/TRM (créations, modifications, suppressions et erreurs du compte, jamais les simples consultations), les connexions, et la boîte ${PERSONNE_SUIVIE} en lecture seule.`,
+    ecritures: [
+      `Un e-mail à ${RAPPORT_ACTIVITE_DESTINATAIRES.join(' et ')}, envoyé par tricotbot@etsmalterre.com — destinataires fixés dans le code, aucun abonnement possible.`,
+      'L’exécution garde les compteurs et les adresses, jamais le contenu du rapport.',
+      'Supprime chaque nuit les lignes du journal d’activité de plus d’un an.',
+    ],
+    abstention:
+      'Un samedi ou un dimanche sans aucune activité (ni action, ni mail envoyé, ni connexion), aucun e-mail. Les mails dont l’objet les dit personnels sont listés sans être lus ; les mails automatiques (newsletters, notifications) ne sont pas listés. Si Mistral ne répond pas, le rapport part quand même avec les faits seuls.',
+    evaluation: {
+      reussite: 'Le rapport était juste : les points signalés méritaient d’être vérifiés.',
+      echec: 'Un point signalé à tort ou un fait mal résumé : dites lequel, pour la version suivante du prompt.',
+      guide: {
+        question: 'Les points d’attention de l’analyse IA étaient-ils fondés ? Oui → réussite. Un point faux ou injuste → échec, en disant lequel.',
+        exemples: {
+          reussite: '« Prix de 5,20 €/ml annoncé à Sigvaris, la commande 1234 est à 5,60 » : c’était bien une erreur de saisie.',
+          echec: '« Client sans réponse » alors qu’il avait répondu par téléphone.',
+        },
+        remarques: ['Les faits relevés par ETM (erreurs serveur, refus, suppressions) ne viennent pas du modèle : ils ne le notent pas.'],
+      },
+    },
+    pointsEvaluables: false,
+    modes: {
+      off: 'N’envoie rien.',
+      essai: 'Prépare le rapport à l’heure prévue et dit à qui il l’enverrait, n’envoie rien.',
+      actif: 'Envoie le rapport chaque soir. « Lancer maintenant » l’envoie tout de suite, sur la période depuis la veille 18 h.',
+    },
+    versionInitiale: RAPPORT_ACTIVITE_VERSION_INITIALE,
+    modeles: MODELES_MISTRAL,
+    sonder: executerRapportActivite,
   },
 ]
 

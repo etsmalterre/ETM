@@ -66,6 +66,7 @@ import { createAgentsIaRouter } from './routes/agents-ia.js'
 import { rhRouter } from './routes/rh.js'
 import { webserviceSiteRouter } from './routes/webservice-site.js'
 import { demarrerAgents, enregistrerTaches } from './lib/agents/scheduler.js'
+import { journaliserActivite } from './lib/journal-activite.js'
 import { createAutomatesRouter } from './routes/automates.js'
 import { AGENTS_IA_ETM, AGENTS_IA_TRM } from './lib/agents/app-scope.js'
 import { tachesAutomates } from './lib/automates/execution.js'
@@ -100,6 +101,9 @@ app.use(cookieParser())
 // Best-effort: attaches req.userId when a valid signed cookie is present.
 // Never 401s — routes keep working without a cookie, same as before.
 app.use(attachUser())
+// Who did what: every write of an identified account + every 5xx
+// (lib/journal-activite.ts, read by the agent « Rapport d'activité »).
+app.use(journaliserActivite())
 
 // Liveness by default. `?db=1` upgrades it to a readiness probe that actually
 // touches HFSQL — the process can answer the plain form perfectly while every
