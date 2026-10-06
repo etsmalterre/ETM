@@ -8,6 +8,7 @@ import type { Declenchement } from '../agents/catalog.js'
 import { declarerEtatInitial, type AutomateMode, type AutomateState, type AutomateStatut } from './store.js'
 import * as videosurveillance from './videosurveillance/videosurveillance.js'
 import * as rapportsPointage from './rapports-pointage/rapports-pointage.js'
+import * as pointSst from './point-sst/point-sst.js'
 import { deLApp, type AppIa } from '../agents/app-scope.js'
 import { abonnementRapport } from '../rapports-pointage-envoi.js'
 import type { AbonnementAutomate } from './abonnement.js'
@@ -139,6 +140,34 @@ export const AUTOMATES: readonly AutomateDef[] = [
     executer: rapportsPointage.executeur('notif_bilan_heures'),
     abonnement: abonnementRapport('notif_bilan_heures'),
     etatInitial: rapportsPointage.etatInitial('notif_bilan_heures'),
+  },
+  {
+    slug: pointSst.SLUG,
+    nom: 'Point sous-traitant',
+    description:
+      'Prépare chaque jour ouvré à 17 h le « Point du JJ/MM » du lendemain pour MATEL (sorties prévues, contrôles, soumissions, métrages, délais, études), à vérifier ligne par ligne dans Sous-traitants › Point, et envoie à l’heure dite les points qu’une personne a programmés.',
+    version: pointSst.VERSION,
+    versions: pointSst.VERSIONS,
+    declenchement: { type: 'releve', intervalleMs: 60_000 },
+    declencheur: `Chaque minute : envoie les points programmés dont l’heure est passée ; à partir de ${pointSst.HEURE_PREPARATION} h un jour ouvré, prépare le point du jour ouvré suivant s’il n’existe pas encore (le vendredi : celui du lundi).`,
+    lit: [
+      'Les commandes d’ennoblissement ouvertes du sous-traitant (lignes, délais, statuts), les rouleaux reçus, le suivi des lots (mesures du teinturier), les soumissions envoyées et les contacts « soumission » des clients.',
+      'Les études coloris « Attente labo » du sous-traitant.',
+    ],
+    ecritures: [
+      'Le point préparé (Sous-traitants › Point), en brouillon : rien ne part sans qu’une personne l’ait programmé ou envoyé.',
+      'À l’heure programmée, l’e-mail du point depuis contact@etsmalterre.com, signé par la personne qui l’a programmé, avec le fichier Word si elle l’a coché.',
+    ],
+    abstention: 'Un point déjà préparé n’est jamais recréé ni écrasé : « Actualiser » sur l’écran le met à jour sans toucher aux lignes modifiées. Le week-end, rien n’est préparé.',
+    modes: {
+      off: 'Ne prépare rien et n’envoie rien, même les points programmés.',
+      essai: 'Calcule une fois par jour le point qu’il préparerait (visible dans l’exécution), ne l’enregistre pas, n’envoie rien.',
+      actif: 'Prépare le point à 17 h et envoie les points programmés.',
+    },
+    executer: pointSst.executer,
+    // Writes only drafts and sends only what a person scheduled: live in
+    // production from the deploy; never on a dev or worktree API.
+    etatInitial: () => ({ mode: process.env.NODE_ENV === 'production' ? 'actif' : 'essai' }),
   },
 ]
 

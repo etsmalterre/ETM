@@ -43,6 +43,9 @@ export interface Retour {
   texte: string
   par: Auteur
   le: string
+  /** What the remark is about, when given where the work is done (a line of
+   *  Sous-traitants › Point, its Tricobot button) rather than in Agents IA. */
+  cible?: { libelle: string; lien?: string }
 }
 
 export interface AutomateState {

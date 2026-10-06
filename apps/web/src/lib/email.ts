@@ -58,6 +58,9 @@ export interface SendPayload {
    *  real recipients. The server ignores this flag unless NODE_ENV is not
    *  'production'. */
   devSkipSend?: boolean
+  /** Set when the user clicked the dialog's « Programmer » button (prop
+   *  `programmer`) instead of Envoyer: the caller schedules the send. */
+  programme?: boolean
 }
 
 /** Split a comma/semicolon/newline-separated recipient string into trimmed,

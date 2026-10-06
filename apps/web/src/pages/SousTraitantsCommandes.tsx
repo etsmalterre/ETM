@@ -2915,8 +2915,21 @@ function PiecesDrawer({
     [data?.ecruLinked],
   )
 
+  const finiRecus = data?.finiReceived
+  // Écru already turned into a fini roll — directly (`IDstock_ecru`) or as a
+  // component of a grouped roll (LIVA #1149). Never selectable for a new
+  // reception: neither by click, nor « Tout sélectionner », nor a Shift range.
+  const ecruIdsWithFini = useMemo(
+    () => new Set((finiRecus ?? []).flatMap((f) => [Number(f.IDstock_ecru), ...(f.source_ecru_ids ?? [])]).filter((id) => id > 0)),
+    [finiRecus],
+  )
+
   const handleEcruClick = useCallback((id: number, shiftKey: boolean) => {
-    const ids = ecruLinked.map((r) => r.IDstock_ecru)
+    // §44: the range runs over the SELECTABLE rows only. Until 2026-10-06 it ran
+    // over every affected écru: a Shift range 3550/1 → 3550/15 on order 8990
+    // swept in 3550/2, received on 21/09, which got received a second time
+    // (with the 21/09 BL values) while 3550/16 was left out.
+    const ids = ecruLinked.filter((r) => !ecruIdsWithFini.has(r.IDstock_ecru)).map((r) => r.IDstock_ecru)
     const anchor = lastSelectedEcruIdRef.current
     if (shiftKey && anchor !== null && anchor !== id) {
       const a = ids.indexOf(anchor)
@@ -2939,7 +2952,7 @@ function PiecesDrawer({
       return next
     })
     lastSelectedEcruIdRef.current = id
-  }, [ecruLinked])
+  }, [ecruLinked, ecruIdsWithFini])
   const ecruAvailable = data?.ecruAvailable ?? []
   const finiReceived = useMemo(
     () => (data?.finiReceived ?? []).slice().sort(byNumeroAsc),
@@ -3057,11 +3070,6 @@ function PiecesDrawer({
           // Those rolls hide their unlink button AND can't be selected
           // for a new reception (no duplicate fini per écru). Other
           // linked rolls remain fully interactive.
-          const ecruIdsWithFini = new Set(
-            finiReceived
-              .flatMap((f) => [Number(f.IDstock_ecru), ...(f.source_ecru_ids ?? [])])
-              .filter((id) => id > 0)
-          )
           const selectableEcrus = ecruLinked.filter((r) => !ecruIdsWithFini.has(r.IDstock_ecru))
           const allSelected = selectableEcrus.length > 0 && selectableEcrus.every((r) => selectedEcruIds.has(r.IDstock_ecru))
           const selectAll = () => setSelectedEcruIds(new Set(selectableEcrus.map((r) => r.IDstock_ecru)))
@@ -5117,7 +5125,9 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
       }
       if (lastPayload) onSuccess(lastPayload)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erreur')
+      // The server's French message when it refuses (e.g. « piece_deja_recue »), not « API 409 ».
+      const msg = (err as { body?: { message?: string } }).body?.message
+      setError(msg ?? (err instanceof Error ? err.message : 'Erreur'))
     } finally {
       setSubmitting(false)
     }

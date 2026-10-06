@@ -367,6 +367,73 @@ CREATE INDEX facture_sst_historique_facture ON facture_sst_historique (idfacture
 ${grantApi('SELECT, INSERT', 'facture_sst_historique')}
 `,
   },
+  {
+    // Sous-traitants › Point — the daily « Point du JJ/MM » sent to a dyer
+    // (MATEL first). The automate « Point sous-traitant » prepares the next
+    // working day's point at 17:00 (lib/point-sst/); a person checks it line
+    // by line, then sends it (now, or scheduled for 9:00). `auto` keeps what
+    // the automate proposed so a line edited by the person can be compared
+    // with it (and « Actualiser » never overwrites an edit). A removed auto
+    // line is kept with `retiree` so « Actualiser » does not bring it back.
+    name: '0010_point_sst',
+    sql: `
+CREATE TABLE point_sst (
+  idpoint_sst bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idsous_traitant bigint NOT NULL,
+  jour date NOT NULL,
+  statut text NOT NULL DEFAULT 'brouillon' CHECK (statut IN ('brouillon', 'programme', 'envoye')),
+  genere_le timestamptz NOT NULL DEFAULT now(),
+  genere_par text NOT NULL DEFAULT 'automate',
+  actualise_le timestamptz,
+  version integer NOT NULL DEFAULT 1,
+  introduction text NOT NULL DEFAULT '',
+  conclusion text NOT NULL DEFAULT '',
+  destinataires jsonb NOT NULL DEFAULT '[]',
+  cc jsonb NOT NULL DEFAULT '[]',
+  cci jsonb NOT NULL DEFAULT '[]',
+  sujet text NOT NULL DEFAULT '',
+  avec_docx boolean NOT NULL DEFAULT false,
+  pieces_jointes jsonb NOT NULL DEFAULT '[]',
+  envoi_prevu_le timestamptz,
+  programme_par bigint,
+  programme_par_nom text,
+  envoye_le timestamptz,
+  envoye_par bigint,
+  envoye_par_nom text,
+  message_id text,
+  erreur_envoi text,
+  UNIQUE (idsous_traitant, jour)
+);
+CREATE INDEX point_sst_programme ON point_sst (envoi_prevu_le) WHERE statut = 'programme';
+CREATE TABLE point_sst_ligne (
+  idpoint_sst_ligne bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idpoint_sst bigint NOT NULL REFERENCES point_sst ON DELETE CASCADE,
+  section smallint NOT NULL CHECK (section BETWEEN 1 AND 6),
+  ordre integer NOT NULL DEFAULT 0,
+  origine text NOT NULL CHECK (origine IN ('auto', 'manuel')),
+  cle text,
+  idcommande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idligne_commande_sous_traitant bigint NOT NULL DEFAULT 0,
+  commande text NOT NULL DEFAULT '',
+  reference text NOT NULL DEFAULT '',
+  coloris text NOT NULL DEFAULT '',
+  date_prevue date,
+  commentaire text NOT NULL DEFAULT '',
+  pourquoi text NOT NULL DEFAULT '',
+  auto jsonb,
+  modifiee boolean NOT NULL DEFAULT false,
+  retiree boolean NOT NULL DEFAULT false,
+  retour_id text,
+  retour_texte text,
+  retour_par_nom text,
+  modifie_le timestamptz,
+  modifie_par_nom text,
+  UNIQUE (idpoint_sst, cle)
+);
+CREATE INDEX point_sst_ligne_point ON point_sst_ligne (idpoint_sst, section, ordre);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'point_sst, point_sst_ligne')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

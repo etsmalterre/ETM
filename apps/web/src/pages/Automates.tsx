@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import {
   AlertCircle,
   AlertTriangle,
@@ -119,7 +120,7 @@ interface AutomateVue {
   retoursVersion: number
 }
 
-interface Retour { id: string; version: number; texte: string; par: Auteur; le: string }
+interface Retour { id: string; version: number; texte: string; par: Auteur; le: string; cible?: { libelle: string; lien?: string } }
 
 const STATUT_META: Record<Statut, { label: string; solid: string; text: string; icon: ComponentType<{ className?: string }> }> = {
   applique: { label: 'Appliqué', solid: 'bg-success border-success', text: 'text-success', icon: CheckCircle2 },
@@ -993,6 +994,11 @@ function RetoursTab({ automate, canPilot }: { automate: AutomateVue; canPilot: b
                   <li key={r.id} className="group flex items-start gap-2">
                     <MessagesSquare className="h-3.5 w-3.5 text-muted-foreground/60 flex-shrink-0 mt-0.5" />
                     <div className="min-w-0 flex-1">
+                      {r.cible && (
+                        r.cible.lien
+                          ? <Link to={r.cible.lien} className="text-[11px] font-medium text-accent hover:underline">{r.cible.libelle}</Link>
+                          : <p className="text-[11px] font-medium text-muted-foreground">{r.cible.libelle}</p>
+                      )}
                       <p className="text-sm whitespace-pre-line">{r.texte}</p>
                       <p className="text-[11px] text-muted-foreground">{r.par.nom} · {fmtDateHeure(r.le)}</p>
                     </div>

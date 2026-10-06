@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   AtSign,
+  CalendarClock,
   Check,
   Mail,
   FileText,
@@ -74,6 +75,10 @@ interface SendEmailDialogProps {
   title?: string
   /** A quiet alternative left of Annuler (e.g. « Réclamer sans email »). */
   secondaryAction?: { label: string; onClick: () => void }
+  /** A « Programmer » button next to Envoyer (Sous-traitants › Point: sent at
+   *  9:00 by the automate). Clicking it calls onSend with `programme: true`.
+   *  `disabledReason` greys it out and becomes its tooltip. */
+  programmer?: { label: string; title?: string; disabledReason?: string | null }
 
   /** Free-text context chip shown in the dialog header (e.g. fournisseur name). */
   contextLabel?: string
@@ -103,6 +108,7 @@ export function SendEmailDialog({
   onClose,
   title = 'Envoyer un email',
   secondaryAction,
+  programmer,
   contextLabel,
   queryKey,
   loadDefaults,
@@ -377,7 +383,7 @@ export function SendEmailDialog({
   }, [])
 
   // ── Send ─────────────────────────────────────────────
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(async (programme = false) => {
     setErrorMessage(null)
     setSuccessMessage(null)
     const to = selectedRecipients.map((r) => r.email)
@@ -405,8 +411,9 @@ export function SendEmailDialog({
         optionalAttachments: Object.fromEntries(
           visibleOptional.map((a) => [a.id, optionalChecked[a.id] === true]),
         ),
+        ...(programme ? { programme: true } : {}),
       })
-      setSuccessMessage('Email envoyé avec succès')
+      setSuccessMessage(programme ? 'Envoi programmé' : 'Email envoyé avec succès')
       setTimeout(() => onClose(), 1200)
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Échec de l'envoi")
@@ -729,8 +736,19 @@ export function SendEmailDialog({
                     <Button variant="outline" onClick={onClose} disabled={isSending}>
                       Annuler
                     </Button>
+                    {programmer && (
+                      <Button
+                        variant="outline"
+                        onClick={() => handleSend(true)}
+                        disabled={isSending || loadingDefaults || !!successMessage || !!programmer.disabledReason}
+                        title={programmer.disabledReason ?? programmer.title}
+                      >
+                        <CalendarClock className="h-3.5 w-3.5 mr-1.5" />
+                        {programmer.label}
+                      </Button>
+                    )}
                     <Button
-                      onClick={handleSend}
+                      onClick={() => handleSend()}
                       disabled={isSending || loadingDefaults || !!successMessage}
                     >
                       {isSending ? (

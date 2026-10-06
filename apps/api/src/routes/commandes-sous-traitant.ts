@@ -6331,6 +6331,25 @@ commandesSousTraitantRouter.post(
         }
       }
 
+      // A piece number is received once per line (2026-10-06, lot MA109269:
+      // « 3550/2 », back on 21/09 and en reprise, was received a second time on
+      // 01/10 in place of 3550/16 — stock and invoice check counted it twice).
+      // A piece back from reprise is re-received by updating its roll (PATCH
+      // below), never by a new one; a split at the dyer gets « -1 » / « -2 ».
+      const deja = await query<{ IDstock_fini: number; IDetat_stock_fini: number | null; date_saisie: string | null }>(
+        `SELECT IDstock_fini, IDetat_stock_fini, DATE_SAISIE AS date_saisie FROM stock_fini
+         WHERE IDref_commande_source = ${ligneId} AND numero = '${esc(d.numero.trim())}'`,
+      )
+      if (deja.length > 0) {
+        const enReprise = Number(deja[0].IDetat_stock_fini) === 2
+        res.status(409).json({
+          error: 'piece_deja_recue',
+          message: `La pièce ${d.numero.trim()} est déjà réceptionnée sur cette ligne${enReprise ? ' (en reprise) : pour la reprendre, utilisez « Reprendre » sur ce rouleau' : ''}. Vérifiez le numéro sur le bordereau.`,
+          IDstock_fini: Number(deja[0].IDstock_fini),
+        })
+        return
+      }
+
       const today = new Date()
       const yyyy = String(today.getFullYear())
       const mm = String(today.getMonth() + 1).padStart(2, '0')
