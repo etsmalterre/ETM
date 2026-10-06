@@ -72,9 +72,13 @@ for (const c of CONTROLES.filter((x) => MAILS.has(x.id))) {
 }
 
 // Half « nouveau », half « toujours ouvert » so both renderings show.
-const il_y_a = (j: number) => new Date(t0 - j * 86_400_000).toISOString()
+// Dates pinned to midnight: re-running the seed the same day updates the
+// journal's points instead of adding copies (an entry is keyed on its date).
+const minuit = new Date(t0); minuit.setHours(0, 0, 0, 0)
+const aujourdhui = minuit.toISOString()
+const il_y_a = (j: number) => new Date(minuit.getTime() - j * 86_400_000).toISOString()
 const constats: ConstatRun[] = [...mails, ...trouves].map((c, i) =>
-  i % 2 === 0 ? { ...c, etat: 'nouveau', depuis: nowIso } : { ...c, etat: 'ouvert', depuis: il_y_a(2 + i) },
+  i % 2 === 0 ? { ...c, etat: 'nouveau', depuis: aujourdhui } : { ...c, etat: 'ouvert', depuis: il_y_a(2 + i) },
 )
 
 // A few objects the checks let pass, shown as closed points with the real
@@ -103,7 +107,7 @@ await ajouterRun({
   id: nouvelIdRun(),
   slug: SUPERVISEUR_SLUG,
   createdAt: nowIso,
-  source: 'manuel',
+  source: 'planifie', // read as the morning run: the « Dernier contrôle » in the sidebar shows it
   mode: 'actif',
   lancePar: { id: 0, nom: 'Seed dev' },
   message: null,
@@ -116,5 +120,23 @@ await ajouterRun({
   coutUsd: 0.0042, // shows the « < 0,01 € » rendering
   dureeMs: Date.now() - t0,
 })
+// The points journal the « Points » tab reads (superviseur/historique.ts): the
+// open points, the closed ones (first journaled from 3 days ago, then closed
+// now with their reason), one handled « Traité » and one « Fausse alerte ».
+const { journaliserRun, journaliserTraitement } = await import('../lib/agents/superviseur/historique.js')
+const fermesRun: ConstatRun[] = fermes.map((f) => ({
+  cle: f.cle, controle: f.cle.split(':')[0], domaine: f.domaine as ConstatRun['domaine'], gravite: 'attention',
+  titre: f.titre, message: f.raison ?? '', lien: null, etat: 'ouvert', depuis: f.depuis,
+}))
+await journaliserRun([...constats, ...resolus, ...fermesRun], [], il_y_a(1))
+await journaliserRun([...constats, ...resolus], fermes.map((f) => ({ cle: f.cle, depuis: f.depuis, raison: f.raison ?? '' })), nowIso)
+const seed = { id: 0, nom: 'Seed dev' }
+await journaliserTraitement(resolus[0], { issue: 'traite', note: 'reussite', commentaire: '', par: seed, le: il_y_a(1) })
+const newsletter = constats.find((c) => c.cle === 'seed:mail:3')
+if (newsletter) {
+  await journaliserTraitement(newsletter, {
+    issue: 'fausse_alerte', note: 'echec', commentaire: 'Envoi automatique du fournisseur, aucune réponse attendue.', par: seed, le: nowIso,
+  })
+}
 console.log(`\nRapport de test ajouté : ${constats.length} point(s).`)
 process.exit(0)

@@ -151,6 +151,21 @@ function statistiques(def: AgentDef, runs: AgentRun[], state: AgentState) {
     points: def.points ? def.points.score(actifs) : null,
     coutUsd: actifs.reduce((s, r) => s + (r.coutUsd || 0), 0),
     dernierRun: runs.length ? runs[runs.length - 1].createdAt : null,
+    dernierControle: dernierControle(runs),
+  }
+}
+
+/** Daily agents: how the last SCHEDULED run went — the only place a failed
+ *  morning shows since the Superviseur's points list replaced its reports
+ *  (2026-10-06). A run can succeed while some of its checks failed. */
+function dernierControle(runs: AgentRun[]) {
+  const r = [...runs].reverse().find((x) => x.source === 'planifie')
+  if (!r) return null
+  const controles = (r.resultat as { controles?: Array<{ libelle: string; erreur: string | null }> } | null)?.controles ?? []
+  return {
+    le: r.createdAt,
+    erreur: r.statut === 'erreur' ? (r.erreur ?? 'Erreur inconnue') : null,
+    controlesEnErreur: controles.filter((c) => c.erreur).map((c) => ({ libelle: c.libelle, erreur: c.erreur as string })),
   }
 }
 
@@ -551,9 +566,10 @@ routes.put('/:slug/points/traitement', async (req, res) => {
 })
 
 /** Every point the agent raised, open or closed, and how it was handled —
- *  the widget's « Historique ». */
+ *  the widget's « Historique » and the agent's « Points » tab in Agents IA.
+ *  Readable by any session, like the runs that carry the same points. */
 routes.get('/:slug/points/historique', async (req, res) => {
-  if ((await traiteurPoints(req, res)) === null) return
+  if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return
   if (def.slug !== SUPERVISEUR_SLUG) { res.json({ points: [] }); return }

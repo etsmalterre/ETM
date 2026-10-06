@@ -165,8 +165,16 @@ interface AgentVue {
     points: ScorePoints | null
     coutUsd: number
     dernierRun: string | null
+    dernierControle: DernierControle | null
   }
   sondage: Sondage
+}
+
+/** Daily agents: the last scheduled run — failed outright, or with some checks down. */
+interface DernierControle {
+  le: string
+  erreur: string | null
+  controlesEnErreur: Array<{ libelle: string; erreur: string }>
 }
 
 interface AgentVersion {
@@ -386,6 +394,7 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
     queryClient.invalidateQueries({ queryKey: ['agents-ia'] })
     queryClient.invalidateQueries({ queryKey: ['agent-ia', selectedSlug] })
     queryClient.invalidateQueries({ queryKey: ['agent-ia-runs', selectedSlug] })
+    queryClient.invalidateQueries({ queryKey: ['agent-ia-points', selectedSlug] })
     queryClient.invalidateQueries({ queryKey: ['agent-ia-couts', selectedSlug] })
     queryClient.invalidateQueries({ queryKey: ['agent-ia-retours', selectedSlug] })
   }, [queryClient, selectedSlug])
@@ -540,7 +549,7 @@ function DetailHeader({ agent, isLoading, canPilot, onSonder, isSondant, onEssai
   const quotidien = agent.declenchement.type === 'quotidien'
   const sonderTitle = !canPilot ? 'Droit « Piloter les agents IA » requis'
     : agent.mode === 'off' ? 'L’agent est à l’arrêt : passez-le en essai ou en service'
-    : quotidien ? 'Lancer les contrôles maintenant — ne change pas ce que dira le rapport de demain matin'
+    : quotidien ? 'Lancer les contrôles maintenant — aperçu seulement : la liste des points n’est pas modifiée'
     : 'Relever la boîte mail maintenant'
   return (
     <div className="flex-shrink-0 pt-0.5">
@@ -611,17 +620,20 @@ function DetailMain({ agent, isLoading, hasSelection, canPilot, onOpenRun, onCha
   if (isLoading || !agent) {
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
   }
+  const superviseur = agent.pointsEvaluables && agent.slug !== FACTURES_SST_SLUG
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="flex-shrink-0 flex items-center gap-1 border-b border-border/60 pb-2 overflow-x-auto">
         {MAIN_TABS.map((t) => {
-          const Icon = t.icon
+          // The Superviseur's first tab lists its points, not its runs (2026-10-06).
+          const pointsTab = t.key === 'executions' && superviseur
+          const Icon = pointsTab ? ListChecks : t.icon
           const active = activeTab === t.key
           return (
             <button key={t.key} type="button" onClick={() => setActiveTab(t.key)}
               className={cn('flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap',
                 active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10 hover:text-accent')}>
-              <Icon className="h-3.5 w-3.5" />{t.label}
+              <Icon className="h-3.5 w-3.5" />{pointsTab ? 'Points' : t.label}
             </button>
           )
         })}
@@ -629,8 +641,8 @@ function DetailMain({ agent, isLoading, hasSelection, canPilot, onOpenRun, onCha
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1">
         {activeTab === 'executions' && (agent.slug === TRIAGE_SLUG
           ? <TriageExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />
-          : agent.pointsEvaluables && agent.slug !== FACTURES_SST_SLUG
-          ? <SuperviseurExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />
+          : superviseur
+          ? <SuperviseurPointsTab slug={agent.slug} />
           : <ExecutionsTab slug={agent.slug} onOpenRun={onOpenRun} />)}
         {activeTab === 'retours' && <RetoursTab agent={agent} onOpenRun={onOpenRun} />}
         {activeTab === 'prompt' && <PromptTab agent={agent} canPilot={canPilot} onChanged={onChanged} />}
@@ -793,7 +805,7 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
       </div>
       <p className="text-[11px] text-muted-foreground">
         Chaque correction de Tricobot porte un pourquoi : c’est la liste à relire avant de publier la version suivante du prompt.
-        {agent.pointsEvaluables && ' Les points du rapport évalués un par un y figurent aussi.'}
+        {agent.pointsEvaluables && ' Les remarques laissées sur les points y figurent aussi.'}
       </p>
       {isLoading ? <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
       : isError ? <div className="flex flex-col items-center justify-center py-12 text-destructive"><AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Chargement impossible</p></div>
@@ -818,7 +830,7 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
                     {r.portee === 'point' ? r.titre : `Exécution du ${fmtDateCourte(r.runLe)}`}
                   </p>
                   <p className="text-[11px] text-muted-foreground truncate">
-                    {r.portee === 'point' ? `Point du rapport du ${fmtDateCourte(r.runLe)}` : r.titre} · {r.par.nom}, {fmtDateHeure(r.le)}
+                    {r.portee === 'point' ? `Point relevé le ${fmtDateCourte(r.runLe)}` : r.titre} · {r.par.nom}, {fmtDateHeure(r.le)}
                   </p>
                 </div>
               </div>
@@ -840,7 +852,7 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
             Marqués résolus à la main ({resolutions.length}) — ce que l’agent ne pouvait pas voir
           </p>
           {resolutions.map((r, i) => (
-            <div key={`${r.runId}-res-${i}`} onClick={() => onOpenRun(r.runId)} title="Ouvrir le rapport"
+            <div key={`${r.runId}-res-${i}`} onClick={() => onOpenRun(r.runId)} title="Voir le contrôle"
               className="rounded-lg border-l-4 border border-border/60 border-l-green-500/60 bg-zinc-100/80 p-3 cursor-pointer hover:border-accent/40 transition-colors">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-green-500/10">
@@ -848,7 +860,7 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-medium truncate" title={r.titre}>{r.titre}</p>
-                  <p className="text-[11px] text-muted-foreground truncate">Point du rapport du {fmtDateCourte(r.runLe)} · {r.par.nom}, {fmtDateHeure(r.le)}</p>
+                  <p className="text-[11px] text-muted-foreground truncate">Point relevé le {fmtDateCourte(r.runLe)} · {r.par.nom}, {fmtDateHeure(r.le)}</p>
                 </div>
               </div>
               <div className="flex items-start gap-1.5 mt-2 ml-9">
@@ -1182,6 +1194,29 @@ function EvaluationsKV({ s }: { s: AgentVue['stats'] }) {
 
 /** A point-scored agent's score: what its version raised, and how much of it
  *  was worth raising. */
+/** How the last scheduled control went: the one place a failed morning shows
+ *  since the Superviseur lists its points instead of its runs. */
+function DernierControleKV({ d }: { d: DernierControle | null }) {
+  if (!d) return <KV label="Dernier contrôle" value="—" />
+  const ko = d.erreur !== null || d.controlesEnErreur.length > 0
+  return (
+    <>
+      <KV label="Dernier contrôle" value={
+        <span className={cn('inline-flex items-center gap-1', ko ? 'text-destructive font-semibold' : 'text-green-700')}>
+          {ko ? <XCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+          {ilYA(d.le)}{d.erreur ? ' — a échoué' : ''}
+        </span>
+      } />
+      {d.erreur && <p className="text-xs text-destructive break-words">{d.erreur}</p>}
+      {d.controlesEnErreur.map((c) => (
+        <p key={c.libelle} className="text-xs text-destructive break-words" title={c.erreur}>
+          <span className="font-semibold">{c.libelle} n’a pas tourné : </span>{c.erreur}
+        </p>
+      ))}
+    </>
+  )
+}
+
 function PointsKV({ p }: { p: ScorePoints }) {
   const pct = p.precision === null ? null : Math.round(p.precision * 100)
   const tone = pct === null ? 'text-muted-foreground' : pct >= 80 ? NOTE_META.reussite.text : pct >= 50 ? 'text-amber-800' : NOTE_META.echec.text
@@ -1228,20 +1263,13 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode, onChange
               <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
                 <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><Clock className="h-3.5 w-3.5" />Planification</p>
                 <KV label="Prochain contrôle" value={agent.mode === 'off' ? 'agent à l’arrêt' : fmtDateHeure(agent.prochaineExecution)} />
-                <KV label="Dernier contrôle" value={ilYA(s.dernierRun)} />
+                <DernierControleKV d={s.dernierControle} />
                 {agent.sondage.derniereErreur && (
                   <div className="flex items-start gap-1.5 mt-1 text-xs text-destructive">
                     <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /><span>{agent.sondage.derniereErreur}</span>
                   </div>
                 )}
-              </div>
-              <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
-                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><History className="h-3.5 w-3.5" />Version {agent.activeVersion} — rapports</p>
-                <KV label="Total" value={fmtNum(s.total)} mono />
-                <KV label="Avec des points à voir" value={fmtNum(n('points_a_voir') + n('mail_envoye') + n('simule'))} mono />
-                <KV label="Rien à signaler" value={fmtNum(n('rien_a_signaler'))} mono />
-                <KV label="Erreurs" value={<span className={cn(n('erreur') > 0 && 'text-destructive font-semibold')}>{fmtNum(n('erreur'))}</span>} mono />
-                <KV label="Coût" value={fmtEur(s.coutUsd)} mono />
+                <KV label={`Coût v${agent.activeVersion}`} value={fmtEur(s.coutUsd)} mono />
               </div>
               {s.points && (
                 <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
@@ -1419,7 +1447,7 @@ function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending,
       {!actuel && herite && !brouillon && (
         <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
           <span className="min-w-0">
-            Évalué {NOTE_META[herite.note].label.toLowerCase()} sur un rapport précédent par {herite.par.nom}{herite.commentaire ? ` : « ${herite.commentaire} »` : ''}
+            Évalué {NOTE_META[herite.note].label.toLowerCase()} un jour précédent par {herite.par.nom}{herite.commentaire ? ` : « ${herite.commentaire} »` : ''}
           </span>
           {canEvaluate && !modif && (
             <button type="button" className="flex-shrink-0 hover:text-accent transition-colors" disabled={isPending} onClick={() => setModif(true)}>
@@ -1932,105 +1960,197 @@ function BilanMini({ b }: { b: BilanPoints }) {
   )
 }
 
-function BilanCell({ b }: { b: BilanPoints | null }) {
-  if (!b || b.points === 0) return <span className="text-muted-foreground">—</span>
-  const fini = b.aEvaluer === 0
-  return (
-    <>
-      <div className={cn('tabular-nums whitespace-nowrap', fini && 'font-semibold text-green-700')}>
-        {fmtNum(b.evalues)}<span className="text-muted-foreground font-normal"> / {fmtNum(b.points)}</span>
-      </div>
-      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-        {b.evalues === 0
-          ? <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />à évaluer</span>
-          : NOTE_ORDER.filter((n) => b[n] > 0).map((n) => {
-              const m = NOTE_META[n]
-              const Icon = m.icon
-              return <span key={n} className={cn('inline-flex items-center gap-0.5 tabular-nums', m.text)} title={m.label}><Icon className="h-3 w-3" />{fmtNum(b[n])}</span>
-            })}
-      </div>
-    </>
-  )
-}
-
 function joursDepuis(iso: string): number {
   return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000))
 }
 
-const SUP_FILTERS: Array<{ key: string; label: string; query: string }> = [
-  { key: 'tout', label: 'Tous', query: '' },
-  { key: 'a_evaluer', label: 'À évaluer', query: '?note=a_evaluer' },
-  { key: 'mal', label: 'Échecs', query: '?note=echec' },
-  { key: 'erreurs', label: 'Erreurs', query: '?statut=erreur' },
+// ── Superviseur: the points it raised ────────────────────
+// Decision 2026-10-06: the Superviseur's tab lists the POINTS, not the morning
+// reports — a report only re-copied the points still open, so the same point
+// showed in five rows and the counts mixed new and carried-over ones. One row
+// per point (GET /:slug/points/historique, superviseur/historique.ts), dated by
+// the day it appeared; how it ended comes from the dashboard widget, where
+// Isabelle handles it — nothing is decided here.
+
+interface PointTraitement { issue: 'traite' | 'fausse_alerte'; note: Note; commentaire: string; par: Auteur; le: string }
+interface PointHistorique {
+  id: string
+  cle: string
+  domaine: string
+  gravite: Gravite
+  titre: string
+  message: string
+  lien: string | null
+  depuis: string
+  vuLe: string
+  fermeLe: string | null
+  raisonFermeture: string | null
+  traitement: PointTraitement | null
+}
+
+type EtatPoint = 'ouvert' | 'clos' | 'traite' | 'corrige' | 'fausse_alerte'
+const etatPoint = (p: PointHistorique): EtatPoint =>
+  p.traitement?.issue === 'fausse_alerte' ? 'fausse_alerte'
+  : p.traitement ? (p.traitement.note === 'echec' ? 'corrige' : 'traite')
+  : p.fermeLe ? 'clos' : 'ouvert'
+
+const ETAT_POINT_META: Record<EtatPoint, { label: string; cls: string; icon: ComponentType<{ className?: string }>; title: string }> = {
+  ouvert: { label: 'À traiter', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-800', icon: Clock,
+    title: 'Toujours relevé, personne ne l’a encore traité' },
+  clos: { label: 'Disparu', cls: 'border-zinc-300 bg-zinc-100 text-zinc-700', icon: CheckCircle2,
+    title: 'Le contrôle ne le relève plus, sans que personne l’ait traité' },
+  traite: { label: 'Traité', cls: 'border-green-500/30 bg-green-500/10 text-green-700', icon: CheckCheck,
+    title: 'Traité dans le tableau de bord : l’alerte était juste' },
+  corrige: { label: 'Traité · Tricobot corrigé', cls: 'border-destructive/30 bg-destructive/5 text-destructive', icon: TricobotMascot,
+    title: 'Traité, avec une remarque sur ce que Tricobot aurait dû dire' },
+  fausse_alerte: { label: 'Fausse alerte', cls: 'border-destructive/30 bg-destructive/10 text-destructive', icon: XCircle,
+    title: 'Rien à faire : l’alerte était fausse' },
+}
+
+const POINT_FILTRES: Array<{ key: string; label: string; garde: (e: EtatPoint) => boolean }> = [
+  { key: 'tous', label: 'Tous', garde: () => true },
+  { key: 'ouverts', label: 'À traiter', garde: (e) => e === 'ouvert' },
+  { key: 'traites', label: 'Traités', garde: (e) => e === 'traite' || e === 'corrige' },
+  { key: 'fausses', label: 'Fausses alertes', garde: (e) => e === 'fausse_alerte' },
+  { key: 'clos', label: 'Disparus', garde: (e) => e === 'clos' },
 ]
 
-function SuperviseurExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: string) => void }) {
+const fmtJour = (iso: string) => new Date(iso).toLocaleDateString('fr-FR')
+
+function SuperviseurPointsTab({ slug }: { slug: string }) {
   const base = useBaseApi()
-  const [filtre, setFiltre] = useState('tout')
-  const q = SUP_FILTERS.find((f) => f.key === filtre)?.query ?? ''
+  const [filtre, setFiltre] = useState('tous')
+  const [deplieId, setDeplieId] = useState<string | null>(null)
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['agent-ia-runs', slug, filtre],
-    queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`${base}/${slug}/runs${q}`),
+    queryKey: ['agent-ia-points', slug],
+    queryFn: () => apiFetch<{ points: PointHistorique[] }>(`${base}/${slug}/points/historique`),
     refetchInterval: 30_000,
   })
-  const num = (v: number | null) => (v === null ? '—' : fmtNum(v))
+  // Newest first by the day it appeared — not by the last thing that happened to it.
+  const tous = useMemo(() => [...(data?.points ?? [])].sort((a, b) => b.depuis.localeCompare(a.depuis)), [data])
+  const parFiltre = useMemo(() => {
+    const m = new Map<string, PointHistorique[]>()
+    for (const f of POINT_FILTRES) m.set(f.key, tous.filter((p) => f.garde(etatPoint(p))))
+    return m
+  }, [tous])
+  const points = parFiltre.get(filtre) ?? tous
 
   return (
     <>
       <div className="flex flex-wrap items-center gap-1">
-        {SUP_FILTERS.map((f) => (
+        {POINT_FILTRES.map((f) => (
           <button key={f.key} type="button" onClick={() => setFiltre(f.key)}
-            className={cn('px-3 py-1 text-xs rounded-md transition-colors',
+            className={cn('px-3 py-1 text-xs rounded-md transition-colors tabular-nums',
               filtre === f.key ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10')}>
-            {f.label}
+            {f.label}{data && f.key !== 'tous' ? ` (${parFiltre.get(f.key)?.length ?? 0})` : ''}
           </button>
         ))}
-        {data && <span className="ml-auto text-xs text-muted-foreground">{data.total} rapport{data.total !== 1 ? 's' : ''}</span>}
+        {data && <span className="ml-auto text-xs text-muted-foreground">{tous.length} point{tous.length !== 1 ? 's' : ''} relevé{tous.length !== 1 ? 's' : ''}</span>}
       </div>
       {isLoading ? <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
       : isError ? <div className="flex flex-col items-center justify-center py-12 text-destructive"><AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Chargement impossible</p></div>
-      : !data || data.runs.length === 0 ? (
+      : points.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
           <Inbox className="h-12 w-12 mb-3 opacity-40" />
-          <p className="text-sm">Aucun rapport</p>
+          <p className="text-sm">Aucun point</p>
         </div>
       ) : (
         <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
           <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
             <colgroup>
-              <col style={{ width: '19%' }} /><col style={{ width: '22%' }} /><col style={{ width: '9%' }} />
-              <col style={{ width: '9%' }} /><col style={{ width: '9%' }} /><col style={{ width: '20%' }} /><col style={{ width: '12%' }} />
+              <col style={{ width: '58%' }} /><col style={{ width: '14%' }} /><col style={{ width: '24%' }} /><col style={{ width: '4%' }} />
             </colgroup>
             <thead className="bg-zinc-200/60 border-b border-border/60">
               <tr className="text-xs uppercase tracking-wide text-muted-foreground">
-                <th className="px-3 py-2.5 text-left font-semibold">Date</th>
-                <th className="px-3 py-2.5 text-left font-semibold">Résultat</th>
-                <th className="px-3 py-2.5 text-right font-semibold" title="Points nouveaux ou aggravés">Nouv.</th>
-                <th className="px-3 py-2.5 text-right font-semibold" title="Points toujours ouverts">Ouv.</th>
-                <th className="px-3 py-2.5 text-right font-semibold" title="Points résolus depuis le rapport précédent">Rés.</th>
-                <th className="px-3 py-2.5 text-left font-semibold" title="Points évalués sur points signalés">Évalués</th>
-                <th className="px-3 py-2.5 text-right font-semibold">Coût</th>
+                <th className="px-3 py-2.5 text-left font-semibold">Point</th>
+                <th className="px-3 py-2.5 text-left font-semibold">Apparu le</th>
+                <th className="px-3 py-2.5 text-left font-semibold">État</th>
+                <th />
               </tr>
             </thead>
             <tbody>
-              {data.runs.map((r) => (
-                <tr key={r.id} onClick={() => onOpenRun(r.id)} title={r.resume}
-                  className="border-b border-border/40 last:border-b-0 cursor-pointer hover:bg-accent/5 transition-colors">
-                  <td className="px-3 py-1.5">
-                    <div className="tabular-nums truncate">{fmtDateCourte(r.createdAt)}</div>
-                    <div className="text-[11px] text-muted-foreground truncate">{SOURCE_LABEL[r.source]}</div>
-                  </td>
-                  <td className="px-3 py-1.5"><StatutPill statut={r.statut} /></td>
-                  <td className={cn('px-3 py-1.5 text-right tabular-nums', (r.nbNouveaux ?? 0) > 0 && 'font-semibold text-amber-700')}>{num(r.nbNouveaux)}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbOuverts)}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums">{num(r.nbFermes)}</td>
-                  <td className="px-3 py-1.5"><BilanCell b={r.bilan} /></td>
-                  <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtEur(r.coutUsd)}</td>
-                </tr>
+              {points.map((p) => (
+                <PointLigne key={p.id} p={p} deplie={deplieId === p.id} onToggle={() => setDeplieId((v) => (v === p.id ? null : p.id))} />
               ))}
             </tbody>
           </table>
         </div>
+      )}
+    </>
+  )
+}
+
+function PointLigne({ p, deplie, onToggle }: { p: PointHistorique; deplie: boolean; onToggle: () => void }) {
+  const g = GRAVITE_META[p.gravite]
+  const GIcon = g.icon
+  const etat = etatPoint(p)
+  const m = ETAT_POINT_META[etat]
+  const EIcon = m.icon
+  const { contexte, action } = decouperMessage(p.message)
+  const j = joursDepuis(p.depuis)
+  const t = p.traitement
+  return (
+    <>
+      <tr onClick={onToggle}
+        className={cn('border-b border-border/40 cursor-pointer transition-colors select-none',
+          deplie ? 'bg-accent/10' : 'hover:bg-accent/5')}>
+        <td className="px-3 py-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0', g.iconBg)}>
+              <GIcon className={cn('h-3.5 w-3.5', g.iconCls)} />
+            </div>
+            <div className="min-w-0">
+              <p className={cn('truncate', etat === 'ouvert' ? 'font-medium' : 'text-muted-foreground')} title={p.titre}>{p.titre}</p>
+              <p className="text-[11px] text-muted-foreground truncate">{DOMAINE_LIBELLE[p.domaine] ?? p.domaine}</p>
+            </div>
+          </div>
+        </td>
+        <td className="px-3 py-2 tabular-nums whitespace-nowrap">
+          <div>{fmtJour(p.depuis)}</div>
+          {etat === 'ouvert' && <div className="text-[11px] text-muted-foreground">{j === 0 ? 'aujourd’hui' : `depuis ${j} j`}</div>}
+        </td>
+        <td className="px-3 py-2">
+          <span title={m.title} className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium max-w-full', m.cls)}>
+            <EIcon className="h-3 w-3 flex-shrink-0" /><span className="truncate">{m.label}</span>
+          </span>
+        </td>
+        <td className="pr-3 py-2 text-right">
+          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform inline', deplie && 'rotate-180')} />
+        </td>
+      </tr>
+      {deplie && (
+        <tr className="border-b border-border/40 bg-zinc-50">
+          <td colSpan={4} className="px-3 py-3">
+            <div className="ml-9 space-y-2">
+              {contexte && <p className="text-[13px] leading-relaxed text-muted-foreground whitespace-pre-line">{contexte}</p>}
+              {action && (
+                <div className="flex items-start gap-2 rounded-md border border-accent/25 bg-accent/[0.07] px-2.5 py-1.5">
+                  <ArrowRight className="h-3.5 w-3.5 text-amber-700 flex-shrink-0 mt-[3px]" />
+                  <p className="text-[13px] leading-snug"><span className="font-semibold text-amber-800">À faire : </span>{action}</p>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>Apparu le {fmtDateHeure(p.depuis)}</span>
+                <span>{p.fermeLe ? `Plus relevé le ${fmtDateHeure(p.fermeLe)}` : `Encore relevé le ${fmtDateHeure(p.vuLe)}`}</span>
+                {p.lien && (
+                  <Link to={p.lien} className="inline-flex items-center gap-1 text-accent-blue hover:underline">
+                    <ExternalLink className="h-3 w-3" />Ouvrir dans ETM
+                  </Link>
+                )}
+              </div>
+              {p.raisonFermeture && (
+                <p className="text-xs"><span className="font-semibold">Pourquoi il a disparu : </span>{p.raisonFermeture}</p>
+              )}
+              {t && (
+                <p className="text-xs">
+                  <span className={cn('font-semibold', etat === 'traite' ? 'text-green-700' : 'text-destructive')}>{m.label}</span>
+                  {t.commentaire && <span> : {t.commentaire}</span>}
+                  <span className="text-muted-foreground"> — {t.par.nom}, {fmtDateHeure(t.le)}</span>
+                </p>
+              )}
+            </div>
+          </td>
+        </tr>
       )}
     </>
   )
@@ -2110,7 +2230,7 @@ function ConstatCard({ c, avis, resolution, textes, estompe }: {
             <div className="flex items-start gap-1.5 text-xs">
               <CheckCheck className="h-3.5 w-3.5 text-green-700 flex-shrink-0 mt-px" />
               <span className="min-w-0 flex-1">
-                <span className="font-semibold text-green-700">Résolu{resolution ? '' : ' sur un rapport précédent'} : </span>
+                <span className="font-semibold text-green-700">Résolu{resolution ? '' : ' un jour précédent'} : </span>
                 <span>{res.commentaire}</span>
                 <span className="text-muted-foreground"> — {res.par.nom}, {fmtDateHeure(res.le)}</span>
               </span>
@@ -2205,7 +2325,7 @@ function SuperviseurRunDialog({ agent, runId, onClose }: {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 flex-wrap">
             <ShieldCheck className="h-5 w-5 text-accent" />
-            {run ? `Rapport du ${fmtDateHeure(run.createdAt)}` : 'Rapport'}
+            {run ? (run.source === 'planifie' ? `Contrôle du ${fmtDateHeure(run.createdAt)}` : `Aperçu du contrôle — ${fmtDateHeure(run.createdAt)}`) : 'Contrôle'}
             {run && <StatutPill statut={run.statut} className="text-xs py-0.5" />}
             {run && constats.length > 0 && (aEvaluer > 0
               ? <span className="inline-flex items-center gap-1 text-xs font-normal text-muted-foreground"><Clock className="h-3.5 w-3.5" />À évaluer</span>
@@ -2217,7 +2337,7 @@ function SuperviseurRunDialog({ agent, runId, onClose }: {
             )}
           </DialogTitle>
           {run && res && !res.memoireMiseAJour && (
-            <p className="text-xs text-muted-foreground">Lancement manuel : la mémoire des points signalés n’a pas été modifiée.</p>
+            <p className="text-xs text-muted-foreground">Aperçu : rien n’est enregistré, la liste des points de l’onglet Points n’a pas changé.</p>
           )}
         </DialogHeader>
         {isLoading || !run ? (
