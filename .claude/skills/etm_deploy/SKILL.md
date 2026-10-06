@@ -227,7 +227,10 @@ with ours minus the `workspace:` refs and ships it + runs `npm install` **only**
 dependencies differ; refuses if the host's `.env` differs from `.env.production` (it never
 writes the host's `.env` — reconcile by hand); tars `src/` (tests excluded); uploads;
 backs up `src/` + `package.json` to `../mps_api_backup.tar.gz`; `rm -rf src/scripts`;
-extracts; restarts `mps-api`; waits up to 30 s for `/api/health` to answer
+extracts; **applies the pending `mps` schema migrations** (`mps-migrate.ts --write`,
+owner role from the host's `.env`, new code, BEFORE the restart — a failure exits 5 with
+the old process still serving and no restart; manual until 2026-10-06, when the forgotten
+`0011_journal_activite` broke the Rapport d'activité agent's first runs); restarts `mps-api`; waits up to 30 s for `/api/health` to answer
 `"app":"MPS API"` (otherwise prints the journal tail and exits without stamping); counts
 `HY090` / `Error` in the journal; smoke-checks **all four clients through their own
 nginx** — `mpsng`, `trm`, `atelier`, `trs` — and only then writes `DEPLOYED_SHA`, by its

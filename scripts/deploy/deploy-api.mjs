@@ -12,9 +12,16 @@
 //   4. env      prod's .env vs our .env.production: must be identical (the .env on the
 //               host is the secret store; this script never overwrites it)
 //   5. tarball  src/ minus *.test.ts → upload
-//   6. host     backup → rm -rf src/scripts → extract → [npm install] → restart →
-//               wait for /api/health to say "MPS API" → journal scan (HY090 = the
-//               accented-literal footgun that only fails on the Linux bridge)
+//   6. host     backup → rm -rf src/scripts → extract → [npm install] → migrations →
+//               restart → wait for /api/health to say "MPS API" → journal scan (HY090 =
+//               the accented-literal footgun that only fails on the Linux bridge)
+//               Migrations = mps-migrate.ts --write (lib/mps-schema.ts, owner role
+//               MPS_PG_OWNER_URL from the host's .env), run with the NEW code but BEFORE
+//               the restart: the new code finds its tables on its first request, and a
+//               failed migration stops here while the old process still serves. Until
+//               2026-10-06 this step was manual and got forgotten (0011_journal_activite
+//               missing, the Rapport d'activité agent's first runs failed). The rh and
+//               espace_client databases migrate themselves at API start-up.
 //   7. smoke    every client through its own nginx: mpsng, trm, atelier, trs, pointage
 //   8. stamp    DEPLOYED_SHA — last, its own call, only after 6 and 7
 //
@@ -104,6 +111,10 @@ tar czf ../mps_api_backup.tar.gz src/ package.json
 rm -rf src/scripts
 tar xzf ../mps_api_src.tar.gz
 ${depsChanged ? 'npm install 2>&1 | tail -3' : ''}
+if ! NODE_ENV=production node --import tsx src/scripts/mps-migrate.ts --write; then
+  echo "migrations FAILED — mps-api NOT restarted (the old process still serves; the new src/ is extracted)"
+  exit 5
+fi
 sudo systemctl restart mps-api
 for i in $(seq 1 30); do
   sleep 1
@@ -113,6 +124,7 @@ done
 sudo systemctl is-active mps-api
 echo "journal errors (HY090/Error) since restart: $(sudo journalctl -u mps-api --since '2 min ago' --no-pager | grep -c 'HY090\\|Error' || true)"
 `)
+if (r.code === 5) die(`a schema migration failed on the host — mps-api NOT restarted, stamp NOT written.\n  Fix the migration (lib/mps-schema.ts), land it, redeploy. To put the old src/ back meanwhile: ssh ${API_HOST} 'cd ${REMOTE} && tar xzf ../mps_api_backup.tar.gz'`)
 if (r.code !== 0) die(`deploy failed on the host (exit ${r.code}) — stamp NOT written.\n  Rollback: ssh ${API_HOST} 'cd ${REMOTE} && tar xzf ../mps_api_backup.tar.gz && sudo systemctl restart mps-api'`)
 
 // 7. smoke every client through its own proxy (a failure here is nginx-side if health passed)
