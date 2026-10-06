@@ -267,7 +267,7 @@ export function QualiteSuiviLots() {
     queryFn: () => apiFetch<ListRow[]>(`/suivi-lots?status=${statusFilter}`),
   })
 
-  const { data: detail, isLoading: detailLoading } = useQuery({
+  const { data: detail, isLoading: detailLoading, isError: detailError } = useQuery({
     queryKey: ['suivi-lot', selectedId],
     queryFn: () => apiFetch<SuiviLotDetail>(`/suivi-lots/${selectedId}`),
     enabled: selectedId !== null,
@@ -456,6 +456,12 @@ export function QualiteSuiviLots() {
         detail={
           detail ? (
             <RecapSection detail={detail} />
+          ) : detailError && selectedId !== null ? (
+            // A failed detail load used to leave the panel blank (#1264).
+            <div className="flex flex-col items-center justify-center py-10 text-destructive">
+              <AlertCircle className="h-6 w-6 mb-2" />
+              <span className="text-sm">Erreur de chargement du lot</span>
+            </div>
           ) : selectedId === null && !isLoading ? (
             <EmptyDetailState />
           ) : null
