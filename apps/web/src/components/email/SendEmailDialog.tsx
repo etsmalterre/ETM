@@ -9,7 +9,6 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
-  AlertTriangle,
   User,
   Plus,
   X,
@@ -754,15 +753,6 @@ export function SendEmailDialog({
 
                   {/* Body — anchored: fills remaining vertical space in the left pane */}
                   <div className="flex-1 min-h-0 flex flex-col gap-1">
-                    {(defaults?.points_a_signaler?.length ?? 0) > 0 && (
-                      <div className="flex-shrink-0 flex items-start gap-2 px-2.5 py-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-800 text-xs">
-                        <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-                        <p>
-                          Cette livraison comporte {defaults!.points_a_signaler!.length} point{defaults!.points_a_signaler!.length > 1 ? 's' : ''} à
-                          signaler au client, repris dans le message. Vous pouvez les reformuler.
-                        </p>
-                      </div>
-                    )}
                     {/* min-h keeps the message readable when Cc/Cci, the
                         points banner and the signature all show — the form
                         scrolls instead of crushing it (#1266 feedback). */}
