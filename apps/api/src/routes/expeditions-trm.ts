@@ -1279,8 +1279,7 @@ expeditionsTrmRouter.get('/:id/email-defaults', async (req: Request, res: Respon
         `Bonjour,\n\n` +
         `Veuillez trouver ci-joint notre avis d'expédition N°${id}.\n\n` +
         `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-        `Cordialement,\n` +
-        SENDER_LABEL,
+        `Cordialement,`,
       clientNom: clientNames.get(IDclient) ?? '',
       // No Cci: TRM ships from its own workshop, so there is no sous-traitant
       // magasin to notify (the ETM avis copies the holding warehouse in).

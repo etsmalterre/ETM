@@ -629,8 +629,7 @@ async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | nu
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre bon de commande N°${numero}${fournisseurNom ? ` à destination de ${fournisseurNom}` : ''}.\n\n` +
     `Merci de bien vouloir nous confirmer la bonne réception de cette commande.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
 
   return {
     recipients: { selected, suggestions },

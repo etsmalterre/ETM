@@ -1300,8 +1300,7 @@ dossiersQualiteRouter.get('/:id/fnc/email-defaults', async (req: Request, res: R
         `Veuillez trouver ci-joint notre fiche de non-conformité N°${id}` +
         `${defautNom ? ` (${defautNom})` : ''}.\n\n` +
         `Merci de nous faire part de votre analyse et des mesures prises.\n\n` +
-        `Cordialement,\n` +
-        `Ets Malterre - Service Qualité`,
+        `Cordialement,`,
       societeNom,
       clientNom: labels.clientNom.get(dossier.IDclient) ?? '',
       bcc: [],

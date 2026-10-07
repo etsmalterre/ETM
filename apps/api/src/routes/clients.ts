@@ -2372,8 +2372,7 @@ clientsRouter.get('/:id/tarifs/email-defaults', async (req: Request, res: Respon
       `Bonjour,\n\n` +
       `Veuillez trouver ci-joint notre fiche tarifs.\n\n` +
       `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-      `Cordialement,\n` +
-      `ETS Malterre`
+      `Cordialement,`
 
     res.json({ recipients: { selected, suggestions }, subject, body, clientNom })
   } catch (err) {

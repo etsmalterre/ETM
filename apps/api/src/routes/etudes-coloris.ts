@@ -834,7 +834,6 @@ async function buildEtudeEmailDefaults(id: number): Promise<EmailDefaultsPayload
     "Nous vous remercions de bien vouloir nous retourner vos propositions après étude de l'échantillon joint.",
     '',
     'Cordialement,',
-    'ETS Malterre',
   )
   const body = bodyLines.join('\n')
 
@@ -1699,7 +1698,6 @@ async function buildSoumissionEmailDefaults(soumId: number): Promise<{
     "Merci de bien vouloir nous retourner vos commentaires après examen des échantillons joints.",
     '',
     'Cordialement,',
-    'ETS Malterre',
   )
 
   return {

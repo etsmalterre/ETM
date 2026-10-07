@@ -1395,8 +1395,7 @@ async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | nu
         `Bonjour,\n\n` +
         `Veuillez trouver ci-joint notre devis N°${numero}, accompagné de nos conditions générales de vente.\n\n` +
         `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-        `Cordialement,\n` +
-        `ETS Malterre`,
+        `Cordialement,`,
       clientNom: prospect?.nom ?? '',
       numero,
     }
@@ -1433,8 +1432,7 @@ async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | nu
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre devis N°${numero}, accompagné de nos conditions générales de vente.\n\n` +
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
   return { recipients: { selected, suggestions }, subject, body, clientNom, numero }
 }
 

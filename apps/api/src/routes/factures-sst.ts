@@ -487,7 +487,7 @@ facturesSstRouter.get('/:id/reclamation/email-defaults', async (req, res) => {
       `${lignes.join('\n')}\n` +
       (trop > 0 ? `\nMontant facturé en trop selon notre tarif : ${eurFr(trop)} €.\n` : '') +
       `\nMerci de nous adresser un avoir ou une facture rectificative.\n\n` +
-      `Cordialement,\nETS Malterre`
+      `Cordialement,`
     res.json({
       recipients: { selected, suggestions },
       cc: [FACTURES_SST_BOITE],

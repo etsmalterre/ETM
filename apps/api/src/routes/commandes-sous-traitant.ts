@@ -2499,8 +2499,7 @@ async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | nu
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre bon de commande N°${numero}${sousTraitantNom ? ` à destination de ${sousTraitantNom}` : ''}.\n\n` +
     `Merci de bien vouloir nous confirmer la bonne réception de cette commande.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
 
   return { recipients: { selected, suggestions }, subject, body, sousTraitantNom, numero }
 }
@@ -3662,8 +3661,7 @@ async function buildSoumissionEmailDefaults(
     `Veuillez trouver ci-joint la soumission du lot ${lotString} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
     (refCommandeClient ? `Réf commande client : ${refCommandeClient}\n\n` : '') +
     `Un échantillon est joint au document imprimé.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
 
   return {
     recipients: { selected, suggestions },

@@ -431,8 +431,7 @@ async function buildEntrepriseEmailDefaults(id: number): Promise<EntrepriseEmail
   const body =
     `Bonjour,\n\n` +
     `…\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
 
   return {
     recipients: { selected, suggestions },

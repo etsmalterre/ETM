@@ -542,7 +542,7 @@ function emailText(doc: Doc, commandeClient: string, coloris: string) {
         `Bonjour,\n\n` +
         `Veuillez trouver ci-joint le tableau de métrage des pièces Simone Pérèle${what ? ` (${what})` : ''}.\n\n` +
         `Merci de nous le retourner complété (métrage brut, métrage net, laize, tare et poids de chaque pièce).\n\n` +
-        `Cordialement,\nETS Malterre`,
+        `Cordialement,`,
     }
   }
   return {
@@ -550,7 +550,7 @@ function emailText(doc: Doc, commandeClient: string, coloris: string) {
     body:
       `Bonjour,\n\n` +
       `Veuillez trouver ci-joint les étiquettes des pièces Simone Pérèle${what ? ` (${what})` : ''}, à imprimer et à apposer sur chaque rouleau avant expédition.\n\n` +
-      `Cordialement,\nETS Malterre`,
+      `Cordialement,`,
   }
 }
 

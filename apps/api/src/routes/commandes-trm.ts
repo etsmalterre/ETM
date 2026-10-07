@@ -2325,8 +2325,7 @@ commandesTrmRouter.get('/:id/email-defaults', async (req: Request, res: Response
         recap +
         `Nous vous remercions de vérifier les références, quantités et délais indiqués et de nous signaler toute anomalie.\n\n` +
         `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-        `Cordialement,\n` +
-        SENDER_LABEL,
+        `Cordialement,`,
       clientNom: clientNames.get(IDclient) ?? '',
       // No Cci: unlike the ETM avis there is no holding warehouse to copy in.
       bcc: [],

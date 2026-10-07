@@ -5062,8 +5062,7 @@ async function buildEmailDefaults(
       `Bonjour,\n\n` +
       `Veuillez trouver ci-joint le calcul de la valeur des pièces de la donation N°${numero}.\n\n` +
       `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-      `Cordialement,\n` +
-      `ETS Malterre`
+      `Cordialement,`
     return { recipients: { selected, suggestions }, subject, body, clientNom, numero }
   }
 
@@ -5073,8 +5072,7 @@ async function buildEmailDefaults(
       `Bonjour,\n\n` +
       `Veuillez trouver ci-joint notre facture proforma relative à votre commande N°${numero}.\n\n` +
       `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-      `Cordialement,\n` +
-      `ETS Malterre`
+      `Cordialement,`
     return { recipients: { selected, suggestions }, subject, body, clientNom, numero }
   }
 
@@ -5104,8 +5102,7 @@ async function buildEmailDefaults(
     recap +
     `**Nous vous remercions de vérifier attentivement les termes de ce document (références, coloris, quantités, délais) et de nous signaler toute anomalie sous 48 heures. Sans retour de votre part dans ce délai, la commande sera considérée comme acceptée en l'état.**\n\n` +
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
   return { recipients: { selected, suggestions }, subject, body, clientNom, numero }
 }
 

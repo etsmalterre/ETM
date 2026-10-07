@@ -2986,8 +2986,7 @@ async function buildBlEmailDefaults(id: number): Promise<{
     `Veuillez trouver ci-joint notre avis d'expédition N°${id}.\n\n` +
     paragraphePointsASignaler(points_a_signaler) +
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
   return { recipients: { selected, suggestions }, subject, body, clientNom, bcc, optional_attachments, points_a_signaler }
 }
 
@@ -3278,8 +3277,7 @@ async function buildBlDiversEmailDefaults(id: number): Promise<{
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre avis d'expédition N°${id}.\n\n` +
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
   return { recipients: { selected, suggestions }, subject, body, clientNom }
 }
 

@@ -1369,8 +1369,7 @@ async function buildTransfertEmailDefaults(kind: Kind, id: number): Promise<{
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre bordereau de livraison N°${id}.\n\n` +
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-    `Cordialement,\n` +
-    `ETS Malterre`
+    `Cordialement,`
   return { recipients: { selected, suggestions }, subject, body, destinationNom: destNom }
 }
 

@@ -1159,8 +1159,7 @@ retoursClientTrmRouter.get('/:id/email-defaults', async (req: Request, res: Resp
         `Veuillez trouver ci-joint notre fiche de retour client N°${id}` +
         `${defaut ? ` (${defaut})` : ''}, avec le traitement apporté par l'atelier.\n\n` +
         `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
-        `Cordialement,\n` +
-        SENDER_LABEL_TRM,
+        `Cordialement,`,
       clientNom: labels.clientNom.get(row.IDclient) ?? '',
       bcc: [],
       optional_attachments: [],
