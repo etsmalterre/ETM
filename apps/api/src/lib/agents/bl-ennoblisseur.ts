@@ -20,7 +20,7 @@
 import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
 import { listerMessages, lireMessage, lirePieceJointe, assurerLibelle, ajouterLibelle, type MessageInfo } from '../gmail-reader.js'
-import { OPTION_VIA_TRIAGE } from './triage/constantes.js'
+import { relaisTriage, triesParTriage } from './triage/relais.js'
 import {
   BL_PROMPT_V1,
   controlerExtraction,
@@ -334,10 +334,11 @@ async function contacts(): Promise<Array<{ mail: string; idSousTraitant: number 
 }
 
 /** Read the new mails of the dyers since the agent started. Returns the runs
- *  made. Nothing when the Triage hands this agent its mail (OPTION_VIA_TRIAGE). */
+ *  made. Nothing while the Triage is in service and hands this agent its mail
+ *  (triage/relais.ts); never a mail the Triage already sorted. */
 export async function sonderBoite(state: AgentState, version: AgentVersion, lancePar: Auteur | null = null): Promise<AgentRun[]> {
   if (state.mode === 'off' || !state.startedAt) return []
-  if (optionDe(state, OPTION_VIA_TRIAGE, false)) return []
+  if ((await relaisTriage()).source === 'triage') return []
   const cs = await contacts()
   const termes = termesExpediteurs(cs.map((c) => c.mail))
   if (termes.length === 0) return []
@@ -345,7 +346,8 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
   const q = `${requeteExpediteurs(termes)} has:attachment after:${apres}`
   const ids = await listerMessages(BL_ENNOBLISSEUR_BOITE, q, 50)
   const deja = await messagesTraites(BL_ENNOBLISSEUR_SLUG)
-  const nouveaux = ids.filter((id) => !deja.has(id)).reverse() // oldest first
+  const tries = await triesParTriage()
+  const nouveaux = ids.filter((id) => !deja.has(id) && !tries.has(id)).reverse() // oldest first
   const tous: AgentRun[] = []
   for (const id of nouveaux) {
     const m = await lireMessage(BL_ENNOBLISSEUR_BOITE, id)

@@ -46,6 +46,8 @@ import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reader.js'
 import { corrigerTriage, CorrectionInvalide, TRIAGE_BOITE, TRIAGE_SLUG } from '../lib/agents/triage/agent.js'
 import { CATEGORIES } from '../lib/agents/triage/categories.js'
+import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
+import { relaisTriage } from '../lib/agents/triage/relais.js'
 
 const routes: RouterType = Router()
 
@@ -198,7 +200,10 @@ function allege(r: AgentRun) {
 async function vueAgent(def: AgentDef) {
   const [state, runs] = await Promise.all([lireEtat(def.slug, def.versionInitiale), lireRuns(def.slug)])
   const v = versionActive(state)
+  // An agent the Triage hands mail to: where its mail comes from right now.
+  const relais = def.slug in DESTINATAIRES ? await relaisTriage() : null
   return {
+    relais,
     slug: def.slug,
     nom: def.nom,
     description: def.description,

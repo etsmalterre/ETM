@@ -51,6 +51,7 @@ import { categorie, libelleGmail, normaliserCategories, type Categorie } from '.
 import { adresseDe, annuaire, identifier, type Organisation } from './annuaire.js'
 import { entreeTriage, TRIAGE_PROMPT_V1, TRIAGE_PROMPT_V2, TRIAGE_SCHEMA, type ReponseTriage } from './prompt.js'
 import { DESTINATAIRES, sousCategorie, transmettre, type Destinataire, type Transmission } from './transmission.js'
+import { noterReleveTriage } from './relais.js'
 
 export { TRIAGE_SLUG, TRIAGE_BOITE }
 
@@ -278,6 +279,8 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
     }
   }
   if (state.mode === 'actif') await relancer(lancePar)
+  // The mailbox was read: the agents behind keep leaving it to the Triage (relais.ts).
+  noterReleveTriage()
   return runs
 }
 

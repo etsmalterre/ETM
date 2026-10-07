@@ -94,7 +94,7 @@ describe('aTrier (which mails a poll triages)', () => {
 
 describe('trierMessage', () => {
   it('essai: categories stored, no label, no hand-off; the dyer from the sender', async () => {
-    etats.set('bl-ennoblisseur', { mode: 'actif', options: { via_triage: true } })
+    etats.set('bl-ennoblisseur', { mode: 'actif', options: {} })
     const r = await trierMessage('m1', 't1', { mode: 'essai', version, source: 'gmail', lancePar: null })
     const res = resultatTriage(r)
     expect(r.statut).toBe('trie')
@@ -107,7 +107,7 @@ describe('trierMessage', () => {
   })
 
   it('actif: handed to BL Ennoblisseur (its own mode), labelled with the dyer it read', async () => {
-    etats.set('bl-ennoblisseur', { mode: 'essai', options: { via_triage: true } })
+    etats.set('bl-ennoblisseur', { mode: 'essai', options: {} })
     const r = await trierMessage('m1', 't1', { mode: 'actif', version, source: 'gmail', lancePar: null })
     const res = resultatTriage(r)
     expect(recusBl).toEqual(['m1'])
@@ -116,19 +116,20 @@ describe('trierMessage', () => {
     expect(runs.get('bl-ennoblisseur')![0].source).toBe('triage')
   })
 
-  it('never hands to an agent that still polls the mailbox itself, nor to one that is off', async () => {
+  it('hands to an agent in service without any option (the old « via_triage » switch is gone), never to one that is off', async () => {
     etats.set('bl-ennoblisseur', { mode: 'actif', options: {} })
     const r = await trierMessage('m1', 't1', { mode: 'actif', version, source: 'gmail', lancePar: null })
-    expect(recusBl).toEqual([])
-    expect(resultatTriage(r).transmissions[0]).toMatchObject({ statut: 'non_transmis' })
-    expect(resultatTriage(r).transmissions[0].raison).toMatch(/relève la boîte lui-même/)
-    etats.set('bl-ennoblisseur', { mode: 'off', options: { via_triage: true } })
+    expect(recusBl).toEqual(['m1'])
+    expect(resultatTriage(r).transmissions[0]).toMatchObject({ statut: 'transmis' })
+    runs.delete('bl-ennoblisseur'); recusBl.length = 0
+    etats.set('bl-ennoblisseur', { mode: 'off', options: {} })
     const r2 = await trierMessage('m1', 't1', { mode: 'actif', version, source: 'gmail', lancePar: null })
+    expect(recusBl).toEqual([])
     expect(resultatTriage(r2).transmissions[0].raison).toMatch(/à l’arrêt/)
   })
 
   it('an agent that already has a run for the mail is not called again', async () => {
-    etats.set('bl-ennoblisseur', { mode: 'actif', options: { via_triage: true } })
+    etats.set('bl-ennoblisseur', { mode: 'actif', options: {} })
     runs.set('bl-ennoblisseur', [{ id: 'old', message: { id: 'm1' }, statut: 'ecrit', resume: 'x', resultat: {} } as unknown as AgentRun])
     const r = await trierMessage('m1', 't1', { mode: 'actif', version, source: 'gmail', lancePar: null })
     expect(recusBl).toEqual([])
@@ -136,8 +137,8 @@ describe('trierMessage', () => {
   })
 
   it('a BL and an invoice in one mail go to both agents', async () => {
-    etats.set('bl-ennoblisseur', { mode: 'actif', options: { via_triage: true } })
-    etats.set('factures-ennoblisseur', { mode: 'actif', options: { via_triage: true } })
+    etats.set('bl-ennoblisseur', { mode: 'actif', options: {} })
+    etats.set('factures-ennoblisseur', { mode: 'actif', options: {} })
     reponse = { raison: 'BL et facture.', categories: ['bl_ennoblisseur', 'facture_sous_traitant'] }
     const r = await trierMessage('m1', 't1', { mode: 'actif', version, source: 'gmail', lancePar: null })
     expect(recusBl).toEqual(['m1'])
@@ -169,7 +170,7 @@ describe('sonderBoite', () => {
 
 describe('corrigerTriage', () => {
   it('a correction re-labels, hands the mail to the new category’s agent and scores an échec with why', async () => {
-    etats.set('factures-ennoblisseur', { mode: 'actif', options: { via_triage: true } })
+    etats.set('factures-ennoblisseur', { mode: 'actif', options: {} })
     reponse = { raison: 'Point du jour.', categories: ['sous_traitant'] }
     const r = await trierMessage('m1', 't1', { mode: 'actif', version, source: 'gmail', lancePar: null })
     expect(labels).toEqual([{ op: 'add', nom: 'ETM/Échange sous-traitant' }])
@@ -185,7 +186,7 @@ describe('corrigerTriage', () => {
   })
 
   it('removing a category an agent already handled lists it (never undone)', async () => {
-    etats.set('bl-ennoblisseur', { mode: 'actif', options: { via_triage: true } })
+    etats.set('bl-ennoblisseur', { mode: 'actif', options: {} })
     const r = await trierMessage('m1', 't1', { mode: 'actif', version, source: 'gmail', lancePar: null })
     const c = await corrigerTriage(r.id, ['sous_traitant'], 'Pas un BL, une relance.', par)
     expect(c!.dejaTraites).toMatchObject([{ agent: 'bl-ennoblisseur', runs: [{ id: 'bl-m1' }] }])
@@ -202,7 +203,7 @@ describe('corrigerTriage', () => {
   })
 
   it('an essai run is corrected without label nor hand-off', async () => {
-    etats.set('factures-ennoblisseur', { mode: 'actif', options: { via_triage: true } })
+    etats.set('factures-ennoblisseur', { mode: 'actif', options: {} })
     const r = await trierMessage('m1', 't1', { mode: 'essai', version, source: 'gmail', lancePar: null })
     await corrigerTriage(r.id, ['facture_sous_traitant'], 'Facture.', par)
     expect(recusFactures).toEqual([])

@@ -132,8 +132,14 @@ interface GuideNotation {
 /** A switch a pilot sets on the agent (configuration, never a score). */
 interface OptionAgent { cle: string; libelle: string; description: string; defaut: boolean; valeur: boolean }
 
+/** Where an agent behind the Triage gets its mail right now (triage/relais.ts):
+ *  handed by the Triage, its own mailbox read, or a fallback read while the
+ *  Triage is failing. Null for the other agents. */
+interface RelaisTriage { source: 'triage' | 'boite' | 'secours'; raison: string }
+
 interface AgentVue {
   options?: OptionAgent[]
+  relais?: RelaisTriage | null
   slug: string
   nom: string
   description: string
@@ -1318,6 +1324,18 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode, onChange
               <p className="text-[11px] text-muted-foreground">Changé par {agent.modeChangedBy.nom} le {fmtDateHeure(agent.modeChangedAt)}</p>
             )}
           </div>
+          {agent.relais && (
+            <div className={cn(
+              'p-3 rounded-lg border bg-card shadow-sm space-y-1.5',
+              agent.relais.source === 'secours' && 'border-l-4 border-l-amber-400/60',
+            )}>
+              <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><Inbox className="h-3.5 w-3.5" />Boîte mail</p>
+              <p className={cn('text-sm flex items-start gap-1.5', agent.relais.source === 'secours' && 'text-amber-700')}>
+                {agent.relais.source === 'secours' && <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />}
+                <span>{agent.relais.raison}</span>
+              </p>
+            </div>
+          )}
           {(agent.options ?? []).length > 0 && (
             <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2.5">
               <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><Settings2 className="h-3.5 w-3.5" />Réglages</p>

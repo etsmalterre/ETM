@@ -37,7 +37,6 @@ import {
 import { resultatTriage, sonderBoite as sonderTriage, TRIAGE_BOITE, TRIAGE_PROMPT_LIVRE, TRIAGE_SLUG, TRIAGE_VERSION_INITIALE } from './triage/agent.js'
 import { CATEGORIES } from './triage/categories.js'
 import { DESTINATAIRES } from './triage/transmission.js'
-import { OPTION_VIA_TRIAGE_DEF } from './triage/constantes.js'
 import {
   FACTURES_SST_BOITE,
   FACTURES_SST_SLUG,
@@ -144,7 +143,7 @@ export const AGENTS: readonly AgentDef[] = [
     declencheur: `Relève chaque minute la boîte ${TRIAGE_BOITE} : tous les mails reçus (jamais ceux qu’elle envoie), depuis sa mise en route et au plus les 7 derniers jours, du plus ancien au plus récent. L’expéditeur est reconnu dans les contacts d’ETM (clients, sous-traitants, fournisseurs, transporteurs, prospects) ; le modèle lit l’objet, le corps, les noms des pièces jointes et les deux messages précédents du fil.`,
     ecritures: [
       `Un libellé Gmail par catégorie sur le mail : « ETM/Transport », « ETM/Qualité »… ; pour un BL ou une facture d’ennoblisseur, un niveau de plus avec l’ennoblisseur (« ETM/BL ennoblisseur/MATEL » — reconnu dans le PDF par l’agent qui le lit, sinon par l’expéditeur, « Inconnu » à défaut). Mode actif seulement.`,
-      `Le mail transmis à l’agent de sa catégorie (${CATEGORIES.filter((c) => c.cible).map((c) => `${c.libelle} → ${DESTINATAIRES[c.cible!]?.nom ?? c.cible}`).join(', ')}), quand cet agent est en service avec l’option « Mails transmis par le Triage ». Cet agent lit et enregistre selon son propre mode.`,
+      `Le mail transmis à l’agent de sa catégorie (${CATEGORIES.filter((c) => c.cible).map((c) => `${c.libelle} → ${DESTINATAIRES[c.cible!]?.nom ?? c.cible}`).join(', ')}), quand cet agent est en service. Cet agent lit et enregistre selon son propre mode. Tant que le Triage est en service, ces agents ne relèvent plus la boîte eux-mêmes ; ils la relèvent de nouveau s’il est à l’arrêt, en essai ou en panne (aucun relevé réussi depuis 15 min, ou ses 3 derniers tris en échec).`,
     ],
     abstention:
       'En essai, il trie et garde l’exécution, sans libellé ni transmission. Un mail dont le tri échoue (Gmail ou Mistral indisponible) est retenté aux relevés suivants, 3 fois au plus ; une transmission en erreur aussi, pendant 3 jours. Corriger les catégories d’un mail (Exécutions) déplace ses libellés et transmet le mail à l’agent d’une nouvelle catégorie — ce qu’un agent a déjà fait pour une catégorie retirée n’est pas défait.',
@@ -194,7 +193,7 @@ export const AGENTS: readonly AgentDef[] = [
     description:
       `Lit les bordereaux de livraison des ennoblisseurs (${PROFILS.map((p) => p.nom).join(', ')}) et prépare la réception : chaque pièce (métrage, observations, et le poids pour MATEL) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande. Les autres pièces jointes de ces expéditeurs (palettes, plans de charge, factures, nos propres documents renvoyés) sont écartées sans alerte.`,
     declenchement: { type: 'releve', intervalleMs: 2 * 60_000 },
-    declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE} : mails avec pièce jointe venant des contacts de ${PROFILS.map((p) => p.nom).join(', ')} (Sous-traitants › Gestion › Contacts — une nouvelle adresse du même domaine est prise d’office). C’est le texte du PDF qui décide s’il s’agit d’un BL.${((essai) => (essai.length ? ` ${essai.join(' et ')} : en essai quel que soit le mode de l’agent, le temps de valider leur lecture.` : ''))(PROFILS.filter((p) => p.modeMax === 'essai').map((p) => p.nom))}`,
+    declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE} : mails avec pièce jointe venant des contacts de ${PROFILS.map((p) => p.nom).join(', ')} (Sous-traitants › Gestion › Contacts — une nouvelle adresse du même domaine est prise d’office). C’est le texte du PDF qui décide s’il s’agit d’un BL. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).${((essai) => (essai.length ? ` ${essai.join(' et ')} : en essai quel que soit le mode de l’agent, le temps de valider leur lecture.` : ''))(PROFILS.filter((p) => p.modeMax === 'essai').map((p) => p.nom))}`,
     ecritures: [
       'Le PDF dans les documents de la commande sous-traitant (type « BL retour ennoblisseur »), nommé comme le lot.',
       'Une ligne par pièce dans les données de réception (table data_bl_tricotbot). Lot : « MA » + n° de BL (MATEL), « BON » + n° de BL (Bontemps), « TA » + n° d’OF (TAD, mise à dispo comme BL). Poids : celui du BL pour MATEL, aucun pour les autres (Malterre pèse).',
@@ -222,7 +221,6 @@ export const AGENTS: readonly AgentDef[] = [
     modeles: MODELES_MISTRAL,
     sonder: sonderBlEnnoblisseur,
     traiter: traiterBlEnnoblisseur,
-    options: [OPTION_VIA_TRIAGE_DEF],
   },
   {
     slug: FACTURES_SST_SLUG,
@@ -230,7 +228,7 @@ export const AGENTS: readonly AgentDef[] = [
     description:
       'Contrôle les factures des ennoblisseurs comme le faisait Pierre-Emmanuel avec « Lire facture » dans l’ancien Suivi lots : pour chaque lot facturé, le poids envoyé, le rendement et les traitements qui donnent le prix, comparés au tarif ETM du sous-traitant. La facture est enregistrée une seule fois dans Sous-traitants › Factures et rattachée à chaque commande qu’elle facture. Seules les factures avec un écart demandent une intervention.',
     declenchement: { type: 'releve', intervalleMs: 5 * 60_000 },
-    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que BL Ennoblisseur) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}.`,
+    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que BL Ennoblisseur) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).`,
     ecritures: [
       'La facture et son PDF dans Sous-traitants › Factures, une ligne par ligne imprimée, chaque lot rattaché à sa ligne de commande sous-traitant (avec le poids ETM, le prix attendu et le verdict).',
       'Le n° de facture sur les lignes de commande facturées, là où il est vide (comme dans l’ancien Suivi lots) — seulement si la lecture est fiable.',
@@ -263,7 +261,7 @@ export const AGENTS: readonly AgentDef[] = [
       libelle: 'Confirmation de toutes les factures',
       description: 'Activé : chaque facture, même conforme, arrive « à traiter » dans Sous-traitants › Factures pour qu’une personne la valide — c’est ainsi que l’agent est noté pendant la période de confiance. Désactivé : seules les factures avec un écart, un lot introuvable ou des prix non contrôlés demandent une intervention.',
       defaut: true,
-    }, OPTION_VIA_TRIAGE_DEF],
+    }],
     modes: { off: 'Ne lit pas la boîte mail.', essai: 'Lit et contrôle, n’enregistre rien.', actif: 'Lit, contrôle, enregistre la facture et signale les écarts.' },
     versionInitiale: FACTURES_SST_VERSION_INITIALE,
     modeles: MODELES_MISTRAL,

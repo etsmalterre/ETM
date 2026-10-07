@@ -593,7 +593,7 @@ function CorrectionDialog({ open, categories, actuelles, agent, actif, isPending
           {actif && nouvellesCibles.length > 0 && (
             <p className="text-xs text-muted-foreground flex items-start gap-1.5">
               <Clock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
-              Le mail sera transmis à {nouvellesCibles.map((c) => c.cibleNom).join(' et ')} (s’il est en service avec l’option « Mails transmis par le Triage »).
+              Le mail sera transmis à {nouvellesCibles.map((c) => c.cibleNom).join(' et ')} (s’il est en service).
             </p>
           )}
           {error && <p className="text-sm text-destructive flex items-center gap-1.5"><AlertCircle className="h-4 w-4" />{error.message}</p>}

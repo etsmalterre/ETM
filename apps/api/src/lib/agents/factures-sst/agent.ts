@@ -18,7 +18,7 @@
 
 import { ocrPdf, chatJson } from '../../mistral.js'
 import { listerMessages, lireMessage, lirePieceJointe, type MessageInfo } from '../../gmail-reader.js'
-import { OPTION_VIA_TRIAGE } from '../triage/constantes.js'
+import { relaisTriage, triesParTriage } from '../triage/relais.js'
 import { contactsEnnoblisseurs } from '../bl-ennoblisseur-db.js'
 import { requeteExpediteurs, sousTraitantExpediteur, termesExpediteurs } from '../bl-profils.js'
 import { BL_ENNOBLISSEUR_BOITE } from '../bl-ennoblisseur.js'
@@ -202,10 +202,11 @@ async function contacts(): Promise<Array<{ mail: string; idSousTraitant: number 
   return contactsCache.contacts
 }
 
-/** Read the dyers' new invoice mails since the agent started. */
+/** Read the dyers' new invoice mails since the agent started. Nothing while
+ *  the Triage is in service (triage/relais.ts); never a mail it already sorted. */
 export async function sonderBoite(state: AgentState, version: AgentVersion, lancePar: Auteur | null = null): Promise<AgentRun[]> {
   if (state.mode === 'off' || !state.startedAt) return []
-  if (optionDe(state, OPTION_VIA_TRIAGE, false)) return []
+  if ((await relaisTriage()).source === 'triage') return []
   const cs = await contacts()
   const termes = termesExpediteurs(cs.map((c) => c.mail))
   if (termes.length === 0) return []
@@ -215,7 +216,8 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
   const q = `${requeteExpediteurs(termes)} has:attachment (filename:facture OR filename:fa OR subject:facture) after:${apres}`
   const ids = await listerMessages(FACTURES_SST_BOITE, q, 50)
   const deja = await messagesTraites(FACTURES_SST_SLUG)
-  const nouveaux = ids.filter((id) => !deja.has(id)).reverse()
+  const tries = await triesParTriage()
+  const nouveaux = ids.filter((id) => !deja.has(id) && !tries.has(id)).reverse()
   const tous: AgentRun[] = []
   for (const id of nouveaux) {
     const m = await lireMessage(FACTURES_SST_BOITE, id)

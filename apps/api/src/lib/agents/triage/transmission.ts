@@ -3,10 +3,10 @@
 // A direct in-process call (MFProd's shape, no queue) to the agent's own
 // `traiterMessage`, under THAT agent's lock (verrous.ts) and with ITS mode
 // and prompt version: the Triage only decides who gets the mail, never how it
-// is read. Handed over only when the agent is on and its option « Mails
-// transmis par le Triage » is set — otherwise it still polls the mailbox
-// itself and would read the mail twice. An agent that already has a run for
-// the message is never called again (« déjà traité »).
+// is read. Handed over whenever the agent is on: while the Triage is in
+// service the agent no longer polls the mailbox itself (relais.ts). An agent
+// that already has a run for the message — read by its own fallback poll
+// while the Triage was failing — is never called again (« déjà traité »).
 //
 // No import of catalog.ts / scheduler.ts here (catalog imports the Triage).
 
@@ -24,9 +24,9 @@ import {
   traiterMessage as recevoirFacture,
 } from '../factures-sst/agent.js'
 import { fournisseurDe, fournisseurDuSousTraitant } from '../factures-sst/extraction.js'
-import { lireEtat, lireRuns, optionDe, versionActive, type AgentMode, type AgentRun, type AgentVersion, type Auteur, type RunSource, type VersionInitiale } from '../store.js'
+import { lireEtat, lireRuns, versionActive, type AgentMode, type AgentRun, type AgentVersion, type Auteur, type RunSource, type VersionInitiale } from '../store.js'
 import { apresVerrou } from '../verrous.js'
-import { OPTION_VIA_TRIAGE, TRIAGE_BOITE } from './constantes.js'
+import { TRIAGE_BOITE } from './constantes.js'
 import type { Categorie } from './categories.js'
 import type { Organisation } from './annuaire.js'
 
@@ -37,7 +37,7 @@ export interface Transmission {
   nom: string
   le: string
   /** transmis = the agent processed it now; deja_traite = it had already;
-   *  non_transmis = it is off or still reads the mailbox itself; erreur = retried. */
+   *  non_transmis = it is off; erreur = retried. */
   statut: 'transmis' | 'deja_traite' | 'non_transmis' | 'erreur'
   raison: string | null
   runs: Array<{ id: string; statut: string; resume: string }>
@@ -97,7 +97,6 @@ export async function transmettre(
   try {
     const state = await lireEtat(d.slug, d.versionInitiale)
     if (state.mode === 'off') { t.raison = `${d.nom} est à l’arrêt`; return t }
-    if (!optionDe(state, OPTION_VIA_TRIAGE, false)) { t.raison = `${d.nom} relève la boîte lui-même (option « Mails transmis par le Triage » désactivée)`; return t }
     // Under the agent's lock: never next to one of its own runs on the same mail.
     return await apresVerrou(d.slug, async () => {
       const deja = (await lireRuns(d.slug)).filter((r) => r.message?.id === messageId)
