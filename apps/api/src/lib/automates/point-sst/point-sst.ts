@@ -1,7 +1,7 @@
 // Automate « Point sous-traitant » — prepares, every working day from 17:00,
 // the next working day's « Point du JJ/MM » for each dyer in
 // POINT_SST_SOUS_TRAITANTS (MATEL first), and sends the points a person
-// scheduled (Sous-traitants › Point, « Programmer l'envoi », 9:00 by default).
+// scheduled (Sous-traitants › Point, « Programmer l'envoi », 8:00 — HEURE_ENVOI).
 // The rules are lib/point-sst/regles.ts; the person checks every line before
 // anything leaves — the automate never sends a point nobody scheduled.
 //
@@ -35,7 +35,7 @@ export const VERSIONS = [
   {
     version: 3,
     date: '2026-10-07',
-    note: 'Corrigée sur les retours de Pierre-Emmanuel au point du 07/10 : la soumission n’est plus demandée quand un lot déjà mesuré par MATEL attend notre contrôle ; une commande dont rien n’est revenu et dont la soumission vient de partir n’est plus rappelée en sortie ; les études ne sont plus listées (la question reste). Une ligne retirée avec son « pourquoi » reste retirée les jours suivants tant que les faits ne changent pas — un motif qu’ETM ne voit pas (décision du client, appel) n’est pas transformé en règle. Un point préparé à la main avant 17 h est actualisé à 17 h, sans toucher aux lignes corrigées.',
+    note: 'Corrigée sur les retours de Pierre-Emmanuel au point du 07/10 : la soumission n’est plus demandée quand un lot déjà mesuré par MATEL attend notre contrôle ; une commande dont rien n’est revenu et dont la soumission vient de partir n’est plus rappelée en sortie ; les études ne sont plus listées (la question reste). Une ligne retirée avec son « pourquoi » reste retirée les jours suivants tant que les faits ne changent pas — un motif qu’ETM ne voit pas (décision du client, appel) n’est pas transformé en règle. Un point préparé à la main avant 17 h est actualisé à 17 h, sans toucher aux lignes corrigées. L’envoi programmé part à 8 h au lieu de 9 h.',
   },
 ] as const
 

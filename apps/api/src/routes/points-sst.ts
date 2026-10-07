@@ -1,7 +1,7 @@
 // Sous-traitants › Point — the daily « Point du JJ/MM » to a dyer (MATEL
 // first), prepared at 17:00 by the automate « Point sous-traitant »
 // (lib/automates/point-sst/, rules in lib/point-sst/regles.ts), checked here
-// line by line, then sent now or scheduled (9:00 by default).
+// line by line, then sent now or scheduled (HEURE_ENVOI, 8:00).
 //
 // Every line carries the Tricobot button: the remark lands in the automate's
 // « Retours » (Agents IA › Automates), tied to its line — read before each
@@ -24,7 +24,7 @@ import {
 } from '../lib/point-sst/db.js'
 import { docx, nomDocx, pageApercu } from '../lib/point-sst/rendu.js'
 import { EnvoiImpossible, envoyerPoint, POINT_EXPEDITEUR } from '../lib/point-sst/envoi.js'
-import { jourSuivantOuvre, SECTIONS, type Section } from '../lib/point-sst/regles.js'
+import { HEURE_ENVOI, jourSuivantOuvre, SECTIONS, type Section } from '../lib/point-sst/regles.js'
 import { SLUG as SLUG_AUTOMATE, VERSION, sousTraitantsDuPoint } from '../lib/automates/point-sst/point-sst.js'
 import { ajouterRetour, lireEtat, supprimerRetour } from '../lib/automates/store.js'
 import { msHeureParis, partiesParis } from '../lib/pointage-etat.js'
@@ -77,6 +77,7 @@ pointsSstRouter.get('/', async (req, res) => {
       sousTraitants: ssts.map((s) => ({ id: Number(s.id), nom: s.nom, automatique: sousTraitantsDuPoint().includes(Number(s.id)) })),
       prochainJour: jourSuivantOuvre(isoParis(Date.now())),
       expediteur: POINT_EXPEDITEUR,
+      heureEnvoi: HEURE_ENVOI,
       sections: SECTIONS,
     })
   } catch (err) { erreur(res, err, 'list') }
@@ -289,7 +290,7 @@ pointsSstRouter.get('/:id/email-defaults', async (req, res) => {
 })
 
 // POST /:id/email — the dialog's payload (postEmail). `programme: true` = the
-// « Programmer » button: saved and sent at 9:00 on the point's day by the automate.
+// « Programmer » button: saved and sent at HEURE_ENVOI (8:00) on the point's day by the automate.
 const piece = z.object({ filename: z.string().min(1).max(255), content_base64: z.string(), content_type: z.string().max(200) })
 const emailBody = z.object({
   to: z.array(z.string().trim().email()).min(1, 'Ajoutez au moins un destinataire'),
@@ -312,9 +313,9 @@ pointsSstRouter.post('/:id/email', async (req, res) => {
     const par = await auteur(uid)
     const p = await lirePoint(id)
     if (p.statut === 'envoye') throw new PointEnvoye()
-    const quand = neufHeures(p.jour)
+    const quand = heureEnvoi(p.jour)
     if (b.data.programme) {
-      if (quand.getTime() <= Date.now()) throw new EnvoiImpossible('9 h est déjà passé pour ce point : envoyez-le maintenant.')
+      if (quand.getTime() <= Date.now()) throw new EnvoiImpossible(`${HEURE_ENVOI} h est déjà passé pour ce point : envoyez-le maintenant.`)
       if ((await lireEtat(SLUG_AUTOMATE)).mode !== 'actif') throw new EnvoiImpossible('L’automate « Point sous-traitant » n’est pas actif : un envoi programmé ne partirait pas. Envoyez maintenant, ou activez-le dans Agents IA › Automates.')
     }
     const contacts = await contactsDe(p.idsousTraitant)
@@ -351,8 +352,8 @@ pointsSstRouter.delete('/:id/programme', async (req, res) => {
   } catch (err) { erreur(res, err, 'annuler programme') }
 })
 
-/** 9:00 Paris on the point's day — PE's points always left around then. */
-function neufHeures(jour: string): Date {
-  return new Date(msHeureParis(+jour.slice(0, 4), +jour.slice(5, 7), +jour.slice(8, 10), 9))
+/** HEURE_ENVOI Paris on the point's day. */
+function heureEnvoi(jour: string): Date {
+  return new Date(msHeureParis(+jour.slice(0, 4), +jour.slice(5, 7), +jour.slice(8, 10), HEURE_ENVOI))
 }
 

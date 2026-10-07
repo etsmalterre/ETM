@@ -26,6 +26,9 @@ export const SECTIONS = [
 
 export type Section = 1 | 2 | 3 | 4 | 5 | 6
 
+/** Hour (Paris) a scheduled point leaves on its day — 8:00, PE's habit (Vincent 2026-10-07; 9:00 before). */
+export const HEURE_ENVOI = 8
+
 /** Days ahead a planned exit is announced (§1). PE's points reach 7 to 15
  *  days; 9 matches the latest ones (05/10 → up to 14/10). */
 export const HORIZON_SORTIES_J = 9

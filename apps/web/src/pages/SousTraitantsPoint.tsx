@@ -2,7 +2,7 @@
 // first; Pierre-Emmanuel wrote it by hand in Word every evening since 2015).
 // The automate « Point sous-traitant » prepares the next working day's point
 // at 17:00 (apps/api/src/lib/point-sst/); here a person checks it line by
-// line, corrects it, then sends it — now, or scheduled for 9:00.
+// line, corrects it, then sends it — now, or scheduled for 8:00 (the API's HEURE_ENVOI).
 //
 // Fiche layout: left the points, center the six numbered sections (MATEL
 // answers « 2) … 5) … » by number, so the numbering never moves), right the
@@ -134,6 +134,7 @@ interface ListeReponse {
   sousTraitants: Array<{ id: number; nom: string; automatique: boolean }>
   prochainJour: string
   expediteur: string
+  heureEnvoi: number
   sections: SectionMeta[]
 }
 
@@ -295,6 +296,7 @@ export function SousTraitantsPoint() {
           open={emailOpen}
           point={point}
           automateActif={liste?.automate.mode === 'actif'}
+          heureEnvoi={liste?.heureEnvoi ?? 8}
           onClose={() => setEmailOpen(false)}
           onSent={apresEnvoi}
         />
@@ -955,13 +957,13 @@ function Kv({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 /** The standard email dialog, with the point always in the body and the Word file optional. */
-function EmailPointDialog({ open, point, automateActif, onClose, onSent }: {
-  open: boolean; point: Point; automateActif: boolean; onClose: () => void; onSent: () => void
+function EmailPointDialog({ open, point, automateActif, heureEnvoi, onClose, onSent }: {
+  open: boolean; point: Point; automateActif: boolean; heureEnvoi: number; onClose: () => void; onSent: () => void
 }) {
-  const neufHeures = new Date(`${point.jour}T09:00:00`)
+  const depart = new Date(`${point.jour}T${String(heureEnvoi).padStart(2, '0')}:00:00`)
   const raison = !automateActif
     ? 'L’automate « Point sous-traitant » n’est pas actif (Agents IA › Automates) : un envoi programmé ne partirait pas.'
-    : neufHeures.getTime() <= Date.now() ? '9 h est déjà passé pour ce point.' : null
+    : depart.getTime() <= Date.now() ? `${heureEnvoi} h est déjà passé pour ce point.` : null
   const apercu = `${API_URL}/points-sst/${point.id}/apercu`
   const nomWord = `point ${point.sousTraitant.toLowerCase()} ${point.jour.slice(8, 10)}${point.jour.slice(5, 7)}${point.jour.slice(0, 4)}.docx`
   return (
@@ -974,7 +976,7 @@ function EmailPointDialog({ open, point, automateActif, onClose, onSent }: {
       loadDefaults={() => apiFetch<EmailDefaults>(`/points-sst/${point.id}/email-defaults`)}
       extraServerAttachments={[{ id: 'point', label: 'Le point (dans le message)', url: apercu }]}
       optionalServerAttachments={[{ id: 'word', label: nomWord, url: apercu, defaultChecked: point.avecDocx }]}
-      programmer={{ label: 'Programmer à 9 h', title: `Part tout seul le ${jourLong(point.jour)} à 9 h ; vous pouvez encore le corriger ou annuler l’envoi jusque-là.`, disabledReason: raison }}
+      programmer={{ label: `Programmer à ${heureEnvoi} h`, title: `Part tout seul le ${jourLong(point.jour)} à ${heureEnvoi} h ; vous pouvez encore le corriger ou annuler l’envoi jusque-là.`, disabledReason: raison }}
       onSend={async (p) => {
         await postEmail(`${API_URL}/points-sst/${point.id}/email`, p, {
           extraBody: { word: p.optionalAttachments?.word === true, programme: p.programme === true },
