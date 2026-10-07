@@ -667,6 +667,16 @@ ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'trm_maintenance_journal')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE trm_maintenance_journal_idjournal_seq')}
 `,
   },
+  {
+    // Fils › Références — the supplier's delivery time of a yarn coloris, in
+    // WEEKS (2026-10-07, Vincent: 730 PES/CU and 280/48/1 PES HT take months to
+    // arrive). With the measured consumption it turns « stock mini » into a
+    // reasoned figure: mini ≈ kg per week × (délai + safety margin), see
+    // lib/fil-consommation.ts. Per coloris because colori_fil is already per
+    // supplier variant. 0 = not filled in (numeric columns default 0, R17).
+    name: '0014_colori_fil_delai_appro',
+    sql: `ALTER TABLE colori_fil ADD COLUMN delai_appro integer NOT NULL DEFAULT 0;`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -4,6 +4,8 @@ import multer from 'multer'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { pickVal, stripKeys } from './stock.js'
 import { aggregateStockFilRows, resteALivrer } from '../lib/references-fil-agg.js'
+import { consommationRefFil, MARGE_SEMAINES } from '../lib/fil-consommation.js'
+import { mpsPg } from '../lib/mps-pg.js'
 import {
   REF_FIL_DOC_TYPES,
   REF_FIL_DOC_TYPES_SQL,
@@ -254,7 +256,7 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
     // misleading legacy data (see project memory). Real fournisseur↔coloris
     // links live in asso_colorisfil_frs and are loaded below.
     const varianteRows = await query(
-      `SELECT IDcolori_fil, IDref_fil, reference, prix_kg, stock_mini, commentaire FROM colori_fil WHERE IDref_fil = ${id} ORDER BY reference`,
+      `SELECT IDcolori_fil, IDref_fil, reference, prix_kg, stock_mini, delai_appro, commentaire FROM colori_fil WHERE IDref_fil = ${id} ORDER BY reference`,
     )
     const variantesFixed = await fixEncoding(
       varianteRows as any,
@@ -298,6 +300,7 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
         reference: v.reference ?? null,
         prix_kg: toNumOrNull(v.prix_kg),
         stock_mini: toNumOrNull(v.stock_mini),
+        delai_appro: Number(v.delai_appro) || 0,
         commentaire: v.commentaire ?? null,
         fournisseurs_count: frs.length,
         fournisseurs: frs,
@@ -776,11 +779,58 @@ referencesFilRouter.delete('/:id', async (req: Request, res: Response) => {
 // VARIANTES (colori_fil) — all ASCII columns
 // ──────────────────────────────────────────────────────────
 
+// stock_mini / delai_appro are NOT written here: their only writer is
+// PUT …/:coloriId/reappro (the Stock & conso dialog). This form rewrites the
+// rest of the row, and a stale copy of the minimum must never come back with it.
 const varianteBody = z.object({
   reference: z.string().min(1).max(100),
   prix_kg: z.number().optional().nullable(),
-  stock_mini: z.number().optional().nullable(),
   commentaire: z.string().optional().nullable(),
+})
+
+// GET /api/references-fil/:id/consommation — per coloris: stock position
+// (État des stocks figures) + knitted consumption, cover, order date and the
+// suggested minimum. Rules and measurements: lib/fil-consommation.ts.
+referencesFilRouter.get('/:id/consommation', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    res.json({ marge_semaines: MARGE_SEMAINES, coloris: await consommationRefFil(id) })
+  } catch (err) {
+    console.error('Error computing yarn consumption:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/references-fil/:id/variantes/:coloriId/reappro — the two
+// reordering settings of a coloris, set from the Stock & conso dialog where
+// the projection is shown (2026-10-07). Writes ONLY these two columns: the
+// general PUT above rewrites the whole row from a full form.
+const reapproBody = z.object({
+  stock_mini: z.number().int().min(0).max(1_000_000), // colori_fil.stock_mini is bigint — whole kg
+  delai_appro: z.number().int().min(0).max(104),
+})
+referencesFilRouter.put('/:id/variantes/:coloriId/reappro', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const coloriId = parseInt(req.params.coloriId, 10)
+    if (isNaN(id) || isNaN(coloriId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = reapproBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', message: 'Stock mini ou délai invalide.', details: parsed.error.issues })
+      return
+    }
+    const sql = mpsPg()
+    const updated = await sql`
+      UPDATE colori_fil SET stock_mini = ${parsed.data.stock_mini}, delai_appro = ${parsed.data.delai_appro}
+      WHERE idcolori_fil = ${coloriId} AND idref_fil = ${id}
+      RETURNING idcolori_fil`
+    if (updated.length === 0) { res.status(404).json({ error: 'Variante not found for this reference' }); return }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error updating colori_fil reappro:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
 })
 
 // POST /api/references-fil/:id/variantes
@@ -798,7 +848,7 @@ referencesFilRouter.post('/:id/variantes', async (req: Request, res: Response) =
     // NB: colori_fil.IDfournisseur is deprecated legacy metadata — fournisseur
     // links go into asso_colorisfil_frs via /:id/variantes/:coloriId/fournisseurs.
     await query(
-      `INSERT INTO colori_fil (IDref_fil, reference, prix_kg, stock_mini, commentaire) VALUES (${id}, ${sqlText(b.reference)}, ${b.prix_kg ?? 0}, ${b.stock_mini ?? 0}, ${sqlText(b.commentaire ?? '')})`,
+      `INSERT INTO colori_fil (IDref_fil, reference, prix_kg, stock_mini, delai_appro, commentaire) VALUES (${id}, ${sqlText(b.reference)}, ${b.prix_kg ?? 0}, 0, 0, ${sqlText(b.commentaire ?? '')})`,
     )
     // Fetch the new id — match by (IDref_fil, reference) and take the latest
     const rows = await query<{ IDcolori_fil: number }>(
@@ -835,7 +885,7 @@ referencesFilRouter.put('/:id/variantes/:coloriId', async (req: Request, res: Re
     }
     const b = parsed.data
     await query(
-      `UPDATE colori_fil SET reference = ${sqlText(b.reference)}, prix_kg = ${b.prix_kg ?? 0}, stock_mini = ${b.stock_mini ?? 0}, commentaire = ${sqlText(b.commentaire ?? '')} WHERE IDcolori_fil = ${coloriId}`,
+      `UPDATE colori_fil SET reference = ${sqlText(b.reference)}, prix_kg = ${b.prix_kg ?? 0}, commentaire = ${sqlText(b.commentaire ?? '')} WHERE IDcolori_fil = ${coloriId}`,
     )
     res.json({ ok: true })
   } catch (err) {

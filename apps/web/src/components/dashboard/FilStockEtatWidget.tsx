@@ -164,15 +164,15 @@ export function FilStockEtatWidget() {
                     }}
                   />
                   <Kpi
-                    label="Besoin"
+                    label="Réservé"
                     value={etat.besoin}
                     sub={`${etat.nb_affectations} commande${etat.nb_affectations > 1 ? 's' : ''} en cours`}
                     icon={Scissors}
                     wrap="border-terracotta/25 bg-terracotta/[0.06]"
                     iconBox="icon-box-terracotta"
                     info={{
-                      title: 'Besoin',
-                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées), déduction faite de ce que leurs OF ont déjà tricoté (reste à tricoter). « * » : fil non affecté sur la commande, besoin déduit des OF lancés. « — » : tricoteur externe, production non suivie.',
+                      title: 'Réservé',
+                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées), déduction faite de ce que leurs OF ont déjà tricoté (reste à tricoter). « * » : fil non affecté sur la commande, réservé déduit des OF lancés. « — » : tricoteur externe, production non suivie.',
                       headers: ['N° STT', 'Lot', 'Affecté', 'Tricoté', 'Reste'],
                       numCols: 3,
                       rows: etat.besoin_rows.map((r) => [
@@ -191,12 +191,12 @@ export function FilStockEtatWidget() {
                   <div className="absolute right-2 top-2">
                     <InfoTip
                       title="Disponible"
-                      text="Disponible une fois le besoin de production couvert. Négatif = rupture."
+                      text="Disponible une fois le fil réservé déduit. Négatif = rupture."
                       headers={['Élément', 'kg']}
                       rows={[
                         ['En stock', `+${fmtNum(etat.en_stock, 1)}`],
                         ['Commandé', `+${fmtNum(etat.commande, 1)}`],
-                        ['Besoin', `−${fmtNum(etat.besoin, 1)}`],
+                        ['Réservé', `−${fmtNum(etat.besoin, 1)}`],
                       ]}
                       totalKg={etat.disponible}
                     />
@@ -211,7 +211,7 @@ export function FilStockEtatWidget() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Disponible</p>
-                    <p className="text-[11px] text-muted-foreground">En stock + commandé − besoin</p>
+                    <p className="text-[11px] text-muted-foreground">En stock + commandé − réservé</p>
                   </div>
                   <div className="pr-6 text-right">
                     <p className={cn(

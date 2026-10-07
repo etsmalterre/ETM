@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -23,7 +24,6 @@ import {
   Info,
   Leaf,
   Recycle,
-  ChevronDown,
   Package,
   FlaskConical,
   Warehouse,
@@ -36,7 +36,7 @@ import {
   Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
@@ -44,9 +44,10 @@ import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
+import { StockConsoTab, StatutBadge, useConsommationFil, type ConsoColoris } from '@/components/fils/StockConsoTab'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -71,6 +72,8 @@ interface Variante {
   reference: string | null
   prix_kg: number | null
   stock_mini: number | null
+  /** Supplier delivery time in weeks (0 = not filled in). */
+  delai_appro: number
   commentaire: string | null
   fournisseurs_count: number
   fournisseurs: { IDfournisseur: number; nom: string | null }[]
@@ -185,6 +188,59 @@ function LabeledInput({
         className={inputClass}
       />
     </div>
+  )
+}
+
+/** §18.A form dialog shared by the sub-entity forms of the fiche (matière,
+ *  coloris, offre): title + icon, body, error banner, Annuler / Enregistrer. */
+function SubFormDialog({
+  open,
+  title,
+  icon: Icon,
+  onClose,
+  onSave,
+  canSave,
+  isSaving,
+  errorMsg,
+  children,
+}: {
+  open: boolean
+  title: string
+  icon: typeof Info
+  onClose: () => void
+  onSave: () => void
+  canSave: boolean
+  isSaving: boolean
+  errorMsg?: string | null
+  children: React.ReactNode
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !isSaving) onClose() }}>
+      <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto" onClose={isSaving ? undefined : onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Icon className="h-5 w-5 text-accent" />
+            {title}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">{children}</div>
+        {errorMsg && (
+          <div className="mt-3 flex items-center gap-2 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            {errorMsg}
+          </div>
+        )}
+        <DialogFooter className="mt-4 gap-2">
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>
+            Annuler
+          </Button>
+          <Button onClick={onSave} disabled={!canSave || isSaving}>
+            {isSaving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+            Enregistrer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -451,6 +507,7 @@ export function FilsReferences() {
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['refs-fil'] })
     queryClient.invalidateQueries({ queryKey: ['ref-fil', selectedId] })
+    queryClient.invalidateQueries({ queryKey: ['ref-fil-consommation', selectedId] })
   }, [queryClient, selectedId])
 
   const saveMutation = useMutation({
@@ -902,6 +959,17 @@ function DetailHeader({
 
 // ── Center: Detail Main ────────────────────────────────
 
+// ── Center panel: Classeur master tabs (§39) ───────────
+// Same shape as Finis › Références: one dataset at a time gets the full
+// panel height instead of six collapsible cards stacked on top of each other.
+const MAIN_TABS = [
+  { key: 'specifications', label: 'Spécifications', icon: Package },
+  { key: 'stock', label: 'Stock & conso', icon: Warehouse },
+  { key: 'commandes', label: 'Commandes', icon: ShoppingCart },
+  { key: 'offres', label: 'Offres', icon: Tag },
+] as const
+type MainTab = (typeof MAIN_TABS)[number]['key']
+
 function DetailMain({
   detail,
   isLoading,
@@ -925,6 +993,10 @@ function DetailMain({
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
+  const [activeTab, setActiveTab] = useState<MainTab>('specifications')
+  // Land on the technical sheet whenever the selection changes.
+  useEffect(() => { setActiveTab('specifications') }, [detail?.IDref_fil])
+
   if (!hasSelection) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -946,39 +1018,101 @@ function DetailMain({
   }
   if (!detail) return null
 
+  const counts: Partial<Record<MainTab, number>> = {
+    stock: detail.stock_lots,
+    commandes: detail.commande_lignes,
+    offres: (detail.offres ?? []).length,
+  }
+
   return (
-    <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
-      <SpecsCard
-        detail={detail}
-        isEditing={isEditing}
-        draft={draft}
-        onDraftChange={onDraftChange}
-        unites={unites}
-      />
-      <CompositionCard
-        detail={detail}
-        isEditing={isEditing}
-        refFilId={refFilId}
-        onMutationSuccess={onMutationSuccess}
-        reportDirty={reportDirty}
-      />
-      <VariantesCard
-        detail={detail}
-        isEditing={isEditing}
-        refFilId={refFilId}
-        onMutationSuccess={onMutationSuccess}
-        reportDirty={reportDirty}
-      />
-      {!isEditing && <StockAggregateCard detail={detail} isEditing={isEditing} />}
-      {!isEditing && <CommandesAggregateCard detail={detail} isEditing={isEditing} />}
-      <OffresHistoryCard
-        detail={detail}
-        isEditing={isEditing}
-        refFilId={refFilId}
-        onMutationSuccess={onMutationSuccess}
-        reportDirty={reportDirty}
-      />
+    <div className="flex-1 min-h-0 flex flex-col">
+      {/* Master tabs — header-submenu style pills on the natural background */}
+      <div className="flex-shrink-0 flex items-center gap-1 border-b border-border/60 pb-2 overflow-x-auto scrollbar-transparent">
+        {MAIN_TABS.map((t) => {
+          const Icon = t.icon
+          const active = activeTab === t.key
+          const count = counts[t.key]
+          return (
+            <button key={t.key} type="button" onClick={() => setActiveTab(t.key)}
+              className={cn('flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap',
+                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10 hover:text-accent')}>
+              <Icon className="h-3.5 w-3.5" />{t.label}
+              {/* Counts come from the already-loaded detail — no extra fetch. */}
+              {count != null && <span className="text-xs tabular-nums opacity-70">{count}</span>}
+            </button>
+          )
+        })}
+      </div>
+      {/* px-1/pb-1 keep focus rings and hover borders clear of the overflow clip (§31.5) */}
+      <div className="flex-1 min-h-0 overflow-auto space-y-3 pt-3 px-1 pb-1 scrollbar-transparent">
+        {activeTab === 'specifications' && (
+          <>
+            <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} unites={unites} />
+            <CompositionCard
+              detail={detail}
+              isEditing={isEditing}
+              refFilId={refFilId}
+              onMutationSuccess={onMutationSuccess}
+              reportDirty={reportDirty}
+            />
+            <VariantesCard
+              detail={detail}
+              isEditing={isEditing}
+              refFilId={refFilId}
+              onMutationSuccess={onMutationSuccess}
+              reportDirty={reportDirty}
+            />
+          </>
+        )}
+        {activeTab === 'stock' && <StockConsoTab refFilId={detail.IDref_fil} refReference={detail.reference} />}
+        {activeTab === 'commandes' && <CommandesAggregateCard detail={detail} />}
+        {activeTab === 'offres' && (
+          <OffresHistoryCard
+            detail={detail}
+            isEditing={isEditing}
+            refFilId={refFilId}
+            onMutationSuccess={onMutationSuccess}
+            reportDirty={reportDirty}
+          />
+        )}
+      </div>
     </div>
+  )
+}
+
+/** A spec tile: uppercase caption on top, the value big underneath — same
+ *  tile as Finis › Références. */
+function SpecTile({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-zinc-100/80 px-3 py-2.5 min-w-0">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold truncate">{label}</p>
+      <div className="mt-1">{children}</div>
+    </div>
+  )
+}
+
+function TileFigure({ value, unit }: { value: string | null; unit?: string | null }) {
+  if (value == null) return <span className="text-2xl font-bold text-muted-foreground/60 leading-none">—</span>
+  return (
+    <span className="text-2xl font-bold tabular-nums leading-none">
+      {value}
+      {unit ? <span className="text-xs text-muted-foreground font-normal ml-1">{unit}</span> : null}
+    </span>
+  )
+}
+
+/** The §7.1 add-row button at the bottom of a tab's list (edit mode only). */
+function AddRowButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onClick}
+      className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
+    >
+      <Plus className="h-3.5 w-3.5 mr-1.5" />
+      {label}
+    </Button>
   )
 }
 
@@ -1000,25 +1134,7 @@ function SpecsCard({
   const uniteNom = unites.find((u) => u.IDunite_titrage === detail.IDunite_titrage)?.nomenclature ?? null
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2">
-        <Package className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Spécifications</CardTitle>
-        <div className="ml-auto flex gap-1.5 flex-wrap">
-          {!!detail.bio && (
-            <Badge className="badge-success text-[10px] py-0 px-1.5 gap-1">
-              <Leaf className="h-2.5 w-2.5" />
-              Bio
-            </Badge>
-          )}
-          {!!detail.recycle && (
-            <Badge className="bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20 text-[10px] py-0 px-1.5 gap-1">
-              <Recycle className="h-2.5 w-2.5" />
-              Recyclé
-            </Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="pb-4">
+      <CardContent className="pt-4 pb-4">
         {isEditing ? (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
@@ -1078,29 +1194,40 @@ function SpecsCard({
             </div>
           </div>
         ) : (
-          <div className="flex flex-wrap items-baseline gap-x-10 gap-y-2">
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs text-muted-foreground">Titrage</span>
-              <span className="text-lg font-semibold tabular-nums">
-                {detail.titrage != null && detail.titrage > 0
-                  ? `${fmtNum(detail.titrage, 0)}${uniteNom ? ` ${uniteNom}` : ''}`
-                  : '—'}
-              </span>
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <SpecTile label="Titrage">
+                <TileFigure
+                  value={detail.titrage != null && detail.titrage > 0 ? fmtNum(detail.titrage, 0) : null}
+                  unit={uniteNom}
+                />
+              </SpecTile>
+              <SpecTile label="Fil / Brin">
+                <TileFigure value={`${detail.nb_fil ?? '—'} / ${detail.nb_brin ?? '—'}`} />
+              </SpecTile>
+              <SpecTile label="Prix de base">
+                <TileFigure
+                  value={detail.prix_kg != null && detail.prix_kg > 0 ? fmtNum(detail.prix_kg, 2) : null}
+                  unit="€/kg"
+                />
+              </SpecTile>
             </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs text-muted-foreground">Fil / Brin</span>
-              <span className="text-lg font-semibold tabular-nums">
-                {`${detail.nb_fil ?? '—'} / ${detail.nb_brin ?? '—'}`}
-              </span>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs text-muted-foreground">Prix de base</span>
-              <span className="text-lg font-semibold tabular-nums">
-                {detail.prix_kg != null && detail.prix_kg > 0
-                  ? `${fmtNum(detail.prix_kg, 2)} €/kg`
-                  : '—'}
-              </span>
-            </div>
+            {(!!detail.bio || !!detail.recycle) && (
+              <div className="flex gap-1.5 flex-wrap">
+                {!!detail.bio && (
+                  <Badge className="badge-success text-xs py-0.5 px-2 gap-1">
+                    <Leaf className="h-3 w-3" />
+                    Bio
+                  </Badge>
+                )}
+                {!!detail.recycle && (
+                  <Badge className="bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20 text-xs py-0.5 px-2 gap-1">
+                    <Recycle className="h-3 w-3" />
+                    Recyclé
+                  </Badge>
+                )}
+              </div>
+            )}
           </div>
         )}
       </CardContent>
@@ -1117,6 +1244,9 @@ interface CompositionDraft {
   recycle: boolean
 }
 
+/** Segment colours of the composition bar, in row order. */
+const COMPO_COLORS = ['bg-amber-500', 'bg-teal-500', 'bg-sky-500', 'bg-rose-400', 'bg-violet-400', 'bg-zinc-400']
+
 function CompositionCard({
   detail,
   isEditing,
@@ -1131,7 +1261,6 @@ function CompositionCard({
   reportDirty: (key: string, dirty: boolean) => void
 }) {
   const queryClient = useQueryClient()
-  const [open, setOpen] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState<CompositionDraft>({ IDmatiere: 0, pourcentage: '', bio: false, recycle: false })
@@ -1249,147 +1378,103 @@ function CompositionCard({
   const totalPct = detail.composition.reduce((s, c) => s + (Number(c.pourcentage) || 0) * 100, 0)
   const totalOk = Math.abs(totalPct - 100) < 0.01
 
+  const startCreate = () => {
+    setShowForm(true)
+    setEditingId(null)
+    setErrorMsg(null)
+    setForm({ IDmatiere: 0, pourcentage: '', bio: false, recycle: false })
+  }
+
   return (
     <>
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardHeader
-          className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-          onClick={() => setOpen(!open)}
-        >
-          <FlaskConical className="h-4 w-4 text-accent" />
-          <CardTitle className="text-sm font-semibold">Composition</CardTitle>
-          {isEditing && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 w-6 p-0 text-accent hover:text-accent hover:bg-accent/10"
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowForm(true)
-                setEditingId(null)
-                setErrorMsg(null)
-                setForm({ IDmatiere: 0, pourcentage: '', bio: false, recycle: false })
-                if (!open) setOpen(true)
-              }}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          {!totalOk && (
-            <Badge
-              className="text-xs ml-auto bg-destructive/10 text-destructive ring-1 ring-destructive/20"
-              title="La composition doit totaliser 100%"
-            >
-              {Math.round(totalPct * 1000) / 1000}%
-            </Badge>
-          )}
-          <Badge variant="secondary" className={cn('text-xs', totalOk && 'ml-auto')}>
-            {detail.composition.length}
-          </Badge>
-          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-        </CardHeader>
-        {open && (
-          <CardContent className="space-y-2 pb-3">
-            {detail.composition.length === 0 && !showForm && (
-              <p className="text-sm text-muted-foreground italic">Aucune matière</p>
-            )}
-            {detail.composition.map((c) => {
-              const isRowEditing = editingId === c.IDasso_fil_matiere
-              return (
-                <div key={c.IDasso_fil_matiere}>
-                  {isRowEditing && isEditing ? (
-                    <CompositionForm
-                      form={form}
-                      onFormChange={setForm}
-                      matieres={matieres ?? []}
-                      onCancel={resetForm}
-                      onSave={() => updateMut.mutate(c.IDasso_fil_matiere)}
-                      isSaving={updateMut.isPending}
-                      errorMsg={errorMsg}
-                      title="Modifier la matière"
-                    />
-                  ) : (
-                    <div
-                      className={cn(
-                        'group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3 border-l-amber-400/60',
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
-                            <FlaskConical className="h-3.5 w-3.5 text-amber-600" />
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{c.matiere_libelle ?? '—'}</p>
-                            <p className="text-[11px] text-muted-foreground truncate tabular-nums">
-                              {pct(c.pourcentage)}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {!!c.bio && (
-                            <Badge className="badge-success text-[10px] py-0 px-1.5 gap-0.5">
-                              <Leaf className="h-2.5 w-2.5" />
-                              Bio
-                            </Badge>
-                          )}
-                          {!!c.recycle && (
-                            <Badge className="bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20 text-[10px] py-0 px-1.5 gap-0.5">
-                              <Recycle className="h-2.5 w-2.5" />
-                              Recyclé
-                            </Badge>
-                          )}
-                          {isEditing && (
-                            <>
-                              <button
-                                onClick={() => startEditRow(c)}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-foreground transition-opacity"
-                                title="Modifier"
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                onClick={() => setDeleteTarget(c)}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 text-destructive hover:text-destructive/80 transition-opacity"
-                                title="Supprimer"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-            {showForm && isEditing && (
-              <CompositionForm
-                form={form}
-                onFormChange={setForm}
-                matieres={matieres ?? []}
-                onCancel={resetForm}
-                onSave={() => createMut.mutate()}
-                isSaving={createMut.isPending}
-                errorMsg={errorMsg}
-                title="Nouvelle matière"
-              />
-            )}
+        <CardContent className="pt-4 pb-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <FlaskConical className="h-4 w-4 text-accent" />
+            <h3 className="text-sm font-semibold">Composition</h3>
             {detail.composition.length > 0 && (
-              <div
+              <span
                 className={cn(
-                  'mt-2 pt-2 border-t border-border/50 flex items-center justify-between text-xs font-semibold',
-                  totalOk ? 'text-green-600' : 'text-amber-600',
+                  'ml-auto text-xs font-semibold tabular-nums rounded-full px-2 py-0.5',
+                  totalOk ? 'bg-green-500/10 text-green-700' : 'bg-destructive/10 text-destructive',
                 )}
+                title={totalOk ? undefined : 'La composition doit totaliser 100%'}
               >
-                <span>Total</span>
-                <span className="tabular-nums">{fmtNum(totalPct, 1)}%</span>
-              </div>
+                {fmtNum(totalPct, 1)} %
+              </span>
             )}
-          </CardContent>
-        )}
+          </div>
+
+          {detail.composition.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">Aucune matière</p>
+          ) : (
+            <>
+              {/* Proportion bar — one segment per matière, same colour as its row dot */}
+              <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-zinc-200/70">
+                {detail.composition.map((c, i) => (
+                  <div
+                    key={c.IDasso_fil_matiere}
+                    className={cn('h-full', COMPO_COLORS[i % COMPO_COLORS.length])}
+                    style={{ width: `${Math.max(0, (Number(c.pourcentage) || 0) * 100)}%` }}
+                    title={`${c.matiere_libelle ?? '—'} · ${pct(c.pourcentage)}`}
+                  />
+                ))}
+              </div>
+              <div className="divide-y divide-border/50">
+                {detail.composition.map((c, i) => (
+                  <div key={c.IDasso_fil_matiere} className="group flex items-center gap-2.5 py-2">
+                    <span className={cn('h-2.5 w-2.5 rounded-full flex-shrink-0', COMPO_COLORS[i % COMPO_COLORS.length])} />
+                    <span className="text-sm font-medium truncate">{c.matiere_libelle ?? '—'}</span>
+                    {!!c.bio && (
+                      <Badge className="badge-success text-[10px] py-0 px-1.5 gap-0.5">
+                        <Leaf className="h-2.5 w-2.5" />
+                        Bio
+                      </Badge>
+                    )}
+                    {!!c.recycle && (
+                      <Badge className="bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20 text-[10px] py-0 px-1.5 gap-0.5">
+                        <Recycle className="h-2.5 w-2.5" />
+                        Recyclé
+                      </Badge>
+                    )}
+                    <span className="ml-auto text-sm font-semibold tabular-nums">{pct(c.pourcentage)}</span>
+                    {isEditing && (
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => startEditRow(c)}
+                          className="p-0.5 text-muted-foreground hover:text-foreground"
+                          title="Modifier"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setDeleteTarget(c)}
+                          className="p-0.5 text-destructive hover:text-destructive/80"
+                          title="Supprimer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {isEditing && <AddRowButton label="Ajouter une matière" onClick={startCreate} />}
+        </CardContent>
       </Card>
+      <CompositionForm
+        open={isEditing && (showForm || editingId !== null)}
+        form={form}
+        onFormChange={setForm}
+        matieres={matieres ?? []}
+        onCancel={resetForm}
+        onSave={() => (editingId !== null ? updateMut.mutate(editingId) : createMut.mutate())}
+        isSaving={createMut.isPending || updateMut.isPending}
+        errorMsg={errorMsg}
+        title={editingId !== null ? 'Modifier la matière' : 'Nouvelle matière'}
+      />
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Supprimer la matière"
@@ -1409,6 +1494,7 @@ function CompositionCard({
 }
 
 function CompositionForm({
+  open,
   form,
   onFormChange,
   matieres,
@@ -1418,6 +1504,7 @@ function CompositionForm({
   errorMsg,
   title,
 }: {
+  open: boolean
   form: CompositionDraft
   onFormChange: (f: CompositionDraft) => void
   matieres: MatiereLookup[]
@@ -1429,9 +1516,17 @@ function CompositionForm({
 }) {
   const canSave = form.IDmatiere > 0 && Number(form.pourcentage) > 0
   return (
-    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-4 space-y-3">
-      <p className="text-xs font-semibold text-accent uppercase tracking-wide">{title}</p>
-      <div className="grid grid-cols-2 gap-2">
+    <SubFormDialog
+      open={open}
+      title={title}
+      icon={FlaskConical}
+      onClose={onCancel}
+      onSave={onSave}
+      canSave={canSave}
+      isSaving={isSaving}
+      errorMsg={errorMsg}
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted-foreground">Matière</label>
           <PopoverSelect
@@ -1465,31 +1560,22 @@ function CompositionForm({
           </span>
         </label>
       </div>
-      {errorMsg && <p className="text-xs text-destructive">{errorMsg}</p>}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          Annuler
-        </Button>
-        <Button size="sm" onClick={onSave} disabled={!canSave || isSaving}>
-          {isSaving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
-          Enregistrer
-        </Button>
-      </div>
-    </div>
+    </SubFormDialog>
   )
 }
 
 // ── Variantes Card ─────────────────────────────────────
 
+// stock_mini / delai_appro are NOT part of this form: they are set from the
+// Stock & conso dialog (PUT …/reappro), their only writer.
 interface VarianteDraft {
   reference: string
   prix_kg: string
-  stock_mini: string
   commentaire: string
 }
 
 function emptyVarianteDraft(): VarianteDraft {
-  return { reference: '', prix_kg: '', stock_mini: '', commentaire: '' }
+  return { reference: '', prix_kg: '', commentaire: '' }
 }
 
 function VariantesCard({
@@ -1505,7 +1591,6 @@ function VariantesCard({
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState<VarianteDraft>(emptyVarianteDraft())
@@ -1527,11 +1612,11 @@ function VariantesCard({
   )
 
   // Fournisseurs catalog — reused with the FilsGestion query key so the cache
-  // is shared. Loaded only once the card is opened (via `enabled: open`).
+  // is shared. Loaded only in edit mode, where the « Ajouter un fournisseur » picker needs it.
   const { data: allFournisseurs } = useQuery<Array<{ IDfournisseur: number; nom: string | null }>>({
     queryKey: ['fournisseurs'],
     queryFn: () => apiFetch('/fournisseurs'),
-    enabled: open && isEditing,
+    enabled: isEditing,
   })
 
   const linkFrsMut = useMutation({
@@ -1557,12 +1642,14 @@ function VariantesCard({
     setEditingId(null)
     setForm(emptyVarianteDraft())
     setErrorMsg(null)
+    // Drop a previous save error so the next dialog opens clean.
+    createMut.reset()
+    updateMut.reset()
   }
 
   const draftToBody = (f: VarianteDraft) => ({
     reference: f.reference.trim(),
     prix_kg: f.prix_kg === '' ? 0 : Number(f.prix_kg),
-    stock_mini: f.stock_mini === '' ? 0 : Number(f.stock_mini),
     commentaire: f.commentaire,
   })
 
@@ -1621,194 +1708,185 @@ function VariantesCard({
     setForm({
       reference: v.reference ?? '',
       prix_kg: v.prix_kg != null ? String(v.prix_kg) : '',
-      stock_mini: v.stock_mini != null ? String(v.stock_mini) : '',
       commentaire: v.commentaire ?? '',
     })
   }
 
+  // Status and « disponible » come from the consumption endpoint — the same
+  // rule as the alert: available stock (stock + ordered − reserved) against
+  // the minimum, never the bare shelf stock (280/48 écru: 163,7 kg on the
+  // shelf under a 180 kg minimum, but 500 kg on order).
+  const { data: consoData } = useConsommationFil(refFilId)
+  const consoById = new Map<number, ConsoColoris>()
+  for (const c of consoData?.coloris ?? []) consoById.set(c.IDcolori_fil, c)
+  const aCommanderCount = (consoData?.coloris ?? []).filter((c) => c.statut === 'commander').length
+
   return (
     <>
+      {/* A section of the Spécifications tab, built like the Composition one. */}
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardHeader
-          className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-          onClick={() => setOpen(!open)}
-        >
-          <Palette className="h-4 w-4 text-accent" />
-          <CardTitle className="text-sm font-semibold">Coloris</CardTitle>
-          {isEditing && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 w-6 p-0 text-accent hover:text-accent hover:bg-accent/10"
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowForm(true)
-                setEditingId(null)
-                setForm(emptyVarianteDraft())
-                if (!open) setOpen(true)
-              }}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          <Badge variant="secondary" className="text-xs ml-auto">
-            {detail.variantes.length}
-          </Badge>
-          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-        </CardHeader>
-        {open && (
-          <CardContent className="space-y-2 pb-3">
-            {detail.variantes.length === 0 && !showForm && (
-              <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
+        <CardContent className="pt-4 pb-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Palette className="h-4 w-4 text-accent" />
+            <h3 className="text-sm font-semibold">Coloris</h3>
+            <span className="text-xs text-muted-foreground tabular-nums">{detail.variantes.length}</span>
+            {aCommanderCount > 0 && (
+              <span className="ml-auto inline-flex items-center gap-1 text-xs font-semibold rounded-full px-2 py-0.5 bg-destructive/10 text-destructive">
+                <AlertCircle className="h-3 w-3" />
+                {aCommanderCount} à commander
+              </span>
             )}
-            {detail.variantes.map((v) => {
-              const isRowEditing = editingId === v.IDcolori_fil
-              return (
-                <div key={v.IDcolori_fil}>
-                  {isRowEditing && isEditing ? (
-                    <VarianteForm
-                      form={form}
-                      onFormChange={setForm}
-                      onCancel={resetForm}
-                      onSave={() => updateMut.mutate(v.IDcolori_fil)}
-                      isSaving={updateMut.isPending}
-                      title="Modifier le coloris"
-                    />
-                  ) : (
-                    <div
-                      className={cn(
-                        'group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
-                        'border-l-amber-400/60',
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
-                            <Palette className="h-3.5 w-3.5 text-amber-600" />
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{v.reference ?? '—'}</p>
-                            <p className="text-[11px] text-muted-foreground truncate tabular-nums">
-                              {v.prix_kg != null && v.prix_kg > 0 ? `${fmtNum(v.prix_kg, 2)} €/kg` : '— €/kg'}
-                              {' · '}
-                              Stock mini {fmtNum(v.stock_mini ?? 0, 0)} kg
-                            </p>
-                          </div>
+          </div>
+          {detail.variantes.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
+          ) : (
+            <div className="divide-y divide-border/50">
+              {detail.variantes.map((v, i) => {
+                const conso = consoById.get(v.IDcolori_fil)
+                const mini = Number(v.stock_mini) || 0
+                const underMini = conso?.statut === 'commander'
+                return (
+                  <div key={v.IDcolori_fil} className="group py-2.5 first:pt-0 last:pb-0">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      {/* Identity — name, alert, suppliers */}
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div
+                          className={cn(
+                            'h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0',
+                            underMini ? 'bg-destructive/10' : 'bg-amber-400/10',
+                          )}
+                        >
+                          <Palette className={cn('h-4 w-4', underMini ? 'text-destructive/70' : 'text-amber-600')} />
                         </div>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          <Badge variant="secondary" className="text-[10px] py-0 px-1.5 gap-1">
-                            <Factory className="h-2.5 w-2.5" />
-                            {v.fournisseurs_count}
-                          </Badge>
-                          {isEditing && (
-                            <>
-                              <button
-                                onClick={() => startEditRow(v)}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-foreground transition-opacity"
-                                title="Modifier"
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setDeleteTarget(v)
-                                  setErrorMsg(null)
-                                }}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 text-destructive hover:text-destructive/80 transition-opacity"
-                                title="Supprimer"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <p className="text-sm font-semibold truncate">{v.reference ?? '—'}</p>
+                            {conso && <StatutBadge statut={conso.statut} />}
+                          </div>
+                          {(isEditing || v.fournisseurs.length > 0) && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              {v.fournisseurs.length === 0 ? (
+                                <span className="text-xs text-muted-foreground italic">Aucun fournisseur lié</span>
+                              ) : (
+                                v.fournisseurs.map((f) => (
+                                  <span
+                                    key={f.IDfournisseur}
+                                    className="inline-flex items-center gap-1 rounded-full bg-zinc-100 border border-border/60 px-2 py-0.5 text-[11px] text-muted-foreground"
+                                  >
+                                    <Factory className="h-2.5 w-2.5" />
+                                    {f.nom ?? '—'}
+                                    {isEditing && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          unlinkFrsMut.mutate({ coloriId: v.IDcolori_fil, fournisseurId: f.IDfournisseur })
+                                        }
+                                        disabled={unlinkFrsMut.isPending}
+                                        className="rounded-full hover:bg-destructive/20 hover:text-destructive p-0.5 -mr-1 transition-colors"
+                                        title="Retirer ce fournisseur"
+                                      >
+                                        <X className="h-2.5 w-2.5" />
+                                      </button>
+                                    )}
+                                  </span>
+                                ))
+                              )}
+                              {isEditing && (
+                                <PopoverSelect
+                                  size="sm"
+                                  // Action-trigger pattern: the value never sticks. The
+                                  // emptyLabel doubles as the button label; selecting an
+                                  // option fires the link mutation immediately.
+                                  value={0}
+                                  onChange={(fid) => {
+                                    if (!fid) return
+                                    linkFrsMut.mutate({ coloriId: v.IDcolori_fil, fournisseurId: fid })
+                                  }}
+                                  disabled={linkFrsMut.isPending || !allFournisseurs}
+                                  emptyLabel="+ Ajouter un fournisseur"
+                                  options={(allFournisseurs ?? [])
+                                    .filter((f) => !v.fournisseurs.some((linked) => linked.IDfournisseur === f.IDfournisseur))
+                                    .map((f) => ({ id: f.IDfournisseur, primary: f.nom ?? `#${f.IDfournisseur}` }))}
+                                />
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
-                      {!!v.commentaire?.trim() && (
-                        <div className="flex items-start gap-1.5 mt-2 ml-9">
-                          <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
-                          <p className="text-[11px] text-muted-foreground italic">{v.commentaire.trim()}</p>
-                        </div>
-                      )}
-                      {(isEditing || v.fournisseurs.length > 0) && (
-                        <div className="mt-2 ml-9 flex flex-wrap items-center gap-1.5">
-                          <Factory className="h-3 w-3 text-muted-foreground/60 flex-shrink-0" />
-                          {v.fournisseurs.length === 0 ? (
-                            <span className="text-[11px] text-muted-foreground italic">
-                              Aucun fournisseur lié
-                            </span>
-                          ) : (
-                            v.fournisseurs.map((f) => (
-                              <Badge
-                                key={f.IDfournisseur}
-                                variant="secondary"
-                                className="text-[10px] py-0 px-1.5 gap-1"
-                              >
-                                {f.nom ?? '—'}
-                                {isEditing && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      unlinkFrsMut.mutate({
-                                        coloriId: v.IDcolori_fil,
-                                        fournisseurId: f.IDfournisseur,
-                                      })
-                                    }
-                                    disabled={unlinkFrsMut.isPending}
-                                    className="ml-0.5 rounded-full hover:bg-destructive/20 hover:text-destructive p-0.5 -mr-1 transition-colors"
-                                    title="Retirer ce fournisseur"
-                                  >
-                                    <X className="h-2.5 w-2.5" />
-                                  </button>
-                                )}
-                              </Badge>
-                            ))
-                          )}
-                          {isEditing && (
-                            <PopoverSelect
-                              size="sm"
-                              // Action-trigger pattern: the value never sticks. The
-                              // emptyLabel doubles as the button label; selecting an
-                              // option fires the link mutation immediately.
-                              value={0}
-                              onChange={(fid) => {
-                                if (!fid) return
-                                linkFrsMut.mutate({ coloriId: v.IDcolori_fil, fournisseurId: fid })
-                              }}
-                              disabled={linkFrsMut.isPending || !allFournisseurs}
-                              emptyLabel="+ Ajouter un fournisseur"
-                              options={(allFournisseurs ?? [])
-                                .filter(
-                                  (f) =>
-                                    !v.fournisseurs.some(
-                                      (linked) => linked.IDfournisseur === f.IDfournisseur,
-                                    ),
-                                )
-                                .map((f) => ({
-                                  id: f.IDfournisseur,
-                                  primary: f.nom ?? `#${f.IDfournisseur}`,
-                                }))}
-                            />
-                          )}
+
+                      {/* Key figures — compact, right-aligned, same columns on every card */}
+                      <div className="grid grid-cols-3 gap-5 flex-shrink-0">
+                        <ColorisFigure showLabel={i === 0} label="Prix" value={v.prix_kg != null && v.prix_kg > 0 ? `${fmtNum(v.prix_kg, 2)} €/kg` : '—'} />
+                        <ColorisFigure
+                          showLabel={i === 0}
+                          label="Disponible"
+                          value={conso ? `${fmtNum(conso.disponible, 1)} kg` : '…'}
+                          tone={underMini ? 'danger' : undefined}
+                        />
+                        <ColorisFigure
+                          showLabel={i === 0}
+                          label="Stock mini"
+                          value={mini > 0 ? `${fmtNum(mini, 0)} kg` : '—'}
+                          sub={conso?.semaines_mini != null ? `≈ ${fmtNum(conso.semaines_mini, 0)} sem.` : undefined}
+                        />
+                      </div>
+
+                      {isEditing && (
+                        <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => startEditRow(v)}
+                            className="p-0.5 text-muted-foreground hover:text-foreground"
+                            title="Modifier"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              setDeleteTarget(v)
+                              setErrorMsg(null)
+                            }}
+                            className="p-0.5 text-destructive hover:text-destructive/80"
+                            title="Supprimer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              )
-            })}
-            {showForm && isEditing && (
-              <VarianteForm
-                form={form}
-                onFormChange={setForm}
-                onCancel={resetForm}
-                onSave={() => createMut.mutate()}
-                isSaving={createMut.isPending}
-                title="Nouveau coloris"
-              />
-            )}
-          </CardContent>
-        )}
+
+                    {!!v.commentaire?.trim() && (
+                      <div className="flex items-start gap-1.5 mt-1.5 ml-11">
+                        <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-muted-foreground italic">{v.commentaire.trim()}</p>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {isEditing && (
+            <AddRowButton
+              label="Ajouter un coloris"
+              onClick={() => {
+                setShowForm(true)
+                setEditingId(null)
+                setForm(emptyVarianteDraft())
+              }}
+            />
+          )}
+        </CardContent>
       </Card>
+      <VarianteForm
+        open={isEditing && (showForm || editingId !== null)}
+        form={form}
+        onFormChange={setForm}
+        onCancel={resetForm}
+        onSave={() => (editingId !== null ? updateMut.mutate(editingId) : createMut.mutate())}
+        isSaving={createMut.isPending || updateMut.isPending}
+        errorMsg={saveErrorMessage(editingId !== null ? updateMut.error : createMut.error)}
+        title={editingId !== null ? 'Modifier le coloris' : 'Nouveau coloris'}
+      />
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Supprimer le coloris"
@@ -1828,6 +1906,30 @@ function VariantesCard({
   )
 }
 
+/** One labelled figure on a coloris card (price, stock, minimum). */
+function ColorisFigure({ label, value, tone, sub, showLabel = true }: { label: string; value: string; tone?: 'danger'; sub?: string; showLabel?: boolean }) {
+  return (
+    // Fixed width + right alignment so the figures form columns across cards.
+    <div className="w-24 text-right">
+      {showLabel && (
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold truncate">{label}</p>
+      )}
+      <p className={cn('text-sm font-semibold tabular-nums truncate', tone === 'danger' && 'text-destructive')} title={label}>
+        {value}
+      </p>
+      {sub && <p className="text-[10px] text-muted-foreground tabular-nums">{sub}</p>}
+    </div>
+  )
+}
+
+/** The server's French reason for a failed save (`apiFetch` puts the JSON
+ *  body on `err.body`), or a generic line. */
+function saveErrorMessage(err: unknown): string | null {
+  if (!err) return null
+  const body = (err as { body?: { message?: unknown; error?: unknown } }).body
+  return String(body?.message ?? body?.error ?? "L'enregistrement a échoué")
+}
+
 function deleteError(errorMsg: string | null, target: Variante | null): string | undefined {
   if (errorMsg) return errorMsg
   if (!target) return undefined
@@ -1835,25 +1937,37 @@ function deleteError(errorMsg: string | null, target: Variante | null): string |
 }
 
 function VarianteForm({
+  open,
   form,
   onFormChange,
   onCancel,
   onSave,
   isSaving,
+  errorMsg,
   title,
 }: {
+  open: boolean
   form: VarianteDraft
   onFormChange: (f: VarianteDraft) => void
   onCancel: () => void
   onSave: () => void
   isSaving: boolean
+  errorMsg: string | null
   title: string
 }) {
   const canSave = form.reference.trim().length > 0
   return (
-    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-4 space-y-3">
-      <p className="text-xs font-semibold text-accent uppercase tracking-wide">{title}</p>
-      <div className="grid grid-cols-2 gap-2">
+    <SubFormDialog
+      open={open}
+      title={title}
+      icon={Palette}
+      onClose={onCancel}
+      onSave={onSave}
+      canSave={canSave}
+      isSaving={isSaving}
+      errorMsg={errorMsg}
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <LabeledInput
           label="Référence coloris"
           value={form.reference}
@@ -1867,12 +1981,10 @@ function VarianteForm({
           onChange={(v) => onFormChange({ ...form, prix_kg: v })}
         />
       </div>
-      <LabeledInput
-        label="Stock minimum (kg)"
-        type="number"
-        value={form.stock_mini}
-        onChange={(v) => onFormChange({ ...form, stock_mini: v })}
-      />
+      <p className="text-[11px] text-muted-foreground">
+        Le stock mini et le délai d'approvisionnement se règlent dans l'onglet <span className="font-medium text-foreground">Stock & conso</span>,
+        face à la projection.
+      </p>
       <div className="space-y-1">
         <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
         <textarea
@@ -1882,163 +1994,82 @@ function VarianteForm({
           className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
         />
       </div>
-      <div className="flex justify-end gap-2 pt-1">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          Annuler
-        </Button>
-        <Button size="sm" onClick={onSave} disabled={!canSave || isSaving}>
-          {isSaving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
-          Enregistrer
-        </Button>
-      </div>
-    </div>
+    </SubFormDialog>
   )
 }
 
-// ── Stock Aggregate Card ───────────────────────────────
+// ── Commandes tab ──────────────────────────────────────
+// Read-only purchase history. A row opens the commande in Fils › Commandes.
 
-function StockAggregateCard({
-  detail,
-  isEditing,
-}: {
-  detail: RefFilDetail
-  isEditing: boolean
-}) {
-  const byVariante = new Map<number, { total_kg: number; lots: number }>()
-  for (const s of detail.stock_per_variante) byVariante.set(s.IDcolori_fil, s)
-  const [open, setOpen] = useState(false)
-  return (
-    <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader
-        className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-        onClick={() => setOpen(!open)}
-      >
-        <Warehouse className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Stock actuel</CardTitle>
-        <Badge variant="secondary" className="text-xs ml-auto">
-          {detail.stock_lots} lot{detail.stock_lots !== 1 ? 's' : ''}
-        </Badge>
-        <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-      </CardHeader>
-      {open && (
-      <CardContent className="pb-4">
-        {detail.stock_lots === 0 ? (
-          <p className="text-sm text-muted-foreground italic">Aucun stock en cours</p>
-        ) : (
-          <>
-            <div className="flex items-baseline justify-between mb-3">
-              <span className="text-xs text-muted-foreground">Total</span>
-              <span className="text-lg font-semibold tabular-nums">
-                {fmtNum(detail.stock_total_kg, 1)} kg
-              </span>
-            </div>
-            <div className="space-y-1.5">
-              {detail.variantes
-                .filter((v) => byVariante.has(v.IDcolori_fil))
-                .map((v) => {
-                  const s = byVariante.get(v.IDcolori_fil)!
-                  return (
-                    <a
-                      key={v.IDcolori_fil}
-                      href={`/fils/stock?q=${encodeURIComponent(
-                        `${detail.reference} ${v.reference ?? ''}`,
-                      )}`}
-                      className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-md hover:bg-accent/5 transition-colors text-sm"
-                    >
-                      <span className="truncate">{v.reference ?? '—'}</span>
-                      <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">
-                        {fmtNum(s.total_kg, 1)} kg · {s.lots} lot{s.lots !== 1 ? 's' : ''}
-                      </span>
-                    </a>
-                  )
-                })}
-            </div>
-          </>
-        )}
-      </CardContent>
-      )}
-    </Card>
-  )
-}
-
-// ── Commandes Aggregate Card ───────────────────────────
-
-function CommandesAggregateCard({
-  detail,
-  isEditing,
-}: {
-  detail: RefFilDetail
-  isEditing: boolean
-}) {
-  const [open, setOpen] = useState(false)
+function CommandesAggregateCard({ detail }: { detail: RefFilDetail }) {
+  const navigate = useNavigate()
   const history = detail.commande_history ?? []
   return (
-    <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader
-        className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-        onClick={() => setOpen(!open)}
-      >
-        <ShoppingCart className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Historique commandes</CardTitle>
-        <Badge variant="secondary" className="text-xs ml-auto">
-          {detail.commande_lignes} ligne{detail.commande_lignes !== 1 ? 's' : ''}
-        </Badge>
-        <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-      </CardHeader>
-      {open && (
-        <CardContent className="pb-4">
-          {history.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">Aucune commande</p>
-          ) : (
-            <>
-              <div className="flex items-baseline justify-between mb-3">
-                <span className="text-xs text-muted-foreground">Total commandé</span>
-                <span className="text-lg font-semibold tabular-nums">{fmtNum(detail.commande_total_kg, 1)} kg</span>
-              </div>
-              <div className="space-y-1.5">
-                {history.map((h) => (
-                  <a
-                    key={h.IDref_fil_commande}
-                    href={`/fils/commandes?id=${h.IDcommande_fil}`}
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/5 transition-colors text-sm"
-                  >
-                    <span className="tabular-nums text-muted-foreground flex-shrink-0">
-                      N°{h.IDcommande_fil}
-                    </span>
-                    <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">
-                      {h.date_commande ? formatHfsqlDate(h.date_commande) : '—'}
-                    </span>
-                    <span className="truncate flex-1">
-                      {h.fournisseur_nom ?? '—'}
-                      {h.colori_reference && (
-                        <span className="text-muted-foreground"> · {h.colori_reference}</span>
-                      )}
-                    </span>
-                    {h.etat === 1 && (
-                      <Badge variant="secondary" className="text-[10px] py-0 px-1.5 flex-shrink-0">
-                        Terminée
-                      </Badge>
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <SpecTile label="Total commandé">
+          <TileFigure value={fmtNum(detail.commande_total_kg, 1)} unit="kg" />
+        </SpecTile>
+        <SpecTile label="Lignes">
+          <TileFigure value={fmtNum(detail.commande_lignes)} />
+        </SpecTile>
+        <SpecTile label="Encore attendu">
+          <TileFigure value={fmtNum(detail.commande_reste_kg, 1)} unit="kg" />
+        </SpecTile>
+      </div>
+      {history.length === 0 ? (
+        <p className="text-sm text-muted-foreground italic px-1">Aucune commande</p>
+      ) : (
+        <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-200/60 border-b border-border/60">
+              <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+                <th className="px-3 py-2 text-left font-semibold">N°</th>
+                <th className="px-3 py-2 text-left font-semibold">Date</th>
+                <th className="px-3 py-2 text-left font-semibold">Fournisseur</th>
+                <th className="px-3 py-2 text-left font-semibold">Coloris</th>
+                <th className="px-3 py-2 text-right font-semibold">Quantité</th>
+                <th className="px-3 py-2 text-right font-semibold">Prix</th>
+                <th className="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((h) => (
+                <tr
+                  key={h.IDref_fil_commande}
+                  className="border-b border-border/40 last:border-b-0 hover:bg-accent/5 transition-colors cursor-pointer"
+                  onClick={() => navigate(`/fils/commandes?id=${h.IDcommande_fil}`)}
+                >
+                  <td className="px-3 py-2 tabular-nums font-medium whitespace-nowrap">N°{h.IDcommande_fil}</td>
+                  <td className="px-3 py-2 tabular-nums text-muted-foreground whitespace-nowrap">
+                    {h.date_commande ? formatHfsqlDate(h.date_commande) : '—'}
+                  </td>
+                  <td className="px-3 py-2 truncate max-w-[180px]">{h.fournisseur_nom ?? '—'}</td>
+                  <td className="px-3 py-2 text-muted-foreground truncate max-w-[120px]">{h.colori_reference ?? '—'}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-semibold whitespace-nowrap">{fmtNum(h.quantite, 0)} kg</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-muted-foreground whitespace-nowrap">
+                    {h.prix_unitaire != null && h.prix_unitaire > 0 ? `${fmtNum(h.prix_unitaire, 2)} €/kg` : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    {h.etat === 1 ? (
+                      <Badge variant="success" className="text-[10px] py-0 px-1.5">Terminée</Badge>
+                    ) : (
+                      <Badge variant="default" className="text-[10px] py-0 px-1.5">En cours</Badge>
                     )}
-                    <span className="text-xs tabular-nums flex-shrink-0">
-                      {fmtNum(h.quantite, 0)} kg
-                      {h.prix_unitaire != null && h.prix_unitaire > 0 && (
-                        <span className="text-muted-foreground"> · {fmtNum(h.prix_unitaire, 2)} €/kg</span>
-                      )}
-                    </span>
-                  </a>
-                ))}
-              </div>
-            </>
-          )}
-        </CardContent>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-    </Card>
+    </>
   )
 }
 
-// ── Offres History Card ────────────────────────────────
+// ── Offres tab ────────────────────────────────────────
 // Supplier price quotes per ref_fil. Visible in both modes (employees record
-// new quotes during edit mode). Add via inline form, delete via hover-trash.
+// new quotes during edit mode). Add via dialog, delete via hover-trash.
 
 interface OffreDraft {
   IDfournisseur: number
@@ -2077,7 +2108,6 @@ function OffresHistoryCard({
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<OffreDraft>(emptyOffreDraft())
   const [deleteTarget, setDeleteTarget] = useState<OffreFilRow | null>(null)
@@ -2101,7 +2131,7 @@ function OffresHistoryCard({
   const { data: allFournisseurs } = useQuery<Array<{ IDfournisseur: number; nom: string | null }>>({
     queryKey: ['fournisseurs'],
     queryFn: () => apiFetch('/fournisseurs'),
-    enabled: open && isEditing,
+    enabled: isEditing,
   })
 
   const resetForm = () => {
@@ -2167,183 +2197,178 @@ function OffresHistoryCard({
   const canSubmit =
     form.IDfournisseur > 0 && Number(form.prix) > 0 && /^\d{4}-\d{2}-\d{2}$/.test(form.date)
 
+  // Summary tiles: cheapest quote ever recorded, and the most recent one by date.
+  const priced = offres.filter((o) => o.prix != null && o.prix > 0)
+  const best = priced.reduce<OffreFilRow | null>((b, o) => (b == null || o.prix! < b.prix! ? o : b), null)
+  const latest = offres.reduce<OffreFilRow | null>(
+    (l, o) => (l == null || String(o.date ?? '') > String(l.date ?? '') ? o : l),
+    null,
+  )
+
   return (
     <>
-      <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardHeader
-          className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none"
-          onClick={() => setOpen(!open)}
-        >
-          <Tag className="h-4 w-4 text-accent" />
-          <CardTitle className="text-sm font-semibold">Historique des offres</CardTitle>
-          {isEditing && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 w-6 p-0 text-accent hover:text-accent hover:bg-accent/10"
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowForm(true)
-                setErrorMsg(null)
-                if (!open) setOpen(true)
-              }}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          <Badge variant="secondary" className="text-xs ml-auto">
-            {offres.length}
-          </Badge>
-          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-        </CardHeader>
-        {open && (
-          <CardContent className="space-y-2 pb-4">
-            {showForm && isEditing && (
-              <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-3 space-y-2">
-                <p className="text-xs font-semibold text-accent uppercase tracking-wide">
-                  Nouvelle offre
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Fournisseur</label>
-                    <SearchableCombobox<{ IDfournisseur: number; nom: string | null }>
-                      options={allFournisseurs ?? []}
-                      value={form.IDfournisseur}
-                      onChange={(id) => setForm({ ...form, IDfournisseur: id })}
-                      getId={(f) => f.IDfournisseur}
-                      getPrimary={(f) => f.nom ?? `#${f.IDfournisseur}`}
-                      placeholder="Choisir un fournisseur"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">
-                      Coloris (optionnel)
-                    </label>
-                    <PopoverSelect
-                      options={detail.variantes.map((v) => ({
-                        id: v.IDcolori_fil,
-                        primary: v.reference ?? `#${v.IDcolori_fil}`,
-                      }))}
-                      value={form.IDcolori_fil}
-                      onChange={(id) => setForm({ ...form, IDcolori_fil: id })}
-                      emptyLabel="Tous les coloris"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Date</label>
-                    <input
-                      type="date"
-                      value={form.date}
-                      onChange={(e) => setForm({ ...form, date: e.target.value })}
-                      className={inputClass}
-                    />
-                  </div>
-                  <LabeledInput
-                    label="Prix (€/kg)"
-                    type="number"
-                    step="0.01"
-                    value={form.prix}
-                    onChange={(v) => setForm({ ...form, prix: v })}
-                  />
-                  <LabeledInput
-                    label="Quantité (kg)"
-                    type="number"
-                    value={form.quantite}
-                    onChange={(v) => setForm({ ...form, quantite: v })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Observation (optionnel)
-                  </label>
-                  <textarea
-                    value={form.observation}
-                    onChange={(e) => setForm({ ...form, observation: e.target.value })}
-                    rows={2}
-                    className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-                  />
-                </div>
-                {errorMsg && <p className="text-xs text-destructive">{errorMsg}</p>}
-                <div className="flex justify-end gap-2 pt-1">
-                  <Button variant="outline" size="sm" onClick={resetForm}>
-                    <X className="h-3.5 w-3.5 mr-1.5" />
-                    Annuler
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => createMut.mutate()}
-                    disabled={!canSubmit || createMut.isPending}
-                  >
-                    <Save className="h-3.5 w-3.5 mr-1.5" />
-                    Enregistrer
-                  </Button>
-                </div>
-              </div>
-            )}
-            {offres.length === 0 && !showForm ? (
-              <p className="text-sm text-muted-foreground italic">Aucune offre enregistrée</p>
-            ) : (
-              <div className="space-y-1.5">
-                {offres.map((o) => (
-                  <div
-                    key={o.IDoffre_fil}
-                    className={cn(
-                      'group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
-                      'border-l-amber-400/60',
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
-                          <Tag className="h-3.5 w-3.5 text-amber-600" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">
-                            {o.fournisseur_nom ?? '—'}
-                          </p>
-                          <p className="text-[11px] text-muted-foreground tabular-nums">
-                            {o.date ? formatHfsqlDate(o.date) : '—'}
-                            {o.colori_reference && (
-                              <span> · {o.colori_reference}</span>
-                            )}
-                            {o.quantite != null && o.quantite > 0 && (
-                              <span> · {fmtNum(o.quantite, 0)} kg</span>
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <span className="text-sm font-semibold tabular-nums">
-                          {o.prix != null ? `${fmtNum(o.prix, 2)} €/kg` : '—'}
-                        </span>
-                        {isEditing && (
-                          <button
-                            onClick={() => setDeleteTarget(o)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 text-destructive hover:text-destructive/80 transition-opacity"
-                            title="Supprimer"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
+      {offres.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <SpecTile label="Meilleur prix">
+            <TileFigure value={best?.prix != null ? fmtNum(best.prix, 2) : null} unit="€/kg" />
+            <p className="mt-1 text-[11px] text-muted-foreground truncate">{best?.fournisseur_nom ?? '—'}</p>
+          </SpecTile>
+          <SpecTile label="Dernière offre">
+            <TileFigure value={latest?.prix != null ? fmtNum(latest.prix, 2) : null} unit="€/kg" />
+            <p className="mt-1 text-[11px] text-muted-foreground truncate">
+              {latest?.fournisseur_nom ?? '—'}
+              {latest?.date ? ` · ${formatHfsqlDate(latest.date)}` : ''}
+            </p>
+          </SpecTile>
+          <SpecTile label="Fournisseurs">
+            <TileFigure value={fmtNum(new Set(offres.map((o) => o.IDfournisseur)).size)} />
+            <p className="mt-1 text-[11px] text-muted-foreground truncate">
+              {offres.length} offre{offres.length > 1 ? 's' : ''}
+            </p>
+          </SpecTile>
+        </div>
+      )}
+      {offres.length === 0 ? (
+        <p className="text-sm text-muted-foreground italic px-1">Aucune offre enregistrée</p>
+      ) : (
+        <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-200/60 border-b border-border/60">
+              <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+                <th className="px-3 py-2 text-left font-semibold">Date</th>
+                <th className="px-3 py-2 text-left font-semibold">Fournisseur</th>
+                <th className="px-3 py-2 text-left font-semibold">Coloris</th>
+                <th className="px-3 py-2 text-right font-semibold">Quantité</th>
+                <th className="px-3 py-2 text-right font-semibold">Prix</th>
+                {isEditing && <th className="w-8" />}
+              </tr>
+            </thead>
+            <tbody>
+              {offres.map((o) => (
+                <tr key={o.IDoffre_fil} className="group border-b border-border/40 last:border-b-0 align-top">
+                  <td className="px-3 py-2 tabular-nums text-muted-foreground whitespace-nowrap">
+                    {o.date ? formatHfsqlDate(o.date) : '—'}
+                  </td>
+                  <td className="px-3 py-2">
+                    <p className="font-medium">{o.fournisseur_nom ?? '—'}</p>
                     {!!o.observation?.trim() && (
-                      <div className="flex items-start gap-1.5 mt-2 ml-9">
+                      <p className="mt-0.5 flex items-start gap-1 text-[11px] text-muted-foreground italic">
                         <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
-                        <p className="text-[11px] text-muted-foreground italic">
-                          {o.observation.trim()}
-                        </p>
-                      </div>
+                        {o.observation.trim()}
+                      </p>
                     )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        )}
-      </Card>
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{o.colori_reference ?? 'Tous'}</td>
+                  <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">
+                    {o.quantite != null && o.quantite > 0 ? `${fmtNum(o.quantite, 0)} kg` : '—'}
+                  </td>
+                  <td
+                    className={cn(
+                      'px-3 py-2 text-right tabular-nums font-semibold whitespace-nowrap',
+                      best && o.IDoffre_fil === best.IDoffre_fil && 'text-green-700',
+                    )}
+                  >
+                    {o.prix != null ? `${fmtNum(o.prix, 2)} €/kg` : '—'}
+                  </td>
+                  {isEditing && (
+                    <td className="px-1 py-2 text-right">
+                      <button
+                        onClick={() => setDeleteTarget(o)}
+                        className="opacity-0 group-hover:opacity-100 p-0.5 text-destructive hover:text-destructive/80 transition-opacity"
+                        title="Supprimer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {isEditing && (
+        <AddRowButton
+          label="Ajouter une offre"
+          onClick={() => {
+            setShowForm(true)
+            setErrorMsg(null)
+          }}
+        />
+      )}
+      <SubFormDialog
+        open={showForm && isEditing}
+        title="Nouvelle offre"
+        icon={Tag}
+        onClose={resetForm}
+        onSave={() => createMut.mutate()}
+        canSave={canSubmit}
+        isSaving={createMut.isPending}
+        errorMsg={errorMsg}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Fournisseur</label>
+            <SearchableCombobox<{ IDfournisseur: number; nom: string | null }>
+              options={allFournisseurs ?? []}
+              value={form.IDfournisseur}
+              onChange={(id) => setForm({ ...form, IDfournisseur: id })}
+              getId={(f) => f.IDfournisseur}
+              getPrimary={(f) => f.nom ?? `#${f.IDfournisseur}`}
+              placeholder="Choisir un fournisseur"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              Coloris (optionnel)
+            </label>
+            <PopoverSelect
+              options={detail.variantes.map((v) => ({
+                id: v.IDcolori_fil,
+                primary: v.reference ?? `#${v.IDcolori_fil}`,
+              }))}
+              value={form.IDcolori_fil}
+              onChange={(id) => setForm({ ...form, IDcolori_fil: id })}
+              emptyLabel="Tous les coloris"
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Date</label>
+            <input
+              type="date"
+              value={form.date}
+              onChange={(e) => setForm({ ...form, date: e.target.value })}
+              className={inputClass}
+            />
+          </div>
+          <LabeledInput
+            label="Prix (€/kg)"
+            type="number"
+            step="0.01"
+            value={form.prix}
+            onChange={(v) => setForm({ ...form, prix: v })}
+          />
+          <LabeledInput
+            label="Quantité (kg)"
+            type="number"
+            value={form.quantite}
+            onChange={(v) => setForm({ ...form, quantite: v })}
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted-foreground">
+            Observation (optionnel)
+          </label>
+          <textarea
+            value={form.observation}
+            onChange={(e) => setForm({ ...form, observation: e.target.value })}
+            rows={2}
+            className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+          />
+        </div>
+      </SubFormDialog>
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Supprimer l'offre"
