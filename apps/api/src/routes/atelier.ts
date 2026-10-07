@@ -1680,6 +1680,10 @@ function actionsFor(ctx: Contexte, estRegleur: boolean): ActionAtelier[] {
   // which only a régleur reads. A bonnetier on an unlaunched OF has nothing
   // to record; the phone shows the poste and waits.
   if (!ctx.demarre) return estRegleur ? ['Lancement OF'] : []
+  // A métier the régleur has paused is his until he resumes it (Mickaël,
+  // 2026-10-07): the bonnetier still reads the poste but records nothing. The
+  // legacy did not check this. The régleur keeps every action.
+  if (ctx.interrompu && !estRegleur) return []
   const out: ActionAtelier[] = []
   if (ctx.nb_nettoyages_faits < ctx.nb_nettoyages_requis) out.push('Nettoyage')
   if (ctx.produites + 1 >= ctx.nb_pieces && !ctx.finir_fil) out.push('Terminer OF')
