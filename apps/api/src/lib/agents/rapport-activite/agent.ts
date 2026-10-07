@@ -25,8 +25,9 @@ import { mpsPg } from '../../mps-pg.js'
 import { journalDe, purgerJournal } from '../../journal-activite.js'
 import { partiesParis } from '../../pointage-etat.js'
 import { collecterEntetes, lireMessage, type EnteteMessage } from '../superviseur/boites.js'
-import { appDe, estPersonnel, libelleAction, menuDe, periode, resultatDe, signaux, HEURES_RAPPORT, HEURES_TEXTE, JOURS_RAPPORT, type ConnexionJour, type Signal } from './regles.js'
-import { entreeRapport, hhmm, PROMPT_V1, RAPPORT_SCHEMA, type MailEntree, type ReponseRapport } from './prompt.js'
+import { appDe, estPersonnel, menuDe, periode, resultatDe, signaux, HEURES_RAPPORT, HEURES_TEXTE, JOURS_RAPPORT, type ConnexionJour, type Signal } from './regles.js'
+import { entreeRapport, hhmm, PROMPT_V1, PROMPT_V2, RAPPORT_SCHEMA, type MailEntree, type ReponseRapport } from './prompt.js'
+import { chargerRefs, decrire, refsVides, regrouper } from './libelles.js'
 import { contenuEmail, sujetRapport, type ActionRapport, type ContenuRapport, type MailRapport } from './email.js'
 
 export const RAPPORT_ACTIVITE_SLUG = 'rapport-activite'
@@ -48,6 +49,13 @@ export const RAPPORT_ACTIVITE_VERSION_INITIALE: VersionInitiale = {
   model: 'mistral-medium-latest',
   prompt: PROMPT_V1,
   note: 'Version initiale — synthèse, résumé des mails et points d’attention (les faits et les signaux du code ne passent pas par le modèle).',
+}
+
+/** Offered in Agents IA › Prompt until published (prompt.ts PROMPT_V2). */
+export const RAPPORT_ACTIVITE_PROMPT_LIVRE: VersionInitiale = {
+  model: 'mistral-medium-latest',
+  prompt: PROMPT_V2,
+  note: 'Version 2 — rapport toutes les heures, actions en clair avec les numéros affichés à l’écran ; une libération ou un retrait de pièce n’est pas une suppression, un commentaire de commande n’est pas un engagement.',
 }
 
 /** Mails read by the model at most (headers of the others are still listed). */
@@ -105,15 +113,23 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     collecterEntetes(PERSONNE_SUIVIE, du),
   ])
 
-  const actions: ActionRapport[] = journal.map((l) => ({
+  // Names as people see them on screen; a lookup failure keeps the raw paths.
+  const refs = await chargerRefs(journal).catch((err: unknown) => {
+    console.error(`[agents] ${RAPPORT_ACTIVITE_SLUG}: names not resolved:`, err instanceof Error ? err.message : err)
+    return refsVides()
+  })
+  const decrits = journal.map((l) => ({ ...l, ...decrire(l, refs) }))
+  const lignes = regrouper(decrits)
+  const actions: ActionRapport[] = lignes.map((l) => ({
     heure: hhmm(l.le.getTime()),
     app: appDe(l),
     menu: menuDe(l.chemin),
-    action: libelleAction(l),
+    action: l.texte,
     resultat: resultatDe(l.statut),
     erreur: l.erreur,
+    n: l.n,
   }))
-  const sig: Signal[] = signaux(journal, connexions)
+  const sig: Signal[] = signaux(decrits, connexions)
 
   const mailsPeriode = entetes.filter((m) => m.date >= du && m.date < au)
   const automatiques = mailsPeriode.filter((m) => m.automatique && !m.envoye).length
@@ -153,7 +169,9 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
           personne: p.nom,
           periode: periodeTexte,
           connexions: connexionsTexte,
-          actions: journal.map((l, i) => ({ ...actions[i], resultat: `${actions[i].resultat} (${l.statut})`, ecran: l.ecran, corps: l.corps })),
+          // A known route is said in full by its sentence; only an unknown one
+          // still needs its raw body.
+          actions: lignes.map((l, i) => ({ ...actions[i], resultat: `${actions[i].resultat} (${l.statut})`, ecran: l.connue ? null : l.ecran, corps: l.connue ? null : l.corps })),
           signaux: sig,
           mails: entreesMails,
         }),
@@ -192,8 +210,8 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     coutUsd,
     compteurs: {
       connexions: connexions.length,
-      actionsEtm: actions.filter((a) => a.app === 'ETM').length,
-      actionsTrm: actions.filter((a) => a.app === 'TRM').length,
+      actionsEtm: decrits.filter((l) => appDe(l) === 'ETM').length,
+      actionsTrm: decrits.filter((l) => appDe(l) === 'TRM').length,
       erreurs: actions.filter((a) => a.resultat === 'erreur').length,
       refus: actions.filter((a) => a.resultat === 'refus').length,
       mailsEnvoyes: mails.filter((m) => m.sens === 'envoyé').length,

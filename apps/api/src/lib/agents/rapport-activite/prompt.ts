@@ -29,6 +29,23 @@ Règles :
 - Ne juge pas la vie personnelle ; ignore tout ce qui n'est pas professionnel.
 - Une journée sans rien de notable donne une liste d'alertes vide : c'est le cas normal.`
 
+/** v2 (2026-10-07), after the first hourly report: the actions now come as
+ *  French sentences with on-screen numbers (libelles.ts), the report covers
+ *  about an hour, and v1 raised a released reservation as a « suppression
+ *  massive » and an order comment as a « commitment ». */
+export const PROMPT_V2 = PROMPT_V1.replace('Tu prépares le compte rendu quotidien', 'Tu prépares le compte rendu régulier (environ toutes les heures)')
+  .replace('- synthese : 3 à 6 phrases', '- synthese : 2 à 5 phrases')
+  .replace(
+    '- Une journée sans rien de notable',
+    `- Les actions sont déjà écrites en clair avec les numéros affichés à l'écran (commande client N° 3762, pièce 3510/11) : reprends ces numéros tels quels, n'en déduis rien d'autre.
+- Libérer une réservation, désaffecter ou retirer une pièce d'une commande ou d'un bon de transfert n'est pas une suppression : c'est un ajustement courant, jamais une alerte à lui seul.
+- Les actions listées SONT ce qui est enregistré dans ETM/TRM : ne demande jamais de vérifier qu'une action listée y a bien été enregistrée.
+- Une alerte désigne une erreur ou un oubli probable ET le fait précis qui le montre. « À vérifier si c'est bien fait / bien enregistré / validé » sans indice du contraire n'est pas une alerte. Des défauts notés à la réception d'un rouleau, c'est le contrôle qui fonctionne, pas une alerte.
+- Réceptionner ou affecter plusieurs pièces à la suite est le travail normal, pas une rafale suspecte.
+- Un commentaire saisi sur une commande (« urgent », « merci »…) est une consigne interne, pas un engagement envers un client ou un fournisseur.
+- Une période sans rien de notable`,
+  )
+
 export const RAPPORT_SCHEMA = {
   type: 'object',
   additionalProperties: false,

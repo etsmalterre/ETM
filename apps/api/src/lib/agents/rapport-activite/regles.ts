@@ -146,9 +146,16 @@ const hhmm = (d: Date) => {
   return `${String(p.h).padStart(2, '0')}:${String(p.mi).padStart(2, '0')}`
 }
 
+/** A journal line with its French description (libelles.ts decrire). */
+export type LigneDecrite = LigneJournal & { texte?: string; retrait?: boolean }
+
+const texteDe = (l: LigneDecrite) => l.texte ?? libelleAction(l)
+
 /** The signals code can stand behind: server errors, refusals, failed logins,
- *  deletions, actions as someone else, and the same write repeated in a burst. */
-export function signaux(journal: readonly LigneJournal[], connexions: readonly ConnexionJour[]): Signal[] {
+ *  deletions (not a mere unlink: a released reservation, a piece taken off an
+ *  order), actions as someone else, and the very same write sent again and
+ *  again in a burst. */
+export function signaux(journal: readonly LigneDecrite[], connexions: readonly ConnexionJour[]): Signal[] {
   const out: Signal[] = []
   const erreurs = journal.filter((l) => resultatDe(l.statut) === 'erreur')
   if (erreurs.length) {
@@ -156,7 +163,7 @@ export function signaux(journal: readonly LigneJournal[], connexions: readonly C
       gravite: 'haute',
       nature: 'technique',
       titre: `${erreurs.length} erreur${erreurs.length > 1 ? 's' : ''} serveur rencontrée${erreurs.length > 1 ? 's' : ''}`,
-      detail: erreurs.slice(0, 8).map((l) => `${hhmm(l.le)} ${menuDe(l.chemin)} (${l.statut}${l.erreur ? ` : ${l.erreur}` : ''})`).join(' ; '),
+      detail: erreurs.slice(0, 8).map((l) => `${hhmm(l.le)} ${texteDe(l)} (${l.statut}${l.erreur ? ` : ${l.erreur}` : ''})`).join(' ; '),
     })
   }
   const refus = journal.filter((l) => resultatDe(l.statut) === 'refus')
@@ -165,7 +172,7 @@ export function signaux(journal: readonly LigneJournal[], connexions: readonly C
       gravite: refus.length >= 5 ? 'moyenne' : 'basse',
       nature: 'technique',
       titre: `${refus.length} action${refus.length > 1 ? 's' : ''} refusée${refus.length > 1 ? 's' : ''} par ETM/TRM`,
-      detail: refus.slice(0, 8).map((l) => `${hhmm(l.le)} ${menuDe(l.chemin)}${l.erreur ? ` : ${l.erreur}` : ` (${l.statut})`}`).join(' ; '),
+      detail: refus.slice(0, 8).map((l) => `${hhmm(l.le)} ${texteDe(l)}${l.erreur ? ` : ${l.erreur}` : ` (${l.statut})`}`).join(' ; '),
     })
   }
   const echecs = connexions.filter((c) => !c.succes)
@@ -177,13 +184,13 @@ export function signaux(journal: readonly LigneJournal[], connexions: readonly C
       detail: echecs.slice(0, 8).map((c) => `${hhmm(c.le)}${c.motif ? ` (${c.motif})` : ''}`).join(', '),
     })
   }
-  const suppressions = journal.filter((l) => l.methode === 'DELETE' && resultatDe(l.statut) === 'ok')
+  const suppressions = journal.filter((l) => l.methode === 'DELETE' && !l.retrait && resultatDe(l.statut) === 'ok')
   if (suppressions.length) {
     out.push({
       gravite: suppressions.length >= 5 ? 'moyenne' : 'basse',
       nature: 'comportement',
       titre: `${suppressions.length} suppression${suppressions.length > 1 ? 's' : ''}`,
-      detail: suppressions.slice(0, 10).map((l) => `${hhmm(l.le)} ${libelleAction(l)}`).join(' ; '),
+      detail: suppressions.slice(0, 10).map((l) => `${hhmm(l.le)} ${texteDe(l)}`).join(' ; '),
     })
   }
   const voirComme = journal.filter((l) => l.voir_comme !== null)
@@ -192,25 +199,26 @@ export function signaux(journal: readonly LigneJournal[], connexions: readonly C
       gravite: 'basse',
       nature: 'comportement',
       titre: `${voirComme.length} action${voirComme.length > 1 ? 's' : ''} faite${voirComme.length > 1 ? 's' : ''} en « Voir comme » un autre compte`,
-      detail: voirComme.slice(0, 5).map((l) => `${hhmm(l.le)} ${libelleAction(l)}`).join(' ; '),
+      detail: voirComme.slice(0, 5).map((l) => `${hhmm(l.le)} ${texteDe(l)}`).join(' ; '),
     })
   }
-  // The same write on the same object 4+ times within 2 minutes: a stuck
-  // screen, a double click storm, or trial and error.
-  const rafales = new Map<string, number[]>()
+  // The very same write (same object, same data) 4+ times within 2 minutes:
+  // a stuck screen, a double-click storm, or trial and error. Twelve rolls
+  // received one after the other share a path but not their data: not a burst.
+  const rafales = new Map<string, LigneDecrite[]>()
   for (const l of journal) {
     if (l.methode === 'GET') continue
-    const cle = `${l.methode} ${l.chemin}`
-    rafales.set(cle, [...(rafales.get(cle) ?? []), l.le.getTime()])
+    const cle = `${l.methode} ${l.chemin} ${l.corps ?? ''}`
+    rafales.set(cle, [...(rafales.get(cle) ?? []), l])
   }
-  for (const [cle, temps] of rafales) {
-    for (let i = 0; i + 3 < temps.length; i++) {
-      if (temps[i + 3] - temps[i] <= 120_000) {
+  for (const lignes of rafales.values()) {
+    for (let i = 0; i + 3 < lignes.length; i++) {
+      if (lignes[i + 3].le.getTime() - lignes[i].le.getTime() <= 120_000) {
         out.push({
           gravite: 'basse',
           nature: 'technique',
-          titre: 'Même action répétée en rafale',
-          detail: `${cle.replace(/^\w+ \/api\//, '')} : ${temps.length} fois, dont 4 en moins de 2 minutes vers ${hhmm(new Date(temps[i]))}.`,
+          titre: 'Même action envoyée plusieurs fois de suite',
+          detail: `${texteDe(lignes[0])} : ${lignes.length} fois à l’identique, dont 4 en moins de 2 minutes vers ${hhmm(lignes[i].le)}.`,
         })
         break
       }

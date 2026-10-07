@@ -31,6 +31,7 @@ import {
   RAPPORT_ACTIVITE_JOURS,
   RAPPORT_ACTIVITE_SLUG,
   RAPPORT_ACTIVITE_VERSION_INITIALE,
+  RAPPORT_ACTIVITE_PROMPT_LIVRE,
   executer as executerRapportActivite,
 } from './rapport-activite/agent.js'
 import { resultatTriage, sonderBoite as sonderTriage, TRIAGE_BOITE, TRIAGE_SLUG, TRIAGE_VERSION_INITIALE } from './triage/agent.js'
@@ -345,6 +346,7 @@ export const AGENTS: readonly AgentDef[] = [
       actif: 'Envoie le rapport à chaque heure prévue. « Lancer maintenant » l’envoie tout de suite, sur la période depuis le dernier rapport prévu.',
     },
     versionInitiale: RAPPORT_ACTIVITE_VERSION_INITIALE,
+    promptLivre: RAPPORT_ACTIVITE_PROMPT_LIVRE,
     modeles: MODELES_MISTRAL,
     sonder: executerRapportActivite,
   },

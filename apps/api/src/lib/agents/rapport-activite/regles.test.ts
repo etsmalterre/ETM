@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { msHeureParis } from '../../pointage-etat.js'
-import { appDe, estPersonnel, libelleAction, menuDe, periode, signaux } from './regles.js'
+import { appDe, estPersonnel, libelleAction, menuDe, periode, signaux, type LigneDecrite } from './regles.js'
 import { sansCitation } from './agent.js'
 import { resumerCorps, messageErreur } from '../../journal-activite.js'
 import type { LigneJournal } from '../../journal-activite.js'
 
-const ligne = (o: Partial<LigneJournal>): LigneJournal => ({
+const ligne = (o: Partial<LigneDecrite>): LigneDecrite => ({
   le: new Date(msHeureParis(2026, 10, 6, 10, 0)),
   voir_comme: null,
   appareil: null,
@@ -79,7 +79,12 @@ describe('signaux', () => {
   it('a burst of the same write', () => {
     const t = msHeureParis(2026, 10, 6, 10)
     const j = [0, 20, 40, 60].map((s) => ligne({ le: new Date(t + s * 1000) }))
-    expect(signaux(j, []).map((x) => x.titre)).toEqual(['Même action répétée en rafale'])
+    expect(signaux(j, []).map((x) => x.titre)).toEqual(['Même action envoyée plusieurs fois de suite'])
+  })
+  it('rolls received one after the other are not a burst, a released reservation not a deletion', () => {
+    const t = msHeureParis(2026, 10, 6, 10)
+    const j = [0, 20, 40, 60].map((s) => ligne({ le: new Date(t + s * 1000), methode: 'POST', corps: `{"numero":"3560/${s}"}` }))
+    expect(signaux([...j, ligne({ methode: 'DELETE', retrait: true })], [])).toEqual([])
   })
 })
 

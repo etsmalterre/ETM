@@ -22,7 +22,12 @@ export interface ActionRapport {
   action: string
   resultat: 'ok' | 'refus' | 'erreur'
   erreur: string | null
+  /** Journal lines this one stands for (a run merged by regrouper). */
+  n: number
 }
+
+/** Journal actions behind a list of merged lines. */
+export const nbActions = (actions: readonly ActionRapport[]) => actions.reduce((t, a) => t + a.n, 0)
 
 export interface MailRapport {
   heure: string
@@ -97,7 +102,7 @@ function sectionActions(app: 'ETM' | 'TRM', lignesIa: string[], actions: ActionR
   const vues = actions.slice(0, MAX_LIGNES)
   const reste = actions.length - vues.length
   const html =
-    titreSection(`${app} — ${actions.length} action${actions.length > 1 ? 's' : ''}`) +
+    titreSection(`${app} — ${nbActions(actions)} action${nbActions(actions) > 1 ? 's' : ''}`) +
     lignesIa.map((l) => paragraphe(`• ${l}`)).join('') +
     (vues.length
       ? `<div style="height:6px;line-height:6px;font-size:0;">&nbsp;</div><table ${TABLE}><tr>${th('Heure')}${th('Écran')}${th('Action')}${th('Résultat')}</tr>` +
@@ -112,7 +117,7 @@ function sectionActions(app: 'ETM' | 'TRM', lignesIa: string[], actions: ActionR
         (reste > 0 ? paragraphe(`… et ${reste} autres actions.`, S.muted) : '')
       : '')
   const text = [
-    `${app} — ${actions.length} action(s)`,
+    `${app} — ${nbActions(actions)} action(s)`,
     ...lignesIa.map((l) => `• ${l}`),
     ...vues.map((a) => `  ${a.heure}  ${a.menu} — ${a.action} — ${LIBELLE_RESULTAT[a.resultat]}${a.erreur ? ` : ${a.erreur}` : ''}`),
     ...(reste > 0 ? [`  … et ${reste} autres actions.`] : []),
@@ -155,7 +160,7 @@ export function sujetRapport(c: Pick<ContenuRapport, 'personne' | 'jour' | 'sign
 }
 
 export function contenuEmail(c: ContenuRapport): NotificationEmailContent {
-  const n = (app: 'ETM' | 'TRM') => c.actions.filter((a) => a.app === app).length
+  const n = (app: 'ETM' | 'TRM') => nbActions(c.actions.filter((a) => a.app === app))
   const envoyes = c.mails.filter((m) => m.sens === 'envoyé').length
   const recus = c.mails.filter((m) => m.sens === 'reçu').length
   const sansReponse = c.mails.filter((m) => m.sansReponse).length
