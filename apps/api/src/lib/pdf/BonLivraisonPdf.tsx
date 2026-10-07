@@ -46,6 +46,10 @@ export interface BlPiece {
   poids: number
   metrage: number
   observations: string | null
+  /** « 8 Ml non facturés (motif) » — ETM fini rolls (#1266). Client-facing
+   *  like the invoice, so printed even when observations are hidden: the
+   *  Observations column then shows only this. */
+  nonFactures?: string | null
   /** Structured quality defects, one per line ("Démaillage x1"). TRM only —
    *  rendered in its own column when `showDefauts` is set. */
   defauts?: string[] | null
@@ -327,7 +331,13 @@ function productionLotLabel(lot: BlLot): string {
 
 export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
   const v = VARIANTS[data.variant ?? 'etm']
-  const showObs = data.showObservations
+  // The column appears when observations are shown, or when a roll carries
+  // Ml non facturés (#1266) — then only that mention fills it, the internal
+  // observations stay off the paper.
+  const hasNonFactures = data.articles.some((a) => a.lots.some((l) => l.pieces.some((p) => !!p.nonFactures)))
+  const showObs = data.showObservations || hasNonFactures
+  const obsCell = (p: BlPiece) =>
+    [data.showObservations ? p.observations?.trim() : '', p.nonFactures?.trim()].filter(Boolean).join(' — ')
   const showDefauts = v.defauts
   const showMetrage = v.metrage
   // The pièce column only takes the slack when NO flexible column follows it.
@@ -421,7 +431,7 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
                   <Text style={[styles.cellBase, styles.colNum]}>{fmtNum(p.poids)}</Text>
                   {showMetrage ? <Text style={[styles.cellBase, styles.colNum]}>{fmtNum(p.metrage)}</Text> : null}
                   {showObs ? (
-                    <Text style={[styles.cellBase, styles.colObs]}>{p.observations?.trim() || ''}</Text>
+                    <Text style={[styles.cellBase, styles.colObs]}>{obsCell(p)}</Text>
                   ) : null}
                   {showDefauts ? (
                     // One defect per line, like the legacy report's stacked cell.

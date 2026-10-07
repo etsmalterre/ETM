@@ -32,7 +32,16 @@ export interface EmailDefaults {
    *  pre-ticked when the client's inclureRapportQualite flag is set). When
    *  absent, the dialog falls back to the caller-side `defaultChecked`. */
   optional_attachments?: Array<{ id: string; default_checked: boolean }>
+  /** What the client must be told about this document (BL: roll observations
+   *  shown on the BL, Ml non facturés — LIVA #1266). The server already wrote
+   *  them into `body` under POINTS_A_SIGNALER_TITRE; the dialog asks for a
+   *  confirmation when the user sends after deleting that paragraph. */
+  points_a_signaler?: string[]
 }
+
+/** Heading of the « points à signaler » paragraph — same text as the API's
+ *  `POINTS_A_SIGNALER_TITRE` (lib/bl-points-a-signaler.ts). */
+export const POINTS_A_SIGNALER_TITRE = 'Points à signaler sur cette livraison'
 
 export interface SendPayload {
   to: string[]

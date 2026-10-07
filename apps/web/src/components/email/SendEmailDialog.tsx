@@ -9,6 +9,7 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
+  AlertTriangle,
   User,
   Plus,
   X,
@@ -17,6 +18,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { SignaturePreview } from '@/components/ui/signature-preview'
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { apiFetch } from '@/lib/api'
 import { useUser } from '@/contexts/UserContext'
 import { cn } from '@/lib/utils'
@@ -25,6 +27,7 @@ import {
   parseEmailList,
   formatFileSize,
   MAX_TOTAL_ATTACHMENT_BYTES,
+  POINTS_A_SIGNALER_TITRE,
   type EmailDefaults,
   type EmailRecipient,
   type SendPayload,
@@ -34,6 +37,79 @@ import {
  *  `SendPayload.userAttachments` API still takes plain `File[]` — this richer
  *  shape only lives in dialog state so we can track stable ids for preview
  *  selection and pair each File with a blob URL for inline previews. */
+/** Cc / Cci as chips, same look as the À row. The value stays the
+ *  comma-separated string the dialog already sends (parseEmailList); a chip
+ *  shows the contact's name when the address belongs to a known contact, and
+ *  an invalid address is a red chip (send refuses it). */
+function AddressChipsInput({ value, onChange, names, placeholder }: {
+  value: string
+  onChange: (next: string) => void
+  names: Map<string, string>
+  placeholder: string
+}) {
+  const [draft, setDraft] = useState('')
+  const list = parseEmailList(value)
+  const commit = () => {
+    const added = parseEmailList(draft)
+    setDraft('')
+    if (added.length === 0) return
+    const seen = new Set(list.map((a) => a.toLowerCase()))
+    const next = [...list, ...added.filter((a) => !seen.has(a.toLowerCase()))]
+    onChange(next.join(', '))
+  }
+  const remove = (i: number) => onChange(list.filter((_, j) => j !== i).join(', '))
+  return (
+    <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1 py-0.5">
+      {list.map((a, i) => {
+        const ok = EMAIL_REGEX.test(a)
+        const name = names.get(a.toLowerCase())
+        return (
+          <span
+            key={`${a}-${i}`}
+            title={ok ? a : `Adresse invalide : ${a}`}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md border text-xs py-0.5 pl-1.5 pr-0.5',
+              ok ? 'bg-primary/[0.07] border-primary/20 text-primary' : 'bg-destructive/10 border-destructive/30 text-destructive',
+            )}
+          >
+            {name && <User className="h-3 w-3 flex-shrink-0 opacity-70" />}
+            <span className="max-w-[220px] truncate">{name || a}</span>
+            <button type="button" onClick={() => remove(i)} className="rounded-full hover:bg-primary/15 p-0.5 transition-colors" title="Retirer">
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        )
+      })}
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ',' || e.key === ';') {
+            e.preventDefault()
+            commit()
+          } else if (e.key === 'Backspace' && draft === '' && list.length > 0) {
+            remove(list.length - 1)
+          }
+        }}
+        onBlur={commit}
+        onPaste={(e) => {
+          // A pasted list becomes chips at once.
+          const text = e.clipboardData.getData('text')
+          if (/[,;\n]/.test(text)) {
+            e.preventDefault()
+            const seen = new Set(list.map((a) => a.toLowerCase()))
+            onChange([...list, ...parseEmailList(text).filter((a) => !seen.has(a.toLowerCase()))].join(', '))
+          }
+        }}
+        placeholder={list.length === 0 ? placeholder : 'ajouter…'}
+        className="flex-1 min-w-[8rem] h-6 px-1 text-xs bg-transparent focus:outline-none"
+        autoComplete="off"
+      />
+    </div>
+  )
+}
+
 interface UserAttachment {
   id: string
   file: File
@@ -152,6 +228,12 @@ export function SendEmailDialog({
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [hydrated, setHydrated] = useState(false)
   const [isSending, setIsSending] = useState(false)
+  /** Set when the user sends a mail whose « points à signaler » paragraph
+   *  was deleted: holds the send mode until they confirm or go back. */
+  const [pendingSansPoints, setPendingSansPoints] = useState<{ programme: boolean } | null>(null)
+  /** The signature preview is folded by default: at 7 lines it took the
+   *  message's room, and it never changes from one mail to the next. */
+  const [showSignature, setShowSignature] = useState(false)
 
   // ── Defaults fetch ───────────────────────────────────
   const {
@@ -192,6 +274,15 @@ export function SendEmailDialog({
     const allowed = new Set(serverList.map((o) => o.id))
     return props.filter((a) => allowed.has(a.id))
   }, [optionalServerAttachments, defaults])
+
+  // Names of the known contacts, so a Cc / Cci chip shows « Prénom Nom ».
+  const contactNames = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const r of [...(defaults?.recipients.selected ?? []), ...(defaults?.recipients.suggestions ?? [])]) {
+      if (r.name) m.set(r.email.toLowerCase(), r.name)
+    }
+    return m
+  }, [defaults])
 
   // Hydrate form fields once defaults arrive, then leave them editable.
   // Also set the initial preview target: 'server' when a pdfUrl is present,
@@ -234,6 +325,7 @@ export function SendEmailDialog({
     setShowBcc(false)
     setSubject('')
     setBody('')
+    setPendingSansPoints(null)
     setAttachPdf(true)
     setUserAttachments((prev) => {
       prev.forEach((a) => URL.revokeObjectURL(a.blobUrl))
@@ -383,7 +475,7 @@ export function SendEmailDialog({
   }, [])
 
   // ── Send ─────────────────────────────────────────────
-  const handleSend = useCallback(async (programme = false) => {
+  const handleSend = useCallback(async (programme = false, confirmeSansPoints = false) => {
     setErrorMessage(null)
     setSuccessMessage(null)
     const to = selectedRecipients.map((r) => r.email)
@@ -396,8 +488,20 @@ export function SendEmailDialog({
       setErrorMessage("L'objet ne peut pas être vide")
       return
     }
+    // The client must read the shipment's anomalies in the mail (#1266):
+    // deleting the pre-filled paragraph is allowed, but never by accident.
+    const points = defaults?.points_a_signaler ?? []
+    if (points.length > 0 && !confirmeSansPoints && !body.includes(POINTS_A_SIGNALER_TITRE)) {
+      setPendingSansPoints({ programme })
+      return
+    }
     const ccList = parseEmailList(cc)
     const bccList = parseEmailList(bcc)
+    const invalide = [...ccList, ...bccList].find((a) => !EMAIL_REGEX.test(a))
+    if (invalide) {
+      setErrorMessage(`L'adresse « ${invalide} » n'est pas valide`)
+      return
+    }
     setIsSending(true)
     try {
       await onSend({
@@ -420,7 +524,7 @@ export function SendEmailDialog({
     } finally {
       setIsSending(false)
     }
-  }, [selectedRecipients, subject, cc, bcc, body, attachPdf, userAttachments, pdfUrl, onSend, onClose, visibleOptional, optionalChecked])
+  }, [selectedRecipients, subject, cc, bcc, body, attachPdf, userAttachments, pdfUrl, onSend, onClose, visibleOptional, optionalChecked, defaults])
 
   // Dev-only "Faux envoi" — short-circuits to vincent@etsmalterre.com with
   // dev_skip_send=true so the backend logs envoi_email + flips sstatut
@@ -523,77 +627,84 @@ export function SendEmailDialog({
               </div>
             ) : (
               <>
-                <div className="flex-1 min-h-0 flex flex-col p-4 gap-3">
-                  {/* À — chip picker. The Cc / Cci fields hang off this row's
-                      toggles so they cost no vertical space until needed. */}
-                  <div className="space-y-1 flex-shrink-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-xs font-medium text-muted-foreground">À</label>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => toggleCopyField('cc')}
-                          aria-pressed={showCc}
-                          title={showCc ? 'Masquer le champ Cc' : 'Ajouter des destinataires en copie'}
-                          className={cn(
-                            'px-2 py-0.5 text-[11px] rounded-md transition-colors',
-                            showCc
-                              ? 'bg-accent text-accent-foreground shadow-sm font-medium'
-                              : 'text-muted-foreground hover:bg-accent/10',
-                          )}
-                        >
-                          Cc
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleCopyField('bcc')}
-                          aria-pressed={showBcc}
-                          title={showBcc ? 'Masquer le champ Cci' : 'Ajouter des destinataires en copie cachée'}
-                          className={cn(
-                            'px-2 py-0.5 text-[11px] rounded-md transition-colors',
-                            showBcc
-                              ? 'bg-accent text-accent-foreground shadow-sm font-medium'
-                              : 'text-muted-foreground hover:bg-accent/10',
-                          )}
-                        >
-                          Cci
-                        </button>
+                <div className="flex-1 min-h-0 flex flex-col p-4 gap-3 overflow-y-auto scrollbar-transparent">
+                  {/* Envelope header — one bordered block, one row per field with
+                      the label on the left (mail-client style), so À / Cc / Cci /
+                      Objet cost a line each and the message keeps the room. The
+                      Cc / Cci toggles sit at the end of the À row. */}
+                  <div className="flex-shrink-0 rounded-md border border-input bg-white divide-y divide-border/60">
+                    <div className="flex items-start gap-2 px-2.5 py-1.5">
+                      <label className="w-10 flex-shrink-0 pt-1 text-xs font-medium text-muted-foreground">À</label>
+                      <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1">
+                        {selectedRecipients.map((r) => (
+                          <span
+                            key={r.email}
+                            className="inline-flex items-center gap-1 rounded-md bg-primary/[0.07] border border-primary/20 text-xs py-0.5 pl-1.5 pr-0.5 text-primary"
+                            title={r.email}
+                          >
+                            {r.source === 'contact' && <User className="h-3 w-3 flex-shrink-0 opacity-70" />}
+                            <span className="max-w-[180px] truncate">{r.name || r.email}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeRecipient(r.email)}
+                              className="rounded-full hover:bg-primary/15 p-0.5 transition-colors"
+                              title="Retirer"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </span>
+                        ))}
+                        <input
+                          type="email"
+                          value={manualInput}
+                          onChange={(e) => setManualInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ',' || e.key === ';') {
+                              e.preventDefault()
+                              addManual()
+                            }
+                          }}
+                          onBlur={() => { if (manualInput.trim()) addManual() }}
+                          placeholder={selectedRecipients.length === 0 ? 'Ajouter un destinataire…' : 'ajouter…'}
+                          className="flex-1 min-w-[8rem] h-6 px-1 text-xs bg-transparent focus:outline-none"
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div className="flex items-center gap-0.5 flex-shrink-0">
+                        {(['cc', 'bcc'] as const).map((f) => {
+                          const on = f === 'cc' ? showCc : showBcc
+                          return (
+                            <button
+                              key={f}
+                              type="button"
+                              onClick={() => toggleCopyField(f)}
+                              aria-pressed={on}
+                              title={f === 'cc'
+                                ? (on ? 'Masquer le champ Cc' : 'Ajouter des destinataires en copie')
+                                : (on ? 'Masquer le champ Cci' : 'Ajouter des destinataires en copie cachée')}
+                              className={cn(
+                                'px-1.5 py-0.5 text-[11px] rounded-md transition-colors',
+                                on ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10',
+                              )}
+                            >
+                              {f === 'cc' ? 'Cc' : 'Cci'}
+                            </button>
+                          )
+                        })}
                       </div>
                     </div>
-                    <div className="rounded-md border border-input bg-white p-2 space-y-2">
-                      {selectedRecipients.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {selectedRecipients.map((r) => (
-                            <span
-                              key={r.email}
-                              className="inline-flex items-center gap-1 rounded-md bg-accent/10 border border-accent/30 text-xs py-1 pl-2 pr-1 text-accent"
-                              title={r.email}
-                            >
-                              {r.source === 'contact' && <User className="h-3 w-3 flex-shrink-0" />}
-                              <span className="max-w-[180px] truncate">{r.name || r.email}</span>
-                              <button
-                                type="button"
-                                onClick={() => removeRecipient(r.email)}
-                                className="rounded-full hover:bg-accent/20 p-0.5 transition-colors"
-                                title="Retirer"
-                              >
-                                <X className="h-3 w-3" />
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-muted-foreground italic px-1">Aucun destinataire sélectionné</p>
-                      )}
 
-                      {suggestions.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 pt-2 border-t border-border/40">
+                    {/* Contacts not pre-selected — one click adds them to À */}
+                    {suggestions.length > 0 && (
+                      <div className="flex items-center gap-2 px-2.5 py-1 bg-zinc-50">
+                        <span className="w-10 flex-shrink-0 text-[10px] text-muted-foreground">Suggérés</span>
+                        <div className="flex-1 min-w-0 flex flex-wrap gap-1">
                           {suggestions.map((r) => (
                             <button
                               key={r.email}
                               type="button"
                               onClick={() => addFromSuggestion(r)}
-                              className="inline-flex items-center gap-1 rounded-md bg-zinc-100 border border-border/60 text-xs py-1 px-2 text-muted-foreground hover:bg-accent/10 hover:border-accent/30 hover:text-accent transition-colors"
+                              className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-border text-[11px] py-0.5 px-1.5 text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
                               title={r.email}
                             >
                               <Plus className="h-3 w-3 flex-shrink-0" />
@@ -601,89 +712,57 @@ export function SendEmailDialog({
                             </button>
                           ))}
                         </div>
-                      )}
-
-                      <div className="flex items-center gap-1.5 pt-2 border-t border-border/40">
-                        <input
-                          type="email"
-                          value={manualInput}
-                          onChange={(e) => setManualInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault()
-                              addManual()
-                            }
-                          }}
-                          placeholder="ajouter une adresse…"
-                          className="flex-1 h-7 px-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-                          autoComplete="off"
-                        />
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-accent hover:text-accent hover:bg-accent/10"
-                          onClick={addManual}
-                          disabled={!manualInput.trim()}
-                          title="Ajouter"
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                        </Button>
                       </div>
-                    </div>
-                  </div>
+                    )}
 
-                  {/* Cc — comma text, shown on demand (or when pre-filled) */}
-                  {showCc && (
-                    <div className="space-y-1 flex-shrink-0">
-                      <label className="text-xs font-medium text-muted-foreground">Cc</label>
+                    {/* Cc — comma text, shown on demand (or when pre-filled) */}
+                    {showCc && (
+                      <div className="flex items-center gap-2 px-2.5 py-1">
+                        <label className="w-10 flex-shrink-0 text-xs font-medium text-muted-foreground">Cc</label>
+                        <AddressChipsInput value={cc} onChange={setCc} names={contactNames} placeholder="copie@exemple.com" />
+                      </div>
+                    )}
+
+                    {/* Cci — comma text. Pre-filled (and therefore auto-shown) by
+                        endpoints that copy a third party silently, e.g. the
+                        sous-traitants holding the rolls of an expédition. */}
+                    {showBcc && (
+                      <div className="flex items-center gap-2 px-2.5 py-1">
+                        <label className="w-10 flex-shrink-0 text-xs font-medium text-muted-foreground">Cci</label>
+                        <AddressChipsInput value={bcc} onChange={setBcc} names={contactNames} placeholder="copie.cachee@exemple.com" />
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 px-2.5 py-1">
+                      <label className="w-10 flex-shrink-0 text-xs font-medium text-muted-foreground">Objet</label>
                       <input
                         type="text"
-                        value={cc}
-                        onChange={(e) => setCc(e.target.value)}
-                        placeholder="copie@exemple.com"
-                        className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                        value={subject}
+                        onChange={(e) => setSubject(e.target.value)}
+                        className="flex-1 min-w-0 h-7 px-1 text-sm font-medium bg-transparent focus:outline-none"
                         autoComplete="off"
                       />
                     </div>
-                  )}
-
-                  {/* Cci — comma text. Pre-filled (and therefore auto-shown) by
-                      endpoints that copy a third party silently, e.g. the
-                      sous-traitants holding the rolls of an expédition. */}
-                  {showBcc && (
-                    <div className="space-y-1 flex-shrink-0">
-                      <label className="text-xs font-medium text-muted-foreground">Cci</label>
-                      <input
-                        type="text"
-                        value={bcc}
-                        onChange={(e) => setBcc(e.target.value)}
-                        placeholder="copie.cachee@exemple.com"
-                        className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-                        autoComplete="off"
-                      />
-                    </div>
-                  )}
-
-                  {/* Subject */}
-                  <div className="space-y-1 flex-shrink-0">
-                    <label className="text-xs font-medium text-muted-foreground">Objet</label>
-                    <input
-                      type="text"
-                      value={subject}
-                      onChange={(e) => setSubject(e.target.value)}
-                      className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-                      autoComplete="off"
-                    />
                   </div>
 
                   {/* Body — anchored: fills remaining vertical space in the left pane */}
                   <div className="flex-1 min-h-0 flex flex-col gap-1">
-                    <label className="text-xs font-medium text-muted-foreground flex-shrink-0">Message</label>
+                    {(defaults?.points_a_signaler?.length ?? 0) > 0 && (
+                      <div className="flex-shrink-0 flex items-start gap-2 px-2.5 py-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-800 text-xs">
+                        <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                        <p>
+                          Cette livraison comporte {defaults!.points_a_signaler!.length} point{defaults!.points_a_signaler!.length > 1 ? 's' : ''} à
+                          signaler au client, repris dans le message. Vous pouvez les reformuler.
+                        </p>
+                      </div>
+                    )}
+                    {/* min-h keeps the message readable when Cc/Cci, the
+                        points banner and the signature all show — the form
+                        scrolls instead of crushing it (#1266 feedback). */}
                     <textarea
                       value={body}
                       onChange={(e) => setBody(e.target.value)}
-                      className="flex-1 min-h-0 w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none font-sans scrollbar-transparent"
+                      className="flex-1 min-h-[16rem] w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none font-sans scrollbar-transparent"
                     />
                     <p className="flex-shrink-0 text-[10px] text-muted-foreground">
                       Astuce : le texte entouré de ** apparaîtra en <strong>gras</strong> dans l'email envoyé.
@@ -694,8 +773,16 @@ export function SendEmailDialog({
                           {signatureIsDefault
                             ? "Signature automatique - ajoutée à l'envoi. Personnalisez-la dans Paramètres › Utilisateurs."
                             : "Signature - ajoutée automatiquement à l'envoi"}
+                          {' · '}
+                          <button
+                            type="button"
+                            onClick={() => setShowSignature((v) => !v)}
+                            className="text-accent hover:underline"
+                          >
+                            {showSignature ? 'Masquer' : 'Afficher'}
+                          </button>
                         </p>
-                        <SignaturePreview html={signatureHtml} className="min-h-0 h-28" />
+                        {showSignature && <SignaturePreview html={signatureHtml} className="min-h-0 h-28" />}
                       </div>
                     )}
                   </div>
@@ -981,6 +1068,23 @@ export function SendEmailDialog({
             </div>
           </div>
         </div>
+        <ConfirmDialog
+          open={pendingSansPoints !== null}
+          variant="default"
+          title="Envoyer sans les points à signaler ?"
+          description={
+            `Le message ne contient plus le paragraphe « ${POINTS_A_SIGNALER_TITRE} ». ` +
+            `Le client ne sera pas prévenu dans l'email de : ${(defaults?.points_a_signaler ?? []).join(' ; ')}.`
+          }
+          confirmLabel="Envoyer quand même"
+          cancelLabel="Revenir au message"
+          onCancel={() => setPendingSansPoints(null)}
+          onConfirm={() => {
+            const mode = pendingSansPoints
+            setPendingSansPoints(null)
+            if (mode) void handleSend(mode.programme, true)
+          }}
+        />
       </DialogContent>
     </Dialog>
   )

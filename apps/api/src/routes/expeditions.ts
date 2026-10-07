@@ -73,6 +73,7 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { ADRESSE_A_DEFINIR_REFUS, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable } from '../lib/fini-expediable.js'
+import { mentionRouleauNonFacture, paragraphePointsASignaler, pointsASignaler, type RouleauASignaler } from '../lib/bl-points-a-signaler.js'
 import { rechercherExpeditionsDivers, rechercherExpeditionsFormelles, type RechercheEtat } from '../lib/expeditions-recherche.js'
 
 export const expeditionsRouter: RouterType = Router()
@@ -1828,6 +1829,7 @@ function groupByLot(rows: any[]): BlLot[] {
       poids: Number(p.poids) || 0,
       metrage: Number(p.metrage) || 0,
       observations: p.observations != null ? String(p.observations) : null,
+      nonFactures: mentionRouleauNonFacture(p),
     })
     byLot.set(lot, arr)
   }
@@ -1916,9 +1918,9 @@ export async function buildBlPdfData(id: number): Promise<BonLivraisonPdfData | 
       }
       finition = FINITION_LABELS[colFinition || Number(rf?.finition) || 0] ?? null
       const rollRows = await query<any>(
-        `SELECT IDstock_fini, numero, lot, poids, metrage, observations FROM stock_fini WHERE IDligne_expedition = ${leId} ORDER BY lot, numero`,
+        `SELECT IDstock_fini, numero, lot, poids, metrage, observations, ml_non_factures, ml_non_factures_motif FROM stock_fini WHERE IDligne_expedition = ${leId} ORDER BY lot, numero`,
       )
-      piecesRaw = await fixEncoding(rollRows, 'stock_fini', 'IDstock_fini', ['numero', 'lot', 'observations'])
+      piecesRaw = await fixEncoding(rollRows, 'stock_fini', 'IDstock_fini', ['numero', 'lot', 'observations', 'ml_non_factures_motif'])
     } else {
       // écru (tombé de métier)
       const reRows = refId > 0
@@ -2874,14 +2876,36 @@ async function loadExpeditionMagasinSstIds(ligneIds: number[]): Promise<number[]
   return Array.from(new Set([...fini, ...ecru].map((r) => Number(r.IDmagasin) || 0).filter((x) => x > 0)))
 }
 
+/** What the client must read in the BL mail (#1266) — client-facing facts
+ *  only, rules in lib/bl-points-a-signaler.ts. */
+async function loadBlPointsASignaler(ligneIds: number[], afficheObservations: boolean, observationBl: string | null): Promise<string[]> {
+  const ids = Array.from(new Set(ligneIds.filter((x) => x > 0)))
+  let rouleaux: RouleauASignaler[] = []
+  if (ids.length > 0) {
+    const inLe = ids.join(',')
+    const [fini, ecru] = await Promise.all([
+      query<any>(`SELECT IDstock_fini, numero, observations, metrage, ml_non_factures, ml_non_factures_motif FROM stock_fini WHERE IDligne_expedition IN (${inLe})`),
+      afficheObservations
+        ? query<any>(`SELECT IDstock_ecru, numero, observations, metrage FROM stock_ecru WHERE IDligne_expedition_ETM IN (${inLe})`)
+        : Promise.resolve([]),
+    ])
+    rouleaux = [
+      ...(await fixEncoding(fini, 'stock_fini', 'IDstock_fini', ['numero', 'observations', 'ml_non_factures_motif'])),
+      ...(await fixEncoding(ecru, 'stock_ecru', 'IDstock_ecru', ['numero', 'observations'])),
+    ] as RouleauASignaler[]
+  }
+  return pointsASignaler({ afficheObservations, observationBl, rouleaux })
+}
+
 async function buildBlEmailDefaults(id: number): Promise<{
   recipients: { selected: EmailRecipientPayload[]; suggestions: EmailRecipientPayload[] }
   subject: string; body: string; clientNom: string
   bcc: string[]
   optional_attachments: Array<{ id: string; default_checked: boolean }>
+  points_a_signaler: string[]
 } | null> {
-  const rows = await query<{ IDcommande_client: number; inclureRapportQualite: number | null }>(
-    `SELECT IDcommande_client, inclureRapportQualite FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`,
+  const rows = await query<{ IDcommande_client: number; inclureRapportQualite: number | null; affiche_observations: number | null; observation_bl: string | null }>(
+    `SELECT IDcommande_client, inclureRapportQualite, affiche_observations, observation_bl FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`,
   )
   if (rows.length === 0) return null
   const cmdId = Number(rows[0].IDcommande_client) || 0
@@ -2950,14 +2974,21 @@ async function buildBlEmailDefaults(id: number): Promise<{
     else suggestions.push(recipient)
   }
 
+  const points_a_signaler = await loadBlPointsASignaler(
+    (leRows as any[]).map((l) => Number(l.IDligne_expedition) || 0),
+    Number(rows[0].affiche_observations) === 1,
+    stripRtf(rows[0].observation_bl) || null,
+  )
+
   const subject = `Avis d'expédition N°${id} - ETS Malterre`
   const body =
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre avis d'expédition N°${id}.\n\n` +
+    paragraphePointsASignaler(points_a_signaler) +
     `Nous restons à votre disposition pour toute information complémentaire.\n\n` +
     `Cordialement,\n` +
     `ETS Malterre`
-  return { recipients: { selected, suggestions }, subject, body, clientNom, bcc, optional_attachments }
+  return { recipients: { selected, suggestions }, subject, body, clientNom, bcc, optional_attachments, points_a_signaler }
 }
 
 expeditionsRouter.get('/formelle/:id/email-defaults', async (req: Request, res: Response) => {
