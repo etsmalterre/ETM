@@ -28,6 +28,12 @@ export const PERMISSION_KEYS = [
     category: 'Tableau de bord',
   },
   {
+    key: 'dashboard_commandes_fil',
+    label: 'Fils en commande',
+    description: 'Affiche le widget « Fils en commande » sur le tableau de bord : les lignes de commande de fil encore attendues, leur état et leur date de livraison prévue.',
+    category: 'Tableau de bord',
+  },
+  {
     key: 'dashboard_notifications',
     label: 'Notifications',
     description:

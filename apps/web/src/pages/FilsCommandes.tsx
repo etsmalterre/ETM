@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
@@ -216,9 +217,25 @@ function etatColors(etat: number | null) {
 
 export function FilsCommandes() {
   const queryClient = useQueryClient()
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // Deep link /fils/commandes?commande=<IDcommande_fil> (the dashboard's
+  // « Fils en commande » widget) arrives with the commande selected. Consumed
+  // once below so a later refresh doesn't pin the selection.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedCommandeId = (() => {
+    const raw = parseInt(searchParams.get('commande') ?? '', 10)
+    return isNaN(raw) || raw <= 0 ? null : raw
+  })()
+  const [selectedId, setSelectedId] = useState<number | null>(linkedCommandeId)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'en_cours' | 'terminee'>('en_cours')
+  useEffect(() => {
+    if (searchParams.has('commande')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('commande')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [isEditing, setIsEditing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [stockDrawerLineId, setStockDrawerLineId] = useState<number | null>(null)
@@ -417,7 +434,9 @@ export function FilsCommandes() {
     selectedId,
     getId: (c) => c.IDcommande_fil,
     select: setSelectedId,
-    suspended: isEditing,
+    // While the list loads, `filtered` is [] and the hook would drop a
+    // deep-linked selection before the commande it names has arrived.
+    suspended: isEditing || isLoading,
   })
 
   return (

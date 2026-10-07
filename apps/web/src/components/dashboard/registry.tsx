@@ -8,13 +8,14 @@
 // renaming one silently drops that widget from every layout that mentions it
 // (it degrades gracefully: the widget reappears at the end with its defaults).
 
-import { TrendingUp, FileSpreadsheet, LineChart, ShoppingCart, Wallet } from 'lucide-react'
+import { TrendingUp, FileSpreadsheet, LineChart, ShoppingCart, Wallet, Truck } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { AnalyseFinanciereWidget } from './AnalyseFinanciereWidget'
 import { ChiffreAffairesWidget } from './ChiffreAffairesWidget'
 import { FilStockEtatWidget } from './FilStockEtatWidget'
+import { CommandesFilWidget } from './CommandesFilWidget'
 import { LaGentleExportWidget } from './LaGentleExportWidget'
 import { NotificationsWidget } from './NotificationsWidget'
 import { UtilisationFilWidget } from './UtilisationFilWidget'
@@ -170,6 +171,18 @@ export const WIDGET_REGISTRY: readonly WidgetDef[] = [
     minWidth: 3,
     defaultHeightPx: 500,
     Component: FilStockEtatWidget,
+  },
+  {
+    key: 'commandes_fil',
+    permission: 'dashboard_commandes_fil',
+    title: 'Fils en commande',
+    icon: Truck,
+    defaultWidth: 6,
+    // Two-line cards with a phase pill and a date on the right — below 3
+    // columns the pill crowds the reference.
+    minWidth: 3,
+    defaultHeightPx: 500,
+    Component: CommandesFilWidget,
   },
   {
     key: 'la_gentle',

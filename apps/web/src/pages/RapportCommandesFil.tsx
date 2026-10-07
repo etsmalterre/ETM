@@ -7,17 +7,10 @@ import {
   ArrowUp,
   ArrowDown,
   ClipboardList,
-  Hourglass,
-  Clock,
-  PackageOpen,
-  PackageCheck,
-  CheckCircle2,
   FileSpreadsheet,
   Columns3,
-  type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
@@ -31,67 +24,9 @@ import { formatHfsqlDate } from '@/lib/dates'
 import { apiFetch } from '@/lib/api'
 import { useUser } from '@/contexts/UserContext'
 import { fmtNum } from '@/lib/format'
+import { phaseMeta, PhasePill, type PhaseCommandeFil, type RapportFilLine } from '@/lib/phase-commande-fil'
 
-// ── Types ──────────────────────────────────────────────
-
-type Phase = 'terminee' | 'recue' | 'partielle' | 'attente_delai' | 'en_cours'
-
-interface RapportFilLine {
-  IDref_fil_commande: number
-  IDcommande_fil: number
-  phase: Phase
-  fournisseur_nom: string
-  reference: string
-  coloris: string
-  qte_commandee: number
-  qte_recue: number
-  qte_restante: number
-  nb_lots: number
-  prix_unitaire: number
-  montant: number
-  date_commande: string | null
-  date_livraison: string | null
-  date_notif: string | null
-  retard_jours: number | null
-  commentaire: string
-  journal: string
-  urgency: 'late' | 'soon' | null
-  etat_ligne: number
-  etat_commande: number
-}
-
-// ── Line phase pill meta ───────────────────────────────
-//
-// A yarn order line only carries etat 0/1, so the API derives a richer
-// phase from the delivery date + the linked stock lots. Colors mirror the
-// SST report's LINE_STATUT_META so both reports read the same way.
-interface PhaseMeta {
-  label: string
-  icon: LucideIcon
-  solid: string
-}
-const PHASE_META: Record<Phase, PhaseMeta> = {
-  attente_delai: { label: 'Attente délai', icon: Hourglass, solid: 'bg-yellow-500 border-yellow-500' },
-  en_cours: { label: 'En cours', icon: Clock, solid: 'bg-primary border-primary' },
-  partielle: { label: 'Réception partielle', icon: PackageOpen, solid: 'bg-sky-500 border-sky-500' },
-  // Fully delivered but the line is still open — the user hasn't clôturé it.
-  recue: { label: 'Reçue', icon: PackageCheck, solid: 'bg-teal-500 border-teal-500' },
-  terminee: { label: 'Terminée', icon: CheckCircle2, solid: 'bg-success border-success' },
-}
-function phaseMeta(phase: Phase): PhaseMeta {
-  return PHASE_META[phase] ?? { label: '—', icon: ClipboardList, solid: 'bg-zinc-500 border-zinc-500' }
-}
-
-function PhasePill({ phase }: { phase: Phase }) {
-  const meta = phaseMeta(phase)
-  const Icon = meta.icon
-  return (
-    <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white whitespace-nowrap', meta.solid)}>
-      <Icon className="h-2.5 w-2.5 flex-shrink-0" />
-      {meta.label}
-    </Badge>
-  )
-}
+type Phase = PhaseCommandeFil
 
 // ── Formatting helpers ─────────────────────────────────
 

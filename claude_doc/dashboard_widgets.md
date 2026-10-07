@@ -162,6 +162,13 @@ Pick a fil + coloris → **En stock** (Σ `stock_fil.stock` of the lots, `stock 
 - **A lot at stock 0 does not cancel the need** — 8884 had knitted 2 727 kg of 3 304 reserved from an exhausted lot: the 577 kg left have to come from another lot of the same fil, which is exactly what « Disponible » must show.
 - The arithmetic is pure (`lib/fil-etat-besoin.ts`, `computeBesoin`) and pinned by `fil-etat-besoin.test.ts` on the #1139 prod figures (11 336 reserved → 1 963 remaining) and the #1159 ones (sst 9032 derived 180 kg from 3 000 kg × 6 %). Data probe: `scripts/probe-1139-besoin-fil.ts` (run on the MPS API host, the dev snapshot predates those OFs).
 
+### Fils en commande widget (tableau de bord)
+
+LIVA #1267 (asked by Nico on TRM, built in ETM only by decision — separation of concerns). Every yarn order line still awaited, with its phase and the date it is expected. Permission `dashboard_commandes_fil`; widget `components/dashboard/CommandesFilWidget.tsx`.
+- **No endpoint of its own**: it reads `GET /api/rapports/commandes-fil?terminees=0` — the Rapports › Commandes de fils scope (open lines of open commandes) and its computed phase + §30 urgency — under the same query key, so widget and report never disagree. The phase pill colours live in `lib/phase-commande-fil.tsx`, shared by both.
+- Sorted by what needs attention: lines with no date first, then the date that matters for the phase (relance `date_notif` while « Attente délai », delivery date after), « Reçue » (delivered, not clôturée) last.
+- A line click opens `/fils/commandes?commande=<IDcommande_fil>` (deep link added for it; the auto-select is suspended while the list loads so it doesn't drop the linked selection).
+
 ### Utilisation fil widget (tableau de bord)
 
 Ports legacy *FI_Utilisation_fil.wdw*: pick a fil (+ optionally one of its coloris) → the écru références whose composition uses it. Permission `dashboard_utilisation_fil`; endpoint `GET /api/references-fil/:id/utilisation?colori=<id>`; widget `components/dashboard/UtilisationFilWidget.tsx`. Two facts about `composition_ecru` (`IDref_ecru × IDcolori_ecru × IDref_fil × IDcolori_fil × pourcentage`) drive it:
