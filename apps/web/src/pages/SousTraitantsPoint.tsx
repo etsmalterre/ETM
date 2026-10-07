@@ -17,7 +17,8 @@
 // what the automate first proposed.
 //
 // No global « Modifier » cycle: a point is a working draft, edited line by
-// line (inline form per line, like the lines of a commande), until it is sent.
+// line (a dialog to add or correct one, like « Retirer » and « Tricobot s’est
+// trompé ? »), until it is sent.
 
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -38,6 +39,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Send,
   Trash2,
@@ -473,6 +475,7 @@ function DetailMain({ point, sections, isLoading, hasSelection, onChanged }: {
   if (isLoading || !point) return <div className="flex items-center justify-center py-12"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
 
   const modifiable = point.statut !== 'envoye'
+  const edition = editionId !== null ? point.lignes.find((l) => l.id === editionId) ?? null : null
   return (
     <div className="flex-1 min-h-0 overflow-auto space-y-4 p-1 scrollbar-transparent">
       {point.erreurEnvoi && (
@@ -494,36 +497,22 @@ function DetailMain({ point, sections, isLoading, hasSelection, onChanged }: {
               <Badge variant="secondary" className="text-xs flex-shrink-0">{actives}</Badge>
             </div>
             <div className="mt-3 space-y-2">
-              {lignes.length === 0 && ajoutSection !== s.n && (
+              {lignes.length === 0 && (
                 <p className="text-sm text-muted-foreground italic">Rien à demander{s.n === 6 ? ' — la question est posée quand même.' : ' : la section part vide (« — »).'}</p>
               )}
               {lignes.map((l) => (
-                editionId === l.id ? (
-                  <LigneForm
-                    key={l.id}
-                    pointId={point.id}
-                    section={s.n}
-                    sections={sections}
-                    ligne={l}
-                    onDone={(p) => { if (p) onChanged(p); setEditionId(null) }}
-                  />
-                ) : (
-                  <LigneCard
-                    key={l.id}
-                    pointId={point.id}
-                    ligne={l}
-                    avecDate={s.n === 1}
-                    modifiable={modifiable}
-                    onEditer={() => { setAjoutSection(null); setEditionId(l.id) }}
-                    onRetour={() => setRetourPour(l)}
-                    onChanged={onChanged}
-                  />
-                )
+                <LigneCard
+                  key={l.id}
+                  pointId={point.id}
+                  ligne={l}
+                  avecDate={s.n === 1}
+                  modifiable={modifiable}
+                  onEditer={() => setEditionId(l.id)}
+                  onRetour={() => setRetourPour(l)}
+                  onChanged={onChanged}
+                />
               ))}
-              {ajoutSection === s.n && (
-                <LigneForm pointId={point.id} section={s.n} sections={sections} ligne={null} onDone={(p) => { if (p) onChanged(p); setAjoutSection(null) }} />
-              )}
-              {modifiable && ajoutSection !== s.n && editionId === null && (
+              {modifiable && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -537,6 +526,15 @@ function DetailMain({ point, sections, isLoading, hasSelection, onChanged }: {
           </div>
         )
       })}
+      <LigneDialog
+        open={ajoutSection !== null || edition !== null}
+        pointId={point.id}
+        section={edition?.section ?? ajoutSection ?? 1}
+        sections={sections}
+        ligne={edition}
+        onClose={() => { setAjoutSection(null); setEditionId(null) }}
+        onSaved={onChanged}
+      />
       <TricobotRetourDialog
         open={retourPour !== null}
         sujet={retourPour ? [retourPour.commande, retourPour.reference].filter(Boolean).join(' · ') || 'cette ligne' : null}
@@ -633,19 +631,31 @@ function LigneCard({ pointId, ligne: l, avecDate, modifiable, onEditer, onRetour
   )
 }
 
-function LigneForm({ pointId, section, sections, ligne, onDone }: {
-  pointId: number; section: Section; sections: SectionMeta[]; ligne: PointLigne | null; onDone: (p: Point | null) => void
+/** Adding or correcting a line — a dialog, like « Retirer » and « Tricobot s’est
+ *  trompé ? », so the form never pushes the section's other lines around. */
+function LigneDialog({ open, pointId, section, sections, ligne, onClose, onSaved }: {
+  open: boolean; pointId: number; section: Section; sections: SectionMeta[]; ligne: PointLigne | null
+  onClose: () => void; onSaved: (p: Point) => void
 }) {
-  const [f, setF] = useState({
-    section: ligne?.section ?? section,
-    commande: ligne?.commande ?? '',
-    reference: ligne?.reference ?? '',
-    coloris: ligne?.coloris ?? '',
-    commentaire: ligne?.commentaire ?? '',
-    datePrevue: ligne?.datePrevue ?? '',
+  const vide = (l: PointLigne | null) => ({
+    section: l?.section ?? section,
+    commande: l?.commande ?? '',
+    reference: l?.reference ?? '',
+    coloris: l?.coloris ?? '',
+    commentaire: l?.commentaire ?? '',
+    datePrevue: l?.datePrevue ?? '',
   })
+  const [f, setF] = useState(() => vide(ligne))
   const [pourquoi, setPourquoi] = useState(ligne?.retour?.texte ?? '')
   const [erreur, setErreur] = useState<string | null>(null)
+  // Fresh form on every opening (another line, another section).
+  useEffect(() => {
+    if (!open) return
+    setF(vide(ligne))
+    setPourquoi(ligne?.retour?.texte ?? '')
+    setErreur(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, ligne?.id, section])
   // Tricobot speaks on a line he missed (new) or wrote (auto); a person's own line is theirs.
   const tricobot = !ligne || ligne.origine === 'auto'
   const save = useMutation({
@@ -659,13 +669,21 @@ function LigneForm({ pointId, section, sections, ligne, onDone }: {
       const lid = ligne?.id ?? r.id!
       return apiFetch<{ point: Point }>(`/points-sst/${pointId}/lignes/${lid}/retour`, { method: 'POST', body: JSON.stringify({ texte: pourquoi.trim() }) })
     },
-    onSuccess: (r) => onDone(r.point),
+    onSuccess: (r) => { onSaved(r.point); onClose() },
     onError: (e) => setErreur(erreurDe(e)),
   })
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((p) => ({ ...p, [k]: e.target.value }))
+  const sujet = ligne ? [ligne.commande, ligne.reference].filter(Boolean).join(' · ') : ''
   return (
-    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-4 space-y-3">
-      <p className="text-xs font-semibold text-accent uppercase tracking-wide">{ligne ? 'Corriger la ligne' : 'Nouvelle ligne'}</p>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-2xl max-h-[90dvh] overflow-y-auto" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {ligne ? <Pencil className="h-5 w-5 text-accent" /> : <Plus className="h-5 w-5 text-accent" />}
+            {ligne ? `Corriger la ligne${sujet ? ` — ${sujet}` : ''}` : 'Ajouter une ligne'}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
       {!ligne && (
         <TricobotBulle titre="J’ai oublié une ligne ?"
           texte="Écris-la ici, elle partira avec le point. J’en tiendrai compte lors de ma prochaine mise à jour — dis-moi pourquoi en bas si tu peux." />
@@ -698,13 +716,15 @@ function LigneForm({ pointId, section, sections, ligne, onDone }: {
         </Labeled>
       )}
       {erreur && <p className="text-sm text-destructive flex items-center gap-1.5"><AlertCircle className="h-4 w-4" />{erreur}</p>}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button variant="outline" size="sm" onClick={() => onDone(null)}>Annuler</Button>
-        <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending}>
-          {save.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Enregistrer
-        </Button>
-      </div>
-    </div>
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose}>Annuler</Button>
+          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+            {save.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}Enregistrer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
