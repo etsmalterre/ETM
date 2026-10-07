@@ -20,7 +20,7 @@
 // line (a dialog to add or correct one, like « Retirer » and « Tricobot s’est
 // trompé ? »), until it is sent.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -30,6 +30,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardList,
+  ArrowRight,
   Clock,
   FileDown,
   History,
@@ -149,6 +150,9 @@ const jjmmaaaa = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.
 const dateHeure = (iso: string) =>
   new Date(iso).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 const heure = (iso: string) => new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+/** Today and the hour in Paris — the factory's clock, whatever the PC's. */
+const aujourdhuiParis = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date())
+const heureParis = () => Number(new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', hourCycle: 'h23' }).format(new Date()))
 
 const erreurDe = (e: unknown) => {
   const b = (e as { body?: { error?: string; message?: string } })?.body
@@ -212,8 +216,11 @@ export function SousTraitantsPoint() {
   const rows = useMemo(() => liste?.points ?? [], [liste])
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
+    const aujourdhui = aujourdhuiParis()
     return rows.filter((r) => {
       if (vue === 'a_envoyer' && r.statut === 'envoye') return false
+      // A day gone by without sending: nothing left to send (it stays under « Tous »).
+      if (vue === 'a_envoyer' && r.statut === 'brouillon' && r.jour < aujourdhui) return false
       if (vue === 'envoyes' && r.statut !== 'envoye') return false
       if (!q) return true
       return `${r.sousTraitant} ${jourLong(r.jour)} ${jjmmaaaa(r.jour)}`.toLowerCase().includes(q)
@@ -266,6 +273,14 @@ export function SousTraitantsPoint() {
             isLoading={detailQuery.isLoading && selectedId !== null}
             hasSelection={selectedId !== null}
             onChanged={appliquer}
+            bandeau={point && (
+              <PointSuivant
+                point={point}
+                prochainJour={liste?.prochainJour ?? ''}
+                suivantId={rows.find((r) => r.idsousTraitant === point.idsousTraitant && r.jour === liste?.prochainJour)?.id ?? null}
+                onOuvrir={(id) => { setVue('a_envoyer'); setSelectedId(id) }}
+              />
+            )}
           />
         }
         sidebar={selectedId !== null ? (
@@ -448,10 +463,56 @@ function DetailHeader({ point, isLoading, onChanged, onEmail }: { point: Point |
   )
 }
 
+// ── « Ce n'est pas le point de demain » ────────────────
+// Pierre-Emmanuel corrected the point du 07/10 on 07/10 at 16:40, believing it was
+// tomorrow's: the 08/10 point only appears at 17:00, and nothing said the one on
+// screen was today's. An unsent point that is not the next one says so, and leads
+// to the next one — opening it, or preparing it now.
+
+function PointSuivant({ point, prochainJour, suivantId, onOuvrir }: {
+  point: Point; prochainJour: string; suivantId: number | null; onOuvrir: (id: number) => void
+}) {
+  const queryClient = useQueryClient()
+  const preparer = useMutation({
+    mutationFn: () => apiFetch<{ id: number }>('/points-sst/preparer', { method: 'POST', body: JSON.stringify({ idsousTraitant: point.idsousTraitant, jour: prochainJour }) }),
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ['points-sst'] })
+      onOuvrir(r.id)
+    },
+  })
+  const aujourdhui = aujourdhuiParis()
+  if (point.statut === 'envoye' || !prochainJour || point.jour >= prochainJour) return null
+  const depasse = point.jour < aujourdhui
+  // Today's point is the one to send in the morning: only point the way once the morning is over.
+  if (!depasse && (point.jour > aujourdhui || heureParis() < 12)) return null
+  return (
+    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 flex items-center gap-3 flex-wrap">
+      <CalendarClock className="h-4 w-4 text-amber-600 flex-shrink-0" />
+      <p className="text-sm min-w-0 flex-1">
+        {depasse
+          ? <><span className="font-semibold">Ce point est dépassé</span> : il était pour {jourLong(point.jour)} et n’est pas parti.</>
+          : <><span className="font-semibold">C’est le point d’aujourd’hui</span> ({jourLong(point.jour)}). Pour le prochain, c’est le point du {jourLong(prochainJour)}.</>}
+        {!suivantId && <span className="text-muted-foreground"> Tricobot le prépare à 17 h ; vous pouvez le préparer dès maintenant, il sera actualisé à 17 h sans perdre vos corrections.</span>}
+        {preparer.isError && <span className="text-destructive"> {erreurDe(preparer.error)}</span>}
+      </p>
+      {suivantId ? (
+        <Button size="sm" onClick={() => onOuvrir(suivantId)}>
+          <ArrowRight className="h-3.5 w-3.5 mr-1.5" />Ouvrir le point du {jourLong(prochainJour)}
+        </Button>
+      ) : (
+        <Button size="sm" onClick={() => preparer.mutate()} disabled={preparer.isPending}>
+          {preparer.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Plus className="h-3.5 w-3.5 mr-1.5" />}
+          Préparer le point du {jourLong(prochainJour)}
+        </Button>
+      )}
+    </div>
+  )
+}
+
 // ── Center: the six sections ───────────────────────────
 
-function DetailMain({ point, sections, isLoading, hasSelection, onChanged }: {
-  point: Point | null; sections: SectionMeta[]; isLoading: boolean; hasSelection: boolean; onChanged: (p: Point) => void
+function DetailMain({ point, sections, isLoading, hasSelection, onChanged, bandeau }: {
+  point: Point | null; sections: SectionMeta[]; isLoading: boolean; hasSelection: boolean; onChanged: (p: Point) => void; bandeau?: ReactNode
 }) {
   const [ajoutSection, setAjoutSection] = useState<Section | null>(null)
   const [editionId, setEditionId] = useState<number | null>(null)
@@ -478,6 +539,7 @@ function DetailMain({ point, sections, isLoading, hasSelection, onChanged }: {
   const edition = editionId !== null ? point.lignes.find((l) => l.id === editionId) ?? null : null
   return (
     <div className="flex-1 min-h-0 overflow-auto space-y-4 p-1 scrollbar-transparent">
+      {bandeau}
       {point.erreurEnvoi && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive flex items-center gap-2">
           <AlertCircle className="h-4 w-4 flex-shrink-0" />L’envoi programmé a échoué : {point.erreurEnvoi}

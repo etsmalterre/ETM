@@ -9,7 +9,7 @@
 
 import { mpsPg } from '../mps-pg.js'
 import { lireFaits } from './lecture.js'
-import { construirePoint, trier, type LignePoint, type Section } from './regles.js'
+import { construirePoint, jjmm, trier, type LignePoint, type RetraitRepris, type Section } from './regles.js'
 
 export type StatutPoint = 'brouillon' | 'programme' | 'envoye'
 
@@ -191,8 +191,8 @@ export const CONCLUSION_PAR_DEFAUT = ''
 /** Prepares (creates) or refreshes (merges) the point of `jour` for a dyer.
  *  An already sent point is left alone. Returns the point id and what changed. */
 export async function preparerPoint(idsousTraitant: number, jour: string, par: string, version: number): Promise<{ id: number; cree: boolean; ajoutees: number; mises_a_jour: number; enlevees: number; envoye: boolean }> {
-  const { lignes, etudes } = await lireFaits(idsousTraitant, jour)
-  const calcul = construirePoint(jour, lignes, etudes)
+  const { lignes } = await lireFaits(idsousTraitant, jour)
+  const calcul = reprendreRetraits(construirePoint(jour, lignes), await lignesDuPointPrecedent(idsousTraitant, jour))
   const sql = mpsPg()
   return sql.begin(async (t) => {
     const tx = t as unknown as typeof sql
@@ -217,18 +217,18 @@ export async function preparerPoint(idsousTraitant: number, jour: string, par: s
     const plan = fusionner(actuelles, calcul)
     for (const l of plan.inserer) {
       await tx`INSERT INTO point_sst_ligne (idpoint_sst, section, ordre, origine, cle, idcommande_sous_traitant, idligne_commande_sous_traitant,
-          commande, reference, coloris, date_prevue, commentaire, pourquoi, auto)
+          commande, reference, coloris, date_prevue, commentaire, pourquoi, auto, retiree)
         VALUES (${id}, ${l.section}, 0, 'auto', ${l.cle}, ${l.idcommande}, ${l.idligne}, ${l.commande}, ${l.reference}, ${l.coloris},
-          ${l.datePrevue}::date, ${l.commentaire}, ${l.pourquoi}, ${tx.json(autoDe(l))})`
+          ${l.datePrevue}::date, ${l.commentaire}, ${pourquoiDe(l)}, ${tx.json(autoDe(l))}, ${!!l.reprise})`
     }
     for (const { id: lid, l } of plan.mettreAJour) {
       await tx`UPDATE point_sst_ligne SET section = ${l.section}, idcommande_sous_traitant = ${l.idcommande}, idligne_commande_sous_traitant = ${l.idligne},
           commande = ${l.commande}, reference = ${l.reference}, coloris = ${l.coloris}, date_prevue = ${l.datePrevue}::date, commentaire = ${l.commentaire},
-          pourquoi = ${l.pourquoi}, auto = ${tx.json(autoDe(l))}
+          pourquoi = ${pourquoiDe(l)}, auto = ${tx.json(autoDe(l))}, retiree = ${!!l.reprise}
         WHERE idpoint_sst_ligne = ${lid}`
     }
     for (const { id: lid, l } of plan.rafraichirAuto) {
-      await tx`UPDATE point_sst_ligne SET auto = ${tx.json(autoDe(l))}, pourquoi = ${l.pourquoi} WHERE idpoint_sst_ligne = ${lid}`
+      await tx`UPDATE point_sst_ligne SET auto = ${tx.json(autoDe(l))}, pourquoi = ${pourquoiDe(l)} WHERE idpoint_sst_ligne = ${lid}`
     }
     if (plan.supprimer.length > 0) await tx`DELETE FROM point_sst_ligne WHERE idpoint_sst_ligne IN ${tx(plan.supprimer)}`
     await renumeroter(tx, id)
@@ -236,7 +236,50 @@ export async function preparerPoint(idsousTraitant: number, jour: string, par: s
   })
 }
 
-const autoDe = (l: LignePoint) => ({ commande: l.commande, reference: l.reference, coloris: l.coloris, datePrevue: l.datePrevue, commentaire: l.commentaire })
+/** `auto` = what the automate proposed; it also keeps the carried removal (`reprise`) so
+ *  the next day can carry it again without the person's original line. */
+const autoDe = (l: LignePoint) => ({
+  commande: l.commande, reference: l.reference, coloris: l.coloris, datePrevue: l.datePrevue, commentaire: l.commentaire,
+  ...(l.reprise ? { reprise: { ...l.reprise } } : {}),
+})
+
+/** The auto lines of this dyer's previous point (the latest day before `jour`, sent or not). */
+async function lignesDuPointPrecedent(idsousTraitant: number, jour: string): Promise<{ jour: string; lignes: PointLigne[] } | null> {
+  const sql = mpsPg()
+  const [p] = await sql`SELECT idpoint_sst, to_char(jour, 'YYYY-MM-DD') AS jour FROM point_sst
+    WHERE idsous_traitant = ${idsousTraitant} AND jour < ${jour}::date ORDER BY jour DESC LIMIT 1`
+  if (!p) return null
+  const rows = await sql<Record<string, any>[]>`
+    SELECT *, to_char(date_prevue, 'YYYY-MM-DD') AS date_prevue FROM point_sst_ligne
+    WHERE idpoint_sst = ${p.idpoint_sst} AND origine = 'auto'`
+  return { jour: p.jour, lignes: rows.map(versLigne) }
+}
+
+/** A line a person removed from the previous point comes back removed while the automate
+ *  would propose exactly the same thing (v3, point du 07/10: « on attend la décision du
+ *  client » — a reason ETM cannot see, so no rule can learn it). New facts (another lot,
+ *  a moved date) bring the line back; « Rétablir » breaks the chain. Pure, tested. */
+export function reprendreRetraits(calcul: readonly LignePoint[], precedent: { jour: string; lignes: readonly PointLigne[] } | null): LignePoint[] {
+  if (!precedent) return [...calcul]
+  const parCle = new Map(precedent.lignes.filter((p) => p.cle && p.retiree && p.auto).map((p) => [p.cle!, p]))
+  return calcul.map((l) => {
+    const p = parCle.get(l.cle)
+    if (!p || p.section !== l.section || CHAMPS_AUTO.some((k) => (p.auto![k] ?? '') !== (l[k] ?? ''))) return l
+    // Removed by a person that day, or carried from further back without being touched.
+    const avant = (p.auto as { reprise?: RetraitRepris }).reprise
+    const reprise: RetraitRepris = p.modifiePar || !avant
+      ? { jour: precedent.jour, par: p.modifiePar ?? '', texte: p.retour?.texte ?? '' }
+      : avant
+    return { ...l, reprise }
+  })
+}
+
+/** The line's « pourquoi », with the carried removal said in full. */
+export function pourquoiDe(l: LignePoint): string {
+  if (!l.reprise) return l.pourquoi
+  const r = l.reprise
+  return `${l.pourquoi} Retirée le ${jjmm(r.jour)}${r.par ? ` par ${r.par}` : ''}${r.texte ? ` : « ${r.texte} »` : ''} — elle reste retirée tant que rien ne change.`
+}
 
 /** The merge of « Actualiser » — pure, tested in db.test.ts. */
 export function fusionner(actuelles: readonly PointLigne[], calcul: readonly LignePoint[]): {
@@ -248,16 +291,20 @@ export function fusionner(actuelles: readonly PointLigne[], calcul: readonly Lig
   const parCle = new Map(actuelles.filter((a) => a.origine === 'auto' && a.cle).map((a) => [a.cle!, a]))
   const vues = new Set<string>()
   const out = { inserer: [] as LignePoint[], mettreAJour: [] as { id: number; l: LignePoint }[], rafraichirAuto: [] as { id: number; l: LignePoint }[], supprimer: [] as number[] }
+  // A person acted on the line (edit, removal, « Rétablir », Tricobot): their version wins.
+  // A line removed only because yesterday's removal was carried (no modifiePar) still
+  // follows the rules — new facts bring it back.
+  const touchee = (a: PointLigne) => a.modifiee || !!a.retour || a.modifiePar !== null
   for (const l of calcul) {
     vues.add(l.cle)
     const a = parCle.get(l.cle)
     if (!a) out.inserer.push(l)
-    else if (a.modifiee || a.retiree || a.retour) out.rafraichirAuto.push({ id: a.id, l }) // the person's version wins
+    else if (touchee(a)) out.rafraichirAuto.push({ id: a.id, l })
     else out.mettreAJour.push({ id: a.id, l })
   }
   for (const a of parCle.values()) {
     if (vues.has(a.cle!)) continue
-    if (!a.modifiee && !a.retiree && !a.retour) out.supprimer.push(a.id)
+    if (!touchee(a)) out.supprimer.push(a.id)
   }
   return out
 }

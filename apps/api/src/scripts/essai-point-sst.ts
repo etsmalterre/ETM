@@ -24,8 +24,8 @@ const { closeMpsPg } = await import('../lib/mps-pg.js')
 
 const sst = Number(arg('sst') ?? 9)
 const jour = arg('jour') ?? jourSuivantOuvre(new Date().toISOString().slice(0, 10))
-const { lignes, etudes } = await lireFaits(sst, jour)
-const point = construirePoint(jour, lignes, etudes)
+const { lignes } = await lireFaits(sst, jour)
+const point = construirePoint(jour, lignes)
 console.log(`Point du ${jour} — sous-traitant ${sst} — ${lignes.length} lignes ouvertes lues, ${point.length} lignes au point\n`)
 for (const s of SECTIONS) {
   console.log(`${s.n}. ${s.titre}`)

@@ -2,7 +2,7 @@
 // Native PostgreSQL (lib/mps-pg.ts): flat queries, merged in JS.
 
 import { mpsPg } from '../mps-pg.js'
-import { plusJours, type EtudeFait, type LigneFait } from './regles.js'
+import { plusJours, type LigneFait } from './regles.js'
 
 /** Lots received this long ago or less are still asked about (§2). */
 const CONTROLE_FENETRE_J = 45
@@ -15,7 +15,7 @@ const TYPE_DOC_SOUMISSION = 15
 /** Dates come from SQL as to_char(…, 'YYYY-MM-DD'): no time zone parsing anywhere. */
 const iso = (d: unknown): string | null => (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null)
 
-export async function lireFaits(idsousTraitant: number, jour: string): Promise<{ lignes: LigneFait[]; etudes: EtudeFait[] }> {
+export async function lireFaits(idsousTraitant: number, jour: string): Promise<{ lignes: LigneFait[] }> {
   const sql = mpsPg()
   const depuis = plusJours(jour, -365)
   const lignesRows = await sql<{ idcommande: number; idligne: number; idcommande_client: number | null; sstatut: string | null; date_livraison: string | null; relance: string | null; quantite: number; reference: string; coloris: string }[]>`
@@ -35,7 +35,7 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
       AND COALESCE(l.sstatut::text, '') NOT LIKE 'Termin%'
       AND c.date_commande >= ${depuis}::date`
   const lignes = lignesRows.map((r) => ({ ...r, idcommande: Number(r.idcommande), idligne: Number(r.idligne), idcommande_client: Number(r.idcommande_client) || 0 }))
-  if (lignes.length === 0) return { lignes: [], etudes: await lireEtudes(idsousTraitant) }
+  if (lignes.length === 0) return { lignes: [] }
 
   const idsLigne = lignes.map((l) => l.idligne)
   const idsCommande = [...new Set(lignes.map((l) => l.idcommande))]
@@ -88,7 +88,9 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
   const recuParLigne = new Map(recus.map((r) => [Number(r.idligne), r]))
   const soumisParCommande = new Map(soumis.map((r) => [Number(r.idcommande), iso(r.dernier)]))
   // §2: received recently, dyer measures missing, not in reprise. §5: in reprise (état 2), whatever its age.
+  // Received recently WITH the measures, still open: the next step is ours (§3 is not asked).
   const sansControle = new Map<number, string[]>()
+  const aControler = new Map<number, string[]>()
   const enReprise = new Map<number, string[]>()
   const ranger = (m: Map<number, string[]>, idligne: number, lot: string) => {
     const a = m.get(idligne) ?? []
@@ -100,6 +102,7 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
     if (!lot) continue
     if (Number(r.etat) === LOT_EN_REPRISE) ranger(enReprise, Number(r.idligne), lot)
     else if (r.sans_mesures && r.recent) ranger(sansControle, Number(r.idligne), lot)
+    else if (r.recent) ranger(aControler, Number(r.idligne), lot)
   }
 
   const faits: LigneFait[] = lignes.map((l) => {
@@ -121,21 +124,10 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
       clientSoumission: !!dernierSoumis || [...clients].some((c) => clientsSoumission.has(c)),
       lotsSansControle: sansControle.get(l.idligne) ?? [],
       lotsEnReprise: enReprise.get(l.idligne) ?? [],
+      lotsAControler: aControler.get(l.idligne) ?? [],
       relance: iso(l.relance),
     }
   })
-  return { lignes: faits, etudes: await lireEtudes(idsousTraitant) }
-}
-
-async function lireEtudes(idsousTraitant: number): Promise<EtudeFait[]> {
-  const sql = mpsPg()
-  const rows = await sql<{ idetude: number; libelle: string | null; reference: string | null; client: string | null }[]>`
-    SELECT e.idetude_col AS idetude, e.libelle, rf.reference, COALESCE(NULLIF(TRIM(e.desig_client), ''), cl.nom) AS client
-    FROM etude_col e
-    LEFT JOIN ref_fini rf ON rf.idref_fini = e.idref_fini
-    LEFT JOIN client cl ON cl.idclient = e.idclient
-    WHERE e.idsous_traitant = ${idsousTraitant} AND e.statut_col = 1
-    ORDER BY e.idetude_col DESC`
-  return rows.map((r) => ({ idetude: Number(r.idetude), libelle: String(r.libelle ?? '').trim(), reference: String(r.reference ?? '').trim(), client: String(r.client ?? '').trim() }))
+  return { lignes: faits }
 }
 

@@ -10,7 +10,7 @@
 // 2026-10-05: automates are not scored, their users' remarks are read
 // before each new version).
 
-import { partiesParis } from '../../pointage-etat.js'
+import { msHeureParis, partiesParis } from '../../pointage-etat.js'
 import { jourSuivantOuvre } from '../../point-sst/regles.js'
 import { pointsAEnvoyer, preparerPoint, marquerErreurEnvoi } from '../../point-sst/db.js'
 import { envoyerPoint } from '../../point-sst/envoi.js'
@@ -20,7 +20,7 @@ import { mpsPg } from '../../mps-pg.js'
 import type { Issue } from '../catalog.js'
 
 export const SLUG = 'point-sst'
-export const VERSION = 2
+export const VERSION = 3
 export const VERSIONS = [
   {
     version: 1,
@@ -31,6 +31,11 @@ export const VERSIONS = [
     version: 2,
     date: '2026-10-06',
     note: 'Corrigée sur le point réellement envoyé par Pierre-Emmanuel le 06/10 : les délais ne sont demandés qu’à la date de relance du bon de commande (bon + 3 jours ouvrés) ; un lot en reprise passe en « délais » avec « reprise » au lieu de « contrôles » ; la section « métrages » n’est plus remplie (l’accord du client sur la soumission et la fin d’un lot n’arrivent que par mail) ; une commande en retard n’apparaît plus.',
+  },
+  {
+    version: 3,
+    date: '2026-10-07',
+    note: 'Corrigée sur les retours de Pierre-Emmanuel au point du 07/10 : la soumission n’est plus demandée quand un lot déjà mesuré par MATEL attend notre contrôle ; une commande dont rien n’est revenu et dont la soumission vient de partir n’est plus rappelée en sortie ; les études ne sont plus listées (la question reste). Une ligne retirée avec son « pourquoi » reste retirée les jours suivants tant que les faits ne changent pas — un motif qu’ETM ne voit pas (décision du client, appel) n’est pas transformé en règle. Un point préparé à la main avant 17 h est actualisé à 17 h, sans toucher aux lignes corrigées.',
   },
 ] as const
 
@@ -84,8 +89,19 @@ export async function executer(mode: 'essai' | 'actif', resultat: Record<string,
     const jour = jourSuivantOuvre(aujourdhui)
     const sql = mpsPg()
     for (const sst of sousTraitantsDuPoint()) {
-      const [existe] = await sql`SELECT idpoint_sst FROM point_sst WHERE idsous_traitant = ${sst} AND jour = ${jour}::date`
-      if (existe) continue
+      const [existe] = await sql`SELECT idpoint_sst, statut, GREATEST(genere_le, COALESCE(actualise_le, genere_le)) AS a_jour_le
+        FROM point_sst WHERE idsous_traitant = ${sst} AND jour = ${jour}::date`
+      if (existe) {
+        // v3: a person prepared it before 17:00 (« Préparer » on the screen) — refresh it once
+        // with the day's last data. The merge keeps every line they touched; a scheduled or
+        // sent point is never rewritten.
+        if (mode === 'actif' && existe.statut === 'brouillon' && new Date(existe.a_jour_le).getTime() < msHeureParis(maintenant.y, maintenant.mo, maintenant.d, HEURE_PREPARATION)) {
+          const r = await preparerPoint(sst, jour, 'automate', VERSION)
+          faits.push(`Point du ${jour.slice(8, 10)}/${jour.slice(5, 7)} préparé avant ${HEURE_PREPARATION} h : actualisé (${r.ajoutees} ajoutée(s), ${r.mises_a_jour} mise(s) à jour, ${r.enlevees} enlevée(s)).`)
+          applique = true
+        }
+        continue
+      }
       if (mode === 'actif') {
         const r = await preparerPoint(sst, jour, 'automate', VERSION)
         liste(resultat, 'prepares').push({ sousTraitant: sst, jour, point: r.id, lignes: r.ajoutees })
@@ -93,8 +109,8 @@ export async function executer(mode: 'essai' | 'actif', resultat: Record<string,
         applique = true
       } else if (essaiDuJour !== `${aujourdhui}:${sst}`) {
         essaiDuJour = `${aujourdhui}:${sst}`
-        const { lignes, etudes } = await lireFaits(sst, jour)
-        const point = construirePoint(jour, lignes, etudes)
+        const { lignes } = await lireFaits(sst, jour)
+        const point = construirePoint(jour, lignes)
         liste(resultat, 'proposes').push({ sousTraitant: sst, jour, lignes: point.map((l) => ({ section: l.section, commande: l.commande, reference: l.reference, coloris: l.coloris, commentaire: l.commentaire, pourquoi: l.pourquoi })) })
         faits.push(`Essai : préparerait le point du ${jour.slice(8, 10)}/${jour.slice(5, 7)} (sous-traitant ${sst}, ${point.length} lignes).`)
         return { statut: 'simule', resume: faits.join(' '), empreinte: `${jour}:${sst}:${point.length}` }

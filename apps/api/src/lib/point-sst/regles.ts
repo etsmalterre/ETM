@@ -9,6 +9,11 @@
 // so the person checking the point sees which rule put it there, and every
 // correction (edit, removal, added line, Tricobot button) is what the next
 // version is written from. Bump VERSION in the automate with any change here.
+//
+// ⚠️ Generalise only what the DATA can tell. A removal whose reason lives
+// outside ETM (« on attend la décision du client », a phone call…) is not a
+// rule: db.ts carries it to the next points while the line's facts stay the
+// same (`reprisesRetirees()`), it never becomes a filter here.
 
 export const SECTIONS = [
   { n: 1, titre: 'Pour mémoire, sont prévues en sortie dans les prochains jours les commandes suivantes :', court: 'Sorties prévues' },
@@ -52,15 +57,12 @@ export interface LigneFait {
   lotsSansControle: string[]
   /** Lots « En reprise » (suivilot état 2): the dyer reworks them — PE asks their délai (§5 « reprise »). */
   lotsEnReprise: string[]
+  /** Lots received WITH the dyer measures, still open on our side (en contrôle / attente de décision):
+   *  the dyer has answered, the next step is ours (v3, point du 07/10: 9029 « déjà contrôlée par
+   *  Perrine, on attend le contrôle de Laëtitia »). */
+  lotsAControler: string[]
   /** The order's relance date (commande_sous_traitant.date_notif, bon de commande + 3 working days). */
   relance: string | null
-}
-
-export interface EtudeFait {
-  idetude: number
-  libelle: string
-  reference: string
-  client: string
 }
 
 export interface LignePoint {
@@ -75,7 +77,12 @@ export interface LignePoint {
   datePrevue: string | null
   commentaire: string
   pourquoi: string
+  /** Set by db.ts when a person removed this very line (same facts) from the previous
+   *  point: it is born removed, with who and why. */
+  reprise?: RetraitRepris
 }
+
+export type RetraitRepris = { jour: string; par: string; texte: string }
 
 const DAY_MS = 86_400_000
 const ms = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10))
@@ -101,8 +108,10 @@ const base = (l: LigneFait) => ({
   coloris: l.coloris,
 })
 
-/** The point of day `jour` ('YYYY-MM-DD'), sections 1 to 6, in display order. */
-export function construirePoint(jour: string, lignes: readonly LigneFait[], etudes: readonly EtudeFait[]): LignePoint[] {
+/** The point of day `jour` ('YYYY-MM-DD'), in display order. §6 (« Avez-vous des
+ *  études ? ») stays an open question without lines since v3 (point du 07/10,
+ *  Pierre-Emmanuel: « je ne mets pas la liste des labos en attente »). */
+export function construirePoint(jour: string, lignes: readonly LigneFait[]): LignePoint[] {
   const out: LignePoint[] = []
   for (const l of lignes) {
     const statut = l.sstatut ?? ''
@@ -140,29 +149,22 @@ export function construirePoint(jour: string, lignes: readonly LigneFait[], etud
     // the dyer announced the lot finished — both arrive by email, ETM records neither
     // (reponse_soumission is unused since 2025). The person adds them; reading Perrine's
     // replies (phase 2) is what will fill this section.
-    if (l.clientSoumission && !soumisRecent && retard >= -HORIZON_SOUMISSION_J && retard <= HORIZON_SOUMISSION_J) {
+    // v3 (point du 07/10, 9029): a lot already measured by the dyer waits for OUR control —
+    // « puis-je soumettre ? » would ask MATEL what only we can answer.
+    const attenteChezNous = l.lotsAControler.length > 0
+    if (l.clientSoumission && !soumisRecent && !attenteChezNous && retard >= -HORIZON_SOUMISSION_J && retard <= HORIZON_SOUMISSION_J) {
       out.push({ ...base(l), section: 3, cle: `soumission:${l.idligne}`, datePrevue: null, commentaire: partielle ? 'solde' : '', pourquoi: `Le client demande des soumissions ; sortie prévue le ${jjmm(l.dateLivraison)}, pas de soumission envoyée depuis ${SOUMISSION_RECENTE_J} jours.` })
       continue
     }
     // Late lines are no longer « prévues en sortie »: nothing generated (see §4 above).
     if (retard > 0) continue
+    // v3 (point du 07/10, 9037): nothing back yet and a soumission just sent — the order is
+    // finished at the dyer and waits for the client, no exit to remind. Only when NOTHING
+    // came back: a partly received line stays a « solde » exit (9013, point du 06/10).
+    if (soumisRecent && l.nbRecus === 0) continue
     if (-retard <= HORIZON_SORTIES_J) {
       out.push({ ...base(l), section: 1, cle: `sortie:${l.idligne}`, datePrevue: l.dateLivraison, commentaire: partielle ? 'solde' : '', pourquoi: `Sortie prévue le ${jjmm(l.dateLivraison)} (dans les ${HORIZON_SORTIES_J} jours)${partielle ? ', déjà reçue en partie' : ''}.` })
     }
-  }
-  for (const e of etudes) {
-    out.push({
-      section: 6,
-      cle: `etude:${e.idetude}`,
-      idcommande: 0,
-      idligne: 0,
-      commande: '',
-      reference: e.reference,
-      coloris: e.libelle,
-      datePrevue: null,
-      commentaire: e.client,
-      pourquoi: 'Étude coloris « Attente labo » chez ce teinturier.',
-    })
   }
   return trier(out)
 }

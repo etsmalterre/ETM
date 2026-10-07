@@ -18,12 +18,13 @@ function ligne(p: Partial<LigneFait> & { idligne: number }): LigneFait {
     clientSoumission: false,
     lotsSansControle: [],
     lotsEnReprise: [],
+    lotsAControler: [],
     relance: null,
     ...p,
   }
 }
 
-const sections = (l: LigneFait[]) => construirePoint(JOUR, l, []).map((x) => `${x.section}:${x.idligne}`)
+const sections = (l: LigneFait[]) => construirePoint(JOUR, l).map((x) => `${x.section}:${x.idligne}`)
 
 describe('construirePoint', () => {
   it('§5: a sent order waiting for its date; a bon de commande not sent is never asked', () => {
@@ -40,7 +41,7 @@ describe('construirePoint', () => {
   })
 
   it('§1: a partly received line is announced as « solde »', () => {
-    const [l] = construirePoint(JOUR, [ligne({ idligne: 1, dateLivraison: '2026-10-12', nbRecus: 3, metrageRecu: 300 })], [])
+    const [l] = construirePoint(JOUR, [ligne({ idligne: 1, dateLivraison: '2026-10-12', nbRecus: 3, metrageRecu: 300 })])
     expect(l).toMatchObject({ section: 1, commentaire: 'solde', datePrevue: '2026-10-12' })
   })
 
@@ -53,7 +54,7 @@ describe('construirePoint', () => {
   })
 
   it('§2: lots without the dyer measures, written as PE does (no « MA »)', () => {
-    const [l] = construirePoint(JOUR, [ligne({ idligne: 1, nbRecus: 30, metrageRecu: 2000, lotsSansControle: ['MA109286', 'MA109287'] })], [])
+    const [l] = construirePoint(JOUR, [ligne({ idligne: 1, nbRecus: 30, metrageRecu: 2000, lotsSansControle: ['MA109286', 'MA109287'] })])
     expect(l).toMatchObject({ section: 2, commentaire: '109286 et 109287' })
   })
 
@@ -79,7 +80,7 @@ describe('construirePoint', () => {
     })
 
     it('a lot in reprise is a délai question « reprise », not a control (8929 lot 109102)', () => {
-      const p = construirePoint(JOUR, [ligne({ idligne: 1, nbRecus: 23, metrageRecu: 1660, quantite: 1658, lotsEnReprise: ['MA109102'] })], [])
+      const p = construirePoint(JOUR, [ligne({ idligne: 1, nbRecus: 23, metrageRecu: 1660, quantite: 1658, lotsEnReprise: ['MA109102'] })])
       expect(p).toEqual([expect.objectContaining({ section: 5, cle: 'reprise:1', commentaire: 'reprise' })])
     })
 
@@ -92,14 +93,34 @@ describe('construirePoint', () => {
     })
 
     it('a partly received line with a soumission is still a « solde » exit (9013)', () => {
-      const [l] = construirePoint(JOUR, [ligne({ idligne: 1, quantite: 0, nbRecus: 10, metrageRecu: 300, dateLivraison: '2026-10-12', dernierSoumis: '2026-09-30', dernierRecu: '2026-09-27', clientSoumission: true })], [])
+      const [l] = construirePoint(JOUR, [ligne({ idligne: 1, quantite: 0, nbRecus: 10, metrageRecu: 300, dateLivraison: '2026-10-12', dernierSoumis: '2026-09-30', dernierRecu: '2026-09-27', clientSoumission: true })])
       expect(l).toMatchObject({ section: 1, commentaire: 'solde' })
     })
   })
 
-  it('§6: studies waiting at the lab', () => {
-    const p = construirePoint(JOUR, [], [{ idetude: 7, libelle: 'dtm navy 1609', reference: '228/122', client: 'Le Slip Français' }])
-    expect(p).toEqual([expect.objectContaining({ section: 6, cle: 'etude:7', coloris: 'dtm navy 1609' })])
+  // v3 — Pierre-Emmanuel’s corrections on the point du 07/10, generalised only where ETM holds the fact.
+  describe('v3 (point du 07/10)', () => {
+    it('§3 is not asked while a lot measured by the dyer waits for our control (9029, lot 109379)', () => {
+      expect(sections([
+        ligne({ idligne: 1, clientSoumission: true, dateLivraison: '2026-10-05', nbRecus: 16, metrageRecu: 642, quantite: 688, lotsAControler: ['MA109379'] }),
+        ligne({ idligne: 2, clientSoumission: true, dateLivraison: '2026-10-05' }),
+      ])).toEqual(['3:2'])
+    })
+
+    it('a measured lot does not hide the exit of what is still due', () => {
+      expect(sections([ligne({ idligne: 1, dateLivraison: '2026-10-12', nbRecus: 3, metrageRecu: 300, lotsAControler: ['MA1'] })])).toEqual(['1:1'])
+    })
+
+    it('§1 is not reminded when nothing came back and a soumission just went out (9037)', () => {
+      expect(sections([
+        ligne({ idligne: 1, dateLivraison: '2026-10-08', dernierSoumis: '2026-10-06' }),
+        ligne({ idligne: 2, dateLivraison: '2026-10-08', dernierSoumis: '2026-09-20' }), // older than a week: reminded
+      ])).toEqual(['1:2'])
+    })
+
+    it('§6 (études) is never filled — the question stays, without a list', () => {
+      expect(construirePoint(JOUR, []).some((l) => l.section === 6)).toBe(false)
+    })
   })
 
   it('every line explains itself', () => {
@@ -107,7 +128,7 @@ describe('construirePoint', () => {
       ligne({ idligne: 1, sstatut: 'Attente_Delai' }),
       ligne({ idligne: 2, dateLivraison: '2026-10-12' }),
       ligne({ idligne: 3, dateLivraison: '2026-10-01' }),
-    ], [])
+    ])
     for (const l of p) expect(l.pourquoi.length).toBeGreaterThan(10)
   })
 })
@@ -125,7 +146,7 @@ describe('lines without an ordered quantity', () => {
     const p = construirePoint(JOUR, [
       ligne({ idligne: 1, quantite: 0, nbRecus: 10, metrageRecu: 300, dateLivraison: '2026-10-12' }),
       ligne({ idligne: 2, quantite: 0, nbRecus: 22, metrageRecu: 600, dateLivraison: '2026-10-01' }),
-    ], [])
+    ])
     expect(p.map((x) => `${x.section}:${x.idligne}:${x.commentaire}`)).toEqual(['1:1:solde'])
   })
 })
