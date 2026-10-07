@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normRef, rapprocher, uniteEtm, type CommandeEtm, type CommandeExtraite } from './rapprochement.js'
+import { detailLignes, normRef, rapprocher, uniteEtm, type CommandeEtm, type CommandeExtraite } from './rapprochement.js'
 
 const ext = (o: Partial<CommandeExtraite> = {}): CommandeExtraite => ({
   type_message: 'nouvelle_commande',
@@ -59,7 +59,7 @@ describe('rapprocher', () => {
     const r = rapprocher(ext({ numero_commande_client: '', lignes: [{ ...ext().lignes[0], quantite: 200, unite: 'kg', prix_unitaire: null }] }), D,
       [cmd({ refClient: 'Mails du 22/09', dateCommande: '20260322', lignes: [{ quantite: 200, unite: 1, prix: 9.69 }, { quantite: 200, unite: 1, prix: 9.69 }] })])
     expect(r).toMatchObject({ statut: 'trouvee', par: 'date' })
-    if (r.statut === 'trouvee') expect(r.ecarts).toEqual(['quantité 200 kg commandée, 400 kg saisie'])
+    if (r.statut === 'trouvee') expect(r.ecarts).toEqual(['quantité totale 200 kg commandée, 400 kg saisie'])
   })
 
   it('recognises a call-off on a still-open framework order (Idylle N°3807)', () => {
@@ -81,5 +81,25 @@ describe('rapprocher', () => {
   it('does not call a missing price on the PO a price mismatch', () => {
     const r = rapprocher(ext({ lignes: [{ designation: 'x', reference_client: '', coloris: '', quantite: 404, unite: 'm', prix_unitaire: null, delai: '' }] }), D, [cmd()])
     expect(r).toMatchObject({ statut: 'trouvee', ecarts: [] })
+  })
+})
+
+describe('detailLignes', () => {
+  it('lists both orders line by line, with where each line was read and the totals (LEMAHIEU N°3891)', () => {
+    const e = ext({
+      lignes: [
+        { designation: 'Jersey', reference_client: '481401P3150', coloris: 'Marine', quantite: 300, unite: 'ml', prix_unitaire: 12.09, delai: '', source: 'BC_1000002259.pdf' },
+        { designation: 'Côte', reference_client: '482901P3160', coloris: '', quantite: 315, unite: 'ml', prix_unitaire: 15.24, delai: '', source: 'BC_1000002259.pdf' },
+      ],
+    })
+    const c = cmd({ numero: 3891, lignes: [{ quantite: 351, unite: 3, prix: 10.34, libelle: '481' }, { quantite: 351, unite: 3, prix: 13.02, libelle: '4829' }] })
+    expect(detailLignes(e, c)).toBe(
+      'Lu dans « BC_1000002259.pdf » (2 lignes) : 300 ml 481401P3150 Jersey coloris Marine à 12,09 € ; 315 ml 482901P3160 Côte à 15,24 € — total 615 Ml. ' +
+      'Saisi dans ETM N°3891 (2 lignes) : 351 Ml 481 à 10,34 € ; 351 Ml 4829 à 13,02 € — total 702 Ml.',
+    )
+  })
+
+  it('does not claim a source an older cached extraction did not record', () => {
+    expect(detailLignes(ext(), cmd())).toMatch(/^Lu dans le mail et ses pièces jointes \(1 ligne\)/)
   })
 })

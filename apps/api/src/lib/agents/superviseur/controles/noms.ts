@@ -8,6 +8,7 @@ const TABLES = {
   client: { id: 'IDclient', col: 'nom' },
   ref_fini: { id: 'IDref_fini', col: 'reference' },
   ref_ecru: { id: 'IDref_ecru', col: 'reference' },
+  ref_divers: { id: 'IDref_divers', col: 'designation' },
   ref_fil: { id: 'IDref_fil', col: 'reference' },
   colori_fil: { id: 'IDcolori_fil', col: 'reference' },
   sous_traitant: { id: 'IDsous_traitant', col: 'nom' },

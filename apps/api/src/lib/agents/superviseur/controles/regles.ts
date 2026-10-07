@@ -76,6 +76,84 @@ export function raisonCouverture(l: LigneCouverture, today: Date): string {
   return `Délai dépassé depuis plus de ${COUVERTURE_RETARD_MAX_J} jours : plus suivi par ce contrôle.`
 }
 
+// ── Ligne en retard : couverte mais pas expédiée ──
+// A late line NOT covered is couverture's (« dépassé de X j : pièces à
+// affecter ») — never two points on one line. Same 30-day limit: older délais
+// are stale data (framework orders whose délai was never moved).
+
+/** Late from this many days past the délai → urgent. */
+export const RETARD_URGENT_J = 7
+
+/** A late line with what can leave today: pieces ready to ship (a Validé fini
+ *  roll, an écru piece in stock) reserved to it and not shipped, in its unit.
+ *  `affecte` alone is not « ready »: the gauge also counts écru still at the
+ *  dyer and planned knitting (replay 2026-10-07: « 3 582 Ml affectés sur
+ *  1 430 » on a line with nothing to ship). */
+export interface LigneRetard extends LigneCouverture {
+  pret: number
+  piecesPretes: number
+}
+
+export function evaluerRetard(l: LigneRetard, today: Date): { gravite: Gravite; joursRetard: number; pret: boolean } | null {
+  if (![1, 3].includes(l.unite) || !(l.quantite > 0)) return null
+  if (l.expedie >= l.quantite * EXPEDIE_SEUIL) return null
+  if (l.affecte < l.quantite * COUVERTURE_SEUIL) return null
+  const jours = joursAvant(l.dateLivraison, today)
+  if (jours === null || jours >= 0 || jours < -COUVERTURE_RETARD_MAX_J) return null
+  // Nothing ready and nothing in the pipe beyond what already left: a short
+  // delivery (AGAPE N°3792: 208 Ml assigned, 208 shipped, 214 ordered).
+  if (l.piecesPretes === 0 && l.expedie >= l.affecte * EXPEDIE_SEUIL) return null
+  return { gravite: -jours >= RETARD_URGENT_J ? 'urgent' : 'attention', joursRetard: -jours, pret: l.piecesPretes > 0 }
+}
+
+export function raisonRetard(l: LigneRetard, today: Date): string {
+  const u = l.unite === 3 ? 'Ml' : 'kg'
+  if (![1, 3].includes(l.unite) || !(l.quantite > 0)) return 'Ligne sans quantité en Kg ou Ml : plus contrôlée.'
+  if (l.expedie >= l.quantite * EXPEDIE_SEUIL) return `Ligne expédiée : ${fmt(l.expedie)} ${u} sur ${fmt(l.quantite)} ${u}.`
+  if (l.affecte < l.quantite * COUVERTURE_SEUIL) return 'Ligne pas encore couverte : suivie par « Pièces à affecter / production à lancer ».'
+  const jours = joursAvant(l.dateLivraison, today)
+  if (jours === null) return 'La ligne n’a plus de délai.'
+  if (jours >= 0) return `Délai au ${jjmm(l.dateLivraison!)} : pas encore dépassé.`
+  if (jours < -COUVERTURE_RETARD_MAX_J) return `Délai dépassé depuis plus de ${COUVERTURE_RETARD_MAX_J} jours : plus suivi par ce contrôle.`
+  return `Tout ce qui était affecté est parti (${fmt(l.expedie)} ${u} sur ${fmt(l.quantite)} ${u}) : reliquat sans pièce.`
+}
+
+/** The point's sentence after the délai. */
+export function messageRetard(l: LigneRetard, pret: boolean): string {
+  const u = l.unite === 3 ? 'Ml' : 'kg'
+  const exp = l.expedie > 0 ? `${fmt(l.expedie)} ${u} déjà expédiés sur ${fmt(l.quantite)} ${u}` : `rien d’expédié sur ${fmt(l.quantite)} ${u}`
+  return pret
+    ? `${exp} ; ${fmt(l.pret)} ${u} prêts (${l.piecesPretes} pièce${l.piecesPretes > 1 ? 's' : ''}) à expédier, ou prévenir le client.`
+    : `${exp} ; rien de prêt — la ligne attend la production ou la teinture : prévenir le client et reporter le délai.`
+}
+
+// ── Confirmation de commande jamais envoyée ──
+
+/** Orders before this date were confirmed from WinDev — not checked. */
+export const CONFIRMATION_DEPUIS = '20260929'
+/** Working days after the order date before the point is raised; urgent from the second value. */
+export const CONFIRMATION_ATTENTION_JO = 2
+export const CONFIRMATION_URGENT_JO = 5
+
+/** Monday–Friday days from a YYYYMMDD date (excluded) to `today` (included). */
+export function joursOuvresDepuis(yyyymmdd: string | null | undefined, today: Date): number | null {
+  const avant = joursAvant(yyyymmdd, today)
+  if (avant === null) return null
+  let n = 0
+  for (let k = avant + 1; k <= 0; k++) {
+    const d = new Date(today)
+    d.setDate(d.getDate() + k)
+    if (d.getDay() !== 0 && d.getDay() !== 6) n++
+  }
+  return n
+}
+
+export function evaluerConfirmation(dateCommande: string | null, today: Date): { gravite: Gravite; jours: number } | null {
+  const j = joursOuvresDepuis(dateCommande, today)
+  if (j === null || j < CONFIRMATION_ATTENTION_JO) return null
+  return { gravite: j >= CONFIRMATION_URGENT_JO ? 'urgent' : 'attention', jours: j }
+}
+
 // ── Écru réservé à une ligne fini mais pas envoyé au teinturier ──
 
 /** Checked when the délai is within this many days. */
@@ -231,3 +309,64 @@ export function listeEnvois(envois: readonly EnvoiEtm[]): string {
 export const ACCORDS_LIVRAISON_PARTIELLE: ReadonlyMap<number, string> = new Map([
   [52, 'accord THUASNE : livraison de ce qui est disponible'],
 ])
+// ── Palier suivant (commande à arrondir au rouleau) ──
+
+/** A line is checked while its order is this fresh (days since the order
+ *  date): later the order is confirmed and in production — too late to offer
+ *  more. Measured on prod 2026-10-07: ~1 line a month within reach of the
+ *  next band. */
+export const PALIER_FENETRE_J = 7
+
+/** Below this drop of the unit price the call is not worth it (611 Ml at
+ *  8,75 € vs 612 Ml at 8,68 € — a rounding, not a sale). */
+export const PALIER_BAISSE_MIN = 0.03
+
+/** One order line, priced by calcLignePriceClient (pricing-ligne-client.ts) —
+ *  the SAME engine as Tricobot's « À proposer au client ? » in the line form,
+ *  so the check fires exactly where the screen showed the nudge (15 %). */
+export interface LignePalier {
+  quantite: number
+  /** € per unit typed on the line (0 when empty). */
+  prixSaisi: number
+  prix: number | null
+  nearNextTranche: boolean
+  nextTrancheRolls: number
+  nextTrancheQty: number
+  nextTrancheGapQty: number
+  nextTranchePrix: number | null
+}
+
+export interface PalierAProposer {
+  /** The unit price the client pays today (typed, else the grid). */
+  prixActuel: number
+  /** −x % on the unit price at the next band, 0..1. */
+  baisse: number
+  totalActuel: number
+  totalPalier: number
+}
+
+/** Should the client have been offered the next band? Null when the line is
+ *  not near it, or already priced at (or under) that band's price — the
+ *  employee gave it anyway (common before ETM: 611 Ml at the 612 Ml price). */
+export function evaluerPalierSuivant(l: LignePalier): PalierAProposer | null {
+  if (!l.nearNextTranche || l.nextTranchePrix == null || !(l.nextTrancheGapQty > 0)) return null
+  const prixActuel = l.prixSaisi > 0 ? l.prixSaisi : l.prix ?? 0
+  if (!(prixActuel > l.nextTranchePrix)) return null
+  const baisse = (prixActuel - l.nextTranchePrix) / prixActuel
+  if (baisse < PALIER_BAISSE_MIN) return null
+  return {
+    prixActuel,
+    baisse,
+    totalActuel: Math.round(l.quantite * prixActuel * 100) / 100,
+    totalPalier: Math.round(l.nextTrancheQty * l.nextTranchePrix * 100) / 100,
+  }
+}
+
+/** Why a fresh line is not reported (what a closing point says). */
+export function raisonPalierSuivant(l: LignePalier, u: string): string {
+  if (l.nextTranchePrix == null || !(l.nextTrancheGapQty > 0)) return 'Quantité au palier, ou plus de palier moins cher au-dessus.'
+  if (!l.nearNextTranche) return `Palier suivant (${l.nextTrancheRolls} rouleaux) à ${fmt(l.nextTrancheGapQty)} ${u} de plus : trop loin pour le proposer.`
+  const actuel = l.prixSaisi > 0 ? l.prixSaisi : l.prix ?? 0
+  if (actuel <= l.nextTranchePrix) return `Prix déjà au tarif du palier ${l.nextTrancheRolls} rouleaux (${fmt(l.nextTranchePrix, 2)} €).`
+  return `Palier ${l.nextTrancheRolls} rouleaux à ${fmt(l.nextTranchePrix, 2)} € : moins de ${fmt(PALIER_BAISSE_MIN * 100)} % de baisse, pas la peine de le proposer.`
+}

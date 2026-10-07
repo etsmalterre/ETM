@@ -6,15 +6,20 @@
 // problems. Thresholds live in regles.ts.
 
 import type { Controle } from '../types.js'
-import { controleCouverture, controleEnnoblissement } from './commandes-client.js'
+import { controleCouverture, controleEnnoblissement, controleRetard } from './commandes-client.js'
+import { controleConfirmation } from './confirmation.js'
 import { controleAffectationFil, controleFilACommander } from './fils.js'
 import { controleClientsSansReponse } from './mails-clients.js'
 import { controleCommandesMails } from './commandes-mails.js'
+import { controlePalierSuivant } from './palier-suivant.js'
 
 export const CONTROLES: readonly Controle[] = [
   controleClientsSansReponse,
   controleCommandesMails,
+  controleConfirmation,
+  controlePalierSuivant,
   controleCouverture,
+  controleRetard,
   controleEnnoblissement,
   controleFilACommander,
   controleAffectationFil,

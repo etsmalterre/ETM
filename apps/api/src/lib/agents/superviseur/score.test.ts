@@ -56,6 +56,58 @@ describe('scorePoints', () => {
     expect(scorePoints([r])).toMatchObject({ points: 2, evalues: 2, reussite: 1, echec: 1, precision: 0.5 })
   })
 
+  it('reads an old « partielle » carried on a point as échec', () => {
+    const r = run('r1', [point('a', { avis: { ...avis('reussite'), note: 'partielle' as never } }), point('b', { avis: avis('reussite') })])
+    const s = scorePoints([r])
+    expect(s).toEqual({ points: 2, evalues: 2, reussite: 1, echec: 1, aEvaluer: 0, precision: 0.5 })
+    expect(s.reussite + s.echec + s.aEvaluer).toBe(s.points)
+  })
+
+  it('counts a point closed with nobody correcting it as a réussite', () => {
+    const lundi = run('r1', [point('a'), point('b'), point('c')])
+    const mardi = run('r2', [point('c', { etat: 'ouvert' })], {
+      createdAt: '2026-09-24T05:00:00.000Z',
+      resultat: {
+        constats: [point('c', { etat: 'ouvert' })], ecartes: [], controles: [], memoireMiseAJour: true,
+        fermes: [{ cle: 'a', titre: 'a', domaine: 'commandes_client', depuis: '2026-09-23T05:00:00.000Z', raison: 'Ligne couverte.' }],
+      },
+    })
+    expect(scorePoints([lundi, mardi])).toEqual({ points: 3, evalues: 1, reussite: 1, echec: 0, aEvaluer: 2, precision: 1 })
+  })
+
+  it('keeps a correction given before the point closed', () => {
+    const lundi = run('r1', [point('a')], { avisPoints: { a: avis('echec') } })
+    const mardi = run('r2', [], {
+      createdAt: '2026-09-24T05:00:00.000Z',
+      resultat: { constats: [], ecartes: [], controles: [], memoireMiseAJour: true,
+        fermes: [{ cle: 'a', titre: 'a', domaine: 'commandes_client', depuis: '2026-09-23T05:00:00.000Z' }] },
+    })
+    expect(scorePoints([lundi, mardi])).toMatchObject({ points: 1, echec: 1, reussite: 0 })
+  })
+
+  it('counts a point a person marked résolu without a score as a réussite', () => {
+    const r = run('r1', [point('a'), point('b')], { resolutionsPoints: { a: { commentaire: 'fait', par, le: '2026-09-23T08:00:00.000Z' } } })
+    expect(scorePoints([r])).toMatchObject({ points: 2, reussite: 1, aEvaluer: 1 })
+  })
+
+  it('does not settle a point on a manual preview', () => {
+    const apercu = run('r1', [], {
+      source: 'manuel',
+      resultat: { constats: [], ecartes: [], controles: [], memoireMiseAJour: false,
+        fermes: [{ cle: 'a', titre: 'a', domaine: 'commandes_client', depuis: '2026-09-23T05:00:00.000Z' }] },
+    })
+    expect(scorePoints([run('r0', [point('a')]), apercu])).toMatchObject({ points: 1, aEvaluer: 1, reussite: 0 })
+  })
+
+  it('leaves the points raised by the previous version to that version', () => {
+    const v1 = point('v1', { depuis: '2026-09-20T05:00:00.000Z', etat: 'ouvert', avis: avis('reussite', '2026-09-21T08:00:00.000Z') })
+    const r = run('r1', [v1, point('v2')], {
+      resultat: { constats: [v1, point('v2')], ecartes: [], controles: [], memoireMiseAJour: true,
+        fermes: [{ cle: 'v1-bis', titre: '', domaine: 'mails', depuis: '2026-09-19T05:00:00.000Z' }] },
+    })
+    expect(scorePoints([r])).toEqual({ points: 1, evalues: 0, reussite: 0, echec: 0, aEvaluer: 1, precision: null })
+  })
+
   it('has no précision before anyone scores', () => {
     expect(scorePoints([run('r1', [point('a')])]).precision).toBeNull()
     expect(scorePoints([]).points).toBe(0)

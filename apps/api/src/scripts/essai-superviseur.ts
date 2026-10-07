@@ -17,9 +17,12 @@ import dotenv from 'dotenv'
 const arg = (k: string) => process.argv.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3)
 const envFile = arg('env')
 if (envFile) {
-  const m = fs.readFileSync(envFile, 'utf8').match(/^HFSQL_CONNECTION_STRING=(.*)$/m)
-  if (!m) throw new Error(`HFSQL_CONNECTION_STRING absent de ${envFile}`)
-  process.env.HFSQL_CONNECTION_STRING = m[1].trim().replace(/^"|"$/g, '')
+  // The database settings only (PostgreSQL since the 2026-09-29 cutover).
+  const txt = fs.readFileSync(envFile, 'utf8')
+  const lu = (k: string) => txt.match(new RegExp(`^${k}=(.*)$`, 'm'))?.[1].trim().replace(/^"|"$/g, '')
+  const cles = ['DB_BACKEND', 'PG_CONNECTION_STRING', 'HFSQL_CONNECTION_STRING'].filter((k) => lu(k) !== undefined)
+  if (!cles.length) throw new Error(`ni PG_CONNECTION_STRING ni HFSQL_CONNECTION_STRING dans ${envFile}`)
+  for (const k of cles) process.env[k] = lu(k)
 }
 dotenv.config({ path: '.env.development' }) // never overrides the line above
 

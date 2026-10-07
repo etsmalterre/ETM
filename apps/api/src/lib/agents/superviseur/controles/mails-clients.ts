@@ -34,7 +34,7 @@ export const controleClientsSansReponse: Controle = {
   domaine: 'mails',
   libelle: 'Client sans réponse',
   description:
-    `Conversation d’un client (adresse ou domaine d’un contact client, hors fournisseurs et sous-traitants) dont le dernier message attend depuis 24 h ouvrées sans réponse de l’une des boîtes lues ni envoi de document depuis ETM, et que Mistral juge appeler une réponse du bureau (jamais un échange technique). Hors rapport : la boîte de Nicolas sans Isabelle en copie, et la boîte d’Isabelle avant 5 jours ouvrés. Un document réclamé déjà envoyé depuis ETM, ou une adresse annoncée déjà saisie, ne fait pas un point. Urgent à 48 h ouvrées ou si le client est mécontent / bloqué. Fenêtre : ${FENETRE_JOURS} jours.`,
+    `Conversation d’un client (adresse ou domaine d’un contact client, hors fournisseurs et sous-traitants) dont le dernier message attend depuis 24 h ouvrées sans réponse de l’une des boîtes lues ni envoi de document depuis ETM, et que Mistral juge appeler une réponse du bureau (jamais un échange technique). Hors rapport : un mail archivé (règle de la maison : un mail traité est archivé), la boîte de Nicolas sans Isabelle en copie, et la boîte d’Isabelle avant 5 jours ouvrés. Un document réclamé déjà envoyé depuis ETM, ou une adresse annoncée déjà saisie, ne fait pas un point. Urgent à 48 h ouvrées ou si le client est mécontent / bloqué. Fenêtre : ${FENETRE_JOURS} jours.`,
   raisonAbsent: 'La conversation n’apparaît plus dans les boîtes lues (archivée, supprimée ou sortie de la fenêtre).',
   async executer(ctx) {
     const depuisMs = ctx.nowMs - FENETRE_JOURS * 86_400_000

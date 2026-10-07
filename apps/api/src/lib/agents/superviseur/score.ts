@@ -5,13 +5,14 @@
 //     and how; drives the report's « à évaluer » state in the list and the KPI
 //     strip of the dialog;
 //   - scorePoints(): one prompt version — every distinct finding it ever
-//     raised, scored by its latest avis; « précision » = what was worth raising
-//     (réussite + partielle) over what was scored. The figure that says whether
+//     raised first, scored by its latest avis, a point closed without a
+//     correction counting as réussite; « précision » = réussites over what was
+//     scored (réussites + échecs). The figure that says whether
 //     a prompt version is better than the last.
 // A point scored on an earlier report (ConstatRun.avis, carried by avis.ts)
 // counts as scored: Isabelle does not re-score an open point every morning.
 
-import type { AgentRun, Evaluation, Note } from '../store.js'
+import { type AgentRun, type Evaluation, type Note, noteBinaire } from '../store.js'
 import type { ResultatSuperviseur } from './superviseur.js'
 import type { ConstatRun } from './constats.js'
 
@@ -33,13 +34,15 @@ type AvisLu = Pick<Evaluation, 'note' | 'le'>
 
 const vide = (): BilanPoints => ({ points: 0, evalues: 0, reussite: 0, echec: 0, aEvaluer: 0 })
 
-/** Shared with the other agents scored point by point (factures-sst/points.ts). */
-export function compter(notes: Array<Note | null>): BilanPoints {
+/** Shared with the other agents scored point by point (factures-sst/points.ts).
+ *  A score stored under the old three-level scale (« partielle », carried on a
+ *  report's points) reads as échec: évalués = réussites + échecs, always. */
+export function compter(notes: Array<Note | string | null | undefined>): BilanPoints {
   const b = vide()
   b.points = notes.length
   for (const n of notes) {
-    if (n === null) b.aEvaluer++
-    else { b.evalues++; b[n]++ }
+    if (n == null) b.aEvaluer++
+    else { b.evalues++; b[noteBinaire(n)]++ }
   }
   return b
 }
@@ -71,18 +74,42 @@ export function notesDuBilan(b: BilanPoints | null): Set<string> {
   return s
 }
 
-/** Every distinct finding the runs raised, scored by its latest avis. A point
- *  set aside (écarté) was raised too: it counts, as the false alarm it is. */
+/** Every distinct finding the version raised, scored by its latest avis. A
+ *  point set aside (écarté) was raised too: it counts, as the false alarm it is.
+ *  Two rules (decision Vincent 2026-10-07, from v2's first two weeks):
+ *  - silence = réussite: a point that closed (the agent saw it settled, or a
+ *    person marked it résolu) with nobody saying « fausse alerte » before is a
+ *    réussite. Isabelle scores only what she wants to correct, and a closed
+ *    point leaves the widget: left « à évaluer », it never got a score;
+ *  - a version is judged on the points it raised FIRST (`depuis` from its
+ *    first run on): a point still open from the previous version, scored on
+ *    that version's report, stays that version's. */
 export function scorePoints(runs: AgentRun[]): ScorePoints {
+  const ordre = [...runs].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const debut = ordre[0]?.createdAt
+  const aCetteVersion = (depuis: string | undefined) => !debut || !depuis || depuis >= debut
   const dernier = new Map<string, AvisLu | null>()
-  for (const r of runs) {
+  const clos = new Set<string>()
+  for (const r of ordre) {
     const sup = r.resultat as Partial<ResultatSuperviseur>
-    for (const c of [...(sup.constats ?? []), ...(sup.ecartes ?? [])]) {
+    const resolus = new Set((sup.resolus ?? []).map((c) => c.cle))
+    for (const c of [...(sup.constats ?? []), ...(sup.ecartes ?? []), ...(sup.resolus ?? [])]) {
+      if (!aCetteVersion(c.depuis)) continue
       const a = avisDuPoint(c, r.avisPoints)
       const d = dernier.get(c.cle)
       if (d === undefined || (a && (!d || a.le > d.le))) dernier.set(c.cle, a)
+      // Found again: open, unless a person marked it résolu.
+      if (resolus.has(c.cle) || r.resolutionsPoints?.[c.cle]) clos.add(c.cle)
+      else clos.delete(c.cle)
+    }
+    // A manual preview never updates the memory: its « fermés » are not settled.
+    if (sup.memoireMiseAJour === false) continue
+    for (const f of sup.fermes ?? []) {
+      if (!aCetteVersion(f.depuis)) continue
+      if (!dernier.has(f.cle)) dernier.set(f.cle, null)
+      clos.add(f.cle)
     }
   }
-  const b = compter([...dernier.values()].map((a) => a?.note ?? null))
+  const b = compter([...dernier].map(([cle, a]) => a?.note ?? (clos.has(cle) ? 'reussite' : null)))
   return { ...b, precision: b.evalues ? b.reussite / b.evalues : null }
 }

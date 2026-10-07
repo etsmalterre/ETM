@@ -28,7 +28,7 @@ import { appliquerSuivi, lireAvis, lireResolutions, purgerAvis, purgerResolution
 import { comparer, ecrireMemoire, lireMemoire, type ConstatRun } from './constats.js'
 import { journaliserRun } from './historique.js'
 import { CONTROLES } from './controles/index.js'
-import { TRI_PROMPT_V1, TRI_PROMPT_V2 } from './prompt.js'
+import { TRI_PROMPT_V1, TRI_PROMPT_V3 } from './prompt.js'
 import type { Constat, Domaine } from './types.js'
 
 export const SUPERVISEUR_SLUG = 'superviseur'
@@ -45,11 +45,11 @@ export const SUPERVISEUR_VERSION_INITIALE: VersionInitiale = {
   note: 'Version initiale — tri des fils de mail (les contrôles de la base sont du code, sans prompt).',
 }
 
-/** v2 (2026-09-25), from Isabelle's scores on v1 — prompt.ts. */
+/** v3 (2026-10-07), from Isabelle's scores on v1 + v2 — prompt.ts. */
 export const SUPERVISEUR_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
-  prompt: TRI_PROMPT_V2,
-  note: 'Version 2 — mails techniques hors rapport, document réclamé et changement d’adresse vérifiés dans ETM (le périmètre des boîtes et les vérifications ETM sont du code).',
+  prompt: TRI_PROMPT_V3,
+  note: 'Version 3 — un mail archivé est traité (règle de la maison), commande reçue comparée ligne à ligne avec la source de chaque ligne, stock non affecté indiqué sur les pièces à affecter, un client qui « reviendra vers nous » n’attend rien (seule cette dernière règle est dans le prompt, le reste est du code).',
 }
 
 /** What a Superviseur run stores in `resultat` (read by the web screen). */

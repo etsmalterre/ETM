@@ -60,3 +60,16 @@ Règles :
 - "bruit" est réservé à ce qu'aucun humain n'a besoin de lire : publicité, newsletter, notification automatique, accusé de lecture.
 
 N'invente rien : si une information n'est pas dans le fil, laisse-la vide.`
+
+// Version 3 (2026-10-07) — from Isabelle's scores on v1 + v2 (30 points). One
+// rule: a client who says HE will come back to us (« je reviens vers vous après
+// vérification ») waits for nothing (La Fabrique, 2026-10-06). The rest of v3
+// is code: an archived mail is a handled one (company rule — reponses.ts), the
+// order check lists both orders line by line with their source, the coverage
+// check says whether unassigned stock exists. Most comments were left out on
+// purpose (phone calls, client-specific agreements, « je suis au courant »):
+// context of the day, handled by « Fausse alerte » setting the point aside.
+export const TRI_PROMPT_V3 = TRI_PROMPT_V2.replace(
+  "- Un client qui remercie pour une réponse déjà donnée, ou qui confirme une réception, n'attend rien.",
+  "- Un client qui remercie pour une réponse déjà donnée, ou qui confirme une réception, n'attend rien.\n- Un client qui annonce qu'il reviendra vers nous (« je reviens vers vous », « après vérification de notre côté ») n'attend rien de nous tant qu'il n'a pas réécrit.",
+)

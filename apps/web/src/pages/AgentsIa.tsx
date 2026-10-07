@@ -1279,7 +1279,7 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode, onChange
                 <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
                   <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><ListChecks className="h-3.5 w-3.5" />Version {agent.activeVersion} — points</p>
                   <PointsKV p={s.points} />
-                  <p className="text-[11px] text-muted-foreground pt-1">Précision = points confirmés ou partiels sur points évalués. Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.</p>
+                  <p className="text-[11px] text-muted-foreground pt-1">Précision = réussites sur points évalués (réussites + échecs). Un point fermé sans que personne ne le corrige compte comme réussite ; une version n’est notée que sur les points qu’elle a signalés en premier. Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.</p>
                 </div>
               )}
             </>

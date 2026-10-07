@@ -8,7 +8,8 @@
 // mailbox its own threadId. A conversation waits for us when its last message
 // comes from a client and nothing internal followed — neither in the same
 // conversation, nor any later internal mail addressed to that client (a reply
-// written as a new mail).
+// written as a new mail) — and the client's last message is still in an inbox:
+// an archived mail is a handled one (company rule, 2026-10-07).
 
 import type { EnteteMessage } from './boites.js'
 
@@ -131,7 +132,11 @@ export function conversationsSansReponse(
   for (const m of msgs) {
     const k = m.messageId || `${m.boite}:${m.id}`
     const d = parId.get(k)
-    if (d) { if (!d.boites.includes(m.boite)) d.boites.push(m.boite) } else parId.set(k, { ...m, boites: [m.boite] })
+    if (d) {
+      if (!d.boites.includes(m.boite)) d.boites.push(m.boite)
+      // Archived only when every mailbox that holds it archived it.
+      d.archive = d.archive && m.archive
+    } else parId.set(k, { ...m, boites: [m.boite] })
   }
   const uniques = [...parId.values()]
   const interne = (m: EnteteMessage) => m.envoye || estInterne(m.de)
@@ -160,6 +165,13 @@ export function conversationsSansReponse(
     // Answered by a new mail to the same person (not a reply in the thread)?
     const reponse = internes.find((x) => x.date > dernier.date && (x.a.includes(dernier.de) || x.cc.includes(dernier.de)))
     if (reponse) { raison(cle, `Réponse de ${qui(reponse)} par un nouveau mail ${leA(reponse.date)} (« ${reponse.sujet || 'sans objet'} »).`); continue }
+    // Company rule: a mail is archived once handled and over (answered by
+    // phone, settled elsewhere, of no interest) — v3, from Isabelle's scores
+    // (Université de Picardie, feat coop, Lucid, Seenel…).
+    if (dernier.archive) {
+      raison(cle, `Dernier message du client ${leA(dernier.date)} archivé dans la boîte de ${dernier.boites.map((b) => b.split('@')[0]).join(', ')} : traité ou sans intérêt.`)
+      continue
+    }
     const participants = [...new Set(ms.flatMap((x) => [x.de, ...x.a, ...x.cc]).map((x) => x.toLowerCase()).filter(Boolean))]
     out.push({ cle, client, dernier, boites: dernier.boites, heuresAttente: heuresOuvrees(dernier.date, nowMs), participants })
   }

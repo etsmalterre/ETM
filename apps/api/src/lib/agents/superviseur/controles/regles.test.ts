@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { delaiTexte, evaluerAffectationFil, evaluerCouverture, evaluerEnnoblissement, evaluerFil, joursAvant, raisonCouverture, raisonEnnoblissement, horsPortee, adresseConnue, listeEnvois, BOITE_LECTRICE_DELAI_H } from './regles.js'
+import { delaiTexte, evaluerConfirmation, evaluerRetard, joursOuvresDepuis, messageRetard, raisonRetard, evaluerPalierSuivant, raisonPalierSuivant, evaluerAffectationFil, evaluerCouverture, evaluerEnnoblissement, evaluerFil, joursAvant, raisonCouverture, raisonEnnoblissement, horsPortee, adresseConnue, listeEnvois, BOITE_LECTRICE_DELAI_H } from './regles.js'
 
 const today = new Date(2026, 8, 23) // Wed 23/09/2026
 
@@ -134,5 +134,93 @@ describe('v2 — listeEnvois', () => {
       d('2026-09-18T14:11:49Z', 'vmousnier@idylle.fr'),
       d('2026-09-21T13:08:25Z', 'comptabilite@idylle.fr'),
     ])).toBe('le 18/09 (vmousnier@idylle.fr), le 21/09 (comptabilite@idylle.fr)')
+  })
+})
+
+describe('evaluerPalierSuivant', () => {
+  // N°3707, 10/04: 141 Ml at 14,51 €, 4 rolls = 154,4 Ml at 12,20 €.
+  const ligne = {
+    quantite: 141, prixSaisi: 14.51, prix: 14.51, nearNextTranche: true,
+    nextTrancheRolls: 4, nextTrancheQty: 154.4, nextTrancheGapQty: 13.4, nextTranchePrix: 12.2,
+  }
+
+  it('reports a line within reach of a cheaper band, with both totals', () => {
+    const p = evaluerPalierSuivant(ligne)!
+    expect(p.prixActuel).toBe(14.51)
+    expect(p.baisse).toBeCloseTo(0.159, 3)
+    expect(p.totalActuel).toBe(2045.91)
+    expect(p.totalPalier).toBe(1883.68)
+  })
+
+  it('stays silent when the typed price is already the next band’s (611 Ml at the 612 Ml price)', () => {
+    expect(evaluerPalierSuivant({ ...ligne, prixSaisi: 12.2 })).toBeNull()
+    expect(raisonPalierSuivant({ ...ligne, prixSaisi: 12.2 }, 'Ml')).toBe('Prix déjà au tarif du palier 4 rouleaux (12,20 €).')
+  })
+
+  it('stays silent outside the screen’s 15 % zone, and says how far the band is', () => {
+    const loin = { ...ligne, nearNextTranche: false, nextTrancheGapQty: 96.2 }
+    expect(evaluerPalierSuivant(loin)).toBeNull()
+    expect(raisonPalierSuivant(loin, 'Ml')).toBe('Palier suivant (4 rouleaux) à 96 Ml de plus : trop loin pour le proposer.')
+  })
+
+  it('uses the grid price when none was typed', () => {
+    expect(evaluerPalierSuivant({ ...ligne, prixSaisi: 0 })?.prixActuel).toBe(14.51)
+  })
+})
+
+describe('evaluerPalierSuivant — rounding', () => {
+  it('ignores a drop under 3 % (611 Ml at 8,75 € vs 612 Ml at 8,68 €)', () => {
+    const l = { quantite: 611, prixSaisi: 8.75, prix: 10.34, nearNextTranche: true, nextTrancheRolls: 15, nextTrancheQty: 612, nextTrancheGapQty: 1, nextTranchePrix: 8.68 }
+    expect(evaluerPalierSuivant(l)).toBeNull()
+    expect(raisonPalierSuivant(l, 'Ml')).toBe('Palier 15 rouleaux à 8,68 € : moins de 3 % de baisse, pas la peine de le proposer.')
+  })
+})
+
+describe('evaluerRetard', () => {
+  // today = Wed 23/09/2026
+  const l = { quantite: 500, unite: 3, affecte: 480, expedie: 0, dateLivraison: '20260918', pret: 480, piecesPretes: 6 }
+
+  it('reports a covered line past its délai and not shipped, urgent from 7 days late', () => {
+    expect(evaluerRetard(l, today)).toEqual({ gravite: 'attention', joursRetard: 5, pret: true })
+    expect(evaluerRetard({ ...l, dateLivraison: '20260910' }, today)).toEqual({ gravite: 'urgent', joursRetard: 13, pret: true })
+  })
+
+  it('says what is ready, or that the line waits for production', () => {
+    expect(messageRetard(l, true)).toBe('rien d’expédié sur 500 Ml ; 480 Ml prêts (6 pièces) à expédier, ou prévenir le client.')
+    const enTeinture = { ...l, pret: 0, piecesPretes: 0 }
+    expect(evaluerRetard(enTeinture, today)?.pret).toBe(false)
+    expect(messageRetard(enTeinture, false)).toMatch(/rien de prêt — la ligne attend la production ou la teinture : prévenir le client/)
+  })
+
+  it('leaves an uncovered late line to couverture, never two points on one line', () => {
+    expect(evaluerRetard({ ...l, affecte: 100 }, today)).toBeNull()
+    expect(raisonRetard({ ...l, affecte: 100 }, today)).toMatch(/Pièces à affecter/)
+  })
+
+  it('stays silent on a short delivery: all that was assigned left (AGAPE N°3792)', () => {
+    const agape = { quantite: 214, unite: 3, affecte: 208, expedie: 208, dateLivraison: '20260918', pret: 0, piecesPretes: 0 }
+    expect(evaluerRetard(agape, today)).toBeNull()
+    expect(raisonRetard(agape, today)).toBe('Tout ce qui était affecté est parti (208 Ml sur 214 Ml) : reliquat sans pièce.')
+  })
+
+  it('stays silent when shipped, not yet due, or late beyond 30 days (stale délai)', () => {
+    expect(evaluerRetard({ ...l, expedie: 495 }, today)).toBeNull()
+    expect(evaluerRetard({ ...l, dateLivraison: '20260923' }, today)).toBeNull()
+    expect(evaluerRetard({ ...l, dateLivraison: '20260801' }, today)).toBeNull()
+    expect(raisonRetard({ ...l, dateLivraison: '20260801' }, today)).toMatch(/plus de 30 jours/)
+  })
+})
+
+describe('evaluerConfirmation', () => {
+  it('counts working days only', () => {
+    expect(joursOuvresDepuis('20260923', today)).toBe(0)
+    expect(joursOuvresDepuis('20260919', today)).toBe(3) // Sat → Mon, Tue, Wed
+    expect(joursOuvresDepuis('20260918', today)).toBe(3) // Fri → same
+  })
+
+  it('raises after 2 working days, urgent from 5', () => {
+    expect(evaluerConfirmation('20260922', today)).toBeNull()
+    expect(evaluerConfirmation('20260921', today)).toEqual({ gravite: 'attention', jours: 2 })
+    expect(evaluerConfirmation('20260916', today)).toEqual({ gravite: 'urgent', jours: 5 })
   })
 })

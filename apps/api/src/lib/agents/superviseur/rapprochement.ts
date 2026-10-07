@@ -16,6 +16,9 @@ export interface LigneExtraite {
   unite: string
   prix_unitaire: number | null
   delai: string
+  /** Where the line was read: « mail » or the attachment's file name (v3;
+   *  absent on extractions cached before). */
+  source?: string
 }
 
 export interface CommandeExtraite {
@@ -36,7 +39,8 @@ export interface CommandeEtm {
   societe: number
   /** Not soldée — a framework order the client calls off over months. */
   ouverte: boolean
-  lignes: Array<{ quantite: number; unite: number; prix: number }>
+  /** `libelle`: the line's reference (and coloris) as ETM shows it. */
+  lignes: Array<{ quantite: number; unite: number; prix: number; libelle?: string }>
 }
 
 /** Letters and digits only, uppercase — « A3-58281 » and « a3 58281 » match. */
@@ -150,7 +154,7 @@ export function ecarts(ext: CommandeExtraite, c: CommandeEtm): string[] {
     // on the PO, Ml in ETM), not a missing quantity.
     const e = te.get(u)
     if (e === undefined) continue
-    if (!proche(q, e, TOLERANCE_QUANTITE)) out.push(`quantité ${fmtQ(q)} ${LIBELLE_UNITE[u]} commandée, ${fmtQ(e)} ${LIBELLE_UNITE[u]} saisie`)
+    if (!proche(q, e, TOLERANCE_QUANTITE)) out.push(`quantité totale ${fmtQ(q)} ${LIBELLE_UNITE[u]} commandée, ${fmtQ(e)} ${LIBELLE_UNITE[u]} saisie`)
   }
   const prixEtm = c.lignes.map((l) => l.prix).filter((p) => p > 0)
   if (prixEtm.length) {
@@ -165,4 +169,39 @@ export function ecarts(ext: CommandeExtraite, c: CommandeEtm): string[] {
   return [...new Set(out)] // a PO repeating a line repeats its price
 }
 
+const MAX_LIGNES_DETAIL = 8
+
+function totaux(t: Map<Unite, number>): string {
+  return [...t].map(([u, q]) => `${fmtQ(q)} ${LIBELLE_UNITE[u]}`).join(' + ')
+}
+
+function liste(parts: string[]): string {
+  const vus = parts.slice(0, MAX_LIGNES_DETAIL)
+  return vus.join(' ; ') + (parts.length > vus.length ? ` ; … (+${parts.length - vus.length})` : '')
+}
+
+/** Both orders line by line, with where each figure was read, so the reader
+ *  can see where a total comes from (Isabelle on LEMAHIEU N°3891, 2026-09-30:
+ *  « je ne sais pas d'où viennent tes 615 mL »). Pure. */
+export function detailLignes(ext: CommandeExtraite, c: CommandeEtm): string {
+  const mail = ext.lignes.map((l) => {
+    const ref = [l.reference_client, l.designation].filter(Boolean).join(' ').slice(0, 50)
+    const q = l.quantite != null ? `${fmtQte(l.quantite)} ${l.unite}`.trim() : 'quantité non lue'
+    return [q, ref, l.coloris ? `coloris ${l.coloris}` : '', l.prix_unitaire ? `à ${fmtQ(l.prix_unitaire, 2)} €` : ''].filter(Boolean).join(' ')
+  })
+  const etm = c.lignes.map((l) => {
+    const u = LIBELLE_UNITE[l.unite as Unite] ?? ''
+    return [`${fmtQte(l.quantite)} ${u}`.trim(), l.libelle ?? '', l.prix > 0 ? `à ${fmtQ(l.prix, 2)} €` : ''].filter(Boolean).join(' ')
+  })
+  const sources = [...new Set(ext.lignes.map((l) => (l.source === 'mail' ? 'texte du mail' : l.source ? `« ${l.source} »` : '')).filter(Boolean))]
+  const tMail = totaux(totalExtrait(ext))
+  const tEtm = totaux(totalEtm(c))
+  return [
+    `Lu dans ${sources.length ? sources.join(', ') : 'le mail et ses pièces jointes'} (${ext.lignes.length} ligne${ext.lignes.length > 1 ? 's' : ''}) : ${liste(mail)}${tMail ? ` — total ${tMail}` : ''}.`,
+    `Saisi dans ETM N°${c.numero} (${c.lignes.length} ligne${c.lignes.length > 1 ? 's' : ''}) : ${liste(etm)}${tEtm ? ` — total ${tEtm}` : ''}.`,
+  ].join(' ')
+}
+
 const fmtQ = (v: number, d = 0) => v.toLocaleString('fr-FR', { maximumFractionDigits: d, minimumFractionDigits: d }).replace(/\s/g, ' ') // fr-FR groups with U+202F / U+00A0
+/** A quantity: up to 2 decimals, none when whole (« 300 », « 12,5 »). */
+const fmtQte = (v: number) => v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }).replace(/\s/g, ' ')

@@ -146,6 +146,9 @@ export interface EnteteMessage {
   /** ms, from internalDate. */
   date: number
   envoye: boolean
+  /** Received and no longer in the inbox. Company rule (2026-10-07): a mail is
+   *  archived, never deleted, once handled and over — archived = done. */
+  archive: boolean
   /** List-Unsubscribe / Auto-Submitted / Precedence bulk — a machine wrote it. */
   automatique: boolean
 }
@@ -176,6 +179,7 @@ export async function lireEntete(boite: string, id: string): Promise<EnteteMessa
     sujet: h('Subject'),
     date: Number(r.data.internalDate ?? 0),
     envoye: (r.data.labelIds ?? []).includes('SENT'),
+    archive: !(r.data.labelIds ?? []).some((l) => l === 'INBOX' || l === 'SENT'),
     automatique: !!h('List-Unsubscribe') || /auto-(generated|replied)/i.test(h('Auto-Submitted')) || /bulk|list|junk/i.test(h('Precedence')),
   }
 }

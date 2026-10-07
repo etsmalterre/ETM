@@ -28,7 +28,7 @@ const LUNDI_9H = Date.parse('2026-09-21T07:00:00Z')
 const m = (o: Partial<EnteteMessage>): EnteteMessage => ({
   boite: 'contact@etsmalterre.com', id: `m${++n}`, threadId: 't1', messageId: `id${n}@x`, inReplyTo: '', references: [],
   de: 'achat@thuasne.fr', deNom: '', a: ['contact@etsmalterre.com'], cc: [], sujet: 'Commande', date: LUNDI_9H,
-  envoye: false, automatique: false, ...o,
+  envoye: false, archive: false, automatique: false, ...o,
 })
 
 describe('identifierClient', () => {
@@ -119,6 +119,18 @@ describe('conversationsSansReponse — why a conversation is not waiting', () =>
     const q = m({ messageId: 'q@x' })
     const r = m({ de: 'pierre-emmanuel@etsmalterre.com', envoye: true, references: ['q@x'], date: LUNDI_9H + 2 * H })
     expect(raisons([q, r])).toEqual(['Réponse de pierre-emmanuel le 21/09 à 11h00.'])
+  })
+
+  it('treats a client message archived in every mailbox as handled', () => {
+    const q = m({ messageId: 'arch@x', threadId: 't20', archive: true })
+    expect(conversationsSansReponse([q], annuaire, now, depuis)).toHaveLength(0)
+    expect(raisons([q])).toEqual(['Dernier message du client le 21/09 à 09h00 archivé dans la boîte de contact : traité ou sans intérêt.'])
+  })
+
+  it('still waits while one mailbox keeps it in its inbox', () => {
+    const a = m({ messageId: 'arch2@x', threadId: 't21', archive: true })
+    const b = m({ messageId: 'arch2@x', threadId: 't22', boite: 'isabelle@etsmalterre.com', archive: false })
+    expect(conversationsSansReponse([a, b], annuaire, now, depuis)).toHaveLength(1)
   })
 
   it('names an answer written as a new mail to the client', () => {

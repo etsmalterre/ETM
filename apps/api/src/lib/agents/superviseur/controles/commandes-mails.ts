@@ -19,7 +19,8 @@ import { AGENTS_DIR } from '../../store.js'
 import { lireMessage, lirePieceJointe, type EnteteMessage } from '../boites.js'
 import { chargerAnnuaire, entetesDuRun, FENETRE_JOURS, sansCitation } from '../mails.js'
 import { heuresOuvrees, identifierClient, racine, type ClientConnu } from '../reponses.js'
-import { rapprocher, type CommandeEtm, type CommandeExtraite } from '../rapprochement.js'
+import { detailLignes, rapprocher, type CommandeEtm, type CommandeExtraite } from '../rapprochement.js'
+import { noms } from './noms.js'
 import type { Constat, Controle } from '../types.js'
 import { fmt, REPONSE_ATTENTION_H, REPONSE_URGENT_H } from './regles.js'
 
@@ -30,7 +31,7 @@ export const EXTRACTION_PROMPT = `Tu lis un mail (et le texte de ses pièces joi
 Dis s'il s'agit d'une NOUVELLE commande ferme du client, d'une MODIFICATION d'une commande existante, ou d'AUTRE chose (demande de prix, question, confirmation, relance, accusé de réception, prévisionnel non ferme).
 Pour une commande ou une modification, extrais :
 - numero_commande_client : le numéro de commande / bon de commande / PO du client, tel qu'écrit ("" s'il n'y en a pas) ;
-- lignes : une ligne par article commandé — designation, reference_client (référence ou code article du client), coloris, quantite (nombre), unite (telle qu'écrite : m, ml, mètres, kg…), prix_unitaire (nombre hors taxe, null si absent), delai (date ou semaine demandée, telle qu'écrite).
+- lignes : une ligne par article commandé — designation, reference_client (référence ou code article du client), coloris, quantite (nombre), unite (telle qu'écrite : m, ml, mètres, kg…), prix_unitaire (nombre hors taxe, null si absent), delai (date ou semaine demandée, telle qu'écrite), source ("mail" si la ligne est lue dans le texte du mail, sinon le nom exact de la pièce jointe où elle figure).
 Un mail qui parle d'une commande DÉJÀ passée — point sur la commande, suivi, appel d'une partie d'une commande cadre, date de livraison, réponse à notre confirmation — n'est PAS une nouvelle commande : c'est "modification" s'il change une quantité, un article ou une date, sinon "autre".
 N'invente rien : laisse vide ou null ce qui n'est pas écrit. Pour AUTRE, lignes = [].`
 
@@ -53,8 +54,9 @@ export const EXTRACTION_SCHEMA = {
           unite: { type: 'string' },
           prix_unitaire: { type: ['number', 'null'] },
           delai: { type: 'string' },
+          source: { type: 'string' },
         },
-        required: ['designation', 'reference_client', 'coloris', 'quantite', 'unite', 'prix_unitaire', 'delai'],
+        required: ['designation', 'reference_client', 'coloris', 'quantite', 'unite', 'prix_unitaire', 'delai', 'source'],
       },
     },
   },
@@ -131,9 +133,14 @@ export async function commandesCandidates(idClient: number, depuis: string, nume
 async function versCommandes(cmds: LigneCmd[]): Promise<CommandeEtm[]> {
   if (!cmds.length) return []
   const fixed = await fixEncoding(cmds, 'commande_client', 'IDcommande_client', ['ref_client'])
-  const lignes = await query<{ IDcommande_client: number; quantite: number | null; unite: number | null; prix: number | null }>(
-    `SELECT IDcommande_client, quantite, unite, prix FROM ligne_commande_client WHERE IDcommande_client IN (${fixed.map((c) => Number(c.IDcommande_client)).join(',')})`,
+  // TYPE is a reserved word → alias (1 écru, 2 fini, 3 divers).
+  const lignes = await query<{ IDcommande_client: number; type_kind: number; IDreference: number | null; quantite: number | null; unite: number | null; prix: number | null }>(
+    `SELECT IDcommande_client, TYPE AS type_kind, IDreference, quantite, unite, prix FROM ligne_commande_client WHERE IDcommande_client IN (${fixed.map((c) => Number(c.IDcommande_client)).join(',')})`,
   )
+  const refsDe = (t: number) => lignes.filter((l) => Number(l.type_kind) === t).map((l) => Number(l.IDreference) || 0)
+  const [ecrus, finis, divers] = await Promise.all([noms('ref_ecru', refsDe(1)), noms('ref_fini', refsDe(2)), noms('ref_divers', refsDe(3))])
+  const libelle = (l: { type_kind: number; IDreference: number | null }) =>
+    [ecrus, finis, divers][Number(l.type_kind) - 1]?.get(Number(l.IDreference) || 0) ?? ''
   return fixed.map((c) => ({
     id: Number(c.IDcommande_client),
     numero: Number(c.numero) || 0,
@@ -142,7 +149,7 @@ async function versCommandes(cmds: LigneCmd[]): Promise<CommandeEtm[]> {
     societe: Number(c.IDsociete) || 1,
     ouverte: Number(c.est_soldee) !== 1,
     lignes: lignes.filter((l) => Number(l.IDcommande_client) === Number(c.IDcommande_client))
-      .map((l) => ({ quantite: Number(l.quantite) || 0, unite: Number(l.unite) || 0, prix: Number(l.prix) || 0 })),
+      .map((l) => ({ quantite: Number(l.quantite) || 0, unite: Number(l.unite) || 0, prix: Number(l.prix) || 0, libelle: libelle(l) })),
   }))
 }
 
@@ -223,9 +230,14 @@ export const controleCommandesMails: Controle = {
           gravite: 'attention',
           titre: `${client.nom} — commande${po} à vérifier (N°${r.commande.numero})`,
           // A date-only match is a guess: say so, the écart may just mean « not entered ».
-          message: r.par === 'date'
-            ? `Commande reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} (${resume}) : aucune commande avec ce numéro ou cette quantité. La plus proche est N°${r.commande.numero} (${r.ecarts.join(' ; ')}) — vérifier qu’elle a bien été saisie.`
-            : `La commande reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} diffère de la saisie : ${r.ecarts.join(' ; ')}.`,
+          // Then both orders line by line: the reader checks a figure without
+          // opening the mail (v3, from Isabelle's LEMAHIEU comment).
+          message: [
+            r.par === 'date'
+              ? `Commande reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} (${resume}) : aucune commande avec ce numéro ou cette quantité. La plus proche est N°${r.commande.numero} (${r.ecarts.join(' ; ')}) — vérifier qu’elle a bien été saisie.`
+              : `La commande reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} (${m.boite.split('@')[0]}, « ${court(m.sujet)} ») diffère de la saisie : ${r.ecarts.join(' ; ')}.`,
+            detailLignes(ext, r.commande),
+          ].join(' '),
           lien: `/clients/commandes?commande=${r.commande.id}`,
         })
       } else {

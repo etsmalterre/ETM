@@ -274,7 +274,7 @@ export const AGENTS: readonly AgentDef[] = [
     slug: SUPERVISEUR_SLUG,
     nom: 'Superviseur',
     description:
-      'Contrôle chaque nuit l’activité d’ETS Malterre et prépare le rapport du matin : les clients ont-ils tous une réponse, les commandes reçues par mail sont-elles saisies dans ETM et justes, reste-t-il des actions en attente (pièces à affecter, fil à commander, ennoblissement non lancé…). Le rapport se lit ici, dans Exécutions.',
+      'Contrôle chaque nuit l’activité d’ETS Malterre et prépare le rapport du matin : les clients ont-ils tous une réponse, les commandes reçues par mail sont-elles saisies dans ETM et justes, un client proche du palier de rouleaux suivant s’est-il vu proposer d’arrondir, chaque commande a-t-elle sa confirmation, reste-t-il des actions en attente (pièces à affecter, ligne en retard à expédier, fil à commander, ennoblissement non lancé…). Le rapport se lit ici, dans Exécutions.',
     declenchement: { type: 'quotidien', heure: SUPERVISEUR_HEURE, jours: SUPERVISEUR_JOURS },
     declencheur: `Chaque jour ouvré à ${SUPERVISEUR_HEURE} h du matin. Lit la base ETM (ETS Malterre uniquement) et les boîtes ${SUPERVISEUR_BOITES.join(', ')}.`,
     ecritures: ['Rien dans la base ni dans les boîtes mail : il lit seulement. Le rapport est l’exécution elle-même.'],
