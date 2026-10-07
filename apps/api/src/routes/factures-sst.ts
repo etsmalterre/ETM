@@ -27,6 +27,7 @@ import { lireHistorique, noter } from '../lib/agents/factures-sst/historique.js'
 import { FACTURES_SST_BOITE } from '../lib/agents/factures-sst/agent.js'
 import { lireMessage } from '../lib/gmail-reader.js'
 import { sendMail } from '../lib/gmail.js'
+import { corpsEnTexte } from '../lib/email-riche.js'
 import { getUserEmail } from '../lib/user-emails.js'
 
 export const facturesSstRouter: RouterType = Router()
@@ -521,7 +522,7 @@ facturesSstRouter.post('/:id/reclamation/email', async (req, res) => {
   const d = p.data
   try {
     // Refused close = no mail sent.
-    const refus = await traiter(id, uid, 'reclamee', d.body.trim(), { verifier: true })
+    const refus = await traiter(id, uid, 'reclamee', corpsEnTexte(d.body).trim(), { verifier: true })
     if (refus) { res.status(refus.status).json({ error: refus.error, message: refus.message }); return }
     const from = await getUserEmail(uid)
     if (!from) {
@@ -540,7 +541,7 @@ facturesSstRouter.post('/:id/reclamation/email', async (req, res) => {
       from, fromName: `${qui.nom} — ETS Malterre`, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body,
       attachments: attachments.length ? attachments : undefined,
     })
-    await traiter(id, uid, 'reclamee', d.body.trim(), { email: { to: d.to, cc: d.cc ?? [], subject: d.subject, messageId } })
+    await traiter(id, uid, 'reclamee', corpsEnTexte(d.body).trim(), { email: { to: d.to, cc: d.cc ?? [], subject: d.subject, messageId } })
     res.json({ ok: true, messageId })
   } catch (err) {
     console.error('[factures-sst] reclamation email failed:', err)

@@ -18,6 +18,7 @@
 import * as fs from 'node:fs'
 import { google } from 'googleapis'
 import { getSignatureForEmail } from './user-profiles.js'
+import { estCorpsRiche, htmlEmailEnTexte, nettoyerHtmlEmail } from './email-riche.js'
 import type { InlineImage } from './signature-template.js'
 
 type JwtClient = InstanceType<typeof google.auth.JWT>
@@ -114,6 +115,7 @@ const BOLD_RE = /\*\*([^*]+)\*\*/g
 
 /** Plain-text part: body with `**bold**` markers stripped. */
 function bodyToPlain(body: string): string {
+  if (estCorpsRiche(body)) return htmlEmailEnTexte(body)
   return body.replace(BOLD_RE, '$1')
 }
 
@@ -144,9 +146,12 @@ function escapeHtml(s: string): string {
 /** HTML part: escaped body, `**bold**` → <strong>, newlines → <br>. Wrapped
  *  in a minimal styled div so rendering stays close to the plain default. */
 function bodyToHtml(body: string): string {
-  const html = escapeHtml(body)
-    .replace(BOLD_RE, '<strong>$1</strong>')
-    .replace(/\r?\n/g, '<br>\r\n')
+  // Rich body from the dialog's editor: sanitized, never trusted (email-riche.ts).
+  const html = estCorpsRiche(body)
+    ? nettoyerHtmlEmail(body)
+    : escapeHtml(body)
+      .replace(BOLD_RE, '<strong>$1</strong>')
+      .replace(/\r?\n/g, '<br>\r\n')
   return (
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222222;">' +
     html +

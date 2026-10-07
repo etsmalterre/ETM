@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { SignaturePreview } from '@/components/ui/signature-preview'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
+import { RichEmailEditor, texteVersHtml } from './RichEmailEditor'
 import { apiFetch } from '@/lib/api'
 import { useUser } from '@/contexts/UserContext'
 import { cn } from '@/lib/utils'
@@ -28,6 +29,7 @@ import {
   formatFileSize,
   MAX_TOTAL_ATTACHMENT_BYTES,
   POINTS_A_SIGNALER_TITRE,
+  CORPS_RICHE,
   type EmailDefaults,
   type EmailRecipient,
   type SendPayload,
@@ -298,7 +300,8 @@ export function SendEmailDialog({
     setShowCc(ccDefaults.length > 0)
     setShowBcc(bccDefaults.length > 0)
     setSubject(defaults.subject)
-    setBody(defaults.body)
+    // Endpoints pre-fill plain text; a saved rich body comes back with its marker.
+    setBody(defaults.body.startsWith(CORPS_RICHE) ? defaults.body.slice(CORPS_RICHE.length) : texteVersHtml(defaults.body))
     // Initial checked state: server default_checked wins over the prop fallback.
     const serverById = new Map((defaults.optional_attachments ?? []).map((o) => [o.id, o.default_checked]))
     const checked: Record<string, boolean> = {}
@@ -502,6 +505,10 @@ export function SendEmailDialog({
       setErrorMessage(`L'adresse « ${invalide} » n'est pas valide`)
       return
     }
+    if (CORPS_RICHE.length + body.length > 20000) {
+      setErrorMessage('Le message est trop long (20 000 caractères au plus, mise en forme comprise).')
+      return
+    }
     setIsSending(true)
     try {
       await onSend({
@@ -509,7 +516,7 @@ export function SendEmailDialog({
         cc: ccList,
         bcc: bccList,
         subject: trimmedSubject,
-        body,
+        body: CORPS_RICHE + body,
         attachPdf: pdfUrl ? attachPdf : false,
         userAttachments: userAttachments.map((a) => a.file),
         optionalAttachments: Object.fromEntries(
@@ -541,7 +548,7 @@ export function SendEmailDialog({
         cc: [],
         bcc: [],
         subject: trimmedSubject,
-        body: body || '[Faux envoi dev — pas de corps]',
+        body: CORPS_RICHE + (body || '<p>[Faux envoi dev — pas de corps]</p>'),
         attachPdf: false,
         userAttachments: [],
         optionalAttachments: {},
@@ -759,14 +766,7 @@ export function SendEmailDialog({
                     {/* min-h keeps the message readable when Cc/Cci, the
                         points banner and the signature all show — the form
                         scrolls instead of crushing it (#1266 feedback). */}
-                    <textarea
-                      value={body}
-                      onChange={(e) => setBody(e.target.value)}
-                      className="flex-1 min-h-[16rem] w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none font-sans scrollbar-transparent"
-                    />
-                    <p className="flex-shrink-0 text-[10px] text-muted-foreground">
-                      Astuce : le texte entouré de ** apparaîtra en <strong>gras</strong> dans l'email envoyé.
-                    </p>
+                    <RichEmailEditor value={body} onChange={setBody} className="flex-1 min-h-[16rem]" />
                     {signatureHtml && (
                       <div className="flex-shrink-0 space-y-1">
                         <p className="text-[10px] text-muted-foreground">

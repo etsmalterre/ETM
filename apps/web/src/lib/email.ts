@@ -43,6 +43,11 @@ export interface EmailDefaults {
  *  `POINTS_A_SIGNALER_TITRE` (lib/bl-points-a-signaler.ts). */
 export const POINTS_A_SIGNALER_TITRE = 'Points à signaler sur cette livraison'
 
+/** Marker in front of an HTML body (the dialog's rich-text editor). The API
+ *  sanitizes and renders it — same value as `CORPS_RICHE` in
+ *  apps/api/src/lib/email-riche.ts. */
+export const CORPS_RICHE = '<!--mps:html-->'
+
 export interface SendPayload {
   to: string[]
   cc: string[]

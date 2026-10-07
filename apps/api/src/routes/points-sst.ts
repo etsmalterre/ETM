@@ -28,6 +28,7 @@ import { jourSuivantOuvre, SECTIONS, type Section } from '../lib/point-sst/regle
 import { SLUG as SLUG_AUTOMATE, VERSION, sousTraitantsDuPoint } from '../lib/automates/point-sst/point-sst.js'
 import { ajouterRetour, lireEtat, supprimerRetour } from '../lib/automates/store.js'
 import { msHeureParis, partiesParis } from '../lib/pointage-etat.js'
+import { corpsEnTexte } from '../lib/email-riche.js'
 
 export const pointsSstRouter: RouterType = Router()
 
@@ -323,7 +324,8 @@ pointsSstRouter.post('/:id/email', async (req, res) => {
       cc: (b.data.cc ?? []).map(avecNom),
       cci: (b.data.bcc ?? []).map(avecNom),
       sujet: b.data.subject,
-      message: b.data.body,
+      // The point lays the message out itself (mail, Word): keep it as text.
+      message: corpsEnTexte(b.data.body),
       avecDocx: !!b.data.word,
       pieces: b.data.extra_attachments ?? [],
     })
