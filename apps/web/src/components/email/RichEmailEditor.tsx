@@ -119,11 +119,14 @@ function Toolbar({ editor }: { editor: Editor }) {
   )
 }
 
-export function RichEmailEditor({ value, onChange, className }: {
+export function RichEmailEditor({ value, onChange, className, footer }: {
   /** The message as HTML. */
   value: string
   onChange: (html: string) => void
   className?: string
+  /** Read-only block under the text, inside the same scrolling frame — the
+   *  sender's signature, so the draft reads like the mail that will arrive. */
+  footer?: React.ReactNode
 }) {
   const editor = useEditor({
     extensions: [
@@ -164,8 +167,11 @@ export function RichEmailEditor({ value, onChange, className }: {
   return (
     <div className={cn('flex flex-col rounded-md border border-input bg-white focus-within:ring-2 focus-within:ring-ring', className)}>
       {editor && <Toolbar editor={editor} />}
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent cursor-text" onClick={() => editor?.commands.focus()}>
-        <EditorContent editor={editor} className="h-full" />
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent flex flex-col">
+        <div className="flex-1 cursor-text" onClick={() => editor?.commands.focus()}>
+          <EditorContent editor={editor} className="h-full" />
+        </div>
+        {footer}
       </div>
     </div>
   )

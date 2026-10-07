@@ -232,9 +232,6 @@ export function SendEmailDialog({
   /** Set when the user sends a mail whose « points à signaler » paragraph
    *  was deleted: holds the send mode until they confirm or go back. */
   const [pendingSansPoints, setPendingSansPoints] = useState<{ programme: boolean } | null>(null)
-  /** The signature preview is folded by default: at 7 lines it took the
-   *  message's room, and it never changes from one mail to the next. */
-  const [showSignature, setShowSignature] = useState(false)
 
   // ── Defaults fetch ───────────────────────────────────
   const {
@@ -756,25 +753,26 @@ export function SendEmailDialog({
                     {/* min-h keeps the message readable when Cc/Cci, the
                         points banner and the signature all show — the form
                         scrolls instead of crushing it (#1266 feedback). */}
-                    <RichEmailEditor value={body} onChange={setBody} className="flex-1 min-h-[16rem]" />
-                    {signatureHtml && (
-                      <div className="flex-shrink-0 space-y-1">
-                        <p className="text-[10px] text-muted-foreground">
-                          {signatureIsDefault
-                            ? "Signature automatique - ajoutée à l'envoi. Personnalisez-la dans Paramètres › Utilisateurs."
-                            : "Signature - ajoutée automatiquement à l'envoi"}
-                          {' · '}
-                          <button
-                            type="button"
-                            onClick={() => setShowSignature((v) => !v)}
-                            className="text-accent hover:underline"
-                          >
-                            {showSignature ? 'Masquer' : 'Afficher'}
-                          </button>
-                        </p>
-                        {showSignature && <SignaturePreview html={signatureHtml} className="min-h-0 h-28" />}
-                      </div>
-                    )}
+                    <RichEmailEditor
+                      value={body}
+                      onChange={setBody}
+                      className="flex-1 min-h-[16rem]"
+                      footer={signatureHtml ? (
+                        // The signature as the client will receive it — read-only, added
+                        // by the server at send time (Paramètres › Utilisateurs).
+                        <div
+                          className="flex-shrink-0 mx-3 mb-2 pt-2 border-t border-dashed border-border select-none"
+                          title={signatureIsDefault
+                            ? "Signature automatique, ajoutée à l'envoi. Personnalisez-la dans Paramètres › Utilisateurs."
+                            : "Signature ajoutée automatiquement à l'envoi"}
+                        >
+                          <SignaturePreview html={signatureHtml} autoHeight className="min-h-0 border-0 rounded-none pointer-events-none" />
+                          <p className="text-[10px] text-muted-foreground/70 text-right">
+                            {signatureIsDefault ? 'Signature automatique · personnalisable dans Paramètres › Utilisateurs' : 'Signature ajoutée à l’envoi'}
+                          </p>
+                        </div>
+                      ) : undefined}
+                    />
                   </div>
                 </div>
 
