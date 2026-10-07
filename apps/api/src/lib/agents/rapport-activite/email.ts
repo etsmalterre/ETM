@@ -94,34 +94,14 @@ function td(t: string, opts: { couleur?: string; gras?: boolean; nowrap?: boolea
   )
 }
 
-const LIBELLE_RESULTAT = { ok: 'fait', refus: 'refusé', erreur: 'erreur' } as const
-const COULEUR_RESULTAT = { ok: S.text, refus: AMBER, erreur: RED } as const
-
+/** Per app: the action count and the model's summary lines. No line-by-line
+ *  table — too long to read; errors and refusals are already in the code
+ *  signals (« Relevé par ETM »). */
 function sectionActions(app: 'ETM' | 'TRM', lignesIa: string[], actions: ActionRapport[]): EmailSection | null {
   if (!actions.length && !lignesIa.length) return null
-  const vues = actions.slice(0, MAX_LIGNES)
-  const reste = actions.length - vues.length
-  const html =
-    titreSection(`${app} — ${nbActions(actions)} action${nbActions(actions) > 1 ? 's' : ''}`) +
-    lignesIa.map((l) => paragraphe(`• ${l}`)).join('') +
-    (vues.length
-      ? `<div style="height:6px;line-height:6px;font-size:0;">&nbsp;</div><table ${TABLE}><tr>${th('Heure')}${th('Écran')}${th('Action')}${th('Résultat')}</tr>` +
-        vues
-          .map(
-            (a) =>
-              `<tr>${td(a.heure, { nowrap: true })}${td(a.menu)}${td(a.action)}` +
-              `${td(a.erreur ? `${LIBELLE_RESULTAT[a.resultat]} : ${a.erreur}` : LIBELLE_RESULTAT[a.resultat], { couleur: COULEUR_RESULTAT[a.resultat], gras: a.resultat !== 'ok' })}</tr>`,
-          )
-          .join('') +
-        `</table>` +
-        (reste > 0 ? paragraphe(`… et ${reste} autres actions.`, S.muted) : '')
-      : '')
-  const text = [
-    `${app} — ${nbActions(actions)} action(s)`,
-    ...lignesIa.map((l) => `• ${l}`),
-    ...vues.map((a) => `  ${a.heure}  ${a.menu} — ${a.action} — ${LIBELLE_RESULTAT[a.resultat]}${a.erreur ? ` : ${a.erreur}` : ''}`),
-    ...(reste > 0 ? [`  … et ${reste} autres actions.`] : []),
-  ].join('\n')
+  const titre = `${app} — ${nbActions(actions)} action${nbActions(actions) > 1 ? 's' : ''}`
+  const html = titreSection(titre) + lignesIa.map((l) => paragraphe(`• ${l}`)).join('')
+  const text = [titre, ...lignesIa.map((l) => `• ${l}`)].join('\n')
   return { html, text }
 }
 
