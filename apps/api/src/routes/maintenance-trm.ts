@@ -40,6 +40,7 @@ import {
   etatRouloir,
   indexKg,
   kgDepuis,
+  kgParPeriode,
   monthsSince,
   pireEtat,
   round2,
@@ -345,6 +346,149 @@ async function upsertOperationMetier(
 }
 
 // ════════════════════════════════════════════════════════
+//  History — trm_maintenance_journal (2026-10-07)
+// ════════════════════════════════════════════════════════
+//
+// One row per time an item was done. The stored date + comment of an item
+// (machine columns, operation_maintenance_metier, operation_maintenance) stay
+// the copy of its LATEST row, so every reader above is unchanged:
+//  - « Effectué ce jour » appends a row (today, the comment typed then) and
+//    copies it onto the item;
+//  - edit mode corrects the LATEST row only (the date or comment typed in the
+//    fiche); clearing the date removes that row and the item falls back on the
+//    one before.
+
+/** Which item a history row is about. idmachine null = an atelier item. */
+interface JournalKey {
+  idmachine: number | null
+  /** 'rouloir', a garniture column name, or 'operation'. */
+  item: string
+  op: number | null
+}
+
+interface JournalRow {
+  id: number
+  date: string
+  commentaire: string | null
+}
+
+function journalWhere(sql: Sql, k: JournalKey) {
+  return sql`item = ${k.item}
+    AND ${k.idmachine === null ? sql`idmachine IS NULL` : sql`idmachine = ${k.idmachine}`}
+    AND ${k.op === null ? sql`idoperation_maintenance IS NULL` : sql`idoperation_maintenance = ${k.op}`}`
+}
+
+/** The two newest rows of an item, newest first. */
+async function journalLatest(sql: Sql, k: JournalKey): Promise<JournalRow[]> {
+  const rows = await sql<Row[]>`
+    SELECT idjournal, to_char(date_fait, 'YYYYMMDD') AS d, commentaire
+    FROM trm_maintenance_journal WHERE ${journalWhere(sql, k)}
+    ORDER BY date_fait DESC, idjournal DESC LIMIT 2`
+  return rows.map((r) => ({ id: Number(r.idjournal), date: String(r.d), commentaire: text(r.commentaire) }))
+}
+
+async function journalAppend(sql: Sql, k: JournalKey, date: string, commentaire: string | null, userId: number) {
+  await sql`
+    INSERT INTO trm_maintenance_journal (idmachine, item, idoperation_maintenance, date_fait, commentaire, saisi_par)
+    VALUES (${k.idmachine}, ${k.item}, ${k.op}, ${pgDate(date)}, ${commentaire}, ${userId})`
+}
+
+/**
+ * Edit mode on one item: the latest row takes the typed date + comment (or
+ * is created when the item had none). A cleared date removes the latest row.
+ * Returns what the item must now store — the row before when one was removed.
+ */
+async function journalCorrectLatest(
+  sql: Sql,
+  k: JournalKey,
+  date: string | null,
+  commentaire: string | null,
+  userId: number,
+): Promise<{ date: string | null; commentaire: string | null }> {
+  const [latest, previous] = await journalLatest(sql, k)
+  if (date === null) {
+    if (!latest) return { date: null, commentaire }
+    await sql`DELETE FROM trm_maintenance_journal WHERE idjournal = ${latest.id}`
+    return previous ? { date: previous.date, commentaire: previous.commentaire } : { date: null, commentaire: null }
+  }
+  if (!latest) {
+    await journalAppend(sql, k, date, commentaire, userId)
+  } else {
+    await sql`
+      UPDATE trm_maintenance_journal SET date_fait = ${pgDate(date)}, commentaire = ${commentaire}
+      WHERE idjournal = ${latest.id}`
+  }
+  return { date, commentaire }
+}
+
+/** An item's whole history, newest first, with who entered each row. */
+async function journalHistorique(sql: Sql, k: JournalKey) {
+  const rows = await sql<Row[]>`
+    SELECT j.idjournal, to_char(j.date_fait, 'YYYYMMDD') AS d, j.commentaire, j.reprise,
+           to_char(j.saisi_le, 'YYYY-MM-DD"T"HH24:MI:SS') AS saisi_le,
+           COALESCE(NULLIF(trim(COALESCE(u.prenom::text, '') || ' ' || COALESCE(u.nom::text, '')), ''), u.identifiant::text) AS saisi_par
+    FROM trm_maintenance_journal j LEFT JOIN utilisateur u ON u.idutilisateur = j.saisi_par
+    WHERE ${journalWhere(sql, k)}
+    ORDER BY j.date_fait DESC, j.idjournal DESC`
+  return rows.map((r) => ({
+    id: Number(r.idjournal),
+    date: String(r.d),
+    commentaire: text(r.commentaire),
+    reprise: r.reprise === true,
+    saisiLe: r.reprise === true ? null : text(r.saisi_le),
+    saisiPar: r.reprise === true ? null : text(r.saisi_par),
+  }))
+}
+
+/** 'rouloir' | garniture key | entretien id (as in POST /fait) → its journal key. */
+function metierJournalKey(idmachine: number, item: 'rouloir' | GarnitureKey | number): JournalKey {
+  if (item === 'rouloir') return { idmachine, item: 'rouloir', op: null }
+  if (typeof item === 'string') return { idmachine, item: GARNITURE.find((g) => g.key === item)!.date, op: null }
+  return { idmachine, item: 'operation', op: item }
+}
+
+const itemParam = z.union([
+  z.literal('rouloir'),
+  z.enum(GARNITURE.map((g) => g.key) as [GarnitureKey, ...GarnitureKey[]]),
+  z.coerce.number().int().positive(),
+])
+
+/** GET /metiers/:id/historique?item=rouloir|<garniture key>|<entretien id> */
+maintenanceTrmRouter.get('/metiers/:id/historique', async (req: Request, res: Response) => {
+  try {
+    const id = parseId(req.params.id)
+    const parsed = itemParam.safeParse(req.query.item)
+    if (id === null || !parsed.success) {
+      res.status(400).json({ error: 'Validation failed' })
+      return
+    }
+    const sql = mpsPg()
+    const [entrees, kg] = await Promise.all([journalHistorique(sql, metierJournalKey(id, parsed.data)), selectKg(sql, id)])
+    const kgs = kgParPeriode(kg.get(id), entrees)
+    res.json({ entrees: entrees.map((e, i) => ({ ...e, kgPeriode: kgs[i] })) })
+  } catch (err) {
+    console.error('GET /maintenance-trm/metiers/:id/historique failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** GET /operations/:id/historique — an atelier item (no kg: tied to no métier). */
+maintenanceTrmRouter.get('/operations/:id/historique', async (req: Request, res: Response) => {
+  try {
+    const id = parseId(req.params.id)
+    if (id === null) {
+      res.status(400).json({ error: 'invalid id' })
+      return
+    }
+    const entrees = await journalHistorique(mpsPg(), { idmachine: null, item: 'operation', op: id })
+    res.json({ entrees: entrees.map((e) => ({ ...e, kgPeriode: null })) })
+  } catch (err) {
+    console.error('GET /maintenance-trm/operations/:id/historique failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
 //  PUT /metiers/:id — the fiche
 // ════════════════════════════════════════════════════════
 
@@ -390,31 +534,54 @@ maintenanceTrmRouter.put('/metiers/:id', async (req: Request, res: Response) => 
       return
     }
 
-    const g = body.garniture
     const nul = (s: string | null) => (s && s.trim() !== '' ? s.trim() : null)
+    const [before] = await selectMachines(sql, id)
+    const opsBefore = await selectOperationsMetier(sql, id)
     await sql.begin(async (tx) => {
       const t = tx as unknown as Sql // postgres.js typing: TransactionSql loses its call signatures
-      await t`
-        UPDATE machine SET
-          commentaire            = ${nul(body.description)},
-          double_fonture         = ${body.doubleFonture ? 1 : 0},
-          date_maintenance       = ${pgDate(body.rouloir.derniereVisite)},
-          observation_maintenace = ${nul(body.rouloir.commentaire)},
-          nett_platines          = ${pgDate(g.nettPlatines.date)},
-          comm_nett_platines     = ${nul(g.nettPlatines.commentaire)},
-          nett_cylindre          = ${pgDate(g.nettCylindre.date)},
-          comm_nett_cylindre     = ${nul(g.nettCylindre.commentaire)},
-          nett_plateau           = ${pgDate(g.nettPlateau.date)},
-          comm_nett_plateau      = ${nul(g.nettPlateau.commentaire)},
-          chg_aiguilles          = ${pgDate(g.chgAiguilles.date)},
-          comm_chg_aiguilles     = ${nul(g.chgAiguilles.commentaire)},
-          chg_platines           = ${pgDate(g.chgPlatines.date)},
-          comm_chg_platines      = ${nul(g.chgPlatines.commentaire)},
-          pulsonique             = ${pgDate(g.pulsonique.date)},
-          comm_pulsonque         = ${nul(g.pulsonique.commentaire)}
-        WHERE idmachine = ${id}`
+      // An item whose date or comment changed corrects its latest history row;
+      // an untouched one is left alone (its row may be older than its stored
+      // copy's last edit, and saving the fiche must not rewrite it).
+      const settle = async (
+        key: JournalKey,
+        old: { date: string | null; commentaire: string | null },
+        next: { date: string | null; commentaire: string | null },
+      ) => {
+        const n = { date: next.date, commentaire: nul(next.commentaire) }
+        if (n.date === old.date && n.commentaire === old.commentaire) return n
+        return journalCorrectLatest(t, key, n.date, n.commentaire, req.userId!)
+      }
+      const rouloir = await settle(
+        metierJournalKey(id, 'rouloir'),
+        { date: hf(before.date_maintenance), commentaire: text(before.observation_maintenace) },
+        { date: body.rouloir.derniereVisite, commentaire: body.rouloir.commentaire },
+      )
+      const garniture = {} as Record<GarnitureKey, { date: string | null; commentaire: string | null }>
+      for (const g of GARNITURE) {
+        garniture[g.key] = await settle(
+          metierJournalKey(id, g.key),
+          { date: hf(before[g.date]), commentaire: text(before[g.comm]) },
+          body.garniture[g.key],
+        )
+      }
+      const sets = GARNITURE.flatMap((g, i) => [`${g.date} = $${2 * i + 4}`, `${g.comm} = $${2 * i + 5}`])
+      await t.unsafe(
+        `UPDATE machine SET commentaire = $2, double_fonture = $3, ${sets.join(', ')},
+           date_maintenance = $16, observation_maintenace = $17
+         WHERE idmachine = $1`,
+        [
+          id,
+          nul(body.description),
+          body.doubleFonture ? 1 : 0,
+          ...GARNITURE.flatMap((g) => [pgDate(garniture[g.key].date), garniture[g.key].commentaire]),
+          pgDate(rouloir.date),
+          rouloir.commentaire,
+        ],
+      )
       for (const e of body.entretiens) {
-        await upsertOperationMetier(t, e.id, id, e.date, nul(e.commentaire), req.userId!)
+        const old = opsBefore.get(`${e.id}:${id}`) ?? { date: null, commentaire: null }
+        const v = await settle(metierJournalKey(id, e.id), old, e)
+        await upsertOperationMetier(t, e.id, id, v.date, v.commentaire, req.userId!)
       }
     })
 
@@ -432,7 +599,12 @@ maintenanceTrmRouter.put('/metiers/:id', async (req: Request, res: Response) => 
 const faitBody = z.object({
   /** 'rouloir', a garniture key, or an entretien id. */
   item: z.union([z.literal('rouloir'), z.enum(GARNITURE.map((g) => g.key) as [GarnitureKey, ...GarnitureKey[]]), z.number().int().positive()]),
+  /** What was done, typed in the confirmation. Becomes the item's comment:
+   *  the one shown on the fiche is always the latest intervention's. */
+  commentaire: comment,
 })
+
+const resetBody = z.object({ commentaire: comment })
 
 maintenanceTrmRouter.post('/metiers/:id/fait', async (req: Request, res: Response) => {
   if (!(await requireEditMaintenance(req, res))) return
@@ -447,21 +619,26 @@ maintenanceTrmRouter.post('/metiers/:id/fait', async (req: Request, res: Respons
     if (!(await machineEcrivable(sql, id, res))) return
     const today = pgDate(todayHf())
     const item = parsed.data.item
-    if (item === 'rouloir') {
-      await sql`UPDATE machine SET date_maintenance = ${today} WHERE idmachine = ${id}`
-    } else if (typeof item === 'string') {
-      const col = GARNITURE.find((g) => g.key === item)!.date
-      await sql.unsafe(`UPDATE machine SET ${col} = $1 WHERE idmachine = $2`, [today, id])
-    } else {
+    const commentaire = parsed.data.commentaire?.trim() || null
+    if (typeof item === 'number') {
       const op = (await selectOperations(sql)).find((o) => o.id === item && o.portee === 'metier')
       if (!op) {
         res.status(404).json({ error: 'opération introuvable' })
         return
       }
-      // Keeps the stored comment: « done today » is about the date only.
-      const current = (await selectOperationsMetier(sql, id)).get(`${item}:${id}`)
-      await upsertOperationMetier(sql, item, id, todayHf(), current?.commentaire ?? null, req.userId!)
     }
+    await sql.begin(async (tx) => {
+      const t = tx as unknown as Sql
+      await journalAppend(t, metierJournalKey(id, item), todayHf(), commentaire, req.userId!)
+      if (item === 'rouloir') {
+        await t`UPDATE machine SET date_maintenance = ${today}, observation_maintenace = ${commentaire} WHERE idmachine = ${id}`
+      } else if (typeof item === 'string') {
+        const g = GARNITURE.find((x) => x.key === item)!
+        await t.unsafe(`UPDATE machine SET ${g.date} = $1, ${g.comm} = $2 WHERE idmachine = $3`, [today, commentaire, id])
+      } else {
+        await upsertOperationMetier(t, item, id, todayHf(), commentaire, req.userId!)
+      }
+    })
     res.json({ seuilRouloirKg: MAINTENANCE_ROULOIR_SEUIL_KG, metier: await loadMetier(sql, id) })
   } catch (err) {
     console.error('POST /maintenance-trm/metiers/:id/fait failed:', err)
@@ -587,8 +764,9 @@ maintenanceTrmRouter.delete('/operations/:id', async (req: Request, res: Respons
 maintenanceTrmRouter.post('/operations/:id/reset', async (req: Request, res: Response) => {
   if (!(await requireEditMaintenance(req, res))) return
   const id = parseId(req.params.id)
-  if (id === null) {
-    res.status(400).json({ error: 'invalid id' })
+  const parsed = resetBody.safeParse(req.body ?? {})
+  if (id === null || !parsed.success) {
+    res.status(400).json({ error: 'Validation failed' })
     return
   }
   try {
@@ -602,7 +780,12 @@ maintenanceTrmRouter.post('/operations/:id/reset', async (req: Request, res: Res
       res.status(409).json({ error: 'operation_par_metier', message: 'Cet entretien se fait métier par métier.' })
       return
     }
-    await sql`UPDATE operation_maintenance SET date_derniere = ${pgDate(todayHf())} WHERE idoperation_maintenance = ${id}`
+    await sql.begin(async (tx) => {
+      const t = tx as unknown as Sql
+      const commentaire = parsed.data.commentaire?.trim() || null
+      await journalAppend(t, { idmachine: null, item: 'operation', op: id }, todayHf(), commentaire, req.userId!)
+      await t`UPDATE operation_maintenance SET date_derniere = ${pgDate(todayHf())} WHERE idoperation_maintenance = ${id}`
+    })
     res.json(await operationsPayload(sql))
   } catch (err) {
     console.error('POST /maintenance-trm/operations/:id/reset failed:', err)

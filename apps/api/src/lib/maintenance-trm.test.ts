@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { etatPeriodique, etatRouloir, indexKg, kgDepuis, monthsSince, pireEtat } from './maintenance-trm.js'
+import { etatPeriodique, etatRouloir, indexKg, kgDepuis, kgParPeriode, monthsSince, pireEtat } from './maintenance-trm.js'
 
 describe('kgDepuis', () => {
   const idx = indexKg([
@@ -52,5 +52,31 @@ describe('periodic state', () => {
     expect(pireEtat(['ok', 'inconnu'])).toBe('ok')
     expect(pireEtat(['ok', 'proche', 'due'])).toBe('due')
     expect(pireEtat([])).toBe('ok')
+  })
+})
+
+describe('kgParPeriode', () => {
+  const idx = indexKg([
+    { jour: '20260901', kg: 10 },
+    { jour: '20260905', kg: 20 },
+    { jour: '20260910', kg: 30 },
+  ])
+
+  it('gives each entry the kg up to the next one, the newest its running total', () => {
+    // Newest first: done on 09-05, then 08-31.
+    expect(kgParPeriode(idx, [{ date: '20260905' }, { date: '20260831' }])).toEqual([30, 30])
+  })
+
+  it('counts a roll weighed on the next entry day in the earlier period', () => {
+    expect(kgParPeriode(idx, [{ date: '20260910' }, { date: '20260901' }])).toEqual([0, 50])
+  })
+
+  it('gives 0 to two entries on the same day', () => {
+    expect(kgParPeriode(idx, [{ date: '20260905' }, { date: '20260905' }])).toEqual([30, 0])
+  })
+
+  it('handles a métier without rolls and an empty history', () => {
+    expect(kgParPeriode(undefined, [{ date: '20260905' }])).toEqual([0])
+    expect(kgParPeriode(idx, [])).toEqual([])
   })
 })

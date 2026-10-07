@@ -617,6 +617,56 @@ ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'trm_fourniture_type, trm_fournitur
 ${grantApi('USAGE, SELECT', 'SEQUENCE trm_fourniture_type_idfourniture_type_seq, trm_fourniture_constructeur_idfourniture_constructeur_seq, trm_fourniture_fournisseur_idfourniture_fournisseur_seq, trm_fourniture_article_idfourniture_article_seq, trm_fourniture_montage_idfourniture_montage_seq, trm_fourniture_montage_ligne_id_seq, trm_fourniture_mouvement_idfourniture_mouvement_seq')}
 `,
   },
+  {
+    // TRM Atelier › Maintenance — the history of every maintenance item
+    // (2026-10-07, the régleurs). Until now each item kept only its LAST date
+    // and comment (machine.date_maintenance / nett_platines / … and their
+    // comm_*, operation_maintenance_metier, operation_maintenance.date_derniere),
+    // each « Effectué ce jour » overwriting the previous one. One row per time
+    // an item was done; the item's stored date + comment stay the copy of its
+    // latest row (routes/maintenance-trm.ts keeps them in step).
+    //  - idmachine NULL = an atelier item (operation_maintenance.portee = 'atelier').
+    //  - item: 'rouloir', a garniture column name, or 'operation' (+ its id).
+    //  - reprise: seeded here from the date each item carried — the only past
+    //    fact the base held. No person, no earlier entries exist.
+    name: '0013_maintenance_journal_trm',
+    sql: `
+CREATE TABLE trm_maintenance_journal (
+  idjournal bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idmachine bigint,
+  item text NOT NULL CHECK (item IN ('rouloir', 'nett_platines', 'nett_cylindre', 'nett_plateau', 'chg_aiguilles', 'chg_platines', 'pulsonique', 'operation')),
+  idoperation_maintenance bigint,
+  date_fait date NOT NULL,
+  commentaire text,
+  reprise boolean NOT NULL DEFAULT false,
+  saisi_le timestamptz NOT NULL DEFAULT now(),
+  saisi_par bigint NOT NULL DEFAULT 0,
+  CHECK ((item = 'operation') = (idoperation_maintenance IS NOT NULL))
+);
+CREATE INDEX trm_maintenance_journal_item ON trm_maintenance_journal (idmachine, item, idoperation_maintenance, date_fait);
+INSERT INTO trm_maintenance_journal (idmachine, item, date_fait, commentaire, reprise)
+  SELECT idmachine, 'rouloir', date_maintenance, NULLIF(trim(observation_maintenace::text), ''), true
+  FROM machine WHERE date_maintenance > DATE '1900-01-01';
+${[
+  ['nett_platines', 'comm_nett_platines'],
+  ['nett_cylindre', 'comm_nett_cylindre'],
+  ['nett_plateau', 'comm_nett_plateau'],
+  ['chg_aiguilles', 'comm_chg_aiguilles'],
+  ['chg_platines', 'comm_chg_platines'],
+  ['pulsonique', 'comm_pulsonque'],
+].map(([d, c]) => `INSERT INTO trm_maintenance_journal (idmachine, item, date_fait, commentaire, reprise)
+  SELECT idmachine, '${d}', ${d}, NULLIF(trim(${c}::text), ''), true
+  FROM machine WHERE ${d} > DATE '1900-01-01';`).join('\n')}
+INSERT INTO trm_maintenance_journal (idmachine, item, idoperation_maintenance, date_fait, commentaire, reprise)
+  SELECT idmachine, 'operation', idoperation_maintenance, date_derniere, NULLIF(trim(commentaire), ''), true
+  FROM operation_maintenance_metier WHERE date_derniere > DATE '1900-01-01';
+INSERT INTO trm_maintenance_journal (idmachine, item, idoperation_maintenance, date_fait, reprise)
+  SELECT NULL, 'operation', idoperation_maintenance, date_derniere, true
+  FROM operation_maintenance WHERE portee = 'atelier' AND date_derniere > DATE '1900-01-01';
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'trm_maintenance_journal')}
+${grantApi('USAGE, SELECT', 'SEQUENCE trm_maintenance_journal_idjournal_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

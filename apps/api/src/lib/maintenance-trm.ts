@@ -96,3 +96,24 @@ export function kgDepuis(index: KgIndex | undefined, date: string | null): numbe
   }
   return lo < index.jours.length ? round2(index.suffix[lo]) : 0
 }
+
+/** One entry of an item's history (trm_maintenance_journal), newest first. */
+export interface JournalDate {
+  /** 'YYYYMMDD'. */
+  date: string
+}
+
+/**
+ * Kg knitted over the period each history entry opened: strictly after its
+ * day, up to and including the day of the NEXT entry (the one above it in a
+ * newest-first list). The newest entry's period is still running — its kg is
+ * « since », the figure the fiche shows. Same measure as kgDepuis.
+ */
+export function kgParPeriode(index: KgIndex | undefined, entrees: JournalDate[]): number[] {
+  return entrees.map((e, i) => {
+    const depuis = kgDepuis(index, e.date) ?? 0
+    if (i === 0) return depuis
+    const suivante = kgDepuis(index, entrees[i - 1].date) ?? 0
+    return round2(Math.max(0, depuis - suivante))
+  })
+}
