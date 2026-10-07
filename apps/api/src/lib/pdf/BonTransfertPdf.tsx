@@ -4,7 +4,8 @@
 //  - top row: destination address card + transfer metadata card (source,
 //    destination, transporteur)
 //  - rouleaux (type_matiere 1): one section per reference — identity block
-//    ("128/101" / "interlock - 100% polyester") then a framed table
+//    ("128/101" / "interlock - 100% polyester", repeated with the column
+//    header on every page the section runs onto, #1268) then a framed table
 //    (coloris · numéro · lot · poids · métrage) with a per-article totals row —
 //    and a gold grand-total box (n pièces · Σ kg · Σ Ml)
 //  - fils (type_matiere 2): a single framed table (lot · référence · coloris ·
@@ -107,6 +108,9 @@ const styles = StyleSheet.create({
 
   // Article identity block (rouleaux)
   article: { marginBottom: 14 },
+  // The gap above the table lives here, not on the table: this block is
+  // repeated on continuation pages, the table's own marginTop is not.
+  articleHead: { paddingBottom: 6 },
   articleTitre: { fontSize: 11.5, color: colors.primary, fontWeight: 900, lineHeight: 1.35 },
   articleLine: { fontSize: 10.5, color: colors.text, lineHeight: 1.35 },
 
@@ -280,12 +284,14 @@ export function BonTransfertPdf({ data }: { data: BonTransfertPdfData }) {
             return (
               <View key={ai} style={styles.article}>
                 {/* Keep the article identity glued to its table start instead of
-                    stranding it at a page bottom (same semantics as the BL). */}
-                <View wrap={false} minPresenceAhead={100}>
+                    stranding it at a page bottom (same semantics as the BL).
+                    `fixed`: repeated on every page the article's table runs
+                    onto, so a loose page still names its reference (#1268). */}
+                <View style={styles.articleHead} wrap={false} minPresenceAhead={100} fixed>
                   <Text style={styles.articleTitre}>{article.titre}</Text>
                   {article.sousTitre ? <Text style={styles.articleLine}>{article.sousTitre}</Text> : null}
                 </View>
-                <View style={styles.table}>
+                <View style={[styles.table, { marginTop: 0 }]}>
                   <View style={styles.tableHeader} fixed>
                     <Text style={[styles.tableHeaderCell, styles.colColoris]}>COLORIS</Text>
                     <Text style={[styles.tableHeaderCell, styles.colNumero]}>NUMÉRO</Text>
