@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { categorie, CATEGORIES, libelleGmail, normaliserCategories } from './categories.js'
-import { TRIAGE_PROMPT_V1, TRIAGE_SCHEMA } from './prompt.js'
+import { TRIAGE_PROMPT_V1, TRIAGE_PROMPT_V2, TRIAGE_SCHEMA } from './prompt.js'
 
 describe('categories', () => {
   it('unknown keys dropped, duplicates removed, order kept, « autre » when empty', () => {
@@ -34,5 +34,14 @@ describe('entreeTriage', () => {
     // The unsanitised cut does contain one (the test is not vacuous).
     expect(`${texte.slice(0, MAX_CORPS)}`).toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
     expect(out).toContain('a…')
+  })
+})
+
+describe('prompt v2', () => {
+  it('is v1 with the two fixes of 06/10: an unannounced dyer PDF and our reply in a BL thread are no BL', () => {
+    expect(TRIAGE_PROMPT_V2).not.toBe(TRIAGE_PROMPT_V1)
+    expect(TRIAGE_PROMPT_V2).toContain('« TAD INFOS CLIENTS »')
+    expect(TRIAGE_PROMPT_V2).toContain('sans nouveau document joint est interne')
+    expect(TRIAGE_PROMPT_V2.split('\n').length).toBe(TRIAGE_PROMPT_V1.split('\n').length)
   })
 })

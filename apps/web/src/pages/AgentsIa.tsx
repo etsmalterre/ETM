@@ -658,12 +658,14 @@ function DetailMain({ agent, isLoading, hasSelection, canPilot, onOpenRun, onCha
 // ── Exécutions ───────────────────────────────────────────
 
 const RUN_FILTERS: Array<{ key: string; label: string; query: string }> = [
-  { key: 'tout', label: 'Toutes', query: '' },
+  // « Ignorées » (a mail with no document to read) have their own tab, out of « Toutes ».
+  { key: 'tout', label: 'Toutes', query: '?sans=ignore' },
   { key: 'verifier', label: 'À vérifier', query: '?statut=a_verifier,erreur' },
   { key: 'ecrit', label: 'Enregistrées', query: '?statut=ecrit' },
   { key: 'simule', label: 'Simulées', query: '?statut=simule' },
   { key: 'a_evaluer', label: 'À évaluer', query: '?note=a_evaluer' },
   { key: 'mal', label: 'Échecs', query: '?note=echec' },
+  { key: 'ignore', label: 'Ignorées', query: '?statut=ignore' },
 ]
 
 /** The score as one icon, for tight table cells (full label in the title). */

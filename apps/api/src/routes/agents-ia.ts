@@ -345,6 +345,8 @@ routes.get('/:slug/runs', async (req, res) => {
   if (!def) return
   try {
     const statut = typeof req.query.statut === 'string' && req.query.statut ? req.query.statut.split(',') : null
+    // ?sans=ignore — the « Toutes » tab leaves out the mails that held no document to read.
+    const sans = typeof req.query.sans === 'string' && req.query.sans ? req.query.sans.split(',') : []
     // ?note=echec — any of reussite / echec, or a_evaluer
     // for the runs nobody scored. A point-scored agent (Superviseur) is read
     // through its points: a report matches when one of its points does.
@@ -356,7 +358,7 @@ routes.get('/:slug/runs', async (req, res) => {
     const cat = typeof req.query.categorie === 'string' && req.query.categorie ? req.query.categorie : null
     const parCategorie = (r: AgentRun) => !cat || ((r.resultat as { categories?: string[] }).categories ?? []).includes(cat)
     const runs = (await lireRuns(def.slug))
-      .filter((r) => (!statut || statut.includes(r.statut)) && parNote(r) && parCategorie(r))
+      .filter((r) => (!statut || statut.includes(r.statut)) && !sans.includes(r.statut) && parNote(r) && parCategorie(r))
       .reverse()
     const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '200'), 10) || 200))
     res.json({ total: runs.length, runs: runs.slice(0, limit).map(allege) })

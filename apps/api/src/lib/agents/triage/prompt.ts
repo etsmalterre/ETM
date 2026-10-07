@@ -1,4 +1,4 @@
-// Agent « Triage » — the prompt (version 1, stored and versioned in Agents IA
+// Agent « Triage » — the prompt (versions 1 and 2, stored and versioned in Agents IA
 // like every agent's), the strict JSON schema, and what the model reads for
 // one mail.
 //
@@ -41,6 +41,25 @@ Règles :
 6. Dans le doute entre demande_prix et commande_client : commande_client seulement si le client engage une commande (quantités, référence, « veuillez trouver notre commande »).
 
 Réponds en JSON : "raison" = une phrase courte en français qui dit ce que tu as compris du mail, puis "categories" = la liste des catégories, la principale d’abord.`
+
+/** Replace one exact passage of a prompt; throws if it is not there. */
+function remplacer(prompt: string, avant: string, apres: string): string {
+  if (!prompt.includes(avant)) throw new Error(`prompt: passage introuvable « ${avant.slice(0, 60)} »`)
+  return prompt.replace(avant, apres)
+}
+
+/** v2 (2026-10-07) = v1 + two fixes from 06/10: three « TAD INFOS CLIENTS »
+ *  (a dyer's PDF announced as nothing) went to bl_ennoblisseur, and our own
+ *  « Re: BL métrages 109464 » (a reply, no new document) too. */
+export const TRIAGE_PROMPT_V2 = remplacer(
+  remplacer(
+    TRIAGE_PROMPT_V1,
+    '- bl_ennoblisseur : bordereau de livraison (BL, « BL métrages ») ou mise à disposition envoyé par un ennoblisseur / teinturier (MATEL, Bontemps, TAD…) : le mail porte le document en pièce jointe.',
+    '- bl_ennoblisseur : bordereau de livraison (BL, « BL métrages ») ou mise à disposition (« MISE A DISPO - OF N° … ») envoyé par un ennoblisseur / teinturier (MATEL, Bontemps, TAD…) : le mail porte le document en pièce jointe ET l’objet ou le corps l’annonce comme un BL ou une mise à disposition. Un PDF d’ennoblisseur annoncé ni comme BL, ni comme mise à disposition, ni comme facture (« TAD INFOS CLIENTS », plan de charge, palettes, point du jour) n’est PAS un BL → sous_traitant.',
+  ),
+  '4. Un message écrit par une personne d’ETS Malterre est interne, seul — sauf s’il transfère un BL ou une facture d’ennoblisseur : il reste alors bl_ennoblisseur / facture_sous_traitant (c’est le document qui compte).',
+  '4. Un message écrit par une personne d’ETS Malterre est interne, seul — sauf s’il TRANSFÈRE un BL ou une facture d’ennoblisseur en pièce jointe : il reste alors bl_ennoblisseur / facture_sous_traitant (c’est le document qui compte). Sa réponse dans un fil de BL ou de facture (« Re: BL métrages … ») sans nouveau document joint est interne.',
+)
 
 export const TRIAGE_SCHEMA = {
   type: 'object',

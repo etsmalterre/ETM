@@ -34,7 +34,7 @@ import {
   RAPPORT_ACTIVITE_PROMPT_LIVRE,
   executer as executerRapportActivite,
 } from './rapport-activite/agent.js'
-import { resultatTriage, sonderBoite as sonderTriage, TRIAGE_BOITE, TRIAGE_SLUG, TRIAGE_VERSION_INITIALE } from './triage/agent.js'
+import { resultatTriage, sonderBoite as sonderTriage, TRIAGE_BOITE, TRIAGE_PROMPT_LIVRE, TRIAGE_SLUG, TRIAGE_VERSION_INITIALE } from './triage/agent.js'
 import { CATEGORIES } from './triage/categories.js'
 import { DESTINATAIRES } from './triage/transmission.js'
 import { OPTION_VIA_TRIAGE_DEF } from './triage/constantes.js'
@@ -172,6 +172,7 @@ export const AGENTS: readonly AgentDef[] = [
       actif: 'Trie, pose les libellés Gmail et transmet aux agents.',
     },
     versionInitiale: TRIAGE_VERSION_INITIALE,
+    promptLivre: TRIAGE_PROMPT_LIVRE,
     modeles: MODELES_MISTRAL,
     sonder: sonderTriage,
     ligne: (run) => {
