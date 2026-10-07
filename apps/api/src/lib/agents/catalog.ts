@@ -25,7 +25,8 @@ import {
 import { CONTROLES } from './superviseur/controles/index.js'
 import {
   DESTINATAIRES as RAPPORT_ACTIVITE_DESTINATAIRES,
-  HEURE_RAPPORT as RAPPORT_ACTIVITE_HEURE,
+  HEURES_RAPPORT as RAPPORT_ACTIVITE_HEURES,
+  HEURES_TEXTE as RAPPORT_ACTIVITE_HEURES_TEXTE,
   PERSONNE_SUIVIE,
   RAPPORT_ACTIVITE_JOURS,
   RAPPORT_ACTIVITE_SLUG,
@@ -52,10 +53,11 @@ import type { AgentMode, AgentRun, AgentState, AgentVersion, Auteur, VersionInit
 import type { Contexte } from './bl-ennoblisseur.js'
 import { deLApp, type AppIa } from './app-scope.js'
 
-/** What starts an agent: a mailbox poll every N ms, or once a day at an hour (Paris). */
+/** What starts an agent: a mailbox poll every N ms, or on given days at an
+ *  hour (Paris) — or at several hours, one run per hour listed. */
 export type Declenchement =
   | { type: 'releve'; intervalleMs: number }
-  | { type: 'quotidien'; heure: number; /** ISO weekdays, 1 = Monday. */ jours: readonly number[] }
+  | { type: 'quotidien'; heure: number | readonly number[]; /** ISO weekdays, 1 = Monday. */ jours: readonly number[] }
 
 export interface AgentDef {
   slug: string
@@ -314,16 +316,16 @@ export const AGENTS: readonly AgentDef[] = [
   {
     slug: RAPPORT_ACTIVITE_SLUG,
     nom: 'Rapport d’activité',
-    description: `Envoie chaque soir à ${RAPPORT_ACTIVITE_HEURE} h le compte rendu de l’activité de ${PERSONNE_SUIVIE} depuis la veille au soir : connexions, actions dans ETM et TRM, mails envoyés et reçus, et les points à vérifier — techniques (erreurs, actions refusées, saisie douteuse) et de comportement (ton d’un mail, engagement sans trace dans ETM, client sans réponse).`,
-    declenchement: { type: 'quotidien', heure: RAPPORT_ACTIVITE_HEURE, jours: RAPPORT_ACTIVITE_JOURS },
-    declencheur: `Chaque jour à ${RAPPORT_ACTIVITE_HEURE} h (heure de Paris), sur la période depuis la veille ${RAPPORT_ACTIVITE_HEURE} h. Lit le journal d’activité d’ETM/TRM (créations, modifications, suppressions et erreurs du compte, jamais les simples consultations), les connexions, et la boîte ${PERSONNE_SUIVIE} en lecture seule.`,
+    description: `Envoie aux heures de bureau (${RAPPORT_ACTIVITE_HEURES_TEXTE}) le compte rendu de l’activité de ${PERSONNE_SUIVIE} depuis le rapport précédent : connexions, actions dans ETM et TRM, mails envoyés et reçus, et les points à vérifier — techniques (erreurs, actions refusées, saisie douteuse) et de comportement (ton d’un mail, engagement sans trace dans ETM, client sans réponse).`,
+    declenchement: { type: 'quotidien', heure: RAPPORT_ACTIVITE_HEURES, jours: RAPPORT_ACTIVITE_JOURS },
+    declencheur: `Du lundi au vendredi à ${RAPPORT_ACTIVITE_HEURES_TEXTE} (heure de Paris), sur la période depuis le rapport précédent — celui de 9 h couvre depuis la veille ouvrée 18 h, week-end compris. Lit le journal d’activité d’ETM/TRM (créations, modifications, suppressions et erreurs du compte, jamais les simples consultations), les connexions, et la boîte ${PERSONNE_SUIVIE} en lecture seule.`,
     ecritures: [
       `Un e-mail à ${RAPPORT_ACTIVITE_DESTINATAIRES.join(' et ')}, envoyé par tricotbot@etsmalterre.com — destinataires fixés dans le code, aucun abonnement possible.`,
       'L’exécution garde les compteurs et les adresses, jamais le contenu du rapport.',
-      'Supprime chaque nuit les lignes du journal d’activité de plus d’un an.',
+      'Supprime à chaque rapport prévu les lignes du journal d’activité de plus d’un an.',
     ],
     abstention:
-      'Un samedi ou un dimanche sans aucune activité (ni action, ni mail envoyé, ni connexion), aucun e-mail. Les mails dont l’objet les dit personnels sont listés sans être lus ; les mails automatiques (newsletters, notifications) ne sont pas listés. Si Mistral ne répond pas, le rapport part quand même avec les faits seuls.',
+      'Une période sans aucune activité (ni action, ni connexion, ni mail envoyé ou reçu) : aucun e-mail. Les mails dont l’objet les dit personnels sont listés sans être lus ; les mails automatiques (newsletters, notifications) ne sont pas listés. Si Mistral ne répond pas, le rapport part quand même avec les faits seuls.',
     evaluation: {
       reussite: 'Le rapport était juste : les points signalés méritaient d’être vérifiés.',
       echec: 'Un point signalé à tort ou un fait mal résumé : dites lequel, pour la version suivante du prompt.',
@@ -340,7 +342,7 @@ export const AGENTS: readonly AgentDef[] = [
     modes: {
       off: 'N’envoie rien.',
       essai: 'Prépare le rapport à l’heure prévue et dit à qui il l’enverrait, n’envoie rien.',
-      actif: 'Envoie le rapport chaque soir. « Lancer maintenant » l’envoie tout de suite, sur la période depuis la veille 18 h.',
+      actif: 'Envoie le rapport à chaque heure prévue. « Lancer maintenant » l’envoie tout de suite, sur la période depuis le dernier rapport prévu.',
     },
     versionInitiale: RAPPORT_ACTIVITE_VERSION_INITIALE,
     modeles: MODELES_MISTRAL,

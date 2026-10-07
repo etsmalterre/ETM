@@ -37,7 +37,7 @@ export interface MailRapport {
 export interface ContenuRapport {
   personne: string
   periode: string
-  /** Paris day of the report, « mardi 06/10 ». */
+  /** Paris day and hour of the report, « mardi 06/10 15:00 ». */
   jour: string
   connexions: string[]
   actions: ActionRapport[]

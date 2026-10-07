@@ -5,17 +5,33 @@
 import { msHeureParis, partiesParis } from '../../pointage-etat.js'
 import type { LigneJournal } from '../../journal-activite.js'
 
-/** The report goes out every evening at this hour (Paris). */
-export const HEURE_RAPPORT = 18
+/** The report goes out at these hours (Paris)… (decision Vincent 2026-10-07) */
+export const HEURES_RAPPORT: readonly number[] = [9, 10, 11, 12, 15, 16, 17, 18]
+/** …on working days (ISO, 1 = Monday): Monday 9:00 covers the weekend. */
+export const JOURS_RAPPORT: readonly number[] = [1, 2, 3, 4, 5]
+export const HEURES_TEXTE = `${HEURES_RAPPORT.slice(0, -1).join(', ')} et ${HEURES_RAPPORT[HEURES_RAPPORT.length - 1]} h`
 
-/** From the previous day's report hour to now: nothing falls between two
- *  reports, whatever the hour of a manual launch. */
-export function periode(nowMs: number): { du: number; au: number } {
+/** The report slots at or before `nowMs`, latest first (two are enough). */
+function creneauxAvant(nowMs: number, n: number): number[] {
+  const out: number[] = []
   const t = partiesParis(nowMs)
-  // The scheduled run (18:00 or later) covers since yesterday's report; a
-  // launch before 18:00 covers since yesterday's report too.
-  const veille = partiesParis(msHeureParis(t.y, t.mo, t.d, 12) - 24 * 3_600_000)
-  return { du: msHeureParis(veille.y, veille.mo, veille.d, HEURE_RAPPORT), au: nowMs }
+  for (let i = 0; i < 10 && out.length < n; i++) {
+    const j = partiesParis(msHeureParis(t.y, t.mo, t.d, 12) - i * 86_400_000)
+    if (!JOURS_RAPPORT.includes(new Date(Date.UTC(j.y, j.mo - 1, j.d)).getUTCDay() || 7)) continue
+    for (const h of [...HEURES_RAPPORT].reverse()) {
+      const ms = msHeureParis(j.y, j.mo, j.d, h)
+      if (ms <= nowMs && out.length < n) out.push(ms)
+    }
+  }
+  return out
+}
+
+/** Since the previous report, so nothing falls between two reports. A
+ *  scheduled run (made at its slot, or caught up later) covers from the slot
+ *  before its own; a manual launch covers from the last scheduled slot. */
+export function periode(nowMs: number, planifie: boolean): { du: number; au: number } {
+  const [dernier, precedent] = creneauxAvant(nowMs, 2)
+  return { du: planifie ? precedent : dernier, au: nowMs }
 }
 
 export type AppActivite = 'ETM' | 'TRM'

@@ -11,9 +11,10 @@
 //
 // One minute tick for every agent, each on its own trigger (catalog.ts):
 //   - `releve`: polled every `intervalleMs` (BL Ennoblisseur, 2 min);
-//   - `quotidien`: once a day at `heure` (Paris) on `jours`; the day is written
-//     in state.json BEFORE the run (at most once a day even if the process dies
-//     mid-run; after a restart later the same day it catches up).
+//   - `quotidien`: once a day at `heure` (Paris) on `jours` — or once per hour
+//     when `heure` lists several (Rapport d'activité); the slot is written in
+//     state.json BEFORE the run (at most once a slot even if the process dies
+//     mid-run; after a restart later the same day it catches up the latest).
 //
 // One lock per agent shared by the tick, the manual run and the Triage's
 // hand-off (verrous.ts): two runs of the same agent never overlap (they would
@@ -160,24 +161,40 @@ export function lancerSondage(cle: string, par: Auteur): Lancement {
   return l
 }
 
-/** Is a daily agent due at `nowMs` (Paris), given the day of its last scheduled run? */
-export function quotidienDu(d: Extract<Declenchement, { type: 'quotidien' }>, nowMs: number, dernierJour: string | null | undefined): boolean {
+type Quotidien = Extract<Declenchement, { type: 'quotidien' }>
+
+const heuresDe = (d: Quotidien): number[] => (typeof d.heure === 'number' ? [d.heure] : [...d.heure].sort((a, b) => a - b))
+
+/** The slot a daily trigger is in at `nowMs` (Paris) — the key written in
+ *  `dernierePlanification` — or null before its first hour / on an off day.
+ *  One hour: the day (`20260923`, the historical shape); several: day + hour
+ *  (`20260923-15`). Missed slots are not replayed: a restart catches up the
+ *  latest one only. */
+export function creneauQuotidien(d: Quotidien, nowMs: number): string | null {
   const t = partiesParis(nowMs)
   const jourSemaine = new Date(Date.UTC(t.y, t.mo - 1, t.d)).getUTCDay() || 7
-  return d.jours.includes(jourSemaine) && t.h >= d.heure && dernierJour !== jourParis(nowMs)
+  if (!d.jours.includes(jourSemaine)) return null
+  const passees = heuresDe(d).filter((h) => h <= t.h)
+  if (!passees.length) return null
+  return typeof d.heure === 'number' ? jourParis(nowMs) : `${jourParis(nowMs)}-${String(passees[passees.length - 1]).padStart(2, '0')}`
+}
+
+/** Is a daily agent due at `nowMs` (Paris), given the slot of its last scheduled run? */
+export function quotidienDu(d: Quotidien, nowMs: number, dernierCreneau: string | null | undefined): boolean {
+  const c = creneauQuotidien(d, nowMs)
+  return c !== null && c !== dernierCreneau
 }
 
 /** Next scheduled run of a daily agent, as an ISO instant (for the screen). */
-export function prochainQuotidien(d: Extract<Declenchement, { type: 'quotidien' }>, nowMs: number, dernierJour: string | null | undefined): string | null {
+export function prochainQuotidien(d: Quotidien, nowMs: number, dernierCreneau: string | null | undefined): string | null {
+  // Due now (the next tick picks it up).
+  if (quotidienDu(d, nowMs, dernierCreneau)) return new Date(nowMs).toISOString()
   for (let i = 0; i < 8; i++) {
     const t = partiesParis(nowMs + i * 86_400_000)
     const jourSemaine = new Date(Date.UTC(t.y, t.mo - 1, t.d)).getUTCDay() || 7
     if (!d.jours.includes(jourSemaine)) continue
-    const jour = jourParis(nowMs + i * 86_400_000)
-    if (i === 0 && dernierJour === jour) continue
-    // Today and already past the hour: due now (the next tick picks it up).
-    if (i === 0 && t.h >= d.heure) return new Date(nowMs).toISOString()
-    return new Date(msHeureParis(t.y, t.mo, t.d, d.heure)).toISOString()
+    const h = heuresDe(d).find((x) => i > 0 || x > t.h)
+    if (h !== undefined) return new Date(msHeureParis(t.y, t.mo, t.d, h)).toISOString()
   }
   return null
 }
@@ -195,9 +212,10 @@ async function tick(): Promise<void> {
         if (now - (dernierReleve.get(t.cle) ?? 0) < d.intervalleMs - 5_000) continue
         dernierReleve.set(t.cle, now)
       } else {
-        if (!quotidienDu(d, now, state.dernierePlanification)) continue
-        // Journal first: at most once a day, even if the process dies mid-run.
-        await t.marquerPlanification(jourParis(now))
+        const creneau = creneauQuotidien(d, now)
+        if (creneau === null || creneau === state.dernierePlanification) continue
+        // Journal first: at most once a slot, even if the process dies mid-run.
+        await t.marquerPlanification(creneau)
       }
       await sonder(t.cle, null)
     } catch (err) {

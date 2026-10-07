@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { comparer, dedoublonner, memoireVide, type Memoire } from './constats.js'
 import { appliquerSuivi, type IndexAvis } from './avis.js'
-import { quotidienDu, prochainQuotidien } from '../scheduler.js'
+import { creneauQuotidien, quotidienDu, prochainQuotidien } from '../scheduler.js'
 import type { Constat, Gravite } from './types.js'
 
 const c = (id: string, gravite: Gravite = 'attention', controle = 'test'): Constat => ({
@@ -145,5 +145,26 @@ describe('quotidienDu (19:00 Paris, weekdays)', () => {
     expect(prochainQuotidien(d, mer('20:00'), '20260923')).toBe('2026-09-24T17:00:00.000Z')
     // Friday evening, done → Monday.
     expect(prochainQuotidien(d, Date.parse('2026-09-25T20:00:00+02:00'), '20260925')).toBe('2026-09-28T17:00:00.000Z')
+  })
+})
+
+describe('quotidienDu (several hours: 9, 10, 15)', () => {
+  const d = { type: 'quotidien' as const, heure: [15, 9, 10], jours: [1, 2, 3, 4, 5] }
+  const mer = (hhmm: string) => Date.parse(`2026-09-23T${hhmm}:00+02:00`)
+
+  it('one run per slot, keyed day + hour', () => {
+    expect(creneauQuotidien(d, mer('08:59'))).toBe(null)
+    expect(creneauQuotidien(d, mer('09:00'))).toBe('20260923-09')
+    expect(creneauQuotidien(d, mer('14:59'))).toBe('20260923-10')
+    expect(quotidienDu(d, mer('09:30'), '20260923-09')).toBe(false)
+    expect(quotidienDu(d, mer('10:00'), '20260923-09')).toBe(true)
+    expect(quotidienDu(d, mer('13:00'), '20260923-09')).toBe(true) // catch-up of the latest slot only
+    expect(quotidienDu(d, mer('09:00'), '20260922')).toBe(true) // state written by the one-hour trigger
+  })
+
+  it('announces the next slot', () => {
+    expect(prochainQuotidien(d, mer('09:30'), '20260923-09')).toBe('2026-09-23T08:00:00.000Z')
+    expect(prochainQuotidien(d, mer('11:00'), '20260923-10')).toBe('2026-09-23T13:00:00.000Z')
+    expect(prochainQuotidien(d, mer('16:00'), '20260923-15')).toBe('2026-09-24T07:00:00.000Z')
   })
 })

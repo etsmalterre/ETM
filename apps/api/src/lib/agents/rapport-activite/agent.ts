@@ -1,7 +1,8 @@
-// Agent « Rapport d'activité » (2026-10-06) — every evening at 18:00 (Paris)
-// it mails Vincent and Isabelle what one salarié did since the previous
-// evening: logins, actions in ETM and TRM (lib/journal-activite.ts), mails
-// sent and received in his mailbox (read-only, the Superviseur's client), and
+// Agent « Rapport d'activité » (2026-10-06) — on working days at 9, 10, 11, 12,
+// 15, 16, 17 and 18 h (Paris, since 2026-10-07) it mails Vincent — only him
+// since 2026-10-07 — what one salarié did since the previous report: logins,
+// actions in ETM and TRM (lib/journal-activite.ts), mails sent and received
+// in his mailbox (read-only, the Superviseur's client), and
 // the points to check — technical (errors, refusals, likely input mistakes)
 // and behavioural (tone, a commitment with no trace in ETM, a client left
 // without answer…).
@@ -14,7 +15,7 @@
 // (Code du travail L1222-4 — decision Vincent 2026-10-06). The recipients are
 // fixed here, not a subscription anyone could tick. A run keeps counts and
 // addresses only — never the report body (Agents IA is open to more people
-// than the two readers).
+// than the reader).
 
 import { ajouterRun, nouvelIdRun, type AgentRun, type AgentState, type AgentVersion, type Auteur, type RunStatut, type VersionInitiale } from '../store.js'
 import { chatJson } from '../../mistral.js'
@@ -24,19 +25,19 @@ import { mpsPg } from '../../mps-pg.js'
 import { journalDe, purgerJournal } from '../../journal-activite.js'
 import { partiesParis } from '../../pointage-etat.js'
 import { collecterEntetes, lireMessage, type EnteteMessage } from '../superviseur/boites.js'
-import { appDe, estPersonnel, libelleAction, menuDe, periode, resultatDe, signaux, HEURE_RAPPORT, type ConnexionJour, type Signal } from './regles.js'
+import { appDe, estPersonnel, libelleAction, menuDe, periode, resultatDe, signaux, HEURES_RAPPORT, HEURES_TEXTE, JOURS_RAPPORT, type ConnexionJour, type Signal } from './regles.js'
 import { entreeRapport, hhmm, PROMPT_V1, RAPPORT_SCHEMA, type MailEntree, type ReponseRapport } from './prompt.js'
 import { contenuEmail, sujetRapport, type ActionRapport, type ContenuRapport, type MailRapport } from './email.js'
 
 export const RAPPORT_ACTIVITE_SLUG = 'rapport-activite'
-export { HEURE_RAPPORT }
-/** Every day: a weekend with no activity sends nothing (see executer). */
-export const RAPPORT_ACTIVITE_JOURS: readonly number[] = [1, 2, 3, 4, 5, 6, 7]
+export { HEURES_RAPPORT, HEURES_TEXTE }
+/** Working days only: Monday 9:00 covers the weekend. */
+export const RAPPORT_ACTIVITE_JOURS = JOURS_RAPPORT
 
 /** The salarié followed — his ETM/TRM account is found by this e-mail. */
 export const PERSONNE_SUIVIE = 'pierre-emmanuel@etsmalterre.com'
 /** Who reads the report. Fixed in code on purpose (see header). */
-export const DESTINATAIRES: readonly string[] = (process.env.RAPPORT_ACTIVITE_DESTINATAIRES?.trim() || 'vincent@etsmalterre.com,isabelle@etsmalterre.com')
+export const DESTINATAIRES: readonly string[] = (process.env.RAPPORT_ACTIVITE_DESTINATAIRES?.trim() || 'vincent@etsmalterre.com')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
@@ -87,17 +88,17 @@ const correspondant = (m: EnteteMessage) =>
 
 export interface DonneesRapport {
   contenu: ContenuRapport
-  /** Nothing happened at all (no action, no mail sent, no login). */
+  /** Nothing happened at all (no action, no mail sent or received, no login). */
   vide: boolean
   coutUsd: number
   compteurs: Record<string, number>
 }
 
 /** Everything the report says about [du, au) — read-only, sends nothing. */
-export async function construireRapport(version: Pick<AgentVersion, 'model' | 'prompt'>, nowMs: number): Promise<DonneesRapport> {
+export async function construireRapport(version: Pick<AgentVersion, 'model' | 'prompt'>, nowMs: number, planifie = false): Promise<DonneesRapport> {
   const p = await personneSuivie()
   if (!p) throw new Error(`Aucun compte ETM/TRM avec l’adresse ${PERSONNE_SUIVIE} (Paramètres › Utilisateurs).`)
-  const { du, au } = periode(nowMs)
+  const { du, au } = periode(nowMs, planifie)
   const [journal, connexions, entetes] = await Promise.all([
     journalDe(p.id, new Date(du), new Date(au)),
     connexionsDe(p, new Date(du), new Date(au)),
@@ -142,8 +143,8 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
   let ia: ContenuRapport['ia'] = null
   let iaErreur: string | null = null
   let coutUsd = 0
-  const vide = !journal.length && !mails.some((m) => m.sens === 'envoyé') && !connexions.some((c) => c.succes)
-  if (!vide || mails.length) {
+  const vide = !journal.length && !mails.length && !connexions.some((c) => c.succes)
+  if (!vide) {
     try {
       const r = await chatJson({
         model: version.model,
@@ -177,7 +178,7 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
   const contenu: ContenuRapport = {
     personne: p.nom,
     periode: periodeTexte,
-    jour: jourLong(au),
+    jour: `${jourLong(au)} ${hhmm(au)}`,
     connexions: connexionsTexte,
     actions,
     mails: mails.map(({ ref: _ref, ...m }) => m),
@@ -245,16 +246,14 @@ export async function executer(state: AgentState, version: AgentVersion, par: Au
       const purges = await purgerJournal().catch(() => 0)
       if (purges) console.log(`[agents] ${RAPPORT_ACTIVITE_SLUG}: ${purges} journal rows past retention deleted`)
     }
-    const d = await construireRapport(version, t0)
-    const t = partiesParis(t0)
-    const weekEnd = [0, 6].includes(new Date(Date.UTC(t.y, t.mo - 1, t.d)).getUTCDay())
+    const d = await construireRapport(version, t0, !par)
     const resultat: Record<string, unknown> = { periode: d.contenu.periode, compteurs: d.compteurs, destinataires: DESTINATAIRES }
     const chiffres = `${d.compteurs.actionsEtm} actions ETM · ${d.compteurs.actionsTrm} TRM · ${d.compteurs.mailsEnvoyes} mails envoyés · ${d.compteurs.mailsRecus} reçus · ${d.compteurs.signaux + d.compteurs.alertesIa} points`
     let statut: RunStatut
     let resume: string
-    if (d.vide && weekEnd) {
+    if (d.vide) {
       statut = 'rien_a_signaler'
-      resume = 'Aucune activité ce week-end : pas d’e-mail.'
+      resume = 'Aucune activité depuis le rapport précédent : pas d’e-mail.'
     } else if (state.mode === 'essai') {
       statut = 'simule'
       resume = `Enverrait « ${sujetRapport(d.contenu)} » à ${DESTINATAIRES.length} destinataires — ${chiffres}.`

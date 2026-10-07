@@ -140,7 +140,7 @@ interface AgentVue {
   declencheur: string
   ecritures: string[]
   abstention: string
-  declenchement: { type: 'releve'; intervalleMs: number } | { type: 'quotidien'; heure: number; jours: number[] }
+  declenchement: { type: 'releve'; intervalleMs: number } | { type: 'quotidien'; heure: number | number[]; jours: number[] }
   /** What each score means for this agent (shown beside the three buttons). */
   evaluation: Record<Note, string>
   /** The scoring guide opened beside the buttons (catalog.ts `evaluation.guide`). */
@@ -550,7 +550,7 @@ function DetailHeader({ agent, isLoading, canPilot, onSonder, isSondant, onEssai
   const quotidien = agent.declenchement.type === 'quotidien'
   const sonderTitle = !canPilot ? 'Droit « Piloter les agents IA » requis'
     : agent.mode === 'off' ? 'L’agent est à l’arrêt : passez-le en essai ou en service'
-    : quotidien && !agent.pointsEvaluables ? (agent.mode === 'actif' ? 'Envoyer le rapport maintenant (depuis la veille au soir)' : 'Préparer le rapport maintenant, sans l’envoyer')
+    : quotidien && !agent.pointsEvaluables ? (agent.mode === 'actif' ? 'Envoyer le rapport maintenant (depuis le dernier rapport prévu)' : 'Préparer le rapport maintenant, sans l’envoyer')
     : quotidien ? 'Lancer les contrôles maintenant — aperçu seulement : la liste des points n’est pas modifiée'
     : 'Relever la boîte mail maintenant'
   return (

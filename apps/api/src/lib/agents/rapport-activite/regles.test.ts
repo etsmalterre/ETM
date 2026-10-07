@@ -22,17 +22,25 @@ const ligne = (o: Partial<LigneJournal>): LigneJournal => ({
 })
 
 describe('periode', () => {
-  it('the 18:00 run covers since yesterday 18:00', () => {
-    const now = msHeureParis(2026, 10, 6, 18, 0, 30)
-    expect(periode(now)).toEqual({ du: msHeureParis(2026, 10, 5, 18), au: now })
+  // 2026-10-07 is a Wednesday.
+  it('a scheduled run covers since the previous slot', () => {
+    const now = msHeureParis(2026, 10, 7, 10, 0, 30)
+    expect(periode(now, true)).toEqual({ du: msHeureParis(2026, 10, 7, 9), au: now })
+    expect(periode(msHeureParis(2026, 10, 7, 15, 0, 30), true).du).toBe(msHeureParis(2026, 10, 7, 12))
   })
-  it('a launch at 15:00 also starts yesterday 18:00', () => {
-    const now = msHeureParis(2026, 10, 6, 15)
-    expect(periode(now).du).toBe(msHeureParis(2026, 10, 5, 18))
+  it('9:00 covers since the previous working day 18:00 — Monday includes the weekend', () => {
+    expect(periode(msHeureParis(2026, 10, 7, 9, 1), true).du).toBe(msHeureParis(2026, 10, 6, 18))
+    expect(periode(msHeureParis(2026, 10, 12, 9, 1), true).du).toBe(msHeureParis(2026, 10, 9, 18))
   })
-  it('across the DST change (25/10) yesterday is still 18:00 Paris', () => {
-    const now = msHeureParis(2026, 10, 26, 18, 1)
-    expect(periode(now).du).toBe(msHeureParis(2026, 10, 25, 18))
+  it('a catch-up after a restart still starts at the slot before its own', () => {
+    expect(periode(msHeureParis(2026, 10, 7, 13, 40), true).du).toBe(msHeureParis(2026, 10, 7, 11))
+  })
+  it('a manual launch covers since the last scheduled slot', () => {
+    expect(periode(msHeureParis(2026, 10, 7, 14), false).du).toBe(msHeureParis(2026, 10, 7, 12))
+    expect(periode(msHeureParis(2026, 10, 10, 11), false).du).toBe(msHeureParis(2026, 10, 9, 18)) // Saturday
+  })
+  it('across the DST change (25/10) Monday 9:00 still starts Friday 18:00 Paris', () => {
+    expect(periode(msHeureParis(2026, 10, 26, 9, 1), true).du).toBe(msHeureParis(2026, 10, 23, 18))
   })
 })
 
