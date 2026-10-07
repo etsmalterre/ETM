@@ -55,6 +55,7 @@ import { pointageAdminRouter } from './routes/pointage-admin.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
 import { maintenanceTrmRouter } from './routes/maintenance-trm.js'
+import { fournituresTrmRouter } from './routes/fournitures-trm.js'
 import { retoursClientTrmRouter } from './routes/retours-client-trm.js'
 import { authRouter } from './routes/auth.js'
 import { comptesRouter } from './routes/comptes.js'
@@ -237,6 +238,9 @@ app.use('/api/dashboard-trm', dashboardTrmRouter)
 app.use('/api/prime-trm', primeTrmRouter)
 // TRM machine upkeep (Atelier > Maintenance) — consumed by the TRM web app.
 app.use('/api/maintenance-trm', maintenanceTrmRouter)
+// TRM menu « Fournitures » (aiguilles, platines… — LIVA #1263) and the Aiguilles
+// tab of Atelier › Maintenance. Consumed by the TRM web app.
+app.use('/api/fournitures-trm', fournituresTrmRouter)
 // TRM client returns (Qualité › Retour client) — the receiving end of an ETM
 // FNC, answered here and republished onto the dossier. Consumed by the TRM web app.
 app.use('/api/retours-client-trm', retoursClientTrmRouter)

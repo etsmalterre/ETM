@@ -492,6 +492,131 @@ ${grantApi('SELECT, INSERT, DELETE', 'journal_activite')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE journal_activite_id_seq')}
 `,
   },
+  {
+    // TRM menu « Fournitures » (LIVA #1263, Nicolas + Vincent, 2026-10-07):
+    // every material that is not yarn. Aiguilles and platines only for now
+    // (Vincent, 2026-10-07); another type = one row in trm_fourniture_type.
+    // Replaces Nicolas's Google sheet « Stock aiguille ».
+    // TRM-only tables: nothing here touches ETM's Fils screens.
+    //  - trm_fourniture_type: Aiguille, Platine (avec_position =
+    //    the article sits on the cylindre or the plateau).
+    //  - trm_fourniture_article: a reference (« Vo LS 83.41 G003 »), SHARED by the
+    //    métiers that take it; trm_fourniture_article_constructeur = the
+    //    constructeurs accepted for it (the same reference comes from Groz,
+    //    Samsung, Neetex…).
+    //  - trm_fourniture_article_metier: the references a métier takes — ALL mounted
+    //    at once — with the quantity a montage takes (typed by Nicolas), the
+    //    constructeur mounted now and since when.
+    //  - trm_fourniture_montage (+ _ligne): one « set change » on a métier — one or
+    //    several references replaced at once, taken out of stock then.
+    //  - trm_fourniture_mouvement: the stock, as signed movements per article and
+    //    constructeur (NULL = not split by constructeur): entree (+, an order
+    //    received), sortie (−, a montage), inventaire (± the correction a count
+    //    made). Stock = Σ quantite.
+    //  - trm_fourniture_fournisseur (+ _type): who we buy from, by type.
+    name: '0012_fournitures_trm',
+    sql: `
+CREATE TABLE trm_fourniture_type (
+  idfourniture_type bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nom text NOT NULL,
+  avec_position boolean NOT NULL DEFAULT false,
+  rang integer NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX trm_fourniture_type_nom ON trm_fourniture_type (lower(nom));
+INSERT INTO trm_fourniture_type (nom, avec_position, rang) VALUES
+  ('Aiguille', true, 1), ('Platine', false, 2);
+
+CREATE TABLE trm_fourniture_constructeur (
+  idfourniture_constructeur bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nom text NOT NULL,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par bigint NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX trm_fourniture_constructeur_nom ON trm_fourniture_constructeur (lower(nom));
+
+CREATE TABLE trm_fourniture_fournisseur (
+  idfourniture_fournisseur bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nom text NOT NULL,
+  contact text,
+  tel text,
+  email text,
+  commentaire text,
+  archive boolean NOT NULL DEFAULT false,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par bigint NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX trm_fourniture_fournisseur_nom ON trm_fourniture_fournisseur (lower(nom));
+CREATE TABLE trm_fourniture_fournisseur_type (
+  idfourniture_fournisseur bigint NOT NULL REFERENCES trm_fourniture_fournisseur ON DELETE CASCADE,
+  idfourniture_type bigint NOT NULL REFERENCES trm_fourniture_type ON DELETE CASCADE,
+  PRIMARY KEY (idfourniture_fournisseur, idfourniture_type)
+);
+
+CREATE TABLE trm_fourniture_article (
+  idfourniture_article bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idfourniture_type bigint NOT NULL REFERENCES trm_fourniture_type,
+  reference text NOT NULL,
+  position text CHECK (position IN ('cylindre', 'plateau')),
+  commentaire text,
+  archive boolean NOT NULL DEFAULT false,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par bigint NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX trm_fourniture_article_reference ON trm_fourniture_article (idfourniture_type, lower(reference));
+CREATE TABLE trm_fourniture_article_constructeur (
+  idfourniture_article bigint NOT NULL REFERENCES trm_fourniture_article ON DELETE CASCADE,
+  idfourniture_constructeur bigint NOT NULL REFERENCES trm_fourniture_constructeur ON DELETE CASCADE,
+  PRIMARY KEY (idfourniture_article, idfourniture_constructeur)
+);
+
+CREATE TABLE trm_fourniture_article_metier (
+  idmachine bigint NOT NULL,
+  idfourniture_article bigint NOT NULL REFERENCES trm_fourniture_article ON DELETE CASCADE,
+  rang integer NOT NULL DEFAULT 0,
+  quantite integer CHECK (quantite > 0),
+  idfourniture_constructeur bigint REFERENCES trm_fourniture_constructeur ON DELETE SET NULL,
+  date_montage date,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (idmachine, idfourniture_article)
+);
+
+CREATE TABLE trm_fourniture_montage (
+  idfourniture_montage bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idmachine bigint NOT NULL,
+  date_montage date NOT NULL,
+  commentaire text,
+  saisi_le timestamptz NOT NULL DEFAULT now(),
+  saisi_par bigint NOT NULL DEFAULT 0
+);
+CREATE INDEX trm_fourniture_montage_metier ON trm_fourniture_montage (idmachine, date_montage);
+CREATE TABLE trm_fourniture_montage_ligne (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idfourniture_montage bigint NOT NULL REFERENCES trm_fourniture_montage ON DELETE CASCADE,
+  idfourniture_article bigint NOT NULL REFERENCES trm_fourniture_article,
+  idfourniture_constructeur bigint REFERENCES trm_fourniture_constructeur,
+  quantite integer NOT NULL CHECK (quantite > 0)
+);
+
+CREATE TABLE trm_fourniture_mouvement (
+  idfourniture_mouvement bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idfourniture_article bigint NOT NULL REFERENCES trm_fourniture_article,
+  idfourniture_constructeur bigint REFERENCES trm_fourniture_constructeur,
+  type text NOT NULL CHECK (type IN ('entree', 'sortie', 'inventaire')),
+  quantite integer NOT NULL,
+  date_mouvement date NOT NULL,
+  idfourniture_fournisseur bigint REFERENCES trm_fourniture_fournisseur,
+  idfourniture_montage bigint REFERENCES trm_fourniture_montage ON DELETE CASCADE,
+  commentaire text,
+  saisi_le timestamptz NOT NULL DEFAULT now(),
+  saisi_par bigint NOT NULL DEFAULT 0
+);
+CREATE INDEX trm_fourniture_mouvement_article ON trm_fourniture_mouvement (idfourniture_article, date_mouvement);
+
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'trm_fourniture_type, trm_fourniture_constructeur, trm_fourniture_fournisseur, trm_fourniture_fournisseur_type, trm_fourniture_article, trm_fourniture_article_constructeur, trm_fourniture_article_metier, trm_fourniture_montage, trm_fourniture_montage_ligne, trm_fourniture_mouvement')}
+${grantApi('USAGE, SELECT', 'SEQUENCE trm_fourniture_type_idfourniture_type_seq, trm_fourniture_constructeur_idfourniture_constructeur_seq, trm_fourniture_fournisseur_idfourniture_fournisseur_seq, trm_fourniture_article_idfourniture_article_seq, trm_fourniture_montage_idfourniture_montage_seq, trm_fourniture_montage_ligne_id_seq, trm_fourniture_mouvement_idfourniture_mouvement_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

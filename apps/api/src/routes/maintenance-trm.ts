@@ -84,11 +84,11 @@ function hf(v: unknown): string | null {
 }
 
 /** 'YYYYMMDD' → 'YYYY-MM-DD' for a PG date parameter, or null. */
-function pgDate(v: string | null | undefined): string | null {
+export function pgDate(v: string | null | undefined): string | null {
   return v && /^\d{8}$/.test(v) ? `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}` : null
 }
 
-function todayHf(): string {
+export function todayHf(): string {
   const d = new Date()
   const p = (x: number) => String(x).padStart(2, '0')
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
@@ -292,7 +292,7 @@ maintenanceTrmRouter.get('/metiers', async (_req: Request, res: Response) => {
 
 /** Guard for every write path. Reads stay open to anyone holding the Atelier
  *  menu. Sends the 401/403 itself and returns false when not allowed. */
-async function requireEditMaintenance(req: Request, res: Response): Promise<boolean> {
+export async function requireEditMaintenance(req: Request, res: Response): Promise<boolean> {
   if (req.userId === undefined) {
     res.status(401).json({ error: 'not authenticated' })
     return false
@@ -311,7 +311,7 @@ function parseId(raw: string | undefined): number | null {
 }
 
 /** 404 / 409 for a métier that cannot be written; null when it can. */
-async function machineEcrivable(sql: Sql, id: number, res: Response): Promise<boolean> {
+export async function machineEcrivable(sql: Sql, id: number, res: Response): Promise<boolean> {
   const [m] = await sql<{ archive: number }[]>`SELECT archive FROM machine WHERE idmachine = ${id}`
   if (!m) {
     res.status(404).json({ error: 'métier introuvable' })

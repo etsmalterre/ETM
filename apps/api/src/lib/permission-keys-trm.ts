@@ -220,6 +220,16 @@ export const TRM_PERMISSION_KEYS = [
       'Autorise la modification de la fiche maintenance d’un métier dans Atelier > Maintenance (description, fonture, visite du rouloir, dates et commentaires de garniture) et la déclaration des entretiens d’atelier (« Effectué ce jour » sur les jauges Ventilateurs, Couronnes et Fuites d’air). La consultation reste ouverte à tous les utilisateurs qui ont le menu Atelier.',
     category: 'Atelier',
   },
+  // Fournitures (LIVA #1263) — the catalogue of non-yarn materials, their stock
+  // entries and counts, and their suppliers. The set change on a métier (which
+  // takes stock out) stays under edit_maintenance. routes/fournitures-trm.ts.
+  {
+    key: 'edit_fournitures',
+    label: 'Gestion des fournitures',
+    description:
+      'Autorise, dans le menu Fournitures, la création et la modification des références (aiguilles, platines), la saisie des entrées de stock et des inventaires, et la gestion des fournisseurs. Le changement de jeu sur un métier (Atelier > Maintenance) relève du droit de maintenance.',
+    category: 'Fournitures',
+  },
   // Rapports > Finance — the accountant's balance, account by account. Gated
   // rather than open like a production report, because the balance names the
   // payroll lines. Same key NAMES as ETM's catalog on purpose: same action,

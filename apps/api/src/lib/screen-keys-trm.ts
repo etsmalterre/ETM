@@ -74,6 +74,20 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
       { href: '/fils/fournisseurs', label: 'Fournisseurs' },
     ],
   },
+  // Every material that is not yarn — aiguilles and platines for now
+  // (LIVA #1263). Granted person by person (Nicolas, Mickaël…),
+  // never to the whole company.
+  {
+    id: 'fournitures',
+    href: '/fournitures',
+    label: 'Fournitures',
+    screens: [
+      { href: '/fournitures/references', label: 'Références' },
+      { href: '/fournitures/stock', label: 'Stock' },
+      { href: '/fournitures/gestion', label: 'Gestion' },
+    ],
+    seed: false,
+  },
   {
     id: 'tombe-metier',
     href: '/tombe-metier',
