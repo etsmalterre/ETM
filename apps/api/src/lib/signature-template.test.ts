@@ -39,7 +39,7 @@ describe('renderSignatureHtml', () => {
     expect(html).toContain('mailto:vincent@etsmalterre.com')
     expect(html).toContain('src="cid:logo@test"')
     // Vertical gold divider between logo and text, same height as the logo
-    expect(html).toContain('width:3px;height:96px;background-color:#F2B80A')
+    expect(html).toContain('width:3px;height:64px;background-color:#F2B80A')
   })
 
   it('omits empty optional lines', () => {

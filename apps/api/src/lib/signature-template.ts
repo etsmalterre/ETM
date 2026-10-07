@@ -117,21 +117,21 @@ export function renderSignatureHtml(fields: SignatureFields, logoSrc: string): s
 
   if (f.displayName) {
     lines.push(
-      `<div style="font-size:20px;line-height:1.3;font-weight:bold;color:${TEXT};">${esc(f.displayName)}</div>`,
+      `<div style="font-size:16px;line-height:1.3;font-weight:bold;color:${TEXT};">${esc(f.displayName)}</div>`,
     )
   }
 
   if (f.fonction) {
     lines.push(
-      `<div style="font-size:13px;line-height:1.5;font-weight:bold;color:${BLUE};text-transform:uppercase;letter-spacing:0.3px;">${esc(f.fonction)}</div>`,
+      `<div style="font-size:11px;line-height:1.5;font-weight:bold;color:${BLUE};text-transform:uppercase;letter-spacing:0.3px;">${esc(f.fonction)}</div>`,
     )
   }
 
   let firstContactLine = true
   const contactLine = (content: string) => {
-    const marginTop = firstContactLine ? 'margin-top:12px;' : ''
+    const marginTop = firstContactLine ? 'margin-top:6px;' : ''
     firstContactLine = false
-    return `<div style="font-size:14px;line-height:1.6;${marginTop}">${content}</div>`
+    return `<div style="font-size:13px;line-height:1.5;${marginTop}">${content}</div>`
   }
 
   if (f.telFixe) {
@@ -145,18 +145,20 @@ export function renderSignatureHtml(fields: SignatureFields, logoSrc: string): s
     )
   }
 
+  // Sized as a footer under a 14 px message (2026-10-07, shown under the text
+  // in the email dialog): 64 px logo, 16 px name — it must not outweigh the mail.
   return (
     '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;">' +
     '<tr>' +
-    '<td style="padding:0 18px 0 0;vertical-align:middle;">' +
-    `<img src="${logoSrc}" width="96" height="96" alt="Malterre" style="display:block;width:96px;height:96px;border:0;">` +
+    '<td style="padding:0 14px 0 0;vertical-align:middle;">' +
+    `<img src="${logoSrc}" width="64" height="64" alt="Malterre" style="display:block;width:64px;height:64px;border:0;">` +
     '</td>' +
     // The divider bar matches the logo height exactly (top and bottom
     // aligned), so it's a fixed-height block rather than a td border.
     '<td style="padding:0;vertical-align:middle;">' +
-    `<div style="width:3px;height:96px;background-color:${GOLD};font-size:0;line-height:0;">&nbsp;</div>` +
+    `<div style="width:3px;height:64px;background-color:${GOLD};font-size:0;line-height:0;">&nbsp;</div>` +
     '</td>' +
-    '<td style="padding:0 0 0 18px;vertical-align:middle;">' +
+    '<td style="padding:0 0 0 14px;vertical-align:middle;">' +
     lines.join('') +
     '</td>' +
     '</tr>' +
