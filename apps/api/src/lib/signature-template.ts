@@ -93,16 +93,17 @@ function esc(s: string): string {
 }
 
 // Palette matches the user's approved signature design: near-black name,
-// deep blue for the role line and links, brand gold for the divider bar.
+// deep blue for the role line and links. The divider is a light grey since
+// 2026-10-07: the gold logo beside it already carries the brand colour.
 const TEXT = '#111827'
 const PHONE = '#374151'
 const BLUE = '#2B6CB0'
-const GOLD = '#F2B80A'
+const DIVIDER = '#D1D5DB'
 
 /** Render the signature HTML from a user's fields. `logoSrc` is either
  *  `cid:<SIGNATURE_LOGO_CID>` (outgoing email) or a data: URI (preview).
  *  Layout (per the approved design): gold "M" badge on the left, a vertical
- *  gold bar, then name (bold, near-black), fonction (bold blue, uppercased
+ *  grey bar, then name (bold, near-black), fonction (bold blue, uppercased
  *  via CSS so the text/plain fallback keeps natural case), phone line,
  *  email link. */
 export function renderSignatureHtml(fields: SignatureFields, logoSrc: string): string {
@@ -113,25 +114,39 @@ export function renderSignatureHtml(fields: SignatureFields, logoSrc: string): s
     email: fields.email.trim(),
   }
 
+  // Every line has a fixed PIXEL height (with mso-line-height-rule for
+  // Outlook), so the text block's height is known here and the logo and the
+  // divider are sized to it: top and bottom aligned whichever lines a person
+  // filled in (decision Vincent 2026-10-07 — sized as a footer under a 14 px
+  // message, it must not outweigh the mail).
+  const LH_NOM = 20
+  const LH_FONCTION = 16
+  const LH_CONTACT = 18
+  const ECART_CONTACT = 4
+  const ligne = (lh: number, style: string, contenu: string, margeHaut = 0) =>
+    `<div style="${style}line-height:${lh}px;mso-line-height-rule:exactly;${margeHaut ? `margin-top:${margeHaut}px;` : ''}">${contenu}</div>`
+
   const lines: string[] = []
+  let hauteur = 0
 
   if (f.displayName) {
-    lines.push(
-      `<div style="font-size:16px;line-height:1.3;font-weight:bold;color:${TEXT};">${esc(f.displayName)}</div>`,
-    )
+    lines.push(ligne(LH_NOM, `font-size:16px;font-weight:bold;color:${TEXT};`, esc(f.displayName)))
+    hauteur += LH_NOM
   }
 
   if (f.fonction) {
-    lines.push(
-      `<div style="font-size:11px;line-height:1.5;font-weight:bold;color:${BLUE};text-transform:uppercase;letter-spacing:0.3px;">${esc(f.fonction)}</div>`,
-    )
+    lines.push(ligne(LH_FONCTION, `font-size:11px;font-weight:bold;color:${BLUE};text-transform:uppercase;letter-spacing:0.3px;`, esc(f.fonction)))
+    hauteur += LH_FONCTION
   }
 
   let firstContactLine = true
   const contactLine = (content: string) => {
-    const marginTop = firstContactLine ? 'margin-top:6px;' : ''
+    // A small gap separates the contact lines from the name block — only when
+    // there is a name block above.
+    const marge = firstContactLine && lines.length > 0 ? ECART_CONTACT : 0
     firstContactLine = false
-    return `<div style="font-size:13px;line-height:1.5;${marginTop}">${content}</div>`
+    hauteur += LH_CONTACT + marge
+    return ligne(LH_CONTACT, 'font-size:13px;', content, marge)
   }
 
   if (f.telFixe) {
@@ -145,20 +160,20 @@ export function renderSignatureHtml(fields: SignatureFields, logoSrc: string): s
     )
   }
 
-  // Sized as a footer under a 14 px message (2026-10-07, shown under the text
-  // in the email dialog): 64 px logo, 16 px name — it must not outweigh the mail.
+  // Logo and divider exactly as tall as the text (never below 40 px, so a
+  // one-line signature keeps a readable logo).
+  const h = Math.max(hauteur, 40)
   return (
     '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;">' +
     '<tr>' +
-    '<td style="padding:0 14px 0 0;vertical-align:middle;">' +
-    `<img src="${logoSrc}" width="64" height="64" alt="Malterre" style="display:block;width:64px;height:64px;border:0;">` +
+    '<td style="padding:0 12px 0 0;vertical-align:middle;">' +
+    `<img src="${logoSrc}" width="${h}" height="${h}" alt="Malterre" style="display:block;width:${h}px;height:${h}px;border:0;">` +
     '</td>' +
-    // The divider bar matches the logo height exactly (top and bottom
-    // aligned), so it's a fixed-height block rather than a td border.
+    // A fixed-height block rather than a td border, so it matches the logo.
     '<td style="padding:0;vertical-align:middle;">' +
-    `<div style="width:3px;height:64px;background-color:${GOLD};font-size:0;line-height:0;">&nbsp;</div>` +
+    `<div style="width:2px;height:${h}px;background-color:${DIVIDER};font-size:0;line-height:0;">&nbsp;</div>` +
     '</td>' +
-    '<td style="padding:0 0 0 14px;vertical-align:middle;">' +
+    '<td style="padding:0 0 0 12px;vertical-align:middle;">' +
     lines.join('') +
     '</td>' +
     '</tr>' +

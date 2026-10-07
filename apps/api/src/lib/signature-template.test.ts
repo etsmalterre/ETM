@@ -38,8 +38,19 @@ describe('renderSignatureHtml', () => {
     expect(html).toContain('Tél. : 03 22 35 36 66')
     expect(html).toContain('mailto:vincent@etsmalterre.com')
     expect(html).toContain('src="cid:logo@test"')
-    // Vertical gold divider between logo and text, same height as the logo
-    expect(html).toContain('width:3px;height:64px;background-color:#F2B80A')
+    // Grey divider and logo exactly as tall as the text: 20 + 16 + 4 + 18 + 18
+    expect(html).toContain('width:2px;height:76px;background-color:#D1D5DB')
+    expect(html).toContain('width="76" height="76"')
+  })
+
+  it('keeps logo and divider aligned with the text when lines are missing', () => {
+    // No fonction: name 20 + gap 4 + two contact lines 18 + 18
+    const html = renderSignatureHtml({ ...FULL, fonction: '' }, 'cid:x')
+    expect(html).toContain('width="60" height="60"')
+    expect(html).toContain('height:60px;background-color')
+    // Name only: floored at 40 px so the logo stays readable
+    const seul = renderSignatureHtml({ ...EMPTY_SIGNATURE_FIELDS, displayName: 'Jean Dupont' }, 'cid:x')
+    expect(seul).toContain('width="40" height="40"')
   })
 
   it('omits empty optional lines', () => {
