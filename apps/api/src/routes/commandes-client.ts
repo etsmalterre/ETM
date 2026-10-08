@@ -23,6 +23,7 @@
 //  - Reservation pointer: stock_ecru.IDligne_commande_client /
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
+import { faitsLignesClient, statutLigneClient } from '../lib/statut-ligne-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import multer from 'multer'
@@ -1461,6 +1462,24 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       diversLines.length > 0 ? diversShippedByArticle(id) : Promise.resolve(new Map<string, number>()),
     ])
 
+    // Computed status per line (lib/statut-ligne-client.ts): shown next to the free commentaire, never written to it.
+    const soldee = Number(h.est_soldee) === 1
+    const faits = await faitsLignesClient(lignesFixed.map((l) => {
+      const typeKind = Number(l.type_kind) || 0
+      const refId = Number(l.IDreference) || 0
+      return {
+        id: Number(l.IDligne_commande_client) || 0,
+        typeKind,
+        refId,
+        unite: Number(l.unite) || 0,
+        quantite: Number(l.quantite) || 0,
+        soldee,
+        expedieDivers: typeKind === 3
+          ? (diversShipped.get(diversKey(refId, Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0)) ?? 0)
+          : undefined,
+      }
+    }))
+
     const lignes = lignesFixed.map((l) => {
       const typeKind = Number(l.type_kind) || 0
       const refId = Number(l.IDreference) || 0
@@ -1500,6 +1519,10 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         expedie: typeKind === 3
           ? (diversShipped.get(diversKey(refId, v1, v2)) ?? 0)
           : lineDim(l.unite) === 'metrage' ? agg.exp_metrage : agg.exp_poids,
+        statut: (() => {
+          const f = faits.get(Number(l.IDligne_commande_client))
+          return f ? statutLigneClient(f, uniteLabel(l.unite) || (lineDim(l.unite) === 'metrage' ? 'Ml' : 'Kg')) : null
+        })(),
       }
     })
 

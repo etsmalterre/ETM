@@ -6,9 +6,9 @@ describe('statutLigne', () => {
     expect(statutLigne(800, 0)).toBe('a_venir')
     expect(statutLigne(800, null)).toBe('a_venir')
   })
-  it('counts a line shipped from 95 % (rolls never add up to the exact metre)', () => {
-    expect(statutLigne(800, 759)).toBe('partielle')
-    expect(statutLigne(800, 760)).toBe('expediee')
+  it('counts a line shipped from 90 % (rolls never add up to the exact metre)', () => {
+    expect(statutLigne(800, 719)).toBe('partielle')
+    expect(statutLigne(800, 720)).toBe('expediee')
     expect(statutLigne(800, 854)).toBe('expediee')
   })
 })

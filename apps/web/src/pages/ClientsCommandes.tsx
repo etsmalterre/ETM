@@ -73,6 +73,7 @@ import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { EtatPill } from '@/lib/etat-stock-fini'
+import { StatutLignePill, type StatutLigneClient } from '@/lib/statut-ligne-client'
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 
 // ── Types ──────────────────────────────────────────────
@@ -134,6 +135,8 @@ interface LigneCommande {
   total_poids: number
   affecte: number
   expedie: number
+  /** computed status (API lib/statut-ligne-client.ts), never written to commentaire */
+  statut: StatutLigneClient | null
 }
 
 interface RollLite {
@@ -1991,6 +1994,7 @@ function LineCard({
           </div>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
+          {line.statut && <StatutLignePill statut={line.statut} />}
           {chip && (
             <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-medium', chip.classes)}>{chip.label}</span>
           )}

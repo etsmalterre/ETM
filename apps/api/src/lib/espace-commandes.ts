@@ -15,6 +15,7 @@
 
 import { query, fixEncoding } from './hfsql-auto.js'
 import { stripRtf } from './rtf-utils.js'
+import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 import { withAdresseADefinir, isAdresseADefinir } from './adresse-a-definir.js'
 import {
   diversKey,
@@ -37,9 +38,10 @@ export type StatutCommande = 'en_cours' | 'partielle' | 'expediee' | 'soldee'
 /** `soldee`: the order was closed before this line shipped in full (cancelled, delivered short…). */
 export type StatutLigne = 'a_venir' | 'partielle' | 'expediee' | 'soldee'
 
-/** A line counts as shipped from 95 % of its quantity: rolls never add up to the exact metre/kilo ordered, and
- *  a 780 ml delivery on an 800 ml line must not read « partiellement expédiée » for ever. */
-export const SEUIL_EXPEDIE = 0.95
+/** A line counts as shipped from SEUIL_EXPEDIE (90 %) of its quantity: rolls never add up to the exact metre/kilo
+ *  ordered, and a 760 ml delivery on an 800 ml line must not read « partiellement expédiée » for ever. One
+ *  threshold for ETM and the espace client: lib/statut-ligne-client.ts (2026-10-08, was 95 % here). */
+export { SEUIL_EXPEDIE }
 
 /** `expedie` null = not measurable (a line in U or m² on rolls): it stays « à venir » until the order is soldée. */
 export function statutLigne(quantite: number, expedie: number | null): StatutLigne {
