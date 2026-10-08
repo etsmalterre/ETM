@@ -1421,7 +1421,7 @@ function LineFormFields({
 
 // ── Right Panel: Sidebar with Tabs ─────────────────────
 
-type SidebarTab = 'info' | 'adresses' | 'docs' | 'journal'
+type SidebarTab = 'info' | 'adresses' | 'docs'
 
 function DetailSidebar({
   commande, isLoading, isEditing,
@@ -1488,7 +1488,6 @@ function DetailSidebar({
     { key: 'info', label: 'Info', icon: Info },
     { key: 'adresses', label: 'Adresses', icon: MapPin },
     { key: 'docs', label: 'Docs', icon: FileText },
-    { key: 'journal', label: 'Journal', icon: BookOpen },
   ]
 
   return (
@@ -1524,6 +1523,8 @@ function DetailSidebar({
             onEditDateCommandeChange={onEditDateCommandeChange}
             editCommentaire={editCommentaire}
             onEditCommentaireChange={onEditCommentaireChange}
+            editJournal={editJournal}
+            onEditJournalChange={onEditJournalChange}
             editIDModePaiement={editIDModePaiement}
             onEditIDModePaiementChange={onEditIDModePaiementChange}
             editIDEcheance={editIDEcheance}
@@ -1543,14 +1544,6 @@ function DetailSidebar({
         )}
         {activeTab === 'docs' && (
           <DocsTab commande={commande} isEditing={isEditing} />
-        )}
-        {activeTab === 'journal' && (
-          <JournalTab
-            commande={commande}
-            isEditing={isEditing}
-            editJournal={editJournal}
-            onEditJournalChange={onEditJournalChange}
-          />
         )}
       </div>
       </div>
@@ -1611,6 +1604,7 @@ function InfoTab({
   commande, isEditing, modesPaiement, echeances,
   editDateCommande, onEditDateCommandeChange,
   editCommentaire, onEditCommentaireChange,
+  editJournal, onEditJournalChange,
   editIDModePaiement, onEditIDModePaiementChange,
   editIDEcheance, onEditIDEcheanceChange,
 }: {
@@ -1622,6 +1616,8 @@ function InfoTab({
   onEditDateCommandeChange: (v: string) => void
   editCommentaire: string
   onEditCommentaireChange: (v: string) => void
+  editJournal: string
+  onEditJournalChange: (v: string) => void
   editIDModePaiement: number
   onEditIDModePaiementChange: (v: number) => void
   editIDEcheance: number
@@ -1687,6 +1683,14 @@ function InfoTab({
           <p className="text-sm text-muted-foreground italic">Aucun commentaire</p>
         )}
       </div>
+
+      {/* Journal card: under the comment so it reads without a tab switch (LIVA #1271) */}
+      <JournalCard
+        commande={commande}
+        isEditing={isEditing}
+        editJournal={editJournal}
+        onEditJournalChange={onEditJournalChange}
+      />
     </div>
   )
 }
@@ -2441,9 +2445,9 @@ function DocViewDialog({
   )
 }
 
-// ── Sidebar Tab: Journal ───────────────────────────────
+// ── Info tab: Journal card ─────────────────────────────
 
-function JournalTab({
+function JournalCard({
   commande, isEditing, editJournal, onEditJournalChange,
 }: {
   commande: CommandeDetail
@@ -2460,7 +2464,7 @@ function JournalTab({
         <textarea
           value={editJournal}
           onChange={(e) => onEditJournalChange(e.target.value)}
-          rows={16}
+          rows={8}
           placeholder="Entrées de journal..."
           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y font-mono"
         />
