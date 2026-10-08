@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decrire, idsAResoudre, refsVides, regrouper, type Refs } from './libelles.js'
-import { PROMPT_V1, PROMPT_V2 } from './prompt.js'
+import { PROMPT_V1, PROMPT_V3 } from './prompt.js'
 
 // The real case of 2026-10-07 (prod ids).
 const refs = (): Refs => {
@@ -73,12 +73,22 @@ describe('idsAResoudre', () => {
   })
 })
 
-describe('prompt v2', () => {
-  it('every v1 sentence it rewrites was found', () => {
-    expect(PROMPT_V2).not.toBe(PROMPT_V1)
-    expect(PROMPT_V2).toContain('environ toutes les heures')
-    expect(PROMPT_V2).toContain('2 à 5 phrases')
-    expect(PROMPT_V2).toContain('pas une suppression')
-    expect(PROMPT_V2).toContain('Une période sans rien de notable')
+describe('prompt v3', () => {
+  it('a whole text, the points Vincent found too severe written out', () => {
+    expect(PROMPT_V3).not.toBe(PROMPT_V1)
+    expect(PROMPT_V3).toContain('environ toutes les heures')
+    expect(PROMPT_V3).toContain('Le ton amical')
+    expect(PROMPT_V3).toContain('Un mail pas encore répondu')
+    expect(PROMPT_V3).toContain('0 à 3')
+    expect(PROMPT_V3).not.toContain('sans_reponse')
+  })
+})
+
+describe('Point sous-traitant', () => {
+  it('a line removed from the point is a removal, not a deletion', () => {
+    const d = decrire({ methode: 'DELETE', chemin: '/api/points-sst/1/lignes/7', corps: null }, refsVides())
+    expect(d.connue).toBe(true)
+    expect(d.retrait).toBe(true)
+    expect(decrire({ methode: 'POST', chemin: '/api/points-sst/1/lignes/20/retour', corps: '{"texte":"DATE DE RELANCE 08/10"}' }, refsVides()).texte).toContain('DATE DE RELANCE 08/10')
   })
 })

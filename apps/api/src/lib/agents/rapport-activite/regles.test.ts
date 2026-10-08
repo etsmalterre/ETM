@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { msHeureParis } from '../../pointage-etat.js'
-import { appDe, estPersonnel, libelleAction, menuDe, periode, signaux, type LigneDecrite } from './regles.js'
+import { actionsParHeure, appDe, estPersonnel, gestes, libelleAction, menuDe, moyenneParHeure, periode, signaux, type LigneDecrite } from './regles.js'
 import { sansCitation } from './agent.js'
 import { resumerCorps, messageErreur } from '../../journal-activite.js'
 import type { LigneJournal } from '../../journal-activite.js'
@@ -76,6 +76,9 @@ describe('signaux', () => {
     expect(s.map((x) => x.titre)).toEqual(['1 erreur serveur rencontrée', '1 action refusée par ETM/TRM', '3 connexions échouées', '1 suppression'])
     expect(s[0].detail).toContain('boom')
   })
+  it('a failing background read is not reported (tickets widget polling)', () => {
+    expect(signaux([ligne({ methode: 'GET', chemin: '/api/tickets', statut: 502 })], [])).toEqual([])
+  })
   it('a burst of the same write', () => {
     const t = msHeureParis(2026, 10, 6, 10)
     const j = [0, 20, 40, 60].map((s) => ligne({ le: new Date(t + s * 1000) }))
@@ -85,6 +88,29 @@ describe('signaux', () => {
     const t = msHeureParis(2026, 10, 6, 10)
     const j = [0, 20, 40, 60].map((s) => ligne({ le: new Date(t + s * 1000), methode: 'POST', corps: `{"numero":"3560/${s}"}` }))
     expect(signaux([...j, ligne({ methode: 'DELETE', retrait: true })], [])).toEqual([])
+  })
+})
+
+describe('actions per hour', () => {
+  const t = msHeureParis(2026, 10, 7, 9, 14, 30)
+  const a = (s: number, o: Partial<LigneDecrite> = {}) => ligne({ le: new Date(t + s * 1000), ...o })
+  // 09:14:30 a BL of 12 rolls + the Tricobot check, all within the second;
+  // 09:14:50 one order line; 09:15:00 one more (10 s later: a new click).
+  const bl = [...Array.from({ length: 12 }, (_, i) => a(i * 0.1, { methode: 'POST', chemin: '/api/commandes-sous-traitant/9016/lignes/8989/pieces/fini' })), a(1.3, { chemin: '/api/tricobot/bl-reception' })]
+  const journal = [...bl, a(20, { chemin: '/api/commandes-client/lignes/13200' }), a(30, { chemin: '/api/commandes-client/7202' })]
+
+  it('one click = one action, however many rows it wrote', () => {
+    expect(gestes(journal).map((g) => g.length)).toEqual([13, 1, 1])
+  })
+  it('a 5xx on a read is not a click', () => {
+    expect(gestes([a(0, { methode: 'GET', statut: 502 })])).toEqual([])
+  })
+  it('per Paris clock hour, with what it went on', () => {
+    const h = actionsParHeure([...journal, a(3600)])
+    expect(h.map((x) => [x.heure, x.actions, x.ecritures])).toEqual([['9 h', 3, 15], ['10 h', 1, 1]])
+    expect(h[0].menus).toEqual([{ menu: 'Clients › Commandes', actions: 2 }, { menu: 'Sous-traitants › Commandes', actions: 1 }])
+    expect(moyenneParHeure(h)).toBe(2)
+    expect(moyenneParHeure([])).toBeNull()
   })
 })
 

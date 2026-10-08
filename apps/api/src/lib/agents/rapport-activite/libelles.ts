@@ -272,6 +272,18 @@ const ROUTES: Route[] = [
   { m: 'PUT', re: /^\/api\/suivi-lots\/(\d+)$/, f: ([s], _b, r) => `Saisie des mesures du lot ${r.lots.get(s) ?? `#${s}`} (suivi de lot)` },
   { m: 'POST', re: /^\/api\/suivi-lots\/(\d+)\/etat$/, f: ([s], _b, r) => `Changement d’état du lot ${r.lots.get(s) ?? `#${s}`}` },
   { m: 'PUT', re: /^\/api\/suivi-lots\/(\d+)\/actions\/\d+$/, f: ([s], _b, r) => `Action qualité sur le lot ${r.lots.get(s) ?? `#${s}`}` },
+  // Sous-traitants › Point: the day's draft to MATEL. Removing a line is
+  // curating the draft (restorable, « Restaurer »), never a deletion.
+  { m: 'POST', re: /^\/api\/points-sst\/preparer$/, f: () => 'Point sous-traitant : préparation du point' },
+  { m: 'POST', re: /^\/api\/points-sst\/(\d+)\/actualiser$/, f: () => 'Point sous-traitant : actualisation' },
+  { m: 'POST', re: /^\/api\/points-sst\/(\d+)\/lignes$/, f: (_g, b) => `Point sous-traitant : ajout d’une ligne${txt(b.commande) ? ` (commande sous-traitant N° ${txt(b.commande)})` : ''}` },
+  { m: 'PATCH', re: /^\/api\/points-sst\/(\d+)\/lignes\/\d+$/, f: () => 'Point sous-traitant : modification d’une ligne' },
+  { m: 'DELETE', retrait: true, re: /^\/api\/points-sst\/(\d+)\/lignes\/\d+$/, f: () => 'Point sous-traitant : ligne retirée du point (restaurable)' },
+  { m: 'POST', re: /^\/api\/points-sst\/(\d+)\/lignes\/\d+\/restaurer$/, f: () => 'Point sous-traitant : ligne restaurée' },
+  { m: 'POST', re: /^\/api\/points-sst\/(\d+)\/lignes\/\d+\/retour$/, f: (_g, b) => `Point sous-traitant : retour à Tricobot${txt(b.texte) ? ` « ${txt(b.texte)} »` : ''}` },
+  { m: 'DELETE', retrait: true, re: /^\/api\/points-sst\/(\d+)\/lignes\/\d+\/retour$/, f: () => 'Point sous-traitant : retour à Tricobot effacé' },
+  { m: 'POST', re: /^\/api\/points-sst\/(\d+)\/email$/, f: (_g, b) => `Point sous-traitant : envoi ou programmation du mail${destinataires(b.to)}` },
+  { m: 'DELETE', retrait: true, re: /^\/api\/points-sst\/(\d+)\/programme$/, f: () => 'Point sous-traitant : envoi programmé annulé' },
   { m: 'POST', re: /^\/api\/tickets(?:-trm)?$/, f: (_g, b) => `Ticket envoyé au développement : « ${txt(b.title)} »${txt(b.description) ? ` — ${txt(b.description)}` : ''}` },
   { m: 'PUT', re: /^\/api\/permissions(?:-trm)?\/users\/(\d+)$/, f: ([u], _b, r) => `Modification des droits de ${r.utilisateurs.get(u) ?? `l’utilisateur #${u}`}` },
   {

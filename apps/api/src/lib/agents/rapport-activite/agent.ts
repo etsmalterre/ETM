@@ -25,8 +25,8 @@ import { mpsPg } from '../../mps-pg.js'
 import { journalDe, purgerJournal } from '../../journal-activite.js'
 import { partiesParis } from '../../pointage-etat.js'
 import { collecterEntetes, lireMessage, type EnteteMessage } from '../superviseur/boites.js'
-import { appDe, estPersonnel, menuDe, periode, resultatDe, signaux, HEURES_RAPPORT, HEURES_TEXTE, JOURS_RAPPORT, type ConnexionJour, type Signal } from './regles.js'
-import { entreeRapport, hhmm, PROMPT_V1, PROMPT_V2, RAPPORT_SCHEMA, type MailEntree, type ReponseRapport } from './prompt.js'
+import { actionsParHeure, appDe, estPersonnel, gestes, menuDe, moyenneParHeure, periode, resultatDe, signaux, HEURES_RAPPORT, HEURES_TEXTE, JOURS_RAPPORT, type ConnexionJour, type Signal } from './regles.js'
+import { entreeRapport, hhmm, PROMPT_V1, PROMPT_V3, RAPPORT_SCHEMA, type MailEntree, type ReponseRapport } from './prompt.js'
 import { chargerRefs, decrire, refsVides, regrouper } from './libelles.js'
 import { contenuEmail, sujetRapport, type ActionRapport, type ContenuRapport, type MailRapport } from './email.js'
 
@@ -51,12 +51,16 @@ export const RAPPORT_ACTIVITE_VERSION_INITIALE: VersionInitiale = {
   note: 'Version initiale — synthèse, résumé des mails et points d’attention (les faits et les signaux du code ne passent pas par le modèle).',
 }
 
-/** Offered in Agents IA › Prompt until published (prompt.ts PROMPT_V2). */
+/** Offered in Agents IA › Prompt until published (prompt.ts PROMPT_V3; v2
+ *  was never published and is superseded). */
 export const RAPPORT_ACTIVITE_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-medium-latest',
-  prompt: PROMPT_V2,
-  note: 'Version 2 — rapport toutes les heures, actions en clair avec les numéros affichés à l’écran ; une libération ou un retrait de pièce n’est pas une suppression, un commentaire de commande n’est pas un engagement.',
+  prompt: PROMPT_V3,
+  note: 'Version 3 — moins sévère (relecture des 16 premiers rapports, 2026-10-08) : un ton amical, un mail pas encore répondu dans l’heure, un délai donné par mail, un défaut signalé au client ne sont plus des alertes ; 0 à 3 alertes, seulement sur un fait qui montre l’erreur.',
 }
+
+/** Worked hours before the period that make the reference pace. */
+const JOURS_REFERENCE = 5
 
 /** Mails read by the model at most (headers of the others are still listed). */
 const MAX_MAILS_LUS = 80
@@ -107,8 +111,10 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
   const p = await personneSuivie()
   if (!p) throw new Error(`Aucun compte ETM/TRM avec l’adresse ${PERSONNE_SUIVIE} (Paramètres › Utilisateurs).`)
   const { du, au } = periode(nowMs, planifie)
-  const [journal, connexions, entetes] = await Promise.all([
+  const [journal, historique, connexions, entetes] = await Promise.all([
     journalDe(p.id, new Date(du), new Date(au)),
+    // Two calendar weeks hold the last JOURS_REFERENCE worked days.
+    journalDe(p.id, new Date(du - 14 * 86_400_000), new Date(du)),
     connexionsDe(p, new Date(du), new Date(au)),
     collecterEntetes(PERSONNE_SUIVIE, du),
   ])
@@ -131,6 +137,20 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
   }))
   const sig: Signal[] = signaux(decrits, connexions)
 
+  // What the person did, one click = one action (regles.ts gestes).
+  const parGeste = gestes(journal)
+  const actionsApp = (app: 'ETM' | 'TRM') => {
+    const g = parGeste.filter((x) => appDe(x[0]) === app)
+    return { actions: g.length, ecritures: g.reduce((t, x) => t + x.length, 0) }
+  }
+  const heuresRef = actionsParHeure(historique)
+  const joursRef = [...new Set(heuresRef.map((h) => jourLong(h.debut)))].slice(-JOURS_REFERENCE)
+  const reference = moyenneParHeure(heuresRef.filter((h) => joursRef.includes(jourLong(h.debut))))
+  const rythme: ContenuRapport['rythme'] = {
+    heures: actionsParHeure(journal),
+    reference: reference === null ? null : { moyenne: reference, jours: joursRef.length },
+  }
+
   const mailsPeriode = entetes.filter((m) => m.date >= du && m.date < au)
   const automatiques = mailsPeriode.filter((m) => m.automatique && !m.envoye).length
   const humains = mailsPeriode.filter((m) => m.envoye || !m.automatique)
@@ -141,7 +161,7 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     const ref = `m${i + 1}`
     const personnel = estPersonnel(m.sujet)
     const sens = m.envoye ? 'envoyé' : 'reçu'
-    mails.push({ ref, heure: hhmm(m.date), sens, correspondant: correspondant(m), sujet: m.sujet, resume: null, sansReponse: false, personnel })
+    mails.push({ ref, heure: hhmm(m.date), sens, correspondant: correspondant(m), sujet: m.sujet, resume: null, personnel })
     if (personnel || lus >= MAX_MAILS_LUS) continue
     lus++
     let extrait = ''
@@ -182,10 +202,7 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
       const rep = r.data as Partial<ReponseRapport>
       for (const m of rep.mails ?? []) {
         const cible = mails.find((x) => x.ref === m.ref)
-        if (cible && !cible.personnel) {
-          cible.resume = m.resume || null
-          cible.sansReponse = cible.sens === 'reçu' && !!m.sans_reponse
-        }
+        if (cible && !cible.personnel) cible.resume = m.resume || null
       }
       ia = { synthese: rep.synthese ?? '', etm: rep.etm ?? [], trm: rep.trm ?? [], alertes: rep.alertes ?? [] }
     } catch (err) {
@@ -199,6 +216,8 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     jour: `${jourLong(au)} ${hhmm(au)}`,
     connexions: connexionsTexte,
     actions,
+    parApp: { ETM: actionsApp('ETM'), TRM: actionsApp('TRM') },
+    rythme,
     mails: mails.map(({ ref: _ref, ...m }) => m),
     signaux: sig,
     ia,
@@ -210,8 +229,10 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     coutUsd,
     compteurs: {
       connexions: connexions.length,
-      actionsEtm: decrits.filter((l) => appDe(l) === 'ETM').length,
-      actionsTrm: decrits.filter((l) => appDe(l) === 'TRM').length,
+      // Actions = gestures (one click); écritures = the journal rows behind.
+      actionsEtm: actionsApp('ETM').actions,
+      actionsTrm: actionsApp('TRM').actions,
+      ecritures: parGeste.reduce((t, g) => t + g.length, 0),
       erreurs: actions.filter((a) => a.resultat === 'erreur').length,
       refus: actions.filter((a) => a.resultat === 'refus').length,
       mailsEnvoyes: mails.filter((m) => m.sens === 'envoyé').length,
@@ -265,7 +286,14 @@ export async function executer(state: AgentState, version: AgentVersion, par: Au
       if (purges) console.log(`[agents] ${RAPPORT_ACTIVITE_SLUG}: ${purges} journal rows past retention deleted`)
     }
     const d = await construireRapport(version, t0, !par)
-    const resultat: Record<string, unknown> = { periode: d.contenu.periode, compteurs: d.compteurs, destinataires: DESTINATAIRES }
+    // The pace per hour is kept on every run (counts only): the series Vincent
+    // reads while Pierrot's job is automated. Recomputable from the journal.
+    const resultat: Record<string, unknown> = {
+      periode: d.contenu.periode,
+      compteurs: d.compteurs,
+      actionsParHeure: d.contenu.rythme.heures.map((h) => ({ debut: new Date(h.debut).toISOString(), actions: h.actions, ecritures: h.ecritures, menus: h.menus })),
+      destinataires: DESTINATAIRES,
+    }
     const chiffres = `${d.compteurs.actionsEtm} actions ETM · ${d.compteurs.actionsTrm} TRM · ${d.compteurs.mailsEnvoyes} mails envoyés · ${d.compteurs.mailsRecus} reçus · ${d.compteurs.signaux + d.compteurs.alertesIa} points`
     let statut: RunStatut
     let resume: string

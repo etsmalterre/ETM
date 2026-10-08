@@ -5,7 +5,7 @@
 // leads to check, never as findings.
 
 import { EMAIL_STYLE as S, type EmailSection, type NotificationEmailContent } from '../../notification-email.js'
-import type { Signal } from './regles.js'
+import type { HeureActivite, Signal } from './regles.js'
 
 const RED = '#B91C1C'
 const RED_BG = '#FEF2F2'
@@ -26,8 +26,6 @@ export interface ActionRapport {
   n: number
 }
 
-/** Journal actions behind a list of merged lines. */
-export const nbActions = (actions: readonly ActionRapport[]) => actions.reduce((t, a) => t + a.n, 0)
 
 export interface MailRapport {
   heure: string
@@ -35,7 +33,6 @@ export interface MailRapport {
   correspondant: string
   sujet: string
   resume: string | null
-  sansReponse: boolean
   personnel: boolean
 }
 
@@ -46,6 +43,12 @@ export interface ContenuRapport {
   jour: string
   connexions: string[]
   actions: ActionRapport[]
+  /** Per app: actions (one click = one, regles.ts gestes) and the journal
+   *  rows behind them. */
+  parApp: Record<'ETM' | 'TRM', { actions: number; ecritures: number }>
+  /** Actions per clock hour, and the reference pace of the previous worked
+   *  days (null without history). */
+  rythme: { heures: HeureActivite[]; reference: { moyenne: number; jours: number } | null }
   mails: MailRapport[]
   signaux: Signal[]
   /** null = the model failed: the e-mail says so and keeps the facts. */
@@ -94,12 +97,41 @@ function td(t: string, opts: { couleur?: string; gras?: boolean; nowrap?: boolea
   )
 }
 
+/** « 23 actions (60 écritures) » — the writes only when a click made several. */
+export function texteActions(a: { actions: number; ecritures: number }): string {
+  return `${a.actions} action${a.actions > 1 ? 's' : ''}${a.ecritures > a.actions ? ` (${a.ecritures} écritures)` : ''}`
+}
+
+const virgule = (n: number) => String(Math.round(n * 10) / 10).replace('.', ',')
+
+/** Actions per hour, what they went on, against the previous worked days. */
+function sectionRythme(r: ContenuRapport['rythme']): EmailSection | null {
+  if (!r.heures.length) return null
+  const titre = 'Rythme — actions par heure'
+  const surQuoi = (h: HeureActivite) => h.menus.map((m) => `${m.menu} ${m.actions}`).join(' · ')
+  const ref = r.reference
+    ? `Référence : ${virgule(r.reference.moyenne)} actions par heure travaillée sur les ${r.reference.jours} derniers jours d’activité.`
+    : null
+  const note = 'Une action = un clic : recevoir un BL de 60 rouleaux ou en libérer 20 compte pour une, comme une ligne de commande saisie.'
+  const html =
+    titreSection(titre) +
+    `<table ${TABLE}><tr>${th('Heure')}${th('Actions', 'right')}${th('Sur quoi')}</tr>` +
+    r.heures
+      .map((h) => `<tr>${td(h.heure, { nowrap: true })}<td style="padding:5px 12px 5px 0;vertical-align:top;font-family:${S.font};font-size:12px;line-height:1.4;color:${S.text};font-weight:bold;text-align:right;border-bottom:1px solid ${S.border};">${h.actions}</td>${td(surQuoi(h), { couleur: S.muted })}</tr>`)
+      .join('') +
+    `</table>` +
+    (ref ? `<div style="height:6px;"></div>${paragraphe(ref, S.muted)}` : '') +
+    paragraphe(note, S.muted)
+  const text = [titre, ...r.heures.map((h) => `  ${h.heure}  ${h.actions}  ${surQuoi(h)}`), ...(ref ? [ref] : []), note].join('\n')
+  return { html, text }
+}
+
 /** Per app: the action count and the model's summary lines. No line-by-line
  *  table — too long to read; errors and refusals are already in the code
  *  signals (« Relevé par ETM »). */
-function sectionActions(app: 'ETM' | 'TRM', lignesIa: string[], actions: ActionRapport[]): EmailSection | null {
-  if (!actions.length && !lignesIa.length) return null
-  const titre = `${app} — ${nbActions(actions)} action${nbActions(actions) > 1 ? 's' : ''}`
+function sectionActions(app: 'ETM' | 'TRM', lignesIa: string[], compte: { actions: number; ecritures: number }): EmailSection | null {
+  if (!compte.actions && !lignesIa.length) return null
+  const titre = `${app} — ${texteActions(compte)}`
   const html = titreSection(titre) + lignesIa.map((l) => paragraphe(`• ${l}`)).join('')
   const text = [titre, ...lignesIa.map((l) => `• ${l}`)].join('\n')
   return { html, text }
@@ -120,7 +152,6 @@ function sectionMails(sens: 'envoyé' | 'reçu', mails: MailRapport[]): EmailSec
           `<tr>${td(m.heure, { nowrap: true })}${td(m.correspondant)}` +
           `<td style="padding:5px 8px 5px 0;vertical-align:top;font-family:${S.font};font-size:12px;line-height:1.4;color:${S.text};border-bottom:1px solid ${S.border};">` +
           `<strong>${esc(m.sujet || '(sans objet)')}</strong>` +
-          (m.sansReponse ? ` <span style="color:${RED};font-weight:bold;">· sans réponse</span>` : '') +
           (ligneResume(m) ? `<br><span style="color:${S.muted};">${esc(ligneResume(m))}</span>` : '') +
           `</td></tr>`,
       )
@@ -129,7 +160,7 @@ function sectionMails(sens: 'envoyé' | 'reçu', mails: MailRapport[]): EmailSec
     (liste.length > vues.length ? paragraphe(`… et ${liste.length - vues.length} autres.`, S.muted) : '')
   const text = [
     titre,
-    ...vues.map((m) => `  ${m.heure}  ${m.correspondant} — ${m.sujet || '(sans objet)'}${m.sansReponse ? ' [sans réponse]' : ''}${ligneResume(m) ? ` — ${ligneResume(m)}` : ''}`),
+    ...vues.map((m) => `  ${m.heure}  ${m.correspondant} — ${m.sujet || '(sans objet)'}${ligneResume(m) ? ` — ${ligneResume(m)}` : ''}`),
   ].join('\n')
   return { html, text }
 }
@@ -140,10 +171,8 @@ export function sujetRapport(c: Pick<ContenuRapport, 'personne' | 'jour' | 'sign
 }
 
 export function contenuEmail(c: ContenuRapport): NotificationEmailContent {
-  const n = (app: 'ETM' | 'TRM') => nbActions(c.actions.filter((a) => a.app === app))
   const envoyes = c.mails.filter((m) => m.sens === 'envoyé').length
   const recus = c.mails.filter((m) => m.sens === 'reçu').length
-  const sansReponse = c.mails.filter((m) => m.sansReponse).length
   const sections: EmailSection[] = []
   if (c.signaux.length) sections.push(blocAlertes('Relevé par ETM (faits)', c.signaux, RED_BG, RED))
   if (c.ia?.alertes.length) sections.push(blocAlertes('Points d’attention — analyse IA, à vérifier', c.ia.alertes, AMBER_BG, AMBER))
@@ -152,9 +181,11 @@ export function contenuEmail(c: ContenuRapport): NotificationEmailContent {
     sections.push({ html: paragraphe(`Analyse IA indisponible (${c.iaErreur}) : le rapport ne contient que les faits.`, AMBER), text: `Analyse IA indisponible : ${c.iaErreur}` })
   }
   for (const app of ['ETM', 'TRM'] as const) {
-    const s = sectionActions(app, (app === 'ETM' ? c.ia?.etm : c.ia?.trm) ?? [], c.actions.filter((a) => a.app === app))
+    const s = sectionActions(app, (app === 'ETM' ? c.ia?.etm : c.ia?.trm) ?? [], c.parApp[app])
     if (s) sections.push(s)
   }
+  const rythme = sectionRythme(c.rythme)
+  if (rythme) sections.push(rythme)
   for (const sens of ['envoyé', 'reçu'] as const) {
     const s = sectionMails(sens, c.mails)
     if (s) sections.push(s)
@@ -165,13 +196,13 @@ export function contenuEmail(c: ContenuRapport): NotificationEmailContent {
     intro: `Activité de **${c.personne}** du ${c.periode}.`,
     rows: [
       { label: 'Connexions', value: c.connexions.length ? c.connexions.join(' · ') : 'aucune' },
-      { label: 'Actions ETM', value: String(n('ETM')) },
-      { label: 'Actions TRM', value: String(n('TRM')) },
-      { label: 'Mails', value: `${envoyes} envoyé${envoyes > 1 ? 's' : ''} · ${recus} reçu${recus > 1 ? 's' : ''}${sansReponse ? ` · ${sansReponse} sans réponse` : ''}` },
+      { label: 'Actions ETM', value: texteActions(c.parApp.ETM) },
+      { label: 'Actions TRM', value: texteActions(c.parApp.TRM) },
+      { label: 'Mails', value: `${envoyes} envoyé${envoyes > 1 ? 's' : ''} · ${recus} reçu${recus > 1 ? 's' : ''}` },
     ],
     sections,
     appName: 'ETM',
     footerNote:
-      'Agent « Rapport d’activité » (Agents IA). Les actions sont celles enregistrées par le serveur ETM/TRM (créations, modifications, suppressions, erreurs) ; les simples consultations ne sont pas enregistrées. Les points de l’analyse IA sont des pistes à vérifier, pas des constats. Les mails marqués personnels ne sont pas lus.',
+      'Agent « Rapport d’activité » (Agents IA). Les actions sont celles enregistrées par le serveur ETM/TRM (créations, modifications, suppressions, erreurs), comptées une par clic ; les simples consultations ne sont pas enregistrées. Les points de l’analyse IA sont des pistes à vérifier, pas des constats. Les mails marqués personnels ne sont pas lus.',
   }
 }

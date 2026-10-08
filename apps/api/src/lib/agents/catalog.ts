@@ -316,7 +316,7 @@ export const AGENTS: readonly AgentDef[] = [
   {
     slug: RAPPORT_ACTIVITE_SLUG,
     nom: 'Rapport d’activité',
-    description: `Envoie aux heures de bureau (${RAPPORT_ACTIVITE_HEURES_TEXTE}) le compte rendu de l’activité de ${PERSONNE_SUIVIE} depuis le rapport précédent : connexions, actions dans ETM et TRM, mails envoyés et reçus, et les points à vérifier — techniques (erreurs, actions refusées, saisie douteuse) et de comportement (ton d’un mail, engagement sans trace dans ETM, client sans réponse).`,
+    description: `Envoie aux heures de bureau (${RAPPORT_ACTIVITE_HEURES_TEXTE}) le compte rendu de l’activité de ${PERSONNE_SUIVIE} depuis le rapport précédent : connexions, actions dans ETM et TRM, le nombre d’actions par heure (un clic qui écrit 60 rouleaux compte pour une action), mails envoyés et reçus, et les rares points à vérifier — techniques (erreurs, actions refusées, saisie contredite par un mail) et de comportement (mail grossier, erreur signalée par un client, prix contraire à ETM).`,
     declenchement: { type: 'quotidien', heure: RAPPORT_ACTIVITE_HEURES, jours: RAPPORT_ACTIVITE_JOURS },
     declencheur: `Du lundi au vendredi à ${RAPPORT_ACTIVITE_HEURES_TEXTE} (heure de Paris), sur la période depuis le rapport précédent — celui de 9 h couvre depuis la veille ouvrée 18 h, week-end compris. Lit le journal d’activité d’ETM/TRM (créations, modifications, suppressions et erreurs du compte, jamais les simples consultations), les connexions, et la boîte ${PERSONNE_SUIVIE} en lecture seule.`,
     ecritures: [
@@ -333,7 +333,7 @@ export const AGENTS: readonly AgentDef[] = [
         question: 'Les points d’attention de l’analyse IA étaient-ils fondés ? Oui → réussite. Un point faux ou injuste → échec, en disant lequel.',
         exemples: {
           reussite: '« Prix de 5,20 €/ml annoncé à Sigvaris, la commande 1234 est à 5,60 » : c’était bien une erreur de saisie.',
-          echec: '« Client sans réponse » alors qu’il avait répondu par téléphone.',
+          echec: '« Ton inadapté » pour un « merci beaucoup !!!! » à une fournisseuse : un ton amical n’est pas un défaut.',
         },
         remarques: ['Les faits relevés par ETM (erreurs serveur, refus, suppressions) ne viennent pas du modèle : ils ne le notent pas.'],
       },

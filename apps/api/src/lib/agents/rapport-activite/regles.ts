@@ -151,13 +151,16 @@ export type LigneDecrite = LigneJournal & { texte?: string; retrait?: boolean }
 
 const texteDe = (l: LigneDecrite) => l.texte ?? libelleAction(l)
 
-/** The signals code can stand behind: server errors, refusals, failed logins,
+/** The signals code can stand behind: server errors on a write, refusals, failed logins,
  *  deletions (not a mere unlink: a released reservation, a piece taken off an
  *  order), actions as someone else, and the very same write sent again and
  *  again in a burst. */
 export function signaux(journal: readonly LigneDecrite[], connexions: readonly ConnexionJour[]): Signal[] {
   const out: Signal[] = []
-  const erreurs = journal.filter((l) => resultatDe(l.statut) === 'erreur')
+  // A read failing is the screen polling in the background (the tickets
+  // widget every 5 min while the tracker was down: « 6 erreurs serveur »,
+  // haute, 2026-10-08) — infrastructure, not something the person did.
+  const erreurs = journal.filter((l) => resultatDe(l.statut) === 'erreur' && l.methode !== 'GET')
   if (erreurs.length) {
     out.push({
       gravite: 'haute',
@@ -229,3 +232,75 @@ export function signaux(journal: readonly LigneDecrite[], connexions: readonly C
 
 /** A mail its author marked personal: listed, never read. */
 export const estPersonnel = (sujet: string) => /\b(perso|personnel|personnelle|priv[ée]e?)\b/i.test(sujet)
+
+// ── Actions per hour (2026-10-08) ────────────────────────
+// Vincent is automating Pierrot's job and wants to see his pace fall. The
+// journal holds one row per REQUEST, and one click can send many: receiving a
+// BL of 12 rolls is 12 POSTs + the Tricobot check in the same second, putting
+// 60 rolls on an avis or releasing 19 reservations is one request per roll,
+// a transfer's « Enregistrer » sends its pieces then its header. Counted per
+// row, a BL of 60 rolls weighed 60 times a hand-typed order line. On his first
+// two days (453 writes) the gaps between rows are bimodal: 0-2 s (the screen
+// chaining calls) or 5 s and more (a person reading, typing, clicking).
+
+/** Rows closer than this belong to the same gesture (one click). */
+export const GESTE_MS = 2_000
+
+/** The journal cut into gestures: a run of writes each within GESTE_MS of
+ *  the previous one. A failed request still counts (the person clicked). */
+export function gestes<T extends Pick<LigneJournal, 'le' | 'methode'>>(journal: readonly T[]): T[][] {
+  const out: T[][] = []
+  let prec: number | null = null
+  for (const l of journal) {
+    if (l.methode === 'GET') continue // a 5xx on a read: not a gesture
+    const t = l.le.getTime()
+    if (prec !== null && t - prec <= GESTE_MS) out[out.length - 1].push(l)
+    else out.push([l])
+    prec = t
+  }
+  return out
+}
+
+export interface HeureActivite {
+  /** Start of the clock hour (Paris), ms. */
+  debut: number
+  /** « 15 h ». */
+  heure: string
+  /** Gestures started in this hour: what the person actually did. */
+  actions: number
+  /** Journal rows behind them. */
+  ecritures: number
+  /** Menu → actions, most first: what the hour went on. */
+  menus: Array<{ menu: string; actions: number }>
+}
+
+/** Actions per clock hour (Paris), only the hours with at least one. A
+ *  gesture belongs to the hour it starts in and to the menu of its first row. */
+export function actionsParHeure<T extends Pick<LigneJournal, 'le' | 'methode' | 'chemin'>>(journal: readonly T[]): HeureActivite[] {
+  const parHeure = new Map<number, { actions: number; ecritures: number; menus: Map<string, number> }>()
+  for (const g of gestes(journal)) {
+    const p = partiesParis(g[0].le.getTime())
+    const debut = msHeureParis(p.y, p.mo, p.d, p.h)
+    const h = parHeure.get(debut) ?? { actions: 0, ecritures: 0, menus: new Map<string, number>() }
+    h.actions++
+    h.ecritures += g.length
+    const menu = menuDe(g[0].chemin)
+    h.menus.set(menu, (h.menus.get(menu) ?? 0) + 1)
+    parHeure.set(debut, h)
+  }
+  return [...parHeure.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([debut, h]) => ({
+      debut,
+      heure: `${partiesParis(debut).h} h`,
+      actions: h.actions,
+      ecritures: h.ecritures,
+      menus: [...h.menus.entries()].map(([menu, actions]) => ({ menu, actions })).sort((a, b) => b.actions - a.actions || a.menu.localeCompare(b.menu, 'fr')),
+    }))
+}
+
+/** Average actions per worked hour (an hour with at least one action), the
+ *  reference the current hours are read against. null without history. */
+export function moyenneParHeure(heures: readonly Pick<HeureActivite, 'actions'>[]): number | null {
+  return heures.length ? heures.reduce((t, h) => t + h.actions, 0) / heures.length : null
+}
