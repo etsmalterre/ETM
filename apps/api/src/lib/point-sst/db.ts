@@ -243,11 +243,15 @@ const autoDe = (l: LignePoint) => ({
   ...(l.reprise ? { reprise: { ...l.reprise } } : {}),
 })
 
-/** The auto lines of this dyer's previous point (the latest day before `jour`, sent or not). */
+/** The auto lines of this dyer's previous point a person worked on: the latest day before
+ *  `jour` that was sent, scheduled or has a line someone touched. v4 (point du 09/10): the
+ *  08/10 point, prepared but never opened, hid the removal of 8990 made on 07/10. */
 async function lignesDuPointPrecedent(idsousTraitant: number, jour: string): Promise<{ jour: string; lignes: PointLigne[] } | null> {
   const sql = mpsPg()
-  const [p] = await sql`SELECT idpoint_sst, to_char(jour, 'YYYY-MM-DD') AS jour FROM point_sst
-    WHERE idsous_traitant = ${idsousTraitant} AND jour < ${jour}::date ORDER BY jour DESC LIMIT 1`
+  const [p] = await sql`SELECT p.idpoint_sst, to_char(p.jour, 'YYYY-MM-DD') AS jour FROM point_sst p
+    WHERE p.idsous_traitant = ${idsousTraitant} AND p.jour < ${jour}::date
+      AND (p.statut <> 'brouillon' OR EXISTS (SELECT 1 FROM point_sst_ligne l WHERE l.idpoint_sst = p.idpoint_sst AND l.modifie_par_nom IS NOT NULL))
+    ORDER BY p.jour DESC LIMIT 1`
   if (!p) return null
   const rows = await sql<Record<string, any>[]>`
     SELECT *, to_char(date_prevue, 'YYYY-MM-DD') AS date_prevue FROM point_sst_ligne

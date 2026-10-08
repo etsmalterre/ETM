@@ -20,7 +20,7 @@ import { mpsPg } from '../../mps-pg.js'
 import type { Issue } from '../catalog.js'
 
 export const SLUG = 'point-sst'
-export const VERSION = 3
+export const VERSION = 4
 export const VERSIONS = [
   {
     version: 1,
@@ -36,6 +36,11 @@ export const VERSIONS = [
     version: 3,
     date: '2026-10-07',
     note: 'Corrigée sur les retours de Pierre-Emmanuel au point du 07/10 : la soumission n’est plus demandée quand un lot déjà mesuré par MATEL attend notre contrôle ; une commande dont rien n’est revenu et dont la soumission vient de partir n’est plus rappelée en sortie ; les études ne sont plus listées (la question reste). Une ligne retirée avec son « pourquoi » reste retirée les jours suivants tant que les faits ne changent pas — un motif qu’ETM ne voit pas (décision du client, appel) n’est pas transformé en règle. Un point préparé à la main avant 17 h est actualisé à 17 h, sans toucher aux lignes corrigées. L’envoi programmé part à 8 h au lieu de 9 h.',
+  },
+  {
+    version: 4,
+    date: '2026-10-08',
+    note: 'Corrigée sur les retours de Pierre-Emmanuel au point du 09/10 et ses réponses du 08/10 : une commande dont la sortie tombe le jour du point n’est plus annoncée en rubrique 1, ses métrages sont réclamés en rubrique 4 ; la soumission n’est plus demandée avant la date de sortie (avant, la commande reste en rubrique 1). Une ligne retirée est reprise du dernier point qu’une personne a traité (envoyé, programmé ou corrigé), plus seulement de la veille : un point préparé mais jamais ouvert faisait revenir une ligne retirée.',
   },
 ] as const
 

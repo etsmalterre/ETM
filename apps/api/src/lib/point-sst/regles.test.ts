@@ -62,12 +62,13 @@ describe('construirePoint', () => {
     expect(sections([ligne({ idligne: 1, dateLivraison: '2026-10-12', nbRecus: 3, metrageRecu: 300, lotsSansControle: ['MA1'] })])).toEqual(['1:1', '2:1'])
   })
 
-  it('§3: a client wanting soumissions, due within 3 days or late, none sent for a week', () => {
+  it('§3: a client wanting soumissions, due today or up to 3 days late, none sent for a week', () => {
     expect(sections([
-      ligne({ idligne: 1, clientSoumission: true, dateLivraison: '2026-10-08' }),
-      ligne({ idligne: 2, clientSoumission: true, dateLivraison: '2026-10-12' }), // too far: §1
+      ligne({ idligne: 1, clientSoumission: true, dateLivraison: '2026-10-04' }),
+      ligne({ idligne: 2, clientSoumission: true, dateLivraison: '2026-10-08' }), // not due yet: §1 (v4)
       ligne({ idligne: 3, clientSoumission: false, dateLivraison: '2026-10-08' }), // no soumission: §1
-    ])).toEqual(['1:3', '1:2', '3:1'])
+      ligne({ idligne: 4, clientSoumission: true, dateLivraison: '2026-10-06' }), // due today
+    ])).toEqual(['1:3', '1:2', '3:4', '3:1'])
   })
 
   // v2 — the cases of PE's point du 06/10/2026 the v1 rules got wrong.
@@ -120,6 +121,33 @@ describe('construirePoint', () => {
 
     it('§6 (études) is never filled — the question stays, without a list', () => {
       expect(construirePoint(JOUR, []).some((l) => l.section === 6)).toBe(false)
+    })
+  })
+
+  // v4: Pierre-Emmanuel's corrections on the point du 09/10 and his answers of 08/10.
+  describe('v4 (point du 09/10)', () => {
+    const J = '2026-10-09'
+    const s4 = (l: LigneFait[]) => construirePoint(J, l).map((x) => `${x.section}:${x.idligne}:${x.commentaire}`)
+
+    it('due on the point day, nothing back: claimed in §4, no longer a §1 exit (8982)', () => {
+      expect(s4([ligne({ idligne: 1, dateLivraison: '2026-10-09' })])).toEqual(['4:1:'])
+    })
+
+    it('due on the point day, partly received: §4 « solde »', () => {
+      expect(s4([ligne({ idligne: 1, dateLivraison: '2026-10-09', nbRecus: 3, metrageRecu: 300 })])).toEqual(['4:1:solde'])
+    })
+
+    it('§3 never before the exit date: 9017 (due 12/10, partly received) stays a §1 « solde »', () => {
+      expect(s4([ligne({ idligne: 1, quantite: 0, nbRecus: 26, metrageRecu: 1867, dateLivraison: '2026-10-12', clientSoumission: true, lotsSansControle: ['MA109331', 'MA109333'] })]))
+        .toEqual(['1:1:solde', '2:1:109331 et 109333'])
+    })
+
+    it('a client wanting soumissions, due on the point day: §3, not §4', () => {
+      expect(s4([ligne({ idligne: 1, dateLivraison: '2026-10-09', clientSoumission: true })])).toEqual(['3:1:'])
+    })
+
+    it('late lines still leave the point (PE moves the date at each of Perrine\'s answers)', () => {
+      expect(s4([ligne({ idligne: 1, dateLivraison: '2026-10-08' })])).toEqual([])
     })
   })
 

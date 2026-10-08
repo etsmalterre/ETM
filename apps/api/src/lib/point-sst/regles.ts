@@ -32,7 +32,9 @@ export const HEURE_ENVOI = 8
 /** Days ahead a planned exit is announced (§1). PE's points reach 7 to 15
  *  days; 9 matches the latest ones (05/10 → up to 14/10). */
 export const HORIZON_SORTIES_J = 9
-/** §3: a soumission is asked when the line is due within this many days (or late). */
+/** §3: a soumission is asked from the exit date up to this many days late. v4 (PE,
+ *  08/10): never before the exit date in the point (he asks by mail when an order
+ *  needs watching). */
 export const HORIZON_SOUMISSION_J = 3
 /** §3: no new question while a soumission went out less than this many days ago. */
 export const SOUMISSION_RECENTE_J = 7
@@ -147,24 +149,32 @@ export function construirePoint(jour: string, lignes: readonly LigneFait[]): Lig
     const retard = ecart(jour, l.dateLivraison) // > 0 = late
     const soumisRecent = !!l.dernierSoumis && ecart(jour, l.dernierSoumis) < SOUMISSION_RECENTE_J
 
-    // §4 (métrages) is NOT generated since v2 (point du 06/10: 9023, 9013, 8936 all wrong).
-    // PE asks for métrages once the client approved the soumission (« ok à ramer ») or
+    // §4 (métrages): since v4 only on the exit day (below). Not before: v2 (point du 06/10:
+    // 9023, 9013, 8936 all wrong). PE also asks for métrages once the client approved the soumission (« ok à ramer ») or
     // the dyer announced the lot finished — both arrive by email, ETM records neither
     // (reponse_soumission is unused since 2025). The person adds them; reading Perrine's
     // replies (phase 2) is what will fill this section.
     // v3 (point du 07/10, 9029): a lot already measured by the dyer waits for OUR control —
     // « puis-je soumettre ? » would ask MATEL what only we can answer.
     const attenteChezNous = l.lotsAControler.length > 0
-    if (l.clientSoumission && !soumisRecent && !attenteChezNous && retard >= -HORIZON_SOUMISSION_J && retard <= HORIZON_SOUMISSION_J) {
+    // v4 (point du 09/10, 9017 due 12/10): from the exit date only; before it, the line is a §1 exit.
+    if (l.clientSoumission && !soumisRecent && !attenteChezNous && retard >= 0 && retard <= HORIZON_SOUMISSION_J) {
       out.push({ ...base(l), section: 3, cle: `soumission:${l.idligne}`, datePrevue: null, commentaire: partielle ? 'solde' : '', pourquoi: `Le client demande des soumissions ; sortie prévue le ${jjmm(l.dateLivraison)}, pas de soumission envoyée depuis ${SOUMISSION_RECENTE_J} jours.` })
       continue
     }
-    // Late lines are no longer « prévues en sortie »: nothing generated (see §4 above).
+    // Late lines are no longer « prévues en sortie »: nothing generated (see §4 above). PE moves
+    // the exit date at each of Perrine's answers (08/10), so a late date is one MATEL did not renew.
     if (retard > 0) continue
     // v3 (point du 07/10, 9037): nothing back yet and a soumission just sent — the order is
     // finished at the dyer and waits for the client, no exit to remind. Only when NOTHING
     // came back: a partly received line stays a « solde » exit (9013, point du 06/10).
     if (soumisRecent && l.nbRecus === 0) continue
+    if (retard === 0) {
+      // v4 (point du 09/10, 8982): due on the point's day, it is no longer announced but claimed:
+      // « la sortie est prévue pour demain, donc il faut réclamer cette commande dans la rubrique 4 ».
+      out.push({ ...base(l), section: 4, cle: `metrages:${l.idligne}`, datePrevue: null, commentaire: partielle ? 'solde' : '', pourquoi: `Sortie prévue ce jour (${jjmm(l.dateLivraison)}) : on réclame les métrages.` })
+      continue
+    }
     if (-retard <= HORIZON_SORTIES_J) {
       out.push({ ...base(l), section: 1, cle: `sortie:${l.idligne}`, datePrevue: l.dateLivraison, commentaire: partielle ? 'solde' : '', pourquoi: `Sortie prévue le ${jjmm(l.dateLivraison)} (dans les ${HORIZON_SORTIES_J} jours)${partielle ? ', déjà reçue en partie' : ''}.` })
     }
