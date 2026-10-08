@@ -272,9 +272,9 @@ export const AGENTS: readonly AgentDef[] = [
     slug: SUPERVISEUR_SLUG,
     nom: 'Superviseur',
     description:
-      'Contrôle chaque nuit l’activité d’ETS Malterre et prépare le rapport du matin : les clients ont-ils tous une réponse, les commandes reçues par mail sont-elles saisies dans ETM et justes, un client proche du palier de rouleaux suivant s’est-il vu proposer d’arrondir, chaque commande a-t-elle sa confirmation, reste-t-il des actions en attente (pièces à affecter, ligne en retard à expédier, fil à commander, ennoblissement non lancé…). Le rapport se lit ici, dans Exécutions.',
+      'Contrôle l’activité d’ETS Malterre chaque nuit et après le déjeuner, et met à jour les points à traiter du tableau de bord : les clients ont-ils tous une réponse, les commandes reçues par mail sont-elles saisies dans ETM et justes, un client proche du palier de rouleaux suivant s’est-il vu proposer d’arrondir, chaque commande a-t-elle sa confirmation, reste-t-il des actions en attente (pièces à affecter, ligne en retard à expédier, fil à commander, ennoblissement non lancé, pièces écru faites pour un client restées sans emploi…). Les points se traitent dans le widget Notifications du tableau de bord.',
     declenchement: { type: 'quotidien', heure: SUPERVISEUR_HEURE, jours: SUPERVISEUR_JOURS },
-    declencheur: `Chaque jour ouvré à ${SUPERVISEUR_HEURE} h du matin. Lit la base ETM (ETS Malterre uniquement) et les boîtes ${SUPERVISEUR_BOITES.join(', ')}.`,
+    declencheur: `Chaque jour ouvré à ${SUPERVISEUR_HEURE.map((h) => `${h} h`).join(' et ')}. Lit la base ETM (ETS Malterre uniquement) et les boîtes ${SUPERVISEUR_BOITES.join(', ')}.`,
     ecritures: ['Rien dans la base ni dans les boîtes mail : il lit seulement. Le rapport est l’exécution elle-même.'],
     abstention:
       'Un point déjà signalé reste dans le rapport, marqué « toujours ouvert », jusqu’à ce qu’il soit résolu. Un point jugé en échec (fausse alerte) est écarté des rapports suivants tant qu’il reste identique. Un lancement manuel ne met jamais à jour sa mémoire : le rapport du lendemain reste juste.',
@@ -305,7 +305,7 @@ export const AGENTS: readonly AgentDef[] = [
     },
     modes: {
       off: 'Ne fait aucun contrôle.',
-      actif: 'Contrôle chaque nuit et prépare le rapport du matin.',
+      actif: 'Contrôle chaque nuit et à 13 h, et met à jour les points à traiter.',
     },
     versionInitiale: SUPERVISEUR_VERSION_INITIALE,
     promptLivre: SUPERVISEUR_PROMPT_LIVRE,

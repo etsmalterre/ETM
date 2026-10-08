@@ -197,8 +197,8 @@ export function detailLignes(ext: CommandeExtraite, c: CommandeEtm): string {
   const tMail = totaux(totalExtrait(ext))
   const tEtm = totaux(totalEtm(c))
   return [
-    `Lu dans ${sources.length ? sources.join(', ') : 'le mail et ses pièces jointes'} (${ext.lignes.length} ligne${ext.lignes.length > 1 ? 's' : ''}) : ${liste(mail)}${tMail ? ` — total ${tMail}` : ''}.`,
-    `Saisi dans ETM N°${c.numero} (${c.lignes.length} ligne${c.lignes.length > 1 ? 's' : ''}) : ${liste(etm)}${tEtm ? ` — total ${tEtm}` : ''}.`,
+    `Lu dans ${sources.length ? sources.join(', ') : 'le mail et ses pièces jointes'} (${ext.lignes.length} ligne${ext.lignes.length > 1 ? 's' : ''}) : ${liste(mail)}${tMail ? `, total ${tMail}` : ''}.`,
+    `Saisi dans ETM N°${c.numero} (${c.lignes.length} ligne${c.lignes.length > 1 ? 's' : ''}) : ${liste(etm)}${tEtm ? `, total ${tEtm}` : ''}.`,
   ].join(' ')
 }
 

@@ -150,9 +150,9 @@ async function stockAffectable(lignes: LigneOuverte[]): Promise<Map<number, Disp
 /** What to do about a missing quantity, given the unassigned stock. */
 export function quoiFaire(d: Disponible | undefined, u: string): string {
   if (!d || d.pieces === 0) return 'Aucune pièce en stock à affecter : production à lancer.'
-  return `En stock non affecté sur cette référence et ce coloris : ${fmt(d.qte)} ${u} (${d.pieces} pièce${d.pieces > 1 ? 's' : ''}) — à affecter.`
+  return `En stock non affecté sur cette référence et ce coloris : ${fmt(d.qte)} ${u} (${d.pieces} pièce${d.pieces > 1 ? 's' : ''}) : à affecter.`
 }
-const titre = (l: LigneOuverte) => `Commande N°${l.numero} — ${l.client}${l.reference ? ` · ${l.reference}` : ''}`
+const titre = (l: LigneOuverte) => `Commande N°${l.numero} · ${l.client}${l.reference ? ` · ${l.reference}` : ''}`
 const lien = (l: LigneOuverte) => `/clients/commandes?commande=${l.commandeId}`
 
 export const controleCouverture: Controle = {

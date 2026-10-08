@@ -1,20 +1,23 @@
 // ── Superviseur points in the Notifications widget ────────────
 // The agent Superviseur's morning points are handled HERE, one by one, not in
-// its reports (decision 2026-09-28 — Agents IA is the admin side). A point
-// ends one of two ways, and only what can be improved is written:
-//   - « Traité »        → réussite (silence: Tricobot was right); the
-//                         Tricobot button « Tricobot s'est trompé ? » opens a
-//                         required comment (→ échec, binary scale 2026-10-02);
-//   - « Fausse alerte » → échec, comment required.
-// API: PUT /agents-ia/superviseur/points/traitement, GET …/points/historique
-// (apps/api/src/lib/agents/superviseur/points.ts, historique.ts).
+// its reports (decision 2026-09-28: Agents IA is the admin side). LIVA #1272
+// (2026-10-08) keeps two gestures apart, each on the card:
+//   - « Traité » settles the point → réussite, with an optional word on how
+//     it was handled;
+//   - « Former Tricobot » teaches him, at any time: also from the history,
+//     also once the agent closed the point: « n'aurait pas dû remonter »
+//     (échec, the point leaves the list) or « tu pouvais aller chercher plus
+//     loin » (a lesson, no score, the point stays).
+// Doing nothing is fine too: the agent closes the point when it is settled.
+// API: PUT /agents-ia/superviseur/points/traitement, POST …/points/tricobot,
+// GET …/points/historique (apps/api/src/lib/agents/superviseur/points.ts).
 
 import { useMemo, useState, type ComponentType } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle, AlertTriangle, ArrowRight, CheckCheck, Clock, ExternalLink,
-  History, Info, Loader2, RotateCcw, X, XCircle,
+  History, Info, Lightbulb, Loader2, RotateCcw, Search, X, XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -36,8 +39,11 @@ export interface PointSuperviseur {
   nouveau: boolean
   depuis: string
   lien: string | null
+  /** Lessons already given to Tricobot on this point. */
+  lecons: number
 }
 
+interface Lecon { commentaire: string; par: { id: number; nom: string }; le: string }
 interface Traitement { issue: Issue; note: Note; commentaire: string; par: { id: number; nom: string }; le: string }
 interface PointHistorique {
   id: string
@@ -52,12 +58,16 @@ interface PointHistorique {
   fermeLe: string | null
   raisonFermeture: string | null
   traitement: Traitement | null
+  lecons: Lecon[]
 }
 
-const GRAVITE_META: Record<Gravite, { border: string; iconBg: string; iconCls: string; icon: ComponentType<{ className?: string }>; label: string }> = {
-  urgent: { border: 'border-l-destructive/60', iconBg: 'bg-destructive/10', iconCls: 'text-destructive/70', icon: AlertTriangle, label: 'Urgent' },
-  attention: { border: 'border-l-amber-400/60', iconBg: 'bg-amber-400/10', iconCls: 'text-amber-600', icon: AlertCircle, label: 'Attention' },
-  info: { border: 'border-l-border', iconBg: 'bg-muted', iconCls: 'text-muted-foreground', icon: Info, label: 'Info' },
+/** What « Former Tricobot » is about: one occurrence of a point. */
+export interface CiblePoint { cle: string; depuis: string; titre: string; ouvert: boolean }
+
+const GRAVITE_META: Record<Gravite, { border: string; iconBg: string; iconCls: string; pill: string; icon: ComponentType<{ className?: string }>; label: string }> = {
+  urgent: { border: 'border-l-destructive/60', iconBg: 'bg-destructive/10', iconCls: 'text-destructive/70', pill: 'border-destructive/30 bg-destructive/10 text-destructive', icon: AlertTriangle, label: 'Urgent' },
+  attention: { border: 'border-l-amber-400/60', iconBg: 'bg-amber-400/10', iconCls: 'text-amber-600', pill: 'border-amber-500/30 bg-amber-500/10 text-amber-800', icon: AlertCircle, label: 'Attention' },
+  info: { border: 'border-l-border', iconBg: 'bg-muted', iconCls: 'text-muted-foreground', pill: 'border-border bg-muted text-muted-foreground', icon: Info, label: 'Info' },
 }
 
 const DOMAINE_LIBELLE: Record<string, string> = {
@@ -65,6 +75,11 @@ const DOMAINE_LIBELLE: Record<string, string> = {
   fils: 'Fils', stock: 'Stock', references: 'Références', etudes_coloris: 'Études coloris', qualite: 'Qualité',
   integrite: 'Intégrité des données',
 }
+
+/** Points saved before 2026-10-08 carry em dashes in their titles and
+ *  messages (the agent's old templates); never show one (Vincent's rule). */
+export const sansTiretTitre = (t: string) => t.replace(/\s*—\s*/g, ' · ')
+export const sansTiretTexte = (t: string) => t.replace(/\s*—\s*/g, ' ; ')
 
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('fr-FR')
 const joursDepuis = (iso: string) => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000))
@@ -80,58 +95,67 @@ const messageErreur = (e: unknown) =>
   ((e as { body?: { error?: string } })?.body?.error) ?? 'L’enregistrement a échoué.'
 
 // ── One point card ───────────────────────────────────────
-// §7 center-panel item card, left edge by gravity. The two actions are always
-// visible: handling the point is the whole reason it is on the dashboard.
+// White card with a gravity left edge, like the widget's other cards (the §8.1
+// white-on-panel card: grey cards on the white widget body read as dull). Both gestures are always
+// visible: teaching Tricobot never settles the point, settling never asks
+// for a score.
 
-export function SuperviseurPointCard({ titre, description, point, onTraiter }: {
+export function SuperviseurPointCard({ titre, description, point, onTraiter, onFormer }: {
   titre: string
   description: string
   point: PointSuperviseur
-  onTraiter: (issue: Issue) => void
+  onTraiter: () => void
+  onFormer: () => void
 }) {
   const g = GRAVITE_META[point.gravite]
   const Icon = g.icon
   const j = joursDepuis(point.depuis)
-  const { contexte, action } = decouperMessage(description)
+  const { contexte, action } = decouperMessage(sansTiretTexte(description))
+  titre = sansTiretTitre(titre)
   return (
-    <div className={cn('rounded-lg border border-border/60 border-l-4 bg-zinc-100/80 p-3', g.border)}>
+    <div className={cn('rounded-lg border border-border/60 border-l-4 bg-card p-3 shadow-sm', g.border)}>
       <div className="flex items-start gap-2">
         <div className={cn('flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md', g.iconBg)}>
           <Icon className={cn('h-3.5 w-3.5', g.iconCls)} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium leading-snug line-clamp-2" title={titre}>{titre}</p>
+          <p className="text-sm font-semibold leading-snug line-clamp-2" title={titre}>{titre}</p>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
             <span>{point.domaine}</span>
+            <span aria-hidden>·</span>
             {point.nouveau
-              ? <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-medium text-amber-800">Nouveau</span>
+              ? <span className="font-medium text-amber-700">Nouveau</span>
               : <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />depuis {j === 0 ? 'aujourd’hui' : `${j} j`}</span>}
           </div>
         </div>
-        {point.lien && (
-          <Link to={point.lien} title="Ouvrir dans ETM"
-            className="flex-shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent/10 hover:text-accent">
-            <ExternalLink className="h-3.5 w-3.5" />
-          </Link>
-        )}
+        <span className={cn('flex-shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold', g.pill)}>{g.label}</span>
       </div>
       <div className="mt-2 ml-9 space-y-1.5">
-        {contexte && <p className="text-xs leading-relaxed text-muted-foreground line-clamp-3" title={contexte}>{contexte}</p>}
+        {contexte && <p className="text-[13px] leading-relaxed text-foreground/80 line-clamp-4" title={contexte}>{contexte}</p>}
         {action && (
           <div className="flex items-start gap-1.5 rounded-md border border-accent/25 bg-accent/[0.07] px-2 py-1">
             <ArrowRight className="mt-0.5 h-3 w-3 flex-shrink-0 text-amber-700" />
             <p className="text-xs leading-snug"><span className="font-semibold text-amber-800">À faire : </span>{action}</p>
           </div>
         )}
-        <div className="flex items-center justify-end gap-1.5 pt-0.5">
-          <button type="button" onClick={() => onTraiter('fausse_alerte')}
-            title="Rien à faire : c’est faux, ou c’est normal"
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-destructive/30 bg-white px-2 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10">
-            <XCircle className="h-3.5 w-3.5" />Fausse alerte
-          </button>
-          <button type="button" onClick={() => onTraiter('traite')}
+      </div>
+      <div className="mt-2.5 flex items-center gap-2 border-t border-border/50 pt-2">
+        {point.lien && (
+          <Link to={point.lien} className="inline-flex items-center gap-1 text-xs text-accent-blue hover:underline">
+            <ExternalLink className="h-3 w-3" />Ouvrir dans ETM
+          </Link>
+        )}
+        {point.lecons > 0 && (
+          <span className="text-[11px] text-muted-foreground" title="Remarques déjà données à Tricobot sur ce point">
+            · {point.lecons} remarque{point.lecons > 1 ? 's' : ''} à Tricobot
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          <TricobotBouton onClick={onFormer} label="Former Tricobot"
+            title="Ce point n’aurait pas dû remonter, ou Tricobot pouvait aller chercher plus loin : dites-le-lui." />
+          <button type="button" onClick={onTraiter}
             title="Le point était juste et il est réglé"
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-green-600/30 bg-white px-2 text-xs font-medium text-green-700 transition-colors hover:bg-green-500/10">
+            className="inline-flex h-6 items-center gap-1 rounded-md bg-success px-2.5 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-success/90">
             <CheckCheck className="h-3.5 w-3.5" />Traité
           </button>
         </div>
@@ -140,21 +164,20 @@ export function SuperviseurPointCard({ titre, description, point, onTraiter }: {
   )
 }
 
-// ── « Traité » / « Fausse alerte » confirmation ──────────
-// §18.A dialog. « Traité » asks nothing by default (silence = Tricobot was
-// right); the Tricobot button opens the comment for him, then required.
+// ── « Traité » ───────────────────────────────────────────
+// §18.A dialog. Settles the point; the word on how it was handled is
+// optional (Isabelle, #1272: « traité ne me permet pas de mettre des données »).
 
-export function TraitementDialog({ cible, onClose }: {
-  cible: { titre: string; point: PointSuperviseur; issue: Issue } | null
+export function TraiteDialog({ cible, onClose }: {
+  cible: { titre: string; point: PointSuperviseur } | null
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
-  const [aAmeliorer, setAAmeliorer] = useState(false)
   const [commentaire, setCommentaire] = useState('')
   const [erreur, setErreur] = useState('')
 
   const mut = useMutation({
-    mutationFn: (body: { runId: string; cle: string; issue: Issue; aAmeliorer: boolean; commentaire: string }) =>
+    mutationFn: (body: { runId: string; cle: string; issue: 'traite'; commentaire: string }) =>
       apiFetch('/agents-ia/superviseur/points/traitement', { method: 'PUT', body: JSON.stringify(body) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['abonnements-notifications'] })
@@ -165,48 +188,153 @@ export function TraitementDialog({ cible, onClose }: {
   })
 
   function fermer() {
-    setAAmeliorer(false)
     setCommentaire('')
     setErreur('')
     onClose()
   }
-
-  const fausse = cible?.issue === 'fausse_alerte'
-  const commentaireRequis = fausse || aAmeliorer
-  const pret = !commentaireRequis || commentaire.trim().length > 0
 
   return (
     <Dialog open={cible !== null} onOpenChange={(v) => { if (!v) fermer() }}>
       <DialogContent className="max-w-md" onClose={fermer}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            {fausse
-              ? <><XCircle className="h-5 w-5 text-destructive" />Signaler une fausse alerte ?</>
-              : <><CheckCheck className="h-5 w-5 text-green-600" />Marquer ce point comme traité ?</>}
+            <CheckCheck className="h-5 w-5 text-green-600" />Marquer ce point comme traité
           </DialogTitle>
         </DialogHeader>
         <div className="mt-4 space-y-3">
-          <p className="text-sm font-medium leading-snug">{cible?.titre}</p>
+          <p className="text-sm font-medium leading-snug">{cible ? sansTiretTitre(cible.titre) : ''}</p>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Comment ? <span className="font-normal">(facultatif)</span></label>
+            <textarea autoFocus rows={3} value={commentaire} onChange={(e) => { setCommentaire(e.target.value); setErreur('') }}
+              placeholder="Client appelé, confirmation renvoyée, livraison décalée…"
+              className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+          </div>
+          {erreur && <p className="text-sm text-destructive">{erreur}</p>}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={fermer} disabled={mut.isPending}>Annuler</Button>
+          <Button
+            disabled={mut.isPending || !cible}
+            onClick={() => cible && mut.mutate({ runId: cible.point.runId, cle: cible.point.cle, issue: 'traite', commentaire: commentaire.trim() })}
+          >
+            {mut.isPending ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <CheckCheck className="mr-1.5 h-4 w-4" />}
+            Traité
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
-          {!fausse && !aAmeliorer && (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] text-muted-foreground">Mauvaise cause, mauvais client, mal formulé, déjà connu… ?</p>
-              <TricobotBouton onClick={() => { setAAmeliorer(true); setErreur('') }} />
+// ── « Former Tricobot » ──────────────────────────────────
+// §18.A dialog, Tricobot speaking for himself (TricobotRetourDialog's mascot
+// + bubble). Two kinds of feedback, why always required. Never settles a
+// point by itself, except a false alarm, which has nothing left to do.
+
+type Formation = 'pas_a_remonter' | 'a_savoir'
+
+// Isabelle's feedback falls in two cases (2026-10-08): the point was wrong,
+// or it was right but Tricobot could have looked further (another table, the
+// client's history, PE's mails). Both ask WHERE the information was: what
+// turns a comment into a rule for the next version.
+const FORMATIONS: Array<{
+  key: Formation
+  label: string
+  aide: (ouvert: boolean) => string
+  question: string
+  exemple: string
+  icon: ComponentType<{ className?: string }>
+  /** Picked: red = Tricobot was wrong, amber = right but could do better. */
+  actif: string
+  iconActif: string
+}> = [
+  {
+    key: 'pas_a_remonter',
+    label: 'Ce point n’aurait pas dû remonter',
+    aide: (ouvert) => ouvert ? 'Fausse alerte : il quitte la liste.' : 'Fausse alerte.',
+    question: 'Pourquoi ? Où aurais-je pu le voir ?',
+    exemple: 'C’est noté dans la commande : solde sur appel.',
+    icon: XCircle,
+    actif: 'border-destructive bg-destructive/10 ring-1 ring-destructive',
+    iconActif: 'text-destructive',
+  },
+  {
+    key: 'a_savoir',
+    label: 'Le point était juste, mais tu pouvais aller chercher plus loin',
+    aide: (ouvert) => ouvert ? 'Le point reste dans la liste.' : 'Une remarque pour la suite.',
+    question: 'Où aurais-je dû regarder ?',
+    exemple: 'L’historique du client, les mails de PE, le commentaire de la commande…',
+    icon: Search,
+    actif: 'border-amber-500 bg-amber-500/10 ring-1 ring-amber-500',
+    iconActif: 'text-amber-600',
+  },
+]
+
+export function FormerTricobotDialog({ cible, onClose }: { cible: CiblePoint | null; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [type, setType] = useState<Formation | null>(null)
+  const [commentaire, setCommentaire] = useState('')
+  const [erreur, setErreur] = useState('')
+
+  const mut = useMutation({
+    mutationFn: (body: { cle: string; depuis: string; type: Formation; commentaire: string }) =>
+      apiFetch('/agents-ia/superviseur/points/tricobot', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['abonnements-notifications'] })
+      queryClient.invalidateQueries({ queryKey: ['superviseur-historique'] })
+      fermer()
+    },
+    onError: (e) => setErreur(messageErreur(e)),
+  })
+
+  function fermer() {
+    setType(null)
+    setCommentaire('')
+    setErreur('')
+    onClose()
+  }
+
+  const pret = !!cible && type !== null && commentaire.trim().length > 0
+  const choix = FORMATIONS.find((f) => f.key === type) ?? null
+
+  return (
+    <Dialog open={cible !== null} onOpenChange={(v) => { if (!v) fermer() }}>
+      <DialogContent className="max-w-md" onClose={fermer}>
+        <DialogHeader>
+          <DialogTitle>Former Tricobot</DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="flex items-end gap-3">
+            <TricobotMascot className="h-20 w-20 -mb-1 flex-shrink-0" />
+            <div className="min-w-0 flex-1 rounded-xl rounded-bl-none border border-accent/30 bg-accent/10 px-3 py-2.5">
+              <p className="text-sm font-semibold leading-snug">{cible ? sansTiretTitre(cible.titre) : ''}</p>
+              <p className="mt-0.5 text-sm text-foreground/80">Qu’est-ce que je dois retenir ?</p>
             </div>
-          )}
+          </div>
 
-          {commentaireRequis && (
+          <div className="space-y-1.5">
+            {FORMATIONS.map((f) => {
+              const actif = type === f.key
+              const FIcon = f.icon
+              return (
+                <button key={f.key} type="button" onClick={() => { setType(f.key); setErreur('') }} aria-pressed={actif}
+                  className={cn('w-full flex items-start gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors',
+                    actif ? f.actif : 'border-border bg-white hover:border-accent/40')}>
+                  <FIcon className={cn('mt-0.5 h-4 w-4 flex-shrink-0', actif ? f.iconActif : 'text-muted-foreground')} />
+                  <span className="min-w-0">
+                    <span className={cn('block text-sm font-medium', actif && f.key === 'pas_a_remonter' && 'text-destructive')}>{f.label}</span>
+                    <span className="block text-[11px] text-muted-foreground">{f.aide(cible?.ouvert ?? true)}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
+          {choix && (
             <div className="space-y-1">
-              <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <TricobotMascot className="h-5 w-5" />
-                {fausse ? 'Pourquoi est-ce une fausse alerte ?' : 'Qu’est-ce que Tricobot aurait dû dire ?'}
-                {!fausse && (
-                  <button type="button" onClick={() => { setAAmeliorer(false); setCommentaire('') }}
-                    className="ml-auto text-[11px] text-muted-foreground hover:text-foreground">Non, il avait juste</button>
-                )}
-              </label>
+              <label className="text-xs font-medium text-muted-foreground">{choix.question}</label>
               <textarea autoFocus rows={3} value={commentaire} onChange={(e) => { setCommentaire(e.target.value); setErreur('') }}
-                placeholder="Un mot pour Tricobot : c’est ce qui sert à l’améliorer."
+                placeholder={choix.exemple}
                 className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
             </div>
           )}
@@ -216,16 +344,11 @@ export function TraitementDialog({ cible, onClose }: {
         <DialogFooter className="mt-4">
           <Button variant="outline" onClick={fermer} disabled={mut.isPending}>Annuler</Button>
           <Button
-            disabled={!pret || mut.isPending || !cible}
-            onClick={() => cible && mut.mutate({
-              runId: cible.point.runId, cle: cible.point.cle, issue: cible.issue,
-              aAmeliorer: !fausse && aAmeliorer, commentaire: commentaireRequis ? commentaire.trim() : '',
-            })}
+            disabled={!pret || mut.isPending}
+            onClick={() => cible && type && mut.mutate({ cle: cible.cle, depuis: cible.depuis, type, commentaire: commentaire.trim() })}
           >
-            {mut.isPending
-              ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              : fausse ? <XCircle className="mr-1.5 h-4 w-4" /> : <CheckCheck className="mr-1.5 h-4 w-4" />}
-            {fausse ? 'Fausse alerte' : 'Traité'}
+            {mut.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+            Envoyer à Tricobot
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -258,6 +381,7 @@ export function HistoriqueDialog({ open, onClose }: { open: boolean; onClose: ()
   const queryClient = useQueryClient()
   const [filtre, setFiltre] = useState<Filtre>('tous')
   const [erreur, setErreur] = useState('')
+  const [aFormer, setAFormer] = useState<CiblePoint | null>(null)
 
   const { data, isLoading, isError } = useQuery<{ points: PointHistorique[] }>({
     queryKey: ['superviseur-historique'],
@@ -294,7 +418,7 @@ export function HistoriqueDialog({ open, onClose }: { open: boolean; onClose: ()
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Historique des points</h2>
-            <p className="text-xs text-white/70 truncate">Agent Superviseur — chaque point signalé, et ce qui en a été fait</p>
+            <p className="text-xs text-white/70 truncate">Agent Superviseur : chaque point signalé, et ce qui en a été fait</p>
           </div>
           <Button variant="ghost" size="icon" className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white" title="Fermer" onClick={onClose}>
             <X className="h-4 w-4" />
@@ -327,7 +451,7 @@ export function HistoriqueDialog({ open, onClose }: { open: boolean; onClose: ()
               <div key={p.id} className="rounded-lg border border-border/60 bg-card p-3 shadow-sm">
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium leading-snug">{p.titre}</p>
+                    <p className="text-sm font-medium leading-snug">{sansTiretTitre(p.titre)}</p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">
                       {DOMAINE_LIBELLE[p.domaine] ?? p.domaine} · <span className={g.iconCls}>{g.label}</span> · signalé le {fmtDate(p.depuis)}
                       {p.fermeLe ? ` · fermé le ${fmtDate(p.fermeLe)}` : ' · toujours détecté'}
@@ -341,7 +465,7 @@ export function HistoriqueDialog({ open, onClose }: { open: boolean; onClose: ()
                   <div className="mt-1.5 flex items-start gap-1.5 text-xs">
                     <span className="min-w-0 flex-1">
                       {t.commentaire && <span className="italic">« {t.commentaire} » </span>}
-                      <span className="text-muted-foreground">— {t.par.nom}, {fmtDate(t.le)}</span>
+                      <span className="text-muted-foreground">· {t.par.nom}, {fmtDate(t.le)}</span>
                     </span>
                     {!p.fermeLe && (
                       <button type="button" disabled={retablir.isPending}
@@ -354,19 +478,35 @@ export function HistoriqueDialog({ open, onClose }: { open: boolean; onClose: ()
                     )}
                   </div>
                 )}
+                {p.lecons.map((l, i) => (
+                  <div key={i} className="mt-1.5 flex items-start gap-1.5 text-xs">
+                    <Lightbulb className="mt-0.5 h-3 w-3 flex-shrink-0 text-accent" />
+                    <span className="min-w-0 flex-1">
+                      <span className="italic">« {l.commentaire} » </span>
+                      <span className="text-muted-foreground">· {l.par.nom}, {fmtDate(l.le)}</span>
+                    </span>
+                  </div>
+                ))}
                 {p.fermeLe && p.raisonFermeture && (
                   <p className="mt-1 text-[11px] text-green-700">Fermé par l’agent : {p.raisonFermeture}</p>
                 )}
-                {p.lien && (
-                  <Link to={p.lien} onClick={onClose} className="mt-1 inline-flex items-center gap-1 text-[11px] text-accent-blue hover:underline">
-                    <ExternalLink className="h-3 w-3" />Ouvrir dans ETM
-                  </Link>
-                )}
+                <div className="mt-1.5 flex items-center gap-3">
+                  {p.lien && (
+                    <Link to={p.lien} onClick={onClose} className="inline-flex items-center gap-1 text-[11px] text-accent-blue hover:underline">
+                      <ExternalLink className="h-3 w-3" />Ouvrir dans ETM
+                    </Link>
+                  )}
+                  <div className="ml-auto">
+                    <TricobotBouton label="Former Tricobot"
+                      onClick={() => setAFormer({ cle: p.cle, depuis: p.depuis, titre: p.titre, ouvert: !p.fermeLe })} />
+                  </div>
+                </div>
               </div>
             )
           })}
         </div>
       </DialogContent>
+      <FormerTricobotDialog cible={aFormer} onClose={() => setAFormer(null)} />
     </Dialog>
   )
 }

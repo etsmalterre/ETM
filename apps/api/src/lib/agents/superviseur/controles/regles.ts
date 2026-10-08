@@ -124,7 +124,7 @@ export function messageRetard(l: LigneRetard, pret: boolean): string {
   const exp = l.expedie > 0 ? `${fmt(l.expedie)} ${u} déjà expédiés sur ${fmt(l.quantite)} ${u}` : `rien d’expédié sur ${fmt(l.quantite)} ${u}`
   return pret
     ? `${exp} ; ${fmt(l.pret)} ${u} prêts (${l.piecesPretes} pièce${l.piecesPretes > 1 ? 's' : ''}) à expédier, ou prévenir le client.`
-    : `${exp} ; rien de prêt — la ligne attend la production ou la teinture : prévenir le client et reporter le délai.`
+    : `${exp} ; rien de prêt : la ligne attend la production ou la teinture : prévenir le client et reporter le délai.`
 }
 
 // ── Confirmation de commande jamais envoyée ──
@@ -369,4 +369,43 @@ export function raisonPalierSuivant(l: LignePalier, u: string): string {
   const actuel = l.prixSaisi > 0 ? l.prixSaisi : l.prix ?? 0
   if (actuel <= l.nextTranchePrix) return `Prix déjà au tarif du palier ${l.nextTrancheRolls} rouleaux (${fmt(l.nextTranchePrix, 2)} €).`
   return `Palier ${l.nextTrancheRolls} rouleaux à ${fmt(l.nextTranchePrix, 2)} € : moins de ${fmt(PALIER_BAISSE_MIN * 100)} % de baisse, pas la peine de le proposer.`
+}
+
+// ── Écru fait pour un client, resté sans emploi (« pièces orphelines ») ──
+// Real case 2026-10-08: sst 8904 asked TRM for 10 pieces where order 3816
+// needed 6, on an oral agreement; the 4 extra pieces sat unassigned in ETM
+// stock for 2.5 months and nobody knew why they existed. Measured on prod the
+// same day: 145 such pieces (2.5 t) from 30 sst orders since 2021, about one
+// new source order a month. Pieces knitted for stock (an sst order with no
+// client) are expected to wait and are never reported; fini rolls are left
+// out (a few leftover rolls after a delivery is the dyer's yield: 432 rolls,
+// mostly noise).
+
+/** Source orders before this date (YYYYMMDD) are the backlog, sorted once
+ *  outside the widget (claude_doc/screen_notes.md § 13). */
+export const ORPHELIN_DEPUIS = '20260701'
+/** Days since the newest piece was knitted before the order is reported. */
+export const ORPHELIN_JOURS = 30
+
+export interface OrphelinsCommande {
+  /** sst order date, YYYYMMDD. */
+  dateCommande: string
+  /** Days since the newest unused piece was knitted. */
+  ageJours: number
+  /** The sst order's journal, plain text. */
+  journal: string
+}
+
+/** Report a source order's unused pieces? `null` = no, with why in raisonOrphelins(). */
+export function evaluerOrphelins(c: OrphelinsCommande): { gravite: Gravite } | null {
+  if (c.dateCommande < ORPHELIN_DEPUIS) return null
+  if (c.ageJours < ORPHELIN_JOURS) return null
+  if (c.journal.trim()) return null
+  return { gravite: 'attention' }
+}
+
+export function raisonOrphelins(c: OrphelinsCommande): string {
+  if (c.journal.trim()) return `Expliqué au journal de la commande : « ${c.journal.trim().replace(/\s+/g, ' ').slice(0, 160)} ».`
+  if (c.dateCommande < ORPHELIN_DEPUIS) return 'Commande d’avant le 01/07/2026 : reprise une fois, hors du tableau de bord.'
+  return `Pièces tricotées il y a ${c.ageJours} j : on attend ${ORPHELIN_JOURS} j avant de demander pourquoi.`
 }

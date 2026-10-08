@@ -27,7 +27,7 @@ import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { WidgetFrame, useWidgetChrome } from './WidgetFrame'
-import { HistoriqueDialog, SuperviseurPointCard, TraitementDialog, type PointSuperviseur } from './SuperviseurPoints'
+import { FormerTricobotDialog, HistoriqueDialog, SuperviseurPointCard, TraiteDialog, type CiblePoint, type PointSuperviseur } from './SuperviseurPoints'
 
 /** ETM-only subscription (apps/api/src/lib/abonnements-etm.ts): the agent
  *  Superviseur's points, handled right on their card. */
@@ -91,7 +91,8 @@ export function NotificationsWidget() {
   const [typeFilter, setTypeFilter] = useState(0) // 0 = tous
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [historiqueOpen, setHistoriqueOpen] = useState(false)
-  const [aTraiter, setATraiter] = useState<{ titre: string; point: PointSuperviseur; issue: 'traite' | 'fausse_alerte' } | null>(null)
+  const [aTraiter, setATraiter] = useState<{ titre: string; point: PointSuperviseur } | null>(null)
+  const [aFormer, setAFormer] = useState<CiblePoint | null>(null)
 
   const catalogQuery = useQuery<CatalogResponse>({
     queryKey: ['abonnements'],
@@ -185,7 +186,7 @@ export function NotificationsWidget() {
           </div>
         }
       >
-        <CardContent className="flex h-full flex-col gap-2 p-3">
+        <CardContent className="flex h-full flex-col gap-2 rounded-b-lg bg-zinc-100/80 p-3">
           {/* Toolbar — count, the hidden-cards toggle, then the type filter.
               The toggle is legacy's "Afficher tout" checkbox, rendered as the
               app's counter pill (mps_designer §41): it only exists when there
@@ -288,7 +289,8 @@ export function NotificationsWidget() {
                 titre={row.titre}
                 description={row.description}
                 point={row.superviseur}
-                onTraiter={(issue) => setATraiter({ titre: row.titre, point: row.superviseur!, issue })}
+                onTraiter={() => setATraiter({ titre: row.titre, point: row.superviseur! })}
+                onFormer={() => setAFormer({ cle: row.superviseur!.cle, depuis: row.superviseur!.depuis, titre: row.titre, ouvert: true })}
               />
             ) : (
               <NotificationCard
@@ -303,7 +305,7 @@ export function NotificationsWidget() {
               // Never truncate silently: say what is not on screen and how to
               // get to it (the type filter narrows the list under the cap).
               <p className="pt-1 text-center text-xs italic text-muted-foreground">
-                … et {hiddenTail} autre{hiddenTail > 1 ? 's' : ''} — filtrez par type pour les voir.
+                … et {hiddenTail} autre{hiddenTail > 1 ? 's' : ''}, filtrez par type pour les voir.
               </p>
             )}
 
@@ -324,7 +326,8 @@ export function NotificationsWidget() {
         subscribed={catalogQuery.data?.subscribed ?? []}
         isLoading={catalogQuery.isLoading}
       />
-      <TraitementDialog cible={aTraiter} onClose={() => setATraiter(null)} />
+      <TraiteDialog cible={aTraiter} onClose={() => setATraiter(null)} />
+      <FormerTricobotDialog cible={aFormer} onClose={() => setAFormer(null)} />
       <HistoriqueDialog open={historiqueOpen} onClose={() => setHistoriqueOpen(false)} />
     </>
   )
@@ -356,7 +359,7 @@ function NotificationCard({
         onClick={() => navigate(lien)}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(lien) } }}
         title="Ouvrir dans Sous-traitants › Factures"
-        className="group cursor-pointer rounded-lg border border-border/60 border-l-4 border-l-destructive/60 bg-zinc-100/80 p-3 transition-colors hover:border-accent/40"
+        className="group cursor-pointer rounded-lg border border-border/60 border-l-4 border-l-destructive/60 bg-card p-3 shadow-sm transition-colors hover:border-accent/40"
       >
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
@@ -376,7 +379,7 @@ function NotificationCard({
   return (
     <div
       className={cn(
-        'group rounded-lg border border-border/60 border-l-4 bg-zinc-100/80 p-3 transition-colors',
+        'group rounded-lg border border-border/60 border-l-4 bg-card p-3 shadow-sm transition-colors',
         row.hidden ? 'border-l-border opacity-60' : 'border-l-amber-400/60',
       )}
     >

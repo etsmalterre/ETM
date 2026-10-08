@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { delaiTexte, evaluerConfirmation, evaluerRetard, joursOuvresDepuis, messageRetard, raisonRetard, evaluerPalierSuivant, raisonPalierSuivant, evaluerAffectationFil, evaluerCouverture, evaluerEnnoblissement, evaluerFil, joursAvant, raisonCouverture, raisonEnnoblissement, horsPortee, adresseConnue, listeEnvois, BOITE_LECTRICE_DELAI_H } from './regles.js'
+import { evaluerOrphelins, raisonOrphelins, ORPHELIN_JOURS, delaiTexte, evaluerConfirmation, evaluerRetard, joursOuvresDepuis, messageRetard, raisonRetard, evaluerPalierSuivant, raisonPalierSuivant, evaluerAffectationFil, evaluerCouverture, evaluerEnnoblissement, evaluerFil, joursAvant, raisonCouverture, raisonEnnoblissement, horsPortee, adresseConnue, listeEnvois, BOITE_LECTRICE_DELAI_H } from './regles.js'
 
 const today = new Date(2026, 8, 23) // Wed 23/09/2026
 
@@ -189,7 +189,7 @@ describe('evaluerRetard', () => {
     expect(messageRetard(l, true)).toBe('rien d’expédié sur 500 Ml ; 480 Ml prêts (6 pièces) à expédier, ou prévenir le client.')
     const enTeinture = { ...l, pret: 0, piecesPretes: 0 }
     expect(evaluerRetard(enTeinture, today)?.pret).toBe(false)
-    expect(messageRetard(enTeinture, false)).toMatch(/rien de prêt — la ligne attend la production ou la teinture : prévenir le client/)
+    expect(messageRetard(enTeinture, false)).toMatch(/rien de prêt : la ligne attend la production ou la teinture : prévenir le client/)
   })
 
   it('leaves an uncovered late line to couverture, never two points on one line', () => {
@@ -222,5 +222,29 @@ describe('evaluerConfirmation', () => {
     expect(evaluerConfirmation('20260922', today)).toBeNull()
     expect(evaluerConfirmation('20260921', today)).toEqual({ gravite: 'attention', jours: 2 })
     expect(evaluerConfirmation('20260916', today)).toEqual({ gravite: 'urgent', jours: 5 })
+  })
+})
+
+describe('evaluerOrphelins (sst 8904, 2026-10-08)', () => {
+  const base = { dateCommande: '20260706', ageJours: 72, journal: '' }
+
+  it('reports an order whose client pieces sit unused past the threshold, with nothing in its journal', () => {
+    expect(evaluerOrphelins(base)).toEqual({ gravite: 'attention' })
+  })
+
+  it('waits ORPHELIN_JOURS after the newest piece', () => {
+    expect(evaluerOrphelins({ ...base, ageJours: ORPHELIN_JOURS - 1 })).toBeNull()
+    expect(raisonOrphelins({ ...base, ageJours: 12 })).toMatch(/il y a 12 j/)
+  })
+
+  it('a sentence in the journal explains it, and the closing reason quotes it', () => {
+    const c = { ...base, journal: "ATTENTION : j'ai besoin de 300 kg mini. Je préfère plus que moins." }
+    expect(evaluerOrphelins(c)).toBeNull()
+    expect(raisonOrphelins(c)).toMatch(/^Expliqué au journal de la commande : « ATTENTION/)
+  })
+
+  it('orders before the start date are the backlog, never a point', () => {
+    expect(evaluerOrphelins({ ...base, dateCommande: '20260218' })).toBeNull()
+    expect(raisonOrphelins({ ...base, dateCommande: '20260218' })).toMatch(/hors du tableau de bord/)
   })
 })

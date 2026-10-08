@@ -23,16 +23,27 @@ import { AGENTS_DIR, type Auteur, type Note } from '../store.js'
 import type { ConstatRun } from './constats.js'
 import type { Domaine, Gravite } from './types.js'
 
-/** How a person handled a point (dashboard widget):
- *   - « traite »: the alert was real and dealt with — réussite, or partielle
- *     when she ticked « Le point pouvait être mieux » (comment then required);
- *   - « fausse_alerte »: nothing to do — échec, comment required. */
+/** How a person settled a point (dashboard widget, LIVA #1272):
+ *   - « traite »: the alert was real and dealt with: réussite, with an
+ *     optional word on how (« appelée le 08/10 »);
+ *   - « fausse_alerte »: « Former Tricobot › Ce point n'aurait pas dû
+ *     remonter »: échec, why required.
+ *  Entries written before #1272 may be a « traite » scored échec (the old
+ *  « Tricobot s'est trompé ? » switch): shown « Traité · Tricobot corrigé ». */
 export type Issue = 'traite' | 'fausse_alerte'
 
 export interface Traitement {
   issue: Issue
   note: Note
-  /** Empty for a plain « traité »: only what can be improved is written. */
+  /** « traite »: how it was handled (may be empty); « fausse_alerte »: why. */
+  commentaire: string
+  par: Auteur
+  le: string
+}
+
+/** « Former Tricobot › Tu pouvais aller chercher plus loin »: given at any time, on an
+ *  open or a closed point, never settles it and is not a score. */
+export interface Lecon {
   commentaire: string
   par: Auteur
   le: string
@@ -57,6 +68,8 @@ export interface PointHistorique {
   /** Why the check let it pass (« Réponse de pierre-emmanuel le 24/09 »). */
   raisonFermeture: string | null
   traitement: Traitement | null
+  /** Absent on entries written before #1272. */
+  lecons?: Lecon[]
 }
 
 type Journal = Record<string, PointHistorique>
@@ -110,6 +123,7 @@ function depuisConstat(c: ConstatRun, nowIso: string, avant?: PointHistorique): 
     fermeLe: null,
     raisonFermeture: null,
     traitement: avant?.traitement ?? null,
+    lecons: avant?.lecons ?? [],
   }
 }
 
@@ -148,11 +162,37 @@ export function journaliserTraitement(c: ConstatRun, traitement: Traitement | nu
   })
 }
 
+/** Add a lesson to a point's entry (created if it predates the journal). */
+export function journaliserLecon(c: ConstatRun, lecon: Lecon): Promise<void> {
+  return exclusive(async () => {
+    const j = await lire()
+    const id = idPoint(c.cle, c.depuis)
+    const e = j[id] ?? depuisConstat(c, new Date().toISOString())
+    e.lecons = [...(e.lecons ?? []), lecon]
+    j[id] = e
+    await ecrire(j)
+  })
+}
+
+/** One entry by id (`${cle}@${depuis}`), or null. */
+export async function lireEntree(id: string): Promise<PointHistorique | null> {
+  return (await lire())[id] ?? null
+}
+
+/** Lesson count by entry id: the widget's « Tricobot formé » chip. */
+export async function nombreLecons(): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  for (const e of Object.values(await lire())) if (e.lecons?.length) out.set(e.id, e.lecons.length)
+  return out
+}
+
 /** Newest activity first. */
 export async function lireHistorique(): Promise<PointHistorique[]> {
   const j = await lire()
   // Old « partielle » handlings read under the binary scale.
   for (const e of Object.values(j)) if (e.traitement) e.traitement = { ...e.traitement, note: noteBinaire(e.traitement.note) }
-  const activite = (e: PointHistorique) => [e.fermeLe, e.traitement?.le, e.vuLe].filter(Boolean).sort().pop() as string
+  for (const e of Object.values(j)) e.lecons ??= []
+  const activite = (e: PointHistorique) =>
+    [e.fermeLe, e.traitement?.le, e.vuLe, ...(e.lecons ?? []).map((l) => l.le)].filter(Boolean).sort().pop() as string
   return Object.values(j).sort((a, b) => activite(b).localeCompare(activite(a)))
 }

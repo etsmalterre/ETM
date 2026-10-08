@@ -12,6 +12,7 @@ import { controleAffectationFil, controleFilACommander } from './fils.js'
 import { controleClientsSansReponse } from './mails-clients.js'
 import { controleCommandesMails } from './commandes-mails.js'
 import { controlePalierSuivant } from './palier-suivant.js'
+import { controleEcruOrphelin } from './ecru-orphelin.js'
 
 export const CONTROLES: readonly Controle[] = [
   controleClientsSansReponse,
@@ -23,4 +24,5 @@ export const CONTROLES: readonly Controle[] = [
   controleEnnoblissement,
   controleFilACommander,
   controleAffectationFil,
+  controleEcruOrphelin,
 ]

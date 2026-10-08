@@ -31,7 +31,18 @@ function client(boite: string): gmail_v1.Gmail {
 }
 
 /** A readable French message for the errors an admin can fix. */
+/** A network failure that a retry a minute later usually cures (DNS blip,
+ *  dropped connection): `getaddrinfo EAI_AGAIN oauth2.googleapis.com` cost the
+ *  08/10/2026 morning its whole mail check. */
+export function erreurReseau(err: unknown): boolean {
+  const msg = err instanceof Error ? `${err.message} ${(err as { code?: string }).code ?? ''}` : String(err)
+  return /EAI_AGAIN|ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|fetch failed|network/i.test(msg)
+}
+
+export const GOOGLE_INJOIGNABLE = 'Google injoignable (coupure réseau passagère)'
+
 export function boiteErreur(boite: string, err: unknown): string {
+  if (erreurReseau(err)) return GOOGLE_INJOIGNABLE
   const msg = err instanceof Error ? err.message : String(err)
   if (/unauthorized_client|insufficient|scope/i.test(msg)) {
     return `Lecture de ${boite} refusée : ajouter le droit « gmail.readonly » au compte de service dans Google Admin (délégation au niveau du domaine).`

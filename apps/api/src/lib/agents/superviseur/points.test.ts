@@ -59,14 +59,13 @@ describe('estTraite', () => {
 })
 
 describe('noteDuTraitement', () => {
-  it('traité = réussite with no comment; « pouvait être mieux » and fausse alerte = échec (binary)', () => {
-    expect(noteDuTraitement('traite', false, '')).toBe('reussite')
-    expect(noteDuTraitement('traite', true, 'mauvais client')).toBe('echec')
-    expect(noteDuTraitement('fausse_alerte', false, 'déjà réglé')).toBe('echec')
+  it('traité = réussite, with or without a word on how; « n’aurait pas dû remonter » = échec (#1272)', () => {
+    expect(noteDuTraitement('traite', '')).toBe('reussite')
+    expect(noteDuTraitement('traite', 'client appelé le 08/10')).toBe('reussite')
+    expect(noteDuTraitement('fausse_alerte', 'déjà réglé')).toBe('echec')
   })
 
-  it('only what can be improved needs a comment — and then it is required', () => {
-    expect(() => noteDuTraitement('traite', true, '  ')).toThrow(TraitementInvalide)
-    expect(() => noteDuTraitement('fausse_alerte', false, '')).toThrow(TraitementInvalide)
+  it('the why of a false alarm is required', () => {
+    expect(() => noteDuTraitement('fausse_alerte', '  ')).toThrow(TraitementInvalide)
   })
 })

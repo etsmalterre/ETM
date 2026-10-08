@@ -146,6 +146,10 @@ export interface AgentRun {
   avisPoints?: Record<string, Evaluation>
   /** Superviseur: points a person marked resolved on this report, with why. */
   resolutionsPoints?: Record<string, Pick<Evaluation, 'commentaire' | 'par' | 'le'>>
+  /** Superviseur: « Former Tricobot › Tu pouvais aller chercher plus loin » on a
+   *  point that was right: where else the agent should have looked. Not a score, never closes the
+   *  point; read by the Retours tab like the other comments. */
+  leconsPoints?: Record<string, Array<Pick<Evaluation, 'commentaire' | 'par' | 'le'>>>
   /** Legacy — see RunVerdict. */
   verdict?: RunVerdict | null
 }

@@ -24,7 +24,7 @@ export const controlePalierSuivant: Controle = {
   domaine: 'commandes_client',
   libelle: 'Palier suivant à proposer',
   description:
-    `Ligne d’une commande client des ${PALIER_FENETRE_J} derniers jours dont la quantité est à moins de 15 % du palier de rouleaux suivant, moins cher — le même calcul que Tricobot à la saisie (« À proposer au client ? »). Pas signalée quand le prix saisi est déjà celui du palier suivant, quand la baisse est sous 3 %, ni pour les sociétés du groupe.`,
+    `Ligne d’une commande client des ${PALIER_FENETRE_J} derniers jours dont la quantité est à moins de 15 % du palier de rouleaux suivant, moins cher : le même calcul que Tricobot à la saisie (« À proposer au client ? »). Pas signalée quand le prix saisi est déjà celui du palier suivant, quand la baisse est sous 3 %, ni pour les sociétés du groupe.`,
   raisonAbsent: `Commande de plus de ${PALIER_FENETRE_J} jours, soldée, ou ligne supprimée.`,
   async executer(ctx) {
     const today = new Date(ctx.nowMs)
@@ -73,10 +73,10 @@ export const controlePalierSuivant: Controle = {
         controle: 'palier_suivant',
         domaine: 'commandes_client',
         gravite: 'attention',
-        titre: `Commande N°${Number(c.numero) || 0} — ${clients.get(Number(c.IDclient)) || `Client #${c.IDclient}`}${ref ? ` · ${ref}` : ''}`,
+        titre: `Commande N°${Number(c.numero) || 0} · ${clients.get(Number(c.IDclient)) || `Client #${c.IDclient}`}${ref ? ` · ${ref}` : ''}`,
         message:
           `Commandé ${qte(quantite)} ${u} à ${fmt(p.prixActuel, 2)} €/${u} (${fmt(p.totalActuel)} €). ` +
-          `Avec ${qte(r.nextTrancheGapQty)} ${u} de plus — ${r.nextTrancheRolls} rouleaux, ${qte(r.nextTrancheQty)} ${u} — le prix passe à ${fmt(r.nextTranchePrix!, 2)} €/${u} (−${fmt(p.baisse * 100)} %) : ${fmt(p.totalPalier)} € en tout. ` +
+          `Avec ${qte(r.nextTrancheGapQty)} ${u} de plus (${r.nextTrancheRolls} rouleaux, ${qte(r.nextTrancheQty)} ${u}), le prix passe à ${fmt(r.nextTranchePrix!, 2)} €/${u} (−${fmt(p.baisse * 100)} %) : ${fmt(p.totalPalier)} € en tout. ` +
           `Commande saisie ${age > 0 ? `il y a ${age} jour${age > 1 ? 's' : ''}` : 'aujourd’hui'}, Tricobot le suggère à la saisie : le client a-t-il eu la proposition ?`,
         lien: `/clients/commandes?commande=${Number(c.IDcommande_client)}`,
       })

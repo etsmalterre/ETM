@@ -17,7 +17,7 @@ import { query, fixEncoding } from '../../../hfsql-auto.js'
 import { chatJson, ocrPdf } from '../../../mistral.js'
 import { AGENTS_DIR } from '../../store.js'
 import { lireMessage, lirePieceJointe, type EnteteMessage } from '../boites.js'
-import { chargerAnnuaire, entetesDuRun, FENETRE_JOURS, sansCitation } from '../mails.js'
+import { chargerAnnuaire, entetesDuRun, FENETRE_JOURS, resumeErreursBoites, sansCitation } from '../mails.js'
 import { heuresOuvrees, identifierClient, racine, type ClientConnu } from '../reponses.js'
 import { detailLignes, rapprocher, type CommandeEtm, type CommandeExtraite } from '../rapprochement.js'
 import { noms } from './noms.js'
@@ -163,11 +163,11 @@ export const controleCommandesMails: Controle = {
   domaine: 'commandes_client',
   libelle: 'Commande reçue par mail non saisie ou différente',
   description:
-    `Mail d’un client (${FENETRE_JOURS} derniers jours) contenant une nouvelle commande — lue par Mistral dans le texte et les PDF joints — sans commande correspondante dans ETM après 1 jour ouvré (urgent à 2), ou dont la commande saisie diffère en quantité (±5 %) ou en prix (±1 %). Rapprochement par le n° de commande du client dans « Réf. client », sinon par date et quantité totale.`,
+    `Mail d’un client (${FENETRE_JOURS} derniers jours) contenant une nouvelle commande (lue par Mistral dans le texte et les PDF joints) sans commande correspondante dans ETM après 1 jour ouvré (urgent à 2), ou dont la commande saisie diffère en quantité (±5 %) ou en prix (±1 %). Rapprochement par le n° de commande du client dans « Réf. client », sinon par date et quantité totale.`,
   raisonAbsent: `Mail sorti de la fenêtre de ${FENETRE_JOURS} jours.`,
   async executer(ctx) {
     const [{ entetes, erreurs }, annuaire] = await Promise.all([entetesDuRun(ctx.nowMs), chargerAnnuaire()])
-    if (erreurs.length) throw new Error(`boîte(s) illisible(s) — ${erreurs.join(' ; ')}`)
+    if (erreurs.length) throw new Error(resumeErreursBoites(erreurs))
     const depuis = ctx.nowMs - FENETRE_JOURS * 86_400_000
     // One copy per Message-ID (contact@ + cc arrive twice).
     // One candidate per conversation — its latest client message (Idylle wrote
@@ -217,7 +217,7 @@ export const controleCommandesMails: Controle = {
           controle: 'commande_mail',
           domaine: 'commandes_client',
           gravite: attente >= REPONSE_URGENT_H ? 'urgent' : 'attention',
-          titre: `${client.nom} — commande${po} non saisie`,
+          titre: `${client.nom} : commande${po} non saisie`,
           message: `Reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} (${m.boite.split('@')[0]}, « ${court(m.sujet)} ») : ${resume}${ext.lignes.length > 3 ? '…' : ''}. Aucune commande correspondante dans ETM.`,
           lien: null,
         })
@@ -228,7 +228,7 @@ export const controleCommandesMails: Controle = {
           controle: 'commande_mail',
           domaine: 'commandes_client',
           gravite: 'attention',
-          titre: `${client.nom} — commande${po} à vérifier (N°${r.commande.numero})`,
+          titre: `${client.nom} : commande${po} à vérifier (N°${r.commande.numero})`,
           // A date-only match is a guess: say so, the écart may just mean « not entered ».
           // Then both orders line by line: the reader checks a figure without
           // opening the mail (v3, from Isabelle's LEMAHIEU comment).

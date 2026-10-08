@@ -148,7 +148,7 @@ export const controleAffectationFil: Controle = {
       controle: 'fil_affectation',
       domaine: 'sous_traitants',
       gravite: 'attention',
-      titre: `Commande sous-traitant N°${t.cmd} — Tricotage Malterre`,
+      titre: `Commande sous-traitant N°${t.cmd} · Tricotage Malterre`,
       message: `Fil non affecté : ${t.manquants.map((m) => libelleFil(refs.get(m.IDref_fil), coloris.get(m.IDcolori_fil), m.IDref_fil)).join(', ')}. TRM ne peut pas lancer l’OF tant qu’il n’est pas affecté (onglet Stock fil).`,
       lien: `/sous-traitants/commandes?commande=${t.cmd}`,
     }))

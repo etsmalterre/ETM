@@ -40,7 +40,7 @@ import {
 import { etatSondage, lancerSondage, prochainQuotidien, SondageEnCoursError } from '../lib/agents/scheduler.js'
 import { SUPERVISEUR_SLUG, type ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
 import { notesDuBilan } from '../lib/agents/superviseur/score.js'
-import { traiterPoint, TraitementInvalide } from '../lib/agents/superviseur/points.js'
+import { formerTricobot, traiterPoint, TraitementInvalide } from '../lib/agents/superviseur/points.js'
 import { lireHistorique } from '../lib/agents/superviseur/historique.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reader.js'
@@ -542,16 +542,16 @@ const traitementBody = z.object({
   /** Omitted = the current report (an undo from the history). */
   runId: z.string().min(1).max(100).nullable().default(null),
   cle: z.string().min(1).max(500),
-  /** null undoes the handling. */
+  /** null undoes the handling. « fausse_alerte » is what « Former Tricobot ›
+   *  N'aurait pas dû remonter » writes: the widget goes through /tricobot. */
   issue: z.enum(['traite', 'fausse_alerte']).nullable(),
-  /** « Le point pouvait être mieux » — makes a traité an échec (binary scale). */
-  aAmeliorer: z.boolean().default(false),
+  /** « traite »: optional word on how it was handled. */
   commentaire: z.string().trim().max(2000).default(''),
 })
 
-/** Handle one point from the Notifications widget: « Traité » or « Fausse
- *  alerte » (lib/agents/superviseur/points.ts). The scoring right, or the
- *  widget's Superviseur sub-permission (traiteurPoints). */
+/** Settle one point from the Notifications widget (« Traité »), or undo a
+ *  handling from its history (lib/agents/superviseur/points.ts). The scoring
+ *  right, or the widget's Superviseur sub-permission (traiteurPoints). */
 routes.put('/:slug/points/traitement', async (req, res) => {
   const uid = await traiteurPoints(req, res)
   if (uid === null) return
@@ -560,14 +560,46 @@ routes.put('/:slug/points/traitement', async (req, res) => {
   if (def.slug !== SUPERVISEUR_SLUG) { res.status(409).json({ error: 'cet agent ne produit pas de points à traiter' }); return }
   const p = traitementBody.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'traitement invalide' }); return }
-  const { runId, cle, issue, aAmeliorer, commentaire } = p.data
+  const { runId, cle, issue, commentaire } = p.data
   try {
-    const t = await traiterPoint(runId, cle, issue, aAmeliorer, commentaire, await auteur(uid))
+    const t = await traiterPoint(runId, cle, issue, commentaire, await auteur(uid))
     if (t === undefined) { res.status(404).json({ error: 'point introuvable dans ce rapport' }); return }
     res.json({ traitement: t })
   } catch (err) {
     if (err instanceof TraitementInvalide) { res.status(400).json({ error: err.message }); return }
     console.error('[agents-ia] traitement point failed:', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
+  }
+})
+
+const formationBody = z.object({
+  cle: z.string().min(1).max(500),
+  /** The occurrence (`depuis` of the point): open or already closed. */
+  depuis: z.string().min(1).max(40),
+  type: z.enum(['pas_a_remonter', 'a_savoir']),
+  commentaire: z.string().trim().min(1).max(2000),
+})
+
+/** « Former Tricobot » on one point, from the widget or its history, open or
+ *  closed (LIVA #1272): « n'aurait pas dû remonter » (échec, leaves the queue)
+ *  or « tu pouvais aller chercher plus loin » (a lesson, no score). Same guard as above. */
+routes.post('/:slug/points/tricobot', async (req, res) => {
+  const uid = await traiteurPoints(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  if (def.slug !== SUPERVISEUR_SLUG) { res.status(409).json({ error: 'cet agent ne produit pas de points à traiter' }); return }
+  const p = formationBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'Dites quelque chose à Tricobot : c’est ce qui sert à le former.' }); return }
+  const { cle, depuis, type, commentaire } = p.data
+  try {
+    if (!(await formerTricobot(cle, depuis, type, commentaire, await auteur(uid)))) {
+      res.status(404).json({ error: 'point introuvable' }); return
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof TraitementInvalide) { res.status(400).json({ error: err.message }); return }
+    console.error('[agents-ia] former tricobot failed:', err)
     res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
   }
 })
@@ -602,6 +634,8 @@ routes.get('/:slug/retours', async (req, res) => {
     }> = []
     /** Points marked résolu by hand — what ETM and the mailboxes could not see. */
     const resolutions: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
+    /** « Former Tricobot › Tu pouvais aller chercher plus loin »: no score, read like the comments. */
+    const lecons: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
     for (const r of await lireRuns(def.slug)) {
       if (r.version !== version) continue
       const base = { runId: r.id, runLe: r.createdAt, source: r.source }
@@ -617,10 +651,14 @@ routes.get('/:slug/retours', async (req, res) => {
         if (!x.commentaire || x.commentaire === r.avisPoints?.[cle]?.commentaire) continue
         resolutions.push({ runId: r.id, runLe: r.createdAt, titre: titres.get(cle) ?? cle, ...x })
       }
+      for (const [cle, xs] of Object.entries(r.leconsPoints ?? {})) {
+        for (const x of xs) lecons.push({ runId: r.id, runLe: r.createdAt, titre: titres.get(cle) ?? cle, ...x })
+      }
     }
     retours.sort((a, b) => b.le.localeCompare(a.le))
     resolutions.sort((a, b) => b.le.localeCompare(a.le))
-    res.json({ version, versions: state.versions.map((v) => v.version).reverse(), retours, resolutions })
+    lecons.sort((a, b) => b.le.localeCompare(a.le))
+    res.json({ version, versions: state.versions.map((v) => v.version).reverse(), retours, resolutions, lecons })
   } catch (err) {
     console.error('[agents-ia] retours failed:', err)
     res.status(500).json({ error: 'Internal server error' })

@@ -54,7 +54,7 @@ export const controleConfirmation: Controle = {
         controle: 'confirmation',
         domaine: 'commandes_client',
         gravite: r.gravite,
-        titre: `Commande N°${Number(c.numero) || 0} — ${clients.get(Number(c.IDclient)) || `Client #${c.IDclient}`}`,
+        titre: `Commande N°${Number(c.numero) || 0} · ${clients.get(Number(c.IDclient)) || `Client #${c.IDclient}`}`,
         message: `Commande du ${jjmm(String(c.date_commande).slice(0, 8))} : aucune confirmation envoyée au client depuis ETM après ${r.jours} jours ouvrés. Envoyer la confirmation (elle porte l’acceptation des CGV) ; si le client l’a eue autrement, la renvoyer depuis ETM pour en garder la trace.`,
         lien: `/clients/commandes?commande=${id}`,
       })

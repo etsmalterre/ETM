@@ -13,7 +13,7 @@ import * as path from 'node:path'
 import { query } from '../../hfsql-auto.js'
 import { chatJson } from '../../mistral.js'
 import { AGENTS_DIR } from '../store.js'
-import { collecterEntetes, lireFil, type EnteteMessage } from './boites.js'
+import { boiteErreur, collecterEntetes, erreurReseau, lireFil, type EnteteMessage } from './boites.js'
 import { sansCitation } from '../../gmail-reader.js'
 import { construireAnnuaire, type AnnuaireClients } from './reponses.js'
 import { noms } from './controles/noms.js'
@@ -69,6 +69,18 @@ let memo: { nowMs: number; entetes: Promise<{ entetes: EnteteMessage[]; erreurs:
 
 /** Every mailbox since the window start (+1 day of margin for the replies'
  *  context). A mailbox that fails is reported, the others still count. */
+/** Waits before each retry of a mailbox on a network error (~3.5 min in all:
+ *  the run is at 05:00, nobody is waiting for it). */
+export const RESSAIS_RESEAU_MS = [30_000, 60_000, 120_000]
+
+/** « boîte(s) illisible(s) » in one line: when every mailbox failed for the
+ *  same reason, say it once instead of five times. */
+export function resumeErreursBoites(erreurs: string[]): string {
+  const causes = [...new Set(erreurs.map((e) => e.replace(/^[^:]+ : /, '')))]
+  if (causes.length === 1 && erreurs.length > 1) return `mails non lus, ${causes[0]} sur les ${erreurs.length} boîtes`
+  return `mails non lus : ${erreurs.join(' ; ')}`
+}
+
 export function entetesDuRun(nowMs: number): Promise<{ entetes: EnteteMessage[]; erreurs: string[] }> {
   if (!memo || memo.nowMs !== nowMs) {
     memo = {
@@ -77,11 +89,22 @@ export function entetesDuRun(nowMs: number): Promise<{ entetes: EnteteMessage[];
         const depuis = nowMs - (FENETRE_JOURS + 1) * 86_400_000
         const entetes: EnteteMessage[] = []
         const erreurs: string[] = []
+        // A network blip retries (RESSAIS_RESEAU_MS); once one mailbox has
+        // used them all, Google is down: the others get a single try.
+        let reseauKo = false
         for (const b of SUPERVISEUR_BOITES) {
-          try {
-            entetes.push(...(await collecterEntetes(b, depuis)))
-          } catch (err) {
-            erreurs.push(`${b} : ${err instanceof Error ? err.message : String(err)}`)
+          const attentes = reseauKo ? [] : [...RESSAIS_RESEAU_MS]
+          for (;;) {
+            try {
+              entetes.push(...(await collecterEntetes(b, depuis)))
+              break
+            } catch (err) {
+              const attente = erreurReseau(err) ? attentes.shift() : undefined
+              if (attente !== undefined) { await new Promise((r) => setTimeout(r, attente)); continue }
+              if (erreurReseau(err)) reseauKo = true
+              erreurs.push(`${b} : ${boiteErreur(b, err)}`)
+              break
+            }
           }
         }
         return { entetes, erreurs }

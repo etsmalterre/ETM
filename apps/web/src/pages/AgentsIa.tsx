@@ -44,6 +44,7 @@ import {
   Inbox,
   Info,
   ListChecks,
+  Lightbulb,
   Loader2,
   Mail,
   MessageSquare,
@@ -90,6 +91,7 @@ import {
   type Sondage,
 } from '@/components/agents-ia/commun'
 import { TRIAGE_SLUG, TriageExecutionsTab, TriageRunDialog } from '@/components/agents-ia/Triage'
+import { sansTiretTexte, sansTiretTitre } from '@/components/dashboard/SuperviseurPoints'
 
 // ── Types (mirror routes/agents-ia.ts) ───────────────────
 
@@ -778,10 +780,11 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
   useEffect(() => { setVersion(agent.activeVersion) }, [agent.slug, agent.activeVersion])
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-retours', agent.slug, version],
-    queryFn: () => apiFetch<{ version: number; retours: Retour[]; resolutions?: RetourResolution[] }>(`${base}/${agent.slug}/retours?version=${version}`),
+    queryFn: () => apiFetch<{ version: number; retours: Retour[]; resolutions?: RetourResolution[]; lecons?: RetourResolution[] }>(`${base}/${agent.slug}/retours?version=${version}`),
   })
   const tous = data?.retours ?? []
   const resolutions = data?.resolutions ?? []
+  const lecons = data?.lecons ?? []
   // « À prendre en compte » = what says something: every échec,
   // and a réussite only when someone bothered to comment it.
   const retours = filtre === 'tout' ? tous : tous.filter((r) => r.note !== 'reussite' || r.commentaire)
@@ -856,10 +859,35 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
           </div>
         )
       })}
+      {!isLoading && !isError && lecons.length > 0 && (
+        <>
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-2">
+            Chercher plus loin ({lecons.length}) : « Former Tricobot » sur les points justes
+          </p>
+          {lecons.map((r, i) => (
+            <div key={`${r.runId}-lec-${i}`} onClick={() => onOpenRun(r.runId)} title="Voir le contrôle"
+              className="rounded-lg border-l-4 border border-border/60 border-l-amber-400/60 bg-zinc-100/80 p-3 cursor-pointer hover:border-accent/40 transition-colors">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
+                  <Lightbulb className="h-3.5 w-3.5 text-amber-600" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate" title={r.titre}>{r.titre}</p>
+                  <p className="text-[11px] text-muted-foreground truncate">Point relevé le {fmtDateCourte(r.runLe)} · {r.par.nom}, {fmtDateHeure(r.le)}</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-1.5 mt-2 ml-9">
+                <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+                <p className="text-sm whitespace-pre-wrap">{r.commentaire}</p>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
       {!isLoading && !isError && resolutions.length > 0 && (
         <>
           <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-2">
-            Marqués résolus à la main ({resolutions.length}) — ce que l’agent ne pouvait pas voir
+            Traités avec un mot ({resolutions.length}) : comment ça s’est réglé
           </p>
           {resolutions.map((r, i) => (
             <div key={`${r.runId}-res-${i}`} onClick={() => onOpenRun(r.runId)} title="Voir le contrôle"
@@ -1214,17 +1242,40 @@ function DernierControleKV({ d }: { d: DernierControle | null }) {
       <KV label="Dernier contrôle" value={
         <span className={cn('inline-flex items-center gap-1', ko ? 'text-destructive font-semibold' : 'text-green-700')}>
           {ko ? <XCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-          {ilYA(d.le)}{d.erreur ? ' — a échoué' : ''}
+          {ilYA(d.le)}{d.erreur ? ', a échoué' : ''}
         </span>
       } />
-      {d.erreur && <p className="text-xs text-destructive break-words">{d.erreur}</p>}
-      {d.controlesEnErreur.map((c) => (
-        <p key={c.libelle} className="text-xs text-destructive break-words" title={c.erreur}>
-          <span className="font-semibold">{c.libelle} n’a pas tourné : </span>{c.erreur}
+      {d.erreur && <p className="text-xs text-destructive break-words" title={d.erreur}>{erreurLisible(d.erreur)}</p>}
+      {grouperErreurs(d.controlesEnErreur).map((g) => (
+        <p key={g.cause} className="text-xs text-destructive break-words" title={g.brut}>
+          <span className="font-semibold">{g.libelles.join(', ')} {g.libelles.length > 1 ? 'n’ont' : 'n’a'} pas tourné : </span>{g.cause}
         </p>
       ))}
     </>
   )
+}
+
+/** A check's error in one plain sentence: a network blip reads as such, not as
+ *  five copies of `getaddrinfo EAI_AGAIN oauth2.googleapis.com` (08/10/2026).
+ *  The raw text stays in the tooltip. */
+function erreurLisible(e: string): string {
+  if (/EAI_AGAIN|ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|fetch failed|injoignable/i.test(e)) {
+    return 'Google était injoignable (coupure réseau passagère) : les mails n’ont pas été lus. Les contrôles de la base ont tourné.'
+  }
+  if (/gmail\.readonly|unauthorized_client/i.test(e)) return 'Lecture des mails refusée : le droit Gmail du compte de service manque (Google Admin).'
+  return e
+}
+
+/** Checks that failed for the same reason, said once. */
+function grouperErreurs(cs: Array<{ libelle: string; erreur: string }>): Array<{ cause: string; libelles: string[]; brut: string }> {
+  const parCause = new Map<string, { cause: string; libelles: string[]; brut: string }>()
+  for (const c of cs) {
+    const cause = erreurLisible(c.erreur)
+    const g = parCause.get(cause) ?? { cause, libelles: [], brut: c.erreur }
+    g.libelles.push(c.libelle)
+    parCause.set(cause, g)
+  }
+  return [...parCause.values()]
 }
 
 function PointsKV({ p }: { p: ScorePoints }) {
@@ -2008,6 +2059,8 @@ interface PointHistorique {
   fermeLe: string | null
   raisonFermeture: string | null
   traitement: PointTraitement | null
+  /** « Former Tricobot › Tu pouvais aller chercher plus loin » (#1272). */
+  lecons?: Array<{ commentaire: string; par: Auteur; le: string }>
 }
 
 type EtatPoint = 'ouvert' | 'clos' | 'traite' | 'corrige' | 'fausse_alerte'
@@ -2024,9 +2077,9 @@ const ETAT_POINT_META: Record<EtatPoint, { label: string; cls: string; icon: Com
   traite: { label: 'Traité', cls: 'border-green-500/30 bg-green-500/10 text-green-700', icon: CheckCheck,
     title: 'Traité dans le tableau de bord : l’alerte était juste' },
   corrige: { label: 'Traité · Tricobot corrigé', cls: 'border-destructive/30 bg-destructive/5 text-destructive', icon: TricobotMascot,
-    title: 'Traité, avec une remarque sur ce que Tricobot aurait dû dire' },
+    title: 'Traité, avec une remarque sur ce que Tricobot aurait dû dire (avant #1272)' },
   fausse_alerte: { label: 'Fausse alerte', cls: 'border-destructive/30 bg-destructive/10 text-destructive', icon: XCircle,
-    title: 'Rien à faire : l’alerte était fausse' },
+    title: 'Former Tricobot : ce point n’aurait pas dû remonter' },
 }
 
 const POINT_FILTRES: Array<{ key: string; label: string; garde: (e: EtatPoint) => boolean }> = [
@@ -2108,7 +2161,7 @@ function PointLigne({ p, deplie, onToggle }: { p: PointHistorique; deplie: boole
   const etat = etatPoint(p)
   const m = ETAT_POINT_META[etat]
   const EIcon = m.icon
-  const { contexte, action } = decouperMessage(p.message)
+  const { contexte, action } = decouperMessage(sansTiretTexte(p.message))
   const j = joursDepuis(p.depuis)
   const t = p.traitement
   return (
@@ -2122,7 +2175,7 @@ function PointLigne({ p, deplie, onToggle }: { p: PointHistorique; deplie: boole
               <GIcon className={cn('h-3.5 w-3.5', g.iconCls)} />
             </div>
             <div className="min-w-0">
-              <p className={cn('truncate', etat === 'ouvert' ? 'font-medium' : 'text-muted-foreground')} title={p.titre}>{p.titre}</p>
+              <p className={cn('truncate', etat === 'ouvert' ? 'font-medium' : 'text-muted-foreground')} title={sansTiretTitre(p.titre)}>{sansTiretTitre(p.titre)}</p>
               <p className="text-[11px] text-muted-foreground truncate">{DOMAINE_LIBELLE[p.domaine] ?? p.domaine}</p>
             </div>
           </div>
@@ -2170,6 +2223,13 @@ function PointLigne({ p, deplie, onToggle }: { p: PointHistorique; deplie: boole
                   <span className="text-muted-foreground"> — {t.par.nom}, {fmtDateHeure(t.le)}</span>
                 </p>
               )}
+              {(p.lecons ?? []).map((l, i) => (
+                <p key={i} className="text-xs">
+                  <span className="font-semibold text-amber-800">Tricobot formé</span>
+                  <span> : {l.commentaire}</span>
+                  <span className="text-muted-foreground"> · {l.par.nom}, {fmtDateHeure(l.le)}</span>
+                </p>
+              ))}
             </div>
           </td>
         </tr>

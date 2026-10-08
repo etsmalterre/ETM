@@ -268,6 +268,7 @@ async function pointsSuperviseur() {
         nouveau: p.etat !== 'ouvert',
         depuis: p.depuis,
         lien: p.lien,
+        lecons: p.lecons,
       },
     }))
   } catch (err) {

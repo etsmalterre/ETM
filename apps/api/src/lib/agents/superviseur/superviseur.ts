@@ -1,4 +1,4 @@
-// Agent « Superviseur » — every weekday at 05:00 (Paris) it runs its checks
+// Agent « Superviseur »: every weekday at 05:00 and 13:00 (Paris) it runs its checks
 // over ETM (IDsociete 1 only — never TRM nor mfprod) and the factory
 // mailboxes, compares the findings with what it already reported, and leaves
 // the report in Agents IA › Superviseur, where Isabelle reads it every morning.
@@ -32,8 +32,13 @@ import { TRI_PROMPT_V1, TRI_PROMPT_V3 } from './prompt.js'
 import type { Constat, Domaine } from './types.js'
 
 export const SUPERVISEUR_SLUG = 'superviseur'
-/** Ready before anyone arrives, late enough to include the night's mails. */
-export const SUPERVISEUR_HEURE = 5
+/** 05:00: ready before anyone arrives, late enough to include the night's
+ *  mails. 13:00 (2026-10-08): closes by itself what the morning settled (a
+ *  confirmation sent, pieces reserved) instead of leaving it in the list until
+ *  tomorrow, catches up a failed morning (that day's DNS blip cost every mail
+ *  check), and reads the morning's mails. Not more: the points are a daily
+ *  to-do list, not a feed to chase. */
+export const SUPERVISEUR_HEURE: readonly number[] = [5, 13]
 /** ISO weekdays, 1 = Monday. */
 export const SUPERVISEUR_JOURS: readonly number[] = [1, 2, 3, 4, 5]
 

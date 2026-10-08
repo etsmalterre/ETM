@@ -94,8 +94,8 @@ describe('detailLignes', () => {
     })
     const c = cmd({ numero: 3891, lignes: [{ quantite: 351, unite: 3, prix: 10.34, libelle: '481' }, { quantite: 351, unite: 3, prix: 13.02, libelle: '4829' }] })
     expect(detailLignes(e, c)).toBe(
-      'Lu dans « BC_1000002259.pdf » (2 lignes) : 300 ml 481401P3150 Jersey coloris Marine à 12,09 € ; 315 ml 482901P3160 Côte à 15,24 € — total 615 Ml. ' +
-      'Saisi dans ETM N°3891 (2 lignes) : 351 Ml 481 à 10,34 € ; 351 Ml 4829 à 13,02 € — total 702 Ml.',
+      'Lu dans « BC_1000002259.pdf » (2 lignes) : 300 ml 481401P3150 Jersey coloris Marine à 12,09 € ; 315 ml 482901P3160 Côte à 15,24 €, total 615 Ml. ' +
+      'Saisi dans ETM N°3891 (2 lignes) : 351 Ml 481 à 10,34 € ; 351 Ml 4829 à 13,02 €, total 702 Ml.',
     )
   })
 

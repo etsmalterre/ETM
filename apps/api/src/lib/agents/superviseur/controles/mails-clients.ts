@@ -20,7 +20,7 @@
 // as a false « sans réponse ».
 
 import type { Constat, Controle, Gravite } from '../types.js'
-import { appelleReponse, chargerAnnuaire, entetesDuRun, FENETRE_JOURS, trier } from '../mails.js'
+import { appelleReponse, chargerAnnuaire, entetesDuRun, FENETRE_JOURS, resumeErreursBoites, trier } from '../mails.js'
 import { conversationsSansReponse, estInterne, leA } from '../reponses.js'
 import { BOITES_SUR_COPIE, SUPERVISEUR_LECTRICE } from '../boites-liste.js'
 import { adressesClient, envoisDesDocuments, envoisDuRun } from '../verifications-etm.js'
@@ -39,7 +39,7 @@ export const controleClientsSansReponse: Controle = {
   async executer(ctx) {
     const depuisMs = ctx.nowMs - FENETRE_JOURS * 86_400_000
     const [{ entetes, erreurs }, annuaire, envois] = await Promise.all([entetesDuRun(ctx.nowMs), chargerAnnuaire(), envoisDuRun(ctx.nowMs, depuisMs)])
-    if (erreurs.length) throw new Error(`boîte(s) illisible(s) — ${erreurs.join(' ; ')}`)
+    if (erreurs.length) throw new Error(resumeErreursBoites(erreurs))
     const cle = (conv: string) => `client_sans_reponse:${conv}`
     const attente = conversationsSansReponse(entetes, annuaire, ctx.nowMs, depuisMs, (conv, t) => ctx.raison(cle(conv), t))
       .filter((c) => {
@@ -96,7 +96,7 @@ export const controleClientsSansReponse: Controle = {
           }
           if (deja.length) {
             gravite = 'info'
-            notes.push(`Déjà envoyé depuis ETM avant sa demande : ${[...new Set(deja.map((e) => e.libelle))].join(', ')} ${listeEnvois(deja)} — vérifier qu’il l’a bien reçu.`)
+            notes.push(`Déjà envoyé depuis ETM avant sa demande : ${[...new Set(deja.map((e) => e.libelle))].join(', ')} ${listeEnvois(deja)} ; vérifier qu’il l’a bien reçu.`)
           }
         }
         // An announced address already entered.
@@ -119,7 +119,7 @@ export const controleClientsSansReponse: Controle = {
         controle: 'client_sans_reponse',
         domaine: 'mails',
         gravite,
-        titre: `${c.client.nom} — « ${court(c.dernier.sujet || '(sans objet)')} »`,
+        titre: `${c.client.nom} : « ${court(c.dernier.sujet || '(sans objet)')} »`,
         message: erreur
           ? `Message de ${c.dernier.de} ${quand}. Lecture IA impossible, à vérifier.`
           : [`${tri.resume} ${quand[0].toUpperCase()}${quand.slice(1)}.`, tri.action_attendue ? `À faire : ${tri.action_attendue}` : '', ...notes].filter(Boolean).join(' '),
