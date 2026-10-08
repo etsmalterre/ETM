@@ -1985,9 +1985,10 @@ function ColorisDrawer({ refItem, tarifEditable, onAddColoris, onClose, onOpenTa
 // ── Ajouter un coloris (gestion_coloris) ───────────────────────────
 // Restricted path for users who may extend a ref's coloris list but can't edit
 // the reference or its tarifs. The new coloris has to inherit the terms already
-// in force, so the ref must be uniform: every coloris on tarif standard, all
-// sharing the same visible tranches. When it isn't, the dialog explains that a
-// tarif manager has to do it. Mirrored server-side in POST
+// in force, so every coloris of the ref must be on tarif standard (a contract or
+// a coefficient is a negotiated price). Divergent visible tranches don't block:
+// the new coloris gets the unanimous set, else the 0..6 default. When it is
+// blocked, the dialog explains that a tarif manager has to do it. Mirrored server-side in POST
 // /clients/:id/references/:did/coloris — this is UX, not the security boundary.
 
 /** Normalised, comparable form of an rcc lst_tranche ("" → the 0..6 default). */
@@ -2008,12 +2009,13 @@ function trancheSummary(signature: string): string {
   return labels.length === 0 ? '—' : `${labels.join(' · ')} rouleaux`
 }
 
-/** The single set of terms shared by every coloris of a ref, or null when they diverge. */
+/** Tranches a new coloris gets when every coloris of the ref is on tarif
+ *  standard (the unanimous set, else the 0..6 default), or null when one is
+ *  under a contract or a coefficient. Same rule as the API. */
 function sharedStandardTerms(coloris: RefColoris[]): string | null {
-  if (coloris.length === 0) return '0,1,2,3,4,5,6'
   if (coloris.some((c) => c.tarif_mode !== 'standard')) return null
   const signatures = new Set(coloris.map((c) => trancheSignature(c.lst_tranche)))
-  return signatures.size === 1 ? [...signatures][0] : null
+  return signatures.size === 1 ? [...signatures][0] : '0,1,2,3,4,5,6'
 }
 
 function AddColorisDialog({ open, refItem, clientId, canManageTarifs, onClose }: {
@@ -2108,8 +2110,8 @@ function AddColorisDialog({ open, refItem, clientId, canManageTarifs, onClose }:
                   Merci de demander à un utilisateur ayant le droit d’éditer les tarifs pour ajouter ce coloris.
                 </p>
                 <p className="text-[11px] mt-1 text-amber-800/80">
-                  Les coloris de cette référence n’ont pas tous le même tarif standard avec les mêmes tranches - il n’y a
-                  pas de conditions uniques à reprendre pour un nouveau coloris.
+                  Des coloris de cette référence sont sous contrat ou à coefficient : le tarif d’un nouveau coloris
+                  est à décider par un responsable.
                 </p>
               </div>
             </div>

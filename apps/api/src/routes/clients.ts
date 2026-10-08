@@ -1213,8 +1213,8 @@ function rccRowColorisId(r: RccRow): number {
   return r.IDref_fini_colori > 0 ? r.IDref_fini_colori : r.IDcolori_ecru
 }
 
-/** Refusal shown to a gestion_coloris-only user when the ref's existing coloris
- *  don't share one set of standard terms to copy onto the new one. */
+/** Refusal shown to a gestion_coloris-only user when a coloris of the ref is
+ *  under a contract or a coefficient (a negotiated price to extend). */
 const COLORIS_TERMS_MISMATCH =
   'Merci de demander à un utilisateur ayant le droit d’éditer les tarifs pour ajouter ce coloris.'
 
@@ -1335,11 +1335,13 @@ const addColorisBody = z.object({
 // while managing neither references nor tarifs.
 //
 // Such a user can't set a tarif, so the new rows must inherit the terms already
-// in force — which only exists if the ref is uniform: every coloris on tarif
-// standard, all sharing the same visible tranches (lst_tranche). Otherwise
-// there is no single "same terms" to copy and we refuse, pointing at someone
-// who can edit tarifs. Callers holding gestion_tarifs skip the gate (they can
-// set the tarif afterwards).
+// in force: every coloris of the ref on tarif standard. A contract or a
+// coefficient is a negotiated price only a tarif manager may extend, so we
+// refuse, pointing at someone who can edit tarifs. Divergent visible tranches
+// (lst_tranche) do NOT block: on the standard grid the price is the same, the
+// older coloris merely hide the « < 1 rouleau » band (AGAPE 228/122,
+// 2026-10-08: 47 coloris on 0..6, 26 on 1..6, Isa got the request for nothing).
+// Callers holding gestion_tarifs skip the gate (they can set the tarif afterwards).
 clientsRouter.post('/:id/references/:did/coloris', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
@@ -1392,13 +1394,13 @@ clientsRouter.post('/:id/references/:did/coloris', async (req: Request, res: Res
     if (!allowedTarifs) {
       const modes = await fetchTarifModes(audited.map((r) => ({ id: r.IDref_client_colori, contrat: r.contrat })))
       const allStandard = audited.every((r) => (modes.get(r.IDref_client_colori)?.tarif_mode ?? 'standard') === 'standard')
-      if (!allStandard || signatures.size > 1) {
+      if (!allStandard) {
         res.status(403).json({ error: 'tarifs_non_uniformes', message: COLORIS_TERMS_MISMATCH })
         return
       }
     }
-    // Copy the ref's shared tranches when they're unanimous; otherwise (only
-    // reachable with gestion_tarifs) fall back to the standard 0..6 default.
+    // Copy the ref's shared tranches when they're unanimous; otherwise fall back
+    // to the 0..6 default a coloris created today gets.
     if (signatures.size === 1) lstTranche = [...signatures][0]
 
     let pk = 0
@@ -1486,7 +1488,7 @@ clientsRouter.post('/:id/references/:did/coloris/demande', async (req: Request, 
         tone: 'alert',
         intro:
           `**${who}** souhaite ajouter un coloris à une référence client, mais l’opération est bloquée : ` +
-          'les coloris existants de cette référence n’ont pas tous le tarif standard avec les mêmes tranches.',
+          'des coloris de cette référence sont sous contrat ou à coefficient.',
         rows: detailRows,
         note: parsed.data.note.trim() ? { label: 'Note du demandeur', value: parsed.data.note } : null,
         callout: 'L’ajout doit être réalisé par un utilisateur ayant le droit d’éditer les tarifs.',

@@ -52,8 +52,7 @@ const SAMPLES: Sample[] = [
       tone: 'alert',
       intro:
         '**Marie Dupont** souhaite ajouter un coloris à une référence client, mais l’opération est ' +
-        'bloquée : les coloris existants de cette référence n’ont pas tous le tarif standard avec les ' +
-        'mêmes tranches.',
+        'bloquée : des coloris de cette référence sont sous contrat ou à coefficient.',
       rows: [
         { label: 'Client', value: 'CONFECTION MARTIN' },
         { label: 'Référence', value: 'MOLLETON GRATTE (ML-4420)' },

@@ -302,7 +302,7 @@ export const PERMISSION_KEYS = [
     key: 'gestion_coloris',
     label: 'Gestion des coloris',
     description:
-      'Autorise l’ajout d’un coloris à une référence client existante — bouton « Ajouter un coloris » du tiroir Coloris de Clients > Gestion — sans donner accès aux références ni aux tarifs. Le nouveau coloris reprend les conditions déjà en place ; l’ajout est refusé si les coloris existants n’ont pas tous le tarif standard avec les mêmes tranches.',
+      'Autorise l’ajout d’un coloris à une référence client existante — bouton « Ajouter un coloris » du tiroir Coloris de Clients > Gestion — sans donner accès aux références ni aux tarifs. Le nouveau coloris reprend les conditions déjà en place ; l’ajout est refusé si un coloris existant est sous contrat ou à coefficient.',
     category: 'Gestion client',
   },
   // LIVA #1209: the Simone Pérèle code list (Clients › Gestion › Étiquettes)
