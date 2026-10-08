@@ -66,6 +66,7 @@ import { sendMail } from '../lib/gmail.js'
 import { isRectiligneType, partitionByKind, refuseIfRectiligne, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 import { loadRectiligneRefLabels, loadRectiligneColorisLabels, readRefRectiligneRow, normalizeRefRectiligne } from '../lib/rectiligne.js'
 import { getUserEmail } from '../lib/user-emails.js'
+import { loadEtmAffectation } from '../lib/affectation-fil-trm.js'
 
 export const commandesTrmRouter: RouterType = Router()
 
@@ -1698,18 +1699,33 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/stock-fil', async (req: Request, re
     // of the 123 lots in stock — it only bites on the small clients, which is
     // exactly where it matters.
     //
+    // One exception (LIVA #1273, 2026-10-08): on the mirror of an ETM sst
+    // line, the lots Pierrot affected to THAT line are offered whoever owns
+    // them. The mirror's client is Ets Malterre, but the yarn may be ETM's own
+    // customer's (Sigvaris polyamide on 180102) — filtered out, the blend
+    // could never be completed and « Créer un OF » never appeared. Only the
+    // lots affected to this very line, never "every lot of ETM's customer":
+    // the affectation is a deliberate choice for this order, and since #1159
+    // it is what decides the yarn of a mirror's OF anyway. A TRM-native line
+    // has no affectation, so nothing changes for it.
+    //
     // The other two legacy filters, same rationale: `IDMagasin = 1` is TRM's
     // own warehouse (122 of 123 lots), and `terminé = 0` excludes archived
     // lots — `stock > 0` is NOT equivalent, 3 lots are archived with stock
-    // still on them.
+    // still on them. Both still apply to an affected lot.
     const pairClause = Array.from(pctByPair.keys())
       .map((k) => { const [rf, cf] = k.split(':'); return `(IDref_fil = ${rf} AND IDcolori_fil = ${cf})` })
       .join(' OR ')
+    const affectation = await loadEtmAffectation(ligneId)
+    const affectedIds = Array.from(new Set(affectation.lots.map((l) => l.IDstock_fil).filter((x) => x > 0)))
+    const ownerClause = affectedIds.length > 0
+      ? `(IDclient = ${IDclient} OR IDstock_fil IN (${affectedIds.join(',')}))`
+      : `IDclient = ${IDclient}`
     const lotsRaw = await query<any>(
       `SELECT IDstock_fil, IDref_fil, IDcolori_fil, lot, stock, stock_initial,
               IDMagasin, IDfournisseur, IDclient, emplacement
        FROM stock_fil WHERE (${pairClause}) AND stock > 0
-             AND IDclient = ${IDclient} AND IDMagasin = ${TRM_MAGASIN}
+             AND ${ownerClause} AND IDMagasin = ${TRM_MAGASIN}
        ORDER BY lot`,
     )
     const archived = await archivedLotIds(lotsRaw.map((l: any) => Number(l.IDstock_fil) || 0))

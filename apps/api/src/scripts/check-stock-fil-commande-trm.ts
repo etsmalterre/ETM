@@ -6,6 +6,9 @@
 // TRM knits à façon: the client supplies the yarn, so an order can only run off
 // its own client's lots. Read-only; reproduces the endpoint's predicate over
 // every open TRM line and reports what the client filter removes.
+// Exception (LIVA #1273): on the mirror of an ETM sst line, the lots affected
+// to that line (asso_fil_lignecmdsst) are kept whoever owns them — ETM's own
+// customer may supply the yarn. Those are counted separately below.
 import 'dotenv/config'
 import { query } from '../lib/hfsql-auto.js'
 
@@ -27,7 +30,7 @@ async function main() {
 
   if (cmds.length === 0) { console.log('Aucune commande TRM ouverte.'); process.exit(0) }
   const lignes = await query<any>(
-    `SELECT IDligne_commande_client, IDcommande_client, IDreference, IDcolori FROM ligne_commande_client
+    `SELECT IDligne_commande_client, IDcommande_client, IDreference, IDcolori, IDligne_commande_ETM FROM ligne_commande_client
      WHERE IDcommande_client IN (${Array.from(cmdById.keys()).join(',')}) AND TYPE = 1`,
   )
   const compo = await query<any>(`SELECT IDref_ecru, IDcolori_ecru, IDref_fil, IDcolori_fil FROM composition_ecru WHERE IDref_fil > 0`)
@@ -38,7 +41,22 @@ async function main() {
     (await query<any>(`SELECT IDstock_fil FROM stock_fil WHERE terminé = 1`)).map((r: any) => n(r.IDstock_fil)),
   )
 
+  const etmLigneIds = Array.from(new Set(lignes.map((l: any) => n(l.IDligne_commande_ETM)).filter(Boolean)))
+  const affectedByEtmLigne = new Map<number, Set<number>>()
+  if (etmLigneIds.length > 0) {
+    const asso = await query<any>(
+      `SELECT IDligne_commande_sous_traitant, IDstock_fil FROM asso_fil_lignecmdsst
+       WHERE IDligne_commande_sous_traitant IN (${etmLigneIds.join(',')})`,
+    )
+    for (const a of asso) {
+      const k = n(a.IDligne_commande_sous_traitant)
+      if (!affectedByEtmLigne.has(k)) affectedByEtmLigne.set(k, new Set())
+      affectedByEtmLigne.get(k)!.add(n(a.IDstock_fil))
+    }
+  }
+
   let lignesAvecEcart = 0
+  let lotsAffectesGardes = 0
   let lotsRetires = 0
   console.log('ligne | cmd  | client                    | avant | après | lots retirés (propriétaire)')
   for (const l of lignes) {
@@ -53,8 +71,15 @@ async function main() {
     )
     if (pairs.size === 0) continue
     const candidats = lots.filter((x: any) => pairs.has(`${n(x.IDref_fil)}:${n(x.IDcolori_fil)}`))
+    const affected = affectedByEtmLigne.get(n(l.IDligne_commande_ETM)) ?? new Set<number>()
     const apres = candidats.filter((x: any) =>
-      n(x.IDclient) === idClient && n(x.IDMagasin) === TRM_MAGASIN && !archived.has(n(x.IDstock_fil)))
+      (n(x.IDclient) === idClient || affected.has(n(x.IDstock_fil)))
+      && n(x.IDMagasin) === TRM_MAGASIN && !archived.has(n(x.IDstock_fil)))
+    for (const x of apres) {
+      if (n(x.IDclient) === idClient) continue
+      lotsAffectesGardes++
+      console.log(`  ligne ${n(l.IDligne_commande_client)} (cmd ${n(cmd.numero)}) garde le lot affecté ${x.lot} (client ${n(x.IDclient)}, ${f(x.stock).toFixed(0)} Kg)`)
+    }
     if (candidats.length === apres.length) continue
     lignesAvecEcart++
     lotsRetires += candidats.length - apres.length
@@ -67,7 +92,9 @@ async function main() {
   console.log(`\nlignes de type 1 sur commandes ouvertes : ${lignes.length}`)
   console.log(`  dont la liste change              : ${lignesAvecEcart}`)
   console.log(`  lots retirés au total             : ${lotsRetires}`)
-  console.log('\n✓ Tout lot retiré ci-dessus appartient à un AUTRE client, à un autre magasin, ou est archivé.')
+  console.log(`  lots affectés ETM d'un autre client gardés : ${lotsAffectesGardes}`)
+  console.log('\n✓ Tout lot retiré ci-dessus appartient à un AUTRE client, à un autre magasin, ou est archivé,')
+  console.log('  et n\'est pas affecté sur la ligne sous-traitant ETM de la commande.')
   process.exit(0)
 }
 
