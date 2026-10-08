@@ -2932,7 +2932,7 @@ Apply it to any list card that carries a deadline the user cares about. Candidat
 - Production → Tricotage / Teinture / Confection — `date_prevue`
 - Transport → Expéditions / Livraisons — `date_expedition` / `date_livraison`
 
-**Exception — Clients → Commandes**: its left-list cards are neutral-by-default and color only on workflow state (amber = non affectée), NOT on delivery deadlines — see §41. Deadline urgency on that screen survives only at the line-card level inside the detail panel. When a screen's every card would end up red/amber under the deadline rule (long-running orders), prefer the §41 workflow-state model for the left list. **TRM's Clients → Commandes went the other way** (LIVA #1123, 2026-09-07): there the commande lives by its délai, so the liseré follows this §30 rule (red = something to do on our side: no délai on any line, or past; amber = act before it turns red), the §41 counter pill counts the reds, and the phase pill alone carries the workflow state. Same visual language, opposite pick — the test is "what does the user do first when a card is red?"
+**Exception — Clients → Commandes**: its left-list cards are neutral-by-default and color on **line status × délai** (§41, since 2026-10-08): red/amber only when there is something to do on ETM's side (launch, ship, chase a late subcontractor), never for a délai alone while TRM or the dyer works in time. A bare deadline rule would make every long-running order red or amber. **TRM's Clients → Commandes went the other way** (LIVA #1123, 2026-09-07): there the commande lives by its délai, so the liseré follows this §30 rule (red = something to do on our side: no délai on any line, or past; amber = act before it turns red), the §41 counter pill counts the reds, and the phase pill alone carries the workflow state. Same visual language, opposite pick — the test is "what does the user do first when a card is red?"
 
 The three-day window can be tuned per domain, but the visual language (red = late/missing, amber = soon, no decoration = normal) stays constant across the whole app so users don't have to re-learn it per screen.
 
@@ -4193,7 +4193,7 @@ Lives in `apps/web/e2e/` (Playwright, chromium only, own vite server on **port 3
 
 ## 41. Left-list card liseré + search-bar counter pill (attention-state standard)
 
-References: **`SousTraitantsCommandes.tsx`** (red + amber relance pills — the original implementation) and **`ClientsCommandes.tsx`** (amber "non affectée" pill).
+References: **`SousTraitantsCommandes.tsx`** (red + amber relance pills — the original implementation) and **`ClientsCommandes.tsx`** (red « à faire » + amber « bientôt » pills, with the reason under the client name).
 
 The standard color-coding model for master-detail **left-list cards**:
 
@@ -4227,9 +4227,10 @@ The standard color-coding model for master-detail **left-list cards**:
 |---|---|---|
 | Sous-traitants → Commandes | red | `attente_delai` relance due/overdue (`date_notif`), or delivery deadline passed/missing (§30) |
 | Sous-traitants → Commandes | amber | relance tomorrow, or delivery within 3 days (§30) |
-| Clients → Commandes | amber | **commande non affectée** — open order with no roll reserved yet (`phase === 'a_affecter'`) |
+| Clients → Commandes | red | **something to do now** on its most urgent line: fini to launch ≤ 35 j before the délai (écru ≤ 10 j), ready to ship ≤ 3 j or late, knitting / dyer past the délai (`urgence.niveau`, API `lib/urgence-commande-client.ts`) |
+| Clients → Commandes | amber | **something to do very soon**: fini to launch ≤ 56 j (écru ≤ 21 j), ready to ship ≤ 10 j, or a line still to deliver without a délai. The card prints the reason (« 2 lignes à lancer · délai 14/10 ») in the liseré colour. Its pill is NOT a §29.8 footer mirror: it is the order's progress on the line pills' scale (`AvancementPill`), so liseré = what to do, pill = where it stands |
 
-Note the two families of meaning: SST colors are **deadline-derived** (§30 `deliveryUrgency`), Clients colors are **workflow-state-derived** (phase). Both render through the same visual system. When adding a new state: pick the color by severity (red = overdue/blocking, amber = needs action), add the liseré + pill wiring, and add a row to this table. Clients → Commandes deliberately does NOT color cards by delivery urgency anymore — neutral-by-default won over "every card is red or amber" noise.
+Note the two families of meaning: SST colors are **deadline-derived** (§30 `deliveryUrgency`), Clients colors are **workflow-state-derived** (phase). Both render through the same visual system. When adding a new state: pick the color by severity (red = overdue/blocking, amber = needs action), add the liseré + pill wiring, and add a row to this table. Clients → Commandes colours by **line status × délai** (2026-10-08): a délai alone never colours a card while someone else works in time — neutral-by-default won over "every card is red or amber" noise, and a coloured card always prints its reason.
 
 ---
 

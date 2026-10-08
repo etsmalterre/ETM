@@ -46,3 +46,19 @@ export function StatutLignePill({ statut, className }: { statut: StatutLigneClie
     </span>
   )
 }
+
+/** Where an order stands, on the same scale (API avancementCommande): its least advanced line
+ *  still to deliver. Shown on the Clients › Commandes list cards. */
+export function AvancementPill({ etat, className }: { etat: EtatLigneClient; className?: string }) {
+  const meta = STATUT_LIGNE_META[etat]
+  const Icon = meta.icon
+  return (
+    <span
+      title={etat === 'expediee' || etat === 'soldee' ? meta.label : `Ligne la moins avancée : ${meta.label}`}
+      className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap', meta.classes, className)}
+    >
+      <Icon className="h-3 w-3" />
+      {meta.label}
+    </span>
+  )
+}

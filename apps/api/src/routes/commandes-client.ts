@@ -23,7 +23,8 @@
 //  - Reservation pointer: stock_ecru.IDligne_commande_client /
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
-import { faitsLignesClient, statutLigneClient } from '../lib/statut-ligne-client.js'
+import { faitsLignesClient, statutLigneClient, type EtatLigneClient } from '../lib/statut-ligne-client.js'
+import { avancementCommande, urgenceCommande, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import multer from 'multer'
@@ -222,55 +223,42 @@ async function nextNumero(): Promise<number> {
   return (Number(r[0]?.m) || 0) + 1
 }
 
-// ── Phase model ──────────────────────────────────────────
-// A client order is simpler than the sst computed phase (no per-line sstatut):
-//   terminee   — est_soldee = 1 (the sidebar footer pill flips this)
-//   partielle  — open AND at least one line has rolls reserved to it
-//   a_affecter — open AND no rolls reserved yet
-// `est_soldee` remains the sole write gate (refuseIfSoldee).
+type EtatCommande = { urgence: UrgenceCommande | null; avancement: EtatLigneClient | null }
 
-export type ClientPhase = 'a_affecter' | 'partielle' | 'terminee'
-
-/** Set of commande ids that have at least one reserved roll on any line. */
-async function ordersWithReservedRolls(commandeIds: number[]): Promise<Set<number>> {
-  const out = new Set<number>()
-  const ids = commandeIds.filter((x) => x > 0)
-  if (ids.length === 0) return out
-  // Map every line → its commande, then check both stock tables for rolls
-  // reserved to those lines (IDligne_commande_client). Flat queries only.
-  const lineRows = await query<{ IDligne_commande_client: number; IDcommande_client: number }>(
-    `SELECT IDligne_commande_client, IDcommande_client FROM ligne_commande_client
-     WHERE IDcommande_client IN (${ids.join(',')})`,
-  )
-  const cmdByLine = new Map<number, number>()
-  for (const r of lineRows) cmdByLine.set(Number(r.IDligne_commande_client), Number(r.IDcommande_client))
-  const lineIds = Array.from(cmdByLine.keys()).filter((x) => x > 0)
-  if (lineIds.length === 0) return out
-  const inList = lineIds.join(',')
-  const [ecru, fini] = await Promise.all([
-    query<{ IDligne_commande_client: number }>(
-      `SELECT DISTINCT IDligne_commande_client FROM stock_ecru WHERE IDligne_commande_client IN (${inList})`,
-    ),
-    query<{ IDligne_commande_client: number }>(
-      `SELECT DISTINCT IDligne_commande_client FROM stock_fini WHERE IDligne_commande_client IN (${inList})`,
-    ),
-  ])
-  for (const r of [...ecru, ...fini]) {
-    const cmd = cmdByLine.get(Number(r.IDligne_commande_client))
-    if (cmd && cmd > 0) out.add(cmd)
+/** Each open order's state (lib/urgence-commande-client.ts): the line status ladder over all the
+ *  given lines, batched, then per order what there is to do and when (urgence) and where it stands
+ *  (avancement). Closed orders are not passed in: neutral and « soldée ». */
+async function etatCommandesOuvertes(lignes: any[]): Promise<Map<number, EtatCommande>> {
+  const out = new Map<number, EtatCommande>()
+  if (lignes.length === 0) return out
+  const diversCmds = lignes.filter((l) => Number(l.type_kind) === 3).map((l) => Number(l.IDcommande_client))
+  const diversShipped = await diversShippedByCommandes(diversCmds)
+  const faits = await faitsLignesClient(lignes.map((l) => {
+    const typeKind = Number(l.type_kind) || 0
+    return {
+      id: Number(l.IDligne_commande_client) || 0,
+      typeKind,
+      refId: Number(l.IDreference) || 0,
+      unite: Number(l.unite) || 0,
+      quantite: Number(l.quantite) || 0,
+      soldee: false,
+      expedieDivers: typeKind === 3
+        ? (diversShipped.get(Number(l.IDcommande_client))?.get(diversKey(Number(l.IDreference) || 0, Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0)) ?? 0)
+        : undefined,
+    }
+  }))
+  const parCommande = new Map<number, Array<{ etat: ReturnType<typeof statutLigneClient>['etat']; typeKind: number; dateLivraison: string | null }>>()
+  for (const l of lignes) {
+    const f = faits.get(Number(l.IDligne_commande_client))
+    if (!f) continue
+    const cid = Number(l.IDcommande_client)
+    const arr = parCommande.get(cid) ?? []
+    arr.push({ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0, dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null })
+    parCommande.set(cid, arr)
   }
-  return out
-}
-
-async function computePhasesBatch(
-  orders: Array<{ id: number; est_soldee: number }>,
-): Promise<Map<number, ClientPhase>> {
-  const out = new Map<number, ClientPhase>()
-  const openIds = orders.filter((o) => o.est_soldee !== 1).map((o) => o.id)
-  const reserved = await ordersWithReservedRolls(openIds)
-  for (const o of orders) {
-    if (o.est_soldee === 1) out.set(o.id, 'terminee')
-    else out.set(o.id, reserved.has(o.id) ? 'partielle' : 'a_affecter')
+  const today = new Date()
+  for (const [cid, ls] of parCommande) {
+    out.set(cid, { urgence: urgenceCommande(ls, today), avancement: avancementCommande(ls.map((x) => x.etat), false) })
   }
   return out
 }
@@ -959,21 +947,19 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
 
     const ids = commandes.map((c: any) => Number(c.IDcommande_client)).filter(Boolean)
     const clientIds = commandes.map((c: any) => Number(c.IDclient)).filter(Boolean)
-    const [clientNames, phaseMap] = await Promise.all([
-      resolveClientNames(clientIds),
-      computePhasesBatch(commandes.map((c: any) => ({
-        id: Number(c.IDcommande_client),
-        est_soldee: Number(c.est_soldee) || 0,
-      }))),
-    ])
+    const clientNames = await resolveClientNames(clientIds)
 
     // Line aggregates: nb_lignes, total_qte, total_eur (Σ qty×prix), earliest.
     const totalsMap = new Map<number, { total_eur: number; total_qte: number; nb_lignes: number; earliest_delivery: string | null }>()
+    let etatMap = new Map<number, EtatCommande>()
     if (ids.length > 0) {
       const lignes = await query<any>(
-        `SELECT IDcommande_client, quantite, prix, date_livraison
+        `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDVariation1, IDVariation2,
+                unite, quantite, prix, date_livraison
          FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
       )
+      const ouvertes = new Set(commandes.filter((c: any) => Number(c.est_soldee) !== 1).map((c: any) => Number(c.IDcommande_client)))
+      etatMap = await etatCommandesOuvertes(lignes.filter((l: any) => ouvertes.has(Number(l.IDcommande_client))))
       for (const l of lignes) {
         const id = Number(l.IDcommande_client)
         const acc = totalsMap.get(id) ?? { total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null }
@@ -1000,7 +986,9 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
         date_commande: c.date_commande ?? null,
         est_soldee: Number(c.est_soldee) || 0,
         client_nom: clientNames.get(Number(c.IDclient)) ?? '',
-        phase: phaseMap.get(cid) ?? 'a_affecter',
+        // where it stands (line pills' scale) + what there is to do and when; soldée = neutral
+        avancement: Number(c.est_soldee) === 1 ? 'soldee' : (etatMap.get(cid)?.avancement ?? null),
+        urgence: etatMap.get(cid)?.urgence ?? null,
         ...totals,
       }
     })
@@ -1352,21 +1340,35 @@ async function diversExpeditionIds(commandeId: number): Promise<number[]> {
 
 /** Σ shipped quantity per article key across the commande's divers shipments. */
 export async function diversShippedByArticle(commandeId: number): Promise<Map<string, number>> {
-  const out = new Map<string, number>()
-  const expIds = await diversExpeditionIds(commandeId)
-  if (expIds.length === 0) return out
-  const cartons = await query<{ IDligne_expedition_divers: number }>(
-    `SELECT IDligne_expedition_divers FROM ligne_expedition_divers WHERE IDexpedition_divers IN (${expIds.join(',')})`,
+  return (await diversShippedByCommandes([commandeId])).get(commandeId) ?? new Map()
+}
+
+/** Same, batched over several commandes (the list computes every open order's line status). */
+export async function diversShippedByCommandes(commandeIds: number[]): Promise<Map<number, Map<string, number>>> {
+  const out = new Map<number, Map<string, number>>()
+  const ids = Array.from(new Set(commandeIds.filter((x) => Number.isInteger(x) && x > 0)))
+  if (ids.length === 0) return out
+  const exps = await query<{ IDexpedition_divers: number; IDcommande_client: number }>(
+    `SELECT IDexpedition_divers, IDcommande_client FROM expedition_divers WHERE IDcommande_client IN (${ids.join(',')})`,
   )
-  const cartonIds = cartons.map((c) => Number(c.IDligne_expedition_divers)).filter((x) => x > 0)
-  if (cartonIds.length === 0) return out
+  const cmdParExp = new Map(exps.map((e) => [Number(e.IDexpedition_divers), Number(e.IDcommande_client)]))
+  if (cmdParExp.size === 0) return out
+  const cartons = await query<{ IDligne_expedition_divers: number; IDexpedition_divers: number }>(
+    `SELECT IDligne_expedition_divers, IDexpedition_divers FROM ligne_expedition_divers WHERE IDexpedition_divers IN (${[...cmdParExp.keys()].join(',')})`,
+  )
+  const cmdParCarton = new Map(cartons.map((c) => [Number(c.IDligne_expedition_divers), cmdParExp.get(Number(c.IDexpedition_divers)) ?? 0]))
+  if (cmdParCarton.size === 0) return out
   const items = await query<any>(
-    `SELECT quantite, IDref_divers, IDVariation1, IDVariation2 FROM ref_divers_expedie ` +
-      `WHERE IDligne_expedition_divers IN (${cartonIds.join(',')})`,
+    `SELECT IDligne_expedition_divers, quantite, IDref_divers, IDVariation1, IDVariation2 FROM ref_divers_expedie ` +
+      `WHERE IDligne_expedition_divers IN (${[...cmdParCarton.keys()].join(',')})`,
   )
   for (const i of items as any[]) {
+    const cmd = cmdParCarton.get(Number(i.IDligne_expedition_divers)) ?? 0
+    if (!cmd) continue
+    const m = out.get(cmd) ?? new Map<string, number>()
     const k = diversKey(Number(i.IDref_divers) || 0, Number(i.IDVariation1) || 0, Number(i.IDVariation2) || 0)
-    out.set(k, round2c((out.get(k) ?? 0) + (Number(i.quantite) || 0)))
+    m.set(k, round2c((m.get(k) ?? 0) + (Number(i.quantite) || 0)))
+    out.set(cmd, m)
   }
   return out
 }
@@ -1537,7 +1539,6 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       nbDonationPieces = (Number(pe[0]?.nb) || 0) + (Number(pf[0]?.nb) || 0)
     }
 
-    const phase = (await computePhasesBatch([{ id, est_soldee: Number(h.est_soldee) || 0 }])).get(id) ?? 'a_affecter'
     const tombe_metier = await computeTombeMetier(lignesFixed.map((l) => ({
       type_kind: Number(l.type_kind) || 0,
       IDreference: Number(l.IDreference) || 0,
@@ -1571,7 +1572,6 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       adresse_facturation: adrFac,
       lignes,
       tombe_metier,
-      phase,
     })
   } catch (err) {
     console.error('Error fetching commande-client detail:', err)

@@ -73,12 +73,11 @@ import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { EtatPill } from '@/lib/etat-stock-fini'
-import { StatutLignePill, type StatutLigneClient } from '@/lib/statut-ligne-client'
+import { AvancementPill, StatutLignePill, type EtatLigneClient, type StatutLigneClient } from '@/lib/statut-ligne-client'
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 
 // ── Types ──────────────────────────────────────────────
 
-type ClientPhase = 'a_affecter' | 'partielle' | 'terminee'
 
 /** Which printable/emailable document the header menus target.
  *  'donation-valeur' (the "Calcul de la valeur" of the attached pieces) only
@@ -100,12 +99,18 @@ interface CommandeListRow {
   date_commande: string | null
   est_soldee: number
   client_nom: string
-  phase: ClientPhase
+  /** where it stands: its least advanced line still to deliver (API avancementCommande); null = no line */
+  avancement: EtatLigneClient | null
+  /** what there is to do and when (API lib/urgence-commande-client.ts); null = neutral */
+  urgence: UrgenceCommande | null
   total_eur: number
   total_qte: number
   nb_lignes: number
   earliest_delivery: string | null
 }
+
+type NiveauUrgence = 'rouge' | 'ambre'
+interface UrgenceCommande { niveau: NiveauUrgence; raison: string }
 
 interface LigneCommande {
   IDligne_commande_client: number
@@ -276,7 +281,6 @@ interface CommandeDetail {
   adresse_facturation: AdresseLite | null
   lignes: LigneCommande[]
   tombe_metier: TombeMetierRow[]
-  phase: ClientPhase
 }
 
 interface TombeMetierRow { IDref_ecru: number; ref_label: string; coloris_label: string; poids_kg: number }
@@ -383,22 +387,6 @@ const editSectionClass = 'border-l-4 border-l-accent/70 bg-accent/[0.03]'
 
 // ── Status / phase helpers ─────────────────────────────
 
-const PHASE_META: Record<ClientPhase, { label: string; solid: string; icon: React.ElementType }> = {
-  a_affecter: { label: 'À affecter', solid: 'bg-slate-500 border-slate-500', icon: Package },
-  partielle: { label: 'Affectée', solid: 'bg-primary border-primary', icon: Link2 },
-  terminee: { label: 'Terminée', solid: 'bg-success border-success', icon: CheckCircle2 },
-}
-
-function PhasePill({ phase, className }: { phase: ClientPhase; className?: string }) {
-  const meta = PHASE_META[phase] ?? PHASE_META.a_affecter
-  const Icon = meta.icon
-  return (
-    <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white', meta.solid, className)}>
-      <Icon className="h-2.5 w-2.5" />{meta.label}
-    </Badge>
-  )
-}
-
 // Supply-line état pill — solid hue per sst line status, matching the colors
 // used by the Sous-traitants/Commandes phase pills (SST_PHASE_META). Keyed on
 // the French label the supply endpoint emits (SSTATUT_LABELS).
@@ -485,8 +473,8 @@ export function ClientsCommandes() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  // Amber counter-pill toggle: narrow the list to commandes non affectées.
-  const [amberOnly, setAmberOnly] = useState(false)
+  // Counter-pill toggles (mps_designer §41): narrow the list to « à faire » (rouge) / « bientôt » (ambre).
+  const [urgenceOn, setUrgenceOn] = useState<Record<NiveauUrgence, boolean>>({ rouge: false, ambre: false })
   const [isEditing, setIsEditing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [affectationLineId, setAffectationLineId] = useState<number | null>(null)
@@ -663,14 +651,18 @@ export function ClientsCommandes() {
 
   const rows = commandes ?? []
 
-  // "Non affectée" counter pill (mps_designer §41): open commandes with no
-  // roll reserved yet, counted over the loaded list. The toggle narrows the
-  // list to those cards; it disarms implicitly when the bucket empties (the
-  // pill is hidden at 0, so an armed empty filter would strand the user on
-  // an empty list with no visible way out).
-  const amberCount = rows.reduce((n, r) => n + (r.phase === 'a_affecter' ? 1 : 0), 0)
-  const amberActive = amberOnly && amberCount > 0
-  const visibleRows = amberActive ? rows.filter((r) => r.phase === 'a_affecter') : rows
+  // Counter pills (mps_designer §41): rouge = something to do now, ambre = very soon, counted over
+  // the loaded list. Each toggle narrows the list to its cards; a toggle disarms implicitly when its
+  // bucket empties (the pill is hidden at 0, so an armed empty filter would strand the user).
+  const urgenceCounts = { rouge: 0, ambre: 0 }
+  for (const r of rows) if (r.urgence) urgenceCounts[r.urgence.niveau] += 1
+  const urgenceActive: Record<NiveauUrgence, boolean> = {
+    rouge: urgenceOn.rouge && urgenceCounts.rouge > 0,
+    ambre: urgenceOn.ambre && urgenceCounts.ambre > 0,
+  }
+  const visibleRows = urgenceActive.rouge || urgenceActive.ambre
+    ? rows.filter((r) => r.urgence && urgenceActive[r.urgence.niveau])
+    : rows
 
   // Keep the selection valid against the (server-filtered) list. Skip while the
   // list is refetching: after creating a commande we setSelectedId(newId) before
@@ -699,9 +691,9 @@ export function ClientsCommandes() {
             onSearchChange={setSearchQuery}
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilterChange}
-            amberCount={amberCount}
-            amberOn={amberActive}
-            onToggleAmber={() => setAmberOnly((v) => !v)}
+            urgenceCounts={urgenceCounts}
+            urgenceOn={urgenceActive}
+            onToggleUrgence={(n) => setUrgenceOn((v) => ({ ...v, [n]: !v[n] }))}
             onNew={() => setCreateOpen(true)}
             canCreate={canEditCommandes}
             isEditing={isEditing}
@@ -831,12 +823,43 @@ export function ClientsCommandes() {
 
 // ── Left Panel: List ───────────────────────────────────
 
+// Urgence colours (mps_designer §41, raw palette): rouge = to do now, ambre = to do very soon.
+const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; hover: string; text: string }> = {
+  rouge: {
+    lisere: 'shadow-[inset_4px_0_0_0_rgb(239_68_68)]',
+    selected: 'border-red-500 ring-1 ring-red-500',
+    hover: 'border-border hover:border-red-500/50',
+    text: 'text-red-600',
+  },
+  ambre: {
+    lisere: 'shadow-[inset_4px_0_0_0_rgb(245_158_11)]',
+    selected: 'border-amber-500 ring-1 ring-amber-500',
+    hover: 'border-border hover:border-amber-500/50',
+    text: 'text-amber-700',
+  },
+}
+
+const URGENCE_PILLS: Array<{ niveau: NiveauUrgence; title: string; on: string; off: string }> = [
+  {
+    niveau: 'rouge',
+    title: 'Commandes avec quelque chose à faire maintenant',
+    on: 'bg-red-500 text-white border-red-500 shadow-sm',
+    off: 'bg-red-500/10 text-red-700 border-red-500/30 hover:bg-red-500/20',
+  },
+  {
+    niveau: 'ambre',
+    title: 'Commandes avec quelque chose à faire bientôt',
+    on: 'bg-amber-500 text-white border-amber-500 shadow-sm',
+    off: 'bg-amber-500/10 text-amber-800 border-amber-500/30 hover:bg-amber-500/20',
+  },
+]
+
 function CommandeList({
   rows, isLoading, isError, error,
   selectedId, onSelect,
   searchQuery, onSearchChange,
   statusFilter, onStatusFilterChange,
-  amberCount, amberOn, onToggleAmber,
+  urgenceCounts, urgenceOn, onToggleUrgence,
   onNew, canCreate, isEditing,
 }: {
   rows: CommandeListRow[]
@@ -849,11 +872,11 @@ function CommandeList({
   onSearchChange: (q: string) => void
   statusFilter: 'all' | 'open' | 'terminee'
   onStatusFilterChange: (s: 'all' | 'open' | 'terminee') => void
-  /** Count of loaded commandes non affectées — shown as the amber counter
-   *  pill right of the search input (mps_designer §41). 0 hides the pill. */
-  amberCount: number
-  amberOn: boolean
-  onToggleAmber: () => void
+  /** Loaded commandes per urgence level: the red and amber counter pills right
+   *  of the search input (mps_designer §41). 0 hides a pill. */
+  urgenceCounts: Record<NiveauUrgence, number>
+  urgenceOn: Record<NiveauUrgence, boolean>
+  onToggleUrgence: (n: NiveauUrgence) => void
   onNew: () => void
   canCreate: boolean
   isEditing: boolean
@@ -873,25 +896,24 @@ function CommandeList({
               className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
-          {/* Amber counter pill: commandes non affectées. Number-only toggle
+          {/* Counter pills: à faire (rouge), bientôt (ambre). Number-only toggles
               flush right of the search input, hidden when the bucket is
               empty (mps_designer §41). */}
-          {amberCount > 0 && (
+          {URGENCE_PILLS.map((p) => urgenceCounts[p.niveau] > 0 && (
             <button
+              key={p.niveau}
               type="button"
-              onClick={onToggleAmber}
-              aria-pressed={amberOn}
-              title="Commandes non affectées"
+              onClick={() => onToggleUrgence(p.niveau)}
+              aria-pressed={urgenceOn[p.niveau]}
+              title={p.title}
               className={cn(
                 'h-7 min-w-[1.75rem] px-1.5 inline-flex items-center justify-center rounded-md text-xs font-semibold tabular-nums border transition-colors flex-shrink-0',
-                amberOn
-                  ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
-                  : 'bg-amber-500/10 text-amber-800 border-amber-500/30 hover:bg-amber-500/20',
+                urgenceOn[p.niveau] ? p.on : p.off,
               )}
             >
-              {amberCount}
+              {urgenceCounts[p.niveau]}
             </button>
-          )}
+          ))}
         </div>
         <div className="flex gap-1">
           {([
@@ -930,32 +952,32 @@ function CommandeList({
           </div>
         ) : rows.map((row) => {
           const isSelected = selectedId === row.IDcommande_client
-          // Neutral by default (mps_designer §41): the amber liseré flags
-          // commandes non affectées (no roll reserved yet). Delivery urgency
-          // no longer colors the list cards on this screen.
-          const isAmber = row.phase === 'a_affecter'
-          const selectedRingClass = isAmber
-            ? 'border-amber-500 ring-1 ring-amber-500'
-            : 'border-zinc-400 ring-1 ring-zinc-400'
-          const hoverClass = isAmber
-            ? 'border-border hover:border-amber-500/50'
-            : 'border-border hover:border-zinc-400/60'
+          // Neutral by default (mps_designer §41): the liseré says there is something
+          // to do on our side, rouge now, ambre very soon (line status × délai).
+          const u = row.urgence ? URGENCE_CARD[row.urgence.niveau] : null
           return (
             <div
               key={row.IDcommande_client}
               onClick={() => onSelect(row.IDcommande_client)}
               className={cn(
                 'p-3 border rounded-lg cursor-pointer transition-all bg-white',
-                isSelected ? selectedRingClass : hoverClass,
-                isAmber && 'shadow-[inset_4px_0_0_0_rgb(245_158_11)]',
+                isSelected
+                  ? (u?.selected ?? 'border-zinc-400 ring-1 ring-zinc-400')
+                  : (u?.hover ?? 'border-border hover:border-zinc-400/60'),
+                u?.lisere,
               )}
             >
               <div className="flex items-center gap-2">
                 <ShoppingCart className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <span className="font-medium text-sm">N° {row.numero ?? row.IDcommande_client}</span>
-                <PhasePill phase={row.phase} className="ml-auto" />
+                {row.avancement && <AvancementPill etat={row.avancement} className="ml-auto" />}
               </div>
               <p className="text-xs text-muted-foreground mt-1 truncate">{row.client_nom || '—'}</p>
+              {row.urgence && u && (
+                <p className={cn('text-[11px] font-medium mt-1 truncate', u.text)} title={row.urgence.raison}>
+                  {row.urgence.raison}
+                </p>
+              )}
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                 {row.date_commande && <span>{formatHfsqlDate(row.date_commande)}</span>}
                 <span className="ml-auto text-muted-foreground/70">{row.nb_lignes} ligne{row.nb_lignes > 1 ? 's' : ''}</span>
