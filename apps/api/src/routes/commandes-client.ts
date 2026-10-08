@@ -223,7 +223,7 @@ async function nextNumero(): Promise<number> {
   return (Number(r[0]?.m) || 0) + 1
 }
 
-type EtatCommande = { urgence: UrgenceCommande | null; avancement: EtatLigneClient | null }
+type EtatCommande = { urgence: UrgenceCommande | null; avancement: EtatLigneClient | null; etats: EtatLigneClient[] }
 
 /** Each open order's state (lib/urgence-commande-client.ts): the line status ladder over all the
  *  given lines, batched, then per order what there is to do and when (urgence) and where it stands
@@ -258,7 +258,11 @@ async function etatCommandesOuvertes(lignes: any[]): Promise<Map<number, EtatCom
   }
   const today = new Date()
   for (const [cid, ls] of parCommande) {
-    out.set(cid, { urgence: urgenceCommande(ls, today), avancement: avancementCommande(ls.map((x) => x.etat), false) })
+    out.set(cid, {
+      urgence: urgenceCommande(ls, today),
+      avancement: avancementCommande(ls.map((x) => x.etat), false),
+      etats: [...new Set(ls.map((x) => x.etat))],
+    })
   }
   return out
 }
@@ -989,6 +993,8 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
         // where it stands (line pills' scale) + what there is to do and when; soldée = neutral
         avancement: Number(c.est_soldee) === 1 ? 'soldee' : (etatMap.get(cid)?.avancement ?? null),
         urgence: etatMap.get(cid)?.urgence ?? null,
+        // distinct statuses of its lines: the list's search tags (« au moins une ligne ») filter on it
+        etats_lignes: Number(c.est_soldee) === 1 ? ['soldee'] : (etatMap.get(cid)?.etats ?? []),
         ...totals,
       }
     })

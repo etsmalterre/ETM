@@ -73,7 +73,8 @@ import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { EtatPill } from '@/lib/etat-stock-fini'
-import { AvancementPill, StatutLignePill, type EtatLigneClient, type StatutLigneClient } from '@/lib/statut-ligne-client'
+import { AvancementPill, EtatLigneTag, StatutLignePill, STATUT_LIGNE_META, type EtatLigneClient, type StatutLigneClient } from '@/lib/statut-ligne-client'
+import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 
 // ── Types ──────────────────────────────────────────────
@@ -103,6 +104,8 @@ interface CommandeListRow {
   avancement: EtatLigneClient | null
   /** what there is to do and when (API lib/urgence-commande-client.ts); null = neutral */
   urgence: UrgenceCommande | null
+  /** distinct statuses of its lines (a soldée order: ['soldee']), for the search tags */
+  etats_lignes: EtatLigneClient[]
   total_eur: number
   total_qte: number
   nb_lignes: number
@@ -475,6 +478,8 @@ export function ClientsCommandes() {
   }, [])
   // Counter-pill toggles (mps_designer §41): narrow the list to « à faire » (rouge) / « bientôt » (ambre).
   const [urgenceOn, setUrgenceOn] = useState<Record<NiveauUrgence, boolean>>({ rouge: false, ambre: false })
+  // Search-bar tag (a line status, keys of commandeTags): one at a time, picking another replaces it.
+  const [activeTags, setActiveTags] = useState<string[]>([])
   const [isEditing, setIsEditing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [affectationLineId, setAffectationLineId] = useState<number | null>(null)
@@ -660,9 +665,19 @@ export function ClientsCommandes() {
     rouge: urgenceOn.rouge && urgenceCounts.rouge > 0,
     ambre: urgenceOn.ambre && urgenceCounts.ambre > 0,
   }
-  const visibleRows = urgenceActive.rouge || urgenceActive.ambre
+  const urgenceRows = urgenceActive.rouge || urgenceActive.ambre
     ? rows.filter((r) => r.urgence && urgenceActive[r.urgence.niveau])
     : rows
+  // Status tags, counted over the status filter's list WITHOUT the free text: the text typed to find
+  // a tag (« exp ») also narrows the list server-side, which would leave no tag to offer. Same query
+  // key as the unsearched list, so it is the cached first load. An active tag stays drawn in the bar
+  // even when no loaded order carries it, so the list never empties without a visible cause.
+  const { data: commandesSansTexte } = useQuery<CommandeListRow[]>({
+    queryKey: ['commandes-client', statusFilter, ''],
+    queryFn: () => apiFetch(`/commandes-client?status=${statusFilter}&q=&limit=200`),
+  })
+  const tags = useMemo(() => commandeTags(commandesSansTexte ?? []), [commandesSansTexte])
+  const visibleRows = filterRowsByTags(urgenceRows, activeTags, tags)
 
   // Keep the selection valid against the (server-filtered) list. Skip while the
   // list is refetching: after creating a commande we setSelectedId(newId) before
@@ -691,6 +706,9 @@ export function ClientsCommandes() {
             onSearchChange={setSearchQuery}
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilterChange}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={(keys) => setActiveTags(keys.slice(-1))}
             urgenceCounts={urgenceCounts}
             urgenceOn={urgenceActive}
             onToggleUrgence={(n) => setUrgenceOn((v) => ({ ...v, [n]: !v[n] }))}
@@ -839,6 +857,25 @@ const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; ho
   },
 }
 
+// ── Search-bar tags ────────────────────────────────────
+// One tag per line status present: an order carries it when at least one of its lines has it.
+// « À faire » / « Bientôt » are not tags: the counter pills right of the bar already filter on them.
+
+const ETAT_TAG_ORDER: EtatLigneClient[] = ['a_lancer', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+
+function commandeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
+  return ETAT_TAG_ORDER.map((etat): SearchTagDef<CommandeListRow> => {
+    const predicate = (r: CommandeListRow) => (r.etats_lignes ?? []).includes(etat)
+    return {
+      key: `etat:${etat}`,
+      label: STATUT_LIGNE_META[etat].label,
+      renderPill: (trailing) => <EtatLigneTag etat={etat}>{trailing}</EtatLigneTag>,
+      count: rows.filter(predicate).length,
+      predicate,
+    }
+  })
+}
+
 const URGENCE_PILLS: Array<{ niveau: NiveauUrgence; title: string; on: string; off: string }> = [
   {
     niveau: 'rouge',
@@ -859,6 +896,7 @@ function CommandeList({
   selectedId, onSelect,
   searchQuery, onSearchChange,
   statusFilter, onStatusFilterChange,
+  tags, activeTags, onActiveTagsChange,
   urgenceCounts, urgenceOn, onToggleUrgence,
   onNew, canCreate, isEditing,
 }: {
@@ -872,6 +910,9 @@ function CommandeList({
   onSearchChange: (q: string) => void
   statusFilter: 'all' | 'open' | 'terminee'
   onStatusFilterChange: (s: 'all' | 'open' | 'terminee') => void
+  tags: SearchTagDef<CommandeListRow>[]
+  activeTags: string[]
+  onActiveTagsChange: (keys: string[]) => void
   /** Loaded commandes per urgence level: the red and amber counter pills right
    *  of the search input (mps_designer §41). 0 hides a pill. */
   urgenceCounts: Record<NiveauUrgence, number>
@@ -885,17 +926,16 @@ function CommandeList({
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
         <div className="flex items-center gap-2">
-          <div className="relative flex-1 min-w-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Rechercher (n°, client, réf...)"
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-              autoComplete="off"
-              className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
+          <SmartSearchInput<never, CommandeListRow>
+            className="flex-1 min-w-0"
+            value={searchQuery}
+            onValueChange={onSearchChange}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={onActiveTagsChange}
+            placeholder="Rechercher (n°, client, réf...)"
+            chipPlaceholder="Rechercher…"
+          />
           {/* Counter pills: à faire (rouge), bientôt (ambre). Number-only toggles
               flush right of the search input, hidden when the bucket is
               empty (mps_designer §41). */}

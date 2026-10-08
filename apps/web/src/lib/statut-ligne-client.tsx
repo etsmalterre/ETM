@@ -3,7 +3,7 @@
 // (« soldé », « PAE », « en STT »… typed by hand). One hue per état; tricotage and
 // ennoblisseur reuse the sous-traitant type hues (sst-type.tsx) so the line reads
 // with the same colour as the subcontractor it is waiting on.
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import { Archive, CircleDashed, Droplets, Factory, PackageCheck, Truck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -59,6 +59,20 @@ export function AvancementPill({ etat, className }: { etat: EtatLigneClient; cla
     >
       <Icon className="h-3 w-3" />
       {meta.label}
+    </span>
+  )
+}
+
+/** A line status as a search tag of the Clients › Commandes list: the line pill's hue and icon,
+ *  with room for the bar's remove cross. */
+export function EtatLigneTag({ etat, children }: { etat: EtatLigneClient; children?: ReactNode }) {
+  const meta = STATUT_LIGNE_META[etat]
+  const Icon = meta.icon
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap', meta.classes)}>
+      <Icon className="h-3 w-3" />
+      {meta.label}
+      {children}
     </span>
   )
 }
