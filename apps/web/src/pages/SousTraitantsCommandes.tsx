@@ -583,8 +583,8 @@ const SST_PHASE_META: Record<SstPhase, {
 
 /** Lot steps, coloured by whose move it is: dyer sky, client violet, us amber. */
 const ETAPE_LOT_META: Record<EtapeLot, { label: string; classes: string }> = {
-  attente_mesures: { label: 'Attente mesures', classes: 'bg-sky-100 text-sky-800 border-sky-200' },
-  attente_tirelle: { label: 'Attente tirelle', classes: 'bg-sky-100 text-sky-800 border-sky-200' },
+  attente_mesures: { label: 'Attente contrôle ennoblisseur', classes: 'bg-sky-100 text-sky-800 border-sky-200' },
+  attente_tirelle: { label: 'Attente contrôle Malterre', classes: 'bg-amber-100 text-amber-800 border-amber-200' },
   en_reprise:      { label: 'En reprise',      classes: 'bg-orange-100 text-orange-800 border-orange-200' },
   soumis:          { label: 'Soumis au client', classes: 'bg-violet-100 text-violet-800 border-violet-200' },
   a_soumettre:     { label: 'À soumettre',     classes: 'bg-amber-100 text-amber-800 border-amber-200' },
@@ -602,27 +602,22 @@ function EtapeLotPill({ etape }: { etape: EtapeLot }) {
   return <span className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap', m.classes)}>{m.label}</span>
 }
 
-/** Ennoblissement card: whose move + when to chase, and the open lots by step. */
+/** Ennoblissement card: the open lots by step. Whose move, the relance and the
+ *  solde stay in the detail panel: on the card the urgency colour says enough
+ *  (Vincent 2026-10-11). */
 function CycleResume({ row }: { row: CommandeListRow }) {
   const parEtape = new Map<EtapeLot, number>()
   for (const l of row.lots ?? []) parEtape.set(l.etape, (parEtape.get(l.etape) ?? 0) + 1)
-  if (!row.main && parEtape.size === 0) return null
+  if (parEtape.size === 0) return null
   return (
-    <div className="mt-1.5 space-y-1">
-      {!!row.main && (
-        <p className={cn('text-[11px]', row.main === 'nous' ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
-          {MAIN_LABEL[row.main]}{row.relance ? ` · ${row.phase === 'en_teinture' ? 'délai' : 'relance'} ${jjmm(row.relance)}` : ''}{row.solde ? ' · solde' : ''}
-        </p>
-      )}
-      {parEtape.size > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {[...parEtape].map(([etape, n]) => (
-            <span key={etape} className={cn('inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium', ETAPE_LOT_META[etape].classes)}>
-              {n > 1 ? `${n} · ` : ''}{ETAPE_LOT_META[etape].label}
-            </span>
-          ))}
-        </div>
-      )}
+    <div className="mt-1.5">
+      <div className="flex flex-wrap gap-1">
+        {[...parEtape].map(([etape, n]) => (
+          <span key={etape} className={cn('inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium', ETAPE_LOT_META[etape].classes)}>
+            {n > 1 ? `${n} · ` : ''}{ETAPE_LOT_META[etape].label}
+          </span>
+        ))}
+      </div>
     </div>
   )
 }

@@ -16,8 +16,9 @@
 //     soumis           a soumission email names the lot (envoi_email type 15, notes)
 //     attente_mesures  no dyer measure and no tirelle measure (ACP)
 //     attente_tirelle  dyer measures in, our tirelle measure not yet (ACL):
-//                      Laëtitia controls the tirelle the day it arrives
-//                      (Vincent), so the wait is the dyer's
+//                      shown « Attente contrôle Malterre », so the move is
+//                      ours (Vincent 2026-10-11; was the dyer's, the tirelle
+//                      travelling, until the label named Malterre)
 //     a_soumettre      tirelle measured, the client asks soumissions for this
 //                      reference (Clients › Gestion, designation_client.soumettre)
 //     a_valider        tirelle measured, no soumission asked (or état 5 without one)
@@ -64,8 +65,6 @@ export interface LotFait {
 export const RELANCE_J = {
   /** The dyer's measures come in Perrine's answer to the next point. */
   attente_mesures: 1,
-  /** The tirelle travels after the measures. */
-  attente_tirelle: 3,
   /** The client answers a soumission. */
   soumis: 5,
   /** Our own steps: flagged once they wait this long. */
@@ -109,7 +108,7 @@ export function etapeLot(l: LotFait): EtapeLot {
 
 const MAIN: Record<EtapeLot, Main | null> = {
   attente_mesures: 'teinturier',
-  attente_tirelle: 'teinturier',
+  attente_tirelle: 'nous',
   a_soumettre: 'nous',
   soumis: 'client',
   a_valider: 'nous',
@@ -123,9 +122,8 @@ export function etatLot(l: LotFait): EtatLot {
   const r = l.reception
   let relance: string | null = null
   if (etape === 'attente_mesures' && r) relance = plusJoursOuvres(r, RELANCE_J.attente_mesures)
-  else if (etape === 'attente_tirelle' && r) relance = plusJoursOuvres(r, RELANCE_J.attente_tirelle)
   else if (etape === 'soumis' && l.soumisLe) relance = plusJoursOuvres(l.soumisLe, RELANCE_J.soumis)
-  else if ((etape === 'a_soumettre' || etape === 'a_valider') && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
+  else if ((etape === 'attente_tirelle' || etape === 'a_soumettre' || etape === 'a_valider') && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
   // en_reprise: the dyer gives the date back in the point (§5), nothing to compute.
   return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance }
 }

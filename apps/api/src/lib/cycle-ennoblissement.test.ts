@@ -51,9 +51,11 @@ describe('etapeLot: Pierre-Emmanuel’s codes, read from the data (16 lots of 20
 })
 
 describe('etatLot: whose move and when to chase', () => {
-  it('dyer: measures next working day, tirelle after 3 working days', () => {
+  it('dyer: measures next working day', () => {
     expect(etatLot(lot({ reception: '2026-10-09' }))).toMatchObject({ main: 'teinturier', relance: '2026-10-12' })
-    expect(etatLot(lot({ reception: '2026-10-08', mesuresTeinturier: true }))).toMatchObject({ main: 'teinturier', relance: '2026-10-13' })
+  })
+  it('ACL « Attente contrôle Malterre »: ours, flagged after 1 working day', () => {
+    expect(etatLot(lot({ reception: '2026-10-08', mesuresTeinturier: true }))).toMatchObject({ main: 'nous', relance: '2026-10-09' })
   })
   it('client: 5 working days after the soumission', () => {
     expect(etatLot(lot({ soumisLe: '2026-10-09' }))).toMatchObject({ main: 'client', relance: '2026-10-16' })

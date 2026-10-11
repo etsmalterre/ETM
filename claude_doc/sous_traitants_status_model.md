@@ -202,10 +202,11 @@ and relance dates (decision Vincent: built from his Journal, he conforms).
 **Lot steps** (`suivilot`, first match wins): Expédié (état 4) · Validé (3) ·
 En reprise (2) · Soumis au client (a soumission email names the lot,
 `envoi_email` 15 `notes`, digits + R kept by `cleLot()`; a soumission sent
-before any BL makes a lot of its own) · Attente mesures (no `laize_sst` /
-`poids_sst`, no `laize_tirelle`) · Attente tirelle (dyer measures in, no
-`laize_tirelle`: Laëtitia controls the tirelle the day it arrives, so the wait is
-the dyer's; no « tirelle reçue » input, Vincent) · À soumettre (tirelle measured,
+before any BL makes a lot of its own) · Attente contrôle ennoblisseur (ACP/ACB, key `attente_mesures`: no `laize_sst` /
+`poids_sst`, no `laize_tirelle`) · Attente contrôle Malterre (ACL, key `attente_tirelle`: dyer measures in, no
+`laize_tirelle`; our move, amber, flagged after 1 working day: Vincent
+2026-10-11, was the dyer's until the label named Malterre; no « tirelle reçue »
+input) · À soumettre (tirelle measured,
 `designation_client.soumettre` for the line's client and ref) · À valider.
 Each step has whose move (teinturier / nous / client) and a computed chase date
 (`RELANCE_J`: measures +1 working day after reception, tirelle +3, soumission +5,
