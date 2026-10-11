@@ -38,8 +38,6 @@ export const HORIZON_SORTIES_J = 9
 export const HORIZON_SOUMISSION_J = 3
 /** §3: no new question while a soumission went out less than this many days ago. */
 export const SOUMISSION_RECENTE_J = 7
-/** A line counts as fully received from this share of its ordered metrage. */
-export const PART_RECUE_COMPLETE = 0.95
 
 /** One open dyer line, as lecture.ts reads it. Dates are 'YYYY-MM-DD'. */
 export interface LigneFait {
@@ -53,6 +51,10 @@ export interface LigneFait {
   quantite: number
   nbRecus: number
   metrageRecu: number
+  /** Écru pieces handed to the dyer for this line (`stock_ecru.IDref_commande_affectation`). */
+  ecruAffectes: number
+  /** …of which already back dyed: own fini roll or component of a merged roll (lib/fini-sources.ts). */
+  ecruRevenus: number
   dernierRecu: string | null
   /** Last soumission email sent for this order (envoi_email type 15). */
   dernierSoumis: string | null
@@ -98,10 +100,15 @@ export const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 /** MATEL's lots are stored « MA109366 »; PE writes « 109366 ». */
 export const lotCourt = (lot: string) => lot.replace(/^MA/i, '').trim()
 
-/** Without an ordered quantity (écru/écru lines carry 0) a line with rolls
- *  back is complete once its date has passed, a « solde » before (9013, 05/10). */
+/** v5 (point du 12/10, 9003: « Pas de solde attendu : toutes les pièces ont été
+ *  réceptionnées »): a line is complete when every écru piece handed to the dyer
+ *  came back dyed, never by its metrage. The ordered Ml is a projection: 43 of
+ *  43 pieces back made 94 % of it and v4 still asked for a « solde ». A metrage
+ *  short of the client's order is a quality matter (charte ±5 %), not a question
+ *  for the dyer (Vincent 2026-10-11). Without any écru handed over, rolls back
+ *  make the line complete once its date has passed, a « solde » before (9013, 05/10). */
 function recueComplete(l: LigneFait, jour: string): boolean {
-  if (l.quantite > 0) return l.metrageRecu >= PART_RECUE_COMPLETE * l.quantite
+  if (l.ecruAffectes > 0) return l.ecruRevenus >= l.ecruAffectes
   return l.nbRecus > 0 && (!l.dateLivraison || l.dateLivraison < jour)
 }
 

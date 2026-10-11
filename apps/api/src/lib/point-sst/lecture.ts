@@ -2,6 +2,7 @@
 // Native PostgreSQL (lib/mps-pg.ts): flat queries, merged in JS.
 
 import { mpsPg } from '../mps-pg.js'
+import { consumedEcruIds } from '../fini-sources.js'
 import { plusJours, type LigneFait } from './regles.js'
 
 /** Lots received this long ago or less are still asked about (§2). */
@@ -40,7 +41,7 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
   const idsLigne = lignes.map((l) => l.idligne)
   const idsCommande = [...new Set(lignes.map((l) => l.idcommande))]
 
-  const [recus, lots, soumis, clientsEntete, clientsPieces] = await Promise.all([
+  const [recus, lots, soumis, clientsEntete, clientsPieces, ecruLignes] = await Promise.all([
     sql<{ idligne: number; n: number; metrage: number; dernier: unknown }[]>`
       SELECT idref_commande_source AS idligne, COUNT(*)::int AS n, COALESCE(SUM(metrage), 0)::float AS metrage, to_char(MAX(date_saisie), 'YYYY-MM-DD') AS dernier
       FROM stock_fini WHERE idref_commande_source IN ${sql(idsLigne)} GROUP BY idref_commande_source`,
@@ -65,7 +66,20 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
       JOIN ligne_commande_client lcc ON lcc.idligne_commande_client = se.idligne_commande_client
       JOIN commande_client cc ON cc.idcommande_client = lcc.idcommande_client
       WHERE se.idref_commande_affectation IN ${sql(idsLigne)} AND se.idligne_commande_client > 0`,
+    // The écru handed to the dyer per line: complete once all of it came back dyed (v5).
+    sql<{ idligne: number; idecru: number }[]>`
+      SELECT idref_commande_affectation AS idligne, idstock_ecru AS idecru
+      FROM stock_ecru WHERE idref_commande_affectation IN ${sql(idsLigne)}`,
   ])
+  // « Came back » = own fini roll OR component of a merged roll: the one reader.
+  const revenus = await consumedEcruIds(ecruLignes.map((r) => Number(r.idecru)))
+  const ecruParLigne = new Map<number, { affectes: number; revenus: number }>()
+  for (const r of ecruLignes) {
+    const e = ecruParLigne.get(Number(r.idligne)) ?? { affectes: 0, revenus: 0 }
+    e.affectes += 1
+    if (revenus.has(Number(r.idecru))) e.revenus += 1
+    ecruParLigne.set(Number(r.idligne), e)
+  }
 
   const clientsParLigne = new Map<number, Set<number>>()
   const ajouterClient = (idligne: number, idclient: number) => {
@@ -119,6 +133,8 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
       quantite: Number(l.quantite) || 0,
       nbRecus: Number(recu?.n ?? 0),
       metrageRecu: Number(recu?.metrage ?? 0),
+      ecruAffectes: ecruParLigne.get(l.idligne)?.affectes ?? 0,
+      ecruRevenus: ecruParLigne.get(l.idligne)?.revenus ?? 0,
       dernierRecu: iso(recu?.dernier),
       dernierSoumis,
       clientSoumission: !!dernierSoumis || [...clients].some((c) => clientsSoumission.has(c)),

@@ -13,6 +13,8 @@ function ligne(p: Partial<LigneFait> & { idligne: number }): LigneFait {
     quantite: 1000,
     nbRecus: 0,
     metrageRecu: 0,
+    ecruAffectes: 0,
+    ecruRevenus: 0,
     dernierRecu: null,
     dernierSoumis: null,
     clientSoumission: false,
@@ -36,8 +38,20 @@ describe('construirePoint', () => {
       ligne({ idligne: 1, dateLivraison: '2026-10-12' }),
       ligne({ idligne: 2, dateLivraison: '2026-10-15' }), // 6 + 9 = 15: still in
       ligne({ idligne: 3, dateLivraison: '2026-10-16' }),
-      ligne({ idligne: 4, dateLivraison: '2026-10-12', nbRecus: 20, metrageRecu: 980 }),
+      ligne({ idligne: 4, dateLivraison: '2026-10-12', nbRecus: 20, metrageRecu: 980, ecruAffectes: 20, ecruRevenus: 20 }),
     ])).toEqual(['1:1', '1:2'])
+  })
+
+  it('v5: complete when every écru handed over came back, whatever the metrage (9003, point du 12/10)', () => {
+    // 43 of 43 pieces back = 2 908 Ml of 3 101 ordered (94 %): v4 asked a §3 « solde ».
+    const recue = ligne({
+      idligne: 1, quantite: 3101, dateLivraison: '2026-10-06', nbRecus: 43, metrageRecu: 2908,
+      ecruAffectes: 43, ecruRevenus: 43, clientSoumission: true, lotsSansControle: ['MA109376'],
+    })
+    expect(construirePoint(JOUR, [recue]).map((x) => `${x.section}:${x.commentaire}`)).toEqual(['2:109376'])
+    // Half the pieces still at the dyer: a « solde », even with the metrage nearly there.
+    const [l] = construirePoint(JOUR, [ligne({ idligne: 2, quantite: 1000, dateLivraison: '2026-10-12', nbRecus: 11, metrageRecu: 990, ecruAffectes: 22, ecruRevenus: 11 })])
+    expect(l).toMatchObject({ section: 1, commentaire: 'solde' })
   })
 
   it('§1: a partly received line is announced as « solde »', () => {

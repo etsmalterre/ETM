@@ -20,7 +20,7 @@ import { mpsPg } from '../../mps-pg.js'
 import type { Issue } from '../catalog.js'
 
 export const SLUG = 'point-sst'
-export const VERSION = 4
+export const VERSION = 5
 export const VERSIONS = [
   {
     version: 1,
@@ -41,6 +41,11 @@ export const VERSIONS = [
     version: 4,
     date: '2026-10-08',
     note: 'Corrigée sur les retours de Pierre-Emmanuel au point du 09/10 et ses réponses du 08/10 : une commande dont la sortie tombe le jour du point n’est plus annoncée en rubrique 1, ses métrages sont réclamés en rubrique 4 ; la soumission n’est plus demandée avant la date de sortie (avant, la commande reste en rubrique 1). Une ligne retirée est reprise du dernier point qu’une personne a traité (envoyé, programmé ou corrigé), plus seulement de la veille : un point préparé mais jamais ouvert faisait revenir une ligne retirée.',
+  },
+  {
+    version: 5,
+    date: '2026-10-11',
+    note: 'Corrigée sur le retour de Pierre-Emmanuel au point du 12/10 (commande 9030, « Pas de solde attendu : toutes les pièces ont été réceptionnées ») : une commande est entièrement reçue quand toutes les pièces tombé de métier affectées sont revenues en fini, et non plus à 95 % du métrage commandé. Elle n’appelle alors plus ni « solde » ni soumission. Un métrage reçu hors de la tolérance de ±5 % du client relève de la qualité, pas d’une question au teinturier.',
   },
 ] as const
 
