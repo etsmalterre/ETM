@@ -63,6 +63,7 @@ import {
   Merge,
   Spline,
   BadgeEuro,
+  Cog,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -104,29 +105,6 @@ const TYPE_ENNOBLISSEUR = 'Ennoblisseur'
 const SSTATUT_OPEN = 'En_Cours'
 const SSTATUT_DONE = 'Terminé'
 
-// IDtype_sst values from production: 1 Tricoteur, 2 Ennoblisseur, 3 Autre,
-// 4 Confectionneur. The PopoverSelect for "Type sous-traitant" is keyed on
-// these ids. Phase 1 only lists Ennoblisseur; the others land in Phase 2
-// once their drawer flows are built.
-const TYPE_SST_ID_BY_LABEL: Record<string, number> = {
-  Tricoteur: 1,
-  Ennoblisseur: 2,
-  Autre: 3,
-  Confectionneur: 4,
-}
-const TYPE_SST_LABEL_BY_ID: Record<number, string> = {
-  1: 'Tricoteur',
-  2: 'Ennoblisseur',
-  3: 'Autre',
-  4: 'Confectionneur',
-}
-const TYPE_SST_OPTIONS_PHASE1: Array<{ id: number; primary: string }> = [
-  { id: TYPE_SST_ID_BY_LABEL.Ennoblisseur, primary: 'Ennoblisseur' },
-  // Phase 2: Tricoteur is wired with a backend bridge that auto-mirrors
-  // the commande as a TRM-side commande_client (see [[project-etm-trm-bridge]]).
-  { id: TYPE_SST_ID_BY_LABEL.Tricoteur, primary: 'Tricoteur' },
-]
-
 const TYPE_TRICOTEUR = 'Tricoteur'
 
 function isLineDone(sstatut: string | null | undefined): boolean {
@@ -156,6 +134,40 @@ interface CommandeListRow {
    *  null). Primary anchor for the `attente_delai` urgency frame — see
    *  `attenteDelaiUrgency`. */
   date_notif: string | null
+  /** Tricotage only: the late frame computed by the API
+   *  (lib/sst-tricotage.ts) and the kg gauge of the card. */
+  urgence?: 'late' | 'soon' | null
+  jauge?: JaugeTricotage
+  /** Ennoblissement only: whose move, chase date, open lots and their step. */
+  main?: MainCycle | null
+  relance?: string | null
+  solde?: boolean
+  lots?: LotCycle[]
+}
+
+/** Ennoblissement: an order's cycle (API lib/cycle-ennoblissement.ts). */
+type MainCycle = 'teinturier' | 'nous' | 'client'
+type EtapeLot = 'attente_mesures' | 'attente_tirelle' | 'a_soumettre' | 'soumis' | 'a_valider' | 'en_reprise' | 'valide' | 'expedie'
+interface LotCycle {
+  lot: string
+  idsuivilot: number
+  etape: EtapeLot
+  main: MainCycle | null
+  relance: string | null
+}
+interface CycleCommande {
+  urgence: 'late' | 'soon' | null
+  main: MainCycle | null
+  relance: string | null
+  solde: boolean
+  lots: LotCycle[]
+}
+
+/** kg ordered / knitted / shipped over an order's circulaire lines. */
+interface JaugeTricotage {
+  kg_commande: number
+  kg_tricote: number
+  kg_livre: number
 }
 
 interface LigneCommande {
@@ -227,6 +239,10 @@ interface CommandeDetail {
    *  prix input — suppliers without a catalog (e.g. FRANCE TEINTURE)
    *  keep manual prix entry instead. */
   auto_pricing_enabled?: boolean
+  /** Which menu the order belongs to (its sous-traitant's type). */
+  famille: SstFamille
+  /** Ennoblissement only: the order's cycle. */
+  cycle?: CycleCommande
   /** Computed phase (server-derived). See PhasePill / SST_PHASE_META. */
   phase: SstPhase
   /** Most recent bon-de-commande send date (envoi_email IDtype_doc=13),
@@ -516,6 +532,19 @@ export type SstPhase =
   | 'en_reprise'
   | 'trm_soldee'
   | 'terminee'
+  // Sous-traitants › Tricotage only (API lib/sst-tricotage.ts).
+  | 'fil_a_affecter'
+  | 'a_lancer'
+  | 'en_tricotage'
+  // Sous-traitants › Ennoblissement (API lib/cycle-ennoblissement.ts).
+  | 'en_teinture'
+  | 'en_reception'
+  | 'a_cloturer'
+
+/** Sous-traitants › Ennoblissement (dyers, and every non-knitter) or
+ *  › Tricotage (tricoteurs): one screen, two menus, each with its own
+ *  statuses (2026-10-11). */
+export type SstFamille = 'ennoblissement' | 'tricotage'
 
 /** Filter keys accepted by the list endpoint. The toggle bar exposes only
  *  the macro buckets ('open' / 'terminee' / 'all'); sub-phase narrowing
@@ -530,7 +559,7 @@ const SST_PHASE_META: Record<SstPhase, {
    *  band and the left-list card pill so the two always match (§29.8). */
   solid: string
 }> = {
-  non_envoye:    { label: 'Non envoyé',        icon: Mail,         solid: 'bg-slate-500 border-slate-500' },
+  non_envoye:    { label: 'À envoyer',         icon: Mail,         solid: 'bg-slate-500 border-slate-500' },
   attente_delai: { label: 'Attente délai',     icon: Hourglass,    solid: 'bg-yellow-500 border-yellow-500' },
   en_cours:      { label: 'En cours',          icon: Clock,        solid: 'bg-primary border-primary' },
   en_controle:   { label: 'En contrôle',       icon: Eye,          solid: 'bg-amber-500 border-amber-500' },
@@ -541,16 +570,107 @@ const SST_PHASE_META: Record<SstPhase, {
   // its own order (LIVA #1100, 2026-09-02).
   trm_soldee:    { label: 'Soldée par TRM',    icon: Factory,      solid: 'bg-teal-600 border-teal-600' },
   terminee:      { label: 'Terminée',          icon: CheckCircle2, solid: 'bg-success border-success' },
+  // Tricotage: ETM must assign the yarn before TRM can create an OF (#1159),
+  // then TRM launches and knits.
+  fil_a_affecter: { label: 'Fil à affecter',   icon: Link2,        solid: 'bg-slate-500 border-slate-500' },
+  a_lancer:       { label: 'À lancer',         icon: Hourglass,    solid: 'bg-yellow-500 border-yellow-500' },
+  en_tricotage:   { label: 'En tricotage',     icon: Cog,          solid: 'bg-primary border-primary' },
+  // Ennoblissement: the dyer works, lots come back, everything validated.
+  en_teinture:    { label: 'En teinture',      icon: Clock,        solid: 'bg-primary border-primary' },
+  en_reception:   { label: 'En réception',     icon: Eye,          solid: 'bg-amber-500 border-amber-500' },
+  a_cloturer:     { label: 'À clôturer',       icon: CheckCircle2, solid: 'bg-teal-600 border-teal-600' },
 }
 
-function PhasePill({ phase, className }: { phase: SstPhase | null | undefined; className?: string }) {
-  const meta = SST_PHASE_META[phase ?? 'en_cours']
+/** Lot steps, coloured by whose move it is: dyer sky, client violet, us amber. */
+const ETAPE_LOT_META: Record<EtapeLot, { label: string; classes: string }> = {
+  attente_mesures: { label: 'Attente mesures', classes: 'bg-sky-100 text-sky-800 border-sky-200' },
+  attente_tirelle: { label: 'Attente tirelle', classes: 'bg-sky-100 text-sky-800 border-sky-200' },
+  en_reprise:      { label: 'En reprise',      classes: 'bg-orange-100 text-orange-800 border-orange-200' },
+  soumis:          { label: 'Soumis au client', classes: 'bg-violet-100 text-violet-800 border-violet-200' },
+  a_soumettre:     { label: 'À soumettre',     classes: 'bg-amber-100 text-amber-800 border-amber-200' },
+  a_valider:       { label: 'À valider',       classes: 'bg-amber-100 text-amber-800 border-amber-200' },
+  valide:          { label: 'Validé',          classes: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
+  expedie:         { label: 'Expédié',         classes: 'bg-zinc-100 text-zinc-700 border-zinc-200' },
+}
+
+const MAIN_LABEL: Record<MainCycle, string> = { teinturier: 'Teinturier', nous: 'À nous', client: 'Client' }
+
+const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+
+function EtapeLotPill({ etape }: { etape: EtapeLot }) {
+  const m = ETAPE_LOT_META[etape]
+  return <span className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap', m.classes)}>{m.label}</span>
+}
+
+/** Ennoblissement card: whose move + when to chase, and the open lots by step. */
+function CycleResume({ row }: { row: CommandeListRow }) {
+  const parEtape = new Map<EtapeLot, number>()
+  for (const l of row.lots ?? []) parEtape.set(l.etape, (parEtape.get(l.etape) ?? 0) + 1)
+  if (!row.main && parEtape.size === 0) return null
+  return (
+    <div className="mt-1.5 space-y-1">
+      {!!row.main && (
+        <p className={cn('text-[11px]', row.main === 'nous' ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
+          {MAIN_LABEL[row.main]}{row.relance ? ` · ${row.phase === 'en_teinture' ? 'délai' : 'relance'} ${jjmm(row.relance)}` : ''}{row.solde ? ' · solde' : ''}
+        </p>
+      )}
+      {parEtape.size > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {[...parEtape].map(([etape, n]) => (
+            <span key={etape} className={cn('inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium', ETAPE_LOT_META[etape].classes)}>
+              {n > 1 ? `${n} · ` : ''}{ETAPE_LOT_META[etape].label}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A phase's pill meta. Both menus now share their labels (« À envoyer »
+ *  since the Ennoblissement cycle, 2026-10-11); kept as the one entry point. */
+function phaseMeta(phase: SstPhase | null | undefined, _famille: SstFamille) {
+  return SST_PHASE_META[phase ?? 'en_cours']
+}
+
+function PhasePill({ phase, famille, className }: { phase: SstPhase | null | undefined; famille: SstFamille; className?: string }) {
+  const meta = phaseMeta(phase, famille)
   const Icon = meta.icon
   return (
     <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white', meta.solid, className)}>
       <Icon className="h-2.5 w-2.5" />
       {meta.label}
     </Badge>
+  )
+}
+
+/** The card's late frame: Tricotage gets it from the API (its rule lives in
+ *  lib/sst-tricotage.ts), Ennoblissement computes it here. */
+function rowUrgency(row: CommandeListRow): 'late' | 'soon' | null {
+  if (row.urgence !== undefined) return row.urgence
+  return row.phase === 'attente_delai'
+    ? attenteDelaiUrgency(row.date_notif, row.bon_envoye_at)
+    : deliveryUrgency(row.earliest_delivery, row.est_soldee)
+}
+
+/** Tricotage card gauge: kg shipped (solid) and knitted not yet shipped
+ *  (light) over kg ordered. Hidden on a rectiligne-only order (pieces). */
+function JaugeTricotageBar({ jauge }: { jauge: JaugeTricotage }) {
+  if (jauge.kg_commande <= 0) return null
+  const pct = (kg: number) => Math.max(0, Math.min(100, (kg / jauge.kg_commande) * 100))
+  const livre = pct(jauge.kg_livre)
+  const tricote = Math.max(0, pct(jauge.kg_tricote) - livre)
+  return (
+    <div className="mt-2">
+      <div className="h-1.5 rounded-full bg-zinc-200 overflow-hidden flex">
+        <div className="bg-primary" style={{ width: `${livre}%` }} />
+        <div className="bg-primary/35" style={{ width: `${tricote}%` }} />
+      </div>
+      <div className="flex items-center justify-between gap-2 mt-1 text-[10px] text-muted-foreground tabular-nums">
+        <span>{fmtNum(jauge.kg_tricote)} / {fmtNum(jauge.kg_commande)} kg tricotés</span>
+        {jauge.kg_livre > 0 && <span>{fmtNum(jauge.kg_livre)} kg livrés</span>}
+      </div>
+    </div>
   )
 }
 
@@ -710,10 +830,10 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 
 // ── Main Page ──────────────────────────────────────────
 
-export function SousTraitantsCommandes() {
+export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
   const queryClient = useQueryClient()
   const { isStacked } = useResponsiveLayout()
-  // Deep link /sous-traitants/commandes?commande=<IDcommande_sous_traitant>
+  // Deep link /sous-traitants/<famille>?commande=<IDcommande_sous_traitant>
   // (the Superviseur's mail) arrives with the order selected — the detail loads
   // by id even when the order is past the first list page. Consumed once below.
   const [searchParams, setSearchParams] = useSearchParams()
@@ -815,17 +935,17 @@ export function SousTraitantsCommandes() {
     fetchNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery<CommandeListRow[], Error>({
-    queryKey: ['commandes-sst', statusFilter, debouncedSearch, urgencyQuery],
+    queryKey: ['commandes-sst', famille, statusFilter, debouncedSearch, urgencyQuery],
     queryFn: async ({ pageParam }) => {
       if (isSearching) {
         return apiFetch(
-          `/commandes-sous-traitant?status=${statusFilter}&q=${encodeURIComponent(debouncedSearch)}${urgencyQuery}`,
+          `/commandes-sous-traitant?famille=${famille}&status=${statusFilter}&q=${encodeURIComponent(debouncedSearch)}${urgencyQuery}`,
         )
       }
       const cursor = typeof pageParam === 'number' && pageParam > 0
         ? `&before_id=${pageParam}` : ''
       return apiFetch(
-        `/commandes-sous-traitant?status=${statusFilter}&limit=${COMMANDES_PAGE_SIZE}${cursor}${urgencyQuery}`,
+        `/commandes-sous-traitant?famille=${famille}&status=${statusFilter}&limit=${COMMANDES_PAGE_SIZE}${cursor}${urgencyQuery}`,
       )
     },
     initialPageParam: 0,
@@ -851,10 +971,7 @@ export function SousTraitantsCommandes() {
       if (!urgencyFilterActive) return flat
       // Pills on → server already returned only urgent rows; resort so red
       // (`late`) sits above amber (`soon`), then by ID DESC inside a band.
-      const urgencyOf = (row: CommandeListRow) =>
-        row.phase === 'attente_delai'
-          ? attenteDelaiUrgency(row.date_notif, row.bon_envoye_at)
-          : deliveryUrgency(row.earliest_delivery, row.est_soldee)
+      const urgencyOf = rowUrgency
       const rank = (u: 'late' | 'soon' | null) => (u === 'late' ? 0 : u === 'soon' ? 1 : 2)
       return [...flat].sort((a, b) => {
         const ra = rank(urgencyOf(a))
@@ -894,8 +1011,8 @@ export function SousTraitantsCommandes() {
   // from the list so flipping filters doesn't refetch the counters; the
   // 30 s stale window keeps them live without hammering the API.
   const { data: urgencyCounts } = useQuery<{ late: number; soon: number }>({
-    queryKey: ['commandes-sst-urgency-counts'],
-    queryFn: () => apiFetch('/commandes-sous-traitant/urgency-counts'),
+    queryKey: ['commandes-sst-urgency-counts', famille],
+    queryFn: () => apiFetch(`/commandes-sous-traitant/urgency-counts?famille=${famille}`),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
   })
@@ -911,7 +1028,8 @@ export function SousTraitantsCommandes() {
   const { data: soumissionEligibility } = useQuery<{ lots: EligibleLot[] }>({
     queryKey: ['commande-sst-lots-eligibles', selectedId],
     queryFn: () => apiFetch(`/commandes-sous-traitant/${selectedId}/soumission/lots-eligibles`),
-    enabled: selectedId !== null && !isEditing,
+    // A client soumission is a dyed lot: never on a knitting order.
+    enabled: famille === 'ennoblissement' && selectedId !== null && !isEditing,
   })
   const eligibleLots = soumissionEligibility?.lots ?? []
 
@@ -1041,7 +1159,7 @@ export function SousTraitantsCommandes() {
       // The list cache is now an `InfiniteData<CommandeListRow[]>`. Flatten
       // its pages to find the next-best row to auto-select once the current
       // one is gone.
-      const cached = queryClient.getQueryData<InfiniteData<CommandeListRow[]>>(['commandes-sst', statusFilter])
+      const cached = queryClient.getQueryData<InfiniteData<CommandeListRow[]>>(['commandes-sst', famille, statusFilter])
       const flat = cached?.pages.flatMap((p) => p) ?? []
       const remaining = flat.filter((c) => c.IDcommande_sous_traitant !== deletedId)
       queryClient.invalidateQueries({ queryKey: ['commandes-sst'] })
@@ -1124,6 +1242,7 @@ export function SousTraitantsCommandes() {
       <MasterDetailLayout
         list={
           <CommandeList
+            famille={famille}
             rows={filtered}
             isLoading={isLoading}
             isError={isError}
@@ -1212,6 +1331,7 @@ export function SousTraitantsCommandes() {
       />
 
       <CreateCommandeDialog
+        famille={famille}
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(newId) => {
@@ -1329,6 +1449,7 @@ function buildSoumissionLotQuery(lot: EligibleLot): string {
 // ── Left Panel: List ───────────────────────────────────
 
 function CommandeList({
+  famille,
   rows, isLoading, isError, error,
   selectedId, onSelect,
   searchQuery, onSearchChange,
@@ -1339,6 +1460,7 @@ function CommandeList({
   onNew, isEditing,
   hasNextPage, onLoadMore, isFetchingNextPage,
 }: {
+  famille: SstFamille
   rows: CommandeListRow[]
   isLoading: boolean
   isError: boolean
@@ -1476,9 +1598,7 @@ function CommandeList({
           // `attente_delai` cards measure urgency from the `date_notif`
           // relance date (amber the day before, red on the day and after).
           // All other open phases keep using the earliest-delivery deadline.
-          const urgency = row.phase === 'attente_delai'
-            ? attenteDelaiUrgency(row.date_notif, row.bon_envoye_at)
-            : deliveryUrgency(row.earliest_delivery, row.est_soldee)
+          const urgency = rowUrgency(row)
           const selectedRingClass =
             urgency === 'late' ? 'border-red-500 ring-1 ring-red-500'
             : urgency === 'soon' ? 'border-amber-500 ring-1 ring-amber-500'
@@ -1502,25 +1622,20 @@ function CommandeList({
               <div className="flex items-center gap-2">
                 <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <span className="font-medium text-sm">N° {row.IDcommande_sous_traitant}</span>
-                <PhasePill phase={row.phase} className="ml-auto" />
+                <PhasePill phase={row.phase} famille={famille} className="ml-auto" />
               </div>
               <p className="text-xs text-muted-foreground mt-1 truncate">{row.sous_traitant_nom || '—'}</p>
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                 {row.date_commande && <span>{formatHfsqlDate(row.date_commande)}</span>}
-                {!!row.sous_traitant_type && (
-                  <span className={cn(
-                    'px-1.5 py-0.5 rounded text-[10px] font-medium',
-                    sstTypeTagClasses(row.sous_traitant_type),
-                  )}>
-                    {row.sous_traitant_type}
-                  </span>
-                )}
+                {/* No type chip: the menu (Ennoblissement / Tricotage) already says it. */}
                 {row.total_eur > 0 && (
                   <span className="ml-auto px-1.5 py-0.5 rounded bg-zinc-200/80 font-medium tabular-nums">
                     {fmtNum(row.total_eur)} €
                   </span>
                 )}
               </div>
+              {!!row.jauge && <JaugeTricotageBar jauge={row.jauge} />}
+              {famille === 'ennoblissement' && <CycleResume row={row} />}
             </div>
           )
         })}
@@ -1597,9 +1712,10 @@ function DetailHeader({
               </h1>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {!!commande?.sous_traitant_type && (
-                  // Same hue-per-type chip as the left-list cards (see
-                  // sstTypeTagClasses). Use a span with the helper's classes
-                  // rather than the secondary Badge so the colour is type-aware.
+                  // Hue-per-type chip (sstTypeTagClasses, shared with
+                  // Sous-traitants › Gestion). Use a span with the helper's
+                  // classes rather than the secondary Badge so the colour is
+                  // type-aware.
                   <span className={cn(
                     'px-2 py-0.5 rounded text-xs font-medium',
                     sstTypeTagClasses(commande.sous_traitant_type),
@@ -6365,6 +6481,7 @@ function DetailSidebar({
       </div>
       <StatusFooter
         phase={commande.phase}
+        famille={commande.famille}
         est_soldee={commande.est_soldee}
         onToggle={onToggleEtat}
         isToggling={isTogglingEtat}
@@ -6377,8 +6494,9 @@ function DetailSidebar({
 // ── Sidebar Status Footer ──────────────────────────────
 
 function StatusFooter({
-  phase, est_soldee, onToggle, isToggling, disabled,
+  phase, famille, est_soldee, onToggle, isToggling, disabled,
 }: {
+  famille: SstFamille
   /** Computed phase from the detail response. Drives the colored pill. */
   phase: SstPhase | null | undefined
   /** Still required: the Clôturer / Rouvrir button toggles est_soldee
@@ -6389,7 +6507,7 @@ function StatusFooter({
   disabled: boolean
 }) {
   const isTerminee = est_soldee === 1
-  const meta = SST_PHASE_META[phase ?? 'en_cours']
+  const meta = phaseMeta(phase, famille)
   const Icon = meta.icon
   const actionLabel = isTerminee ? 'Rouvrir' : 'Clôturer'
   const ActionIcon = isTerminee ? Clock : CheckCircle2
@@ -6530,6 +6648,57 @@ function MentionsQualiteCard({ commandeId }: { commandeId: number }) {
   )
 }
 
+/** Ennoblissement: whose move, when to chase, and the open lots with their
+ *  step. The relance is computed from the step (lib/cycle-ennoblissement.ts);
+ *  only the délai question keeps a date a person may move (`date_notif`). */
+function CycleCard({ commande, cycle, isEditing, editDateNotif, onEditDateNotifChange }: {
+  commande: CommandeDetail
+  cycle: CycleCommande
+  isEditing: boolean
+  editDateNotif: string
+  onEditDateNotifChange: (v: string) => void
+}) {
+  const relanceEditable = isEditing && commande.phase === 'attente_delai'
+  return (
+    <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', relanceEditable && editSectionClass)}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+          {/* En teinture: the date is the dyer's délai, not a chase we chose. */}
+          <BellRing className="h-3.5 w-3.5 text-accent" />{commande.phase === 'en_teinture' ? 'Délai' : 'Relance'}
+        </span>
+        {relanceEditable ? (
+          <input
+            type="date"
+            value={editDateNotif}
+            onChange={(e) => onEditDateNotifChange(e.target.value)}
+            className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right"
+          />
+        ) : (
+          <span className={cn('text-sm', cycle.urgence === 'late' && 'text-red-600 font-semibold', cycle.urgence === 'soon' && 'text-amber-700 font-semibold')}>
+            {cycle.relance ? formatHfsqlDate(cycle.relance.replace(/-/g, '')) : '—'}
+          </span>
+        )}
+      </div>
+      {!!cycle.main && (
+        <KV label="La main est à" value={<span className={cn(cycle.main === 'nous' && 'text-amber-700 font-medium')}>{MAIN_LABEL[cycle.main]}</span>} />
+      )}
+      {cycle.solde && <p className="text-[11px] text-muted-foreground">Des pièces sont encore chez le teinturier (solde).</p>}
+      {cycle.lots.length > 0 && (
+        <div className="pt-2 border-t border-border/50 space-y-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Lots en cours</p>
+          {cycle.lots.map((l) => (
+            <div key={`${l.lot}-${l.idsuivilot}`} className="flex items-center gap-2 text-sm">
+              <span className="font-medium tabular-nums">{l.lot.replace(/^MA/i, '')}</span>
+              <EtapeLotPill etape={l.etape} />
+              <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">{l.relance ? `relance ${jjmm(l.relance)}` : ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function InfoTab({
   commande, isEditing,
   editDateCommande, onEditDateCommandeChange,
@@ -6553,6 +6722,9 @@ function InfoTab({
       {/* Relance — its own container at the top of the tab. The relance
           date is an actionable self-reminder, so it gets a distinct card
           + gold bell icon instead of sitting among the read-only meta. */}
+      {commande.cycle ? (
+        <CycleCard commande={commande} cycle={commande.cycle} isEditing={isEditing} editDateNotif={editDateNotif} onEditDateNotifChange={onEditDateNotifChange} />
+      ) : (
       <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
@@ -6572,6 +6744,7 @@ function InfoTab({
           )}
         </div>
       </div>
+      )}
 
       {/* TRM mirror — visible only when the sst targets Tricotage Malterre.
           Surfaces the sister-company commande_client's status + produced
@@ -7358,19 +7531,19 @@ function DocViewDialog({
   )
 }
 
-// ── Create Dialog (filtered to Ennoblisseur) ───────────
+// ── Create Dialog (the menu's sous-traitant type) ──────
 
 function CreateCommandeDialog({
-  open, onClose, onCreated,
+  famille, open, onClose, onCreated,
 }: {
+  famille: SstFamille
   open: boolean
   onClose: () => void
   onCreated: (newId: number) => void
 }) {
-  // Phase 1: typeSst is locked to "Ennoblisseur" — kept as state so the
-  // field is visible (and ready to expand to Tricoteur / Confectionneur in
-  // Phase 2 by simply enabling the other options).
-  const [typeSst, setTypeSst] = useState<string>(TYPE_ENNOBLISSEUR)
+  // The menu decides the type: Ennoblissement creates for dyers, Tricotage for
+  // knitters; an order of the other type would land in the other menu.
+  const typeSst = famille === 'tricotage' ? TYPE_TRICOTEUR : TYPE_ENNOBLISSEUR
   const [sousTraitantId, setSousTraitantId] = useState<number>(0)
   const [dateCommande, setDateCommande] = useState<string>(() => new Date().toISOString().slice(0, 10))
   const [adresseStId, setAdresseStId] = useState<number>(0)
@@ -7399,7 +7572,6 @@ function CreateCommandeDialog({
 
   useEffect(() => {
     if (!open) {
-      setTypeSst(TYPE_ENNOBLISSEUR)
       setSousTraitantId(0)
       setDateCommande(new Date().toISOString().slice(0, 10))
       setAdresseStId(0)
@@ -7407,10 +7579,6 @@ function CreateCommandeDialog({
       setCommentaire('')
     }
   }, [open])
-
-  // Switching the type clears the sous-traitant pick (the previous one
-  // doesn't necessarily belong to the new type).
-  useEffect(() => { setSousTraitantId(0) }, [typeSst])
 
   const createMut = useMutation({
     mutationFn: () => apiFetch('/commandes-sous-traitant', {
@@ -7434,21 +7602,12 @@ function CreateCommandeDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ShoppingCart className="h-5 w-5 text-accent" />
-            Nouvelle commande sous-traitant
+            {famille === 'tricotage' ? 'Nouvelle commande de tricotage' : 'Nouvelle commande d’ennoblissement'}
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Type sous-traitant</label>
-            <PopoverSelect
-              options={TYPE_SST_OPTIONS_PHASE1}
-              value={TYPE_SST_ID_BY_LABEL[typeSst] ?? TYPE_SST_ID_BY_LABEL.Ennoblisseur}
-              onChange={(id) => setTypeSst(TYPE_SST_LABEL_BY_ID[id] ?? TYPE_ENNOBLISSEUR)}
-              hideEmpty
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Sous-traitant</label>
+            <label className="text-xs font-medium text-muted-foreground">{famille === 'tricotage' ? 'Tricoteur' : 'Ennoblisseur'}</label>
             <PopoverSelect
               options={(sousTraitants ?? []).map((s) => ({
                 id: s.IDsous_traitant,

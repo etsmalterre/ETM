@@ -140,6 +140,85 @@ commande) seeds it to today + 3 working days — **only when unset**, so a
 manual edit, or a value from an earlier send, is never overwritten
 (re-sending does not restart the relance clock).
 
+## Tricotage: its own menu and its own statuses (2026-10-11)
+
+« Sous-traitants › Commandes » was split into **Ennoblissement** and
+**Tricotage** (decision Vincent). One screen, `SousTraitantsCommandes` with a
+`famille` prop, mounted on `/sous-traitants/ennoblissement` and
+`/sous-traitants/tricotage` (`key` per route so the two keep their own
+selection). The menu is the sous-traitant's type: tricoteur (`IDtype_sst = 1`)
+→ Tricotage, anything else → Ennoblissement (« Autre » and « Confectionneur »
+never had an order; the one untyped order, 1409 of 2021, is a dye job). No
+order mixes knitting and dyeing lines (measured). API: `?famille=` on the list
+and `/urgency-counts`, `GET /:id/famille` for the redirect of the old
+`/sous-traitants/commandes?commande=N` (mails, notifications, agents),
+`famille` on the detail. Écrans: `hide_sous_traitants_ennoblissement` /
+`_tricotage`, copied from the old hide key by migration 0015.
+
+**Why a separate model.** Measured on 597 knitting orders over two years:
+98 % to Tricotage Malterre, **no bon de commande ever emailed to TRM** (the
+line `sstatut` reads « Non envoyé » on orders already knitting), first OF the
+same day, first shipment at 7 days, last at 9 (90 % within 39). Non envoyé /
+Attente délai / contrôle / reprise / soumission mean nothing there.
+
+**Statuses** (`lib/sst-tricotage.ts`, first match wins, tests beside it):
+
+| Status | When |
+|---|---|
+| Terminée | `est_soldee = 1` |
+| Soldée par TRM | the mirror is soldée (unchanged) |
+| En tricotage | TRM: an OF on a mirror line, or rectiligne-only (never an OF, #1185). External knitter: délai announced or rolls received |
+| À lancer | TRM: yarn on every circulaire line, no OF yet |
+| Fil à affecter | TRM: a circulaire line without `asso_fil_lignecmdsst` (TRM cannot create its OF, #1159). « Affecté » is enough, the yarn may still be at ETM (Vincent) |
+| Attente délai / À envoyer | external knitters only (4 orders in 2 years), the bon de commande chain |
+
+« Livrée en partie » was considered and dropped: the **kg gauge** on the card
+shows it (kg shipped solid, knitted light, over kg ordered; circulaire lines
+only). Knitted = pieces of the OFs on the mirror lines, shipped = those with
+`IDligne_expedition_trm > 0`; an external knitter's rolls (created at ETM)
+count as both. **Late frame**, computed by the API (the card reads `urgence`):
+red when a line not yet delivered (< `SEUIL_EXPEDIE` of its kg shipped) is due
+today or earlier, amber within 3 days; a line without a date raises nothing;
+Soldée par TRM is never late; Attente délai keeps the relance rule.
+
+## Ennoblissement: the cycle of an order and of its lots (2026-10-11)
+
+On Sous-traitants › Ennoblissement the old phases (Non envoyé / En cours / En
+contrôle / Soumis / En reprise, `computePhase`) are replaced by a cycle computed
+in `lib/cycle-ennoblissement.ts` (tests beside it, prod replay
+`scripts/essai-cycle-ennoblissement.ts --env production`). `computePhase` only
+serves a list called without `famille`.
+
+**Why.** Pierre-Emmanuel ran the real cycle by hand: the « Relance »
+(`date_notif`) was auto-set at the bon de commande (+3 working days), empty once
+the délai was given, then moved daily to the next point while lots were in
+control (60 edits in 3 days), and the lot states lived as codes in the order's
+Journal: ACP (dyer's measures awaited, ACB at Bontemps), ACL (our control on the
+tirelle awaited), « lot/s » (soumission sent), « ok à ramer » (client accepted,
+lot validated), reprise / lot suffixed R. On the 16 open lots of 2026-10-11 every
+code matched data ETM holds, so the cycle is COMPUTED and he stops typing codes
+and relance dates (decision Vincent: built from his Journal, he conforms).
+
+**Lot steps** (`suivilot`, first match wins): Expédié (état 4) · Validé (3) ·
+En reprise (2) · Soumis au client (a soumission email names the lot,
+`envoi_email` 15 `notes`, digits + R kept by `cleLot()`; a soumission sent
+before any BL makes a lot of its own) · Attente mesures (no `laize_sst` /
+`poids_sst`, no `laize_tirelle`) · Attente tirelle (dyer measures in, no
+`laize_tirelle`: Laëtitia controls the tirelle the day it arrives, so the wait is
+the dyer's; no « tirelle reçue » input, Vincent) · À soumettre (tirelle measured,
+`designation_client.soumettre` for the line's client and ref) · À valider.
+Each step has whose move (teinturier / nous / client) and a computed chase date
+(`RELANCE_J`: measures +1 working day after reception, tirelle +3, soumission +5,
+our steps +1; estimates to correct from use).
+
+**Order steps**: À envoyer · Attente délai (relance = `date_notif`, the only date
+a person still moves) · En teinture (date shown = the earliest délai) ·
+En réception (chase = earliest among open lots; « solde » while affected écru is
+not back) · À clôturer (every lot validated, nothing at the dyer) · Terminée.
+The card's red / amber frame and the header counters follow the chase date
+(`urgenceCommande`). Search keywords match an order step or a lot step
+(« tirelle », « soumis », « reprise »…).
+
 ## Soumission Lot Client feature
 
 End-to-end flow for sending a soumission to a client whose

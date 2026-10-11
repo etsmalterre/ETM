@@ -111,7 +111,7 @@ export const controleEcruOrphelin: Controle = {
         gravite: r.gravite,
         titre: `Commande sous-traitant N°${id} · ${ps.length} pièce${ps.length > 1 ? 's' : ''} écru sans emploi`,
         message: `${ps.length} pièce${ps.length > 1 ? 's' : ''} (${fmt(kg)} kg : ${numeros.slice(0, 8).join(', ')}${numeros.length > 8 ? '…' : ''})${pourQui}, en stock sans affectation depuis ${c.ageJours} j, et rien d’écrit au journal de la commande. À faire : les affecter, ou écrire au journal de la commande sous-traitant pourquoi elles existent (pièces d’avance, accord avec le client…).`,
-        lien: `/sous-traitants/commandes?commande=${id}`,
+        lien: `/sous-traitants/tricotage?commande=${id}`,
       })
     }
     return out

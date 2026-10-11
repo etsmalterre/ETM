@@ -34,7 +34,7 @@ export const facturesSstRouter: RouterType = Router()
 
 const MENU = '/sous-traitants'
 export const ECRAN_FACTURES_SST = '/sous-traitants/factures'
-const ECRAN_COMMANDES = '/sous-traitants/commandes'
+const ECRAN_COMMANDES = '/sous-traitants/ennoblissement'
 
 async function garde(req: Request, res: Response, ecran: string): Promise<number | null> {
   if (req.userId === undefined) {

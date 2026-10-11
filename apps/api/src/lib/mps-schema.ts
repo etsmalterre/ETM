@@ -678,6 +678,18 @@ ${grantApi('USAGE, SELECT', 'SEQUENCE trm_maintenance_journal_idjournal_seq')}
     sql: `ALTER TABLE colori_fil ADD COLUMN delai_appro integer NOT NULL DEFAULT 0;`,
   },
   {
+    // Sous-traitants › Commandes split into Ennoblissement and Tricotage
+    // (2026-10-11): whoever had « Commandes » hidden keeps both hidden. The
+    // old key is left in place, unused and harmless.
+    name: '0015_ecrans_sst_ennoblissement_tricotage',
+    sql: `INSERT INTO permission (idutilisateur, app, cle)
+SELECT p.idutilisateur, p.app, n.cle
+FROM permission p
+CROSS JOIN (VALUES ('hide_sous_traitants_ennoblissement'), ('hide_sous_traitants_tricotage')) AS n (cle)
+WHERE p.app = 'etm' AND p.cle = 'hide_sous_traitants_commandes'
+ON CONFLICT DO NOTHING;`,
+  },
+  {
     // Clients › Commandes — when a READY line leaves is the client's call, not
     // the délai's (2026-10-11, Isabelle's review of the order colours): the
     // délai (date_livraison) stays the end of production, the line now says how

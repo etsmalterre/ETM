@@ -218,7 +218,8 @@ export const mainNavigation: MainMenuItem[] = [
     icon: Building2,
     href: '/sous-traitants',
     submenus: [
-      { title: 'Commandes', href: '/sous-traitants/commandes' },
+      { title: 'Ennoblissement', href: '/sous-traitants/ennoblissement' },
+      { title: 'Tricotage', href: '/sous-traitants/tricotage' },
       { title: 'Factures', href: '/sous-traitants/factures' },
       { title: 'Point', href: '/sous-traitants/point' },
       { title: 'Gestion', href: '/sous-traitants/gestion' },
@@ -371,7 +372,8 @@ export const routeTitles: Record<string, string> = {
   '/clients/gestion': 'Gestion',
   // Sous-traitants
   '/sous-traitants': 'Sous-traitants',
-  '/sous-traitants/commandes': 'Commandes',
+  '/sous-traitants/ennoblissement': 'Ennoblissement',
+  '/sous-traitants/tricotage': 'Tricotage',
   '/sous-traitants/factures': 'Factures',
   '/sous-traitants/point': 'Point',
   '/sous-traitants/gestion': 'Gestion',

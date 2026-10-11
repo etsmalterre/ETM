@@ -43,7 +43,7 @@ const blReception = z.object({
 })
 
 tricobotRouter.put('/bl-reception', async (req, res) => {
-  const uid = await garde(req, res, '/sous-traitants', '/sous-traitants/commandes')
+  const uid = await garde(req, res, '/sous-traitants', '/sous-traitants/ennoblissement')
   if (uid === null) return
   const p = blReception.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'corps invalide' }); return }

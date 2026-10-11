@@ -72,6 +72,8 @@ import {
 } from '../lib/sst-shared.js'
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
+import { etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
+import { etatCommande, lireCommandesEnnoblissement, urgenceCommande, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
 import {
   loadRectiligneRefLabels,
   loadRectiligneColorisLabels,
@@ -247,6 +249,26 @@ const PHASE_KEYWORD_ALIASES: Array<[string, SstPhase]> = [
   ['soldee', 'trm_soldee'],
 ]
 
+/** Same smart filter on Sous-traitants › Tricotage, over its own statuses
+ *  (lib/sst-tricotage.ts). « Non envoyé » reads « À envoyer » there. */
+const PHASE_KEYWORD_ALIASES_TRICOTAGE: Array<[string, SstPhase]> = [
+  ['en tricotage', 'en_tricotage'],
+  ['tricotage', 'en_tricotage'],
+  ['fil a affecter', 'fil_a_affecter'],
+  ['affecter', 'fil_a_affecter'],
+  ['a lancer', 'a_lancer'],
+  ['lancer', 'a_lancer'],
+  ['soldee par trm', 'trm_soldee'],
+  ['soldee', 'trm_soldee'],
+  ['terminee', 'terminee'],
+  ['termine', 'terminee'],
+  ['a envoyer', 'non_envoye'],
+  ['envoyer', 'non_envoye'],
+  ['attente delai', 'attente_delai'],
+  ['attente', 'attente_delai'],
+  ['delai', 'attente_delai'],
+]
+
 function normalizePhaseQuery(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
 }
@@ -257,14 +279,15 @@ function normalizePhaseQuery(s: string): string {
  *  appears as a substring inside one ("dela" → "attente delai", "trole"
  *  → "en controle"). Prefix is tried first since it produces more
  *  intuitive results when both could apply. */
-function matchPhaseKeyword(q: string): SstPhase | null {
+function matchPhaseKeyword(q: string, famille: SstFamille | null = null): SstPhase | null {
   if (!q) return null
   const norm = normalizePhaseQuery(q)
   if (norm.length < 3) return null
-  for (const [kw, phase] of PHASE_KEYWORD_ALIASES) {
+  const aliases = famille === 'tricotage' ? PHASE_KEYWORD_ALIASES_TRICOTAGE : PHASE_KEYWORD_ALIASES
+  for (const [kw, phase] of aliases) {
     if (kw.startsWith(norm)) return phase
   }
-  for (const [kw, phase] of PHASE_KEYWORD_ALIASES) {
+  for (const [kw, phase] of aliases) {
     if (kw.includes(norm)) return phase
   }
   return null
@@ -883,6 +906,73 @@ commandesSousTraitantRouter.get('/lookups/magasins', async (_req: Request, res: 
   }
 })
 
+/** Ennoblissement: each order's step, whose move, chase date and lot steps
+ *  (lib/cycle-ennoblissement.ts). */
+async function etatsEnnoblissement(ids: number[]): Promise<Map<number, EtatCommande>> {
+  const faits = await lireCommandesEnnoblissement(ids)
+  return new Map([...faits].map(([id, f]) => [id, etatCommande(f)]))
+}
+
+/** What the list card and the detail show of an order's cycle. */
+function cycleFields(e: EtatCommande) {
+  return {
+    urgence: urgenceCommande(e, todayIso()),
+    main: e.main,
+    relance: e.relance,
+    solde: e.solde,
+    lots: e.lots.map((l) => ({ lot: l.lot, idsuivilot: l.idsuivilot, etape: l.etape, main: l.main, relance: l.relance })),
+  }
+}
+
+const todayIso = () => {
+  const t = new Date()
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+}
+
+/** Ennoblissement smart filter: an order step, or a step one of its lots is at
+ *  (« tirelle » lists the orders with a lot waiting for its tirelle). */
+const ETAPE_KEYWORDS_ENNOBLISSEMENT: Array<[string, { commande?: EtapeCommande; lot?: EtapeLot }]> = [
+  ['a envoyer', { commande: 'non_envoye' }],
+  ['attente delai', { commande: 'attente_delai' }],
+  ['delai', { commande: 'attente_delai' }],
+  ['en teinture', { commande: 'en_teinture' }],
+  ['teinture', { commande: 'en_teinture' }],
+  ['en reception', { commande: 'en_reception' }],
+  ['reception', { commande: 'en_reception' }],
+  ['a cloturer', { commande: 'a_cloturer' }],
+  ['cloturer', { commande: 'a_cloturer' }],
+  ['terminee', { commande: 'terminee' }],
+  ['attente mesures', { lot: 'attente_mesures' }],
+  ['mesures', { lot: 'attente_mesures' }],
+  ['attente tirelle', { lot: 'attente_tirelle' }],
+  ['tirelle', { lot: 'attente_tirelle' }],
+  ['a soumettre', { lot: 'a_soumettre' }],
+  ['soumis', { lot: 'soumis' }],
+  ['a valider', { lot: 'a_valider' }],
+  ['valider', { lot: 'a_valider' }],
+  ['en reprise', { lot: 'en_reprise' }],
+  ['reprise', { lot: 'en_reprise' }],
+]
+
+function matchEtapeEnnoblissement(q: string): { commande?: EtapeCommande; lot?: EtapeLot } | null {
+  const norm = normalizePhaseQuery(q)
+  if (norm.length < 3) return null
+  for (const [kw, m] of ETAPE_KEYWORDS_ENNOBLISSEMENT) if (kw.startsWith(norm)) return m
+  for (const [kw, m] of ETAPE_KEYWORDS_ENNOBLISSEMENT) if (kw.includes(norm)) return m
+  return null
+}
+
+/** Narrows a commande_sous_traitant query to one menu's orders:
+ *  Tricotage = tricoteur sous-traitants, Ennoblissement = every other one
+ *  (lib/sst-tricotage.ts `familleOfTypeSst`). `alias` is the table name or
+ *  alias carrying IDsous_traitant. Null = no narrowing. */
+async function famillePredicate(famille: SstFamille | null, alias: string): Promise<string | null> {
+  if (!famille) return null
+  const ids = await tricoteurIds()
+  if (ids.length === 0) return famille === 'tricotage' ? '1 = 0' : null
+  return `${alias}.IDsous_traitant ${famille === 'tricotage' ? 'IN' : 'NOT IN'} (${ids.join(',')})`
+}
+
 // ── Urgency bucket helper ────────────────────────────────
 //
 // Mirrors the frontend frame-colour logic so the header pills count
@@ -900,14 +990,38 @@ commandesSousTraitantRouter.get('/lookups/magasins', async (_req: Request, res: 
 //
 // Returns the set of IDs for each bucket so callers can either count them
 // (pill endpoint) or use them as an IN-list filter (list endpoint).
-async function computeUrgencyBuckets(): Promise<{
+async function computeUrgencyBuckets(famille: SstFamille | null = null): Promise<{
   late: Set<number>
   soon: Set<number>
 }> {
   const empty = { late: new Set<number>(), soon: new Set<number>() }
-  const openRows = await query<{ IDcommande_sous_traitant: number; date_notif: string | null }>(
-    `SELECT IDcommande_sous_traitant, date_notif FROM commande_sous_traitant WHERE est_soldee = 0`,
+  const familleSql = await famillePredicate(famille, 'commande_sous_traitant')
+  const openRowsAll = await query<{ IDcommande_sous_traitant: number; date_notif: string | null }>(
+    `SELECT IDcommande_sous_traitant, date_notif FROM commande_sous_traitant
+     WHERE est_soldee = 0${familleSql ? ` AND ${familleSql}` : ''}`,
   )
+  // Tricotage has its own rule (lib/sst-tricotage.ts), computed with its status.
+  if (famille === 'tricotage') {
+    const etats = await etatsTricotage(openRowsAll.map((r) => Number(r.IDcommande_sous_traitant)))
+    const out = { late: new Set<number>(), soon: new Set<number>() }
+    for (const [id, e] of etats) {
+      if (e.urgence === 'late') out.late.add(id)
+      else if (e.urgence === 'soon') out.soon.add(id)
+    }
+    return out
+  }
+  if (famille === 'ennoblissement') {
+    const etats = await etatsEnnoblissement(openRowsAll.map((r) => Number(r.IDcommande_sous_traitant)))
+    const out = { late: new Set<number>(), soon: new Set<number>() }
+    const today = todayIso()
+    for (const [id, e] of etats) {
+      const u = urgenceCommande(e, today)
+      if (u === 'late') out.late.add(id)
+      else if (u === 'soon') out.soon.add(id)
+    }
+    return out
+  }
+  const openRows = openRowsAll
   const openIds = openRows.map((r) => Number(r.IDcommande_sous_traitant)).filter((n) => n > 0)
   if (openIds.length === 0) return empty
 
@@ -1016,9 +1130,9 @@ async function computeUrgencyBuckets(): Promise<{
 //   - `soon`: every open commande currently rendering as an amber frame
 // See `computeUrgencyBuckets` for the per-phase rules. Registered before
 // `/:id` so the literal path wins the Express match.
-commandesSousTraitantRouter.get('/urgency-counts', async (_req: Request, res: Response) => {
+commandesSousTraitantRouter.get('/urgency-counts', async (req: Request, res: Response) => {
   try {
-    const { late, soon } = await computeUrgencyBuckets()
+    const { late, soon } = await computeUrgencyBuckets(parseFamille(req.query.famille))
     res.json({ late: late.size, soon: soon.size })
   } catch (err) {
     console.error('Error fetching urgency counts:', err)
@@ -1055,9 +1169,13 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
     // the known phase keywords, we override statusFilter to that phase and
     // skip the catalog search. Compound queries like "MATEL reprise" are
     // intentionally NOT supported in v1 — a future iteration can tokenise.
-    const phaseFromKeyword = matchPhaseKeyword(q)
+    // Sous-traitants › Ennoblissement / › Tricotage (2026-10-11): each menu
+    // lists its own orders with its own statuses. Absent = every order.
+    const famille = parseFamille(req.query.famille)
+    const etapeFromKeyword = famille === 'ennoblissement' ? matchEtapeEnnoblissement(q) : null
+    const phaseFromKeyword = famille === 'ennoblissement' ? null : matchPhaseKeyword(q, famille)
     const statusFilter = phaseFromKeyword ?? statusFilterRaw
-    const isSearching = q.length > 0 && phaseFromKeyword === null
+    const isSearching = q.length > 0 && phaseFromKeyword === null && etapeFromKeyword === null
     const limitRaw = parseInt(String(req.query.limit ?? ''), 10)
     const limit = isNaN(limitRaw) ? 100 : Math.min(Math.max(limitRaw, 1), 500)
     const beforeIdRaw = parseInt(String(req.query.before_id ?? ''), 10)
@@ -1075,6 +1193,8 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
 
     const whereParts: string[] = []
     if (!isNaN(stFilter)) whereParts.push(`cst.IDsous_traitant = ${stFilter}`)
+    const familleSql = await famillePredicate(famille, 'cst')
+    if (familleSql) whereParts.push(familleSql)
 
     // Status filter — accepts:
     //   - 'all'        → no predicate (everything)
@@ -1086,7 +1206,30 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
     //                    (pre-resolved via signal sets so the SQL can
     //                    narrow to IN (...) and pagination stays stable)
     const SUB_PHASES: SstPhase[] = ['non_envoye', 'attente_delai', 'en_cours', 'en_controle', 'soumis', 'en_reprise', 'trm_soldee']
-    if (statusFilter === 'terminee') {
+    const TRICOTAGE_SUB_PHASES: SstPhase[] = ['non_envoye', 'attente_delai', 'fil_a_affecter', 'a_lancer', 'en_tricotage', 'trm_soldee']
+    if (famille === 'ennoblissement' && etapeFromKeyword) {
+      // Step keyword: status every open dye order (~55), keep the match.
+      const open = await query<{ IDcommande_sous_traitant: number }>(
+        `SELECT cst.IDcommande_sous_traitant FROM commande_sous_traitant cst
+         WHERE cst.est_soldee = 0 AND ${familleSql}`,
+      )
+      const etats = await etatsEnnoblissement(open.map((r) => Number(r.IDcommande_sous_traitant)))
+      const match = [...etats]
+        .filter(([, e]) => (etapeFromKeyword.commande ? e.etape === etapeFromKeyword.commande : e.lots.some((l) => l.etape === etapeFromKeyword.lot)))
+        .map(([id]) => id)
+      if (match.length === 0) { res.json([]); return }
+      whereParts.push(`cst.IDcommande_sous_traitant IN (${match.join(',')})`)
+    } else if (famille === 'tricotage' && TRICOTAGE_SUB_PHASES.includes(statusFilter as SstPhase)) {
+      // A handful of open knitting orders (~10): status them all, keep the match.
+      const open = await query<{ IDcommande_sous_traitant: number }>(
+        `SELECT cst.IDcommande_sous_traitant FROM commande_sous_traitant cst
+         WHERE cst.est_soldee = 0 AND ${familleSql}`,
+      )
+      const etats = await etatsTricotage(open.map((r) => Number(r.IDcommande_sous_traitant)))
+      const match = [...etats].filter(([, e]) => e.phase === statusFilter).map(([id]) => id)
+      if (match.length === 0) { res.json([]); return }
+      whereParts.push(`cst.IDcommande_sous_traitant IN (${match.join(',')})`)
+    } else if (statusFilter === 'terminee') {
       whereParts.push(`cst.est_soldee = 1`)
     } else if (statusFilter === 'open') {
       whereParts.push(`cst.est_soldee = 0`)
@@ -1268,7 +1411,7 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
       .map((s) => s.trim())
       .filter((s) => s === 'late' || s === 'soon')
     if (urgencyTokens.length > 0) {
-      const buckets = await computeUrgencyBuckets()
+      const buckets = await computeUrgencyBuckets(famille)
       const merged = new Set<number>()
       if (urgencyTokens.includes('late')) for (const id of buckets.late) merged.add(id)
       if (urgencyTokens.includes('soon')) for (const id of buckets.soon) merged.add(id)
@@ -1424,12 +1567,25 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
     // the frontend can render the new colored pill without an extra
     // round-trip. Phase order: terminée > en_reprise > soumis >
     // en_controle > en_cours (see computePhasesBatch).
-    const phaseMap = await computePhasesBatch(
-      commandes.map((c: any) => ({
-        id: Number(c.IDcommande_sous_traitant),
-        est_soldee: Number(c.est_soldee) || 0,
-      })),
-    )
+    // Tricotage: its own status, plus the kg gauge and the late frame the
+    // card paints (computed here, the only copy of the rule).
+    const etatsTric: Map<number, EtatTricotage> = famille === 'tricotage'
+      ? await etatsTricotage(ids.map(Number))
+      : new Map()
+    // Ennoblissement: the order's step, whose move, chase date and lot steps.
+    const etatsEnn: Map<number, EtatCommande> = famille === 'ennoblissement'
+      ? await etatsEnnoblissement(ids.map(Number))
+      : new Map()
+    const phaseMap = famille === 'tricotage'
+      ? new Map<number, SstPhase>([...etatsTric].map(([id, e]) => [id, e.phase]))
+      : famille === 'ennoblissement'
+        ? new Map<number, SstPhase>([...etatsEnn].map(([id, e]) => [id, e.etape]))
+        : await computePhasesBatch(
+        commandes.map((c: any) => ({
+          id: Number(c.IDcommande_sous_traitant),
+          est_soldee: Number(c.est_soldee) || 0,
+        })),
+      )
 
     // Most recent bon de commande send date per commande (envoi_email
     // IDtype_doc=13). Frontend uses this to drive the "Attente Délai"
@@ -1469,12 +1625,33 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
         phase: phaseMap.get(cid) ?? 'en_cours',
         bon_envoye_at: bonEnvoyeMap.get(cid) ?? null,
         ...totals,
+        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, jauge: etatsTric.get(cid)!.jauge } : {}),
+        ...(etatsEnn.has(cid) ? cycleFields(etatsEnn.get(cid)!) : {}),
       }
     })
 
     res.json(result)
   } catch (err) {
     console.error('Error fetching commandes-sous-traitant:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Which menu an order lives in ─────────────────────────
+// The old address /sous-traitants/commandes?commande=N (mails, notifications,
+// agents) redirects to Ennoblissement or Tricotage by this answer.
+commandesSousTraitantRouter.get('/:id/famille', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(String(req.params.id), 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const rows = await query<{ IDsous_traitant: number }>(
+      `SELECT IDsous_traitant FROM commande_sous_traitant WHERE IDcommande_sous_traitant = ${id}`,
+    )
+    if (rows.length === 0) { res.status(404).json({ error: 'Not found' }); return }
+    const st = await loadSousTraitantType(Number(rows[0].IDsous_traitant) || 0)
+    res.json({ famille: familleOfTypeSst(st?.IDtype_sst) })
+  } catch (err) {
+    console.error('Error fetching commande-sous-traitant famille:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1818,7 +1995,12 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     // keep manual prix entry. The flag is per-commande, not per-line,
     // because IDsous_traitant is set once at commande creation.
     const autoPricingEnabled = await hasTariffData(Number(header.IDsous_traitant) || 0)
-    const phase = await computePhase(id, Number(header.est_soldee) || 0)
+    // Each menu has its own statuses: a knitting order is read by
+    // lib/sst-tricotage.ts, everything else by computePhase.
+    const famille = familleOfTypeSst(sousTraitantIDtypeSst)
+    const etatTric = famille === 'tricotage' ? (await etatsTricotage([id])).get(id) ?? null : null
+    const etatEnn = famille === 'ennoblissement' ? (await etatsEnnoblissement([id])).get(id) ?? null : null
+    const phase: SstPhase = etatTric?.phase ?? etatEnn?.etape ?? await computePhase(id, Number(header.est_soldee) || 0)
 
     // Most recent bon de commande send date (envoi_email IDtype_doc=13) for
     // this commande. The frontend uses it to show "Attente depuis X jours"
@@ -1900,7 +2082,10 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       adresse_livraison: fixedAdresseLiv[0] ?? null,
       lignes: lignesEnriched,
       auto_pricing_enabled: autoPricingEnabled,
+      famille,
       phase,
+      ...(etatTric ? { urgence: etatTric.urgence, jauge: etatTric.jauge } : {}),
+      ...(etatEnn ? { cycle: cycleFields(etatEnn) } : {}),
       bon_envoye_at: bonEnvoyeAt,
       trm_mirror: trmMirror,
     })
@@ -2710,6 +2895,10 @@ export type SstPhase =
   | 'en_reprise'
   | 'trm_soldee'
   | 'terminee'
+  // Tricotage only (lib/sst-tricotage.ts).
+  | Exclude<TricotagePhase, 'non_envoye' | 'attente_delai' | 'trm_soldee' | 'terminee'>
+  // Ennoblissement only (lib/cycle-ennoblissement.ts).
+  | Exclude<EtapeCommande, 'non_envoye' | 'attente_delai' | 'terminee'>
 
 /** Sub-classify the open commande (est_soldee=0, no reprise/soumis/en_controle
  *  signal) into non_envoye / attente_delai / en_cours by reading its lines. */

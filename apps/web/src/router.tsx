@@ -43,6 +43,7 @@ import { ClientsGestion } from '@/pages/ClientsGestion'
 
 // Sous-traitants pages (real)
 import { SousTraitantsCommandes } from '@/pages/SousTraitantsCommandes'
+import { SstCommandesRedirect } from '@/pages/sous-traitants/SstCommandesRedirect'
 import { SousTraitantsGestion } from '@/pages/SousTraitantsGestion'
 import { SousTraitantsFactures } from '@/pages/SousTraitantsFactures'
 import { SousTraitantsPoint } from '@/pages/SousTraitantsPoint'
@@ -115,8 +116,13 @@ export const router = createBrowserRouter([
       { path: 'clients/gestion', element: <ClientsGestion /> },
 
       // Sous-traitants
-      { path: 'sous-traitants', element: <Navigate to="/sous-traitants/commandes" replace /> },
-      { path: 'sous-traitants/commandes', element: <SousTraitantsCommandes /> },
+      { path: 'sous-traitants', element: <Navigate to="/sous-traitants/ennoblissement" replace /> },
+      // One screen, two menus (2026-10-11): the key keeps each menu's
+      // selection and filters apart.
+      { path: 'sous-traitants/ennoblissement', element: <SousTraitantsCommandes key="ennoblissement" famille="ennoblissement" /> },
+      { path: 'sous-traitants/tricotage', element: <SousTraitantsCommandes key="tricotage" famille="tricotage" /> },
+      // The old address (mails, notifications): sent to the order's menu.
+      { path: 'sous-traitants/commandes', element: <SstCommandesRedirect /> },
       { path: 'sous-traitants/factures', element: <SousTraitantsFactures /> },
       { path: 'sous-traitants/point', element: <SousTraitantsPoint /> },
       { path: 'sous-traitants/gestion', element: <SousTraitantsGestion /> },

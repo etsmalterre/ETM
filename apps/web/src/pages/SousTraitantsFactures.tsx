@@ -859,7 +859,7 @@ function TableComparaison({ l }: { l: LigneFacture }) {
       {(data?.commande || (data && data.autres_factures.length > 0)) && (
         <div className="mt-1 flex flex-wrap items-center gap-x-3 text-[11px] text-muted-foreground">
           {data?.commande && (
-            <button type="button" onClick={() => navigate(`/sous-traitants/commandes?commande=${data.commande!.id}`)}
+            <button type="button" onClick={() => navigate(`/sous-traitants/ennoblissement?commande=${data.commande!.id}`)}
               className="inline-flex items-center gap-1 text-accent-blue hover:underline">
               Commande sous-traitant {data.commande.id}{data.commande.date_commande ? ` du ${formatHfsqlDate(data.commande.date_commande)}` : ''}
               <ExternalLink className="h-3 w-3" />
