@@ -144,6 +144,9 @@ describe('record order: ties and unordered queries come back by key, as in HFSQL
     // a list that is a subquery, or an IN inside a subquery, is not a literal list
     expect(inListOrder('SELECT * FROM a WHERE x IN (SELECT y FROM b)')).toBeUndefined()
     expect(inListOrder('SELECT * FROM a WHERE z = (SELECT 1 FROM b WHERE y IN (1,2))')).toBeUndefined()
+    // NOT IN keeps none of the listed rows: nothing to order, and never `NOT::numeric`
+    expect(inListOrder('SELECT * FROM a WHERE est_soldee = 0 AND a.x NOT IN (1,37)')).toBeUndefined()
+    expect(inListOrder('SELECT * FROM a WHERE x not in (1) AND y IN (2, 3)')).toBe('array_position(ARRAY[2, 3]::numeric[], y::numeric)')
   })
 
   it('leaves aggregates, GROUP BY, DISTINCT, writes and native LIMIT alone', () => {

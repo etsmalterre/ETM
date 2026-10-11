@@ -511,7 +511,10 @@ function outerLevel(sql: string): string {
  */
 export function inListOrder(sql: string): string | undefined {
   const top = outerLevel(sql)
-  const m = /\bWHERE\b[\s\S]*?(?<![\w.])((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s+IN\s*\(/i.exec(top)
+  // `col NOT IN (…)` keeps no listed row, so it has no order to reproduce;
+  // and its `NOT` must never be read as the column (`NOT::numeric` was a
+  // syntax error on every such query without an ORDER BY, 2026-10-11).
+  const m = /\bWHERE\b[\s\S]*?(?<![\w.])(?!NOT\b)((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s+IN\s*\(/i.exec(top)
   if (!m) return undefined
   const open = m.index + m[0].length - 1
   let depth = 0, quote = false, end = -1
