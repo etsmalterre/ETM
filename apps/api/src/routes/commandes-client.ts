@@ -24,7 +24,7 @@
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
 import { faitsLignesClient, statutLigneClient, type EtatLigneClient } from '../lib/statut-ligne-client.js'
-import { avancementCommande, urgenceCommande, type UrgenceCommande } from '../lib/urgence-commande-client.js'
+import { avancementCommande, modeLivraisonDe, MODES_LIVRAISON, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import multer from 'multer'
@@ -247,13 +247,19 @@ async function etatCommandesOuvertes(lignes: any[]): Promise<Map<number, EtatCom
         : undefined,
     }
   }))
-  const parCommande = new Map<number, Array<{ etat: ReturnType<typeof statutLigneClient>['etat']; typeKind: number; dateLivraison: string | null }>>()
+  const parCommande = new Map<number, LigneUrgence[]>()
   for (const l of lignes) {
     const f = faits.get(Number(l.IDligne_commande_client))
     if (!f) continue
     const cid = Number(l.IDcommande_client)
     const arr = parCommande.get(cid) ?? []
-    arr.push({ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0, dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null })
+    arr.push({
+      etat: statutLigneClient(f, '').etat,
+      typeKind: Number(l.type_kind) || 0,
+      dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
+      modeLivraison: modeLivraisonDe(l.mode_livraison),
+      dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
+    })
     parCommande.set(cid, arr)
   }
   const today = new Date()
@@ -314,7 +320,21 @@ const ligneBody = z.object({
   poids: z.number().optional(),
   date_livraison: z.string().optional(),
   commentaire: z.string().optional(),
+  // How a ready line leaves (lib/urgence-commande-client.ts); the date only with « date_client ».
+  mode_livraison: z.enum(MODES_LIVRAISON).optional(),
+  date_expedition_prevue: z.string().optional(),
 })
+
+/** '' or YYYYMMDD → a SQL date literal; NULL when empty (the new column is not in
+ *  pg-datecols.json, so a '' would not be rewritten to NULL by the backend). */
+const dateOuNull = (v: unknown) => { const d = dateStr(v); return d ? `'${d}'` : 'NULL' }
+
+/** A « date client » line without its date would silently fall back to the délai. */
+function refuseIfDateExpeditionManquante(res: Response, mode: string, date: string): boolean {
+  if (mode !== 'date_client' || date) return false
+  res.status(400).json({ error: 'date_expedition_requise', message: 'Indiquez la date d’expédition convenue avec le client.' })
+  return true
+}
 
 // ════════════════════════════════════════════════════════
 //  LOOKUPS  (literal paths — must register before /:id)
@@ -959,7 +979,7 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
     if (ids.length > 0) {
       const lignes = await query<any>(
         `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDVariation1, IDVariation2,
-                unite, quantite, prix, date_livraison
+                unite, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue
          FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
       )
       const ouvertes = new Set(commandes.filter((c: any) => Number(c.est_soldee) !== 1).map((c: any) => Number(c.IDcommande_client)))
@@ -1430,12 +1450,13 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       h.IDadresse_facturation
         ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_facturation)}`)
         : Promise.resolve([]),
-      // TYPE is a reserved word → alias type_kind. IDcolori is lowercase. Never
-      // name the accented delai_annoncé / déverrouiller columns.
+      // TYPE is a reserved word → alias type_kind. IDcolori is lowercase. The
+      // accented delai_annoncé (PG: delai_annonce) only where it can be named.
       query<any>(
         `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind,
                 IDreference, IDcolori, IDVariation1, IDVariation2,
-                quantite, unite, prix, poids, date_livraison, commentaire
+                quantite, unite, prix, poids, date_livraison, commentaire,
+                mode_livraison, date_expedition_prevue${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
          FROM ligne_commande_client
          WHERE IDcommande_client = ${id}
          ORDER BY IDligne_commande_client`,
@@ -1492,6 +1513,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       const typeKind = Number(l.type_kind) || 0
       const refId = Number(l.IDreference) || 0
       const colId = Number(l.IDcolori) || 0
+      const f = faits.get(Number(l.IDligne_commande_client))
+      const statut = f ? statutLigneClient(f, uniteLabel(l.unite) || (lineDim(l.unite) === 'metrage' ? 'Ml' : 'Kg')) : null
       const resolved = resolveRefLabel(maps, refId, typeKind)
       const agg = aggMap.get(Number(l.IDligne_commande_client)) ?? { nb_rolls: 0, total_metrage: 0, total_poids: 0, exp_metrage: 0, exp_poids: 0 }
       const qty = Number(l.quantite) || 0
@@ -1514,6 +1537,10 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         prix,
         poids: Number(l.poids) || 0,
         date_livraison: l.date_livraison ?? null,
+        // The first délai given (frozen), null when unknown (lines older than 2026-10-11).
+        delai_initial: typeof l.delai_initial === 'string' && /^\d{8}$/.test(l.delai_initial) ? l.delai_initial : null,
+        mode_livraison: modeLivraisonDe(l.mode_livraison),
+        date_expedition_prevue: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
         commentaire: l.commentaire ?? null,
         ref_label: resolved.label || null,
         ref_kind: resolved.kind,
@@ -1527,10 +1554,17 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         expedie: typeKind === 3
           ? (diversShipped.get(diversKey(refId, v1, v2)) ?? 0)
           : lineDim(l.unite) === 'metrage' ? agg.exp_metrage : agg.exp_poids,
-        statut: (() => {
-          const f = faits.get(Number(l.IDligne_commande_client))
-          return f ? statutLigneClient(f, uniteLabel(l.unite) || (lineDim(l.unite) === 'metrage' ? 'Ml' : 'Kg')) : null
-        })(),
+        statut,
+        // The line's own colour on the list's rule (closed order: neutral), drives the délai's tint.
+        urgence: statut && !soldee
+          ? urgenceLigne({
+            etat: statut.etat,
+            typeKind,
+            dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
+            modeLivraison: modeLivraisonDe(l.mode_livraison),
+            dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
+          }, new Date())?.niveau ?? null
+          : null,
       }
     })
 
@@ -2054,22 +2088,30 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
     const typeKind = Number(d.type) || 0
+    const mode = d.mode_livraison ?? 'des_que_prete'
+    const dateExp = mode === 'date_client' ? dateStr(d.date_expedition_prevue) : ''
+    if (refuseIfDateExpeditionManquante(res, mode, dateExp)) return
     if (await refuseIfContratExpire(res, id, {
       type: typeKind, IDreference: d.IDreference ?? 0, IDcolori: d.IDcolori ?? 0,
     })) return
     // TYPE written uppercase (reserved word); IDcolori lowercase; commentaire
-    // accent-safe via sqlText. Accented line columns are never named.
+    // accent-safe via sqlText. The first délai is frozen in delai_annonce (accented
+    // under HFSQL: named only where it can be).
+    const delai = d.date_livraison ? dateStr(d.date_livraison) : ''
+    const annonce = canNameAccented() && delai
     await query(
       `INSERT INTO ligne_commande_client
          (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
           IDVariation1, IDVariation2,
-          quantite, unite, prix, poids, date_livraison, commentaire)
+          quantite, unite, prix, poids, date_livraison, commentaire,
+          mode_livraison, date_expedition_prevue${annonce ? ', delai_annonce' : ''})
        VALUES
          (${id}, 0, ${typeKind}, ${n(d.IDreference ?? 0)}, ${n(d.IDcolori ?? 0)},
           ${n(typeKind === 3 ? (d.IDVariation1 ?? 0) : 0)}, ${n(typeKind === 3 ? (d.IDVariation2 ?? 0) : 0)},
           ${Number(d.quantite) || 0}, ${n(d.unite ?? 0)}, ${Number(d.prix) || 0},
-          ${Number(d.poids) || 0}, '${d.date_livraison ? dateStr(d.date_livraison) : ''}',
-          ${sqlText(d.commentaire ?? '')})`,
+          ${Number(d.poids) || 0}, '${delai}',
+          ${sqlText(d.commentaire ?? '')},
+          ${MODES_LIVRAISON.indexOf(mode)}, ${dateOuNull(dateExp)}${annonce ? `, '${delai}'` : ''})`,
     )
     const newRows = await query<{ IDligne_commande_client: number }>(
       `SELECT IDligne_commande_client FROM ligne_commande_client
@@ -2093,6 +2135,7 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+    let curDelai = { delai: '', initial: '', mode: modeLivraisonDe(0), exp: '' }
 
     // Contract guard on update. The body is partial, so the check runs on the
     // line as it WOULD be, and only when the payload actually changes something
@@ -2101,9 +2144,11 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     // blocking those would punish the user for a lapse they can't fix here.
     {
       const cur = await query<Record<string, unknown>>(
-        `SELECT TYPE, IDreference, IDcolori, quantite, prix FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+        `SELECT TYPE, IDreference, IDcolori, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
+         FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
       )
       const row = cur[0] ?? {}
+      curDelai = { delai: dateStr(row.date_livraison), initial: dateStr(row.delai_initial), mode: modeLivraisonDe(row.mode_livraison), exp: dateStr(row.date_expedition_prevue) }
       // TYPE is a reserved word — ODBC hands the key back uppercased.
       const curType = Number(row.TYPE ?? (row as { type?: unknown }).type) || 0
       const next = {
@@ -2158,7 +2203,22 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     if (d.unite !== undefined) sets.push(`unite = ${n(d.unite)}`)
     if (d.prix !== undefined) sets.push(`prix = ${Number(d.prix) || 0}`)
     if (d.poids !== undefined) sets.push(`poids = ${Number(d.poids) || 0}`)
-    if (d.date_livraison !== undefined) sets.push(`date_livraison = '${dateStr(d.date_livraison)}'`)
+    if (d.date_livraison !== undefined) {
+      const next = dateStr(d.date_livraison)
+      sets.push(`date_livraison = '${next}'`)
+      // Freeze the first délai ever given: the one already on the line when this change
+      // replaces it (a line from before 2026-10-11 has no delai_annonce), else this one.
+      if (canNameAccented() && !curDelai.initial && next !== curDelai.delai) {
+        const premier = curDelai.delai || next
+        if (premier) sets.push(`delai_annonce = '${premier}'`)
+      }
+    }
+    if (d.mode_livraison !== undefined || d.date_expedition_prevue !== undefined) {
+      const mode = d.mode_livraison ?? curDelai.mode
+      const exp = mode !== 'date_client' ? '' : d.date_expedition_prevue !== undefined ? dateStr(d.date_expedition_prevue) : curDelai.exp
+      if (refuseIfDateExpeditionManquante(res, mode, exp)) return
+      sets.push(`mode_livraison = ${MODES_LIVRAISON.indexOf(mode)}`, `date_expedition_prevue = ${dateOuNull(exp)}`)
+    }
     if (d.commentaire !== undefined) sets.push(`commentaire = ${sqlText(d.commentaire)}`)
     if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
 

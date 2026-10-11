@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { avancementCommande, urgenceCommande, urgenceLigne, type LigneUrgence } from './urgence-commande-client.js'
+import { avancementCommande, modeLivraisonDe, urgenceCommande, urgenceLigne, type LigneUrgence } from './urgence-commande-client.js'
 
 const today = new Date(2026, 9, 8) // 08/10/2026
 const dans = (j: number) => {
@@ -46,6 +46,46 @@ describe('urgenceLigne', () => {
   it('a line still to deliver without a délai is ambre', () => {
     expect(niveau(l('a_lancer', null))).toBe('ambre')
     expect(niveau(l('ennoblisseur', null))).toBe('ambre')
+  })
+})
+
+describe('urgenceLigne: mode de livraison of a ready line', () => {
+  const pae = (j: number, modeLivraison: LigneUrgence['modeLivraison'], exp: number | null = null): LigneUrgence =>
+    ({ etat: 'pae', typeKind: 2, dateLivraison: dans(j), modeLivraison, dateExpedition: exp === null ? null : dans(exp) })
+
+  it('« sur appel » is neutral until 4 months past the délai, then asks to chase the client', () => {
+    expect(niveau(pae(-30, 'sur_appel'))).toBe(null)
+    expect(niveau(pae(-120, 'sur_appel'))).toBe(null)
+    expect(urgenceLigne(pae(-121, 'sur_appel'), today)).toMatchObject({ niveau: 'rouge', action: 'relancer' })
+  })
+  it('« date client » is judged on the agreed date, not on the délai', () => {
+    expect(niveau(pae(-20, 'date_client', 30))).toBe(null)
+    expect(niveau(pae(-20, 'date_client', 10))).toBe('ambre')
+    expect(niveau(pae(-20, 'date_client', 3))).toBe('rouge')
+    expect(urgenceLigne(pae(-90, 'date_client', -61), today)?.action).toBe('solder')
+  })
+  it('« date client » without a date falls back to the délai', () => {
+    expect(niveau(pae(2, 'date_client'))).toBe('rouge')
+  })
+  it('the mode never changes the production stages, which run on the délai', () => {
+    const lancer: LigneUrgence = { etat: 'a_lancer', typeKind: 2, dateLivraison: dans(20), modeLivraison: 'sur_appel' }
+    expect(niveau(lancer)).toBe('rouge')
+  })
+  it('the reason names the date it is about', () => {
+    expect(urgenceCommande([pae(-20, 'date_client', 2)], today)?.raison)
+      .toBe(`1 ligne à expédier · expédition prévue ${dans(2).slice(6, 8)}/${dans(2).slice(4, 6)}`)
+    expect(urgenceCommande([pae(-130, 'sur_appel')], today)?.raison)
+      .toBe(`1 ligne sur appel : relancer le client · délai ${dans(-130).slice(6, 8)}/${dans(-130).slice(4, 6)} dépassé`)
+  })
+})
+
+describe('modeLivraisonDe', () => {
+  it('reads the smallint, anything unknown is « dès que prête »', () => {
+    expect(modeLivraisonDe(0)).toBe('des_que_prete')
+    expect(modeLivraisonDe(1)).toBe('date_client')
+    expect(modeLivraisonDe('2')).toBe('sur_appel')
+    expect(modeLivraisonDe(null)).toBe('des_que_prete')
+    expect(modeLivraisonDe(9)).toBe('des_que_prete')
   })
 })
 

@@ -677,6 +677,23 @@ ${grantApi('USAGE, SELECT', 'SEQUENCE trm_maintenance_journal_idjournal_seq')}
     name: '0014_colori_fil_delai_appro',
     sql: `ALTER TABLE colori_fil ADD COLUMN delai_appro integer NOT NULL DEFAULT 0;`,
   },
+  {
+    // Clients › Commandes — when a READY line leaves is the client's call, not
+    // the délai's (2026-10-11, Isabelle's review of the order colours): the
+    // délai (date_livraison) stays the end of production, the line now says how
+    // it ships. 0 = dès que prête, 1 = à la date convenue avec le client
+    // (date_expedition_prevue), 2 = sur appel du client. Read by
+    // lib/urgence-commande-client.ts. The first délai ever given goes in the
+    // legacy column delai_annonce, empty on every line until now (1 row of
+    // ~9 000, 2021): written by the API, never backfilled — NULL = unknown.
+    name: '0016_ligne_client_mode_livraison',
+    sql: `
+ALTER TABLE ligne_commande_client
+  ADD COLUMN mode_livraison smallint NOT NULL DEFAULT 0,
+  ADD COLUMN date_expedition_prevue date,
+  ADD CONSTRAINT ligne_commande_client_mode_livraison_check CHECK (mode_livraison IN (0, 1, 2));
+`,
+  },
 ]
 
 export interface MigrationStatus {

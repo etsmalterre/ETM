@@ -132,7 +132,16 @@ interface LigneCommande {
   unite_label: string
   prix: number
   poids: number
+  /** délai: when PRODUCTION must be done (YYYYMMDD) */
   date_livraison: string | null
+  /** the first délai ever given, frozen by the API; null on lines older than 2026-10-11 */
+  delai_initial: string | null
+  /** how a ready line leaves (API lib/urgence-commande-client.ts) */
+  mode_livraison: ModeLivraison
+  /** YYYYMMDD, only with mode « date_client » */
+  date_expedition_prevue: string | null
+  /** the line's own colour on the order list's rule */
+  urgence: 'rouge' | 'ambre' | null
   commentaire: string | null
   ref_label: string | null
   ref_kind: 'ecru' | 'fini' | 'divers' | null
@@ -145,6 +154,21 @@ interface LigneCommande {
   expedie: number
   /** computed status (API lib/statut-ligne-client.ts), never written to commentaire */
   statut: StatutLigneClient | null
+}
+
+type ModeLivraison = 'des_que_prete' | 'date_client' | 'sur_appel'
+
+// PopoverSelect ids (0 is its « none » sentinel).
+const MODES_LIVRAISON: { id: number; mode: ModeLivraison; label: string }[] = [
+  { id: 1, mode: 'des_que_prete', label: 'Dès que prête' },
+  { id: 2, mode: 'date_client', label: 'Date convenue avec le client' },
+  { id: 3, mode: 'sur_appel', label: 'Sur appel du client' },
+]
+
+/** Days from one YYYYMMDD to another (positive = later). */
+function joursEntre(de: string, a: string): number {
+  const d = (x: string) => Date.UTC(+x.slice(0, 4), +x.slice(4, 6) - 1, +x.slice(6, 8))
+  return Math.round((d(a) - d(de)) / 86_400_000)
 }
 
 interface RollLite {
@@ -416,19 +440,6 @@ function lineTypeChip(type: number): { label: string; classes: string } | null {
   if (type === 1) return { label: 'Écru', classes: 'bg-amber-500/15 text-amber-800 border border-amber-500/30' }
   if (type === 2) return { label: 'Fini', classes: 'bg-sky-500/10 text-sky-700 border border-sky-500/25' }
   if (type === 3) return { label: 'Divers', classes: 'bg-stone-500/10 text-stone-700 border border-stone-500/25' }
-  return null
-}
-
-// Delivery-urgency flag based on the earliest line delivery date.
-function deliveryUrgency(earliestHfsql: string | null, estSoldee: number): 'late' | 'soon' | null {
-  if (estSoldee === 1) return null
-  if (!earliestHfsql || !/^\d{8}$/.test(earliestHfsql)) return 'late'
-  const target = new Date(Number(earliestHfsql.slice(0, 4)), Number(earliestHfsql.slice(4, 6)) - 1, Number(earliestHfsql.slice(6, 8)))
-  target.setHours(0, 0, 0, 0)
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const diffDays = Math.round((target.getTime() - today.getTime()) / 86_400_000)
-  if (diffDays <= 0) return 'late'
-  if (diffDays <= 3) return 'soon'
   return null
 }
 
@@ -1289,6 +1300,8 @@ const emptyLineForm = {
   unite: 3,
   prix: '',
   date_livraison: '',
+  mode_livraison: 'des_que_prete' as ModeLivraison,
+  date_expedition_prevue: '',
   commentaire: '',
 }
 type LineFormState = typeof emptyLineForm
@@ -1990,14 +2003,15 @@ function DonationPickerDialog({
 
 // Micro label + value stat block used on line cards — same label/value
 // language as the mobile CardKV (uppercase micro label, tabular value).
-function LineStat({ label, value, className, valueClass }: {
+function LineStat({ label, value, className, valueClass, title }: {
   label: string
   value: string
   className?: string
   valueClass?: string
+  title?: string
 }) {
   return (
-    <div className={className}>
+    <div className={className} title={title}>
       <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">{label}</p>
       <p className={cn('text-xs font-semibold tabular-nums', valueClass)}>{value}</p>
     </div>
@@ -2086,15 +2100,32 @@ function LineCard({
         )}
         {line.prix > 0 && <LineStat label="Prix u." value={`${fmtNum(line.prix, 2)} €`} />}
         {line.montant > 0 && <LineStat label="Montant" value={`${fmtNum(line.montant, 2)} €`} />}
-        {line.date_livraison && (() => {
-          const u = deliveryUrgency(line.date_livraison, 0)
+        {(() => {
+          // The tint follows the line's verdict (API urgenceLigne) and sits on the date that verdict is
+          // about: once the line is ready and the client decides when it leaves, the livraison stat.
+          const tint = line.urgence === 'rouge' ? 'text-red-600' : line.urgence === 'ambre' ? 'text-amber-600' : undefined
+          const etat = line.statut?.etat
+          const prete = etat === 'pae' || (isDivers && etat === 'a_lancer')
+          const surLivraison = prete && line.mode_livraison !== 'des_que_prete'
+          const retard = line.delai_initial && line.date_livraison && line.delai_initial !== line.date_livraison
+            ? joursEntre(line.delai_initial, line.date_livraison) : 0
           return (
-            <LineStat
-              label="Expédition"
-              value={formatHfsqlDate(line.date_livraison)}
-              className="ml-auto text-right"
-              valueClass={u === 'late' ? 'text-red-600' : u === 'soon' ? 'text-amber-600' : undefined}
-            />
+            <div className="ml-auto flex items-end gap-4 text-right">
+              {line.date_livraison && (
+                <LineStat
+                  label={retard > 0 ? `Délai · +${retard} j` : 'Délai'}
+                  value={formatHfsqlDate(line.date_livraison)}
+                  title={line.delai_initial && retard !== 0 ? `Délai initial ${formatHfsqlDate(line.delai_initial)}` : undefined}
+                  valueClass={surLivraison ? undefined : tint}
+                />
+              )}
+              {line.mode_livraison === 'sur_appel' && (
+                <LineStat label="Livraison" value="Sur appel" valueClass={surLivraison ? tint : undefined} />
+              )}
+              {line.mode_livraison === 'date_client' && line.date_expedition_prevue && (
+                <LineStat label="Expédition prévue" value={formatHfsqlDate(line.date_expedition_prevue)} valueClass={surLivraison ? tint : undefined} />
+              )}
+            </div>
           )
         })()}
       </div>
@@ -5597,6 +5628,8 @@ function LineFormDialog({
         // `prix` is a 4-byte REAL (13.36 reads back 13.359999…): show the centime.
         prix: line.prix != null ? String(Math.round(Number(line.prix) * 100) / 100) : '',
         date_livraison: hfsqlDateToInput(line.date_livraison),
+        mode_livraison: line.mode_livraison ?? 'des_que_prete',
+        date_expedition_prevue: hfsqlDateToInput(line.date_expedition_prevue),
         commentaire: line.commentaire ?? '',
       })
       setPriceLocked(false) // preserve the saved price until the user re-locks
@@ -5745,6 +5778,9 @@ function LineFormDialog({
         unite: form.unite,
         prix: Number(form.prix) || 0,
         date_livraison: form.date_livraison ? inputDateToHfsql(form.date_livraison) : '',
+        mode_livraison: form.mode_livraison,
+        date_expedition_prevue: form.mode_livraison === 'date_client' && form.date_expedition_prevue
+          ? inputDateToHfsql(form.date_expedition_prevue) : '',
         commentaire: form.commentaire,
       })
       return isNew
@@ -5802,6 +5838,7 @@ function LineFormDialog({
   // An expired contract makes the reference unsellable — same rule as the fiche
   // client, enforced again on the API (409 contrat_expire).
   const canSave = form.IDreference > 0 && Number(form.quantite) > 0 && !contratBlocksSave
+    && (form.mode_livraison !== 'date_client' || !!form.date_expedition_prevue)
 
   if (!open) return null
 
@@ -6061,7 +6098,37 @@ function LineFormDialog({
               </div>
             )
           })()}
-          <LabeledInput label="Date d'expédition" type="date" value={form.date_livraison} onChange={(v) => setForm({ ...form, date_livraison: v })} />
+          {/* Délai = end of production; when the ready line leaves is the client's call (mode de livraison). */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <LabeledInput label="Délai de production" type="date" value={form.date_livraison} onChange={(v) => setForm({ ...form, date_livraison: v })} />
+              {(() => {
+                const initial = line?.delai_initial
+                const actuel = form.date_livraison ? inputDateToHfsql(form.date_livraison) : ''
+                if (!initial || !actuel || initial === actuel) return null
+                const j = joursEntre(initial, actuel)
+                return (
+                  <p className={cn('text-[11px]', j > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
+                    Délai initial {formatHfsqlDate(initial)} · {j > 0 ? `+${j}` : j} j
+                  </p>
+                )
+              })()}
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Livraison</label>
+              <PopoverSelect
+                options={MODES_LIVRAISON.map((m) => ({ id: m.id, primary: m.label }))}
+                value={MODES_LIVRAISON.find((m) => m.mode === form.mode_livraison)?.id ?? 1}
+                onChange={(id) => setForm({ ...form, mode_livraison: MODES_LIVRAISON.find((m) => m.id === id)?.mode ?? 'des_que_prete' })}
+                hideEmpty
+              />
+            </div>
+            {form.mode_livraison === 'date_client' && (
+              <div className="col-span-full sm:col-start-2 sm:col-span-1">
+                <LabeledInput label="Expédition convenue" type="date" value={form.date_expedition_prevue} onChange={(v) => setForm({ ...form, date_expedition_prevue: v })} />
+              </div>
+            )}
+          </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
             <textarea value={form.commentaire} onChange={(e) => setForm({ ...form, commentaire: e.target.value })} rows={2}

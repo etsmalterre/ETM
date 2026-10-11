@@ -1206,15 +1206,19 @@ devisRouter.post('/:id/convert', async (req: Request, res: Response) => {
     // Copy each devis line into the order.
     for (const l of lignesFixed) {
       const typeKind = Number(l.type_kind) || 0
+      const delai = typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : ''
+      // The devis's délai is the first one the client was given: frozen in delai_annonce
+      // (accented under HFSQL, named only where it can be — lib/urgence-commande-client.ts).
+      const annonce = canNameAccented() && delai
       await query(
         `INSERT INTO ligne_commande_client
            (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
-            quantite, unite, prix, poids, date_livraison, commentaire, IDdesignation_client)
+            quantite, unite, prix, poids, date_livraison, commentaire, IDdesignation_client${annonce ? ', delai_annonce' : ''})
          VALUES
            (${newId}, 0, ${typeKind}, ${n(l.IDreference ?? 0)}, ${n(l.IDcolori ?? 0)},
             ${Number(l.quantite) || 0}, ${n(l.unite ?? 0)}, ${Number(l.prix) || 0},
-            ${Number(l.poids) || 0}, '${typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : ''}',
-            '', ${n(l.IDdesignation_client ?? 0)})`,
+            ${Number(l.poids) || 0}, '${delai}',
+            '', ${n(l.IDdesignation_client ?? 0)}${annonce ? `, '${delai}'` : ''})`,
       )
     }
 

@@ -12,6 +12,14 @@
 //   ready  shipped 3–9 j before the délai (median)                           → rouge ≤ 3 j,  ambre ≤ 10 j
 // `screen_notes.md` § 3 « Urgence des commandes ».
 //
+// The délai (date_livraison) is when PRODUCTION must be done. When a ready line leaves is the
+// client's call, kept on the line as its mode de livraison (2026-10-11, Isabelle's review: ready
+// orders the client will call for were red for months):
+//   des_que_prete  ships as soon as ready: the délai is the shipping date (the rule above)
+//   date_client    the client named a date: the ready line is judged on date_expedition_prevue
+//   sur_appel      the client will call: nothing to do until 4 months past the délai, then chase
+// The production stages always run on the délai, whatever the mode.
+//
 // The card says two things, never mixed: the liseré + reason = what there is to do and when
 // (urgenceCommande), the pill = where the order stands (avancementCommande).
 
@@ -26,7 +34,17 @@ export const SEUILS_URGENCE = {
   expedierAmbre: 10,
   /** a ready line this far past its délai is probably a remainder nobody will take */
   soldeApres: 60,
+  /** a ready line « sur appel » is chased this long after its délai (Isabelle: 4 months) */
+  relanceAppel: 120,
 } as const
+
+export const MODES_LIVRAISON = ['des_que_prete', 'date_client', 'sur_appel'] as const
+export type ModeLivraison = (typeof MODES_LIVRAISON)[number]
+
+/** ligne_commande_client.mode_livraison (smallint) → mode; anything unknown reads « dès que prête ». */
+export function modeLivraisonDe(v: unknown): ModeLivraison {
+  return MODES_LIVRAISON[Number(v)] ?? 'des_que_prete'
+}
 
 export type NiveauUrgence = 'rouge' | 'ambre'
 
@@ -42,11 +60,24 @@ export interface LigneUrgence {
   typeKind: number
   /** YYYYMMDD, or anything else for « no délai » */
   dateLivraison: string | null
+  /** absent = « dès que prête » */
+  modeLivraison?: ModeLivraison
+  /** YYYYMMDD, the date agreed with the client (mode date_client only) */
+  dateExpedition?: string | null
 }
 
-type Action = 'lancer' | 'expedier' | 'solder' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'lancer' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
 
-interface Verdict { niveau: NiveauUrgence; action: Action; jours: number | null; date: string | null }
+interface Verdict {
+  niveau: NiveauUrgence
+  action: Action
+  jours: number | null
+  date: string | null
+  /** what `date` is, printed before it: « délai », « expédition prévue », « sur appel depuis » */
+  quoi?: string
+}
+
+const ymd = (v: string | null | undefined) => (v && /^\d{8}$/.test(v) ? v : null)
 
 const RANG: Record<NiveauUrgence, number> = { rouge: 2, ambre: 1 }
 
@@ -59,7 +90,7 @@ function joursAvant(date: string, today: Date): number {
 /** One line's verdict, null when there is nothing to do on our side. */
 export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
   if (l.etat === 'soldee' || l.etat === 'expediee') return null
-  const date = l.dateLivraison && /^\d{8}$/.test(l.dateLivraison) ? l.dateLivraison : null
+  const date = ymd(l.dateLivraison)
   // A line still to deliver without a délai can never light up on its own: ask for one.
   if (!date) return { niveau: 'ambre', action: 'sans_delai', jours: null, date: null }
   const j = joursAvant(date, today)
@@ -69,6 +100,17 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
 
   // Divers lines carry no production: « à lancer » means « not shipped yet ».
   if (l.etat === 'pae' || (l.etat === 'a_lancer' && l.typeKind === 3)) {
+    const mode = l.modeLivraison ?? 'des_que_prete'
+    if (mode === 'sur_appel') {
+      return j < -S.relanceAppel ? { niveau: 'rouge', action: 'relancer', jours: j, date, quoi: 'délai' } : null
+    }
+    const exp = mode === 'date_client' ? ymd(l.dateExpedition) : null
+    if (exp) {
+      const je = joursAvant(exp, today)
+      const v = (niveau: NiveauUrgence, action: Action): Verdict => ({ niveau, action, jours: je, date: exp, quoi: 'expédition prévue' })
+      if (je < -S.soldeApres) return v('rouge', 'solder')
+      return je <= S.expedierRouge ? v('rouge', 'expedier') : je <= S.expedierAmbre ? v('ambre', 'expedier') : null
+    }
     if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
     return palier('expedier', S.expedierRouge, S.expedierAmbre)
   }
@@ -83,6 +125,7 @@ const LIBELLE: Record<Action, [string, string]> = {
   lancer: ['ligne à lancer', 'lignes à lancer'],
   expedier: ['ligne à expédier', 'lignes à expédier'],
   solder: ['ligne à expédier ou solder', 'lignes à expédier ou solder'],
+  relancer: ['ligne sur appel : relancer le client', 'lignes sur appel : relancer le client'],
   tricotage: ['ligne en tricotage en retard', 'lignes en tricotage en retard'],
   ennoblisseur: ['ligne en retard chez l’ennoblisseur', 'lignes en retard chez l’ennoblisseur'],
   sans_delai: ['ligne sans délai', 'lignes sans délai'],
@@ -104,7 +147,7 @@ export function urgenceCommande(lignes: readonly LigneUrgence[], today: Date): U
   const [un, plusieurs] = LIBELLE[top.action]
   const n = memes.length
   let raison = `${n} ${n > 1 ? plusieurs : un}`
-  if (top.date) raison += ` · délai ${jjmm(top.date)}${top.jours! < 0 ? ' dépassé' : ''}`
+  if (top.date) raison += ` · ${top.quoi ?? 'délai'} ${jjmm(top.date)}${top.jours! < 0 ? ' dépassé' : ''}`
   return { niveau: top.niveau, raison }
 }
 
