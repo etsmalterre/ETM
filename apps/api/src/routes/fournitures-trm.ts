@@ -8,8 +8,8 @@
 // lib/fournitures-trm.ts.
 //
 // Two write rights:
-//  - edit_fournitures — the catalogue, stock entries and counts, suppliers
-//    (Fournitures › Références / Stock / Gestion);
+//  - edit_fournitures — the catalogue, stock entries, counts and moves to
+//    the buffer stock, suppliers (Fournitures › Références / Stock / Gestion);
 //  - edit_maintenance — what is on a métier: its references, the quantity a
 //    montage takes, and the set change itself (which takes stock out).
 // Reads are open to any signed-in TRM screen, like Atelier › Maintenance.
@@ -386,7 +386,12 @@ fournituresTrmRouter.delete('/articles/:id', async (req: Request, res: Response)
 //  Stock movements (Fournitures › Stock)
 // ════════════════════════════════════════════════════════
 
-const TYPE_MOUVEMENT: Record<string, string> = { entree: 'Entrée', sortie: 'Montage', inventaire: 'Inventaire' }
+const TYPE_MOUVEMENT: Record<string, string> = {
+  entree: 'Entrée',
+  sortie: 'Montage',
+  inventaire: 'Inventaire',
+  tampon: 'Stock tampon',
+}
 
 fournituresTrmRouter.get('/articles/:id/mouvements', async (req: Request, res: Response) => {
   const id = parseId(req.params.id)
@@ -434,8 +439,9 @@ const mouvementBody = z
   .object({
     idArticle: z.number().int().positive(),
     /** entree: quantity received (> 0). inventaire: the quantity COUNTED (≥ 0)
-     *  for that constructeur — the server writes the correction. */
-    type: z.enum(['entree', 'inventaire']),
+     *  for that constructeur — the server writes the correction. tampon:
+     *  quantity moved to the atelier's buffer stock (> 0, LIVA #1285). */
+    type: z.enum(['entree', 'inventaire', 'tampon']),
     constructeur: constructeurChoix.nullable(),
     quantite: z.number().int().min(0).max(1_000_000),
     date: hfDate,
@@ -460,6 +466,14 @@ fournituresTrmRouter.post('/mouvements', async (req: Request, res: Response) => 
     res.status(400).json({ error: 'quantite_nulle', message: 'Une entrée porte une quantité.' })
     return
   }
+  if (b.type === 'tampon' && b.quantite === 0) {
+    res.status(400).json({ error: 'quantite_nulle', message: 'Un passage en stock tampon porte une quantité.' })
+    return
+  }
+  if (b.type === 'tampon' && b.constructeur && 'nom' in b.constructeur) {
+    res.status(400).json({ error: 'constructeur_inconnu', message: "On ne sort que du stock d'un constructeur connu." })
+    return
+  }
   try {
     const sql = mpsPg()
     const ecrit = await sql.begin(async (tx) => {
@@ -469,6 +483,30 @@ fournituresTrmRouter.post('/mouvements', async (req: Request, res: Response) => 
       if (!a) throw new Refus(404, 'article_introuvable', 'Article introuvable.')
       const cId = b.constructeur ? await resoudreConstructeur(t, b.constructeur, req.userId!) : null
       if (cId !== null) await accepter(t, b.idArticle, cId)
+      if (b.type === 'tampon') {
+        // Taken like a montage (repartirSortie): the constructeur's own stock,
+        // then the unsplit one, then negative — never refused, the needles are
+        // already in the buffer box; a negative stock calls for a count.
+        const seaux = await t<Row[]>`
+          SELECT idfourniture_constructeur, SUM(quantite)::int AS stock FROM trm_fourniture_mouvement
+          WHERE idfourniture_article = ${b.idArticle} GROUP BY 1`
+        const prises = repartirSortie(
+          seaux.map((s): Seau => ({
+            constructeur: s.idfourniture_constructeur == null ? null : Number(s.idfourniture_constructeur),
+            stock: Number(s.stock) || 0,
+          })),
+          cId,
+          b.quantite,
+        )
+        for (const p of prises) {
+          await t`
+            INSERT INTO trm_fourniture_mouvement
+              (idfourniture_article, idfourniture_constructeur, type, quantite, date_mouvement, commentaire, saisi_par)
+            VALUES (${b.idArticle}, ${p.constructeur}, 'tampon', ${-p.quantite}, ${pgDate(b.date)},
+                    ${b.commentaire?.trim() || null}, ${req.userId!})`
+        }
+        return true
+      }
       let quantite = b.quantite
       if (b.type === 'inventaire') {
         const [s] = await t<Row[]>`

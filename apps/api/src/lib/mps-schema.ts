@@ -706,6 +706,19 @@ ALTER TABLE ligne_commande_client
   ADD CONSTRAINT ligne_commande_client_mode_livraison_check CHECK (mode_livraison IN (0, 1, 2));
 `,
   },
+  {
+    // Fournitures › Stock (LIVA #1285, Mickaël + Vincent, 2026-10-12): the
+    // régleur moves needles from the stock to the atelier's buffer stock
+    // (« stock tampon », where the bonnetiers help themselves; its refill is
+    // the physical orange / red markers, not tracked here). A fourth movement
+    // type, negative like a montage's sortie but with no métier.
+    name: '0017_fourniture_mouvement_tampon',
+    sql: `
+ALTER TABLE trm_fourniture_mouvement
+  DROP CONSTRAINT trm_fourniture_mouvement_type_check,
+  ADD CONSTRAINT trm_fourniture_mouvement_type_check CHECK (type IN ('entree', 'sortie', 'inventaire', 'tampon'));
+`,
+  },
 ]
 
 export interface MigrationStatus {
