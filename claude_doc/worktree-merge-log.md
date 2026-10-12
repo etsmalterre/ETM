@@ -1,4 +1,7 @@
 # Worktree merge log
+## 2026-10-12 · feat/stock-aiguilles-1285
+**TRM Fournitures › Stock — « Vers le stock tampon » (LIVA #1285, Mickaël + Vincent).** API half of a TRM pair: a fourth stock movement type `tampon` in `trm_fourniture_mouvement` (migration **0017**, widens the type CHECK — run `mps-migrate.ts --write` before `/etm_deploy`). `POST /fournitures-trm/mouvements { type: "tampon" }` takes the quantity out like a montage (`repartirSortie`: constructeur, then unsplit, then negative — never refused), refuses a constructeur typed by name, labels it « Stock tampon », deletable like an entry; under `edit_fournitures`. The atelier buffer box itself is not tracked (physical orange/red markers). TRM web lands right after.
+
 ## 2026-10-12 · feat/surteinture-1284
 **Prod data repair for the #1281 surteinture (LIVA #1284, Pierre-Emmanuel; « oui » Vincent).** No code: #1281 fixed future surteintures, but the 3 pieces over-dyed before it (3182/25, /26, /28 — `stock_ecru` 47123, 47126, 47136) were still on MATEL sst line 8956 and reserved to Lapsuss order 3854 (line 13097), which hid them from that order so they couldn't be released. One transaction on prod PG `mps`: `IDref_commande_affectation = 0`, `IDligne_commande_client = 0`, trace → « … tcx 63840/1 - cde 3854 a surteindre », guarded on the old values + a 3-row check, read back after. 3495/1, /3, /6 keep their Lapsuss reservation. Not checked on screen. Ticket not answered yet.
 
