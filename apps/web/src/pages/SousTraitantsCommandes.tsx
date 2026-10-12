@@ -76,6 +76,7 @@ import { useResponsiveLayout } from '@/hooks/useResponsiveLayout'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
+import { HorsRefBadge, type FilHorsRef } from '@/components/shared/HorsRef'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { RollNotes } from '@/components/shared/RollNotes'
@@ -361,6 +362,8 @@ interface StockEcruLite {
   commande_numero?: number | null
   /** The reservation is for another article/coloris than this dyer line (LIVA #1261). */
   reservation_hors_teinture?: boolean
+  /** Yarns its TRM OF knitted off the reference's sheet (« hors réf »). */
+  hors_ref?: FilHorsRef[]
 }
 interface StockFiniLite {
   IDstock_fini: number
@@ -395,6 +398,8 @@ interface StockFiniLite {
    *  reception time. Shown as a `Building2` badge on the card. */
   client_nom?: string | null
   commande_numero?: number | null
+  /** Inherited from its écru piece(s) (« hors réf »). */
+  hors_ref?: FilHorsRef[]
 }
 interface PiecesPayload {
   ecruLinked: StockEcruLite[]
@@ -4258,6 +4263,7 @@ function EcruRollRow({
             {roll.lot && (
               <span className="text-xs text-muted-foreground truncate">· lot {roll.lot}</span>
             )}
+            <HorsRefBadge fils={roll.hors_ref} />
             {received && (
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-green-700 bg-green-500/10 border border-green-500/30 rounded px-1.5 py-0.5">
                 <Check className="h-3 w-3" />
@@ -4412,6 +4418,7 @@ function FiniRollRow({
             {roll.lot && (
               <span className="text-xs text-muted-foreground truncate">· lot {roll.lot}</span>
             )}
+            <HorsRefBadge fils={roll.hors_ref} />
           </div>
           <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground tabular-nums">
             {Number(roll.poids) > 0 && (
@@ -4995,6 +5002,8 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     merged: number
     /** The cut roll's pieces weigh more than the écru (warning only). */
     tropLourd: boolean
+    /** « hors réf » yarns of the écru piece(s) this roll comes from. */
+    horsRef: FilHorsRef[]
   }
 
   // Couper: the pieces of a roll should not weigh more than the écru they
@@ -5016,6 +5025,24 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   }
   const coupesTropLourdes = [...poidsCoupes.values()].filter((c) => c.reference > 0 && c.total > c.reference + 0.05)
 
+  // « Hors réf » per source écru (cut pieces read their roll, a merged roll
+  // the union of its components; reprise rows carry their own).
+  const horsRefById = new Map<number, FilHorsRef[]>(
+    isReprise
+      ? finiRolls.map((r) => [r.IDstock_fini, r.hors_ref ?? []])
+      : ecruRolls.map((r) => [r.IDstock_ecru, r.hors_ref ?? []]),
+  )
+  const horsRefOf = (r: { id: number; cutOf?: number; members?: Array<{ id: number }> }): FilHorsRef[] => {
+    const ids = r.members?.map((m) => m.id) ?? [r.cutOf ?? r.id]
+    const out: FilHorsRef[] = []
+    for (const id of ids) {
+      for (const f of horsRefById.get(id) ?? []) {
+        if (!out.some((x) => x.IDref_fil === f.IDref_fil && x.IDcolori_fil === f.IDcolori_fil)) out.push(f)
+      }
+    }
+    return out
+  }
+
   const finiPreview: FiniPreview[] = []
   rolls.forEach((r, i) => {
     const row = rows[r.id]
@@ -5030,6 +5057,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
       piece: r.piece ?? 0,
       merged: r.members?.length ?? 0,
       tropLourd: coupeTropLourde(r.cutOf) !== null,
+      horsRef: horsRefOf(r),
     })
   })
   // Every fini must have a non-empty lot AND a positive metrage before the
@@ -5768,6 +5796,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                     {!hasData && e.merged === 0 && <span className="italic">— en attente</span>}
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
+                    <HorsRefBadge fils={e.horsRef} />
                     {e.hasObs && <MessageSquare className="h-3 w-3 text-blue-600" />}
                     {e.hasDef && <AlertTriangle className="h-3 w-3 text-red-600" />}
                     {e.merged > 0 && (

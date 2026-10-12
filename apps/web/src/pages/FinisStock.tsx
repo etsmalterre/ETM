@@ -46,6 +46,7 @@ import {
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
+import { HorsRefBadge, HorsRefNote, type FilHorsRef } from '@/components/shared/HorsRef'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
@@ -113,6 +114,8 @@ interface StockFiniRow {
   grammage: number | null
   client_nom: string | null
   commande_numero: number | null
+  /** Detail only — yarns off the écru reference's sheet, from its TRM piece(s). */
+  hors_ref?: FilHorsRef[]
 }
 
 interface EtatOption {
@@ -2473,6 +2476,7 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                         Expédiée
                       </Badge>
                     )}
+                    <HorsRefBadge fils={detail.hors_ref} tone="dark" />
                   </div>
                   <p className="text-xs text-white/70 truncate">
                     {[
@@ -2686,6 +2690,7 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
               {/* Provenance */}
               <DrawerCard icon={<Factory className="h-4 w-4 text-accent" />} title="Provenance">
                 <div className="space-y-2.5">
+                  <HorsRefNote fils={detail.hors_ref} />
                   {/* Fils — yarns knit into this roll, with supplier + fil order N° */}
                   {!!provenance && provenance.fils.length > 0 && (
                     <div className="space-y-1.5">

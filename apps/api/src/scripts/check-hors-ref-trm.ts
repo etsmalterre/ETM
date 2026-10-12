@@ -1,9 +1,11 @@
-// Guard for the « hors réf » marker (of-trm GET /:id → composition[].hors_ref):
+// Guard for the « hors réf » marker (lib/hors-ref-trm.ts: of-trm GET /:id,
+// the TRM commande, ETM sst réception, Tombé Métier / Finis › Stock):
 // a yarn the OF knits that the reference's own composition_ecru does not list.
 // Read-only; runs the API's exact predicate over the whole ledger and prints
 // what the badge will show, so a regression is visible without opening a screen.
 import 'dotenv/config'
 import { query } from '../lib/hfsql-auto.js'
+import { estHorsRef } from '../lib/hors-ref-trm.js'
 
 const n = (v: unknown) => Number(v) || 0
 
@@ -39,7 +41,7 @@ async function main() {
     // API rule: false, never null, when the reference declares no composition
     // at all — "everything is off-sheet" is noise, not information.
     if (!refPairs || refPairs.size === 0) { noCompo++; continue }
-    if (refPairs.has(`${n(a.IDref_fil)}:${n(a.IDcolori_fil)}`)) continue
+    if (!estHorsRef(refPairs, n(a.IDref_fil), n(a.IDcolori_fil))) continue
     flagged++
     ofsFlagged.add(ofId)
     const y = String(dateOf.get(ofId) ?? '').slice(0, 4) || '????'

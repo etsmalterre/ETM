@@ -7,6 +7,7 @@ import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { finiIdsByComponentEcru, loadFiniSources, mergedComponentEcruIds } from '../lib/fini-sources.js'
+import { horsRefParEcru } from '../lib/hors-ref-trm.js'
 
 export const stockEcruRouter: RouterType = Router()
 
@@ -1156,7 +1157,10 @@ stockEcruRouter.get('/ecru/:id', async (req: Request, res: Response) => {
       return
     }
     const hydrated = await hydrateEcruRows(rows)
-    res.json(hydrated[0])
+    // A TRM-knitted piece whose OF fed a yarn off the reference's sheet
+    // (lib/hors-ref-trm.ts) — detail only, never the list.
+    const horsRef = (await horsRefParEcru([id])).get(id) ?? []
+    res.json({ ...hydrated[0], hors_ref: horsRef })
   } catch (err) {
     console.error('Error fetching stock_ecru detail:', err)
     res.status(500).json({ error: 'Internal server error' })

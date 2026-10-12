@@ -67,6 +67,7 @@ import { isRectiligneType, partitionByKind, refuseIfRectiligne, LINE_TYPE_RECTIL
 import { loadRectiligneRefLabels, loadRectiligneColorisLabels, readRefRectiligneRow, normalizeRefRectiligne } from '../lib/rectiligne.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { loadEtmAffectation } from '../lib/affectation-fil-trm.js'
+import { horsRefParOf, type FilHorsRef } from '../lib/hors-ref-trm.js'
 
 export const commandesTrmRouter: RouterType = Router()
 
@@ -1465,6 +1466,9 @@ interface AffectationPiece {
   IDordre_fabrication: number
   expedie: boolean
   defects: DefautQualite[]
+  /** Yarns its OF knitted off the reference's sheet (lib/hors-ref-trm.ts).
+   *  Shown in the TRM app only — never on the BL sent to the client. */
+  hors_ref: FilHorsRef[]
 }
 
 commandesTrmRouter.get('/:id/lignes/:ligneId/pieces', async (req: Request, res: Response) => {
@@ -1485,6 +1489,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/pieces', async (req: Request, res: 
     )
     const rows = await fixEncoding(rowsRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
     const defectsById = await fetchDefectsByEcru(rows.map((r: any) => Number(r.IDstock_ecru) || 0))
+    const horsRefByOf = await horsRefParOf(rows.map((r: any) => Number(r.IDordre_fabrication) || 0))
 
     const pieces: AffectationPiece[] = rows.map((r: any) => ({
       id: Number(r.IDstock_ecru),
@@ -1499,6 +1504,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/pieces', async (req: Request, res: 
       IDordre_fabrication: Number(r.IDordre_fabrication) || 0,
       expedie: (Number(r.IDligne_expedition_TRM) || 0) > 0,
       defects: defectsById.get(Number(r.IDstock_ecru)) ?? [],
+      hors_ref: horsRefByOf.get(Number(r.IDordre_fabrication) || 0) ?? [],
     }))
 
     // "Stock disponible 1er choix" in the legacy footer: the un-shipped,
@@ -1922,6 +1928,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/ordres-fabrication', async (req: Re
 
     const machineIds = Array.from(new Set(ofs.map((o: any) => Number(o.IDmachine) || 0).filter(Boolean)))
     const machineNames = await resolveMachineLabels(machineIds)
+    const horsRefByOf = await horsRefParOf(ofIds)
 
     // "Compatible sur" — every machine the écru has a machine sheet for.
     let compatibles: string[] = []
@@ -1959,6 +1966,7 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/ordres-fabrication', async (req: Re
           planning_fin: o.planning_fin ?? null,
           observations: (o.observations ?? '') || null,
           fils: filsByOf.get(ofId) ?? [],
+          hors_ref: horsRefByOf.get(ofId) ?? [],
         }
       }),
       compatibles,

@@ -67,6 +67,7 @@ import {
 } from '../lib/production-trm.js'
 import { rerankQueue, activeOfOnMachine, terminerOf, reactiverOf, healHandedOverOfs } from '../lib/of-queue-trm.js'
 import { realisableSurLots } from '../lib/realisable-fil-trm.js'
+import { resolveRefFilNames, resolveColoriFilNames, loadRefPairs, estHorsRef } from '../lib/hors-ref-trm.js'
 import { loadEtmAffectation, missingAffectations, type FilPair } from '../lib/affectation-fil-trm.js'
 // A rectiligne line (type 4 — cols / bandes, LIVA #1185) never gets an OF:
 // its IDreference is a ref_rectiligne, and ordre_fabrication.IDref_ecru would
@@ -85,31 +86,8 @@ const FAUX_ARRETS_MIN_S = 120
 // Métier labels: `resolveMachineLabels()` (lib/production-trm.ts), shared by
 // every TRM route so they all agree (LIVA #1102, #1199).
 
-export async function resolveRefFilNames(ids: number[]): Promise<Map<number, string>> {
-  const out = new Map<number, string>()
-  const list = Array.from(new Set(ids.filter((x) => x > 0)))
-  if (list.length === 0) return out
-  const rows = await query<{ IDref_fil: number; reference: string | null }>(
-    `SELECT IDref_fil, reference FROM ref_fil WHERE IDref_fil IN (${list.join(',')})`,
-  )
-  for (const r of await fixEncoding(rows, 'ref_fil', 'IDref_fil', ['reference'])) {
-    out.set(Number(r.IDref_fil), (r.reference ?? '').toString().trim())
-  }
-  return out
-}
-
-export async function resolveColoriFilNames(ids: number[]): Promise<Map<number, string>> {
-  const out = new Map<number, string>()
-  const list = Array.from(new Set(ids.filter((x) => x > 0)))
-  if (list.length === 0) return out
-  const rows = await query<{ IDcolori_fil: number; reference: string | null }>(
-    `SELECT IDcolori_fil, reference FROM colori_fil WHERE IDcolori_fil IN (${list.join(',')})`,
-  )
-  for (const r of await fixEncoding(rows, 'colori_fil', 'IDcolori_fil', ['reference'])) {
-    out.set(Number(r.IDcolori_fil), (r.reference ?? '').toString().trim())
-  }
-  return out
-}
+// Yarn labels live with the « hors réf » rule they also serve.
+export { resolveRefFilNames, resolveColoriFilNames }
 
 /** The ETM affectation gate (LIVA #1159): an OF on the mirror of an ETM sst
  *  line may only knit fils affected on that line. Answers 409
@@ -824,14 +802,8 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
     // 3 175 carry one; on pre-2022 OFs a hit is often just composition drift
     // (the reference's sheet changed since), which is why this is a neutral
     // marker and not a warning.
-    const refCompo = refId > 0
-      ? await query<any>(
-          `SELECT IDref_fil, IDcolori_fil FROM composition_ecru WHERE IDref_ecru = ${refId}`,
-        )
-      : []
-    const refPairs = new Set(
-      refCompo.map((c: any) => `${Number(c.IDref_fil) || 0}:${Number(c.IDcolori_fil) || 0}`),
-    )
+    // Rule + every other reader: lib/hors-ref-trm.ts.
+    const refPairs = (await loadRefPairs([refId])).get(refId) ?? new Set<string>()
 
     const composition = assoRaw.map((a: any) => {
       const lot = lotMap.get(Number(a.IDstock_fil) || 0)
@@ -853,7 +825,7 @@ ofTrmRouter.get('/:id', async (req: Request, res: Response) => {
         lot_stock: lot?.stock ?? 0,
         // false, never null, when the reference declares no composition at all:
         // "everything is off-sheet" would be noise, not information.
-        hors_ref: refPairs.size > 0 && !refPairs.has(`${rf}:${cf}`),
+        hors_ref: estHorsRef(refPairs, rf, cf),
       }
     })
 

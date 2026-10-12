@@ -15,6 +15,7 @@ import {
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { copyFiniSources, deleteFiniSources, loadFiniSources } from '../lib/fini-sources.js'
+import { horsRefParFini } from '../lib/hors-ref-trm.js'
 import { StockFiniLabelPdf, type StockFiniLabelData } from '../lib/pdf/StockFiniLabelPdf.js'
 
 export const stockFiniRouter: RouterType = Router()
@@ -508,7 +509,10 @@ stockFiniRouter.get('/fini/:id', async (req: Request, res: Response) => {
 
     // Grouped roll (LIVA #1149): the écru pieces the dyer joined into it.
     const sources = await loadComponentPieces(id)
-    res.json({ ...fixed[0], sources })
+    // Dyed from a TRM piece knitted with a yarn off the écru reference's
+    // sheet (lib/hors-ref-trm.ts) — internal, never on the BL.
+    const horsRef = (await horsRefParFini([id])).get(id) ?? []
+    res.json({ ...fixed[0], sources, hors_ref: horsRef })
   } catch (err) {
     console.error('Error fetching stock_fini detail:', err)
     res.status(500).json({ error: 'Internal server error' })

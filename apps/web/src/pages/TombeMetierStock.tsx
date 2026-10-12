@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/dialog'
 import { FabricRollIcon } from '@/components/icons/FabricRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
+import { HorsRefBadge, HorsRefNote, type FilHorsRef } from '@/components/shared/HorsRef'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate } from '@/lib/dates'
@@ -87,6 +88,8 @@ interface StockEcruRow {
   client_nom: string | null
   defauts: string | null
   defects?: DefautQualite[]
+  /** Detail only — yarns its TRM OF knitted off the reference's sheet. */
+  hors_ref?: FilHorsRef[]
 }
 
 interface MagasinOption {
@@ -1721,6 +1724,7 @@ function StockEcruDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                       En teinture
                     </Badge>
                   )}
+                  <HorsRefBadge fils={detail.hors_ref} tone="dark" />
                 </div>
                 <p className="text-xs text-white/70 truncate">
                   {detail.coloris_reference ?? '—'}
@@ -1874,6 +1878,7 @@ function StockEcruDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
               {/* Provenance */}
               <DrawerCard icon={<Factory className="h-4 w-4 text-accent" />} title="Provenance">
                 <div className="space-y-2.5">
+                  <HorsRefNote fils={detail.hors_ref} />
                   {/* Fils — yarns knit into this écru roll, with supplier + fil order N° */}
                   {!!provenance && provenance.fils.length > 0 && (
                     <div className="space-y-1.5">

@@ -50,6 +50,7 @@ import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
 import { consumedEcruIds, deleteFiniSources, insertFiniSources, loadFiniSources, probeFiniSourceTable, FiniSourceUnavailableError } from '../lib/fini-sources.js'
+import { horsRefParEcru, horsRefParFini, type FilHorsRef } from '../lib/hors-ref-trm.js'
 import {
   loadActions,
   loadLineKeysForCommande,
@@ -5132,6 +5133,8 @@ interface StockEcruLite {
   commande_numero?: number | null
   /** The client line is for another article/coloris than this dyer line (LIVA #1261). */
   reservation_hors_teinture?: boolean
+  /** Yarns its TRM OF knitted off the reference's sheet (lib/hors-ref-trm.ts). */
+  hors_ref?: FilHorsRef[]
 }
 
 interface StockFiniLite {
@@ -5149,6 +5152,8 @@ interface StockFiniLite {
    *  order, with the matching numeros. Empty on a plain roll. */
   source_ecru_ids?: number[]
   source_numeros?: string[]
+  /** Yarns off the écru reference's sheet, from its écru piece(s) (lib/hors-ref-trm.ts). */
+  hors_ref?: FilHorsRef[]
   // Two distinct free-text fields on stock_fini: the visitor's note
   // (`observations`, captured when the roll is checked in) and the
   // ennoblisseur's note (`observation_sst`). They're surfaced as two
@@ -5327,8 +5332,15 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   // (LIVA #1261) — the badge turns red so it gets released from here.
   const lccKeys = await loadClientLineKeys(linkedFixed.map((r) => Number(r.IDligne_commande_client) || 0))
   const dye = { ref: ctx.IDref_fini, coloris: ctx.IDColoris }
+  // TRM-knitted pieces whose OF fed a yarn off the écru reference's sheet
+  // (lib/hors-ref-trm.ts) — the reception card shows it on écru and fini.
+  const [horsRefEcru, horsRefFini] = await Promise.all([
+    horsRefParEcru(allEcruIds),
+    horsRefParFini(finiFixed.map((r) => Number(r.IDstock_fini) || 0)),
+  ])
   const linked = linkedFixed.map((r) => ({
     ...r,
+    hors_ref: horsRefEcru.get(Number(r.IDstock_ecru) || 0) ?? [],
     client_nom: clientByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
     commande_numero: commandeNumByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
     reservation_hors_teinture: (() => {
@@ -5339,6 +5351,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   }))
   available = available.map((r) => ({
     ...r,
+    hors_ref: horsRefEcru.get(Number(r.IDstock_ecru) || 0) ?? [],
     defects: defectsByEcruId.get(Number(r.IDstock_ecru) || 0) ?? [],
   }))
 
@@ -5372,6 +5385,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
       commande_numero: lcc > 0 ? (commandeNumByLcc.get(lcc) ?? null) : null,
       source_ecru_ids: sources,
       source_numeros: sources.map((id) => componentNumero.get(id) ?? `#${id}`),
+      hors_ref: horsRefFini.get(Number(r.IDstock_fini)) ?? [],
     }
   })
 
