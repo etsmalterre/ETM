@@ -279,20 +279,3 @@ export async function faitsReprises(ligneIds: number[]): Promise<Map<string, Fai
   for (const r of rows) out.set(`${Number(r.ligne)}:${r.lot}`, { nombre: Number(r.nombre), ouverte: !!r.ouverte, dernierRetour: r.retour })
   return out
 }
-
-/** The lot as a client reads it on a soumission: « MA109102 (reprise) » once it
- *  came back from a reprise — the number itself never changes (decision
- *  2026-10-12; 80 soumissions since 2024 named an « R » lot to the client). */
-export async function libelleLotClient(commandeId: number, lot: string): Promise<string> {
-  const l = (lot ?? '').trim()
-  if (!l || !(commandeId > 0)) return l
-  try {
-    const [r] = await mpsPg()<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM reprise r
-      JOIN ligne_commande_sous_traitant lc ON lc.idligne_commande_sous_traitant = r.idligne_commande_sous_traitant
-      WHERE lc.idcommande_sous_traitant = ${commandeId} AND r.lot = ${l}`
-    return Number(r?.n) > 0 ? `${l} (reprise)` : l
-  } catch {
-    return l
-  }
-}

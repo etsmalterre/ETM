@@ -88,7 +88,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
-import { libelleLotClient, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
+import { ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -3709,8 +3709,7 @@ export async function buildSoumissionLotPdfData(
     adresseLivraison,
     expediteur,
     destinataire,
-    // Display only (the « Lot / Bain » cell): « (reprise) » once back from one.
-    lot: await libelleLotClient(commandeId, lotString),
+    lot: lotString,
   }
 }
 
@@ -3851,11 +3850,10 @@ async function buildSoumissionEmailDefaults(
   const ccFixed = await fixEncoding(ccRows as any[], 'commande_client', 'IDcommande_client', ['ref_client'])
   const refCommandeClient = ((ccFixed[0] as any)?.ref_client ?? '').toString().trim()
 
-  const lotClient = await libelleLotClient(commandeId, lotString)
-  const subject = `Soumission Lot ${lotClient} - ${lot.ref_malterre}${lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}${refCommandeClient ? ` · ${refCommandeClient}` : ''}`
+  const subject = `Soumission Lot ${lotString} - ${lot.ref_malterre}${lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}${refCommandeClient ? ` · ${refCommandeClient}` : ''}`
   const body =
     `Bonjour,\n\n` +
-    `Veuillez trouver ci-joint la soumission du lot ${lotClient} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
+    `Veuillez trouver ci-joint la soumission du lot ${lotString} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
     (refCommandeClient ? `Réf commande client : ${refCommandeClient}\n\n` : '') +
     `Un échantillon est joint au document imprimé.\n\n` +
     `Cordialement,`
