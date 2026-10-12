@@ -310,7 +310,7 @@ routes.patch('/:slug/options', async (req, res) => {
 const versionBody = z.object({
   model: z.string().min(1),
   prompt: z.string().trim().min(20).max(30_000),
-  note: z.string().trim().max(500).default(''),
+  note: z.string().trim().max(1000).default(''),
 })
 
 routes.post('/:slug/versions', async (req, res) => {

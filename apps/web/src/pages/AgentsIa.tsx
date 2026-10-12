@@ -1124,7 +1124,7 @@ function NouvelleVersionDialog({ open, agent, base, onClose, onDone }: {
             </div>
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Note (ce qui change et pourquoi)</label>
-              <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500}
+              <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={1000}
                 className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
             </div>
           </div>
