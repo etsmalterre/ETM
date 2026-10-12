@@ -2199,13 +2199,23 @@ function AffectationDrawer({
   // `lastLinkIdRef` is the anchor for Shift+click range selection (§44).
   const [linkSel, setLinkSel] = useState<Set<number>>(new Set())
   const lastLinkIdRef = useRef<number | null>(null)
+  const [linkBatchError, setLinkBatchError] = useState<string | null>(null)
   const linkBatchMut = useMutation({
     mutationFn: (stockIds: number[]) =>
       apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/pieces/${kind}/affecter`, {
         method: 'POST',
         body: JSON.stringify({ stockIds }),
       }),
+    // A refusal (e.g. 409 `piece_a_donner` — the roll was flagged « don »
+    // since the list loaded, #1276) is shown and the lists reloaded.
+    onError: (err: any) => {
+      setLinkBatchError(err?.body?.message ?? 'Affectation refusée.')
+      setLinkSel(new Set())
+      lastLinkIdRef.current = null
+      queryClient.invalidateQueries({ queryKey })
+    },
     onSuccess: (payload: AffectationPayload) => {
+      setLinkBatchError(null)
       setLinkSel(new Set())
       lastLinkIdRef.current = null
       queryClient.setQueryData(queryKey, payload)
@@ -2545,6 +2555,9 @@ function AffectationDrawer({
               either list. Affecté selection → Expédier (legacy quick-ship);
               Stock disponible selection → Affecter. Mutual exclusion above
               guarantees the bar maps to exactly one action. */}
+          {linkBatchError && (
+            <p className="flex-shrink-0 px-3 py-1.5 border-t text-xs text-destructive">{linkBatchError}</p>
+          )}
           {!soldee && selMode !== null && (
             <div className="flex-shrink-0 px-3 py-2 border-t bg-zinc-200/50 flex items-center gap-2">
               <div className="flex items-center gap-1">

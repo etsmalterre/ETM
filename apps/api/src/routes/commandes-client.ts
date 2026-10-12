@@ -203,6 +203,15 @@ function refuseIfDonated(res: Response, IDcommande_donation: unknown): boolean {
   return true
 }
 
+/** A fini roll flagged « don » in Finis › Stock is set aside for a gift
+ *  (#1276): it may go on a donation order, never on a client line. Only NEW
+ *  links are refused — a roll already on the line keeps its link. */
+function refuseIfADonner(res: Response, don: unknown): boolean {
+  if (!(Number(don) > 0)) return false
+  res.status(409).json({ error: 'piece_a_donner', message: 'Ce rouleau est marqué « à donner » : il ne peut être joint qu’à une commande de donation.' })
+  return true
+}
+
 function refuseIfSoldee(res: Response, est_soldee: number | null): boolean {
   if (est_soldee === 1) {
     res.status(409).json({
@@ -2500,6 +2509,7 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
          AND (${ctx.coloriId} = 0 OR IDColoris = ${ctx.coloriId})
          AND (IDligne_commande_client IS NULL OR IDligne_commande_client = 0)
          AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)
+         AND (don IS NULL OR don = 0)
          AND (IDligne_expedition IS NULL OR IDligne_expedition = 0)
          AND (IDetat_stock_fini IS NULL OR IDetat_stock_fini <> 4)
        ORDER BY date_saisie DESC, IDstock_fini DESC`,
@@ -2853,8 +2863,8 @@ commandesClientRouter.put('/:id/lignes/:ligneId/pieces/fini/:stockId', async (re
     const ctx = await loadClientLineContext(commandeId, ligneId)
     if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
     if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
-    const rollRows = await query<{ IDref_fini: number; IDColoris: number | null; IDligne_commande_client: number | null; IDetat_stock_fini: number | null; IDcommande_donation: number | null }>(
-      `SELECT IDref_fini, IDColoris, IDligne_commande_client, IDetat_stock_fini, IDcommande_donation FROM stock_fini WHERE IDstock_fini = ${stockId}`,
+    const rollRows = await query<{ IDref_fini: number; IDColoris: number | null; IDligne_commande_client: number | null; IDetat_stock_fini: number | null; IDcommande_donation: number | null; don: number | null }>(
+      `SELECT IDref_fini, IDColoris, IDligne_commande_client, IDetat_stock_fini, IDcommande_donation, don FROM stock_fini WHERE IDstock_fini = ${stockId}`,
     )
     if (rollRows.length === 0) { res.status(404).json({ error: 'Stock fini not found' }); return }
     if (Number(rollRows[0].IDref_fini) !== ctx.refId) { res.status(400).json({ error: 'Roll ref does not match the line' }); return }
@@ -2862,6 +2872,7 @@ commandesClientRouter.put('/:id/lignes/:ligneId/pieces/fini/:stockId', async (re
     if (refuseIfDonated(res, rollRows[0].IDcommande_donation)) return
     const current = Number(rollRows[0].IDligne_commande_client) || 0
     if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
+    if (current !== ligneId && refuseIfADonner(res, rollRows[0].don)) return
     await query(`UPDATE stock_fini SET IDligne_commande_client = ${ligneId} WHERE IDstock_fini = ${stockId}`)
     res.json(await fetchAffectationPayload(ctx))
   } catch (err) {
@@ -2923,7 +2934,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/pieces/:kind/affecter', async (
     const colCol = kindParam === 'ecru' ? 'IDcolori_ecru' : 'IDColoris'
     const idList = stockIds.join(',')
     const rows = await query<Record<string, unknown>>(
-      `SELECT ${pk}, ${refCol}, ${colCol}, IDligne_commande_client, IDcommande_donation FROM ${table} WHERE ${pk} IN (${idList})`,
+      `SELECT ${pk}, ${refCol}, ${colCol}, IDligne_commande_client, IDcommande_donation${kindParam === 'fini' ? ', don' : ''} FROM ${table} WHERE ${pk} IN (${idList})`,
     )
     const byId = new Map(rows.map((r) => [Number(r[pk]), r]))
     for (const sid of stockIds) {
@@ -2934,6 +2945,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/pieces/:kind/affecter', async (
       if (refuseIfDonated(res, r.IDcommande_donation)) return
       const current = Number(r.IDligne_commande_client) || 0
       if (current !== 0 && current !== ligneId) { res.status(409).json({ error: `Roll ${sid} already reserved to another line` }); return }
+      if (current !== ligneId && refuseIfADonner(res, r.don)) return
     }
     if (kindParam === 'ecru' && (await ecruStillAtDyer(stockIds)).length > 0) {
       res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: ECRU_AT_DYER_MESSAGE }); return
