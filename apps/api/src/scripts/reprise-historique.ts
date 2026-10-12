@@ -29,7 +29,12 @@ const essai = process.argv.includes('--essai')
 const write = process.argv.includes('--write') || essai
 config({ path: env === 'production' ? resolve(process.cwd(), '../../../ETM/apps/api/.env.production') : resolve(process.cwd(), '.env.development') })
 if (!write) process.env.PGOPTIONS = '-c default_transaction_read_only=on'
-const inclure = new Set((arg('inclure') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean))
+// Mistyped digits, corrected only on proof and Vincent's go (2026-10-12): the
+// dyer's BL PDFs filed on order 5499 are MA101313.pdf, MA101313R.pdf, MA101313R3.pdf.
+const CORRECTIONS: Record<string, string> = { MA11313R3: 'MA101313' }
+// Real old lots reprised later (the base lot sits on the same order), Vincent's go 2026-10-12.
+const VALIDES = ['MA98170R', 'MA99240R2']
+const inclure = new Set([...VALIDES, ...Object.keys(CORRECTIONS)].concat((arg('inclure') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)))
 
 const { mpsPg, closeMpsPg } = await import('../lib/mps-pg.js')
 const { suffixeReprise } = await import('../lib/reprises.js')
@@ -57,7 +62,8 @@ const aRevoir: Array<{ lot: string; ligne: number; rouleaux: number; raison: str
 // (line, base) → the suffixed groups to fold into it.
 const cibles = new Map<string, { ligne: number; base: string; groupes: Array<Groupe & { rang: number }> }>()
 for (const g of groupes.values()) {
-  const s = suffixeReprise(g.lot)
+  const lu = suffixeReprise(g.lot)
+  const s = lu && CORRECTIONS[g.lot] ? { ...lu, base: CORRECTIONS[g.lot] } : lu
   if (!s) { aRevoir.push({ lot: g.lot, ligne: g.ligne, rouleaux: g.ids.length, raison: 'pas une reprise (lettre ou texte libre) — non touché' }); continue }
   if (!(g.ligne > 0)) { aRevoir.push({ lot: g.lot, ligne: g.ligne, rouleaux: g.ids.length, raison: 'rouleau sans ligne sous-traitant' }); continue }
   const chiffres = /\d{5,}/.exec(s.base)?.[0] ?? ''
