@@ -62,6 +62,18 @@ export function suffixeReprise(lot: string, chiffres = 5): SuffixeReprise | null
   return { base: m[1].trim().toUpperCase(), rang, canonique: /^MA\d{5,}R$/.test(t) }
 }
 
+/** A typed lot in its one shape: the dyer's letters glued to its number, upper
+ *  case (« MA 109401 » / « ma109401 » → « MA109401 », « bon 3976 » → « BON3976 »;
+ *  Pierrot typed « MA 109401 » on 2026-10-12, the Tricobot lot is « MA109401 »).
+ *  Anything else is left as typed. Pure. */
+export function normaliserLot(lot: string | null | undefined): string {
+  const t = (lot ?? '').trim()
+  // « trm<IDexpedition> » is the TRM handover lot (lib/trm-handover.ts), lower case on purpose.
+  if (/^trm/i.test(t)) return t
+  const m = /^([A-Za-z]{2,3})\s*(\d{3,}[A-Za-z]?)$/.exec(t)
+  return m ? `${m[1]}${m[2]}`.toUpperCase() : t
+}
+
 /** The message refusing a lot typed WITH a reprise suffix, or null. A lot left
  *  as it already is passes (an old roll not yet cleaned by the history script). */
 export function refusLotSuffixe(nouveau: string | null | undefined, actuel?: string | null): string | null {

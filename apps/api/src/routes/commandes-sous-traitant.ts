@@ -88,7 +88,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
-import { ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
+import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -6488,6 +6488,7 @@ commandesSousTraitantRouter.post(
         return
       }
       const d = parsed.data
+      if (d.lot !== undefined) d.lot = normaliserLot(d.lot)
       const refusLot = refusLotSuffixe(d.lot)
       if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
 
@@ -6800,6 +6801,8 @@ commandesSousTraitantRouter.patch(
       if (d.IDetat_stock_fini === 2 && etatAvant !== 2) {
         res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise », avec son motif.' }); return
       }
+      // A lot left as it is stays as it is (an old « MA 109401 » is not rewritten by an unrelated edit).
+      if (d.lot !== undefined && d.lot.trim() !== String(verify[0].lot ?? '').trim()) d.lot = normaliserLot(d.lot)
       const refusLot = refusLotSuffixe(d.lot, verify[0].lot)
       if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
       const expedie = etatAvant === 4 || (Number(verify[0].IDligne_expedition) || 0) > 0

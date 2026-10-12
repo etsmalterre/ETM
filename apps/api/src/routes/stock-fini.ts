@@ -28,7 +28,7 @@ function esc(value: string): string {
 }
 
 import { IS_WINDOWS } from '../lib/sst-shared.js'
-import { refusLotSuffixe, reprisesParRouleau } from '../lib/reprises.js'
+import { normaliserLot, refusLotSuffixe, reprisesParRouleau } from '../lib/reprises.js'
 
 /** ref_fini.archivé is accented — on Linux SELECT * returns a mangled key. */
 function isArchive(row: Record<string, unknown>): boolean {
@@ -462,7 +462,7 @@ stockFiniRouter.post('/fini', async (req: Request, res: Response) => {
       ? parseInt(String(b.IDmagasin), 10)
       : 0
     const secondChoix = b.second_choix ? 1 : 0
-    const lot = (b.lot ?? '').toString()
+    const lot = normaliserLot((b.lot ?? '').toString())
     const refusLot = refusLotSuffixe(lot)
     if (IDetat === 2) { res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise » (Sous-traitants) ou « Reprendre » (Qualité), avec son motif.' }); return }
     if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }

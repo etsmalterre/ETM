@@ -168,10 +168,23 @@ export function modeEffectif(mode: AgentMode, profil: ProfilEnnoblisseur): Agent
   return mode === 'actif' && profil.modeMax === 'essai' ? 'essai' : mode
 }
 
+/** Which pages of one mail are the same document: same dyer, same kind, same
+ *  lot AND same bordereau with its letter ('' = an unreadable lot, alone).
+ *  109269 A and 109269 B in one mail are two BLs of one lot (v3, 2026-10-12:
+ *  v2 merged them into 21 pieces and blocked both on the totals). */
+export function cleDocument(profil: ProfilEnnoblisseur, type: TypeDocument, e: BlExtraction): string {
+  const lot = profil.lot(e)
+  return lot ? `${profil.cle}|${type}|${lot}|${e.numero_bordereau}` : ''
+}
+
 /** ged name of the document on the order: the BL is `<lot>.pdf` (as n8n named
- *  MATEL's), TAD's mise à dispo `<lot>-dispo.pdf` (the BL of the same OF follows). */
-export function nomGed(lot: string, type: TypeDocument): string {
-  return type === 'mise_a_dispo' ? `${lot}-dispo` : lot
+ *  MATEL's), TAD's mise à dispo `<lot>-dispo.pdf` (the BL of the same OF follows).
+ *  A later MATEL bordereau of the same lot (109269 B after 109269 A, v3
+ *  2026-10-12) is a document of its own: `MA109269B.pdf` — A keeps the bare lot. */
+export function nomGed(lot: string, type: TypeDocument, bordereau = ''): string {
+  if (type === 'mise_a_dispo') return `${lot}-dispo`
+  const lettre = /^\d{6}([B-Z])$/.exec(bordereau)?.[1]
+  return lettre ? `${lot}${lettre}` : lot
 }
 
 // ── Mailbox: who to read, which attachments ─────────────

@@ -32,6 +32,7 @@ import {
   type Controle,
 } from './bl-extraction.js'
 import {
+  cleDocument,
   detecterProfil,
   estPieceCandidate,
   modeEffectif,
@@ -46,7 +47,7 @@ import {
   type ProfilEnnoblisseur,
   type TypeDocument,
 } from './bl-profils.js'
-import { cleDeLigne, contactsEnnoblisseurs, ecrireBl, poidsEcrit, resoudreBl, retirerPieces, type Ecriture, type Resolution } from './bl-ennoblisseur-db.js'
+import { classerPdf, cleDeLigne, contactsEnnoblisseurs, ecrireBl, poidsEcrit, resoudreBl, retirerPieces, type Ecriture, type Resolution } from './bl-ennoblisseur-db.js'
 import {
   ajouterRun,
   enregistrerFichier as enregistrerFichierRun,
@@ -72,13 +73,15 @@ export const BL_ENNOBLISSEUR_VERSION_INITIALE: VersionInitiale = {
   note: 'Version initiale — benchmark du 22/09/2026 : 119/120 BL lus exactement (OCR Mistral + Mistral Small).',
 }
 
-/** v2 (2026-09-28): every dyer, BLs only (bl-profils.ts). MATEL's prompt is
- *  unchanged — Bontemps and TAD ship their own with their profile — but the
- *  agent's behaviour changed, so its runs are scored under a new version. */
+/** v2 (2026-09-28, published): every dyer, BLs only (bl-profils.ts).
+ *  v3 (2026-10-12, from the v2 feedback — bl-diagnostics.ts): the prompt is
+ *  unchanged again (the reading was never at fault), the behaviour changed,
+ *  so its runs are scored under a new version. Never a version number in the
+ *  note: the store numbers versions in publication order. */
 export const BL_ENNOBLISSEUR_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: BL_PROMPT_V1,
-  note: 'Version 2 — MATEL, Bontemps et TAD, BL uniquement : le texte du document décide de ce qui est un BL, le reste est écarté sans notification (prompt MATEL inchangé, ceux de Bontemps et TAD sont livrés avec leur profil).',
+  note: 'Retours de la v2, prompt inchangé : deux bordereaux du même lot dans un mail (109269 A et B) sont deux BL ; un BL bloqué dit pourquoi — pièce affectée à aucune commande ou à la commande N (nommée), BL probablement mal numéroté (toutes les pièces sur une autre commande, même article), BL commun à plusieurs commandes (« 9040+9045 » : quelle pièce va où, réception à la main), pièce introuvable avec le numéro probable (3570/50 → 3572/50, jamais remplacé seul) ; le BL TAD qui suit la mise à dispo est classé comme preuve d’expédition ; plus d’alerte « livré directement chez le client » (c’est la règle pour tous les ennoblisseurs).',
 }
 
 /** The mailbox n8n polled. Every dyer mails its BLs there (Bontemps asked to
@@ -222,12 +225,8 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
     })
   }
 
-  // Pages of one document: same dyer, same kind, same lot (an unreadable lot stays alone).
-  const cle = (e: BlExtraction, i: number) => {
-    const l = lues[i]
-    const lot = l.profil!.lot(e)
-    return lot ? `${l.profil!.cle}|${l.type}|${lot}` : ''
-  }
+  // Pages of one document (cleDocument(): same dyer, kind, lot and bordereau).
+  const cle = (e: BlExtraction, i: number) => cleDocument(lues[i].profil!, lues[i].type!, e)
   const extractions = lues.map((l) => l.extraction!)
   const groupes = grouperPages(extractions, cle)
   const fusions = fusionnerPages(extractions, cle)
@@ -254,7 +253,16 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
       }
       const deja = new Set(resolution?.dejaImportees ?? [])
       if (estBloquant(controles)) statut = 'a_verifier'
-      else if (e.pieces.every((p) => deja.has(cleDeLigne(p.numero_piece, poidsEcrit(profil, p.poids), p.metrage)))) statut = 'deja_importe'
+      else if (e.pieces.every((p) => deja.has(cleDeLigne(p.numero_piece, poidsEcrit(profil, p.poids), p.metrage)))) {
+        statut = 'deja_importe'
+        // Nothing to import, but the document itself goes on the order when it
+        // is not there yet: TAD's BL after its mise à dispo is the shipment to
+        // the client — our request carried out (v3, 2026-10-12).
+        if (mode === 'actif' && resolution && resolution.gedExistant == null) {
+          const gedId = await classerPdf(resolution, pages.map((p) => p.contenu))
+          if (gedId != null) ecriture = { gedId, lignesEcrites: 0, ids: [] }
+        }
+      }
       else if (mode === 'actif') {
         ecriture = await ecrireBl(e, resolution!, pages.map((p) => p.contenu), jourParisYmd(), profil)
         statut = 'ecrit'
@@ -300,8 +308,17 @@ function resumer(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument
   switch (statut) {
     case 'ecrit': return `${bl}${cmd} · ${ecriture?.lignesEcrites ?? 0} pièce(s) enregistrée(s)`
     case 'simule': return `${bl}${cmd} · ${n} prête(s) à enregistrer (mode essai)`
-    case 'deja_importe': return `${bl}${cmd} · déjà importé`
-    case 'a_verifier': return `${bl}${cmd} · ${controles.find((c) => c.gravite === 'bloquant')?.message ?? 'à vérifier'}`
+    case 'deja_importe':
+      // TAD's BL after the mise à dispo: the shipment, not a duplicate.
+      if (profil.cle === 'tad' && type === 'bl') {
+        return `${profil.nom} · Expédition BL ${num}${e.destinataire ? ` vers ${e.destinataire}` : ''}${cmd} · ${n} déjà importée(s) à la mise à dispo${ecriture?.gedId ? ' · BL classé' : ''}`
+      }
+      return `${bl}${cmd} · déjà importé${ecriture?.gedId ? ' · document classé' : ''}`
+    case 'a_verifier': {
+      const bloquants = controles.filter((c) => c.gravite === 'bloquant')
+      const c = bloquants.find((x) => x.code === 'plusieurs_commandes') ?? bloquants[0]
+      return `${bl}${cmd} · ${c?.message ?? 'à vérifier'}`
+    }
     default: return `${bl}${cmd} · ${n}`
   }
 }

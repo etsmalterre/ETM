@@ -214,7 +214,9 @@ export function controlerExtraction(e: BlExtraction, regles: ReglesControle = RE
   const bloque = (code: string, message: string) => out.push({ code, gravite: 'bloquant', message })
   const avertit = (code: string, message: string) => out.push({ code, gravite: 'avertissement', message })
 
-  if (!/^\d{4}$/.test(e.numero_commande)) bloque('commande_format', `Numéro de commande illisible (« ${e.numero_commande || '—'} »).`)
+  // « 9040+9045 »: one lot dyed for several orders (BL 109402A) — readable;
+  // resoudreBl() says which piece goes where and keeps it for a person.
+  if (!/^\d{4}(\+\d{4})*$/.test(e.numero_commande)) bloque('commande_format', `Numéro de commande illisible (« ${e.numero_commande || '—'} »).`)
   if (!regles.bordereauRe.test(e.numero_bordereau)) bloque('bordereau_format', `Numéro de bordereau illisible (« ${e.numero_bordereau || '—'} »).`)
   if (regles.ofRequis && !/^\d{6}$/.test(e.numero_of)) bloque('of_format', `Numéro d’OF illisible (« ${e.numero_of || '—'} »).`)
   const pesee = (code: string, message: string) => (regles.poidsUtile ? bloque : avertit)(code, message)
@@ -265,12 +267,10 @@ export function controlerExtraction(e: BlExtraction, regles: ReglesControle = RE
   if (e.nombre_pieces != null && e.nombre_pieces !== e.pieces.length) {
     avertit('total_nombre', `Le BL annonce ${e.nombre_pieces} pièce(s), ${e.pieces.length} ligne(s) lue(s).`)
   }
-  // TAD may ship straight to a customer or a contrecolleur (BL 344642 → C2TEC,
-  // 2026-09-14): the réception is the same, but ETM still shows the rolls at
-  // the dyer's (magasin) until someone moves them.
-  if (e.destinataire && !/MALTERRE/i.test(e.destinataire)) {
-    avertit('livre_ailleurs', `Livré directement chez ${e.destinataire} : dans ETM les rouleaux restent au magasin de l’ennoblisseur — faire un transfert si besoin.`)
-  }
+  // No check on the destinataire: every dyer ships straight to the client
+  // (Vincent, 2026-10-12 — MATEL just does not print it); the avis
+  // d'expédition is made in ETM after the réception. The v2 warning
+  // « livré directement… faire un transfert » was wrong in principle.
   if (e.poids_total == null && e.metrage_total == null) {
     avertit('totaux_absents', 'Aucun total imprimé sur ce document (BL sur plusieurs pages ?) : les pièces n’ont pas pu être recoupées.')
   }

@@ -242,7 +242,7 @@ const PROFIL_NOM: Record<string, string> = { matel: 'MATEL', bontemps: 'Bontemps
 
 interface Controle { code: string; gravite: 'bloquant' | 'avertissement'; message: string }
 interface BlPiece { numero_piece: string; poids: number | null; metrage: number | null; observations: string }
-interface PieceResolue { numero_piece: string; statut: 'ok' | 'affectee_ailleurs' | 'inconnue' }
+interface PieceResolue { numero_piece: string; statut: 'ok' | 'affectee_ailleurs' | 'non_affectee' | 'inconnue' }
 
 /** A pilot's note on a run, for the next version (POST /:slug/runs/:id/notes-dev). */
 interface NoteDev { commentaire: string; par: Auteur; le: string }
@@ -1721,6 +1721,7 @@ function PointEvaluation({ avis, herite, textes, canEvaluate, onSave, isPending,
 const PIECE_STATUT: Record<PieceResolue['statut'], { label: string; cls: string }> = {
   ok: { label: 'OK', cls: 'text-success' },
   affectee_ailleurs: { label: 'Autre commande', cls: 'text-destructive' },
+  non_affectee: { label: 'Non affectée', cls: 'text-destructive' },
   inconnue: { label: 'Introuvable', cls: 'text-destructive' },
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  cleDocument,
   correspond,
   detecterProfil,
   estPieceCandidate,
@@ -50,6 +51,19 @@ describe('lots and ged names', () => {
     expect(nomGed('TA530425', 'bl')).toBe('TA530425')
     expect(nomGed('TA530425', 'mise_a_dispo')).toBe('TA530425-dispo')
   })
+  it('names a later MATEL bordereau of the same lot by its letter (109269 B after A)', () => {
+    expect(nomGed('MA109269', 'bl', '109269A')).toBe('MA109269')
+    expect(nomGed('MA109269', 'bl', '109269B')).toBe('MA109269B')
+    expect(nomGed('MA108914', 'bl', '108914')).toBe('MA108914')
+    expect(nomGed('TA531487', 'bl', '345186')).toBe('TA531487')
+  })
+  it('keeps two bordereaux of one lot apart, pages of one bordereau together (mail « TR: BL métrages 109269 »)', () => {
+    const matel = profilDe('matel')!
+    const page = (b: string) => normaliserExtraction({ numero_commande: '8990', numero_bordereau: b, ligne: 1, pieces: [] })
+    expect(cleDocument(matel, 'bl', page('109269A'))).not.toBe(cleDocument(matel, 'bl', page('109269B')))
+    expect(cleDocument(matel, 'bl', page('109269B'))).toBe(cleDocument(matel, 'bl', page('109269B')))
+    expect(cleDocument(matel, 'bl', page(''))).toBe('')
+  })
 })
 
 describe('TAD extraction', () => {
@@ -62,9 +76,9 @@ describe('TAD extraction', () => {
     nombre_pieces: 2, poids_total: 39.7, metrage_total: 173.8,
   }
   it('drops the choice after the bar', () => expect(normaliserExtraction(raw).pieces[0].numero_piece).toBe('3526/15'))
-  it('passes, warning that the goods went to a third party', () => {
+  it('passes a delivery straight to the client without a warning (every dyer does it, v3)', () => {
     const cs = controlerExtraction(normaliserExtraction(raw), reglesDe(profilDe('tad')!))
-    expect(cs.map((c) => [c.code, c.gravite])).toEqual([['livre_ailleurs', 'avertissement']])
+    expect(cs).toEqual([])
   })
   it('accepts a mise à dispo without bordereau, never without OF', () => {
     const r = reglesDe(profilDe('tad')!)

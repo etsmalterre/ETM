@@ -60,6 +60,11 @@ describe('controlerExtraction', () => {
     expect(cs.map((c) => c.code)).toContain('commande_format')
     expect(estBloquant(cs)).toBe(true)
   })
+  it('reads « 9040+9045 » as a BL common to several orders, not an unreadable number (BL 109402A)', () => {
+    const cs = controlerExtraction(normaliserExtraction({ ...bl109152, numero_commande: '9040+9045' }))
+    expect(cs.map((c) => c.code)).not.toContain('commande_format')
+    expect(controlerExtraction(normaliserExtraction({ ...bl109152, numero_commande: '9040+' })).map((c) => c.code)).toContain('commande_format')
+  })
   it('blocks a garbled piece number (« 349/01+349/05 » is well-formed, « 3496/l » is not)', () => {
     const cs = controlerExtraction(normaliserExtraction({ ...bl109152, pieces: [{ ...bl109152.pieces[0], numero_piece: '3496/l' }] }))
     expect(cs.map((c) => c.code)).toContain('piece_format')
