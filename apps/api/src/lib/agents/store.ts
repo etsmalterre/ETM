@@ -108,6 +108,9 @@ export interface Evaluation {
   le: string
   /** What an échec removed from ETM, in French (BL: the pre-filled pieces). */
   retrait?: string | null
+  /** Set when a pilot corrected the score from the run dialog (Agents IA): the
+   *  score it replaced, kept so the person's original retour stays readable. */
+  avant?: Omit<Evaluation, 'avant'> | null
 }
 
 /** Before 2026-09-23: thumbs up / down (BL) or « échouée » (Superviseur).

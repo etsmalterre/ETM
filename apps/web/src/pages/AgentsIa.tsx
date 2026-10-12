@@ -111,6 +111,8 @@ interface Evaluation {
   le: string
   /** What an échec removed from ETM (BL: the pre-filled pieces). */
   retrait?: string | null
+  /** A pilot corrected the score (PUT /:slug/runs/:id/evaluation): the score it replaced. */
+  avant?: Omit<Evaluation, 'avant'> | null
 }
 
 /** How the points of one Superviseur report stand (a point scored on an
@@ -1782,6 +1784,13 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                 {run.evaluation
                   ? <EvaluationLue evaluation={run.evaluation} sansAuteur />
                   : <p className="text-xs text-muted-foreground italic">Pas encore de retour : il est donné à la réception des rouleaux (Sous-traitants › Commandes).</p>}
+                {run.evaluation?.avant && (
+                  <div className="border-t border-border/40 pt-1.5 space-y-1">
+                    <p className="text-[11px] text-muted-foreground">Score corrigé — retour d’origine de {run.evaluation.avant.par.nom} :</p>
+                    <EvaluationLue evaluation={run.evaluation.avant} className="opacity-70" sansAuteur />
+                  </div>
+                )}
+                {canPilot && <CorrectionScore slug={slug} run={run} />}
               </div>
               <NotesDevCard slug={slug} run={run} canPilot={canPilot} ajout={ajoutNote} onFermerAjout={() => setAjoutNote(false)} />
               {canPilot && (
@@ -1806,6 +1815,62 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** A pilot corrects the run's score (decision Vincent 2026-10-12), e.g. an
+ *  échec given on a roll bent to bill less, since fixed. The replaced score
+ *  stays visible under it. Réussite: why optional; échec: why required. */
+function CorrectionScore({ slug, run }: { slug: string; run: RunComplet }) {
+  const base = useBaseApi()
+  const queryClient = useQueryClient()
+  const [ouvert, setOuvert] = useState(false)
+  const [note, setNote] = useState<Note>(run.evaluation?.note === 'reussite' ? 'echec' : 'reussite')
+  const [texte, setTexte] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const fermer = () => { setOuvert(false); setTexte(''); setError(null) }
+  const mut = useMutation({
+    mutationFn: () => callApi<RunComplet>(`${base}/${slug}/runs/${run.id}/evaluation`, { method: 'PUT', body: JSON.stringify({ note, commentaire: texte }) }),
+    onSuccess: (r) => {
+      queryClient.setQueryData(['agent-ia-run', slug, run.id], r)
+      queryClient.invalidateQueries({ queryKey: ['agent-ia', slug] })
+      queryClient.invalidateQueries({ queryKey: ['agent-ia-runs', slug] })
+      queryClient.invalidateQueries({ queryKey: ['agent-ia-retours', slug] })
+      fermer()
+    },
+    onError: (e: Error) => setError(e.message),
+  })
+  if (!ouvert) {
+    return (
+      <div className="flex justify-end">
+        <button type="button" onClick={() => setOuvert(true)} className="text-xs text-muted-foreground hover:text-accent transition-colors"
+          title="Corriger le score de cette exécution (l’ancien retour reste visible)">
+          Corriger le score
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-3 space-y-2">
+      <div className="flex gap-1">
+        {(['reussite', 'echec'] as const).map((n) => (
+          <button key={n} type="button" onClick={() => setNote(n)}
+            className={cn('px-3 py-1 text-xs rounded-md transition-colors', note === n ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10')}>
+            {NOTE_META[n].label}
+          </button>
+        ))}
+      </div>
+      <textarea value={texte} onChange={(e) => setTexte(e.target.value)} rows={2} maxLength={2000} autoFocus
+        placeholder={note === 'echec' ? 'Pourquoi Tricobot s’est trompé (obligatoire)…' : 'Pourquoi c’était juste (facultatif)…'}
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={fermer}>Annuler</Button>
+        <Button size="sm" disabled={(note === 'echec' && !texte.trim()) || mut.isPending} onClick={() => mut.mutate()}>
+          {mut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Enregistrer
+        </Button>
+      </div>
+      {error && <div className="flex items-center gap-2 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" />{error}</div>}
+    </div>
   )
 }
 

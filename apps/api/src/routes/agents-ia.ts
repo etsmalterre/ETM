@@ -463,6 +463,38 @@ routes.delete('/:slug/runs/:id/notes-dev/:le', async (req, res) => {
   res.json(r)
 })
 
+// ── Score correction (BL Ennoblisseur) ───────────────────
+// A pilot corrects a run's score from the run dialog (decision Vincent
+// 2026-10-12): e.g. an échec given when the roll had been bent to bill less,
+// fixed since through « Ml non facturés ». The one carve-out from « scored where
+// the work is done »: only agents scored per run (no `points`), never the
+// Triage (its correction re-dispatches). The replaced score is kept in `avant`.
+
+const evaluationBody = z.object({
+  note: z.enum(['reussite', 'echec']),
+  commentaire: z.string().trim().max(2000).default(''),
+})
+
+routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  if (def.points || def.slug === TRIAGE_SLUG) { res.status(409).json({ error: 'cet agent est noté là où le travail est fait' }); return }
+  const p = evaluationBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'note invalide' }); return }
+  if (p.data.note === 'echec' && !p.data.commentaire) { res.status(400).json({ error: 'Un échec se donne avec un pourquoi.' }); return }
+  const par = await auteur(uid)
+  const r = await modifierRun(def.slug, req.params.id, (x) => {
+    const prec = x.evaluation ?? null
+    // Correcting a correction keeps the person's original score, not ours.
+    const avant = prec ? (prec.avant ?? (({ avant: _a, ...rest }) => rest)(prec)) : null
+    x.evaluation = { note: p.data.note, commentaire: p.data.commentaire, par, le: new Date().toISOString(), avant }
+  })
+  if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  res.json(r)
+})
+
 // ── Triage ───────────────────────────────────────────────
 // The Triage's work IS the triage, so it is corrected here (decision Vincent
 // 2026-10-05) — the one agent scored from Agents IA. Correct by default: a
