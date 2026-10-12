@@ -47,6 +47,7 @@ import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reader.js'
 import { corrigerTriage, CorrectionInvalide, TRIAGE_BOITE, TRIAGE_SLUG } from '../lib/agents/triage/agent.js'
 import { CATEGORIES } from '../lib/agents/triage/categories.js'
+import { BL_ENNOBLISSEUR_SLUG, etiqueterVerifie } from '../lib/agents/bl-ennoblisseur.js'
 import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
 import { relaisTriage } from '../lib/agents/triage/relais.js'
 
@@ -492,6 +493,33 @@ routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
     x.evaluation = { note: p.data.note, commentaire: p.data.commentaire, par, le: new Date().toISOString(), avant }
   })
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  res.json(r)
+})
+
+// ── « Vérifié » ──────────────────────────────────────────
+// A pilot checked an « à vérifier » / « erreur » run (handled by hand, e.g. the
+// rolls received manually): statut → 'verifie', the original kept in
+// `verification`. Not a score. BL: the mail moves to the « traité » label.
+
+const verifieBody = z.object({ commentaire: z.string().trim().max(2000).default('') })
+
+routes.post('/:slug/runs/:id/verifie', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  const p = verifieBody.safeParse(req.body ?? {})
+  if (!p.success) { res.status(400).json({ error: 'commentaire invalide' }); return }
+  const par = await auteur(uid)
+  let refus: string | null = null
+  const r = await modifierRun(def.slug, req.params.id, (x) => {
+    if (x.statut !== 'a_verifier' && x.statut !== 'erreur') { refus = 'seule une exécution « à vérifier » ou en erreur se marque vérifiée'; return }
+    x.verification = { statutAvant: x.statut, commentaire: p.data.commentaire, par, le: new Date().toISOString() }
+    x.statut = 'verifie'
+  })
+  if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  if (refus) { res.status(409).json({ error: refus }); return }
+  if (def.slug === BL_ENNOBLISSEUR_SLUG && r.message?.id && r.mode === 'actif') await etiqueterVerifie(r.message.id)
   res.json(r)
 })
 

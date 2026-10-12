@@ -67,6 +67,7 @@ export type RunStatut =
   | 'ecrit' // written to HFSQL
   | 'simule' // mode essai: everything passed, would have been written
   | 'a_verifier' // a blocking check failed: a human must look
+  | 'verifie' // was à vérifier / erreur, a pilot checked it (AgentRun.verification keeps the original)
   | 'deja_importe' // every piece already in data_bl_tricotbot with the same values
   | 'ignore' // nothing to read (no PDF attachment)
   | 'erreur' // an exception (API down, HFSQL…)
@@ -156,6 +157,9 @@ export interface AgentRun {
   /** Notes a pilot leaves on the run for the next version of the agent (Agents
    *  IA › run dialog). Not a score: the score stays where the work is done. */
   notesDev?: Array<Pick<Evaluation, 'commentaire' | 'par' | 'le'>>
+  /** A pilot marked an « à vérifier » / « erreur » run as checked (Agents IA,
+   *  2026-10-12): statut became 'verifie', the original is kept here. Not a score. */
+  verification?: { statutAvant: RunStatut; commentaire: string; par: Auteur; le: string } | null
   /** Legacy — see RunVerdict. */
   verdict?: RunVerdict | null
 }

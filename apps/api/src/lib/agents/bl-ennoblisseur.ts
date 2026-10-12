@@ -19,7 +19,7 @@
 
 import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
-import { listerMessages, lireMessage, lirePieceJointe, assurerLibelle, ajouterLibelle, type MessageInfo } from '../gmail-reader.js'
+import { listerMessages, lireMessage, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
 import { relaisTriage, triesParTriage } from './triage/relais.js'
 import {
   BL_PROMPT_V1,
@@ -399,6 +399,16 @@ async function etiqueter(messageId: string, runs: AgentRun[]): Promise<void> {
     await ajouterLibelle(BL_ENNOBLISSEUR_BOITE, messageId, label)
   } catch (err) {
     console.error(`[agents] ${BL_ENNOBLISSEUR_SLUG}: label failed for ${messageId}:`, err)
+  }
+}
+
+/** A pilot checked an « à vérifier » run: the mail moves to « traité ». Best effort. */
+export async function etiqueterVerifie(messageId: string): Promise<void> {
+  try {
+    await ajouterLibelle(BL_ENNOBLISSEUR_BOITE, messageId, await assurerLibelle(BL_ENNOBLISSEUR_BOITE, LIBELLE_TRAITE))
+    await retirerLibelle(BL_ENNOBLISSEUR_BOITE, messageId, await assurerLibelle(BL_ENNOBLISSEUR_BOITE, LIBELLE_A_VERIFIER))
+  } catch (err) {
+    console.error(`[agents] ${BL_ENNOBLISSEUR_SLUG}: relabel failed for ${messageId}:`, err)
   }
 }
 

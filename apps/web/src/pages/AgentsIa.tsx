@@ -98,7 +98,7 @@ import { sansTiretTexte, sansTiretTitre } from '@/components/dashboard/Supervise
 
 // ── Types (mirror routes/agents-ia.ts) ───────────────────
 
-type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'deja_importe' | 'ignore' | 'erreur' | 'points_a_voir' | 'rien_a_signaler' | 'mail_envoye' | 'trie'
+type Statut = 'ecrit' | 'simule' | 'a_verifier' | 'verifie' | 'deja_importe' | 'ignore' | 'erreur' | 'points_a_voir' | 'rien_a_signaler' | 'mail_envoye' | 'trie'
 type Source = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel' | 'triage' | 'triage'
 type Note = 'reussite' | 'echec'
 
@@ -246,6 +246,8 @@ interface NoteDev { commentaire: string; par: Auteur; le: string }
 
 interface RunComplet extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces'> {
   notesDev?: NoteDev[]
+  /** A pilot marked the run checked (POST /:slug/runs/:id/verifie): the original statut. */
+  verification?: { statutAvant: Statut; commentaire: string; par: Auteur; le: string } | null
   resultat: {
     /** BL Ennoblisseur since 2026-09-28: which dyer, which document (absent before = MATEL BL). */
     profil?: 'matel' | 'bontemps' | 'tad' | null
@@ -309,6 +311,8 @@ const STATUT_META: Record<Statut, { label: string; solid: string; icon: Componen
   ecrit: { label: 'Enregistré', solid: 'bg-success border-success', icon: CheckCircle2 },
   simule: { label: 'Simulé', solid: 'bg-sky-600 border-sky-600', icon: FlaskConical },
   a_verifier: { label: 'À vérifier', solid: 'bg-destructive border-destructive', icon: AlertTriangle },
+  // An « à vérifier » / « erreur » run a pilot checked (verification keeps the original).
+  verifie: { label: 'Vérifié', solid: 'bg-emerald-700 border-emerald-700', icon: CheckCircle2 },
   deja_importe: { label: 'Déjà importé', solid: 'bg-zinc-500 border-zinc-500', icon: Copy },
   ignore: { label: 'Ignoré', solid: 'bg-zinc-400 border-zinc-400', icon: CircleSlash },
   erreur: { label: 'Erreur', solid: 'bg-red-800 border-red-800', icon: XCircle },
@@ -1627,7 +1631,9 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const [showOcr, setShowOcr] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [ajoutNote, setAjoutNote] = useState(false)
-  useEffect(() => { setPage(0); setShowOcr(false); setError(null); setAjoutNote(false) }, [runId])
+  // Dev actions opened below the feedback card: correct the score, mark checked.
+  const [actionDev, setActionDev] = useState<'score' | 'verifie' | null>(null)
+  useEffect(() => { setPage(0); setShowOcr(false); setError(null); setAjoutNote(false); setActionDev(null) }, [runId])
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['agent-ia-run', slug, runId],
@@ -1790,11 +1796,33 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                     <EvaluationLue evaluation={run.evaluation.avant} className="opacity-70" sansAuteur />
                   </div>
                 )}
-                {canPilot && <CorrectionScore slug={slug} run={run} />}
+                {actionDev === 'score' && <CorrectionScore slug={slug} run={run} onClose={() => setActionDev(null)} />}
               </div>
+              {run.verification && (
+                <div className="rounded-lg border-l-4 border-l-emerald-600/60 border border-border/60 bg-emerald-600/5 p-3 text-sm flex gap-2">
+                  <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5 text-emerald-700" />
+                  <div className="min-w-0">
+                    <p>Vérifié par {run.verification.par.nom}, {fmtDateHeure(run.verification.le)} (était « {STATUT_META[run.verification.statutAvant]?.label ?? run.verification.statutAvant} »).</p>
+                    {run.verification.commentaire && <p className="text-muted-foreground whitespace-pre-wrap">{run.verification.commentaire}</p>}
+                  </div>
+                </div>
+              )}
+              {actionDev === 'verifie' && <MarquerVerifie slug={slug} run={run} onClose={() => setActionDev(null)} onDone={onChanged} />}
               <NotesDevCard slug={slug} run={run} canPilot={canPilot} ajout={ajoutNote} onFermerAjout={() => setAjoutNote(false)} />
               {canPilot && (
-                <div className="flex justify-end gap-2">
+                <div className="flex justify-end gap-2 flex-wrap">
+                  {(run.statut === 'a_verifier' || run.statut === 'erreur') && actionDev !== 'verifie' && (
+                    <Button variant="outline" size="sm" onClick={() => setActionDev('verifie')}
+                      title="Cette exécution a été vérifiée (traitée à la main) : elle sort de « À vérifier »">
+                      <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />Marquer comme vérifié
+                    </Button>
+                  )}
+                  {actionDev !== 'score' && (
+                    <Button variant="outline" size="sm" onClick={() => setActionDev('score')}
+                      title="Changer le score (réussite / échec) ; le retour d’origine reste visible">
+                      <ListChecks className="h-3.5 w-3.5 mr-1.5" />Corriger le score
+                    </Button>
+                  )}
                   {!ajoutNote && (
                     <Button variant="outline" size="sm" onClick={() => setAjoutNote(true)}
                       title="Note de développement sur cette exécution, relue avant d’écrire la version suivante de l’agent">
@@ -1821,14 +1849,13 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
 /** A pilot corrects the run's score (decision Vincent 2026-10-12), e.g. an
  *  échec given on a roll bent to bill less, since fixed. The replaced score
  *  stays visible under it. Réussite: why optional; échec: why required. */
-function CorrectionScore({ slug, run }: { slug: string; run: RunComplet }) {
+function CorrectionScore({ slug, run, onClose }: { slug: string; run: RunComplet; onClose: () => void }) {
   const base = useBaseApi()
   const queryClient = useQueryClient()
-  const [ouvert, setOuvert] = useState(false)
   const [note, setNote] = useState<Note>(run.evaluation?.note === 'reussite' ? 'echec' : 'reussite')
   const [texte, setTexte] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const fermer = () => { setOuvert(false); setTexte(''); setError(null) }
+  const fermer = onClose
   const mut = useMutation({
     mutationFn: () => callApi<RunComplet>(`${base}/${slug}/runs/${run.id}/evaluation`, { method: 'PUT', body: JSON.stringify({ note, commentaire: texte }) }),
     onSuccess: (r) => {
@@ -1840,16 +1867,6 @@ function CorrectionScore({ slug, run }: { slug: string; run: RunComplet }) {
     },
     onError: (e: Error) => setError(e.message),
   })
-  if (!ouvert) {
-    return (
-      <div className="flex justify-end">
-        <button type="button" onClick={() => setOuvert(true)} className="text-xs text-muted-foreground hover:text-accent transition-colors"
-          title="Corriger le score de cette exécution (l’ancien retour reste visible)">
-          Corriger le score
-        </button>
-      </div>
-    )
-  }
   return (
     <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-3 space-y-2">
       <div className="flex gap-1">
@@ -1867,6 +1884,40 @@ function CorrectionScore({ slug, run }: { slug: string; run: RunComplet }) {
         <Button variant="outline" size="sm" onClick={fermer}>Annuler</Button>
         <Button size="sm" disabled={(note === 'echec' && !texte.trim()) || mut.isPending} onClick={() => mut.mutate()}>
           {mut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Enregistrer
+        </Button>
+      </div>
+      {error && <div className="flex items-center gap-2 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" />{error}</div>}
+    </div>
+  )
+}
+
+/** A pilot marks an « à vérifier » / « erreur » run as checked (handled by
+ *  hand): it leaves « À vérifier », the original statut stays on the run.
+ *  Not a score. */
+function MarquerVerifie({ slug, run, onClose, onDone }: { slug: string; run: RunComplet; onClose: () => void; onDone: () => void }) {
+  const base = useBaseApi()
+  const queryClient = useQueryClient()
+  const [texte, setTexte] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const mut = useMutation({
+    mutationFn: () => callApi<RunComplet>(`${base}/${slug}/runs/${run.id}/verifie`, { method: 'POST', body: JSON.stringify({ commentaire: texte }) }),
+    onSuccess: (r) => {
+      queryClient.setQueryData(['agent-ia-run', slug, run.id], r)
+      onDone()
+      onClose()
+    },
+    onError: (e: Error) => setError(e.message),
+  })
+  return (
+    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-3 space-y-2">
+      <p className="text-xs font-semibold text-muted-foreground">Marquer comme vérifié</p>
+      <textarea value={texte} onChange={(e) => setTexte(e.target.value)} rows={2} maxLength={2000} autoFocus
+        placeholder="Comment ça a été traité (facultatif), ex. « réceptionné à la main le 07/10 »…"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={onClose}>Annuler</Button>
+        <Button size="sm" disabled={mut.isPending} onClick={() => mut.mutate()}>
+          {mut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Marquer vérifié
         </Button>
       </div>
       {error && <div className="flex items-center gap-2 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" />{error}</div>}
