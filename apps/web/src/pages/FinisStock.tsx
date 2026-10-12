@@ -52,7 +52,7 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
-import { EtatPill } from '@/lib/etat-stock-fini'
+import { EtatPill, RepriseBadge } from '@/lib/etat-stock-fini'
 import { STOCK_QUERY_FRESHNESS, invalidateStockCaches } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { useUser } from '@/contexts/UserContext'
@@ -109,6 +109,8 @@ interface StockFiniRow {
   designation: string | null
   coloris_reference: string | null
   etat_libelle: string | null
+  /** Reprises at the dyer this roll went through (lib/reprises.ts on the API). */
+  reprises?: number
   magasin_nom: string | null
   contexture_nom: string | null
   grammage: number | null
@@ -1933,7 +1935,7 @@ function CreateFiniRollDialog({
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">État</label>
             <PopoverSelect
-              options={(etats ?? []).map((e) => ({ id: e.IDetat_stock_fini, primary: e.libelle }))}
+              options={(etats ?? []).filter((e) => e.IDetat_stock_fini !== 2).map((e) => ({ id: e.IDetat_stock_fini, primary: e.libelle }))}
               value={IDetat}
               onChange={setIDetat}
               hideEmpty
@@ -2055,7 +2057,10 @@ const StockRow = memo(function StockRow({
       <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{row.commande_numero ?? '—'}</td>
       <td className="px-2 py-1.5">
         {row.etat_libelle ? (
-          <EtatPill libelle={row.etat_libelle} />
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <EtatPill libelle={row.etat_libelle} />
+            <RepriseBadge compact nombre={row.reprises} enReprise={Number(row.IDetat_stock_fini) === 2} />
+          </span>
         ) : (
           <span className="text-muted-foreground">—</span>
         )}
@@ -2120,6 +2125,7 @@ const StockFiniCard = memo(function StockFiniCard({
           {!!row.don && <Gift className="h-3.5 w-3.5 text-amber-600" />}
           {!!row.destockage && <Trash2 className="h-3.5 w-3.5 text-zinc-500" />}
           {row.etat_libelle && <EtatPill libelle={row.etat_libelle} />}
+          <RepriseBadge nombre={row.reprises} enReprise={Number(row.IDetat_stock_fini) === 2} />
         </div>
       </div>
       <p className="text-xs text-muted-foreground mt-0.5 truncate">{row.coloris_reference ?? '—'}</p>
@@ -2665,7 +2671,12 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                   <KV
                     label="Statut"
                     value={
-                      detail.etat_libelle ? <EtatPill libelle={detail.etat_libelle} /> : '—'
+                      detail.etat_libelle ? (
+                        <span className="inline-flex items-center gap-1">
+                          <EtatPill libelle={detail.etat_libelle} />
+                          <RepriseBadge nombre={detail.reprises} enReprise={Number(detail.IDetat_stock_fini) === 2} />
+                        </span>
+                      ) : '—'
                     }
                   />
                   <KV

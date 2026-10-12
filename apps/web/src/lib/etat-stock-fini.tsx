@@ -1,3 +1,4 @@
+import { RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 // État (stock_fini status) libellé → pill colour classes. Shared between the
@@ -52,6 +53,24 @@ export function EtatPill({
       )}
     >
       {libelle}
+    </span>
+  )
+}
+
+/** « Repris » / « Repris ×N » on a roll back from reprise (lib/reprises.ts):
+ *  the reprise is data, the lot keeps the dyer's number. Hidden while the
+ *  roll is at the dyer — its état badge already says « En reprise ». Orange,
+ *  the reprise hue of the état pills (§37). */
+/** `compact`: icon + count only, for a narrow table cell (Finis › Stock). */
+export function RepriseBadge({ nombre, enReprise, compact }: { nombre?: number; enReprise?: boolean; compact?: boolean }) {
+  if (!nombre || nombre <= 0 || enReprise) return null
+  return (
+    <span
+      className="inline-flex items-center gap-0.5 rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0 text-[10px] font-medium text-orange-800 flex-shrink-0"
+      title={nombre > 1 ? `Rouleau repris ${nombre} fois chez l’ennoblisseur` : 'Rouleau repris chez l’ennoblisseur'}
+    >
+      <RotateCcw className="h-2.5 w-2.5" />
+      {compact ? (nombre > 1 ? `×${nombre}` : null) : nombre > 1 ? `Repris ×${nombre}` : 'Repris'}
     </span>
   )
 }

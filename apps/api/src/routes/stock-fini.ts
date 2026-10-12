@@ -28,7 +28,7 @@ function esc(value: string): string {
 }
 
 import { IS_WINDOWS } from '../lib/sst-shared.js'
-import { refusLotSuffixe } from '../lib/reprises.js'
+import { refusLotSuffixe, reprisesParRouleau } from '../lib/reprises.js'
 
 /** ref_fini.archivé is accented — on Linux SELECT * returns a mangled key. */
 function isArchive(row: Record<string, unknown>): boolean {
@@ -314,8 +314,9 @@ stockFiniRouter.get('/fini', async (req: Request, res: Response) => {
     })
     fixed = await repairAllJoins(fixed)
     fixed = await enrichListExtras(fixed)
-
-    res.json(fixed)
+    // « Repris ×N » (lib/reprises.ts): one flat read for the whole list.
+    const reprises = await reprisesParRouleau(fixed.map((r) => Number(r.IDstock_fini)))
+    res.json(fixed.map((r) => ({ ...r, reprises: reprises.get(Number(r.IDstock_fini))?.nombre ?? 0 })))
   } catch (err) {
     console.error('Error fetching stock_fini:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -463,6 +464,7 @@ stockFiniRouter.post('/fini', async (req: Request, res: Response) => {
     const secondChoix = b.second_choix ? 1 : 0
     const lot = (b.lot ?? '').toString()
     const refusLot = refusLotSuffixe(lot)
+    if (IDetat === 2) { res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise » (Sous-traitants) ou « Reprendre » (Qualité), avec son motif.' }); return }
     if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
     const numero = (b.numero ?? '').toString()
     const emplacement = (b.emplacement ?? '').toString()
@@ -515,7 +517,8 @@ stockFiniRouter.get('/fini/:id', async (req: Request, res: Response) => {
     // Dyed from a TRM piece knitted with a yarn off the écru reference's
     // sheet (lib/hors-ref-trm.ts) — internal, never on the BL.
     const horsRef = (await horsRefParFini([id])).get(id) ?? []
-    res.json({ ...fixed[0], sources, hors_ref: horsRef })
+    const reprises = (await reprisesParRouleau([id])).get(id)?.nombre ?? 0
+    res.json({ ...fixed[0], sources, hors_ref: horsRef, reprises })
   } catch (err) {
     console.error('Error fetching stock_fini detail:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -1004,6 +1007,8 @@ stockFiniRouter.patch('/fini/:id', async (req: Request, res: Response) => {
     if (body.don !== undefined) sets.push(`don = ${body.don ? 1 : 0}`)
     if (body.IDetat_stock_fini !== undefined) {
       const v = parseInt(String(body.IDetat_stock_fini), 10)
+      // « En reprise » is a gesture with a motif (lib/reprises.ts), never a bare état.
+      if (v === 2) { res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise » (Sous-traitants) ou « Reprendre » (Qualité), avec son motif.' }); return }
       if (!isNaN(v)) sets.push(`IDetat_stock_fini = ${v}`)
     }
     if (typeof body.pointage === 'string') {

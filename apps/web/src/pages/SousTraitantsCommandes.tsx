@@ -79,6 +79,7 @@ import { BobineIcon } from '@/components/icons/BobineIcon'
 import { HorsRefBadge, type FilHorsRef } from '@/components/shared/HorsRef'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
+import { RepriseBadge } from '@/lib/etat-stock-fini'
 import { RollNotes } from '@/components/shared/RollNotes'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import {
@@ -4512,23 +4513,6 @@ interface FiniRollChanges {
   lot?: string
   poids?: number
   metrage?: number
-}
-
-/** « Repris » / « Repris ×N » on a roll back from reprise (lib/reprises.ts):
- *  the reprise is data, the lot keeps the dyer's number. Hidden while the
- *  roll is at the dyer — its état badge already says « En reprise ». Orange,
- *  the reprise hue of the état pills (§37). */
-function RepriseBadge({ nombre, enReprise }: { nombre?: number; enReprise?: boolean }) {
-  if (!nombre || nombre <= 0 || enReprise) return null
-  return (
-    <span
-      className="inline-flex items-center gap-0.5 rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0 text-[10px] font-medium text-orange-800 flex-shrink-0"
-      title={nombre > 1 ? `Rouleau repris ${nombre} fois chez l’ennoblisseur` : 'Rouleau repris chez l’ennoblisseur'}
-    >
-      <RotateCcw className="h-2.5 w-2.5" />
-      {nombre > 1 ? `Repris ×${nombre}` : 'Repris'}
-    </span>
-  )
 }
 
 function EditFiniRollDialog({
