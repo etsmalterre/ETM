@@ -18,6 +18,7 @@ import { sqlText } from '../clients-common.js'
 import { insertGedSst } from '../ged-sst.js'
 import type { BlExtraction, Controle } from './bl-extraction.js'
 import { nomGed, PROFILS, type ProfilEnnoblisseur, type TypeDocument } from './bl-profils.js'
+import { mpsPg } from '../mps-pg.js'
 
 /** ged.IDtype_doc — « BL retour ennoblisseur » (whitelist in routes/commandes-sous-traitant.ts). */
 export const GED_TYPE_BL_ENNOBLISSEUR = 3
@@ -45,6 +46,10 @@ export interface Resolution {
   /** A ged row with the same name already exists on the order. */
   gedExistant: number | null
   controles: Controle[]
+  /** A reprise BL: its pieces are rolls already received on the line
+   *  (lib/reprises.ts). `idreprise` = the open reprise they belong to, null when
+   *  none was recorded (the run warns). Absent on runs before 2026-10-12. */
+  reprise?: { idreprise: number | null; rang: number | null; pieces: string[] } | null
 }
 
 /** Identity of a data_bl_tricotbot row: same piece, same poids, same métrage
@@ -73,7 +78,7 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
   const lot = profil.lot(e)
   const res: Resolution = {
     commandeId: null, sousTraitantId: null, lignes: [], ligneId: null, lot, nomGed: lot ? nomGed(lot, type) : '',
-    pieces: [], dejaImportees: [], gedExistant: null, controles,
+    pieces: [], dejaImportees: [], gedExistant: null, controles, reprise: null,
   }
   const cmd = /^\d{4,6}$/.test(e.numero_commande) ? parseInt(e.numero_commande, 10) : NaN
   if (!Number.isFinite(cmd)) return res
@@ -107,6 +112,8 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
   // reprise lists the fini numeros, with their -1/-2 cut suffixes).
   const numeros = [...new Set(e.pieces.flatMap((p) => p.composants))].filter((n) => /^[\d/+-]+$/.test(n))
   const ligneDe = new Map<string, number>()
+  /** Numero → roll already received on a line of this order (a reprise BL). */
+  const finiRecu = new Map<string, number>()
   const ailleurs = new Set<string>()
   for (const part of chunks(numeros, 50)) {
     const inList = part.map((n) => `'${esc(n)}'`).join(',')
@@ -118,12 +125,15 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
       if (lignesSet.has(l)) ligneDe.set(String(r.numero).trim(), l)
       else ailleurs.add(String(r.numero).trim())
     }
-    const finis = await query<{ numero: string; IDref_commande_source: number }>(
-      `SELECT numero, IDref_commande_source FROM stock_fini WHERE numero IN (${inList})`,
+    const finis = await query<{ IDstock_fini: number; numero: string; IDref_commande_source: number }>(
+      `SELECT IDstock_fini, numero, IDref_commande_source FROM stock_fini WHERE numero IN (${inList})`,
     )
     for (const r of finis) {
       const l = Number(r.IDref_commande_source) || 0
-      if (lignesSet.has(l)) ligneDe.set(String(r.numero).trim(), l)
+      if (lignesSet.has(l)) {
+        ligneDe.set(String(r.numero).trim(), l)
+        finiRecu.set(String(r.numero).trim(), Number(r.IDstock_fini))
+      }
       else ailleurs.add(String(r.numero).trim())
     }
   }
@@ -160,9 +170,40 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
   if (inconnues.length) bloque('pieces_inconnues', `Pièce(s) introuvable(s) dans le stock : ${inconnues.join(', ')}.`)
   if (autres.length) bloque('pieces_autre_ligne', `Pièce(s) affectée(s) à une autre commande : ${autres.join(', ')}.`)
 
+  // A reprise BL (decision 2026-10-12): the pieces are rolls already received.
+  // The lot stays the dyer's number; the BL pre-fills the reprise réception and
+  // its PDF is filed under its own name (it used to collide with the first BL's
+  // ged and was never filed). No open reprise = recorded too late: warn, still
+  // pre-fill, so the réception is not left without the dyer's figures.
+  const recues = [...new Set(e.pieces.flatMap((p) => p.composants).filter((n) => finiRecu.has(n)))]
+  let repriseDepuis: string | null = null
+  if (recues.length > 0) {
+    const ids = recues.map((n) => finiRecu.get(n)!)
+    const ouvertes = await mpsPg()<{ idreprise: number; rang: number; idstock_fini: number; depuis: string | null }[]>`
+      SELECT r.id AS idreprise, r.rang, rp.idstock_fini, to_char(r.envoye_le AT TIME ZONE 'Europe/Paris', 'YYYYMMDD') AS depuis
+      FROM reprise_piece rp JOIN reprise r ON r.id = rp.idreprise
+      WHERE rp.idstock_fini = ANY(${ids}) AND r.statut = 'ouverte'`.catch(() => [])
+    const couvertes = new Set(ouvertes.map((o) => Number(o.idstock_fini)))
+    const hors = recues.filter((n) => !couvertes.has(finiRecu.get(n)!))
+    const rep = ouvertes[0]
+    res.reprise = { idreprise: rep && hors.length === 0 ? Number(rep.idreprise) : null, rang: rep ? Number(rep.rang) : null, pieces: recues }
+    repriseDepuis = rep && hors.length === 0 ? rep.depuis : null
+    if (hors.length > 0) {
+      controles.push({
+        code: 'reprise_non_enregistree',
+        gravite: 'avertissement',
+        message: `Pièce(s) déjà réceptionnée(s) sans reprise enregistrée : ${hors.join(', ')}. Sélectionnez-les dans l’onglet Réception et « Envoyer en reprise » avant de réceptionner.`,
+      })
+    }
+    if (res.nomGed) res.nomGed = `${res.nomGed}-reprise${res.reprise.rang ?? ''}`
+  }
+
   if (res.ligneId != null && lot) {
+    // A reprise BL repeating the first BL's figures is still new: only rows
+    // written since the reprise was opened count as already imported.
+    const depuis = repriseDepuis && /^\d{8}$/.test(repriseDepuis) ? ` AND DATE >= '${repriseDepuis}'` : ''
     const deja = await query<{ num_piece: string; poids: number; metrage: number }>(
-      `SELECT num_piece, poids, metrage FROM data_bl_tricotbot WHERE IDligne_commande_sous_traitant = ${res.ligneId} AND lot = '${esc(lot)}'`,
+      `SELECT num_piece, poids, metrage FROM data_bl_tricotbot WHERE IDligne_commande_sous_traitant = ${res.ligneId} AND lot = '${esc(lot)}'${depuis}`,
     )
     res.dejaImportees = [...new Set(deja.map((d) => cleDeLigne(String(d.num_piece ?? ''), d.poids, d.metrage)))]
   }
@@ -232,6 +273,10 @@ export async function ecrireBl(
        WHERE IDligne_commande_sous_traitant = ${r.ligneId} AND lot = '${esc(r.lot)}' AND num_piece = '${esc(p.numero_piece)}'`,
     )
     if (row?.id) ids.push(Number(row.id))
+  }
+  // The reprise's return BL (lib/reprises.ts): the dyer's paper, on the reprise.
+  if (r.reprise?.idreprise && gedId) {
+    await mpsPg()`UPDATE reprise SET idged_retour = ${gedId} WHERE id = ${r.reprise.idreprise} AND idged_retour IS NULL`
   }
   return { gedId, lignesEcrites: n, ids }
 }

@@ -332,7 +332,7 @@ The responsable qualité's verdict in **Qualité › Suivi Lots**
 stock_fini.lot = suivilot.lot` (same key as the détail/pièces query):
 
 - **Valider** (`IDetatLot = 3`) → rolls set to `IDetat_stock_fini = 3` (Validé).
-- **Reprendre** (`IDetatLot = 2`) → rolls set to `IDetat_stock_fini = 2` (En reprise).
+- **Reprendre** (`IDetatLot = 2`) → opens a reprise (`lib/reprises.ts`, motif required): rolls set to `IDetat_stock_fini = 2` (En reprise) by `ouvrirReprise()`.
 - Guard `IDetat_stock_fini <> 4` so an already-Expédié roll is never pulled
   backward. Best-effort: a cascade failure must not fail the recorded verdict.
 
@@ -341,8 +341,12 @@ rolls stuck "En Contrôle" after lot validation — fixed + back-filled 79 prod 
 
 ## Reprise flow
 
+**Since 2026-10-12 a reprise is data** (`lib/reprises.ts`, `screen_notes.md` § 4): the lot keeps the
+dyer's number, « Envoyer en reprise » / « Reprendre » open a `reprise` row, the réception below closes it.
+
 Multi-select fini rolls whose `IDetat_stock_fini = 2` ("En reprise") in
-the Réception tab → "Reprendre (X)" button in the tab strip header →
+the Réception tab → "Réceptionner la reprise (X)" button in the tab strip header (rolls NOT in
+reprise selected instead → "Envoyer en reprise (X)", motif dialog) →
 opens `BatchReceptionDialog` in `mode='reprise'` (discriminated union):
 
 - Pre-fills lot/poids/metrage/observations from the existing fini rows

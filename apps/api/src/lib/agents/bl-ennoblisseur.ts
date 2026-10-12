@@ -441,7 +441,7 @@ export async function prevenir(runs: AgentRun[]): Promise<void> {
 
 // ── Tricobot feedback at réception ───────────────────────
 
-const lotNormal = (l: string) => l.toUpperCase().replace(/s+/g, '')
+const lotNormal = (l: string) => l.toUpperCase().replace(/\s+/g, '')
 
 /** The run that wrote the pre-filled pieces of this lot on this order line —
  *  the latest written one (a corrected BL re-read writes again). Its

@@ -100,6 +100,20 @@ interface ClientInfo {
   ref_client: string | null
 }
 
+interface RepriseLot {
+  id: number
+  rang: number
+  statut: 'ouverte' | 'close'
+  origine: 'geste' | 'historique'
+  motif: string | null
+  envoye_le: string | null
+  envoye_par: string | null
+  retour_le: string | null
+  retour_par: string | null
+  lot_saisi: string | null
+  rouleaux: number
+}
+
 interface SuiviLotDetail {
   IDsuivilot: number
   lot: string
@@ -133,6 +147,8 @@ interface SuiviLotDetail {
   fin_archivage: string
   IDetatLot: number | null
   etat_libelle: string | null
+  /** The lot's reprises at the dyer, oldest first (absent on an older API). */
+  reprises?: RepriseLot[]
   pieces: PieceRow[]
   moyenne_rdt: number | null
   rendement_mini: number | null
@@ -334,16 +350,18 @@ export function QualiteSuiviLots() {
     },
   })
 
+  // Reprendre asks its motif first (RepriseMotifDialog): a reprise is recorded.
+  const [repriseOpen, setRepriseOpen] = useState(false)
   const etatMut = useMutation({
-    mutationFn: (etat: Etat) =>
+    mutationFn: ({ etat, motif }: { etat: Etat; motif?: string }) =>
       apiFetch(`/suivi-lots/${selectedId}/etat`, {
         method: 'POST',
-        body: JSON.stringify({ etat }),
+        body: JSON.stringify({ etat, motif }),
       }),
     // Valider/Reprendre changes lot état and (on Reprendre) flags the lot's
     // rolls — both surface on Sous-traitants › Commandes, so refresh both
     // screens, not just this one.
-    onSuccess: () => invalidateLotQualityCaches(queryClient),
+    onSuccess: () => { invalidateLotQualityCaches(queryClient); setRepriseOpen(false) },
   })
 
   // ── Guard ───────────────────────────────────────────────
@@ -476,7 +494,7 @@ export function QualiteSuiviLots() {
               onEditField={setEditField}
               activeTab={activeTab}
               onTabChange={setActiveTab}
-              onEtatChange={(e) => etatMut.mutate(e)}
+              onEtatChange={(e) => (e === 2 ? (etatMut.reset(), setRepriseOpen(true)) : etatMut.mutate({ etat: e }))}
               etatChanging={etatMut.isPending}
             />
           ) : null
@@ -486,6 +504,15 @@ export function QualiteSuiviLots() {
       <UnsavedChangesDialog open={guard.showDialog} onAction={guard.handleAction} isSaving={guard.isSaving} />
 
       <LotTrendDialog open={graphOpen} onClose={() => setGraphOpen(false)} lotId={selectedId} />
+
+      <RepriseMotifDialog
+        open={repriseOpen}
+        lot={detail?.lot ?? ''}
+        isPending={etatMut.isPending}
+        error={etatMut.error instanceof Error ? etatMut.error.message : null}
+        onCancel={() => setRepriseOpen(false)}
+        onConfirm={(motif) => etatMut.mutate({ etat: 2, motif })}
+      />
     </>
   )
 }
@@ -641,6 +668,15 @@ function LotDetailHeader({
           {!isEditing && (
             <div className="flex gap-1.5 mt-1 flex-wrap items-center text-sm text-muted-foreground">
               <span className="truncate">{detail.reference || '—'}</span>
+              {(detail.reprises?.length ?? 0) > 0 && (
+                <span
+                  className="inline-flex items-center gap-0.5 rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0 text-[10px] font-medium text-orange-800 flex-shrink-0"
+                  title="Lot repris chez l’ennoblisseur (détail sous le récapitulatif)"
+                >
+                  <RotateCcw className="h-2.5 w-2.5" />
+                  {detail.reprises!.length > 1 ? `Repris ×${detail.reprises!.length}` : 'Repris'}
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -1329,6 +1365,8 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
           </div>
         )}
       </div>
+
+      <ReprisesCard reprises={detail.reprises ?? []} />
     </div>
   )
 }
@@ -2088,6 +2126,135 @@ function DefautsTab({ lotId }: { lotId: number }) {
 }
 
 // ── Client tab ───────────────────────────────────────────
+
+// ── Reprises (lib/reprises.ts on the API) ────────────────
+//
+// A reprise is data since 2026-10-12: the lot keeps the dyer's number, each
+// return to the dyer is a row (who, when, why, back when). Historical ones
+// come from the old « R » suffixes, undated.
+
+function fmtDateHeure(iso: string | null): string {
+  if (!iso) return ''
+  const [d, h] = iso.split('T')
+  const [y, m, j] = d.split('-')
+  return h ? `${j}/${m}/${y} ${h}` : `${j}/${m}/${y}`
+}
+
+function ReprisesCard({ reprises }: { reprises: RepriseLot[] }) {
+  if (reprises.length === 0) return null
+  return (
+    <div className="rounded-xl border bg-card shadow-sm p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <RotateCcw className="h-4 w-4 text-accent" />
+        <h2 className="text-sm font-semibold">Reprises chez l’ennoblisseur</h2>
+        <Badge variant="secondary" className="text-xs ml-auto">{reprises.length}</Badge>
+      </div>
+      <div className="space-y-2">
+        {reprises.map((r) => {
+          const ouverte = r.statut === 'ouverte'
+          return (
+            <div
+              key={r.id}
+              className={cn(
+                'rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
+                ouverte ? 'border-l-orange-500/60' : 'border-l-border',
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0', ouverte ? 'bg-orange-500/10' : 'bg-muted')}>
+                    <RotateCcw className={cn('h-3.5 w-3.5', ouverte ? 'text-orange-600' : 'text-muted-foreground')} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">Reprise n° {r.rang}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {r.rouleaux} rouleau{r.rouleaux > 1 ? 'x' : ''}
+                      {r.origine === 'historique' && r.lot_saisi ? ` · saisie « ${r.lot_saisi} » avant ETM` : ''}
+                    </p>
+                  </div>
+                </div>
+                {ouverte
+                  ? <Badge variant="outline" className="text-[10px] py-0 border-orange-200 bg-orange-100 text-orange-800">Chez l’ennoblisseur</Badge>
+                  : <Badge variant="outline" className="text-[10px] py-0">Revenue</Badge>}
+              </div>
+              {r.motif?.trim() && (
+                <div className="flex items-start gap-1.5 mt-2 ml-9">
+                  <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-muted-foreground italic">{r.motif.trim()}</p>
+                </div>
+              )}
+              <div className="flex items-center gap-3 mt-2 ml-9 text-[11px] text-muted-foreground flex-wrap">
+                {r.origine === 'historique'
+                  ? <span>Date inconnue (lot suffixé à la main)</span>
+                  : (
+                    <>
+                      {r.envoye_le && <span>Envoyée le {fmtDateHeure(r.envoye_le)}{r.envoye_par ? ` par ${r.envoye_par}` : ''}</span>}
+                      {r.retour_le && <span>Revenue le {fmtDateHeure(r.retour_le)}{r.retour_par ? ` par ${r.retour_par}` : ''}</span>}
+                    </>
+                  )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** « Reprendre »: the motif is asked before the lot goes back to the dyer. */
+function RepriseMotifDialog({
+  open, lot, isPending, error, onCancel, onConfirm,
+}: {
+  open: boolean
+  lot: string
+  isPending: boolean
+  error: string | null
+  onCancel: () => void
+  onConfirm: (motif: string) => void
+}) {
+  const [motif, setMotif] = useState('')
+  useEffect(() => { if (open) setMotif('') }, [open])
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !isPending) onCancel() }}>
+      <DialogContent className="max-w-md" onClose={onCancel}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <RotateCcw className="h-5 w-5 text-accent" />
+            Reprendre le lot {lot}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Motif de la reprise</label>
+            <textarea
+              value={motif}
+              onChange={(e) => setMotif(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder="Teinte hors tolérance, laize trop étroite…"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Les rouleaux du lot encore en stock partent en reprise. Le lot garde le numéro de l’ennoblisseur : ETM enregistre la reprise, n’ajoutez pas de « R ».
+          </p>
+          {error && (
+            <div className="flex items-start gap-2 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /><span>{error}</span>
+            </div>
+          )}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={onCancel} disabled={isPending}>Annuler</Button>
+          <Button onClick={() => onConfirm(motif.trim())} disabled={!motif.trim() || isPending}>
+            {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1.5" />}
+            Reprendre
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 // ── Status footer (multi-state état pill) ────────────────
 

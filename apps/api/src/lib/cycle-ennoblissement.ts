@@ -12,7 +12,7 @@
 //   Lot steps (first match wins):
 //     expedie          suivilot état 4
 //     valide           état 3 (after a soumission it is PE's « ok à ramer »)
-//     en_reprise       état 2 (the dyer reworks it)
+//     en_reprise       état 2, or an open reprise (lib/reprises.ts — the dyer reworks it)
 //     soumis           a soumission email names the lot (envoi_email type 15, notes)
 //     attente_mesures  no dyer measure and no tirelle measure (ACP)
 //     attente_tirelle  dyer measures in, our tirelle measure not yet (ACL):
@@ -29,6 +29,7 @@
 
 import { mpsPg } from './mps-pg.js'
 import { consumedEcruIds } from './fini-sources.js'
+import { faitsReprises } from './reprises.js'
 
 export type EtapeLot =
   | 'attente_mesures'
@@ -57,8 +58,13 @@ export interface LotFait {
   tirelleMesuree: boolean
   /** The client asks a soumission for this reference (designation_client.soumettre). */
   soumissionRequise: boolean
-  /** Last soumission email naming this lot. 'YYYY-MM-DD' */
+  /** Last soumission email naming this lot. 'YYYY-MM-DD' — only one sent after
+   *  the lot's latest return from reprise counts (lireCommandesEnnoblissement). */
   soumisLe: string | null
+  /** A reprise of the lot is open at the dyer (lib/reprises.ts). */
+  repriseOuverte?: boolean
+  /** How many reprises the lot went through (« repris ×N »). */
+  reprises?: number
 }
 
 /** Working days the other side gets before we chase. Estimates (2026-10-11). */
@@ -78,6 +84,8 @@ export interface EtatLot {
   main: Main | null
   /** When to chase whoever has the move. 'YYYY-MM-DD', null = nothing to chase. */
   relance: string | null
+  /** Reprises the lot went through (0 = never reworked). */
+  reprises: number
 }
 
 const DAY = 86_400_000
@@ -99,7 +107,7 @@ export function plusJoursOuvres(iso: string, n: number): string {
 export function etapeLot(l: LotFait): EtapeLot {
   if (l.etat === ETAT_LOT.EXPEDIE) return 'expedie'
   if (l.etat === ETAT_LOT.VALIDE) return 'valide'
-  if (l.etat === ETAT_LOT.EN_REPRISE) return 'en_reprise'
+  if (l.etat === ETAT_LOT.EN_REPRISE || l.repriseOuverte) return 'en_reprise'
   if (l.soumisLe) return 'soumis'
   if (l.etat === ETAT_LOT.ATTENTE_DECISION) return 'a_valider'
   if (!l.tirelleMesuree) return l.mesuresTeinturier ? 'attente_tirelle' : 'attente_mesures'
@@ -125,7 +133,7 @@ export function etatLot(l: LotFait): EtatLot {
   else if (etape === 'soumis' && l.soumisLe) relance = plusJoursOuvres(l.soumisLe, RELANCE_J.soumis)
   else if ((etape === 'attente_tirelle' || etape === 'a_soumettre' || etape === 'a_valider') && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
   // en_reprise: the dyer gives the date back in the point (§5), nothing to compute.
-  return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance }
+  return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance, reprises: l.reprises ?? 0 }
 }
 
 // ── The order ─────────────────────────────────────────────
@@ -192,12 +200,12 @@ export function urgenceCommande(e: EtatCommande, today: string): 'late' | 'soon'
   return null
 }
 
-/** « MA109331 », « 109331/s »: the digits name the lot; a reprise lot keeps an R
- *  (« MA109102R », « MA109090 REPRIS ») so its soumission never marks the original. */
+/** « MA109331 », « 109331/s », « MA109102R » (an old reprise suffix): the digits
+ *  name the lot. A reprise is data now (lib/reprises.ts): a soumission sent
+ *  before the lot came back from reprise no longer counts, by date. */
 export function cleLot(s: string): string {
-  const m = /(\d{5,})\s*(R\b|R(?=\/)|REPRIS)?/i.exec(s)
-  if (!m) return s.trim().toUpperCase()
-  return m[2] ? `${m[1]}R` : m[1]
+  const m = /(\d{5,})/.exec(s)
+  return m ? m[1] : s.trim().toUpperCase()
 }
 
 // ── Reading the facts (native PostgreSQL) ────────────────
@@ -290,7 +298,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     [...(clientsParLigne.get(Number(l.id)) ?? [])].some((c) => aSoumettre.has(`${c}:${Number(l.idref_fini)}`))
 
   // The « solde »: écru handed over and not back dyed (own fini or merged component).
-  const revenus = await consumedEcruIds(ecru.map((r) => Number(r.idecru)))
+  const [revenus, reprises] = await Promise.all([consumedEcruIds(ecru.map((r) => Number(r.idecru))), faitsReprises(lineIds)])
   const chezTeinturier = new Map<number, number>()
   for (const r of ecru) if (!revenus.has(Number(r.idecru))) chezTeinturier.set(Number(r.ligne), (chezTeinturier.get(Number(r.ligne)) ?? 0) + 1)
 
@@ -310,6 +318,8 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       .filter((s) => Number(ligneParId.get(Number(s.ligne))?.cmd) === id && String(s.lot ?? '').trim())
       .map((s) => {
         const ligne = ligneParId.get(Number(s.ligne))!
+        const rep = reprises.get(`${Number(s.ligne)}:${String(s.lot).trim()}`)
+        const soumis = soumisParCle.get(`${id}:${cleLot(String(s.lot))}`) ?? null
         return {
           lot: String(s.lot).trim(),
           idsuivilot: Number(s.idsuivilot),
@@ -318,13 +328,15 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
           mesuresTeinturier: Number(s.laize_sst) > 0 || Number(s.poids_sst) > 0,
           tirelleMesuree: Number(s.laize_tirelle) > 0,
           soumissionRequise: ligneRequiert(ligne),
-          soumisLe: soumisParCle.get(`${id}:${cleLot(String(s.lot))}`) ?? null,
+          // A soumission sent before the lot came back from reprise was about the old dye.
+          soumisLe: soumis && (!rep?.dernierRetour || soumis >= rep.dernierRetour) ? soumis : null,
+          repriseOuverte: rep?.ouverte ?? false,
+          reprises: rep?.nombre ?? 0,
         }
       })
     // A soumission can leave before any BL (a piece already in the dyer's stock,
     // 9023 / 9037): the lot exists only in the email, it is still « soumis ».
-    // A reprise renames the lot (MA109102 → MA109102R): its older soumission is the same lot.
-    const connus = new Set(sesLots.flatMap((l) => [cleLot(l.lot), cleLot(l.lot).replace(/R$/, '')]))
+    const connus = new Set(sesLots.map((l) => cleLot(l.lot)))
     for (const [k, jour] of soumisParCle) {
       const [cmd, cle] = k.split(':')
       if (Number(cmd) !== id || connus.has(cle)) continue

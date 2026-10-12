@@ -719,6 +719,52 @@ ALTER TABLE trm_fourniture_mouvement
   ADD CONSTRAINT trm_fourniture_mouvement_type_check CHECK (type IN ('entree', 'sortie', 'inventaire', 'tampon'));
 `,
   },
+  {
+    // A reprise is DATA, no longer an « R » typed onto the lot (decision Vincent
+    // 2026-10-12, lib/reprises.ts): the lot keeps the dyer's number, each
+    // episode is a row — sent back (who, when, why), returned (who, when, which
+    // BL) — with one row per roll it covers (a reprise can take part of a lot).
+    // `lot_avant` keeps the lot's measures before the rework; `origine =
+    // 'historique'` rows come from the old suffixes (undated, the suffixed text
+    // kept in `lot_saisi`). Never deleted: the API role may not DELETE.
+    name: '0018_reprise_lots',
+    sql: `
+CREATE TABLE reprise (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idligne_commande_sous_traitant bigint NOT NULL,
+  lot text NOT NULL,
+  rang int NOT NULL CHECK (rang > 0),
+  statut text NOT NULL CHECK (statut IN ('ouverte', 'close')),
+  origine text NOT NULL CHECK (origine IN ('geste', 'historique')),
+  motif text,
+  envoye_le timestamptz,
+  envoye_par_id bigint,
+  envoye_par text,
+  retour_le timestamptz,
+  retour_par_id bigint,
+  retour_par text,
+  idged_retour bigint,
+  run_retour text,
+  lot_avant jsonb,
+  lot_saisi text,
+  UNIQUE (idligne_commande_sous_traitant, lot, rang)
+);
+CREATE UNIQUE INDEX reprise_une_ouverte ON reprise (idligne_commande_sous_traitant, lot) WHERE statut = 'ouverte';
+CREATE TABLE reprise_piece (
+  idreprise bigint NOT NULL REFERENCES reprise (id),
+  idstock_fini bigint NOT NULL,
+  poids_avant double precision,
+  metrage_avant double precision,
+  poids_apres double precision,
+  metrage_apres double precision,
+  revenu_le timestamptz,
+  PRIMARY KEY (idreprise, idstock_fini)
+);
+CREATE INDEX reprise_piece_rouleau ON reprise_piece (idstock_fini);
+${grantApi('SELECT, INSERT, UPDATE', 'reprise, reprise_piece')}
+${grantApi('USAGE, SELECT', 'SEQUENCE reprise_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

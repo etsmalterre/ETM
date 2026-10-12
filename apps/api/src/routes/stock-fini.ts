@@ -28,6 +28,7 @@ function esc(value: string): string {
 }
 
 import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { refusLotSuffixe } from '../lib/reprises.js'
 
 /** ref_fini.archivé is accented — on Linux SELECT * returns a mangled key. */
 function isArchive(row: Record<string, unknown>): boolean {
@@ -461,6 +462,8 @@ stockFiniRouter.post('/fini', async (req: Request, res: Response) => {
       : 0
     const secondChoix = b.second_choix ? 1 : 0
     const lot = (b.lot ?? '').toString()
+    const refusLot = refusLotSuffixe(lot)
+    if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
     const numero = (b.numero ?? '').toString()
     const emplacement = (b.emplacement ?? '').toString()
     const observations = (b.observations ?? '').toString()

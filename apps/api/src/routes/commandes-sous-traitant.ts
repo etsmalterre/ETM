@@ -88,6 +88,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
+import { libelleLotClient, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -3708,7 +3709,8 @@ export async function buildSoumissionLotPdfData(
     adresseLivraison,
     expediteur,
     destinataire,
-    lot: lotString,
+    // Display only (the « Lot / Bain » cell): « (reprise) » once back from one.
+    lot: await libelleLotClient(commandeId, lotString),
   }
 }
 
@@ -3849,10 +3851,11 @@ async function buildSoumissionEmailDefaults(
   const ccFixed = await fixEncoding(ccRows as any[], 'commande_client', 'IDcommande_client', ['ref_client'])
   const refCommandeClient = ((ccFixed[0] as any)?.ref_client ?? '').toString().trim()
 
-  const subject = `Soumission Lot ${lotString} - ${lot.ref_malterre}${lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}${refCommandeClient ? ` · ${refCommandeClient}` : ''}`
+  const lotClient = await libelleLotClient(commandeId, lotString)
+  const subject = `Soumission Lot ${lotClient} - ${lot.ref_malterre}${lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}${refCommandeClient ? ` · ${refCommandeClient}` : ''}`
   const body =
     `Bonjour,\n\n` +
-    `Veuillez trouver ci-joint la soumission du lot ${lotString} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
+    `Veuillez trouver ci-joint la soumission du lot ${lotClient} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
     (refCommandeClient ? `Réf commande client : ${refCommandeClient}\n\n` : '') +
     `Un échantillon est joint au document imprimé.\n\n` +
     `Cordialement,`
@@ -5334,9 +5337,11 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   const dye = { ref: ctx.IDref_fini, coloris: ctx.IDColoris }
   // TRM-knitted pieces whose OF fed a yarn off the écru reference's sheet
   // (lib/hors-ref-trm.ts) — the reception card shows it on écru and fini.
-  const [horsRefEcru, horsRefFini] = await Promise.all([
+  const [horsRefEcru, horsRefFini, reprisesFini] = await Promise.all([
     horsRefParEcru(allEcruIds),
     horsRefParFini(finiFixed.map((r) => Number(r.IDstock_fini) || 0)),
+    // How many reprises each roll went through (lib/reprises.ts): « Repris ×N ».
+    reprisesParRouleau(finiFixed.map((r) => Number(r.IDstock_fini) || 0)),
   ])
   const linked = linkedFixed.map((r) => ({
     ...r,
@@ -5386,6 +5391,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
       source_ecru_ids: sources,
       source_numeros: sources.map((id) => componentNumero.get(id) ?? `#${id}`),
       hors_ref: horsRefFini.get(Number(r.IDstock_fini)) ?? [],
+      reprises: reprisesFini.get(Number(r.IDstock_fini))?.nombre ?? 0,
     }
   })
 
@@ -6484,6 +6490,8 @@ commandesSousTraitantRouter.post(
         return
       }
       const d = parsed.data
+      const refusLot = refusLotSuffixe(d.lot)
+      if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
 
       // Reprise « Couper »: the piece takes the next free suffix of the cut
       // roll's base (`3571/1-2` cut → `3571/1-3`), never the preview's guess.
@@ -6592,7 +6600,7 @@ commandesSousTraitantRouter.post(
         const enReprise = Number(deja[0].IDetat_stock_fini) === 2
         res.status(409).json({
           error: 'piece_deja_recue',
-          message: `La pièce ${d.numero.trim()} est déjà réceptionnée sur cette ligne${enReprise ? ' (en reprise) : pour la reprendre, utilisez « Reprendre » sur ce rouleau' : ''}. Vérifiez le numéro sur le bordereau.`,
+          message: `La pièce ${d.numero.trim()} est déjà réceptionnée sur cette ligne${enReprise ? ' (en reprise) : sélectionnez ce rouleau dans l’onglet Réception et « Réceptionner la reprise »' : ''}. Vérifiez le numéro sur le bordereau.`,
           IDstock_fini: Number(deja[0].IDstock_fini),
         })
         return
@@ -6731,13 +6739,18 @@ commandesSousTraitantRouter.delete(
 //   - `observation_sst`  : the ennoblisseur's defect report
 //                          (red banner in the UI)
 //
-// Reprise flow (multi-select in the Réception tab → "Reprendre X" → batch
-// dialog): the same PATCH endpoint is also used to update lot / poids /
-// metrage / numero on a roll currently in `IDetat_stock_fini = 2` ("En
-// reprise"). The frontend defaults the etat back to `1` (En contrôle)
-// after the reprise edit so the visiteur can re-validate the values.
-// Other stock_fini fields (magasin, …) remain non-editable from this
-// surface — they'd require revisiting the link/destockage invariants.
+// Two more gestures use it (lib/reprises.ts, 2026-10-12):
+//   - the reprise réception (multi-select of rolls « En reprise » → batch
+//     dialog): lot / poids / metrage / numero of a roll in état 2, sent with
+//     `IDetat_stock_fini: 1` — records the roll's return and closes the
+//     reprise once nothing of it is left at the dyer;
+//   - « Corriger la réception »: lot / poids / métrage of a roll still in
+//     control, a typo at reception — never a reprise.
+// État 2 is never set here: a reprise is opened by its own route (motif).
+// A lot is never given a reprise suffix (refusLotSuffixe). Shipped rolls
+// keep their BL's lot / poids / métrage. Other stock_fini fields (magasin, …)
+// remain non-editable from this surface — they'd require revisiting the
+// link/destockage invariants.
 
 const finiNotesPatchBody = z.object({
   observations: z.string().optional(),
@@ -6775,12 +6788,25 @@ commandesSousTraitantRouter.patch(
       // Verify the row belongs to this line — symmetric with the DELETE
       // handler. We don't need the downstream-usage guard here because
       // editing notes never breaks an expedition / commande client / etc.
-      const verify = await query<{ IDref_commande_source: number | null; lot: string | null }>(
-        `SELECT IDref_commande_source, lot FROM stock_fini WHERE IDstock_fini = ${stockFiniId}`,
+      const verify = await query<{
+        IDref_commande_source: number | null; lot: string | null
+        IDetat_stock_fini: number | null; IDligne_expedition: number | null
+      }>(
+        `SELECT IDref_commande_source, lot, IDetat_stock_fini, IDligne_expedition FROM stock_fini WHERE IDstock_fini = ${stockFiniId}`,
       )
       if (verify.length === 0) { res.status(404).json({ error: 'Stock fini not found' }); return }
       if (Number(verify[0].IDref_commande_source) !== ligneId) {
         res.status(400).json({ error: 'Stock fini is not linked to this line' }); return
+      }
+      const etatAvant = Number(verify[0].IDetat_stock_fini) || 0
+      if (d.IDetat_stock_fini === 2 && etatAvant !== 2) {
+        res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise », avec son motif.' }); return
+      }
+      const refusLot = refusLotSuffixe(d.lot, verify[0].lot)
+      if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
+      const expedie = etatAvant === 4 || (Number(verify[0].IDligne_expedition) || 0) > 0
+      if (expedie && (d.lot !== undefined || d.poids !== undefined || d.metrage !== undefined || d.numero !== undefined)) {
+        res.status(409).json({ error: 'rouleau_expedie', message: 'Rouleau expédié : son lot, son poids et son métrage sont ceux du bon de livraison.' }); return
       }
 
       const setParts: string[] = []
@@ -6829,16 +6855,74 @@ commandesSousTraitantRouter.patch(
       if (d.IDetat_stock_fini === 1 || d.IDetat_stock_fini === 2) {
         const suiviLot = ((d.lot !== undefined ? d.lot : verify[0].lot) ?? '').toString().trim()
         if (suiviLot) {
-          await query(
-            `UPDATE suivilot SET IDetatLot = ${d.IDetat_stock_fini}
-             WHERE IDligne_commande_sous_traitant = ${ligneId} AND lot = ${sqlText(suiviLot)}`,
-          )
+          // A partial return leaves the lot « en reprise » while a roll of it
+          // is still at the dyer.
+          const reste = d.IDetat_stock_fini === 1
+            ? await query<{ n: number }>(
+                `SELECT COUNT(*) AS n FROM stock_fini WHERE IDref_commande_source = ${ligneId}
+                 AND lot = ${sqlText(suiviLot)} AND IDetat_stock_fini = 2`,
+              )
+            : []
+          if (!(Number(reste[0]?.n) > 0)) {
+            await query(
+              `UPDATE suivilot SET IDetatLot = ${d.IDetat_stock_fini}
+               WHERE IDligne_commande_sous_traitant = ${ligneId} AND lot = ${sqlText(suiviLot)}`,
+            )
+          }
+        }
+      }
+
+      // The reprise réception: the roll is back, its reprise closes once
+      // nothing of it is left at the dyer (lib/reprises.ts).
+      if (etatAvant === 2 && d.IDetat_stock_fini === 1) {
+        try {
+          const par = req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : { id: 0, nom: '' }
+          await retourRouleau({ idstockFini: stockFiniId, ligneId, par })
+        } catch (err) {
+          console.error(`Reprise return failed for stock_fini=${stockFiniId}:`, err)
         }
       }
 
       res.json(await fetchPiecesPayload(ctx, ligneId))
     } catch (err) {
       console.error('Error updating stock_fini notes:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
+
+// ── Envoyer en reprise (lib/reprises.ts) ─────────────────
+//
+// POST /:commandeId/lignes/:ligneId/reprises { rouleaux: number[], motif }
+// Chosen rolls of the line go back to the dyer: a reprise opens per lot (or
+// the lot's open reprise takes them), the rolls and the lot go « En reprise ».
+// The whole-lot gesture is « Reprendre » on Qualité › Suivi lots.
+const repriseBody = z.object({
+  rouleaux: z.array(z.number().int().positive()).min(1).max(500),
+  motif: z.string().trim().min(1).max(1000),
+})
+
+commandesSousTraitantRouter.post(
+  '/:commandeId/lignes/:ligneId/reprises',
+  async (req: Request, res: Response) => {
+    try {
+      if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+      const commandeId = parseInt(req.params.commandeId, 10)
+      const ligneId = parseInt(req.params.ligneId, 10)
+      if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+      const ctx = await loadEnnoblisseurLineContext(commandeId, ligneId)
+      if (!ctx) { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
+      if (refuseIfTerminee(res, await loadCommandeSoldee(commandeId))) return
+      const p = repriseBody.safeParse(req.body)
+      if (!p.success) { res.status(400).json({ error: 'motif_requis', message: 'Indiquez le motif de la reprise.' }); return }
+      const ouvertes = await ouvrirReprise({
+        ligneId, rouleaux: p.data.rouleaux, motif: p.data.motif,
+        par: { id: req.userId, nom: await nomUtilisateur(req.userId) },
+      })
+      res.json({ reprises: ouvertes, ...(await fetchPiecesPayload(ctx, ligneId)) })
+    } catch (err) {
+      if (err instanceof RepriseRefusee) { res.status(409).json({ error: err.code, message: err.message }); return }
+      console.error('Error opening reprise:', err)
       res.status(500).json({ error: 'Internal server error' })
     }
   },

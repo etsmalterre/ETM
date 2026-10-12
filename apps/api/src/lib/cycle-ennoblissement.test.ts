@@ -45,6 +45,10 @@ describe('etapeLot: Pierre-Emmanuel’s codes, read from the data (16 lots of 20
     expect(etapeLot(lot({ etat: 3, soumisLe: '2026-10-01' }))).toBe('valide')
     expect(etapeLot(lot({ etat: 4 }))).toBe('expedie')
   })
+  it('an open reprise (lib/reprises.ts) puts the lot at the dyer, whatever the old état', () => {
+    expect(etapeLot(lot({ etat: 1, tirelleMesuree: true, repriseOuverte: true }))).toBe('en_reprise')
+    expect(etatLot(lot({ repriseOuverte: true, reprises: 2 })).reprises).toBe(2)
+  })
   it('attente de décision without a soumission is ours to decide', () => {
     expect(etapeLot(lot({ etat: 5, mesuresTeinturier: true }))).toBe('a_valider')
   })
@@ -105,10 +109,10 @@ describe('helpers', () => {
     expect(urgenceCommande(e, '2026-10-09')).toBe('soon')
     expect(urgenceCommande(e, '2026-10-08')).toBeNull()
   })
-  it('lot keys: digits, R kept for a reprise lot', () => {
+  it('lot keys: the digits — an old reprise suffix names the same lot (reprise is data now)', () => {
     expect(cleLot('MA109331')).toBe('109331')
     expect(cleLot('109331/s')).toBe('109331')
-    expect(cleLot('MA109102R')).toBe('109102R')
-    expect(cleLot('MA109090 REPRIS')).toBe('109090R')
+    expect(cleLot('MA109102R')).toBe('109102')
+    expect(cleLot('MA109090 REPRIS')).toBe('109090')
   })
 })
