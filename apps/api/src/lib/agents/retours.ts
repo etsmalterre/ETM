@@ -23,8 +23,11 @@ export interface Retour {
   cle: string | null
   /** true = silence (nobody had anything to correct). */
   juste: boolean
-  /** Required when not juste: why. */
+  /** What the person wrote. Required when not juste, unless corrections say it. */
   commentaire: string
+  /** BL: the fields the person changed in the pre-fill, one line each — stored
+   *  apart from the comment so both stay readable (2026-10-12). */
+  corrections?: string[]
   par: Auteur
   /** An échec already recorded stays: a later silent pass over the same item
    *  (a second partial réception of the same BL) must not erase a correction. */
@@ -33,10 +36,10 @@ export interface Retour {
 
 /** Record one feedback on a run. Returns false when the run no longer exists. */
 export async function enregistrerRetour(r: Retour): Promise<boolean> {
-  if (!r.juste && !r.commentaire.trim()) throw new Error('Une correction de Tricobot se donne avec un pourquoi.')
+  if (!r.juste && !r.commentaire.trim() && !r.corrections?.length) throw new Error('Une correction de Tricobot se donne avec un pourquoi.')
   const e: Evaluation = r.juste
     ? { note: 'reussite', commentaire: '', par: r.par, le: new Date().toISOString() }
-    : { note: 'echec', commentaire: r.commentaire.trim(), par: r.par, le: new Date().toISOString() }
+    : { note: 'echec', commentaire: r.commentaire.trim(), ...(r.corrections?.length ? { corrections: r.corrections } : {}), par: r.par, le: new Date().toISOString() }
   const run = await modifierRun(r.slug, r.runId, (x) => {
     const avant = r.cle ? x.avisPoints?.[r.cle] : x.evaluation
     if (r.garderEchec && r.juste && avant?.note === 'echec') return

@@ -721,7 +721,7 @@ routes.get('/:slug/retours', async (req, res) => {
     const version = parseInt(String(req.query.version ?? ''), 10) || state.activeVersion
     const retours: Array<{
       runId: string; runLe: string; source: AgentRun['source']; portee: 'execution' | 'point'
-      titre: string | null; note: Note; commentaire: string; par: Auteur; le: string; retrait: string | null
+      titre: string | null; note: Note; commentaire: string; corrections?: string[]; par: Auteur; le: string; retrait: string | null
     }> = []
     /** Points marked résolu by hand — what ETM and the mailboxes could not see. */
     const resolutions: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []

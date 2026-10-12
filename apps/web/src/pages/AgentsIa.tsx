@@ -48,6 +48,7 @@ import {
   Loader2,
   Mail,
   MessageSquare,
+  Pencil,
   MessagesSquare,
   NotebookPen,
   Play,
@@ -113,6 +114,8 @@ interface Evaluation {
   retrait?: string | null
   /** A pilot corrected the score (PUT /:slug/runs/:id/evaluation): the score it replaced. */
   avant?: Omit<Evaluation, 'avant'> | null
+  /** BL: the fields the person changed at the réception, apart from the comment. */
+  corrections?: string[]
 }
 
 /** How the points of one Superviseur report stand (a point scored on an
@@ -285,6 +288,8 @@ interface Retour {
   par: Auteur
   le: string
   retrait: string | null
+  /** BL: the fields the person changed at the réception, apart from the comment. */
+  corrections?: string[]
 }
 
 interface Couts {
@@ -904,11 +909,8 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
               </div>
               <span className={cn('text-xs font-semibold flex-shrink-0', m.text)}>{m.label}</span>
             </div>
-            {r.commentaire && (
-              <div className="flex items-start gap-1.5 mt-2 ml-9">
-                <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
-                <p className="text-sm whitespace-pre-wrap">{r.commentaire}</p>
-              </div>
+            {(r.commentaire || (r.corrections?.length ?? 0) > 0) && (
+              <RetourContenu commentaire={r.commentaire} corrections={r.corrections} className="mt-2 ml-9" />
             )}
             {r.retrait && <p className="text-[11px] text-muted-foreground mt-1 ml-9">{r.retrait}</p>}
           </div>
@@ -1148,7 +1150,8 @@ function NouvelleVersionDialog({ open, agent, base, onClose, onDone }: {
                       <Icon className={cn('h-3.5 w-3.5 flex-shrink-0 mt-px', m.text)} />
                       <span className="min-w-0">
                         {r.portee === 'point' && <span className="font-medium">{r.titre} — </span>}
-                        {r.commentaire || <span className="italic text-muted-foreground">sans commentaire</span>}
+                        {r.commentaire || (r.corrections?.length ? null : <span className="italic text-muted-foreground">sans commentaire</span>)}
+                        {(r.corrections?.length ?? 0) > 0 && <RetourContenu commentaire="" corrections={r.corrections} className={r.commentaire ? 'mt-1' : ''} />}
                       </span>
                     </li>
                   )
@@ -1516,15 +1519,64 @@ function NoteButtons({ value, onChange, disabled, size = 'md', titles }: {
 }
 
 /** A score, read-only: pill, comment, who and when. */
+/** « 3182/25 observation « 4 défauts » → « 4 défauts - MAL UNI » » → its parts. */
+function lireCorrection(c: string): { piece: string; champ: string; avant: string; apres: string } | null {
+  const m = /^(\S+)\s+(\S+)\s+(.*?)\s+→\s+(.*)$/.exec(c)
+  return m ? { piece: m[1], champ: m[2], avant: m[3], apres: m[4] } : null
+}
+
+/** What a person said about Tricobot's work, as TWO distinct things (Vincent
+ *  2026-10-12): the fields they changed at the réception (a diff: before
+ *  struck through, after in bold) and what they wrote (a quote). */
+function RetourContenu({ commentaire, corrections, className }: { commentaire: string; corrections?: string[]; className?: string }) {
+  const cs = corrections ?? []
+  if (!commentaire && cs.length === 0) return null
+  return (
+    <div className={cn('space-y-2', className)}>
+      {cs.length > 0 && (
+        <div className="rounded-md border border-border/60 bg-zinc-100/80 overflow-hidden">
+          <p className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground border-b border-border/60 flex items-center gap-1.5">
+            <Pencil className="h-3 w-3" />Champs modifiés à la réception ({cs.length})
+          </p>
+          <ul className="divide-y divide-border/40">
+            {cs.map((c, i) => {
+              const x = lireCorrection(c)
+              return (
+                <li key={i} className="px-2.5 py-1 text-xs">
+                  {x ? (
+                    <span className="flex flex-wrap items-baseline gap-x-1.5">
+                      <span className="font-semibold tabular-nums">{x.piece}</span>
+                      <span className="text-muted-foreground">{x.champ}</span>
+                      <span className="line-through text-muted-foreground">{x.avant}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <span className="font-semibold">{x.apres}</span>
+                    </span>
+                  ) : c}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+      {commentaire && (
+        <div className="flex items-start gap-1.5 rounded-md border-l-2 border-l-accent/60 bg-accent/[0.04] px-2.5 py-1.5">
+          <MessageSquare className="h-3.5 w-3.5 text-accent flex-shrink-0 mt-0.5" />
+          <p className="text-sm whitespace-pre-wrap">{commentaire}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function EvaluationLue({ evaluation, className, sansAuteur }: {
-  evaluation: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'> & { retrait?: string | null }; className?: string
+  evaluation: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'> & { retrait?: string | null; corrections?: string[] }; className?: string
   /** The author is already named above (the card's title). */
   sansAuteur?: boolean
 }) {
   return (
-    <div className={cn('space-y-0.5', className)}>
+    <div className={cn('space-y-1', className)}>
       <NotePill evaluation={evaluation as Evaluation} />
-      {evaluation.commentaire && <p className="text-sm whitespace-pre-wrap">{evaluation.commentaire}</p>}
+      <RetourContenu commentaire={evaluation.commentaire} corrections={evaluation.corrections} />
       <p className="text-[11px] text-muted-foreground">{sansAuteur ? '' : `${evaluation.par.nom}, `}{fmtDateHeure(evaluation.le)}</p>
       {evaluation.retrait && <p className="text-[11px] text-muted-foreground">{evaluation.retrait}</p>}
     </div>
@@ -1838,7 +1890,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                   ) : <ScoreBadge evaluation={run.evaluation} />}
                 </div>
                 {run.evaluation
-                  ? (run.evaluation.commentaire || !run.evaluation.avant) && <EvaluationLue evaluation={run.evaluation} sansAuteur />
+                  ? (run.evaluation.commentaire || run.evaluation.corrections?.length || !run.evaluation.avant) && <EvaluationLue evaluation={run.evaluation} sansAuteur />
                   : <p className="text-xs text-muted-foreground italic">Pas encore de retour : il est donné à la réception des rouleaux (Sous-traitants › Commandes).</p>}
                 {run.evaluation?.avant && (
                   <div className="border-t border-border/40 pt-1.5 space-y-1">

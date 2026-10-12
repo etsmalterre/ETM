@@ -109,6 +109,10 @@ export interface Evaluation {
   le: string
   /** What an échec removed from ETM, in French (BL: the pre-filled pieces). */
   retrait?: string | null
+  /** BL: what the person changed in Tricobot's pre-fill at the réception, one
+   *  line each (« 3505/14 poids 21,4 → 24,1 »). Kept apart from `commentaire`,
+   *  which is only what the person wrote (2026-10-12). */
+  corrections?: string[]
   /** Set when a pilot corrected the score from the run dialog (Agents IA): the
    *  score it replaced, kept so the person's original retour stays readable. */
   avant?: Omit<Evaluation, 'avant'> | null
@@ -166,9 +170,32 @@ export interface AgentRun {
 
 /** A stored run in today's shape: a legacy verdict becomes an evaluation
  *  (correct → réussite, incorrect → échec — the échec removed nothing then). */
+/** One line of a BL réception diff: a piece numero, a field, « avant → après ». */
+const CORRECTION_RE = /^\d+\/[\w/+.-]*\s+\S+\s(?:(?! — ).)*\s→\s/
+
+/** Before 2026-10-12 a BL retour stored « <comment> — <c1> ; <c2> » in one
+ *  string. Split it back: the person's comment, and the field changes. A
+ *  string that is not of that shape stays a comment. Pure. */
+export function separerCorrections(texte: string): { commentaire: string; corrections: string[] } {
+  const toutes = (s: string) => { const xs = s.split(' ; ').map((x) => x.trim()); return xs.length > 0 && xs.every((x) => CORRECTION_RE.test(x)) ? xs : null }
+  const seules = toutes(texte.trim())
+  if (seules) return { commentaire: '', corrections: seules }
+  for (let i = texte.indexOf(' — '); i >= 0; i = texte.indexOf(' — ', i + 1)) {
+    const xs = toutes(texte.slice(i + 3).trim())
+    if (xs) return { commentaire: texte.slice(0, i).trim(), corrections: xs }
+  }
+  return { commentaire: texte, corrections: [] }
+}
+
 export function normaliserRun(r: AgentRun): AgentRun {
-  // Scores stored under the old three-level scale read as binary.
-  const binaire = (e: Evaluation): Evaluation => (e.note === 'reussite' || e.note === 'echec' ? e : { ...e, note: noteBinaire(e.note) })
+  // Scores stored under the old three-level scale read as binary; a BL retour
+  // stored as one string gets its field changes split from the comment.
+  const binaire = (e0: Evaluation): Evaluation => {
+    const e = e0.corrections || !e0.commentaire.includes(' → ') ? e0 : { ...e0, ...separerCorrections(e0.commentaire) }
+    const avant = e.avant && !e.avant.corrections && e.avant.commentaire.includes(' → ') ? { ...e.avant, ...separerCorrections(e.avant.commentaire) } : e.avant
+    const x = avant === e.avant ? e : { ...e, avant }
+    return x.note === 'reussite' || x.note === 'echec' ? x : { ...x, note: noteBinaire(x.note) }
+  }
   const avisPoints = r.avisPoints
     ? Object.fromEntries(Object.entries(r.avisPoints).map(([k, e]) => [k, binaire(e)]))
     : r.avisPoints

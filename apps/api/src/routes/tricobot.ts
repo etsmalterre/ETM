@@ -54,8 +54,9 @@ tricobotRouter.put('/bl-reception', async (req, res) => {
       const run = await runDuLot(p.data.ligneId, lot)
       const juste = corrections.length === 0
       if (run) {
-        const commentaire = juste ? '' : [p.data.commentaire.trim(), corrections.join(' ; ')].filter(Boolean).join(' — ')
-        await enregistrerRetour({ slug: BL_ENNOBLISSEUR_SLUG, runId: run.id, cle: null, juste, commentaire, par, garderEchec: true })
+        // The person's comment and the field changes are stored apart: both matter.
+        const commentaire = juste ? '' : p.data.commentaire.trim()
+        await enregistrerRetour({ slug: BL_ENNOBLISSEUR_SLUG, runId: run.id, cle: null, juste, commentaire, corrections: juste ? [] : corrections, par, garderEchec: true })
       }
       retours.push({ lot, runId: run?.id ?? null, juste })
     }
