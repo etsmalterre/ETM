@@ -367,6 +367,22 @@ function ScoreBadge({ evaluation }: { evaluation: Evaluation | null | undefined 
   )
 }
 
+/** The run's score as a light pill for the runs table: worded, pale, so it
+ *  never competes with the solid « Traitement » pill next to it. */
+function ScoreSoft({ evaluation }: { evaluation: Evaluation | null | undefined }) {
+  if (!evaluation) {
+    return <span className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-zinc-100/80 px-2 py-0.5 text-[11px] text-muted-foreground whitespace-nowrap"><Clock className="h-3 w-3" />À évaluer</span>
+  }
+  const m = NOTE_META[evaluation.note]
+  const Icon = m.icon
+  return (
+    <span title={evaluation.commentaire || undefined}
+      className={cn('inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap', m.soft, m.text)}>
+      <Icon className="h-3 w-3" />{m.label}
+    </span>
+  )
+}
+
 const SOURCE_LABEL: Record<Source, string> = {
   gmail: 'Mail', essai_manuel: 'Test', retraitement: 'Retraitement', planifie: 'Planifiée', manuel: 'Manuelle', triage: 'Triage',
 }
@@ -703,18 +719,6 @@ const RUN_FILTERS: Array<{ key: string; label: string; query: string }> = [
   { key: 'ignore', label: 'Ignorées', query: '?statut=ignore' },
 ]
 
-/** The score as one icon, for tight table cells (full label in the title). */
-function NoteIcon({ evaluation }: { evaluation: Evaluation | null | undefined }) {
-  if (!evaluation) return null
-  const m = NOTE_META[evaluation.note]
-  const Icon = m.icon
-  return (
-    <span title={`${m.label}${evaluation.commentaire ? ` — ${evaluation.commentaire}` : ''}`} className="inline-flex flex-shrink-0">
-      <Icon className={cn('h-3.5 w-3.5', m.text)} />
-    </span>
-  )
-}
-
 function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: string) => void }) {
   const base = useBaseApi()
   const [filtre, setFiltre] = useState('tout')
@@ -751,7 +755,7 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
           <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
             <colgroup>
               <col style={{ width: '19%' }} /><col style={{ width: '17%' }} /><col style={{ width: '11%' }} />
-              <col style={{ width: '10%' }} /><col style={{ width: '29%' }} /><col style={{ width: '14%' }} />
+              <col style={{ width: '10%' }} /><col style={{ width: '16%' }} /><col style={{ width: '13%' }} /><col style={{ width: '14%' }} />
             </colgroup>
             <thead className="bg-zinc-200/60 border-b border-border/60">
               <tr className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -759,7 +763,8 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
                 <th className="px-3 py-2.5 text-left font-semibold">{colonnes[0]}</th>
                 <th className="px-3 py-2.5 text-left font-semibold">{colonnes[1]}</th>
                 <th className="px-3 py-2.5 text-right font-semibold">{colonnes[2]}</th>
-                <th className="px-3 py-2.5 text-left font-semibold">Statut</th>
+                <th className="px-3 py-2.5 text-left font-semibold" title="Ce que Tricobot a fait du document">Traitement</th>
+                <th className="px-3 py-2.5 text-left font-semibold" title="Est-ce que Tricobot a bien lu ?">Score</th>
                 <th className="px-3 py-2.5 text-right font-semibold">Coût</th>
               </tr>
             </thead>
@@ -776,12 +781,8 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
                   <td className="px-3 py-1.5 truncate font-medium tabular-nums">{r.bordereau || '—'}</td>
                   <td className="px-3 py-1.5 truncate tabular-nums">{r.commande || '—'}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{r.nbPieces ?? '—'}</td>
-                  <td className="px-3 py-1.5">
-                    <span className="inline-flex items-center gap-1 max-w-full">
-                      <StatutPill statut={r.statut} />
-                      {r.bilan ? <BilanMini b={r.bilan} /> : <NoteIcon evaluation={r.evaluation} />}
-                    </span>
-                  </td>
+                  <td className="px-3 py-1.5"><StatutPill statut={r.statut} /></td>
+                  <td className="px-3 py-1.5">{r.bilan ? <BilanMini b={r.bilan} /> : <ScoreSoft evaluation={r.evaluation} />}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtEur(r.coutUsd)}</td>
                 </tr>
               ))}
