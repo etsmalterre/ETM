@@ -29,6 +29,9 @@ describe('refusLotSuffixe', () => {
   it('refuses a newly typed R', () => {
     expect(refusLotSuffixe('MA109102R', 'MA109102')).toMatch(/MA109102/)
     expect(refusLotSuffixe('MA109102R')).not.toBeNull()
+    // short codes too (2026-10-12: « 1234R » went through on a test lot)
+    expect(refusLotSuffixe('1234R', '1234')).toMatch(/1234/)
+    expect(refusLotSuffixe('BON3976 R2', 'BON3976')).not.toBeNull()
   })
   it('lets the dyer number and an unchanged old lot pass', () => {
     expect(refusLotSuffixe('MA109102', 'MA109102R')).toBeNull()

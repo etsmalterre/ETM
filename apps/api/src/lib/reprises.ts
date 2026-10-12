@@ -37,7 +37,11 @@ export interface Auteur { id: number; nom: string }
  *  REPRIS / BIS / TER, optionally after a letter the dyer or a person used to
  *  tell two lots apart (« MA106117BR2 »). A lone letter (A/B/C) is NOT a
  *  reprise and is left alone (decision 2026-10-12). Pure. */
-const SUFFIXE = /^(.*?\d{5,}[A-Za-z]?)\s*[-_ ]?\s*(REPRIS|BIS|TER|R(\d)?)$/i
+// `chiffres`: how many digits name the lot. The guard reads 3+ (Bontemps
+// BON3976; a 4-digit test lot « 1234R » went through on 2026-10-12); the history
+// script keeps 5+ (MATEL's numbers), so it never sweeps a short code it cannot vouch for.
+const suffixe = (chiffres: number) =>
+  new RegExp(String.raw`^(.*?\d{${chiffres},}[A-Za-z]?)\s*[-_ ]?\s*(REPRIS|BIS|TER|R(\d)?)$`, 'i')
 
 export interface SuffixeReprise {
   /** The lot without the suffix, upper-cased (« ma100941r » → « MA100941 »). */
@@ -48,9 +52,9 @@ export interface SuffixeReprise {
   canonique: boolean
 }
 
-export function suffixeReprise(lot: string): SuffixeReprise | null {
+export function suffixeReprise(lot: string, chiffres = 5): SuffixeReprise | null {
   const t = (lot ?? '').trim()
-  const m = SUFFIXE.exec(t)
+  const m = suffixe(chiffres).exec(t)
   if (!m) return null
   const s = m[2].toUpperCase()
   const rang = s === 'TER' ? 3 : s === 'BIS' ? 2 : s === 'REPRIS' ? 1 : m[3] ? Number(m[3]) : 1
@@ -63,7 +67,7 @@ export function suffixeReprise(lot: string): SuffixeReprise | null {
 export function refusLotSuffixe(nouveau: string | null | undefined, actuel?: string | null): string | null {
   const n = (nouveau ?? '').trim()
   if (!n || n === (actuel ?? '').trim()) return null
-  const s = suffixeReprise(n)
+  const s = suffixeReprise(n, 3)
   if (!s) return null
   return `Le lot reste le numéro de l’ennoblisseur (${s.base}) : la reprise est enregistrée par ETM, sans « R » ajouté au lot.`
 }
