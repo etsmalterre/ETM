@@ -1525,14 +1525,49 @@ function lireCorrection(c: string): { piece: string; champ: string; avant: strin
   return m ? { piece: m[1], champ: m[2], avant: m[3], apres: m[4] } : null
 }
 
+type ModifsPiece = Partial<Record<'poids' | 'metrage' | 'observation', string>> & { lot?: { avant: string; apres: string } }
+
+/** The réception's field changes, by piece of the BL table: « 3182/25
+ *  observation « a » → « b » » → modifsParPiece.get('3182/25').observation = 'b'.
+ *  `correctionsVues` = the lines placed in the table (the rest stays listed). */
+function modifsDuTableau(corrections: string[], pieces: Set<string>): { modifsParPiece: Map<string, ModifsPiece>; correctionsVues: string[] } {
+  const modifsParPiece = new Map<string, ModifsPiece>()
+  const correctionsVues: string[] = []
+  const net = (s: string) => s.trim().replace(/^«\s*/, '').replace(/\s*»$/, '').replace(/\s*(kg|Ml)$/i, '')
+  for (const c of corrections) {
+    const x = lireCorrection(c)
+    if (!x || !pieces.has(x.piece)) continue
+    const champ = x.champ.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    const m = modifsParPiece.get(x.piece) ?? {}
+    if (champ === 'poids' || champ === 'metrage' || champ === 'observation') m[champ] = net(x.apres) || '(vide)'
+    else if (champ === 'lot') m.lot = { avant: net(x.avant), apres: net(x.apres) }
+    else continue
+    modifsParPiece.set(x.piece, m)
+    correctionsVues.push(c)
+  }
+  return { modifsParPiece, correctionsVues }
+}
+
 /** What a person said about Tricobot's work, as TWO distinct things (Vincent
  *  2026-10-12): the fields they changed at the réception (a diff: before
  *  struck through, after in bold) and what they wrote (a quote). */
-function RetourContenu({ commentaire, corrections, className }: { commentaire: string; corrections?: string[]; className?: string }) {
-  const cs = corrections ?? []
-  if (!commentaire && cs.length === 0) return null
+function RetourContenu({ commentaire, corrections, dansTableau, className }: {
+  commentaire: string; corrections?: string[]
+  /** Lines already shown in the run's pieces table: only pointed at here. */
+  dansTableau?: string[]
+  className?: string
+}) {
+  const vues = new Set(dansTableau ?? [])
+  const cs = (corrections ?? []).filter((c) => !vues.has(c))
+  const nbVues = (corrections ?? []).length - cs.length
+  if (!commentaire && cs.length === 0 && nbVues === 0) return null
   return (
     <div className={cn('space-y-2', className)}>
+      {nbVues > 0 && (
+        <p className="text-xs text-amber-800 flex items-center gap-1.5">
+          <Pencil className="h-3 w-3 flex-shrink-0" />{nbVues} champ{nbVues > 1 ? 's' : ''} modifié{nbVues > 1 ? 's' : ''} à la réception : voir le tableau des pièces.
+        </p>
+      )}
       {cs.length > 0 && (
         <div className="rounded-md border border-border/60 bg-zinc-100/80 overflow-hidden">
           <p className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground border-b border-border/60 flex items-center gap-1.5">
@@ -1568,15 +1603,17 @@ function RetourContenu({ commentaire, corrections, className }: { commentaire: s
   )
 }
 
-function EvaluationLue({ evaluation, className, sansAuteur }: {
+function EvaluationLue({ evaluation, className, sansAuteur, dansTableau }: {
   evaluation: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'> & { retrait?: string | null; corrections?: string[] }; className?: string
   /** The author is already named above (the card's title). */
   sansAuteur?: boolean
+  /** Corrections already shown in the run's pieces table. */
+  dansTableau?: string[]
 }) {
   return (
     <div className={cn('space-y-1', className)}>
       <NotePill evaluation={evaluation as Evaluation} />
-      <RetourContenu commentaire={evaluation.commentaire} corrections={evaluation.corrections} />
+      <RetourContenu commentaire={evaluation.commentaire} corrections={evaluation.corrections} dansTableau={dansTableau} />
       <p className="text-[11px] text-muted-foreground">{sansAuteur ? '' : `${evaluation.par.nom}, `}{fmtDateHeure(evaluation.le)}</p>
       {evaluation.retrait && <p className="text-[11px] text-muted-foreground">{evaluation.retrait}</p>}
     </div>
@@ -1732,6 +1769,13 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const res = run?.resultat.resolution ?? null
   const controles = run?.resultat.controles ?? []
   const statutPiece = (numero: string, i: number) => res?.pieces[i]?.numero_piece === numero ? res.pieces[i].statut : res?.pieces.find((p) => p.numero_piece === numero)?.statut
+  // What the person changed at the réception, shown IN the pieces table (the
+  // facts of the réception, whatever the score became: read the original retour
+  // when a pilot corrected it).
+  const retourReception = run?.evaluation?.corrections?.length ? run.evaluation : run?.evaluation?.avant?.corrections?.length ? run.evaluation.avant : null
+  const { modifsParPiece, correctionsVues } = modifsDuTableau(retourReception?.corrections ?? [], new Set(e?.pieces.map((p) => p.numero_piece) ?? []))
+  const nbModifs = correctionsVues.length
+  const auteurModifs = retourReception?.par.nom ?? null
   const pdfUrl = run && run.fichiers.length > 0 ? `${API_URL}${base}/${slug}/runs/${run.id}/fichiers/${page}#view=FitH` : null
   const somme = (k: 'poids' | 'metrage') => e ? e.pieces.reduce((s, p) => s + (p[k] ?? 0), 0) : 0
   // Runs before 2026-09-28 carry no profil: they were all MATEL BLs.
@@ -1807,6 +1851,12 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
               )}
               {e && e.pieces.length > 0 && (
                 <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                  {nbModifs > 0 && (
+                    <p className="px-2.5 py-1.5 text-[11px] text-amber-800 bg-amber-400/10 border-b border-amber-400/30 flex items-center gap-1.5">
+                      <Pencil className="h-3 w-3 flex-shrink-0" />
+                      {nbModifs} champ{nbModifs > 1 ? 's' : ''} modifié{nbModifs > 1 ? 's' : ''} à la réception{auteurModifs ? ` par ${auteurModifs}` : ''} : lu par Tricobot barré, saisi en gras.
+                    </p>
+                  )}
                   <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
                     <colgroup><col style={{ width: '27%' }} /><col style={{ width: '13%' }} /><col style={{ width: '14%' }} /><col style={{ width: '31%' }} /><col style={{ width: '15%' }} /></colgroup>
                     <thead className="bg-zinc-200/60 border-b border-border/60">
@@ -1821,12 +1871,23 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                     <tbody>
                       {e.pieces.map((p, i) => {
                         const st = statutPiece(p.numero_piece, i)
+                        const md = modifsParPiece.get(p.numero_piece)
+                        // A changed cell: what Tricobot read struck through, what the person typed in bold.
+                        const cellule = (lu: string, saisi: string | undefined) => saisi === undefined ? lu : (
+                          <span className="whitespace-normal">
+                            <span className="line-through text-muted-foreground">{lu}</span>{' '}
+                            <span className="font-semibold text-amber-800">{saisi}</span>
+                          </span>
+                        )
                         return (
-                          <tr key={`${p.numero_piece}-${i}`} className="border-b border-border/40 last:border-b-0">
-                            <td className="px-2 py-1.5 truncate font-medium tabular-nums" title={p.numero_piece}>{p.numero_piece}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums">{p.poids != null ? fmtNum(p.poids, 2) : '—'}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums">{p.metrage != null ? fmtNum(p.metrage, 2) : '—'}</td>
-                            <td className="px-2 py-1.5 truncate text-muted-foreground" title={p.observations}>{p.observations || '—'}</td>
+                          <tr key={`${p.numero_piece}-${i}`} className={cn('border-b border-border/40 last:border-b-0', md && 'bg-amber-400/[0.07]')}>
+                            <td className="px-2 py-1.5 font-medium tabular-nums" title={p.numero_piece}>
+                              <div className="truncate">{p.numero_piece}</div>
+                              {md?.lot && <div className="text-[10px] font-normal whitespace-normal">lot <span className="line-through text-muted-foreground">{md.lot.avant}</span> <span className="font-semibold text-amber-800">{md.lot.apres}</span></div>}
+                            </td>
+                            <td className="px-2 py-1.5 text-right tabular-nums">{cellule(p.poids != null ? fmtNum(p.poids, 2) : '—', md?.poids)}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums">{cellule(p.metrage != null ? fmtNum(p.metrage, 2) : '—', md?.metrage)}</td>
+                            <td className={cn('px-2 py-1.5 text-muted-foreground', !md?.observation && 'truncate')} title={p.observations}>{cellule(p.observations || '—', md?.observation)}</td>
                             <td className={cn('px-2 py-1.5 truncate', st ? PIECE_STATUT[st].cls : 'text-muted-foreground')}>{st ? PIECE_STATUT[st].label : '—'}</td>
                           </tr>
                         )
@@ -1890,12 +1951,12 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                   ) : <ScoreBadge evaluation={run.evaluation} />}
                 </div>
                 {run.evaluation
-                  ? (run.evaluation.commentaire || run.evaluation.corrections?.length || !run.evaluation.avant) && <EvaluationLue evaluation={run.evaluation} sansAuteur />
+                  ? (run.evaluation.commentaire || run.evaluation.corrections?.length || !run.evaluation.avant) && <EvaluationLue evaluation={run.evaluation} sansAuteur dansTableau={correctionsVues} />
                   : <p className="text-xs text-muted-foreground italic">Pas encore de retour : il est donné à la réception des rouleaux (Sous-traitants › Commandes).</p>}
                 {run.evaluation?.avant && (
                   <div className="border-t border-border/40 pt-1.5 space-y-1">
                     <p className="text-[11px] text-muted-foreground">Score corrigé le {fmtDateHeure(run.evaluation.le)} — retour d’origine de {run.evaluation.avant.par.nom} :</p>
-                    <EvaluationLue evaluation={run.evaluation.avant} className="opacity-70" sansAuteur />
+                    <EvaluationLue evaluation={run.evaluation.avant} className="opacity-70" sansAuteur dansTableau={correctionsVues} />
                   </div>
                 )}
               </div>
