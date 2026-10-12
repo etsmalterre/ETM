@@ -353,6 +353,20 @@ function NotePill({ evaluation, className }: { evaluation: Evaluation | null | u
   )
 }
 
+/** The run's score as a solid badge, readable at a glance (dialog header). */
+function ScoreBadge({ evaluation }: { evaluation: Evaluation | null | undefined }) {
+  if (!evaluation) {
+    return <span className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground whitespace-nowrap"><Clock className="h-3.5 w-3.5" />À évaluer</span>
+  }
+  const m = NOTE_META[evaluation.note]
+  const Icon = m.icon
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-semibold text-white whitespace-nowrap', m.solid)}>
+      <Icon className="h-3.5 w-3.5" />{m.label}
+    </span>
+  )
+}
+
 const SOURCE_LABEL: Record<Source, string> = {
   gmail: 'Mail', essai_manuel: 'Test', retraitement: 'Retraitement', planifie: 'Planifiée', manuel: 'Manuelle', triage: 'Triage',
 }
@@ -1631,9 +1645,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const [showOcr, setShowOcr] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [ajoutNote, setAjoutNote] = useState(false)
-  // Dev actions opened below the feedback card: correct the score, mark checked.
-  const [actionDev, setActionDev] = useState<'score' | 'verifie' | null>(null)
-  useEffect(() => { setPage(0); setShowOcr(false); setError(null); setAjoutNote(false); setActionDev(null) }, [runId])
+  useEffect(() => { setPage(0); setShowOcr(false); setError(null); setAjoutNote(false) }, [runId])
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['agent-ia-run', slug, runId],
@@ -1644,6 +1656,22 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const retraiterMut = useMutation({
     mutationFn: () => callApi<{ runs: RunLigne[] }>(`${base}/${slug}/runs/${runId}/retraiter`, { method: 'POST' }),
     onSuccess: (r) => { onChanged(); if (r.runs[0]) onOpenRun(r.runs[0].id) },
+    onError: (e: Error) => setError(e.message),
+  })
+  // Dev actions, one click each: the why goes in a « Note pour la vN+1 ».
+  const apresAction = (r: RunComplet) => {
+    queryClient.setQueryData(['agent-ia-run', slug, r.id], r)
+    queryClient.invalidateQueries({ queryKey: ['agent-ia-retours', slug] })
+    onChanged()
+  }
+  const scoreMut = useMutation({
+    mutationFn: (note: Note) => callApi<RunComplet>(`${base}/${slug}/runs/${runId}/evaluation`, { method: 'PUT', body: JSON.stringify({ note }) }),
+    onSuccess: apresAction,
+    onError: (e: Error) => setError(e.message),
+  })
+  const verifieMut = useMutation({
+    mutationFn: () => callApi<RunComplet>(`${base}/${slug}/runs/${runId}/verifie`, { method: 'POST', body: '{}' }),
+    onSuccess: apresAction,
     onError: (e: Error) => setError(e.message),
   })
   const ecriture = run?.resultat.ecriture ?? null
@@ -1668,6 +1696,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
             <FileText className="h-5 w-5 text-accent" />
             {titre}
             {run && <StatutPill statut={run.statut} className="text-xs py-0.5" />}
+            {run && <ScoreBadge evaluation={run.evaluation} />}
             {run && <span className="text-xs font-normal text-muted-foreground">{fmtDateHeure(run.createdAt)} · {SOURCE_LABEL[run.source]} · v{run.version}</span>}
           </DialogTitle>
         </DialogHeader>
@@ -1784,19 +1813,38 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
               </div>
               <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1.5">
                 {/* The score is what a person said about Tricobot's reading: name them. */}
-                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-                  <User className="h-3.5 w-3.5" />{run.evaluation ? `Retour de ${run.evaluation.par.nom}` : 'Retour utilisateur'}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 flex-1 min-w-0">
+                    <User className="h-3.5 w-3.5" />{run.evaluation ? `Retour de ${run.evaluation.par.nom}` : 'Retour utilisateur'}
+                  </p>
+                  {/* Pilots switch the score in one click (the why goes in a dev note). */}
+                  {canPilot ? (
+                    <div className="flex gap-1 flex-shrink-0">
+                      {NOTE_ORDER.map((n) => {
+                        const m = NOTE_META[n]
+                        const Icon = m.icon
+                        const actif = run.evaluation?.note === n
+                        return (
+                          <button key={n} type="button" disabled={actif || scoreMut.isPending} onClick={() => scoreMut.mutate(n)}
+                            title={actif ? `Score actuel : ${m.label}` : `Passer le score en ${m.label.toLowerCase()}`}
+                            className={cn('inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md border transition-colors',
+                              actif ? cn(m.solid, 'text-white') : cn('border-border text-muted-foreground', m.hover))}>
+                            <Icon className="h-3.5 w-3.5" />{m.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : <ScoreBadge evaluation={run.evaluation} />}
+                </div>
                 {run.evaluation
-                  ? <EvaluationLue evaluation={run.evaluation} sansAuteur />
+                  ? (run.evaluation.commentaire || !run.evaluation.avant) && <EvaluationLue evaluation={run.evaluation} sansAuteur />
                   : <p className="text-xs text-muted-foreground italic">Pas encore de retour : il est donné à la réception des rouleaux (Sous-traitants › Commandes).</p>}
                 {run.evaluation?.avant && (
                   <div className="border-t border-border/40 pt-1.5 space-y-1">
-                    <p className="text-[11px] text-muted-foreground">Score corrigé — retour d’origine de {run.evaluation.avant.par.nom} :</p>
+                    <p className="text-[11px] text-muted-foreground">Score corrigé le {fmtDateHeure(run.evaluation.le)} — retour d’origine de {run.evaluation.avant.par.nom} :</p>
                     <EvaluationLue evaluation={run.evaluation.avant} className="opacity-70" sansAuteur />
                   </div>
                 )}
-                {actionDev === 'score' && <CorrectionScore slug={slug} run={run} onClose={() => setActionDev(null)} />}
               </div>
               {run.verification && (
                 <div className="rounded-lg border-l-4 border-l-emerald-600/60 border border-border/60 bg-emerald-600/5 p-3 text-sm flex gap-2">
@@ -1807,20 +1855,13 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                   </div>
                 </div>
               )}
-              {actionDev === 'verifie' && <MarquerVerifie slug={slug} run={run} onClose={() => setActionDev(null)} onDone={onChanged} />}
               <NotesDevCard slug={slug} run={run} canPilot={canPilot} ajout={ajoutNote} onFermerAjout={() => setAjoutNote(false)} />
               {canPilot && (
                 <div className="flex justify-end gap-2 flex-wrap">
-                  {(run.statut === 'a_verifier' || run.statut === 'erreur') && actionDev !== 'verifie' && (
-                    <Button variant="outline" size="sm" onClick={() => setActionDev('verifie')}
+                  {(run.statut === 'a_verifier' || run.statut === 'erreur') && (
+                    <Button variant="outline" size="sm" disabled={verifieMut.isPending} onClick={() => verifieMut.mutate()}
                       title="Cette exécution a été vérifiée (traitée à la main) : elle sort de « À vérifier »">
-                      <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />Marquer comme vérifié
-                    </Button>
-                  )}
-                  {actionDev !== 'score' && (
-                    <Button variant="outline" size="sm" onClick={() => setActionDev('score')}
-                      title="Changer le score (réussite / échec) ; le retour d’origine reste visible">
-                      <ListChecks className="h-3.5 w-3.5 mr-1.5" />Corriger le score
+                      {verifieMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}Marquer comme vérifié
                     </Button>
                   )}
                   {!ajoutNote && (
@@ -1843,85 +1884,6 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
         )}
       </DialogContent>
     </Dialog>
-  )
-}
-
-/** A pilot corrects the run's score (decision Vincent 2026-10-12), e.g. an
- *  échec given on a roll bent to bill less, since fixed. The replaced score
- *  stays visible under it. Réussite: why optional; échec: why required. */
-function CorrectionScore({ slug, run, onClose }: { slug: string; run: RunComplet; onClose: () => void }) {
-  const base = useBaseApi()
-  const queryClient = useQueryClient()
-  const [note, setNote] = useState<Note>(run.evaluation?.note === 'reussite' ? 'echec' : 'reussite')
-  const [texte, setTexte] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const fermer = onClose
-  const mut = useMutation({
-    mutationFn: () => callApi<RunComplet>(`${base}/${slug}/runs/${run.id}/evaluation`, { method: 'PUT', body: JSON.stringify({ note, commentaire: texte }) }),
-    onSuccess: (r) => {
-      queryClient.setQueryData(['agent-ia-run', slug, run.id], r)
-      queryClient.invalidateQueries({ queryKey: ['agent-ia', slug] })
-      queryClient.invalidateQueries({ queryKey: ['agent-ia-runs', slug] })
-      queryClient.invalidateQueries({ queryKey: ['agent-ia-retours', slug] })
-      fermer()
-    },
-    onError: (e: Error) => setError(e.message),
-  })
-  return (
-    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-3 space-y-2">
-      <div className="flex gap-1">
-        {(['reussite', 'echec'] as const).map((n) => (
-          <button key={n} type="button" onClick={() => setNote(n)}
-            className={cn('px-3 py-1 text-xs rounded-md transition-colors', note === n ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10')}>
-            {NOTE_META[n].label}
-          </button>
-        ))}
-      </div>
-      <textarea value={texte} onChange={(e) => setTexte(e.target.value)} rows={2} maxLength={2000} autoFocus
-        placeholder={note === 'echec' ? 'Pourquoi Tricobot s’est trompé (obligatoire)…' : 'Pourquoi c’était juste (facultatif)…'}
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={fermer}>Annuler</Button>
-        <Button size="sm" disabled={(note === 'echec' && !texte.trim()) || mut.isPending} onClick={() => mut.mutate()}>
-          {mut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Enregistrer
-        </Button>
-      </div>
-      {error && <div className="flex items-center gap-2 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" />{error}</div>}
-    </div>
-  )
-}
-
-/** A pilot marks an « à vérifier » / « erreur » run as checked (handled by
- *  hand): it leaves « À vérifier », the original statut stays on the run.
- *  Not a score. */
-function MarquerVerifie({ slug, run, onClose, onDone }: { slug: string; run: RunComplet; onClose: () => void; onDone: () => void }) {
-  const base = useBaseApi()
-  const queryClient = useQueryClient()
-  const [texte, setTexte] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const mut = useMutation({
-    mutationFn: () => callApi<RunComplet>(`${base}/${slug}/runs/${run.id}/verifie`, { method: 'POST', body: JSON.stringify({ commentaire: texte }) }),
-    onSuccess: (r) => {
-      queryClient.setQueryData(['agent-ia-run', slug, run.id], r)
-      onDone()
-      onClose()
-    },
-    onError: (e: Error) => setError(e.message),
-  })
-  return (
-    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-3 space-y-2">
-      <p className="text-xs font-semibold text-muted-foreground">Marquer comme vérifié</p>
-      <textarea value={texte} onChange={(e) => setTexte(e.target.value)} rows={2} maxLength={2000} autoFocus
-        placeholder="Comment ça a été traité (facultatif), ex. « réceptionné à la main le 07/10 »…"
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onClose}>Annuler</Button>
-        <Button size="sm" disabled={mut.isPending} onClick={() => mut.mutate()}>
-          {mut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Marquer vérifié
-        </Button>
-      </div>
-      {error && <div className="flex items-center gap-2 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" />{error}</div>}
-    </div>
   )
 }
 

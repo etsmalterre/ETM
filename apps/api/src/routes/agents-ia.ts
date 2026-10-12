@@ -484,7 +484,7 @@ routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
   if (def.points || def.slug === TRIAGE_SLUG) { res.status(409).json({ error: 'cet agent est noté là où le travail est fait' }); return }
   const p = evaluationBody.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'note invalide' }); return }
-  if (p.data.note === 'echec' && !p.data.commentaire) { res.status(400).json({ error: 'Un échec se donne avec un pourquoi.' }); return }
+  // No why required: a pilot writes it as a dev note on the run (« Note pour la vN+1 »).
   const par = await auteur(uid)
   const r = await modifierRun(def.slug, req.params.id, (x) => {
     const prec = x.evaluation ?? null
