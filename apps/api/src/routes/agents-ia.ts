@@ -27,6 +27,7 @@ import {
   lireFichier,
   lireRun,
   lireRuns,
+  modifierRun,
   estPublie,
   publierVersion,
   versionActive,
@@ -432,6 +433,36 @@ routes.post('/:slug/runs/:id/retraiter', async (req, res) => {
   }
 })
 
+// ── Dev notes ────────────────────────────────────────────
+// A pilot's note on a run, for the next version of the agent: listed in the
+// version's « Retours » and in the « Nouvelle version » dialog. Never a score.
+
+const noteDevBody = z.object({ commentaire: z.string().trim().min(1).max(2000) })
+
+routes.post('/:slug/runs/:id/notes-dev', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  const p = noteDevBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'note vide' }); return }
+  const note = { commentaire: p.data.commentaire, par: await auteur(uid), le: new Date().toISOString() }
+  const r = await modifierRun(def.slug, req.params.id, (x) => { x.notesDev = [...(x.notesDev ?? []), note] })
+  if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  res.json(r)
+})
+
+/** Remove one note, identified by its timestamp. */
+routes.delete('/:slug/runs/:id/notes-dev/:le', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  const r = await modifierRun(def.slug, req.params.id, (x) => { x.notesDev = (x.notesDev ?? []).filter((n) => n.le !== req.params.le) })
+  if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  res.json(r)
+})
+
 // ── Triage ───────────────────────────────────────────────
 // The Triage's work IS the triage, so it is corrected here (decision Vincent
 // 2026-10-05) — the one agent scored from Agents IA. Correct by default: a
@@ -636,6 +667,8 @@ routes.get('/:slug/retours', async (req, res) => {
     const resolutions: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
     /** « Former Tricobot › Tu pouvais aller chercher plus loin »: no score, read like the comments. */
     const lecons: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
+    /** Pilots' notes on runs, for the next version (POST /:slug/runs/:id/notes-dev). */
+    const notesDev: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
     for (const r of await lireRuns(def.slug)) {
       if (r.version !== version) continue
       const base = { runId: r.id, runLe: r.createdAt, source: r.source }
@@ -654,11 +687,13 @@ routes.get('/:slug/retours', async (req, res) => {
       for (const [cle, xs] of Object.entries(r.leconsPoints ?? {})) {
         for (const x of xs) lecons.push({ runId: r.id, runLe: r.createdAt, titre: titres.get(cle) ?? cle, ...x })
       }
+      for (const x of r.notesDev ?? []) notesDev.push({ runId: r.id, runLe: r.createdAt, titre: r.resume, ...x })
     }
     retours.sort((a, b) => b.le.localeCompare(a.le))
     resolutions.sort((a, b) => b.le.localeCompare(a.le))
     lecons.sort((a, b) => b.le.localeCompare(a.le))
-    res.json({ version, versions: state.versions.map((v) => v.version).reverse(), retours, resolutions, lecons })
+    notesDev.sort((a, b) => b.le.localeCompare(a.le))
+    res.json({ version, versions: state.versions.map((v) => v.version).reverse(), retours, resolutions, lecons, notesDev })
   } catch (err) {
     console.error('[agents-ia] retours failed:', err)
     res.status(500).json({ error: 'Internal server error' })

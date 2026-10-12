@@ -150,6 +150,9 @@ export interface AgentRun {
    *  point that was right: where else the agent should have looked. Not a score, never closes the
    *  point; read by the Retours tab like the other comments. */
   leconsPoints?: Record<string, Array<Pick<Evaluation, 'commentaire' | 'par' | 'le'>>>
+  /** Notes a pilot leaves on the run for the next version of the agent (Agents
+   *  IA › run dialog). Not a score: the score stays where the work is done. */
+  notesDev?: Array<Pick<Evaluation, 'commentaire' | 'par' | 'le'>>
   /** Legacy — see RunVerdict. */
   verdict?: RunVerdict | null
 }

@@ -49,6 +49,7 @@ import {
   Mail,
   MessageSquare,
   MessagesSquare,
+  NotebookPen,
   Play,
   Power,
   ReceiptText,
@@ -58,7 +59,9 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  Trash2,
   Upload,
+  User,
   Workflow,
   X,
   XCircle,
@@ -236,7 +239,11 @@ interface Controle { code: string; gravite: 'bloquant' | 'avertissement'; messag
 interface BlPiece { numero_piece: string; poids: number | null; metrage: number | null; observations: string }
 interface PieceResolue { numero_piece: string; statut: 'ok' | 'affectee_ailleurs' | 'inconnue' }
 
+/** A pilot's note on a run, for the next version (POST /:slug/runs/:id/notes-dev). */
+interface NoteDev { commentaire: string; par: Auteur; le: string }
+
 interface RunComplet extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces'> {
+  notesDev?: NoteDev[]
   resultat: {
     /** BL Ennoblisseur since 2026-09-28: which dyer, which document (absent before = MATEL BL). */
     profil?: 'matel' | 'bontemps' | 'tad' | null
@@ -780,11 +787,12 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
   useEffect(() => { setVersion(agent.activeVersion) }, [agent.slug, agent.activeVersion])
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-retours', agent.slug, version],
-    queryFn: () => apiFetch<{ version: number; retours: Retour[]; resolutions?: RetourResolution[]; lecons?: RetourResolution[] }>(`${base}/${agent.slug}/retours?version=${version}`),
+    queryFn: () => apiFetch<{ version: number; retours: Retour[]; resolutions?: RetourResolution[]; lecons?: RetourResolution[]; notesDev?: RetourResolution[] }>(`${base}/${agent.slug}/retours?version=${version}`),
   })
   const tous = data?.retours ?? []
   const resolutions = data?.resolutions ?? []
   const lecons = data?.lecons ?? []
+  const notesDev = data?.notesDev ?? []
   // « À prendre en compte » = what says something: every échec,
   // and a réussite only when someone bothered to comment it.
   const retours = filtre === 'tout' ? tous : tous.filter((r) => r.note !== 'reussite' || r.commentaire)
@@ -827,7 +835,33 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
           <MessagesSquare className="h-12 w-12 mb-3 opacity-40" />
           <p className="text-sm">{tous.length === 0 ? 'Aucune évaluation sur cette version' : 'Rien à prendre en compte sur cette version'}</p>
         </div>
-      ) : retours.map((r, i) => {
+      ) : null}
+      {!isLoading && !isError && notesDev.length > 0 && (
+        <>
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-2">
+            Notes de développement ({notesDev.length}) : pour la version suivante
+          </p>
+          {notesDev.map((r, i) => (
+            <div key={`${r.runId}-dev-${i}`} onClick={() => onOpenRun(r.runId)} title="Ouvrir l’exécution"
+              className="rounded-lg border-l-4 border border-border/60 border-l-accent/70 bg-zinc-100/80 p-3 cursor-pointer hover:border-accent/40 transition-colors">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-accent/10">
+                  <NotebookPen className="h-3.5 w-3.5 text-accent" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">Exécution du {fmtDateCourte(r.runLe)}</p>
+                  <p className="text-[11px] text-muted-foreground truncate">{r.titre} · {r.par.nom}, {fmtDateHeure(r.le)}</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-1.5 mt-2 ml-9">
+                <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
+                <p className="text-sm whitespace-pre-wrap">{r.commentaire}</p>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+      {!isLoading && !isError && retours.map((r, i) => {
         const m = NOTE_META[r.note]
         const Icon = m.icon
         return (
@@ -1043,10 +1077,11 @@ function NouvelleVersionDialog({ open, agent, base, onClose, onDone }: {
   // What people said about the version being replaced — the reason to write a new one.
   const { data: retoursData } = useQuery({
     queryKey: ['agent-ia-retours', agent.slug, base.version],
-    queryFn: () => apiFetch<{ retours: Retour[] }>(`${api}/${agent.slug}/retours?version=${base.version}`),
+    queryFn: () => apiFetch<{ retours: Retour[]; notesDev?: RetourResolution[] }>(`${api}/${agent.slug}/retours?version=${base.version}`),
     enabled: open,
   })
   const aPrendre = (retoursData?.retours ?? []).filter((r) => r.note !== 'reussite' || r.commentaire)
+  const notesDev = retoursData?.notesDev ?? []
   const modelOptions = agent.modeles.map((m, i) => ({ id: i + 1, primary: m.label, secondary: m.id }))
   const unchanged = prompt.trim() === base.prompt.trim() && model === base.model
 
@@ -1072,12 +1107,18 @@ function NouvelleVersionDialog({ open, agent, base, onClose, onDone }: {
           </div>
           <div className="rounded-lg border border-border/60 bg-zinc-100/80 p-2.5">
             <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-              <MessagesSquare className="h-3.5 w-3.5" />Retours sur la version {base.version} ({aPrendre.length})
+              <MessagesSquare className="h-3.5 w-3.5" />Retours sur la version {base.version} ({aPrendre.length + notesDev.length})
             </p>
-            {aPrendre.length === 0 ? (
+            {aPrendre.length + notesDev.length === 0 ? (
               <p className="text-xs text-muted-foreground italic mt-1">Aucun retour à prendre en compte.</p>
             ) : (
               <ul className="mt-1.5 max-h-36 overflow-y-auto space-y-1 scrollbar-transparent">
+                {notesDev.map((n, i) => (
+                  <li key={`dev-${n.runId}-${i}`} className="flex items-start gap-1.5 text-xs">
+                    <NotebookPen className="h-3.5 w-3.5 flex-shrink-0 mt-px text-accent" />
+                    <span className="min-w-0 whitespace-pre-wrap">{n.commentaire}</span>
+                  </li>
+                ))}
                 {aPrendre.map((r, i) => {
                   const m = NOTE_META[r.note]
                   const Icon = m.icon
@@ -1454,12 +1495,16 @@ function NoteButtons({ value, onChange, disabled, size = 'md', titles }: {
 }
 
 /** A score, read-only: pill, comment, who and when. */
-function EvaluationLue({ evaluation, className }: { evaluation: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'> & { retrait?: string | null }; className?: string }) {
+function EvaluationLue({ evaluation, className, sansAuteur }: {
+  evaluation: Pick<Evaluation, 'note' | 'commentaire' | 'par' | 'le'> & { retrait?: string | null }; className?: string
+  /** The author is already named above (the card's title). */
+  sansAuteur?: boolean
+}) {
   return (
     <div className={cn('space-y-0.5', className)}>
       <NotePill evaluation={evaluation as Evaluation} />
       {evaluation.commentaire && <p className="text-sm whitespace-pre-wrap">{evaluation.commentaire}</p>}
-      <p className="text-[11px] text-muted-foreground">{evaluation.par.nom}, {fmtDateHeure(evaluation.le)}</p>
+      <p className="text-[11px] text-muted-foreground">{sansAuteur ? '' : `${evaluation.par.nom}, `}{fmtDateHeure(evaluation.le)}</p>
       {evaluation.retrait && <p className="text-[11px] text-muted-foreground">{evaluation.retrait}</p>}
     </div>
   )
@@ -1579,7 +1624,8 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const [page, setPage] = useState(0)
   const [showOcr, setShowOcr] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => { setPage(0); setShowOcr(false); setError(null) }, [runId])
+  const [ajoutNote, setAjoutNote] = useState(false)
+  useEffect(() => { setPage(0); setShowOcr(false); setError(null); setAjoutNote(false) }, [runId])
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['agent-ia-run', slug, runId],
@@ -1663,7 +1709,6 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                 <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1">
                   <KV label="Ennoblisseur" value={`${PROFIL_NOM[profil ?? ''] ?? '—'}${miseADispo ? ' — stock fini à disposition' : ''}`} />
                   <KV label="Commande" value={e.numero_commande || '—'} mono />
-                  <KV label="Ligne de commande" value={res?.ligneId ? `#${res.ligneId}${e.ligne ? ` (imprimé : ligne ${e.ligne})` : ''}` : '—'} mono />
                   <KV label="Lot" value={res?.lot || '—'} mono />
                   {profil && profil !== 'matel' && <KV label="Poids" value="non repris (Malterre pèse les rouleaux)" />}
                   <KV label="Totaux imprimés" value={`${e.nombre_pieces ?? '—'} pc · ${e.poids_total != null ? fmtNum(e.poids_total, 2) : '—'} kg · ${e.metrage_total != null ? fmtNum(e.metrage_total, 2) : '—'} m`} mono />
@@ -1730,17 +1775,29 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                 : <div className="h-full flex flex-col items-center justify-center text-muted-foreground"><FileText className="h-12 w-12 opacity-30" /><p className="text-sm">Aucun PDF</p></div>}
               </div>
               <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1.5">
-                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><TricobotMascot className="h-4 w-4" />Retour Tricobot</p>
+                {/* The score is what a person said about Tricobot's reading: name them. */}
+                <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                  <User className="h-3.5 w-3.5" />{run.evaluation ? `Retour de ${run.evaluation.par.nom}` : 'Retour utilisateur'}
+                </p>
                 {run.evaluation
-                  ? <EvaluationLue evaluation={run.evaluation} />
+                  ? <EvaluationLue evaluation={run.evaluation} sansAuteur />
                   : <p className="text-xs text-muted-foreground italic">Pas encore de retour : il est donné à la réception des rouleaux (Sous-traitants › Commandes).</p>}
               </div>
-              {canPilot && run.fichiers.length > 0 && (
-                <div className="flex justify-end">
-                  <Button variant="outline" size="sm" disabled={retraiterMut.isPending} onClick={() => retraiterMut.mutate()}
-                    title="Relancer la lecture avec la version active (enregistre si l’agent est en service)">
-                    {retraiterMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1.5" />}Retraiter
-                  </Button>
+              <NotesDevCard slug={slug} run={run} canPilot={canPilot} ajout={ajoutNote} onFermerAjout={() => setAjoutNote(false)} />
+              {canPilot && (
+                <div className="flex justify-end gap-2">
+                  {!ajoutNote && (
+                    <Button variant="outline" size="sm" onClick={() => setAjoutNote(true)}
+                      title="Note de développement sur cette exécution, relue avant d’écrire la version suivante de l’agent">
+                      <NotebookPen className="h-3.5 w-3.5 mr-1.5" />Note pour la v{run.version + 1}
+                    </Button>
+                  )}
+                  {run.fichiers.length > 0 && (
+                    <Button variant="outline" size="sm" disabled={retraiterMut.isPending} onClick={() => retraiterMut.mutate()}
+                      title="Relancer la lecture avec la version active (enregistre si l’agent est en service)">
+                      {retraiterMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1.5" />}Retraiter
+                    </Button>
+                  )}
                 </div>
               )}
               {error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{error}</div>}
@@ -1749,6 +1806,69 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The pilots' notes on one run, for the next version of the agent: listed
+ *  here and in the version's « Retours ». Never a score. */
+function NotesDevCard({ slug, run, canPilot, ajout, onFermerAjout }: {
+  slug: string; run: RunComplet; canPilot: boolean; ajout: boolean; onFermerAjout: () => void
+}) {
+  const base = useBaseApi()
+  const queryClient = useQueryClient()
+  const [texte, setTexte] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const notes = run.notesDev ?? []
+  const apres = (r: RunComplet) => {
+    queryClient.setQueryData(['agent-ia-run', slug, run.id], r)
+    queryClient.invalidateQueries({ queryKey: ['agent-ia-retours', slug] })
+  }
+  const ajouterMut = useMutation({
+    mutationFn: () => callApi<RunComplet>(`${base}/${slug}/runs/${run.id}/notes-dev`, { method: 'POST', body: JSON.stringify({ commentaire: texte }) }),
+    onSuccess: (r) => { apres(r); setTexte(''); setError(null); onFermerAjout() },
+    onError: (e: Error) => setError(e.message),
+  })
+  const supprimerMut = useMutation({
+    mutationFn: (le: string) => callApi<RunComplet>(`${base}/${slug}/runs/${run.id}/notes-dev/${encodeURIComponent(le)}`, { method: 'DELETE' }),
+    onSuccess: apres,
+    onError: (e: Error) => setError(e.message),
+  })
+  if (notes.length === 0 && !ajout) return null
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1.5">
+      <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><NotebookPen className="h-3.5 w-3.5" />Notes pour la prochaine version</p>
+      {notes.map((n) => (
+        <div key={n.le} className="group flex items-start gap-1.5">
+          <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-1" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm whitespace-pre-wrap">{n.commentaire}</p>
+            <p className="text-[11px] text-muted-foreground">{n.par.nom}, {fmtDateHeure(n.le)}</p>
+          </div>
+          {canPilot && (
+            <Button variant="ghost" size="icon" title="Supprimer la note" disabled={supprimerMut.isPending}
+              className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+              onClick={() => supprimerMut.mutate(n.le)}>
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          )}
+        </div>
+      ))}
+      {ajout && (
+        <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-3 space-y-2">
+          <textarea value={texte} onChange={(e) => setTexte(e.target.value)} rows={3} maxLength={2000} autoFocus
+            placeholder="Ce que la prochaine version doit faire autrement…"
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => { setTexte(''); setError(null); onFermerAjout() }}>Annuler</Button>
+            <Button size="sm" disabled={!texte.trim() || ajouterMut.isPending} onClick={() => ajouterMut.mutate()}>
+              {ajouterMut.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Enregistrer
+            </Button>
+          </div>
+        </div>
+      )}
+      {error && <div className="flex items-center gap-2 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5" />{error}</div>}
+    </div>
   )
 }
 
