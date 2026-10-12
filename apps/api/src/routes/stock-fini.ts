@@ -1092,10 +1092,38 @@ async function resolveClientNames(lccIds: number[]): Promise<Map<number, string>
 }
 
 // Build the surteinture trace observation for a finished roll being sent back
-// to dyeing: "<lot> - <ref> - <coloris> a surteindre". Built server-side so the
-// modal preview and the actual write can never drift.
-function surteintObservation(lot: string, ref: string, coloris: string): string {
-  return [lot, ref, coloris].map((s) => (s ?? '').toString().trim()).filter(Boolean).join(' - ') + ' a surteindre'
+// to dyeing: "<lot> - <ref> - <coloris> - cde <numero> a surteindre". Built
+// server-side so the modal preview and the actual write can never drift. The
+// order number is the only link left to the client order once the écru is
+// released (LIVA #1281).
+function surteintObservation(lot: string, ref: string, coloris: string, commande = ''): string {
+  const cde = (commande ?? '').toString().trim()
+  return [lot, ref, coloris, cde ? `cde ${cde}` : '']
+    .map((s) => (s ?? '').toString().trim())
+    .filter(Boolean)
+    .join(' - ') + ' a surteindre'
+}
+
+// Client order numero (as shown on screen) per ligne_commande_client id.
+async function resolveCommandeNumeros(lccIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  const ids = Array.from(new Set(lccIds.filter((x) => Number.isInteger(x) && x > 0)))
+  if (ids.length === 0) return out
+  const lccRows = await query<{ IDligne_commande_client: number; IDcommande_client: number }>(
+    `SELECT IDligne_commande_client, IDcommande_client FROM ligne_commande_client WHERE IDligne_commande_client IN (${ids.join(',')})`,
+  )
+  const ccIds = Array.from(new Set(lccRows.map((r) => Number(r.IDcommande_client) || 0))).filter((x) => x > 0)
+  if (ccIds.length === 0) return out
+  const ccRows = await query<{ IDcommande_client: number; numero: unknown }>(
+    `SELECT IDcommande_client, numero FROM commande_client WHERE IDcommande_client IN (${ccIds.join(',')})`,
+  )
+  const numeroByCc = new Map<number, string>()
+  for (const r of ccRows) numeroByCc.set(Number(r.IDcommande_client), String(r.numero ?? '').trim())
+  for (const r of lccRows) {
+    const numero = numeroByCc.get(Number(r.IDcommande_client) || 0) ?? ''
+    if (numero && numero !== '0') out.set(Number(r.IDligne_commande_client), numero)
+  }
+  return out
 }
 
 interface SurteintFiniRow {
@@ -1207,6 +1235,7 @@ stockFiniRouter.post('/fini/surteindre/preview', async (req: Request, res: Respo
       ...Array.from(ecruById.values()).map((r) => Number(r.IDligne_commande_client) || 0),
     ]
     const clientByLcc = await resolveClientNames(allLcc)
+    const numeroByLcc = await resolveCommandeNumeros(allLcc)
 
     const rows = finiRows.map((f) => {
       const ecru = f.IDstock_ecru > 0 ? ecruById.get(f.IDstock_ecru) : undefined
@@ -1232,7 +1261,12 @@ stockFiniRouter.post('/fini/surteindre/preview', async (req: Request, res: Respo
               client: clientByLcc.get(Number(ecru.IDligne_commande_client) || 0) ?? '',
             }
           : null,
-        computedObservation: surteintObservation(f.lot, f.ref_fini, f.coloris_reference),
+        computedObservation: surteintObservation(
+          f.lot,
+          f.ref_fini,
+          f.coloris_reference,
+          numeroByLcc.get(f.IDligne_commande_client) ?? numeroByLcc.get(Number(ecru?.IDligne_commande_client) || 0) ?? '',
+        ),
       }
     })
 
@@ -1247,10 +1281,13 @@ stockFiniRouter.post('/fini/surteindre/preview', async (req: Request, res: Respo
 //   Body: { ids: number[] }.
 //   Gated by surteindre_stock_fini. For each selected roll that has a linked
 //   écru and is not shipped: append the trace observation to its tombé-de-métier
-//   (stock_ecru) row, then DELETE the finished roll. The écru thus returns to
-//   available stock for a fresh dyeing cycle, keeping a record of where it came
-//   from. The écru's coloris and magasin are left untouched. Accented text via
-//   sqlText().
+//   (stock_ecru) row, release it from its dyer line AND its client reservation,
+//   then DELETE the finished roll. The écru thus returns to « Disponible » like a
+//   new piece, ready for a fresh dyeing cycle; the trace (lot, ref, coloris,
+//   client order) is the only record of where it came from (LIVA #1281: left on
+//   the dyer line it was hidden from Tombé Métier › Stock; left reserved, a dyer
+//   line of another colour would refuse it, #1261). The écru's coloris and
+//   magasin are left untouched. Accented text via sqlText().
 stockFiniRouter.post('/fini/surteindre', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) {
@@ -1286,16 +1323,24 @@ stockFiniRouter.post('/fini/surteindre', async (req: Request, res: Response) => 
       return comps.length > 0 ? comps : f.IDstock_ecru > 0 ? [f.IDstock_ecru] : []
     }
 
-    // Existing écru observations (to append, not overwrite).
+    // Existing écru observations (to append, not overwrite) + their client line,
+    // the fallback for the order number when the roll carries none.
     const ecruIds = Array.from(new Set(finiRows.flatMap((r) => ecruIdsOf(r))))
     const ecruObs = new Map<number, string>()
+    const ecruLcc = new Map<number, number>()
     if (ecruIds.length > 0) {
-      const ecruRows = await query<{ IDstock_ecru: number; observations: string | null }>(
-        `SELECT IDstock_ecru, observations FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`,
+      const ecruRows = await query<{ IDstock_ecru: number; observations: string | null; IDligne_commande_client: number }>(
+        `SELECT IDstock_ecru, observations, IDligne_commande_client FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`,
       )
-      for (const r of (await fixEncoding(ecruRows, 'stock_ecru', 'IDstock_ecru', ['observations'])) as any[])
+      for (const r of (await fixEncoding(ecruRows, 'stock_ecru', 'IDstock_ecru', ['observations'])) as any[]) {
         ecruObs.set(Number(r.IDstock_ecru), (r.observations ?? '').toString())
+        ecruLcc.set(Number(r.IDstock_ecru), Number(r.IDligne_commande_client) || 0)
+      }
     }
+    const numeroByLcc = await resolveCommandeNumeros([
+      ...finiRows.map((r) => r.IDligne_commande_client),
+      ...Array.from(ecruLcc.values()),
+    ])
 
     let deleted = 0
     let updated = 0
@@ -1306,11 +1351,18 @@ stockFiniRouter.post('/fini/surteindre', async (req: Request, res: Response) => 
         skipped++
         continue
       }
-      const trace = surteintObservation(f.lot, f.ref_fini, f.coloris_reference)
-      for (const ecruId of ecruIdsOf(f)) {
+      const comps = ecruIdsOf(f)
+      const numero =
+        numeroByLcc.get(f.IDligne_commande_client) ??
+        comps.map((id) => numeroByLcc.get(ecruLcc.get(id) ?? 0)).find(Boolean) ??
+        ''
+      const trace = surteintObservation(f.lot, f.ref_fini, f.coloris_reference, numero)
+      for (const ecruId of comps) {
         const existing = (ecruObs.get(ecruId) ?? '').trim()
         const obs = existing ? `${existing}\n${trace}` : trace
-        await query(`UPDATE stock_ecru SET observations = ${sqlText(obs)} WHERE IDstock_ecru = ${ecruId}`)
+        await query(
+          `UPDATE stock_ecru SET observations = ${sqlText(obs)}, IDref_commande_affectation = 0, IDligne_commande_client = 0 WHERE IDstock_ecru = ${ecruId}`,
+        )
         updated++
       }
       await query(`DELETE FROM stock_fini WHERE IDstock_fini = ${f.IDstock_fini}`)

@@ -970,7 +970,8 @@ export function FinisStock() {
         colorisLabel={selectedRows[0]?.coloris_reference ?? null}
         onClose={() => setSurteindreOpen(false)}
         onSuccess={() => {
-          onMutationSuccess()
+          // The écru pieces come back to Tombé Métier › Stock (#1281).
+          invalidateStockCaches(queryClient)
           setSurteindreOpen(false)
           exitEditMode()
         }}
