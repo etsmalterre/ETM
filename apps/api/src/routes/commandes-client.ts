@@ -54,7 +54,7 @@ import { resolveSstAdresses } from '../lib/sst-adresses.js'
 import { createKnitOrder, TRICOTAGE_MALTERRE_ID } from './commandes-sous-traitant.js'
 import { computeDateEcheance, loadEcheanceRule } from './factures.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
-import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
+import { fetchDefectsByEcru, defautSummary, type DefautQualite } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow } from '../lib/ennoblissement-supply.js'
@@ -3170,6 +3170,9 @@ commandesClientRouter.delete('/:id/lignes/:ligneId/supply/ennoblissement/:sstLin
 // ════════════════════════════════════════════════════════
 
 interface AvailableEcruRoll extends RollLite {
+  /** Visitage defects of the écru piece (defaut_qualite) — the red hover
+   *  icon of the « Ennoblir » create-order dialog (#1282). */
+  defects: DefautQualite[]
   reserved_elsewhere: boolean
   /** Already reserved to THIS client line (counted in affecte_total) — the
    *  create-order gauge must not add it a second time. */
@@ -3266,6 +3269,7 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
   const fixed = await fixEncoding(kept, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   const magNames = await resolveMagasinNames(fixed.map((x: any) => Number(x.IDmagasin)))
   const colNames = await resolveEcruColoris(fixed.map((x: any) => Number(x.IDcolori_ecru)))
+  const defectsByEcru = await fetchDefectsByEcru(fixed.map((x: any) => Number(x.IDstock_ecru) || 0))
   base.rolls = fixed.map((x: any): AvailableEcruRoll => ({
     id: Number(x.IDstock_ecru),
     numero: x.numero ?? null,
@@ -3277,6 +3281,7 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
     second_choix: Number(x.second_choix) || 0,
     observations: x.observations ?? null,
     observation_sst: null,
+    defects: defectsByEcru.get(Number(x.IDstock_ecru)) ?? [],
     etat_label: null,
     expedie: false,
     expediable: true,

@@ -63,6 +63,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { Tooltip } from '@/components/ui/tooltip'
+import type { RollNoteDefect } from '@/components/shared/RollNotes'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
@@ -4738,6 +4739,8 @@ function TricotageAffectationDialog({
 // button that opens a create-order dialog scoped to that location's stock.
 
 interface AvailableEcruRoll extends RollLite {
+  /** Visitage defects of the écru piece (defaut_qualite) — red hover icon (#1282). */
+  defects: RollNoteDefect[]
   reserved_elsewhere: boolean
   /** Already reserved to this client line — counted in affecte_total. */
   reserved_to_line: boolean
@@ -5246,6 +5249,18 @@ function SelectableEcruRoll({
   const poids = Number(roll.poids) || 0
   const LinkIcon = linked ? Link2 : Unlink
   const linkTitle = linked ? 'Réservé à la commande client — cliquer pour teindre pour le stock' : 'Teint pour le stock — cliquer pour réserver à la commande client'
+  const obsText = roll.observations?.trim() ?? ''
+  const isSecondChoix = Number(roll.second_choix) > 0
+  // Same wording as RollNotes: the precise description, else type + size.
+  const defectLines = (roll.defects ?? [])
+    .map((d) => {
+      const desc = (d.description ?? '').trim()
+      const size = Number(d.taille_cm) || 0
+      const text = desc || [(d.type_defaut ?? '').trim(), size > 0 ? `${size} cm` : ''].filter(Boolean).join(' ')
+      return { id: d.IDdefaut_qualite, text }
+    })
+    .filter((d) => d.text.length > 0)
+  const hasDefect = isSecondChoix || defectLines.length > 0
   return (
     <button
       type="button"
@@ -5274,6 +5289,50 @@ function SelectableEcruRoll({
           {roll.coloris_reference && <span className="truncate">· {roll.coloris_reference}</span>}
         </div>
       </div>
+      {/* Notes as hover icons, same as the affectation drawer's RollRow (#1282):
+          red = 2e choix + visitage defects, blue = observations. Spans, not
+          buttons — the whole card is already a button. */}
+      {hasDefect && (
+        <Tooltip
+          side="left"
+          content={
+            <div className="w-max max-w-[320px] space-y-1.5 py-1">
+              <p className="text-xs font-semibold uppercase tracking-wide text-red-700 whitespace-nowrap">Défauts</p>
+              {isSecondChoix && (
+                <p className="text-xs font-bold uppercase tracking-wide text-red-700">2e choix</p>
+              )}
+              {defectLines.map((d) => (
+                <p key={d.id} className="text-sm font-normal">{d.text}</p>
+              ))}
+            </div>
+          }
+        >
+          <span
+            className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 border border-red-200 bg-red-50"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
+          </span>
+        </Tooltip>
+      )}
+      {obsText.length > 0 && (
+        <Tooltip
+          side="left"
+          content={
+            <div className="w-max max-w-[320px] space-y-1.5 py-1">
+              <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 whitespace-nowrap">Observations</p>
+              <p className="text-sm font-normal whitespace-pre-line">{obsText}</p>
+            </div>
+          }
+        >
+          <span
+            className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 border border-blue-200 bg-blue-50"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MessageSquare className="h-3.5 w-3.5 text-blue-600" />
+          </span>
+        </Tooltip>
+      )}
       {selected && canLink && (
         <span
           role="button"
