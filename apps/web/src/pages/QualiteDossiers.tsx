@@ -1505,7 +1505,7 @@ function DossierSidebar({
           {activeTab === 'journal' && (
             <JournalTab detail={detail} isEditing={isEditing} edit={edit} onField={onField} />
           )}
-          {activeTab === 'documents' && <DocumentsTab dossierId={detail.IDdossier_qualite} />}
+          {activeTab === 'documents' && <DocumentsTab dossierId={detail.IDdossier_qualite} isEditing={isEditing} />}
           {activeTab === 'fnc' && (
             <FncTab
               detail={detail}
@@ -1630,13 +1630,89 @@ function JournalTab({
 
 // ── Documents tab ────────────────────────────────────────
 
-function DocumentsTab({ dossierId }: { dossierId: number }) {
+// Documents are added / deleted in edit mode and persist immediately (no
+// Enregistrer step): the file is the change, there is nothing to snapshot.
+function DocumentsTab({ dossierId, isEditing }: { dossierId: number; isEditing: boolean }) {
+  const queryClient = useQueryClient()
   const [viewDoc, setViewDoc] = useState<DocQualite | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<DocQualite | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const queryKey = ['dossier-qualite-docs', dossierId]
   const { data, isLoading } = useQuery({
-    queryKey: ['dossier-qualite-docs', dossierId],
+    queryKey,
     queryFn: () =>
       apiFetch<{ documents: DocQualite[]; degraded: boolean }>(`/dossiers-qualite/${dossierId}/documents`),
   })
+
+  // Raw fetch + FormData: apiFetch forces a JSON content type (mps_designer §22).
+  const uploadMut = useMutation({
+    mutationFn: async (files: File[]) => {
+      for (const file of files) {
+        const form = new FormData()
+        form.append('fichier', file)
+        const res = await fetch(`${API_URL}/dossiers-qualite/${dossierId}/documents`, {
+          method: 'POST',
+          body: form,
+          credentials: 'include',
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => null)
+          throw new Error(body?.message ?? `« ${file.name} » n'a pas pu être ajouté (erreur ${res.status}).`)
+        }
+      }
+    },
+    onMutate: () => setUploadError(null),
+    onError: (err: Error) => setUploadError(err.message),
+    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: (docId: number) =>
+      apiFetch(`/dossiers-qualite/${dossierId}/documents/${docId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      setDeleteTarget(null)
+      queryClient.invalidateQueries({ queryKey })
+    },
+  })
+
+  // Hooks above; early returns below (React #310).
+  const addButton = (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".pdf,image/*"
+        className="hidden"
+        onClick={(e) => { (e.target as HTMLInputElement).value = '' }}
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? [])
+          if (files.length > 0) uploadMut.mutate(files)
+        }}
+      />
+      <Button
+        variant="ghost"
+        size="sm"
+        className="w-full text-muted-foreground hover:text-foreground"
+        disabled={uploadMut.isPending}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        {uploadMut.isPending ? (
+          <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+        ) : (
+          <Plus className="h-4 w-4 mr-1.5" />
+        )}
+        Ajouter un document
+      </Button>
+      {uploadError && (
+        <div className="flex items-start gap-1.5 text-xs text-destructive px-1">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+          <span>{uploadError}</span>
+        </div>
+      )}
+    </>
+  )
 
   if (isLoading) {
     return (
@@ -1661,10 +1737,13 @@ function DocumentsTab({ dossierId }: { dossierId: number }) {
   const docs = data?.documents ?? []
   if (docs.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-        <FileText className="h-10 w-10 opacity-30 mb-3" />
-        <p className="text-sm">Aucun document</p>
-      </div>
+      <>
+        <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+          <FileText className="h-10 w-10 opacity-30 mb-3" />
+          <p className="text-sm">Aucun document</p>
+        </div>
+        {isEditing && addButton}
+      </>
     )
   }
 
@@ -1674,13 +1753,37 @@ function DocumentsTab({ dossierId }: { dossierId: number }) {
         <div
           key={d.IDdoc_qualite}
           onClick={() => setViewDoc(d)}
-          className="group p-3 rounded-lg border bg-card shadow-sm cursor-pointer hover:border-accent/40 transition-colors flex items-center gap-2"
+          className={cn(
+            'group p-3 rounded-lg border bg-card shadow-sm cursor-pointer hover:border-accent/40 transition-colors flex items-center gap-2',
+            isEditing && editSectionClass,
+          )}
         >
           <FileText className="h-4 w-4 text-accent flex-shrink-0" />
-          <span className="text-sm truncate">{d.nom || `Document ${d.IDdoc_qualite}`}</span>
+          <span className="text-sm truncate flex-1 min-w-0">{d.nom || `Document ${d.IDdoc_qualite}`}</span>
+          {isEditing && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+              title="Supprimer le document"
+              onClick={(e) => { e.stopPropagation(); setDeleteTarget(d) }}
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          )}
         </div>
       ))}
+      {isEditing && addButton}
       <DocViewDialog dossierId={dossierId} doc={viewDoc} onClose={() => setViewDoc(null)} />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Supprimer le document"
+        description={deleteTarget ? `« ${deleteTarget.nom || `Document ${deleteTarget.IDdoc_qualite}`} » sera retiré du dossier. Cette action est irréversible.` : undefined}
+        isPending={deleteMut.isPending}
+        error={deleteMut.error ? "Le document n'a pas pu être supprimé." : null}
+        onCancel={() => { setDeleteTarget(null); deleteMut.reset() }}
+        onConfirm={() => { if (deleteTarget) deleteMut.mutate(deleteTarget.IDdoc_qualite) }}
+      />
     </>
   )
 }

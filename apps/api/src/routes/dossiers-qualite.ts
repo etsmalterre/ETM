@@ -31,7 +31,11 @@
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
+import multer from 'multer'
 import { query, queryRaw, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
+import { mpsPg } from '../lib/mps-pg.js'
+import { userHasPermission } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
 import { esc, n, IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { readCol } from '../lib/accented-keys.js'
 import { renderFncPdfBuffer, type FncPdfData } from '../lib/pdf/FncPdf.js'
@@ -726,6 +730,30 @@ dossiersQualiteRouter.delete(
 // therefore fully functional on Windows ODBC and PostgreSQL (canNameAccented())
 // and reports `degraded` on the Linux bridge instead of pretending the dossier
 // has no documents.
+//
+// Adding / deleting a document (LIVA #1277) is post-cutover code: native
+// PostgreSQL through mpsPg (unaccented names, identity PK, bytea parameter),
+// gated by `responsable_qualite` like the screen's Modifier button. The TRM
+// retour client linked to the dossier reads the same rows.
+
+const docUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } })
+
+async function ensureResponsable(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return false
+  }
+  if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'responsable_qualite'))) {
+    res.status(403).json({ error: 'permission denied: responsable_qualite' })
+    return false
+  }
+  return true
+}
+
+/** multer decodes the multipart filename as Latin-1; browsers send UTF-8. */
+function uploadedName(file: Express.Multer.File): string {
+  return Buffer.from(file.originalname ?? '', 'latin1').toString('utf8').trim()
+}
 
 interface DocQualiteRow {
   IDdoc_qualite: number
@@ -793,6 +821,61 @@ dossiersQualiteRouter.get('/:id/documents/:docId/fichier', async (req: Request, 
     res.end(buf)
   } catch (err) {
     console.error('Error serving doc_qualite file:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /:id/documents — multipart (fichier, optional nom). The name defaults
+// to the uploaded file's name.
+dossiersQualiteRouter.post('/:id/documents', async (req: Request, res: Response) => {
+  try {
+    if (!(await ensureResponsable(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+    // multer runs after the guard so an anonymous caller never streams a file in.
+    try {
+      await new Promise<void>((resolve, reject) =>
+        docUpload.single('fichier')(req, res, (err: unknown) => (err ? reject(err) : resolve())),
+      )
+    } catch (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({ error: 'fichier_trop_gros', message: 'Le fichier dépasse 25 Mo.' })
+        return
+      }
+      throw err
+    }
+    if (!req.file || req.file.buffer.length === 0) { res.status(400).json({ error: 'Fichier manquant' }); return }
+
+    const sql = mpsPg()
+    const [dossier] = await sql`SELECT iddossier_qualite FROM dossier_qualite WHERE iddossier_qualite = ${id}`
+    if (!dossier) { res.status(404).json({ error: 'Dossier not found' }); return }
+
+    const nom = String(req.body?.nom ?? '').trim() || uploadedName(req.file) || 'Document'
+    const [row] = await sql<{ iddoc_qualite: number }[]>`
+      INSERT INTO doc_qualite (nom, fichier, iddossier_qualite)
+      VALUES (${nom}, ${req.file.buffer}, ${id})
+      RETURNING iddoc_qualite`
+    res.status(201).json({ IDdoc_qualite: row.iddoc_qualite, nom })
+  } catch (err) {
+    console.error('Error creating doc_qualite:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+dossiersQualiteRouter.delete('/:id/documents/:docId', async (req: Request, res: Response) => {
+  try {
+    if (!(await ensureResponsable(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    const docId = parseInt(req.params.docId, 10)
+    if (isNaN(id) || isNaN(docId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const deleted = await mpsPg()`
+      DELETE FROM doc_qualite WHERE iddoc_qualite = ${docId} AND iddossier_qualite = ${id}
+      RETURNING iddoc_qualite`
+    if (deleted.length === 0) { res.status(404).json({ error: 'Document not found' }); return }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error deleting doc_qualite:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
