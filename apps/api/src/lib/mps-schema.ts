@@ -817,6 +817,38 @@ ${grantApi('SELECT, INSERT', 'commande_fil_cloture')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE commande_fil_cloture_id_seq')}
 `,
   },
+  {
+    // Fils › Stock — which yarn lots ETM sees (LIVA #1293, Isabelle, decision
+    // Vincent 2026-10-13). stock_fil holds every lot stored at TRM: ETM's own
+    // (IDclient 1 « Ets Malterre ») and its clients' consigned yarn. Most of the
+    // latter is none of ETM's business (Sofileta, Hermès…), but a few clients
+    // consign yarn that TRM knits on ETM orders — Sigvaris' PA66 for 180102,
+    // all of La Gentle Factory's, Gant Maille's thermosoie — and ETM must see
+    // those to affect them on the sst line (#1159). `gere_par_etm` is decided
+    // per lot, at entry, from the client's list below; idref_fil 0 = every yarn
+    // of that client. lib/fil-gere-etm.ts reads both. Backfill: the three
+    // clients measured on 2026-10-13 (every one of their lots knitted so far
+    // went into an ETM order), guarded so a database without them runs too.
+    name: '0022_stock_fil_gere_par_etm',
+    sql: `
+ALTER TABLE stock_fil ADD COLUMN gere_par_etm smallint NOT NULL DEFAULT 0;
+CREATE TABLE fil_gere_par_etm (
+  idclient bigint NOT NULL,
+  idref_fil bigint NOT NULL DEFAULT 0,
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  cree_par text,
+  PRIMARY KEY (idclient, idref_fil)
+);
+${grantApi('SELECT, INSERT, DELETE', 'fil_gere_par_etm')}
+INSERT INTO fil_gere_par_etm (idclient, idref_fil, cree_par)
+SELECT v.idclient, v.idref_fil, 'Reprise #1293'
+FROM (VALUES (8, 0), (524, 64), (1023, 68)) AS v (idclient, idref_fil)
+WHERE EXISTS (SELECT 1 FROM client c WHERE c.idclient = v.idclient AND c.idsociete = 2);
+UPDATE stock_fil sf SET gere_par_etm = 1
+WHERE EXISTS (SELECT 1 FROM fil_gere_par_etm g
+              WHERE g.idclient = sf.idclient AND g.idref_fil IN (0, sf.idref_fil));
+`,
+  },
 ]
 
 export interface MigrationStatus {

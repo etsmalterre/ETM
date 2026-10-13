@@ -6,6 +6,7 @@ import { pickVal, stripKeys } from './stock.js'
 import { aggregateStockFilRows, resteALivrer } from '../lib/references-fil-agg.js'
 import { consommationRefFil, MARGE_SEMAINES } from '../lib/fil-consommation.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { filEtmSql } from '../lib/fil-gere-etm.js'
 import {
   REF_FIL_DOC_TYPES,
   REF_FIL_DOC_TYPES_SQL,
@@ -340,8 +341,8 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
     //    lib/references-fil-agg.test.ts pins them.
     const stockRows = await query<Record<string, unknown>>(
       IS_WINDOWS
-        ? `SELECT IDstock_fil, IDcolori_fil, IDref_fil_commande, stock, stock_initial, terminé AS termine FROM stock_fil WHERE IDref_fil = ${id}`
-        : `SELECT * FROM stock_fil WHERE IDref_fil = ${id}`,
+        ? `SELECT IDstock_fil, IDcolori_fil, IDref_fil_commande, stock, stock_initial, terminé AS termine FROM stock_fil WHERE IDref_fil = ${id} AND ${filEtmSql()}`
+        : `SELECT * FROM stock_fil WHERE IDref_fil = ${id} AND ${filEtmSql()}`,
     )
     const { totalKg: stockTotalKg, lots: stockLots, perVariante: stockPerVariante } =
       aggregateStockFilRows(stockRows)

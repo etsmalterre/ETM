@@ -89,6 +89,7 @@ import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
+import { filEtmSql } from '../lib/fil-gere-etm.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -5882,7 +5883,7 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
       `SELECT sf.IDstock_fil, sf.IDref_fil, sf.IDcolori_fil, sf.IDfournisseur, sf.IDMagasin,
               sf.IDref_fil_commande, sf.stock, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree
        FROM stock_fil sf
-       WHERE (${pairClause}) AND sf.stock > 0
+       WHERE (${pairClause}) AND sf.stock > 0 AND ${filEtmSql('sf')}
        ORDER BY sf.date_entree DESC, sf.IDstock_fil DESC`,
     )
     const stockFixed = await fixEncoding(stockRows, 'stock_fil', 'IDstock_fil', ['lot', 'lot_frs', 'emplacement'])

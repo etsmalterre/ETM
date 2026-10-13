@@ -40,6 +40,7 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { repairAliased } from './stock-fini.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
+import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
 import { BonTransfertPdf, type BonTransfertPdfData, type BtArticle, type BtPiece, type BtFilRow } from '../lib/pdf/BonTransfertPdf.js'
 import { sendMail } from '../lib/gmail.js'
@@ -1050,7 +1051,7 @@ export async function loadAvailableFil(sourceId: number, crit: SearchCriteria): 
       `LEFT JOIN ref_fil rf ON sf.IDref_fil = rf.IDref_fil ` +
       `LEFT JOIN colori_fil cf ON sf.IDcolori_fil = cf.IDcolori_fil ` +
       `LEFT JOIN fournisseur f ON sf.IDfournisseur = f.IDfournisseur ` +
-      `WHERE sf.IDMagasin = ${sourceId}${like} ORDER BY sf.IDstock_fil DESC`,
+      `WHERE sf.IDMagasin = ${sourceId} AND ${filEtmSql('sf')}${like} ORDER BY sf.IDstock_fil DESC`,
   )
   let fixed = await fixEncoding(raw, 'stock_fil', 'IDstock_fil', ['lot', 'commentaire'])
   fixed = await repairAliased(fixed, 'ref_fil', 'IDref_fil', { ref_fil: 'reference' })

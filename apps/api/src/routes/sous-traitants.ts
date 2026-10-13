@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { consumedEcruIds } from '../lib/fini-sources.js'
+import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { etatEcruChezSst, type SstLineInfo } from '../lib/ecru-etat-sst.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 
@@ -304,7 +305,7 @@ sousTraitantsRouter.get('/:id/yarn-lots', async (req: Request, res: Response) =>
     }>(
       `SELECT IDstock_fil, lot, lot_frs, emplacement, stock, date_entree, IDref_fil, IDcolori_fil, IDfournisseur
        FROM stock_fil
-       WHERE IDMagasin = ${id} AND stock > 0
+       WHERE IDMagasin = ${id} AND stock > 0 AND ${filEtmSql()}
        ORDER BY date_entree DESC, IDstock_fil DESC`,
     )
     const lotsFixed = await fixEncoding(lotRows, 'stock_fil', 'IDstock_fil', ['lot', 'lot_frs', 'emplacement'])

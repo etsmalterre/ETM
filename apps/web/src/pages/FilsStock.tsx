@@ -23,6 +23,7 @@ import {
   Package,
   MessageSquare,
   Eye,
+  UserRound,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -71,6 +72,9 @@ interface StockRow {
   colori_reference: string | null
   fournisseur_nom: string | null
   magasin_nom: string | null
+  /** Consigned yarn of a TRM client that ETM manages (LIVA #1293) — its owner. */
+  fil_confie: number | null
+  client_nom: string | null
 }
 
 interface StockDetail extends StockRow {
@@ -206,6 +210,7 @@ function rowHaystacks(r: StockRow): string[] {
     r.emplacement,
     r.fournisseur_nom,
     r.magasin_nom,
+    r.client_nom,
     r.commentaire,
   ]
     .filter((f): f is string => !!f)
@@ -415,6 +420,7 @@ export function FilsStock() {
                         </td>
                         <td className="px-3 py-2 text-right">
                           <div className="flex items-center justify-end gap-1">
+                            {!!r.fil_confie && <FilConfieIcon client={r.client_nom} />}
                             {!!r.bio && <Leaf className="h-3.5 w-3.5 text-green-600" />}
                             {!!r.recycle && <Recycle className="h-3.5 w-3.5 text-blue-600" />}
                             {!!r.termine && <Badge variant="outline" className="text-[10px] py-0">T</Badge>}
@@ -533,6 +539,7 @@ function StockLotCard({ row, isSelected, onClick }: { row: StockRow; isSelected:
       <div className="flex items-center justify-between gap-2">
         <p className="text-sm font-medium truncate">{row.ref_fil ?? '—'}</p>
         <div className="flex items-center gap-1 flex-shrink-0">
+          {!!row.fil_confie && <FilConfieIcon client={row.client_nom} />}
           {!!row.bio && <Leaf className="h-3.5 w-3.5 text-green-600" />}
           {!!row.recycle && <Recycle className="h-3.5 w-3.5 text-blue-600" />}
           {!!row.termine && <Badge variant="outline" className="text-[10px] py-0">T</Badge>}
@@ -710,6 +717,12 @@ function StockDetailDrawer({ id, onClose, onMutationSuccess, onDirtyChange, save
                     Recyclé
                   </Badge>
                 )}
+                {!!detail.fil_confie && (
+                  <Badge className="bg-amber-100 text-amber-800 border-amber-200 gap-1 text-[10px] py-0">
+                    <UserRound className="h-2.5 w-2.5" />
+                    Fil confié
+                  </Badge>
+                )}
               </div>
               <p className="text-xs text-white/70 truncate">
                 {detail.colori_reference ?? '—'} • Lot {detail.lot ?? '—'}
@@ -784,6 +797,7 @@ function StockDetailDrawer({ id, onClose, onMutationSuccess, onDirtyChange, save
             {/* Provenance */}
             <DrawerCard icon={<Factory className="h-4 w-4 text-accent" />} title="Provenance" highlight={isEditing}>
               <div className="space-y-1.5">
+                {!!detail.fil_confie && <KV label="Propriétaire" value={detail.client_nom ?? '—'} />}
                 <KV label="Fournisseur" value={detail.fournisseur_nom ?? '—'} />
                 <KV label="Lot fournisseur" value={detail.lot_frs ?? '—'} mono />
                 <KV
@@ -956,6 +970,16 @@ function DrawerCard({
       </div>
       {children}
     </div>
+  )
+}
+
+/** Marker of a TRM client's consigned yarn that ETM manages (Sigvaris' PA66,
+ *  La Gentle Factory…) — LIVA #1293. The owner is in the tooltip. */
+function FilConfieIcon({ client }: { client: string | null }) {
+  return (
+    <span title={`Fil confié — ${client ?? 'client TRM'}`} className="inline-flex">
+      <UserRound className="h-3.5 w-3.5 text-amber-600" />
+    </span>
   )
 }
 

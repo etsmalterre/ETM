@@ -16,6 +16,7 @@ import { pickVal, stripKeys } from './stock.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 import { StockFilLabelPdf, type StockFilLabelData } from '../lib/pdf/StockFilLabelPdf.js'
 import { RapportFreintePdf, type RapportFreinteData } from '../lib/pdf/RapportFreintePdf.js'
+import { ID_CLIENT_ETS_MALTERRE, gereParEtmParDefaut, regleFilsEtm, reglesFilsEtm } from '../lib/fil-gere-etm.js'
 
 export const stockFilTrmRouter: RouterType = Router()
 
@@ -58,7 +59,7 @@ type EtatFilter = 'disponible' | 'archive' | 'tous'
 const LIGHT_COLS_WINDOWS =
   'IDstock_fil, IDclient, IDfournisseur, IDref_fil, IDcolori_fil, IDref_fil_commande, IDMagasin, ' +
   'stock, stock_initial, lot, lot_frs, emplacement, date_entree, dernier_mouvement, dernier_pointage, ' +
-  'niveau, terminé AS termine, controlé AS controle'
+  'niveau, gere_par_etm, terminé AS termine, controlé AS controle'
 
 const MEMO_CHUNK = 300
 
@@ -206,6 +207,8 @@ async function hydrateRows(rows: Row[]): Promise<Row[]> {
     out.fournisseur_nom = cat.fournisseur.get(numOf(out.IDfournisseur)) ?? null
     out.magasin_nom = cat.magasin.get(numOf(out.IDMagasin)) ?? null
     out.client_nom = cat.client.get(numOf(out.IDclient)) ?? null
+    // Shown to ETM too (LIVA #1293, lib/fil-gere-etm.ts). Moot on Ets Malterre's own lots.
+    out.gere_par_etm = numOf(out.gere_par_etm) ? 1 : 0
     return out
   })
 }
@@ -489,6 +492,8 @@ function formatDateFrLong(ymd: string): string {
 // GET /api/stock/fil-trm/lookups/clients — the Client combo (owner of the
 // yarn). Société-2 clients, non-archived rows only would need the accented
 // `archivé` flag — the legacy dialog lists them all, so keep it simple.
+// Each carries its « fils gérés par ETM » list, from which the Nouveau lot
+// dialog pre-sets the lot's switch (LIVA #1293).
 // MUST be declared before '/fil-trm/:id'.
 stockFilTrmRouter.get('/fil-trm/lookups/clients', async (_req: Request, res: Response) => {
   try {
@@ -496,8 +501,16 @@ stockFilTrmRouter.get('/fil-trm/lookups/clients', async (_req: Request, res: Res
       `SELECT IDclient, nom FROM client WHERE IDsociete = 2 ORDER BY nom`,
     )
     const fixed = await fixEncoding(rows as Row[], 'client', 'IDclient', ['nom'])
+    const regles = await reglesFilsEtm()
     res.json(
-      (fixed as Row[]).map((r) => ({ IDclient: numOf(r.IDclient), nom: String(r.nom ?? '').trim() })),
+      (fixed as Row[]).map((r) => {
+        const IDclient = numOf(r.IDclient)
+        return {
+          IDclient,
+          nom: String(r.nom ?? '').trim(),
+          fil_gere_etm: regles.get(IDclient) ?? { tous: false, refs: [] },
+        }
+      }),
     )
   } catch (err) {
     console.error('Error fetching TRM clients lookup:', err)
@@ -658,6 +671,13 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
     const niveau = Math.min(3, Math.max(0, intOf(body.niveau)))
     const date_entree = dateDigitsOnly(body.date_entree) || todayDigits()
     const dernier_pointage = dateDigitsOnly(body.dernier_pointage) || date_entree
+    // ETM sees the lot when the client's list says so, unless the dialog's
+    // switch says otherwise (LIVA #1293). Never set on Ets Malterre's own yarn.
+    const gere =
+      typeof body.gere_par_etm === 'boolean'
+        ? body.gere_par_etm
+        : gereParEtmParDefaut(IDclient, IDref_fil, await regleFilsEtm(IDclient))
+    const gere_par_etm = gere && IDclient !== ID_CLIENT_ETS_MALTERRE ? 1 : 0
 
     // lot is a UNIQUE key — retry the max+1 allocation on a concurrent insert.
     let newId = 0
@@ -668,11 +688,11 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
       const cols =
         `IDclient, IDfournisseur, IDref_fil, IDcolori_fil, stock, stock_initial, lot, lot_frs, ` +
         `emplacement, niveau, date_entree, dernier_mouvement, dernier_pointage, commentaire, ` +
-        `IDMagasin, IDref_fil_commande` + (canNameAccented() ? ', terminé, controlé' : '')
+        `IDMagasin, IDref_fil_commande, gere_par_etm` + (canNameAccented() ? ', terminé, controlé' : '')
       const vals =
         `${IDclient}, ${IDfournisseur}, ${IDref_fil}, ${IDcolori_fil}, ${stock_initial}, ${stock_initial}, ` +
         `'${lot}', ${sqlText(lot_frs)}, ${sqlText(emplacement)}, ${niveau}, '${date_entree}', ` +
-        `'${date_entree}', '${dernier_pointage}', ${sqlText(commentaire)}, 1, 0` +
+        `'${date_entree}', '${dernier_pointage}', ${sqlText(commentaire)}, 1, 0, ${gere_par_etm}` +
         (canNameAccented() ? ', 0, 0' : '')
       try {
         await query(`INSERT INTO stock_fil (${cols}) VALUES (${vals})`)
@@ -699,7 +719,9 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
 })
 
 // PATCH /api/stock/fil-trm/:id — light edit. Whitelist: emplacement, niveau,
-// commentaire, lot_frs, dernier_pointage, IDclient. Archived lots refuse.
+// commentaire, lot_frs, dernier_pointage, IDclient, gere_par_etm. Archived lots
+// refuse. A new owner re-derives « géré par ETM » from its list unless the
+// body sets it (LIVA #1293).
 // stock / stock_initial / dernier_mouvement / terminé / controlé are NEVER
 // writable here — the production flow and the Archivage own them (controlé is
 // a dead pre-2023 flag, do not resurrect it). The one sanctioned override of
@@ -723,6 +745,20 @@ stockFilTrmRouter.patch('/fil-trm/:id', async (req: Request, res: Response) => {
       const cid = intOf(body.IDclient)
       if (cid <= 0) { res.status(400).json({ error: 'IDclient must be a positive id' }); return }
       sets.push(`IDclient = ${cid}`)
+    }
+    if (typeof body.gere_par_etm === 'boolean') {
+      if (!(await requirePermission(req, res, 'create_stock_fil', TRM_PERMISSIONS))) return
+      const cid = body.IDclient !== undefined ? intOf(body.IDclient) : -1
+      sets.push(`gere_par_etm = ${body.gere_par_etm && cid !== ID_CLIENT_ETS_MALTERRE ? 1 : 0}`)
+    } else if (body.IDclient !== undefined) {
+      const cur = await query<{ IDclient: number; IDref_fil: number }>(
+        `SELECT IDclient, IDref_fil FROM stock_fil WHERE IDstock_fil = ${id}`,
+      )
+      const cid = intOf(body.IDclient)
+      if (cur[0] && numOf(cur[0].IDclient) !== cid) {
+        const gere = gereParEtmParDefaut(cid, numOf(cur[0].IDref_fil), await regleFilsEtm(cid))
+        sets.push(`gere_par_etm = ${gere ? 1 : 0}`)
+      }
     }
     if (typeof body.dernier_pointage === 'string') {
       const d = dateDigitsOnly(body.dernier_pointage)
@@ -820,7 +856,7 @@ stockFilTrmRouter.post('/fil-trm/:id/diviser', async (req: Request, res: Respons
       const cols =
         `IDclient, IDfournisseur, IDref_fil, IDcolori_fil, stock, stock_initial, lot, lot_frs, ` +
         `emplacement, niveau, date_entree, dernier_mouvement, dernier_pointage, commentaire, ` +
-        `IDMagasin, IDref_fil_commande` + (canNameAccented() ? ', terminé, controlé' : '')
+        `IDMagasin, IDref_fil_commande, gere_par_etm` + (canNameAccented() ? ', terminé, controlé' : '')
       const vals =
         `${numOf(source.IDclient)}, ${numOf(source.IDfournisseur)}, ${numOf(source.IDref_fil)}, ` +
         `${numOf(source.IDcolori_fil)}, ${x}, ${x}, '${lot}', ${sqlText(String(source.lot_frs ?? ''))}, ` +
@@ -828,7 +864,8 @@ stockFilTrmRouter.post('/fil-trm/:id/diviser', async (req: Request, res: Respons
         `'${dateDigitsOnly(source.date_entree) || todayDigits()}', ` +
         `'${dateDigitsOnly(source.dernier_mouvement) || dateDigitsOnly(source.date_entree) || todayDigits()}', ` +
         `'${dateDigitsOnly(source.dernier_pointage) || dateDigitsOnly(source.date_entree) || todayDigits()}', ` +
-        `${sqlText(String(source.commentaire ?? ''))}, ${numOf(source.IDMagasin)}, ${numOf(source.IDref_fil_commande)}` +
+        `${sqlText(String(source.commentaire ?? ''))}, ${numOf(source.IDMagasin)}, ${numOf(source.IDref_fil_commande)}, ` +
+        `${numOf(source.gere_par_etm) ? 1 : 0}` +
         (canNameAccented() ? ', 0, 0' : '')
       try {
         await query(`INSERT INTO stock_fil (${cols}) VALUES (${vals})`)

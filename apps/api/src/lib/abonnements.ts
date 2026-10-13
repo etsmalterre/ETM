@@ -33,6 +33,7 @@
 import { query, queryB64Text, fixEncoding } from './hfsql-auto.js'
 import { IS_WINDOWS, n } from './sst-shared.js'
 import { readCol } from './accented-keys.js'
+import { filEtmSql } from './fil-gere-etm.js'
 import type { PermissionKey } from './permission-keys.js'
 
 /** The sub-permission of `dashboard_notifications` that each subscription of
@@ -448,7 +449,7 @@ const DETECTORS: Record<number, Detector> = {
     // certif_bio in the column list — both silently return 0 rows on Windows
     // (memory: project-stock-fil-poisoned-select).
     const stockRows = await query<{ IDcolori_fil: number; stock: number | null }>(
-      `SELECT IDcolori_fil, stock FROM stock_fil WHERE stock > 0`,
+      `SELECT IDcolori_fil, stock FROM stock_fil WHERE stock > 0 AND ${filEtmSql()}`,
     )
     const onHand = new Map<number, number>()
     for (const r of stockRows) {
@@ -474,7 +475,7 @@ const DETECTORS: Record<number, Detector> = {
   5: async () => {
     const rows = await query<{ IDstock_fil: number; lot: string | null }>(
       `SELECT IDstock_fil, lot FROM stock_fil
-       WHERE (IDref_fil_commande IS NULL OR IDref_fil_commande = 0) AND stock > 0`,
+       WHERE (IDref_fil_commande IS NULL OR IDref_fil_commande = 0) AND stock > 0 AND ${filEtmSql()}`,
     )
     const fixed = (await fixEncoding(rows as any[], 'stock_fil', 'IDstock_fil', ['lot'])) as any[]
     return fixed.map((r) => ({

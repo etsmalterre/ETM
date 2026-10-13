@@ -33,6 +33,9 @@ import {
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
+import { mpsPg } from '../lib/mps-pg.js'
+import { ID_CLIENT_ETS_MALTERRE, regleFilsEtm, remplacerRegleFilsEtm } from '../lib/fil-gere-etm.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { loadTakenComptes, pickCompte, normalizeCompte, isValidCompte } from '../lib/compte-client.js'
 import { isRectiligneType } from '../lib/sst-line-kind.js'
 import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
@@ -816,12 +819,93 @@ clientsTrmRouter.get('/:id/stock-fil', async (req: Request, res: Response) => {
         stock_initial: numOf(r.stock_initial),
         emplacement: strOf(r.emplacement),
         termine: termine(r),
+        gere_par_etm: numOf(r.gere_par_etm) ? 1 : 0,
       })),
       capped,
       total: matching.length,
     })
   } catch (err) {
     console.error('Error fetching TRM client stock fil:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Fils gérés par ETM (LIVA #1293) ─────────────────────────────────────
+// A client whose consigned yarn TRM knits on ETM orders (Sigvaris' PA66, all
+// of La Gentle Factory's…) lists that yarn here; a lot of it entered at TRM
+// is then « géré par ETM » and shows in ETM's Fils › Stock (lib/fil-gere-etm.ts).
+// `options` = the yarn catalog, this client's own yarns first.
+
+async function filsGeresEtmPayload(id: number) {
+  const regle = await regleFilsEtm(id)
+  const refs = await mpsPg()<{ idref_fil: number; reference: string | null; utilise: boolean }[]>`
+    SELECT rf.idref_fil, rf.reference,
+           EXISTS (SELECT 1 FROM stock_fil sf WHERE sf.idref_fil = rf.idref_fil AND sf.idclient = ${id}) AS utilise
+    FROM ref_fil rf`
+  const options = refs
+    .map((r) => ({ IDref_fil: r.idref_fil, reference: (r.reference ?? '').trim(), utilise: r.utilise }))
+    .filter((r) => r.reference !== '')
+    .sort((a, b) => Number(b.utilise) - Number(a.utilise) || a.reference.localeCompare(b.reference, 'fr', { sensitivity: 'base' }))
+  const label = new Map(options.map((o) => [o.IDref_fil, o.reference]))
+  return {
+    ets_malterre: id === ID_CLIENT_ETS_MALTERRE,
+    tous: regle.tous,
+    refs: regle.refs
+      .map((r) => ({ IDref_fil: r, reference: label.get(r) ?? `Fil ${r}` }))
+      .sort((a, b) => a.reference.localeCompare(b.reference, 'fr', { sensitivity: 'base' })),
+    options,
+  }
+}
+
+clientsTrmRouter.get('/:id/fils-geres-etm', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
+    res.json(await filsGeresEtmPayload(id))
+  } catch (err) {
+    console.error('Error fetching TRM client fils geres ETM:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const filsGeresEtmBody = z.object({
+  tous: z.boolean(),
+  refs: z.array(z.number().int().positive()).max(500),
+})
+
+// PUT replaces the list. Lots still in stock that the new list covers become
+// « géré par ETM » too — the reason the list was just edited is usually a lot
+// already on the shelf. Nothing is ever taken away from ETM here: a lot ETM may
+// already have affected leaves only by its own switch.
+clientsTrmRouter.put('/:id/fils-geres-etm', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await isTrmClient(id))) { res.status(404).json({ error: 'Client not found' }); return }
+    if (!(await requirePermission(req, res, 'edit_client_info', TRM_PERMISSIONS))) return
+    if (id === ID_CLIENT_ETS_MALTERRE) {
+      res.status(409).json({ error: 'ets_malterre', message: 'Le fil d’Ets Malterre est toujours géré par ETM.' })
+      return
+    }
+    const parsed = filsGeresEtmBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+
+    const regle = await remplacerRegleFilsEtm(id, parsed.data, await nomUtilisateur(req.userId))
+    const touches = regle.tous
+      ? await mpsPg()`
+          UPDATE stock_fil SET gere_par_etm = 1
+          WHERE idclient = ${id} AND termine = 0 AND gere_par_etm = 0 RETURNING idstock_fil`
+      : regle.refs.length > 0
+        ? await mpsPg()`
+            UPDATE stock_fil SET gere_par_etm = 1
+            WHERE idclient = ${id} AND termine = 0 AND gere_par_etm = 0 AND idref_fil = ANY(${regle.refs})
+            RETURNING idstock_fil`
+        : []
+    res.json({ ...(await filsGeresEtmPayload(id)), lots_ajoutes: touches.length })
+  } catch (err) {
+    console.error('Error saving TRM client fils geres ETM:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

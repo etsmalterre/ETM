@@ -29,12 +29,13 @@ function esc(value: string): string {
 // Each path defines its own SELECT/JOINS strings below. The `normalizeStockRow`
 // post-processor then maps both shapes to the same canonical ASCII keys.
 import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
+import { filEtmSql, ID_CLIENT_ETS_MALTERRE } from '../lib/fil-gere-etm.js'
 
 const STOCK_SELECT = IS_WINDOWS
-  ? `sf.IDstock_fil, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.IDMagasin, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.dernier_mouvement, sf.dernier_pointage, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, sf.commentaire, sf.observation_freinte, rf.reference AS ref_fil, rf.titrage, rf.bio, rf.recyclé AS recycle, cf.reference AS colori_reference, f.nom AS fournisseur_nom, st.nom AS magasin_nom`
-  : `sf.*, rf.reference AS ref_fil, rf.titrage, rf.bio, cf.reference AS colori_reference, f.nom AS fournisseur_nom, st.nom AS magasin_nom`
+  ? `sf.IDstock_fil, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.IDMagasin, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.dernier_mouvement, sf.dernier_pointage, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, sf.commentaire, sf.observation_freinte, sf.IDclient, sf.gere_par_etm, rf.reference AS ref_fil, rf.titrage, rf.bio, rf.recyclé AS recycle, cf.reference AS colori_reference, f.nom AS fournisseur_nom, st.nom AS magasin_nom, cl.nom AS client_nom`
+  : `sf.*, rf.reference AS ref_fil, rf.titrage, rf.bio, cf.reference AS colori_reference, f.nom AS fournisseur_nom, st.nom AS magasin_nom, cl.nom AS client_nom`
 
-const STOCK_JOINS = `FROM stock_fil sf LEFT JOIN ref_fil rf ON sf.IDref_fil = rf.IDref_fil LEFT JOIN colori_fil cf ON sf.IDcolori_fil = cf.IDcolori_fil LEFT JOIN fournisseur f ON sf.IDfournisseur = f.IDfournisseur LEFT JOIN sous_traitant st ON sf.IDMagasin = st.IDsous_traitant`
+const STOCK_JOINS = `FROM stock_fil sf LEFT JOIN ref_fil rf ON sf.IDref_fil = rf.IDref_fil LEFT JOIN colori_fil cf ON sf.IDcolori_fil = cf.IDcolori_fil LEFT JOIN fournisseur f ON sf.IDfournisseur = f.IDfournisseur LEFT JOIN sous_traitant st ON sf.IDMagasin = st.IDsous_traitant LEFT JOIN client cl ON sf.IDclient = cl.IDclient`
 
 // Accented sf.* columns (terminé, controlé, certif_recyclé; ref_fil.recyclé) come
 // back from the Linux bridge with the identifier truncated at the accent AND a
@@ -102,6 +103,12 @@ export function normalizeStockRow(row: Record<string, unknown>, recycleMap: Map<
   const idRefFil = Number(out.IDref_fil)
   out.recycle = recycleMap.get(idRefFil) ?? 0
 
+  // Consigned yarn of a TRM client that ETM manages (LIVA #1293): its owner is
+  // shown, ETM's own lots need no mention.
+  const idClient = Number(out.IDclient) || 0
+  out.fil_confie = idClient > 0 && idClient !== ID_CLIENT_ETS_MALTERRE ? 1 : 0
+  if (!out.fil_confie) out.client_nom = null
+
   return out
 }
 
@@ -113,7 +120,9 @@ stockRouter.get('/fil', async (req: Request, res: Response) => {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
 
     // WHERE clause: only use non-accented columns. terminé filter is applied in JS.
-    const where: string[] = []
+    // Only the lots ETM manages: its own + the consigned yarn TRM knits on ETM
+    // orders (LIVA #1293, lib/fil-gere-etm.ts).
+    const where: string[] = [filEtmSql('sf')]
     if (fournisseur && !isNaN(fournisseur)) where.push(`sf.IDfournisseur = ${fournisseur}`)
     if (q) {
       const e = esc(q)
@@ -134,6 +143,7 @@ stockRouter.get('/fil', async (req: Request, res: Response) => {
     fixed = await repairAliased(fixed, 'ref_fil', 'IDref_fil', { ref_fil: 'reference' })
     fixed = await repairAliased(fixed, 'colori_fil', 'IDcolori_fil', { colori_reference: 'reference' })
     fixed = await repairAliased(fixed, 'fournisseur', 'IDfournisseur', { fournisseur_nom: 'nom' })
+    fixed = await repairAliased(fixed, 'client', 'IDclient', { client_nom: 'nom' })
 
     // Load ref_fil recycle flags and normalise each row
     const recycleMap = await loadRefFilRecycleMap()
@@ -309,6 +319,7 @@ stockRouter.get('/fil/:id', async (req: Request, res: Response) => {
     fixed = await repairAliased(fixed, 'ref_fil', 'IDref_fil', { ref_fil: 'reference' })
     fixed = await repairAliased(fixed, 'colori_fil', 'IDcolori_fil', { colori_reference: 'reference' })
     fixed = await repairAliased(fixed, 'fournisseur', 'IDfournisseur', { fournisseur_nom: 'nom' })
+    fixed = await repairAliased(fixed, 'client', 'IDclient', { client_nom: 'nom' })
 
     const recycleMap = await loadRefFilRecycleMap()
     const normalised = normalizeStockRow(fixed[0] as Record<string, unknown>, recycleMap)
@@ -484,6 +495,7 @@ stockRouter.patch('/fil/:id', async (req: Request, res: Response) => {
     fixed = await repairAliased(fixed, 'ref_fil', 'IDref_fil', { ref_fil: 'reference' })
     fixed = await repairAliased(fixed, 'colori_fil', 'IDcolori_fil', { colori_reference: 'reference' })
     fixed = await repairAliased(fixed, 'fournisseur', 'IDfournisseur', { fournisseur_nom: 'nom' })
+    fixed = await repairAliased(fixed, 'client', 'IDclient', { client_nom: 'nom' })
 
     const recycleMap = await loadRefFilRecycleMap()
     const normalised = normalizeStockRow(fixed[0] as Record<string, unknown>, recycleMap)

@@ -5,15 +5,18 @@
 // "Fil à commander" = disponible < 0.
 
 import { query, fixEncoding } from './hfsql-auto.js'
+import { filEtmSql } from './fil-gere-etm.js'
 import { computeBesoin, type AssoRow, type MirrorLine, type OfRow, type PieceRow, type OfFilRow, type LineRow } from './fil-etat-besoin.js'
 
 export async function calculerEtatFil(refFil: number, coloriFil: number) {
   // En stock — physical on-hand rolls (stock > 0), with their source
   // fournisseur. `terminé` is accented (bridge can't tokenize it in WHERE);
   // consumed rolls carry stock=0 so `stock > 0` already excludes them.
+  // Only the lots ETM manages — a TRM client's yarn of the same ref is not ours
+  // to count (LIVA #1293).
   const stockRows = await query<{ lot: string | null; stock: number | null; IDfournisseur: number }>(
     `SELECT lot, stock, IDfournisseur FROM stock_fil
-     WHERE IDref_fil = ${refFil} AND IDcolori_fil = ${coloriFil} AND stock > 0
+     WHERE IDref_fil = ${refFil} AND IDcolori_fil = ${coloriFil} AND stock > 0 AND ${filEtmSql()}
      ORDER BY stock DESC`,
   )
   const en_stock = stockRows.reduce((s, r) => s + (Number(r.stock) || 0), 0)

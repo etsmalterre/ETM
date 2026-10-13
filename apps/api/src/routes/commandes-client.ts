@@ -62,6 +62,7 @@ import {
   ECRU_AT_DYER_MESSAGE, RESERVATION_MISFIT_ERROR, ecruStillAtDyer, findReservationMisfits, misfitMessage, reservationFitsDyeLine,
 } from '../lib/reservation-teinture.js'
 import { adresseADefinirRow, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
+import { filEtmSql } from '../lib/fil-gere-etm.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const commandesClientRouter: RouterType = Router()
@@ -3573,7 +3574,7 @@ async function fetchTricoStockFil(ctx: ClientLineContext) {
     .join(' OR ')
   const lots = await query<{ IDstock_fil: number; IDref_fil: number; IDcolori_fil: number; IDMagasin: number | null; stock: number | null }>(
     `SELECT IDstock_fil, IDref_fil, IDcolori_fil, IDMagasin, stock FROM stock_fil
-     WHERE (${pairClause}) AND stock > 0`,
+     WHERE (${pairClause}) AND stock > 0 AND ${filEtmSql()}`,
   )
 
   const pendingByLot = await openOfPendingByLot(lots.map((l) => Number(l.IDstock_fil)))
@@ -3773,7 +3774,7 @@ commandesClientRouter.get('/:id/lignes/:ligneId/supply/tricotage/new-order-conte
       const pairClause = pairs.map((p) => `(IDref_fil = ${p.IDref_fil} AND IDcolori_fil = ${p.IDcolori_fil})`).join(' OR ')
       const lots = await query<{ IDstock_fil: number; IDref_fil: number; IDcolori_fil: number; lot: string | null; stock: number | null; IDref_fil_commande: number | null }>(
         `SELECT IDstock_fil, IDref_fil, IDcolori_fil, lot, stock, IDref_fil_commande FROM stock_fil
-         WHERE (${pairClause}) AND stock > 0 AND IDMagasin = ${magasin}`,
+         WHERE (${pairClause}) AND stock > 0 AND IDMagasin = ${magasin} AND ${filEtmSql()}`,
       )
       const pending = await query<{ IDref_fil_commande: number; IDref_fil: number; IDcolori_fil: number; quantite: number | null; date_livraison: string | null }>(
         `SELECT IDref_fil_commande, IDref_fil, IDcolori_fil, quantite, date_livraison FROM ref_fil_commande
@@ -3916,7 +3917,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
       const lot = await query<{ IDstock_fil: number }>(
         `SELECT IDstock_fil FROM stock_fil
           WHERE IDref_fil = ${p.IDref_fil} AND IDcolori_fil = ${p.IDcolori_fil}
-            AND IDMagasin = ${d.IDsous_traitant} AND stock > 0
+            AND IDMagasin = ${d.IDsous_traitant} AND stock > 0 AND ${filEtmSql()}
           ORDER BY stock DESC`,
       )
       const lotId = Number(lot[0]?.IDstock_fil) || 0
