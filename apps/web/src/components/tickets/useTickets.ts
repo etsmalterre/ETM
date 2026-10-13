@@ -12,7 +12,14 @@ import { useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { API_URL } from '@/lib/api'
 import { useUser } from '@/contexts/UserContext'
-import type { Ticket, TicketAttachment, TicketCategory, TicketSeverity, TicketStatus } from './types'
+import type {
+  Ticket,
+  TicketAttachment,
+  TicketCategory,
+  TicketMessage,
+  TicketSeverity,
+  TicketStatus,
+} from './types'
 
 export async function ticketFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const isForm = options?.body instanceof FormData
@@ -52,7 +59,10 @@ export function mapTicket(raw: Record<string, unknown>): Ticket {
     follow_up: raw.follow_up === true,
     fixed_in_version: (raw.fixed_in_version as string) || null,
     resolved_at: (raw.resolved_at as string) || null,
+    waiting_for: (raw.waiting_for as string) || null,
     attachments: (raw.attachments as TicketAttachment[]) || [],
+    // Absent on a tracker older than the conversation (v1.4.0).
+    messages: Array.isArray(raw.messages) ? (raw.messages as TicketMessage[]) : [],
   }
 }
 
@@ -146,6 +156,17 @@ export function useTickets() {
     return mapTicket(data)
   }, [])
 
+  /** Write on the ticket's conversation. Returns the whole ticket: on a
+   *  ticket waiting for the reporter the tracker has just moved it back to
+   *  `en_cours`, and the caller must show that. 409 = the ticket is closed. */
+  const postMessage = useCallback(async (id: string, body: string): Promise<Ticket> => {
+    const data = await ticketFetch<Record<string, unknown>>(`/${id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    })
+    return mapTicket(data)
+  }, [])
+
   const uploadAttachments = useCallback(async (ticketId: string, files: File[]): Promise<void> => {
     const formData = new FormData()
     for (const file of files) formData.append('files', file)
@@ -157,6 +178,7 @@ export function useTickets() {
     submitTicket,
     fetchTicket,
     setFollowUp,
+    postMessage,
     uploadAttachments,
   }
 }

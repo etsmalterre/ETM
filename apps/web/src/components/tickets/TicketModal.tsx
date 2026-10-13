@@ -5,13 +5,18 @@
 // initialScreenshot, exposed as an "include screenshot" attachment button
 // that shows a spinner while capturingScreenshot is true.
 //
-// LIVA ticket widget — feature version 1.3.0 (see the
+// LIVA ticket widget — feature version 1.4.0 (see the
 // issue_tracker_integration skill; bump both together).
 //
 // 1.3.0: an account with no mapped email still reports (the proxy files it
 // under a synthetic identity) and only loses the follow-up mail, so the
 // follow-up controls render only when GET /reporter says can_follow. A host
 // page may name who is at a shared station (reporterHint.ts).
+// 1.3.1: status `en_attente` — the team waits on the reporter; ranked first
+// in the open list, purple chip saying whose wait it is.
+// 1.4.0: the detail carries the conversation with the team (TicketThread):
+// the reporter answers the team's question in place, and the tracker moves
+// the ticket back to `en_cours` by itself.
 
 import { useState, useEffect, useRef } from 'react'
 import {
@@ -42,6 +47,7 @@ import { useTicketContext } from './useTicketContext'
 import { useTickets, useTicketReporter } from './useTickets'
 import { useTicketReporterHint } from './reporterHint'
 import { useTicketNotifications } from './useTicketNotifications'
+import { TicketThread } from './TicketThread'
 import type { Ticket, TicketCategory, TicketSeverity } from './types'
 import {
   severityLabels,
@@ -208,7 +214,7 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
 
   const contexte = useTicketContext()
   const reporterHint = useTicketReporterHint()
-  const { isSubmitting, submitTicket, fetchTicket, setFollowUp, uploadAttachments } =
+  const { isSubmitting, submitTicket, fetchTicket, setFollowUp, postMessage, uploadAttachments } =
     useTickets()
   // Can this account receive the follow-up mail at all? Unknown (not loaded
   // yet, or the lookup failed) reads as "yes": the proxy ignores the tick for
@@ -223,8 +229,12 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
   const severityOptions = categorie === 'bug' ? bugSeverities : featureSeverities
 
   // Split the list: what's still moving stays on screen, everything closed
-  // goes into the collapsible drawer at the bottom.
-  const openTickets = tickets.filter((t) => !isClosedStatus(t.status))
+  // goes into the collapsible drawer at the bottom. A ticket waiting on the
+  // user comes first: it is the one they have to act on (stable sort keeps
+  // the newest-first order otherwise).
+  const openTickets = tickets
+    .filter((t) => !isClosedStatus(t.status))
+    .sort((a, b) => Number(b.status === 'en_attente') - Number(a.status === 'en_attente'))
   const closedTickets = tickets.filter((t) => isClosedStatus(t.status))
   const closedUnread = closedTickets.filter(isUnread).length
 
@@ -339,6 +349,18 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
     } finally {
       setSuiviBusy(false)
     }
+  }
+
+  /** Detail view: a message on the conversation. The returned ticket may
+   *  have changed status (answering a waiting ticket resumes it), so it
+   *  replaces the detail AND is marked read — the user's own answer must not
+   *  come back as an unread badge. */
+  const handlePostMessage = async (body: string) => {
+    if (!selectedTicket) return
+    const updated = await postMessage(selectedTicket.id, body)
+    setSelectedTicket(updated)
+    markSeen(updated)
+    refresh()
   }
 
   const handleSend = async () => {
@@ -495,6 +517,9 @@ export function TicketModal({ open, onOpenChange, initialScreenshot, capturingSc
                     <p className="text-sm text-muted-foreground italic">Pas encore de réponse</p>
                   )}
                 </div>
+
+                {/* Conversation with the team (v1.4.0) */}
+                <TicketThread ticket={selectedTicket} onSend={handlePostMessage} />
 
                 {/* Metadata */}
                 <div className="space-y-1">

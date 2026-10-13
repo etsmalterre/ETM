@@ -22,7 +22,10 @@ import { useUser } from '@/contexts/UserContext'
 import { listMyTickets } from './useTickets'
 import type { Ticket } from './types'
 
-const STORAGE_PREFIX = 'mps.tickets.seen.'
+// Versioned with ticketSignature(): a new signature FORMAT would mismatch
+// every stored entry and badge each user's whole history. A new prefix makes
+// the store look empty instead, so it reseeds silently (v2 = widget 1.4.0).
+const STORAGE_PREFIX = 'mps.tickets.seen.v2.'
 const POLL_INTERVAL_MS = 5 * 60_000
 
 /** Errors that polling cannot fix: no session (401), tracker not configured
@@ -38,9 +41,19 @@ export function myTicketsQueryKey(userId: number | null) {
   return ['my-tickets', userId] as const
 }
 
-/** The parts of a ticket a reporter cares about. Any change here = unread. */
+/** The parts of a ticket a reporter cares about. Any change here = unread.
+ *  The team's question (`waiting_for`) and every new TEAM message count; the
+ *  reporter's own messages never do — their answer is not news to them. */
 export function ticketSignature(t: Ticket): string {
-  return [t.status, t.comment ?? '', t.fixed_in_version ?? '', t.resolved_at ?? ''].join('|')
+  const teamMessages = t.messages.filter((m) => m.author === 'team').length
+  return [
+    t.status,
+    t.comment ?? '',
+    t.fixed_in_version ?? '',
+    t.resolved_at ?? '',
+    t.waiting_for ?? '',
+    teamMessages,
+  ].join('|')
 }
 
 // ── localStorage-backed store, shared by every hook instance ──────────────

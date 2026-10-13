@@ -54,7 +54,7 @@ Full design system in `.claude/skills/mps_designer/SKILL.md`.
 | PDF | `@react-pdf/renderer` (server-side, Lato fonts bundled) |
 | Excel | `xlsx` (SheetJS) — **client-side**, lazy `await import('xlsx')` so it's a separate chunk; API returns JSON, browser builds the `.xlsx` |
 | Email | Gmail API via `googleapis` + domain-wide delegation |
-| Tickets | LIVA issue tracker via server-side proxy `apps/api/src/routes/tickets.ts` (one router factory mounted twice: `/api/tickets/*` = `etm-erp`, `/api/tickets-trm/*` = `trm-erp`), widget `apps/web/src/components/tickets/`, **feature version 1.3.0** (spec + upgrade path: `issue_tracker_integration` skill). Every read is pinned to `product_slug` (the key is company-scoped), `resolu` counts as **open**, and an account without a mapped email still reports under a synthetic identity. Full rules: `claude_doc/screen_notes.md` § Tickets |
+| Tickets | LIVA issue tracker via server-side proxy `apps/api/src/routes/tickets.ts` (one router factory mounted twice: `/api/tickets/*` = `etm-erp`, `/api/tickets-trm/*` = `trm-erp`), widget `apps/web/src/components/tickets/`, **feature version 1.4.0** (spec + upgrade path: `issue_tracker_integration` skill). Every read is pinned to `product_slug` (the key is company-scoped), `resolu` counts as **open**, an account without a mapped email still reports under a synthetic identity, and the reporter answers the team in the ticket's conversation (`POST /:id/messages`; the tracker resumes a waiting ticket by itself). Full rules: `claude_doc/screen_notes.md` § Tickets |
 
 ## Project Structure
 

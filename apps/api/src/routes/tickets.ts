@@ -34,6 +34,7 @@
 //   GET    /                  — list the session user's tickets
 //   GET    /:id               — detail (404 unless owned)
 //   PATCH  /:id/follow        — opt in/out of status-change emails (owner only)
+//   POST   /:id/messages      — answer on the ticket conversation (owner only)
 //   POST   /:id/attachments   — multipart upload (owner only)
 //
 // Env (server-side only, never sent to the client):
@@ -64,6 +65,7 @@ const NOT_CONFIGURED_MSG = "Le système de tickets n'est pas configuré sur le s
 const UNREACHABLE_MSG = 'Impossible de contacter le serveur de tickets.'
 const TIMEOUT_MSG = 'Le serveur de tickets ne répond pas (délai dépassé).'
 const BAD_KEY_MSG = 'Système de tickets : clé API invalide. Contactez un administrateur.'
+const CLOSED_MSG = "Ce ticket est clôturé : il n'accepte plus de réponse."
 const NO_FOLLOW_MSG =
   "Le suivi par email demande une adresse associée à votre compte. " +
   'Un administrateur peut en définir une dans Paramètres › Utilisateurs.'
@@ -163,6 +165,9 @@ const submitBody = z.object({
 })
 
 const followBody = z.object({ follow_up: z.boolean() })
+
+// Same bounds as the tracker (1–5000 chars after trim).
+const messageBody = z.object({ body: z.string().trim().min(1).max(5000) })
 
 /** Everything below is per-mount: the two apps differ only in which env var
  *  names their product slug in the tracker. */
@@ -351,6 +356,56 @@ function createTicketsRouter(slugEnvVar: string): RouterType {
       forward(res, status, data)
     } catch (err) {
       sendTrackerError(res, err, 'PATCH /bugs/:id/follow')
+    }
+  })
+
+  // ── POST /:id/messages — answer on the ticket conversation ─
+  // Widget v1.4.0: the reporter writes in the ticket's thread with the team —
+  // typically the answer to the question of a ticket waiting on them, which
+  // the tracker then moves back to `en_cours` by itself (reminders stop). Same
+  // ownership re-check as /follow; a synthetic reporter MAY post (answering
+  // needs no mailbox). 201 → the whole ticket, 409 (closed) passed through.
+  router.post('/:id/messages', async (req: Request, res: Response) => {
+    if (!ensureConfigured(res)) return
+    if (!TICKET_ID_RE.test(req.params.id)) {
+      res.status(404).json({ error: 'Ticket introuvable' })
+      return
+    }
+    const parsed = messageBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    try {
+      const reporter = await resolveReporter(req, res)
+      if (!reporter) return
+      const owned = await trackerJson(`/bugs/${req.params.id}`, { headers: trackerHeaders() })
+      if (owned.status === 401) {
+        forward(res, owned.status, owned.data)
+        return
+      }
+      const owner = (owned.data as { reporter_email?: string })?.reporter_email
+      if (
+        owned.status !== 200 ||
+        !owner ||
+        owner.toLowerCase() !== reporter.email.toLowerCase() ||
+        !belongsToProduct(owned.data)
+      ) {
+        res.status(404).json({ error: 'Ticket introuvable' })
+        return
+      }
+      const { status, data } = await trackerJson(`/bugs/${req.params.id}/messages`, {
+        method: 'POST',
+        headers: trackerHeaders(true),
+        body: JSON.stringify(parsed.data),
+      })
+      if (status === 409) {
+        res.status(409).json({ error: 'ticket_closed', message: CLOSED_MSG })
+        return
+      }
+      forward(res, status, data)
+    } catch (err) {
+      sendTrackerError(res, err, 'POST /bugs/:id/messages')
     }
   })
 

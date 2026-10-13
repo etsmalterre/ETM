@@ -19,6 +19,9 @@ export type TicketStatus =
   | 'nouveau'
   | 'pris_en_compte'
   | 'en_cours'
+  // The team is blocked on the reporter: it asked them something and waits
+  // for the answer (v1.3.1). Open, ranked first, purple.
+  | 'en_attente'
   | 'resolu'
   | 'ferme'
   | 'ne_sera_pas_corrige'
@@ -28,6 +31,16 @@ export interface TicketAttachment {
   filename: string
   content_type: string
   size_bytes: number
+  created_at: string
+}
+
+/** One message of the ticket's conversation with the team (v1.4.0). Team
+ *  messages are signed with the brand ("Malterre Intelligence"). */
+export interface TicketMessage {
+  id: string
+  author: 'team' | 'reporter'
+  author_name: string | null
+  body: string
   created_at: string
 }
 
@@ -51,7 +64,13 @@ export interface Ticket {
   follow_up: boolean
   fixed_in_version: string | null
   resolved_at: string | null
+  /** Status `en_attente`: what the team needs from the reporter. Also the
+   *  latest team message of the thread — kept as the fallback when the thread
+   *  is empty. */
+  waiting_for: string | null
   attachments: TicketAttachment[]
+  /** Conversation with the team, oldest first. */
+  messages: TicketMessage[]
 }
 
 export const categoryLabels: Record<TicketCategory, string> = {
@@ -86,8 +105,11 @@ export const severityColors: Record<TicketSeverity, string> = {
 
 export const statusLabels: Record<TicketStatus, string> = {
   nouveau: 'Nouveau',
-  pris_en_compte: 'Pris en compte',
+  // "Backlog": accepted, parked until scheduled (tracker wording since 2026-09-30).
+  pris_en_compte: 'À planifier',
   en_cours: 'En cours',
+  // Says whose wait it is — a plain « En attente » reads as "the team is on it".
+  en_attente: 'En attente de votre réponse',
   resolu: 'Résolu',
   ferme: 'Fermé',
   ne_sera_pas_corrige: 'Ne sera pas corrigé',
@@ -95,8 +117,10 @@ export const statusLabels: Record<TicketStatus, string> = {
 
 export const statusColors: Record<TicketStatus, string> = {
   nouveau: 'bg-blue-100 text-blue-800',
-  pris_en_compte: 'bg-purple-100 text-purple-800',
+  pris_en_compte: 'bg-teal-100 text-teal-800',
   en_cours: 'bg-orange-100 text-orange-800',
+  // Purple belongs to the wait on the reporter, as in the tracker and its mails.
+  en_attente: 'bg-purple-100 text-purple-800',
   resolu: 'bg-green-100 text-green-800',
   ferme: 'bg-zinc-100 text-zinc-700',
   ne_sera_pas_corrige: 'bg-zinc-100 text-zinc-500',
