@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Tricobot — ETM",
+  "short_name": "Tricobot",
+  "description": "Ce que Tricobot (Triage, BL, Factures) a fait du mail ouvert dans Gmail, et vos corrections.",
+  "version": "0.0.0",
+  "icons": {
+    "16": "icons/tricobot-16.png",
+    "32": "icons/tricobot-32.png",
+    "48": "icons/tricobot-48.png",
+    "128": "icons/tricobot-128.png"
+  },
+  "action": {
+    "default_title": "Ouvrir le panneau Tricobot",
+    "default_icon": {
+      "16": "icons/tricobot-16.png",
+      "32": "icons/tricobot-32.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/tricobot-32.png"],
+      "matches": ["https://mail.google.com/*"]
+    }
+  ],
+  "permissions": ["sidePanel", "storage"],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://etm.intra.etsmalterre.com/*",
+    "http://localhost/*"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@mps/gmail-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tricobot — panneau ETM dans Gmail (extension Chrome, Manifest V3)",
+  "scripts": {
+    "build": "node build.mjs",
+    "package": "node package.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.4",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.0.16"
+  }
+}

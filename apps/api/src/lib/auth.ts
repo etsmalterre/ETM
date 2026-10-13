@@ -205,10 +205,20 @@ function appliquerSession(req: Request, s: SessionResolue): void {
   if (s.estAdmin) req.adminId = s.idutilisateur
 }
 
+/** The Tricobot Gmail extension carries its session token as a bearer
+ *  (`POST /auth/login` with `client: 'extension'`): its own session, never
+ *  the browser's cookie — the extension does not depend on how Chrome treats
+ *  a SameSite cookie in an extension context, and logging out of one leaves
+ *  the other alone. Same `session` table, same expiry, same revocation. */
+export function jetonBearer(req: Request): string | undefined {
+  const m = /^Bearer\s+([A-Za-z0-9_-]{20,100})$/.exec(req.headers.authorization ?? '')
+  return m?.[1]
+}
+
 async function attach(req: Request, res: Response): Promise<void> {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
 
-  const jeton = cookies[SESSION_COOKIE_NAME]
+  const jeton = cookies[SESSION_COOKIE_NAME] ?? jetonBearer(req)
   const session = jeton ? await resoudreSession(jeton) : null
   if (session) {
     appliquerSession(req, session)

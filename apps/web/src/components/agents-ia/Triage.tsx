@@ -284,10 +284,11 @@ export function TriageExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenR
 
 // ── Run dialog ───────────────────────────────────────────
 
-export function TriageRunDialog({ slug, runId, canPilot, onClose, onOuvrirRunAgent, onChanged }: {
+export function TriageRunDialog({ slug, runId, canCorriger, onClose, onOuvrirRunAgent, onChanged }: {
   slug: string
   runId: string | null
-  canPilot: boolean
+  /** edit_agents_ia or corriger_triage (routes/agents-ia.ts correcteurTriage). */
+  canCorriger: boolean
   onClose: () => void
   /** Open a run of another agent (the one the mail was handed to). */
   onOuvrirRunAgent: (agent: string, runId: string) => void
@@ -377,7 +378,7 @@ export function TriageRunDialog({ slug, runId, canPilot, onClose, onOuvrirRunAge
                         Tricobot avait choisi : {(res.categoriesAgent ?? []).map((c) => libelle.get(c) ?? c).join(' + ')}
                       </p>
                     )}
-                    {triable && canPilot && (
+                    {triable && canCorriger && (
                       <Button variant="outline" size="sm" className="mt-3 w-full" onClick={() => setCorrigerOpen(true)}>
                         <TricobotMascot className="h-4 w-4 mr-1.5" />Corriger le tri
                       </Button>

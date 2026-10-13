@@ -1,0 +1,33 @@
+/* Tricobot chip next to the Gmail subject (content script) — ETM navy / gold. */
+.tricobot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 4px 8px;
+  padding: 2px 10px 2px 4px;
+  border: 1px solid #b9cce2;
+  border-radius: 999px;
+  background: #eaf0f7;
+  color: #143d6b;
+  font: 500 12px/20px 'Google Sans', Roboto, Arial, sans-serif;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.tricobot-chip:hover {
+  background: #dbe6f2;
+}
+.tricobot-chip img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+.tricobot-chip--attention {
+  border-color: #f2b80a;
+  background: #fef8e4;
+  font-weight: 600;
+}
+.tricobot-chip--muted {
+  border-color: #d4d4d8;
+  background: #fafafa;
+  color: #71717a;
+}

@@ -5,6 +5,7 @@ File/directory layout with per-file annotations. Load when navigating the codeba
 ```
 ETM/
 ├── apps/
+│   ├── gmail-extension/  # « Tricobot » Chrome extension (MV3 side panel in Gmail, esbuild; README)
 │   ├── api/           # Express API
 │   │   ├── data/      # Runtime JSON (gitignored): permissions.json, user-emails.json
 │   │   ├── secrets/   # Gitignored: Google service account key

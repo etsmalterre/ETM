@@ -34,6 +34,12 @@ const DOMAINES_GENERIQUES = /^(wanadoo|orange|free|sfr|laposte|gmail|googlemail|
 const DOMAINE_INTERNE = /(^|\.)([a-z-]*malterre[a-z-]*)\.(com|fr)$/i
 
 export const adresseDe = (de: string): string => ((/<([^>]+)>/.exec(de)?.[1] ?? de).trim().toLowerCase())
+
+/** Sent by someone of the Malterre group (ETS, Tricotage…), by domain. */
+export const estInterne = (de: string): boolean => {
+  const a = adresseDe(de)
+  return a.includes('@') && DOMAINE_INTERNE.test(a.slice(a.lastIndexOf('@') + 1))
+}
 const domaineDe = (a: string): string => a.slice(a.lastIndexOf('@') + 1)
 
 export const LIBELLE_TYPE: Record<TypeOrganisation, string> = {

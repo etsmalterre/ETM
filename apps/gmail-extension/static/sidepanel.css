@@ -1,0 +1,625 @@
+/* Tricobot side panel — ETM colours (CLAUDE.md §Branding): navy #143D6B
+   header, gold #F2B80A accents, accent blue #3B7DC9 links. */
+:root {
+  --bg: #f4f4f5;
+  --card: #ffffff;
+  --border: #e4e4e7;
+  --text: #18181b;
+  --muted: #71717a;
+  --navy: #143d6b;
+  --navy-soft: #eaf0f7;
+  --gold: #f2b80a;
+  --gold-soft: #fef8e4;
+  --gold-border: #f6d777;
+  --accent: #3b7dc9;
+  --green: #047857;
+  --green-soft: #ecfdf5;
+  --amber: #b45309;
+  --amber-soft: #fffbeb;
+  --red: #b91c1c;
+  --red-soft: #fef2f2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+a {
+  color: var(--accent);
+}
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--navy);
+  border-bottom: 3px solid var(--gold);
+  box-shadow: 0 2px 8px rgba(20, 61, 107, 0.25);
+}
+.header img {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+}
+.header .brand {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+.header .title {
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+  color: #ffffff;
+}
+.header .tagline {
+  font-size: 11px;
+  color: var(--gold);
+}
+.header .spacer {
+  flex: 1;
+}
+.header .user {
+  color: #dbe4ef;
+  font-size: 12px;
+}
+.header .btn.icon {
+  color: #ffffff;
+}
+.header .btn.icon:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subject {
+  font-weight: 600;
+  font-size: 14px;
+}
+.subject .mailbox {
+  display: block;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 24px 8px;
+}
+
+.notice {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--gold-soft);
+  border: 1px solid var(--gold-border);
+  color: #6b4e00;
+}
+.error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--red-soft);
+  border: 1px solid #fecaca;
+  color: var(--red);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.card-head {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+  color: var(--muted);
+  font-size: 12px;
+}
+.card-head strong {
+  color: var(--text);
+}
+
+.section {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.section + .section {
+  border-top: 1px dashed var(--border);
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.section-title .spacer {
+  flex: 1;
+}
+
+.headline {
+  font-weight: 600;
+}
+.reasoning summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
+}
+/* Chrome flags a clicked <summary> as focus-visible: no frame, a colour. */
+.reasoning summary:focus,
+.reasoning summary:focus-visible {
+  outline: none;
+}
+.reasoning summary:hover,
+.reasoning summary:focus-visible {
+  color: var(--accent);
+}
+.reasoning p {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--gold);
+  background: var(--gold-soft);
+  border-radius: 0 6px 6px 0;
+  white-space: pre-wrap;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fafafa;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.pill.label {
+  background: var(--navy-soft);
+  border-color: #b9cce2;
+  color: var(--navy);
+  white-space: normal;
+}
+.pill.struck {
+  text-decoration: line-through;
+  color: var(--muted);
+  background: transparent;
+}
+.pill.ok {
+  background: var(--green-soft);
+  border-color: #a7f3d0;
+  color: var(--green);
+}
+.pill.warn {
+  background: var(--amber-soft);
+  border-color: #fde68a;
+  color: var(--amber);
+}
+.pill.bad {
+  background: var(--red-soft);
+  border-color: #fecaca;
+  color: var(--red);
+}
+.pill.muted {
+  color: var(--muted);
+}
+.pill.tiny {
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.echec {
+  color: var(--red);
+}
+
+/* Triage hand-offs to other agents. */
+.hand-offs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hand-offs li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* BL pieces. */
+.pieces {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.pieces th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  background: #fafafa;
+}
+.pieces th,
+.pieces td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.pieces .num {
+  text-align: right;
+  white-space: nowrap;
+}
+.pieces tr.obs td {
+  padding-top: 0;
+  color: var(--muted);
+  font-style: italic;
+}
+.pieces tr.total td {
+  font-weight: 600;
+  border-bottom: none;
+}
+
+/* Checks raised by an agent (BL diagnostics, invoice controls). */
+.checks {
+  margin: 0;
+  padding: 0 0 0 16px;
+  font-size: 12px;
+  color: var(--amber);
+}
+.checks li.info {
+  color: var(--muted);
+}
+.checks li.bloquant,
+.checks li.erreur {
+  color: var(--red);
+}
+
+/* Invoice lines. */
+.lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.lines li.line {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+}
+.lines li.line + li.line {
+  border-top: 1px solid var(--border);
+}
+.line-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.line-head .lbl {
+  flex: 1;
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.btn:hover {
+  background: #f4f4f5;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn.primary {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: var(--navy);
+  font-weight: 600;
+}
+.btn.primary:hover {
+  background: #e0aa08;
+}
+.btn.ghost {
+  border-color: #b9cce2;
+  color: var(--navy);
+}
+.btn.danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: white;
+}
+.btn.link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+}
+.btn.icon {
+  border: none;
+  background: none;
+  font-size: 16px;
+  padding: 2px 4px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gold-border);
+  border-left: 4px solid var(--gold);
+  border-radius: 8px;
+  background: var(--gold-soft);
+}
+.form label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.form input,
+.form select,
+.form textarea {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+}
+.form textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip {
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip.on {
+  background: var(--navy);
+  border-color: var(--navy);
+  color: white;
+}
+
+.auth {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+}
+.auth input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* The Triage category pill doubles as the "Mal classé ?" control. */
+.pill.editable {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.pill.editable .caret {
+  font-size: 9px;
+  opacity: 0.7;
+}
+.pill.editable:hover,
+.pill.editable.open {
+  background: #dbe6f2;
+  border-color: var(--navy);
+}
+.pill.editable:disabled {
+  cursor: default;
+}
+
+/* Keyboard focus only — no frame left behind by a mouse click. */
+.pill.editable:focus-visible,
+.btn:focus-visible,
+.chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Bottom tab bar: « Agent » / « Conversation ». */
+body.with-tabs {
+  padding-bottom: 60px;
+}
+.tabs {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -2px 8px rgba(20, 61, 107, 0.08);
+}
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0 7px;
+  border: none;
+  border-top: 3px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--navy);
+}
+.tab.on {
+  color: var(--navy);
+  border-top-color: var(--gold);
+}
+.tab-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+.tab:not(.on) img.tab-icon {
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+
+/* Conversation: the thread as chat bubbles (theirs left, ours right). */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.day {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0 2px;
+}
+.day span {
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: #e4e4e7;
+  color: #52525b;
+  font-size: 11px;
+  font-weight: 600;
+}
+.bubble-row {
+  display: flex;
+}
+.bubble-row.out {
+  justify-content: flex-end;
+}
+.bubble {
+  max-width: 88%;
+  padding: 6px 9px 4px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+.bubble-row.in .bubble {
+  border-top-left-radius: 3px;
+}
+.bubble-row.out .bubble {
+  border-top-right-radius: 3px;
+  background: #dfeaf6;
+  border-color: #c5d7ea;
+}
+.bubble-from {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.bubble-row.out .bubble-from {
+  color: var(--navy);
+}
+.bubble-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bubble-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+.bubble-foot .time {
+  font-size: 11px;
+  color: var(--muted);
+}
+.pill.label.tricobot {
+  cursor: pointer;
+  font-family: inherit;
+  margin-right: auto;
+}
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.attachment {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  cursor: pointer;
+}
+.attachment:hover {
+  border-color: var(--accent);
+}

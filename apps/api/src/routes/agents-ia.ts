@@ -596,11 +596,24 @@ const categoriesBody = z.object({
   commentaire: z.string().trim().max(2000).default(''),
 })
 
-/** Correct a run's categories (piloting right — Vincent only for now). The
- *  labels move, a new category's agent gets the mail; the answer lists what
- *  an agent already did for a category now removed (never undone). */
+/** 401 / 403 unless the caller may correct the Triage: a pilot, or the
+ *  holder of `corriger_triage` (who handles contact@ without piloting). */
+async function correcteurTriage(req: Request, res: Response): Promise<number | null> {
+  const id = session(req, res)
+  if (id === null) return null
+  const [pilot, correcteur] = await Promise.all([aLeDroit(req, res, id, 'edit_agents_ia'), aLeDroit(req, res, id, 'corriger_triage')])
+  if (!pilot && !correcteur) {
+    res.status(403).json({ error: 'permission denied: corriger_triage' })
+    return null
+  }
+  return id
+}
+
+/** Correct a run's categories (pilot or `corriger_triage`). The labels
+ *  move, a new category's agent gets the mail; the answer lists what an
+ *  agent already did for a category now removed (never undone). */
 routes.put('/:slug/runs/:id/categories', async (req, res) => {
-  const uid = await pilote(req, res)
+  const uid = await correcteurTriage(req, res)
   if (uid === null) return
   const def = agentOu404(req, res)
   if (!def || !triageOu409(def, res)) return

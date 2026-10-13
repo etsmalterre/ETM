@@ -17,7 +17,7 @@ export type AppIa = 'etm' | 'trm'
 
 /** The rights the two routers check. The two `dashboard_*` keys exist in
  *  ETM's catalog only (the Notifications widget's Superviseur points). */
-export type DroitIa = 'edit_agents_ia' | 'evaluer_agents_ia' | 'dashboard_notifications' | 'dashboard_notif_superviseur'
+export type DroitIa = 'edit_agents_ia' | 'evaluer_agents_ia' | 'corriger_triage' | 'dashboard_notifications' | 'dashboard_notif_superviseur'
 
 export interface AgentsIaScope {
   app: AppIa

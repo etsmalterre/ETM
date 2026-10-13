@@ -121,11 +121,18 @@ authRouter.post('/dev-login', async (req: Request, res: Response) => {
 
 // ── POST /login ──────────────────────────────────────────────
 const loginBody = z.union([
-  z.object({ identifiant: z.string().trim().min(1).max(200), motDePasse: z.string().min(1).max(200) }),
+  z.object({
+    identifiant: z.string().trim().min(1).max(200),
+    motDePasse: z.string().min(1).max(200),
+    /** 'extension' = the Tricobot Gmail extension: its session token comes
+     *  back in the body (sent as a bearer, lib/auth.ts jetonBearer), no cookie. */
+    client: z.enum(['web', 'extension']).optional(),
+  }),
   z.object({ IDutilisateur: z.number().int().positive() }),
 ])
 
 const REFUS = 'Identifiant ou mot de passe incorrect.'
+const EXTENSION_LIBELLE = 'Extension Gmail Tricobot'
 
 // Hashed once: an unknown identifiant still pays one scrypt, so the answer's
 // timing does not tell which identifiants exist.
@@ -184,6 +191,14 @@ authRouter.post('/login', async (req: Request, res: Response) => {
       return
     }
     await mpsPg()`UPDATE utilisateur SET derniere_connexion = now() WHERE idutilisateur = ${c.idutilisateur}`
+    if (parsed.data.client === 'extension') {
+      // Its own browser session, named so the account's session list tells it apart.
+      const jeton = await creerSession({
+        idutilisateur: c.idutilisateur, type: 'navigateur', libelle: EXTENSION_LIBELLE, ip, userAgent: req.headers['user-agent'] ?? null,
+      })
+      res.json({ ...publicUser(c), isAdmin: c.est_admin, doitChangerMdp: c.doit_changer_mdp, jeton })
+      return
+    }
     await ouvrirSession(req, res, c)
     res.json({ ...publicUser(c), isAdmin: c.est_admin, doitChangerMdp: c.doit_changer_mdp })
   } catch (err) {

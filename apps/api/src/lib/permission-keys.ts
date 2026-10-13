@@ -537,6 +537,17 @@ export const PERMISSION_KEYS = [
       'Autorise à traiter les points du Superviseur depuis le widget Notifications sans l’abonnement du widget. Les agents IA ne se notent jamais dans Agents IA : chaque retour à Tricobot (juste, ou corrigé avec un pourquoi) se donne là où le travail se fait — réception des rouleaux, factures sous-traitants, widget Notifications.',
     category: 'Agents IA',
   },
+  // The Triage is the one agent corrected outside its work screen (its work IS
+  // the triage): the people who handle contact@ correct it — from Agents IA ›
+  // Exécutions or the Tricobot Gmail extension — without piloting the agents
+  // (decision Vincent 2026-10-13: Isabelle, and the admins).
+  {
+    key: 'corriger_triage',
+    label: 'Corriger le Triage',
+    description:
+      'Autorise à corriger les catégories que Tricobot a données à un mail de contact@ (Agents IA › Exécutions du Triage, ou l’extension Gmail Tricobot), avec un pourquoi. La correction remplace les libellés Gmail et transmet le mail à l’agent de la nouvelle catégorie. Ne permet pas de piloter les agents.',
+    category: 'Agents IA',
+  },
 ] as const
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number]['key']

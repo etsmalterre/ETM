@@ -412,6 +412,7 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
   const [searchParams, setSearchParams] = useSearchParams()
   const canPilot = useHasPermission('edit_agents_ia')
   const canEvaluate = useHasPermission('evaluer_agents_ia')
+  const canCorrigerTriage = useHasPermission('corriger_triage')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedSlug, setSelectedSlug] = useState<string | null>(searchParams.get('agent'))
   const [openRunId, setOpenRunId] = useState<string | null>(searchParams.get('run'))
@@ -518,7 +519,7 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
         onBack={() => setSelectedSlug(null)}
       />
       {selectedSlug && detail?.slug === selectedSlug && detail.slug === TRIAGE_SLUG && (
-        <TriageRunDialog slug={detail.slug} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)}
+        <TriageRunDialog slug={detail.slug} runId={openRunId} canCorriger={canPilot || canCorrigerTriage} onClose={() => setOpenRunId(null)}
           onOuvrirRunAgent={(agent, runId) => { setSelectedSlug(agent); setOpenRunId(runId) }} onChanged={invalidate} />
       )}
       {selectedSlug && detail?.slug === selectedSlug && detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && (
