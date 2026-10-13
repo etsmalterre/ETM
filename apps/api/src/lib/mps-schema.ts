@@ -794,6 +794,29 @@ UPDATE ged SET regle_le = TIMESTAMPTZ '2026-10-13 00:00:00 Europe/Paris',
   WHERE idtype_doc = 1 AND idged <= 10887;
 `,
   },
+  {
+    // Fils › Commandes — « Clôturer quand même » (decision Vincent 2026-10-13,
+    // lib/cycle-commande-fil.ts): a received yarn order is terminée only once
+    // its organic lots are GOTS-certified and its invoices attached and paid;
+    // a person holding `cloturer_commande_fil` may close it anyway, with a
+    // reason. Append-only: the latest row of an order says whether it is
+    // forced closed ('cloture') or no longer ('annulation').
+    name: '0021_commande_fil_cloture',
+    sql: `
+CREATE TABLE commande_fil_cloture (
+  id bigserial PRIMARY KEY,
+  idcommande_fil bigint NOT NULL,
+  action text NOT NULL CHECK (action IN ('cloture', 'annulation')),
+  le timestamptz NOT NULL DEFAULT now(),
+  par_id bigint,
+  par text,
+  motif text NOT NULL DEFAULT ''
+);
+CREATE INDEX commande_fil_cloture_commande ON commande_fil_cloture (idcommande_fil, le DESC);
+${grantApi('SELECT, INSERT', 'commande_fil_cloture')}
+${grantApi('USAGE, SELECT', 'SEQUENCE commande_fil_cloture_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -10,10 +10,11 @@ const upload = multer({ storage: multer.memoryStorage() })
 import { CommandeFournisseurPdf, type CommandeFournisseurPdfData } from '../lib/pdf/CommandeFournisseurPdf.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
-import { userCanOpenScreen } from '../lib/permissions.js'
+import { userCanOpenScreen, userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
-import { facturesARegler, marquerReglement, reglementsDeDocs } from '../lib/facture-fil-reglement.js'
+import { marquerReglement, reglementsDeDocs } from '../lib/facture-fil-reglement.js'
+import { aujourdhuiParis, clotureForceeActive, cyclesCommandesFil, journaliserCloture, TYPE_DOC_CERTIFICAT_GOTS, urgenceCommandeFil, type CycleCommandeFil } from '../lib/cycle-commande-fil.js'
 
 export const commandesFilRouter: RouterType = Router()
 
@@ -245,6 +246,12 @@ commandesFilRouter.get('/lookups/adresses', async (req: Request, res: Response) 
 
 // ── List all commandes ───────────────────────────────────
 
+/** The list card needs the stage and the counts, not each organic lot. */
+function resumeCycle(c: CycleCommandeFil) {
+  const { lots_bio, ...rest } = c
+  return { ...rest, lots_bio: lots_bio.length }
+}
+
 commandesFilRouter.get('/', async (req: Request, res: Response) => {
   try {
     const q = String(req.query.q ?? '').trim()
@@ -253,8 +260,8 @@ commandesFilRouter.get('/', async (req: Request, res: Response) => {
 
     const whereParts: string[] = []
     if (!isNaN(fournisseurFilter)) whereParts.push(`cf.IDfournisseur = ${fournisseurFilter}`)
-    if (etatFilter === 'en_cours') whereParts.push(`cf.etat = 0`)
-    else if (etatFilter === 'terminee') whereParts.push(`cf.etat = 1`)
+    // The stage (en cours / en attente / terminée) is computed from the
+    // documents (lib/cycle-commande-fil.ts), so `etat` filters after it.
     const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : ''
 
     const commandes = await query<any>(
@@ -305,15 +312,31 @@ commandesFilRouter.get('/', async (req: Request, res: Response) => {
       }
     }
 
-    // Unpaid supplier invoices per commande (LIVA #1292) — the card's « À régler » marker.
-    const aRegler = await facturesARegler(ids.map(Number))
+    // Stage + what is missing (certificat GOTS, facture, paiement) per commande.
+    const cycles = await cyclesCommandesFil(ids.map(Number))
+    const today = aujourdhuiParis()
 
     // Filter by search query (supplier name, id, or commentaire)
     const qLower = q.toLowerCase()
     const result = fixedWithFournisseurNom
       .map((c: any) => {
         const totals = totalsMap.get(Number(c.IDcommande_fil)) ?? { total_kg: 0, total_eur: 0, nb_lignes: 0, earliest_delivery: null }
-        return { ...c, ...totals, factures_a_regler: aRegler.get(Number(c.IDcommande_fil)) ?? 0 }
+        const cycle = cycles.get(Number(c.IDcommande_fil))
+        return {
+          ...c, ...totals,
+          factures_a_regler: cycle?.factures_a_regler ?? 0,
+          cycle: cycle ? resumeCycle(cycle) : null,
+          // rouge = to do now, ambre = can be done now (lib/cycle-commande-fil.ts)
+          urgence: cycle ? urgenceCommandeFil(cycle, totals.earliest_delivery, today) : null,
+        }
+      })
+      // en_cours = not terminée yet (yarn awaited OR waiting for a document);
+      // attente = received, something missing; terminee = nothing missing.
+      .filter((c: any) => {
+        const etape = c.cycle?.etape ?? 'en_cours'
+        if (etatFilter === 'en_cours') return etape !== 'terminee'
+        if (etatFilter === 'attente' || etatFilter === 'terminee') return etape === etatFilter
+        return true
       })
       .filter((c: any) => {
         if (!q) return true
@@ -389,6 +412,7 @@ commandesFilRouter.get('/:id', async (req: Request, res: Response) => {
       adresse_facturation: fixedAdresseFact[0] ?? null,
       adresse_livraison: fixedAdresseLiv[0] ?? null,
       lignes: lignesWithLinked,
+      cycle: (await cyclesCommandesFil([id])).get(id) ?? null,
     })
   } catch (err) {
     console.error('Error fetching commande-fil detail:', err)
@@ -817,6 +841,14 @@ commandesFilRouter.put('/:id', async (req: Request, res: Response) => {
     if (d.etat === 1) {
       await query(`UPDATE ref_fil_commande SET etat = 1 WHERE IDcommande_fil = ${id} AND etat = 0`)
     }
+    // Reopening (yarn awaited again) ends a « Clôturer quand même »: once the
+    // order is received again it must earn its terminée like any other.
+    if (d.etat === 0 && (await clotureForceeActive(id))) {
+      const par = req.userId !== undefined
+        ? { id: req.userId, nom: await nomUtilisateur(req.userId) }
+        : null
+      await journaliserCloture(id, 'annulation', par, 'Commande rouverte')
+    }
 
     const rows = await query<CommandeFil>(`SELECT * FROM commande_fil WHERE IDcommande_fil = ${id}`)
     if (rows.length === 0) { res.status(404).json({ error: 'Commande not found' }); return }
@@ -824,6 +856,62 @@ commandesFilRouter.put('/:id', async (req: Request, res: Response) => {
     res.json(fixed[0])
   } catch (err) {
     console.error('Error updating commande-fil:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── « Clôturer quand même » (lib/cycle-commande-fil.ts) ──
+//
+// POST closes a received order that still waits for a certificate, an
+// invoice or a payment; DELETE cancels that close (the order is « en
+// attente » again). Both under `cloturer_commande_fil`, both journaled.
+
+commandesFilRouter.post('/:id/cloture-forcee', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'cloturer_commande_fil'))) {
+      res.status(403).json({ error: 'permission denied: cloturer_commande_fil' }); return
+    }
+    const parsed = z.object({ motif: z.string().trim().min(1).max(1000) }).safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'motif_requis', message: 'Le motif est obligatoire.' }); return
+    }
+    const cycle = (await cyclesCommandesFil([id])).get(id)
+    if (!cycle) { res.status(404).json({ error: 'Commande not found' }); return }
+    if (cycle.etape !== 'attente') {
+      res.status(409).json({
+        error: 'rien_a_cloturer',
+        message: cycle.etape === 'en_cours'
+          ? 'Le fil de cette commande n’est pas encore entièrement reçu : clôturez la réception d’abord.'
+          : 'Cette commande est déjà terminée.',
+      })
+      return
+    }
+    await journaliserCloture(id, 'cloture', { id: req.userId, nom: await nomUtilisateur(req.userId) }, parsed.data.motif)
+    res.json({ cycle: (await cyclesCommandesFil([id])).get(id) ?? null })
+  } catch (err) {
+    console.error('Error forcing commande-fil close:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesFilRouter.delete('/:id/cloture-forcee', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'cloturer_commande_fil'))) {
+      res.status(403).json({ error: 'permission denied: cloturer_commande_fil' }); return
+    }
+    if (!(await clotureForceeActive(id))) {
+      res.status(409).json({ error: 'pas_de_cloture_forcee', message: 'Cette commande n’a pas été clôturée de force.' }); return
+    }
+    await journaliserCloture(id, 'annulation', { id: req.userId, nom: await nomUtilisateur(req.userId) }, 'Clôture forcée annulée')
+    res.json({ cycle: (await cyclesCommandesFil([id])).get(id) ?? null })
+  } catch (err) {
+    console.error('Error cancelling commande-fil forced close:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1277,6 +1365,27 @@ commandesFilRouter.post('/:id/documents', upload.single('fichier'), async (req: 
       await queryRaw(`UPDATE ged SET fichier = x'${hexStr}' WHERE IDged = ${newId}`)
     }
 
+    // A GOTS certificate is tied to the lots it covers (lib/cycle-commande-fil.ts):
+    // `lots` = the stock_fil ids picked in the dialog (comma-separated); absent
+    // = the order's only lot when it has exactly one. Always explicit links,
+    // even when every current lot is picked: a certificate covers the
+    // shipments it lists, so a lot received LATER on the order must not
+    // inherit it. Only a certificate filed before any lot arrived stays
+    // unlinked (= every lot, the screen's historical rule).
+    if (idTypeDoc === TYPE_DOC_CERTIFICAT_GOTS) {
+      const lotsDeLaCommande = (await query<{ IDstock_fil: number }>(
+        `SELECT sf.IDstock_fil FROM stock_fil sf
+         INNER JOIN ref_fil_commande rfc ON sf.IDref_fil_commande = rfc.IDref_fil_commande
+         WHERE rfc.IDcommande_fil = ${id}`
+      )).map((r) => Number(r.IDstock_fil))
+      const demandes: number[] = typeof req.body.lots === 'string'
+        ? req.body.lots.split(',').map((x: string) => parseInt(x, 10)).filter((x: number) => !isNaN(x))
+        : lotsDeLaCommande.length === 1 ? lotsDeLaCommande : []
+      for (const stockId of new Set(demandes.filter((x) => lotsDeLaCommande.includes(x)))) {
+        await query(`INSERT INTO stock_fil_ged (IDged, IDstock_fil) VALUES (${newId}, ${stockId})`)
+      }
+    }
+
     res.status(201).json({ IDged: newId })
   } catch (err) {
     console.error('Error creating commande-fil document:', err)
@@ -1368,6 +1477,8 @@ commandesFilRouter.delete('/:id/documents/:idged', async (req: Request, res: Res
     )
     if (scope.length === 0) { res.status(404).json({ error: 'Document not found' }); return }
 
+    // Its lot links go with it — they say which lots a certificate covers.
+    await query(`DELETE FROM stock_fil_ged WHERE IDged = ${idged}`)
     await query(`DELETE FROM ged WHERE IDged = ${idged}`)
     res.json({ ok: true })
   } catch (err) {

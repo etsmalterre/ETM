@@ -29,6 +29,11 @@ import {
   FileText,
   Upload,
   ReceiptText,
+  Hourglass,
+  ShieldAlert,
+  ShieldCheck,
+  ChevronUp,
+  RotateCcw,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -36,6 +41,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
+import { useHasPermission } from '@/contexts/PermissionsContext'
+import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { cn } from '@/lib/utils'
@@ -59,7 +66,50 @@ interface CommandeListRow {
   earliest_delivery: string | null
   /** Supplier invoices of the order not ticked « réglée » (LIVA #1292). */
   factures_a_regler: number
+  cycle: CycleResume | null
+  /** What there is to do, and when (API urgenceCommandeFil); null = neutral. */
+  urgence: { niveau: NiveauUrgence; raison: string } | null
 }
+
+type NiveauUrgence = 'rouge' | 'ambre'
+
+// The order's stage once its yarn is received (API lib/cycle-commande-fil.ts):
+// terminée only when its organic lots are GOTS-certified and its invoices
+// attached and paid — or closed anyway (« Clôturer quand même »).
+type AttenteCommande = 'certificat' | 'facture' | 'paiement'
+type EtapeCommande = 'en_cours' | 'attente' | 'terminee'
+
+interface ClotureForcee {
+  le: string
+  par: string | null
+  motif: string
+}
+
+interface CycleResume {
+  etape: EtapeCommande
+  attentes: AttenteCommande[]
+  manques: AttenteCommande[]
+  sous_regle: boolean
+  lots_bio: number
+  lots_bio_sans_certificat: number
+  nb_factures: number
+  factures_a_regler: number
+  cloture_forcee: ClotureForcee | null
+}
+
+interface LotBio {
+  IDstock_fil: number
+  lot: string | null
+  certifie: boolean
+}
+
+interface CycleCommande extends Omit<CycleResume, 'lots_bio'> {
+  lots_bio: LotBio[]
+}
+
+type StatusFilter = 'en_cours' | 'attente' | 'terminee' | 'all'
+
+const PERMISSION_CLOTURER = 'cloturer_commande_fil'
 
 interface LigneCommande {
   IDref_fil_commande: number
@@ -132,6 +182,7 @@ interface CommandeDetail {
   adresse_facturation: AdresseLite | null
   adresse_livraison: AdresseLite | null
   lignes: LigneCommande[]
+  cycle: CycleCommande | null
 }
 
 interface ModePaiement {
@@ -179,6 +230,46 @@ const editSectionClass = 'border-l-4 border-l-accent/70 bg-accent/[0.03]'
 function CommandeEtatBadge({ etat, className }: { etat: number | null; className?: string }) {
   if (etat === 1) return <Badge variant="success" className={cn('text-[10px] py-0 gap-1', className)}><CheckCircle2 className="h-2.5 w-2.5" />Terminée</Badge>
   return <Badge variant="default" className={cn('text-[10px] py-0 gap-1', className)}><Clock className="h-2.5 w-2.5" />En cours</Badge>
+}
+
+const ATTENTE_LABEL: Record<AttenteCommande, string> = {
+  certificat: 'certificat GOTS',
+  facture: 'facture',
+  paiement: 'paiement',
+}
+
+/** « Attente certificat GOTS · paiement » — the footer and the list badge. */
+function attenteLabel(attentes: AttenteCommande[]): string {
+  return `Attente ${attentes.map((a) => ATTENTE_LABEL[a]).join(' · ')}`
+}
+
+/** What each gap means, in a sentence (tooltips, the forced-close dialog). */
+function attenteDetail(a: AttenteCommande, cycle: Pick<CycleResume, 'lots_bio_sans_certificat' | 'factures_a_regler'>): string {
+  if (a === 'certificat') {
+    const n = cycle.lots_bio_sans_certificat
+    return `${n} lot${n > 1 ? 's' : ''} bio sans certificat GOTS`
+  }
+  if (a === 'facture') return 'Aucune facture fournisseur jointe'
+  const n = cycle.factures_a_regler
+  return `${n} facture${n > 1 ? 's' : ''} à régler`
+}
+
+/** The order's stage on the left-list card — same solid colours as the
+ *  sidebar footer (mps_designer §29.8). */
+function CommandeEtapeBadge({ cycle, etat, className }: { cycle: CycleResume | null; etat: number | null; className?: string }) {
+  if (!cycle) return <CommandeEtatBadge etat={etat} className={className} />
+  if (cycle.etape === 'attente') {
+    return (
+      <Badge
+        variant="outline"
+        className={cn('text-[10px] py-0 gap-1 border text-white bg-amber-500 border-amber-500', className)}
+        title={cycle.attentes.map((a) => attenteDetail(a, cycle)).join('\n')}
+      >
+        <Hourglass className="h-2.5 w-2.5" />En attente
+      </Badge>
+    )
+  }
+  return <CommandeEtatBadge etat={cycle.etape === 'terminee' ? 1 : 0} className={className} />
 }
 
 // Returns a delivery-urgency flag based on the earliest line delivery date.
@@ -230,7 +321,9 @@ export function FilsCommandes() {
   })()
   const [selectedId, setSelectedId] = useState<number | null>(linkedCommandeId)
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'en_cours' | 'terminee'>('en_cours')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('en_cours')
+  const [urgenceOn, setUrgenceOn] = useState<Record<NiveauUrgence, boolean>>({ rouge: false, ambre: false })
+  const [activeTags, setActiveTags] = useState<string[]>([])
   useEffect(() => {
     if (searchParams.has('commande')) {
       const next = new URLSearchParams(searchParams)
@@ -400,6 +493,14 @@ export function FilsCommandes() {
     onSuccess: invalidateAll,
   })
 
+  // « Clôturer quand même » — its own right; the dialog asks the reason.
+  const canForceClose = useHasPermission(PERMISSION_CLOTURER)
+  const [forceCloseOpen, setForceCloseOpen] = useState(false)
+  const cancelForceCloseMut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-fil/${selectedId}/cloture-forcee`, { method: 'DELETE' }),
+    onSuccess: invalidateAll,
+  })
+
   const handleSelect = useCallback((id: number) => {
     guard.guardAction(() => {
       setIsEditing(false)
@@ -407,7 +508,7 @@ export function FilsCommandes() {
     })
   }, [guard])
 
-  const handleStatusFilterChange = useCallback((s: 'all' | 'en_cours' | 'terminee') => {
+  const handleStatusFilterChange = useCallback((s: StatusFilter) => {
     guard.guardAction(() => {
       setIsEditing(false)
       setStatusFilter(s)
@@ -427,13 +528,30 @@ export function FilsCommandes() {
     )
   }, [commandes, searchQuery])
 
+  // Counter pills (mps_designer §41): rouge = to do now, ambre = can be done
+  // now — counted over the loaded list; a toggle disarms when its bucket
+  // empties (the pill hides at 0, an armed empty filter would strand the user).
+  const urgenceCounts = { rouge: 0, ambre: 0 }
+  for (const r of filtered) if (r.urgence) urgenceCounts[r.urgence.niveau] += 1
+  const urgenceActive: Record<NiveauUrgence, boolean> = {
+    rouge: urgenceOn.rouge && urgenceCounts.rouge > 0,
+    ambre: urgenceOn.ambre && urgenceCounts.ambre > 0,
+  }
+  const urgenceRows = urgenceActive.rouge || urgenceActive.ambre
+    ? filtered.filter((r) => r.urgence && urgenceActive[r.urgence.niveau])
+    : filtered
+  // Stage tags in the search bar, counted over the loaded list WITHOUT the
+  // free text (the text that finds a tag also narrows the list).
+  const tags = useMemo(() => etapeTags(commandes ?? []), [commandes])
+  const visibleRows = filterRowsByTags(urgenceRows, activeTags, tags)
+
   // Keep the selection valid against the (possibly search-filtered) list: when
   // the selected commande isn't among the current results, select the one at
   // the top. Covers both the initial load and search narrowing the list — so
   // typing in the search bar auto-selects the first visible commande. Skip
   // while editing so we never discard unsaved changes out from under the user.
   useAutoSelectFirst({
-    rows: filtered,
+    rows: visibleRows,
     selectedId,
     getId: (c) => c.IDcommande_fil,
     select: setSelectedId,
@@ -447,7 +565,7 @@ export function FilsCommandes() {
       <MasterDetailLayout
         list={
           <CommandeList
-            rows={filtered}
+            rows={visibleRows}
             isLoading={isLoading}
             isError={isError}
             error={error as Error | null}
@@ -455,6 +573,12 @@ export function FilsCommandes() {
             onSelect={handleSelect}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={(keys) => setActiveTags(keys.slice(-1))}
+            urgenceCounts={urgenceCounts}
+            urgenceOn={urgenceActive}
+            onToggleUrgence={(n) => setUrgenceOn((v) => ({ ...v, [n]: !v[n] }))}
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilterChange}
             onNew={() => setCreateOpen(true)}
@@ -511,7 +635,10 @@ export function FilsCommandes() {
             editIDAdresseLivraison={editIDAdresseLivraison}
             onEditIDAdresseLivraisonChange={setEditIDAdresseLivraison}
             onToggleEtat={() => toggleEtatMut.mutate(detail?.etat === 1 ? 0 : 1)}
-            isTogglingEtat={toggleEtatMut.isPending}
+            isTogglingEtat={toggleEtatMut.isPending || cancelForceCloseMut.isPending}
+            canForceClose={canForceClose}
+            onForceClose={() => setForceCloseOpen(true)}
+            onCancelForceClose={() => cancelForceCloseMut.mutate()}
           />
         ) : null}
         sidebarTitle="Informations"
@@ -537,6 +664,16 @@ export function FilsCommandes() {
           setAutoEditForId(newId)
         }}
       />
+
+      {detail?.cycle && (
+        <ForceCloseDialog
+          open={forceCloseOpen}
+          commandeId={detail.IDcommande_fil}
+          cycle={detail.cycle}
+          onClose={() => setForceCloseOpen(false)}
+          onDone={() => { setForceCloseOpen(false); invalidateAll() }}
+        />
+      )}
 
       <ConfirmDialog
         open={deleteCommandeConfirmOpen}
@@ -568,11 +705,96 @@ export function FilsCommandes() {
 
 // ── Left Panel: List ───────────────────────────────────
 
+const GAP_CHIP_LABEL: Record<AttenteCommande, string> = {
+  certificat: 'GOTS',
+  facture: 'Facture',
+  paiement: 'À régler',
+}
+
+// Liseré + reason of a card (mps_designer §41): neutral by default.
+const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; hover: string; text: string }> = {
+  rouge: {
+    lisere: 'shadow-[inset_4px_0_0_0_rgb(239_68_68)]',
+    selected: 'border-red-500 ring-1 ring-red-500',
+    hover: 'border-border hover:border-red-500/50',
+    text: 'text-red-600',
+  },
+  ambre: {
+    lisere: 'shadow-[inset_4px_0_0_0_rgb(245_158_11)]',
+    selected: 'border-amber-500 ring-1 ring-amber-500',
+    hover: 'border-border hover:border-amber-500/50',
+    text: 'text-amber-700',
+  },
+}
+
+const URGENCE_PILLS: Array<{ niveau: NiveauUrgence; title: string; on: string; off: string }> = [
+  {
+    niveau: 'rouge',
+    title: 'Commandes avec quelque chose à faire maintenant (livraison en retard, facture ou certificat à relancer, paiement échu)',
+    on: 'bg-red-500 text-white border-red-500 shadow-sm',
+    off: 'bg-red-500/10 text-red-700 border-red-500/30 hover:bg-red-500/20',
+  },
+  {
+    niveau: 'ambre',
+    title: 'Commandes où quelque chose peut déjà être fait, sans urgence',
+    on: 'bg-amber-500 text-white border-amber-500 shadow-sm',
+    off: 'bg-amber-500/10 text-amber-800 border-amber-500/30 hover:bg-amber-500/20',
+  },
+]
+
+// Stage tags of the search bar (SmartSearchInput, like Clients › Commandes):
+// one per stage / missing document, drawn as the card's own pills.
+function EtapeTagPill({ tone, icon: Icon, children }: {
+  tone: 'primary' | 'amber' | 'success'
+  icon: React.ElementType
+  children: React.ReactNode
+}) {
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium text-white whitespace-nowrap',
+      tone === 'primary' && 'bg-primary border-primary',
+      tone === 'amber' && 'bg-amber-500 border-amber-500',
+      tone === 'success' && 'bg-success border-success',
+    )}>
+      <Icon className="h-3 w-3" />{children}
+    </span>
+  )
+}
+
+function etapeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
+  const etape = (r: CommandeListRow): EtapeCommande => r.cycle?.etape ?? (r.etat === 1 ? 'terminee' : 'en_cours')
+  const defs: Array<{ key: string; label: string; tone: 'primary' | 'amber' | 'success'; icon: React.ElementType; predicate: (r: CommandeListRow) => boolean }> = [
+    { key: 'etape:en_cours', label: 'Fil attendu', tone: 'primary', icon: Clock, predicate: (r) => etape(r) === 'en_cours' },
+    { key: 'attente:certificat', label: 'Attente certificat GOTS', tone: 'amber', icon: ShieldAlert, predicate: (r) => !!r.cycle?.attentes.includes('certificat') },
+    { key: 'attente:facture', label: 'Attente facture', tone: 'amber', icon: ReceiptText, predicate: (r) => !!r.cycle?.attentes.includes('facture') },
+    { key: 'attente:paiement', label: 'Attente paiement', tone: 'amber', icon: ReceiptText, predicate: (r) => !!r.cycle?.attentes.includes('paiement') },
+    { key: 'etape:terminee', label: 'Terminée', tone: 'success', icon: CheckCircle2, predicate: (r) => etape(r) === 'terminee' },
+  ]
+  return defs.map((d) => ({
+    key: d.key,
+    label: d.label,
+    renderPill: (trailing) => <EtapeTagPill tone={d.tone} icon={d.icon}>{d.label}{trailing}</EtapeTagPill>,
+    count: rows.filter(d.predicate).length,
+    predicate: d.predicate,
+  }))
+}
+
+/** The gaps a card names: everything that holds a received order open; on
+ *  any other order only an unpaid invoice (the #1292 « À régler » marker),
+ *  since an invoice may be paid before the yarn arrives. */
+function gapsOnCard(row: CommandeListRow): AttenteCommande[] {
+  if (!row.cycle) return row.factures_a_regler > 0 ? ['paiement'] : []
+  if (row.cycle.etape === 'attente') return row.cycle.attentes
+  return row.cycle.manques.includes('paiement') && !row.cycle.cloture_forcee ? ['paiement'] : []
+}
+
 function CommandeList({
   rows, isLoading, isError, error,
   selectedId, onSelect,
   searchQuery, onSearchChange,
   statusFilter, onStatusFilterChange,
+  tags, activeTags, onActiveTagsChange,
+  urgenceCounts, urgenceOn, onToggleUrgence,
   onNew, isEditing,
 }: {
   rows: CommandeListRow[]
@@ -583,8 +805,15 @@ function CommandeList({
   onSelect: (id: number) => void
   searchQuery: string
   onSearchChange: (q: string) => void
-  statusFilter: 'all' | 'en_cours' | 'terminee'
-  onStatusFilterChange: (s: 'all' | 'en_cours' | 'terminee') => void
+  statusFilter: StatusFilter
+  onStatusFilterChange: (s: StatusFilter) => void
+  tags: SearchTagDef<CommandeListRow>[]
+  activeTags: string[]
+  onActiveTagsChange: (keys: string[]) => void
+  /** Loaded commandes per urgence level — the counters right of the search (0 hides one). */
+  urgenceCounts: Record<NiveauUrgence, number>
+  urgenceOn: Record<NiveauUrgence, boolean>
+  onToggleUrgence: (n: NiveauUrgence) => void
   onNew: () => void
   isEditing: boolean
 }) {
@@ -592,28 +821,46 @@ function CommandeList({
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       {/* Search + filter header */}
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Rechercher (n°, fournisseur...)"
+        <div className="flex items-center gap-2">
+          <SmartSearchInput<never, CommandeListRow>
+            className="flex-1 min-w-0"
             value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            autoComplete="off"
-            className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            onValueChange={onSearchChange}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={onActiveTagsChange}
+            placeholder="Rechercher (n°, fournisseur...)"
+            chipPlaceholder="Rechercher…"
           />
+          {URGENCE_PILLS.map((p) => urgenceCounts[p.niveau] > 0 && (
+            <button
+              key={p.niveau}
+              type="button"
+              onClick={() => onToggleUrgence(p.niveau)}
+              aria-pressed={urgenceOn[p.niveau]}
+              title={p.title}
+              className={cn(
+                'h-7 min-w-[1.75rem] px-1.5 inline-flex items-center justify-center rounded-md text-xs font-semibold tabular-nums border transition-colors flex-shrink-0',
+                urgenceOn[p.niveau] ? p.on : p.off,
+              )}
+            >
+              {urgenceCounts[p.niveau]}
+            </button>
+          ))}
         </div>
         <div className="flex gap-1">
           {([
-            { key: 'en_cours', label: 'En cours' },
-            { key: 'terminee', label: 'Terminées' },
-            { key: 'all', label: 'Toutes' },
+            { key: 'en_cours', label: 'En cours', title: 'Commandes pas encore terminées : fil attendu, ou reçu en attente d’un document' },
+            { key: 'attente', label: 'En attente', title: 'Fil reçu, il manque un certificat GOTS, une facture ou un paiement' },
+            { key: 'terminee', label: 'Terminées', title: undefined },
+            { key: 'all', label: 'Toutes', title: undefined },
           ] as const).map((opt) => (
             <button
               key={opt.key}
               onClick={() => onStatusFilterChange(opt.key)}
+              title={opt.title}
               className={cn(
-                'flex-1 px-2 py-1 text-xs rounded-md transition-colors',
+                'flex-1 px-2 py-1 text-xs rounded-md transition-colors whitespace-nowrap',
                 statusFilter === opt.key
                   ? 'bg-accent text-accent-foreground shadow-sm font-medium'
                   : 'text-muted-foreground hover:bg-accent/10'
@@ -641,41 +888,44 @@ function CommandeList({
           </div>
         ) : rows.map((row) => {
           const isSelected = selectedId === row.IDcommande_fil
-          const urgency = deliveryUrgency(row.earliest_delivery, row.etat)
-          const selectedRingClass =
-            urgency === 'late' ? 'border-red-500 ring-1 ring-red-500'
-            : urgency === 'soon' ? 'border-amber-500 ring-1 ring-amber-500'
-            : 'border-zinc-400 ring-1 ring-zinc-400'
-          const hoverClass =
-            urgency === 'late' ? 'border-border hover:border-red-500/50'
-            : urgency === 'soon' ? 'border-border hover:border-amber-500/50'
-            : 'border-border hover:border-zinc-400/60'
+          // Neutral by default (mps_designer §41): the liseré says there is
+          // something to do — rouge now, ambre possible now (API urgenceCommandeFil).
+          const u = row.urgence ? URGENCE_CARD[row.urgence.niveau] : null
           return (
             <div
               key={row.IDcommande_fil}
               onClick={() => onSelect(row.IDcommande_fil)}
               className={cn(
                 'p-3 border rounded-lg cursor-pointer transition-all bg-white',
-                isSelected ? selectedRingClass : hoverClass,
-                // Inset left-edge strip via box-shadow — coexists with ring via --tw-shadow
-                urgency === 'late' && 'shadow-[inset_4px_0_0_0_rgb(239_68_68)]',
-                urgency === 'soon' && 'shadow-[inset_4px_0_0_0_rgb(245_158_11)]'
+                isSelected
+                  ? (u?.selected ?? 'border-zinc-400 ring-1 ring-zinc-400')
+                  : (u?.hover ?? 'border-border hover:border-zinc-400/60'),
+                u?.lisere,
               )}
             >
               <div className="flex items-center gap-2">
                 <ShoppingCart className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <span className="font-medium text-sm">N° {row.IDcommande_fil}</span>
-                {row.factures_a_regler > 0 && (
-                  <span
-                    className="inline-flex items-center gap-1 rounded-full border border-zinc-300 bg-zinc-100 px-1.5 text-[10px] font-medium text-zinc-600"
-                    title={row.factures_a_regler > 1 ? `${row.factures_a_regler} factures à régler` : 'Facture à régler'}
-                  >
-                    <ReceiptText className="h-2.5 w-2.5" />À régler
-                  </span>
-                )}
-                <CommandeEtatBadge etat={row.etat} className="ml-auto" />
+                {gapsOnCard(row).map((a) => {
+                  const GapIcon = a === 'certificat' ? ShieldAlert : ReceiptText
+                  return (
+                    <span
+                      key={a}
+                      className="inline-flex items-center gap-1 rounded-full border border-zinc-300 bg-zinc-100 px-1.5 text-[10px] font-medium text-zinc-600 whitespace-nowrap"
+                      title={row.cycle ? attenteDetail(a, row.cycle) : undefined}
+                    >
+                      <GapIcon className="h-2.5 w-2.5" />{GAP_CHIP_LABEL[a]}
+                    </span>
+                  )
+                })}
+                <CommandeEtapeBadge cycle={row.cycle} etat={row.etat} className="ml-auto" />
               </div>
               <p className="text-xs text-muted-foreground mt-1 truncate">{row.fournisseur_nom || '—'}</p>
+              {row.urgence && u && (
+                <p className={cn('text-[11px] font-medium mt-1 truncate', u.text)} title={row.urgence.raison}>
+                  {row.urgence.raison}
+                </p>
+              )}
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                 {row.date_commande && <span>{formatHfsqlDate(row.date_commande)}</span>}
                 {row.total_kg > 0 && (
@@ -1444,6 +1694,7 @@ function DetailSidebar({
   editIDAdresseFacturation, onEditIDAdresseFacturationChange,
   editIDAdresseLivraison, onEditIDAdresseLivraisonChange,
   onToggleEtat, isTogglingEtat,
+  canForceClose, onForceClose, onCancelForceClose,
 }: {
   commande: CommandeDetail | null
   isLoading: boolean
@@ -1464,6 +1715,9 @@ function DetailSidebar({
   onEditIDAdresseLivraisonChange: (v: number) => void
   onToggleEtat: () => void
   isTogglingEtat: boolean
+  canForceClose: boolean
+  onForceClose: () => void
+  onCancelForceClose: () => void
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('info')
 
@@ -1560,9 +1814,13 @@ function DetailSidebar({
       </div>
       <StatusFooter
         etat={commande.etat}
+        cycle={commande.cycle}
         onToggle={onToggleEtat}
         isToggling={isTogglingEtat}
         disabled={isEditing}
+        canForceClose={canForceClose}
+        onForceClose={onForceClose}
+        onCancelForceClose={onCancelForceClose}
       />
     </div>
   )
@@ -1570,15 +1828,102 @@ function DetailSidebar({
 
 // ── Sidebar Status Footer ──────────────────────────────
 
+/** « Clôturée quand même le 13/10/2026 par … : motif ». */
+function clotureForceeDetail(c: ClotureForcee): string {
+  const date = `${c.le.slice(8, 10)}/${c.le.slice(5, 7)}/${c.le.slice(0, 4)}`
+  return `Clôturée quand même le ${date}${c.par ? ` par ${c.par}` : ''} : ${c.motif}`
+}
+
+// Three stages (lib/cycle-commande-fil.ts): « En cours » (yarn awaited) →
+// « Attente … » once received while a certificate / invoice / payment is
+// missing → « Terminée ». Only the reception is moved by hand (Clôturer /
+// Rouvrir); the waits follow the documents, and « Clôturer quand même »
+// (own right, reason required) is the escape — a §29.4 menu on the waiting
+// and forced stages, the §29.3 split toggle otherwise.
 function StatusFooter({
-  etat, onToggle, isToggling, disabled,
+  etat, cycle, onToggle, isToggling, disabled,
+  canForceClose, onForceClose, onCancelForceClose,
 }: {
   etat: number | null
+  cycle: CycleCommande | null
   onToggle: () => void
   isToggling: boolean
   disabled: boolean
+  canForceClose: boolean
+  onForceClose: () => void
+  onCancelForceClose: () => void
 }) {
-  const isTerminee = etat === 1
+  const [menuOpen, setMenuOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [menuOpen])
+
+  const etape: EtapeCommande = cycle?.etape ?? (etat === 1 ? 'terminee' : 'en_cours')
+  const forcee = cycle?.cloture_forcee ?? null
+
+  if (etape === 'attente' || forcee) {
+    const isAttente = etape === 'attente'
+    const Icon = isAttente ? Hourglass : CheckCircle2
+    const label = isAttente ? attenteLabel(cycle!.attentes) : 'Terminée · forcée'
+    const title = isAttente
+      ? cycle!.attentes.map((a) => attenteDetail(a, cycle!)).join('\n')
+      : clotureForceeDetail(forcee!)
+    const items: Array<{ key: string; label: string; icon: React.ElementType; onClick: () => void }> = []
+    if (isAttente && canForceClose) items.push({ key: 'force', label: 'Clôturer quand même…', icon: CheckCircle2, onClick: onForceClose })
+    if (!isAttente && canForceClose) items.push({ key: 'unforce', label: 'Annuler la clôture forcée', icon: RotateCcw, onClick: onCancelForceClose })
+    items.push({ key: 'reopen', label: 'Rouvrir la réception', icon: Clock, onClick: onToggle })
+    return (
+      <div ref={rootRef} className="flex-shrink-0 relative">
+        <div className={cn(
+          'rounded-xl border shadow-sm overflow-hidden flex items-stretch h-11',
+          isAttente ? 'bg-amber-500 border-amber-500' : 'bg-success border-success',
+        )}>
+          <div className="flex items-center gap-2 px-3 flex-1 text-white min-w-0" title={title}>
+            <Icon className="h-4 w-4 flex-shrink-0" />
+            <span className="text-sm font-bold uppercase tracking-wide truncate">{label}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            disabled={disabled || isToggling}
+            title="Changer l’état"
+            className="px-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 disabled:bg-white/5 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold border-l border-white/25 flex items-center gap-1.5 transition-colors"
+          >
+            {isToggling
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <ChevronUp className={cn('h-3.5 w-3.5 transition-transform', menuOpen && 'rotate-180')} />}
+            Changer
+          </button>
+        </div>
+        {menuOpen && (
+          <div className="absolute bottom-full right-0 mb-1 w-full min-w-[220px] rounded-lg border bg-white shadow-lg overflow-hidden z-50">
+            {items.map((item) => {
+              const ItemIcon = item.icon
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => { setMenuOpen(false); item.onClick() }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-zinc-100"
+                >
+                  <ItemIcon className="h-4 w-4 text-muted-foreground" />
+                  {item.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const isTerminee = etape === 'terminee'
   const Icon = isTerminee ? CheckCircle2 : Clock
   const label = isTerminee ? 'Terminée' : 'En cours'
   const actionLabel = isTerminee ? 'Rouvrir' : 'Clôturer'
@@ -1599,13 +1944,83 @@ function StatusFooter({
         type="button"
         onClick={onToggle}
         disabled={disabled || isToggling}
-        title={isTerminee ? 'Marquer en cours' : 'Marquer terminée'}
+        title={isTerminee ? 'Rouvrir la réception du fil' : 'Tout le fil est reçu'}
         className="px-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 disabled:bg-white/5 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold border-l border-white/25 flex items-center gap-1.5 transition-colors"
       >
         <ActionIcon className="h-3.5 w-3.5" />
         {actionLabel}
       </button>
     </div>
+  )
+}
+
+// ── « Clôturer quand même » ────────────────────────────
+
+function ForceCloseDialog({ open, commandeId, cycle, onClose, onDone }: {
+  open: boolean
+  commandeId: number
+  cycle: CycleCommande
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [motif, setMotif] = useState('')
+  useEffect(() => { if (open) setMotif('') }, [open])
+  const mut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-fil/${commandeId}/cloture-forcee`, {
+      method: 'POST',
+      body: JSON.stringify({ motif: motif.trim() }),
+    }),
+    onSuccess: onDone,
+  })
+  const serverMessage = (mut.error as { body?: { message?: string } } | null)?.body?.message
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-md" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-accent" />
+            Clôturer quand même
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 space-y-1">
+            <p className="text-xs font-semibold text-amber-800">Il manque encore :</p>
+            {cycle.attentes.map((a) => (
+              <p key={a} className="text-sm text-amber-900 flex items-center gap-1.5">
+                <Hourglass className="h-3.5 w-3.5 flex-shrink-0" />{attenteDetail(a, cycle)}
+              </p>
+            ))}
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Motif (obligatoire)</label>
+            <textarea
+              value={motif}
+              onChange={(e) => setMotif(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder="Ex. : le fournisseur ne délivre pas de certificat de transaction"
+              className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            La commande passe « Terminée ». Le motif, votre nom et la date restent visibles sur la commande.
+          </p>
+          {mut.isError && (
+            <div className="flex items-center gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+              <span>{serverMessage ?? 'La commande n’a pas pu être clôturée.'}</span>
+            </div>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Annuler</Button>
+          <Button onClick={() => mut.mutate()} disabled={mut.isPending || motif.trim().length === 0}>
+            {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
+            Clôturer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1953,6 +2368,70 @@ interface TypeDoc {
   nom: string
 }
 
+/** Pill of one organic lot: covered by a GOTS certificate of the order, or not. */
+function LotCertificatPill({ lot }: { lot: LotBio }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap',
+        lot.certifie
+          ? 'bg-green-500/10 text-green-700 border-green-500/25'
+          : 'bg-red-500/10 text-red-700 border-red-500/25',
+      )}
+    >
+      {lot.certifie ? <ShieldCheck className="h-3 w-3" /> : <ShieldAlert className="h-3 w-3" />}
+      {lot.certifie ? 'Certificat GOTS' : 'Certificat manquant'}
+    </span>
+  )
+}
+
+/** Top of the Docs tab: what the order still needs before it is terminée —
+ *  each organic lot's certificate, the invoices, a forced close. */
+function SuiviCard({ cycle, etat }: { cycle: CycleCommande; etat: number | null }) {
+  const factures = cycle.nb_factures === 0
+    ? 'Aucune facture jointe'
+    : `${cycle.nb_factures} jointe${cycle.nb_factures > 1 ? 's' : ''}${cycle.factures_a_regler > 0 ? ` · ${cycle.factures_a_regler} à régler` : ' · réglée' + (cycle.nb_factures > 1 ? 's' : '')}`
+  const factureOk = cycle.nb_factures > 0 && cycle.factures_a_regler === 0
+  return (
+    <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+      <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+        <ShieldCheck className="h-3.5 w-3.5" />Suivi de la commande
+      </p>
+      {cycle.lots_bio.length > 0 && (
+        <div className="space-y-1">
+          {cycle.lots_bio.map((l) => (
+            <div key={l.IDstock_fil} className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-sm min-w-0">
+                <Leaf className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                <span className="truncate">Lot {l.lot || '—'}</span>
+              </span>
+              <LotCertificatPill lot={l} />
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-sm">
+          <ReceiptText className="h-3.5 w-3.5 text-muted-foreground" />Factures
+        </span>
+        <span className={cn('text-xs', factureOk ? 'text-green-700' : etat === 1 ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
+          {factures}
+        </span>
+      </div>
+      {cycle.cloture_forcee && (
+        <p className="text-[11px] text-muted-foreground italic border-t border-border/50 pt-2">
+          {clotureForceeDetail(cycle.cloture_forcee)}
+        </p>
+      )}
+      {!cycle.sous_regle && etat === 1 && cycle.manques.length > 0 && (
+        <p className="text-[11px] text-muted-foreground italic border-t border-border/50 pt-2">
+          Commande antérieure au 01/01/2026 : ces manques n’empêchent pas qu’elle soit terminée.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing: boolean }) {
   const queryClient = useQueryClient()
   const commandeId = commande.IDcommande_fil
@@ -1968,8 +2447,12 @@ function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing:
   const [createOpen, setCreateOpen] = useState(false)
   const [deleteDocConfirm, setDeleteDocConfirm] = useState<GedDocument | null>(null)
 
+  // Documents drive the order's stage (certificat / facture / paiement), so a
+  // change here refreshes the detail and the list too.
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: docsQueryKey })
+    queryClient.invalidateQueries({ queryKey: ['commande-fil', commandeId] })
+    queryClient.invalidateQueries({ queryKey: ['commandes-fil'] })
   }, [queryClient, commandeId])
 
   const deleteMut = useMutation({
@@ -1986,14 +2469,13 @@ function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing:
         method: 'PUT',
         body: JSON.stringify({ regle }),
       }),
-    onSuccess: () => {
-      invalidate()
-      queryClient.invalidateQueries({ queryKey: ['commandes-fil'] })
-    },
+    onSuccess: invalidate,
   })
 
   return (
     <>
+      {commande.cycle && <SuiviCard cycle={commande.cycle} etat={commande.etat} />}
+
       {isLoading && (
         <div className="flex items-center justify-center py-6">
           <Loader2 className="h-4 w-4 animate-spin text-accent" />
@@ -2114,6 +2596,7 @@ function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing:
         open={createOpen || editingDoc !== null}
         commandeId={commandeId}
         doc={editingDoc}
+        lotsBio={commande.cycle?.lots_bio ?? []}
         onClose={() => { setCreateOpen(false); setEditingDoc(null) }}
         onSuccess={() => { setCreateOpen(false); setEditingDoc(null); invalidate() }}
       />
@@ -2142,17 +2625,24 @@ interface DocLotsPayload {
   available: StockLotLite[]
 }
 
+const TYPE_DOC_CERTIFICAT_GOTS = 5
+
 function DocCreateEditDialog({
-  open, commandeId, doc, onClose, onSuccess,
+  open, commandeId, doc, lotsBio, onClose, onSuccess,
 }: {
   open: boolean
   commandeId: number
   doc: GedDocument | null  // null = create mode
+  /** The order's organic lots — a new GOTS certificate is tied to the ones it covers. */
+  lotsBio: LotBio[]
   onClose: () => void
   onSuccess: () => void
 }) {
   const isNew = doc === null
   const queryClient = useQueryClient()
+  // New GOTS certificate: which organic lots it covers (pre-ticked = the ones
+  // no certificate covers yet). Asked only when there is a choice to make.
+  const [lotsCertifies, setLotsCertifies] = useState<Set<number>>(new Set())
   const [nom, setNom] = useState('')
   const [idTypeDoc, setIdTypeDoc] = useState<number>(0)
   const [commentaire, setCommentaire] = useState('')
@@ -2192,8 +2682,11 @@ function DocCreateEditDialog({
     onSuccess: (payload) => {
       queryClient.setQueryData(lotsQueryKey, payload)
       // Keep the parent docs list in sync — the linked_lots field on each
-      // card reflects stock_fil_ged and must refresh after any toggle.
+      // card reflects stock_fil_ged and must refresh after any toggle — and
+      // the order's stage, which reads which lots a certificate covers.
       queryClient.invalidateQueries({ queryKey: ['commande-fil-docs', commandeId] })
+      queryClient.invalidateQueries({ queryKey: ['commande-fil', commandeId] })
+      queryClient.invalidateQueries({ queryKey: ['commandes-fil'] })
       setPendingLotId(null)
     },
     onError: () => { setPendingLotId(null) },
@@ -2205,6 +2698,8 @@ function DocCreateEditDialog({
     onSuccess: (payload) => {
       queryClient.setQueryData(lotsQueryKey, payload)
       queryClient.invalidateQueries({ queryKey: ['commande-fil-docs', commandeId] })
+      queryClient.invalidateQueries({ queryKey: ['commande-fil', commandeId] })
+      queryClient.invalidateQueries({ queryKey: ['commandes-fil'] })
     },
   })
 
@@ -2252,8 +2747,12 @@ function DocCreateEditDialog({
     setRemoveFichier(false)
     setError(null)
     setIsSaving(false)
+    setLotsCertifies(new Set(lotsBio.filter((l) => !l.certifie).map((l) => l.IDstock_fil)))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, doc?.IDged])
+
+  const isNewCertificat = isNew && idTypeDoc === TYPE_DOC_CERTIFICAT_GOTS && lotsBio.length > 0
+  const askLots = isNewCertificat && lotsBio.length > 1
 
   // Clean up blob URL when dialog closes.
   useEffect(() => {
@@ -2288,6 +2787,11 @@ function DocCreateEditDialog({
       formData.append('IDtype_doc', String(idTypeDoc))
       if (newFile) formData.append('fichier', newFile)
       if (removeFichier && !newFile) formData.append('remove_fichier', '1')
+      if (isNewCertificat) {
+        const ids = askLots ? [...lotsCertifies] : lotsBio.map((l) => l.IDstock_fil)
+        if (ids.length === 0) throw new Error('Cochez au moins un lot couvert par ce certificat.')
+        formData.append('lots', ids.join(','))
+      }
 
       const url = isNew
         ? `${API_URL}/commandes-fil/${commandeId}/documents`
@@ -2347,6 +2851,37 @@ function DocCreateEditDialog({
                 className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
             </div>
+            {askLots && (
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <BobineIcon className="h-3.5 w-3.5 text-accent" />Lots couverts par ce certificat
+                </label>
+                <div className="rounded-md border border-input bg-white">
+                  {lotsBio.map((l) => (
+                    <label
+                      key={l.IDstock_fil}
+                      className="flex items-center gap-2 px-2 py-1.5 border-b border-border/40 last:border-0 hover:bg-accent/5 cursor-pointer select-none"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={lotsCertifies.has(l.IDstock_fil)}
+                        onChange={() => setLotsCertifies((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(l.IDstock_fil)) next.delete(l.IDstock_fil); else next.add(l.IDstock_fil)
+                          return next
+                        })}
+                        className="h-3.5 w-3.5 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer"
+                      />
+                      <span className="text-[11px] font-medium flex-1 truncate">Lot {l.lot || '—'}</span>
+                      {l.certifie && <span className="text-[10px] text-green-700">déjà certifié</span>}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Cochez les lots des livraisons que ce certificat liste. Un lot reçu plus tard ne sera pas couvert.
+                </p>
+              </div>
+            )}
             {!isNew && doc && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border/60 bg-white shadow-sm">

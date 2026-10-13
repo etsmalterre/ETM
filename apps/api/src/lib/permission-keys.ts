@@ -347,6 +347,16 @@ export const PERMISSION_KEYS = [
     description: 'Autorise la création de nouvelles entrées dans Fournisseurs > Stock.',
     category: 'Fournisseurs',
   },
+  // A received yarn order stays open until its organic lots are certified and
+  // its invoices attached and paid (lib/cycle-commande-fil.ts); this right
+  // closes it anyway, with a reason, journaled. Closed by default.
+  {
+    key: 'cloturer_commande_fil',
+    label: 'Clôturer une commande de fil quand même',
+    description:
+      'Autorise « Clôturer quand même » dans Fils > Commandes : termine une commande reçue à laquelle il manque encore un certificat GOTS, une facture ou un paiement (fournisseur qui n’enverra jamais le certificat, facture réglée hors circuit…). Le motif est obligatoire ; qui, quand et pourquoi restent tracés sur la commande.',
+    category: 'Fournisseurs',
+  },
   {
     key: 'cut_stock_fini',
     label: 'Couper un rouleau',
