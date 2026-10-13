@@ -71,6 +71,15 @@ describe('urgenceLigne: mode de livraison of a ready line', () => {
     const lancer: LigneUrgence = { etat: 'a_lancer', typeKind: 2, dateLivraison: dans(20), modeLivraison: 'sur_appel' }
     expect(niveau(lancer)).toBe('rouge')
   })
+  it('« commande complète » waits while another line is in production, then ships like « dès que prête »', () => {
+    expect(niveau({ ...pae(-5, 'commande_complete'), commandeIncomplete: true })).toBe(null)
+    expect(niveau(pae(-5, 'commande_complete'))).toBe('rouge')
+    // the order: the ready line waits, the lagging line alone speaks
+    expect(urgenceCommande([pae(-5, 'commande_complete'), l('ennoblisseur', 20)], today)).toBe(null)
+    expect(urgenceCommande([pae(-5, 'commande_complete'), l('pae', 30), l('expediee', -40)], today)?.niveau).toBe('rouge')
+    // a divers line not shipped yet is ready by nature: it never holds the order back
+    expect(urgenceCommande([pae(-5, 'commande_complete'), { ...l('a_lancer', 30), typeKind: 3 }], today)?.niveau).toBe('rouge')
+  })
   it('the reason names the date it is about', () => {
     expect(urgenceCommande([pae(-20, 'date_client', 2)], today)?.raison)
       .toBe(`1 ligne à expédier · expédition prévue ${dans(2).slice(6, 8)}/${dans(2).slice(4, 6)}`)
@@ -84,6 +93,7 @@ describe('modeLivraisonDe', () => {
     expect(modeLivraisonDe(0)).toBe('des_que_prete')
     expect(modeLivraisonDe(1)).toBe('date_client')
     expect(modeLivraisonDe('2')).toBe('sur_appel')
+    expect(modeLivraisonDe(3)).toBe('commande_complete')
     expect(modeLivraisonDe(null)).toBe('des_que_prete')
     expect(modeLivraisonDe(9)).toBe('des_que_prete')
   })
@@ -102,7 +112,7 @@ describe('urgenceCommande', () => {
   it('red beats amber, and a passed délai says so', () => {
     const u = urgenceCommande([l('pae', 8), l('ennoblisseur', -6)], today)
     expect(u?.niveau).toBe('rouge')
-    expect(u?.raison).toBe('1 ligne en retard chez l’ennoblisseur · délai 02/10 dépassé')
+    expect(u?.raison).toBe('1 ligne en ennoblissement en retard · délai 02/10 dépassé')
   })
   it('names lines without délai', () => {
     expect(urgenceCommande([l('a_lancer', null, 3), l('a_lancer', null, 3)], today))

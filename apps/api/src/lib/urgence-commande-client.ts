@@ -18,6 +18,9 @@
 //   des_que_prete  ships as soon as ready: the délai is the shipping date (the rule above)
 //   date_client    the client named a date: the ready line is judged on date_expedition_prevue
 //   sur_appel      the client will call: nothing to do until 4 months past the délai, then chase
+//   commande_complete  ships with the whole order (2026-10-13, Vincent): a ready line waits, neutral,
+//                  while another line of the order is still in production; once none is, it is
+//                  judged like « dès que prête » (meanwhile the lagging line carries the urgency)
 // The production stages always run on the délai, whatever the mode.
 //
 // The card says two things, never mixed: the liseré + reason = what there is to do and when
@@ -38,7 +41,7 @@ export const SEUILS_URGENCE = {
   relanceAppel: 120,
 } as const
 
-export const MODES_LIVRAISON = ['des_que_prete', 'date_client', 'sur_appel'] as const
+export const MODES_LIVRAISON = ['des_que_prete', 'date_client', 'sur_appel', 'commande_complete'] as const
 export type ModeLivraison = (typeof MODES_LIVRAISON)[number]
 
 /** ligne_commande_client.mode_livraison (smallint) → mode; anything unknown reads « dès que prête ». */
@@ -64,6 +67,18 @@ export interface LigneUrgence {
   modeLivraison?: ModeLivraison
   /** YYYYMMDD, the date agreed with the client (mode date_client only) */
   dateExpedition?: string | null
+  /** mode commande_complete only: another line of the order is still in production */
+  commandeIncomplete?: boolean
+}
+
+/** A line that has not reached « prête à expédier » yet (divers: no production, ready by nature). */
+function enProduction(l: Pick<LigneUrgence, 'etat' | 'typeKind'>): boolean {
+  return l.etat === 'tricotage' || l.etat === 'ennoblisseur' || (l.etat === 'a_lancer' && l.typeKind !== 3)
+}
+
+/** True while some line of the order is still in production: a « commande complète » line waits for it. */
+export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 'typeKind'>[]): boolean {
+  return lignes.some(enProduction)
 }
 
 type Action = 'lancer' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
@@ -101,6 +116,7 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
   // Divers lines carry no production: « à lancer » means « not shipped yet ».
   if (l.etat === 'pae' || (l.etat === 'a_lancer' && l.typeKind === 3)) {
     const mode = l.modeLivraison ?? 'des_que_prete'
+    if (mode === 'commande_complete' && l.commandeIncomplete) return null
     if (mode === 'sur_appel') {
       return j < -S.relanceAppel ? { niveau: 'rouge', action: 'relancer', jours: j, date, quoi: 'délai' } : null
     }
@@ -127,7 +143,7 @@ const LIBELLE: Record<Action, [string, string]> = {
   solder: ['ligne à expédier ou solder', 'lignes à expédier ou solder'],
   relancer: ['ligne sur appel : relancer le client', 'lignes sur appel : relancer le client'],
   tricotage: ['ligne en tricotage en retard', 'lignes en tricotage en retard'],
-  ennoblisseur: ['ligne en retard chez l’ennoblisseur', 'lignes en retard chez l’ennoblisseur'],
+  ennoblisseur: ['ligne en ennoblissement en retard', 'lignes en ennoblissement en retard'],
   sans_delai: ['ligne sans délai', 'lignes sans délai'],
 }
 
@@ -137,7 +153,10 @@ const jjmm = (d: string) => `${d.slice(6, 8)}/${d.slice(4, 6)}`
  *  share it at any level (3900: 3 lines due 06/11 + 3 due 27/11 are launched together, « 6 lignes
  *  à lancer »), and the most urgent délai. Null = neutral. */
 export function urgenceCommande(lignes: readonly LigneUrgence[], today: Date): UrgenceCommande | null {
-  const verdicts = lignes.map((l) => urgenceLigne(l, today)).filter((v): v is Verdict => v !== null)
+  const incomplete = commandeIncomplete(lignes)
+  const verdicts = lignes
+    .map((l) => urgenceLigne({ ...l, commandeIncomplete: incomplete }, today))
+    .filter((v): v is Verdict => v !== null)
   if (verdicts.length === 0) return null
   // Most urgent first: level, then earliest délai (no délai last within a level).
   const cle = (v: Verdict) => -RANG[v.niveau] * 1e6 + (v.jours ?? 1e5)

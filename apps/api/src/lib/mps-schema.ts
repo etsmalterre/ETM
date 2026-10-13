@@ -765,6 +765,17 @@ ${grantApi('SELECT, INSERT, UPDATE', 'reprise, reprise_piece')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE reprise_id_seq')}
 `,
   },
+  {
+    // Clients › Commandes — a 4th mode de livraison (2026-10-13, Vincent): 3 = « commande
+    // complète », a ready line ships with the whole order, once no other line of the order
+    // is still in production (lib/urgence-commande-client.ts).
+    name: '0019_ligne_client_mode_commande_complete',
+    sql: `
+ALTER TABLE ligne_commande_client
+  DROP CONSTRAINT ligne_commande_client_mode_livraison_check,
+  ADD CONSTRAINT ligne_commande_client_mode_livraison_check CHECK (mode_livraison IN (0, 1, 2, 3));
+`,
+  },
 ]
 
 export interface MigrationStatus {

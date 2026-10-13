@@ -22,7 +22,7 @@ const SEUIL_EXPEDIE = 0.9
 export const STATUT_LIGNE_META: Record<EtatLigneClient, { label: string; icon: ComponentType<{ className?: string }>; classes: string }> = {
   a_lancer: { label: 'À lancer', icon: CircleDashed, classes: 'bg-zinc-100 text-zinc-700 border-zinc-300' },
   tricotage: { label: 'En tricotage', icon: Factory, classes: 'bg-amber-500/15 text-amber-800 border-amber-500/30' },
-  ennoblisseur: { label: 'Chez l’ennoblisseur', icon: Droplets, classes: 'bg-sky-500/10 text-sky-700 border-sky-500/25' },
+  ennoblisseur: { label: 'En ennoblissement', icon: Droplets, classes: 'bg-sky-500/10 text-sky-700 border-sky-500/25' },
   pae: { label: 'Prête à expédier', icon: PackageCheck, classes: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
   expediee: { label: 'Expédiée', icon: Truck, classes: 'bg-green-600 text-white border-green-600' },
   soldee: { label: 'Soldée', icon: Archive, classes: 'bg-zinc-500 text-white border-zinc-500' },

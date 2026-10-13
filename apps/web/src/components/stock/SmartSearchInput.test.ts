@@ -19,7 +19,7 @@ const tags = [
   tag('urgence:rouge', 'À faire', (r) => r.urgence === 'rouge'),
   tag('urgence:ambre', 'Bientôt', (r) => r.urgence === 'ambre'),
   tag('etat:a_lancer', 'À lancer', (r) => r.etats.includes('a_lancer')),
-  tag('etat:ennoblisseur', 'Chez l’ennoblisseur', (r) => r.etats.includes('ennoblisseur')),
+  tag('etat:ennoblisseur', 'En ennoblissement', (r) => r.etats.includes('ennoblisseur')),
   tag('etat:pae', 'Prête à expédier', (r) => r.etats.includes('pae')),
   tag('etat:expediee', 'Expédiée', (r) => r.etats.includes('expediee')),
 ]

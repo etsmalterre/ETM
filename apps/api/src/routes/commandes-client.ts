@@ -24,7 +24,7 @@
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
 import { faitsLignesClient, statutLigneClient, type EtatLigneClient } from '../lib/statut-ligne-client.js'
-import { avancementCommande, modeLivraisonDe, MODES_LIVRAISON, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
+import { avancementCommande, commandeIncomplete, modeLivraisonDe, MODES_LIVRAISON, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import multer from 'multer'
@@ -1517,6 +1517,11 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
           : undefined,
       }
     }))
+    // A « commande complète » line waits while another line of the order is still in production.
+    const incomplete = commandeIncomplete(lignesFixed.flatMap((l) => {
+      const f = faits.get(Number(l.IDligne_commande_client))
+      return f ? [{ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0 }] : []
+    }))
 
     const lignes = lignesFixed.map((l) => {
       const typeKind = Number(l.type_kind) || 0
@@ -1572,6 +1577,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
             modeLivraison: modeLivraisonDe(l.mode_livraison),
             dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
+            commandeIncomplete: incomplete,
           }, new Date())?.niveau ?? null
           : null,
       }

@@ -157,13 +157,14 @@ interface LigneCommande {
   statut: StatutLigneClient | null
 }
 
-type ModeLivraison = 'des_que_prete' | 'date_client' | 'sur_appel'
+type ModeLivraison = 'des_que_prete' | 'date_client' | 'sur_appel' | 'commande_complete'
 
 // PopoverSelect ids (0 is its « none » sentinel).
 const MODES_LIVRAISON: { id: number; mode: ModeLivraison; label: string }[] = [
   { id: 1, mode: 'des_que_prete', label: 'Dès que prête' },
   { id: 2, mode: 'date_client', label: 'Date convenue avec le client' },
   { id: 3, mode: 'sur_appel', label: 'Sur appel du client' },
+  { id: 4, mode: 'commande_complete', label: 'Commande complète' },
 ]
 
 /** Days from one YYYYMMDD to another (positive = later). */
@@ -2107,7 +2108,8 @@ function LineCard({
           const tint = line.urgence === 'rouge' ? 'text-red-600' : line.urgence === 'ambre' ? 'text-amber-600' : undefined
           const etat = line.statut?.etat
           const prete = etat === 'pae' || (isDivers && etat === 'a_lancer')
-          const surLivraison = prete && line.mode_livraison !== 'des_que_prete'
+          // « commande complète » ships like « dès que prête » once nothing else is in production: tint on the délai.
+          const surLivraison = prete && (line.mode_livraison === 'sur_appel' || line.mode_livraison === 'date_client')
           const retard = line.delai_initial && line.date_livraison && line.delai_initial !== line.date_livraison
             ? joursEntre(line.delai_initial, line.date_livraison) : 0
           return (
@@ -2122,6 +2124,9 @@ function LineCard({
               )}
               {line.mode_livraison === 'sur_appel' && (
                 <LineStat label="Livraison" value="Sur appel" valueClass={surLivraison ? tint : undefined} />
+              )}
+              {line.mode_livraison === 'commande_complete' && (
+                <LineStat label="Livraison" value="Commande complète" title="Expédiée avec toute la commande, quand plus aucune ligne n’est en production" />
               )}
               {line.mode_livraison === 'date_client' && line.date_expedition_prevue && (
                 <LineStat label="Expédition prévue" value={formatHfsqlDate(line.date_expedition_prevue)} valueClass={surLivraison ? tint : undefined} />
