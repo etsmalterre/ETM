@@ -1414,8 +1414,12 @@ async function chargerContexte(id: number) {
     const last = pieces[0]
     const lastPieceId = last ? n(last.IDpiece_production) : 0
 
+    const lastClosed = last ? parseDtMs(last.date_fin) !== null : true
     const [nettoyages, nbMessages, derniere] = await Promise.all([
-      lastPieceId > 0 ? countNettoyages(lastPieceId) : Promise.resolve(0),
+      // A closed last piece is not the one on the machine: after « Réactiver
+      // l'OF » the machine knits a piece no row exists for yet, and it has had
+      // no nettoyage — counting the closed piece's would hide the action.
+      lastPieceId > 0 && !lastClosed ? countNettoyages(lastPieceId) : Promise.resolve(0),
       countMessages(id),
       lastPieceId > 0 ? lastAction(lastPieceId) : Promise.resolve(null),
     ])
@@ -1449,7 +1453,7 @@ async function chargerContexte(id: number) {
         numero_affiche: total + 1,
         IDpiece_production: lastPieceId,
         numero: last ? n(last.numero) : 0,
-        terminee: last ? parseDtMs(last.date_fin) !== null : true,
+        terminee: lastClosed,
       },
       compteur: await compteurFor(refId, machineId, poidsPiece),
       derniere_action: derniere,
@@ -1764,7 +1768,8 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
       }
     }
 
-    const pieceId = ctx.piece_en_cours.IDpiece_production
+    let pieceId = ctx.piece_en_cours.IDpiece_production
+    let numero = ctx.piece_en_cours.numero
     // Every branch except « Lancement OF » writes against an existing piece.
     if (body.action !== 'Lancement OF' && pieceId <= 0) {
       res.status(409).json({ error: 'aucune_piece', message: "Cet OF n'a aucune pièce ouverte." })
@@ -1777,6 +1782,24 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
     const ecrits: string[] = []
 
     // ── Writes. Past this line a failure is partial, and the response says so.
+
+    // ⚠️ A running OF whose last piece is CLOSED is an OF the ERP re-activated
+    // (« Réactiver l'OF », LIVA #1197 — it clears arret_prod and touches no
+    // piece). The machine has been knitting a piece no row exists for since
+    // that close. Record it first — numero + 1, started when the previous one
+    // ended — so the action lands on the piece actually on the machine. Before
+    // this, « Dernière pièce » re-closed the old piece and the knitted one was
+    // never recorded (OF 3601, 2026-10-13: pièce 11 « finie » twice, no 12).
+    // « Relancer OF » keeps its own legacy handling of a closed piece.
+    if (ctx.piece_en_cours.terminee && body.action !== 'Lancement OF' && body.action !== 'Relancer OF') {
+      const debut = await finDePiece(pieceId)
+      numero += 1
+      pieceId = await creerPiece(id, numero, debut)
+      ecrits.push(`piece ${pieceId}`)
+      await ecrireEvenement(pieceId, EVT_DEBUT_PIECE, body.IDbonnetier, appareil, debut)
+      ecrits.push(EVT_DEBUT_PIECE)
+    }
+
     switch (body.action) {
       case 'Lancement OF': {
         await query(
@@ -1802,12 +1825,10 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
       }
 
       case 'Fin de pièce': {
-        if (!ctx.piece_en_cours.terminee) {
-          await fermerPiece(pieceId, ctx.poids_piece)
-          await ecrireEvenement(pieceId, EVT_FIN_PIECE, body.IDbonnetier, appareil)
-          ecrits.push(EVT_FIN_PIECE)
-        }
-        const suivante = await creerPiece(id, ctx.piece_en_cours.numero + 1)
+        await fermerPiece(pieceId, ctx.poids_piece)
+        await ecrireEvenement(pieceId, EVT_FIN_PIECE, body.IDbonnetier, appareil)
+        ecrits.push(EVT_FIN_PIECE)
+        const suivante = await creerPiece(id, numero + 1)
         ecrits.push(`piece ${suivante}`)
         await ecrireEvenement(suivante, EVT_DEBUT_PIECE, body.IDbonnetier, appareil)
         ecrits.push(EVT_DEBUT_PIECE)
@@ -1903,13 +1924,24 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
  *
  *  `poids` starts at 0 — the legacy leaves it untouched until a Nettoyage
  *  (half) or a fin de pièce (full) sets it. */
-async function creerPiece(ofId: number, numero: number): Promise<number> {
+async function creerPiece(ofId: number, numero: number, debut: string = nowDt()): Promise<number> {
   const newId = (await maxId('piece_production', 'IDpiece_production')) + 1
   await query(
     `INSERT INTO piece_production (IDpiece_production, IDordre_fabrication, numero, date_debut, poids)
-     VALUES (${newId}, ${ofId}, ${numero}, '${nowDt()}', 0)`,
+     VALUES (${newId}, ${ofId}, ${numero}, '${debut}', 0)`,
   )
   return newId
+}
+
+/** A closed piece's `date_fin` in nowDt()'s compact shape — the start of the
+ *  piece knitted after it. Either driver shape reduces to its first 14 digits;
+ *  an unreadable value falls back to now. */
+async function finDePiece(pieceId: number): Promise<string> {
+  const rows = await query<Record<string, unknown>>(
+    `SELECT date_fin FROM piece_production WHERE IDpiece_production = ${pieceId}`,
+  )
+  const digits = String(rows[0]?.date_fin ?? '').replace(/\D/g, '').slice(0, 14)
+  return digits.length === 14 ? digits : nowDt()
 }
 
 async function fermerPiece(pieceId: number, poidsPiece: number): Promise<void> {
@@ -1928,10 +1960,11 @@ async function ecrireEvenement(
   evenement: string,
   IDbonnetier: number,
   appareil: string,
+  quand: string = nowDt(),
 ): Promise<number> {
   const newId = (await maxId('evenement_piece', 'IDevenement_piece')) + 1
   await query(
-    `INSERT INTO evenement_piece VALUES (${newId}, ${sqlText(evenement)}, ${pieceId}, '${nowDt()}', ` +
+    `INSERT INTO evenement_piece VALUES (${newId}, ${sqlText(evenement)}, ${pieceId}, '${quand}', ` +
       `${IDbonnetier}, NULL, 0, ${sqlText(appareil)})`,
   )
   return newId
