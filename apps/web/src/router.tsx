@@ -5,7 +5,6 @@ import { Dashboard } from '@/pages/Dashboard'
 import {
   FileText,
   ClipboardCheck,
-  BarChart3,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -25,8 +24,7 @@ function createPlaceholder(title: string, description: string, Icon: LucideIcon)
 const FilsPrevisionsPage = createPlaceholder('Prévisions Fournisseurs', 'Prévisions d\'approvisionnement fournisseurs', FileText)
 
 // Références Finis / Études coloris / Tarifs — real screens (not placeholders anymore)
-// Actions qualité — real screen (not a placeholder anymore)
-const QualiteAnalysePage = createPlaceholder('Analyse', 'Analyse qualité', BarChart3)
+// Actions / Analyse qualité — real screens (not placeholders anymore)
 // Commandes clients — real screen (not a placeholder anymore)
 // Commandes fils — real screen (not a placeholder anymore)
 
@@ -56,6 +54,7 @@ import { TransfertsFils } from '@/pages/TransfertsFils'
 import { QualiteSuiviLots } from '@/pages/QualiteSuiviLots'
 import { QualiteDossiers } from '@/pages/QualiteDossiers'
 import { QualiteActions } from '@/pages/QualiteActions'
+import { QualiteAnalyse } from '@/pages/QualiteAnalyse'
 
 // Tombé Métier pages (real)
 import { TombeMetierReferences } from '@/pages/TombeMetierReferences'
@@ -162,7 +161,7 @@ export const router = createBrowserRouter([
       { path: 'qualite/suivi-lots', element: <QualiteSuiviLots /> },
       { path: 'qualite/dossiers', element: <QualiteDossiers /> },
       { path: 'qualite/actions', element: <QualiteActions /> },
-      { path: 'qualite/analyse', element: <QualiteAnalysePage /> },
+      { path: 'qualite/analyse', element: <QualiteAnalyse /> },
 
       // Rapports
       { path: 'rapports', element: <Navigate to="/rapports/commandes-clients" replace /> },

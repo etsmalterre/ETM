@@ -16,6 +16,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import {
   ShieldCheck,
   Search,
@@ -264,9 +265,24 @@ export function QualiteSuiviLots() {
   // Only the responsable qualité (and admins) can interact — everyone else
   // sees the screen read-only (no Modifier, no status change).
   const canManage = useHasPermission('responsable_qualite')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('en_cours')
+  // Deep link ?lot=<IDsuivilot> (Qualité › Analyse opens a lot here): only
+  // validated lots are analysed, so the link lands on the « Terminés » list.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedLotId = (() => {
+    const raw = parseInt(searchParams.get('lot') ?? '', 10)
+    return isNaN(raw) || raw <= 0 ? null : raw
+  })()
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(linkedLotId !== null ? 'termine' : 'en_cours')
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [selectedId, setSelectedId] = useState<number | null>(linkedLotId)
+  useEffect(() => {
+    if (searchParams.has('lot')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('lot')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [isEditing, setIsEditing] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'defauts' | 'actions'>('controles')
@@ -429,7 +445,8 @@ export function QualiteSuiviLots() {
     selectedId,
     getId: (l) => l.IDsuivilot,
     select: setSelectedId,
-    suspended: isEditing,
+    // isLoading: the list is [] until it arrives — a linked lot must survive it.
+    suspended: isEditing || isLoading,
   })
 
   // ── Render ──────────────────────────────────────────────

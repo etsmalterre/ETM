@@ -39,6 +39,7 @@ import { stockFilTrmRouter } from './routes/stock-fil-trm.js'
 import { suiviLotsRouter } from './routes/suivi-lots.js'
 import { dossiersQualiteRouter } from './routes/dossiers-qualite.js'
 import { actionsQualiteRouter } from './routes/actions-qualite.js'
+import { analyseQualiteRouter } from './routes/analyse-qualite.js'
 import { rapportsRouter } from './routes/rapports.js'
 import { rapportsTrmRouter } from './routes/rapports-trm.js'
 import { importSageRouter, importSageTrmRouter } from './routes/import-sage.js'
@@ -200,6 +201,7 @@ app.use('/api/stock', stockFilTrmRouter)
 app.use('/api/suivi-lots', suiviLotsRouter)
 app.use('/api/dossiers-qualite', dossiersQualiteRouter)
 app.use('/api/actions-qualite', actionsQualiteRouter)
+app.use('/api/analyse-qualite', analyseQualiteRouter)
 app.use('/api/rapports', rapportsRouter)
 app.use('/api/rapports-trm', rapportsTrmRouter)
 // Paramètres › Outils › Import de la balance Sage — one router per société.
