@@ -172,6 +172,18 @@ function parseKind(raw: string | undefined): Kind | null {
 // Write-path lock responses.
 const DEF_LOCK = { error: 'facture_definitive', message: 'Facture définitive — non modifiable. Créez un avoir pour corriger.' }
 
+/** A header just created starts with NO lines — drop any row already pointing
+ *  at its id before writing its own (LIVA #1290). The legacy deleted converted
+ *  proformas without their lines (2 180 orphans up to IDfacture_prov 4439), and
+ *  since the cutover the identity hands those ids out again: 28 lines of 2020
+ *  shipments of other clients showed up on the 13/10/2026 proformas.
+ *  `scripts/pg-fix-orphan-proforma-lines.ts` purged them; this keeps any that
+ *  remain from ever surfacing. */
+async function purgeInheritedLines(kind: Kind, id: number): Promise<void> {
+  const t = TBL[kind]
+  await query(`DELETE FROM ${t.lineTable} WHERE ${t.lineFk} = ${id}`)
+}
+
 /** Parent proforma id for a ligne_facture_prov row (0 if not found). */
 async function provLineParent(lineId: number): Promise<number> {
   const rows = await query<any>(`SELECT IDfacture_prov FROM ligne_facture_prov WHERE IDligne_facture_prov = ${lineId}`)
@@ -1454,6 +1466,7 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       )
       const newId = Number(newRows[0]?.IDfacture_prov) || 0
       if (!newId) throw new Error('could not resolve new facture_prov id')
+      await purgeInheritedLines('prov', newId)
 
       for (const l of lines) {
         await query(
@@ -1890,7 +1903,9 @@ router.post('/:kind', async (req: Request, res: Response) => {
     const newRows = await query<any>(
       `SELECT ${t.pk} FROM ${t.table} WHERE IDsociete = ${scope.societe} AND numero = ${newNumero} ORDER BY ${t.pk} DESC`,
     )
-    res.status(201).json({ id: Number(newRows[0]?.[t.pk]) || 0, kind })
+    const newId = Number(newRows[0]?.[t.pk]) || 0
+    if (newId) await purgeInheritedLines(kind, newId)
+    res.status(201).json({ id: newId, kind })
   } catch (err) {
     console.error('Error creating facture:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -1999,6 +2014,7 @@ async function convertProforma(id: number): Promise<{ IDfacture: number; numero:
   )
   const newId = Number(newRows[0]?.IDfacture) || 0
   if (!newId) throw new Error('could not resolve new facture id')
+  await purgeInheritedLines('def', newId)
 
   // Copy lines (designation/unite re-encoded via sqlText after fixEncoding read).
   for (const l of lignes) {
@@ -2126,6 +2142,7 @@ router.post('/def/:id/avoir', async (req: Request, res: Response) => {
     )
     const newId = Number(newRows[0]?.IDfacture_prov) || 0
     if (!newId) throw new Error('could not resolve new proforma id')
+    await purgeInheritedLines('prov', newId)
 
     // Duplicate the lines. IDligne_expedition carries over so the credited
     // shipment lines stay traceable (and keep their stock-kind icon); the
