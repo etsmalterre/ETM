@@ -28,6 +28,7 @@ import {
   AtSign,
   FileText,
   Upload,
+  ReceiptText,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -56,6 +57,8 @@ interface CommandeListRow {
   total_eur: number
   nb_lignes: number
   earliest_delivery: string | null
+  /** Supplier invoices of the order not ticked « réglée » (LIVA #1292). */
+  factures_a_regler: number
 }
 
 interface LigneCommande {
@@ -662,6 +665,14 @@ function CommandeList({
               <div className="flex items-center gap-2">
                 <ShoppingCart className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <span className="font-medium text-sm">N° {row.IDcommande_fil}</span>
+                {row.factures_a_regler > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border border-zinc-300 bg-zinc-100 px-1.5 text-[10px] font-medium text-zinc-600"
+                    title={row.factures_a_regler > 1 ? `${row.factures_a_regler} factures à régler` : 'Facture à régler'}
+                  >
+                    <ReceiptText className="h-2.5 w-2.5" />À régler
+                  </span>
+                )}
                 <CommandeEtatBadge etat={row.etat} className="ml-auto" />
               </div>
               <p className="text-xs text-muted-foreground mt-1 truncate">{row.fournisseur_nom || '—'}</p>
@@ -1876,6 +1887,65 @@ interface GedDocument {
   IDtype_doc: number
   type_nom: string | null
   linked_lots: Array<{ IDstock_fil: number; lot: string | null }>
+  /** Set on supplier invoices only (type « facture fil »), null otherwise. */
+  reglement: ReglementFacture | null
+}
+
+interface ReglementFacture {
+  /** 'YYYY-MM-DDTHH:MM' Paris time, null = à régler. */
+  regle_le: string | null
+  regle_par: string | null
+  /** Ticked at go-live (invoices filed before 13/10/2026), not by a person. */
+  reprise: boolean
+}
+
+/** « Réglée » / « À régler » on a supplier invoice card (LIVA #1292). A plain
+ *  chip in view mode; in edit mode the chip itself is the toggle. */
+function ReglementChip({ reglement, isEditing, isPending, onToggle }: {
+  reglement: ReglementFacture
+  isEditing: boolean
+  isPending: boolean
+  onToggle: () => void
+}) {
+  const regle = reglement.regle_le !== null
+  const date = regle && !reglement.reprise
+    ? `${reglement.regle_le!.slice(8, 10)}/${reglement.regle_le!.slice(5, 7)}`
+    : null
+  const detail = !regle
+    ? 'Facture non réglée'
+    : reglement.reprise
+      ? 'Facture antérieure au 13/10/2026, considérée réglée'
+      : `Réglée le ${date}/${reglement.regle_le!.slice(0, 4)} par ${reglement.regle_par ?? '—'}`
+  const Icon = isPending ? Loader2 : regle ? CheckCircle2 : Clock
+  const className = cn(
+    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium flex-shrink-0 whitespace-nowrap',
+    regle
+      ? 'bg-green-500/10 text-green-700 border-green-500/25'
+      : 'bg-zinc-100 text-zinc-600 border-zinc-300',
+  )
+  const content = (
+    <>
+      <Icon className={cn('h-3 w-3', isPending && 'animate-spin')} />
+      {regle ? 'Réglée' : 'À régler'}
+      {date && <span className="tabular-nums">· {date}</span>}
+    </>
+  )
+  if (!isEditing) return <span className={className} title={detail}>{content}</span>
+  return (
+    <button
+      type="button"
+      disabled={isPending}
+      onClick={(e) => { e.stopPropagation(); onToggle() }}
+      title={`${detail} — cliquer pour ${regle ? 'la remettre à régler' : 'la marquer réglée'}`}
+      className={cn(
+        className,
+        'cursor-pointer transition-colors disabled:cursor-wait',
+        regle ? 'hover:bg-green-500/20' : 'hover:bg-zinc-200 hover:border-zinc-400',
+      )}
+    >
+      {content}
+    </button>
+  )
 }
 
 interface TypeDoc {
@@ -1906,6 +1976,20 @@ function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing:
     mutationFn: (idged: number) =>
       apiFetch(`/commandes-fil/${commandeId}/documents/${idged}`, { method: 'DELETE' }),
     onSuccess: invalidate,
+  })
+
+  // Tick / untick « réglée » — a direct write, not part of the order's
+  // Enregistrer; the left-list « À régler » marker refreshes with it.
+  const reglementMut = useMutation({
+    mutationFn: ({ idged, regle }: { idged: number; regle: boolean }) =>
+      apiFetch(`/commandes-fil/${commandeId}/documents/${idged}/reglement`, {
+        method: 'PUT',
+        body: JSON.stringify({ regle }),
+      }),
+    onSuccess: () => {
+      invalidate()
+      queryClient.invalidateQueries({ queryKey: ['commandes-fil'] })
+    },
   })
 
   return (
@@ -1967,6 +2051,14 @@ function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing:
                       </p>
                     </div>
                   )}
+                  {doc.reglement && (
+                    <ReglementChip
+                      reglement={doc.reglement}
+                      isEditing={isEditing}
+                      isPending={reglementMut.isPending && reglementMut.variables?.idged === doc.IDged}
+                      onToggle={() => reglementMut.mutate({ idged: doc.IDged, regle: doc.reglement!.regle_le === null })}
+                    />
+                  )}
                   {isEditing && (
                     <Button
                       variant="ghost"
@@ -1991,6 +2083,13 @@ function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing:
               </div>
             )
           })}
+        </div>
+      )}
+
+      {reglementMut.isError && (
+        <div className="flex items-center gap-1.5 py-1 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5" />
+          <span>La facture n'a pas pu être mise à jour.</span>
         </div>
       )}
 

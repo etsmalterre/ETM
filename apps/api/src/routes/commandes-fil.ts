@@ -10,6 +10,10 @@ const upload = multer({ storage: multer.memoryStorage() })
 import { CommandeFournisseurPdf, type CommandeFournisseurPdfData } from '../lib/pdf/CommandeFournisseurPdf.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
+import { userCanOpenScreen } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
+import { facturesARegler, marquerReglement, reglementsDeDocs } from '../lib/facture-fil-reglement.js'
 
 export const commandesFilRouter: RouterType = Router()
 
@@ -301,12 +305,15 @@ commandesFilRouter.get('/', async (req: Request, res: Response) => {
       }
     }
 
+    // Unpaid supplier invoices per commande (LIVA #1292) — the card's « À régler » marker.
+    const aRegler = await facturesARegler(ids.map(Number))
+
     // Filter by search query (supplier name, id, or commentaire)
     const qLower = q.toLowerCase()
     const result = fixedWithFournisseurNom
       .map((c: any) => {
         const totals = totalsMap.get(Number(c.IDcommande_fil)) ?? { total_kg: 0, total_eur: 0, nb_lignes: 0, earliest_delivery: null }
-        return { ...c, ...totals }
+        return { ...c, ...totals, factures_a_regler: aRegler.get(Number(c.IDcommande_fil)) ?? 0 }
       })
       .filter((c: any) => {
         if (!q) return true
@@ -1151,6 +1158,9 @@ commandesFilRouter.get('/:id/documents', async (req: Request, res: Response) => 
       }
     }
 
+    // « Réglée » on the supplier invoices (LIVA #1292); null on other types.
+    const reglements = await reglementsDeDocs(docIds.map(Number))
+
     const out = fixed.map((r) => ({
       IDged: r.IDged,
       nom: r.nom,
@@ -1158,6 +1168,7 @@ commandesFilRouter.get('/:id/documents', async (req: Request, res: Response) => 
       IDtype_doc: r.IDtype_doc,
       type_nom: typeMap.get(r.IDtype_doc) ?? null,
       linked_lots: lotsByDoc.get(r.IDged) ?? [],
+      reglement: reglements.get(Number(r.IDged)) ?? null,
     }))
     res.json(out)
   } catch (err) {
@@ -1310,6 +1321,34 @@ commandesFilRouter.put('/:id/documents/:idged', upload.single('fichier'), async 
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating commande-fil document:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /:id/documents/:idged/reglement — tick / untick « réglée » on a supplier
+// invoice (LIVA #1292). Anyone who can open Fils › Commandes; the web offers it
+// in edit mode only. Body { regle: boolean }.
+commandesFilRouter.put('/:id/documents/:idged/reglement', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const idged = parseInt(req.params.idged, 10)
+    if (isNaN(id) || isNaN(idged)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    if (!(await userCanOpenScreen(req.userId, isEffectiveAdmin(req), '/fils', '/fils/commandes'))) {
+      res.status(403).json({ error: 'écran non accessible' }); return
+    }
+    const parsed = z.object({ regle: z.boolean() }).safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed' }); return }
+
+    const ok = await marquerReglement(id, idged, parsed.data.regle, {
+      id: req.userId,
+      nom: await nomUtilisateur(req.userId),
+    })
+    if (!ok) { res.status(404).json({ error: 'Facture introuvable sur cette commande' }); return }
+    const reglement = (await reglementsDeDocs([idged])).get(idged) ?? null
+    res.json({ IDged: idged, reglement })
+  } catch (err) {
+    console.error('Error updating facture fil reglement:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

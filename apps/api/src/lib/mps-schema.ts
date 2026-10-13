@@ -776,6 +776,24 @@ ALTER TABLE ligne_commande_client
   ADD CONSTRAINT ligne_commande_client_mode_livraison_check CHECK (mode_livraison IN (0, 1, 2, 3));
 `,
   },
+  {
+    // Fils › Commandes — a yarn supplier's invoice is ticked « réglée » on its
+    // document card (LIVA #1292, Pierre-Emmanuel, 2026-10-13): who ticked it and
+    // when, on the ged row itself (only `IDtype_doc = 1` facture fil uses it,
+    // lib/facture-fil-reglement.ts). NULL = à régler. Every invoice already
+    // filed on 2026-10-13 (prod max IDged = 10887 that day) starts réglée, by
+    // decision Vincent, so the list does not open on years of false « à régler ».
+    name: '0020_ged_facture_fil_reglee',
+    sql: `
+ALTER TABLE ged
+  ADD COLUMN regle_le timestamptz,
+  ADD COLUMN regle_par_id bigint,
+  ADD COLUMN regle_par text;
+UPDATE ged SET regle_le = TIMESTAMPTZ '2026-10-13 00:00:00 Europe/Paris',
+               regle_par = 'Reprise : factures antérieures au 13/10/2026'
+  WHERE idtype_doc = 1 AND idged <= 10887;
+`,
+  },
 ]
 
 export interface MigrationStatus {
