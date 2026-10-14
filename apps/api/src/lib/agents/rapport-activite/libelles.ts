@@ -13,7 +13,8 @@
 // order or a transfer) — not counted as a deletion by the code signals.
 
 import { mpsPg } from '../../mps-pg.js'
-import type { LigneJournal } from '../../journal-activite.js'
+import { SUIVIS, type LigneJournal } from '../../journal-activite.js'
+import { phrases } from './changements.js'
 
 export interface Refs {
   /** commande_client (ETM and TRM) → on-screen numero + client name. */
@@ -44,6 +45,8 @@ export interface Refs {
   refsFini: Map<number, string>
   /** facture → its on-screen numero. */
   factures: Map<number, string>
+  /** « table:id » of an order line (SUIVIS) → « EDF85/55 739 peau rosée ». */
+  articles: Map<string, string>
 }
 
 export const refsVides = (): Refs => ({
@@ -65,6 +68,7 @@ export const refsVides = (): Refs => ({
   refsDivers: new Map(),
   refsFini: new Map(),
   factures: new Map(),
+  articles: new Map(),
 })
 
 export interface Description {
@@ -73,6 +77,10 @@ export interface Description {
   retrait: boolean
   /** A known route: the sentence says it all, the raw body is not needed. */
   connue: boolean
+  /** A save that changed nothing on its row (journal_activite.changements
+   *  = {}): the screen's « Enregistrer » sent the header along with the
+   *  line. Left out of the report. */
+  sansEffet?: boolean
   /** Piece routes only — what regrouper() needs to merge a run. */
   groupe?: string
   numero?: string
@@ -223,7 +231,7 @@ const TR = `${P}transferts/(?:rouleaux|fils)`
 const ROUTES: Route[] = [
   // Clients › Commandes
   { m: 'POST', re: /^\/api\/commandes-client$/, f: () => 'Création d’une commande client' },
-  { m: 'PUT', re: new RegExp(`${CC}$`), f: ([c], b, r) => `Modification de l’en-tête de la ${cmd(r, c)}${entre(txt(b.ref_client) && `réf. client « ${txt(b.ref_client)} »`)}` },
+  { m: 'PUT', re: new RegExp(`${CC}$`), f: ([c], b, r) => `Modification de la ${cmd(r, c)}${entre(txt(b.ref_client) && `réf. client « ${txt(b.ref_client)} »`)}` },
   { m: 'PUT', re: new RegExp(`${CC}/etat$`), f: ([c], _b, r) => `Changement d’état de la ${cmd(r, c)}` },
   { m: 'DELETE', re: new RegExp(`${CC}$`), f: ([c], _b, r) => `Suppression de la ${cmd(r, c)}` },
   { m: 'POST', re: new RegExp(`${CC}/lignes$`), f: ([c], b, r) => `Ajout d’une ligne à la ${cmd(r, c)}${entre(nombre(b.quantite, 'u.'), nombre(b.prix, '€'))}` },
@@ -271,7 +279,7 @@ const ROUTES: Route[] = [
 
   // Sous-traitants › Commandes
   { m: 'POST', re: /^\/api\/commandes-sous-traitant$/, f: (_g, b, r) => `Création d’une commande sous-traitant${b.IDsous_traitant !== undefined ? ` chez ${sstNom(r, num(b.IDsous_traitant))}` : ''}` },
-  { m: 'PUT', re: new RegExp(`${CS}$`), f: ([s], b, r) => `Modification de l’en-tête de la ${sst(r, s)}${entre(txt(b.commentaire) && `commentaire de la commande : « ${txt(b.commentaire)} »`)}` },
+  { m: 'PUT', re: new RegExp(`${CS}$`), f: ([s], b, r) => `Modification de la ${sst(r, s)}${entre(txt(b.commentaire) && `commentaire de la commande : « ${txt(b.commentaire)} »`)}` },
   { m: 'PUT', re: new RegExp(`${CS}/etat$`), f: ([s], _b, r) => `Changement d’état de la ${sst(r, s)}` },
   { m: 'DELETE', re: new RegExp(`${CS}$`), f: ([s], _b, r) => `Suppression de la ${sst(r, s)}` },
   { m: 'POST', re: new RegExp(`${CS}/lignes$`), f: ([s], _b, r) => `Ajout d’une ligne à la ${sst(r, s)}` },
@@ -314,7 +322,7 @@ const ROUTES: Route[] = [
 
   // TRM commandes (same commande_client table, IDsociete 2)
   { m: 'POST', re: /^\/api\/commandes-trm$/, f: () => 'Création d’une commande TRM' },
-  { m: 'PUT', re: /^\/api\/commandes-trm\/(\d+)$/, f: ([c], _b, r) => `Modification de l’en-tête de la ${cmd(r, c, 'commande TRM')}` },
+  { m: 'PUT', re: /^\/api\/commandes-trm\/(\d+)$/, f: ([c], _b, r) => `Modification de la ${cmd(r, c, 'commande TRM')}` },
   { m: 'PUT', re: /^\/api\/commandes-trm\/(\d+)\/etat$/, f: ([c], _b, r) => `Changement d’état de la ${cmd(r, c, 'commande TRM')}` },
   { m: 'DELETE', re: /^\/api\/commandes-trm\/(\d+)$/, f: ([c], _b, r) => `Suppression de la ${cmd(r, c, 'commande TRM')}` },
   { m: 'POST', re: /^\/api\/commandes-trm\/(\d+)\/lignes$/, f: ([c], _b, r) => `Ajout d’une ligne à la ${cmd(r, c, 'commande TRM')}` },
@@ -358,7 +366,7 @@ const ROUTES: Route[] = [
 
   // Fils › Commandes (the commande_fil id is the N° printed on the order)
   { m: 'POST', re: /^\/api\/commandes-fil$/, f: (_g, b, r) => `Création d’une commande de fil chez ${fournisseur(r, num(b.IDfournisseur))}` },
-  { m: 'PUT', re: /^\/api\/commandes-fil\/(\d+)$/, f: ([c], b, r) => `Modification de l’en-tête de la ${cmdFil(r, c)}${entre(txt(b.commentaire) && `commentaire ${cite(b.commentaire)}`, txt(b.journal) && `note interne ${cite(b.journal)}`)}` },
+  { m: 'PUT', re: /^\/api\/commandes-fil\/(\d+)$/, f: ([c], b, r) => `Modification de la ${cmdFil(r, c)}${entre(txt(b.commentaire) && `commentaire ${cite(b.commentaire)}`, txt(b.journal) && `note interne ${cite(b.journal)}`)}` },
   { m: 'DELETE', re: /^\/api\/commandes-fil\/(\d+)$/, f: ([c], _b, r) => `Suppression de la ${cmdFil(r, c)}` },
   { m: 'POST', re: /^\/api\/commandes-fil\/(\d+)\/lignes$/, f: ([c], b, r) => `Ajout d’une ligne à la ${cmdFil(r, c)} : fil ${refFil(r, b.IDref_fil) || '?'}${entre(colorisFil(r, b.IDcolori_fil), nombre(b.quantite, 'kg'), nombre(b.prix_unitaire, '€/kg'), b.date_livraison ? `livraison ${date(b.date_livraison)}` : '')}` },
   { m: 'PUT', re: /^\/api\/commandes-fil\/lignes\/(\d+)$/, f: ([l], b, r) => `Modification d’une ligne de la ${cmdFilLigne(r, l)} : fil ${refFil(r, b.IDref_fil) || '?'}${entre(colorisFil(r, b.IDcolori_fil), nombre(b.quantite, 'kg'), nombre(b.prix_unitaire, '€/kg'), b.date_livraison ? `livraison ${date(b.date_livraison)}` : '')}` },
@@ -468,8 +476,50 @@ const ROUTES: Route[] = [
 
 const VERBES: Record<string, string> = { POST: 'Action / création', PUT: 'Modification', PATCH: 'Modification', DELETE: 'Suppression' }
 
+const majuscule = (t: string) => t[0].toUpperCase() + t.slice(1)
+
+/** The order (and line) a SUIVIS row belongs to, as on screen. */
+function sujetSuivi(table: string, id: number, chemin: string, r: Refs): string {
+  const article = r.articles.get(`${table}:${id}`)
+  const ligne = article ? `, ligne ${article}` : ', une ligne'
+  const quoi = chemin.startsWith('/api/commandes-trm/') ? 'commande TRM' : undefined
+  switch (table) {
+    case 'ligne_commande_sous_traitant': return majuscule(sstLigne(r, id)) + ligne
+    case 'commande_sous_traitant': return majuscule(sst(r, id))
+    case 'ligne_commande_client': return majuscule(cmdLigne(r, id, quoi)) + ligne
+    case 'commande_client': return majuscule(cmd(r, id, quoi))
+    case 'ref_fil_commande': return majuscule(cmdFilLigne(r, id)) + ligne
+    default: return majuscule(cmdFil(r, id))
+  }
+}
+
 /** One journal line in French. Pure: the names come from `refs`. */
-export function decrire(l: Pick<LigneJournal, 'methode' | 'chemin' | 'corps'>, refs: Refs): Description {
+export function decrire(
+  l: Pick<LigneJournal, 'methode' | 'chemin' | 'corps'> & Partial<Pick<LigneJournal, 'changements' | 'statut'>>,
+  refs: Refs,
+): Description {
+  // An order saved through its form: say what moved, read from the row
+  // before and after (journal_activite.changements) — never from the body,
+  // which carries every field of the form, touched or not.
+  const suivi = l.methode === 'PUT' || l.methode === 'PATCH'
+    ? SUIVIS.map((s) => ({ s, id: parseInt(s.re.exec(l.chemin)?.[1] ?? '', 10) })).find((x) => !isNaN(x.id))
+    : undefined
+  if (suivi && l.changements) {
+    const sujet = sujetSuivi(suivi.s.table, suivi.id, l.chemin, refs)
+    const ph = phrases(l.changements)
+    return ph.length
+      ? { texte: `${sujet} : ${ph.join(' ; ')}`, retrait: false, connue: true }
+      : { texte: `${sujet} : enregistrée sans changement`, retrait: false, connue: true, sansEffet: true }
+  }
+  const d = decrireRoute(l, refs)
+  // Journaled before 2026-10-14 (or the row could not be read): only the
+  // form sent is known — say so rather than let it pass for a change.
+  return suivi && d.connue && (l.statut ?? 200) < 400
+    ? { ...d, texte: `${d.texte} — formulaire enregistré, le détail de ce qui a changé n’est pas connu` }
+    : d
+}
+
+function decrireRoute(l: Pick<LigneJournal, 'methode' | 'chemin' | 'corps'>, refs: Refs): Description {
   for (const [i, route] of ROUTES.entries()) {
     if (!route.m.split('|').includes(l.methode)) continue
     const m = route.re.exec(l.chemin)
@@ -687,5 +737,68 @@ export async function chargerRefs(lignes: readonly Pick<LigneJournal, 'chemin' |
       r.sousTraitants.set(Number(x.idsous_traitant), (x.nom ?? '').trim())
     }
   }
+  await chargerArticles(lignes, r)
   return r
+}
+
+type Article = { id: number; ref: string | null; coloris: string | null }
+
+/** « EDF85/55 739 peau rosée » for every order line a SUIVIS row names. The
+ *  catalog follows the line's type (lib/sst-line-kind.ts: 2 = fini,
+ *  4 = rectiligne, else écru; client lines 3 = divers), a fini's coloris its
+ *  avec_teinture (#1158). */
+async function chargerArticles(lignes: readonly Pick<LigneJournal, 'chemin'>[], r: Refs): Promise<void> {
+  const parTable = new Map<string, Set<number>>()
+  for (const l of lignes) {
+    const s = SUIVIS.find((x) => x.re.test(l.chemin))
+    if (!s || !(s.table.startsWith('ligne_') || s.table === 'ref_fil_commande')) continue
+    const set = parTable.get(s.table) ?? new Set<number>()
+    set.add(parseInt(s.re.exec(l.chemin)![1], 10))
+    parTable.set(s.table, set)
+  }
+  const sql = mpsPg()
+  const poser = (table: string) => (rows: Article[]) => {
+    for (const x of rows) {
+      const t = [x.ref, x.coloris].map((v) => (v ?? '').trim()).filter(Boolean).join(' ')
+      if (t) r.articles.set(`${table}:${Number(x.id)}`, t)
+    }
+  }
+  const sst = parTable.get('ligne_commande_sous_traitant')
+  const cli = parTable.get('ligne_commande_client')
+  const fil = parTable.get('ref_fil_commande')
+  await Promise.all([
+    sst && sql<Article[]>`
+      SELECT l.idligne_commande_sous_traitant AS id,
+             CASE WHEN l.type = 2 THEN rf.reference WHEN l.type = 4 THEN rr.reference ELSE re.reference END AS ref,
+             CASE WHEN l.type = 2 THEN (CASE WHEN COALESCE(rf.avec_teinture, 1) = 0 THEN ce.reference ELSE rfc.reference END)
+                  WHEN l.type = 4 THEN cr.coloris ELSE ce.reference END AS coloris
+      FROM ligne_commande_sous_traitant l
+      LEFT JOIN ref_fini rf ON l.type = 2 AND rf.idref_fini = l.idreference
+      LEFT JOIN ref_fini_colori rfc ON l.type = 2 AND rfc.idref_fini_colori = l.idcoloris
+      LEFT JOIN ref_rectiligne rr ON l.type = 4 AND rr.idref_rectiligne = l.idreference
+      LEFT JOIN coloris_rectiligne cr ON l.type = 4 AND cr.idcoloris_rectiligne = l.idcoloris
+      LEFT JOIN ref_ecru re ON l.type NOT IN (2, 4) AND re.idref_ecru = l.idreference
+      LEFT JOIN colori_ecru ce ON l.type <> 4 AND ce.idcolori_ecru = l.idcoloris
+      WHERE l.idligne_commande_sous_traitant IN ${sql([...sst])}`.then(poser('ligne_commande_sous_traitant')),
+    cli && sql<Article[]>`
+      SELECT l.idligne_commande_client AS id,
+             CASE WHEN l.type = 2 THEN rf.reference WHEN l.type = 3 THEN rd.designation WHEN l.type = 4 THEN rr.reference ELSE re.reference END AS ref,
+             CASE WHEN l.type = 2 THEN (CASE WHEN COALESCE(rf.avec_teinture, 1) = 0 THEN ce.reference ELSE rfc.reference END)
+                  WHEN l.type = 3 THEN NULL WHEN l.type = 4 THEN cr.coloris ELSE ce.reference END AS coloris
+      FROM ligne_commande_client l
+      LEFT JOIN ref_fini rf ON l.type = 2 AND rf.idref_fini = l.idreference
+      LEFT JOIN ref_fini_colori rfc ON l.type = 2 AND rfc.idref_fini_colori = l.idcolori
+      LEFT JOIN ref_divers rd ON l.type = 3 AND rd.idref_divers = l.idreference
+      LEFT JOIN ref_rectiligne rr ON l.type = 4 AND rr.idref_rectiligne = l.idreference
+      LEFT JOIN coloris_rectiligne cr ON l.type = 4 AND cr.idcoloris_rectiligne = l.idcolori
+      LEFT JOIN ref_ecru re ON l.type NOT IN (2, 3, 4) AND re.idref_ecru = l.idreference
+      LEFT JOIN colori_ecru ce ON l.type NOT IN (3, 4) AND ce.idcolori_ecru = l.idcolori
+      WHERE l.idligne_commande_client IN ${sql([...cli])}`.then(poser('ligne_commande_client')),
+    fil && sql<Article[]>`
+      SELECT l.idref_fil_commande AS id, rf.reference AS ref, cf.reference AS coloris
+      FROM ref_fil_commande l
+      LEFT JOIN ref_fil rf ON rf.idref_fil = l.idref_fil
+      LEFT JOIN colori_fil cf ON cf.idcolori_fil = l.idcolori_fil
+      WHERE l.idref_fil_commande IN ${sql([...fil])}`.then(poser('ref_fil_commande')),
+  ])
 }

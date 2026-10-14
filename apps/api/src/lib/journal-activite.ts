@@ -36,6 +36,57 @@ const CLE_SECRETE = /pass|mdp|mot_?de_?passe|token|jeton|secret|^code(_rh)?$|sig
 
 export const DUREE_CONSERVATION_JOURS = 365
 
+/** Writes whose row is read before and after, so the journal keeps what the
+ *  save really changed (`changements`): the order screens send their whole
+ *  form on « Enregistrer » — header AND line, touched or not — and the body
+ *  alone cannot tell a new délai from a value sent unchanged (2026-10-14,
+ *  sst 9104: « ligne et en-tête » for a délai typed and a relance cleared).
+ *  Reading the row on both sides also catches what the route did by itself
+ *  (the Attente_Delai → En_Cours flip, a recomputed price). */
+export const SUIVIS: { re: RegExp; table: string; pk: string }[] = [
+  { re: /^\/api\/commandes-sous-traitant\/lignes\/(\d+)$/, table: 'ligne_commande_sous_traitant', pk: 'idligne_commande_sous_traitant' },
+  { re: /^\/api\/commandes-sous-traitant\/(\d+)(?:\/etat)?$/, table: 'commande_sous_traitant', pk: 'idcommande_sous_traitant' },
+  { re: /^\/api\/commandes-(?:client|trm)\/lignes\/(\d+)(?:\/delai)?$/, table: 'ligne_commande_client', pk: 'idligne_commande_client' },
+  { re: /^\/api\/commandes-(?:client|trm)\/(\d+)(?:\/etat)?$/, table: 'commande_client', pk: 'idcommande_client' },
+  { re: /^\/api\/commandes-fil\/lignes\/(\d+)$/, table: 'ref_fil_commande', pk: 'idref_fil_commande' },
+  { re: /^\/api\/commandes-fil\/(\d+)$/, table: 'commande_fil', pk: 'idcommande_fil' },
+]
+
+/** { colonne: [avant, après] }. */
+export type Changements = Record<string, [unknown, unknown]>
+
+/** A column value as the journal keeps it: dates « YYYY-MM-DD » (ISO when
+ *  there is a time), long texts cut, files left out. */
+function valeurJournal(v: unknown): unknown {
+  if (v instanceof Date) {
+    const iso = v.toISOString()
+    return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso
+  }
+  if (typeof v === 'string') return v.length > MAX_TEXTE ? `${v.slice(0, MAX_TEXTE)}… [${v.length} car.]` : v
+  if (v === undefined || v instanceof Uint8Array) return undefined
+  return v
+}
+
+/** The columns that differ between two reads of the same row; {} = the
+ *  save changed nothing (kept, so the report can drop it — null means
+ *  « not known »). */
+export function diffLignes(avant: Record<string, unknown>, apres: Record<string, unknown>): Changements {
+  const out: Changements = {}
+  for (const k of Object.keys(apres)) {
+    const a = valeurJournal(avant[k])
+    const b = valeurJournal(apres[k])
+    if (a === undefined && b === undefined) continue
+    if (JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)) out[k] = [a ?? null, b ?? null]
+  }
+  return out
+}
+
+async function lireLigne(table: string, pk: string, id: number): Promise<Record<string, unknown> | null> {
+  const sql = mpsPg()
+  const [row] = await sql<Record<string, unknown>[]>`SELECT * FROM ${sql(table)} WHERE ${sql(pk)} = ${id}`
+  return row ?? null
+}
+
 const MAX_CORPS = 1500
 const MAX_TEXTE = 200
 
@@ -91,6 +142,12 @@ export function journaliserActivite(): RequestHandler {
     const chemin = req.originalUrl.split('?')[0]
     if (EXCLUS.some((r) => r.test(chemin))) return next()
     const t0 = Date.now()
+    // The row before the request, for the routes in SUIVIS. A failed read
+    // only costs the `changements` column — the request goes on regardless.
+    const m = (req.method === 'PUT' || req.method === 'PATCH') && req.userId !== undefined
+      ? SUIVIS.map((s) => ({ s, id: parseInt(s.re.exec(chemin)?.[1] ?? '', 10) })).find((x) => !isNaN(x.id))
+      : undefined
+    const avantP = m ? lireLigne(m.s.table, m.s.pk, m.id).catch(() => null) : null
     let erreur: string | null = null
     const json = res.json.bind(res)
     res.json = (body?: unknown) => {
@@ -106,17 +163,37 @@ export function journaliserActivite(): RequestHandler {
       const idutilisateur = req.session?.idutilisateur ?? req.userId
       const voirComme = req.session?.voirComme ?? null
       const appareil = req.appareil ? `${req.appareil.id}` : null
-      mpsPg()`
-        INSERT INTO journal_activite (idutilisateur, voir_comme, appareil, methode, chemin, statut, duree_ms, origine, ecran, corps, erreur, ip)
-        VALUES (${idutilisateur}, ${voirComme}, ${appareil}, ${req.method}, ${chemin.slice(0, 300)}, ${res.statusCode},
-                ${Date.now() - t0}, ${origine}, ${ecran}, ${corps}, ${erreur}, ${clientIp(req)})`
+      const statut = res.statusCode
+      const duree = Date.now() - t0
+      const ip = clientIp(req)
+      const changementsP: Promise<Changements | null> = m && avantP && statut < 400
+        ? avantP.then(async (avant) => {
+            const apres = avant ? await lireLigne(m.s.table, m.s.pk, m.id) : null
+            return avant && apres ? diffLignes(avant, apres) : null
+          }).catch(() => null)
+        : Promise.resolve(null)
+      changementsP
+        .then((changements) => {
+          const sql = mpsPg()
+          return changements
+            ? sql`
+                INSERT INTO journal_activite (idutilisateur, voir_comme, appareil, methode, chemin, statut, duree_ms, origine, ecran, corps, erreur, ip, changements)
+                VALUES (${idutilisateur}, ${voirComme}, ${appareil}, ${req.method}, ${chemin.slice(0, 300)}, ${statut},
+                        ${duree}, ${origine}, ${ecran}, ${corps}, ${erreur}, ${ip}, ${sql.json(changements as never)})`
+            : sql`
+                INSERT INTO journal_activite (idutilisateur, voir_comme, appareil, methode, chemin, statut, duree_ms, origine, ecran, corps, erreur, ip)
+                VALUES (${idutilisateur}, ${voirComme}, ${appareil}, ${req.method}, ${chemin.slice(0, 300)}, ${statut},
+                        ${duree}, ${origine}, ${ecran}, ${corps}, ${erreur}, ${ip})`
+        })
         .catch((err: unknown) => {
           if (Date.now() - derniereErreurLog < 60_000) return
           derniereErreurLog = Date.now()
           console.error('[journal-activite] insert failed:', err instanceof Error ? err.message : err)
         })
     })
-    next()
+    // The route must not write before the row is read.
+    if (avantP) void avantP.then(() => next())
+    else next()
   }
 }
 
@@ -135,12 +212,14 @@ export interface LigneJournal {
   corps: string | null
   erreur: string | null
   ip: string | null
+  /** What the save changed on the row (SUIVIS routes, since 2026-10-14), else null. */
+  changements: Changements | null
 }
 
 /** One person's journal over [du, au), oldest first. */
 export async function journalDe(idutilisateur: number, du: Date, au: Date): Promise<LigneJournal[]> {
   return mpsPg()<LigneJournal[]>`
-    SELECT le, voir_comme, appareil, methode, chemin, statut, duree_ms, origine, ecran, corps, erreur, ip
+    SELECT le, voir_comme, appareil, methode, chemin, statut, duree_ms, origine, ecran, corps, erreur, ip, changements
     FROM journal_activite
     WHERE idutilisateur = ${idutilisateur} AND le >= ${du} AND le < ${au}
     ORDER BY le, id`

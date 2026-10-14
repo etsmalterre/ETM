@@ -860,6 +860,16 @@ ALTER TABLE client ADD COLUMN relance_sur_appel integer NOT NULL DEFAULT 0
   CHECK (relance_sur_appel >= 0);
 `,
   },
+  {
+    // Journal d'activité — what a save really changed (2026-10-14): the order
+    // screens send their whole form on « Enregistrer », so the body alone
+    // cannot say what moved. { colonne: [avant, après] } of the row, read
+    // before and after the request (lib/journal-activite.ts SUIVIS).
+    name: '0024_journal_activite_changements',
+    sql: `
+ALTER TABLE journal_activite ADD COLUMN changements jsonb;
+`,
+  },
 ]
 
 export interface MigrationStatus {

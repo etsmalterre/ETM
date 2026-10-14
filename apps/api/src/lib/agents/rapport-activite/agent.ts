@@ -127,7 +127,9 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     console.error(`[agents] ${RAPPORT_ACTIVITE_SLUG}: names not resolved:`, err instanceof Error ? err.message : err)
     return refsVides()
   })
-  const decrits = journal.map((l) => ({ ...l, ...decrire(l, refs) }))
+  // A form saved with nothing changed on that row (the header sent along with
+  // a line) is no action — the click itself is still counted by gestes().
+  const decrits = journal.map((l) => ({ ...l, ...decrire(l, refs) })).filter((l) => !l.sansEffet)
   const lignes = regrouper(decrits)
   const actions: ActionRapport[] = lignes.map((l) => ({
     heure: hhmm(l.le.getTime()),

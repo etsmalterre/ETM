@@ -18,6 +18,7 @@ const ligne = (o: Partial<LigneDecrite>): LigneDecrite => ({
   corps: null,
   erreur: null,
   ip: null,
+  changements: null,
   ...o,
 })
 

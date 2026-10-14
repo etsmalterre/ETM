@@ -56,7 +56,7 @@ describe('decrire', () => {
   })
   it('an unknown route keeps its path, a missing name its id', () => {
     expect(decrire({ methode: 'DELETE', chemin: '/api/devis/9', corps: null }, refsVides())).toMatchObject({ texte: 'Suppression — devis › 9', retrait: false, connue: false })
-    expect(decrire({ methode: 'PUT', chemin: '/api/commandes-client/5', corps: null }, refsVides()).texte).toBe('Modification de l’en-tête de la commande client #5')
+    expect(decrire({ methode: 'PUT', chemin: '/api/commandes-client/5', corps: null }, refsVides()).texte).toBe('Modification de la commande client #5 — formulaire enregistré, le détail de ce qui a changé n’est pas connu')
   })
 })
 
@@ -122,7 +122,7 @@ describe('routes labelled on 2026-10-14', () => {
     )
     expect(decrire({ methode: 'DELETE', chemin: '/api/commandes-fil/lignes/1000', corps: null }, r).texte).toBe('Suppression d’une ligne de la commande de fil N° 721 (FILMATECH)')
     expect(decrire({ methode: 'PUT', chemin: '/api/commandes-fil/720', corps: '{"date_commande":"20261014","commentaire":"48 cônes de 550 g","journal":"pour 263","IDadresse_fournisseur":1584}' }, r).texte).toBe(
-      'Modification de l’en-tête de la commande de fil N° 720 (commentaire « 48 cônes de 550 g », note interne « pour 263 »)',
+      'Modification de la commande de fil N° 720 (commentaire « 48 cônes de 550 g », note interne « pour 263 ») — formulaire enregistré, le détail de ce qui a changé n’est pas connu',
     )
   })
   it('a colour study reads its date as a date, the client and the dyer by name', () => {
