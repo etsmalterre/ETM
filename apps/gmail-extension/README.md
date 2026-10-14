@@ -66,5 +66,5 @@ Comme Vector : extension non répertoriée du Chrome Web Store (compte développ
 vincent@etsmalterre.com), installée d'office par la console d'administration Google. Pour une
 mise à jour : augmenter `version` dans `package.json`, `pnpm package` →
 `release/tricobot-gmail-<version>.zip`, à téléverser dans le tableau de bord développeur.
-Fiche, confidentialité et réglages de la console : suivre `MFPROD/apps/gmail-extension/store/STORE.md`.
+Fiche, confidentialité, images et réglages de la console : `store/STORE.md`.
 Seul Chrome desktop est pris en charge.
