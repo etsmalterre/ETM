@@ -26,7 +26,7 @@ import { journalDe, purgerJournal } from '../../journal-activite.js'
 import { partiesParis } from '../../pointage-etat.js'
 import { collecterEntetes, lireMessage, type EnteteMessage } from '../superviseur/boites.js'
 import { actionsParHeure, appDe, estPersonnel, gestes, menuDe, moyenneParHeure, periode, resultatDe, signaux, HEURES_RAPPORT, HEURES_TEXTE, JOURS_RAPPORT, type ConnexionJour, type Signal } from './regles.js'
-import { entreeRapport, hhmm, PROMPT_V1, PROMPT_V3, RAPPORT_SCHEMA, type MailEntree, type ReponseRapport } from './prompt.js'
+import { entreeRapport, estMailContexte, estPromptV4, filtrerPoints, hhmm, pointDAlerte, PROMPT_V1, PROMPT_V4, RAPPORT_SCHEMA, RAPPORT_SCHEMA_V4, type MailEntree, type PointEcarte, type ReponseRapport } from './prompt.js'
 import { chargerRefs, decrire, refsVides, regrouper } from './libelles.js'
 import { contenuEmail, sujetRapport, type ActionRapport, type ContenuRapport, type MailRapport } from './email.js'
 
@@ -51,12 +51,13 @@ export const RAPPORT_ACTIVITE_VERSION_INITIALE: VersionInitiale = {
   note: 'Version initiale — synthèse, résumé des mails et points d’attention (les faits et les signaux du code ne passent pas par le modèle).',
 }
 
-/** Offered in Agents IA › Prompt until published (prompt.ts PROMPT_V3; v2
- *  was never published and is superseded). */
+/** Offered in Agents IA › Prompt until published (prompt.ts PROMPT_V4; v3 is
+ *  published in prod since 2026-10-08 as its version 2). Until v4 is
+ *  published the run keeps the v3 schema (estPromptV4). */
 export const RAPPORT_ACTIVITE_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-medium-latest',
-  prompt: PROMPT_V3,
-  note: 'Version 3 — moins sévère (relecture des 16 premiers rapports, 2026-10-08) : un ton amical, un mail pas encore répondu dans l’heure, un délai donné par mail, un défaut signalé au client ne sont plus des alertes ; 0 à 3 alertes, seulement sur un fait qui montre l’erreur.',
+  prompt: PROMPT_V4,
+  note: 'Version 4 — relecture des 45 premiers rapports (2026-10-14) : un point = deux faits datés qui se contredisent, le risque et la vérification à faire (un point sans heure de la période est écarté par le code) ; signaler un défaut ou un manque à un fournisseur, une étape antérieure à l’heure, une livraison en plusieurs fois, les mails de Vincent ne sont jamais des points.',
 }
 
 /** Worked hours before the period that make the reference pace. */
@@ -104,6 +105,8 @@ export interface DonneesRapport {
   vide: boolean
   coutUsd: number
   compteurs: Record<string, number>
+  /** Points the code dropped (v4 filter): kept in the run to tune the prompt. */
+  ecartes: PointEcarte[]
 }
 
 /** Everything the report says about [du, au) — read-only, sends nothing. */
@@ -161,6 +164,7 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     const ref = `m${i + 1}`
     const personnel = estPersonnel(m.sujet)
     const sens = m.envoye ? 'envoyé' : 'reçu'
+    const contexte = estMailContexte(m)
     mails.push({ ref, heure: hhmm(m.date), sens, correspondant: correspondant(m), sujet: m.sujet, resume: null, personnel })
     if (personnel || lus >= MAX_MAILS_LUS) continue
     lus++
@@ -170,7 +174,7 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
     } catch {
       extrait = '(corps illisible)'
     }
-    entreesMails.push({ ref, heure: hhmm(m.date), sens, correspondant: correspondant(m), sujet: m.sujet, extrait })
+    entreesMails.push({ ref, heure: hhmm(m.date), sens, correspondant: correspondant(m), sujet: m.sujet, extrait, contexte })
   }
 
   const connexionsTexte = connexions.map((c) => `${hhmm(c.le.getTime())} ${c.succes ? 'réussie' : `échouée${c.motif ? ` (${c.motif})` : ''}`}`)
@@ -179,6 +183,8 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
   let ia: ContenuRapport['ia'] = null
   let iaErreur: string | null = null
   let coutUsd = 0
+  let ecartes: PointEcarte[] = []
+  const v4 = estPromptV4(version.prompt)
   const vide = !journal.length && !mails.length && !connexions.some((c) => c.succes)
   if (!vide) {
     try {
@@ -196,7 +202,7 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
           mails: entreesMails,
         }),
         schemaName: 'rapport_activite',
-        schema: RAPPORT_SCHEMA,
+        schema: v4 ? RAPPORT_SCHEMA_V4 : RAPPORT_SCHEMA,
       })
       coutUsd = r.usd
       const rep = r.data as Partial<ReponseRapport>
@@ -204,7 +210,17 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
         const cible = mails.find((x) => x.ref === m.ref)
         if (cible && !cible.personnel) cible.resume = m.resume || null
       }
-      ia = { synthese: rep.synthese ?? '', etm: rep.etm ?? [], trm: rep.trm ?? [], alertes: rep.alertes ?? [] }
+      // The hours a fact may cite: the salarié's own (actions, his mails and
+      // the others') and the [contexte] mails'.
+      const propres = new Set([...actions.map((a) => a.heure), ...entreesMails.filter((m) => !m.contexte).map((m) => m.heure)])
+      const contexteH = new Set(entreesMails.filter((m) => m.contexte).map((m) => m.heure))
+      let points = (rep.alertes ?? []).map(pointDAlerte)
+      if (v4) {
+        const f = filtrerPoints(rep.points ?? [], { propres, contexte: contexteH })
+        points = f.gardes
+        ecartes = f.ecartes
+      }
+      ia = { synthese: rep.synthese ?? '', etm: rep.etm ?? [], trm: rep.trm ?? [], points }
     } catch (err) {
       iaErreur = err instanceof Error ? err.message.slice(0, 200) : String(err)
     }
@@ -240,8 +256,10 @@ export async function construireRapport(version: Pick<AgentVersion, 'model' | 'p
       mailsAutomatiques: automatiques,
       mailsPersonnels: mails.filter((m) => m.personnel).length,
       signaux: sig.length,
-      alertesIa: ia?.alertes.length ?? 0,
+      alertesIa: ia?.points.length ?? 0,
+      pointsEcartes: ecartes.length,
     },
+    ecartes,
   }
 }
 
@@ -311,6 +329,8 @@ export async function executer(state: AgentState, version: AgentVersion, par: Au
       resume = echecs.length ? `Envoyé à ${envoyes.length} sur ${DESTINATAIRES.length} ; échec pour ${echecs.join(', ')}.` : `Envoyé à ${envoyes.join(', ')} — ${chiffres}.`
     }
     if (d.contenu.iaErreur) resultat.iaErreur = d.contenu.iaErreur
+    // Only the dropped points' wording and why — the shown ones go by mail.
+    if (d.ecartes.length) resultat.pointsEcartes = d.ecartes.map((e) => ({ raison: e.raison, constat: e.point.constat }))
     run = { ...base, statut, resultat, resume, coutUsd: d.coutUsd, dureeMs: Date.now() - t0 }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

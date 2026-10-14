@@ -6,6 +6,7 @@
 
 import { EMAIL_STYLE as S, type EmailSection, type NotificationEmailContent } from '../../notification-email.js'
 import type { HeureActivite, Signal } from './regles.js'
+import type { PointIa, Risque } from './prompt.js'
 
 const RED = '#B91C1C'
 const RED_BG = '#FEF2F2'
@@ -52,7 +53,7 @@ export interface ContenuRapport {
   mails: MailRapport[]
   signaux: Signal[]
   /** null = the model failed: the e-mail says so and keeps the facts. */
-  ia: { synthese: string; etm: string[]; trm: string[]; alertes: Signal[] } | null
+  ia: { synthese: string; etm: string[]; trm: string[]; points: PointIa[] } | null
   iaErreur: string | null
 }
 
@@ -83,6 +84,46 @@ function blocAlertes(titre: string, alertes: Signal[], fond: string, bord: strin
       .join('') +
     `</td></tr></table>`
   const text = [titre.toUpperCase(), ...alertes.map((a) => `- [${a.gravite} · ${a.nature}] ${a.titre} : ${a.detail}`)].join('\n')
+  return { html, text }
+}
+
+const RISQUE: Record<Risque, string> = {
+  client: 'touche un client',
+  fournisseur: 'touche un fournisseur',
+  stock: 'fausse le stock',
+  facturation: 'touche la facturation',
+  interne: 'interne seulement',
+}
+
+/** The model's points (v4): what is wrong in one line, the two facts that
+ *  show it, then the risk and the one check — readable in ten seconds. A
+ *  v1-v3 point has only its constat and one fact. */
+function blocPoints(points: PointIa[]): EmailSection {
+  const titre = 'Points à vérifier — analyse IA'
+  const ligne = (label: string, t: string, couleur: string = S.text) =>
+    t ? `<div style="font-size:12px;line-height:1.5;color:${couleur};margin-top:2px;"><span style="color:${S.muted};">${esc(label)}</span> ${esc(t)}</div>` : ''
+  const html =
+    `<table ${TABLE}><tr><td style="border-left:3px solid ${AMBER};background-color:${AMBER_BG};padding:12px 14px;font-family:${S.font};">` +
+    `<div style="font-size:11px;line-height:1.4;color:${AMBER};text-transform:uppercase;letter-spacing:0.4px;font-weight:bold;">${esc(titre)}</div>` +
+    points
+      .map(
+        (p) =>
+          `<div style="margin-top:10px;font-family:${S.font};">` +
+          `<div style="font-size:13px;line-height:1.5;color:${S.text};font-weight:bold;">${esc(p.constat)}${p.risque ? ` <span style="color:${p.risque === 'client' ? RED : AMBER};font-weight:normal;">— ${esc(RISQUE[p.risque])}</span>` : ''}</div>` +
+          (p.fait_2 ? ligne('•', p.fait_1) + ligne('•', p.fait_2) : ligne('', p.fait_1, S.muted)) +
+          ligne('À vérifier :', p.a_verifier) +
+          `</div>`,
+      )
+      .join('') +
+    `</td></tr></table>`
+  const text = [
+    titre.toUpperCase(),
+    ...points.flatMap((p) => [
+      `- ${p.constat}${p.risque ? ` (${RISQUE[p.risque]})` : ''}`,
+      ...[p.fait_1, p.fait_2].filter(Boolean).map((f) => `    • ${f}`),
+      ...(p.a_verifier ? [`    À vérifier : ${p.a_verifier}`] : []),
+    ]),
+  ].join('\n')
   return { html, text }
 }
 
@@ -166,7 +207,8 @@ function sectionMails(sens: 'envoyé' | 'reçu', mails: MailRapport[]): EmailSec
 }
 
 export function sujetRapport(c: Pick<ContenuRapport, 'personne' | 'jour' | 'signaux' | 'ia'>): string {
-  const n = c.signaux.filter((s) => s.gravite !== 'basse').length + (c.ia?.alertes.filter((s) => s.gravite !== 'basse').length ?? 0)
+  // Every point counts, the « basse » ones too: the subject says what the body shows.
+  const n = c.signaux.length + (c.ia?.points.length ?? 0)
   return `Rapport d’activité — ${c.personne} — ${c.jour}${n ? ` — ${n} point${n > 1 ? 's' : ''} à vérifier` : ''}`
 }
 
@@ -175,7 +217,7 @@ export function contenuEmail(c: ContenuRapport): NotificationEmailContent {
   const recus = c.mails.filter((m) => m.sens === 'reçu').length
   const sections: EmailSection[] = []
   if (c.signaux.length) sections.push(blocAlertes('Relevé par ETM (faits)', c.signaux, RED_BG, RED))
-  if (c.ia?.alertes.length) sections.push(blocAlertes('Points d’attention — analyse IA, à vérifier', c.ia.alertes, AMBER_BG, AMBER))
+  if (c.ia?.points.length) sections.push(blocPoints(c.ia.points))
   if (c.ia?.synthese) sections.push({ html: titreSection('Synthèse') + paragraphe(c.ia.synthese), text: `SYNTHÈSE\n${c.ia.synthese}` })
   if (!c.ia && c.iaErreur) {
     sections.push({ html: paragraphe(`Analyse IA indisponible (${c.iaErreur}) : le rapport ne contient que les faits.`, AMBER), text: `Analyse IA indisponible : ${c.iaErreur}` })
@@ -192,7 +234,7 @@ export function contenuEmail(c: ContenuRapport): NotificationEmailContent {
   }
   return {
     title: `Rapport d’activité — ${c.personne}`,
-    tone: c.signaux.some((s) => s.gravite === 'haute') || c.ia?.alertes.some((s) => s.gravite === 'haute') ? 'alert' : 'info',
+    tone: c.signaux.some((s) => s.gravite === 'haute') || c.ia?.points.some((p) => p.risque === 'client') ? 'alert' : 'info',
     intro: `Activité de **${c.personne}** du ${c.periode}.`,
     rows: [
       { label: 'Connexions', value: c.connexions.length ? c.connexions.join(' · ') : 'aucune' },

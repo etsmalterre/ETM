@@ -31,6 +31,19 @@ export interface Refs {
   /** suivilot → lot. */
   lots: Map<number, string>
   utilisateurs: Map<number, string>
+  /** commande_fil (its id IS the on-screen N°) → its fournisseur id. */
+  commandesFil: Map<number, number>
+  /** ref_fil_commande → its commande_fil. */
+  lignesFil: Map<number, number>
+  fournisseurs: Map<number, string>
+  refsFil: Map<number, string>
+  /** colori_fil → its reference (an offer or an order line is per coloris). */
+  colorisFil: Map<number, string>
+  clients: Map<number, string>
+  refsDivers: Map<number, string>
+  refsFini: Map<number, string>
+  /** facture → its on-screen numero. */
+  factures: Map<number, string>
 }
 
 export const refsVides = (): Refs => ({
@@ -43,6 +56,15 @@ export const refsVides = (): Refs => ({
   fini: new Map(),
   lots: new Map(),
   utilisateurs: new Map(),
+  commandesFil: new Map(),
+  lignesFil: new Map(),
+  fournisseurs: new Map(),
+  refsFil: new Map(),
+  colorisFil: new Map(),
+  clients: new Map(),
+  refsDivers: new Map(),
+  refsFini: new Map(),
+  factures: new Map(),
 })
 
 export interface Description {
@@ -122,7 +144,41 @@ const pieces = (r: Refs, v: unknown, genre: 'ecru' | 'fini' | '?' = '?') => {
   if (total <= 5 && ids.length === total) return `${total > 1 ? 'pièces' : 'pièce'} ${ids.map((i) => (genre === 'fini' ? r.fini.get(i) : genre === 'ecru' ? r.ecru.get(i) : (r.ecru.get(i) ?? r.fini.get(i))) ?? `#${i}`).join(', ')}`
   return pluriel(total, 'pièce')
 }
-const docType = (sur: string) => ({ POST: `Ajout d’un document sur ${sur}`, PUT: `Modification d’un document de ${sur}`, DELETE: `Suppression d’un document de ${sur}` })
+const fournisseur = (r: Refs, id: number) => r.fournisseurs.get(id) ?? `fournisseur #${id}`
+const cmdFil = (r: Refs, id: number) => {
+  const f = r.commandesFil.get(id)
+  return `commande de fil N° ${id}${f !== undefined && r.fournisseurs.get(f) ? ` (${r.fournisseurs.get(f)})` : ''}`
+}
+/** A deleted line can no longer be traced to its order. */
+const cmdFilLigne = (r: Refs, ligne: number) => {
+  const c = r.lignesFil.get(ligne)
+  return c ? cmdFil(r, c) : 'commande de fil'
+}
+const refFil = (r: Refs, id: unknown) => {
+  const n = r.refsFil.get(num(id))
+  return n ? `« ${n} »` : ''
+}
+/** « coloris Écru » when the body names one. */
+const colorisFil = (r: Refs, id: unknown) => {
+  const n = r.colorisFil.get(num(id))
+  return n ? `coloris « ${n} »` : ''
+}
+const client = (r: Refs, id: unknown) => r.clients.get(num(id)) ?? `client #${num(id)}`
+const refFini = (r: Refs, id: unknown) => {
+  const n = r.refsFini.get(num(id))
+  return n ? `réf. fini ${n}` : ''
+}
+/** A user-typed text, quoted and cut. */
+const cite = (v: unknown, n = 160) => {
+  const t = txt(v).replace(/\s+/g, ' ')
+  return t ? `« ${t.length > n ? `${t.slice(0, n)}…` : t} »` : ''
+}
+/** Corrections counted from a list or its stored summary « [2 éléments] ». */
+const nbElements = (v: unknown) => (Array.isArray(v) ? v.length : Number(/\[(\d+) éléments?\]/.exec(txt(v))?.[1] ?? 0))
+const nomPieceId = (r: Refs, id: unknown) => r.fini.get(num(id)) ?? r.ecru.get(num(id)) ?? `#${num(id)}`
+const objets = (v: unknown): Corps[] => (Array.isArray(v) ? v.filter((x): x is Corps => !!x && typeof x === 'object' && !Array.isArray(x)) : [])
+
+const docType = (sur: string) =>({ POST: `Ajout d’un document sur ${sur}`, PUT: `Modification d’un document de ${sur}`, DELETE: `Suppression d’un document de ${sur}` })
 
 // ── Routes ───────────────────────────────────────────────
 
@@ -292,6 +348,122 @@ const ROUTES: Route[] = [
     f: (_g, b) => `Superviseur : point marqué « ${txt(b.issue).replace('_', ' ') || 'traité'} »${txt(b.commentaire) ? ` — « ${txt(b.commentaire)} »` : ''}`,
   },
   { m: 'POST', re: /^\/api\/agents-ia\/([a-z-]+)\/sonder$/, f: () => 'Agents IA : lancement manuel d’un agent' },
+  { m: 'POST', re: /^\/api\/agents-ia(?:-trm)?\/([a-z-]+)\/versions$/, f: () => 'Agents IA : nouvelle version d’un prompt' },
+  { m: 'POST|PUT', re: /^\/api\/agents-ia(?:-trm)?\/([a-z-]+)\/runs\/[^/]+\/(?:evaluation|notes-dev|verifie)$/, f: () => 'Agents IA : avis donné sur une exécution' },
+
+  // 2026-10-14 — the routes the model still read as raw JSON (13 % of the
+  // actions; it took the dossier's free « journal » note for its history and
+  // « 20261012 » for a wrong date). Only what the person typed or chose is
+  // said; internal ids never are.
+
+  // Fils › Commandes (the commande_fil id is the N° printed on the order)
+  { m: 'POST', re: /^\/api\/commandes-fil$/, f: (_g, b, r) => `Création d’une commande de fil chez ${fournisseur(r, num(b.IDfournisseur))}` },
+  { m: 'PUT', re: /^\/api\/commandes-fil\/(\d+)$/, f: ([c], b, r) => `Modification de l’en-tête de la ${cmdFil(r, c)}${entre(txt(b.commentaire) && `commentaire ${cite(b.commentaire)}`, txt(b.journal) && `note interne ${cite(b.journal)}`)}` },
+  { m: 'DELETE', re: /^\/api\/commandes-fil\/(\d+)$/, f: ([c], _b, r) => `Suppression de la ${cmdFil(r, c)}` },
+  { m: 'POST', re: /^\/api\/commandes-fil\/(\d+)\/lignes$/, f: ([c], b, r) => `Ajout d’une ligne à la ${cmdFil(r, c)} : fil ${refFil(r, b.IDref_fil) || '?'}${entre(colorisFil(r, b.IDcolori_fil), nombre(b.quantite, 'kg'), nombre(b.prix_unitaire, '€/kg'), b.date_livraison ? `livraison ${date(b.date_livraison)}` : '')}` },
+  { m: 'PUT', re: /^\/api\/commandes-fil\/lignes\/(\d+)$/, f: ([l], b, r) => `Modification d’une ligne de la ${cmdFilLigne(r, l)} : fil ${refFil(r, b.IDref_fil) || '?'}${entre(colorisFil(r, b.IDcolori_fil), nombre(b.quantite, 'kg'), nombre(b.prix_unitaire, '€/kg'), b.date_livraison ? `livraison ${date(b.date_livraison)}` : '')}` },
+  { m: 'DELETE', re: /^\/api\/commandes-fil\/lignes\/(\d+)$/, f: ([l], _b, r) => `Suppression d’une ligne de la ${cmdFilLigne(r, l)}` },
+  { m: 'PUT', re: /^\/api\/commandes-fil\/(\d+)\/lignes\/\d+\/stock\/\d+$/, f: ([c], _b, r) => `Lot de stock rattaché à une ligne de la ${cmdFil(r, c)} (réception)` },
+  { m: 'POST|PUT|DELETE', re: /^\/api\/commandes-fil\/(\d+)\/documents(?:\/\d+)?$/, f: ([c], b, r, m) => `${docType(cmdFil(r, c))[m as 'POST']}${txt(b.nom) ? ` « ${txt(b.nom)} »` : ''}` },
+  { m: 'POST', re: /^\/api\/commandes-fil\/(\d+)\/email$/, f: ([c], b, r) => `Envoi par mail du bon de la ${cmdFil(r, c)}${destinataires(b.to)}` },
+
+  // Fils › Références
+  { m: 'PUT', re: /^\/api\/references-fil\/(\d+)$/, f: (_g, b) => `Modification de la référence fil ${cite(b.reference) || '?'}${entre(typeof b.prix_kg === 'number' ? `prix de base ${nombre(b.prix_kg, '€/kg')}` : '', txt(b.commentaire) && `commentaire ${cite(b.commentaire)}`)}` },
+  { m: 'POST', re: /^\/api\/references-fil\/(\d+)\/offres$/, f: ([f], b, r) => `Offre de prix saisie sur la référence fil ${refFil(r, f) || '?'}${colorisFil(r, b.IDcolori_fil) ? `, ${colorisFil(r, b.IDcolori_fil)}` : ''} : ${fournisseur(r, num(b.IDfournisseur))}${entre(nombre(b.prix, '€/kg'), nombre(b.quantite, 'kg'), txt(b.observation) && cite(b.observation))}` },
+  { m: 'PUT', re: /^\/api\/references-fil\/(\d+)\/variantes\/\d+\/reappro$/, f: ([f], b, r) => `Stock mini et délai d’appro d’un coloris de la référence fil ${refFil(r, f) || '?'}${entre(nombre(b.stock_mini, 'kg'), nombre(b.delai_appro, 'jours'))}` },
+  { m: 'POST|DELETE', re: /^\/api\/references-fil\/(\d+)\/variantes\/\d+\/fournisseurs\/(\d+)$/, f: ([f, fo], _b, r, m) => `${m === 'POST' ? 'Ajout' : 'Retrait'} du fournisseur ${fournisseur(r, fo)} sur un coloris de la référence fil ${refFil(r, f) || '?'}` },
+
+  // Qualité › Dossiers (the dossier id is the N° printed on the FNC). Its
+  // « journal » is a free note, never the history: left out on purpose.
+  { m: 'POST', re: /^\/api\/dossiers-qualite$/, f: (_g, b, r) => `Création d’un dossier qualité pour ${client(r, b.IDclient)} : ${cite(b.description)}` },
+  {
+    m: 'PUT',
+    re: /^\/api\/dossiers-qualite\/(\d+)$/,
+    f: ([d], b) =>
+      `Modification du dossier qualité N° ${d}${txt(b.reference) ? ` (pièce ${txt(b.reference)})` : ''} : description ${cite(b.description) || 'vide'}` +
+      `${txt(b.message_fnc) ? ` ; texte de la FNC ${cite(b.message_fnc)}` : ''}${txt(b.fnc_resolution) ? ` ; résolution « ${txt(b.fnc_resolution)} »` : ''}${txt(b.fnc_commentaire) ? ` ; commentaire ${cite(b.fnc_commentaire)}` : ''}`,
+  },
+  { m: 'PUT', re: /^\/api\/dossiers-qualite\/(\d+)\/termine$/, f: ([d], b) => `Dossier qualité N° ${d} ${b.termine === 0 || b.termine === false ? 'rouvert' : 'marqué terminé'}` },
+  { m: 'POST|PUT|DELETE', re: /^\/api\/dossiers-qualite\/(\d+)\/documents(?:\/\d+)?$/, f: ([d], _b, _r, m) => docType(`dossier qualité N° ${d}`)[m as 'POST'] },
+  { m: 'POST', re: /^\/api\/dossiers-qualite\/(\d+)\/fnc\/(?:email|envoi)$/, f: ([d], b) => `Envoi de la fiche de non-conformité du dossier qualité N° ${d}${destinataires(b.to)}` },
+
+  // Finis › Études coloris
+  { m: 'POST', re: /^\/api\/etudes-coloris$/, f: (_g, b, r) => `Création de l’étude coloris ${cite(b.libelle)} pour ${client(r, b.IDclient)}${entre(refFini(r, b.IDref_fini), b.IDsous_traitant !== undefined ? `chez ${sstNom(r, num(b.IDsous_traitant))}` : '', b.date_reception_type ? `type reçu le ${date(b.date_reception_type)}` : '')}` },
+  { m: 'PUT', re: /^\/api\/etudes-coloris\/(\d+)$/, f: (_g, b) => `Modification de l’étude coloris ${cite(b.libelle) || '?'}${entre(txt(b.commentaire) && `commentaire ${cite(b.commentaire)}`, txt(b.journal) && `note interne ${cite(b.journal)}`)}` },
+  { m: 'POST', re: /^\/api\/etudes-coloris\/soumissions\/(\d+)\/respond$/, f: () => 'Réponse du client enregistrée sur une soumission coloris' },
+
+  // Clients, fournisseurs, sous-traitants, prospects
+  { m: 'PUT', re: /^\/api\/clients(?:-trm)?\/(\d+)$/, f: ([c], b, r) => `Modification de la fiche du client ${r.clients.get(c) ?? (txt(b.nom) || `#${c}`)}${entre(txt(b.commentaire) && `commentaire ${cite(b.commentaire)}`)}` },
+  { m: 'POST|PUT', re: /^\/api\/clients(?:-trm)?\/(\d+)\/contacts(?:\/\d+)?$/, f: ([c], b, r, m) => `${m === 'POST' ? 'Ajout' : 'Modification'} du contact ${[txt(b.prenom), txt(b.nom)].filter(Boolean).join(' ')}${txt(b.mail) ? ` (${txt(b.mail)})` : ''} du client ${client(r, c)}` },
+  { m: 'DELETE', re: /^\/api\/clients(?:-trm)?\/(\d+)\/contacts\/\d+$/, f: ([c], _b, r) => `Suppression d’un contact du client ${client(r, c)}` },
+  { m: 'POST|PUT', re: /^\/api\/clients(?:-trm)?\/(\d+)\/adresses(?:\/\d+)?$/, f: ([c], b, r, m) => `${m === 'POST' ? 'Ajout' : 'Modification'} d’une adresse du client ${client(r, c)}${entre(txt(b.nom), txt(b.ville))}` },
+  { m: 'POST', re: /^\/api\/clients\/(\d+)\/references\/\d+\/coloris\/demande$/, f: ([c], _b, r) => `Demande de nouveau coloris pour le client ${client(r, c)}` },
+  { m: 'PUT', re: /^\/api\/fournisseurs\/(\d+)$/, f: ([f], b, r) => `Modification de la fiche du fournisseur ${r.fournisseurs.get(f) ?? (txt(b.nom) || `#${f}`)}` },
+  { m: 'POST|PUT', re: /^\/api\/fournisseurs\/(\d+)\/contacts(?:\/\d+)?$/, f: ([f], b, r, m) => `${m === 'POST' ? 'Ajout' : 'Modification'} du contact ${[txt(b.prenom), txt(b.nom)].filter(Boolean).join(' ')}${txt(b.mail) ? ` (${txt(b.mail)})` : ''} du fournisseur ${fournisseur(r, f)}` },
+  { m: 'PUT', re: /^\/api\/sous-traitants\/(\d+)$/, f: ([s], _b, r) => `Modification de la fiche du sous-traitant ${sstNom(r, s)}` },
+  { m: 'POST|PUT', re: /^\/api\/sous-traitants\/(\d+)\/contacts(?:\/\d+)?$/, f: ([s], b, r, m) => `${m === 'POST' ? 'Ajout' : 'Modification'} du contact ${[txt(b.prenom), txt(b.nom)].filter(Boolean).join(' ')}${txt(b.mail) ? ` (${txt(b.mail)})` : ''} du sous-traitant ${sstNom(r, s)}` },
+  { m: 'PUT', re: /^\/api\/prospects\/(\d+)$/, f: (_g, b) => `Modification du prospect ${txt(b.societe) || [txt(b.prenom), txt(b.nom)].filter(Boolean).join(' ')}` },
+  { m: 'PUT', re: /^\/api\/prospects\/(\d+)\/status$/, f: () => 'Changement de statut d’un prospect (catalogue)' },
+
+  // Stocks
+  {
+    m: 'PATCH',
+    re: /^\/api\/stock\/fini\/(\d+)$/,
+    f: ([p], b, r) =>
+      `Modification du ${fini(r, p)} en stock${entre(txt(b.observations) && `observations ${cite(b.observations)}`, txt(b.observation_sst) && `défauts ${cite(b.observation_sst)}`, txt(b.emplacement) && `emplacement ${txt(b.emplacement)}`, b.second_choix === true ? '2e choix' : '', b.don === true ? 'à donner' : '')}`,
+  },
+  { m: 'POST', re: /^\/api\/stock\/fini\/(\d+)\/cut$/, f: ([p], b, r) => `Découpe du ${fini(r, p)} : ${objets(b.pieces).map((x) => nombre(x.metrage, 'm')).filter(Boolean).join(' + ') || 'morceaux'} détachés` },
+  { m: 'POST', re: /^\/api\/stock\/ecru\/(\d+)\/cut$/, f: ([p], b, r) => `Découpe de la ${ecru(r, p)} : ${objets(b.pieces).map((x) => nombre(x.poids, 'kg')).filter(Boolean).join(' + ') || 'morceaux'} détachés` },
+  { m: 'POST', re: /^\/api\/stock\/fini\/surteindre\/preview$/, f: (_g, b, r) => `Aperçu d’une surteinture (${pieces(r, b.ids, 'fini')}) — rien n’est modifié` },
+  { m: 'POST', re: /^\/api\/stock\/fini\/surteindre$/, f: (_g, b, r) => `Surteinture : ${pieces(r, b.ids, 'fini')} renvoyée(s) en teinture` },
+  { m: 'PATCH', re: /^\/api\/stock\/ecru(?:-trm)?\/(\d+)$/, f: ([p], b, r) => `Modification de la ${ecru(r, p)} en stock${entre(txt(b.observations) && `observations ${cite(b.observations)}`, b.second_choix === true ? '2e choix' : '')}` },
+  { m: 'POST', re: /^\/api\/stock-divers$/, f: (_g, b, r) => `Entrée en stock divers : ${typeof b.quantite === 'number' ? b.quantite : '?'} × ${r.refsDivers.get(num(b.IDref_divers)) ?? 'article'}` },
+  { m: 'PATCH', re: /^\/api\/stock-divers\/(\d+)$/, f: (_g, b) => `Correction d’une quantité en stock divers${typeof b.quantite === 'number' ? ` (${b.quantite})` : ''}` },
+  { m: 'POST', re: /^\/api\/expeditions\/divers\/(\d+)\/lignes$/, f: ([e]) => `Ajout d’une ligne à l’avis d’expédition divers N° ${e}` },
+  { m: 'PUT', re: /^\/api\/expeditions\/divers\/lignes\/\d+\/contenu$/, f: (_g, b, r) => `Contenu d’une ligne d’avis divers : ${objets(b.items).map((x) => `${typeof x.quantite === 'number' ? x.quantite : '?'} × ${r.refsDivers.get(num(x.IDref_divers)) ?? 'article'}${typeof x.prix === 'number' ? ` à ${nombre(x.prix, '€')}` : ''}`).join(', ') || 'vide'}` },
+
+  // Clients › Étiquettes Simone Pérèle (net = the length billed, in m)
+  {
+    m: 'PUT',
+    re: /^\/api\/etiquettes-sp\/lignes\/(\d+)$/,
+    f: ([l], b, r) => {
+      const rl = objets(b.rolls)
+      const mesures = rl.map((x) => `${nomPieceId(r, x.id)} ${[nombre(x.brut, 'm brut'), nombre(x.net, 'm net'), nombre(x.laizeCm, 'cm de laize')].filter(Boolean).join(', ')}`)
+      return `Étiquettes Simone Pérèle de la ${cmdLigne(r, l)} : mesures de ${rl.length} rouleau${rl.length > 1 ? 'x' : ''}${mesures.length ? ` (${mesures.join(' ; ')})` : ''}`
+    },
+  },
+  { m: 'POST', re: /^\/api\/etiquettes-sp\/lignes\/(\d+)\/([a-z]+)\/email$/, f: ([l], b, r) => `Envoi par mail du document Simone Pérèle de la ${cmdLigne(r, l)}${destinataires(b.to)}` },
+
+  // Tricobot: the person checked a BL Tricobot pre-filled
+  {
+    m: 'PUT',
+    re: /^\/api\/tricobot\/bl-reception$/,
+    f: (_g, b, r) => {
+      const lots = objets(b.lots)
+      const corr = lots.reduce((t, x) => t + nbElements(x.corrections), 0)
+      return `Réception d’un BL pré-rempli par Tricobot (lot ${lots.map((x) => txt(x.lot)).filter(Boolean).join(', ') || '?'}, ${sstLigne(r, num(b.ligneId))}) : ${corr ? `${pluriel(corr, 'valeur')} corrigée${corr > 1 ? 's' : ''}` : 'sans correction'}`
+    },
+  },
+
+  // Clients › Facturation
+  { m: 'POST', re: /^\/api\/factures(?:-trm)?\/def\/(\d+)\/email$/, f: ([f], b, r) => `Envoi par mail de la facture N° ${r.factures.get(f) ?? '?'}${destinataires(b.to)}` },
+  { m: 'POST', re: /^\/api\/factures(?:-trm)?\/def\/(\d+)\/marquer-envoyee$/, f: ([f], b, r) => `Facture N° ${r.factures.get(f) ?? '?'} marquée comme envoyée${txt(b.motif) ? ` — ${cite(b.motif)}` : ''}` },
+  { m: 'POST', re: /^\/api\/factures(?:-trm)?\/def\/(\d+)\/avoir$/, f: ([f], _b, r) => `Création d’un avoir sur la facture N° ${r.factures.get(f) ?? '?'}` },
+  { m: 'POST', re: /^\/api\/factures(?:-trm)?\/prov$/, f: (_g, b, r) => `Création d’une facture provisoire pour ${client(r, b.IDclient)}` },
+  { m: 'POST', re: /^\/api\/factures(?:-trm)?\/prov\/generate$/, f: () => 'Génération des factures provisoires' },
+  { m: 'PUT', re: /^\/api\/factures(?:-trm)?\/prov\/(\d+)$/, f: () => 'Modification d’une facture provisoire' },
+  { m: 'POST|PUT', re: /^\/api\/factures(?:-trm)?\/prov\/(?:\d+\/)?lignes(?:\/\d+)?$/, f: (_g, b, _r, m) => `${m === 'POST' ? 'Ajout' : 'Modification'} d’une ligne de facture provisoire${entre(cite(txt(b.designation).split('\n')[0], 60), typeof b.quantite === 'number' && b.quantite ? `${String(b.quantite).replace('.', ',')} ${txt(b.unite)}` : '', nombre(b.prix, '€'))}` },
+  { m: 'POST', re: /^\/api\/factures(?:-trm)?\/prov\/(?:\d+\/convert|convert-batch)$/, f: (_g, b) => `Validation de ${b.ids ? pluriel(idsDe(b.ids).total, 'facture provisoire') : 'la facture provisoire'} en facture définitive` },
+  { m: 'POST', re: /^\/api\/factures(?:-trm)?\/prov\/delete-batch$/, f: (_g, b) => `Suppression de ${pluriel(idsDe(b.ids).total, 'facture provisoire')}` },
+
+  { m: 'PUT', re: /^\/api\/factures-sst\/lignes\/(\d+)\/avis$/, f: (_g, b) => `Sous-traitants › Factures : ligne de facture ennoblisseur ${txt(b.action) ? `jugée « ${txt(b.action)} »` : 'remise en attente'}${txt(b.commentaire) ? ` — ${cite(b.commentaire)}` : ''}` },
+
+  // Others
+  { m: 'POST', re: /^\/api\/tarifs-fini\/(\d+)\/preview$/, f: () => 'Finis › Tarifs : simulation de prix — rien n’est modifié' },
+  { m: 'POST|PUT|DELETE', re: /^\/api\/tarifs-fini(?:\/\d+)?(?:\/fils\/\d+)?$/, f: (_g, b, _r, m) => `Finis › Tarifs : ${m === 'POST' ? 'création' : m === 'DELETE' ? 'suppression' : 'modification'} d’une fiche de prix${txt(b.reference) ? ` ${cite(b.reference)}` : ''}` },
+  { m: 'POST', re: /^\/api\/tickets(?:-trm)?\/[^/]+\/attachments$/, f: () => 'Pièce jointe ajoutée à un ticket' },
+  { m: 'POST', re: /^\/api\/tickets(?:-trm)?\/[^/]+\/messages$/, f: (_g, b) => `Message sur un ticket : ${cite(b.body)}` },
+  { m: 'POST', re: /^\/api\/auth\/voir-comme$/, f: () => '« Voir comme » un autre compte' },
 ]
 
 const VERBES: Record<string, string> = { POST: 'Action / création', PUT: 'Modification', PATCH: 'Modification', DELETE: 'Suppression' }
@@ -359,6 +531,15 @@ export interface IdsAResoudre {
   pieces: Set<number>
   lots: Set<number>
   utilisateurs: Set<number>
+  commandesFil: Set<number>
+  lignesFil: Set<number>
+  fournisseurs: Set<number>
+  refsFil: Set<number>
+  colorisFil: Set<number>
+  clients: Set<number>
+  refsDivers: Set<number>
+  refsFini: Set<number>
+  factures: Set<number>
 }
 
 /** Every id the descriptions of `lignes` will look up. Pure. */
@@ -372,6 +553,15 @@ export function idsAResoudre(lignes: readonly Pick<LigneJournal, 'chemin' | 'cor
     pieces: new Set(),
     lots: new Set(),
     utilisateurs: new Set(),
+    commandesFil: new Set(),
+    lignesFil: new Set(),
+    fournisseurs: new Set(),
+    refsFil: new Set(),
+    colorisFil: new Set(),
+    clients: new Set(),
+    refsDivers: new Set(),
+    refsFini: new Set(),
+    factures: new Set(),
   }
   const ajouter = (s: Set<number>, v: unknown) => {
     const n = num(v)
@@ -391,6 +581,25 @@ export function idsAResoudre(lignes: readonly Pick<LigneJournal, 'chemin' | 'cor
     if ((m = /^\/api\/permissions(?:-trm)?\/users\/(\d+)/.exec(c))) ajouter(ids.utilisateurs, m[1])
     for (const k of ['stockIds', 'stockEcruIds']) for (const i of idsDe(b[k]).ids) ajouter(ids.pieces, i)
     for (const k of ['IDsous_traitant', 'IDmagasin_source', 'IDmagasin_destination']) ajouter(ids.sousTraitants, b[k])
+    if ((m = /^\/api\/commandes-fil\/(\d+)/.exec(c))) ajouter(ids.commandesFil, m[1])
+    if ((m = /^\/api\/commandes-fil\/(?:\d+\/)?lignes\/(\d+)/.exec(c))) ajouter(ids.lignesFil, m[1])
+    if ((m = /^\/api\/(?:fournisseurs|references-fil\/\d+\/variantes\/\d+\/fournisseurs)\/(\d+)/.exec(c))) ajouter(ids.fournisseurs, m[1])
+    if ((m = /^\/api\/references-fil\/(\d+)/.exec(c))) ajouter(ids.refsFil, m[1])
+    if ((m = /^\/api\/clients(?:-trm)?\/(\d+)/.exec(c))) ajouter(ids.clients, m[1])
+    if ((m = /^\/api\/sous-traitants\/(\d+)/.exec(c))) ajouter(ids.sousTraitants, m[1])
+    if ((m = /^\/api\/stock\/(?:fini|ecru(?:-trm)?)\/(\d+)/.exec(c))) ajouter(ids.pieces, m[1])
+    if ((m = /^\/api\/etiquettes-sp\/lignes\/(\d+)/.exec(c))) ajouter(ids.lignesClient, m[1])
+    if ((m = /^\/api\/factures(?:-trm)?\/def\/(\d+)/.exec(c))) ajouter(ids.factures, m[1])
+    if (c === '/api/tricobot/bl-reception') ajouter(ids.lignesSst, b.ligneId)
+    ajouter(ids.fournisseurs, b.IDfournisseur)
+    ajouter(ids.refsFil, b.IDref_fil)
+    ajouter(ids.colorisFil, b.IDcolori_fil)
+    ajouter(ids.clients, b.IDclient)
+    ajouter(ids.refsFini, b.IDref_fini)
+    ajouter(ids.refsDivers, b.IDref_divers)
+    for (const x of objets(b.items)) ajouter(ids.refsDivers, x.IDref_divers)
+    for (const x of objets(b.rolls)) ajouter(ids.pieces, x.id)
+    for (const i of idsDe(b.ids).ids) ajouter(ids.pieces, i)
   }
   return ids
 }
@@ -445,6 +654,33 @@ export async function chargerRefs(lignes: readonly Pick<LigneJournal, 'chemin' |
   for (const x of finis) if (x.numero) r.fini.set(Number(x.id), x.numero.trim())
   for (const x of lots) if (x.lot) r.lots.set(Number(x.idsuivilot), x.lot.trim())
   for (const x of utilisateurs) r.utilisateurs.set(Number(x.idutilisateur), [x.prenom, x.nom].map((v) => (v ?? '').trim()).filter(Boolean).join(' '))
+  if (ids.lignesFil.size) {
+    for (const x of await sql<{ idref_fil_commande: number; idcommande_fil: number }[]>`
+      SELECT idref_fil_commande, idcommande_fil FROM ref_fil_commande WHERE idref_fil_commande IN ${sql(liste(ids.lignesFil))}`) {
+      r.lignesFil.set(Number(x.idref_fil_commande), Number(x.idcommande_fil))
+      ids.commandesFil.add(Number(x.idcommande_fil))
+    }
+  }
+  if (ids.commandesFil.size) {
+    for (const x of await sql<{ idcommande_fil: number; idfournisseur: number }[]>`
+      SELECT idcommande_fil, idfournisseur FROM commande_fil WHERE idcommande_fil IN ${sql(liste(ids.commandesFil))}`) {
+      r.commandesFil.set(Number(x.idcommande_fil), Number(x.idfournisseur))
+      ids.fournisseurs.add(Number(x.idfournisseur))
+    }
+  }
+  const nommer = async (s: Set<number>, cible: Map<number, string>, requete: (l: number[]) => Promise<Array<{ id: number; nom: unknown }>>) => {
+    if (!s.size) return
+    for (const x of await requete(liste(s))) if (x.nom !== null && String(x.nom).trim()) cible.set(Number(x.id), String(x.nom).trim())
+  }
+  await Promise.all([
+    nommer(ids.fournisseurs, r.fournisseurs, (l) => sql`SELECT idfournisseur AS id, nom FROM fournisseur WHERE idfournisseur IN ${sql(l)}`),
+    nommer(ids.colorisFil, r.colorisFil, (l) => sql`SELECT idcolori_fil AS id, reference AS nom FROM colori_fil WHERE idcolori_fil IN ${sql(l)}`),
+    nommer(ids.refsFil, r.refsFil, (l) => sql`SELECT idref_fil AS id, reference AS nom FROM ref_fil WHERE idref_fil IN ${sql(l)}`),
+    nommer(ids.clients, r.clients, (l) => sql`SELECT idclient AS id, nom FROM client WHERE idclient IN ${sql(l)}`),
+    nommer(ids.refsDivers, r.refsDivers, (l) => sql`SELECT idref_divers AS id, designation AS nom FROM ref_divers WHERE idref_divers IN ${sql(l)}`),
+    nommer(ids.refsFini, r.refsFini, (l) => sql`SELECT idref_fini AS id, reference AS nom FROM ref_fini WHERE idref_fini IN ${sql(l)}`),
+    nommer(ids.factures, r.factures, (l) => sql`SELECT idfacture AS id, numero AS nom FROM facture WHERE idfacture IN ${sql(l)}`),
+  ])
   if (ids.sousTraitants.size) {
     for (const x of await sql<{ idsous_traitant: number; nom: string | null }[]>`
       SELECT idsous_traitant, nom FROM sous_traitant WHERE idsous_traitant IN ${sql(liste(ids.sousTraitants))}`) {

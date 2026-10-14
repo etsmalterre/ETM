@@ -30,6 +30,7 @@ try {
   fs.writeFileSync(sortie, renderNotificationEmailPreview(contenuEmail(d.contenu)))
   console.log(sujetRapport(d.contenu))
   console.log(d.compteurs, `coût ${d.coutUsd.toFixed(4)} $`, d.contenu.iaErreur ? `IA : ${d.contenu.iaErreur}` : '')
+  for (const e of d.ecartes) console.log(`Point écarté (${e.raison}) : ${e.point.constat} | ${e.point.fait_1} | ${e.point.fait_2}`)
   console.log(`Aperçu : ${sortie}`)
   if (a) console.log(await envoyerRapport(d.contenu, [a], true))
 } finally {

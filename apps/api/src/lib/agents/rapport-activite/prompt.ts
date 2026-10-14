@@ -90,6 +90,92 @@ Règles :
 - Ne reprends pas les signaux du code tels quels : ils sont déjà dans le rapport.
 - En cas de doute, pas d'alerte. Une heure de travail normal donne une liste d'alertes vide : c'est le cas attendu, presque toutes les heures.`
 
+/** v4 (2026-10-14), after Vincent reread the 45 reports sent so far: v3
+ *  raised about one point an hour, but only 5 or 6 of its 28 were worth a
+ *  look, and the rest were not readable (« Incohérences… » in 18 titles out
+ *  of 28, the fact and the risk mixed in one paragraph, « [m6] » and internal
+ *  ids). A point is now two facts that contradict each other, each with its
+ *  hour and source (the code drops a point whose facts cite no hour of the
+ *  data), the risk and the one check to make. The new false positives are
+ *  listed under « jamais un point »: a shortfall or a defect reported to a
+ *  supplier, measures entered then mailed to the dyer, a delivery in several
+ *  parts, an earlier step that is simply outside the hour. */
+export const PROMPT_V4 = `Tu prépares le compte rendu de l'activité d'un salarié d'ETS Malterre (fabricant textile : tricotage, bonneterie, Moreuil) pour Vincent Malterre, le dirigeant. Le rapport part environ toutes les heures et ne couvre que la période indiquée : ce qui s'est passé avant n'y est pas, et son absence ne prouve rien.
+On te donne : ses connexions, ses actions dans les logiciels ETM (ETS Malterre) et TRM (Tricotage Malterre) telles que le serveur les a enregistrées, déjà écrites en clair avec les numéros affichés à l'écran, les signaux relevés par le code, et ses mails envoyés et reçus (extraits). Les mails marqués [contexte] viennent de Vincent Malterre ou de Malterre Intelligence : ils servent à comprendre, ils ne fondent jamais un point.
+
+Réponds uniquement avec le JSON demandé :
+- synthese : 2 à 5 phrases en français : sur quoi il a travaillé (clients, commandes, sous-traitants, lots…), les faits marquants. Factuel, neutre, sans jugement.
+- etm : les grandes lignes de son travail dans ETM, une phrase courte par sujet (« Réception du lot MA109328 : 12 rouleaux »), 8 au plus. Liste vide s'il n'a rien fait dans ETM.
+- trm : idem pour TRM.
+- mails : une entrée par mail fourni (ref = la référence [mN] donnée), résumé neutre en une phrase.
+- points : 0 à 3 points que Vincent doit vérifier. Presque toujours aucun.
+
+Un point, c'est DEUX faits de la période qui ne peuvent pas être vrais ensemble, et une erreur probable qui en découle. Chaque point a :
+- constat : une phrase simple qui dit ce qui ne va pas, avec le numéro concerné (« Le prix du fil 160 ELASTHANNE dans ETM n'est pas celui de l'offre »). N'emploie jamais les mots « incohérence » ni « incohérent ».
+- fait_1 et fait_2 : chacun commence par l'heure (HH:MM) puis dit où (« ETM, Fils › Références » ou « mail envoyé à Filmatech ») et ce qu'il contient, chiffre ou texte cité. Deux faits différents : pas deux fois le même enregistrement.
+- risque : sur qui l'erreur retombe si elle est réelle : "client", "fournisseur", "stock", "facturation" ou "interne".
+- a_verifier : le geste précis pour trancher, une phrase (« Ouvrir Fils › Commandes N° 721 et comparer le prix de la ligne à l'offre »).
+
+Ce qui mérite un point (seulement si deux faits de la période le montrent) :
+- un prix, une quantité, une date, un coloris ou un numéro de pièce qui diffère entre ce qu'il écrit à un client ou un fournisseur et ce qu'il saisit dans ETM ;
+- un document envoyé (avis d'expédition, confirmation, FNC, bon de commande) qui contredit une autre saisie ou un mail de la période ;
+- une erreur que le client ou le fournisseur a dû signaler lui-même ;
+- une commande laissée vide ou une suppression de quelque chose déjà envoyé à un client ;
+- un mail grossier, insultant ou méprisant.
+
+Ce qui n'est JAMAIS un point :
+- Signaler un manque, un défaut, une non-conformité ou un écart à un fournisseur, un sous-traitant, au tricotage ou à un client : c'est son travail. Saisir des mesures hors tolérance puis l'écrire au teinturier, ouvrir une FNC, noter des défauts à la réception : c'est le contrôle qualité qui fonctionne.
+- Une étape absente de la période (une affectation, une validation, une commande antérieure) : elle a pu être faite avant. Une donnée qui n'est pas fournie (un poids, un prix, une date) ne contredit rien.
+- Une expédition ou une réception en plusieurs fois, plusieurs lignes qui font un total, créer puis modifier, enregistrer plusieurs fois, retirer une ligne du point sous-traitant, libérer une réservation, désaffecter, remplacer un document envoyé.
+- Une ancienne date sur une vieille commande, un numéro écrit avec ou sans préfixe (MA109377 et ACL 109377 sont le même lot), une majuscule, une faute de frappe, une note interne qui diffère de la description.
+- Le ton amical ou familier, un 👍, un mail pas encore répondu, un délai ou un accord donné par mail sans trace dans ETM (ETM n'a pas d'endroit pour ça).
+- Ce que disent les mails [contexte] (Vincent le sait déjà), un ticket envoyé au développement, la vie personnelle, une adresse mail personnelle, le volume, les horaires, les pauses, une action refusée par ETM (elle est déjà dans les signaux du code).
+
+Règles :
+- N'invente rien et ne suppose rien. Si tu ne peux pas citer deux faits précis de la période, il n'y a pas de point. « À vérifier si c'est bien fait » sans fait contraire n'est pas un point.
+- Les actions listées SONT ce qui est enregistré dans ETM/TRM. Reprends les numéros tels qu'ils sont écrits ; ne cite jamais un identifiant technique (« ID 949 », « ligne 995 »), ni les références [mN] : cite l'heure, l'interlocuteur et l'objet du mail.
+- En cas de doute, pas de point. Une heure de travail normal donne une liste vide : c'est le cas attendu.`
+
+/** v4's points: two dated facts, the risk, the check (prompt.ts PROMPT_V4). */
+export const RAPPORT_SCHEMA_V4 = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['synthese', 'etm', 'trm', 'mails', 'points'],
+  properties: {
+    synthese: { type: 'string' },
+    etm: { type: 'array', items: { type: 'string' } },
+    trm: { type: 'array', items: { type: 'string' } },
+    mails: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ref', 'resume'],
+        properties: { ref: { type: 'string' }, resume: { type: 'string' } },
+      },
+    },
+    points: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['constat', 'fait_1', 'fait_2', 'risque', 'a_verifier'],
+        properties: {
+          constat: { type: 'string' },
+          fait_1: { type: 'string' },
+          fait_2: { type: 'string' },
+          risque: { type: 'string', enum: ['client', 'fournisseur', 'stock', 'facturation', 'interne'] },
+          a_verifier: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const
+
+/** A prompt written for the v4 schema (two facts per point); an older
+ *  published prompt keeps the v1-v3 schema until v4 is published. */
+export const estPromptV4 = (prompt: string) => prompt.includes('fait_1')
+
 export const RAPPORT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -129,8 +215,71 @@ export interface ReponseRapport {
   etm: string[]
   trm: string[]
   mails: Array<{ ref: string; resume: string }>
-  alertes: Signal[]
+  /** v1-v3 prompts. */
+  alertes?: Signal[]
+  /** v4 prompt. */
+  points?: PointIa[]
 }
+
+export type Risque = 'client' | 'fournisseur' | 'stock' | 'facturation' | 'interne'
+
+/** A point of attention as the e-mail shows it. A v1-v3 alert becomes one
+ *  with its title as constat, its detail as fait_1 and nothing else. */
+export interface PointIa {
+  constat: string
+  fait_1: string
+  fait_2: string
+  risque: Risque | null
+  a_verifier: string
+}
+
+/** « [m6] » is the model's handle on a mail; the reader never sees it. */
+const sansRefMail = (s: string) => s.replace(/\s*\[m\d+\]/g, '').trim()
+
+/** First « HH:MM » (or « HHhMM ») of a text, as « HH:MM ». */
+export function premiereHeure(s: string): string | null {
+  const m = /\b(\d{1,2})\s*[:h]\s*(\d{2})\b/.exec(s)
+  return m ? `${m[1].padStart(2, '0')}:${m[2]}` : null
+}
+
+export interface PointEcarte {
+  point: PointIa
+  raison: string
+}
+
+/** The code's filter on the model's points (v4): each fact must open on an
+ *  hour the data holds, one of them must be the salarié's own (an action or
+ *  a mail not marked [contexte]), and the two facts must differ. A point the
+ *  model could not anchor is dropped, never shown — kept in the run counts. */
+export function filtrerPoints(
+  points: readonly PointIa[],
+  heures: { propres: ReadonlySet<string>; contexte: ReadonlySet<string> },
+): { gardes: PointIa[]; ecartes: PointEcarte[] } {
+  const gardes: PointIa[] = []
+  const ecartes: PointEcarte[] = []
+  for (const brut of points) {
+    const p: PointIa = {
+      constat: sansRefMail(brut.constat),
+      fait_1: sansRefMail(brut.fait_1),
+      fait_2: sansRefMail(brut.fait_2),
+      risque: brut.risque,
+      a_verifier: sansRefMail(brut.a_verifier),
+    }
+    const h = [premiereHeure(p.fait_1), premiereHeure(p.fait_2)]
+    const connue = (x: string | null) => !!x && (heures.propres.has(x) || heures.contexte.has(x))
+    let raison: string | null = null
+    if (!p.constat || !p.fait_1 || !p.fait_2) raison = 'point incomplet'
+    else if (!h.every(connue)) raison = 'un fait ne cite aucune heure de la période'
+    else if (!h.some((x) => !!x && heures.propres.has(x))) raison = 'les deux faits viennent des mails [contexte]'
+    else if (p.fait_1.toLowerCase() === p.fait_2.toLowerCase()) raison = 'deux fois le même fait'
+    if (raison) ecartes.push({ point: p, raison })
+    else gardes.push(p)
+  }
+  return { gardes, ecartes }
+}
+
+/** A v1-v3 alert in the v4 shape: not filtered (no facts to check). */
+export const pointDAlerte = (a: Signal): PointIa => ({ constat: sansRefMail(a.titre), fait_1: sansRefMail(a.detail), fait_2: '', risque: null, a_verifier: '' })
 
 /** One action as the model reads it. */
 export interface ActionEntree {
@@ -152,7 +301,19 @@ export interface MailEntree {
   correspondant: string
   sujet: string
   extrait: string
+  /** From Vincent Malterre or Malterre Intelligence: read for context, never
+   *  the ground of a point. */
+  contexte?: boolean
 }
+
+/** Received from Vincent (ETM or Malterre Fencing) or Malterre Intelligence
+ *  (release notes, tickets): he already knows what they say. */
+export const estMailContexte = (m: { envoye: boolean; de: string }) =>
+  !m.envoye && (/^vincent@/i.test(m.de) || /@malterre-intelligence\.com$/i.test(m.de))
+
+/** « "20261012" » in a raw body → « "12/10/2026" »: read raw, the model took
+ *  a correct date for a wrong one (2026-10-12). */
+export const datesLisibles = (s: string) => s.replace(/"(20\d{2})(\d{2})(\d{2})"/g, '"$3/$2/$1"')
 
 const couper = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
 
@@ -178,7 +339,7 @@ export function entreeRapport(e: {
   lignes.push(`Actions enregistrées (${e.actions.length}) :`)
   if (!e.actions.length) lignes.push('- aucune')
   for (const a of e.actions.slice(0, MAX_ACTIONS)) {
-    const extra = [a.ecran ? `page ${a.ecran}` : '', a.corps ? `données ${a.corps}` : '', a.erreur ? `message « ${a.erreur} »` : '']
+    const extra = [a.ecran ? `page ${a.ecran}` : '', a.corps ? `données ${datesLisibles(a.corps)}` : '', a.erreur ? `message « ${a.erreur} »` : '']
       .filter(Boolean)
       .join(' — ')
     lignes.push(`- ${a.heure} [${a.app}] ${a.menu} : ${a.action} → ${a.resultat}${extra ? ` (${extra})` : ''}`)
@@ -188,7 +349,7 @@ export function entreeRapport(e: {
   lignes.push(`Mails (${e.mails.length}) :`)
   if (!e.mails.length) lignes.push('- aucun')
   for (const m of e.mails) {
-    lignes.push(`[${m.ref}] ${m.heure} ${m.sens} ${m.sens === 'envoyé' ? 'à' : 'de'} ${m.correspondant} — « ${m.sujet} »`)
+    lignes.push(`[${m.ref}]${m.contexte ? ' [contexte]' : ''} ${m.heure} ${m.sens} ${m.sens === 'envoyé' ? 'à' : 'de'} ${m.correspondant} — « ${m.sujet} »`)
     lignes.push(couper(m.extrait.replace(/\n{3,}/g, '\n\n'), MAX_EXTRAIT), '')
   }
   return sansSurrogatsIsoles(lignes.join('\n'))
