@@ -973,6 +973,23 @@ function RetoursTab({ agent, onOpenRun }: { agent: AgentDetail; onOpenRun: (id: 
 
 // ── Prompt (versions) ────────────────────────────────────
 
+/** A version's note without the « Version N — » the developer put in front of
+ *  it: that N is the prompt's number in the code, not the stored version number
+ *  the screen shows (Rapport d'activité: stored v3 = « Version 4 — … »). Display
+ *  only — the stored and shipped notes stay verbatim (estPublie compares them). */
+function noteSansNumero(note: string): string {
+  const s = note.trim().replace(/^version\s+(\d+|initiale)\s*[—–:-]\s*/i, '')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+function NoteVersion({ note, origine = false, className }: { note: string; origine?: boolean; className?: string }) {
+  return (
+    <p className={cn('text-[11px] text-muted-foreground', className)}>
+      <span className="font-semibold text-foreground/70">{origine ? 'Version d’origine : ' : 'Ce qui change : '}</span>{noteSansNumero(note)}
+    </p>
+  )
+}
+
 function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilot: boolean; onChanged: () => void }) {
   const base = useBaseApi()
   const [draftOpen, setDraftOpen] = useState(false)
@@ -1002,8 +1019,8 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
               <Upload className="h-3.5 w-3.5 text-amber-600" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">Nouvelle version livrée avec l’application</p>
-              <p className="text-[11px] text-muted-foreground">{livre.note}</p>
+              <p className="text-sm font-medium">Prompt livré avec l’application, pas encore publié</p>
+              <p className="text-[11px] text-muted-foreground">Tant qu’il n’est pas publié, l’agent garde la version {active.version}.</p>
             </div>
             <button type="button" onClick={() => setVoirLivre((v) => !v)} className="flex-shrink-0 text-xs text-muted-foreground hover:text-foreground transition-colors">
               {voirLivre ? 'Masquer le prompt' : 'Voir le prompt'}
@@ -1013,6 +1030,7 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
               {publierLivreMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Upload className="h-3.5 w-3.5 mr-1.5" />}Publier la v{prochaine}
             </Button>
           </div>
+          <NoteVersion note={livre.note} className="mt-2 ml-9" />
           {voirLivre && <pre className="mt-2 text-xs whitespace-pre-wrap font-mono bg-white/70 rounded-md p-3 max-h-[40vh] overflow-auto scrollbar-transparent">{livre.prompt}</pre>}
         </div>
       )}
@@ -1029,18 +1047,18 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
         <div className="flex items-center gap-2 mb-2">
           <ScrollText className="h-4 w-4 text-accent" />
-          <h3 className="text-sm font-semibold">Version active — v{active.version}</h3>
+          <h3 className="text-sm font-semibold">Prompt en service — version {active.version}</h3>
           <Badge variant="secondary" className="text-[10px] py-0">{agent.modeles.find((m) => m.id === active.model)?.label ?? active.model}</Badge>
           <Button variant="outline" size="sm" className="ml-auto" disabled={!canPilot} onClick={() => setDraftOpen(true)}
-            title={canPilot ? 'Publier une nouvelle version du prompt' : 'Droit « Piloter les agents IA » requis'}>
-            <RotateCcw className="h-3.5 w-3.5 mr-1.5" />Nouvelle version
+            title={canPilot ? `Écrire la version ${prochaine} à partir de celle-ci` : 'Droit « Piloter les agents IA » requis'}>
+            <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier le prompt
           </Button>
         </div>
-        {active.note && <p className="text-xs text-muted-foreground italic mb-2">{active.note}</p>}
+        {active.note && <NoteVersion note={active.note} origine={!active.createdBy} className="mb-2" />}
         <pre className="text-xs whitespace-pre-wrap font-mono bg-zinc-100/80 rounded-md p-3 max-h-[45vh] overflow-auto scrollbar-transparent">{active.prompt}</pre>
       </div>
       {error && <div className="flex items-center gap-2 text-sm text-destructive"><AlertCircle className="h-4 w-4" />{error}</div>}
-      <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Historique</p>
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold pt-1">Historique des versions</p>
       {agent.versions.map((v) => {
         const isActive = v.version === agent.activeVersion
         return (
@@ -1070,7 +1088,7 @@ function PromptTab({ agent, canPilot, onChanged }: { agent: AgentDetail; canPilo
             {v.note && (
               <div className="flex items-start gap-1.5 mt-2 ml-9">
                 <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
-                <p className="text-[11px] text-muted-foreground italic">{v.note}</p>
+                <NoteVersion note={v.note} origine={!v.createdBy} />
               </div>
             )}
           </div>
