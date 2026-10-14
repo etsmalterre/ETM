@@ -849,6 +849,17 @@ WHERE EXISTS (SELECT 1 FROM fil_gere_par_etm g
               WHERE g.idclient = sf.idclient AND g.idref_fil IN (0, sf.idref_fil));
 `,
   },
+  {
+    // Clients › Gestion — « Relance sur appel » per client (Vincent, 2026-10-14): a ready line
+    // « sur appel » turns red this many days after its délai (lib/urgence-commande-client.ts).
+    // 0 = the default (SEUILS_URGENCE.relanceAppel, 120 j); some clients call much later by
+    // design. ETM's fiche only — TRM's never names it.
+    name: '0023_client_relance_sur_appel',
+    sql: `
+ALTER TABLE client ADD COLUMN relance_sur_appel integer NOT NULL DEFAULT 0
+  CHECK (relance_sur_appel >= 0);
+`,
+  },
 ]
 
 export interface MigrationStatus {

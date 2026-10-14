@@ -20,6 +20,7 @@ import {
   Trash2,
   FileText,
   Phone,
+  PhoneCall,
   Printer,
   AtSign,
   Receipt,
@@ -144,6 +145,8 @@ interface ClientDetail {
   IDactivite: number
   client_interne: number
   inclureRapportQualite: number
+  /** days after the délai before a ready « sur appel » line turns red; 0 = default (120) */
+  relance_sur_appel: number
   dernier_contact: string | null
   date_creation: string | null
   archive: number
@@ -185,6 +188,9 @@ function useComptesPris() {
 const inputClass = 'w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
 const editSectionClass = 'border-l-4 border-l-accent/70 bg-accent/[0.03]'
 
+/** API SEUILS_URGENCE.relanceAppel — the delay of a client whose relance_sur_appel is 0. */
+const RELANCE_APPEL_DEFAUT = 120
+
 // ── Edit draft ─────────────────────────────────────────
 
 interface Draft {
@@ -206,6 +212,7 @@ interface Draft {
   IDactivite: number
   client_interne: boolean
   inclureRapportQualite: boolean
+  relance_sur_appel: string // '' = default
   dernier_contact: string // YYYY-MM-DD for <input type=date>
 }
 
@@ -229,6 +236,7 @@ function draftFromDetail(d: ClientDetail): Draft {
     IDactivite: d.IDactivite ?? 0,
     client_interne: !!d.client_interne,
     inclureRapportQualite: !!d.inclureRapportQualite,
+    relance_sur_appel: d.relance_sur_appel > 0 ? String(d.relance_sur_appel) : '',
     dernier_contact: hfsqlDateToInput(d.dernier_contact),
   }
 }
@@ -253,6 +261,7 @@ function draftToBody(d: Draft) {
     IDactivite: d.IDactivite,
     client_interne: d.client_interne,
     inclureRapportQualite: d.inclureRapportQualite,
+    relance_sur_appel: Math.min(3650, Math.max(0, Math.round(Number(d.relance_sur_appel)) || 0)),
     dernier_contact: inputDateToHfsql(d.dernier_contact),
   }
 }
@@ -393,7 +402,13 @@ export function ClientsGestion() {
 
   const saveMutation = useMutation({
     mutationFn: () => apiSend(`/clients/${selectedId}`, { method: 'PUT', body: JSON.stringify(draftToBody(draft!)) }),
-    onSuccess: () => { invalidateAll(); setIsEditing(false); setDraft(null); setSaveError(null) },
+    onSuccess: () => {
+      invalidateAll()
+      // Clients › Commandes reads the fiche too (commentaire, relance sur appel → card colours).
+      queryClient.invalidateQueries({ queryKey: ['commandes-client'] })
+      queryClient.invalidateQueries({ queryKey: ['commande-client'] })
+      setIsEditing(false); setDraft(null); setSaveError(null)
+    },
     onError: (e: Error) => setSaveError(e.message),
   })
 
@@ -1352,6 +1367,7 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
     IDactivite: ed ? draft!.IDactivite : client.IDactivite,
     client_interne: ed ? draft!.client_interne : !!client.client_interne,
     inclureRapportQualite: edRapport ? draft!.inclureRapportQualite : !!client.inclureRapportQualite,
+    relance_sur_appel: ed ? draft!.relance_sur_appel : (client.relance_sur_appel > 0 ? String(client.relance_sur_appel) : ''),
   }
   return (
     <>
@@ -1365,6 +1381,29 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
           <TogglePill label="Inclure rapports contrôle (exp.)" checked={v.inclureRapportQualite} disabled={!edRapport} onChange={(x) => onPatch({ inclureRapportQualite: x })} />
           <EtiquettesSwitch clientId={client.IDclient} editable={ed} />
         </div>
+      </InfoCard>
+
+      {/* A ready line « sur appel » turns red on Clients › Commandes this many days after its
+          délai (API lib/urgence-commande-client.ts). Empty = the default 120 j. */}
+      <InfoCard icon={<PhoneCall className="h-4 w-4 text-accent" />} title="Commandes sur appel" isEditing={ed}>
+        <KVRow label="Relance sur appel">
+          {ed ? (
+            <span className="inline-flex items-center gap-1.5">
+              <input type="number" min={0} max={3650} step={1} value={v.relance_sur_appel} placeholder={`${RELANCE_APPEL_DEFAUT} (défaut)`}
+                onChange={(e) => onPatch({ relance_sur_appel: e.target.value.replace(/[^\d]/g, '') })}
+                autoComplete="off" data-form-type="other" data-lpignore="true"
+                className="h-7 w-[120px] px-2 text-sm text-right rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+              <span className="text-xs text-muted-foreground">jours</span>
+            </span>
+          ) : v.relance_sur_appel ? (
+            <span className="tabular-nums">{v.relance_sur_appel} jours</span>
+          ) : (
+            <span className="tabular-nums">{RELANCE_APPEL_DEFAUT} jours <span className="text-muted-foreground">(défaut)</span></span>
+          )}
+        </KVRow>
+        <p className="text-[11px] text-muted-foreground">
+          Une ligne prête « sur appel » passe en rouge ce nombre de jours après son délai : il est temps de relancer le client.
+        </p>
       </InfoCard>
 
       <InfoCard icon={<Receipt className="h-4 w-4 text-accent" />} title="Facturation" isEditing={ed}>

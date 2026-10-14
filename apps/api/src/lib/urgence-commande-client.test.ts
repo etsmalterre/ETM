@@ -58,6 +58,14 @@ describe('urgenceLigne: mode de livraison of a ready line', () => {
     expect(niveau(pae(-120, 'sur_appel'))).toBe(null)
     expect(urgenceLigne(pae(-121, 'sur_appel'), today)).toMatchObject({ niveau: 'rouge', action: 'relancer' })
   })
+  it('« sur appel » follows the client’s own relance delay, 0 = the default', () => {
+    expect(niveau({ ...pae(-121, 'sur_appel'), relanceAppel: 180 })).toBe(null)
+    expect(niveau({ ...pae(-181, 'sur_appel'), relanceAppel: 180 })).toBe('rouge')
+    expect(niveau({ ...pae(-31, 'sur_appel'), relanceAppel: 30 })).toBe('rouge')
+    expect(niveau({ ...pae(-121, 'sur_appel'), relanceAppel: 0 })).toBe('rouge')
+    // only « sur appel » reads it
+    expect(niveau({ ...pae(-5, 'des_que_prete'), relanceAppel: 365 })).toBe('rouge')
+  })
   it('« date client » is judged on the agreed date, not on the délai', () => {
     expect(niveau(pae(-20, 'date_client', 30))).toBe(null)
     expect(niveau(pae(-20, 'date_client', 10))).toBe('ambre')

@@ -18,6 +18,7 @@
 //   des_que_prete  ships as soon as ready: the délai is the shipping date (the rule above)
 //   date_client    the client named a date: the ready line is judged on date_expedition_prevue
 //   sur_appel      the client will call: nothing to do until 4 months past the délai, then chase
+//                  (per client: client.relance_sur_appel, 0 = these 4 months — 2026-10-14)
 //   commande_complete  ships with the whole order (2026-10-13, Vincent): a ready line waits, neutral,
 //                  while another line of the order is still in production; once none is, it is
 //                  judged like « dès que prête » (meanwhile the lagging line carries the urgency)
@@ -69,6 +70,15 @@ export interface LigneUrgence {
   dateExpedition?: string | null
   /** mode commande_complete only: another line of the order is still in production */
   commandeIncomplete?: boolean
+  /** mode sur_appel only: the client's own relance delay in days (client.relance_sur_appel);
+   *  absent or 0 = SEUILS_URGENCE.relanceAppel */
+  relanceAppel?: number
+}
+
+/** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
+export function relanceAppelDe(v: unknown): number {
+  const n = Math.round(Number(v))
+  return Number.isFinite(n) && n > 0 ? n : SEUILS_URGENCE.relanceAppel
 }
 
 /** A line that has not reached « prête à expédier » yet (divers: no production, ready by nature). */
@@ -118,7 +128,7 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     const mode = l.modeLivraison ?? 'des_que_prete'
     if (mode === 'commande_complete' && l.commandeIncomplete) return null
     if (mode === 'sur_appel') {
-      return j < -S.relanceAppel ? { niveau: 'rouge', action: 'relancer', jours: j, date, quoi: 'délai' } : null
+      return j < -relanceAppelDe(l.relanceAppel) ? { niveau: 'rouge', action: 'relancer', jours: j, date, quoi: 'délai' } : null
     }
     const exp = mode === 'date_client' ? ymd(l.dateExpedition) : null
     if (exp) {

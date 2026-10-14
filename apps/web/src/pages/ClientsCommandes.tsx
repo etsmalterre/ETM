@@ -289,6 +289,8 @@ interface CommandeDetail {
   /** "Fiche client" — client.commentaire: customer-specific handling notes
    *  (procedures, contrôle rules…) surfaced on every commande like legacy. */
   client_fiche: string | null
+  /** days after the délai before a ready « sur appel » line turns red (Clients › Gestion, default 120) */
+  relance_sur_appel: number
   numero: number | null
   date_commande: string | null
   ref_client: string | null
@@ -6194,10 +6196,16 @@ function LineFormDialog({
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Livraison</label>
               <PopoverSelect
-                options={MODES_LIVRAISON.map((m) => ({ id: m.id, primary: m.label }))}
+                options={MODES_LIVRAISON.map((m) => ({
+                  id: m.id,
+                  primary: m.label,
+                  // The client's relance delay, as a muted hint (set on Clients › Gestion).
+                  secondary: m.mode === 'sur_appel' && commande.relance_sur_appel > 0 ? `relance à ${commande.relance_sur_appel} j` : undefined,
+                }))}
                 value={MODES_LIVRAISON.find((m) => m.mode === form.mode_livraison)?.id ?? 1}
                 onChange={(id) => setForm({ ...form, mode_livraison: MODES_LIVRAISON.find((m) => m.id === id)?.mode ?? 'des_que_prete' })}
                 hideEmpty
+                mutedSecondary
               />
             </div>
             {form.mode_livraison === 'date_client' && (

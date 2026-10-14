@@ -91,6 +91,7 @@ export function PopoverSelect({
   disabledTitle,
   size = 'default',
   widthClass,
+  mutedSecondary = false,
 }: {
   options: PopoverSelectOption[]
   value: number
@@ -110,6 +111,9 @@ export function PopoverSelect({
    *  the row. The popover itself stays at least 240px wide regardless, so the
    *  options remain readable from a narrow trigger. */
   widthClass?: string
+  /** Show the selected option's `secondary` on the trigger as a small muted hint
+   *  instead of « primary — secondary » in body text (Clients › Commandes Livraison). */
+  mutedSecondary?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -174,7 +178,14 @@ export function PopoverSelect({
         )}
         title={disabled ? disabledTitle : undefined}
       >
-        <span className="truncate text-left">{buttonLabel}</span>
+        {mutedSecondary && value !== 0 && selected?.secondary ? (
+          <span className="truncate text-left">
+            {selected.primary}
+            <span className="ml-1.5 text-xs text-muted-foreground/70">{selected.secondary}</span>
+          </span>
+        ) : (
+          <span className="truncate text-left">{buttonLabel}</span>
+        )}
         <ChevronDown
           className={cn(
             'h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform',

@@ -24,7 +24,7 @@
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
 import { faitsLignesClient, statutLigneClient, type EtatLigneClient } from '../lib/statut-ligne-client.js'
-import { avancementCommande, commandeIncomplete, modeLivraisonDe, MODES_LIVRAISON, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
+import { avancementCommande, commandeIncomplete, modeLivraisonDe, MODES_LIVRAISON, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import multer from 'multer'
@@ -238,7 +238,7 @@ type EtatCommande = { urgence: UrgenceCommande | null; avancement: EtatLigneClie
 /** Each open order's state (lib/urgence-commande-client.ts): the line status ladder over all the
  *  given lines, batched, then per order what there is to do and when (urgence) and where it stands
  *  (avancement). Closed orders are not passed in: neutral and « soldée ». */
-async function etatCommandesOuvertes(lignes: any[]): Promise<Map<number, EtatCommande>> {
+async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<number, number>): Promise<Map<number, EtatCommande>> {
   const out = new Map<number, EtatCommande>()
   if (lignes.length === 0) return out
   const diversCmds = lignes.filter((l) => Number(l.type_kind) === 3).map((l) => Number(l.IDcommande_client))
@@ -269,6 +269,7 @@ async function etatCommandesOuvertes(lignes: any[]): Promise<Map<number, EtatCom
       dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
       modeLivraison: modeLivraisonDe(l.mode_livraison),
       dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
+      relanceAppel: relanceParCommande.get(cid),
     })
     parCommande.set(cid, arr)
   }
@@ -294,6 +295,18 @@ async function resolveClientNames(clientIds: number[]): Promise<Map<number, stri
   )
   const fixed = await fixEncoding(rows, 'client', 'IDclient', ['nom'])
   for (const r of fixed) out.set(Number(r.IDclient), (r.nom ?? '').toString().trim())
+  return out
+}
+
+/** Each client's « relance sur appel » delay in days (client.relance_sur_appel, 0 = default). */
+async function relanceAppelParClient(clientIds: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  const ids = Array.from(new Set(clientIds.filter((x) => x > 0)))
+  if (ids.length === 0) return out
+  const rows = await query<{ IDclient: number; relance_sur_appel: number | null }>(
+    `SELECT IDclient, relance_sur_appel FROM client WHERE IDclient IN (${ids.join(',')})`,
+  )
+  for (const r of rows) out.set(Number(r.IDclient), relanceAppelDe(r.relance_sur_appel))
   return out
 }
 
@@ -993,7 +1006,10 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
          FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
       )
       const ouvertes = new Set(commandes.filter((c: any) => Number(c.est_soldee) !== 1).map((c: any) => Number(c.IDcommande_client)))
-      etatMap = await etatCommandesOuvertes(lignes.filter((l: any) => ouvertes.has(Number(l.IDcommande_client))))
+      const relanceParClient = await relanceAppelParClient(clientIds)
+      const relanceParCommande = new Map<number, number>(commandes.map((c: any) =>
+        [Number(c.IDcommande_client), relanceAppelDe(relanceParClient.get(Number(c.IDclient)))]))
+      etatMap = await etatCommandesOuvertes(lignes.filter((l: any) => ouvertes.has(Number(l.IDcommande_client))), relanceParCommande)
       for (const l of lignes) {
         const id = Number(l.IDcommande_client)
         const acc = totalsMap.get(id) ?? { total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null }
@@ -1452,7 +1468,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       // "Fiche client" = client.commentaire — customer-specific handling notes
       // the legacy app surfaces on every commande (procedures, contrôle rules…).
       IDclient > 0
-        ? query<any>(`SELECT IDclient, commentaire FROM client WHERE IDclient = ${IDclient}`)
+        ? query<any>(`SELECT IDclient, commentaire, relance_sur_appel FROM client WHERE IDclient = ${IDclient}`)
         : Promise.resolve([]),
       h.IDadresse_livraison
         ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_livraison)}`)
@@ -1579,6 +1595,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             modeLivraison: modeLivraisonDe(l.mode_livraison),
             dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
             commandeIncomplete: incomplete,
+            relanceAppel: relanceAppelDe(ficheRows[0]?.relance_sur_appel),
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -1608,6 +1625,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       IDclient,
       client_nom: clientNames.get(IDclient) ?? '',
       client_fiche: clientFiche,
+      // Days after the délai before a ready « sur appel » line turns red (client's own or 120).
+      relance_sur_appel: relanceAppelDe(ficheRows[0]?.relance_sur_appel),
       numero: h.numero != null ? Number(h.numero) : null,
       date_commande: h.date_commande ?? null,
       ref_client: h.ref_client ?? null,
