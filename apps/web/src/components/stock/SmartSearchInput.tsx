@@ -12,7 +12,8 @@ import { cn } from '@/lib/utils'
 // Optional TAGS (Clients › Commandes): predefined filters drawn as the real
 // pills of the screen. The popover lists them on focus, before anything is
 // typed; typing narrows them by label (accents ignored). A picked tag becomes
-// a pill inside the bar, left of the text; tags AND-combine too. Without the
+// a pill inside the bar, left of the text, and the bar closes its popover and
+// gives up the focus (a click reopens it); tags AND-combine too. Without the
 // `tags` prop the widget behaves exactly as before.
 
 export interface SearchTagDef<T> {
@@ -169,13 +170,15 @@ export function SmartSearchInput<K extends string, T = unknown>({
     [chips, onChipsChange],
   )
 
-  // A picked tag consumes the term typed to find it.
+  // A picked tag consumes the term typed to find it, then the bar lets go:
+  // popover closed and focus out, so the filtered list is in view at once.
   const addTag = useCallback(
     (key: string) => {
       onActiveTagsChange?.([...activeTags, key])
       onValueChange('')
+      setSuggestOpen(false)
       setSuggestIdx(0)
-      inputRef.current?.focus()
+      inputRef.current?.blur()
     },
     [activeTags, onActiveTagsChange, onValueChange],
   )
