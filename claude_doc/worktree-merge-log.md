@@ -1,4 +1,7 @@
 # Worktree merge log
+## 2026-10-14 · feat/tricobot-chrome
+**Extension Tricobot — kit Chrome Web Store (Vincent).** `apps/gmail-extension/store/` on the model of Vector: `STORE.md` (listing text, permission justifications, privacy answers — « Communications personnelles » ticked because of the Conversation tab, unlike Vector —, admin console steps), `privacy.html` (served at https://etsmalterre.com/tricobot/confidentialite: static file on `sites_malterre_vps` + Caddy route, versioned in `mail_laurent` 63521cd), promo tile 440×280 and a provisional 1280×800 screenshot rendered from the mascot. Item **`lbnbhccnpolklobhddgpmnipjhgdgkpj`**, 1.0.0 submitted for review 2026-10-14, unlisted. After approval: admin.google.com → add by ID → force install + pin; grant `corriger_triage` to Isabelle. No code change.
+
 ## 2026-10-14 · feat/barre-recherche
 **Barre de recherche à badges — choisir un badge ferme le menu et fait sortir le focus (LIVA #1295, Vincent).** In `SmartSearchInput` (Clients › Commandes, Fils › Commandes), `addTag` now closes the suggestion popover and blurs the input instead of refocusing it, by click or by Entrée; a click in the bar reopens the tags. Removing a tag (×) and picking a field chip still keep the focus (not asked). Verified: SmartSearchInput tests + web tsc; not checked in the browser. Ticket answered (en_cours).
 ## 2026-10-14 · feat/apel-cmd
