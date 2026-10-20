@@ -90,6 +90,7 @@ import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
+import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../lib/soumission-lots-bloques.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -3275,15 +3276,21 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
   // ── 2b) Manual: écru rolls affected to this commande's lines with a
   //       client-order reservation. The fini lot doesn't exist yet — the
   //       user types it at picker time.
-  const ecruRows = await query<{
+  const ecruRowsAll = await query<{
+    IDstock_ecru: number
     IDref_commande_affectation: number
     IDligne_commande_client: number
   }>(
-    `SELECT IDref_commande_affectation, IDligne_commande_client
+    `SELECT IDstock_ecru, IDref_commande_affectation, IDligne_commande_client
      FROM stock_ecru
      WHERE IDref_commande_affectation IN (${lineIds.join(',')})
        AND IDligne_commande_client > 0`,
   )
+  // A dyed écru keeps its reservation pointer, but the fini roll owns the
+  // reservation from then on (#1188): a consumed piece never makes a
+  // « lot à saisir » candidate — its lot is already received (LIVA #1302).
+  const consumedEcru = await consumedEcruIds(ecruRowsAll.map((r) => n(r.IDstock_ecru)))
+  const ecruRows = ecruRowsAll.filter((r) => !consumedEcru.has(n(r.IDstock_ecru)))
 
   // Combine all client-order ids we need to resolve.
   const ecruLccIds = new Set<number>(ecruRows.map((r) => Number(r.IDligne_commande_client)).filter((x) => x > 0))
@@ -3532,6 +3539,83 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
   return out
 }
 
+// Received lots of this order the picker cannot offer, with the reason
+// (LIVA #1302) — rule in lib/soumission-lots-bloques.ts. Flat queries only.
+export async function findLotsBloques(commandeId: number, eligible: EligibleLot[]): Promise<LotBloque[]> {
+  const lineRows = await query<{ IDligne_commande_sous_traitant: number; type_kind: number }>(
+    `SELECT IDligne_commande_sous_traitant, type AS type_kind
+     FROM ligne_commande_sous_traitant
+     WHERE IDcommande_sous_traitant = ${commandeId}`,
+  )
+  // Only dyer lines (type 2) produce a fini lot a client can be sent.
+  const lineIds = lineRows.filter((l) => Number(l.type_kind) === 2)
+    .map((l) => n(l.IDligne_commande_sous_traitant)).filter((x) => x > 0)
+  if (lineIds.length === 0) return []
+
+  const finiRows = await query<{
+    IDstock_fini: number; lot: string | null; IDligne_commande_client: number | null
+    IDcommande_donation: number | null; metrage: number | null; IDstock_ecru: number | null
+  }>(
+    `SELECT IDstock_fini, lot, IDligne_commande_client, IDcommande_donation, metrage, IDstock_ecru
+     FROM stock_fini
+     WHERE IDref_commande_source IN (${lineIds.join(',')})`,
+  )
+  if (finiRows.length === 0) return []
+  const fixedFini = await fixEncoding(finiRows as any[], 'stock_fini', 'IDstock_fini', ['lot'])
+
+  const ecruIds = Array.from(new Set(fixedFini.map((r: any) => n(r.IDstock_ecru)).filter((x) => x > 0)))
+  const ecruLcc = new Map<number, number>()
+  if (ecruIds.length > 0) {
+    const ecruRows = await query<{ IDstock_ecru: number; IDligne_commande_client: number | null }>(
+      `SELECT IDstock_ecru, IDligne_commande_client FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`,
+    )
+    for (const r of ecruRows) ecruLcc.set(n(r.IDstock_ecru), n(r.IDligne_commande_client))
+  }
+
+  const rouleaux = fixedFini.map((r: any) => ({
+    lot: (r.lot ?? '').toString(),
+    lcc: n(r.IDligne_commande_client),
+    donation: n(r.IDcommande_donation),
+    metrage: Number(r.metrage) || 0,
+    lccEcru: ecruLcc.get(n(r.IDstock_ecru)) ?? 0,
+  }))
+
+  // Client line → order (numero + client name) for the messages.
+  const lccIds = Array.from(new Set(rouleaux.flatMap((r) => [r.lcc, r.lccEcru]).filter((x) => x > 0)))
+  const commandes = new Map<number, CommandeClientRef>()
+  if (lccIds.length > 0) {
+    const lccRows = await query<{ IDligne_commande_client: number; IDcommande_client: number }>(
+      `SELECT IDligne_commande_client, IDcommande_client FROM ligne_commande_client
+       WHERE IDligne_commande_client IN (${lccIds.join(',')})`,
+    )
+    const ccIds = Array.from(new Set(lccRows.map((r) => n(r.IDcommande_client)).filter((x) => x > 0)))
+    const ccMap = new Map<number, { numero: number; IDclient: number }>()
+    if (ccIds.length > 0) {
+      const ccRows = await query<{ IDcommande_client: number; numero: number | null; IDclient: number | null }>(
+        `SELECT IDcommande_client, numero, IDclient FROM commande_client WHERE IDcommande_client IN (${ccIds.join(',')})`,
+      )
+      for (const r of ccRows) ccMap.set(n(r.IDcommande_client), { numero: n(r.numero), IDclient: n(r.IDclient) })
+    }
+    const clientIds = Array.from(new Set(Array.from(ccMap.values()).map((c) => c.IDclient).filter((x) => x > 0)))
+    const clientNom = new Map<number, string>()
+    if (clientIds.length > 0) {
+      const cl = await query<{ IDclient: number; nom: string | null }>(
+        `SELECT IDclient, nom FROM client WHERE IDclient IN (${clientIds.join(',')})`,
+      )
+      for (const r of await fixEncoding(cl as any[], 'client', 'IDclient', ['nom'])) {
+        clientNom.set(n((r as any).IDclient), ((r as any).nom ?? '').toString().trim())
+      }
+    }
+    for (const r of lccRows) {
+      const cc = ccMap.get(n(r.IDcommande_client))
+      if (cc) commandes.set(n(r.IDligne_commande_client), { numero: cc.numero, client_nom: clientNom.get(cc.IDclient) ?? '' })
+    }
+  }
+
+  const offerts = new Set(eligible.filter((l) => l.kind === 'received').map((l) => l.lot.trim()))
+  return lotsNonSoumissibles(rouleaux, offerts, (lcc) => commandes.get(lcc) ?? null)
+}
+
 // Long-form FR date formatter — reuses the existing FRENCH_MONTHS const
 // declared above for the bon-de-commande PDF helpers.
 function todayLongFr(): string {
@@ -3729,7 +3813,8 @@ commandesSousTraitantRouter.get('/:id/soumission/lots-eligibles', async (req: Re
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const lots = await findEligibleLots(id)
-    res.json({ lots })
+    const bloques = await findLotsBloques(id, lots)
+    res.json({ lots, bloques })
   } catch (err) {
     console.error('Error fetching eligible soumission lots:', err)
     res.status(500).json({ error: 'Internal server error' })

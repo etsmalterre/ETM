@@ -502,6 +502,21 @@ interface EligibleLot {
   key: string
 }
 
+// A received lot the picker cannot offer, and why (LIVA #1302) — rule in
+// apps/api/src/lib/soumission-lots-bloques.ts.
+interface LotBloque {
+  lot: string
+  /** non_reserve = no roll reserved to a client order line;
+   *  sans_soumission = reserved, but the client asks no soumission for the ref. */
+  raison: 'non_reserve' | 'sans_soumission'
+  nb_rolls: number
+  total_metrage: number
+  /** Client order the écru pieces are still reserved to (non_reserve). */
+  reservation_ecru: { numero: number; client_nom: string } | null
+  /** Client order the rolls are reserved to (sans_soumission). */
+  commande_client: { numero: number; client_nom: string } | null
+}
+
 // ── Shared styling ─────────────────────────────────────
 
 const inputClass = 'w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
@@ -1028,27 +1043,28 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
 
   // Soumission Lot eligibility — only fires in view mode for the selected
   // commande. Empty array means the "Soumettre au client" button is hidden.
-  const { data: soumissionEligibility } = useQuery<{ lots: EligibleLot[] }>({
+  const { data: soumissionEligibility, refetch: refetchSoumission } = useQuery<{ lots: EligibleLot[]; bloques?: LotBloque[] }>({
     queryKey: ['commande-sst-lots-eligibles', selectedId],
     queryFn: () => apiFetch(`/commandes-sous-traitant/${selectedId}/soumission/lots-eligibles`),
     // A client soumission is a dyed lot: never on a knitting order.
     enabled: famille === 'ennoblissement' && selectedId !== null && !isEditing,
+    // Eligibility hangs on the rolls' client reservation, changed from
+    // Clients › Commandes: never serve a stale list (LIVA #1302 — the
+    // blocked lot only showed after a page refresh).
+    ...STOCK_QUERY_FRESHNESS,
   })
   const eligibleLots = soumissionEligibility?.lots ?? []
+  const lotsBloques = soumissionEligibility?.bloques ?? []
 
-  // Click handler: zero → no-op (button is hidden anyway). A single
-  // 'received' candidate skips the picker and goes straight to the email
-  // modal; everything else (multiple candidates, or any 'manual' candidate
-  // that needs a typed lot string) routes through the picker.
+  // Always through the picker, even for a single candidate: it names the lot
+  // being sent and lists the received lots that cannot be (LIVA #1302 — a
+  // direct jump to the only candidate's email sent MA109373 again while the
+  // user was looking for MA109374, whose rolls were reserved to no client).
   const onSoumettreClick = useCallback(() => {
-    if (eligibleLots.length === 0) return
-    if (eligibleLots.length === 1 && eligibleLots[0].kind === 'received') {
-      setSelectedSoumissionLot(eligibleLots[0])
-      setSoumissionEmailOpen(true)
-    } else {
-      setSoumissionPickerOpen(true)
-    }
-  }, [eligibleLots])
+    if (eligibleLots.length + lotsBloques.length === 0) return
+    void refetchSoumission()
+    setSoumissionPickerOpen(true)
+  }, [eligibleLots, lotsBloques, refetchSoumission])
 
   // Auto-select the first row whenever the list filter changes (initial
   // load, status filter switch, or search query update). When the new
@@ -1286,7 +1302,7 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
             }}
             onEmailClick={() => setEmailModalOpen(true)}
             onSoumettreClick={onSoumettreClick}
-            soumettreEligibleCount={eligibleLots.length}
+            soumettreEligibleCount={eligibleLots.length + lotsBloques.length}
           />
         }
         detail={
@@ -1388,6 +1404,7 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
       <SoumissionLotPicker
         open={soumissionPickerOpen}
         lots={eligibleLots}
+        bloques={lotsBloques}
         onClose={() => setSoumissionPickerOpen(false)}
         onSelect={(lot) => {
           setSelectedSoumissionLot(lot)
@@ -1691,9 +1708,9 @@ function DetailHeader({
   onDelete: () => void
   onPrintClick: () => void
   onEmailClick: () => void
-  /** Opens the soumission flow — picker if multiple lots, email modal directly if 1. */
+  /** Opens the soumission picker. */
   onSoumettreClick: () => void
-  /** Eligibility count from /lots-eligibles. Button is hidden when 0. */
+  /** Eligible + blocked lots from /lots-eligibles. Button is hidden when 0. */
   soumettreEligibleCount: number
 }) {
   if (!commande && !isLoading) return null
@@ -1792,10 +1809,12 @@ function DetailHeader({
 //   - 'manual'   (no fini yet) → expands an inline "Numéro de lot" input;
 //                                user types the lot then clicks Continuer
 function SoumissionLotPicker({
-  open, lots, onClose, onSelect,
+  open, lots, bloques, onClose, onSelect,
 }: {
   open: boolean
   lots: EligibleLot[]
+  /** Received lots that cannot be submitted — shown greyed with the reason. */
+  bloques: LotBloque[]
   onClose: () => void
   /** For manual entries the caller receives the candidate with `lot` set
    *  to the user-typed string — the downstream URL/params machinery is
@@ -1942,6 +1961,33 @@ function SoumissionLotPicker({
               Aucun lot éligible
             </p>
           )}
+
+          {bloques.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground px-1">
+                Lots reçus non soumissibles
+              </div>
+              {bloques.map((b) => (
+                <div
+                  key={b.lot}
+                  className="p-3 rounded-md border border-dashed border-amber-400/60 bg-amber-50/60 cursor-not-allowed"
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div className="text-sm font-semibold text-muted-foreground truncate">
+                      Lot {b.lot}
+                    </div>
+                    <div className="text-xs text-muted-foreground flex-shrink-0 tabular-nums">
+                      {b.nb_rolls} rouleau{b.nb_rolls > 1 ? 'x' : ''} · {fmtNum(b.total_metrage, 1)} Ml
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-1.5 mt-1.5 text-xs text-amber-800">
+                    <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+                    <span>{lotBloqueMessage(b)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex justify-end">
           <Button variant="outline" size="sm" onClick={onClose}>Annuler</Button>
@@ -1951,6 +1997,21 @@ function SoumissionLotPicker({
   )
 }
 
+
+// Why a received lot cannot be submitted, and what to do about it.
+function lotBloqueMessage(b: LotBloque): string {
+  const cde = (c: { numero: number; client_nom: string }) =>
+    `la commande N° ${c.numero}${c.client_nom ? ` (${c.client_nom})` : ''}`
+  if (b.raison === 'sans_soumission') {
+    return `Le client ne demande pas de soumission pour cette référence${b.commande_client ? ` (rouleaux réservés à ${cde(b.commande_client)})` : ''}. À activer dans Clients › Gestion › Références.`
+  }
+  // The écru reservation is the history the fini leaves behind (#1188): state
+  // it as a fact, never as a story about who removed what.
+  return b.reservation_ecru
+    ? `Aucun rouleau n’est réservé à une commande client. Les pièces écru de ce lot sont réservées à ${cde(b.reservation_ecru)} : affectez les rouleaux à cette commande pour pouvoir soumettre ce lot.`
+    : 'Aucun rouleau n’est réservé à une commande client. Affectez-les à une ligne client (Clients › Commandes) pour pouvoir soumettre ce lot.'
+
+}
 
 // ── Center: Detail Main ────────────────────────────────
 
