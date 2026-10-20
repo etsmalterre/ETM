@@ -1309,12 +1309,11 @@ function DetailHeader({
 
 // ── Center panel: Classeur master tabs (§39) ───────────
 // One dataset at a time gets the full panel height, as on Finis › Références:
-// Spécifications is the fabric sheet, Composition and Coloris the two
-// catalogs hanging off it, then the knitting side: Réglages (LFA, pignons,
+// Spécifications is the fabric sheet (its yarn composition included, Vincent
+// 2026-10-20), Coloris the catalog hanging off it, then the knitting side: Réglages (LFA, pignons,
 // réglages par métier), Liage, Obs OF. Counts come from the loaded detail.
 export const MAIN_TABS = [
   { key: 'specifications', label: 'Spécifications', icon: Package },
-  { key: 'composition', label: 'Composition', icon: FlaskConical },
   { key: 'coloris', label: 'Coloris', icon: Palette },
   { key: 'reglages', label: 'Réglages', icon: Cog },
   { key: 'liage', label: 'Liage', icon: Grid3x3 },
@@ -1376,7 +1375,6 @@ function DetailMain({
   if (!detail) return null
 
   const counts: Partial<Record<RefEcruMainTab, number>> = {
-    composition: detail.composition_lines.length,
     coloris: detail.coloris.length,
     reglages: detail.machines.length,
     liage: detail.chutes.length,
@@ -1406,10 +1404,10 @@ function DetailMain({
       {/* px-1/pb-1 keep focus rings and hover borders clear of the overflow clip (§31.5) */}
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1 scrollbar-transparent">
         {activeTab === 'specifications' && (
-          <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} clients={clients} contextures={contextures} />
-        )}
-        {activeTab === 'composition' && (
-          <CompositionCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+          <SpecsCard
+            detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} clients={clients} contextures={contextures}
+            composition={<CompositionCard embedded detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />}
+          />
         )}
         {activeTab === 'coloris' && (
           <ColorisCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
@@ -1445,6 +1443,7 @@ function SpecsCard({
   onDraftChange,
   clients,
   contextures,
+  composition,
 }: {
   detail: RefEcruDetail
   isEditing: boolean
@@ -1452,6 +1451,8 @@ function SpecsCard({
   onDraftChange: (d: HeaderDraft) => void
   clients: ClientLookup[]
   contextures: ContextureLookup[]
+  /** The yarn composition, right under the contexture band. */
+  composition: React.ReactNode
 }) {
   // Fabric-defining fields are frozen once rolls or orders exist for this ref.
   const fieldsLocked = !!detail.has_rolls || !!detail.has_orders
@@ -1541,6 +1542,8 @@ function SpecsCard({
             <span>Contexture, jauge, diamètre, bio et recyclé sont verrouillés car des rouleaux ou des commandes existent pour cette référence.</span>
           </div>
         )}
+
+        {composition}
 
         {/* Row 1: who it is for, and its façon price */}
         <div className="grid grid-cols-3 gap-2">
@@ -1649,7 +1652,10 @@ function CompositionCard({
   refsFil,
   onMutationSuccess,
   reportDirty,
+  embedded = false,
 }: {
+  /** Rendered as a tile inside Spécifications rather than its own card. */
+  embedded?: boolean
   detail: RefEcruDetail
   isEditing: boolean
   refId: number
@@ -1713,15 +1719,20 @@ function CompositionCard({
     setForm({ IDref_fil: c.IDref_fil, pourcentage: String(c.pourcentage ?? ''), commentaire: c.commentaire ?? '' })
   }
 
+  // Inside Spécifications the composition is one more tile (white yarn rows on
+  // the zinc tile); on its own it keeps the card.
+  const shell = (children: React.ReactNode) => embedded
+    ? <div className="rounded-lg border border-border/60 bg-zinc-100/80 px-3 py-2.5 space-y-2">{children}</div>
+    : <Card className={cn('card-premium', isEditing && editSectionClass)}><CardContent className="pt-4 pb-3 space-y-2">{children}</CardContent></Card>
   const total = detail.composition_lines.reduce((s, c) => s + (Number(c.pourcentage) || 0), 0)
   const totalOk = detail.composition_lines.length === 0 || Math.abs(total - 100) < 0.01
 
   return (
     <>
-      <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardContent className="pt-4 pb-3 space-y-2">
+      {shell(<>
             {/* Caption row: yarn count + the 100 % check */}
             <div className="flex items-center gap-2">
+              {embedded && <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Composition</span>}
               <span className="text-xs text-muted-foreground tabular-nums">
                 {detail.composition_lines.length} fil{detail.composition_lines.length !== 1 ? 's' : ''}
               </span>
@@ -1766,7 +1777,7 @@ function CompositionCard({
                       title="Modifier le fil"
                     />
                   ) : (
-                    <div className={cn('group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3', 'border-l-amber-400/60')}>
+                    <div className={cn('group rounded-lg border-l-4 border border-border/60 p-3', embedded ? 'bg-white' : 'bg-zinc-100/80', 'border-l-amber-400/60')}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
                           <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
@@ -1817,8 +1828,7 @@ function CompositionCard({
                 <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un fil
               </Button>
             )}
-        </CardContent>
-      </Card>
+      </>)}
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Supprimer le fil"
