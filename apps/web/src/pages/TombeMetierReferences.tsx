@@ -1451,7 +1451,7 @@ function SpecsCard({
   onDraftChange: (d: HeaderDraft) => void
   clients: ClientLookup[]
   contextures: ContextureLookup[]
-  /** The yarn composition, right under the contexture band. */
+  /** The yarn composition, after the figures and before the prose tiles. */
   composition: React.ReactNode
 }) {
   // Fabric-defining fields are frozen once rolls or orders exist for this ref.
@@ -1543,8 +1543,6 @@ function SpecsCard({
           </div>
         )}
 
-        {composition}
-
         {/* Row 1: who it is for, and its façon price */}
         <div className="grid grid-cols-3 gap-2">
           <SpecTile label="Client">
@@ -1628,6 +1626,8 @@ function SpecsCard({
             </div>
           )}
         </SpecTile>
+
+        {composition}
 
         <TextTile label="Commentaire" value={detail.commentaire} isEditing={isEditing} draft={draft.commentaire} rows={2} onChange={(v) => onDraftChange({ ...draft, commentaire: v })} />
         <TextTile label="Observations" value={detail.observations} isEditing={isEditing} draft={draft.observations} rows={3} onChange={(v) => onDraftChange({ ...draft, observations: v })} />
