@@ -284,11 +284,17 @@ function compareRows(a: StockEcruRow, b: StockEcruRow, key: SortKey): number {
 export function TombeMetierStock() {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
+  // `?ref=<reference>` (link from Tombé Métier › Références) opens on that
+  // reference's pieces: a « Référence : » chip, all statuses.
+  const [initialParams] = useSearchParams()
+  const linkedRef = initialParams.get('ref')?.trim() || null
   // Field-scoped chips (see SEARCH_FIELDS above).
-  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
+  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>(
+    linkedRef ? [{ field: 'ref_ecru', value: linkedRef }] : [],
+  )
   // Mount ONE row branch (table at md+, cards below) — see useMediaQuery.
   const isMdUp = useMediaQuery(MD_UP)
-  const [statut, setStatut] = useState<StatutCode>(1)
+  const [statut, setStatut] = useState<StatutCode>(linkedRef ? 3 : 1)
   const [secondChoix, setSecondChoix] = useState(false)
   const [sort, setSort] = useState<SortState>({ key: 'date_saisie', dir: 'desc' })
   const [selectedId, setSelectedId] = useState<number | null>(null)

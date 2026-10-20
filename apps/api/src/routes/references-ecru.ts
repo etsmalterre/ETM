@@ -27,6 +27,11 @@ export const referencesEcruRouter: RouterType = Router()
 // is only ever read with an explicit column list.
 
 import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
+import { readCol } from '../lib/accented-keys.js'
+import React from 'react'
+import { renderToBuffer, type DocumentProps } from '@react-pdf/renderer'
+import { FicheTechniqueEcruPdf, ficheTechniqueEcruData, type RefEcruDetailForFiche } from '../lib/pdf/FicheTechniqueEcruPdf.js'
+import { company, companyTrm, type CompanyInfo } from '../lib/pdf/theme.js'
 
 /** Escape a string for SQL (single quotes doubled). */
 function esc(value: string): string {
@@ -370,218 +375,291 @@ referencesEcruRouter.get('/', async (req: Request, res: Response) => {
 // DETAIL
 // ──────────────────────────────────────────────────────────
 
+/** The whole reference sheet: the row, its labels, composition, coloris,
+ *  machine settings, liage, obs OF and lock facts. Shared by the detail route
+ *  and the fiche technique PDF. null = no such reference. */
+export async function loadRefEcruDetail(id: number) {
+  const rows = await query<Record<string, unknown>>(`SELECT * FROM ref_ecru WHERE IDref_ecru = ${id}`)
+  if (rows.length === 0) return null
+  let ref = normalizeRefEcru(rows[0])
+  const fixed = (await fixEncoding(
+    [ref] as any,
+    'ref_ecru',
+    'IDref_ecru',
+    ['reference', 'designation', 'composition', 'reference_client', 'commentaire', 'observations', 'tombe_metier'],
+  )) as RefEcru[]
+  ref = fixed[0]
+
+  // Contexture + client names.
+  let contexture_nom: string | null = null
+  if (ref.IDcontexture > 0) {
+    const c = await query<{ nom: string | null }>(`SELECT nom FROM contexture WHERE IDcontexture = ${ref.IDcontexture}`)
+    if (c.length > 0) {
+      const cf = await fixEncoding(c.map((x) => ({ IDcontexture: ref.IDcontexture, nom: x.nom })), 'contexture', 'IDcontexture', ['nom'])
+      contexture_nom = cf[0]?.nom ?? null
+    }
+  }
+  let client_nom: string | null = null
+  if (ref.IDclient > 0) {
+    const c = await query<{ nom: string | null }>(`SELECT nom FROM client WHERE IDclient = ${ref.IDclient}`)
+    if (c.length > 0) {
+      const cf = await batchRepair(c.map((x) => ({ IDclient: ref.IDclient, nom: x.nom })), 'client', 'IDclient', ['nom'])
+      client_nom = cf[0]?.nom ?? null
+    }
+  }
+
+  // Base composition (IDcolori_ecru = 0) — composition_ecru is all ASCII.
+  const compRows = await query<{
+    IDcomposition_ecru: number
+    IDref_fil: number
+    IDcolori_fil: number
+    pourcentage: number | null
+    commentaire: string | null
+  }>(
+    `SELECT IDcomposition_ecru, IDref_fil, IDcolori_fil, pourcentage, commentaire
+     FROM composition_ecru WHERE IDref_ecru = ${id} AND IDcolori_ecru = 0 ORDER BY IDcomposition_ecru`,
+  )
+  const compFixed = await fixEncoding(compRows, 'composition_ecru', 'IDcomposition_ecru', ['commentaire'])
+
+  // Resolve yarn reference + price for each composition line + cost/kg.
+  const refFilIds = Array.from(new Set(compFixed.map((c) => Number(c.IDref_fil)).filter((n) => n > 0)))
+  const yarnById = new Map<number, { reference: string | null; prix_kg: number | null }>()
+  if (refFilIds.length > 0) {
+    const yarns = await query<{ IDref_fil: number; reference: string | null; prix_kg: number | null }>(
+      `SELECT IDref_fil, reference, prix_kg FROM ref_fil WHERE IDref_fil IN (${refFilIds.join(',')})`,
+    )
+    const yarnsFixed = await batchRepair(
+      yarns.map((y) => ({ IDref_fil: Number(y.IDref_fil) || 0, reference: y.reference ?? null, prix_kg: toNumOrNull(y.prix_kg) })),
+      'ref_fil',
+      'IDref_fil',
+      ['reference'],
+    )
+    for (const y of yarnsFixed) yarnById.set(y.IDref_fil, { reference: y.reference, prix_kg: y.prix_kg })
+  }
+  const compositionLines = compFixed.map((c) => {
+    const y = yarnById.get(Number(c.IDref_fil))
+    return {
+      IDcomposition_ecru: Number(c.IDcomposition_ecru) || 0,
+      IDref_fil: Number(c.IDref_fil) || 0,
+      IDcolori_fil: Number(c.IDcolori_fil) || 0,
+      ref_fil_reference: y?.reference ?? null,
+      prix_kg: y?.prix_kg ?? null,
+      pourcentage: toNumOrNull(c.pourcentage),
+      commentaire: c.commentaire ?? null,
+    }
+  })
+  // Coût/kg = façon price (ref_ecru.prix) + Σ(pourcentage × yarn prix_kg)/100.
+  const yarnCost = compositionLines.reduce(
+    (sum, c) => sum + ((Number(c.pourcentage) || 0) * (Number(c.prix_kg) || 0)) / 100,
+    0,
+  )
+  const cout_kg = Math.round(((ref.prix ?? 0) + yarnCost) * 100) / 100
+
+  // Coloris (colori_ecru — explicit columns; SELECT * fails).
+  const colRows = await query<{ IDcolori_ecru: number; reference: string | null; commentaire: string | null; suivis: number | null }>(
+    `SELECT IDcolori_ecru, reference, commentaire, suivis FROM colori_ecru WHERE IDref_ecru = ${id} ORDER BY reference`,
+  )
+  const colFixed = await fixEncoding(colRows, 'colori_ecru', 'IDcolori_ecru', ['reference', 'commentaire'])
+  const coloris = colFixed.map((c) => ({
+    IDcolori_ecru: Number(c.IDcolori_ecru) || 0,
+    reference: c.reference ?? null,
+    commentaire: c.commentaire ?? null,
+    suivis: Number(c.suivis) ? 1 : 0,
+  }))
+
+  // Per-coloris usage → drives the delete padlock. Same reader as the DELETE
+  // guard, so the screen and the server always agree (LIVA #1203).
+  const usage = await colorisUsage(coloris.map((c) => c.IDcolori_ecru))
+  // Each coloris's own composition — the one orders, OFs and the sst
+  // affectation actually use (LIVA #1205) — with an écart flag against the
+  // reference's recipe and its own lock.
+  const colorisCompo = await loadColorisCompositions(id, coloris.map((c) => c.IDcolori_ecru))
+  const colorisOut = coloris.map((c) => {
+    const lines = colorisCompo.lines.get(c.IDcolori_ecru) ?? []
+    return {
+      ...c,
+      in_use: usage.get(c.IDcolori_ecru) ?? null,
+      composition: lines,
+      composition_ecart: compositionEcart(compFixed, lines),
+      composition_lock: colorisCompo.locks.get(c.IDcolori_ecru) ?? null,
+    }
+  })
+
+  // Machine grid (ref_ecru_machine — all ASCII) + Métier name + computed compteurs.
+  const machRows = await query<{
+    IDref_ecru_machine: number
+    IDmachine: number
+    repere_1: string | null
+    repere_2: string | null
+    repere_3: string | null
+    repere_4: string | null
+    repere_5: string | null
+    hauteur_pl: string | null
+    abattage: string | null
+    trs_10kg_chute: number | null
+    nb_chutes: number | null
+  }>(
+    `SELECT IDref_ecru_machine, IDmachine, repere_1, repere_2, repere_3, repere_4, repere_5, hauteur_pl, abattage, trs_10kg_chute, nb_chutes
+     FROM ref_ecru_machine WHERE IDref_ecru = ${id} ORDER BY IDref_ecru_machine`,
+  )
+  const machIds = Array.from(new Set(machRows.map((m) => Number(m.IDmachine)).filter((n) => n > 0)))
+  // Métier label = emplacement ("1G"), brand as fallback (LIVA #1199).
+  const machNameById = await resolveMachineLabels(machIds)
+  const poidsPiece = Number(ref.poids) || 0
+  const machines = machRows.map((m) => {
+    const trs = Number(m.trs_10kg_chute) || 0
+    const nb = Number(m.nb_chutes) || 0
+    // Legacy compteur (GWDFFEN_Action_Machine): round((trs/nb)*(poids_piece/20)/10)*10.
+    const compteur_saisie = nb > 0 ? Math.round((trs / nb) * (poidsPiece / 20) / 10) * 10 : 0
+    return {
+      IDref_ecru_machine: Number(m.IDref_ecru_machine) || 0,
+      IDmachine: Number(m.IDmachine) || 0,
+      machine_nom: machNameById.get(Number(m.IDmachine)) ?? null,
+      repere_1: m.repere_1 ?? null,
+      repere_2: m.repere_2 ?? null,
+      repere_3: m.repere_3 ?? null,
+      repere_4: m.repere_4 ?? null,
+      repere_5: m.repere_5 ?? null,
+      hauteur_pl: m.hauteur_pl ?? null,
+      abattage: m.abattage ?? null,
+      trs_10kg_chute: toNumOrNull(m.trs_10kg_chute),
+      nb_chutes: toNumOrNull(m.nb_chutes),
+      compteur_saisie,
+      // Compteur Calculé is contextual (needs a live ordre_fabrication poids_piece),
+      // which doesn't exist on the references screen → 0 (matches legacy).
+      compteur_calcule: 0,
+    }
+  })
+
+  // Composition lock: rolls (stock_ecru) or tricoteur orders for this ref.
+  const lock = await refEcruLock(id)
+
+  // Number of écru rolls (stock_ecru) created for this ref + their total weight.
+  let rolls_count = 0
+  let rolls_poids_total = 0
+  try {
+    const rc = await query<{ n: number; poids: number | null }>(
+      `SELECT COUNT(*) AS n, SUM(poids) AS poids FROM stock_ecru WHERE IDref_ecru = ${id}`,
+    )
+    rolls_count = Number(rc[0]?.n ?? 0)
+    rolls_poids_total = Number(rc[0]?.poids ?? 0) || 0
+  } catch { /* stock_ecru unreachable on some envs — leave 0 */ }
+
+  // Schéma de liage — chutes (rows) + cells.
+  const liage = await loadLiage(id)
+
+  // Obs OF — obs_ref_ecru (DATE is reserved → alias). Machine + coloris names.
+  const obsRows = await query<{ IDobs_ref_ecru: number; IDmachine: number; IDcolori_ecru: number; observation: string | null; obs_date: string | null }>(
+    `SELECT IDobs_ref_ecru, IDmachine, IDcolori_ecru, observation, DATE AS obs_date FROM obs_ref_ecru WHERE IDref_ecru = ${id} ORDER BY DATE DESC, IDobs_ref_ecru DESC`,
+  )
+  const obsFixed = await fixEncoding(obsRows, 'obs_ref_ecru', 'IDobs_ref_ecru', ['observation'])
+  const colNameById = new Map<number, string>()
+  for (const c of coloris) colNameById.set(c.IDcolori_ecru, String(c.reference ?? ''))
+  const obs_of = obsFixed.map((o) => ({
+    IDobs_ref_ecru: Number(o.IDobs_ref_ecru) || 0,
+    IDmachine: Number(o.IDmachine) || 0,
+    machine_nom: machNameById.get(Number(o.IDmachine)) ?? null,
+    IDcolori_ecru: Number(o.IDcolori_ecru) || 0,
+    colori_reference: colNameById.get(Number(o.IDcolori_ecru)) ?? null,
+    observation: o.observation ?? null,
+    date: o.obs_date ?? null,
+  }))
+
+  return {
+    ...ref,
+    contexture_nom,
+    client_nom,
+    composition_lines: compositionLines,
+    cout_kg,
+    coloris: colorisOut,
+    machines,
+    ...liage,
+    obs_of,
+    has_rolls: lock.rolls,
+    has_orders: lock.orders,
+    rolls_count,
+    rolls_poids_total,
+  }
+}
+
+export type RefEcruDetailPayload = NonNullable<Awaited<ReturnType<typeof loadRefEcruDetail>>>
+
 // GET /api/references-ecru/:id
 referencesEcruRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-
-    const rows = await query<Record<string, unknown>>(`SELECT * FROM ref_ecru WHERE IDref_ecru = ${id}`)
-    if (rows.length === 0) { res.status(404).json({ error: 'Ref ecru not found' }); return }
-    let ref = normalizeRefEcru(rows[0])
-    const fixed = (await fixEncoding(
-      [ref] as any,
-      'ref_ecru',
-      'IDref_ecru',
-      ['reference', 'designation', 'composition', 'reference_client', 'commentaire', 'observations', 'tombe_metier'],
-    )) as RefEcru[]
-    ref = fixed[0]
-
-    // Contexture + client names.
-    let contexture_nom: string | null = null
-    if (ref.IDcontexture > 0) {
-      const c = await query<{ nom: string | null }>(`SELECT nom FROM contexture WHERE IDcontexture = ${ref.IDcontexture}`)
-      if (c.length > 0) {
-        const cf = await fixEncoding(c.map((x) => ({ IDcontexture: ref.IDcontexture, nom: x.nom })), 'contexture', 'IDcontexture', ['nom'])
-        contexture_nom = cf[0]?.nom ?? null
-      }
-    }
-    let client_nom: string | null = null
-    if (ref.IDclient > 0) {
-      const c = await query<{ nom: string | null }>(`SELECT nom FROM client WHERE IDclient = ${ref.IDclient}`)
-      if (c.length > 0) {
-        const cf = await batchRepair(c.map((x) => ({ IDclient: ref.IDclient, nom: x.nom })), 'client', 'IDclient', ['nom'])
-        client_nom = cf[0]?.nom ?? null
-      }
-    }
-
-    // Base composition (IDcolori_ecru = 0) — composition_ecru is all ASCII.
-    const compRows = await query<{
-      IDcomposition_ecru: number
-      IDref_fil: number
-      IDcolori_fil: number
-      pourcentage: number | null
-      commentaire: string | null
-    }>(
-      `SELECT IDcomposition_ecru, IDref_fil, IDcolori_fil, pourcentage, commentaire
-       FROM composition_ecru WHERE IDref_ecru = ${id} AND IDcolori_ecru = 0 ORDER BY IDcomposition_ecru`,
-    )
-    const compFixed = await fixEncoding(compRows, 'composition_ecru', 'IDcomposition_ecru', ['commentaire'])
-
-    // Resolve yarn reference + price for each composition line + cost/kg.
-    const refFilIds = Array.from(new Set(compFixed.map((c) => Number(c.IDref_fil)).filter((n) => n > 0)))
-    const yarnById = new Map<number, { reference: string | null; prix_kg: number | null }>()
-    if (refFilIds.length > 0) {
-      const yarns = await query<{ IDref_fil: number; reference: string | null; prix_kg: number | null }>(
-        `SELECT IDref_fil, reference, prix_kg FROM ref_fil WHERE IDref_fil IN (${refFilIds.join(',')})`,
-      )
-      const yarnsFixed = await batchRepair(
-        yarns.map((y) => ({ IDref_fil: Number(y.IDref_fil) || 0, reference: y.reference ?? null, prix_kg: toNumOrNull(y.prix_kg) })),
-        'ref_fil',
-        'IDref_fil',
-        ['reference'],
-      )
-      for (const y of yarnsFixed) yarnById.set(y.IDref_fil, { reference: y.reference, prix_kg: y.prix_kg })
-    }
-    const compositionLines = compFixed.map((c) => {
-      const y = yarnById.get(Number(c.IDref_fil))
-      return {
-        IDcomposition_ecru: Number(c.IDcomposition_ecru) || 0,
-        IDref_fil: Number(c.IDref_fil) || 0,
-        IDcolori_fil: Number(c.IDcolori_fil) || 0,
-        ref_fil_reference: y?.reference ?? null,
-        prix_kg: y?.prix_kg ?? null,
-        pourcentage: toNumOrNull(c.pourcentage),
-        commentaire: c.commentaire ?? null,
-      }
-    })
-    // Coût/kg = façon price (ref_ecru.prix) + Σ(pourcentage × yarn prix_kg)/100.
-    const yarnCost = compositionLines.reduce(
-      (sum, c) => sum + ((Number(c.pourcentage) || 0) * (Number(c.prix_kg) || 0)) / 100,
-      0,
-    )
-    const cout_kg = Math.round(((ref.prix ?? 0) + yarnCost) * 100) / 100
-
-    // Coloris (colori_ecru — explicit columns; SELECT * fails).
-    const colRows = await query<{ IDcolori_ecru: number; reference: string | null; commentaire: string | null; suivis: number | null }>(
-      `SELECT IDcolori_ecru, reference, commentaire, suivis FROM colori_ecru WHERE IDref_ecru = ${id} ORDER BY reference`,
-    )
-    const colFixed = await fixEncoding(colRows, 'colori_ecru', 'IDcolori_ecru', ['reference', 'commentaire'])
-    const coloris = colFixed.map((c) => ({
-      IDcolori_ecru: Number(c.IDcolori_ecru) || 0,
-      reference: c.reference ?? null,
-      commentaire: c.commentaire ?? null,
-      suivis: Number(c.suivis) ? 1 : 0,
-    }))
-
-    // Per-coloris usage → drives the delete padlock. Same reader as the DELETE
-    // guard, so the screen and the server always agree (LIVA #1203).
-    const usage = await colorisUsage(coloris.map((c) => c.IDcolori_ecru))
-    // Each coloris's own composition — the one orders, OFs and the sst
-    // affectation actually use (LIVA #1205) — with an écart flag against the
-    // reference's recipe and its own lock.
-    const colorisCompo = await loadColorisCompositions(id, coloris.map((c) => c.IDcolori_ecru))
-    const colorisOut = coloris.map((c) => {
-      const lines = colorisCompo.lines.get(c.IDcolori_ecru) ?? []
-      return {
-        ...c,
-        in_use: usage.get(c.IDcolori_ecru) ?? null,
-        composition: lines,
-        composition_ecart: compositionEcart(compFixed, lines),
-        composition_lock: colorisCompo.locks.get(c.IDcolori_ecru) ?? null,
-      }
-    })
-
-    // Machine grid (ref_ecru_machine — all ASCII) + Métier name + computed compteurs.
-    const machRows = await query<{
-      IDref_ecru_machine: number
-      IDmachine: number
-      repere_1: string | null
-      repere_2: string | null
-      repere_3: string | null
-      repere_4: string | null
-      repere_5: string | null
-      hauteur_pl: string | null
-      abattage: string | null
-      trs_10kg_chute: number | null
-      nb_chutes: number | null
-    }>(
-      `SELECT IDref_ecru_machine, IDmachine, repere_1, repere_2, repere_3, repere_4, repere_5, hauteur_pl, abattage, trs_10kg_chute, nb_chutes
-       FROM ref_ecru_machine WHERE IDref_ecru = ${id} ORDER BY IDref_ecru_machine`,
-    )
-    const machIds = Array.from(new Set(machRows.map((m) => Number(m.IDmachine)).filter((n) => n > 0)))
-    // Métier label = emplacement ("1G"), brand as fallback (LIVA #1199).
-    const machNameById = await resolveMachineLabels(machIds)
-    const poidsPiece = Number(ref.poids) || 0
-    const machines = machRows.map((m) => {
-      const trs = Number(m.trs_10kg_chute) || 0
-      const nb = Number(m.nb_chutes) || 0
-      // Legacy compteur (GWDFFEN_Action_Machine): round((trs/nb)*(poids_piece/20)/10)*10.
-      const compteur_saisie = nb > 0 ? Math.round((trs / nb) * (poidsPiece / 20) / 10) * 10 : 0
-      return {
-        IDref_ecru_machine: Number(m.IDref_ecru_machine) || 0,
-        IDmachine: Number(m.IDmachine) || 0,
-        machine_nom: machNameById.get(Number(m.IDmachine)) ?? null,
-        repere_1: m.repere_1 ?? null,
-        repere_2: m.repere_2 ?? null,
-        repere_3: m.repere_3 ?? null,
-        repere_4: m.repere_4 ?? null,
-        repere_5: m.repere_5 ?? null,
-        hauteur_pl: m.hauteur_pl ?? null,
-        abattage: m.abattage ?? null,
-        trs_10kg_chute: toNumOrNull(m.trs_10kg_chute),
-        nb_chutes: toNumOrNull(m.nb_chutes),
-        compteur_saisie,
-        // Compteur Calculé is contextual (needs a live ordre_fabrication poids_piece),
-        // which doesn't exist on the references screen → 0 (matches legacy).
-        compteur_calcule: 0,
-      }
-    })
-
-    // Composition lock: rolls (stock_ecru) or tricoteur orders for this ref.
-    const lock = await refEcruLock(id)
-
-    // Number of écru rolls (stock_ecru) created for this ref + their total weight.
-    let rolls_count = 0
-    let rolls_poids_total = 0
-    try {
-      const rc = await query<{ n: number; poids: number | null }>(
-        `SELECT COUNT(*) AS n, SUM(poids) AS poids FROM stock_ecru WHERE IDref_ecru = ${id}`,
-      )
-      rolls_count = Number(rc[0]?.n ?? 0)
-      rolls_poids_total = Number(rc[0]?.poids ?? 0) || 0
-    } catch { /* stock_ecru unreachable on some envs — leave 0 */ }
-
-    // Schéma de liage — chutes (rows) + cells.
-    const liage = await loadLiage(id)
-
-    // Obs OF — obs_ref_ecru (DATE is reserved → alias). Machine + coloris names.
-    const obsRows = await query<{ IDobs_ref_ecru: number; IDmachine: number; IDcolori_ecru: number; observation: string | null; obs_date: string | null }>(
-      `SELECT IDobs_ref_ecru, IDmachine, IDcolori_ecru, observation, DATE AS obs_date FROM obs_ref_ecru WHERE IDref_ecru = ${id} ORDER BY DATE DESC, IDobs_ref_ecru DESC`,
-    )
-    const obsFixed = await fixEncoding(obsRows, 'obs_ref_ecru', 'IDobs_ref_ecru', ['observation'])
-    const colNameById = new Map<number, string>()
-    for (const c of coloris) colNameById.set(c.IDcolori_ecru, String(c.reference ?? ''))
-    const obs_of = obsFixed.map((o) => ({
-      IDobs_ref_ecru: Number(o.IDobs_ref_ecru) || 0,
-      IDmachine: Number(o.IDmachine) || 0,
-      machine_nom: machNameById.get(Number(o.IDmachine)) ?? null,
-      IDcolori_ecru: Number(o.IDcolori_ecru) || 0,
-      colori_reference: colNameById.get(Number(o.IDcolori_ecru)) ?? null,
-      observation: o.observation ?? null,
-      date: o.obs_date ?? null,
-    }))
-
-    res.json({
-      ...ref,
-      contexture_nom,
-      client_nom,
-      composition_lines: compositionLines,
-      cout_kg,
-      coloris: colorisOut,
-      machines,
-      ...liage,
-      obs_of,
-      has_rolls: lock.rolls,
-      has_orders: lock.orders,
-      rolls_count,
-      rolls_poids_total,
-    })
+    const detail = await loadRefEcruDetail(id)
+    if (!detail) { res.status(404).json({ error: 'Ref ecru not found' }); return }
+    res.json(detail)
   } catch (err) {
     console.error('Error fetching ref_ecru detail:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+// GET /api/references-ecru/:id/finis: the finished references made from this
+// écru (ref_fini.IDref_ecru): the reverse of the « Référence écru » row on
+// Finis › Références. SELECT * works on ref_fini; archivé is read by readCol.
+referencesEcruRouter.get('/:id/finis', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const rows = await query<Record<string, unknown>>(`SELECT * FROM ref_fini WHERE IDref_ecru = ${id}`)
+    const shaped = rows.map((r) => ({
+      IDref_fini: Number(r.IDref_fini) || 0,
+      reference: (r.reference ?? null) as string | null,
+      designation: (r.designation ?? null) as string | null,
+      avec_teinture: Number(r.avec_teinture) || 0,
+      archive: Number(readCol(r, 'archivé')) ? 1 : 0,
+    }))
+    const fixed = await batchRepair(shaped, 'ref_fini', 'IDref_fini', ['reference', 'designation'])
+    fixed.sort((a, b) => a.archive - b.archive || String(a.reference ?? '').localeCompare(String(b.reference ?? ''), 'fr', { numeric: true }))
+    res.json(fixed)
+  } catch (err) {
+    console.error('Error fetching ref_ecru finis:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/** Render the écru fiche technique of one reference, signed by `issuer`
+ *  (null = no such reference). */
+export async function renderFicheTechniqueEcruPdf(id: number, issuer: CompanyInfo): Promise<{ buffer: Buffer; reference: string } | null> {
+  const detail = await loadRefEcruDetail(id)
+  if (!detail) return null
+  const data = ficheTechniqueEcruData(detail as unknown as RefEcruDetailForFiche)
+  const buffer = await renderToBuffer(
+    React.createElement(FicheTechniqueEcruPdf, { data, issuer }) as unknown as React.ReactElement<DocumentProps>,
+  )
+  return { buffer, reference: data.reference }
+}
+
+// GET /api/references-ecru/:id/fiche-technique[-trm]: the knitting sheet,
+// streamed inline. Same content for both apps; only the company signing the
+// footer differs (an écru is knitted by TRM but also printed from ETM).
+function ficheTechniqueHandler(issuer: CompanyInfo) {
+  return async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10)
+      if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+      const out = await renderFicheTechniqueEcruPdf(id, issuer)
+      if (!out) { res.status(404).json({ error: 'Ref ecru not found' }); return }
+      const safeRef = out.reference.replace(/[^\w.-]+/g, '_')
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader('Content-Disposition', `inline; filename="fiche-technique-${safeRef}.pdf"`)
+      // Iframe embedding from the web origin (mps_designer §21).
+      res.removeHeader('X-Frame-Options')
+      res.removeHeader('Content-Security-Policy')
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+      res.send(out.buffer)
+    } catch (err) {
+      console.error('Error rendering ref_ecru fiche technique:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  }
+}
+referencesEcruRouter.get('/:id/fiche-technique', ficheTechniqueHandler(company))
+referencesEcruRouter.get('/:id/fiche-technique-trm', ficheTechniqueHandler(companyTrm))
 
 // GET /api/references-ecru/:id/cout-tricotage?qty=<number>
 // Detailed breakdown of the TRM knitting cost (PrixDeRevientTRM) for a ref at a

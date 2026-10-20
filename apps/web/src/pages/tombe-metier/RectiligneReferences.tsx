@@ -11,7 +11,7 @@ import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode, type
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, Loader2, AlertCircle, Pencil, Plus, X, Save, Trash2, Info, Copy, Archive, ArchiveRestore,
-  Palette, Layers, Printer, AtSign, Mail, Spline, ClipboardList,
+  Palette, Layers, Printer, AtSign, Mail, Spline, ClipboardList, Package,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
+import { SpecTile, TileValue, TileText, TextTile, tileInput } from './spec-tiles'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -591,6 +592,16 @@ function DetailHeader({
 
 // ── Detail body ────────────────────────────────────────
 
+// Classeur master tabs (§39), as on the circular mode: the sheet, then the
+// two catalogs hanging off it. The montage chosen in « Guides-fil » is kept
+// when switching to « Coloris » (both read the same montage).
+const RECTI_TABS = [
+  { key: 'specifications', label: 'Spécifications', icon: Package },
+  { key: 'guides', label: 'Guides-fil', icon: Layers },
+  { key: 'coloris', label: 'Coloris', icon: Palette },
+] as const
+type RectiTab = (typeof RECTI_TABS)[number]['key']
+
 function DetailMain({
   detail, isLoading, hasSelection, isEditing, draft, onDraftChange, onChanged,
 }: {
@@ -602,12 +613,14 @@ function DetailMain({
   onDraftChange: (d: Draft) => void
   onChanged: () => void
 }) {
-  // The montage shown by the guides and coloris cards. Hooks before the early
+  // The montage shown by the guides and coloris tabs. Hooks before the early
   // returns (§28.6); snaps back to the first montage when the ref changes.
   const [montage, setMontage] = useState<number>(1)
   useEffect(() => {
     if (detail && !detail.montages.includes(montage)) setMontage(detail.montages[0] ?? 1)
   }, [detail, montage])
+  const [activeTab, setActiveTab] = useState<RectiTab>('specifications')
+  useEffect(() => { setActiveTab('specifications') }, [detail?.IDref_rectiligne])
 
   if (!hasSelection) {
     return (
@@ -625,68 +638,79 @@ function DetailMain({
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
   }
   if (!detail) return null
+  const counts: Partial<Record<RectiTab, number>> = {
+    guides: detail.guides.filter((g) => g.montage === montage).length,
+    coloris: detail.coloris.length,
+  }
   return (
-    <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
-      <IdentificationCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
-      <MontageCard detail={detail} isEditing={isEditing} montage={montage} onMontageChange={setMontage} onChanged={onChanged} />
-      <ColorisCard detail={detail} isEditing={isEditing} montage={montage} onChanged={onChanged} />
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-shrink-0 flex items-center gap-0.5 border-b border-border/60 pb-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {RECTI_TABS.map((t) => {
+          const Icon = t.icon
+          const active = activeTab === t.key
+          const count = counts[t.key]
+          return (
+            <button key={t.key} type="button" onClick={() => setActiveTab(t.key)}
+              className={cn('flex flex-shrink-0 items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap',
+                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10 hover:text-accent')}>
+              <Icon className="h-3.5 w-3.5" />{t.label}
+              {count != null && count > 0 && <span className="text-xs tabular-nums opacity-70">{count}</span>}
+            </button>
+          )
+        })}
+      </div>
+      <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1 scrollbar-transparent">
+        {activeTab === 'specifications' && <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />}
+        {activeTab === 'guides' && <MontageCard detail={detail} isEditing={isEditing} montage={montage} onMontageChange={setMontage} onChanged={onChanged} />}
+        {activeTab === 'coloris' && <ColorisCard detail={detail} isEditing={isEditing} montage={montage} onChanged={onChanged} />}
+      </div>
     </div>
   )
 }
 
-function IdentificationCard({ detail, isEditing, draft, onDraftChange }: {
+function SpecsCard({ detail, isEditing, draft, onDraftChange }: {
   detail: RectiDetail
   isEditing: boolean
   draft: Draft
   onDraftChange: (d: Draft) => void
 }) {
+  const u = uniteShort(isEditing ? draft.unite : detail.unite)
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2">
-        <Info className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Identification</CardTitle>
-      </CardHeader>
-      <CardContent className="pb-4">
-        {isEditing ? (
-          <div className="space-y-3">
-            <LabeledInput label="Désignation" value={draft.designation} onChange={(v) => onDraftChange({ ...draft, designation: v })} />
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
-              <LabeledInput label="Programme" value={draft.programme} onChange={(v) => onDraftChange({ ...draft, programme: v })} />
-              <LabeledInput label="Nb aiguilles" type="number" value={draft.nb_aiguilles} onChange={(v) => onDraftChange({ ...draft, nb_aiguilles: v })} />
-              <LabeledInput label="Prix" suffix={`€/${uniteShort(draft.unite)}`} type="number" step="0.01" value={draft.prix} onChange={(v) => onDraftChange({ ...draft, prix: v })} />
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Unité</label>
-                <PopoverSelect
-                  options={UNITES.map((u) => ({ id: u.id, primary: u.primary }))}
-                  value={draft.unite}
-                  onChange={(id) => onDraftChange({ ...draft, unite: id || 4 })}
-                  hideEmpty
-                />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
-              <textarea
-                value={draft.commentaire}
-                onChange={(e) => onDraftChange({ ...draft, commentaire: e.target.value })}
-                rows={2}
-                className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-baseline gap-x-10 gap-y-2">
-              <Inline label="Programme" value={detail.programme || '—'} />
-              <Inline label="Nb aiguilles" value={detail.nb_aiguilles ? fmtNum(detail.nb_aiguilles) : '—'} />
-              <Inline label="Prix" value={detail.prix ? `${fmtNum(detail.prix, 2)} €/${uniteShort(detail.unite)}` : '—'} strong />
-              <Inline label="Unité" value={UNITES.find((u) => u.id === detail.unite)?.primary ?? '—'} />
-            </div>
-            {detail.commentaire.trim() && (
-              <p className="text-sm text-muted-foreground whitespace-pre-line pt-1">{detail.commentaire}</p>
-            )}
-          </div>
+      <CardContent className="pt-4 pb-4 space-y-3">
+        {isEditing && (
+          <LabeledInput label="Désignation" value={draft.designation} onChange={(v) => onDraftChange({ ...draft, designation: v })} />
         )}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <SpecTile label="Programme">
+            {isEditing
+              ? <input value={draft.programme} onChange={(e) => onDraftChange({ ...draft, programme: e.target.value })} className={tileInput} />
+              : <TileText value={detail.programme} />}
+          </SpecTile>
+          <SpecTile label="Nb aiguilles">
+            {isEditing
+              ? <input type="number" value={draft.nb_aiguilles} onChange={(e) => onDraftChange({ ...draft, nb_aiguilles: e.target.value })} className={tileInput} />
+              : <TileValue value={detail.nb_aiguilles || null} />}
+          </SpecTile>
+          <SpecTile label="Prix">
+            {isEditing
+              ? <input type="number" step="0.01" value={draft.prix} onChange={(e) => onDraftChange({ ...draft, prix: e.target.value })} className={tileInput} />
+              : <TileValue value={detail.prix || null} unit={`€/${u}`} digits={2} />}
+          </SpecTile>
+          <SpecTile label="Unité">
+            {isEditing ? (
+              <PopoverSelect
+                options={UNITES.map((x) => ({ id: x.id, primary: x.primary }))}
+                value={draft.unite}
+                onChange={(id) => onDraftChange({ ...draft, unite: id || 4 })}
+                hideEmpty
+              />
+            ) : (
+              <TileText value={UNITES.find((x) => x.id === detail.unite)?.primary ?? null} />
+            )}
+          </SpecTile>
+        </div>
+        <TextTile label="Commentaire" value={detail.commentaire} isEditing={isEditing} draft={draft.commentaire} rows={2} onChange={(v) => onDraftChange({ ...draft, commentaire: v })} />
       </CardContent>
     </Card>
   )
@@ -1269,15 +1293,6 @@ function LabeledInput({ label, value, onChange, type = 'text', step, suffix }: {
         {suffix ? <span className="text-muted-foreground/60"> ({suffix})</span> : null}
       </label>
       <input type={type} step={step} value={value} onChange={(e) => onChange(e.target.value)} className={inputClass} />
-    </div>
-  )
-}
-
-function Inline({ label, value, strong }: { label: string; value: ReactNode; strong?: boolean }) {
-  return (
-    <div className="flex items-baseline gap-2">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={cn('text-sm tabular-nums', strong && 'font-semibold')}>{value}</span>
     </div>
   )
 }

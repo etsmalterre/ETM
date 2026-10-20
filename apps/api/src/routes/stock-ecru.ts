@@ -8,6 +8,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { finiIdsByComponentEcru, loadFiniSources, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { horsRefParEcru } from '../lib/hors-ref-trm.js'
+import { aggregateStockEcru } from '../lib/stock-ecru-par-reference.js'
 
 export const stockEcruRouter: RouterType = Router()
 
@@ -303,6 +304,20 @@ async function hydrateEcruRows(rows: StockEcru[]): Promise<StockEcru[]> {
   return fixed
 }
 
+/** ETM's écru population "physically in stock" (see the list route below for
+ *  why each predicate is there). Shared with `/ecru/par-reference/:refId` so
+ *  the reference sheet and Tombé Métier › Stock always count the same pieces.
+ *  Merged-roll components still need the JS pass (`mergedComponentEcruIds`). */
+const ETM_ECRU_IN_STOCK_WHERE: readonly string[] = [
+  'se.IDsociete = 1',
+  '(se.IDligne_expedition_ETM = 0 OR se.IDligne_expedition_ETM IS NULL)',
+  'NOT EXISTS (SELECT 1 FROM stock_fini sf WHERE sf.IDstock_ecru = se.IDstock_ecru)',
+  // A roll given away on a donation commande has LEFT stock — écru has no
+  // état column, this FK is its only exit fact (legacy FI_Stock_TM_ETM
+  // `AND stock_ecru.IDcommande_donation = 0`, on every tab; #1154).
+  '(se.IDcommande_donation IS NULL OR se.IDcommande_donation = 0)',
+]
+
 // GET /api/stock/ecru - list écru (tombé de métier) rolls with joined display
 //   columns + client reservation + défauts.
 //     ?statut=disponible | teinture | tous   (default disponible)
@@ -329,15 +344,7 @@ stockEcruRouter.get('/ecru', async (req: Request, res: Response) => {
     // time out. (IDligne_expedition_TRM is NOT a stock signal — it records the
     // TRM→ETM provenance, so most in-stock rolls carry it.)
     // HFSQL stores "no FK" as 0 (not NULL) — guard both.
-    const where: string[] = [
-      'se.IDsociete = 1',
-      '(se.IDligne_expedition_ETM = 0 OR se.IDligne_expedition_ETM IS NULL)',
-      'NOT EXISTS (SELECT 1 FROM stock_fini sf WHERE sf.IDstock_ecru = se.IDstock_ecru)',
-      // A roll given away on a donation commande has LEFT stock — écru has no
-      // état column, this FK is its only exit fact (legacy FI_Stock_TM_ETM
-      // `AND stock_ecru.IDcommande_donation = 0`, on every tab; #1154).
-      '(se.IDcommande_donation IS NULL OR se.IDcommande_donation = 0)',
-    ]
+    const where: string[] = [...ETM_ECRU_IN_STOCK_WHERE]
     if (statut === 'disponible') {
       where.push(`(se.IDref_commande_affectation IS NULL OR se.IDref_commande_affectation = 0)`)
     } else if (statut === 'teinture') {
@@ -367,6 +374,29 @@ stockEcruRouter.get('/ecru', async (req: Request, res: Response) => {
     res.json(hydrated)
   } catch (err) {
     console.error('Error fetching stock_ecru:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/stock/ecru/par-reference/:refId: ETM's stock of one écru
+//   reference, total + per coloris (Tombé Métier › Références sidebar and
+//   Coloris tab). « disponible » = not affected to a dyer line, the
+//   « Disponible » tab of Tombé Métier › Stock.
+stockEcruRouter.get('/ecru/par-reference/:refId', async (req: Request, res: Response) => {
+  try {
+    const refId = parseInt(req.params.refId, 10)
+    if (isNaN(refId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const rows = await query<{ IDstock_ecru: number; IDcolori_ecru: number; poids: number | null; IDref_commande_affectation: number | null }>(
+      `SELECT se.IDstock_ecru, se.IDcolori_ecru, se.poids, se.IDref_commande_affectation FROM stock_ecru se WHERE ${[...ETM_ECRU_IN_STOCK_WHERE, `se.IDref_ecru = ${refId}`].join(' AND ')}`,
+    )
+    const merged = await mergedComponentEcruIds()
+    res.json(aggregateStockEcru(
+      rows
+        .filter((r) => !merged.has(Number(r.IDstock_ecru)))
+        .map((r) => ({ IDcolori_ecru: r.IDcolori_ecru, poids: r.poids, disponible: !(Number(r.IDref_commande_affectation) > 0) })),
+    ))
+  } catch (err) {
+    console.error('Error fetching stock_ecru par reference:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

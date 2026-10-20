@@ -22,7 +22,6 @@ import {
   Save,
   Trash2,
   Info,
-  ChevronDown,
   Copy,
   Archive,
   ArchiveRestore,
@@ -40,22 +39,28 @@ import {
   Calendar,
   Lock,
   Calculator,
+  Package,
+  Warehouse,
+  Droplets,
+  CheckCircle2,
+  Circle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { cn } from '@/lib/utils'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 // Relative on purpose: TRM renders this file through `@etm`, where `@/` is
 // TRM's own src (see the header of RectiligneReferences.tsx).
 import { RectiligneReferences, RefKindSwitch, type RefKind } from './tombe-metier/RectiligneReferences'
+import { SpecTile, TileValue, TileText, TextTile, tileInput } from './tombe-metier/spec-tiles'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -410,6 +415,45 @@ function useClients(enabled: boolean, path: string) {
     staleTime: 5 * 60_000,
   })
 }
+// ── Per-app variant ────────────────────────────────────
+// ETM and TRM render this very screen (TRM through `@etm`). What differs is
+// data each company owns or screens only one app has; never a fork, a prop
+// (CLAUDE.md § Tombé Métier): which tab a user lands on, whose stock the
+// sidebar counts, where « voir le stock » / a fini link lead, which company
+// signs the printed fiche technique.
+export interface RefEcruScreenVariant {
+  defaultTab: RefEcruMainTab
+  /** GET returning StockParReference for `${stockPath}/${IDref_ecru}`. */
+  stockPath: string
+  stockHref: ((reference: string) => string) | null
+  finiHref: ((reference: string) => string) | null
+  /** Route segment of the fiche technique PDF under /references-ecru/:id. */
+  ficheTechnique: 'fiche-technique' | 'fiche-technique-trm'
+}
+const ETM_VARIANT: RefEcruScreenVariant = {
+  defaultTab: 'specifications',
+  stockPath: '/stock/ecru/par-reference',
+  stockHref: (reference) => `/tombe-metier/stock?ref=${encodeURIComponent(reference)}`,
+  finiHref: (reference) => `/finis/references?q=${encodeURIComponent(reference)}`,
+  ficheTechnique: 'fiche-technique',
+}
+const ScreenVariantContext = createContext<RefEcruScreenVariant>(ETM_VARIANT)
+
+interface StockQuantite { pieces: number; kg: number }
+interface StockParReference extends StockQuantite {
+  disponible: StockQuantite
+  coloris: Array<StockQuantite & { IDcolori_ecru: number; disponible: StockQuantite }>
+}
+/** Live stock of one reference; staleTime 0: other sessions move pieces. */
+function useStockParReference(refId: number) {
+  const { stockPath } = useContext(ScreenVariantContext)
+  return useQuery<StockParReference>({
+    queryKey: ['ref-ecru-stock', stockPath, refId],
+    queryFn: () => apiFetch(`${stockPath}/${refId}`),
+    staleTime: 0,
+  })
+}
+
 function useRefsFilLookup(enabled: boolean) {
   return useQuery<RefFilLookup[]>({
     queryKey: ['ref-ecru-lk-refsfil'],
@@ -549,10 +593,13 @@ function draftToBody(d: HeaderDraft) {
  * mode is its own component with its own unsaved-changes guard, and the switch
  * in each list header goes through that guard before flipping.
  */
-export function TombeMetierReferences({ obsOfEditor, clientsLookupPath = DEFAULT_CLIENTS_LOOKUP }: {
+export function TombeMetierReferences({ obsOfEditor, clientsLookupPath = DEFAULT_CLIENTS_LOOKUP, variant }: {
   obsOfEditor?: ComponentType<ObsOfEditorProps>
   clientsLookupPath?: string
+  /** TRM overrides what is its own (see RefEcruScreenVariant). */
+  variant?: Partial<RefEcruScreenVariant>
 } = {}) {
+  const screenVariant = useMemo(() => ({ ...ETM_VARIANT, ...variant }), [variant])
   const [searchParams, setSearchParams] = useSearchParams()
   const kind: RefKind = searchParams.get('type') === 'rectiligne' ? 'rectiligne' : 'circulaire'
   const setKind = useCallback((k: RefKind) => {
@@ -563,9 +610,13 @@ export function TombeMetierReferences({ obsOfEditor, clientsLookupPath = DEFAULT
       return next
     }, { replace: true })
   }, [setSearchParams])
-  return kind === 'rectiligne'
-    ? <RectiligneReferences onKindChange={setKind} />
-    : <CirculaireReferences obsOfEditor={obsOfEditor} clientsLookupPath={clientsLookupPath} onKindChange={setKind} />
+  return (
+    <ScreenVariantContext.Provider value={screenVariant}>
+      {kind === 'rectiligne'
+        ? <RectiligneReferences onKindChange={setKind} />
+        : <CirculaireReferences obsOfEditor={obsOfEditor} clientsLookupPath={clientsLookupPath} onKindChange={setKind} />}
+    </ScreenVariantContext.Provider>
+  )
 }
 
 function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: {
@@ -599,9 +650,8 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [printOpen, setPrintOpen] = useState(false)
+  const { ficheTechnique } = useContext(ScreenVariantContext)
   const [emailOpen, setEmailOpen] = useState(false)
-  const [coutDialogOpen, setCoutDialogOpen] = useState(false)
 
   const { data: refs, isLoading, isError, error } = useRefsEcru(archivedFilter)
   const { data: detail, isLoading: detailLoading } = useRefEcruDetail(selectedId)
@@ -865,7 +915,7 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
             isArchiving={archiveMutation.isPending}
             onDuplicate={() => duplicateMutation.mutate()}
             isDuplicating={duplicateMutation.isPending}
-            onPrint={() => setPrintOpen(true)}
+            onPrint={() => { if (selectedId !== null) window.open(`${API_URL}/references-ecru/${selectedId}/${ficheTechnique}`, '_blank') }}
             onEmail={() => setEmailOpen(true)}
           />
         }
@@ -885,7 +935,7 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
             reportDirty={reportDirty}
           />
         }
-        sidebar={selectedId !== null ? <DetailSidebar detail={detail ?? null} refId={selectedId} onOpenCoutDetail={() => setCoutDialogOpen(true)} /> : null}
+        sidebar={selectedId !== null ? <DetailSidebar detail={detail ?? null} /> : null}
         sidebarTitle="Informations"
         hasSelection={selectedId !== null}
         onBack={() => guard.guardAction(() => { setIsEditing(false); setSelectedId(null) })}
@@ -950,14 +1000,7 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
         </AlertDialogContent>
       </AlertDialog>
 
-      <PlaceholderDialog open={printOpen} onClose={() => setPrintOpen(false)} title="Imprimer" TriggerIcon={Printer} CenterIcon={Printer} />
       <PlaceholderDialog open={emailOpen} onClose={() => setEmailOpen(false)} title="Envoyer un email" TriggerIcon={AtSign} CenterIcon={Mail} />
-      <CoutTricotageDialog
-        open={coutDialogOpen}
-        onClose={() => setCoutDialogOpen(false)}
-        refId={selectedId}
-        refLabel={detail?.reference ?? null}
-      />
     </ObsOfEditorContext.Provider>
   )
 }
@@ -990,124 +1033,6 @@ function PlaceholderDialog({
           <CenterIcon className="h-12 w-12 mb-3 opacity-40" />
           <p className="text-sm font-medium">En developpement</p>
           <p className="text-xs mt-1">Cette fonctionnalite sera disponible prochainement.</p>
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-// ── Coût de tricotage breakdown dialog (read-only) ─────
-
-function CoutTricotageDialog({
-  open,
-  onClose,
-  refId,
-  refLabel,
-}: {
-  open: boolean
-  onClose: () => void
-  refId: number | null
-  refLabel: string | null
-}) {
-  const [qtyInput, setQtyInput] = useState('1000')
-  const [debouncedQty, setDebouncedQty] = useState(1000)
-
-  // Reset to the default quantity each time the dialog opens.
-  useEffect(() => { if (open) { setQtyInput('1000'); setDebouncedQty(1000) } }, [open])
-
-  // Debounce the qty input so we don't refetch on every keystroke.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const n = Number(qtyInput)
-      setDebouncedQty(Number.isFinite(n) && n >= 1 ? n : 1000)
-    }, 300)
-    return () => clearTimeout(t)
-  }, [qtyInput])
-
-  const { data: bd, isFetching } = useCoutTricotage(refId, debouncedQty, open)
-  const floorWins = bd ? bd.floor >= bd.salePrice : false
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-2xl" onClose={onClose}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <TmRollIcon className="h-5 w-5 text-accent" />
-            Coût de tricotage{refLabel ? ` — ${refLabel}` : ''}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="mt-4 space-y-3">
-          {/* Quantity */}
-          <div className="flex items-end gap-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Quantité (kg)</label>
-              <input
-                type="number"
-                min={1}
-                step="1"
-                value={qtyInput}
-                onChange={(e) => setQtyInput(e.target.value)}
-                className={cn(inputClass, 'w-32 tabular-nums')}
-              />
-            </div>
-            {isFetching && <Loader2 className="h-4 w-4 animate-spin text-accent mb-2" />}
-            {!!bd?.computable && (
-              <p className="text-[11px] text-muted-foreground mb-1.5">
-                Métier : <span className="tabular-nums">{fmtNum(bd.inputs.gxNbToursKg, 2)}</span> trs/kg · <span className="tabular-nums">{bd.inputs.nbAiguilles}</span> aiguilles
-              </p>
-            )}
-          </div>
-
-          {!!bd && !bd.computable && (
-            <div className="rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
-              Aucune donnée machine pour cette référence — le coût de tricotage ne peut pas être calculé. Le prix retenu est le prix plancher de la fiche.
-            </div>
-          )}
-
-          {!!bd?.computable && bd.sections.map((sec) => (
-            <div key={sec.key}>
-              <p className="text-xs font-semibold text-accent uppercase tracking-wide mb-1.5">{sec.label}</p>
-              <div className="space-y-1">
-                {sec.rows.map((r) => (
-                  <div key={r.key} className="flex items-baseline justify-between gap-3">
-                    <span className="text-sm text-muted-foreground min-w-0">
-                      {r.label}
-                      {r.info && <span className="block text-[10px] text-muted-foreground/70 truncate">{r.info}</span>}
-                    </span>
-                    <span className="text-sm tabular-nums flex-shrink-0">{fmtNum(r.eurPerKg, 4)} €/kg</span>
-                  </div>
-                ))}
-              </div>
-              <div className="flex items-baseline justify-between gap-2 mt-1.5 pt-1.5 border-t border-border/50">
-                <span className="text-xs font-semibold">Sous-total</span>
-                <span className="text-sm font-semibold tabular-nums">{fmtNum(sec.subtotalPerKg, 4)} €/kg</span>
-              </div>
-            </div>
-          ))}
-
-          {/* Totals */}
-          {!!bd && (
-            <div className="border-t pt-3 space-y-1">
-              <div className="flex items-baseline justify-between">
-                <span className="text-sm font-semibold">Coût total</span>
-                <span className="text-base font-bold tabular-nums text-accent">{fmtNum(bd.costPerKg, 2)} €/kg</span>
-              </div>
-              <div className="flex items-baseline justify-between text-sm text-muted-foreground">
-                <span>Prix de vente (marge 30 %)</span>
-                <span className="tabular-nums">{fmtNum(bd.salePrice, 2)} €/kg</span>
-              </div>
-              <div className="flex items-baseline justify-between text-sm text-muted-foreground">
-                <span>Prix plancher (fiche)</span>
-                <span className="tabular-nums">{fmtNum(bd.floor, 2)} €/kg</span>
-              </div>
-              <div className="flex items-baseline justify-between pt-1 mt-1 border-t border-border/50">
-                <span className="text-sm font-semibold">
-                  Prix retenu{floorWins && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(plancher)</span>}
-                </span>
-                <span className="text-base font-bold tabular-nums">{fmtNum(bd.retainedPrice, 2)} €/kg</span>
-              </div>
-            </div>
-          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -1382,7 +1307,20 @@ function DetailHeader({
   )
 }
 
-// ── Center: Detail Main ────────────────────────────────
+// ── Center panel: Classeur master tabs (§39) ───────────
+// One dataset at a time gets the full panel height, as on Finis › Références:
+// Spécifications is the fabric sheet, Composition and Coloris the two
+// catalogs hanging off it, then the knitting side: Réglages (LFA, pignons,
+// réglages par métier), Liage, Obs OF. Counts come from the loaded detail.
+export const MAIN_TABS = [
+  { key: 'specifications', label: 'Spécifications', icon: Package },
+  { key: 'composition', label: 'Composition', icon: FlaskConical },
+  { key: 'coloris', label: 'Coloris', icon: Palette },
+  { key: 'reglages', label: 'Réglages', icon: Cog },
+  { key: 'liage', label: 'Liage', icon: Grid3x3 },
+  { key: 'obs', label: 'Obs OF', icon: ClipboardList },
+] as const
+export type RefEcruMainTab = (typeof MAIN_TABS)[number]['key']
 
 function DetailMain({
   detail,
@@ -1411,6 +1349,11 @@ function DetailMain({
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
+  const { defaultTab } = useContext(ScreenVariantContext)
+  const [activeTab, setActiveTab] = useState<RefEcruMainTab>(defaultTab)
+  // Land on the app's default tab whenever the selection changes (§39).
+  useEffect(() => { setActiveTab(defaultTab) }, [detail?.IDref_ecru, defaultTab])
+
   if (!hasSelection) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -1432,19 +1375,70 @@ function DetailMain({
   }
   if (!detail) return null
 
+  const counts: Partial<Record<RefEcruMainTab, number>> = {
+    composition: detail.composition_lines.length,
+    coloris: detail.coloris.length,
+    reglages: detail.machines.length,
+    liage: detail.chutes.length,
+    obs: detail.obs_of.length,
+  }
+
   return (
-    <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
-      <IdentificationCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} clients={clients} contextures={contextures} />
-      <CompositionCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
-      <ColorisCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
-      <TechnicalTabs detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} machinesLk={machinesLk} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+    <div className="flex-1 min-h-0 flex flex-col">
+      {/* Six tabs: tighter than §39's px-4 so they fit the centre panel at
+          1400 px; the row still scrolls (scrollbar hidden) when narrower. */}
+      <div className="flex-shrink-0 flex items-center gap-0.5 border-b border-border/60 pb-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {MAIN_TABS.map((t) => {
+          const Icon = t.icon
+          const active = activeTab === t.key
+          const count = counts[t.key]
+          return (
+            <button key={t.key} type="button" onClick={() => setActiveTab(t.key)}
+              className={cn('flex flex-shrink-0 items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap',
+                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10 hover:text-accent')}>
+              <Icon className="h-3.5 w-3.5" />{t.label}
+              {/* Counts come from the already-loaded detail, no extra fetch. */}
+              {count != null && count > 0 && <span className="text-xs tabular-nums opacity-70">{count}</span>}
+            </button>
+          )
+        })}
+      </div>
+      {/* px-1/pb-1 keep focus rings and hover borders clear of the overflow clip (§31.5) */}
+      <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1 scrollbar-transparent">
+        {activeTab === 'specifications' && (
+          <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} clients={clients} contextures={contextures} />
+        )}
+        {activeTab === 'composition' && (
+          <CompositionCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+        )}
+        {activeTab === 'coloris' && (
+          <ColorisCard detail={detail} isEditing={isEditing} refId={detail.IDref_ecru} refsFil={refsFil} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+        )}
+        {activeTab === 'reglages' && (
+          <ReglagesCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} machinesLk={machinesLk} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+        )}
+        {activeTab === 'liage' && (
+          <Card className={cn('card-premium', isEditing && editSectionClass)}>
+            <CardContent className="pt-4 pb-4">
+              <SchemaLiageTab detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+            </CardContent>
+          </Card>
+        )}
+        {activeTab === 'obs' && <ObsOfTab detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />}
+      </div>
     </div>
   )
 }
 
-// ── Identification Card ────────────────────────────────
+// ── Spécifications (tiles, same grammar as Finis › Références) ──
 
-function IdentificationCard({
+const PARTICULARITES = [
+  ['maille_ouverture', "Maille d'ouverture"],
+  ['ouvert_visiteuse', 'Ouvert au large'],
+  ['sonneter', 'Sonneter'],
+] as const
+
+function SpecsCard({
   detail,
   isEditing,
   draft,
@@ -1462,139 +1456,183 @@ function IdentificationCard({
   // Fabric-defining fields are frozen once rolls or orders exist for this ref.
   const fieldsLocked = !!detail.has_rolls || !!detail.has_orders
   const lockTitle = 'Verrouillé : des rouleaux ou des commandes existent pour cette référence.'
+  const num = (key: keyof HeaderDraft, step = '0.01') => (
+    <input type="number" step={step} value={draft[key] as string} onChange={(e) => onDraftChange({ ...draft, [key]: e.target.value })} className={tileInput} />
+  )
+  const identity = [
+    detail.contexture_nom,
+    jaugeLabel(detail.Jauge) ? `Jauge ${jaugeLabel(detail.Jauge)}` : null,
+    diametreLabel(detail.diametre) ? `Ø ${diametreLabel(detail.diametre)}` : null,
+  ].filter(Boolean).join(' · ')
+
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2">
-        <Info className="h-4 w-4 text-accent" />
-        <CardTitle className="text-sm font-semibold">Identification</CardTitle>
-        {detail.contexture_nom && !isEditing && (
-          <Badge variant="secondary" className="text-[10px] py-0 ml-auto">{detail.contexture_nom}</Badge>
+      <CardContent className="pt-4 pb-4 space-y-3">
+        {isEditing && (
+          <LabeledInput label="Désignation" value={draft.designation} onChange={(v) => onDraftChange({ ...draft, designation: v })} />
         )}
-      </CardHeader>
-      <CardContent className="pb-4">
-        {isEditing ? (
-          <div className="space-y-3">
-            <LabeledInput label="Désignation" value={draft.designation} onChange={(v) => onDraftChange({ ...draft, designation: v })} />
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Client</label>
-                <SearchableCombobox<ClientLookup>
-                  options={clients}
-                  value={draft.IDclient}
-                  onChange={(id) => onDraftChange({ ...draft, IDclient: id })}
-                  getId={(c) => c.IDclient}
-                  getPrimary={(c) => c.nom ?? `#${c.IDclient}`}
-                  getSecondary={(c) => c.ville ?? undefined}
-                  placeholder="Rechercher un client"
-                />
-              </div>
-              <LabeledInput label="Référence client" value={draft.reference_client} onChange={(v) => onDraftChange({ ...draft, reference_client: v })} />
-            </div>
-            {fieldsLocked && (
-              <div className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
-                <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
-                <span>Contexture, jauge, diamètre, bio et recyclé sont verrouillés car des rouleaux ou des commandes existent pour cette référence.</span>
-              </div>
-            )}
-            <div className="grid grid-cols-4 gap-2">
-              <div className="space-y-1 col-span-2">
-                <label className="text-xs font-medium text-muted-foreground">Contexture</label>
-                <PopoverSelect
-                  options={contextures.map((c) => ({ id: c.IDcontexture, primary: c.nom ?? `#${c.IDcontexture}` }))}
-                  value={draft.IDcontexture}
-                  onChange={(id) => onDraftChange({ ...draft, IDcontexture: id })}
-                  emptyLabel="— Choisir —"
-                  disabled={fieldsLocked}
-                  disabledTitle={lockTitle}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Jauge</label>
+
+        {/* Identity band: what the fabric is: contexture, jauge, diamètre */}
+        <div className="rounded-lg border border-border/60 bg-zinc-100/80 px-3 py-2 flex items-center gap-2.5">
+          <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
+            <TmRollIcon className="h-4 w-4 text-amber-600" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold flex items-center gap-1">
+              Contexture · Jauge · Ø
+              {fieldsLocked && isEditing && <Lock className="h-3 w-3" aria-label="Verrouillé" />}
+            </p>
+            {isEditing ? (
+              <div className="mt-1 grid grid-cols-4 gap-2" title={fieldsLocked ? lockTitle : undefined}>
+                <div className="col-span-2">
+                  <PopoverSelect
+                    options={contextures.map((c) => ({ id: c.IDcontexture, primary: c.nom ?? `#${c.IDcontexture}` }))}
+                    value={draft.IDcontexture}
+                    onChange={(id) => onDraftChange({ ...draft, IDcontexture: id })}
+                    emptyLabel="Contexture"
+                    disabled={fieldsLocked}
+                    disabledTitle={lockTitle}
+                  />
+                </div>
                 <PopoverSelect
                   options={JAUGE_OPTIONS.map((o) => ({ id: o.ord, primary: o.label }))}
                   value={Number(draft.Jauge) || 0}
                   onChange={(id) => onDraftChange({ ...draft, Jauge: id ? String(id) : '' })}
-                  emptyLabel="— Choisir —"
+                  emptyLabel="Jauge"
                   disabled={fieldsLocked}
                   disabledTitle={lockTitle}
                 />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Ø</label>
                 <PopoverSelect
                   options={DIAM_OPTIONS.map((o) => ({ id: o.ord, primary: o.label }))}
                   value={Number(draft.diametre) || 0}
                   onChange={(id) => onDraftChange({ ...draft, diametre: id ? String(id) : '' })}
-                  emptyLabel="— Choisir —"
+                  emptyLabel="Ø"
                   disabled={fieldsLocked}
                   disabledTitle={lockTitle}
                 />
               </div>
-            </div>
-            <div className="grid grid-cols-4 gap-2 items-end">
-              <LabeledInput label="Prix" suffix="€/kg" type="number" step="0.01" value={draft.prix} onChange={(v) => onDraftChange({ ...draft, prix: v })} />
-              <label className="flex items-center gap-2 text-xs font-medium h-8" title={fieldsLocked ? lockTitle : undefined}>
+            ) : (
+              <p className="text-sm font-semibold truncate">{identity || <span className="text-muted-foreground italic font-normal">Non renseignées</span>}</p>
+            )}
+          </div>
+          {isEditing ? (
+            <div className="flex flex-col gap-1.5 flex-shrink-0" title={fieldsLocked ? lockTitle : undefined}>
+              <label className="flex items-center gap-2 text-xs font-medium">
                 <Pill value={draft.bio} onChange={(v) => onDraftChange({ ...draft, bio: v })} disabled={fieldsLocked} />
                 <span className="flex items-center gap-1"><Leaf className="h-3 w-3 text-green-600" />Bio</span>
               </label>
-              <label className="flex items-center gap-2 text-xs font-medium h-8 col-span-2" title={fieldsLocked ? lockTitle : undefined}>
+              <label className="flex items-center gap-2 text-xs font-medium">
                 <Pill value={draft.recycle} onChange={(v) => onDraftChange({ ...draft, recycle: v })} disabled={fieldsLocked} />
                 <span className="flex items-center gap-1"><Recycle className="h-3 w-3 text-teal-600" />Recyclé</span>
               </label>
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
-              <textarea
-                value={draft.commentaire}
-                onChange={(e) => onDraftChange({ ...draft, commentaire: e.target.value })}
-                rows={2}
-                className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-baseline gap-x-10 gap-y-2">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Client</span>
-                <span className="text-sm font-medium">{detail.client_nom || '—'}</span>
+          ) : (
+            (!!detail.bio || !!detail.recycle) && (
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {!!detail.bio && <Badge className="badge-success text-[10px] py-0 px-1.5 gap-0.5"><Leaf className="h-2.5 w-2.5" />Bio</Badge>}
+                {!!detail.recycle && <Badge className="bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20 text-[10px] py-0 px-1.5 gap-0.5"><Recycle className="h-2.5 w-2.5" />Recyclé</Badge>}
               </div>
-              {detail.reference_client?.trim() && (
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">Réf. client</span>
-                  <span className="text-sm">{detail.reference_client}</span>
-                </div>
-              )}
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Prix</span>
-                <span className="text-sm font-semibold tabular-nums">{detail.prix != null ? `${fmtNum(detail.prix, 2)} €/kg` : '—'}</span>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-baseline gap-x-10 gap-y-2">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Contexture</span>
-                <span className="text-sm">{detail.contexture_nom || '—'}</span>
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Jauge</span>
-                <span className="text-sm tabular-nums">{jaugeLabel(detail.Jauge) ?? '—'}</span>
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs text-muted-foreground">Ø</span>
-                <span className="text-sm tabular-nums">{diametreLabel(detail.diametre) ?? '—'}</span>
-              </div>
-              {(!!detail.bio || !!detail.recycle) && (
-                <div className="flex items-center gap-1.5">
-                  {!!detail.bio && <Badge className="badge-success text-[10px] py-0 px-1.5 gap-0.5"><Leaf className="h-2.5 w-2.5" />Bio</Badge>}
-                  {!!detail.recycle && <Badge className="bg-teal-500/10 text-teal-700 ring-1 ring-teal-500/20 text-[10px] py-0 px-1.5 gap-0.5"><Recycle className="h-2.5 w-2.5" />Recyclé</Badge>}
-                </div>
-              )}
-            </div>
-            {detail.commentaire?.trim() && (
-              <p className="text-sm text-muted-foreground whitespace-pre-line pt-1">{detail.commentaire}</p>
-            )}
+            )
+          )}
+        </div>
+        {isEditing && fieldsLocked && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+            <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <span>Contexture, jauge, diamètre, bio et recyclé sont verrouillés car des rouleaux ou des commandes existent pour cette référence.</span>
           </div>
         )}
+
+        {/* Row 1: who it is for, and its façon price */}
+        <div className="grid grid-cols-3 gap-2">
+          <SpecTile label="Client">
+            {isEditing ? (
+              <SearchableCombobox<ClientLookup>
+                options={clients}
+                value={draft.IDclient}
+                onChange={(id) => onDraftChange({ ...draft, IDclient: id })}
+                getId={(c) => c.IDclient}
+                getPrimary={(c) => c.nom ?? `#${c.IDclient}`}
+                getSecondary={(c) => c.ville ?? undefined}
+                placeholder="Rechercher un client"
+              />
+            ) : (
+              <TileText value={detail.client_nom} />
+            )}
+          </SpecTile>
+          <SpecTile label="Réf. client">
+            {isEditing ? (
+              <input value={draft.reference_client} onChange={(e) => onDraftChange({ ...draft, reference_client: e.target.value })} className={tileInput} />
+            ) : (
+              <TileText value={detail.reference_client} />
+            )}
+          </SpecTile>
+          <SpecTile label="Prix façon">
+            {isEditing ? num('prix') : <TileValue value={detail.prix} unit="€/kg" digits={2} />}
+          </SpecTile>
+        </div>
+
+        {/* Row 2: the fabric off the machine */}
+        <div className="grid grid-cols-3 gap-2">
+          <SpecTile label="Laize TBM">{isEditing ? num('laize_tbm') : <TileValue value={detail.laize_tbm} unit="cm" />}</SpecTile>
+          <SpecTile label="Poids TBM">{isEditing ? num('poids_m2_tbm') : <TileValue value={detail.poids_m2_tbm} unit="g/m²" />}</SpecTile>
+          <SpecTile label="Rendement">{isEditing ? num('rendement') : <TileValue value={detail.rendement} />}</SpecTile>
+        </div>
+
+        {/* Row 3: the piece and the machine pace */}
+        <div className="grid grid-cols-3 gap-2">
+          <SpecTile label="Poids pièce">{isEditing ? num('poids') : <TileValue value={detail.poids} unit="kg" />}</SpecTile>
+          <SpecTile label="Vitesse cible">{isEditing ? num('vitesse_cible', '0.1') : <TileValue value={detail.vitesse_cible} unit="tr/min" />}</SpecTile>
+          <SpecTile label="Écarteur">{isEditing ? num('ecarteur') : <TileValue value={detail.ecarteur} />}</SpecTile>
+        </div>
+
+        {/* Tombé du métier + the three particularities, all shown on/off */}
+        <SpecTile label="Tombé du métier · particularités">
+          {isEditing ? (
+            <div className="flex flex-wrap gap-2 items-center">
+              <div className="w-36">
+                <PopoverSelect
+                  options={TOMBE_OPTIONS.map((o) => ({ id: o.id, primary: o.label }))}
+                  value={tombeId(draft.tombe_metier)}
+                  onChange={(id) => onDraftChange({ ...draft, tombe_metier: tombeValue(id) })}
+                  emptyLabel="Tombé"
+                />
+              </div>
+              {PARTICULARITES.map(([k, label]) => (
+                <label key={k} className="flex items-center gap-2 rounded-md border border-border/60 bg-white px-2.5 py-1.5">
+                  <span className="text-sm whitespace-nowrap">{label}</span>
+                  <Pill value={draft[k]} onChange={(v) => onDraftChange({ ...draft, [k]: v })} />
+                </label>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm font-semibold mr-2">{tombeValue(tombeId(detail.tombe_metier)) || '—'}</span>
+              {PARTICULARITES.map(([k, label]) => {
+                const on = !!detail[k]
+                return (
+                  <span
+                    key={k}
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium',
+                      on ? 'bg-accent/10 text-accent border-accent/25' : 'bg-transparent text-muted-foreground/60 border-border/60',
+                    )}
+                  >
+                    {on ? <CheckCircle2 className="h-3 w-3" /> : <Circle className="h-3 w-3" />}
+                    {label}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+        </SpecTile>
+
+        <TextTile label="Commentaire" value={detail.commentaire} isEditing={isEditing} draft={draft.commentaire} rows={2} onChange={(v) => onDraftChange({ ...draft, commentaire: v })} />
+        <TextTile label="Observations" value={detail.observations} isEditing={isEditing} draft={draft.observations} rows={3} onChange={(v) => onDraftChange({ ...draft, observations: v })} />
+
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground pt-1">
+          <Calendar className="h-3 w-3" />
+          Fiche technique mise à jour le {detail.date_maj_ft ? formatHfsqlDate(detail.date_maj_ft) : '—'}
+        </div>
       </CardContent>
     </Card>
   )
@@ -1619,13 +1657,10 @@ function CompositionCard({
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState<CompoForm>({ IDref_fil: 0, pourcentage: '', commentaire: '' })
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  // Collapse by default each time a different ref is selected.
-  useEffect(() => { setOpen(false) }, [refId])
   const [deleteTarget, setDeleteTarget] = useState<CompositionRow | null>(null)
 
   // Locked once rolls (stock_ecru) or tricoteur orders exist — changing the yarn
@@ -1684,32 +1719,23 @@ function CompositionCard({
   return (
     <>
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none" onClick={() => setOpen(!open)}>
-          <FlaskConical className="h-4 w-4 text-accent" />
-          <CardTitle className="text-sm font-semibold">Composition</CardTitle>
-          {locked && isEditing && <Lock className="h-3.5 w-3.5 text-muted-foreground" aria-label="Verrouillée" />}
-          {canEdit && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 w-6 p-0 text-accent hover:text-accent hover:bg-accent/10"
-              onClick={(e) => { e.stopPropagation(); setShowForm(true); setEditingId(null); setForm({ IDref_fil: 0, pourcentage: '', commentaire: '' }); if (!open) setOpen(true) }}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          <Badge
-            variant="secondary"
-            className={cn('text-xs ml-auto tabular-nums', !totalOk && 'bg-destructive/10 text-destructive ring-1 ring-destructive/20')}
-            title={totalOk ? 'Total composition' : 'La composition doit totaliser 100 %'}
-          >
-            {fmtNum(Math.round(total * 100) / 100, Number.isInteger(total) ? 0 : 2)}%
-          </Badge>
-          <Badge variant="secondary" className="text-xs">{detail.composition_lines.length}</Badge>
-          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-        </CardHeader>
-        {open && (
-          <CardContent className="space-y-2 pb-3">
+        <CardContent className="pt-4 pb-3 space-y-2">
+            {/* Caption row: yarn count + the 100 % check */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {detail.composition_lines.length} fil{detail.composition_lines.length !== 1 ? 's' : ''}
+              </span>
+              {detail.composition_lines.length > 0 && (
+                <Badge
+                  variant="secondary"
+                  className={cn('text-xs tabular-nums', !totalOk && 'bg-destructive/10 text-destructive ring-1 ring-destructive/20')}
+                  title={totalOk ? 'Total composition' : 'La composition doit totaliser 100 %'}
+                >
+                  Σ {fmtNum(Math.round(total * 100) / 100, Number.isInteger(total) ? 0 : 2)} %
+                </Badge>
+              )}
+              {locked && <Lock className="h-3.5 w-3.5 text-muted-foreground ml-auto" aria-label="Verrouillée" />}
+            </div>
             {isEditing && locked && (
               <div className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
                 <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
@@ -1723,7 +1749,7 @@ function CompositionCard({
               </div>
             )}
             {detail.composition_lines.length === 0 && !showForm && (
-              <p className="text-sm text-muted-foreground italic">Aucun fil</p>
+              <p className="text-sm text-muted-foreground italic py-2">Aucun fil</p>
             )}
             {detail.composition_lines.map((c) => {
               const isRowEditing = editingId === c.IDcomposition_ecru
@@ -1781,8 +1807,17 @@ function CompositionCard({
                 title="Ajouter un fil"
               />
             )}
-          </CardContent>
-        )}
+            {canEdit && !showForm && editingId === null && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setShowForm(true); setEditingId(null); setForm({ IDref_fil: 0, pourcentage: '', commentaire: '' }) }}
+                className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
+              >
+                <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un fil
+              </Button>
+            )}
+        </CardContent>
       </Card>
       <ConfirmDialog
         open={deleteTarget !== null}
@@ -1863,16 +1898,18 @@ function ColorisCard({
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
   const [compoTarget, setCompoTarget] = useState<ColorisRow | null>(null)
   const ecartCount = detail.coloris.filter((c) => c.composition_ecart).length
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState<ColorisForm>({ reference: '', commentaire: '', suivis: false })
-  // Collapse by default each time a different ref is selected.
-  useEffect(() => { setOpen(false) }, [refId])
   const [deleteTarget, setDeleteTarget] = useState<ColorisRow | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [q, setQ] = useState('')
+  // A filter typed for one ref silently emptying the next one reads as « no coloris ».
+  useEffect(() => { setQ('') }, [refId])
+  const { data: stock } = useStockParReference(refId)
+  const stockByColoris = useMemo(() => new Map((stock?.coloris ?? []).map((c) => [c.IDcolori_ecru, c])), [stock])
 
   const reportDirtyRef = useRef(reportDirty)
   useEffect(() => { reportDirtyRef.current = reportDirty })
@@ -1892,16 +1929,8 @@ function ColorisCard({
   const deleteMut = useMutation({
     mutationFn: (id: number) => apiFetch(`/references-ecru/${refId}/coloris/${id}`, { method: 'DELETE' }),
     onSuccess: () => { onMutationSuccess(); setDeleteTarget(null); setErrorMsg(null) },
-    onError: async () => {
-      let msg = 'Suppression impossible.'
-      try {
-        const res = await fetch(
-          `${import.meta.env.VITE_API_URL || 'http://localhost:3002/api'}/references-ecru/${refId}/coloris/${deleteTarget?.IDcolori_ecru}`,
-          { method: 'DELETE', credentials: 'include' },
-        )
-        if (!res.ok) { const b = await res.json().catch(() => null); if (b?.error) msg = String(b.error) }
-      } catch { /* keep default */ }
-      setErrorMsg(msg)
+    onError: (err: Error & { body?: { error?: string } }) => {
+      setErrorMsg(err.body?.error ? String(err.body.error) : 'Suppression impossible.')
     },
   })
 
@@ -1910,123 +1939,185 @@ function ColorisCard({
     setShowForm(false)
     setForm({ reference: c.reference ?? '', commentaire: c.commentaire ?? '', suivis: !!c.suivis })
   }
+  const startCreate = () => { setShowForm(true); setEditingId(null); setForm({ reference: '', commentaire: '', suivis: false }) }
+
+  const rows = useMemo(() => {
+    const t = q.trim().toLowerCase()
+    if (!t) return detail.coloris
+    return detail.coloris.filter((c) => [c.reference, c.commentaire].some((v) => (v ?? '').toLowerCase().includes(t)))
+  }, [detail.coloris, q])
+  const inStock = detail.coloris.filter((c) => (stockByColoris.get(c.IDcolori_ecru)?.pieces ?? 0) > 0).length
+  const editingRow = editingId !== null ? detail.coloris.find((c) => c.IDcolori_ecru === editingId) ?? null : null
 
   return (
     <>
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
-        <CardHeader className="flex flex-row items-center gap-2 p-4 space-y-0 pb-2 cursor-pointer select-none" onClick={() => setOpen(!open)}>
-          <Palette className="h-4 w-4 text-accent" />
-          <CardTitle className="text-sm font-semibold">Coloris</CardTitle>
-          {isEditing && (
+        <CardContent className="pt-4 pb-3 space-y-3">
+          {/* Caption row: counts, cost, écart, filter */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {detail.coloris.length} coloris
+              {inStock > 0 && <> · <span className="font-medium text-foreground">{inStock}</span> en stock</>}
+            </span>
+            {ecartCount > 0 && (
+              <Badge
+                variant="outline"
+                className="text-[11px] py-0 px-2 gap-1 bg-amber-500/15 text-amber-800 border-amber-500/30"
+                title="La composition de ces coloris diffère de celle de la référence — c'est elle que suivent les commandes et les OF"
+              >
+                <AlertCircle className="h-3 w-3" />
+                {ecartCount} ≠ composition
+              </Badge>
+            )}
+            {detail.coloris.length > 8 && (
+              <div className="relative ml-auto w-56 max-w-full">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Filtrer les coloris"
+                  className="h-8 w-full pl-8 pr-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+            )}
+          </div>
+
+          {(showForm || editingRow) && isEditing && (
+            <ColorisFormView
+              form={form}
+              onFormChange={setForm}
+              onCancel={resetForm}
+              onSave={() => (editingRow ? updateMut.mutate(editingRow.IDcolori_ecru) : createMut.mutate())}
+              isSaving={createMut.isPending || updateMut.isPending}
+              title={editingRow ? `Modifier le coloris ${editingRow.reference ?? ''}` : 'Ajouter un coloris'}
+            />
+          )}
+
+          {detail.coloris.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+              <Palette className="h-10 w-10 mb-2 opacity-40" />
+              <p className="text-sm">Aucun coloris</p>
+              {isEditing && !showForm && (
+                <Button variant="outline" size="sm" className="mt-3" onClick={startCreate}>
+                  <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un coloris
+                </Button>
+              )}
+            </div>
+          ) : rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">Aucun coloris ne correspond au filtre</p>
+          ) : (
+            <div className="rounded-lg border border-border/60 overflow-hidden">
+              <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+                <colgroup>
+                  <col style={{ width: '30%' }} />
+                  <col />
+                  <col style={{ width: '9.5rem' }} />
+                  {isEditing && <col style={{ width: '5.5rem' }} />}
+                </colgroup>
+                <thead className="bg-zinc-200/60 border-b border-border/60">
+                  <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2 text-left font-semibold">Coloris</th>
+                    <th className="px-3 py-2 text-left font-semibold">Composition</th>
+                    <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">Stock</th>
+                    {isEditing && <th className="px-2 py-2" />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((c) => {
+                    const inUse = c.in_use != null
+                    const s = stockByColoris.get(c.IDcolori_ecru)
+                    return (
+                      <tr
+                        key={c.IDcolori_ecru}
+                        className={cn(
+                          'border-b border-border/40 last:border-b-0 hover:bg-accent/5 transition-colors align-top',
+                          editingId === c.IDcolori_ecru && 'bg-accent/10',
+                        )}
+                      >
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Palette className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                            <span className="font-medium truncate" title={c.reference ?? undefined}>{c.reference ?? '—'}</span>
+                          </div>
+                          {c.commentaire?.trim() && <p className="text-[11px] text-muted-foreground truncate ml-5" title={c.commentaire}>{c.commentaire}</p>}
+                        </td>
+                        <td className="px-3 py-2 min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {c.composition_ecart && (
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] py-0 px-1.5 flex-shrink-0 bg-amber-500/15 text-amber-800 border-amber-500/30"
+                                title="Ce coloris ne suit pas la composition de la référence — c'est sa composition que suivent les commandes et les OF"
+                              >
+                                ≠ composition
+                              </Badge>
+                            )}
+                            <div className="min-w-0 flex-1"><ColorisCompoSummary lines={c.composition} /></div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">
+                          {stock === undefined ? (
+                            <span className="text-muted-foreground/40">…</span>
+                          ) : s && s.pieces > 0 ? (
+                            <span title={`${s.disponible.pieces} pièce${s.disponible.pieces > 1 ? 's' : ''} disponible${s.disponible.pieces > 1 ? 's' : ''} · ${fmtNum(s.disponible.kg, 1)} kg`}>
+                              <span className="font-semibold">{fmtNum(s.kg, 1)} kg</span>
+                              <span className="text-[11px] text-muted-foreground"> · {s.pieces} p.</span>
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/40">—</span>
+                          )}
+                        </td>
+                        {isEditing && (
+                          <td className="px-2 py-1.5">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => { if (!c.composition_lock) setCompoTarget(c) }}
+                                aria-disabled={!!c.composition_lock}
+                                className={cn('p-0.5 transition-colors', c.composition_lock ? 'text-muted-foreground/40 cursor-not-allowed' : 'text-muted-foreground hover:text-foreground')}
+                                title={c.composition_lock ? COLORIS_COMPO_LOCK_TITLE[c.composition_lock] : 'Composition du coloris'}
+                              >
+                                <FlaskConical className="h-3.5 w-3.5" />
+                              </button>
+                              <button onClick={() => startEditRow(c)} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors" title="Modifier">
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => { if (!inUse) { setErrorMsg(null); setDeleteTarget(c) } }}
+                                aria-disabled={inUse}
+                                className={cn('p-0.5 transition-colors', inUse ? 'text-muted-foreground/40 cursor-not-allowed' : 'text-destructive hover:text-destructive')}
+                                title={c.in_use ? COLORIS_LOCK_TITLE[c.in_use] : 'Supprimer'}
+                              >
+                                {inUse ? <Lock className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {isEditing && detail.coloris.length > 0 && !showForm && editingId === null && (
             <Button
-              size="sm"
               variant="ghost"
-              className="h-6 w-6 p-0 text-accent hover:text-accent hover:bg-accent/10"
-              onClick={(e) => { e.stopPropagation(); setShowForm(true); setEditingId(null); setForm({ reference: '', commentaire: '', suivis: false }); if (!open) setOpen(true) }}
+              size="sm"
+              onClick={startCreate}
+              className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
             >
-              <Plus className="h-3.5 w-3.5" />
+              <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un coloris
             </Button>
           )}
-          {detail.cout_kg != null && (
-            <Badge className="text-[11px] py-0 px-2 ml-auto bg-accent/10 text-accent ring-1 ring-accent/20 tabular-nums" title="Coût matière + façon par kg">
-              Coût/kg : {fmtNum(detail.cout_kg, 2)} €
-            </Badge>
-          )}
-          {ecartCount > 0 && (
-            <Badge
-              variant="outline"
-              className={cn('text-[11px] py-0 px-2 gap-1 bg-amber-500/15 text-amber-800 border-amber-500/30', detail.cout_kg == null && 'ml-auto')}
-              title="La composition de ces coloris diffère de celle de la référence — c'est elle que suivent les commandes et les OF"
-            >
-              <AlertCircle className="h-3 w-3" />
-              {ecartCount} ≠ composition
-            </Badge>
-          )}
-          <Badge variant="secondary" className={cn('text-xs', detail.cout_kg == null && ecartCount === 0 && 'ml-auto')}>{detail.coloris.length}</Badge>
-          <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
-        </CardHeader>
-        {open && (
-          <CardContent className="space-y-2 pb-3">
-            {detail.coloris.length === 0 && !showForm && (
-              <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
-            )}
-            {detail.coloris.map((c) => {
-              const isRowEditing = editingId === c.IDcolori_ecru
-              const inUse = c.in_use != null
-              const deleteTitle = c.in_use ? COLORIS_LOCK_TITLE[c.in_use] : 'Supprimer'
-              return (
-                <div key={c.IDcolori_ecru}>
-                  {isRowEditing && isEditing ? (
-                    <ColorisFormView form={form} onFormChange={setForm} onCancel={resetForm} onSave={() => updateMut.mutate(c.IDcolori_ecru)} isSaving={updateMut.isPending} title="Modifier le coloris" />
-                  ) : (
-                    <div className={cn('group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3', 'border-l-amber-400/60')}>
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
-                            <Palette className="h-3.5 w-3.5 text-amber-600" />
-                          </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <p className="text-sm font-medium truncate">{c.reference ?? '—'}</p>
-                              {c.composition_ecart && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px] py-0 px-1.5 flex-shrink-0 bg-amber-500/15 text-amber-800 border-amber-500/30"
-                                  title="Ce coloris ne suit pas la composition de la référence — c'est sa composition que suivent les commandes et les OF"
-                                >
-                                  ≠ composition
-                                </Badge>
-                              )}
-                            </div>
-                            {c.commentaire?.trim() && <p className="text-[11px] text-muted-foreground truncate">{c.commentaire}</p>}
-                            <ColorisCompoSummary lines={c.composition} />
-                          </div>
-                        </div>
-                        {isEditing && (
-                          <div className="flex items-center gap-1.5 flex-shrink-0">
-                            <button
-                              onClick={() => { if (!c.composition_lock) setCompoTarget(c) }}
-                              aria-disabled={!!c.composition_lock}
-                              className={cn(
-                                'p-0.5 transition-colors',
-                                c.composition_lock ? 'text-muted-foreground/40 cursor-not-allowed' : 'text-muted-foreground hover:text-foreground',
-                              )}
-                              title={c.composition_lock ? COLORIS_COMPO_LOCK_TITLE[c.composition_lock] : 'Composition du coloris'}
-                            >
-                              <FlaskConical className="h-3.5 w-3.5" />
-                            </button>
-                            <button onClick={() => startEditRow(c)} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors" title="Modifier">
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              onClick={() => { if (!inUse) { setErrorMsg(null); setDeleteTarget(c) } }}
-                              aria-disabled={inUse}
-                              className={cn(
-                                'p-0.5 transition-colors',
-                                inUse ? 'text-muted-foreground/40 cursor-not-allowed' : 'text-destructive hover:text-destructive',
-                              )}
-                              title={deleteTitle}
-                            >
-                              {inUse ? <Lock className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-            {showForm && isEditing && (
-              <ColorisFormView form={form} onFormChange={setForm} onCancel={resetForm} onSave={() => createMut.mutate()} isSaving={createMut.isPending} title="Ajouter un coloris" />
-            )}
-          </CardContent>
-        )}
+        </CardContent>
       </Card>
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Supprimer le coloris"
-        description={errorMsg ?? (deleteTarget ? `${deleteTarget.reference ?? '—'} sera supprimé.` : undefined)}
+        description={deleteTarget ? `${deleteTarget.reference ?? '—'} sera supprimé.` : undefined}
+        error={errorMsg}
         isPending={deleteMut.isPending}
         onCancel={() => { setDeleteTarget(null); setErrorMsg(null) }}
         onConfirm={() => { if (deleteTarget) deleteMut.mutate(deleteTarget.IDcolori_ecru) }}
@@ -2334,9 +2425,9 @@ function ColorisFormView({
   )
 }
 
-// ── Technical Tabs (Données Technique / Obs OF / Schéma de Liage) ──
+// ── Réglages tab (LFA / tour, pignons, réglages par métier) ──
 
-function TechnicalTabs({
+function ReglagesCard({
   detail,
   isEditing,
   draft,
@@ -2353,186 +2444,31 @@ function TechnicalTabs({
   onMutationSuccess: () => void
   reportDirty: (key: string, dirty: boolean) => void
 }) {
-  const [tab, setTab] = useState<'donnees' | 'obs' | 'liage'>('donnees')
-  const tabs: { key: 'donnees' | 'obs' | 'liage'; label: string; icon: typeof Cog }[] = [
-    { key: 'donnees', label: 'Données technique', icon: Cog },
-    { key: 'obs', label: 'Obs OF', icon: ClipboardList },
-    { key: 'liage', label: 'Schéma de liage', icon: Grid3x3 },
-  ]
+  const quad = (label: string, keys: readonly (keyof HeaderDraft & keyof RefEcruDetail)[]) => (
+    <SpecTile label={label}>
+      <div className="grid grid-cols-4 gap-1.5">
+        {keys.map((k) =>
+          isEditing ? (
+            <input key={k} value={draft[k] as string} onChange={(e) => onDraftChange({ ...draft, [k]: e.target.value })} className={cn(inputClass, 'text-center px-1')} />
+          ) : (
+            <div key={k} className="h-8 flex items-center justify-center text-sm font-semibold rounded-md border border-border/60 bg-white tabular-nums">
+              {(detail[k] as string | null)?.trim() || <span className="text-muted-foreground/50 font-normal">—</span>}
+            </div>
+          ),
+        )}
+      </div>
+    </SpecTile>
+  )
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
-      <div className="flex border-b p-1 gap-1">
-        {tabs.map((t) => {
-          const Icon = t.icon
-          const active = tab === t.key
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
-                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
-              )}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              <span>{t.label}</span>
-            </button>
-          )
-        })}
-      </div>
-      <CardContent className="pt-4 pb-4">
-        {tab === 'donnees' && (
-          <DonneesTechnique
-            detail={detail}
-            isEditing={isEditing}
-            draft={draft}
-            onDraftChange={onDraftChange}
-            machinesLk={machinesLk}
-            onMutationSuccess={onMutationSuccess}
-            reportDirty={reportDirty}
-          />
-        )}
-        {tab === 'obs' && <ObsOfTab detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />}
-        {tab === 'liage' && <SchemaLiageTab detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />}
+      <CardContent className="pt-4 pb-4 space-y-4">
+        <div className="grid grid-cols-2 gap-2">
+          {quad('LFA / tour', ['lfa_tour_1', 'lfa_tour_2', 'lfa_tour_3', 'lfa_tour_4'])}
+          {quad('Pignons', ['poulies_1', 'poulies_2', 'poulies_3', 'poulies_4'])}
+        </div>
+        <MachineGrid detail={detail} isEditing={isEditing} machinesLk={machinesLk} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
       </CardContent>
     </Card>
-  )
-}
-
-// ── Données Technique tab ──────────────────────────────
-
-function DonneesTechnique({
-  detail,
-  isEditing,
-  draft,
-  onDraftChange,
-  machinesLk,
-  onMutationSuccess,
-  reportDirty,
-}: {
-  detail: RefEcruDetail
-  isEditing: boolean
-  draft: HeaderDraft
-  onDraftChange: (d: HeaderDraft) => void
-  machinesLk: MachineLookup[]
-  onMutationSuccess: () => void
-  reportDirty: (key: string, dirty: boolean) => void
-}) {
-  return (
-    <div className="space-y-4">
-      {/* LFA/TOUR + PIGNONS */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-muted-foreground">LFA / TOUR</p>
-          <div className="grid grid-cols-4 gap-1.5">
-            {(['lfa_tour_1', 'lfa_tour_2', 'lfa_tour_3', 'lfa_tour_4'] as const).map((k) =>
-              isEditing ? (
-                <input key={k} value={draft[k]} onChange={(e) => onDraftChange({ ...draft, [k]: e.target.value })} className={cn(inputClass, 'text-center px-1')} />
-              ) : (
-                <div key={k} className="h-8 flex items-center justify-center text-sm rounded-md border border-border/60 bg-zinc-50 tabular-nums">{detail[k] || '—'}</div>
-              ),
-            )}
-          </div>
-        </div>
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-muted-foreground">Pignons</p>
-          <div className="grid grid-cols-4 gap-1.5">
-            {(['poulies_1', 'poulies_2', 'poulies_3', 'poulies_4'] as const).map((k) =>
-              isEditing ? (
-                <input key={k} value={draft[k]} onChange={(e) => onDraftChange({ ...draft, [k]: e.target.value })} className={cn(inputClass, 'text-center px-1')} />
-              ) : (
-                <div key={k} className="h-8 flex items-center justify-center text-sm rounded-md border border-border/60 bg-zinc-50 tabular-nums">{detail[k] || '—'}</div>
-              ),
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Machine grid */}
-      <MachineGrid detail={detail} isEditing={isEditing} machinesLk={machinesLk} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
-
-      {/* Scalar technical fields */}
-      {isEditing ? (
-        <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-2">
-            <LabeledInput label="Écarteur" type="number" step="0.01" value={draft.ecarteur} onChange={(v) => onDraftChange({ ...draft, ecarteur: v })} />
-            <LabeledInput label="Laize TBM" type="number" step="0.01" value={draft.laize_tbm} onChange={(v) => onDraftChange({ ...draft, laize_tbm: v })} />
-            <LabeledInput label="Poids/m² TBM" type="number" step="0.01" value={draft.poids_m2_tbm} onChange={(v) => onDraftChange({ ...draft, poids_m2_tbm: v })} />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <LabeledInput label="Rendement" type="number" step="0.01" value={draft.rendement} onChange={(v) => onDraftChange({ ...draft, rendement: v })} />
-            <LabeledInput label="Vitesse cible" suffix="rpm" type="number" step="0.1" value={draft.vitesse_cible} onChange={(v) => onDraftChange({ ...draft, vitesse_cible: v })} />
-            <LabeledInput label="Poids pièce" suffix="kg" type="number" step="0.01" value={draft.poids} onChange={(v) => onDraftChange({ ...draft, poids: v })} />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Tombé du métier</label>
-              <PopoverSelect
-                options={TOMBE_OPTIONS.map((o) => ({ id: o.id, primary: o.label }))}
-                value={tombeId(draft.tombe_metier)}
-                onChange={(id) => onDraftChange({ ...draft, tombe_metier: tombeValue(id) })}
-                emptyLabel="— Choisir —"
-              />
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-x-8 gap-y-2 pt-1">
-            <label className="flex items-center gap-2 text-sm"><Pill value={draft.maille_ouverture} onChange={(v) => onDraftChange({ ...draft, maille_ouverture: v })} />Maille d'ouverture</label>
-            <label className="flex items-center gap-2 text-sm"><Pill value={draft.ouvert_visiteuse} onChange={(v) => onDraftChange({ ...draft, ouvert_visiteuse: v })} />Ouvert au large</label>
-            <label className="flex items-center gap-2 text-sm"><Pill value={draft.sonneter} onChange={(v) => onDraftChange({ ...draft, sonneter: v })} />Sonneter</label>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Observations</label>
-            <textarea value={draft.observations} onChange={(e) => onDraftChange({ ...draft, observations: e.target.value })} rows={3} className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y" />
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
-            <SpecInline label="Écarteur" value={detail.ecarteur} />
-            <SpecInline label="Laize TBM" value={detail.laize_tbm} />
-            <SpecInline label="Poids/m² TBM" value={detail.poids_m2_tbm} />
-            <SpecInline label="Rendement" value={detail.rendement} />
-            <SpecInline label="Vitesse cible" value={detail.vitesse_cible} unit="rpm" />
-            <SpecInline label="Poids pièce" value={detail.poids} unit="kg" />
-          </div>
-          <div className="flex flex-wrap items-center gap-x-8 gap-y-2">
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs text-muted-foreground">Tombé du métier</span>
-              <span className="text-sm">{tombeValue(tombeId(detail.tombe_metier)) || '—'}</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {!!detail.maille_ouverture && <Badge variant="secondary" className="text-[10px] py-0">Maille d'ouverture</Badge>}
-              {!!detail.ouvert_visiteuse && <Badge variant="secondary" className="text-[10px] py-0">Ouvert au large</Badge>}
-              {!!detail.sonneter && <Badge variant="secondary" className="text-[10px] py-0">Sonneter</Badge>}
-            </div>
-          </div>
-          {detail.observations?.trim() && (
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-0.5">Observations</p>
-              <p className="text-sm text-muted-foreground whitespace-pre-line">{detail.observations}</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground pt-1 border-t border-border/50">
-        <Calendar className="h-3 w-3" />
-        Dernière mise à jour : {detail.date_maj_ft ? formatHfsqlDate(detail.date_maj_ft) : '—'}
-      </div>
-    </div>
-  )
-}
-
-function SpecInline({ label, value, unit }: { label: string; value: number | null; unit?: string }) {
-  return (
-    <div className="flex items-baseline gap-2">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-sm font-semibold tabular-nums">
-        {value == null ? '—' : fmtNum(value, Number.isInteger(value) ? 0 : 2)}
-        {value != null && unit ? <span className="text-xs text-muted-foreground font-normal"> {unit}</span> : null}
-      </span>
-    </div>
   )
 }
 
@@ -3052,20 +2988,12 @@ function SchemaLiageTab({
   )
 }
 
-// ── Right Panel: Sidebar ───────────────────────────────
+// ── Right Panel: Sidebar (Informations / Coût) ─────────
 
-function DetailSidebar({
-  detail,
-  refId,
-  onOpenCoutDetail,
-}: {
-  detail: RefEcruDetail | null
-  refId: number | null
-  onOpenCoutDetail: () => void
-}) {
-  // Knitting cost at the default 1000 kg for the card headline (the modal lets
-  // the user change the quantity). Hook before the early return (§28.6).
-  const { data: cout } = useCoutTricotage(refId, 1000, refId !== null)
+type SidebarTab = 'informations' | 'cout'
+
+function DetailSidebar({ detail }: { detail: RefEcruDetail | null }) {
+  const [activeTab, setActiveTab] = useState<SidebarTab>('informations')
   if (!detail) {
     return (
       <div className="w-96 flex-shrink-0 rounded-xl border flex items-center justify-center bg-zinc-100/80">
@@ -3076,66 +3004,269 @@ function DetailSidebar({
   return (
     <div className="w-96 flex-shrink-0 rounded-xl border flex flex-col overflow-hidden bg-zinc-100/80">
       <div className="flex border-b p-1 gap-1 rounded-t-xl bg-zinc-200/50">
-        <button type="button" className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md transition-colors bg-accent text-accent-foreground shadow-sm">
-          <Info className="h-3.5 w-3.5" />
-          Informations
-        </button>
+        {([
+          { key: 'informations', label: 'Informations', icon: Info },
+          { key: 'cout', label: 'Coût', icon: Calculator },
+        ] as { key: SidebarTab; label: string; icon: React.ElementType }[]).map((tab) => {
+          const Icon = tab.icon
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={cn(
+                'flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md transition-colors',
+                activeTab === tab.key ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {tab.label}
+            </button>
+          )
+        })}
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-transparent">
-        {detail.cout_kg != null && (
-          <div className="p-3 rounded-lg border bg-card shadow-sm">
-            <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1">
-              <Layers className="h-3.5 w-3.5" />
-              Coût de revient
-            </p>
-            <p className="text-2xl font-bold tabular-nums text-accent">{fmtNum(detail.cout_kg, 2)} <span className="text-sm font-normal text-muted-foreground">€/kg</span></p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Matière + façon</p>
-          </div>
-        )}
-        <div className="p-3 rounded-lg border bg-card shadow-sm">
-          <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1">
-            <TmRollIcon className="h-3.5 w-3.5" />
-            Coût de tricotage
-          </p>
-          {cout === undefined ? (
-            <div className="h-8 flex items-center"><Loader2 className="h-4 w-4 animate-spin text-accent" /></div>
-          ) : cout.computable ? (
-            <>
-              <p className="text-2xl font-bold tabular-nums text-accent">{fmtNum(cout.costPerKg, 2)} <span className="text-sm font-normal text-muted-foreground">€/kg</span></p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">Prix de vente : <span className="tabular-nums">{fmtNum(cout.salePrice, 2)}</span> €/kg · base 1000 kg</p>
-            </>
-          ) : (
-            <p className="text-sm text-muted-foreground italic mt-0.5">Non calculable (pas de données machine)</p>
-          )}
-          <Button variant="outline" size="sm" className="mt-2 w-full" onClick={onOpenCoutDetail}>
-            <Calculator className="h-3.5 w-3.5 mr-1.5" />
-            Détail du calcul
-          </Button>
-        </div>
-        <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-          <p className="text-xs font-semibold text-muted-foreground">Statistiques</p>
-          <KV label="Rouleaux créés" value={<span className="tabular-nums">{detail.rolls_count}</span>} />
-          <KV label="Poids total" value={<span className="tabular-nums">{fmtNum(detail.rolls_poids_total, 1)} kg</span>} />
-          <KV label="Coloris" value={<span className="tabular-nums">{detail.coloris.length}</span>} />
-          <KV label="Fils (composition)" value={<span className="tabular-nums">{detail.composition_lines.length}</span>} />
-          <KV label="Réglages machine" value={<span className="tabular-nums">{detail.machines.length}</span>} />
-          <KV label="Chutes (liage)" value={<span className="tabular-nums">{detail.chutes.length}</span>} />
-        </div>
-        <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-          <p className="text-xs font-semibold text-muted-foreground">Métadonnées</p>
-          <KV label="Client" value={detail.client_nom || '—'} />
-          <KV label="Contexture" value={detail.contexture_nom || '—'} />
-          <KV label="Dernière MAJ" value={detail.date_maj_ft ? formatHfsqlDate(detail.date_maj_ft) : '—'} />
-          {!!detail.archive && (
-            <div className="pt-1">
+        {activeTab === 'informations' && <InformationsTab detail={detail} />}
+        {activeTab === 'cout' && <CoutTab key={detail.IDref_ecru} detail={detail} />}
+      </div>
+    </div>
+  )
+}
+
+function InformationsTab({ detail }: { detail: RefEcruDetail }) {
+  return (
+    <>
+      <StockActuelCard detail={detail} />
+      <FinisIssusCard refId={detail.IDref_ecru} />
+      <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+        <p className="text-xs font-semibold text-muted-foreground">Statistiques</p>
+        <KV label="Rouleaux tricotés" value={<span className="tabular-nums">{fmtNum(detail.rolls_count)}</span>} />
+        <KV label="Poids tricoté" value={<span className="tabular-nums">{fmtNum(detail.rolls_poids_total, 1)} kg</span>} />
+        <KV label="Coloris" value={<span className="tabular-nums">{detail.coloris.length}</span>} />
+        <KV label="Fils (composition)" value={<span className="tabular-nums">{detail.composition_lines.length}</span>} />
+        <KV label="Réglages machine" value={<span className="tabular-nums">{detail.machines.length}</span>} />
+        <KV label="Chutes (liage)" value={<span className="tabular-nums">{detail.chutes.length}</span>} />
+      </div>
+      <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+        <p className="text-xs font-semibold text-muted-foreground">Métadonnées</p>
+        <KV label="Client" value={detail.client_nom?.trim() || '—'} />
+        <KV label="Réf. client" value={detail.reference_client?.trim() || '—'} />
+        <KV label="Fiche technique MAJ" value={detail.date_maj_ft ? formatHfsqlDate(detail.date_maj_ft) : '—'} />
+        {(!!detail.archive || !!detail.has_rolls || !!detail.has_orders) && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {(!!detail.has_rolls || !!detail.has_orders) && (
+              <Badge variant="secondary" className="text-[10px] py-0 gap-1" title="Contexture, jauge, diamètre, composition figés">
+                <Lock className="h-2.5 w-2.5" />
+                Verrouillée
+              </Badge>
+            )}
+            {!!detail.archive && (
               <Badge variant="outline" className="text-[10px] py-0 gap-1 text-muted-foreground">
                 <Archive className="h-2.5 w-2.5" />
                 Archivée
               </Badge>
-            </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+/** What this reference has in stock right now, each app its own stock
+ *  (ScreenVariantContext.stockPath), never the other company's pieces. */
+function StockActuelCard({ detail }: { detail: RefEcruDetail }) {
+  const { stockHref } = useContext(ScreenVariantContext)
+  const { data: stock, isError } = useStockParReference(detail.IDref_ecru)
+  const href = stockHref && detail.reference ? stockHref(detail.reference) : null
+  return (
+    <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Warehouse className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-semibold text-muted-foreground">Stock actuel</p>
+        {stock && (
+          <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">
+            {stock.pieces} pièce{stock.pieces !== 1 ? 's' : ''}
+          </Badge>
+        )}
+      </div>
+      {isError ? (
+        <p className="text-sm text-destructive">Stock indisponible</p>
+      ) : !stock ? (
+        <div className="h-8 flex items-center"><Loader2 className="h-4 w-4 animate-spin text-accent" /></div>
+      ) : stock.pieces === 0 ? (
+        <p className="text-sm text-muted-foreground italic">Aucune pièce en stock</p>
+      ) : (
+        <>
+          <p className="text-2xl font-bold tabular-nums text-accent leading-none">
+            {fmtNum(stock.kg, 1)} <span className="text-sm font-normal text-muted-foreground">kg</span>
+          </p>
+          <KV
+            label="Disponible"
+            value={<span className="tabular-nums">{stock.disponible.pieces} p. · {fmtNum(stock.disponible.kg, 1)} kg</span>}
+          />
+          {href && (
+            <Link to={href} className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline pt-1">
+              <Warehouse className="h-3.5 w-3.5" />
+              Voir les pièces dans Tombé Métier › Stock
+            </Link>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+interface FiniLie { IDref_fini: number; reference: string | null; designation: string | null; avec_teinture: number; archive: number }
+
+/** The finished references made from this écru: the reverse of the
+ *  « Référence écru » row on Finis › Références. */
+function FinisIssusCard({ refId }: { refId: number }) {
+  const { finiHref } = useContext(ScreenVariantContext)
+  const [showArchived, setShowArchived] = useState(false)
+  useEffect(() => { setShowArchived(false) }, [refId])
+  const { data: finis, isError } = useQuery<FiniLie[]>({
+    queryKey: ['ref-ecru-finis', refId],
+    queryFn: () => apiFetch(`/references-ecru/${refId}/finis`),
+  })
+  const active = (finis ?? []).filter((f) => !f.archive)
+  const archived = (finis ?? []).filter((f) => !!f.archive)
+  const shown = showArchived ? [...active, ...archived] : active
+  return (
+    <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Droplets className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-semibold text-muted-foreground">Finis issus de cet écru</p>
+        {finis && <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">{active.length}</Badge>}
+      </div>
+      {isError ? (
+        <p className="text-sm text-destructive">Liste indisponible</p>
+      ) : !finis ? (
+        <div className="h-8 flex items-center"><Loader2 className="h-4 w-4 animate-spin text-accent" /></div>
+      ) : finis.length === 0 ? (
+        <p className="text-sm text-muted-foreground italic">Aucune référence finie</p>
+      ) : (
+        <div className="space-y-1">
+          {shown.map((f) => {
+            const body = (
+              <>
+                <span className={cn('font-medium flex-shrink-0', !!f.archive && 'text-muted-foreground')}>{f.reference ?? '—'}</span>
+                <span className="text-xs text-muted-foreground truncate flex-1">{f.designation ?? ''}</span>
+                <span className="text-[10px] text-muted-foreground flex-shrink-0">{f.avec_teinture ? 'Teint' : 'Lavé'}</span>
+              </>
+            )
+            const cls = 'flex items-baseline gap-2 text-sm rounded-md px-1.5 py-1 -mx-1.5'
+            return finiHref && f.reference ? (
+              <Link key={f.IDref_fini} to={finiHref(f.reference)} className={cn(cls, 'hover:bg-accent/10')} title="Ouvrir dans Finis › Références">
+                {body}
+              </Link>
+            ) : (
+              <div key={f.IDref_fini} className={cls}>{body}</div>
+            )
+          })}
+          {archived.length > 0 && (
+            <button type="button" onClick={() => setShowArchived((v) => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors pt-1">
+              {showArchived ? 'Masquer les archivées' : `Afficher les archivées (${archived.length})`}
+            </button>
           )}
         </div>
-      </div>
+      )}
     </div>
+  )
+}
+
+/** Coût de revient (matière + façon) and the TRM knitting cost breakdown,
+ *  shown in place (it used to sit behind a « Détail du calcul » dialog). */
+function CoutTab({ detail }: { detail: RefEcruDetail }) {
+  const [qtyInput, setQtyInput] = useState('1000')
+  const [debouncedQty, setDebouncedQty] = useState(1000)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const n = Number(qtyInput)
+      setDebouncedQty(Number.isFinite(n) && n >= 1 ? n : 1000)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [qtyInput])
+  const { data: bd, isFetching } = useCoutTricotage(detail.IDref_ecru, debouncedQty, true)
+  const floorWins = bd ? bd.floor >= bd.salePrice : false
+  return (
+    <>
+      {detail.cout_kg != null && (
+        <div className="p-3 rounded-lg border bg-card shadow-sm">
+          <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1">
+            <Layers className="h-3.5 w-3.5" />
+            Coût de revient
+          </p>
+          <p className="text-2xl font-bold tabular-nums text-accent">{fmtNum(detail.cout_kg, 2)} <span className="text-sm font-normal text-muted-foreground">€/kg</span></p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Matière (composition × prix des fils) + façon {detail.prix != null ? `${fmtNum(detail.prix, 2)} €/kg` : ''}</p>
+        </div>
+      )}
+      <div className="p-3 rounded-lg border bg-card shadow-sm space-y-3">
+        <div className="flex items-center gap-1.5">
+          <TmRollIcon className="h-3.5 w-3.5 text-muted-foreground" />
+          <p className="text-xs font-semibold text-muted-foreground">Coût de tricotage</p>
+          {isFetching && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent ml-auto" />}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <label className="text-xs text-muted-foreground">Quantité</label>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              min={1}
+              step="1"
+              value={qtyInput}
+              onChange={(e) => setQtyInput(e.target.value)}
+              className="h-7 w-24 px-2 text-sm text-right tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <span className="text-xs text-muted-foreground">kg</span>
+          </div>
+        </div>
+        {bd === undefined ? (
+          <div className="h-8 flex items-center"><Loader2 className="h-4 w-4 animate-spin text-accent" /></div>
+        ) : !bd.computable ? (
+          <p className="text-xs text-muted-foreground rounded-md border border-border/60 bg-muted/40 px-2.5 py-2">
+            Aucune donnée machine pour cette référence : le coût de tricotage ne peut pas être calculé. Le prix retenu est le prix plancher de la fiche.
+          </p>
+        ) : (
+          <>
+            <p className="text-[11px] text-muted-foreground">
+              Métier : <span className="tabular-nums">{fmtNum(bd.inputs.gxNbToursKg, 2)}</span> trs/kg · <span className="tabular-nums">{bd.inputs.nbAiguilles}</span> aiguilles
+            </p>
+            {bd.sections.map((sec) => (
+              <div key={sec.key}>
+                <p className="text-[10px] font-semibold text-accent uppercase tracking-wide mb-1">{sec.label}</p>
+                <div className="space-y-0.5">
+                  {sec.rows.map((r) => (
+                    <div key={r.key} className="flex items-baseline justify-between gap-2">
+                      <span className="text-xs text-muted-foreground min-w-0 truncate" title={r.info ? `${r.label} · ${r.info}` : r.label}>{r.label}</span>
+                      <span className="text-xs tabular-nums flex-shrink-0">{fmtNum(r.eurPerKg, 4)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-baseline justify-between gap-2 mt-1 pt-1 border-t border-border/50">
+                  <span className="text-xs font-semibold">Sous-total</span>
+                  <span className="text-xs font-semibold tabular-nums">{fmtNum(sec.subtotalPerKg, 4)} €/kg</span>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+        {bd !== undefined && (
+          <div className="border-t pt-2 space-y-1">
+            {bd.computable && (
+              <>
+                <KV label="Coût total" value={<span className="font-bold tabular-nums text-accent">{fmtNum(bd.costPerKg, 2)} €/kg</span>} />
+                <KV label="Prix de vente (marge 30 %)" value={<span className="tabular-nums">{fmtNum(bd.salePrice, 2)} €/kg</span>} />
+              </>
+            )}
+            <KV label="Prix plancher (fiche)" value={<span className="tabular-nums">{fmtNum(bd.floor, 2)} €/kg</span>} />
+            <KV
+              label={floorWins ? 'Prix retenu (plancher)' : 'Prix retenu'}
+              value={<span className="font-bold tabular-nums">{fmtNum(bd.retainedPrice, 2)} €/kg</span>}
+            />
+          </div>
+        )}
+      </div>
+    </>
   )
 }

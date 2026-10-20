@@ -1,4 +1,5 @@
 import { Fragment, useState, useMemo, useEffect, useCallback, useRef, type ComponentType } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -438,7 +439,9 @@ function draftToBody(d: HeaderDraft) {
 export function FinisReferences() {
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
+  // `?q=<reference>` (link from Tombé Métier › Références « Finis issus ») pre-fills the search.
+  const [initialParams] = useSearchParams()
+  const [searchQuery, setSearchQuery] = useState(() => initialParams.get('q') ?? '')
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState<HeaderDraft>(emptyDraft())
   const originalDraftRef = useRef<HeaderDraft | null>(null)

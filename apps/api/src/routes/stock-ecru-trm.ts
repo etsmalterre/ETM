@@ -7,6 +7,7 @@ import { maxId } from './expeditions.js'
 import { nowDt, sqlText, resolveMachineLabels } from '../lib/production-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
+import { aggregateStockEcru } from '../lib/stock-ecru-par-reference.js'
 
 export const stockEcruTrmRouter: RouterType = Router()
 
@@ -115,6 +116,25 @@ stockEcruTrmRouter.get('/ecru-trm', async (req: Request, res: Response) => {
     res.json(await hydrateTrmEcruRows(rows))
   } catch (err) {
     console.error('Error fetching TRM stock_ecru:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/stock/ecru-trm/par-reference/:refId: TRM's stock of one écru
+//   reference, total + per coloris (Tombé Métier › Références in TRM).
+//   « disponible » = not reserved to a client line, as on TRM's Stock screen.
+stockEcruTrmRouter.get('/ecru-trm/par-reference/:refId', async (req: Request, res: Response) => {
+  try {
+    const refId = parseInt(req.params.refId, 10)
+    if (isNaN(refId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const rows = await query<{ IDcolori_ecru: number; poids: number | null; IDLigne_Commande_TRM: number | null }>(
+      `SELECT se.IDstock_ecru, se.IDcolori_ecru, se.poids, se.IDLigne_Commande_TRM FROM stock_ecru se WHERE ${[...TRM_BASE_WHERE, `se.IDref_ecru = ${refId}`].join(' AND ')}`,
+    )
+    res.json(aggregateStockEcru(
+      rows.map((r) => ({ IDcolori_ecru: r.IDcolori_ecru, poids: r.poids, disponible: !(Number(r.IDLigne_Commande_TRM) > 0) })),
+    ))
+  } catch (err) {
+    console.error('Error fetching TRM stock_ecru par reference:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
