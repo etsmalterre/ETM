@@ -35,6 +35,7 @@
 // `fixEncoding` on every label, ids interpolated after parseInt.
 
 import { query, fixEncoding } from './hfsql-auto.js'
+import { prixTranche } from './tranche-poids.js'
 
 /** Weight (kg) the ennoblissement tariff bands are read at. The legacy report
  *  prices every treatment / dye at one fixed reference quantity rather than the
@@ -141,14 +142,11 @@ interface LotRow { IDstock_fil: number; IDref_fil: number; IDcolori_fil: number;
 interface CmdFilRow { IDcommande_fil: number; prix_unitaire: number }
 interface BandRow { IDtraitement: number; IDteinture: number; quantite_mini: number; quantite_maxi: number; prix: number }
 
-/** Tariff band covering `poids` (mini ≤ poids ≤ maxi), 0 when none does —
+/** Tariff band covering `poids` (whole-kilo band, lib/tranche-poids.ts), 0 when none does —
  *  legacy treats an unpriced treatment as free, and several really are
  *  (Vaporisage, Rame). */
 function bandPrix(bands: BandRow[], poids: number): number {
-  for (const b of bands) {
-    if (Number(b.quantite_mini) <= poids && Number(b.quantite_maxi) >= poids) return Number(b.prix) || 0
-  }
-  return 0
+  return prixTranche(bands, poids)
 }
 
 async function labelMap(

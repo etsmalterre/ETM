@@ -20,6 +20,7 @@
 
 import { query, fixEncoding } from './hfsql-auto.js'
 import { multiplicateurMatel } from './pricing-sst.js'
+import { prixTranche } from './tranche-poids.js'
 
 /** Per-tranche margin — legacy `CoefficientV2(i)`. Index = tranche i (0..8).
  *  Small quantities carry a higher margin; bulk a lower one. Exported so the
@@ -149,15 +150,10 @@ export interface TarifFiniInputs {
   coefficient?: number
 }
 
-/** Pick the tariff-band price for a given weight (mini ≤ poids ≤ maxi). Returns
+/** Pick the tariff-band price for a given weight (whole-kilo band, lib/tranche-poids.ts). Returns
  *  0 when no band covers the weight (treatment/dye effectively unpriced). */
 function bandPrix(bands: BandRow[], poids: number): number {
-  for (const b of bands) {
-    if (Number(b.quantite_mini) <= poids && Number(b.quantite_maxi) >= poids) {
-      return Number(b.prix) || 0
-    }
-  }
-  return 0
+  return prixTranche(bands, poids)
 }
 
 /**

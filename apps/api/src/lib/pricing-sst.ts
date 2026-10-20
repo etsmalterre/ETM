@@ -13,6 +13,7 @@
 // move to a config table).
 
 import { query } from './hfsql-auto.js'
+import { kgTranche } from './tranche-poids.js'
 
 /** MATEL — sous_traitant.IDsous_traitant = 9. The largest ennoblisseur
  *  partner; gets a rendement-based multiplier on dye-only base prices and
@@ -191,13 +192,14 @@ async function _calcCore(input: {
   }
 
   // 3) Single SELECT for all relevant tariff rows for this sst + weight
-  //    band; partition in JS.
+  //    band (whole kilo, lib/tranche-poids.ts: 240,7 kg is in 221-240, #1301);
+  //    partition in JS.
   const allBands = await query<TrancheRow>(
     `SELECT IDtranche_tarif_ennoblissement, IDtraitement, IDteinture, ListeTraitements, quantite_mini, quantite_maxi, prix
      FROM tranche_tarif_ennoblissement
      WHERE IDsous_traitant = ${IDsous_traitant}
-       AND quantite_mini <= ${xPoids}
-       AND quantite_maxi >= ${xPoids}`,
+       AND quantite_mini <= ${kgTranche(xPoids)}
+       AND quantite_maxi >= ${kgTranche(xPoids)}`,
   )
 
   const combinations: TrancheRow[] = []

@@ -34,6 +34,7 @@
 // rolls, and the same 3% (instead of 5%) shipping rate on the 30-roll tranche.
 
 import { query } from './hfsql-auto.js'
+import { prixTranche } from './tranche-poids.js'
 import { COEFFICIENT_V2, ROLL_MULT, type TarifDetailLine } from './pricing-fini-tarif.js'
 
 /** Roll count shown in the table (tranche 0 renders as "< 1"). */
@@ -158,16 +159,11 @@ interface BandRow {
   prix: number
 }
 
-/** Pick the tariff-band price for a given weight (mini ≤ poids ≤ maxi). Returns
+/** Pick the tariff-band price for a given weight (whole-kilo band, lib/tranche-poids.ts). Returns
  *  0 when no band covers the weight — the treatment is then effectively free,
  *  which is what legacy does (several treatments are genuinely priced at 0). */
 function bandPrix(bands: BandRow[], poids: number): number {
-  for (const b of bands) {
-    if (Number(b.quantite_mini) <= poids && Number(b.quantite_maxi) >= poids) {
-      return Number(b.prix) || 0
-    }
-  }
-  return 0
+  return prixTranche(bands, poids)
 }
 
 /** Options for the extra "simulation libre" tranche.
