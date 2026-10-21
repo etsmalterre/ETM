@@ -2,18 +2,18 @@
 // stuck on the sample fabric. Same design as the ref_fini tag
 // (EtiquetteRefFiniPdf), which it mirrors on purpose so the two tags read as
 // one family: the number big on the left over its description, a rule, the
-// figures that define the fabric in bold, and on the right the QR code with
-// the Malterre M in its centre. Where the fini tag prints the care symbols,
-// the sample prints its yarn composition; its QR opens the sample's fiche in
-// ETM (captioned FICHE) instead of the customer's price page. No legacy
-// equivalent (the legacy printed an « OF échantillon » report, not a tag).
+// figures that define the fabric in bold, and the Malterre M on the right.
+// Where the fini tag prints the care symbols, the sample prints its yarn
+// composition. No QR code: the tag stays in the factory (Vincent,
+// 2026-10-21), so the M stands alone where the fini tag has its QR. No
+// legacy equivalent (the legacy printed an « OF échantillon » report).
 //
 // ⚠️ BLACK AND WHITE ONLY — a Dymo LabelWriter is a thermal printer: no
 // colour, and anything not near-black comes out as grey dither. Ink #000,
 // small labels #333, the brand is the monochrome M (as on both siblings).
 //
 // Page is the Dymo 99012 "Large Address" 89 × 36 mm. Centred on the physical
-// label like the fini tag, content narrowed so the QR's right edge stays
+// label like the fini tag, content narrowed so the logo's right edge stays
 // inside the head limit (~234 pt) — pinned by the test (`LAYOUT`).
 // Self-contained: built-in Helvetica.
 
@@ -22,7 +22,6 @@ import { Document, Page, View, Text, Image, StyleSheet } from '@react-pdf/render
 import * as path from 'path'
 import * as fs from 'fs'
 import { fileURLToPath } from 'url'
-import { QrCode } from './QrCode.js'
 
 const PAGE_WIDTH = 89 * 2.834646 // ≈ 252.3
 const PAGE_HEIGHT = 36 * 2.834646 // ≈ 102.05
@@ -35,11 +34,6 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const ASSETS = path.resolve(__dirname, '../../assets')
 const LOGO_MONO_BUFFER: Buffer = fs.readFileSync(path.join(ASSETS, 'logo-m-mono.png'))
-
-/** What the QR opens: the sample's fiche in ETM (the screen finds its filter). */
-export function ficheEchantillonUrl(idEchantillon: number): string {
-  return `https://etm.intra.etsmalterre.com/tombe-metier/echantillons?id=${idEchantillon}`
-}
 
 // ── Input shape ──────────────────────────────────────────
 
@@ -66,7 +60,7 @@ function fr(n: number): string {
  *  The legacy fills tour 1 and 3 with the same value — printing « 7,50 /
  *  7,50 » would only cost width. One value keeps the legacy's two decimals;
  *  several drop the trailing zeros and print smaller (`lfaMultiple`), or they
- *  run under the QR code. */
+ *  run into the logo. */
 export function lfaCellule(lfa: number[]): string {
   const vals = [...new Set(lfa.filter((v) => v > 0))]
   if (vals.length <= 1) return vals.length ? vals[0].toFixed(2).replace('.', ',') : ''
@@ -75,12 +69,12 @@ export function lfaCellule(lfa: number[]): string {
 const lfaMultiple = (lfa: number[]) => new Set(lfa.filter((v) => v > 0)).size > 1
 
 /** « 48 % 1/60 LYOCELL · 47 % 78/68/2 PA66 Z · 5 % 22 ELASTHANNE », clamped
- *  to what two 7 pt lines hold over the 126 pt text column (~36 chars a
+ *  to what two 7 pt lines hold over the ~143 pt text column (~40 chars a
  *  line); a third line would push the block off the 36 mm page. */
 export function compositionTexte(lignes: EtiquetteEchantillonData['composition']): string {
   // Non-breaking spaces bind « 36 % » to its yarn: a line never ends on a bare figure.
   const t = lignes.map((l) => `${fr(l.pourcentage)} % ${l.fil.trim()}`).join(' · ')
-  const budget = 72
+  const budget = 80
   if (t.length <= budget) return t
   const cut = t.slice(0, budget - 1)
   const at = cut.lastIndexOf(' ')
@@ -90,13 +84,13 @@ export function compositionTexte(lignes: EtiquetteEchantillonData['composition']
 // ── Styles ───────────────────────────────────────────────
 //
 // The fini tag's styles, verbatim where the element is the same (headline,
-// rule, spec cells, QR column). Vertical budget 102 − 2 × 3 = 96 pt: numéro
+// rule, spec cells). Vertical budget 102 − 2 × 3 = 96 pt: numéro
 // 22 + contexture 9 + 2.5 + rule 7.8 + specs 20.5 + composition 2 × 8 + 3
 // ≈ 81 at a two-line composition, the worst case after the clamp.
 
-const QR_SIZE = 78
-const QR_LOGO_BOX = 22
-const QR_LOGO = 16
+// The M alone, about the height of the number + contexture block.
+const LOGO = 44
+const SIDE = 56
 
 const styles = StyleSheet.create({
   page: {
@@ -122,27 +116,8 @@ const styles = StyleSheet.create({
   specValue: { fontFamily: 'Helvetica-Bold', fontSize: 13, lineHeight: 1 },
   specValueSmall: { fontFamily: 'Helvetica-Bold', fontSize: 8.5, lineHeight: 1.1, marginBottom: 1 },
   composition: { fontSize: 7, lineHeight: 1.12, marginTop: 3 },
-  qrCol: {
-    width: QR_SIZE,
-    marginLeft: 6,
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingBottom: 2.5,
-  },
-  qrWrap: { width: QR_SIZE, height: QR_SIZE, position: 'relative' },
-  qrLogoBox: {
-    position: 'absolute',
-    left: (QR_SIZE - QR_LOGO_BOX) / 2,
-    top: (QR_SIZE - QR_LOGO_BOX) / 2,
-    width: QR_LOGO_BOX,
-    height: QR_LOGO_BOX,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  qrLogo: { width: QR_LOGO, height: QR_LOGO },
-  qrCaption: { fontFamily: 'Helvetica-Bold', fontSize: 6.5, letterSpacing: 0.8, marginTop: 2.5, lineHeight: 1 },
+  side: { width: SIDE, marginLeft: 6, alignItems: 'center', justifyContent: 'center' },
+  logo: { width: LOGO, height: LOGO },
 })
 
 function Spec({ label, value, small, last }: { label: string; value: string; small?: boolean; last?: boolean }) {
@@ -173,14 +148,8 @@ function Etiquette({ d }: { d: EtiquetteEchantillonData }): React.ReactElement {
         {compo ? <Text style={styles.composition}>{compo}</Text> : null}
       </View>
 
-      <View style={styles.qrCol}>
-        <View style={styles.qrWrap}>
-          <QrCode value={ficheEchantillonUrl(d.IDref_echantillon)} size={QR_SIZE} quietZone={1} level="H" />
-          <View style={styles.qrLogoBox}>
-            <Image src={LOGO_MONO_BUFFER} style={styles.qrLogo} />
-          </View>
-        </View>
-        <Text style={styles.qrCaption}>FICHE</Text>
+      <View style={styles.side}>
+        <Image src={LOGO_MONO_BUFFER} style={styles.logo} />
       </View>
     </Page>
   )

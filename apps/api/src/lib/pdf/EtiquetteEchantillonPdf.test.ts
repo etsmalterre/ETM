@@ -1,13 +1,12 @@
 // Content guard for the sample Dymo tag: walks the element tree (never the
 // rendered bytes) and pins the fields, the LFA and composition shaping, the QR
-// payload and the printable-band layout. The look is checked on a rasterized
+// absence and the printable-band layout. The look is checked on a rasterized
 // render (scripts/dump-etiquette-echantillon.ts).
 import { describe, it, expect } from 'vitest'
 import {
   EtiquetteEchantillonPdf,
   LAYOUT,
   compositionTexte,
-  ficheEchantillonUrl,
   lfaCellule,
   type EtiquetteEchantillonData,
 } from './EtiquetteEchantillonPdf.js'
@@ -47,7 +46,7 @@ describe('EtiquetteEchantillonPdf', () => {
     expect(s).toContain('30"')
     expect(s).toContain('7,50')
     expect(s.some((t) => t.includes('48 % 1/60 LYOCELL'))).toBe(true)
-    expect(s).toContain('FICHE')
+    expect(s).not.toContain('FICHE')
   })
 
   it('shows a dash for what is not entered, and no composition line when empty', () => {
@@ -68,16 +67,12 @@ describe('EtiquetteEchantillonPdf', () => {
       { pourcentage: 36, fil: '78/68/2 PA66 Z' },
       { pourcentage: 15, fil: '48 dtex ELASTHANNE ROICA' },
     ])
-    expect(t.length).toBeLessThanOrEqual(72)
+    expect(t.length).toBeLessThanOrEqual(80)
     expect(t.endsWith('…')).toBe(true)
     expect(t).toContain('36 % 78/68/2')
   })
 
-  it('opens the sample fiche in ETM', () => {
-    expect(ficheEchantillonUrl(55)).toBe('https://etm.intra.etsmalterre.com/tombe-metier/echantillons?id=55')
-  })
-
-  it('centres on the physical label and keeps the QR inside the printable band', () => {
+  it('centres on the physical label and keeps the logo inside the printable band', () => {
     expect(LAYOUT.PAGE_PADDING_X * 2 + LAYOUT.CONTENT_WIDTH).toBeCloseTo(LAYOUT.PAGE_WIDTH, 6)
     expect(LAYOUT.PAGE_PADDING_X + LAYOUT.CONTENT_WIDTH).toBeLessThanOrEqual(LAYOUT.PRINT_LIMIT - 2)
   })
