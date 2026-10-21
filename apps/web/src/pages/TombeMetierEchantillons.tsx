@@ -426,7 +426,6 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
             isSaving={saveMutation.isPending}
             onDelete={() => { setDeleteError(null); setDeleteOpen(true) }}
             onPrint={() => { if (selectedId !== null) window.open(`${API_URL}${apiBase}/${selectedId}/etiquette`, '_blank') }}
-            onCreerReference={() => setCreerOpen(true)}
           />
         }
         detail={
@@ -679,7 +678,7 @@ function CompteurRelance({ urgence, count, on, onToggle }: { urgence: Urgence; c
 // ── Center: header ─────────────────────────────────────
 
 function DetailHeader({
-  detail, isLoading, isEditing, onStartEdit, onCancelEdit, onSave, isSaving, onDelete, onPrint, onCreerReference,
+  detail, isLoading, isEditing, onStartEdit, onCancelEdit, onSave, isSaving, onDelete, onPrint,
 }: {
   detail: EchantillonDetail | null
   isLoading: boolean
@@ -690,7 +689,6 @@ function DetailHeader({
   isSaving: boolean
   onDelete: () => void
   onPrint: () => void
-  onCreerReference: () => void
 }) {
   if (!detail && !isLoading) return null
   const ouvert = detail?.statut === 'en_cours'
@@ -746,11 +744,6 @@ function DetailHeader({
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer l'étiquette (Dymo)" onClick={onPrint}>
                   <Printer className="h-4 w-4" />
                 </Button>
-                {ouvert && (
-                  <Button variant="outline" size="icon" className="h-9 w-9" onClick={onCreerReference} title="Créer la référence tombé métier à partir de cet échantillon">
-                    <TmRollIcon className="h-[22px] w-[22px]" />
-                  </Button>
-                )}
                 <Button
                   variant="gold"
                   size="sm"
