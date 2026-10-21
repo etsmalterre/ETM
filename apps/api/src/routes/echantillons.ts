@@ -66,6 +66,10 @@ interface EchantillonRow {
   lfa2: number | null
   lfa3: number | null
   lfa4: number | null
+  laize_tbm: number | null
+  poids_m2_tbm: number | null
+  laize_lave: number | null
+  poids_m2_lave: number | null
   commentaire: string | null
   idclient: number | null
   archive: number | null
@@ -78,6 +82,7 @@ interface EchantillonRow {
 
 const SELECT_ECHANTILLON = (sql: Sql) => sql`
   SELECT e.idref_echantillon, e.idcontexture, e.jauge, e.diametre, e.lfa1, e.lfa2, e.lfa3, e.lfa4,
+         e.laize_tbm, e.poids_m2_tbm, e.laize_lave, e.poids_m2_lave,
          e.commentaire, e.idclient, e.archive, e.idref_ecru,
          c.nom AS contexture_nom, cl.nom AS client_nom,
          r.reference AS ref_reference, r.designation AS ref_designation
@@ -96,6 +101,9 @@ function shape(e: EchantillonRow) {
     Jauge: ordinalValide(e.jauge, JAUGE_ORD_MAX),
     diametre: ordinalValide(e.diametre, DIAMETRE_ORD_MAX),
     lfa: [e.lfa1, e.lfa2, e.lfa3, e.lfa4].map((v) => Number(v) || 0),
+    // Off the machine, and after the internal wash (« pré-industriel »): cm, g/m², 0 = not measured.
+    tbm: { laize: Number(e.laize_tbm) || 0, poids: Number(e.poids_m2_tbm) || 0 },
+    lave: { laize: Number(e.laize_lave) || 0, poids: Number(e.poids_m2_lave) || 0 },
     commentaire: e.commentaire ?? '',
     IDclient: Number(e.idclient) || 0,
     client_nom: e.client_nom?.trim() || null,
@@ -190,6 +198,8 @@ const enteteBody = z.object({
   Jauge: z.number().int().min(0).max(JAUGE_ORD_MAX),
   diametre: z.number().int().min(0).max(DIAMETRE_ORD_MAX),
   lfa: z.array(z.number().min(0)).length(4),
+  tbm: z.object({ laize: z.number().min(0), poids: z.number().min(0) }),
+  lave: z.object({ laize: z.number().min(0), poids: z.number().min(0) }),
   commentaire: z.string().max(4000),
   IDclient: z.number().int().min(0),
 })
@@ -360,6 +370,8 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
         UPDATE ref_echantillon SET
           idcontexture = ${b.IDcontexture}, jauge = ${b.Jauge}, diametre = ${b.diametre},
           lfa1 = ${b.lfa[0]}, lfa2 = ${b.lfa[1]}, lfa3 = ${b.lfa[2]}, lfa4 = ${b.lfa[3]},
+          laize_tbm = ${b.tbm.laize}, poids_m2_tbm = ${b.tbm.poids},
+          laize_lave = ${b.lave.laize}, poids_m2_lave = ${b.lave.poids},
           commentaire = ${b.commentaire}, idclient = ${b.IDclient}
         WHERE idref_echantillon = ${row.idref_echantillon}`
       res.json({ ok: true })
@@ -522,7 +534,8 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
   })
 
   // POST /:id/creer-reference — the sample becomes a ref_ecru: what it knows
-  // is copied (contexture, jauge, Ø, client, LFA, composition), the rest of the
+  // is copied (contexture, jauge, Ø, client, LFA, laize + poids TBM, composition — the
+  // washed measures stay on the sample: ref_ecru has no column for them), the rest of the
   // fiche is filled on Références; then the sample is closed and linked. Once.
   router.post('/:id/creer-reference', async (req, res) => {
     try {
@@ -537,7 +550,7 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
         // Row lock: two clicks (or two users) cannot both create a reference.
         const [e] = await tx<EchantillonRow[]>`
           SELECT idref_echantillon, idcontexture, jauge, diametre, lfa1, lfa2, lfa3, lfa4,
-                 commentaire, idclient, archive, idref_ecru
+                 laize_tbm, poids_m2_tbm, commentaire, idclient, archive, idref_ecru
             FROM ref_echantillon WHERE idref_echantillon = ${id} FOR UPDATE`
         if (!e) throw new RefusError('introuvable', 'Échantillon introuvable', 404)
         const compo = await tx<{ idref_fil: number; idcolori_fil: number; pourcentage: number | null }[]>`
@@ -554,10 +567,12 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
 
         const [ref] = await tx<{ idref_ecru: number }[]>`
           INSERT INTO ref_ecru (reference, designation, idclient, idcontexture, jauge, diametre,
-                                lfa_tour_1, lfa_tour_2, lfa_tour_3, lfa_tour_4, commentaire, date_maj_ft)
+                                lfa_tour_1, lfa_tour_2, lfa_tour_3, lfa_tour_4, laize_tbm, poids_m2_tbm,
+                                commentaire, date_maj_ft)
           VALUES (${reference}, ${designation}, ${Number(e.idclient) || 0}, ${Number(e.idcontexture) || 0},
                   ${ordinalValide(e.jauge, JAUGE_ORD_MAX)}, ${ordinalValide(e.diametre, DIAMETRE_ORD_MAX)},
                   ${lfaTexte(e.lfa1)}, ${lfaTexte(e.lfa2)}, ${lfaTexte(e.lfa3)}, ${lfaTexte(e.lfa4)},
+                  ${Math.round(Number(e.laize_tbm) || 0)}, ${Math.round(Number(e.poids_m2_tbm) || 0)},
                   '', CURRENT_DATE)
           RETURNING idref_ecru`
         // Same #1290 caution as a new sample: nothing may hang off the new id.

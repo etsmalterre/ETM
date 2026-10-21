@@ -887,6 +887,22 @@ UPDATE ref_echantillon e
    AND COALESCE(e.idref_ecru, 0) = 0;
 `,
   },
+  {
+    // Tombé Métier › Échantillons: the fabric's measures, typed by Nico until
+    // now in the comment. Off the machine (tombé métier — what ref_ecru calls
+    // laize_tbm / poids_m2_tbm, copied there by « Créer la référence ») and
+    // after the internal wash every sample gets (« pré-industriel », the
+    // finished-fabric estimate; Vincent 2026-10-21). cm and g/m², 0 = not
+    // measured. Numeric columns get DEFAULT 0 (CLAUDE.md § PostgreSQL).
+    name: '0026_ref_echantillon_mesures',
+    sql: `
+ALTER TABLE ref_echantillon
+  ADD COLUMN laize_tbm double precision DEFAULT 0,
+  ADD COLUMN poids_m2_tbm double precision DEFAULT 0,
+  ADD COLUMN laize_lave double precision DEFAULT 0,
+  ADD COLUMN poids_m2_lave double precision DEFAULT 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -44,7 +44,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
-import { SpecTile, TileText, TextTile } from './tombe-metier/spec-tiles'
+import { SpecTile, TileText, TileValue, TextTile, tileInput } from './tombe-metier/spec-tiles'
 import { JAUGE_OPTIONS, DIAM_OPTIONS, jaugeLabel, diametreLabel } from './tombe-metier/ordinals'
 import { ColorisCompoLineRow, type CompoDraftLine, type RefFilLookup } from './tombe-metier/composition-fil'
 
@@ -63,6 +63,9 @@ interface EchantillonListRow {
   Jauge: number
   diametre: number
   lfa: number[]
+  /** Off the machine (tombé métier) and after the internal wash (pré-industriel): cm, g/m², 0 = not measured. */
+  tbm: Mesures
+  lave: Mesures
   commentaire: string
   IDclient: number
   client_nom: string | null
@@ -104,6 +107,8 @@ interface Draft {
   Jauge: number
   diametre: number
   lfa: string[]
+  tbm: { laize: string; poids: string }
+  lave: { laize: string; poids: string }
   commentaire: string
   IDclient: number
 }
@@ -115,6 +120,10 @@ const STATUT_META: Record<Statut, { label: string; filtre: string; icon: typeof 
 }
 const STATUTS: Statut[] = ['en_cours', 'reference', 'archive']
 
+interface Mesures { laize: number; poids: number }
+const numDraft = (v: number) => (v > 0 ? String(v) : '')
+const numBody = (v: string) => Number(v.replace(',', '.')) || 0
+
 const inputClass =
   'w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
 const editSectionClass = 'border-l-4 border-l-accent/70 bg-accent/[0.03]'
@@ -124,6 +133,8 @@ const draftFromDetail = (d: EchantillonDetail): Draft => ({
   Jauge: d.Jauge,
   diametre: d.diametre,
   lfa: d.lfa.map((v) => (v > 0 ? v.toFixed(2) : '')),
+  tbm: { laize: numDraft(d.tbm.laize), poids: numDraft(d.tbm.poids) },
+  lave: { laize: numDraft(d.lave.laize), poids: numDraft(d.lave.poids) },
   commentaire: d.commentaire,
   IDclient: d.IDclient,
 })
@@ -266,6 +277,8 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
           Jauge: d.Jauge,
           diametre: d.diametre,
           lfa: d.lfa.map((v) => Number(v.replace(',', '.')) || 0),
+          tbm: { laize: numBody(d.tbm.laize), poids: numBody(d.tbm.poids) },
+          lave: { laize: numBody(d.lave.laize), poids: numBody(d.lave.poids) },
           commentaire: d.commentaire,
           IDclient: d.IDclient,
         }),
@@ -852,6 +865,24 @@ function SpecsCard({
           </div>
         </SpecTile>
 
+        {/* The fabric's measures: off the machine, then after the internal
+            wash every sample gets — the « pré-industriel » finished figures. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <MesuresTile
+            label="Tombé métier"
+            mesures={detail.tbm}
+            draft={isEditing && d ? d.tbm : null}
+            onChange={(tbm) => d && onDraftChange({ ...d, tbm })}
+          />
+          <MesuresTile
+            label="Après lavage · pré-industriel"
+            mesures={detail.lave}
+            draft={isEditing && d ? d.lave : null}
+            onChange={(lave) => d && onDraftChange({ ...d, lave })}
+            avant={detail.tbm}
+          />
+        </div>
+
         <CompositionTile apiBase={apiBase} detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
 
         <TextTile
@@ -864,6 +895,67 @@ function SpecsCard({
         />
       </CardContent>
     </Card>
+  )
+}
+
+/** « 165 cm · 260 g/m² » — empty when nothing is measured. */
+function mesuresTexte(m: Mesures): string {
+  return [m.laize > 0 ? `${fmtNum(m.laize, Number.isInteger(m.laize) ? 0 : 1)} cm` : null, m.poids > 0 ? `${fmtNum(m.poids, Number.isInteger(m.poids) ? 0 : 1)} g/m²` : null]
+    .filter(Boolean).join(' · ')
+}
+
+/** Signed change from `avant` to `apres`, in %: « −4,2 % ». Null unless both are measured. */
+function ecart(avant: number, apres: number): string | null {
+  if (!(avant > 0) || !(apres > 0)) return null
+  const pct = Math.round(((apres - avant) / avant) * 1000) / 10
+  return `${pct > 0 ? '+' : pct < 0 ? '−' : ''}${fmtNum(Math.abs(pct), 1)} %`
+}
+
+/** One tile, two measures (laize cm, poids g/m²) — the « Tombé métier » and
+ *  « Après lavage » pair. The washed one shows how far each moved from the
+ *  machine (`avant`), the shrinkage the wash revealed. */
+function MesuresTile({ label, mesures, draft, onChange, avant }: {
+  label: string
+  mesures: Mesures
+  draft: { laize: string; poids: string } | null
+  onChange: (m: { laize: string; poids: string }) => void
+  avant?: Mesures
+}) {
+  const champs = [
+    { key: 'laize' as const, nom: 'Laize', unit: 'cm' },
+    { key: 'poids' as const, nom: 'Poids', unit: 'g/m²' },
+  ]
+  return (
+    <SpecTile label={label}>
+      <div className="grid grid-cols-2 gap-2">
+        {champs.map((c) => {
+          const delta = avant ? ecart(avant[c.key], mesures[c.key]) : null
+          return (
+            <div key={c.key} className="min-w-0">
+              <p className="text-[10px] text-muted-foreground">{c.nom}</p>
+              {draft ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    aria-label={`${label} — ${c.nom}`}
+                    value={draft[c.key]}
+                    onChange={(e) => onChange({ ...draft, [c.key]: e.target.value })}
+                    className={tileInput}
+                  />
+                  <span className="text-xs text-muted-foreground flex-shrink-0">{c.unit}</span>
+                </div>
+              ) : (
+                <>
+                  <TileValue value={mesures[c.key] || null} unit={c.unit} />
+                  {delta && <p className="text-[11px] text-muted-foreground tabular-nums mt-0.5" title="Écart avec le tombé métier">{delta} vs TBM</p>}
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </SpecTile>
   )
 }
 
@@ -1471,6 +1563,7 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
     ['Contexture · Jauge · Ø', identite(detail) || '—'],
     ['Client', detail.client_nom ?? '—'],
     ['LFA / tour', lfa || '—'],
+    ['Laize · poids TBM', mesuresTexte(detail.tbm) || '—'],
   ]
 
   return (
