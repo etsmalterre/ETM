@@ -61,7 +61,7 @@ reconsidère la fusion que si les échantillons doivent passer par OF / visitage
 
 ## Dépendance
 
-Partir **après la fusion de `feat/tm-references-classeur`** (ETM puis TRM, worktrees
-`ETM-tm-references-classeur` slot 3 et `TRM-tm-references-classeur` slot 1, prêts, non
-fusionnés : Classeur Références, stock par coloris, fiche technique écru) : l'écran
-réutilise `spec-tiles.tsx`. Rebaser `feat/echantillon` sur master ensuite.
+`feat/tm-references-classeur` (Classeur Références, stock par coloris, fiche technique écru)
+est **fusionnée dans master** (2026-10-21) et `feat/echantillon` est rebasée dessus :
+`pages/tombe-metier/spec-tiles.tsx` est disponible. Côté TRM, vérifier que la branche TRM
+du même nom a bien été fusionnée aussi avant de toucher l'écran partagé.
