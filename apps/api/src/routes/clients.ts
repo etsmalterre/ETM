@@ -48,6 +48,7 @@ import {
 } from '../lib/compte-client.js'
 import { normalizeSiren, isValidSiren } from '../lib/siren.js'
 import { parseAssocieeCsv } from '../lib/refs-associees.js'
+import { statsClient, type StatsLigne } from '../lib/stats-client.js'
 
 export const clientsRouter: RouterType = Router()
 
@@ -743,6 +744,55 @@ clientsRouter.get('/:id/historique', async (req: Request, res: Response) => {
     res.json({ lignes, capped: heads.length >= HISTORIQUE_RECENT })
   } catch (err) {
     console.error('Error fetching client historique:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/clients/:id/stats — per reference and per year: quantity, number of
+// orders, average order size (LIVA #1306, rules in lib/stats-client.ts). Whole
+// history, ETM orders only; a donation order is not a purchase, so it is left out.
+clientsRouter.get('/:id/stats', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const heads = (await query<Record<string, unknown>>(
+      `SELECT IDcommande_client, date_commande, donation FROM commande_client ` +
+        `WHERE IDsociete = 1 AND IDcommande_ETM = 0 AND IDclient = ${id}`,
+    )).filter((h) => numOf(h.donation) !== 1)
+    if (heads.length === 0) { res.json(statsClient([])); return }
+    const cids = heads.map((h) => numOf(h.IDcommande_client))
+    const dateOf = new Map(heads.map((h) => [numOf(h.IDcommande_client), strOf(h.date_commande)]))
+    const lines: Record<string, unknown>[] = []
+    for (let i = 0; i < cids.length; i += HISTORIQUE_IN_CHUNK) {
+      const chunk = cids.slice(i, i + HISTORIQUE_IN_CHUNK)
+      lines.push(...await query<Record<string, unknown>>(
+        `SELECT IDcommande_client, TYPE AS type_kind, IDreference, quantite, unite ` +
+          `FROM ligne_commande_client WHERE IDcommande_client IN (${chunk.join(',')})`,
+      ))
+    }
+    const finiMap = await mapRefFini(lines.filter((l) => numOf(l.type_kind) === 2).map((l) => numOf(l.IDreference)))
+    const ecruMap = await mapSimpleRef('ref_ecru', 'IDref_ecru', lines.filter((l) => numOf(l.type_kind) === 1).map((l) => numOf(l.IDreference)))
+    const diversMap = await mapDesignation('ref_divers', 'IDref_divers', lines.filter((l) => numOf(l.type_kind) === 3).map((l) => numOf(l.IDreference)))
+    const lignes: StatsLigne[] = lines.map((l) => {
+      const type = numOf(l.type_kind)
+      const idRef = numOf(l.IDreference)
+      const ref = type === 2 ? finiMap.get(idRef)?.reference ?? ''
+        : type === 1 ? ecruMap.get(idRef) ?? ''
+        : type === 3 ? diversMap.get(idRef) || 'Divers'
+        : 'Divers'
+      return {
+        IDcommande_client: numOf(l.IDcommande_client),
+        date_commande: dateOf.get(numOf(l.IDcommande_client)) ?? null,
+        type_kind: type,
+        IDreference: idRef,
+        ref,
+        quantite: numOf(l.quantite),
+        unite: numOf(l.unite),
+      }
+    })
+    res.json(statsClient(lignes))
+  } catch (err) {
+    console.error('Error fetching client stats:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

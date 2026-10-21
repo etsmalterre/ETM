@@ -41,8 +41,10 @@ import {
   Link2,
   Barcode,
   Globe,
+  BarChart3,
 } from 'lucide-react'
 import { CodesSpTab, EtiquettesSwitch, useEtiquetteClients } from '@/components/etiquettes/CodesSpTab'
+import { foldSearchText } from '@/components/stock/SmartSearchInput'
 import { AccesContactLine, etatAccesEspaceClient, useAccesEspaceClient } from '@/components/espace-client/AccesEspaceClient'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -1121,8 +1123,9 @@ function TogglePill({ label, checked, disabled, onChange }: {
 
 const MAIN_TABS = [
   { key: 'references', label: 'Références', icon: Tag },
-  { key: 'historique', label: 'Historique des commandes', icon: History },
   { key: 'marchandise', label: 'Marchandise expédiée', icon: Truck },
+  { key: 'historique', label: 'Historique des commandes', icon: History },
+  { key: 'stats', label: 'Statistiques', icon: BarChart3 },
   // Only on clients whose roll labels are switched on (LIVA #1200).
   { key: 'etiquettes', label: 'Étiquettes', icon: Barcode },
 ] as const
@@ -1181,6 +1184,9 @@ function DetailMain({ client, isLoading, hasSelection, isEditing, canManageTarif
           // Flex column, not a scroll container: the tab pins its toolbar and
           // selection action bar while the table scrolls internally.
           <div className="flex-1 min-h-0 flex flex-col px-1"><MarchandiseTab clientId={client.IDclient} clientNom={client.nom ?? ''} canRetour={canRetourMarchandise} /></div>
+        )}
+        {activeTab === 'stats' && (
+          <div className="flex-1 min-h-0 flex flex-col px-1"><StatsTab clientId={client.IDclient} /></div>
         )}
         {activeTab === 'etiquettes' && withEtiquettes && <CodesSpTab editable={isEditing && canEditCodesSp} />}
       </div>
@@ -3253,6 +3259,162 @@ function HistoriqueTab({ clientId }: { clientId: number }) {
           )}
         </>
       )}
+    </>
+  )
+}
+
+// ── Statistiques ───────────────────────────────────────
+
+interface StatsCellule { quantite: number; commandes: number }
+interface StatsReference { key: string; type_kind: number; ref: string; unite: number; parAnnee: Record<number, StatsCellule>; total: StatsCellule }
+interface StatsPayload { annees: number[]; references: StatsReference[] }
+
+/** Years shown before « Tout l'historique » is ticked: enough to see a trend
+ *  without pushing the table into horizontal scroll. */
+const STATS_ANNEES_COURTES = 5
+
+/** One bar per shown year, height ∝ quantity over the row's busiest year — the
+ *  trend of a reference at a glance. Single series, so no legend; each bar's
+ *  title carries the exact figure. */
+function StatsTendance({ annees, reference }: { annees: number[]; reference: StatsReference }) {
+  const H = 22, W = 6, GAP = 3
+  const maxQ = Math.max(...annees.map((y) => reference.parAnnee[y]?.quantite ?? 0), 0)
+  return (
+    <svg width={annees.length * (W + GAP) - GAP} height={H} className="block" aria-hidden="true">
+      {annees.map((y, i) => {
+        const q = reference.parAnnee[y]?.quantite ?? 0
+        const h = maxQ > 0 && q > 0 ? Math.max(2, (q / maxQ) * H) : 0
+        const x = i * (W + GAP)
+        return h > 0 ? (
+          <rect key={y} x={x} y={H - h} width={W} height={h} rx={1.5} className="fill-primary/70 hover:fill-accent">
+            <title>{`${y} : ${fmtNum(q)} ${UNITE_LABEL[reference.unite] ?? ''}`}</title>
+          </rect>
+        ) : (
+          <rect key={y} x={x} y={H - 1} width={W} height={1} className="fill-border" />
+        )
+      })}
+    </svg>
+  )
+}
+
+function StatsTab({ clientId }: { clientId: number }) {
+  const [search, setSearch] = useState('')
+  const [toutHistorique, setToutHistorique] = useState(false)
+  useEffect(() => { setSearch(''); setToutHistorique(false) }, [clientId])
+
+  const { data, isLoading } = useQuery<StatsPayload>({
+    queryKey: ['client-stats', clientId],
+    queryFn: () => apiFetch(`/clients/${clientId}/stats`),
+  })
+
+  const anneeCourante = new Date().getFullYear()
+  const toutes = data?.annees ?? []
+  const annees = toutHistorique ? toutes : toutes.slice(-STATS_ANNEES_COURTES)
+  const tronque = toutes.length > STATS_ANNEES_COURTES
+
+  const references = useMemo(() => {
+    const all = data?.references ?? []
+    // A reference with nothing in the shown years is noise in a trend table.
+    const visibles = all.filter((r) => annees.some((y) => r.parAnnee[y]))
+    const q = foldSearchText(search.trim())
+    return q ? visibles.filter((r) => foldSearchText(r.ref).includes(q)) : visibles
+  }, [data, annees, search])
+
+  // Year totals per selling unit: Ml and Kg are never added together.
+  const totaux = useMemo(() => {
+    const parUnite = new Map<number, Record<number, number>>()
+    for (const r of references) {
+      const t = parUnite.get(r.unite) ?? {}
+      for (const y of annees) t[y] = (t[y] ?? 0) + (r.parAnnee[y]?.quantite ?? 0)
+      parUnite.set(r.unite, t)
+    }
+    return [...parUnite.entries()].sort(([a], [b]) => a - b)
+  }, [references, annees])
+
+  if (isLoading) return <SectionSpinner />
+  if (toutes.length === 0) return <SectionEmpty text="Aucune commande" />
+
+  return (
+    <>
+      <div className="flex-shrink-0 flex items-center gap-3 mx-1 mb-2">
+        <div className="relative flex-1 min-w-0">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filtrer les références"
+            className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+        </div>
+        {tronque && (
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none flex-shrink-0">
+            <input type="checkbox" checked={toutHistorique} onChange={(e) => setToutHistorique(e.target.checked)}
+              className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer" />
+            <span>Tout l'historique (depuis {toutes[0]})</span>
+          </label>
+        )}
+      </div>
+      {references.length === 0 ? (
+        <SectionEmpty text={search ? 'Aucune référence ne correspond au filtre' : 'Aucune commande sur la période'} />
+      ) : (
+        <div className="min-h-0 overflow-auto rounded-lg border border-border/60 bg-card shadow-sm scrollbar-transparent">
+          <table className="w-full text-xs">
+            <thead className={cn(thHead, 'sticky top-0 z-10 bg-zinc-100')}><tr>
+              <th className="px-2 py-1.5 text-left font-semibold sticky left-0 bg-zinc-100">Référence</th>
+              {annees.map((y) => (
+                <th key={y} className="px-2 py-1.5 text-right font-semibold whitespace-nowrap">
+                  {y}{y === anneeCourante && <span className="block normal-case tracking-normal font-normal">en cours</span>}
+                </th>
+              ))}
+              <th className="px-2 py-1.5 text-left font-semibold">Tendance</th>
+              {toutHistorique && <th className="px-2 py-1.5 text-right font-semibold">Total</th>}
+            </tr></thead>
+            <tbody>
+              {references.map((r) => (
+                <tr key={r.key} className="border-b border-border/40 last:border-b-0 hover:bg-accent/5">
+                  <td className="px-2 py-1.5 sticky left-0 bg-card max-w-[200px]">
+                    <div className="truncate font-medium" title={r.ref}>{r.ref || '—'}</div>
+                    <div className="text-[10px] text-muted-foreground">{UNITE_LABEL[r.unite] ?? ''}</div>
+                  </td>
+                  {annees.map((y) => {
+                    const c = r.parAnnee[y]
+                    return (
+                      <td key={y} className="px-2 py-1.5 text-right tabular-nums whitespace-nowrap align-top">
+                        {c ? (
+                          <>
+                            <div className="font-semibold">{fmtNum(c.quantite)}</div>
+                            <div className="text-[10px] text-muted-foreground" title="Nombre de commandes · quantité moyenne par commande">
+                              {c.commandes} cde{c.commandes > 1 ? 's' : ''} · moy. {fmtNum(c.quantite / c.commandes)}
+                            </div>
+                          </>
+                        ) : <span className="text-muted-foreground">—</span>}
+                      </td>
+                    )
+                  })}
+                  <td className="px-2 py-1.5 align-middle"><StatsTendance annees={annees} reference={r} /></td>
+                  {toutHistorique && (
+                    <td className="px-2 py-1.5 text-right tabular-nums whitespace-nowrap align-top">
+                      <div className="font-semibold">{fmtNum(r.total.quantite)}</div>
+                      <div className="text-[10px] text-muted-foreground">{r.total.commandes} cde{r.total.commandes > 1 ? 's' : ''}</div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+            <tfoot className="bg-zinc-100/80 border-t">
+              {totaux.map(([unite, parAnnee]) => (
+                <tr key={unite}>
+                  <td className="px-2 py-1.5 font-semibold sticky left-0 bg-zinc-100">Total {UNITE_LABEL[unite] ?? ''}</td>
+                  {annees.map((y) => (
+                    <td key={y} className="px-2 py-1.5 text-right tabular-nums font-semibold whitespace-nowrap">{parAnnee[y] ? fmtNum(parAnnee[y]) : '—'}</td>
+                  ))}
+                  <td />
+                  {toutHistorique && <td className="px-2 py-1.5 text-right tabular-nums font-semibold whitespace-nowrap">{fmtNum(annees.reduce((s, y) => s + (parAnnee[y] ?? 0), 0))}</td>}
+                </tr>
+              ))}
+            </tfoot>
+          </table>
+        </div>
+      )}
+      <p className="flex-shrink-0 text-[11px] text-muted-foreground italic mt-2 mx-1">
+        Quantités commandées par année de commande · « moy. » = quantité moyenne par commande · commandes de donation exclues.
+      </p>
     </>
   )
 }
