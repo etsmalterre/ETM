@@ -4844,7 +4844,7 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     h.IDadresse_livraison ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_livraison)}`) : Promise.resolve([]),
     h.IDadresse_facturation ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_facturation)}`) : Promise.resolve([]),
     query<any>(
-      `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori,
+      `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori, IDVariation1, IDVariation2,
               quantite, unite, prix, date_livraison
        FROM ligne_commande_client WHERE IDcommande_client = ${id} ORDER BY IDligne_commande_client`,
     ),
@@ -4859,9 +4859,13 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
   const adrLiv = withAdresseADefinir((await fixEncoding(adrLivRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null)
   const adrFac = (await fixEncoding(adrFacRows, 'adresse', 'IDadresse', ['nom', 'adresse1', 'adresse2', 'adresse3', 'ville', 'pays']))[0] ?? null
   const lignesFixed = lignesRaw as any[]
-  const maps = await resolveLineLabels(lignesFixed.map((l) => ({
-    IDreference: Number(l.IDreference) || 0, IDcolori: Number(l.IDcolori) || 0, type_kind: Number(l.type_kind) || 0,
-  })))
+  const diversVariations = (l: any) => [Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0]
+  const [maps, variationLabels] = await Promise.all([
+    resolveLineLabels(lignesFixed.map((l) => ({
+      IDreference: Number(l.IDreference) || 0, IDcolori: Number(l.IDcolori) || 0, type_kind: Number(l.type_kind) || 0,
+    }))),
+    resolveDiversVariations(lignesFixed.filter((l) => Number(l.type_kind) === 3).flatMap(diversVariations)),
+  ])
 
   const lignes = lignesFixed.map((l) => {
     const typeKind = Number(l.type_kind) || 0
@@ -4870,9 +4874,14 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     const resolved = resolveRefLabel(maps, refId, typeKind)
     const qty = Number(l.quantite) || 0
     const prix = Number(l.prix) || 0
+    // A divers article has no coloris: its variations (couleur, taille…) take
+    // that slot, joined like the invoice line (LIVA #1299).
+    const coloris = typeKind === 3
+      ? diversVariations(l).map((v) => (v > 0 ? (variationLabels.get(v) ?? '').trim() : '')).filter(Boolean).join(' - ')
+      : resolveColorisLabel(maps, colId, typeKind, refId)
     return {
       ref_label: resolved.label || null,
-      colori_reference: resolveColorisLabel(maps, colId, typeKind, refId) || null,
+      colori_reference: coloris || null,
       quantite: qty,
       unite_label: uniteLabel(l.unite),
       prix,
