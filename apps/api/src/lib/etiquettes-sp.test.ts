@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchCodeSp, defaultCommandeClient, missingMesures, netAAppliquer, lotDigits, nextCodeEan, spColorisFromLibelle, hasCodeForColoris, bainFromLibelle, articleClientFor } from './etiquettes-sp.js'
+import { matchCodeSp, defaultCommandeClient, commandeClientDuLot, missingMesures, netAAppliquer, lotDigits, nextCodeEan, spColorisFromLibelle, hasCodeForColoris, bainFromLibelle, articleClientFor } from './etiquettes-sp.js'
 
 // A slice of the real code_sp list (dev base, 2026-09-24).
 const CODES = [
@@ -121,5 +121,15 @@ describe('bainFromLibelle / articleClientFor', () => {
     expect(articleClientFor({ coloris: '544 NUIT', article_client: 'LF 043 - 544 NUIT' }, '440 ROSE DESIR')).toBe('LF 043 - 440 ROSE DESIR')
     expect(articleClientFor({ coloris: '556 SAPHIR', article_client: 'LF 043 - ' }, '440 ROSE DESIR')).toBe('LF 043 - 440 ROSE DESIR')
     expect(articleClientFor(undefined, 'X')).toBe('')
+  })
+})
+
+describe('commandeClientDuLot (LIVA #1303)', () => {
+  it('prints each SP order of the lot once, in order', () => {
+    expect(commandeClientDuLot(['A3-59180 DU 15/09/2026', 'A3-59180 DU 15/09/2026', ' A3-59301 DU 01/10/2026 '])).toBe('A3-59180 DU 15/09/2026 / A3-59301 DU 01/10/2026')
+  })
+  it('is empty when no roll is affected yet', () => {
+    expect(commandeClientDuLot([])).toBe('')
+    expect(commandeClientDuLot(['', ' '])).toBe('')
   })
 })

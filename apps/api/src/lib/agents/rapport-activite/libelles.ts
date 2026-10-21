@@ -441,6 +441,16 @@ const ROUTES: Route[] = [
     },
   },
   { m: 'POST', re: /^\/api\/etiquettes-sp\/lignes\/(\d+)\/([a-z]+)\/email$/, f: ([l], b, r) => `Envoi par mail du document Simone Pérèle de la ${cmdLigne(r, l)}${destinataires(b.to)}` },
+  {
+    m: 'PUT',
+    re: /^\/api\/etiquettes-sp\/lots\/(\d+)$/,
+    f: ([s], b, r) => {
+      const rl = objets(b.rolls)
+      const mesures = rl.map((x) => `${nomPieceId(r, x.id)} ${[nombre(x.brut, 'm brut'), nombre(x.net, 'm net'), nombre(x.laizeCm, 'cm de laize')].filter(Boolean).join(', ')}`)
+      return `Tableau de métrage Simone Pérèle du lot ${r.lots.get(s) ?? `#${s}`} : mesures de ${rl.length} rouleau${rl.length > 1 ? 'x' : ''}${mesures.length ? ` (${mesures.join(' ; ')})` : ''}`
+    },
+  },
+  { m: 'POST', re: /^\/api\/etiquettes-sp\/lots\/(\d+)\/tableau\/email$/, f: ([s], b, r) => `Envoi par mail du tableau de métrage Simone Pérèle du lot ${r.lots.get(s) ?? `#${s}`}${destinataires(b.to)}` },
 
   // Tricobot: the person checked a BL Tricobot pre-filled
   {
@@ -628,6 +638,7 @@ export function idsAResoudre(lignes: readonly Pick<LigneJournal, 'chemin' | 'cor
     if ((m = /^\/api\/commandes-sous-traitant\/(\d+)/.exec(c))) ajouter(ids.commandesSst, m[1])
     if ((m = /\/(?:rolls|pieces\/ecru|pieces\/fini|pieces)\/(\d+)(?:\/|$)/.exec(c))) ajouter(ids.pieces, m[1])
     if ((m = /^\/api\/suivi-lots\/(\d+)/.exec(c))) ajouter(ids.lots, m[1])
+    if ((m = /^\/api\/etiquettes-sp\/lots\/(\d+)/.exec(c))) ajouter(ids.lots, m[1])
     if ((m = /^\/api\/permissions(?:-trm)?\/users\/(\d+)/.exec(c))) ajouter(ids.utilisateurs, m[1])
     for (const k of ['stockIds', 'stockEcruIds']) for (const i of idsDe(b[k]).ids) ajouter(ids.pieces, i)
     for (const k of ['IDsous_traitant', 'IDmagasin_source', 'IDmagasin_destination']) ajouter(ids.sousTraitants, b[k])

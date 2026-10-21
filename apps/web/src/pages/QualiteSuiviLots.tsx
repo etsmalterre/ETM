@@ -40,6 +40,7 @@ import {
   Factory,
   MessageSquare,
   LineChart,
+  ClipboardList,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -58,6 +59,7 @@ import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateLotQualityCaches } from '@/lib/cache-sync'
+import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageLotDialog'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
@@ -118,6 +120,9 @@ interface RepriseLot {
 interface SuiviLotDetail {
   IDsuivilot: number
   lot: string
+  /** Its coloris is ordered by a client with labels: the tableau de métrage
+   *  of the whole lot is asked from here (LIVA #1303). */
+  etiquettes_sp?: boolean
   DATE: string | null
   IDcommande_sous_traitant: number
   IDligne_commande_sous_traitant: number
@@ -285,6 +290,7 @@ export function QualiteSuiviLots() {
   }, [])
   const [isEditing, setIsEditing] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
+  const [tableauOpen, setTableauOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'defauts' | 'actions'>('controles')
   const [edit, setEdit] = useState<EditState | null>(null)
   const originalRef = useRef<EditState | null>(null)
@@ -481,6 +487,7 @@ export function QualiteSuiviLots() {
               onCancelEdit={cancelEdit}
               onSave={() => saveMut.mutate()}
               onOpenGraph={() => setGraphOpen(true)}
+              onOpenTableau={() => setTableauOpen(true)}
             />
           ) : detailLoading ? (
             <div className="flex items-center justify-center h-24">
@@ -521,6 +528,15 @@ export function QualiteSuiviLots() {
       <UnsavedChangesDialog open={guard.showDialog} onAction={guard.handleAction} isSaving={guard.isSaving} />
 
       <LotTrendDialog open={graphOpen} onClose={() => setGraphOpen(false)} lotId={selectedId} />
+
+      {detail?.etiquettes_sp && (
+        <TableauMetrageLotDialog
+          suivilotId={detail.IDsuivilot}
+          lot={detail.lot}
+          open={tableauOpen}
+          onClose={() => setTableauOpen(false)}
+        />
+      )}
 
       <RepriseMotifDialog
         open={repriseOpen}
@@ -656,6 +672,7 @@ function LotDetailHeader({
   onCancelEdit,
   onSave,
   onOpenGraph,
+  onOpenTableau,
 }: {
   detail: SuiviLotDetail
   isEditing: boolean
@@ -665,6 +682,7 @@ function LotDetailHeader({
   onCancelEdit: () => void
   onSave: () => void
   onOpenGraph: () => void
+  onOpenTableau: () => void
 }) {
   return (
     <div className="flex-shrink-0 pt-0.5">
@@ -711,6 +729,17 @@ function LotDetailHeader({
             </>
           ) : (
             <>
+              {detail.etiquettes_sp && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9"
+                  title="Tableau de métrage Simone Pérèle — à envoyer à l'ennoblisseur, mesures à saisir"
+                  onClick={onOpenTableau}
+                >
+                  <ClipboardList className="h-4 w-4" />
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="icon"

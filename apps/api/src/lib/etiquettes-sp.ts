@@ -8,6 +8,13 @@
 // enters those numbers and sends MATEL the label PDF, which MATEL prints, cuts
 // and sticks on the rolls before shipping to Simone Pérèle.
 //
+// The tableau is asked per dyer LOT from Qualité › Suivi lots (LIVA #1303):
+// Pierrot dyes more pieces than an order needs and affects only what it
+// needs, so a tableau built from the order line left the rest of the lot
+// unmeasured. The measures are per roll either way — the lot and the line
+// read the same ones; only the labels stay on the line (they print the SP
+// order number, known once a roll is affected).
+//
 // The legacy (FEN_Etiquettes_SP) had every field typed by hand and kept
 // nothing. Here the order line gives the order number, the coloris (hence the
 // EAN from `code_sp`) and the rolls; only MATEL's measures are typed, and they
@@ -55,6 +62,8 @@ interface StoreFile {
   clients: number[]
   /** Keyed by IDligne_commande_client. */
   lignes: Record<string, LigneEtiquettes>
+  /** Keyed by IDsuivilot — the lot's tableau de métrage (LIVA #1303). */
+  lots: Record<string, LigneEtiquettes>
   /** Keyed by IDstock_fini. */
   rolls: Record<string, RollMesure>
 }
@@ -67,10 +76,10 @@ async function load(): Promise<StoreFile> {
   try {
     const parsed = JSON.parse(await fs.readFile(FILE_PATH, 'utf8')) as StoreFile
     if (parsed?.version !== 1) throw new Error('etiquettes-sp.json: invalid shape')
-    cache = { version: 1, clients: parsed.clients ?? [], lignes: parsed.lignes ?? {}, rolls: parsed.rolls ?? {} }
+    cache = { version: 1, clients: parsed.clients ?? [], lignes: parsed.lignes ?? {}, lots: parsed.lots ?? {}, rolls: parsed.rolls ?? {} }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.error('Failed to load etiquettes-sp.json:', err)
-    cache = { version: 1, clients: [], lignes: {}, rolls: {} }
+    cache = { version: 1, clients: [], lignes: {}, lots: {}, rolls: {} }
   }
   return cache
 }
@@ -116,6 +125,13 @@ export async function getRollMesures(rollIds: number[]): Promise<Map<number, Rol
   return out
 }
 
+export async function getLotEtiquettes(suivilotId: number): Promise<LigneEtiquettes | null> {
+  return (await load()).lots[String(suivilotId)] ?? null
+}
+
+/** Only the rolls sent are written: the screens send the rolls whose
+ *  measures changed, so the lot and the line never overwrite each other's
+ *  typing with what they loaded earlier. */
 export async function saveLigneEtiquettes(
   ligneId: number,
   ligne: LigneEtiquettes,
@@ -123,10 +139,25 @@ export async function saveLigneEtiquettes(
 ): Promise<void> {
   await update((f) => {
     f.lignes[String(ligneId)] = ligne
-    for (const r of rolls) {
-      f.rolls[String(r.id)] = { brut: r.brut, net: r.net, laizeCm: r.laizeCm, tare: r.tare, poids: r.poids }
-    }
+    writeRolls(f, rolls)
   })
+}
+
+export async function saveLotEtiquettes(
+  suivilotId: number,
+  lot: LigneEtiquettes,
+  rolls: Array<{ id: number } & RollMesure>,
+): Promise<void> {
+  await update((f) => {
+    f.lots[String(suivilotId)] = lot
+    writeRolls(f, rolls)
+  })
+}
+
+function writeRolls(f: StoreFile, rolls: Array<{ id: number } & RollMesure>): void {
+  for (const r of rolls) {
+    f.rolls[String(r.id)] = { brut: r.brut, net: r.net, laizeCm: r.laizeCm, tare: r.tare, poids: r.poids }
+  }
 }
 
 // ── Pure rules ────────────────────────────────────────────────────────────
@@ -182,6 +213,13 @@ export function netAAppliquer(m: RollMesure | undefined | null, metrageStock: nu
   if (!m || missingMesures(m).length > 0) return null
   const net = Math.round(Number(m.net) * 100) / 100
   return net === Math.round((Number(metrageStock) || 0) * 100) / 100 ? null : net
+}
+
+/** The SP order number(s) a lot's tableau prints: those of the SP order
+ *  lines its rolls are affected to, distinct, in order. Empty when no roll
+ *  is affected yet — MATEL measures the pieces, the number is only a header. */
+export function commandeClientDuLot(numeros: string[]): string {
+  return [...new Set(numeros.map((n) => n.trim()).filter(Boolean))].join(' / ')
 }
 
 /** The order number as the label prints it, from `commande_client.ref_client`
