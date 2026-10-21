@@ -71,43 +71,78 @@ export function compositionTexte(lignes: EtiquetteEchantillonData['composition']
 
 // ── Styles ───────────────────────────────────────────────
 //
-// The fini tag's styles, verbatim where the element is the same (headline,
-// rule, spec cells). Vertical budget 102 − 2 × 3 = 96 pt: numéro
-// 22 + contexture 9 + 2.5 + rule 7.8 + specs 20.5 + composition 2 × 8 + 3
-// ≈ 81 at a two-line composition, the worst case after the clamp.
+// Three zones over the whole label (Vincent, 2026-10-21 — the first cut piled
+// everything top-left, the LFA row ran off and the bottom stayed empty):
+//
+//   ┌─────────────────┬──────────────────────────┐
+//   │ ÉCHANTILLON     │ JAUGE        Ø           │
+//   │ E054            │ 18           30"         │
+//   │ cote 1/1 vanisé │ LFA / TOUR               │
+//   │                 │ [11.00][ — ][11.00][ — ] │
+//   ├─────────────────┴──────────────────────────┤
+//   │ COMPOSITION                                │
+//   │ 95 % 1/34 LYO/COT/CHA/PA · 5 % 44 ELAST…   │
+//   └────────────────────────────────────────────┘
+//
+// Identity left, the knitting settings right behind a vertical rule, the
+// yarns along the bottom. The LFA are four boxed cells, the screen's « LFA /
+// tour » tile in ink. Vertical budget 102 − 2 × 5 = 92 pt: top block ≈ 54
+// (caption 6 + numéro 26 + contexture 2 × 8.5 | specs 20 + LFA 21.5) + rule
+// 8 + composition 7 + 2 × 8 ≈ 85.
+
+const LEFT = 84
+const CELL_GAP = 3
+const RIGHT = CONTENT_WIDTH - LEFT - 13 // after the vertical rule and its gutters
+const CELL = (RIGHT - 3 * CELL_GAP) / 4
 
 const styles = StyleSheet.create({
   page: {
     width: PAGE_WIDTH,
     height: PAGE_HEIGHT,
-    flexDirection: 'row',
+    flexDirection: 'column',
+    justifyContent: 'center',
     fontFamily: 'Helvetica',
     color: '#000000',
-    paddingVertical: 3,
+    paddingVertical: 5,
     paddingHorizontal: PAGE_PADDING_X,
   },
-  body: { flex: 1, flexDirection: 'column', justifyContent: 'center', paddingBottom: 3 },
-  headline: { flexDirection: 'row', alignItems: 'flex-end' },
-  tag: { fontSize: 9, color: '#333333', marginRight: 5, marginBottom: 2, lineHeight: 1 },
-  numero: { fontFamily: 'Helvetica-Bold', fontSize: 22, lineHeight: 1 },
-  contexture: { fontSize: 8, lineHeight: 1.12, marginTop: 2.5 },
-  rule: { borderBottomWidth: 0.8, borderBottomColor: '#000000', marginTop: 4, marginBottom: 3 },
-  specs: { flexDirection: 'row', alignItems: 'flex-end' },
-  spec: { flexDirection: 'column', marginRight: 10, minWidth: 26 },
-  // The LFA takes what is left of the row and may wrap (several tours).
-  // LFA / tour: four fixed cells, tour 1 to 4, like the reference's Réglages tile.
-  lfaRow: { flexDirection: 'row' },
-  lfaCell: { width: 31, textAlign: 'center', fontFamily: 'Helvetica-Bold', fontSize: 10.5, lineHeight: 1, marginBottom: 0.5 },
-  lfaEmpty: { width: 31, textAlign: 'center', fontSize: 10.5, lineHeight: 1, color: '#333333', marginBottom: 0.5 },
-  specLabel: { fontSize: 6, color: '#333333', letterSpacing: 0.6, lineHeight: 1, marginBottom: 1.5 },
+  top: { flexDirection: 'row', alignItems: 'stretch' },
+  caption: { fontSize: 5.5, color: '#333333', letterSpacing: 0.8, lineHeight: 1, marginBottom: 2 },
+
+  // Left: who it is
+  ident: { width: LEFT, flexDirection: 'column', justifyContent: 'center' },
+  numero: { fontFamily: 'Helvetica-Bold', fontSize: 26, lineHeight: 1 },
+  contexture: { fontFamily: 'Helvetica-Bold', fontSize: 7.5, lineHeight: 1.12, marginTop: 3 },
+
+  vrule: { width: 0.8, backgroundColor: '#000000', marginHorizontal: 6 },
+
+  // Right: how it is knitted
+  reglages: { width: RIGHT, flexDirection: 'column', justifyContent: 'space-between' },
+  specs: { flexDirection: 'row' },
+  spec: { flexDirection: 'column', width: RIGHT / 2 },
   specValue: { fontFamily: 'Helvetica-Bold', fontSize: 13, lineHeight: 1 },
-  composition: { fontSize: 7, lineHeight: 1.12, marginTop: 3 },
+  lfaRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  lfaCell: {
+    width: CELL,
+    height: 14,
+    borderWidth: 0.8,
+    borderColor: '#000000',
+    borderRadius: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lfaValue: { fontFamily: 'Helvetica-Bold', fontSize: 8.5, lineHeight: 1 },
+  lfaEmpty: { fontSize: 8.5, lineHeight: 1, color: '#333333' },
+
+  // Bottom: what it is made of
+  hrule: { borderBottomWidth: 0.8, borderBottomColor: '#000000', marginTop: 5, marginBottom: 3.5 },
+  composition: { fontSize: 7, lineHeight: 1.15 },
 })
 
 function Spec({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.spec}>
-      <Text style={styles.specLabel}>{label}</Text>
+      <Text style={styles.caption}>{label}</Text>
       <Text style={styles.specValue}>{value || '—'}</Text>
     </View>
   )
@@ -117,28 +152,33 @@ function Etiquette({ d }: { d: EtiquetteEchantillonData }): React.ReactElement {
   const compo = compositionTexte(d.composition)
   return (
     <Page size={[PAGE_WIDTH, PAGE_HEIGHT]} style={styles.page}>
-      <View style={styles.body}>
-        <View style={styles.headline}>
-          <Text style={styles.tag}>Éch.</Text>
+      <View style={styles.top}>
+        <View style={styles.ident}>
+          <Text style={styles.caption}>ÉCHANTILLON</Text>
           <Text style={styles.numero}>{d.numero}</Text>
+          {d.contexture?.trim() ? <Text style={styles.contexture}>{d.contexture.trim()}</Text> : null}
         </View>
-        {d.contexture?.trim() ? <Text style={styles.contexture}>{d.contexture.trim()}</Text> : null}
-        <View style={styles.rule} />
-        <View style={styles.specs}>
-          <Spec label="JAUGE" value={d.jauge ?? ''} />
-          <Spec label="Ø" value={d.diametre ?? ''} />
-          <View style={styles.spec}>
-            <Text style={styles.specLabel}>LFA / TOUR</Text>
+        <View style={styles.vrule} />
+        <View style={styles.reglages}>
+          <View style={styles.specs}>
+            <Spec label="JAUGE" value={d.jauge ?? ''} />
+            <Spec label="Ø" value={d.diametre ?? ''} />
+          </View>
+          <View>
+            <Text style={styles.caption}>LFA / TOUR</Text>
             <View style={styles.lfaRow}>
               {lfaTours(d.lfa).map((v, i) => (
-                <Text key={i} style={v === '—' ? styles.lfaEmpty : styles.lfaCell}>{v}</Text>
+                <View key={i} style={styles.lfaCell}>
+                  <Text style={v === '—' ? styles.lfaEmpty : styles.lfaValue}>{v}</Text>
+                </View>
               ))}
             </View>
           </View>
         </View>
-        {compo ? <Text style={styles.composition}>{compo}</Text> : null}
       </View>
-
+      <View style={styles.hrule} />
+      <Text style={styles.caption}>COMPOSITION</Text>
+      <Text style={styles.composition}>{compo || '—'}</Text>
     </Page>
   )
 }

@@ -50,11 +50,12 @@ describe('EtiquetteEchantillonPdf', () => {
     expect(s).not.toContain('FICHE')
   })
 
-  it('shows a dash for what is not entered, and no composition line when empty', () => {
+  it('shows a dash for what is not entered, composition included', () => {
     const s = pdfStrings(EtiquetteEchantillonPdf({ data: { ...base, contexture: null, jauge: null, lfa: [0, 0, 0, 0], composition: [] } }))
-    // jauge + 4 empty tours
-    expect(s.filter((t) => t === '—').length).toBe(5)
+    // jauge + 4 empty tours + composition
+    expect(s.filter((t) => t === '—').length).toBe(6)
     expect(s.some((t) => t.includes('%'))).toBe(false)
+    expect(s).toContain('COMPOSITION')
   })
 
   it('prints the four LFA tours in order, « — » for an empty one, written like the reference', () => {
