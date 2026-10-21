@@ -237,6 +237,8 @@ interface RefEcruDetail {
   echantillon_origine: { IDref_echantillon: number; numero: string } | null
   composition_lines: CompositionRow[]
   cout_kg: number | null
+  /** Part of the yarn cost that is the frais de gestion on purchases (#1298). */
+  cout_gestion_fil?: number
   coloris: ColorisRow[]
   machines: MachineRow[]
   chutes: ChuteRow[]
@@ -3134,6 +3136,9 @@ function CoutTab({ detail }: { detail: RefEcruDetail }) {
           </p>
           <p className="text-2xl font-bold tabular-nums text-accent">{fmtNum(detail.cout_kg, 2)} <span className="text-sm font-normal text-muted-foreground">€/kg</span></p>
           <p className="text-[11px] text-muted-foreground mt-0.5">Matière (composition × prix des fils) + façon {detail.prix != null ? `${fmtNum(detail.prix, 2)} €/kg` : ''}</p>
+          {(detail.cout_gestion_fil ?? 0) > 0 && (
+            <p className="text-[11px] text-muted-foreground">dont {fmtNum(detail.cout_gestion_fil!, 2)} €/kg de frais de gestion fil (5 % sur l’achat)</p>
+          )}
         </div>
       )}
       <div className="p-3 rounded-lg border bg-card shadow-sm space-y-3">

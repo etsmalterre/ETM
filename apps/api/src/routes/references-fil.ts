@@ -6,6 +6,7 @@ import { pickVal, stripKeys } from './stock.js'
 import { aggregateStockFilRows, resteALivrer } from '../lib/references-fil-agg.js'
 import { consommationRefFil, MARGE_SEMAINES } from '../lib/fil-consommation.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { FRAIS_GESTION_FIL_PCT, prixBaseDepuisAchat } from '../lib/fil-frais-gestion.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import {
   REF_FIL_DOC_TYPES,
@@ -257,7 +258,7 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
     // misleading legacy data (see project memory). Real fournisseur↔coloris
     // links live in asso_colorisfil_frs and are loaded below.
     const varianteRows = await query(
-      `SELECT IDcolori_fil, IDref_fil, reference, prix_kg, stock_mini, delai_appro, commentaire FROM colori_fil WHERE IDref_fil = ${id} ORDER BY reference`,
+      `SELECT IDcolori_fil, IDref_fil, reference, prix_kg, stock_mini, delai_appro, commentaire, idoffre_retenue FROM colori_fil WHERE IDref_fil = ${id} ORDER BY reference`,
     )
     const variantesFixed = await fixEncoding(
       varianteRows as any,
@@ -300,6 +301,7 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
         IDref_fil: Number(v.IDref_fil),
         reference: v.reference ?? null,
         prix_kg: toNumOrNull(v.prix_kg),
+        IDoffre_retenue: Number(v.idoffre_retenue) || 0,
         stock_mini: toNumOrNull(v.stock_mini),
         delai_appro: Number(v.delai_appro) || 0,
         commentaire: v.commentaire ?? null,
@@ -473,6 +475,10 @@ referencesFilRouter.get('/:id', async (req: Request, res: Response) => {
 
     res.json({
       ...refNormalised,
+      // The supplier offer the base price was set from (« Retenir »), 0 =
+      // typed by hand; the base price holds the frais de gestion on top of it.
+      IDoffre_retenue: Number(refNormalised.idoffre_retenue) || 0,
+      frais_gestion_pct: FRAIS_GESTION_FIL_PCT,
       variantes,
       composition,
       stock_total_kg: stockTotalKg,
@@ -507,6 +513,11 @@ const refFilBody = z.object({
   bio: z.boolean().optional(),
   recycle: z.boolean().optional(),
 })
+
+/** A base price was changed by hand (0,005 tolerance: prices are centimes). */
+function prixChange(avant: number | null, apres: number | null | undefined): boolean {
+  return Math.abs((Number(avant) || 0) - (Number(apres) || 0)) > 0.005
+}
 
 function buildRefFilSets(body: z.infer<typeof refFilBody>): string[] {
   const sets: string[] = []
@@ -720,8 +731,13 @@ referencesFilRouter.put('/:id', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
       return
     }
+    const [before] = await mpsPg()<{ prix_kg: number | null }[]>`SELECT prix_kg FROM ref_fil WHERE idref_fil = ${id}`
     const sets = buildRefFilSets(parsed.data)
     await query(`UPDATE ref_fil SET ${sets.join(', ')} WHERE IDref_fil = ${id}`)
+    // A price typed by hand is no longer the retained offer's.
+    if (before && prixChange(before.prix_kg, parsed.data.prix_kg)) {
+      await mpsPg()`UPDATE ref_fil SET idoffre_retenue = 0 WHERE idref_fil = ${id}`
+    }
     res.json({ ok: true, _linux_recycle_skipped: !canNameAccented() })
   } catch (err) {
     console.error('Error updating ref_fil:', err)
@@ -885,9 +901,13 @@ referencesFilRouter.put('/:id/variantes/:coloriId', async (req: Request, res: Re
       return
     }
     const b = parsed.data
+    const [before] = await mpsPg()<{ prix_kg: number | null }[]>`SELECT prix_kg FROM colori_fil WHERE idcolori_fil = ${coloriId}`
     await query(
       `UPDATE colori_fil SET reference = ${sqlText(b.reference)}, prix_kg = ${b.prix_kg ?? 0}, commentaire = ${sqlText(b.commentaire ?? '')} WHERE IDcolori_fil = ${coloriId}`,
     )
+    if (before && prixChange(before.prix_kg, b.prix_kg)) {
+      await mpsPg()`UPDATE colori_fil SET idoffre_retenue = 0 WHERE idcolori_fil = ${coloriId}`
+    }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating colori_fil:', err)
@@ -1096,6 +1116,36 @@ referencesFilRouter.post('/:id/offres', async (req: Request, res: Response) => {
     res.status(201).json({ ok: true })
   } catch (err) {
     console.error('Error creating offre_fil:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/references-fil/:id/offres/:offreId/retenir — Pierrot keeps this
+// offer: the base price becomes the offer + the frais de gestion on yarn
+// (lib/fil-frais-gestion.ts, 5 %), on the coloris the offer names, else on
+// the reference, and remembers which offer it came from (#1298). Before
+// that, the rule lived only in his head and the ×1,05 was typed by hand.
+referencesFilRouter.post('/:id/offres/:offreId/retenir', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const offreId = parseInt(req.params.offreId, 10)
+    if (isNaN(id) || isNaN(offreId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const sql = mpsPg()
+    const [offre] = await sql<{ prix: number | null; idcolori_fil: number | null }[]>`
+      SELECT prix, idcolori_fil FROM offre_fil WHERE idoffre_fil = ${offreId} AND idref_fil = ${id}`
+    if (!offre) { res.status(404).json({ error: 'Offre not found for this reference' }); return }
+    if (!(Number(offre.prix) > 0)) { res.status(409).json({ error: 'offre_sans_prix', message: 'Cette offre n’a pas de prix.' }); return }
+    const prix = prixBaseDepuisAchat(Number(offre.prix))
+    const idColori = Number(offre.idcolori_fil) || 0
+    if (idColori > 0) {
+      await sql`UPDATE colori_fil SET prix_kg = ${prix}, idoffre_retenue = ${offreId}
+                 WHERE idcolori_fil = ${idColori} AND idref_fil = ${id}`
+    } else {
+      await sql`UPDATE ref_fil SET prix_kg = ${prix}, idoffre_retenue = ${offreId} WHERE idref_fil = ${id}`
+    }
+    res.json({ ok: true, prix_kg: prix, IDcolori_fil: idColori })
+  } catch (err) {
+    console.error('Error retaining offre_fil:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

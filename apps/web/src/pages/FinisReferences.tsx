@@ -2297,6 +2297,8 @@ interface TarifTranche {
   qte_ml: number
   poids_ref: number
   moFil: number
+  /** Part of moFil that is the yarn frais de gestion (internal, #1298). */
+  moGestionFil?: number
   detailFil: TarifDetailLine[]
   moTricotage: number
   detailTricotage: TarifDetailLine | null
@@ -2453,6 +2455,9 @@ function TarifTab({ detail }: { detail: RefFiniDetail }) {
                 {current.detailFil.map((l, i) => (
                   <CostLine key={i} label={l.label} value={eurKg(l.valueKg)} />
                 ))}
+                {(current.moGestionFil ?? 0) > 0 && (
+                  <CostLine label="dont frais de gestion fil (5 % sur l’achat)" value={eurKg(current.moGestionFil!)} />
+                )}
               </CostSection>
 
               <CostSection title="Tricotage" total={eurKg(current.moTricotage)}>

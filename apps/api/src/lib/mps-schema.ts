@@ -930,6 +930,41 @@ ${grantApi('SELECT, INSERT', 'echantillon_relance')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE echantillon_relance_id_seq')}
 `,
   },
+  {
+    // Finis › Tarifs rework (LIVA #1298, Vincent 2026-10-21).
+    // • A simulation remembers where it came from — a sample
+    //   (idref_echantillon) or a client's reference (idref_fini + its coloris
+    //   + idclient) — so it can be compared with the reference's catalogue
+    //   price and the client's real price.
+    // • mult_auto = 1: the ennoblissement uplift is MATEL's rendement grid,
+    //   like the catalogue price (Isabelle's ticket: it was missing). Rows
+    //   that carried a hand-typed multiplicateur keep it (mult_auto = 0).
+    // • gots / ajust_ennoblissement (%, e.g. -10 for a negotiated dyer price)
+    //   / frais_gestion_fil (%) are levers of the simulation.
+    // • asso_fil_tarif.prix_achat: the yarn's PURCHASE price; the line's
+    //   €/Kg is prix_achat × (1 + frais_gestion_fil). The old `prix` already
+    //   held the 5 % (ref_fil.prix_kg = selected offer × 1.05), hence ÷ 1.05.
+    // • ref_fil / colori_fil.idoffre_retenue: the supplier offer the base
+    //   price was set from (Fils › Références, « Retenir »), 0 = typed by hand.
+    name: '0028_tarif_simulation_leviers',
+    sql: `
+ALTER TABLE ref_tarif
+  ADD COLUMN idref_fini bigint DEFAULT 0,
+  ADD COLUMN idcoloris bigint DEFAULT 0,
+  ADD COLUMN idclient bigint DEFAULT 0,
+  ADD COLUMN idref_echantillon bigint DEFAULT 0,
+  ADD COLUMN date_creation date,
+  ADD COLUMN mult_auto smallint DEFAULT 1,
+  ADD COLUMN gots smallint DEFAULT 0,
+  ADD COLUMN ajust_ennoblissement double precision DEFAULT 0,
+  ADD COLUMN frais_gestion_fil double precision DEFAULT 5;
+UPDATE ref_tarif SET mult_auto = 0 WHERE COALESCE(multiplicateur, 0) <> 0;
+ALTER TABLE asso_fil_tarif ADD COLUMN prix_achat double precision DEFAULT 0;
+UPDATE asso_fil_tarif SET prix_achat = COALESCE(prix, 0) / 1.05;
+ALTER TABLE ref_fil ADD COLUMN idoffre_retenue bigint DEFAULT 0;
+ALTER TABLE colori_fil ADD COLUMN idoffre_retenue bigint DEFAULT 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {

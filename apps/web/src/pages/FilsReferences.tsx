@@ -34,6 +34,7 @@ import {
   Tag,
   FileText,
   Upload,
+  CheckCircle2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -71,6 +72,8 @@ interface Variante {
   IDref_fil: number
   reference: string | null
   prix_kg: number | null
+  /** Offer the coloris' base price was set from (« Retenir »), 0 = typed. */
+  IDoffre_retenue: number
   stock_mini: number | null
   /** Supplier delivery time in weeks (0 = not filled in). */
   delai_appro: number
@@ -141,6 +144,16 @@ interface RefFilDetail extends RefFilListRow {
   commande_history: CommandeHistoryRow[]
   offres: OffreFilRow[]
   fournisseurs: FournisseurRef[]
+  /** Offer the base price was set from (« Retenir »), 0 = typed by hand. */
+  IDoffre_retenue: number
+  /** Frais de gestion on yarn purchases, in % — the base price is the
+   *  retained offer plus this (API lib/fil-frais-gestion.ts, #1298). */
+  frais_gestion_pct: number
+}
+
+/** Purchase price hidden in a base price: base = offer × (1 + gestion). */
+function achatDepuisBase(prix: number, gestionPct: number): number {
+  return prix / (1 + gestionPct / 100)
 }
 
 interface MatiereLookup {
@@ -1169,7 +1182,7 @@ function SpecsCard({
                 onChange={(v) => onDraftChange({ ...draft, nb_brin: v })}
               />
               <LabeledInput
-                label="Prix (€/kg)"
+                label={`Prix de base (€/kg) — achat + ${fmtNum(detail.frais_gestion_pct, 0)} % de gestion`}
                 type="number"
                 step="0.01"
                 value={draft.prix_kg}
@@ -1210,6 +1223,13 @@ function SpecsCard({
                   value={detail.prix_kg != null && detail.prix_kg > 0 ? fmtNum(detail.prix_kg, 2) : null}
                   unit="€/kg"
                 />
+                {detail.prix_kg != null && detail.prix_kg > 0 && (
+                  <PrixBaseDetail
+                    prix={detail.prix_kg}
+                    gestionPct={detail.frais_gestion_pct}
+                    offre={detail.offres.find((o) => o.IDoffre_fil === detail.IDoffre_retenue) ?? null}
+                  />
+                )}
               </SpecTile>
             </div>
             {(!!detail.bio || !!detail.recycle) && (
@@ -2095,6 +2115,24 @@ function emptyOffreDraft(): OffreDraft {
   }
 }
 
+/** Under a base price: what the supplier is paid and what the frais de gestion
+ *  adds, and the offer it came from when one was retained. */
+function PrixBaseDetail({ prix, gestionPct, offre }: { prix: number; gestionPct: number; offre: OffreFilRow | null }) {
+  const achat = achatDepuisBase(prix, gestionPct)
+  return (
+    <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
+      <p className="tabular-nums">
+        Achat {fmtNum(achat, 2)} € + {fmtNum(gestionPct, 0)} % gestion ({fmtNum(prix - achat, 2)} €)
+      </p>
+      <p className="truncate" title={offre ? undefined : 'Prix saisi à la main — « Retenir » une offre dans l’onglet Offres'}>
+        {offre
+          ? `Offre retenue : ${offre.fournisseur_nom ?? '—'}${offre.date ? `, ${formatHfsqlDate(offre.date)}` : ''}`
+          : 'Aucune offre retenue'}
+      </p>
+    </div>
+  )
+}
+
 function OffresHistoryCard({
   detail,
   isEditing,
@@ -2111,8 +2149,21 @@ function OffresHistoryCard({
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<OffreDraft>(emptyOffreDraft())
   const [deleteTarget, setDeleteTarget] = useState<OffreFilRow | null>(null)
+  const [retenirTarget, setRetenirTarget] = useState<OffreFilRow | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const offres = detail.offres ?? []
+  // The offers a base price was set from: the reference's and each coloris'.
+  const retenues = new Set(
+    [detail.IDoffre_retenue, ...detail.variantes.map((v) => v.IDoffre_retenue)].filter((id) => id > 0),
+  )
+  const retenirMut = useMutation({
+    mutationFn: (offreId: number) =>
+      apiFetch(`/references-fil/${refFilId}/offres/${offreId}/retenir`, { method: 'POST' }),
+    onSuccess: () => {
+      setRetenirTarget(null)
+      onMutationSuccess()
+    },
+  })
 
   const reportDirtyRef = useRef(reportDirty)
   useEffect(() => {
@@ -2240,6 +2291,7 @@ function OffresHistoryCard({
                 <th className="px-3 py-2 text-left font-semibold">Coloris</th>
                 <th className="px-3 py-2 text-right font-semibold">Quantité</th>
                 <th className="px-3 py-2 text-right font-semibold">Prix</th>
+                <th className="px-3 py-2 text-right font-semibold">Base</th>
                 {isEditing && <th className="w-8" />}
               </tr>
             </thead>
@@ -2269,6 +2321,28 @@ function OffresHistoryCard({
                     )}
                   >
                     {o.prix != null ? `${fmtNum(o.prix, 2)} €/kg` : '—'}
+                    {o.prix != null && o.prix > 0 && (
+                      <p className="text-[10px] font-normal text-muted-foreground">
+                        {fmtNum(o.prix * (1 + detail.frais_gestion_pct / 100), 2)} € avec gestion
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    {retenues.has(o.IDoffre_fil) ? (
+                      <Badge variant="outline" className="text-[10px] py-0 gap-1 text-green-700 border-green-500/40 bg-green-500/10">
+                        <CheckCircle2 className="h-3 w-3" />Retenue
+                      </Badge>
+                    ) : !isEditing && o.prix != null && o.prix > 0 ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs text-accent hover:text-accent hover:bg-accent/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => setRetenirTarget(o)}
+                        title="Retenir cette offre : le prix de base devient l’offre + les frais de gestion"
+                      >
+                        Retenir
+                      </Button>
+                    ) : null}
                   </td>
                   {isEditing && (
                     <td className="px-1 py-2 text-right">
@@ -2383,6 +2457,24 @@ function OffresHistoryCard({
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => {
           if (deleteTarget) deleteMut.mutate(deleteTarget.IDoffre_fil)
+        }}
+      />
+      <ConfirmDialog
+        open={retenirTarget !== null}
+        variant="default"
+        title="Retenir l'offre"
+        description={
+          retenirTarget && retenirTarget.prix != null
+            ? `${retenirTarget.fournisseur_nom ?? '—'} à ${fmtNum(retenirTarget.prix, 2)} €/kg : le prix de base ${
+                retenirTarget.IDcolori_fil > 0 ? `du coloris ${retenirTarget.colori_reference ?? ''}` : 'de la référence'
+              } passera à ${fmtNum(retenirTarget.prix * (1 + detail.frais_gestion_pct / 100), 2)} €/kg (offre + ${fmtNum(detail.frais_gestion_pct, 0)} % de frais de gestion).`
+            : undefined
+        }
+        confirmLabel="Retenir"
+        isPending={retenirMut.isPending}
+        onCancel={() => setRetenirTarget(null)}
+        onConfirm={() => {
+          if (retenirTarget) retenirMut.mutate(retenirTarget.IDoffre_fil)
         }}
       />
     </>

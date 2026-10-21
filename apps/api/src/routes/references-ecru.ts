@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
+import { achatDepuisPrixBase } from '../lib/fil-frais-gestion.js'
 import { z } from 'zod'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { selectMachines, machineLabel, resolveMachineLabels } from '../lib/production-trm.js'
@@ -456,6 +457,8 @@ export async function loadRefEcruDetail(id: number) {
     0,
   )
   const cout_kg = Math.round(((ref.prix ?? 0) + yarnCost) * 100) / 100
+  // The yarn base prices hold the frais de gestion on purchases (#1298).
+  const cout_gestion_fil = Math.round((yarnCost - achatDepuisPrixBase(yarnCost)) * 100) / 100
 
   // Coloris (colori_ecru — explicit columns; SELECT * fails).
   const colRows = await query<{ IDcolori_ecru: number; reference: string | null; commentaire: string | null; suivis: number | null }>(
@@ -586,6 +589,7 @@ export async function loadRefEcruDetail(id: number) {
     echantillon_origine,
     composition_lines: compositionLines,
     cout_kg,
+    cout_gestion_fil,
     coloris: colorisOut,
     machines,
     ...liage,

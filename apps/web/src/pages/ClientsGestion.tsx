@@ -2630,6 +2630,8 @@ interface TarifDetailLine { label: string; valueKg: number }
 interface TarifTranche {
   rolls: number; isMetrage: boolean; qte_ml: number; qte_kg: number; poids_ref: number
   moFil: number; detailFil: TarifDetailLine[]
+  /** Part of moFil that is the yarn frais de gestion (internal, #1298). */
+  moGestionFil?: number
   moTricotage: number; detailTricotage: TarifDetailLine | null
   moTraitements: number; detailTraitement: TarifDetailLine[]
   moTeinte: number; detailTeinture: TarifDetailLine | null
@@ -2843,7 +2845,10 @@ function TarifDialog({ open, onClose, clientId, rccId, label }: {
                   : 0
                 return (
                 <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2.5">
-                  <CostSection title="Fil" total={eurKg(basis.moFil)}>{basis.detailFil.map((l, i) => <CostLine key={i} label={l.label} value={eurKg(l.valueKg)} />)}</CostSection>
+                  <CostSection title="Fil" total={eurKg(basis.moFil)}>
+                    {basis.detailFil.map((l, i) => <CostLine key={i} label={l.label} value={eurKg(l.valueKg)} />)}
+                    {(basis.moGestionFil ?? 0) > 0 && <CostLine label="dont frais de gestion fil (5 % sur l’achat)" value={eurKg(basis.moGestionFil!)} />}
+                  </CostSection>
                   <CostSection title="Tricotage" total={eurKg(basis.moTricotage)}>{basis.detailTricotage && <CostLine label={basis.detailTricotage.label} value={eurKg(basis.detailTricotage.valueKg)} />}</CostSection>
                   {!isEcru && (
                     <CostSection title="Traitement" total={eurKg(basis.moTraitements)}>

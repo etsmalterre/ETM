@@ -21,6 +21,7 @@
 import { query, fixEncoding } from './hfsql-auto.js'
 import { multiplicateurMatel } from './pricing-sst.js'
 import { prixTranche } from './tranche-poids.js'
+import { achatDepuisPrixBase } from './fil-frais-gestion.js'
 
 /** Per-tranche margin — legacy `CoefficientV2(i)`. Index = tranche i (0..8).
  *  Small quantities carry a higher margin; bulk a lower one. Exported so the
@@ -67,6 +68,35 @@ function mult(v: number): string {
 export interface TarifDetailLine {
   label: string
   valueKg: number
+  /** Fil lines only: the part of `valueKg` that is the yarn « frais de
+   *  gestion » (lib/fil-frais-gestion.ts) — internal, never printed for a client. */
+  gestionKg?: number
+}
+
+/** What a simulation may change on top of the catalogue rules (Finis ›
+ *  Tarifs). Absent = the catalogue price, byte for byte. */
+export interface TarifLeviers {
+  /** null/undefined = MATEL's rendement grid (catalogue). A ratio (0.05 =
+   *  +5 %) = the legacy hand-typed « Multiplicateur », applied to every
+   *  treatment and to the dye. */
+  multiplicateurManuel?: number | null
+  /** Percent added to every ennoblissement band price (treatments and dye,
+   *  not the GOTS supplement): -10 = a dyer price negotiated 10 % lower. */
+  ajustEnnoblissementPct?: number
+  /** Shipping: percentage of the sale price (the 30-roll tranche stays at
+   *  3 %) or a flat €/Kg. Catalogue = 5 %. */
+  port?: { mode: 'pct' | 'kg'; pct: number; fixe: number }
+  /** Label of the knitting line (the catalogue names the écru reference). */
+  tricotageLabel?: string
+}
+
+/** The extra « simulation libre » tranche: any weight, from a margin or
+ *  backwards from a target €/Ml. `coefficient` wins over `prix_cible_ml`. */
+export interface TarifLibreOptions {
+  poids: number
+  /** Margin as a 0..1 ratio. */
+  coefficient?: number
+  prix_cible_ml?: number
 }
 
 /** A single order-quantity tranche — mirrors the legacy `STPrixDétaillé`. */
@@ -82,6 +112,8 @@ export interface TarifTranche {
   /** Weight (kg) used to pick the tariff band for this tranche. */
   poids_ref: number
   moFil: number
+  /** Part of `moFil` that is the yarn frais de gestion (internal). */
+  moGestionFil: number
   detailFil: TarifDetailLine[]
   moTricotage: number
   detailTricotage: TarifDetailLine | null
@@ -148,6 +180,8 @@ export interface TarifFiniInputs {
   /** Present only when avec_teinture ≠ 0 and the coloris has an IDteinture. */
   dye: { IDteinture: number; label: string | null; gots: boolean; prixGots: number; bands: BandRow[] } | null
   coefficient?: number
+  /** Simulation levers (Finis › Tarifs); absent on every catalogue caller. */
+  leviers?: TarifLeviers
 }
 
 /** Pick the tariff-band price for a given weight (whole-kilo band, lib/tranche-poids.ts). Returns
@@ -319,122 +353,216 @@ export async function calcTarifRefFini(
  * tricotage (−5 % / −10 % at 15 / 30 rolls) + treatments (band × MATEL × 1.05)
  * + dye (band × MATEL × 1.05 + GOTS) = prix de revient, ÷ (1 − margin) ÷
  * (1 − port) → €/Kg, and through the 2-dp rendement → €/Ml.
+ *
+ * Finis › Tarifs prices its simulations through this same function with
+ * `inp.leviers` set, so a simulation copied from a reference starts at the
+ * reference's exact catalogue price (#1298 — the old simulator had its own
+ * maths and dropped the MATEL multiplier and the GOTS supplement).
  */
 export function assembleTarifFini(inp: TarifFiniInputs): TarifResult {
-  const { IDref_fini, IDcoloris, avecTeinture, rendement, ref_ecru, detailFil, treatments, bandsByTreatment, dye } = inp
+  const { IDref_fini, IDcoloris, avecTeinture, rendement, ref_ecru } = inp
   const poidsUnRlx = ref_ecru.poids
-  const prixTricotage = ref_ecru.prix
-  const ecruReference = ref_ecru.reference
-  const IDteinture = dye?.IDteinture ?? 0
-  const dyeBands = dye?.bands ?? []
-  const gots = dye?.gots ?? false
-  const prixGots = dye?.prixGots ?? 0
-  const teintureLabel = dye?.label ?? null
-  const opts = { coefficient: inp.coefficient }
-  const moFil = round2(detailFil.reduce((s, d) => s + d.valueKg, 0))
-
-  const matelMult = multiplicateurMatel(rendement)
-  const rdt2 = Math.round(rendement * 100) / 100
-
-  // ── Per-tranche assembly ───────────────────────────────────
   const tranches: TarifTranche[] = []
   for (let i = 0; i < ROLL_MULT.length; i++) {
-    const poidsRef = poidsUnRlx * ROLL_MULT[i] + 1
+    tranches.push(
+      buildTrancheFini(inp, {
+        rolls: ROLL_LABEL[i],
+        isMetrage: i === 0,
+        // Display quantity uses the UNROUNDED rendement — legacy's Fiche Tarif
+        // prints 355 Ml for 4 rolls of 124A where the 2dp-rounded rendement
+        // gives 354. Prices keep rdt2 (they match legacy with the rounding).
+        qteMl: Math.round(ROLL_MULT[i] * poidsUnRlx * rendement),
+        qteKg: round2(ROLL_MULT[i] * poidsUnRlx),
+        poidsRef: poidsUnRlx * ROLL_MULT[i] + 1,
+        rCoeff:
+          inp.coefficient !== undefined && inp.coefficient > 0 && inp.coefficient < 1
+            ? inp.coefficient
+            : COEFFICIENT_V2[i],
+        trente: i === 8,
+        tricotageRebate: i === 7 ? 0.95 : i === 8 ? 0.9 : 1,
+        tricotageSuffix: i === 7 ? ' -5%' : i === 8 ? ' -10%' : '',
+      }),
+    )
+  }
+  return { kind: 'fini', IDref_fini, IDref_ecru: 0, IDcoloris, avec_teinture: avecTeinture, rendement, ref_ecru, tranches }
+}
 
-    // Tricotage — base price, with the 15-/30-roll rebates.
-    let moTricotage = prixTricotage
-    let tricSuffix = ''
-    if (i === 7) {
-      moTricotage = 0.95 * moTricotage
-      tricSuffix = ' -5%'
-    } else if (i === 8) {
-      moTricotage = 0.9 * moTricotage
-      tricSuffix = ' -10%'
-    }
-    const detailTricotage: TarifDetailLine = {
-      label: `Ref tombé de métier ${ecruReference ?? ''} à ${eur(prixTricotage)} €${tricSuffix}`,
-      valueKg: round2(moTricotage),
-    }
+/**
+ * The « simulation libre » tranche: the same costing at an arbitrary weight,
+ * priced from a given margin or with the margin solved backwards from a target
+ * €/Ml. No knitting rebate, the base shipping rate.
+ */
+export function priceTrancheLibre(inp: TarifFiniInputs, opts: TarifLibreOptions): TarifTranche | null {
+  if (!(opts.poids > 0)) return null
+  const poidsUnRlx = inp.ref_ecru.poids
+  const poidsRef = Math.round(opts.poids)
+  const base = {
+    rolls: poidsUnRlx > 0 ? Math.round((poidsRef / poidsUnRlx) * 10) / 10 : 0,
+    isMetrage: false,
+    qteMl: Math.round(opts.poids * inp.rendement),
+    qteKg: round2(opts.poids),
+    poidsRef,
+    trente: false,
+    tricotageRebate: 1,
+    tricotageSuffix: '',
+  }
+  let rCoeff: number
+  if (opts.coefficient !== undefined && opts.coefficient > 0 && opts.coefficient < 1) {
+    rCoeff = opts.coefficient
+  } else if (opts.prix_cible_ml !== undefined && opts.prix_cible_ml > 0) {
+    // Price a probe at margin 0 to read this weight's prix de revient, then
+    // invert the sale-price formula. Below cost the margin would be negative:
+    // clamp at 0 rather than emit nonsense.
+    const probe = buildTrancheFini(inp, { ...base, rCoeff: 0 })
+    const rdt2 = Math.round(inp.rendement * 100) / 100
+    const port = inp.leviers?.port
+    const venteAvantPortKg =
+      port?.mode === 'kg'
+        ? (opts.prix_cible_ml - (rdt2 > 0 ? port.fixe / rdt2 : 0)) * rdt2
+        : opts.prix_cible_ml * (1 - tauxPortDe(inp.leviers, false)) * rdt2
+    rCoeff = venteAvantPortKg > 0 ? Math.max(0, 1 - probe.moRevient / venteAvantPortKg) : 0
+  } else {
+    rCoeff = COEFFICIENT_V2[0]
+  }
+  return buildTrancheFini(inp, { ...base, rCoeff })
+}
 
-    // Treatments — each priced at this tranche's band, +5% packaging, plus the
-    // MATEL multiplier for the Lavage / BNO-PAT / 298 set.
-    const detailTraitement: TarifDetailLine[] = []
-    let moTraitements = 0
-    for (const t of treatments) {
-      const prix = bandPrix(bandsByTreatment.get(t.IDtraitement) ?? [], poidsRef)
-      const m = MATEL_MULT_TRAITEMENTS.has(t.IDtraitement) ? matelMult : 1
-      const add = prix * m * MAJORATION_CONDITIONNEMENT
-      moTraitements += add
-      const xPart = m !== 1 ? ` X${mult(m)}` : ''
-      detailTraitement.push({
-        label: `${poidsRef} Kgs de ${t.designation ?? ''} à ${eur(prix)} €${xPart} / majoré de 5% (carton, plastiques ...)`,
-        valueKg: round2(add),
-      })
-    }
+/** Shipping rate of a tranche in percentage mode: 3 % on the 30-roll tranche
+ *  whatever the setting (legacy, validated on simulation 522), else the
+ *  simulation's rate, else the catalogue's 5 %. */
+function tauxPortDe(leviers: TarifLeviers | undefined, trente: boolean): number {
+  if (trente) return TAUX_FRAIS_DE_PORT_30RLX
+  if (leviers?.port?.mode === 'pct') return leviers.port.pct / 100
+  return TAUX_FRAIS_DE_PORT
+}
 
-    // Teinture — dye band at this tranche, ×MATEL multiplier, +5%, +GOTS.
-    let moTeinte = 0
-    let detailTeinture: TarifDetailLine | null = null
-    if (avecTeinture !== 0 && IDteinture > 0) {
-      const prix = bandPrix(dyeBands, poidsRef)
-      let add = prix * matelMult * MAJORATION_CONDITIONNEMENT
-      let gotsPart = ''
-      if (gots && prixGots > 0) {
-        add += prixGots
-        gotsPart = ` / Supplément GOTS à ${eur(prixGots)} €`
-      }
-      moTeinte = add
-      detailTeinture = {
-        label: `${poidsRef} Kgs de ${teintureLabel ?? ''} à ${eur(prix)} € X${mult(matelMult)}${gotsPart} / majoré de 5% (carton, plastiques ...)`,
-        valueKg: round2(add),
-      }
-    }
+function buildTrancheFini(
+  inp: TarifFiniInputs,
+  t: {
+    rolls: number
+    isMetrage: boolean
+    qteMl: number
+    qteKg: number
+    poidsRef: number
+    rCoeff: number
+    trente: boolean
+    tricotageRebate: number
+    tricotageSuffix: string
+  },
+): TarifTranche {
+  const { avecTeinture, rendement, ref_ecru, detailFil, treatments, bandsByTreatment, dye, leviers } = inp
+  const prixTricotage = ref_ecru.prix
+  const IDteinture = dye?.IDteinture ?? 0
+  const moFil = round2(detailFil.reduce((s, d) => s + d.valueKg, 0))
+  const moGestionFil = round2(detailFil.reduce((s, d) => s + (d.gestionKg ?? 0), 0))
+  const rdt2 = Math.round(rendement * 100) / 100
 
-    const moRevient = moFil + moTricotage + moTraitements + moTeinte
+  // Ennoblissement uplift: MATEL's rendement grid on the Lavage / BNO-PAT / 298
+  // set and on the dye (catalogue), or the simulation's manual ratio on every
+  // line (legacy « Multiplicateur »).
+  const manuel = leviers?.multiplicateurManuel
+  const isManuel = manuel !== undefined && manuel !== null
+  const matelMult = multiplicateurMatel(rendement)
+  const multTraitement = (id: number) => (isManuel ? 1 + manuel : MATEL_MULT_TRAITEMENTS.has(id) ? matelMult : 1)
+  const multTeinture = isManuel ? 1 + manuel : matelMult
+  const ajust = 1 + (Number(leviers?.ajustEnnoblissementPct) || 0) / 100
+  const ajustPart = ajust !== 1 ? ` / ajusté de ${fmtPct(leviers?.ajustEnnoblissementPct ?? 0)}` : ''
 
-    const tauxPort = i === 8 ? TAUX_FRAIS_DE_PORT_30RLX : TAUX_FRAIS_DE_PORT
-    const rCoeff =
-      opts?.coefficient !== undefined && opts.coefficient > 0 && opts.coefficient < 1
-        ? opts.coefficient
-        : COEFFICIENT_V2[i]
+  // Tricotage — base price, with the 15-/30-roll rebates.
+  const moTricotage = prixTricotage * t.tricotageRebate
+  const detailTricotage: TarifDetailLine = {
+    label: `${leviers?.tricotageLabel ?? `Ref tombé de métier ${ref_ecru.reference ?? ''}`} à ${eur(prixTricotage)} €${t.tricotageSuffix}`,
+    valueKg: round2(moTricotage),
+  }
 
-    // CalculPrixDeVente (type-fini branch).
-    const venteAvantPortKg = moRevient / (1 - rCoeff)
-    const moPrixDeVenteAuKg = round2(venteAvantPortKg / (1 - tauxPort))
-    const venteAvantPortMl = rdt2 > 0 ? venteAvantPortKg / rdt2 : 0
-    const moPrixDeVenteAuMl = round2(venteAvantPortMl / (1 - tauxPort))
-
-    const moPortAuKg = round2(moPrixDeVenteAuKg * tauxPort)
-    const moPortAuMl = round2(moPrixDeVenteAuMl * tauxPort)
-
-    tranches.push({
-      rolls: ROLL_LABEL[i],
-      isMetrage: i === 0,
-      // Display quantity uses the UNROUNDED rendement — legacy's Fiche Tarif
-      // prints 355 Ml for 4 rolls of 124A where the 2dp-rounded rendement
-      // gives 354. Prices keep rdt2 (they match legacy with the rounding).
-      qte_ml: Math.round(ROLL_MULT[i] * poidsUnRlx * rendement),
-      qte_kg: round2(ROLL_MULT[i] * poidsUnRlx),
-      poids_ref: poidsRef,
-      moFil,
-      detailFil,
-      moTricotage: round2(moTricotage),
-      detailTricotage,
-      moTraitements: round2(moTraitements),
-      detailTraitement,
-      moTeinte: round2(moTeinte),
-      detailTeinture,
-      moRevient: round2(moRevient),
-      rCoeff,
-      tauxFraisDePort: tauxPort,
-      moPortAuKg,
-      moPortAuMl,
-      moPrixDeVenteAuKg,
-      moPrixDeVenteAuMl,
+  // Treatments — each priced at this tranche's band, +5% packaging.
+  const detailTraitement: TarifDetailLine[] = []
+  let moTraitements = 0
+  for (const tr of treatments) {
+    const prix = bandPrix(bandsByTreatment.get(tr.IDtraitement) ?? [], t.poidsRef) * ajust
+    const m = multTraitement(tr.IDtraitement)
+    const add = prix * m * MAJORATION_CONDITIONNEMENT
+    moTraitements += add
+    const xPart = m !== 1 ? ` X${mult(m)}` : ''
+    detailTraitement.push({
+      label: `${t.poidsRef} Kgs de ${tr.designation ?? ''} à ${eur(prix)} €${xPart}${ajustPart} / majoré de 5% (carton, plastiques ...)`,
+      valueKg: round2(add),
     })
   }
 
-  return { kind: 'fini', IDref_fini, IDref_ecru: 0, IDcoloris, avec_teinture: avecTeinture, rendement, ref_ecru, tranches }
+  // Teinture — dye band at this tranche, ×multiplier, +5%, +GOTS.
+  let moTeinte = 0
+  let detailTeinture: TarifDetailLine | null = null
+  if (avecTeinture !== 0 && IDteinture > 0 && dye) {
+    const prix = bandPrix(dye.bands, t.poidsRef) * ajust
+    let add = prix * multTeinture * MAJORATION_CONDITIONNEMENT
+    let gotsPart = ''
+    if (dye.gots && dye.prixGots > 0) {
+      add += dye.prixGots
+      gotsPart = ` / Supplément GOTS à ${eur(dye.prixGots)} €`
+    }
+    moTeinte = add
+    detailTeinture = {
+      label: `${t.poidsRef} Kgs de ${dye.label ?? ''} à ${eur(prix)} € X${mult(multTeinture)}${ajustPart}${gotsPart} / majoré de 5% (carton, plastiques ...)`,
+      valueKg: round2(add),
+    }
+  }
+
+  const moRevient = moFil + moTricotage + moTraitements + moTeinte
+
+  // CalculPrixDeVente (type-fini branch): margin first, then shipping grossed
+  // up (percentage) or added flat (€/Kg, simulations only).
+  const venteAvantPortKg = t.rCoeff < 1 ? moRevient / (1 - t.rCoeff) : 0
+  const venteAvantPortMl = rdt2 > 0 ? venteAvantPortKg / rdt2 : 0
+  let tauxPort: number
+  let moPrixDeVenteAuKg: number
+  let moPrixDeVenteAuMl: number
+  let moPortAuKg: number
+  let moPortAuMl: number
+  if (leviers?.port?.mode === 'kg') {
+    const fixe = leviers.port.fixe
+    tauxPort = 0
+    moPortAuKg = round2(fixe)
+    moPortAuMl = round2(rdt2 > 0 ? fixe / rdt2 : 0)
+    moPrixDeVenteAuKg = round2(venteAvantPortKg + fixe)
+    moPrixDeVenteAuMl = round2(venteAvantPortMl + (rdt2 > 0 ? fixe / rdt2 : 0))
+  } else {
+    tauxPort = tauxPortDe(leviers, t.trente)
+    moPrixDeVenteAuKg = round2(venteAvantPortKg / (1 - tauxPort))
+    moPrixDeVenteAuMl = round2(venteAvantPortMl / (1 - tauxPort))
+    moPortAuKg = round2(moPrixDeVenteAuKg * tauxPort)
+    moPortAuMl = round2(moPrixDeVenteAuMl * tauxPort)
+  }
+
+  return {
+    rolls: t.rolls,
+    isMetrage: t.isMetrage,
+    qte_ml: t.qteMl,
+    qte_kg: t.qteKg,
+    poids_ref: t.poidsRef,
+    moFil,
+    moGestionFil,
+    detailFil,
+    moTricotage: round2(moTricotage),
+    detailTricotage,
+    moTraitements: round2(moTraitements),
+    detailTraitement,
+    moTeinte: round2(moTeinte),
+    detailTeinture,
+    moRevient: round2(moRevient),
+    rCoeff: t.rCoeff,
+    tauxFraisDePort: tauxPort,
+    moPortAuKg,
+    moPortAuMl,
+    moPrixDeVenteAuKg,
+    moPrixDeVenteAuMl,
+  }
+}
+
+/** « -10 % » / « +5 % » for the ajustement suffix. */
+function fmtPct(v: number): string {
+  const r = Math.round(v * 10) / 10
+  return `${r > 0 ? '+' : ''}${String(r).replace('.', ',')} %`
 }
 
 /**
@@ -516,6 +644,7 @@ export async function calcTarifRefEcru(
       qte_kg: round2(ROLL_MULT[i] * poidsUnRlx),
       poids_ref: poidsRef,
       moFil,
+      moGestionFil: round2(detailFil.reduce((s, d) => s + (d.gestionKg ?? 0), 0)),
       detailFil,
       moTricotage: round2(moTricotage),
       detailTricotage,
@@ -621,6 +750,8 @@ export function prixFilLines(
     lines.push({
       label: `${pourcentage}% de ${yarn?.reference ?? ''}${colSuffix} à ${eur(prixKg)} €`,
       valueKg: round2(prixCompo),
+      // The base price already holds the purchase frais de gestion.
+      gestionKg: round2(prixCompo - achatDepuisPrixBase(prixCompo)),
     })
   }
   return lines

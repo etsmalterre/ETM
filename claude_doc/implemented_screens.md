@@ -140,12 +140,9 @@ The mode is **derived**, not stored: any row with a non-zero variation id ⇒ `d
 
 ### Pricing model (`apps/api/src/lib/pricing-ref-tarif.ts`)
 
-Shares the catalog pricer's maths — `COEFFICIENT_V2` margin bands, `poids = rolls × poids_rouleau + 1` band lookup, +5 % packaging, −5 %/−10 % knitting rebates at 15/30 rolls, 3 % shipping on the 30-roll tranche — with **two deliberate differences**, both reverse-engineered from the live data:
+Until LIVA #1298 it had its own copy of the catalogue maths with a hand-typed multiplier instead of `multiplicateurMatel(rendement)` (simulation 522 printed `X1` at rendement 3,78) — that was the reported bug. Only the knitting price still differs by nature: it is typed (`prix_tricotage`), a sample has no `ref_ecru`.
 
-1. The ennoblissement uplift is the manual `ref_tarif.multiplicateur`, **not** `multiplicateurMatel(rendement)`. Simulation 522 has rendement 3,78 (MATEL would say ×1,03) yet prints `X1` and its nine prices only reproduce with ×1.
-2. The knitting price is the typed `prix_tricotage`; there is no `ref_ecru` behind a simulation.
-
-`apps/api/src/scripts/check-ref-tarif-parity.ts` pins both against the legacy screen (46/46 exact on simulations 522 and 514, all 18 tranche prices plus the tranche-0 breakdowns).
+Since LIVA #1298 the simulator prices through the catalogue engine (`assembleTarifFini` + `leviers`); `apps/api/src/scripts/check-ref-tarif-parity.ts` checks that a reference's copy reproduces its catalogue price (4731/4731) — the legacy 46/46 figures were the bug.
 
 The free simulation inverts the same formula: give it a coefficient and it returns the price; give it a target €/Ml and it solves the coefficient (clamped at 0 below cost).
 
