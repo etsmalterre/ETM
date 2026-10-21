@@ -650,9 +650,8 @@ function DetailHeader({
                   <Printer className="h-4 w-4" />
                 </Button>
                 {ouvert && (
-                  <Button variant="outline" size="sm" onClick={onCreerReference} title="Créer une référence tombé métier à partir de cet échantillon">
-                    <TmRollIcon className="h-3.5 w-3.5 mr-1.5" />
-                    Créer la référence
+                  <Button variant="outline" size="icon" className="h-9 w-9" onClick={onCreerReference} title="Créer la référence tombé métier à partir de cet échantillon">
+                    <TmRollIcon className="h-4 w-4" />
                   </Button>
                 )}
                 <Button
