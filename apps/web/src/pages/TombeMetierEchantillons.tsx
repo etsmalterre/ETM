@@ -44,7 +44,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
-import { SpecTile, TileValue, TileText, TextTile, tileInput } from './tombe-metier/spec-tiles'
+import { SpecTile, TileText, TextTile } from './tombe-metier/spec-tiles'
 import { JAUGE_OPTIONS, DIAM_OPTIONS, jaugeLabel, diametreLabel } from './tombe-metier/ordinals'
 import { ColorisCompoLineRow, type CompoDraftLine, type RefFilLookup } from './tombe-metier/composition-fil'
 
@@ -123,7 +123,7 @@ const draftFromDetail = (d: EchantillonDetail): Draft => ({
   IDcontexture: d.IDcontexture,
   Jauge: d.Jauge,
   diametre: d.diametre,
-  lfa: d.lfa.map((v) => (v > 0 ? String(v) : '')),
+  lfa: d.lfa.map((v) => (v > 0 ? v.toFixed(2) : '')),
   commentaire: d.commentaire,
   IDclient: d.IDclient,
 })
@@ -827,24 +827,30 @@ function SpecsCard({
           )}
         </SpecTile>
 
-        {/* LFA per tour, as on the reference's Réglages */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {[0, 1, 2, 3].map((i) => (
-            <SpecTile key={i} label={`LFA tour ${i + 1}`}>
-              {isEditing && d ? (
+        {/* LFA per tour: the very tile of the reference's Réglages (one tile,
+            four cells, « — » when empty, written « 7.50 » like ref_ecru's
+            lfa_tour_N, which « Créer la référence » fills from these). */}
+        <SpecTile label="LFA / tour">
+          <div className="grid grid-cols-4 gap-1.5">
+            {[0, 1, 2, 3].map((i) =>
+              isEditing && d ? (
                 <input
+                  key={i}
                   type="text"
                   inputMode="decimal"
+                  aria-label={`LFA tour ${i + 1}`}
                   value={d.lfa[i]}
                   onChange={(e) => { const lfa = [...d.lfa]; lfa[i] = e.target.value; onDraftChange({ ...d, lfa }) }}
-                  className={tileInput}
+                  className={cn(inputClass, 'text-center px-1 tabular-nums')}
                 />
               ) : (
-                <TileValue value={detail.lfa[i] || null} digits={2} />
-              )}
-            </SpecTile>
-          ))}
-        </div>
+                <div key={i} className="h-8 flex items-center justify-center text-sm font-semibold rounded-md border border-border/60 bg-white tabular-nums">
+                  {detail.lfa[i] > 0 ? detail.lfa[i].toFixed(2) : <span className="text-muted-foreground/50 font-normal">—</span>}
+                </div>
+              ),
+            )}
+          </div>
+        </SpecTile>
 
         <CompositionTile apiBase={apiBase} detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
 
@@ -1450,7 +1456,7 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
 
   const total = detail.composition.reduce((s, c) => s + c.pourcentage, 0)
   const compositionOk = detail.composition.length === 0 || Math.abs(total - 100) < 0.01
-  const lfa = detail.lfa.map((v, i) => (v > 0 ? `T${i + 1} ${fmtNum(v, 2)}` : null)).filter(Boolean).join(' · ')
+  const lfa = detail.lfa.some((v) => v > 0) ? detail.lfa.map((v) => (v > 0 ? v.toFixed(2) : '—')).join(' · ') : ''
 
   const createMut = useMutation({
     mutationFn: () => apiFetch(`${apiBase}/${detail.IDref_echantillon}/creer-reference`, {
@@ -1464,7 +1470,7 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
   const repris: [string, string][] = [
     ['Contexture · Jauge · Ø', identite(detail) || '—'],
     ['Client', detail.client_nom ?? '—'],
-    ['LFA', lfa || '—'],
+    ['LFA / tour', lfa || '—'],
   ]
 
   return (

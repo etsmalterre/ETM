@@ -49,17 +49,12 @@ function fr(n: number): string {
   return String(Math.round(n * 100) / 100).replace('.', ',')
 }
 
-/** The LFA cell: the distinct values set, « 7,50 » or « 3,35 / 7,6 / 5,1 ».
- *  The legacy fills tour 1 and 3 with the same value — printing « 7,50 /
- *  7,50 » would only cost width. One value keeps the legacy's two decimals;
- *  several drop the trailing zeros and print smaller (`lfaMultiple`), or they
- *  run off the label. */
-export function lfaCellule(lfa: number[]): string {
-  const vals = [...new Set(lfa.filter((v) => v > 0))]
-  if (vals.length <= 1) return vals.length ? vals[0].toFixed(2).replace('.', ',') : ''
-  return vals.map(fr).join(' / ')
+/** The four LFA cells, tour 1 to 4, as the reference's « LFA / tour » tile
+ *  writes them (« 7.50 », « — » for an empty tour) — a sample and the
+ *  reference it becomes must read the same. */
+export function lfaTours(lfa: number[]): string[] {
+  return [0, 1, 2, 3].map((i) => ((lfa[i] ?? 0) > 0 ? lfa[i].toFixed(2) : '—'))
 }
-const lfaMultiple = (lfa: number[]) => new Set(lfa.filter((v) => v > 0)).size > 1
 
 /** « 48 % 1/60 LYOCELL · 47 % 78/68/2 PA66 Z · 5 % 22 ELASTHANNE », clamped
  *  to what two 7 pt lines hold over the ~205 pt text column (~56 chars a
@@ -100,18 +95,20 @@ const styles = StyleSheet.create({
   specs: { flexDirection: 'row', alignItems: 'flex-end' },
   spec: { flexDirection: 'column', marginRight: 10, minWidth: 26 },
   // The LFA takes what is left of the row and may wrap (several tours).
-  specLast: { flexDirection: 'column', flex: 1, flexShrink: 1, marginRight: 0 },
+  // LFA / tour: four fixed cells, tour 1 to 4, like the reference's Réglages tile.
+  lfaRow: { flexDirection: 'row' },
+  lfaCell: { width: 31, textAlign: 'center', fontFamily: 'Helvetica-Bold', fontSize: 10.5, lineHeight: 1, marginBottom: 0.5 },
+  lfaEmpty: { width: 31, textAlign: 'center', fontSize: 10.5, lineHeight: 1, color: '#333333', marginBottom: 0.5 },
   specLabel: { fontSize: 6, color: '#333333', letterSpacing: 0.6, lineHeight: 1, marginBottom: 1.5 },
   specValue: { fontFamily: 'Helvetica-Bold', fontSize: 13, lineHeight: 1 },
-  specValueSmall: { fontFamily: 'Helvetica-Bold', fontSize: 8.5, lineHeight: 1.1, marginBottom: 1 },
   composition: { fontSize: 7, lineHeight: 1.12, marginTop: 3 },
 })
 
-function Spec({ label, value, small, last }: { label: string; value: string; small?: boolean; last?: boolean }) {
+function Spec({ label, value }: { label: string; value: string }) {
   return (
-    <View style={last ? styles.specLast : styles.spec}>
+    <View style={styles.spec}>
       <Text style={styles.specLabel}>{label}</Text>
-      <Text style={small ? styles.specValueSmall : styles.specValue}>{value || '—'}</Text>
+      <Text style={styles.specValue}>{value || '—'}</Text>
     </View>
   )
 }
@@ -130,7 +127,14 @@ function Etiquette({ d }: { d: EtiquetteEchantillonData }): React.ReactElement {
         <View style={styles.specs}>
           <Spec label="JAUGE" value={d.jauge ?? ''} />
           <Spec label="Ø" value={d.diametre ?? ''} />
-          <Spec label="LFA" value={lfaCellule(d.lfa)} small={lfaMultiple(d.lfa)} last />
+          <View style={styles.spec}>
+            <Text style={styles.specLabel}>LFA / TOUR</Text>
+            <View style={styles.lfaRow}>
+              {lfaTours(d.lfa).map((v, i) => (
+                <Text key={i} style={v === '—' ? styles.lfaEmpty : styles.lfaCell}>{v}</Text>
+              ))}
+            </View>
+          </View>
         </View>
         {compo ? <Text style={styles.composition}>{compo}</Text> : null}
       </View>

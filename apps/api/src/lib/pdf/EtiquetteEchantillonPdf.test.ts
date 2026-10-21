@@ -7,7 +7,7 @@ import {
   EtiquetteEchantillonPdf,
   LAYOUT,
   compositionTexte,
-  lfaCellule,
+  lfaTours,
   type EtiquetteEchantillonData,
 } from './EtiquetteEchantillonPdf.js'
 
@@ -44,21 +44,23 @@ describe('EtiquetteEchantillonPdf', () => {
     expect(s).toContain('jersey vanisé')
     expect(s).toContain('28')
     expect(s).toContain('30"')
-    expect(s).toContain('7,50')
+    expect(s).toContain('LFA / TOUR')
+    expect(s.filter((t) => t === '7.50').length).toBe(2)
     expect(s.some((t) => t.includes('48 % 1/60 LYOCELL'))).toBe(true)
     expect(s).not.toContain('FICHE')
   })
 
   it('shows a dash for what is not entered, and no composition line when empty', () => {
     const s = pdfStrings(EtiquetteEchantillonPdf({ data: { ...base, contexture: null, jauge: null, lfa: [0, 0, 0, 0], composition: [] } }))
-    expect(s.filter((t) => t === '—').length).toBe(2)
+    // jauge + 4 empty tours
+    expect(s.filter((t) => t === '—').length).toBe(5)
     expect(s.some((t) => t.includes('%'))).toBe(false)
   })
 
-  it('prints the LFA once when the tours repeat it, all distinct values otherwise', () => {
-    expect(lfaCellule([7.5, 0, 7.5, 0])).toBe('7,50')
-    expect(lfaCellule([3.35, 7.6, 5.7, 7.6])).toBe('3,35 / 7,6 / 5,7')
-    expect(lfaCellule([0, 0, 0, 0])).toBe('')
+  it('prints the four LFA tours in order, « — » for an empty one, written like the reference', () => {
+    expect(lfaTours([7.5, 0, 7.5, 0])).toEqual(['7.50', '—', '7.50', '—'])
+    expect(lfaTours([3.35, 7.6, 5.7, 10.65])).toEqual(['3.35', '7.60', '5.70', '10.65'])
+    expect(lfaTours([])).toEqual(['—', '—', '—', '—'])
   })
 
   it('clamps a long composition on a word, never splitting « 36 % » from its yarn', () => {
