@@ -1,6 +1,6 @@
 // Content guard for the sample Dymo tag: walks the element tree (never the
-// rendered bytes) and pins the fields, the LFA and composition shaping, the QR
-// absence and the printable-band layout. The look is checked on a rasterized
+// rendered bytes) and pins the fields, the LFA and composition shaping, the
+// absence of a QR code and the printable-band layout. The look is checked on a rasterized
 // render (scripts/dump-etiquette-echantillon.ts).
 import { describe, it, expect } from 'vitest'
 import {
@@ -65,14 +65,15 @@ describe('EtiquetteEchantillonPdf', () => {
     const t = compositionTexte([
       { pourcentage: 49, fil: '1/28 COTON PEIGNE BIO Z' },
       { pourcentage: 36, fil: '78/68/2 PA66 Z' },
-      { pourcentage: 15, fil: '48 dtex ELASTHANNE ROICA' },
+      { pourcentage: 10, fil: '48 dtex ELASTHANNE ROICA' },
+      { pourcentage: 5, fil: '1/40 POLYESTER RECYCLE BLANC OPTIQUE' },
     ])
-    expect(t.length).toBeLessThanOrEqual(80)
+    expect(t.length).toBeLessThanOrEqual(110)
     expect(t.endsWith('…')).toBe(true)
     expect(t).toContain('36 % 78/68/2')
   })
 
-  it('centres on the physical label and keeps the logo inside the printable band', () => {
+  it('centres on the physical label and keeps the text inside the printable band', () => {
     expect(LAYOUT.PAGE_PADDING_X * 2 + LAYOUT.CONTENT_WIDTH).toBeCloseTo(LAYOUT.PAGE_WIDTH, 6)
     expect(LAYOUT.PAGE_PADDING_X + LAYOUT.CONTENT_WIDTH).toBeLessThanOrEqual(LAYOUT.PRINT_LIMIT - 2)
   })
