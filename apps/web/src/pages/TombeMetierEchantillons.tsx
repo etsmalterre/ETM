@@ -371,6 +371,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
             isSaving={saveMutation.isPending}
             onDelete={() => { setDeleteError(null); setDeleteOpen(true) }}
             onPrint={() => setPrintOpen(true)}
+            onCreerReference={() => setCreerOpen(true)}
           />
         }
         detail={
@@ -581,7 +582,7 @@ function EchantillonList({
 // ── Center: header ─────────────────────────────────────
 
 function DetailHeader({
-  detail, isLoading, isEditing, onStartEdit, onCancelEdit, onSave, isSaving, onDelete, onPrint,
+  detail, isLoading, isEditing, onStartEdit, onCancelEdit, onSave, isSaving, onDelete, onPrint, onCreerReference,
 }: {
   detail: EchantillonDetail | null
   isLoading: boolean
@@ -592,6 +593,7 @@ function DetailHeader({
   isSaving: boolean
   onDelete: () => void
   onPrint: () => void
+  onCreerReference: () => void
 }) {
   if (!detail && !isLoading) return null
   const ouvert = detail?.statut === 'en_cours'
@@ -647,6 +649,12 @@ function DetailHeader({
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrint}>
                   <Printer className="h-4 w-4" />
                 </Button>
+                {ouvert && (
+                  <Button variant="outline" size="sm" onClick={onCreerReference} title="Créer une référence tombé métier à partir de cet échantillon">
+                    <TmRollIcon className="h-3.5 w-3.5 mr-1.5" />
+                    Créer la référence
+                  </Button>
+                )}
                 <Button
                   variant="gold"
                   size="sm"
