@@ -61,6 +61,8 @@ import { Link, useSearchParams } from 'react-router-dom'
 // TRM's own src (see the header of RectiligneReferences.tsx).
 import { RectiligneReferences, RefKindSwitch, type RefKind } from './tombe-metier/RectiligneReferences'
 import { SpecTile, TileValue, TileText, TextTile, tileInput } from './tombe-metier/spec-tiles'
+import { JAUGE_OPTIONS, DIAM_OPTIONS, jaugeLabel, diametreLabel } from './tombe-metier/ordinals'
+import { ColorisCompoLineRow, type ColorisFilLookup, type CompoDraftLine, type RefFilLookup } from './tombe-metier/composition-fil'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -231,6 +233,8 @@ interface RefEcruDetail {
   sonneter: number
   contexture_nom: string | null
   client_nom: string | null
+  /** The trial sample this reference came from (Tombé Métier › Échantillons). */
+  echantillon_origine: { IDref_echantillon: number; numero: string } | null
   composition_lines: CompositionRow[]
   cout_kg: number | null
   coloris: ColorisRow[]
@@ -262,7 +266,6 @@ interface CoutTricotageBreakdown {
 
 interface ContextureLookup { IDcontexture: number; nom: string | null }
 interface ClientLookup { IDclient: number; nom: string | null; ville: string | null }
-interface RefFilLookup { IDref_fil: number; reference: string | null; prix_kg: number | null }
 interface MachineLookup { IDmachine: number; nom: string | null; Jauge: number | null }
 
 // ── Shared styling ─────────────────────────────────────
@@ -336,30 +339,6 @@ function KV({ label, value }: { label: string; value: React.ReactNode }) {
 
 const numStr = (n: number | null | undefined): string => (n == null ? '' : String(n))
 const fmtPct = (v: number | null | undefined) => (v == null ? '—' : `${fmtNum(v, Number.isInteger(v) ? 0 : 2)} %`)
-
-// Both Jauge and Diamètre are stored on ref_ecru as 1-based ordinals indexing
-// legacy combo lists, with index 1 = "_" placeholder and -1/0/null = unset.
-// Display the mapped value, never the raw ordinal.
-//
-// Jauge (gtaJauge) = needles-per-inch — a plain number, NO inch unit.
-const JAUGE_OPTIONS: { ord: number; label: string }[] = [
-  { ord: 2, label: '14' },
-  { ord: 3, label: '18' },
-  { ord: 4, label: '20' },
-  { ord: 5, label: '28' },
-]
-// Diamètre (gtaDiametreMachine) = machine diameter in inches (shown with ").
-const DIAM_OPTIONS: { ord: number; label: string }[] = [
-  { ord: 2, label: '26"' },
-  { ord: 3, label: '30"' },
-]
-const ordLabel = (options: { ord: number; label: string }[]) => (ord: number | null | undefined): string | null => {
-  if (ord == null) return null
-  if (ord === 1) return '_'
-  return options.find((o) => o.ord === ord)?.label ?? null
-}
-const jaugeLabel = ordLabel(JAUGE_OPTIONS)
-const diametreLabel = ordLabel(DIAM_OPTIONS)
 
 // "Tombé du métier" is a free-text column storing one of two fixed values
 // ("Rouleaux" / "Plis"); legacy junk ("-1", "") maps to the empty placeholder.
@@ -625,7 +604,9 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
   onKindChange: (k: RefKind) => void
 }) {
   const queryClient = useQueryClient()
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // `?id=<IDref_ecru>` opens that reference (Échantillons › « Devenu référence »).
+  const [searchParams] = useSearchParams()
+  const [selectedId, setSelectedId] = useState<number | null>(() => Number(searchParams.get('id')) || null)
   const [searchQuery, setSearchQuery] = useState('')
   const [archivedFilter, setArchivedFilter] = useState(false) // false = En cours, true = Archivé
   const [isEditing, setIsEditing] = useState(false)
@@ -2166,18 +2147,6 @@ function ColorisCompoSummary({ lines }: { lines: ColorisCompoLine[] }) {
 // (PUT …/coloris/:id/composition); an empty list hands the coloris back to
 // the reference's composition.
 
-interface ColorisFilLookup { IDcolori_fil: number; reference: string; stock_kg: number }
-interface CompoDraftLine { key: number; IDref_fil: number; IDcolori_fil: number; pourcentage: string }
-
-function useColorisFil(refFil: number) {
-  return useQuery<ColorisFilLookup[]>({
-    queryKey: ['references-ecru', 'lookups', 'colori-fil', refFil],
-    queryFn: () => apiFetch(`/references-ecru/lookups/colori-fil?ref_fil=${refFil}`),
-    enabled: refFil > 0,
-    staleTime: 60_000,
-  })
-}
-
 function ColorisCompositionDialog({
   refId,
   coloris,
@@ -2337,63 +2306,6 @@ function ColorisCompositionDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-}
-
-function ColorisCompoLineRow({
-  line,
-  refsFil,
-  onChange,
-  onRemove,
-}: {
-  line: CompoDraftLine
-  refsFil: RefFilLookup[]
-  onChange: (patch: Partial<CompoDraftLine>) => void
-  onRemove: () => void
-}) {
-  const { data: colorisFil, isLoading } = useColorisFil(line.IDref_fil)
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_5rem_1.5rem] sm:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_5rem_1.5rem] gap-2 items-center rounded-lg border border-border/60 bg-zinc-100/80 p-2">
-      <div className="min-w-0 col-span-2 sm:col-span-1">
-        <SearchableCombobox<RefFilLookup>
-          options={refsFil}
-          value={line.IDref_fil}
-          onChange={(id) => onChange({ IDref_fil: id, IDcolori_fil: 0 })}
-          getId={(r) => r.IDref_fil}
-          getPrimary={(r) => r.reference ?? `#${r.IDref_fil}`}
-          placeholder="Rechercher un fil"
-        />
-      </div>
-      <button onClick={onRemove} className="sm:hidden p-0.5 text-destructive hover:text-destructive transition-colors justify-self-center" title="Retirer">
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-      <div className="min-w-0">
-        <SearchableCombobox<ColorisFilLookup>
-          options={colorisFil ?? []}
-          value={line.IDcolori_fil}
-          onChange={(id) => onChange({ IDcolori_fil: id })}
-          getId={(c) => c.IDcolori_fil}
-          getPrimary={(c) => c.reference || `#${c.IDcolori_fil}`}
-          getSecondary={(c) => (c.stock_kg > 0 ? `${fmtNum(c.stock_kg, 1)} kg en stock` : 'pas de stock')}
-          placeholder={line.IDref_fil > 0 ? 'Choisir le coloris' : "Choisir d'abord le fil"}
-          loading={isLoading && line.IDref_fil > 0}
-          disabled={line.IDref_fil <= 0}
-        />
-      </div>
-      <input
-        type="number"
-        step="0.1"
-        min="0"
-        max="100"
-        value={line.pourcentage}
-        onChange={(e) => onChange({ pourcentage: e.target.value })}
-        className={cn(inputClass, 'text-right tabular-nums')}
-        aria-label="Pourcentage"
-      />
-      <button onClick={onRemove} className="hidden sm:block p-0.5 text-destructive hover:text-destructive transition-colors justify-self-center" title="Retirer">
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-    </div>
   )
 }
 
@@ -3062,6 +2974,19 @@ function InformationsTab({ detail }: { detail: RefEcruDetail }) {
         <KV label="Client" value={detail.client_nom?.trim() || '—'} />
         <KV label="Réf. client" value={detail.reference_client?.trim() || '—'} />
         <KV label="Fiche technique MAJ" value={detail.date_maj_ft ? formatHfsqlDate(detail.date_maj_ft) : '—'} />
+        {detail.echantillon_origine && (
+          <KV
+            label="Issue de l'échantillon"
+            value={
+              <Link
+                to={`/tombe-metier/echantillons?id=${detail.echantillon_origine.IDref_echantillon}&statut=reference`}
+                className="font-medium text-accent hover:underline"
+              >
+                {detail.echantillon_origine.numero}
+              </Link>
+            }
+          />
+        )}
         {(!!detail.archive || !!detail.has_rolls || !!detail.has_orders) && (
           <div className="flex flex-wrap gap-1.5 pt-1">
             {(!!detail.has_rolls || !!detail.has_orders) && (

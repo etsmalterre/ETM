@@ -8,6 +8,7 @@ import { fournisseursRouter } from './routes/fournisseurs.js'
 import { referencesFilRouter } from './routes/references-fil.js'
 import { referencesFiniRouter } from './routes/references-fini.js'
 import { referencesEcruRouter } from './routes/references-ecru.js'
+import { echantillonsRouter, echantillonsTrmRouter } from './routes/echantillons.js'
 import { referencesDiversRouter } from './routes/references-divers.js'
 import { referencesRectiligneRouter } from './routes/references-rectiligne.js'
 import { tarifsFiniRouter } from './routes/tarifs-fini.js'
@@ -157,6 +158,9 @@ app.use('/api/fournisseurs', fournisseursRouter)
 app.use('/api/references-fil', referencesFilRouter)
 app.use('/api/references-fini', referencesFiniRouter)
 app.use('/api/references-ecru', referencesEcruRouter)
+// Tombé Métier › Échantillons — one router, each app's own Écrans grant + client ledger.
+app.use('/api/echantillons', echantillonsRouter)
+app.use('/api/echantillons-trm', echantillonsTrmRouter)
 app.use('/api/references-divers', referencesDiversRouter)
 app.use('/api/references-rectiligne', referencesRectiligneRouter)
 app.use('/api/tarifs-fini', tarifsFiniRouter)

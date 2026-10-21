@@ -110,6 +110,7 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     label: 'Tombé Métier',
     screens: [
       { href: '/tombe-metier/references', label: 'Références' },
+      { href: '/tombe-metier/echantillons', label: 'Échantillons' },
       { href: '/tombe-metier/stock', label: 'Stock' },
     ],
   },

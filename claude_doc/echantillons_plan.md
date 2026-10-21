@@ -1,7 +1,7 @@
-# Tombé Métier › Échantillons : où on en est (reprise de session)
+# Tombé Métier › Échantillons : analyse et décisions
 
-Branche `feat/echantillon`, worktree `ETM-echantillon` (slot ETM). Rien n'est codé : cette
-note résume l'analyse et les décisions du 2026-10-20 pour reprendre.
+Branches `feat/echantillon` (ETM : API + écran, TRM : la route). **Construit le 2026-10-21** —
+ce qui est livré est décrit dans `screen_notes.md` § 7 ; cette note garde l'analyse et les décisions.
 
 ## Le besoin (Vincent)
 
@@ -52,12 +52,12 @@ reconsidère la fusion que si les échantillons doivent passer par OF / visitage
   « Issue de l'échantillon E052 ». Un seul passage possible.
 - Hors v1 : fiche OF échantillon / impression, lien atelier-visitage, email.
 
-## Questions ouvertes (Vincent voulait préciser avant de répondre)
+## Questions tranchées (Vincent, 2026-10-21)
 
-1. Application : TRM + ETM (fichier partagé via `@etm`, recommandé) ou TRM seul ?
-2. Numérotation affichée : « E055 » (recommandé), « ECH 55 » ou numéro seul ?
-3. Relier par script les trois passages historiques (7→316, 12→027, 52→328) ?
-4. Pièces d'essai : saisie manuelle (recommandé) ou alimentées par le poste de visitage ?
+1. Application : **TRM + ETM**, un seul écran partagé via `@etm` (props, jamais de fork).
+2. Numérotation affichée : **« E055 »**.
+3. Les trois passages historiques (7→316, 12→027, 52→328) : **reliés par script**.
+4. Pièces d'essai : **saisie manuelle** dans l'onglet.
 
 ## Dépendance
 

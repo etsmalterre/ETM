@@ -28,6 +28,8 @@ export const referencesEcruRouter: RouterType = Router()
 
 import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { readCol } from '../lib/accented-keys.js'
+import { mpsPg } from '../lib/mps-pg.js'
+import { numeroEchantillon } from '../lib/echantillons.js'
 import React from 'react'
 import { renderToBuffer, type DocumentProps } from '@react-pdf/renderer'
 import { FicheTechniqueEcruPdf, ficheTechniqueEcruData, type RefEcruDetailForFiche } from '../lib/pdf/FicheTechniqueEcruPdf.js'
@@ -565,10 +567,23 @@ export async function loadRefEcruDetail(id: number) {
     date: o.obs_date ?? null,
   }))
 
+  // The sample this reference came from (Tombé Métier › Échantillons). Native:
+  // the link column is ours (migration 0025). Missing column before the
+  // migration ran = no link, never a broken fiche.
+  let echantillon_origine: { IDref_echantillon: number; numero: string } | null = null
+  try {
+    const [e] = await mpsPg()<{ idref_echantillon: number }[]>`
+      SELECT idref_echantillon FROM ref_echantillon WHERE idref_ecru = ${id} ORDER BY idref_echantillon LIMIT 1`
+    if (e) echantillon_origine = { IDref_echantillon: e.idref_echantillon, numero: numeroEchantillon(e.idref_echantillon) }
+  } catch (err) {
+    console.warn('[references-ecru] origin sample unreadable:', (err as Error).message)
+  }
+
   return {
     ...ref,
     contexture_nom,
     client_nom,
+    echantillon_origine,
     composition_lines: compositionLines,
     cout_kg,
     coloris: colorisOut,
@@ -807,7 +822,7 @@ function buildRefEcruSets(b: RefEcruBody): string[] {
  *  zero-padded numeric scheme (`0NN`) only — independent of legacy non-padded
  *  numbers (180, 2785) and alphanumeric codes (MADF, 228/122). Increments past
  *  any collision so it never returns an existing reference. */
-function nextRefNumber(existing: string[]): string {
+export function nextRefNumber(existing: string[]): string {
   const used = new Set(existing.map((r) => r.trim().toLowerCase()).filter(Boolean))
   let maxN = 0
   for (const r of existing) {

@@ -58,6 +58,7 @@ import { QualiteAnalyse } from '@/pages/QualiteAnalyse'
 
 // Tombé Métier pages (real)
 import { TombeMetierReferences } from '@/pages/TombeMetierReferences'
+import { TombeMetierEchantillons } from '@/pages/TombeMetierEchantillons'
 import { TombeMetierStock } from '@/pages/TombeMetierStock'
 
 // Divers pages (real)
@@ -142,6 +143,7 @@ export const router = createBrowserRouter([
       // Tombé Métier
       { path: 'tombe-metier', element: <Navigate to="/tombe-metier/references" replace /> },
       { path: 'tombe-metier/references', element: <TombeMetierReferences /> },
+      { path: 'tombe-metier/echantillons', element: <TombeMetierEchantillons /> },
       { path: 'tombe-metier/stock', element: <TombeMetierStock /> },
 
       // Finis

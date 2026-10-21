@@ -255,6 +255,7 @@ export const mainNavigation: MainMenuItem[] = [
     href: '/tombe-metier',
     submenus: [
       { title: 'Références', href: '/tombe-metier/references' },
+      { title: 'Échantillons', href: '/tombe-metier/echantillons' },
       { title: 'Stock', href: '/tombe-metier/stock' },
     ],
   },
@@ -391,6 +392,7 @@ export const routeTitles: Record<string, string> = {
   // Tombé Métier
   '/tombe-metier': 'Tombé Métier',
   '/tombe-metier/references': 'Références',
+  '/tombe-metier/echantillons': 'Échantillons',
   '/tombe-metier/stock': 'Stock',
   // Finis
   '/finis': 'Finis',

@@ -870,6 +870,23 @@ ALTER TABLE client ADD COLUMN relance_sur_appel integer NOT NULL DEFAULT 0
 ALTER TABLE journal_activite ADD COLUMN changements jsonb;
 `,
   },
+  {
+    // Tombé Métier › Échantillons (claude_doc/echantillons_plan.md): the écru
+    // reference a sample became. 0 = none — the legacy had no link at all, the
+    // three known passages were written by hand in the comment and are linked
+    // here (7 → 316, 12 → 027, 52 → 328; Vincent 2026-10-21). A passage closes
+    // the sample, so they are archived too.
+    name: '0025_ref_echantillon_idref_ecru',
+    sql: `
+ALTER TABLE ref_echantillon ADD COLUMN idref_ecru bigint DEFAULT 0;
+UPDATE ref_echantillon e
+   SET idref_ecru = r.idref_ecru, archive = 1
+  FROM (VALUES (7::bigint, '316'), (12::bigint, '027'), (52::bigint, '328')) AS h(idref_echantillon, reference)
+  JOIN ref_ecru r ON r.reference = h.reference
+ WHERE e.idref_echantillon = h.idref_echantillon
+   AND COALESCE(e.idref_ecru, 0) = 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {
