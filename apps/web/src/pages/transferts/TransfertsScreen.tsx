@@ -47,6 +47,7 @@ import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { postEmail } from '@/lib/email'
 import { cn } from '@/lib/utils'
 import { SmartSearchInput, type SearchChip } from '@/components/stock/SmartSearchInput'
+import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -99,6 +100,10 @@ interface RouleauxLine {
   poids: number
   metrage: number
   second_choix: number
+  /** #1297: shown as hover icons on the line and in the picker. */
+  observations: string | null
+  /** Écru: visitage defects; fini: the dyer's report. */
+  defauts: string | null
 }
 interface FilLine {
   IDpiece_transfert: number
@@ -138,6 +143,8 @@ interface AvailableRoll {
   poids: number
   metrage: number
   second_choix: number
+  observations: string | null
+  defauts: string | null
   /** Écru only (#1121): the dyer order the piece is affected to. */
   affectation?: { commande: number; sst: number; sst_nom: string } | null
   /** Écru only: affected to an order whose ennoblisseur is not this bon's destination. */
@@ -855,6 +862,8 @@ function LineCard({
           {!isFil && !!(line as RouleauxLine).second_choix && (
             <Badge variant="outline" className="text-[10px] py-0">2e choix</Badge>
           )}
+          {!isFil && <RollDefautsIcon text={(line as RouleauxLine).defauts} />}
+          {!isFil && <RollObservationsIcon text={(line as RouleauxLine).observations} />}
           <span className="text-sm font-semibold tabular-nums">{fmtNum(line.poids, 1)} kg</span>
           {!isFil && (Number((line as RouleauxLine).metrage) || 0) > 0 && (
             <span className="text-xs text-muted-foreground tabular-nums">{fmtNum((line as RouleauxLine).metrage, 1)} Ml</span>
@@ -899,6 +908,9 @@ interface PickerRow {
   subtitle: string
   poids: number
   secondChoix: boolean
+  /** Rolls only (#1297): read-only hover icons next to the weight. */
+  observations: string | null
+  defauts: string | null
   /** Écru: « MATEL · cde 8989 » — the order the piece is affected to, if any. */
   affectation: string | null
   /** Écru: affected to an order at another ennoblisseur than the destination. */
@@ -1055,6 +1067,8 @@ function PickerDialog({
             : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
           poids: Number(l.poids) || 0,
           secondChoix: !isFil && !!roll.second_choix,
+          observations: isFil ? null : roll.observations,
+          defauts: isFil ? null : roll.defauts,
           affectation: null,
           affecteeAilleurs: false,
           fields: {
@@ -1084,6 +1098,8 @@ function PickerDialog({
         : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
       poids: Number(c.poids) || 0,
       secondChoix: !isFil && !!roll.second_choix,
+      observations: isFil ? null : roll.observations,
+      defauts: isFil ? null : roll.defauts,
       affectation: !isFil && roll.affectation
         ? `${roll.affectation.sst_nom || 'Ets Malterre'} · cde ${roll.affectation.commande}`
         : null,
@@ -1374,6 +1390,8 @@ function PickerDialog({
                     {r.secondChoix && (
                       <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">2e choix</Badge>
                     )}
+                    <RollDefautsIcon text={r.defauts} />
+                    <RollObservationsIcon text={r.observations} />
                     <span className="text-sm tabular-nums flex-shrink-0">{fmtNum(r.poids, 1)} kg</span>
                   </div>
                 )

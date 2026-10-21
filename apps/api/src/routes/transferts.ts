@@ -39,6 +39,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { repairAliased } from './stock-fini.js'
+import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
@@ -257,6 +258,10 @@ interface RouleauxLine {
   poids: number
   metrage: number
   second_choix: number
+  /** The roll's free-text observations (#1297). */
+  observations: string | null
+  /** Défauts (#1297) — écru: the visitage defects, fini: the dyer's report. */
+  defauts: string | null
 }
 
 interface FilLine {
@@ -271,6 +276,9 @@ interface FilLine {
   commentaire: string | null
 }
 
+/** Trimmed text, null when empty (HFSQL stored « » for no note). */
+const textOrNull = (v: unknown): string | null => (v ?? '').toString().trim() || null
+
 const pieceCollator = new Intl.Collator('fr', { numeric: true, sensitivity: 'base' })
 
 async function loadRouleauxLines(bonId: number): Promise<RouleauxLine[]> {
@@ -283,14 +291,15 @@ async function loadRouleauxLines(bonId: number): Promise<RouleauxLine[]> {
   // Flat per-table queries + JS merge (JOIN + CONVERT collapses result sets).
   const [ecruRaw, finiRaw] = await Promise.all([
     ecruIds.length
-      ? query<any>(`SELECT IDstock_ecru, IDref_ecru, IDcolori_ecru, numero, lot, poids, metrage, second_choix FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`)
+      ? query<any>(`SELECT IDstock_ecru, IDref_ecru, IDcolori_ecru, numero, lot, poids, metrage, second_choix, observations FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`)
       : Promise.resolve([]),
     finiIds.length
-      ? query<any>(`SELECT IDstock_fini, IDref_fini, IDColoris, numero, lot, poids, metrage, second_choix FROM stock_fini WHERE IDstock_fini IN (${finiIds.join(',')})`)
+      ? query<any>(`SELECT IDstock_fini, IDref_fini, IDColoris, numero, lot, poids, metrage, second_choix, observations, observation_sst FROM stock_fini WHERE IDstock_fini IN (${finiIds.join(',')})`)
       : Promise.resolve([]),
   ])
-  const ecruFixed = await fixEncoding(ecruRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot'])
-  const finiFixed = await fixEncoding(finiRaw, 'stock_fini', 'IDstock_fini', ['numero', 'lot'])
+  const ecruFixed = await fixEncoding(ecruRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
+  const finiFixed = await fixEncoding(finiRaw, 'stock_fini', 'IDstock_fini', ['numero', 'lot', 'observations', 'observation_sst'])
+  const defectsByEcru = await fetchDefectsByEcru(ecruIds)
   const ecruById = new Map((ecruFixed as any[]).map((r) => [Number(r.IDstock_ecru), r]))
   const finiById = new Map((finiFixed as any[]).map((r) => [Number(r.IDstock_fini), r]))
 
@@ -355,6 +364,8 @@ async function loadRouleauxLines(bonId: number): Promise<RouleauxLine[]> {
         numero: (r.numero ?? '').toString(), lot: (r.lot ?? '').toString(),
         poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
         second_choix: Number(r.second_choix) || 0,
+        observations: textOrNull(r.observations),
+        defauts: textOrNull(defautSummary(defectsByEcru.get(ecruId) ?? [])),
       })
     } else if (finiId > 0) {
       const r = finiById.get(finiId)
@@ -372,6 +383,8 @@ async function loadRouleauxLines(bonId: number): Promise<RouleauxLine[]> {
         numero: (r.numero ?? '').toString(), lot: (r.lot ?? '').toString(),
         poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
         second_choix: Number(r.second_choix) || 0,
+        observations: textOrNull(r.observations),
+        defauts: textOrNull(r.observation_sst),
       })
     }
   }
@@ -853,6 +866,9 @@ interface AvailableRoll {
   poids: number
   metrage: number
   second_choix: number
+  /** Free-text observations and défauts, shown as hover icons in the picker (#1297). */
+  observations: string | null
+  defauts: string | null
   /** Écru only: the dyer order the piece is affected to (null when free). */
   affectation?: { commande: number; sst: number; sst_nom: string } | null
   /** Écru only: affected to an order whose ennoblisseur is NOT the bon's destination. */
@@ -969,16 +985,19 @@ export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria, 
   const opts: EcruViewOpts = { ...view, showSecondChoix }
   const merged = await mergedComponentEcruIds()
   const raw = await query<any>(
-    `SELECT TOP ${AVAILABLE_CAP} se.IDstock_ecru, se.numero, se.lot, se.poids, se.metrage, se.second_choix, se.IDcolori_ecru, ` +
+    `SELECT TOP ${AVAILABLE_CAP} se.IDstock_ecru, se.numero, se.lot, se.poids, se.metrage, se.second_choix, se.observations, se.IDcolori_ecru, ` +
       `se.IDref_commande_affectation AS aff_line, cst.IDcommande_sous_traitant AS aff_cmd, cst.IDsous_traitant AS aff_sst, ` +
       `re.reference AS ref_label ` +
       ECRU_FROM + ecruWhere(sourceId, crit, merged) + ecruSc(opts) + ecruAff(opts) + ' ' +
       `ORDER BY se.IDstock_ecru DESC`,
   )
-  let fixed = await fixEncoding(raw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot'])
+  let fixed = await fixEncoding(raw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   fixed = await repairAliased(fixed, 'ref_ecru', 'IDref_ecru', { ref_label: 'reference' })
-  const col = await loadEcruColorisMap((fixed as any[]).map((r) => Number(r.IDcolori_ecru) || 0))
-  const sstNames = await resolveSstNames((fixed as any[]).map((r) => Number(r.aff_sst) || 0))
+  const [col, sstNames, defectsByEcru] = await Promise.all([
+    loadEcruColorisMap((fixed as any[]).map((r) => Number(r.IDcolori_ecru) || 0)),
+    resolveSstNames((fixed as any[]).map((r) => Number(r.aff_sst) || 0)),
+    fetchDefectsByEcru((fixed as any[]).map((r) => Number(r.IDstock_ecru) || 0)),
+  ])
   return (fixed as any[]).map((r) => {
     const affLine = Number(r.aff_line) || 0
     const affSst = Number(r.aff_sst) || 0
@@ -989,6 +1008,8 @@ export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria, 
       numero: (r.numero ?? '').toString(), lot: (r.lot ?? '').toString(),
       poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
       second_choix: Number(r.second_choix) || 0,
+      observations: textOrNull(r.observations),
+      defauts: textOrNull(defautSummary(defectsByEcru.get(Number(r.IDstock_ecru)) ?? [])),
       affectation: affLine > 0
         ? { commande: Number(r.aff_cmd) || 0, sst: affSst, sst_nom: affSst > 0 ? (sstNames.get(affSst) ?? '') : '' }
         : null,
@@ -1000,12 +1021,12 @@ export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria, 
 export async function loadAvailableFini(sourceId: number, crit: SearchCriteria, showSecondChoix = true): Promise<AvailableRoll[]> {
   const sc = showSecondChoix ? '' : ' AND sf.second_choix = 0'
   const raw = await query<any>(
-    `SELECT TOP ${AVAILABLE_CAP} sf.IDstock_fini, sf.numero, sf.lot, sf.poids, sf.metrage, sf.second_choix, sf.IDColoris, ` +
+    `SELECT TOP ${AVAILABLE_CAP} sf.IDstock_fini, sf.numero, sf.lot, sf.poids, sf.metrage, sf.second_choix, sf.observations, sf.observation_sst, sf.IDColoris, ` +
       `rf.reference AS ref_label, rf.avec_teinture ` +
       FINI_FROM + finiWhere(sourceId, crit) + sc + ' ' +
       `ORDER BY sf.IDstock_fini DESC`,
   )
-  let fixed = await fixEncoding(raw, 'stock_fini', 'IDstock_fini', ['numero', 'lot'])
+  let fixed = await fixEncoding(raw, 'stock_fini', 'IDstock_fini', ['numero', 'lot', 'observations', 'observation_sst'])
   fixed = await repairAliased(fixed, 'ref_fini', 'IDref_fini', { ref_label: 'reference' })
   const washIds: number[] = []
   const dyeIds: number[] = []
@@ -1024,6 +1045,8 @@ export async function loadAvailableFini(sourceId: number, crit: SearchCriteria, 
       numero: (r.numero ?? '').toString(), lot: (r.lot ?? '').toString(),
       poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
       second_choix: Number(r.second_choix) || 0,
+      observations: textOrNull(r.observations),
+      defauts: textOrNull(r.observation_sst),
     }
   })
 }

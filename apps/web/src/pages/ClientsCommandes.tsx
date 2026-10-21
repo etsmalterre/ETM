@@ -63,6 +63,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { Tooltip } from '@/components/ui/tooltip'
+import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
 import type { RollNoteDefect } from '@/components/shared/RollNotes'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
@@ -2922,7 +2923,6 @@ function RollRow({
   const obsText = roll.observations?.trim() ?? ''
   const defautText = (roll.observation_sst ?? '').trim()
   const isSecondChoix = Number(roll.second_choix) > 0
-  const hasDefect = isSecondChoix || defautText.length > 0
   const mlNf = Number(roll.ml_non_factures) || 0
   return (
     <div
@@ -2982,31 +2982,7 @@ function RollRow({
             <MlNonFacturesMention ml={mlNf} motif={roll.ml_non_factures_motif} className="mt-1 text-[11px]" />
           )}
         </div>
-        {hasDefect && (
-          <Tooltip
-            side="left"
-            content={
-              <div className="w-max max-w-[320px] space-y-1.5 py-1">
-                <p className="text-xs font-semibold uppercase tracking-wide text-red-700 whitespace-nowrap">
-                  Défauts
-                </p>
-                {isSecondChoix && (
-                  <p className="text-xs font-bold uppercase tracking-wide text-red-700">2e choix</p>
-                )}
-                {defautText.length > 0 && (
-                  <p className="text-sm font-normal whitespace-pre-line">{defautText}</p>
-                )}
-              </div>
-            }
-          >
-            <span
-              className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 cursor-pointer border border-red-200 bg-red-50 hover:bg-red-100 transition-colors"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
-            </span>
-          </Tooltip>
-        )}
+        <RollDefautsIcon secondChoix={isSecondChoix} text={defautText} />
         {onOpenMlNf && (mlNf > 0 || mlNfEditable) && (
           <button
             type="button"
@@ -3026,28 +3002,7 @@ function RollRow({
             ghost when empty (click to add), blue framed when filled (hover
             shows the text, click edits). */}
         {obsText.length > 0 ? (
-          <Tooltip
-            side="left"
-            content={
-              <div className="w-max max-w-[320px] space-y-1.5 py-1">
-                <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 whitespace-nowrap">
-                  Observations
-                </p>
-                <p className="text-sm font-normal whitespace-pre-line">{obsText}</p>
-              </div>
-            }
-          >
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onEditObs?.() }}
-              className={cn(
-                'h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 border border-blue-200 bg-blue-50 transition-colors',
-                onEditObs ? 'cursor-pointer hover:bg-blue-100' : 'cursor-default',
-              )}
-            >
-              <MessageSquare className="h-3.5 w-3.5 text-blue-600" />
-            </button>
-          </Tooltip>
+          <RollObservationsIcon text={obsText} onClick={onEditObs} />
         ) : onEditObs ? (
           <button
             type="button"
