@@ -110,7 +110,7 @@ interface Draft {
 
 const STATUT_META: Record<Statut, { label: string; filtre: string; icon: typeof FlaskConical; solid: string }> = {
   en_cours: { label: 'En cours', filtre: 'En cours', icon: FlaskConical, solid: 'bg-primary border-primary' },
-  reference: { label: 'Devenu référence', filtre: 'Devenus réf.', icon: CheckCircle2, solid: 'bg-success border-success' },
+  reference: { label: 'Devenu référence', filtre: 'Retenus', icon: CheckCircle2, solid: 'bg-success border-success' },
   archive: { label: 'Archivé', filtre: 'Archivés', icon: Archive, solid: 'bg-zinc-500 border-zinc-500' },
 }
 const STATUTS: Statut[] = ['en_cours', 'reference', 'archive']
