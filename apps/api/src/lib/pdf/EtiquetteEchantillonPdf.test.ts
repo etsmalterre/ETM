@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest'
 import {
   EtiquetteEchantillonPdf,
   LAYOUT,
-  compositionTexte,
+  compositionLignes,
   lfaTours,
   type EtiquetteEchantillonData,
 } from './EtiquetteEchantillonPdf.js'
@@ -46,7 +46,8 @@ describe('EtiquetteEchantillonPdf', () => {
     expect(s).toContain('30"')
     expect(s).toContain('LFA / TOUR')
     expect(s.filter((t) => t === '7.50').length).toBe(2)
-    expect(s.some((t) => t.includes('48 % 1/60 LYOCELL'))).toBe(true)
+    expect(s).toContain('48 %')
+    expect(s).toContain('1/60 LYOCELL')
     expect(s).not.toContain('FICHE')
   })
 
@@ -64,16 +65,23 @@ describe('EtiquetteEchantillonPdf', () => {
     expect(lfaTours([])).toEqual(['—', '—', '—', '—'])
   })
 
-  it('clamps a long composition on a word, never splitting « 36 % » from its yarn', () => {
-    const t = compositionTexte([
+  it('lists every yarn on its own row, name whole, % apart', () => {
+    const l = compositionLignes([
       { pourcentage: 49, fil: '1/28 COTON PEIGNE BIO Z' },
-      { pourcentage: 36, fil: '78/68/2 PA66 Z' },
-      { pourcentage: 10, fil: '48 dtex ELASTHANNE ROICA' },
-      { pourcentage: 5, fil: '1/40 POLYESTER RECYCLE BLANC OPTIQUE' },
+      { pourcentage: 36, fil: '1/23 LYOCELL/CHANVRE 70/30 ' },
+      { pourcentage: 15.5, fil: '48 dtex PA/ELAST' },
     ])
-    expect(t.length).toBeLessThanOrEqual(110)
-    expect(t.endsWith('…')).toBe(true)
-    expect(t).toContain('36 % 78/68/2')
+    expect(l).toEqual([
+      { pct: '49 %', fil: '1/28 COTON PEIGNE BIO Z' },
+      { pct: '36 %', fil: '1/23 LYOCELL/CHANVRE 70/30' },
+      { pct: '15,5 %', fil: '48 dtex PA/ELAST' },
+    ])
+  })
+
+  it('cuts names to one line once the yarns fold into two columns', () => {
+    const quatre = [40, 30, 20, 10].map((p) => ({ pourcentage: p, fil: '1/23 LYOCELL/CHANVRE 70/30' }))
+    for (const l of compositionLignes(quatre)) expect(l.fil.length).toBeLessThanOrEqual(22)
+    expect(compositionLignes(quatre.slice(0, 3))[0].fil).toBe('1/23 LYOCELL/CHANVRE 70/30')
   })
 
   it('centres on the physical label and keeps the text inside the printable band', () => {
