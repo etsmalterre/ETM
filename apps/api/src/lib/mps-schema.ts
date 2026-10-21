@@ -903,6 +903,33 @@ ALTER TABLE ref_echantillon
   ADD COLUMN poids_m2_lave double precision DEFAULT 0;
 `,
   },
+  {
+    // Tombé Métier › Échantillons: follow-up of the research (Vincent
+    // 2026-10-21) — every open sample carries its next relance date (amber 7
+    // days before, red from it, lib/echantillons.ts), set at creation and on
+    // each relance to +30 days; the samples open at deploy start from today
+    // + 30 rather than all red at once. Each relance done is journaled with
+    // who and a note — append-only by use (the API only INSERTs and SELECTs).
+    // `auteur` is the name at the time, like stock_fini_mesure_journal.
+    name: '0027_echantillon_relance',
+    sql: `
+ALTER TABLE ref_echantillon ADD COLUMN date_relance date;
+UPDATE ref_echantillon SET date_relance = CURRENT_DATE + 30
+ WHERE COALESCE(archive, 0) = 0 AND COALESCE(idref_ecru, 0) = 0;
+CREATE TABLE echantillon_relance (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idref_echantillon bigint NOT NULL,
+  le timestamptz NOT NULL DEFAULT now(),
+  idutilisateur bigint NOT NULL,
+  auteur text NOT NULL,
+  note text NOT NULL DEFAULT '',
+  prochaine_relance date
+);
+CREATE INDEX echantillon_relance_echantillon ON echantillon_relance (idref_echantillon, le);
+${grantApi('SELECT, INSERT', 'echantillon_relance')}
+${grantApi('USAGE, SELECT', 'SEQUENCE echantillon_relance_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

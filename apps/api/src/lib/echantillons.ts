@@ -75,3 +75,45 @@ export function refusCreationReference(
   if (!compositionComplete(pourcents)) return 'composition_incomplete'
   return null
 }
+
+// ── Relance (follow-up of the research, Vincent 2026-10-21) ──
+
+/** Days between a sample's creation (or a relance done) and the next one. */
+export const DELAI_RELANCE_JOURS = 30
+/** Amber from this many days before the relance date. */
+export const AMBRE_JOURS = 7
+
+export type UrgenceRelance = 'retard' | 'bientot'
+
+/** Whole days from `aujourdhui` to `date` (YYYY-MM-DD), negative when past. */
+export function joursAvant(date: string, aujourdhui: string): number {
+  const ms = Date.parse(`${date}T00:00:00Z`) - Date.parse(`${aujourdhui}T00:00:00Z`)
+  return Math.round(ms / 86_400_000)
+}
+
+/** Red from the relance date on, amber within the 7 days before, nothing
+ *  otherwise — and only on an open sample: one kept or archived is no longer
+ *  followed. No date on an open sample = nothing to say (the migration gave
+ *  every open sample one; a cleared date is a deliberate choice). */
+export function urgenceRelance(
+  e: { statut: StatutEchantillon; date_relance: string | null },
+  aujourdhui: string,
+): { urgence: UrgenceRelance | null; jours: number | null } {
+  if (e.statut !== 'en_cours' || !e.date_relance) return { urgence: null, jours: null }
+  const jours = joursAvant(e.date_relance, aujourdhui)
+  if (jours <= 0) return { urgence: 'retard', jours }
+  if (jours <= AMBRE_JOURS) return { urgence: 'bientot', jours }
+  return { urgence: null, jours }
+}
+
+/** `date` + n days, YYYY-MM-DD. */
+export function ajouterJours(date: string, n: number): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+
+/** Today in the factory's time zone, YYYY-MM-DD (the server may run in UTC). */
+export function aujourdhuiParis(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Paris' }).format(now)
+}

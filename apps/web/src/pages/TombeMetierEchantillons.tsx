@@ -28,6 +28,7 @@ import {
   ChevronUp,
   ArrowRight,
   Lock,
+  BellRing,
 } from 'lucide-react'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -70,6 +71,8 @@ interface EchantillonListRow {
   IDclient: number
   client_nom: string | null
   reference: ReferenceCreee | null
+  /** Next follow-up: amber 7 days before, red from it (API lib/echantillons.ts). */
+  relance: { date: string | null; urgence: Urgence | null; jours: number | null }
   pieces_count: number
 }
 
@@ -96,11 +99,17 @@ interface Piece {
 interface EchantillonDetail extends Omit<EchantillonListRow, 'pieces_count'> {
   composition: CompoLine[]
   pieces: Piece[]
+  relances: RelanceFaite[]
 }
 
 interface ContextureLookup { IDcontexture: number; nom: string | null }
 interface ClientLookup { IDclient: number; nom: string | null; ville: string | null }
 interface MachineLookup { IDmachine: number; nom: string | null }
+
+type Urgence = 'retard' | 'bientot'
+/** Same delay as the API's DELAI_RELANCE_JOURS: the date « Relancé » proposes. */
+const DELAI_RELANCE_JOURS = 30
+interface RelanceFaite { id: number; le: string; auteur: string; note: string; prochaine_relance: string | null }
 
 interface Draft {
   IDcontexture: number
@@ -111,6 +120,8 @@ interface Draft {
   lave: { laize: string; poids: string }
   commentaire: string
   IDclient: number
+  /** YYYY-MM-DD, '' = none. */
+  date_relance: string
 }
 
 const STATUT_META: Record<Statut, { label: string; filtre: string; icon: typeof FlaskConical; solid: string }> = {
@@ -137,6 +148,7 @@ const draftFromDetail = (d: EchantillonDetail): Draft => ({
   lave: { laize: numDraft(d.lave.laize), poids: numDraft(d.lave.poids) },
   commentaire: d.commentaire,
   IDclient: d.IDclient,
+  date_relance: d.relance.date ?? '',
 })
 
 /** « Contexture · Jauge 20 · Ø 30" » — what the fabric is, in one line. */
@@ -170,6 +182,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
   })
   const [selectedId, setSelectedId] = useState<number | null>(() => Number(searchParams.get('id')) || null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [relanceFiltre, setRelanceFiltre] = useState<Urgence | null>(null)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState<Draft | null>(null)
   const originalDraftRef = useRef<Draft | null>(null)
@@ -218,7 +231,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
     staleTime: 5 * 60_000,
   })
 
-  const filtered = useMemo(() => {
+  const searched = useMemo(() => {
     if (!rows) return []
     const tokens = searchQuery.toLowerCase().split(/\s+/).filter(Boolean)
     if (tokens.length === 0) return rows
@@ -228,6 +241,17 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
       return tokens.every((t) => haystack.includes(t))
     })
   }, [rows, searchQuery])
+  // §41 counter pills: counted over the searched list, and an armed pill whose
+  // bucket emptied stops filtering (it is hidden at 0).
+  const comptes = useMemo(() => ({
+    retard: searched.filter((r) => r.relance.urgence === 'retard').length,
+    bientot: searched.filter((r) => r.relance.urgence === 'bientot').length,
+  }), [searched])
+  const filtreActif = relanceFiltre && comptes[relanceFiltre] > 0 ? relanceFiltre : null
+  const filtered = useMemo(
+    () => (filtreActif ? searched.filter((r) => r.relance.urgence === filtreActif) : searched),
+    [searched, filtreActif],
+  )
 
   useAutoSelectFirst({
     rows: filtered,
@@ -281,6 +305,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
           lave: { laize: numBody(d.lave.laize), poids: numBody(d.lave.poids) },
           commentaire: d.commentaire,
           IDclient: d.IDclient,
+          date_relance: d.date_relance || null,
         }),
       })
     },
@@ -368,6 +393,9 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
         list={
           <EchantillonList
             rows={filtered}
+            comptes={comptes}
+            relanceFiltre={filtreActif}
+            onRelanceFiltre={(u) => setRelanceFiltre((prev) => (prev === u ? null : u))}
             isLoading={isLoading}
             isError={isError}
             error={error as Error | null}
@@ -414,7 +442,11 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
         sidebar={selectedId !== null ? (
           <DetailSidebar
             detail={detail ?? null}
+            apiBase={apiBase}
             isEditing={isEditing}
+            draft={draft}
+            onDraftChange={setDraft}
+            onMutationSuccess={invalidate}
             onArchiver={() => statutMutation.mutate('archiver')}
             onRouvrir={() => statutMutation.mutate('rouvrir')}
             onCreerReference={() => setCreerOpen(true)}
@@ -473,10 +505,13 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
 // ── Left: list ─────────────────────────────────────────
 
 function EchantillonList({
-  rows, isLoading, isError, error, selectedId, onSelect, searchQuery, onSearchChange,
+  rows, comptes, relanceFiltre, onRelanceFiltre, isLoading, isError, error, selectedId, onSelect, searchQuery, onSearchChange,
   statut, onStatutChange, onNew, isCreating, isEditing,
 }: {
   rows: EchantillonListRow[]
+  comptes: Record<Urgence, number>
+  relanceFiltre: Urgence | null
+  onRelanceFiltre: (u: Urgence) => void
   isLoading: boolean
   isError: boolean
   error: Error | null
@@ -495,16 +530,21 @@ function EchantillonList({
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Rechercher..."
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            autoComplete="off"
-            className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Rechercher..."
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              autoComplete="off"
+              className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          {(['retard', 'bientot'] as const).map((u) => comptes[u] > 0 && (
+            <CompteurRelance key={u} urgence={u} count={comptes[u]} on={relanceFiltre === u} onToggle={() => onRelanceFiltre(u)} />
+          ))}
         </div>
         <div className="flex flex-wrap gap-1">
           {STATUTS.map((s) => (
@@ -541,6 +581,8 @@ function EchantillonList({
           rows.map((r) => {
             const ident = identite(r)
             const premiereLigne = r.commentaire.split(/\r?\n/).map((l) => l.trim()).find(Boolean)
+            const urgence = r.relance.urgence
+            const selected = selectedId === r.IDref_echantillon
             return (
               <div
                 key={r.IDref_echantillon}
@@ -548,7 +590,16 @@ function EchantillonList({
                 onClick={() => onSelect(r.IDref_echantillon)}
                 className={cn(
                   'p-3 border rounded-lg cursor-pointer transition-all bg-white',
-                  selectedId === r.IDref_echantillon ? 'border-accent ring-1 ring-accent' : 'border-border hover:border-accent/50',
+                  // §30/§41: the urgency colour takes the liseré AND the selection ring.
+                  selected
+                    ? urgence === 'retard' ? 'border-red-500 ring-1 ring-red-500'
+                      : urgence === 'bientot' ? 'border-amber-500 ring-1 ring-amber-500'
+                      : 'border-accent ring-1 ring-accent'
+                    : urgence === 'retard' ? 'border-border hover:border-red-500/50'
+                      : urgence === 'bientot' ? 'border-border hover:border-amber-500/50'
+                      : 'border-border hover:border-accent/50',
+                  urgence === 'retard' && 'shadow-[inset_4px_0_0_0_rgb(239_68_68)]',
+                  urgence === 'bientot' && 'shadow-[inset_4px_0_0_0_rgb(245_158_11)]',
                 )}
               >
                 <div className="flex items-center gap-2 min-w-0">
@@ -562,6 +613,11 @@ function EchantillonList({
                 </div>
                 {ident && <p className="text-xs text-muted-foreground mt-0.5 truncate">{ident}</p>}
                 {premiereLigne && <p className="text-xs text-muted-foreground/80 italic mt-0.5 line-clamp-2">{premiereLigne}</p>}
+                {urgence && (
+                  <p className={cn('text-[11px] font-medium mt-1', urgence === 'retard' ? 'text-red-600' : 'text-amber-700')}>
+                    {raisonRelance(r.relance)}
+                  </p>
+                )}
                 <div className="flex items-center justify-between gap-2 mt-1 text-[11px] text-muted-foreground">
                   <span className="truncate">{r.client_nom ?? ''}</span>
                   <span className="flex-shrink-0 tabular-nums">
@@ -583,6 +639,35 @@ function EchantillonList({
         )}
       </div>
     </div>
+  )
+}
+
+/** « Relance en retard de 3 j » / « Relance aujourd'hui » / « Relance dans 4 j (28/10/2026) ». */
+function raisonRelance(r: EchantillonListRow['relance']): string {
+  if (r.jours == null || !r.date) return ''
+  if (r.jours < 0) return `Relance en retard de ${-r.jours} j`
+  if (r.jours === 0) return "Relance aujourd'hui"
+  return `Relance dans ${r.jours} j (${formatHfsqlDate(r.date)})`
+}
+
+/** §41 counter pill, flush right of the search: hidden at 0, solid when armed. */
+function CompteurRelance({ urgence, count, on, onToggle }: { urgence: Urgence; count: number; on: boolean; onToggle: () => void }) {
+  const rouge = urgence === 'retard'
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={on}
+      title={rouge ? 'Relance due ou en retard' : 'Relance dans les 7 jours'}
+      className={cn(
+        'h-7 min-w-[1.75rem] px-1.5 inline-flex items-center justify-center rounded-md text-xs font-semibold tabular-nums border transition-colors flex-shrink-0',
+        rouge
+          ? on ? 'bg-red-500 text-white border-red-500 shadow-sm' : 'bg-red-500/10 text-red-700 border-red-500/30 hover:bg-red-500/20'
+          : on ? 'bg-amber-500 text-white border-amber-500 shadow-sm' : 'bg-amber-500/10 text-amber-800 border-amber-500/30 hover:bg-amber-500/20',
+      )}
+    >
+      {count}
+    </button>
   )
 }
 
@@ -1384,9 +1469,151 @@ function KV({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-function DetailSidebar({ detail, isEditing, onArchiver, onRouvrir, onCreerReference, isChanging }: {
-  detail: EchantillonDetail | null
+/** The follow-up of an open sample: next relance date (editable in edit
+ *  mode), how pressing it is, « Relancé » to record one and push the date,
+ *  and the journal of relances done (kept after the sample is closed). */
+function RelanceCard({ apiBase, detail, isEditing, draft, onDraftChange, onMutationSuccess }: {
+  apiBase: string
+  detail: EchantillonDetail
   isEditing: boolean
+  draft: Draft | null
+  onDraftChange: (d: Draft) => void
+  onMutationSuccess: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const r = detail.relance
+  const ouvert = detail.statut === 'en_cours'
+  const ton = r.urgence === 'retard' ? 'text-red-600' : r.urgence === 'bientot' ? 'text-amber-700' : 'text-foreground'
+  return (
+    <div className={cn(
+      'p-3 rounded-lg border bg-card shadow-sm space-y-2',
+      isEditing && 'border-l-4 border-l-accent/70 bg-accent/[0.03]',
+      !isEditing && r.urgence === 'retard' && 'border-l-4 border-l-red-500',
+      !isEditing && r.urgence === 'bientot' && 'border-l-4 border-l-amber-500',
+    )}>
+      <div className="flex items-center gap-2">
+        <BellRing className="h-3.5 w-3.5 text-accent" />
+        <p className="text-xs font-semibold text-muted-foreground flex-1">Relance</p>
+        {ouvert && !isEditing && (
+          <Button size="sm" variant="outline" className="h-7" onClick={() => setOpen(true)} title="Enregistrer la relance faite et reporter la suivante">
+            <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />Relancé
+          </Button>
+        )}
+      </div>
+      {ouvert && (
+        isEditing && draft ? (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">Prochaine relance</span>
+            <input
+              type="date"
+              value={draft.date_relance}
+              onChange={(e) => onDraftChange({ ...draft, date_relance: e.target.value })}
+              className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+        ) : (
+          <div>
+            <p className={cn('text-sm font-semibold', ton)}>
+              {r.date ? formatHfsqlDate(r.date) : 'Aucune date'}
+            </p>
+            {r.date && <p className={cn('text-[11px]', r.urgence ? ton : 'text-muted-foreground')}>{raisonRelance(r)}</p>}
+          </div>
+        )
+      )}
+      {detail.relances.length > 0 && (
+        <div className="pt-2 border-t border-border/60 space-y-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+            {detail.relances.length} relance{detail.relances.length !== 1 ? 's' : ''} faite{detail.relances.length !== 1 ? 's' : ''}
+          </p>
+          {detail.relances.map((h) => (
+            <div key={h.id} className="text-xs">
+              <p className="text-muted-foreground tabular-nums">
+                {new Date(h.le).toLocaleDateString('fr-FR')} · {h.auteur}
+              </p>
+              {h.note.trim() && <p className="whitespace-pre-line">{h.note.trim()}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+      {open && <RelanceDialog apiBase={apiBase} detail={detail} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); onMutationSuccess() }} />}
+    </div>
+  )
+}
+
+/** « Relancé » : what was done (free note) and when to come back — today
+ *  + 30 by default, the date the API would pick anyway. */
+function RelanceDialog({ apiBase, detail, onClose, onSaved }: {
+  apiBase: string
+  detail: EchantillonDetail
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [note, setNote] = useState('')
+  const [prochaine, setProchaine] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() + DELAI_RELANCE_JOURS)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
+  const [error, setError] = useState<string | null>(null)
+  const saveMut = useMutation({
+    mutationFn: () => apiFetch(`${apiBase}/${detail.IDref_echantillon}/relances`, {
+      method: 'POST',
+      body: JSON.stringify({ note, prochaine_relance: prochaine || null }),
+    }),
+    onSuccess: onSaved,
+    onError: (err) => setError(messageErreur(err, "L'enregistrement de la relance a échoué. Veuillez réessayer.")),
+  })
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-md" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <BellRing className="h-5 w-5 text-accent" />
+            Relance — échantillon {detail.numero}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Ce qui a été fait</label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder="Mail à Kenny, attend son retour sur la main…"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Prochaine relance</label>
+            <input type="date" value={prochaine} onChange={(e) => setProchaine(e.target.value)} className={inputClass} />
+          </div>
+        </div>
+        {error && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+            <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose}>Annuler</Button>
+          <Button onClick={() => { setError(null); saveMut.mutate() }} disabled={saveMut.isPending}>
+            {saveMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+            Enregistrer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMutationSuccess, onArchiver, onRouvrir, onCreerReference, isChanging }: {
+  detail: EchantillonDetail | null
+  apiBase: string
+  isEditing: boolean
+  draft: Draft | null
+  onDraftChange: (d: Draft) => void
+  onMutationSuccess: () => void
   onArchiver: () => void
   onRouvrir: () => void
   onCreerReference: () => void
@@ -1410,6 +1637,16 @@ function DetailSidebar({ detail, isEditing, onArchiver, onRouvrir, onCreerRefere
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-transparent">
+          {(detail.statut === 'en_cours' || detail.relances.length > 0) && (
+            <RelanceCard
+              apiBase={apiBase}
+              detail={detail}
+              isEditing={isEditing}
+              draft={draft}
+              onDraftChange={onDraftChange}
+              onMutationSuccess={onMutationSuccess}
+            />
+          )}
           {detail.reference && (
             <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
               <p className="text-xs font-semibold text-muted-foreground">Référence créée</p>

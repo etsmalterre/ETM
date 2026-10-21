@@ -23,7 +23,11 @@ import { EtiquetteEchantillonPdf, type EtiquetteEchantillonData } from '../lib/p
 import {
   DIAMETRE_ORD_MAX,
   JAUGE_ORD_MAX,
+  DELAI_RELANCE_JOURS,
+  ajouterJours,
+  aujourdhuiParis,
   compositionComplete,
+  urgenceRelance,
   diametreLibelle,
   jaugeLibelle,
   fractionVersPourcent,
@@ -74,6 +78,8 @@ interface EchantillonRow {
   idclient: number | null
   archive: number | null
   idref_ecru: number | null
+  /** YYYY-MM-DD (to_char), null when unset. */
+  date_relance?: string | null
   contexture_nom: string | null
   client_nom: string | null
   ref_reference: string | null
@@ -83,7 +89,7 @@ interface EchantillonRow {
 const SELECT_ECHANTILLON = (sql: Sql) => sql`
   SELECT e.idref_echantillon, e.idcontexture, e.jauge, e.diametre, e.lfa1, e.lfa2, e.lfa3, e.lfa4,
          e.laize_tbm, e.poids_m2_tbm, e.laize_lave, e.poids_m2_lave,
-         e.commentaire, e.idclient, e.archive, e.idref_ecru,
+         e.commentaire, e.idclient, e.archive, e.idref_ecru, to_char(e.date_relance, 'YYYY-MM-DD') AS date_relance,
          c.nom AS contexture_nom, cl.nom AS client_nom,
          r.reference AS ref_reference, r.designation AS ref_designation
     FROM ref_echantillon e
@@ -107,6 +113,8 @@ function shape(e: EchantillonRow) {
     commentaire: e.commentaire ?? '',
     IDclient: Number(e.idclient) || 0,
     client_nom: e.client_nom?.trim() || null,
+    // Next follow-up and how pressing it is (amber 7 days before, red from it).
+    relance: { date: e.date_relance ?? null, ...urgenceRelance({ statut: statutEchantillon(e), date_relance: e.date_relance ?? null }, aujourdhuiParis()) },
     reference: (Number(e.idref_ecru) || 0) > 0
       ? { IDref_ecru: Number(e.idref_ecru), reference: e.ref_reference?.trim() ?? '', designation: e.ref_designation?.trim() ?? '' }
       : null,
@@ -144,6 +152,13 @@ async function loadComposition(sql: Sql, id: number) {
     colori_fil_reference: r.colori_fil_reference?.trim() || null,
     pourcentage: fractionVersPourcent(r.pourcentage),
   }))
+}
+
+async function loadRelances(sql: Sql, id: number) {
+  const rows = await sql<{ id: number; le: Date; auteur: string; note: string; prochaine_relance: string | null }[]>`
+    SELECT id, le, auteur, note, to_char(prochaine_relance, 'YYYY-MM-DD') AS prochaine_relance
+      FROM echantillon_relance WHERE idref_echantillon = ${id} ORDER BY le DESC, id DESC`
+  return rows.map((r) => ({ id: r.id, le: r.le.toISOString(), auteur: r.auteur, note: r.note, prochaine_relance: r.prochaine_relance }))
 }
 
 interface PieceRow {
@@ -202,6 +217,7 @@ const enteteBody = z.object({
   lave: z.object({ laize: z.number().min(0), poids: z.number().min(0) }),
   commentaire: z.string().max(4000),
   IDclient: z.number().int().min(0),
+  date_relance: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
 })
 
 const compositionBody = z.object({
@@ -224,6 +240,11 @@ const pieceBody = z.object({
 const creerReferenceBody = z.object({
   reference: z.string().trim().min(1).max(50),
   designation: z.string().trim().max(200),
+})
+
+const relanceBody = z.object({
+  note: z.string().max(2000),
+  prochaine_relance: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
 })
 
 const STATUTS: readonly StatutEchantillon[] = ['en_cours', 'reference', 'archive']
@@ -305,6 +326,7 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
       res.json({
         ...shape(row),
         composition: await loadComposition(sql, row.idref_echantillon),
+        relances: await loadRelances(sql, row.idref_echantillon),
         pieces: await loadPieces(sql, row.idref_echantillon),
       })
     } catch (err) {
@@ -342,8 +364,8 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
       const id = await mpsPg().begin(async (t) => {
         const tx = t as unknown as Sql
         const [row] = await tx<{ idref_echantillon: number }[]>`
-          INSERT INTO ref_echantillon (idcontexture, jauge, diametre, lfa1, lfa2, lfa3, lfa4, commentaire, idclient, archive, idref_ecru)
-          VALUES (0, 0, 0, 0, 0, 0, 0, '', 0, 0, 0)
+          INSERT INTO ref_echantillon (idcontexture, jauge, diametre, lfa1, lfa2, lfa3, lfa4, commentaire, idclient, archive, idref_ecru, date_relance)
+          VALUES (0, 0, 0, 0, 0, 0, 0, '', 0, 0, 0, ${ajouterJours(aujourdhuiParis(), DELAI_RELANCE_JOURS)})
           RETURNING idref_echantillon`
         // An identity may hand back the id of a sample the legacy deleted
         // without its children (#1290): a new sample starts empty.
@@ -372,7 +394,7 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
           lfa1 = ${b.lfa[0]}, lfa2 = ${b.lfa[1]}, lfa3 = ${b.lfa[2]}, lfa4 = ${b.lfa[3]},
           laize_tbm = ${b.tbm.laize}, poids_m2_tbm = ${b.tbm.poids},
           laize_lave = ${b.lave.laize}, poids_m2_lave = ${b.lave.poids},
-          commentaire = ${b.commentaire}, idclient = ${b.IDclient}
+          commentaire = ${b.commentaire}, idclient = ${b.IDclient}, date_relance = ${b.date_relance}
         WHERE idref_echantillon = ${row.idref_echantillon}`
       res.json({ ok: true })
     } catch (err) {
@@ -490,6 +512,34 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
     }
   })
 
+  // POST /:id/relances — « Relancé » : the follow-up was done (who, a note),
+  // the next one moves to `prochaine_relance` (default today + 30). Open
+  // samples only; the journal is append-only.
+  router.post('/:id/relances', async (req, res) => {
+    try {
+      const parsed = relanceBody.safeParse(req.body)
+      if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+      const row = await charger(req, res, { ouvert: true })
+      if (!row) return
+      const prochaine = parsed.data.prochaine_relance ?? ajouterJours(aujourdhuiParis(), DELAI_RELANCE_JOURS)
+      const sql = mpsPg()
+      const [u] = await sql<{ prenom: string | null; nom: string | null }[]>`
+        SELECT prenom, nom FROM utilisateur WHERE idutilisateur = ${req.userId!}`
+      const auteur = [u?.prenom, u?.nom].map((x) => (x ?? '').trim()).filter(Boolean).join(' ') || `#${req.userId}`
+      await sql.begin(async (t) => {
+        const tx = t as unknown as Sql
+        await tx`
+          INSERT INTO echantillon_relance (idref_echantillon, idutilisateur, auteur, note, prochaine_relance)
+          VALUES (${row.idref_echantillon}, ${req.userId!}, ${auteur}, ${parsed.data.note.trim()}, ${prochaine})`
+        await tx`UPDATE ref_echantillon SET date_relance = ${prochaine} WHERE idref_echantillon = ${row.idref_echantillon}`
+      })
+      res.status(201).json({ ok: true, date_relance: prochaine })
+    } catch (err) {
+      console.error('Error recording échantillon relance:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  })
+
   // POST /:id/archiver · POST /:id/rouvrir — the status pill (§29.3)
   router.post('/:id/archiver', async (req, res) => {
     try {
@@ -513,7 +563,8 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
         res.status(409).json({ error: 'deja_reference', message: `L'échantillon est devenu la référence ${row.ref_reference?.trim() ?? ''} : il ne peut pas être rouvert.` })
         return
       }
-      await mpsPg()`UPDATE ref_echantillon SET archive = 0 WHERE idref_echantillon = ${row.idref_echantillon}`
+      // Back in the follow-up: a fresh relance date, never an old one already red.
+      await mpsPg()`UPDATE ref_echantillon SET archive = 0, date_relance = ${ajouterJours(aujourdhuiParis(), DELAI_RELANCE_JOURS)} WHERE idref_echantillon = ${row.idref_echantillon}`
       res.json({ ok: true })
     } catch (err) {
       console.error('Error reopening échantillon:', err)

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DELAI_RELANCE_JOURS,
+  ajouterJours,
+  aujourdhuiParis,
+  joursAvant,
+  urgenceRelance,
   compositionComplete,
   fractionVersPourcent,
   lfaTexte,
@@ -77,5 +82,37 @@ describe('refusCreationReference', () => {
     expect(refusCreationReference({ archive: 0, idref_ecru: 0 }, [95])).toBe('composition_incomplete')
     expect(refusCreationReference({ archive: 1, idref_ecru: 0 }, [100])).toBe('archive')
     expect(refusCreationReference({ archive: 1, idref_ecru: 461 }, [100])).toBe('deja_reference')
+  })
+})
+
+describe('urgenceRelance', () => {
+  const ouvert = (date_relance: string | null) => ({ statut: 'en_cours' as const, date_relance })
+  it('red from the relance date on', () => {
+    expect(urgenceRelance(ouvert('2026-10-21'), '2026-10-21')).toEqual({ urgence: 'retard', jours: 0 })
+    expect(urgenceRelance(ouvert('2026-10-18'), '2026-10-21')).toEqual({ urgence: 'retard', jours: -3 })
+  })
+  it('amber within the 7 days before, nothing earlier', () => {
+    expect(urgenceRelance(ouvert('2026-10-28'), '2026-10-21')).toEqual({ urgence: 'bientot', jours: 7 })
+    expect(urgenceRelance(ouvert('2026-10-22'), '2026-10-21').urgence).toBe('bientot')
+    expect(urgenceRelance(ouvert('2026-10-29'), '2026-10-21')).toEqual({ urgence: null, jours: 8 })
+  })
+  it('never on a kept or archived sample, nor without a date', () => {
+    expect(urgenceRelance({ statut: 'archive', date_relance: '2026-01-01' }, '2026-10-21').urgence).toBeNull()
+    expect(urgenceRelance({ statut: 'reference', date_relance: '2026-01-01' }, '2026-10-21').urgence).toBeNull()
+    expect(urgenceRelance(ouvert(null), '2026-10-21')).toEqual({ urgence: null, jours: null })
+  })
+})
+
+describe('dates', () => {
+  it('adds days across months and years', () => {
+    expect(ajouterJours('2026-10-21', DELAI_RELANCE_JOURS)).toBe('2026-11-20')
+    expect(ajouterJours('2026-12-20', 30)).toBe('2027-01-19')
+  })
+  it('counts days across a DST change without drift', () => {
+    expect(joursAvant('2026-10-26', '2026-10-24')).toBe(2)
+  })
+  it("today is the factory's day, not UTC's", () => {
+    // 23:30 UTC on Oct 21 is already Oct 22 in Paris (UTC+2).
+    expect(aujourdhuiParis(new Date('2026-10-21T23:30:00Z'))).toBe('2026-10-22')
   })
 })
