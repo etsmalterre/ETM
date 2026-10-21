@@ -57,6 +57,13 @@ export function ordinalValide(v: number | null | undefined, max: number): number
 export const JAUGE_ORD_MAX = 5
 export const DIAMETRE_ORD_MAX = 3
 
+/** Display labels of the ordinals, as the web's `pages/tombe-metier/ordinals.ts`
+ *  (jauge = needles per inch, Ø in inches). Null when not set. */
+const JAUGE_LIBELLES: Record<number, string> = { 2: '14', 3: '18', 4: '20', 5: '28' }
+const DIAMETRE_LIBELLES: Record<number, string> = { 2: '26"', 3: '30"' }
+export const jaugeLibelle = (ord: number | null | undefined): string | null => JAUGE_LIBELLES[Number(ord)] ?? null
+export const diametreLibelle = (ord: number | null | undefined): string | null => DIAMETRE_LIBELLES[Number(ord)] ?? null
+
 /** Why a sample cannot become a reference, or null when it can. */
 export function refusCreationReference(
   e: { archive: number | null; idref_ecru: number | null },

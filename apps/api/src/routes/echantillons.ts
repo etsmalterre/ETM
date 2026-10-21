@@ -17,10 +17,15 @@ import { userCanOpenScreen } from '../lib/permissions.js'
 import { trmUserCanOpenScreen } from '../lib/permissions-trm.js'
 import { resolveMachineLabels } from '../lib/production-trm.js'
 import { nextRefNumber } from './references-ecru.js'
+import React from 'react'
+import { renderToBuffer, type DocumentProps } from '@react-pdf/renderer'
+import { EtiquetteEchantillonPdf, type EtiquetteEchantillonData } from '../lib/pdf/EtiquetteEchantillonPdf.js'
 import {
   DIAMETRE_ORD_MAX,
   JAUGE_ORD_MAX,
   compositionComplete,
+  diametreLibelle,
+  jaugeLibelle,
   fractionVersPourcent,
   lfaTexte,
   numeroEchantillon,
@@ -161,6 +166,23 @@ async function loadPieces(sql: Sql, id: number) {
   }))
 }
 
+/** The Dymo tag's fields (lib/pdf/EtiquetteEchantillonPdf.tsx). */
+export async function buildEtiquetteEchantillonData(id: number): Promise<EtiquetteEchantillonData | null> {
+  const sql = mpsPg()
+  const row = await loadEchantillon(sql, id)
+  if (!row) return null
+  const compo = await loadComposition(sql, id)
+  return {
+    IDref_echantillon: id,
+    numero: numeroEchantillon(id),
+    contexture: row.contexture_nom?.trim() || null,
+    jauge: jaugeLibelle(ordinalValide(row.jauge, JAUGE_ORD_MAX)),
+    diametre: diametreLibelle(ordinalValide(row.diametre, DIAMETRE_ORD_MAX)),
+    lfa: [row.lfa1, row.lfa2, row.lfa3, row.lfa4].map((v) => Number(v) || 0),
+    composition: compo.map((c) => ({ pourcentage: c.pourcentage, fil: c.ref_fil_reference ?? '' })),
+  }
+}
+
 // ── Bodies ──────────────────────────────────────────────
 
 const enteteBody = z.object({
@@ -277,6 +299,29 @@ export function createEchantillonsRouter(scope: EchantillonsScope): RouterType {
       })
     } catch (err) {
       console.error('Error fetching échantillon:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  })
+
+  // GET /:id/etiquette — the Dymo tag (89 × 36 mm), one per print, inline.
+  // Any status: a sample archived or kept keeps its fabric and its tag.
+  router.get('/:id/etiquette', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10)
+      if (!(id > 0)) { res.status(400).json({ error: 'Invalid ID' }); return }
+      const data = await buildEtiquetteEchantillonData(id)
+      if (!data) { res.status(404).json({ error: 'Échantillon introuvable' }); return }
+      const buffer = await renderToBuffer(
+        React.createElement(EtiquetteEchantillonPdf, { data }) as unknown as React.ReactElement<DocumentProps>,
+      )
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader('Content-Disposition', `inline; filename="etiquette-${data.numero}.pdf"`)
+      res.removeHeader('X-Frame-Options')
+      res.removeHeader('Content-Security-Policy')
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+      res.send(buffer)
+    } catch (err) {
+      console.error('Error rendering échantillon étiquette PDF:', err)
       res.status(500).json({ error: 'Internal server error' })
     }
   })

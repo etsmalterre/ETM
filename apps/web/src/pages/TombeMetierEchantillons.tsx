@@ -41,7 +41,7 @@ import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { cn } from '@/lib/utils'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
 import { SpecTile, TileValue, TileText, TextTile, tileInput } from './tombe-metier/spec-tiles'
@@ -166,7 +166,10 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [printOpen, setPrintOpen] = useState(false)
+  // `?id=` alone (the QR code on the Dymo tag) does not know the sample's
+  // filter: hold the auto-select until its detail says which one.
+  const [deepLinkId, setDeepLinkId] = useState<number | null>(() =>
+    searchParams.get('id') && !searchParams.get('statut') ? Number(searchParams.get('id')) || null : null)
   const [creerOpen, setCreerOpen] = useState(false)
 
   // Per-key dirty registry (§28.3.b): the composition dialog and the piece
@@ -186,7 +189,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
     queryKey: ['echantillons', apiBase, statut],
     queryFn: () => apiFetch(`${apiBase}?statut=${statut}`),
   })
-  const { data: detail, isLoading: detailLoading } = useQuery<EchantillonDetail>({
+  const { data: detail, isLoading: detailLoading, isError: detailError } = useQuery<EchantillonDetail>({
     queryKey: ['echantillon', apiBase, selectedId],
     queryFn: () => apiFetch(`${apiBase}/${selectedId}`),
     enabled: selectedId !== null,
@@ -220,8 +223,14 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
     selectedId,
     getId: (r) => r.IDref_echantillon,
     select: setSelectedId,
-    suspended: isEditing || autoEditForId !== null,
+    suspended: isEditing || autoEditForId !== null || deepLinkId !== null,
   })
+
+  useEffect(() => {
+    if (deepLinkId === null) return
+    if (detail?.IDref_echantillon === deepLinkId) setStatut(detail.statut)
+    if (detail?.IDref_echantillon === deepLinkId || detailError) setDeepLinkId(null)
+  }, [deepLinkId, detail, detailError])
 
   const startEdit = useCallback(() => {
     if (!detail) return
@@ -370,7 +379,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
             onSave={() => saveMutation.mutate()}
             isSaving={saveMutation.isPending}
             onDelete={() => { setDeleteError(null); setDeleteOpen(true) }}
-            onPrint={() => setPrintOpen(true)}
+            onPrint={() => { if (selectedId !== null) window.open(`${API_URL}${apiBase}/${selectedId}/etiquette`, '_blank') }}
             onCreerReference={() => setCreerOpen(true)}
           />
         }
@@ -444,21 +453,6 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
         />
       )}
 
-      <Dialog open={printOpen} onOpenChange={setPrintOpen}>
-        <DialogContent onClose={() => setPrintOpen(false)}>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Printer className="h-5 w-5 text-accent" />
-              Imprimer
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-            <Printer className="h-12 w-12 mb-3 opacity-40" />
-            <p className="text-sm font-medium">En developpement</p>
-            <p className="text-xs mt-1">Cette fonctionnalite sera disponible prochainement.</p>
-          </div>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }
@@ -646,7 +640,7 @@ function DetailHeader({
               </>
             ) : (
               <>
-                <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrint}>
+                <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer l'étiquette (Dymo)" onClick={onPrint}>
                   <Printer className="h-4 w-4" />
                 </Button>
                 {ouvert && (
