@@ -182,7 +182,8 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
   })
   const [selectedId, setSelectedId] = useState<number | null>(() => Number(searchParams.get('id')) || null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [relanceFiltre, setRelanceFiltre] = useState<Urgence | null>(null)
+  // §41: the two pills are independent toggles — both on = red AND amber.
+  const [relanceFiltre, setRelanceFiltre] = useState<Record<Urgence, boolean>>({ retard: false, bientot: false })
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState<Draft | null>(null)
   const originalDraftRef = useRef<Draft | null>(null)
@@ -241,17 +242,21 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
       return tokens.every((t) => haystack.includes(t))
     })
   }, [rows, searchQuery])
-  // §41 counter pills: counted over the searched list, and an armed pill whose
-  // bucket emptied stops filtering (it is hidden at 0).
+  // §41 counter pills: counted over the searched list; an armed pill whose
+  // bucket emptied stops filtering (it is hidden at 0). Armed pills combine:
+  // the list shows every card of every armed colour.
   const comptes = useMemo(() => ({
     retard: searched.filter((r) => r.relance.urgence === 'retard').length,
     bientot: searched.filter((r) => r.relance.urgence === 'bientot').length,
   }), [searched])
-  const filtreActif = relanceFiltre && comptes[relanceFiltre] > 0 ? relanceFiltre : null
-  const filtered = useMemo(
-    () => (filtreActif ? searched.filter((r) => r.relance.urgence === filtreActif) : searched),
-    [searched, filtreActif],
+  const filtresActifs = useMemo(
+    () => ({ retard: relanceFiltre.retard && comptes.retard > 0, bientot: relanceFiltre.bientot && comptes.bientot > 0 }),
+    [relanceFiltre, comptes],
   )
+  const filtered = useMemo(() => {
+    if (!filtresActifs.retard && !filtresActifs.bientot) return searched
+    return searched.filter((r) => r.relance.urgence !== null && filtresActifs[r.relance.urgence])
+  }, [searched, filtresActifs])
 
   useAutoSelectFirst({
     rows: filtered,
@@ -394,8 +399,8 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
           <EchantillonList
             rows={filtered}
             comptes={comptes}
-            relanceFiltre={filtreActif}
-            onRelanceFiltre={(u) => setRelanceFiltre((prev) => (prev === u ? null : u))}
+            relanceFiltre={filtresActifs}
+            onRelanceFiltre={(u) => setRelanceFiltre((prev) => ({ ...prev, [u]: !prev[u] }))}
             isLoading={isLoading}
             isError={isError}
             error={error as Error | null}
@@ -510,7 +515,7 @@ function EchantillonList({
 }: {
   rows: EchantillonListRow[]
   comptes: Record<Urgence, number>
-  relanceFiltre: Urgence | null
+  relanceFiltre: Record<Urgence, boolean>
   onRelanceFiltre: (u: Urgence) => void
   isLoading: boolean
   isError: boolean
@@ -543,7 +548,7 @@ function EchantillonList({
             />
           </div>
           {(['retard', 'bientot'] as const).map((u) => comptes[u] > 0 && (
-            <CompteurRelance key={u} urgence={u} count={comptes[u]} on={relanceFiltre === u} onToggle={() => onRelanceFiltre(u)} />
+            <CompteurRelance key={u} urgence={u} count={comptes[u]} on={relanceFiltre[u]} onToggle={() => onRelanceFiltre(u)} />
           ))}
         </div>
         <div className="flex flex-wrap gap-1">
