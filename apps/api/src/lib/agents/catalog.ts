@@ -52,12 +52,21 @@ import type { ResultatSuperviseur } from './superviseur/superviseur.js'
 import type { AgentMode, AgentRun, AgentState, AgentVersion, Auteur, VersionInitiale } from './store.js'
 import type { Contexte } from './bl-ennoblisseur.js'
 import { deLApp, type AppIa } from './app-scope.js'
+import {
+  PLANNING_ATELIER_SLUG,
+  PLANNING_ATELIER_VERSION_INITIALE,
+  resultatPlanning,
+  sonder as sonderPlanningAtelier,
+} from './planning-atelier/agent.js'
 
 /** What starts an agent: a mailbox poll every N ms, or on given days at an
  *  hour (Paris) — or at several hours, one run per hour listed. */
 export type Declenchement =
   | { type: 'releve'; intervalleMs: number }
   | { type: 'quotidien'; heure: number | readonly number[]; /** ISO weekdays, 1 = Monday. */ jours: readonly number[] }
+  /** Started by a person from a screen (Planning atelier: « Faire le planning »),
+   *  never by the timer nor « Lancer maintenant ». `ecran` names the screen. */
+  | { type: 'ecran'; ecran: string }
 
 export interface AgentDef {
   slug: string
@@ -348,6 +357,51 @@ export const AGENTS: readonly AgentDef[] = [
     promptLivre: RAPPORT_ACTIVITE_PROMPT_LIVRE,
     modeles: MODELES_MISTRAL,
     sonder: executerRapportActivite,
+  },
+  {
+    slug: PLANNING_ATELIER_SLUG,
+    app: 'trm',
+    nom: 'Planning atelier',
+    description:
+      'Prépare le planning des bonnetiers d’une semaine quand Isabelle le lui demande depuis Atelier › Planning : il continue le roulement (binômes qui tournent chaque semaine, recomposés toutes les 4 semaines, matin → nuit → après-midi quand il y a une nuit), tient compte des desiderata de la semaine et des consignes données au lancement (équipe de nuit ou pas, journées de 7 h ou de 8 h…). Isabelle corrige la grille puis valide : ce qu’elle a changé, et pourquoi, sert à améliorer ses consignes.',
+    declenchement: { type: 'ecran', ecran: 'Atelier › Planning' },
+    declencheur:
+      'Jamais tout seul : bouton « Faire le planning » d’Atelier › Planning, sur une semaine sans aucun créneau, avec les consignes de la personne. Il lit les bonnetiers de la grille, leurs 8 dernières semaines de planning et les desiderata de la semaine.',
+    ecritures: [
+      'Les créneaux de la semaine dans le planning des bonnetiers (un par bonnetier et par jour travaillé), visibles et modifiables aussitôt dans la grille.',
+      'Son explication et ses points d’attention, affichés au-dessus de la grille jusqu’à la validation.',
+    ],
+    abstention:
+      'Il refuse une semaine qui a déjà un créneau : il ne remplace jamais un planning existant. Un créneau qu’il propose mal (bonnetier inconnu, heure hors du quart d’heure, durée hors 4–10 h, deux créneaux le même jour) est écarté et listé dans l’exécution ; s’il ne reste rien, rien n’est écrit.',
+    evaluation: {
+      reussite: 'Gardé tel quel : la semaine validée est celle qu’il avait écrite (ou elle n’a jamais été validée).',
+      echec: 'Corrigé : Isabelle a changé des créneaux avant de valider, en disant pourquoi. Les changements sont relevés automatiquement.',
+      guide: {
+        question: 'Est-ce que j’ai dû changer quelque chose à son planning ? Non → « Valider le planning » (réussite). Oui → je corrige dans la grille puis je valide, en disant pourquoi (échec).',
+        exemples: {
+          reussite: 'S47 : les deux binômes ont bien tourné, le rendez-vous d’Anaïs mardi tombe sur son après-midi libre.',
+          echec: 'Il a recomposé les binômes alors qu’ils n’étaient ensemble que depuis 2 semaines.',
+        },
+        remarques: [
+          'La note se donne dans Atelier › Planning en validant la semaine, jamais ici.',
+          'Une consigne qu’il ne pouvait pas deviner (une nuit qui reprend) se donne au lancement : si elle manquait, ce n’est pas son erreur, dites-le dans le pourquoi.',
+        ],
+      },
+    },
+    pointsEvaluables: false,
+    confianceParDefaut: true,
+    modes: {
+      off: 'Le bouton « Faire le planning » est refusé.',
+      actif: 'Prépare et écrit la semaine demandée depuis Atelier › Planning.',
+    },
+    versionInitiale: PLANNING_ATELIER_VERSION_INITIALE,
+    modeles: MODELES_MISTRAL,
+    sonder: sonderPlanningAtelier,
+    ligne: (run) => {
+      const r = resultatPlanning(run)
+      // The Exécutions table's three columns: week, who launched it, créneaux written.
+      return { bordereau: r.numeroSemaine ? `S${r.numeroSemaine}` : null, commande: run.lancePar?.nom ?? null, nbPieces: r.creneaux?.length ?? null }
+    },
   },
 ]
 

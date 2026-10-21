@@ -58,7 +58,9 @@ async function vueAutomate(def: AutomateDef) {
       ? null
       : d.type === 'quotidien'
         ? prochainQuotidien(d, Date.now(), state.dernierePlanification)
-        : new Date((sondage.dernierSondage ? Date.parse(sondage.dernierSondage) : Date.now()) + d.intervalleMs).toISOString()
+        : d.type === 'releve'
+          ? new Date((sondage.dernierSondage ? Date.parse(sondage.dernierSondage) : Date.now()) + d.intervalleMs).toISOString()
+          : null
   return {
     slug: def.slug,
     nom: def.nom,

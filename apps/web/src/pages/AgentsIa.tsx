@@ -156,7 +156,8 @@ interface AgentVue {
   declencheur: string
   ecritures: string[]
   abstention: string
-  declenchement: { type: 'releve'; intervalleMs: number } | { type: 'quotidien'; heure: number | number[]; jours: number[] }
+  /** `ecran`: started by a person from a screen (Planning atelier, TRM), never here. */
+  declenchement: { type: 'releve'; intervalleMs: number } | { type: 'quotidien'; heure: number | number[]; jours: number[] } | { type: 'ecran'; ecran: string }
   /** What each score means for this agent (shown beside the three buttons). */
   evaluation: Record<Note, string>
   /** The scoring guide opened beside the buttons (catalog.ts `evaluation.guide`). */
@@ -529,7 +530,10 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
         <FactureRunDialog agent={detail} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)}
           onOpenRun={setOpenRunId} onChanged={invalidate} />
       )}
-      {selectedSlug && detail?.slug === selectedSlug && !detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && detail.slug !== TRIAGE_SLUG && (
+      {selectedSlug && detail?.slug === selectedSlug && detail.slug === PLANNING_ATELIER_SLUG && (
+        <PlanningRunDialog slug={detail.slug} runId={openRunId} onClose={() => setOpenRunId(null)} />
+      )}
+      {selectedSlug && detail?.slug === selectedSlug && !detail.pointsEvaluables && detail.slug !== FACTURES_SST_SLUG && detail.slug !== TRIAGE_SLUG && detail.slug !== PLANNING_ATELIER_SLUG && (
         <RunDialog agent={detail} runId={openRunId} canPilot={canPilot} canEvaluate={canEvaluate} onClose={() => setOpenRunId(null)}
           onOpenRun={setOpenRunId} onChanged={invalidate} />
       )}
@@ -630,11 +634,14 @@ function DetailHeader({ agent, isLoading, canPilot, onSonder, isSondant, onEssai
               <Upload className="h-3.5 w-3.5 sm:mr-1.5" /><span className="hidden sm:inline">Tester un PDF</span>
             </Button>
           )}
-          <Button variant="gold" size="sm" onClick={onSonder} disabled={!canPilot || agent.mode === 'off' || isSondant} title={sonderTitle}>
-            {isSondant ? <Loader2 className="h-3.5 w-3.5 sm:mr-1.5 animate-spin" />
-              : quotidien ? <Play className="h-3.5 w-3.5 sm:mr-1.5" /> : <RefreshCw className="h-3.5 w-3.5 sm:mr-1.5" />}
-            <span className="hidden sm:inline">{quotidien ? 'Lancer maintenant' : 'Relever maintenant'}</span>
-          </Button>
+          {/* An agent started from a screen has nothing to launch here (the API answers 409). */}
+          {agent.declenchement.type !== 'ecran' && (
+            <Button variant="gold" size="sm" onClick={onSonder} disabled={!canPilot || agent.mode === 'off' || isSondant} title={sonderTitle}>
+              {isSondant ? <Loader2 className="h-3.5 w-3.5 sm:mr-1.5 animate-spin" />
+                : quotidien ? <Play className="h-3.5 w-3.5 sm:mr-1.5" /> : <RefreshCw className="h-3.5 w-3.5 sm:mr-1.5" />}
+              <span className="hidden sm:inline">{quotidien ? 'Lancer maintenant' : 'Relever maintenant'}</span>
+            </Button>
+          )}
         </div>
       </div>
       {message && (
@@ -730,7 +737,7 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
   const [filtre, setFiltre] = useState('tout')
   const query = RUN_FILTERS.find((f) => f.key === filtre)?.query ?? ''
   // The three document columns: a BL (bordereau, order, pieces) or an invoice (number, gaps, lots).
-  const colonnes = slug === FACTURES_SST_SLUG ? ['Facture', 'Écarts', 'Lots'] : ['BL', 'Cde', 'Pc']
+  const colonnes = slug === FACTURES_SST_SLUG ? ['Facture', 'Écarts', 'Lots'] : slug === PLANNING_ATELIER_SLUG ? ['Semaine', 'Par', 'Créneaux'] : ['BL', 'Cde', 'Pc']
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-ia-runs', slug, filtre],
     queryFn: () => apiFetch<{ total: number; runs: RunLigne[] }>(`${base}/${slug}/runs${query}`),
@@ -788,7 +795,13 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
                   <td className="px-3 py-1.5 truncate tabular-nums">{r.commande || '—'}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{r.nbPieces ?? '—'}</td>
                   <td className="px-3 py-1.5"><StatutPill statut={r.statut} /></td>
-                  <td className="px-3 py-1.5">{r.bilan ? <BilanMini b={r.bilan} /> : <ScoreSoft evaluation={r.evaluation} />}</td>
+                  <td className="px-3 py-1.5">
+                    {r.bilan ? <BilanMini b={r.bilan} />
+                      // Planning atelier is right by default: a week not validated is not « à évaluer ».
+                      : slug === PLANNING_ATELIER_SLUG && !r.evaluation && r.statut === 'ecrit'
+                      ? <span className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-zinc-100/80 px-2 py-0.5 text-[11px] text-muted-foreground whitespace-nowrap" title="Compte comme une réussite tant que personne ne le corrige"><CheckCircle2 className="h-3 w-3" />Non validé</span>
+                      : <ScoreSoft evaluation={r.evaluation} />}
+                  </td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">{fmtEur(r.coutUsd)}</td>
                 </tr>
               ))}
@@ -1258,7 +1271,7 @@ function FonctionnementTab({ agent }: { agent: AgentDetail }) {
       </div>
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
         <div className="flex items-center gap-2 mb-2">
-          {agent.declenchement.type === 'quotidien' ? <Clock className="h-4 w-4 text-accent" /> : <Mail className="h-4 w-4 text-accent" />}
+          {agent.declenchement.type === 'quotidien' ? <Clock className="h-4 w-4 text-accent" /> : agent.declenchement.type === 'ecran' ? <User className="h-4 w-4 text-accent" /> : <Mail className="h-4 w-4 text-accent" />}
           <h3 className="text-sm font-semibold">Déclenchement</h3>
         </div>
         <p className="text-sm text-muted-foreground">{agent.declencheur}</p>
@@ -1270,7 +1283,7 @@ function FonctionnementTab({ agent }: { agent: AgentDetail }) {
         )}
       </div>
       <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-        <div className="flex items-center gap-2 mb-2"><Play className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">{agent.declenchement.type === 'quotidien' ? 'Ce qu’il fait (en service)' : 'Ce qu’il enregistre (en service)'}</h3></div>
+        <div className="flex items-center gap-2 mb-2"><Play className="h-4 w-4 text-accent" /><h3 className="text-sm font-semibold">{agent.declenchement.type === 'releve' ? 'Ce qu’il enregistre (en service)' : 'Ce qu’il fait (en service)'}</h3></div>
         <ul className="text-sm text-muted-foreground list-disc pl-5 space-y-1">
           {agent.ecritures.map((e) => <li key={e}>{e}</li>)}
         </ul>
@@ -1425,7 +1438,7 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode, onChange
               )}
             </>
           ) : (<>
-          <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
+          {agent.declenchement.type === 'releve' && <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
             <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><Inbox className="h-3.5 w-3.5" />Boîte mail</p>
             <KV label="Dernier relevé" value={ilYA(agent.sondage.dernierSondage)} />
             <KV label="Dernier relevé réussi" value={ilYA(agent.sondage.dernierSucces)} />
@@ -1434,7 +1447,7 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode, onChange
                 <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /><span>{agent.sondage.derniereErreur}</span>
               </div>
             )}
-          </div>
+          </div>}
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-1.5">
             <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1"><History className="h-3.5 w-3.5" />Version {agent.activeVersion} — exécutions</p>
             <KV label="Total" value={fmtNum(s.total)} mono />
@@ -1448,6 +1461,8 @@ function DetailSidebar({ agent, canPilot, onChangeMode, isChangingMode, onChange
             <p className="text-[11px] text-muted-foreground pt-1">
               {s.points
                 ? 'Chaque ligne est notée par la personne qui traite la facture, dans Sous-traitants › Factures. Précision = lignes justes sur lignes évaluées.'
+                : agent.slug === PLANNING_ATELIER_SLUG
+                ? 'Chaque semaine est notée quand elle est validée dans Atelier › Planning : validée telle quelle, ou jamais validée = réussite ; un créneau modifié = échec, avec les changements et le pourquoi.'
                 : 'Chaque lecture est notée à la réception des rouleaux : reçus tels que Tricobot les a lus = réussite, une valeur corrigée = échec. Les tests manuels ne comptent pas.'} Les commentaires sont regroupés dans l’onglet Retours. Une nouvelle version repart de zéro.
             </p>
           </div>
@@ -2688,6 +2703,175 @@ function KpiStrip({ items }: {
 /** Read-only: Agents IA watches the agent, it never scores it — Isabelle
  *  handles (and so scores) the points from the dashboard Notifications widget
  *  (decision Vincent 2026-10-02). */
+// ── Planning atelier (TRM, LIVA #1296) ─────────────────────
+
+const PLANNING_ATELIER_SLUG = 'planning-atelier'
+
+interface RunPlanning extends Omit<RunComplet, 'resultat'> {
+  resultat: {
+    semaine: string
+    numeroSemaine: number
+    instructions: string
+    bonnetiers: Array<{ id: number; prenom: string; nom: string }>
+    desiderata: Array<{ date: string; prenom: string; description: string }>
+    creneaux: Array<{ IDbonnetier: number; date: string; debut: string; fin: string }>
+    raisonnement?: string
+    explication: string
+    attention: string[]
+    rejets: string[]
+  }
+}
+
+/** A week Tricobot planned: what he was told, what he wrote, and the retour
+ *  (given in Atelier › Planning when the week is validated, never here). */
+function PlanningRunDialog({ slug, runId, onClose }: { slug: string; runId: string | null; onClose: () => void }) {
+  const base = useBaseApi()
+  const [showRaisonnement, setShowRaisonnement] = useState(false)
+  useEffect(() => { setShowRaisonnement(false) }, [runId])
+  const { data: run, isLoading } = useQuery({
+    queryKey: ['agent-ia-run', slug, runId],
+    queryFn: () => apiFetch<RunPlanning>(`${base}/${slug}/runs/${runId}`),
+    enabled: runId !== null,
+  })
+  const r = run?.resultat
+  const jours = r
+    ? Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(`${r.semaine}T00:00:00Z`)
+        d.setUTCDate(d.getUTCDate() + i)
+        return d.toISOString().slice(0, 10)
+      })
+    : []
+  const carte = 'rounded-lg border border-border/60 bg-card p-3 shadow-sm'
+  const titreCarte = 'text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-1.5'
+  return (
+    <Dialog open={runId !== null} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-4xl w-[94vw] max-h-[88vh] flex flex-col" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 flex-wrap">
+            <TricobotMascot className="h-6 w-6" />
+            {r?.numeroSemaine ? `Planning de la semaine ${r.numeroSemaine}` : 'Planning'}
+            {run && <StatutPill statut={run.statut} className="text-xs py-0.5" />}
+            {run && run.evaluation && <ScoreBadge evaluation={run.evaluation} />}
+            {run && (
+              <span className="text-xs font-normal text-muted-foreground">
+                {fmtDateHeure(run.createdAt)}{run.lancePar ? ` · ${run.lancePar.nom}` : ''} · v{run.version} · {fmtNum(run.dureeMs / 1000, 1)} s
+              </span>
+            )}
+          </DialogTitle>
+        </DialogHeader>
+        {isLoading || !run || !r ? (
+          <div className="py-16 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-accent" /></div>
+        ) : (
+          <div className="mt-4 flex-1 min-h-0 overflow-y-auto space-y-3 px-1 scrollbar-transparent">
+            {run.erreur && (
+              <div className={cn(carte, 'border-destructive/40 text-sm text-destructive flex items-start gap-1.5')}>
+                <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />{run.erreur}
+              </div>
+            )}
+            {run.evaluation?.note === 'echec' ? (
+              <div className={cn(carte, 'border-destructive/30 bg-destructive/5')}>
+                <p className={cn(titreCarte, 'text-destructive')}>
+                  <TricobotMascot className="h-4 w-4" />Corrigé par {run.evaluation.par.nom} le {fmtDateHeure(run.evaluation.le)}
+                </p>
+                {run.evaluation.commentaire && <p className="text-sm">{run.evaluation.commentaire}</p>}
+                {(run.evaluation.corrections ?? []).length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {run.evaluation.corrections!.map((c) => <li key={c} className="text-xs tabular-nums">{c}</li>)}
+                  </ul>
+                )}
+              </div>
+            ) : run.evaluation ? (
+              <p className="text-xs text-muted-foreground">Validé tel quel par {run.evaluation.par.nom} le {fmtDateHeure(run.evaluation.le)}.</p>
+            ) : run.statut === 'ecrit' ? (
+              <p className="text-xs text-muted-foreground">Pas encore validé dans Atelier › Planning : compte comme une réussite tant que personne ne le corrige.</p>
+            ) : null}
+            <div className="grid md:grid-cols-2 gap-3">
+              <div className={carte}>
+                <p className={titreCarte}><MessageSquare className="h-3.5 w-3.5" />Consignes</p>
+                {r.instructions
+                  ? <p className="text-sm whitespace-pre-wrap">{r.instructions}</p>
+                  : <p className="text-sm text-muted-foreground italic">Aucune — continuer comme avant</p>}
+              </div>
+              <div className={carte}>
+                <p className={titreCarte}><Inbox className="h-3.5 w-3.5" />Desiderata de la semaine</p>
+                {r.desiderata.length === 0 ? (
+                  <p className="text-sm text-muted-foreground italic">Aucun</p>
+                ) : (
+                  <ul className="space-y-0.5">
+                    {r.desiderata.map((d, i) => (
+                      <li key={i} className="text-sm">
+                        <span className="tabular-nums">{new Date(`${d.date}T00:00:00Z`).toLocaleDateString('fr-FR', { timeZone: 'UTC' })}</span>
+                        {' · '}<span className="font-medium">{d.prenom}</span> — {d.description}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+            {(r.explication || r.attention.length > 0) && (
+              <div className={carte}>
+                <p className={titreCarte}><Bot className="h-3.5 w-3.5" />Son explication</p>
+                {r.explication && <p className="text-sm">{r.explication}</p>}
+                {r.attention.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {r.attention.map((a) => (
+                      <li key={a} className="text-xs text-amber-800 flex items-start gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />{a}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            {r.creneaux.length > 0 && (
+              <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+                <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
+                  <thead className="bg-zinc-200/60 border-b border-border/60">
+                    <tr className="uppercase tracking-wide text-muted-foreground">
+                      <th className="px-2 py-2 text-left font-semibold w-28">Écrit</th>
+                      {jours.map((j) => (
+                        <th key={j} className="px-1 py-2 text-center font-semibold">
+                          {new Date(`${j}T00:00:00Z`).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', timeZone: 'UTC' })}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.bonnetiers.filter((b) => r.creneaux.some((c) => c.IDbonnetier === b.id)).map((b) => (
+                      <tr key={b.id} className="border-b border-border/40 last:border-b-0">
+                        <td className="px-2 py-1.5 font-medium truncate">{b.prenom}</td>
+                        {jours.map((j) => {
+                          const c = r.creneaux.find((x) => x.IDbonnetier === b.id && x.date === j)
+                          return <td key={j} className="px-1 py-1.5 text-center tabular-nums">{c ? `${c.debut}-${c.fin}` : ''}</td>
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {r.rejets.length > 0 && (
+              <div className={carte}>
+                <p className={titreCarte}><XCircle className="h-3.5 w-3.5" />Écartés avant écriture ({r.rejets.length})</p>
+                <ul className="space-y-0.5">{r.rejets.map((x) => <li key={x} className="text-xs">{x}</li>)}</ul>
+              </div>
+            )}
+            {r.raisonnement && (
+              <div className={carte}>
+                <button type="button" className={cn(titreCarte, 'mb-0 hover:text-foreground')} onClick={() => setShowRaisonnement((v) => !v)}>
+                  {showRaisonnement ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  Son raisonnement (pour écrire le prompt suivant)
+                </button>
+                {showRaisonnement && <p className="mt-1.5 text-xs whitespace-pre-wrap text-muted-foreground">{r.raisonnement}</p>}
+              </div>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function SuperviseurRunDialog({ agent, runId, onClose }: {
   agent: AgentDetail; runId: string | null; onClose: () => void
 }) {

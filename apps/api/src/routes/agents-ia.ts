@@ -783,6 +783,7 @@ routes.post('/:slug/sonder', async (req, res) => {
   try {
     const state = await lireEtat(def.slug, def.versionInitiale)
     if (state.mode === 'off') { res.status(409).json({ error: 'L’agent est à l’arrêt : passez-le en essai ou en service d’abord.' }); return }
+    if (def.declenchement.type === 'ecran') { res.status(409).json({ error: `Cet agent se lance depuis ${def.declenchement.ecran}.` }); return }
     // Answer at once: a run can outlast the proxy timeout. The screen polls
     // GET /:slug until `sondage.dernierLancement.fin` is set.
     const lancement = lancerSondage(def.slug, await auteur(uid))

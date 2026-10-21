@@ -14,7 +14,8 @@
 //   - `quotidien`: once a day at `heure` (Paris) on `jours` — or once per hour
 //     when `heure` lists several (Rapport d'activité); the slot is written in
 //     state.json BEFORE the run (at most once a slot even if the process dies
-//     mid-run; after a restart later the same day it catches up the latest).
+//     mid-run; after a restart later the same day it catches up the latest);
+//   - `ecran`: never — a person starts it from a screen (Planning atelier).
 //
 // One lock per agent shared by the tick, the manual run and the Triage's
 // hand-off (verrous.ts): two runs of the same agent never overlap (they would
@@ -208,6 +209,8 @@ async function tick(): Promise<void> {
       const state = await t.lireEtat()
       if (state.mode === 'off' || estVerrouille(t.cle)) continue
       const d = t.declenchement
+      // Started from a screen only (Planning atelier): the timer never runs it.
+      if (d.type === 'ecran') continue
       if (d.type === 'releve') {
         if (now - (dernierReleve.get(t.cle) ?? 0) < d.intervalleMs - 5_000) continue
         dernierReleve.set(t.cle, now)

@@ -4,6 +4,24 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding, queryB64Text } from '../lib/hfsql-auto.js'
 import { PlanningAtelierPdf, type PlanningAtelierPdfData } from '../lib/pdf/PlanningAtelierPdf.js'
+import { addDays, dtLiteral, normalizeDesiderata, selectDesiderata, selectEntries, insertEntry } from '../lib/planning-bonnetier.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import { trmUserHasMenu } from '../lib/permissions-trm.js'
+import { lireEtat, type AgentRun } from '../lib/agents/store.js'
+import { SondageEnCoursError } from '../lib/agents/verrous.js'
+import { equipesDeLaSemaine, estDimanche } from '../lib/agents/planning-atelier/regles.js'
+import {
+  derniereInstruction,
+  ecartsDuRun,
+  PLANNING_ATELIER_SLUG,
+  PLANNING_ATELIER_VERSION_INITIALE,
+  PlanningRefus,
+  preparerSemaine,
+  resultatPlanning,
+  runDeLaSemaine,
+  validerSemaine,
+} from '../lib/agents/planning-atelier/agent.js'
+import { auteur } from './agents-ia.js'
 
 // Atelier planning (TRM knitting mill) — weekly bonnetier schedule + desiderata.
 // Legacy: FI_Planning_Atelier.wdw / FEN_Desiderata.wdw in TRM mode.
@@ -61,30 +79,6 @@ function rawGet(raw: Record<string, unknown>, re: RegExp): unknown {
     if (re.test(k)) return v
   }
   return undefined
-}
-
-/** Normalize an HFSQL DATETIME value to `{ date: 'YYYY-MM-DD', time: 'HH:MM' }`.
- *  Windows ODBC returns 'YYYY-MM-DD HH:MM:SS.mmm'; the bridge may return the
- *  compact 'YYYYMMDDHHMMSS' — accept both. */
-function splitDateTime(v: unknown): { date: string; time: string } | null {
-  const s = String(v ?? '')
-  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/)
-  if (!m) m = s.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/)
-  if (!m) return null
-  return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}` }
-}
-
-/** Compact HFSQL DATETIME literal from 'YYYY-MM-DD' + 'HH:MM' (verified to
- *  round-trip on the live DB). */
-function dtLiteral(date: string, time: string): string {
-  return `'${date.replace(/-/g, '')}${time.replace(':', '')}00'`
-}
-
-/** Add `days` to a 'YYYY-MM-DD' string (UTC-safe, no DST drift). */
-function addDays(date: string, days: number): string {
-  const d = new Date(`${date}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -167,37 +161,6 @@ planningAtelierRouter.get('/bonnetiers', async (req: Request, res: Response) => 
 
 // ── Planning entries ─────────────────────────────────────
 
-interface PlanningEntry {
-  IDplanning_bonnetier: number
-  IDbonnetier: number
-  date: string // YYYY-MM-DD (day of date_debut)
-  debut: string // HH:MM
-  fin: string // HH:MM (may belong to the next day for night shifts)
-}
-
-function normalizeEntry(raw: Record<string, unknown>): PlanningEntry | null {
-  const debut = splitDateTime(raw.date_debut)
-  const fin = splitDateTime(raw.date_fin)
-  if (!debut || !fin) return null
-  return {
-    IDplanning_bonnetier: n(raw.IDplanning_bonnetier),
-    IDbonnetier: n(raw.IDbonnetier),
-    date: debut.date,
-    debut: debut.time,
-    fin: fin.time,
-  }
-}
-
-async function selectEntries(fromDate: string, toDate: string, bonnetierId?: number): Promise<PlanningEntry[]> {
-  const bonnetierFilter = bonnetierId ? ` AND IDbonnetier = ${bonnetierId}` : ''
-  const rows = await query<Record<string, unknown>>(
-    `SELECT * FROM planning_bonnetier
-     WHERE date_debut >= ${dtLiteral(fromDate, '00:00')}
-       AND date_debut < ${dtLiteral(addDays(toDate, 1), '00:00')}${bonnetierFilter}`,
-  )
-  return rows.map(normalizeEntry).filter((e): e is PlanningEntry => e !== null)
-}
-
 // GET /api/planning-atelier/entries?from=YYYY-MM-DD&to=YYYY-MM-DD
 planningAtelierRouter.get('/entries', async (req: Request, res: Response) => {
   try {
@@ -227,23 +190,6 @@ const entriesBody = z.object({
     .min(1)
     .max(31),
 })
-
-/** Insert one worked day. A `fin` at or before `debut` means the shift ends on
- *  the next day (Nuit 21:00 → 05:00). Any existing entry of that bonnetier on
- *  that day is replaced — matches the legacy one-shift-per-day model. */
-async function insertEntry(bonnetierId: number, date: string, debut: string, fin: string): Promise<void> {
-  await query(
-    `DELETE FROM planning_bonnetier
-     WHERE IDbonnetier = ${bonnetierId}
-       AND date_debut >= ${dtLiteral(date, '00:00')}
-       AND date_debut < ${dtLiteral(addDays(date, 1), '00:00')}`,
-  )
-  const finDate = fin > debut ? date : addDays(date, 1)
-  await query(
-    `INSERT INTO planning_bonnetier (date_debut, date_fin, IDbonnetier)
-     VALUES (${dtLiteral(date, debut)}, ${dtLiteral(finDate, fin)}, ${bonnetierId})`,
-  )
-}
 
 // POST /api/planning-atelier/entries — create (or replace) one entry per given day.
 planningAtelierRouter.post('/entries', async (req: Request, res: Response) => {
@@ -440,38 +386,13 @@ planningAtelierRouter.get('/pdf', async (req: Request, res: Response) => {
 
 // ── Desiderata ───────────────────────────────────────────
 
-interface DesiderataRow {
-  IDdesiderata: number
-  date: string // YYYY-MM-DD
-  description: string
-  IDbonnetier: number
-  justifie: number
-  declare: number
-}
-
-function normalizeDesiderata(raw: Record<string, unknown>): DesiderataRow {
-  // `date` is a reserved word — HFSQL returns the key uppercased as `DATE`.
-  const d = String(rawGet(raw, /^date$/i) ?? '')
-  return {
-    IDdesiderata: n(raw.IDdesiderata),
-    date: d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d,
-    description: String(raw.description ?? '').trim(),
-    IDbonnetier: n(raw.IDbonnetier),
-    justifie: n(raw.justifie),
-    declare: n(raw.declare),
-  }
-}
-
 // GET /api/planning-atelier/desiderata?statut=encours|termine
 // "En cours" = today or future, "Terminé" = past (legacy radio filter).
 planningAtelierRouter.get('/desiderata', async (req: Request, res: Response) => {
   try {
     const statut = req.query.statut === 'termine' ? 'termine' : 'encours'
-    const rows = await query<Record<string, unknown>>('SELECT * FROM desiderata')
-    const fixed = await fixEncoding(rows, 'desiderata', 'IDdesiderata', ['description'])
     const today = new Date().toISOString().slice(0, 10)
-    const out = fixed
-      .map(normalizeDesiderata)
+    const out = (await selectDesiderata())
       .filter((d) => (statut === 'encours' ? d.date >= today : d.date < today))
       .sort((a, b) => (statut === 'encours' ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date)))
     res.json(out)
@@ -560,5 +481,122 @@ planningAtelierRouter.delete('/desiderata/:id', async (req: Request, res: Respon
   } catch (err) {
     console.error('Error deleting desiderata:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Tricobot « Faire le planning » (LIVA #1296) ──────────
+//
+// The agent « Planning atelier » (lib/agents/planning-atelier/agent.ts) is
+// started from this screen only. Guarded by the Atelier menu: whoever opens the
+// planning may ask Tricobot for a week and validate it.
+//
+//   GET  /tricobot?semaine=YYYY-MM-DD   the week's Tricobot run (if any), its gaps so far,
+//                                       the agent's mode and the last instructions
+//   POST /tricobot                      { semaine, instructions } — plan an empty week
+//   POST /tricobot/:runId/valider       { commentaire } — close the run (Isa's retour)
+
+async function accesAtelier(req: Request, res: Response): Promise<number | null> {
+  if (req.userId === undefined) {
+    res.status(401).json({ error: 'not authenticated' })
+    return null
+  }
+  if (!(await trmUserHasMenu(req.userId, isEffectiveAdmin(req), '/atelier'))) {
+    res.status(403).json({ error: 'permission denied: menu Atelier' })
+    return null
+  }
+  return req.userId
+}
+
+function refus(res: Response, label: string, err: unknown): void {
+  if (err instanceof PlanningRefus) {
+    res.status(err.status).json({ error: err.code, message: err.message })
+    return
+  }
+  if (err instanceof SondageEnCoursError) {
+    res.status(409).json({ error: 'en_cours', message: 'Tricobot prépare déjà un planning : attendez qu’il ait fini.' })
+    return
+  }
+  console.error(`Error in /planning-atelier/tricobot ${label}:`, err)
+  res.status(500).json({ error: 'Internal server error' })
+}
+
+function vueRun(run: AgentRun, ecarts: string[]) {
+  const r = resultatPlanning(run)
+  return {
+    id: run.id,
+    createdAt: run.createdAt,
+    lancePar: run.lancePar?.nom ?? null,
+    instructions: r.instructions,
+    explication: r.explication,
+    attention: r.attention,
+    nbCreneaux: r.creneaux.length,
+    /** Tricobot's teams, computed from what he wrote (never his prose). */
+    equipes: equipesDeLaSemaine(r.creneaux, r.bonnetiers).map((g) => ({ equipe: g.equipe, prenoms: g.membres.map((m) => m.prenom) })),
+    evaluation: run.evaluation
+      ? { note: run.evaluation.note, commentaire: run.evaluation.commentaire, par: run.evaluation.par.nom, le: run.evaluation.le }
+      : null,
+    ecarts,
+  }
+}
+
+planningAtelierRouter.get('/tricobot', async (req: Request, res: Response) => {
+  if ((await accesAtelier(req, res)) === null) return
+  try {
+    const semaine = String(req.query.semaine ?? '')
+    if (!estDimanche(semaine)) {
+      res.status(400).json({ error: 'semaine must be a Sunday (YYYY-MM-DD)' })
+      return
+    }
+    const [state, run, instructions] = await Promise.all([
+      lireEtat(PLANNING_ATELIER_SLUG, PLANNING_ATELIER_VERSION_INITIALE),
+      runDeLaSemaine(semaine),
+      derniereInstruction(),
+    ])
+    res.json({
+      mode: state.mode,
+      derniereInstruction: instructions,
+      run: run ? vueRun(run, await ecartsDuRun(run)) : null,
+    })
+  } catch (err) {
+    refus(res, 'GET', err)
+  }
+})
+
+const tricobotBody = z.object({
+  semaine: z.string().refine(estDimanche),
+  instructions: z.string().max(2000),
+})
+
+planningAtelierRouter.post('/tricobot', async (req: Request, res: Response) => {
+  const uid = await accesAtelier(req, res)
+  if (uid === null) return
+  const parsed = tricobotBody.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+    return
+  }
+  try {
+    const run = await preparerSemaine({ dimanche: parsed.data.semaine, instructions: parsed.data.instructions, par: await auteur(uid) })
+    res.status(201).json(vueRun(run, []))
+  } catch (err) {
+    refus(res, 'POST', err)
+  }
+})
+
+const validerBody = z.object({ commentaire: z.string().max(2000).default('') })
+
+planningAtelierRouter.post('/tricobot/:runId/valider', async (req: Request, res: Response) => {
+  const uid = await accesAtelier(req, res)
+  if (uid === null) return
+  const parsed = validerBody.safeParse(req.body ?? {})
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+    return
+  }
+  try {
+    const { run, ecarts } = await validerSemaine(String(req.params.runId), parsed.data.commentaire, await auteur(uid))
+    res.json(vueRun(run, ecarts))
+  } catch (err) {
+    refus(res, 'valider', err)
   }
 })
