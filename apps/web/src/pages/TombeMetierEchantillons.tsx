@@ -19,8 +19,6 @@ import {
   Save,
   Trash2,
   Printer,
-  AtSign,
-  Mail,
   FlaskConical,
   Package,
   Layers,
@@ -168,7 +166,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [placeholder, setPlaceholder] = useState<'print' | 'email' | null>(null)
+  const [printOpen, setPrintOpen] = useState(false)
   const [creerOpen, setCreerOpen] = useState(false)
 
   // Per-key dirty registry (§28.3.b): the composition dialog and the piece
@@ -372,8 +370,7 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
             onSave={() => saveMutation.mutate()}
             isSaving={saveMutation.isPending}
             onDelete={() => { setDeleteError(null); setDeleteOpen(true) }}
-            onPrint={() => setPlaceholder('print')}
-            onEmail={() => setPlaceholder('email')}
+            onPrint={() => setPrintOpen(true)}
           />
         }
         detail={
@@ -446,16 +443,16 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
         />
       )}
 
-      <Dialog open={placeholder !== null} onOpenChange={(o) => { if (!o) setPlaceholder(null) }}>
-        <DialogContent onClose={() => setPlaceholder(null)}>
+      <Dialog open={printOpen} onOpenChange={setPrintOpen}>
+        <DialogContent onClose={() => setPrintOpen(false)}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {placeholder === 'email' ? <AtSign className="h-5 w-5 text-accent" /> : <Printer className="h-5 w-5 text-accent" />}
-              {placeholder === 'email' ? 'Envoyer un email' : 'Imprimer'}
+              <Printer className="h-5 w-5 text-accent" />
+              Imprimer
             </DialogTitle>
           </DialogHeader>
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-            {placeholder === 'email' ? <Mail className="h-12 w-12 mb-3 opacity-40" /> : <Printer className="h-12 w-12 mb-3 opacity-40" />}
+            <Printer className="h-12 w-12 mb-3 opacity-40" />
             <p className="text-sm font-medium">En developpement</p>
             <p className="text-xs mt-1">Cette fonctionnalite sera disponible prochainement.</p>
           </div>
@@ -584,7 +581,7 @@ function EchantillonList({
 // ── Center: header ─────────────────────────────────────
 
 function DetailHeader({
-  detail, isLoading, isEditing, onStartEdit, onCancelEdit, onSave, isSaving, onDelete, onPrint, onEmail,
+  detail, isLoading, isEditing, onStartEdit, onCancelEdit, onSave, isSaving, onDelete, onPrint,
 }: {
   detail: EchantillonDetail | null
   isLoading: boolean
@@ -595,7 +592,6 @@ function DetailHeader({
   isSaving: boolean
   onDelete: () => void
   onPrint: () => void
-  onEmail: () => void
 }) {
   if (!detail && !isLoading) return null
   const ouvert = detail?.statut === 'en_cours'
@@ -650,9 +646,6 @@ function DetailHeader({
               <>
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrint}>
                   <Printer className="h-4 w-4" />
-                </Button>
-                <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmail}>
-                  <AtSign className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="gold"
