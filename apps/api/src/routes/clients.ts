@@ -81,7 +81,7 @@ const CLIENT_DETAIL_COLS = [
   'IDclient', 'nom', 'tel', 'fax', 'num_tva', 'IDtva', 'IDmode_paiement', 'IDecheance',
   'IDtransporteur', 'compte', 'siren', 'IDcode_comptable', 'pct_ajeol', 'pct_remise', 'est_visible',
   'IDsociete', 'date_creation', 'client_interne', 'dernier_contact', 'journal_commercial',
-  'IDsecteur_activite', 'IDactivite', 'inclureRapportQualite', 'commentaire', 'relance_sur_appel',
+  'IDsecteur_activite', 'IDactivite', 'inclureRapportQualite', 'commentaire', 'relance_sur_appel', 'facturation_douaniere',
 ].join(', ')
 
 const CLIENT_TEXT_FIELDS = ['nom', 'tel', 'fax', 'num_tva', 'compte', 'commentaire', 'journal_commercial']
@@ -110,6 +110,8 @@ function shapeClient(r: Record<string, unknown>) {
     inclureRapportQualite: numOf(pick(r, 'inclureRapportQualite', 'inclureRapportQualit')),
     // Days after the délai before a ready « sur appel » line turns red; 0 = default (120).
     relance_sur_appel: numOf(r.relance_sur_appel),
+    // Customs blocks on the invoices (LIVA #1311, lib/facture-douane.ts).
+    facturation_douaniere: numOf(r.facturation_douaniere),
     dernier_contact: strOf(pick(r, 'dernier_contact')),
     date_creation: strOf(pick(r, 'date_creation')),
     est_visible: numOf(r.est_visible),
@@ -354,6 +356,7 @@ const clientBody = z.object({
   client_interne: z.union([z.boolean(), z.number()]).optional(),
   inclureRapportQualite: z.union([z.boolean(), z.number()]).optional(),
   relance_sur_appel: z.number().int().min(0).max(3650).optional(),
+  facturation_douaniere: z.union([z.boolean(), z.number()]).optional(),
   dernier_contact: z.string().optional(),
 })
 
@@ -512,6 +515,7 @@ clientsRouter.put('/:id', async (req: Request, res: Response) => {
       )
       // Only when sent: a client without the field (an older tab) keeps the stored delay.
       if (b.relance_sur_appel !== undefined) sets.push(`relance_sur_appel = ${intOf(b.relance_sur_appel)}`)
+      if (b.facturation_douaniere !== undefined) sets.push(`facturation_douaniere = ${flag(b.facturation_douaniere)}`)
     }
     if (canRapportQualite) sets.push(`inclureRapportQualite = ${flag(b.inclureRapportQualite)}`)
     if (canCommercial) {

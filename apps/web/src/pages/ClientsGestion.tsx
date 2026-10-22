@@ -149,6 +149,8 @@ interface ClientDetail {
   inclureRapportQualite: number
   /** days after the délai before a ready « sur appel » line turns red; 0 = default (120) */
   relance_sur_appel: number
+  /** customs blocks (HS code, poids, origine) on the invoices — LIVA #1311 */
+  facturation_douaniere: number
   dernier_contact: string | null
   date_creation: string | null
   archive: number
@@ -215,6 +217,7 @@ interface Draft {
   client_interne: boolean
   inclureRapportQualite: boolean
   relance_sur_appel: string // '' = default
+  facturation_douaniere: boolean
   dernier_contact: string // YYYY-MM-DD for <input type=date>
 }
 
@@ -239,6 +242,7 @@ function draftFromDetail(d: ClientDetail): Draft {
     client_interne: !!d.client_interne,
     inclureRapportQualite: !!d.inclureRapportQualite,
     relance_sur_appel: d.relance_sur_appel > 0 ? String(d.relance_sur_appel) : '',
+    facturation_douaniere: !!d.facturation_douaniere,
     dernier_contact: hfsqlDateToInput(d.dernier_contact),
   }
 }
@@ -264,6 +268,7 @@ function draftToBody(d: Draft) {
     client_interne: d.client_interne,
     inclureRapportQualite: d.inclureRapportQualite,
     relance_sur_appel: Math.min(3650, Math.max(0, Math.round(Number(d.relance_sur_appel)) || 0)),
+    facturation_douaniere: d.facturation_douaniere,
     dernier_contact: inputDateToHfsql(d.dernier_contact),
   }
 }
@@ -1374,6 +1379,7 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
     client_interne: ed ? draft!.client_interne : !!client.client_interne,
     inclureRapportQualite: edRapport ? draft!.inclureRapportQualite : !!client.inclureRapportQualite,
     relance_sur_appel: ed ? draft!.relance_sur_appel : (client.relance_sur_appel > 0 ? String(client.relance_sur_appel) : ''),
+    facturation_douaniere: ed ? draft!.facturation_douaniere : !!client.facturation_douaniere,
   }
   return (
     <>
@@ -1386,6 +1392,8 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
           <TogglePill label="Client interne" checked={v.client_interne} disabled={!ed} onChange={(x) => onPatch({ client_interne: x })} />
           <TogglePill label="Envoyer le rapport de contrôle de chaque lot" checked={v.inclureRapportQualite} disabled={!edRapport} onChange={(x) => onPatch({ inclureRapportQualite: x })} />
           <EtiquettesSwitch clientId={client.IDclient} editable={ed} />
+          {/* Invoices print the origin declaration + HS code / EXW / poids per avis (LIVA #1311). */}
+          <TogglePill label="Facturation douanière (code SH, poids, origine)" checked={v.facturation_douaniere} disabled={!ed} onChange={(x) => onPatch({ facturation_douaniere: x })} />
         </div>
       </InfoCard>
 

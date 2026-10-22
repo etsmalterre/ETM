@@ -1030,6 +1030,17 @@ ${grantApi('SELECT, INSERT', 'delai_sst_evenement')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE delai_sst_evenement_id_seq')}
 `,
   },
+  {
+    // Clients › Gestion — « Facturation douanière » per client (LIVA #1311,
+    // 2026-10-22): the invoice prints the origin declaration and, per avis,
+    // HS code + EXW + gross / net weights (lib/facture-douane.ts). ETM's fiche
+    // only — TRM's never names it. 0032: 0031 is taken on another branch.
+    name: '0032_client_facturation_douaniere',
+    sql: `
+ALTER TABLE client ADD COLUMN facturation_douaniere integer NOT NULL DEFAULT 0
+  CHECK (facturation_douaniere IN (0, 1));
+`,
+  },
 ]
 
 export interface MigrationStatus {

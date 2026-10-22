@@ -22,6 +22,7 @@ import {
   type AddressBlockData,
 } from './MalterreDocument.js'
 import { colors, company, sizes, tvaRowLabel, type CompanyInfo } from './theme.js'
+import { formatCodeHs, totalDouane, type BlocDouane } from '../facture-douane.js'
 
 interface AddrLite {
   nom: string | null
@@ -83,6 +84,10 @@ export interface FacturePdfData {
   /** Late-payment mentions (C. com. L. 441-9) printed under the totals —
    *  definitive ETM invoices only (routes/factures.ts scope). */
   mentionsPaiement?: string | null
+  /** « Facturation douanière » (LIVA #1311, lib/facture-douane.ts): origin
+   *  declaration under the totals + one row per avis × HS code. Definitive
+   *  ETM invoices of a client switched on only. */
+  douane?: { mentionOrigine: string; incoterm: string; blocs: BlocDouane[] } | null
   lignes: Array<{
     designation: string
     quantite: number
@@ -228,6 +233,17 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
 
+  // ── Customs (LIVA #1311) ─────────────────────────────
+  // Origin declaration: left of the page under the totals, where PE wrote it.
+  mentionOrigine: { marginTop: 10, width: '52%', fontSize: 9, color: colors.text, fontWeight: 700, lineHeight: 1.4 },
+  douaneTitle: { marginTop: 18, marginBottom: 6, fontSize: sizes.fontSm, color: colors.primary, fontWeight: 900, letterSpacing: 0.8, lineHeight: 1 },
+  colAvis: { width: 70 },
+  colHs: { flex: 1 },
+  colIncoterm: { width: 70 },
+  colPieces: { width: 55, textAlign: 'right' },
+  colPoids: { width: 85, textAlign: 'right' },
+  douaneTotal: { fontSize: 10, color: colors.text, fontWeight: 900 },
+
   // ── Bank coordinates card ────────────────────────────
   // Pinned to the bottom of the last page, just above the footer band: the
   // spacer soaks up the remaining vertical space, the card never splits.
@@ -270,6 +286,47 @@ function buildClientAddress(data: FacturePdfData): AddressBlockData {
 /** Printed under the totals of a proforma (LIVA #1164). Wording is Isabelle's. */
 export const PROFORMA_NOTE =
   'Le montant définitif sera ajusté à la livraison selon les métrages réellement produits et livrés.'
+
+/** One row per avis × HS code: the facts PE wrote by hand per avis (HS code,
+ *  incoterm, gross / net weight), then the invoice total. A code ETM cannot
+ *  derive (no composition) prints « à préciser » rather than a guess. */
+function DouaneTable({ blocs, incoterm }: { blocs: BlocDouane[]; incoterm: string }) {
+  const total = totalDouane(blocs)
+  const rows = blocs.flatMap((b) => b.lignes.map((l) => ({ avis: b.avis, ...l })))
+  return (
+    <View>
+      <Text style={styles.douaneTitle} minPresenceAhead={60}>INFORMATIONS DOUANIERES</Text>
+      <View style={styles.table}>
+        <View style={styles.tableHeader} wrap={false}>
+          <Text style={[styles.tableHeaderCell, styles.colAvis]}>AVIS</Text>
+          <Text style={[styles.tableHeaderCell, styles.colHs]}>CODE SH</Text>
+          <Text style={[styles.tableHeaderCell, styles.colIncoterm]}>INCOTERM</Text>
+          <Text style={[styles.tableHeaderCell, styles.colPieces]}>PIECES</Text>
+          <Text style={[styles.tableHeaderCell, styles.colPoids]}>POIDS BRUT</Text>
+          <Text style={[styles.tableHeaderCell, styles.colPoids]}>POIDS NET</Text>
+        </View>
+        {rows.map((r, i) => (
+          <View key={i} style={styles.tableRow} wrap={false}>
+            <Text style={[styles.cellBase, styles.colAvis]}>{`N°${r.avis}`}</Text>
+            <Text style={[styles.cellBase, styles.colHs]}>{r.hs ? formatCodeHs(r.hs) : 'à préciser'}</Text>
+            <Text style={[styles.cellBase, styles.colIncoterm]}>{incoterm}</Text>
+            <Text style={[styles.cellBase, styles.colPieces]}>{String(r.pieces)}</Text>
+            <Text style={[styles.cellBase, styles.colPoids]}>{`${fmtNum(r.brut, 2)} kg`}</Text>
+            <Text style={[styles.cellBase, styles.colPoids]}>{`${fmtNum(r.net, 2)} kg`}</Text>
+          </View>
+        ))}
+        <View style={[styles.tableRow, styles.tableRowLast]} wrap={false}>
+          <Text style={[styles.douaneTotal, styles.colAvis]}>Total</Text>
+          <Text style={[styles.douaneTotal, styles.colHs]}> </Text>
+          <Text style={[styles.douaneTotal, styles.colIncoterm]}> </Text>
+          <Text style={[styles.douaneTotal, styles.colPieces]}>{String(total.pieces)}</Text>
+          <Text style={[styles.douaneTotal, styles.colPoids]}>{`${fmtNum(total.brut, 2)} kg`}</Text>
+          <Text style={[styles.douaneTotal, styles.colPoids]}>{`${fmtNum(total.net, 2)} kg`}</Text>
+        </View>
+      </View>
+    </View>
+  )
+}
 
 export function FacturePdf({ data }: { data: FacturePdfData }) {
   const isAvoir = Number(data.type) === 2
@@ -435,8 +492,16 @@ export function FacturePdf({ data }: { data: FacturePdfData }) {
       ) : null}
       </View>
 
+      {data.douane ? (
+        <Text style={styles.mentionOrigine} wrap={false}>{data.douane.mentionOrigine}</Text>
+      ) : null}
+
       {data.mentionsPaiement ? (
         <Text style={styles.mentionsPaiement} wrap={false}>{data.mentionsPaiement}</Text>
+      ) : null}
+
+      {data.douane && data.douane.blocs.length > 0 ? (
+        <DouaneTable blocs={data.douane.blocs} incoterm={data.douane.incoterm} />
       ) : null}
 
       {/* Bank coordinates at the bottom of the last page, just above the

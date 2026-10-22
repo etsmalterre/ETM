@@ -64,6 +64,8 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { FacturePdf, type FacturePdfData } from '../lib/pdf/FacturePdf.js'
+import { clientFacturationDouaniere, loadBlocsDouane } from '../lib/facture-douane-data.js'
+import { INCOTERM, MENTION_ORIGINE } from '../lib/facture-douane.js'
 import { loadClientSirenForDocument } from '../lib/siren.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
@@ -2266,6 +2268,16 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
   ])
   const tva = tvaMap.get(Number(h.IDtva)) ?? { valeur: 0, libelle: '' }
 
+  // « Facturation douanière » (LIVA #1311): definitive ETM invoices of a
+  // client switched on in Clients › Gestion — never a proforma nor an avoir.
+  const douane = scope.societe === 1 && kind === 'def' && (Number(h.TYPE) || 1) === 1 && await clientFacturationDouaniere(IDclient)
+    ? {
+        mentionOrigine: MENTION_ORIGINE,
+        incoterm: INCOTERM,
+        blocs: await loadBlocsDouane(lignes.map((l) => l.IDligne_expedition)),
+      }
+    : null
+
   const a = adr as any
   const cleanAddr = a ? {
     nom: cleanAddrField(a.nom), adresse1: cleanAddrField(a.adresse1), adresse2: cleanAddrField(a.adresse2),
@@ -2299,6 +2311,7 @@ async function buildFacturePdfData(kind: Kind, id: number): Promise<FacturePdfDa
     // (nothing to pay late).
     mentionsPaiement: kind === 'def' && (Number(h.TYPE) || 1) === 1 ? scope.mentionsPaiement : null,
     lignes: lignes.map((l) => ({ designation: l.designation ?? '', quantite: l.quantite, unite: l.unite, prix: l.prix, montant: l.montant })),
+    douane,
   }
 }
 
