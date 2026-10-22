@@ -7,6 +7,7 @@ import {
   plusJoursOuvres,
   prealablesValidation,
   urgenceCommande,
+  urgenceLot,
   type CommandeFait,
   type LotFait,
 } from './cycle-ennoblissement.js'
@@ -125,6 +126,27 @@ describe('etatCommande', () => {
   })
   it('soldée wins', () => {
     expect(etatCommande(commande({ est_soldee: true, lots: [lot()] })).etape).toBe('terminee')
+  })
+})
+
+describe('urgenceLot: the Suivi lots card colour', () => {
+  it('dyer measures: red from the relance day, amber the working day before', () => {
+    const l = lot({ reception: '2026-10-09' }) // relance 2026-10-12
+    expect(urgenceLot(l, '2026-10-08')).toBeNull()
+    expect(urgenceLot(l, '2026-10-09')).toEqual({ niveau: 'ambre', raison: 'Relancer l’ennoblisseur le 12/10' })
+    expect(urgenceLot(l, '2026-10-12')).toEqual({ niveau: 'rouge', raison: 'Relancer l’ennoblisseur aujourd’hui' })
+    expect(urgenceLot(l, '2026-10-14')).toEqual({ niveau: 'rouge', raison: 'Relancer l’ennoblisseur depuis le 12/10' })
+  })
+  it('client: 5 working days after the soumission', () => {
+    expect(urgenceLot(lot({ soumisLe: '2026-10-09' }), '2026-10-16')?.raison).toBe('Relancer le client aujourd’hui')
+  })
+  it('ours: « À traiter »', () => {
+    expect(urgenceLot(lot({ mesuresTeinturier: true }), '2026-10-12')).toEqual({ niveau: 'rouge', raison: 'À traiter depuis le 09/10' })
+  })
+  it('reprise: no date, no colour; validated: only while a rapport de contrôle is owed', () => {
+    expect(urgenceLot(lot({ etat: 2 }), '2026-10-30')).toBeNull()
+    expect(urgenceLot(lot({ etat: 3 }), '2026-10-30')).toBeNull()
+    expect(urgenceLot(lot({ etat: 3, rcAEnvoyer: ['SIMONE PERELE'] }), '2026-10-30')?.niveau).toBe('rouge')
   })
 })
 

@@ -75,6 +75,7 @@ import {
 import {
   CycleCard,
   ETAPE_LOT_META,
+  EtapeLotPill,
   LotCycleFooter,
   RcMenuButton,
   RefusClientDialog,
@@ -84,6 +85,7 @@ import {
   type SoumissionLot,
 } from '@/components/qualite/LotCycle'
 import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageLotDialog'
+import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
@@ -103,8 +105,12 @@ interface ListRow {
   etape?: EtapeLot | null
   /** A validated lot still owes a client its rapport de contrôle. */
   rc_a_envoyer?: boolean
+  /** Red / amber card (§41): the lot's relance is due (API urgenceLot). */
+  urgence?: { niveau: NiveauUrgence; raison: string } | null
   date: string | null
 }
+
+type NiveauUrgence = 'rouge' | 'ambre'
 
 interface QualityEntry {
   source: string
@@ -314,6 +320,9 @@ export function QualiteSuiviLots() {
   })()
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(linkedLotId !== null ? 'termine' : 'en_cours')
   const [searchQuery, setSearchQuery] = useState('')
+  // Counter-pill toggles (mps_designer §41) and the search-bar step tag (one at a time).
+  const [urgenceOn, setUrgenceOn] = useState<Record<NiveauUrgence, boolean>>({ rouge: false, ambre: false })
+  const [activeTags, setActiveTags] = useState<string[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(linkedLotId)
   useEffect(() => {
     if (searchParams.has('lot')) {
@@ -502,11 +511,25 @@ export function QualiteSuiviLots() {
   )
 
   // ── Filtering + auto-select ─────────────────────────────
+  // Counter pills (§41) count the status filter's list; a toggle disarms when its bucket empties
+  // (the pill is hidden at 0, an armed empty filter would strand the user).
+  const urgenceCounts = useMemo(() => {
+    const c: Record<NiveauUrgence, number> = { rouge: 0, ambre: 0 }
+    for (const l of lots ?? []) if (l.urgence) c[l.urgence.niveau] += 1
+    return c
+  }, [lots])
+  const urgenceActive: Record<NiveauUrgence, boolean> = {
+    rouge: urgenceOn.rouge && urgenceCounts.rouge > 0,
+    ambre: urgenceOn.ambre && urgenceCounts.ambre > 0,
+  }
+  // Step tags, counted over the status filter's list without the free text (the text typed to
+  // find a tag would otherwise narrow the list it is counted on).
+  const tags = useMemo(() => lotTags(lots ?? []), [lots])
+
   const filtered = useMemo(() => {
     if (!lots) return []
     const q = searchQuery.trim().toLowerCase()
-    if (!q) return lots
-    return lots.filter((l) => {
+    let out = !q ? lots : lots.filter((l) => {
       const e = etatOf(l.IDetatLot)
       const uiLabel = l.etape ? ETAPE_LOT_META[l.etape].label : e ? ETAT_META[e].label : ''
       return [l.lot, l.sous_traitant_nom, l.etat_libelle ?? '', uiLabel, l.rc_a_envoyer ? 'rapport à envoyer' : '']
@@ -514,7 +537,9 @@ export function QualiteSuiviLots() {
         .toLowerCase()
         .includes(q)
     })
-  }, [lots, searchQuery])
+    if (urgenceActive.rouge || urgenceActive.ambre) out = out.filter((l) => l.urgence && urgenceActive[l.urgence.niveau])
+    return filterRowsByTags(out, activeTags, tags)
+  }, [lots, searchQuery, urgenceActive.rouge, urgenceActive.ambre, activeTags, tags])
 
   // Keep the selection valid against the (search-filtered) list. Skip while
   // editing so we never discard unsaved changes.
@@ -544,6 +569,12 @@ export function QualiteSuiviLots() {
             onSelect={handleSelect}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={(keys) => setActiveTags(keys.slice(-1))}
+            urgenceCounts={urgenceCounts}
+            urgenceOn={urgenceActive}
+            onToggleUrgence={(n) => setUrgenceOn((v) => ({ ...v, [n]: !v[n] }))}
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilter}
           />
@@ -695,6 +726,74 @@ export function QualiteSuiviLots() {
 
 // ── Left list ────────────────────────────────────────────
 
+// Urgence colours (mps_designer §41, raw palette): rouge = the lot's relance is due, ambre = next working day.
+const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; hover: string; text: string }> = {
+  rouge: {
+    lisere: 'shadow-[inset_4px_0_0_0_rgb(239_68_68)]',
+    selected: 'border-red-500 ring-1 ring-red-500',
+    hover: 'border-border hover:border-red-500/50',
+    text: 'text-red-600',
+  },
+  ambre: {
+    lisere: 'shadow-[inset_4px_0_0_0_rgb(245_158_11)]',
+    selected: 'border-amber-500 ring-1 ring-amber-500',
+    hover: 'border-border hover:border-amber-500/50',
+    text: 'text-amber-700',
+  },
+}
+
+const URGENCE_PILLS: Array<{ niveau: NiveauUrgence; title: string; on: string; off: string }> = [
+  {
+    niveau: 'rouge',
+    title: 'Lots à relancer ou à traiter maintenant',
+    on: 'bg-red-500 text-white border-red-500 shadow-sm',
+    off: 'bg-red-500/10 text-red-700 border-red-500/30 hover:bg-red-500/20',
+  },
+  {
+    niveau: 'ambre',
+    title: 'Lots à relancer ou à traiter le prochain jour ouvré',
+    on: 'bg-amber-500 text-white border-amber-500 shadow-sm',
+    off: 'bg-amber-500/10 text-amber-800 border-amber-500/30 hover:bg-amber-500/20',
+  },
+]
+
+// Search-bar tags: one per step, in the cycle's order. « Rapport à envoyer » also holds the
+// validated lots still owing a rapport de contrôle (their step reads « Validé »).
+const ETAPE_TAG_ORDER: EtapeLot[] = [
+  'attente_mesures', 'attente_tirelle', 'a_soumettre', 'soumis', 'refuse_client',
+  'rc_a_envoyer', 'a_valider', 'en_reprise', 'valide',
+]
+
+function lotTags(rows: ListRow[]): SearchTagDef<ListRow>[] {
+  return ETAPE_TAG_ORDER.map((etape): SearchTagDef<ListRow> => {
+    const predicate = etape === 'rc_a_envoyer'
+      ? (r: ListRow) => r.etape === 'rc_a_envoyer' || !!r.rc_a_envoyer
+      : (r: ListRow) => r.etape === etape
+    return {
+      key: `etape:${etape}`,
+      label: ETAPE_LOT_META[etape].label,
+      renderPill: (trailing) => <EtapeLotPill etape={etape}>{trailing}</EtapeLotPill>,
+      count: rows.filter(predicate).length,
+      predicate,
+    }
+  })
+}
+
+/** The card's status pill: the computed step, else (a lot tied to no dye order) the état. */
+function LotStatutPill({ row, className }: { row: ListRow; className?: string }) {
+  if (row.etape) return <EtapeLotPill etape={row.etape} className={className} />
+  const e = etatOf(row.IDetatLot)
+  if (!e) return null
+  const meta = ETAT_META[e]
+  const Icon = meta.icon
+  return (
+    <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white whitespace-nowrap', meta.solidBg, className)}>
+      <Icon className="h-2.5 w-2.5" />
+      {meta.label}
+    </Badge>
+  )
+}
+
 function LotList({
   rows,
   totalCount,
@@ -704,6 +803,12 @@ function LotList({
   onSelect,
   searchQuery,
   onSearchChange,
+  tags,
+  activeTags,
+  onActiveTagsChange,
+  urgenceCounts,
+  urgenceOn,
+  onToggleUrgence,
   statusFilter,
   onStatusFilterChange,
 }: {
@@ -715,6 +820,13 @@ function LotList({
   onSelect: (id: number) => void
   searchQuery: string
   onSearchChange: (v: string) => void
+  tags: SearchTagDef<ListRow>[]
+  activeTags: string[]
+  onActiveTagsChange: (keys: string[]) => void
+  /** Lots per urgence level: the red and amber counter pills (§41). 0 hides a pill. */
+  urgenceCounts: Record<NiveauUrgence, number>
+  urgenceOn: Record<NiveauUrgence, boolean>
+  onToggleUrgence: (n: NiveauUrgence) => void
   statusFilter: StatusFilter
   onStatusFilterChange: (f: StatusFilter) => void
 }) {
@@ -722,15 +834,34 @@ function LotList({
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       {/* Search + filter */}
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
+        <div className="flex items-center gap-2">
+          <SmartSearchInput<never, ListRow>
+            className="flex-1 min-w-0"
             value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
+            onValueChange={onSearchChange}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={onActiveTagsChange}
             placeholder="Rechercher un lot…"
-            className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            chipPlaceholder="Rechercher…"
           />
+          {/* Counter pills: rouge (relance due), ambre (next working day). Number-only
+              toggles, hidden when the bucket is empty (mps_designer §41). */}
+          {URGENCE_PILLS.map((p) => urgenceCounts[p.niveau] > 0 && (
+            <button
+              key={p.niveau}
+              type="button"
+              onClick={() => onToggleUrgence(p.niveau)}
+              aria-pressed={urgenceOn[p.niveau]}
+              title={p.title}
+              className={cn(
+                'h-7 min-w-[1.75rem] px-1.5 inline-flex items-center justify-center rounded-md text-xs font-semibold tabular-nums border transition-colors flex-shrink-0',
+                urgenceOn[p.niveau] ? p.on : p.off,
+              )}
+            >
+              {urgenceCounts[p.niveau]}
+            </button>
+          ))}
         </div>
         <div className="flex flex-wrap gap-1">
           {FILTERS.map((opt) => (
@@ -770,35 +901,42 @@ function LotList({
         ) : (
           rows.map((row) => {
             const isSelected = selectedId === row.IDsuivilot
-            const meta = etatOf(row.IDetatLot)
-            const etapeMeta = row.etape ? ETAPE_LOT_META[row.etape] : null
-            const Icon = etapeMeta?.icon ?? (meta ? ETAT_META[meta].icon : Clock)
-            const iconColor = etapeMeta?.iconColor ?? (meta ? ETAT_META[meta].iconColor : 'text-muted-foreground')
-            const label = etapeMeta?.label ?? (meta ? ETAT_META[meta].label : '')
+            // Neutral by default (§41): the liseré says the lot's relance is due.
+            const u = row.urgence ? URGENCE_CARD[row.urgence.niveau] : null
+            const rcDu = !!row.rc_a_envoyer && row.etape === 'valide'
             return (
               <div
                 key={row.IDsuivilot}
                 onClick={() => onSelect(row.IDsuivilot)}
                 className={cn(
                   'p-3 border rounded-lg cursor-pointer transition-all bg-white',
-                  isSelected ? 'border-accent ring-1 ring-accent' : 'border-border hover:border-accent/50',
+                  isSelected
+                    ? (u?.selected ?? 'border-zinc-400 ring-1 ring-zinc-400')
+                    : (u?.hover ?? 'border-border hover:border-zinc-400/60'),
+                  u?.lisere,
                 )}
               >
                 <div className="flex items-center gap-2">
-                  <span className="font-medium text-sm truncate flex-1">{row.sous_traitant_nom || '—'}</span>
-                  <span className="flex-shrink-0" title={label}>
-                    <Icon className={cn('h-4 w-4', iconColor)} />
-                  </span>
+                  <ShieldCheck className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                  <span className="font-medium text-sm tabular-nums flex-shrink-0">{row.lot || '—'}</span>
+                  <LotStatutPill row={row} className="ml-auto min-w-0" />
                 </div>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                  <span className="truncate flex-1">{label}</span>
-                  {row.rc_a_envoyer && row.etape === 'valide' && (
-                    <span className="flex-shrink-0 rounded-full border border-amber-200 bg-amber-100 px-1.5 text-[10px] font-medium text-amber-800" title="Rapport de contrôle à envoyer">
-                      RC à envoyer
-                    </span>
-                  )}
-                  <span className="flex-shrink-0 tabular-nums">{row.lot || '—'}</span>
-                </div>
+                <p className="text-xs text-muted-foreground mt-1 truncate">{row.sous_traitant_nom || '—'}</p>
+                {row.urgence && u && (
+                  <p className={cn('text-[11px] font-medium mt-1 truncate', u.text)} title={row.urgence.raison}>
+                    {row.urgence.raison}
+                  </p>
+                )}
+                {(row.date || rcDu) && (
+                  <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
+                    {row.date && <span>Reçu le {formatHfsqlDate(row.date)}</span>}
+                    {rcDu && (
+                      <span className="ml-auto flex-shrink-0 rounded-full border border-amber-200 bg-amber-100 px-1.5 text-[10px] font-medium text-amber-800" title="Rapport de contrôle à envoyer">
+                        RC à envoyer
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })
@@ -808,7 +946,7 @@ function LotList({
       {/* Footer count */}
       <div className="p-3 border-t text-xs text-muted-foreground rounded-b-lg bg-zinc-200/50">
         {rows.length} lot{rows.length !== 1 ? 's' : ''}
-        {searchQuery && totalCount !== rows.length ? ` / ${totalCount}` : ''}
+        {totalCount !== rows.length ? ` / ${totalCount}` : ''}
       </div>
     </div>
   )

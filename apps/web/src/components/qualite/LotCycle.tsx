@@ -14,7 +14,6 @@ import {
   Hourglass,
   Loader2,
   RotateCcw,
-  Ruler,
   Send,
   ShieldCheck,
   ThumbsDown,
@@ -22,6 +21,7 @@ import {
   XCircle,
   type LucideIcon,
 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
@@ -62,8 +62,8 @@ export interface SoumissionLot {
  *  Colour = whose move: sky the dyer, amber us, violet the client, red a
  *  refusal, orange a reprise, green done. */
 export const ETAPE_LOT_META: Record<EtapeLot, { label: string; icon: LucideIcon; solid: string; iconColor: string }> = {
-  attente_mesures: { label: 'Attente contrôle ennoblisseur', icon: Hourglass, solid: 'bg-sky-600 border-sky-600', iconColor: 'text-sky-600' },
-  attente_tirelle: { label: 'Attente contrôle Malterre', icon: Ruler, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
+  attente_mesures: { label: 'Contrôle ennoblisseur', icon: Hourglass, solid: 'bg-sky-600 border-sky-600', iconColor: 'text-sky-600' },
+  attente_tirelle: { label: 'Contrôle Malterre', icon: Hourglass, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
   a_soumettre: { label: 'À soumettre', icon: Send, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
   soumis: { label: 'Soumis au client', icon: Send, solid: 'bg-violet-500 border-violet-500', iconColor: 'text-violet-600' },
   refuse_client: { label: 'Refusé par le client', icon: XCircle, solid: 'bg-red-600 border-red-600', iconColor: 'text-red-600' },
@@ -71,6 +71,19 @@ export const ETAPE_LOT_META: Record<EtapeLot, { label: string; icon: LucideIcon;
   a_valider: { label: 'À valider', icon: ShieldCheck, solid: 'bg-primary border-primary', iconColor: 'text-primary' },
   en_reprise: { label: 'En reprise', icon: RotateCcw, solid: 'bg-orange-500 border-orange-500', iconColor: 'text-orange-600' },
   valide: { label: 'Validé', icon: CheckCircle2, solid: 'bg-success border-success', iconColor: 'text-green-600' },
+}
+
+/** The step on a left-list card or a search-bar tag: the footer's solid colour (§29.8). */
+export function EtapeLotPill({ etape, className, children }: { etape: EtapeLot; className?: string; children?: ReactNode }) {
+  const meta = ETAPE_LOT_META[etape]
+  const Icon = meta.icon
+  return (
+    <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white whitespace-nowrap', meta.solid, className)}>
+      <Icon className="h-2.5 w-2.5 flex-shrink-0" />
+      <span className="truncate">{meta.label}</span>
+      {children}
+    </Badge>
+  )
 }
 
 const fmtJour = (iso: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '')

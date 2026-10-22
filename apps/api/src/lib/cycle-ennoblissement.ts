@@ -17,8 +17,8 @@
 //     en_reprise       état 2, or an open reprise (lib/reprises.ts — the dyer reworks it)
 //     soumis           a soumission names the lot, the client has not answered
 //     refuse_client    the client refused it: the only way on is « Reprendre »
-//     attente_mesures  no dyer measure (ACP): shown « Attente contrôle ennoblisseur »
-//     attente_tirelle  our tirelle measure not yet (ACL): « Attente contrôle Malterre »
+//     attente_mesures  no dyer measure (ACP): shown « Contrôle ennoblisseur »
+//     attente_tirelle  our tirelle measure not yet (ACL): « Contrôle Malterre »
 //     a_soumettre      the client asks soumissions for this reference
 //                      (Clients › Gestion, designation_client.soumettre), none sent
 //                      since the lot's last return from reprise
@@ -229,6 +229,34 @@ export function urgenceCommande(e: EtatCommande, today: string): 'late' | 'soon'
   if (e.relance <= today) return 'late'
   if (e.relance <= plusJoursOuvres(today, 1)) return 'soon'
   return null
+}
+
+/** A lot's card colour on Qualité › Suivi lots (mps_designer §41). */
+export interface UrgenceLot {
+  niveau: 'rouge' | 'ambre'
+  /** Printed under the card, in the colour: who to chase, since when. */
+  raison: string
+}
+
+/** The lot's own chase date read like the order's (urgenceCommande): red from the
+ *  relance day, amber the working day before — so a lot is red on Suivi lots
+ *  exactly when it turns its order red on Sous-traitants › Ennoblissement. A
+ *  validated lot still owing a rapport de contrôle is our move, like the step
+ *  rc_a_envoyer. */
+export function urgenceLot(l: LotFait, today: string): UrgenceLot | null {
+  const e = etatLot(l)
+  let { relance, main } = e
+  if (e.etape === 'valide') {
+    if ((l.rcAEnvoyer?.length ?? 0) === 0 || !l.reception) return null
+    relance = plusJoursOuvres(l.reception, RELANCE_J.nous)
+    main = 'nous'
+  }
+  if (!relance) return null
+  const niveau = relance <= today ? 'rouge' : relance <= plusJoursOuvres(today, 1) ? 'ambre' : null
+  if (!niveau) return null
+  const jour = relance === today ? 'aujourd’hui' : `le ${relance.slice(8, 10)}/${relance.slice(5, 7)}`
+  const quoi = main === 'teinturier' ? 'Relancer l’ennoblisseur' : main === 'client' ? 'Relancer le client' : 'À traiter'
+  return { niveau, raison: niveau === 'rouge' && relance < today ? `${quoi} depuis ${jour}` : `${quoi} ${jour}` }
 }
 
 /** « MA109331 », « 109331/s », « MA109102R » (an old reprise suffix): the digits

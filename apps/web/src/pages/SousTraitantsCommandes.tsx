@@ -100,6 +100,7 @@ import { invalidateLotQualityCaches, invalidateStockCaches, STOCK_QUERY_FRESHNES
 import { postEmail } from '@/lib/email'
 import { sstTypeTagClasses } from '@/lib/sst-type'
 import { pruneSelection } from '@/lib/transfert-picker'
+import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 
 // ── Constants ──────────────────────────────────────────
 
@@ -566,10 +567,11 @@ const SST_PHASE_META: Record<SstPhase, {
   a_cloturer:     { label: 'À clôturer',       icon: CheckCircle2, solid: 'bg-teal-600 border-teal-600' },
 }
 
-/** Lot steps, coloured by whose move it is: dyer sky, client violet, us amber. */
-const ETAPE_LOT_META: Record<EtapeLot, { label: string; classes: string }> = {
-  attente_mesures: { label: 'Attente contrôle ennoblisseur', classes: 'bg-sky-100 text-sky-800 border-sky-200' },
-  attente_tirelle: { label: 'Attente contrôle Malterre', classes: 'bg-amber-100 text-amber-800 border-amber-200' },
+/** Lot steps, coloured by whose move it is: dyer sky, client violet, us amber.
+ *  `attente`: the two control steps carry an hourglass, which says « attente ». */
+const ETAPE_LOT_META: Record<EtapeLot, { label: string; classes: string; attente?: boolean }> = {
+  attente_mesures: { label: 'Contrôle ennoblisseur', classes: 'bg-sky-100 text-sky-800 border-sky-200', attente: true },
+  attente_tirelle: { label: 'Contrôle Malterre', classes: 'bg-amber-100 text-amber-800 border-amber-200', attente: true },
   en_reprise:      { label: 'En reprise',      classes: 'bg-orange-100 text-orange-800 border-orange-200' },
   soumis:          { label: 'Soumis au client', classes: 'bg-violet-100 text-violet-800 border-violet-200' },
   a_soumettre:     { label: 'À soumettre',     classes: 'bg-amber-100 text-amber-800 border-amber-200' },
@@ -583,9 +585,43 @@ const MAIN_LABEL: Record<MainCycle, string> = { teinturier: 'Teinturier', nous: 
 
 const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 
-function EtapeLotPill({ etape }: { etape: EtapeLot }) {
+function EtapeLotPill({ etape, compact, prefix, children }: { etape: EtapeLot; compact?: boolean; prefix?: string; children?: React.ReactNode }) {
   const m = ETAPE_LOT_META[etape]
-  return <span className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap', m.classes)}>{m.label}</span>
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-full border text-[10px] font-medium whitespace-nowrap', compact ? 'px-1.5 py-0' : 'px-2 py-0.5', m.classes)}>
+      {m.attente && <Hourglass className="h-2.5 w-2.5 flex-shrink-0" />}
+      {prefix}{m.label}
+      {children}
+    </span>
+  )
+}
+
+/** Search-bar tags (as on Clients › Commandes): the order's phase, then on
+ *  Ennoblissement the step one of its open lots is at — each drawn as the card's
+ *  own pill. Only the tags some loaded order carries are offered. */
+function commandeTags(rows: CommandeListRow[], famille: SstFamille): SearchTagDef<CommandeListRow>[] {
+  const phases = (Object.keys(SST_PHASE_META) as SstPhase[]).map((phase): SearchTagDef<CommandeListRow> => {
+    const predicate = (r: CommandeListRow) => r.phase === phase
+    return {
+      key: `phase:${phase}`,
+      label: phaseMeta(phase, famille).label,
+      renderPill: (trailing) => <PhasePill phase={phase} famille={famille}>{trailing}</PhasePill>,
+      count: rows.filter(predicate).length,
+      predicate,
+    }
+  })
+  if (famille !== 'ennoblissement') return phases
+  const etapes = (Object.keys(ETAPE_LOT_META) as EtapeLot[]).map((etape): SearchTagDef<CommandeListRow> => {
+    const predicate = (r: CommandeListRow) => (r.lots ?? []).some((l) => l.etape === etape)
+    return {
+      key: `lot:${etape}`,
+      label: ETAPE_LOT_META[etape].label,
+      renderPill: (trailing) => <EtapeLotPill etape={etape}>{trailing}</EtapeLotPill>,
+      count: rows.filter(predicate).length,
+      predicate,
+    }
+  })
+  return [...phases, ...etapes]
 }
 
 /** Ennoblissement card: the open lots by step. Whose move, the relance and the
@@ -599,9 +635,7 @@ function CycleResume({ row }: { row: CommandeListRow }) {
     <div className="mt-1.5">
       <div className="flex flex-wrap gap-1">
         {[...parEtape].map(([etape, n]) => (
-          <span key={etape} className={cn('inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium', ETAPE_LOT_META[etape].classes)}>
-            {n > 1 ? `${n} · ` : ''}{ETAPE_LOT_META[etape].label}
-          </span>
+          <EtapeLotPill key={etape} etape={etape} compact prefix={n > 1 ? `${n} · ` : ''} />
         ))}
       </div>
     </div>
@@ -614,13 +648,14 @@ function phaseMeta(phase: SstPhase | null | undefined, _famille: SstFamille) {
   return SST_PHASE_META[phase ?? 'en_cours']
 }
 
-function PhasePill({ phase, famille, className }: { phase: SstPhase | null | undefined; famille: SstFamille; className?: string }) {
+function PhasePill({ phase, famille, className, children }: { phase: SstPhase | null | undefined; famille: SstFamille; className?: string; children?: React.ReactNode }) {
   const meta = phaseMeta(phase, famille)
   const Icon = meta.icon
   return (
     <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white', meta.solid, className)}>
       <Icon className="h-2.5 w-2.5" />
       {meta.label}
+      {children}
     </Badge>
   )
 }
@@ -842,6 +877,8 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
   const [urgencyLateOn, setUrgencyLateOn] = useState(false)
   const [urgencySoonOn, setUrgencySoonOn] = useState(false)
   const urgencyFilterActive = urgencyLateOn || urgencySoonOn
+  // Search-bar tag (a phase, or a lot step on Ennoblissement): one at a time.
+  const [activeTags, setActiveTags] = useState<string[]>([])
   const [isEditing, setIsEditing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [piecesDrawerLineId, setPiecesDrawerLineId] = useState<number | null>(null)
@@ -1188,6 +1225,15 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
   // pre-filter — that used to flicker, filtering the previous response
   // against the current keystroke while the new fetch was in flight.
   const filtered = commandes ?? []
+  // Tags are counted over the list WITHOUT the free text: the text typed to find
+  // a tag (« récep ») also searches server-side and would leave none to offer. So
+  // the last unsearched list is kept while a search is running.
+  const [tagRows, setTagRows] = useState<CommandeListRow[]>([])
+  useEffect(() => {
+    if (!isSearching && commandes) setTagRows(commandes)
+  }, [isSearching, commandes])
+  const tags = useMemo(() => commandeTags(tagRows, famille), [tagRows, famille])
+  const visibleRows = filterRowsByTags(filtered, activeTags, tags)
 
   return (
     <>
@@ -1195,7 +1241,7 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
         list={
           <CommandeList
             famille={famille}
-            rows={filtered}
+            rows={visibleRows}
             isLoading={isLoading}
             isError={isError}
             error={error as Error | null}
@@ -1203,6 +1249,9 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
             onSelect={handleSelect}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={(keys) => setActiveTags(keys.slice(-1))}
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilterChange}
             attenteDelaiLate={urgencyCounts?.late ?? 0}
@@ -1342,6 +1391,7 @@ function CommandeList({
   rows, isLoading, isError, error,
   selectedId, onSelect,
   searchQuery, onSearchChange,
+  tags, activeTags, onActiveTagsChange,
   statusFilter, onStatusFilterChange,
   attenteDelaiLate, attenteDelaiSoon,
   urgencyLateOn, urgencySoonOn,
@@ -1358,6 +1408,9 @@ function CommandeList({
   onSelect: (id: number) => void
   searchQuery: string
   onSearchChange: (q: string) => void
+  tags: SearchTagDef<CommandeListRow>[]
+  activeTags: string[]
+  onActiveTagsChange: (keys: string[]) => void
   statusFilter: StatusFilter
   onStatusFilterChange: (s: StatusFilter) => void
   /** Count of open `attente_delai` commandes whose bon de commande was
@@ -1402,17 +1455,16 @@ function CommandeList({
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
         <div className="flex items-center gap-2">
-          <div className="relative flex-1 min-w-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Rechercher (n°, sous-traitant, référence, coloris...)"
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-              autoComplete="off"
-              className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
+          <SmartSearchInput<never, CommandeListRow>
+            className="flex-1 min-w-0"
+            value={searchQuery}
+            onValueChange={onSearchChange}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={onActiveTagsChange}
+            placeholder="Rechercher (n°, sous-traitant, référence, coloris...)"
+            chipPlaceholder="Rechercher…"
+          />
           {/* Attente Délai urgency pills. Number-only, sit flush to the
               right of the search input, each pill an independent toggle.
               Hidden individually when their bucket is empty. */}
