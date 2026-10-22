@@ -4,6 +4,7 @@
 import { mpsPg } from '../mps-pg.js'
 import { consumedEcruIds } from '../fini-sources.js'
 import { plusJours, type LigneFait } from './regles.js'
+import { echeanceDelai, lireFaitsDelai } from '../delai-sst.js'
 
 /** Lots received this long ago or less are still asked about (§2). */
 const CONTROLE_FENETRE_J = 45
@@ -19,9 +20,8 @@ const iso = (d: unknown): string | null => (typeof d === 'string' && /^\d{4}-\d{
 export async function lireFaits(idsousTraitant: number, jour: string): Promise<{ lignes: LigneFait[] }> {
   const sql = mpsPg()
   const depuis = plusJours(jour, -365)
-  const lignesRows = await sql<{ idcommande: number; idligne: number; idcommande_client: number | null; sstatut: string | null; date_livraison: string | null; relance: string | null; quantite: number; reference: string; coloris: string }[]>`
+  const lignesRows = await sql<{ idcommande: number; idligne: number; idcommande_client: number | null; sstatut: string | null; date_livraison: string | null; quantite: number; reference: string; coloris: string }[]>`
     SELECT c.idcommande_sous_traitant AS idcommande, l.idligne_commande_sous_traitant AS idligne, c.idcommande_client,
-           to_char(COALESCE(l.date_notif, c.date_notif), 'YYYY-MM-DD') AS relance,
            l.sstatut::text AS sstatut, to_char(l.date_livraison, 'YYYY-MM-DD') AS date_livraison, COALESCE(l.quantite, 0) AS quantite,
            COALESCE(rf.reference, '') AS reference,
            COALESCE(CASE WHEN COALESCE(rf.avec_teinture, 1) = 0 THEN ce.reference ELSE COALESCE(rfc.reference, ce.reference) END, '') AS coloris
@@ -41,6 +41,8 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
   const idsLigne = lignes.map((l) => l.idligne)
   const idsCommande = [...new Set(lignes.map((l) => l.idcommande))]
 
+  // §5 asks from the délai's échéance — the card's own rule (lib/delai-sst.ts, LIVA #1314).
+  const delais = await lireFaitsDelai(idsCommande, sql)
   const [recus, lots, soumis, clientsEntete, clientsPieces, ecruLignes] = await Promise.all([
     sql<{ idligne: number; n: number; metrage: number; dernier: unknown }[]>`
       SELECT idref_commande_source AS idligne, COUNT(*)::int AS n, COALESCE(SUM(metrage), 0)::float AS metrage, to_char(MAX(date_saisie), 'YYYY-MM-DD') AS dernier
@@ -141,7 +143,7 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
       lotsSansControle: sansControle.get(l.idligne) ?? [],
       lotsEnReprise: enReprise.get(l.idligne) ?? [],
       lotsAControler: aControler.get(l.idligne) ?? [],
-      relance: iso(l.relance),
+      relance: (() => { const f = delais.get(l.idcommande); return f ? echeanceDelai(f) : null })(),
     }
   })
   return { lignes: faits }

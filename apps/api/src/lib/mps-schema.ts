@@ -999,6 +999,37 @@ ALTER TABLE reponse_soumission
   ADD COLUMN idsuivilot bigint DEFAULT 0;
 `,
   },
+  {
+    // The délai question of a sous-traitant order (LIVA #1314, lib/delai-sst.ts):
+    // « Relancer » (e-mail / phone — a Point sent is read from point_sst, never
+    // copied here), « Repousser » (new échéance + motif + who the wait is
+    // imputable to) and each line's délai received. Append-only: the API role
+    // may SELECT and INSERT, never UPDATE or DELETE.
+    name: '0030_delai_sst_evenement',
+    sql: `
+CREATE TABLE delai_sst_evenement (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idcommande_sous_traitant bigint NOT NULL,
+  idligne_commande_sous_traitant bigint NOT NULL DEFAULT 0,
+  type text NOT NULL CHECK (type IN ('relance', 'report', 'delai_recu')),
+  le timestamptz NOT NULL DEFAULT now(),
+  canal text CHECK (canal IN ('email', 'telephone')),
+  note text,
+  echeance date,
+  motif text,
+  imputable text CHECK (imputable IN ('sous_traitant', 'malterre')),
+  delai_donne date,
+  origine text NOT NULL DEFAULT 'geste' CHECK (origine IN ('geste', 'historique')),
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  CHECK (type <> 'report' OR (echeance IS NOT NULL AND motif IS NOT NULL AND imputable IS NOT NULL)),
+  CHECK (type <> 'relance' OR canal IS NOT NULL)
+);
+CREATE INDEX delai_sst_evenement_commande ON delai_sst_evenement (idcommande_sous_traitant, le);
+${grantApi('SELECT, INSERT', 'delai_sst_evenement')}
+${grantApi('USAGE, SELECT', 'SEQUENCE delai_sst_evenement_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

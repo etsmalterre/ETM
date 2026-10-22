@@ -20,7 +20,7 @@ import { mpsPg } from '../../mps-pg.js'
 import type { Issue } from '../catalog.js'
 
 export const SLUG = 'point-sst'
-export const VERSION = 5
+export const VERSION = 6
 export const VERSIONS = [
   {
     version: 1,
@@ -46,6 +46,11 @@ export const VERSIONS = [
     version: 5,
     date: '2026-10-11',
     note: 'Corrigée sur le retour de Pierre-Emmanuel au point du 12/10 (commande 9030, « Pas de solde attendu : toutes les pièces ont été réceptionnées ») : une commande est entièrement reçue quand toutes les pièces tombé de métier affectées sont revenues en fini, et non plus à 95 % du métrage commandé. Elle n’appelle alors plus ni « solde » ni soumission. Un métrage reçu hors de la tolérance de ±5 % du client relève de la qualité, pas d’une question au teinturier.',
+  },
+  {
+    version: 6,
+    date: '2026-10-22',
+    note: 'Les délais suivent l’échéance de la commande, la même que la carte de Sous-traitants › Ennoblissement (LIVA #1314) : une commande « Repoussée » avec un motif n’est plus demandée avant sa nouvelle échéance, et une commande sans date de relance attend bon de commande + 3 jours ouvrés au lieu d’être demandée tout de suite. Chaque point envoyé compte comme une relance des commandes de sa rubrique « délais ».',
   },
 ] as const
 

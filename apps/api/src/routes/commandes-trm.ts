@@ -68,6 +68,8 @@ import { loadRectiligneRefLabels, loadRectiligneColorisLabels, readRefRectiligne
 import { getUserEmail } from '../lib/user-emails.js'
 import { loadEtmAffectation } from '../lib/affectation-fil-trm.js'
 import { horsRefParOf, type FilHorsRef } from '../lib/hors-ref-trm.js'
+import { noterDelaiRecu } from '../lib/delai-sst.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 
 export const commandesTrmRouter: RouterType = Router()
 
@@ -1348,6 +1350,10 @@ commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Respon
           )
           sst = { IDligne_commande_sous_traitant: sstLineId, date_livraison: r.date_livraison, date_delai: r.date_delai, sstatut: r.sstatut }
           sstStatus = 'updated'
+          // TRM answered ETM's délai question (LIVA #1314: Qualité de service).
+          if ((cur[0].sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI) {
+            await noterDelaiRecu(sstLineId, r.date_livraison || null, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
+          }
         }
       } catch (e: any) {
         console.error('[trm-bridge] DELAI: sst update failed for cc line', lineId, e)

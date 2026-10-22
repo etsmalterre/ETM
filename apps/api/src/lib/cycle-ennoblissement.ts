@@ -34,6 +34,7 @@ import { mpsPg } from './mps-pg.js'
 import { consumedEcruIds } from './fini-sources.js'
 import { faitsReprises } from './reprises.js'
 import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
+import { echeanceDelai, lireFaitsDelai, relanceDue, derniereRelance, historiqueDelai, type EvenementDelai, type FaitsDelai } from './delai-sst.js'
 
 export type EtapeLot =
   | 'attente_mesures'
@@ -176,10 +177,8 @@ export interface CommandeFait {
   est_soldee: boolean
   /** Max line status rank: 0 Non_Envoye, 1 Attente_Delai, 2 anything later. */
   rangStatut: 0 | 1 | 2
-  /** The relance date of the délai question (commande_sous_traitant.date_notif), 'YYYY-MM-DD'. */
-  relanceDelai: string | null
-  /** Bon de commande sent, 'YYYY-MM-DD' (fallback relance: + 3 working days). */
-  bonEnvoyeLe: string | null
+  /** The délai question: asked, relances, reports (lib/delai-sst.ts). */
+  delaiFaits?: FaitsDelai
   /** Earliest délai of a line not delivered yet, 'YYYY-MM-DD'. */
   delai: string | null
   lots: LotFait[]
@@ -195,6 +194,16 @@ export interface EtatCommande {
   lots: EtatLot[]
   /** Pieces still at the dyer while lots came back. */
   solde: boolean
+  /** attente_delai only: the délai question (lib/delai-sst.ts). */
+  delai?: EtatDelai
+}
+
+export interface EtatDelai {
+  /** From when the délai is due (the Point asks from that day), 'YYYY-MM-DD'. */
+  echeance: string | null
+  /** Latest relance: day and channel. */
+  derniereRelance: { jour: string; canal: string } | null
+  historique: EvenementDelai[]
 }
 
 export function etatCommande(c: CommandeFait): EtatCommande {
@@ -205,8 +214,13 @@ export function etatCommande(c: CommandeFait): EtatCommande {
   if (c.lots.length === 0) {
     if (c.rangStatut === 0) return { etape: 'non_envoye', main: 'nous', relance: null, lots: [], solde: false }
     if (c.rangStatut === 1) {
-      const relance = c.relanceDelai ?? (c.bonEnvoyeLe ? plusJoursOuvres(c.bonEnvoyeLe, 3) : null)
-      return { etape: 'attente_delai', main: 'teinturier', relance, lots: [], solde: false }
+      // Red = due and nobody chased since (LIVA #1314): a relance pushes it back.
+      const f = c.delaiFaits ?? { demandeLe: null, dateNotif: null, relances: [], reports: [], reponduLe: null }
+      const r = derniereRelance(f)
+      return {
+        etape: 'attente_delai', main: 'teinturier', relance: relanceDue(f), lots: [], solde: false,
+        delai: { echeance: echeanceDelai(f), derniereRelance: r ? { jour: r.jour, canal: r.canal } : null, historique: historiqueDelai(f) },
+      }
     }
     return { etape: 'en_teinture', main: 'teinturier', relance: c.delai, lots: [], solde: false }
   }
@@ -270,7 +284,6 @@ export function cleLot(s: string): string {
 // ── Reading the facts (native PostgreSQL) ────────────────
 
 
-const TYPE_DOC_BON = 13
 const TYPE_DOC_SOUMISSION = 15
 
 function rang(sstatut: string | null): 0 | 1 | 2 {
@@ -287,18 +300,16 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   if (cmdIds.length === 0) return out
   const sql = mpsPg()
 
-  const [entetes, lignes, bons, soumissions, reponses] = await Promise.all([
-    sql<{ id: number; est_soldee: number; relance: string | null; idcommande_client: number }[]>`
-      SELECT idcommande_sous_traitant AS id, est_soldee, to_char(date_notif, 'YYYY-MM-DD') AS relance,
+  const faitsDelaiP = lireFaitsDelai(cmdIds, sql)
+  const [entetes, lignes, soumissions, reponses] = await Promise.all([
+    sql<{ id: number; est_soldee: number; idcommande_client: number }[]>`
+      SELECT idcommande_sous_traitant AS id, est_soldee,
              COALESCE(idcommande_client, 0) AS idcommande_client
       FROM commande_sous_traitant WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
     sql<{ id: number; cmd: number; type: number; sstatut: string | null; delai: string | null; idref_fini: number }[]>`
       SELECT idligne_commande_sous_traitant AS id, idcommande_sous_traitant AS cmd, type, sstatut::text AS sstatut,
              to_char(date_livraison, 'YYYY-MM-DD') AS delai, COALESCE(idreference, 0) AS idref_fini
       FROM ligne_commande_sous_traitant WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
-    sql<{ cmd: number; jour: string }[]>`
-      SELECT idreference AS cmd, to_char(max(date), 'YYYY-MM-DD') AS jour FROM envoi_email
-      WHERE idtype_doc = ${TYPE_DOC_BON} AND idreference = ANY(${cmdIds}) GROUP BY idreference`,
     sql<{ cmd: number; notes: string | null; jour: string; ts: string }[]>`
       SELECT idreference AS cmd, notes::text AS notes, to_char(max(date), 'YYYY-MM-DD') AS jour,
              to_char(max(date), 'YYYY-MM-DD HH24:MI:SS') AS ts FROM envoi_email
@@ -311,6 +322,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       FROM reponse_soumission WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
   ])
 
+  const faitsDelai = await faitsDelaiP
   const lineIds = lignes.map((l) => Number(l.id))
   const [lots, ecru, clientsPieces] = lineIds.length === 0 ? [[], [], []] : await Promise.all([
     sql<{ idsuivilot: number; ligne: number; lot: string | null; etat: number; reception: string | null; laize_sst: number; poids_sst: number; laize_tirelle: number }[]>`
@@ -384,7 +396,6 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     if (!prev || r.ts > prev.ts) reponseParCle.set(k, { accepte: Number(r.reponse) === 1, commentaire: (r.commentaire ?? '').trim(), ts: r.ts })
   }
   const rcParLot = await clientsDesLots(lots.map((s) => ({ ligne: Number(s.ligne), lot: String(s.lot ?? '') })))
-  const bonParCmd = new Map(bons.map((b) => [Number(b.cmd), b.jour]))
   const ligneParId = new Map(lignes.map((l) => [Number(l.id), l]))
 
   for (const e of entetes) {
@@ -430,8 +441,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     out.set(id, {
       est_soldee: Number(e.est_soldee) === 1,
       rangStatut: Math.max(0, ...sesLignes.map((l) => rang(l.sstatut))) as 0 | 1 | 2,
-      relanceDelai: e.relance,
-      bonEnvoyeLe: bonParCmd.get(id) ?? null,
+      delaiFaits: faitsDelai.get(id),
       delai: delais[0] ?? null,
       lots: sesLots,
       ecruChezTeinturier: sesLignes.reduce((n, l) => n + (chezTeinturier.get(Number(l.id)) ?? 0), 0),

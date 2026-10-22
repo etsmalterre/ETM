@@ -68,7 +68,7 @@ export interface LigneFait {
    *  the dyer has answered, the next step is ours (v3, point du 07/10: 9029 « déjà contrôlée par
    *  Perrine, on attend le contrôle de Laëtitia »). */
   lotsAControler: string[]
-  /** The order's relance date (commande_sous_traitant.date_notif, bon de commande + 3 working days). */
+  /** From when the délai is due (lib/delai-sst.ts echeanceDelai: latest « Repousser », else date_notif, else bon de commande + 3 working days). */
   relance: string | null
 }
 

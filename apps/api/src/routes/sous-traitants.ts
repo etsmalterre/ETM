@@ -5,6 +5,7 @@ import { consumedEcruIds } from '../lib/fini-sources.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { etatEcruChezSst, type SstLineInfo } from '../lib/ecru-etat-sst.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
+import { qualiteService } from '../lib/qualite-service-sst.js'
 
 // Gestion route for the `sous_traitant` entity (subcontractor management).
 // Mirrors fournisseurs.ts (identical contacts/adresses sub-resource shape) with
@@ -133,6 +134,24 @@ sousTraitantsRouter.get('/:id', async (req: Request, res: Response) => {
     })
   } catch (err) {
     console.error('Error fetching sous-traitant:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sous-traitants/:id/qualite-service?depuis=YYYY-MM-DD — how the
+// sous-traitant answers and keeps its délais (lib/qualite-service-sst.ts,
+// LIVA #1314). Read-only; default period: the last 12 months.
+sousTraitantsRouter.get('/:id/qualite-service', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const t = new Date()
+    const aujourdhui = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+    const q = typeof req.query.depuis === 'string' ? req.query.depuis : ''
+    const depuis = /^\d{4}-\d{2}-\d{2}$/.test(q) ? q : `${t.getFullYear() - 1}${aujourdhui.slice(4)}`
+    res.json(await qualiteService(id, depuis, aujourdhui))
+  } catch (err) {
+    console.error('Error computing qualité de service:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

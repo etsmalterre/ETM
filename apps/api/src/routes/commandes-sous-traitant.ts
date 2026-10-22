@@ -86,6 +86,7 @@ import { uniteLabel } from './expeditions.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
+import { DelaiRefuse, noterDelaiRecu, noterRelance, repousserEcheance } from '../lib/delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
@@ -926,6 +927,7 @@ function cycleFields(e: EtatCommande) {
     relance: e.relance,
     solde: e.solde,
     lots: e.lots.map((l) => ({ lot: l.lot, idsuivilot: l.idsuivilot, etape: l.etape, main: l.main, relance: l.relance })),
+    ...(e.delai ? { delai: e.delai } : {}),
   }
 }
 
@@ -4778,15 +4780,21 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     if (d.unite !== undefined) sets.push(`unite = ${d.unite}`)
     if (d.prix !== undefined) sets.push(`prix = ${n(d.prix)}`)
     if (d.commentaire !== undefined) sets.push(`commentaire = '${esc(d.commentaire)}'`)
+    let statutApres = (cur.sstatut ?? '').trim()
+    let delaiApres: string | null = null
     if (d.date_livraison !== undefined) {
       // Capture-once rule for date_delai + the Attente_Delai → En_Cours flip.
       // Shared with TRM's `PUT /commandes-trm/lignes/:id/delai` (the sister
       // company announcing its knitting date) — the rules live in
       // lib/sst-shared.ts, the sstatut clause comes with them when the patch
       // carries one.
-      sets.push(...sstDelaiSets(cur, d.date_livraison, d.sstatut).sets)
+      const r = sstDelaiSets(cur, d.date_livraison, d.sstatut)
+      sets.push(...r.sets)
+      statutApres = r.sstatut
+      delaiApres = r.date_livraison || null
     } else if (d.sstatut !== undefined) {
       sets.push(`sstatut = '${esc(d.sstatut)}'`)
+      statutApres = d.sstatut
     }
 
     // Tricoteur prix recompute: when IDreference or quantite changes on a
@@ -4809,6 +4817,10 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     await query(
       `UPDATE ligne_commande_sous_traitant SET ${sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${lineId}`,
     )
+    // The dyer answered the délai question (LIVA #1314: Qualité de service).
+    if ((cur.sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && statutApres !== STATUT_ATTENTE_DELAI && statutApres !== STATUT_NON_ENVOYE) {
+      await noterDelaiRecu(lineId, delaiApres, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
+    }
 
     // Auto-close on "all lines done" was removed when we moved to the
     // computed-phase model — the operator now uses the Clôturer button in
@@ -6992,6 +7004,61 @@ commandesSousTraitantRouter.patch(
 
 // ── Envoyer en reprise (lib/reprises.ts) ─────────────────
 //
+// ── The délai question (LIVA #1314, lib/delai-sst.ts) ────
+//
+// POST /:id/delai/relances { canal: 'email' | 'telephone', note? } — the dyer
+//   was asked again (a Point sent counts by itself, never through here).
+// POST /:id/delai/reports { echeance, motif, imputable } — the délai is not
+//   expected before `echeance`, for a reason; moves date_notif too.
+const relanceDelaiBody = z.object({
+  canal: z.enum(['email', 'telephone']),
+  note: z.string().max(1000).optional().default(''),
+})
+const reportDelaiBody = z.object({
+  echeance: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  motif: z.string().trim().min(1).max(1000),
+  imputable: z.enum(['sous_traitant', 'malterre']),
+})
+
+async function repondreCycle(res: Response, id: number): Promise<void> {
+  const etat = (await etatsEnnoblissement([id])).get(id)
+  res.json({ ok: true, ...(etat ? { cycle: cycleFields(etat) } : {}) })
+}
+
+commandesSousTraitantRouter.post('/:id/delai/relances', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
+    const p = relanceDelaiBody.safeParse(req.body)
+    if (!p.success) { res.status(400).json({ error: 'canal_requis', message: 'Indiquez comment le sous-traitant a été relancé.' }); return }
+    await noterRelance(id, p.data.canal, p.data.note, { id: req.userId, nom: await nomUtilisateur(req.userId) })
+    await repondreCycle(res, id)
+  } catch (err) {
+    if (err instanceof DelaiRefuse) { res.status(409).json({ error: err.code, message: err.message }); return }
+    console.error('Error recording délai relance:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesSousTraitantRouter.post('/:id/delai/reports', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
+    const p = reportDelaiBody.safeParse(req.body)
+    if (!p.success) { res.status(400).json({ error: 'motif_requis', message: 'Indiquez la nouvelle échéance, le motif et à qui l’attente est imputable.' }); return }
+    await repousserEcheance(id, p.data.echeance, p.data.motif, p.data.imputable, { id: req.userId, nom: await nomUtilisateur(req.userId) }, todayIso())
+    await repondreCycle(res, id)
+  } catch (err) {
+    if (err instanceof DelaiRefuse) { res.status(409).json({ error: err.code, message: err.message }); return }
+    console.error('Error recording délai report:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // POST /:commandeId/lignes/:ligneId/reprises { rouleaux: number[], motif }
 // Chosen rolls of the line go back to the dyer: a reprise opens per lot (or
 // the lot's open reprise takes them), the rolls and the lot go « En reprise ».

@@ -37,6 +37,7 @@ import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TariffsSection } from './sous-traitants/TariffsSection'
+import { QualiteServiceSection } from './sous-traitants/QualiteServiceSection'
 import { SstTypeTag } from '@/lib/sst-type'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
@@ -508,56 +509,53 @@ function DetailMain({ sousTraitant, isLoading, hasSelection }: {
   const isEnnoblisseur = Number(sousTraitant.IDtype_sst) === ENNOBLISSEUR_TYPE
   const isTricoteur = Number(sousTraitant.IDtype_sst) === TRICOTEUR_TYPE
 
-  // Tricoteur: yarn-lots-on-site table fills the column.
+  const id = sousTraitant.IDsous_traitant
+  // Every type gets « Qualité de service » (LIVA #1314); its « respect du
+  // délai » half reads the lots received, so dyers only.
+  // Tricoteur: yarn lots on site | qualité de service.
   if (isTricoteur) {
     return (
-      <div className="flex-1 min-h-0 flex flex-col">
-        <YarnLotsSection sousTraitantId={sousTraitant.IDsous_traitant} className="flex-1 min-h-0" />
-      </div>
+      <CenterTabs key={id} tabs={[
+        { key: 'fils', label: 'Fils sur le site', render: () => <YarnLotsSection sousTraitantId={id} className="flex-1 min-h-0" /> },
+        { key: 'qualite', label: 'Qualité de service', render: () => <QualiteServiceSection sousTraitantId={id} respect={false} className="flex-1" /> },
+      ]} />
     )
   }
 
-  // Ennoblisseur: segmented toggle between the rolls-on-site table and the
-  // tariff editor.
+  // Ennoblisseur: rolls on site | tariffs | qualité de service.
   if (isEnnoblisseur) {
-    return <EnnoblisseurCenter sousTraitantId={sousTraitant.IDsous_traitant} />
+    return (
+      <CenterTabs key={id} tabs={[
+        { key: 'rolls', label: 'Rouleaux sur le site', render: () => <RollsSection sousTraitantId={id} className="flex-1 min-h-0" /> },
+        { key: 'tarifs', label: 'Tarifs', render: () => <TariffsSection sousTraitantId={id} className="flex-1 min-h-0" /> },
+        { key: 'qualite', label: 'Qualité de service', render: () => <QualiteServiceSection sousTraitantId={id} respect className="flex-1" /> },
+      ]} />
+    )
   }
 
-  // Other types (Autre / Confectionneur / non défini) have no workshop view —
-  // all their data lives in the right panel.
-  return (
-    <div className="flex-1 flex items-center justify-center">
-      <div className="text-center space-y-3">
-        <div className="icon-box-gold h-16 w-16 mx-auto"><Building2 className="h-8 w-8" /></div>
-        <p className="text-muted-foreground text-sm max-w-xs">Les informations de ce sous-traitant sont disponibles dans le panneau de droite.</p>
-      </div>
-    </div>
-  )
+  // Other types (Autre / Confectionneur / non défini): no workshop view, the
+  // rest of their data lives in the right panel.
+  return <QualiteServiceSection sousTraitantId={id} respect={false} className="flex-1" />
 }
 
-// Ennoblisseur center column: [Rouleaux | Tarifs] toggle. Kept as its own
-// component so its tab-state hook stays valid w.r.t. DetailMain's early returns
-// (hooks-before-returns rule).
-function EnnoblisseurCenter({ sousTraitantId }: { sousTraitantId: number }) {
-  const [tab, setTab] = useState<'rolls' | 'tarifs'>('rolls')
-  const tabs: { key: 'rolls' | 'tarifs'; label: string }[] = [
-    { key: 'rolls', label: 'Rouleaux sur le site' },
-    { key: 'tarifs', label: 'Tarifs' },
-  ]
+// Center column tabs. Kept as its own component so its tab-state hook stays
+// valid w.r.t. DetailMain's early returns (hooks-before-returns rule); keyed on
+// the sous-traitant so a new selection lands on the first tab.
+function CenterTabs({ tabs }: { tabs: { key: string; label: string; render: () => React.ReactNode }[] }) {
+  const [tab, setTab] = useState(tabs[0].key)
+  const actif = tabs.find((t) => t.key === tab) ?? tabs[0]
   return (
     <div className="flex-1 min-h-0 flex flex-col gap-4">
       <div className="flex-shrink-0 flex gap-1">
         {tabs.map((t) => (
           <button key={t.key} type="button" onClick={() => setTab(t.key)}
             className={cn('px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
-              tab === t.key ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10')}>
+              actif.key === t.key ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10')}>
             {t.label}
           </button>
         ))}
       </div>
-      {tab === 'rolls'
-        ? <RollsSection sousTraitantId={sousTraitantId} className="flex-1 min-h-0" />
-        : <TariffsSection sousTraitantId={sousTraitantId} className="flex-1 min-h-0" />}
+      {actif.render()}
     </div>
   )
 }

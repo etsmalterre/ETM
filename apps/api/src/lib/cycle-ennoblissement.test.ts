@@ -11,6 +11,7 @@ import {
   type CommandeFait,
   type LotFait,
 } from './cycle-ennoblissement.js'
+import type { FaitsDelai } from './delai-sst.js'
 
 function lot(p: Partial<LotFait> = {}): LotFait {
   return {
@@ -19,9 +20,13 @@ function lot(p: Partial<LotFait> = {}): LotFait {
   }
 }
 
+function faitsDelai(p: Partial<FaitsDelai> = {}): FaitsDelai {
+  return { demandeLe: null, dateNotif: null, relances: [], reports: [], reponduLe: null, ...p }
+}
+
 function commande(p: Partial<CommandeFait> = {}): CommandeFait {
   return {
-    est_soldee: false, rangStatut: 2, relanceDelai: null, bonEnvoyeLe: '2026-09-14',
+    est_soldee: false, rangStatut: 2,
     delai: '2026-10-20', lots: [], ecruChezTeinturier: 0, ...p,
   }
 }
@@ -103,8 +108,8 @@ describe('etatLot: whose move and when to chase', () => {
 describe('etatCommande', () => {
   it('before any lot: à envoyer, attente délai (relance, else bon + 3 working days), en teinture (the délai)', () => {
     expect(etatCommande(commande({ rangStatut: 0 })).etape).toBe('non_envoye')
-    expect(etatCommande(commande({ rangStatut: 1, relanceDelai: '2026-10-12' }))).toMatchObject({ etape: 'attente_delai', main: 'teinturier', relance: '2026-10-12' })
-    expect(etatCommande(commande({ rangStatut: 1, bonEnvoyeLe: '2026-10-09' })).relance).toBe('2026-10-14')
+    expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ dateNotif: '2026-10-12' }) }))).toMatchObject({ etape: 'attente_delai', main: 'teinturier', relance: '2026-10-12' })
+    expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ demandeLe: '2026-10-09' }) })).relance).toBe('2026-10-14')
     expect(etatCommande(commande())).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-10-20' })
   })
   it('en réception: the earliest chase among the open lots (9016: soumis + ACP)', () => {
@@ -156,7 +161,7 @@ describe('helpers', () => {
     expect(plusJoursOuvres('2026-10-07', 3)).toBe('2026-10-12')
   })
   it('urgency: red on the chase day, amber the working day before', () => {
-    const e = etatCommande(commande({ rangStatut: 1, relanceDelai: '2026-10-12' }))
+    const e = etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ dateNotif: '2026-10-12' }) }))
     expect(urgenceCommande(e, '2026-10-12')).toBe('late')
     expect(urgenceCommande(e, '2026-10-09')).toBe('soon')
     expect(urgenceCommande(e, '2026-10-08')).toBeNull()

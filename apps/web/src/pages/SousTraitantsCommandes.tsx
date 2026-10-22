@@ -17,6 +17,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { FacturesCommande } from '@/components/sst/FacturesCommande'
+import { DelaiQuestion, type DelaiCycle } from '@/components/sst/DelaiQuestion'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -166,6 +167,8 @@ interface CycleCommande {
   relance: string | null
   solde: boolean
   lots: LotCycle[]
+  /** attente_delai only: the délai question (API lib/delai-sst.ts, LIVA #1314). */
+  delai?: DelaiCycle
 }
 
 /** kg ordered / knitted / shipped over an order's circulaire lines. */
@@ -6660,38 +6663,30 @@ function MentionsQualiteCard({ commandeId }: { commandeId: number }) {
 }
 
 /** Ennoblissement: whose move, when to chase, and the open lots with their
- *  step. The relance is computed from the step (lib/cycle-ennoblissement.ts);
- *  only the délai question keeps a date a person may move (`date_notif`). */
-function CycleCard({ commande, cycle, isEditing, editDateNotif, onEditDateNotifChange }: {
+ *  step. The relance is computed from the step (lib/cycle-ennoblissement.ts).
+ *  The délai question is moved by its two gestures only, « Relancer » and
+ *  « Repousser » (lib/delai-sst.ts, LIVA #1314) — never by typing a date. */
+function CycleCard({ commande, cycle, isEditing }: {
   commande: CommandeDetail
   cycle: CycleCommande
   isEditing: boolean
-  editDateNotif: string
-  onEditDateNotifChange: (v: string) => void
 }) {
-  const relanceEditable = isEditing && commande.phase === 'attente_delai'
   return (
-    <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', relanceEditable && editSectionClass)}>
+    <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
           {/* En traitement: the date is the dyer's délai, not a chase we chose. */}
           <BellRing className="h-3.5 w-3.5 text-accent" />{commande.phase === 'en_teinture' ? 'Délai' : 'Relance'}
         </span>
-        {relanceEditable ? (
-          <input
-            type="date"
-            value={editDateNotif}
-            onChange={(e) => onEditDateNotifChange(e.target.value)}
-            className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right"
-          />
-        ) : (
-          <span className={cn('text-sm', cycle.urgence === 'late' && 'text-red-600 font-semibold', cycle.urgence === 'soon' && 'text-amber-700 font-semibold')}>
-            {cycle.relance ? formatHfsqlDate(cycle.relance.replace(/-/g, '')) : '—'}
-          </span>
-        )}
+        <span className={cn('text-sm', cycle.urgence === 'late' && 'text-red-600 font-semibold', cycle.urgence === 'soon' && 'text-amber-700 font-semibold')}>
+          {cycle.relance ? formatHfsqlDate(cycle.relance.replace(/-/g, '')) : '—'}
+        </span>
       </div>
       {!!cycle.main && (
         <KV label="La main est à" value={<span className={cn(cycle.main === 'nous' && 'text-amber-700 font-medium')}>{cycle.main === 'teinturier' ? (commande.sous_traitant_nom || MAIN_LABEL.teinturier) : MAIN_LABEL[cycle.main]}</span>} />
+      )}
+      {commande.phase === 'attente_delai' && cycle.delai && (
+        <DelaiQuestion commandeId={commande.IDcommande_sous_traitant} delai={cycle.delai} disabled={isEditing} />
       )}
       {cycle.solde && <p className="text-[11px] text-muted-foreground">Des pièces sont encore chez le teinturier (solde).</p>}
       {cycle.lots.length > 0 && (
@@ -6731,7 +6726,7 @@ function InfoTab({
           date is an actionable self-reminder, so it gets a distinct card
           + gold bell icon instead of sitting among the read-only meta. */}
       {commande.cycle ? (
-        <CycleCard commande={commande} cycle={commande.cycle} isEditing={isEditing} editDateNotif={editDateNotif} onEditDateNotifChange={onEditDateNotifChange} />
+        <CycleCard commande={commande} cycle={commande.cycle} isEditing={isEditing} />
       ) : (
       <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
         <div className="flex items-center justify-between gap-2">
