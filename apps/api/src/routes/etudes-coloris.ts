@@ -1454,6 +1454,14 @@ etudesColorisRouter.post('/soumissions/:soumId/respond', async (req: Request, re
              statut_col = 3
            WHERE IDetude_col = ${etudeId}`,
         )
+        // The client order line waiting for this étude takes its coloris now
+        // (lib/etude-ligne-client.ts) — no more fictive « coloris à étudier ».
+        if (newColoriId > 0) {
+          await query(
+            `UPDATE ligne_commande_client SET IDcolori = ${newColoriId}
+             WHERE IDetude_col = ${etudeId} AND (IDcolori IS NULL OR IDcolori = 0)`,
+          )
+        }
       }
     } else if (d.accepte === 1) {
       // Plain acceptance (no sample number) — still move statut to 3 so

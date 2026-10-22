@@ -24,6 +24,8 @@
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
 import { faitsLignesClient, statutLigneClient, type EtatLigneClient } from '../lib/statut-ligne-client.js'
+import { etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE } from '../lib/etude-ligne-client.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { avancementCommande, commandeIncomplete, modeLivraisonDe, MODES_LIVRAISON, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
@@ -257,6 +259,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
         : undefined,
     }
   }))
+  const etudes = await etudesParId(lignes.map((l) => Number(l.IDetude_col) || 0))
   const parCommande = new Map<number, LigneUrgence[]>()
   for (const l of lignes) {
     const f = faits.get(Number(l.IDligne_commande_client))
@@ -270,6 +273,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       modeLivraison: modeLivraisonDe(l.mode_livraison),
       dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
       relanceAppel: relanceParCommande.get(cid),
+      etude: etudeUrgence(Number(l.IDetude_col) || 0, Number(l.IDcolori) || 0, etudes),
     })
     parCommande.set(cid, arr)
   }
@@ -332,6 +336,8 @@ const ligneBody = z.object({
   type: z.number().int().optional(),
   IDreference: z.number().int().nonnegative().optional(),
   IDcolori: z.number().int().nonnegative().optional(),
+  // Fini only: the étude coloris the line waits for (lib/etude-ligne-client.ts), 0 = none
+  IDetude_col: z.number().int().nonnegative().optional(),
   // Divers (type 3) only: the two variation axes of ref_divers
   // (sTypeVariation1/2 — Couleur / Taille / Reference). Together with
   // IDreference they identify the exact article the line ships.
@@ -591,6 +597,42 @@ commandesClientRouter.get('/lookups/refs-fini', async (req: Request, res: Respon
     })))
   } catch (err) {
     console.error('Error fetching refs-fini lookup:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// The études coloris a fini line of this client may wait for (lib/etude-ligne-client.ts): running
+// ones (attente labo / soumis au client) on that reference, not already linked to another line
+// (one line = one étude). `line` keeps the line's own étude in the list whatever its state.
+commandesClientRouter.get('/lookups/etudes-coloris', async (req: Request, res: Response) => {
+  try {
+    const client = parseInt(String(req.query.client ?? ''), 10) || 0
+    const ref = parseInt(String(req.query.ref_fini ?? ''), 10) || 0
+    const line = parseInt(String(req.query.line ?? ''), 10) || 0
+    if (!(client > 0) || !(ref > 0)) { res.status(400).json({ error: 'client and ref_fini required' }); return }
+    const [rows, liees] = await Promise.all([
+      query<{ IDetude_col: number; libelle: string | null; statut_col: number }>(
+        `SELECT IDetude_col, libelle, statut_col FROM etude_col WHERE IDclient = ${client} AND IDref_fini = ${ref}`),
+      query<{ IDetude_col: number; IDligne_commande_client: number }>(
+        `SELECT IDetude_col, IDligne_commande_client FROM ligne_commande_client WHERE IDetude_col > 0`),
+    ])
+    const prises = new Map(liees.map((r) => [Number(r.IDetude_col), Number(r.IDligne_commande_client)]))
+    const fixed = await fixEncoding(rows, 'etude_col', 'IDetude_col', ['libelle'])
+    const offertes = fixed.filter((r) => {
+      const id = Number(r.IDetude_col)
+      const lienne = prises.get(id)
+      if (line > 0 && lienne === line) return true
+      return lienne === undefined && (Number(r.statut_col) === 1 || Number(r.statut_col) === 2)
+    })
+    const etats = await etudesParId(offertes.map((r) => Number(r.IDetude_col)))
+    res.json(offertes
+      .map((r) => {
+        const e = etats.get(Number(r.IDetude_col))
+        return { id: Number(r.IDetude_col), libelle: (r.libelle ?? '').toString().trim(), attente: e?.attente ?? 'labo' }
+      })
+      .sort((a, b) => b.id - a.id))
+  } catch (err) {
+    console.error('Error fetching etudes-coloris lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1001,8 +1043,8 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
     let etatMap = new Map<number, EtatCommande>()
     if (ids.length > 0) {
       const lignes = await query<any>(
-        `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDVariation1, IDVariation2,
-                unite, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue
+        `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDcolori, IDVariation1, IDVariation2,
+                unite, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue, IDetude_col
          FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
       )
       const ouvertes = new Set(commandes.filter((c: any) => Number(c.est_soldee) !== 1).map((c: any) => Number(c.IDcommande_client)))
@@ -1482,7 +1524,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind,
                 IDreference, IDcolori, IDVariation1, IDVariation2,
                 quantite, unite, prix, poids, date_livraison, commentaire,
-                mode_livraison, date_expedition_prevue${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
+                mode_livraison, date_expedition_prevue, IDetude_col${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
          FROM ligne_commande_client
          WHERE IDcommande_client = ${id}
          ORDER BY IDligne_commande_client`,
@@ -1540,10 +1582,14 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       return f ? [{ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0 }] : []
     }))
 
+    const etudes = await etudesParId(lignesFixed.map((l) => Number(l.IDetude_col) || 0))
+
     const lignes = lignesFixed.map((l) => {
       const typeKind = Number(l.type_kind) || 0
       const refId = Number(l.IDreference) || 0
       const colId = Number(l.IDcolori) || 0
+      const etudeId = Number(l.IDetude_col) || 0
+      const etude = etudeId > 0 ? (etudes.get(etudeId) ?? null) : null
       const f = faits.get(Number(l.IDligne_commande_client))
       const statut = f ? statutLigneClient(f, uniteLabel(l.unite) || (lineDim(l.unite) === 'metrage' ? 'Ml' : 'Kg')) : null
       const resolved = resolveRefLabel(maps, refId, typeKind)
@@ -1576,6 +1622,11 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         ref_label: resolved.label || null,
         ref_kind: resolved.kind,
         colori_reference: resolveColorisLabel(maps, colId, typeKind, refId) || null,
+        // The étude coloris the line waits for (or came from, once its coloris is set).
+        IDetude_col: etudeId,
+        etude: etude
+          ? { id: etude.id, libelle: etude.libelle, attente: etude.attente, depuis: etude.attenteDepuis, relance_le: etude.relanceLe, derniere_relance: etude.derniereRelance }
+          : null,
         montant: qty * prix,
         // affectation aggregates + the gauge basis (poids for Kg, metrage for Ml)
         nb_rolls: agg.nb_rolls,
@@ -1596,6 +1647,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
             commandeIncomplete: incomplete,
             relanceAppel: relanceAppelDe(ficheRows[0]?.relance_sur_appel),
+            etude: etudeUrgence(etudeId, colId, etudes),
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -2129,6 +2181,12 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     if (await refuseIfContratExpire(res, id, {
       type: typeKind, IDreference: d.IDreference ?? 0, IDcolori: d.IDcolori ?? 0,
     })) return
+    // A line waiting for its étude coloris carries no coloris yet (one line = one étude).
+    const etudeId = typeKind === 2 ? (d.IDetude_col ?? 0) : 0
+    if (etudeId > 0) {
+      const refus = await refusLienEtude(etudeId, { idCommande: id, typeKind, refId: d.IDreference ?? 0, idLigne: null })
+      if (refus) { res.status(409).json({ error: 'etude_invalide', message: refus }); return }
+    }
     // TYPE written uppercase (reserved word); IDcolori lowercase; commentaire
     // accent-safe via sqlText. The first délai is frozen in delai_annonce (accented
     // under HFSQL: named only where it can be).
@@ -2139,14 +2197,14 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
          (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
           IDVariation1, IDVariation2,
           quantite, unite, prix, poids, date_livraison, commentaire,
-          mode_livraison, date_expedition_prevue${annonce ? ', delai_annonce' : ''})
+          mode_livraison, date_expedition_prevue, IDetude_col${annonce ? ', delai_annonce' : ''})
        VALUES
-         (${id}, 0, ${typeKind}, ${n(d.IDreference ?? 0)}, ${n(d.IDcolori ?? 0)},
+         (${id}, 0, ${typeKind}, ${n(d.IDreference ?? 0)}, ${etudeId > 0 ? 0 : n(d.IDcolori ?? 0)},
           ${n(typeKind === 3 ? (d.IDVariation1 ?? 0) : 0)}, ${n(typeKind === 3 ? (d.IDVariation2 ?? 0) : 0)},
           ${Number(d.quantite) || 0}, ${n(d.unite ?? 0)}, ${Number(d.prix) || 0},
           ${Number(d.poids) || 0}, '${delai}',
           ${sqlText(d.commentaire ?? '')},
-          ${MODES_LIVRAISON.indexOf(mode)}, ${dateOuNull(dateExp)}${annonce ? `, '${delai}'` : ''})`,
+          ${MODES_LIVRAISON.indexOf(mode)}, ${dateOuNull(dateExp)}, ${etudeId}${annonce ? `, '${delai}'` : ''})`,
     )
     const newRows = await query<{ IDligne_commande_client: number }>(
       `SELECT IDligne_commande_client FROM ligne_commande_client
@@ -2171,6 +2229,9 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
     let curDelai = { delai: '', initial: '', mode: modeLivraisonDe(0), exp: '' }
+    let curEtude = 0
+    let nextType = 0
+    let nextRef = 0
 
     // Contract guard on update. The body is partial, so the check runs on the
     // line as it WOULD be, and only when the payload actually changes something
@@ -2179,10 +2240,11 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     // blocking those would punish the user for a lapse they can't fix here.
     {
       const cur = await query<Record<string, unknown>>(
-        `SELECT TYPE, IDreference, IDcolori, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
+        `SELECT TYPE, IDreference, IDcolori, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue, IDetude_col${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
          FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
       )
       const row = cur[0] ?? {}
+      curEtude = Number(row.IDetude_col) || 0
       curDelai = { delai: dateStr(row.date_livraison), initial: dateStr(row.delai_initial), mode: modeLivraisonDe(row.mode_livraison), exp: dateStr(row.date_expedition_prevue) }
       // TYPE is a reserved word — ODBC hands the key back uppercased.
       const curType = Number(row.TYPE ?? (row as { type?: unknown }).type) || 0
@@ -2199,6 +2261,8 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
         // `prix` is a 4-byte REAL: compare at the centime, never raw floats.
         (d.prix !== undefined && Math.round(Number(d.prix) * 100) !== Math.round((Number(row.prix) || 0) * 100))
       if (commercialChange && await refuseIfContratExpire(res, commandeId, next)) return
+      nextType = next.type
+      nextRef = next.IDreference
 
       // Pieces reserved to the line were picked for its article + coloris; a
       // new one would leave them promised to a product nobody ordered
@@ -2226,7 +2290,15 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
       }
     }
 
+    // The étude link (one line = one étude): checked when it changes or when the line's article does.
+    const etudeId = nextType === 2 ? (d.IDetude_col ?? curEtude) : 0
+    if (etudeId > 0 && (etudeId !== curEtude || d.IDreference !== undefined || d.type !== undefined)) {
+      const refus = await refusLienEtude(etudeId, { idCommande: commandeId, typeKind: nextType, refId: nextRef, idLigne: lineId })
+      if (refus) { res.status(409).json({ error: 'etude_invalide', message: refus }); return }
+    }
+
     const sets: string[] = []
+    if (etudeId !== curEtude) sets.push(`IDetude_col = ${etudeId}`)
     if (d.type !== undefined) sets.push(`TYPE = ${Number(d.type) || 0}`)
     if (d.IDreference !== undefined) sets.push(`IDreference = ${n(d.IDreference)}`)
     if (d.IDcolori !== undefined) sets.push(`IDcolori = ${n(d.IDcolori)}`)
@@ -2262,6 +2334,70 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
   } catch (err) {
     console.error('Error updating ligne-commande-client:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// The line's « Relancer »: a mail to whoever holds its étude coloris — the ennoblisseur or the client,
+// decided here from the étude, never by the screen (lib/etude-ligne-client.ts mailRelanceEtude).
+// GET …/email-defaults pre-fills the dialog; POST sends it and records the relance (etude_col_relance),
+// which restarts the relance clock. Chasing IS writing: there is no « relancé » without the mail.
+commandesClientRouter.get('/lignes/:lineId/relance-etude/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const mail = await mailRelanceEtude(lineId)
+    if (!mail) { res.status(409).json({ error: 'rien_a_relancer', message: 'Cette ligne n’attend ni l’ennoblisseur ni le client.' }); return }
+    res.json(mail)
+  } catch (err) {
+    console.error('Error building étude relance mail:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesClientRouter.post('/lignes/:lineId/relance-etude', async (req: Request, res: Response) => {
+  try {
+    if (!(await requireEditCommandes(req, res))) return
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = emailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const rows = await query<{ IDetude_col: number }>(
+      `SELECT IDetude_col FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+    )
+    const etudeId = Number(rows[0]?.IDetude_col) || 0
+    if (!(await mailRelanceEtude(lineId))) {
+      res.status(409).json({ error: 'rien_a_relancer', message: 'Cette ligne n’attend ni l’ennoblisseur ni le client.' })
+      return
+    }
+    const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
+    let messageId = `dev-skip-${Date.now()}`
+    if (devSkip) {
+      console.log(`[dev-skip-send] relance étude #${etudeId} (ligne ${lineId}) — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const senderEmail = await getUserEmail(req.userId!)
+      if (!senderEmail) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const nom = await nomUtilisateur(req.userId!)
+      messageId = await sendMail({
+        from: senderEmail, fromName: nom ? `${nom} - ETS Malterre` : 'ETS Malterre',
+        to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
+        subject: parsed.data.subject, body: parsed.data.body,
+        attachments: (parsed.data.extra_attachments ?? []).map((a) => ({
+          filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type,
+        })),
+      })
+    }
+    const cible = await enregistrerRelance(etudeId, { id: req.userId ?? 0, nom: req.userId ? await nomUtilisateur(req.userId) : '' }, lineId)
+    res.json({ ok: true, messageId, cible })
+  } catch (err) {
+    console.error('Error sending étude relance:', err)
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    res.status(500).json({ error: 'send_failed', message })
   }
 })
 
@@ -4845,7 +4981,7 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     h.IDadresse_facturation ? query(`SELECT IDadresse, nom, adresse1, adresse2, adresse3, cp, ville, pays FROM adresse WHERE IDadresse = ${n(h.IDadresse_facturation)}`) : Promise.resolve([]),
     query<any>(
       `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori, IDVariation1, IDVariation2,
-              quantite, unite, prix, date_livraison
+              quantite, unite, prix, date_livraison, IDetude_col
        FROM ligne_commande_client WHERE IDcommande_client = ${id} ORDER BY IDligne_commande_client`,
     ),
     // The client's own rate, NOT the ETM default — an "Exonération" client
@@ -4878,7 +5014,9 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     // that slot, joined like the invoice line (LIVA #1299).
     const coloris = typeKind === 3
       ? diversVariations(l).map((v) => (v > 0 ? (variationLabels.get(v) ?? '').trim() : '')).filter(Boolean).join(' - ')
-      : resolveColorisLabel(maps, colId, typeKind, refId)
+      : colId === 0 && (Number(l.IDetude_col) || 0) > 0
+        ? LIBELLE_COLORIS_EN_ETUDE
+        : resolveColorisLabel(maps, colId, typeKind, refId)
     return {
       ref_label: resolved.label || null,
       colori_reference: coloris || null,

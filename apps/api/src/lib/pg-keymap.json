@@ -911,6 +911,7 @@
 "commentaire": "commentaire",
 "date_livraison": "date_livraison",
 "delai_reel": "delai_reel",
+"idetude_col": "IDetude_col",
 "idcolori": "IDcolori",
 "idcommande_client": "IDcommande_client",
 "iddesignation_client": "IDdesignation_client",

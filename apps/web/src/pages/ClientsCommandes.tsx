@@ -52,6 +52,7 @@ import {
   Barcode,
   Ban,
   BadgeEuro,
+  FlaskConical,
 } from 'lucide-react'
 import { ML_NON_FACTURES_PERMISSION, MlNonFacturesDialog, MlNonFacturesMention } from '@/components/shared/MlNonFactures'
 import { KnitIcon } from '@/components/icons/KnitIcon'
@@ -148,6 +149,9 @@ interface LigneCommande {
   ref_label: string | null
   ref_kind: 'ecru' | 'fini' | 'divers' | null
   colori_reference: string | null
+  /** the étude coloris the line waits for (no coloris yet) or came from (API lib/etude-ligne-client.ts) */
+  IDetude_col: number
+  etude: EtudeLigne | null
   montant: number
   nb_rolls: number
   total_metrage: number
@@ -159,6 +163,25 @@ interface LigneCommande {
 }
 
 type ModeLivraison = 'des_que_prete' | 'date_client' | 'sur_appel' | 'commande_complete'
+
+/** Who holds the étude now (API etatEtude): the lab, the client, or nobody. */
+type AttenteEtude = 'labo' | 'client' | 'acceptee' | 'annulee'
+interface EtudeLigne {
+  id: number
+  libelle: string
+  attente: AttenteEtude
+  /** YYYYMMDD: since when the holder holds it (the type received, the soumission, the refusal) */
+  depuis: string | null
+  /** YYYYMMDD: the day we must chase */
+  relance_le: string | null
+  derniere_relance: string | null
+}
+const ATTENTE_ETUDE_LABEL: Record<AttenteEtude, string> = {
+  labo: 'attente ennoblisseur',
+  client: 'soumis au client',
+  acceptee: 'acceptée',
+  annulee: 'annulée',
+}
 
 // PopoverSelect ids (0 is its « none » sentinel).
 const MODES_LIVRAISON: { id: number; mode: ModeLivraison; label: string }[] = [
@@ -1308,6 +1331,9 @@ const emptyLineForm = {
   mode_livraison: 'des_que_prete' as ModeLivraison,
   date_expedition_prevue: '',
   commentaire: '',
+  // Fini only: the line waits for an étude coloris instead of a coloris (one line = one étude).
+  enEtude: false,
+  IDetude_col: 0,
 }
 type LineFormState = typeof emptyLineForm
 
@@ -2049,6 +2075,8 @@ function LineCard({
   // Divers gauge tracks shipped-vs-ordered (there is nothing to reserve).
   const shipPct = target > 0 ? Math.min(100, (line.expedie / target) * 100) : 0
   const variations = [line.variation1_label, line.variation2_label].filter(Boolean).join(' · ')
+  // Waiting for its étude coloris: no coloris yet, no délai to give (API lib/etude-ligne-client.ts).
+  const enEtude = line.type === 2 && line.IDetude_col > 0 && !line.IDcolori
 
   return (
     <div
@@ -2070,6 +2098,7 @@ function LineCard({
             <p className="text-sm font-medium truncate">
               {line.ref_label || '—'}
               {line.colori_reference ? <span className="text-muted-foreground"> / {line.colori_reference}</span> : null}
+              {enEtude ? <span className="text-muted-foreground"> / en étude : {line.etude?.libelle || '—'}</span> : null}
               {variations ? <span className="text-muted-foreground"> · {variations}</span> : null}
             </p>
           </div>
@@ -2117,6 +2146,9 @@ function LineCard({
             ? joursEntre(line.delai_initial, line.date_livraison) : 0
           return (
             <div className="ml-auto flex items-end gap-4 text-right">
+              {enEtude && !line.date_livraison && (
+                <LineStat label="Délai" value="Après l’étude" valueClass="text-muted-foreground font-medium" title="Pas de délai tant que le client n’a pas validé le coloris" />
+              )}
               {line.date_livraison && (
                 <LineStat
                   label={retard > 0 ? `Délai · +${retard} j` : 'Délai'}
@@ -2138,6 +2170,7 @@ function LineCard({
           )
         })()}
       </div>
+      {enEtude && <EtudeLigneBandeau line={line} canRelancer={!isEditing} />}
       {!!line.commentaire?.trim() && (
         <div className="flex items-start gap-1.5 mt-2 ml-9">
           <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
@@ -2171,6 +2204,64 @@ function LineCard({
             Expédié {fmtNum(line.expedie, 1)} / {fmtNum(line.quantite, 1)} {line.unite_label}
           </span>
         </div>
+      )}
+    </div>
+  )
+}
+
+/** A fini line waiting for its étude coloris: who holds the étude and when we chase. « Relancer »
+ *  opens the mail to whoever holds it (the ennoblisseur or the client, chosen by the API); sending it
+ *  records the relance and restarts the clock (API …/lignes/:id/relance-etude). Red only when the
+ *  relance is due or the étude no longer leads to a coloris: then it is ours to act (mps_designer §41). */
+function EtudeLigneBandeau({ line, canRelancer }: { line: LigneCommande; canRelancer: boolean }) {
+  const queryClient = useQueryClient()
+  const canEdit = useHasPermission('edit_commandes_client')
+  const [mailOpen, setMailOpen] = useState(false)
+  const e = line.etude
+  const attente = e?.attente ?? 'annulee'
+  const due = attente === 'annulee' || attente === 'acceptee' || line.urgence === 'rouge'
+  const qui = attente === 'labo' ? 'l’ennoblisseur' : 'le client'
+  const texte = attente === 'annulee'
+    ? 'Étude annulée : choisir un coloris ou annuler la ligne'
+    : attente === 'acceptee'
+      ? 'Coloris accepté : à choisir sur la ligne'
+      : `Attend ${qui}${e?.depuis ? ` depuis le ${formatHfsqlDate(e.depuis)}` : ''}`
+        + (e?.relance_le ? (due ? ` · à relancer depuis le ${formatHfsqlDate(e.relance_le)}` : ` · relance le ${formatHfsqlDate(e.relance_le)}`) : '')
+  const url = `/commandes-client/lignes/${line.IDligne_commande_client}/relance-etude`
+  return (
+    // The dialog sits inside this wrapper so its clicks never reach the line card (which opens the drawer).
+    <div className="flex items-center gap-1.5 mt-2 ml-9 text-[11px]" onClick={(ev) => ev.stopPropagation()}>
+      <FlaskConical className={cn('h-3 w-3 flex-shrink-0', due ? 'text-red-600' : 'text-muted-foreground/60')} />
+      <span className={cn('truncate', due ? 'text-red-600 font-medium' : 'text-muted-foreground')}>{texte}</span>
+      {e?.derniere_relance && (
+        <span className="text-muted-foreground/70 flex-shrink-0">· relancé le {formatHfsqlDate(e.derniere_relance)}</span>
+      )}
+      {canRelancer && canEdit && (attente === 'labo' || attente === 'client') && (
+        <Button
+          variant={due ? 'destructive' : 'outline'}
+          size="sm"
+          className="ml-auto h-6 px-2 text-[11px] flex-shrink-0"
+          title={`${attente === 'labo' ? 'Écrire à l’ennoblisseur' : 'Écrire au client'} : l’envoi compte comme relance`}
+          onClick={() => setMailOpen(true)}
+        >
+          <Mail className="h-3 w-3 mr-1" />
+          Relancer
+        </Button>
+      )}
+      {mailOpen && (
+        <SendEmailDialog
+          open={mailOpen}
+          onClose={() => setMailOpen(false)}
+          title={attente === 'labo' ? 'Relancer l’ennoblisseur' : 'Relancer le client'}
+          contextLabel={e?.libelle}
+          queryKey={['relance-etude-email', line.IDligne_commande_client, e?.derniere_relance ?? '']}
+          loadDefaults={() => apiFetch(`${url}/email-defaults`)}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}${url}`, p)
+            queryClient.invalidateQueries({ queryKey: ['commandes-client'] })
+            queryClient.invalidateQueries({ queryKey: ['commande-client', line.IDcommande_client] })
+          }}
+        />
       )}
     </div>
   )
@@ -5663,6 +5754,8 @@ function LineFormDialog({
         mode_livraison: line.mode_livraison ?? 'des_que_prete',
         date_expedition_prevue: hfsqlDateToInput(line.date_expedition_prevue),
         commentaire: line.commentaire ?? '',
+        enEtude: line.type === 2 && line.IDetude_col > 0 && !line.IDcolori,
+        IDetude_col: line.IDetude_col || 0,
       })
       setPriceLocked(false) // preserve the saved price until the user re-locks
       // Same intent for divers, except a stored 0 is not a price worth keeping
@@ -5794,6 +5887,12 @@ function LineFormDialog({
     },
     enabled: open && form.IDreference > 0 && (form.type === 1 || form.type === 2),
   })
+  // The client's running études coloris on this reference (one line = one étude).
+  const { data: etudeOptions } = useQuery<{ id: number; libelle: string; attente: AttenteEtude }[]>({
+    queryKey: ['cc-etudes', commande.IDclient, form.IDreference, line?.IDligne_commande_client ?? 0],
+    queryFn: () => apiFetch(`/commandes-client/lookups/etudes-coloris?client=${commande.IDclient}&ref_fini=${form.IDreference}&line=${line?.IDligne_commande_client ?? 0}`),
+    enabled: open && form.type === 2 && form.IDreference > 0 && form.enEtude,
+  })
   // Every option flagged = the client has no coloris registered on this ref, so
   // the full list is shown as a fallback rather than an empty picker.
   const coloriCatalogueVide = (coloriOptions ?? []).length > 0 && (coloriOptions ?? []).every((c) => c.hors_catalogue)
@@ -5803,7 +5902,11 @@ function LineFormDialog({
       const body = JSON.stringify({
         type: form.type,
         IDreference: form.IDreference,
-        IDcolori: form.IDcolori,
+        IDcolori: form.type === 2 && form.enEtude ? 0 : form.IDcolori,
+        // In étude: the étude. With a coloris: keep the étude it came from only while that coloris stays.
+        IDetude_col: form.type !== 2 ? 0
+          : form.enEtude ? form.IDetude_col
+          : line && line.IDcolori > 0 && form.IDcolori === line.IDcolori ? line.IDetude_col : 0,
         IDVariation1: form.type === 3 ? form.IDVariation1 : 0,
         IDVariation2: form.type === 3 ? form.IDVariation2 : 0,
         quantite: Number(form.quantite) || 0,
@@ -5864,13 +5967,14 @@ function LineFormDialog({
 
   const setType = (t: number) => {
     setDiversPrixTouched(false)
-    setForm({ ...form, type: t, IDreference: 0, IDcolori: 0, IDVariation1: 0, IDVariation2: 0, unite: t === 1 ? 1 : t === 3 ? 4 : 3 })
+    setForm({ ...form, type: t, IDreference: 0, IDcolori: 0, IDVariation1: 0, IDVariation2: 0, unite: t === 1 ? 1 : t === 3 ? 4 : 3, enEtude: false, IDetude_col: 0 })
   }
 
   // An expired contract makes the reference unsellable — same rule as the fiche
   // client, enforced again on the API (409 contrat_expire).
   const canSave = form.IDreference > 0 && Number(form.quantite) > 0 && !contratBlocksSave
     && (form.mode_livraison !== 'date_client' || !!form.date_expedition_prevue)
+    && !(form.type === 2 && form.enEtude && !form.IDetude_col)
 
   if (!open) return null
 
@@ -5910,7 +6014,7 @@ function LineFormDialog({
               value={form.IDreference}
               onChange={(id) => {
                 setDiversPrixTouched(false) // new combo → re-resolve the grid price
-                setForm({ ...form, IDreference: id, IDcolori: 0, IDVariation1: 0, IDVariation2: 0 })
+                setForm({ ...form, IDreference: id, IDcolori: 0, IDVariation1: 0, IDVariation2: 0, IDetude_col: 0 })
               }}
               getId={(r) => r.id}
               getPrimary={(r) => r.primary}
@@ -5918,7 +6022,69 @@ function LineFormDialog({
               placeholder="Choisir une référence"
             />
           </div>
-          {form.type !== 3 && (
+          {form.type === 2 && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-medium text-muted-foreground">Coloris</label>
+                {/* A coloris still being studied: the line waits for its étude, not a fictive coloris. */}
+                <div className="flex gap-1">
+                  {([{ v: false, l: 'Choisi' }, { v: true, l: 'En étude' }] as const).map((o) => (
+                    <button
+                      key={o.l}
+                      type="button"
+                      onClick={() => setForm({ ...form, enEtude: o.v })}
+                      className={cn(
+                        'px-2 py-0.5 text-[11px] rounded-md transition-colors border',
+                        form.enEtude === o.v ? 'bg-accent text-accent-foreground border-accent shadow-sm font-medium' : 'border-input text-muted-foreground hover:bg-accent/10',
+                      )}
+                    >
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {form.enEtude ? (
+                <>
+                  <PopoverSelect
+                    options={(etudeOptions ?? []).map((e) => ({ id: e.id, primary: e.libelle || `Étude #${e.id}`, secondary: ATTENTE_ETUDE_LABEL[e.attente] }))}
+                    value={form.IDetude_col}
+                    onChange={(id) => setForm({ ...form, IDetude_col: id })}
+                    disabled={!form.IDreference}
+                    emptyLabel="— Choisir l’étude —"
+                  />
+                  {form.IDreference > 0 && etudeOptions && etudeOptions.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground italic">
+                      Aucune étude en cours pour ce client sur cette référence — créez-la dans Finis › Études coloris.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground italic">
+                      Le coloris s’inscrit sur la ligne quand le client accepte une soumission. Pas de délai à donner d’ici là.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <PopoverSelect
+                    options={(coloriOptions ?? []).map((c) => ({
+                      id: c.id,
+                      primary: c.reference,
+                      secondary: c.hors_catalogue && !coloriCatalogueVide ? 'hors catalogue' : undefined,
+                    }))}
+                    value={form.IDcolori}
+                    onChange={(id) => setForm({ ...form, IDcolori: id })}
+                    disabled={!form.IDreference}
+                    emptyLabel="— Choisir —"
+                  />
+                  {coloriCatalogueVide && (
+                    <p className="text-[11px] text-muted-foreground italic">
+                      Aucun coloris enregistré pour ce client sur cette référence — liste complète affichée.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          {form.type === 1 && (
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Coloris</label>
               <PopoverSelect

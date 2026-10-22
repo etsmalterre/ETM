@@ -1095,6 +1095,32 @@ ALTER TABLE client ADD COLUMN facturation_douaniere integer NOT NULL DEFAULT 0
   CHECK (facturation_douaniere IN (0, 1));
 `,
   },
+  {
+    // Clients › Commandes — a line confirmed while its coloris is still being
+    // studied (decision Vincent + Isabelle 2026-10-22, lib/etude-ligne-client.ts):
+    // the line points at ITS étude (one line = one étude) instead of a fictive
+    // « coloris à étudier » coloris; the étude's acceptance writes the new
+    // coloris on the line. While it waits, the line asks no délai, only a
+    // relance: etude_col_relance keeps each one as a fact (append-only), so
+    // the relance clock restarts from it.
+    name: '0033_ligne_client_etude',
+    sql: `
+ALTER TABLE ligne_commande_client ADD COLUMN idetude_col bigint NOT NULL DEFAULT 0;
+CREATE INDEX ligne_commande_client_etude ON ligne_commande_client (idetude_col) WHERE idetude_col > 0;
+CREATE TABLE etude_col_relance (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idetude_col bigint NOT NULL,
+  cible text NOT NULL CHECK (cible IN ('labo', 'client')),
+  relancee_le timestamptz NOT NULL DEFAULT now(),
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  idligne_commande_client bigint NOT NULL DEFAULT 0
+);
+CREATE INDEX etude_col_relance_etude ON etude_col_relance (idetude_col);
+${grantApi('SELECT, INSERT', 'etude_col_relance')}
+${grantApi('USAGE, SELECT', 'SEQUENCE etude_col_relance_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { invalidateCommandeClientCaches } from '@/lib/cache-sync'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -421,7 +422,10 @@ export function EtudesColoris() {
         method: 'PUT',
         body: JSON.stringify({ statut_col: newStatut }),
       }),
-    onSuccess: invalidateAll,
+    onSuccess: () => {
+      invalidateAll()
+      invalidateCommandeClientCaches(queryClient) // an order line may wait for this étude
+    },
   })
 
   const deleteEtudeMut = useMutation({
@@ -431,6 +435,7 @@ export function EtudesColoris() {
         queryClient.getQueryData<EtudeListRow[]>(['etudes-coloris', statusFilter]) ?? []
       const remaining = cached.filter((e) => e.IDetude_col !== deletedId)
       queryClient.invalidateQueries({ queryKey: ['etudes-coloris'] })
+      invalidateCommandeClientCaches(queryClient) // an order line may wait for this étude
       setIsEditing(false)
       setDeleteEtudeConfirmOpen(false)
       setDirtyKeys(new Set())
@@ -1472,6 +1477,8 @@ function SoumissionDrawer({
       }),
     onSuccess: (payload: { codeSp?: CodeSpCree }) => {
       queryClient.setQueryData(['etude-coloris', etudeId], payload)
+      // Accepting writes the new coloris on the order line waiting for the étude; any answer moves its banner.
+      invalidateCommandeClientCaches(queryClient)
       if (payload.codeSp) {
         setCodeSpCree(payload.codeSp)
         queryClient.invalidateQueries({ queryKey: ['etiquettes-sp-codes'] })

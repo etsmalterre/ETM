@@ -43,9 +43,23 @@ describe('urgenceLigne', () => {
     expect(niveau(l('expediee', -100))).toBe(null)
     expect(niveau(l('soldee', null))).toBe(null)
   })
-  it('a line still to deliver without a délai is ambre', () => {
-    expect(niveau(l('a_lancer', null))).toBe('ambre')
-    expect(niveau(l('ennoblisseur', null))).toBe('ambre')
+  it('a line still to deliver without a délai is rouge: giving one is ours to do now', () => {
+    expect(niveau(l('a_lancer', null))).toBe('rouge')
+    expect(niveau(l('ennoblisseur', null))).toBe('rouge')
+  })
+  it('a line in étude coloris asks no délai, only a relance once it is due', () => {
+    const e = (attente: 'labo' | 'client' | 'acceptee' | 'annulee', j: number | null, delai: number | null = null): LigneUrgence =>
+      ({ ...l('a_lancer', delai), etude: { attente, relanceLe: j === null ? null : dans(j) } })
+    expect(niveau(e('labo', 3))).toBe(null)
+    expect(niveau(e('labo', 3, 5))).toBe(null) // a délai typed anyway is not judged
+    expect(niveau(e('client', 1))).toBe(null)
+    expect(niveau(e('client', 0))).toBe('rouge')
+    expect(niveau(e('labo', -4))).toBe('rouge')
+    expect(niveau(e('annulee', null))).toBe('rouge')
+    expect(niveau(e('acceptee', null))).toBe('rouge')
+    expect(niveau({ ...e('labo', -4), etat: 'expediee' })).toBe(null)
+    expect(urgenceCommande([e('client', -2), l('a_lancer', 80)], today))
+      .toEqual({ niveau: 'rouge', raison: `1 ligne en étude coloris : relancer le client · depuis le ${dans(-2).slice(6, 8)}/${dans(-2).slice(4, 6)}` })
   })
 })
 
@@ -124,7 +138,7 @@ describe('urgenceCommande', () => {
   })
   it('names lines without délai', () => {
     expect(urgenceCommande([l('a_lancer', null, 3), l('a_lancer', null, 3)], today))
-      .toEqual({ niveau: 'ambre', raison: '2 lignes sans délai' })
+      .toEqual({ niveau: 'rouge', raison: '2 lignes sans délai : en donner un' })
   })
 })
 

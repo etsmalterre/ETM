@@ -44,6 +44,20 @@ export function invalidateSstCommandeCaches(qc: QueryClient): void {
   for (const root of SST_COMMANDE_QUERY_ROOTS) qc.invalidateQueries({ queryKey: [root] })
 }
 
+// A client order line can wait for its étude coloris (API lib/etude-ligne-client.ts): what Finis ›
+// Études coloris does to the étude — a client's answer to a soumission (accepting writes the new
+// coloris on the line), the statut (annulé turns the line red), a delete — changes the line's
+// coloris, banner and colour on Clients › Commandes. Without this, the 5-minute staleTime kept the
+// « Relancer » button on an accepted line until a reload (2026-10-22).
+export const COMMANDE_CLIENT_QUERY_ROOTS = [
+  'commandes-client', // Clients › Commandes list (liseré + reason, counters)
+  'commande-client', // any open order (its lines)
+] as const
+
+export function invalidateCommandeClientCaches(qc: QueryClient): void {
+  for (const root of COMMANDE_CLIENT_QUERY_ROOTS) qc.invalidateQueries({ queryKey: [root] })
+}
+
 // Where a roll/lot physically IS, and whether it is still available, is written
 // by a dozen screens and read by the four stock screens plus the dashboard.
 // None of the writers sit on the stock screens:

@@ -13,6 +13,7 @@
 // (statutCommande below). « Expédié » is ETM's own figure (lineReservationAggregates: rolls of the line with
 // état Expédié or on a shipment; divers: the expedition_divers ledger). Donation orders are not the customer's.
 
+import { LIBELLE_COLORIS_EN_ETUDE } from './etude-ligne-client.js'
 import { query, fixEncoding } from './hfsql-auto.js'
 import { stripRtf } from './rtf-utils.js'
 import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
@@ -170,6 +171,8 @@ interface LigneRow {
   type_kind: number
   IDreference: number | null
   IDcolori: number | null
+  /** the étude coloris the line waits for (lib/etude-ligne-client.ts) */
+  IDetude_col: number | null
   IDVariation1: number | null
   IDVariation2: number | null
   quantite: number | null
@@ -179,7 +182,7 @@ interface LigneRow {
 }
 
 const LIGNE_COLS = `IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDcolori,
-  IDVariation1, IDVariation2, quantite, unite, prix, date_livraison`
+  IDVariation1, IDVariation2, quantite, unite, prix, date_livraison, IDetude_col`
 
 /** Shipped quantity per line id, in the line's own unit (null = not measurable). */
 async function expedieParLigne(lignes: LigneRow[]): Promise<Map<number, number | null>> {
@@ -466,7 +469,10 @@ export async function commandeClient(idClient: number, idCommande: number): Prom
       id: Number(l.IDligne_commande_client),
       type,
       reference: resolveRefLabel(maps, refId, typeKind).label.trim(),
-      coloris: resolveColorisLabel(maps, Number(l.IDcolori) || 0, typeKind, refId).trim() || null,
+      // A line still waiting for its étude coloris says so, never the étude's internal libellé.
+      coloris: !(Number(l.IDcolori) > 0) && Number(l.IDetude_col) > 0
+        ? LIBELLE_COLORIS_EN_ETUDE
+        : resolveColorisLabel(maps, Number(l.IDcolori) || 0, typeKind, refId).trim() || null,
       variantes: type === 'divers'
         ? [Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0].map((v) => (v > 0 ? variations.get(v)?.trim() : '')).filter((v): v is string => !!v)
         : [],

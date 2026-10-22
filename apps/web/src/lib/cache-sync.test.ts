@@ -9,6 +9,7 @@ import {
   STOCK_QUERY_FRESHNESS,
   SST_COMMANDE_QUERY_ROOTS,
   invalidateSstCommandeCaches,
+  invalidateCommandeClientCaches,
 } from './cache-sync'
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -139,5 +140,21 @@ describe('invalidateSstCommandeCaches', () => {
   it('the sst list query spreads STOCK_QUERY_FRESHNESS', () => {
     const text = fs.readFileSync(path.join(SRC, 'pages/SousTraitantsCommandes.tsx'), 'utf8')
     expect(text).toMatch(/\.\.\.STOCK_QUERY_FRESHNESS/)
+  })
+})
+
+describe('invalidateCommandeClientCaches', () => {
+  // 2026-10-22: accepting a soumission on Finis › Études coloris writes the coloris on the order line
+  // waiting for the étude, but Clients › Commandes kept its « Relancer » banner until a reload.
+  it('invalidates the client-order list and detail, once each', () => {
+    const calls: unknown[][] = []
+    const qc = { invalidateQueries: ({ queryKey }: { queryKey: unknown[] }) => calls.push(queryKey) }
+    invalidateCommandeClientCaches(qc as never)
+    expect(calls).toEqual([['commandes-client'], ['commande-client']])
+  })
+
+  it('is called by the three étude gestures that move an order line (answer, statut, delete)', () => {
+    const text = fs.readFileSync(path.join(SRC, 'pages/EtudesColoris.tsx'), 'utf8')
+    expect([...text.matchAll(/invalidateCommandeClientCaches\(queryClient\)/g)].length).toBeGreaterThanOrEqual(3)
   })
 })

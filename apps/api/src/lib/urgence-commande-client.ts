@@ -1,7 +1,9 @@
 // Clients › Commandes: what there is to do on an open order, and when (ETM).
 //
-// Doctrine (Vincent, 2026-10-08): rouge = something to do NOW, ambre = something to do very soon,
-// neutral otherwise, including while someone else acts in time (TRM knitting, the dyer dyeing).
+// Doctrine (Vincent, 2026-10-08, sharpened 2026-10-22 for every Malterre app): rouge = something
+// Malterre must do NOW, time is lost until it is done; ambre = something Malterre could do now, not
+// urgent, that puts us ahead of our promises (ship before the délai); neutral = nothing for us to do,
+// including while someone else acts in time (TRM knitting, the dyer dyeing, the lab, the client).
 // The order takes the colour of its most urgent line: the line's computed status
 // (lib/statut-ligne-client.ts) crossed with its délai (ligne_commande_client.date_livraison).
 //
@@ -24,10 +26,15 @@
 //                  judged like « dès que prête » (meanwhile the lagging line carries the urgency)
 // The production stages always run on the délai, whatever the mode.
 //
+// A line without a délai is red (2026-10-22): giving the client a délai is ours to do now. Except a fini
+// line still waiting for its étude coloris (lib/etude-ligne-client.ts): no délai can be given, the only
+// action is to chase the lab or the client once they take longer than usual — red, never amber.
+//
 // The card says two things, never mixed: the liseré + reason = what there is to do and when
 // (urgenceCommande), the pill = where the order stands (avancementCommande).
 
 import type { EtatLigneClient } from './statut-ligne-client.js'
+import type { AttenteEtude } from './etude-ligne-client.js'
 
 export const SEUILS_URGENCE = {
   finiRouge: 35,
@@ -73,6 +80,8 @@ export interface LigneUrgence {
   /** mode sur_appel only: the client's own relance delay in days (client.relance_sur_appel);
    *  absent or 0 = SEUILS_URGENCE.relanceAppel */
   relanceAppel?: number
+  /** a fini line waiting for its étude coloris (lib/etude-ligne-client.ts etudeUrgence); absent otherwise */
+  etude?: { attente: AttenteEtude; relanceLe: string | null }
 }
 
 /** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
@@ -92,6 +101,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
 }
 
 type Action = 'lancer' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+  | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
 interface Verdict {
   niveau: NiveauUrgence
@@ -115,9 +125,21 @@ function joursAvant(date: string, today: Date): number {
 /** One line's verdict, null when there is nothing to do on our side. */
 export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
   if (l.etat === 'soldee' || l.etat === 'expediee') return null
+  // Waiting for its étude coloris: the délai means nothing yet, only the relance does.
+  if (l.etude) {
+    const { attente, relanceLe } = l.etude
+    if (attente === 'annulee') return { niveau: 'rouge', action: 'etude_annulee', jours: null, date: null }
+    if (attente === 'acceptee') return { niveau: 'rouge', action: 'etude_acceptee', jours: null, date: null }
+    const due = ymd(relanceLe)
+    if (!due) return null
+    const jr = joursAvant(due, today)
+    return jr <= 0
+      ? { niveau: 'rouge', action: attente === 'labo' ? 'etude_labo' : 'etude_client', jours: jr, date: due, quoi: 'depuis le' }
+      : null
+  }
   const date = ymd(l.dateLivraison)
-  // A line still to deliver without a délai can never light up on its own: ask for one.
-  if (!date) return { niveau: 'ambre', action: 'sans_delai', jours: null, date: null }
+  // A line still to deliver without a délai: giving one is ours to do, now.
+  if (!date) return { niveau: 'rouge', action: 'sans_delai', jours: null, date: null }
   const j = joursAvant(date, today)
   const S = SEUILS_URGENCE
   const palier = (action: Action, rouge: number, ambre: number): Verdict | null =>
@@ -154,7 +176,11 @@ const LIBELLE: Record<Action, [string, string]> = {
   relancer: ['ligne sur appel : relancer le client', 'lignes sur appel : relancer le client'],
   tricotage: ['ligne en tricotage en retard', 'lignes en tricotage en retard'],
   ennoblisseur: ['ligne en ennoblissement en retard', 'lignes en ennoblissement en retard'],
-  sans_delai: ['ligne sans délai', 'lignes sans délai'],
+  sans_delai: ['ligne sans délai : en donner un', 'lignes sans délai : en donner un'],
+  etude_labo: ['ligne en étude coloris : relancer l’ennoblisseur', 'lignes en étude coloris : relancer l’ennoblisseur'],
+  etude_client: ['ligne en étude coloris : relancer le client', 'lignes en étude coloris : relancer le client'],
+  etude_acceptee: ['ligne : coloris accepté, à choisir sur la ligne', 'lignes : coloris accepté, à choisir sur la ligne'],
+  etude_annulee: ['ligne sur une étude annulée : choisir un coloris', 'lignes sur une étude annulée : choisir un coloris'],
 }
 
 const jjmm = (d: string) => `${d.slice(6, 8)}/${d.slice(4, 6)}`
@@ -176,7 +202,9 @@ export function urgenceCommande(lignes: readonly LigneUrgence[], today: Date): U
   const [un, plusieurs] = LIBELLE[top.action]
   const n = memes.length
   let raison = `${n} ${n > 1 ? plusieurs : un}`
-  if (top.date) raison += ` · ${top.quoi ?? 'délai'} ${jjmm(top.date)}${top.jours! < 0 ? ' dépassé' : ''}`
+  // « dépassé » qualifies a délai or a date agreed with the client, never a relance date (« depuis le »).
+  const depasse = top.jours! < 0 && top.quoi !== 'depuis le'
+  if (top.date) raison += ` · ${top.quoi ?? 'délai'} ${jjmm(top.date)}${depasse ? ' dépassé' : ''}`
   return { niveau: top.niveau, raison }
 }
 
