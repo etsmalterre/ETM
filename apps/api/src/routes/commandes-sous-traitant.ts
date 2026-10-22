@@ -91,6 +91,7 @@ import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../lib/soumission-lots-bloques.js'
+import { affectationsCommandeSst } from '../lib/affectations-sst.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -2101,6 +2102,7 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       ...(etatEnn ? { cycle: cycleFields(etatEnn) } : {}),
       bon_envoye_at: bonEnvoyeAt,
       trm_mirror: trmMirror,
+      affectations: await affectationsCommandeSst(id, Number(header.IDcommande_client) || 0),
     })
   } catch (err) {
     console.error('Error fetching commande-sous-traitant detail:', err)

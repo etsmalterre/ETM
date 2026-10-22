@@ -15,7 +15,7 @@
 //     existing non-ennoblisseur commandes remain readable.
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { FacturesCommande } from '@/components/sst/FacturesCommande'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
@@ -64,6 +64,8 @@ import {
   Spline,
   BadgeEuro,
   Cog,
+  Users,
+  Gift,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -237,6 +239,9 @@ interface CommandeDetail {
   adresse_sous_traitant: AdresseLite | null
   adresse_livraison: AdresseLite | null
   lignes: LigneCommande[]
+  /** For whom the matter is meant — client(s), don or stock — read through the
+   *  pieces (API lib/affectations-sst.ts). */
+  affectations?: AffectationSst[]
   /** True when this commande's sous-traitant has rows in
    *  `tranche_tarif_ennoblissement`. Drives the read-only lock on the
    *  prix input — suppliers without a catalog (e.g. FRANCE TEINTURE)
@@ -1283,6 +1288,8 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
               }
             }}
             onEmailClick={() => setEmailModalOpen(true)}
+            editDateCommande={editDateCommande}
+            onEditDateCommandeChange={setEditDateCommande}
           />
         }
         detail={
@@ -1302,8 +1309,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
             commande={detail ?? null}
             isLoading={detailLoading}
             isEditing={isEditing}
-            editDateCommande={editDateCommande}
-            onEditDateCommandeChange={setEditDateCommande}
             editDateNotif={editDateNotif}
             onEditDateNotifChange={setEditDateNotif}
             editCommentaire={editCommentaire}
@@ -1617,10 +1622,13 @@ function DetailHeader({
   commande, isLoading, isEditing,
   onStartEdit, onCancelEdit, onSave, isSaving,
   onDelete, onPrintClick, onEmailClick,
+  editDateCommande, onEditDateCommandeChange,
 }: {
   commande: CommandeDetail | null
   isLoading: boolean
   isEditing: boolean
+  editDateCommande: string
+  onEditDateCommandeChange: (v: string) => void
   onStartEdit: () => void
   onCancelEdit: () => void
   onSave: () => void
@@ -1659,7 +1667,17 @@ function DetailHeader({
                     {commande.sous_traitant_type}
                   </span>
                 )}
-                {commande?.date_commande && (
+                {/* The order date lives here only (the sidebar's Sous-traitant /
+                    Type / Date card was dropped as a repeat of this title). */}
+                {isEditing ? (
+                  <input
+                    type="date"
+                    value={editDateCommande}
+                    onChange={(e) => onEditDateCommandeChange(e.target.value)}
+                    title="Date de commande"
+                    className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                ) : commande?.date_commande && (
                   <Badge variant="secondary" className="text-xs">{formatHfsqlDate(commande.date_commande)}</Badge>
                 )}
                 {isEditing && (
@@ -6303,7 +6321,6 @@ type SidebarTab = 'info' | 'adresses' | 'docs' | 'historique'
 
 function DetailSidebar({
   commande, isLoading, isEditing,
-  editDateCommande, onEditDateCommandeChange,
   editDateNotif, onEditDateNotifChange,
   editCommentaire, onEditCommentaireChange,
   editJournal, onEditJournalChange,
@@ -6314,8 +6331,6 @@ function DetailSidebar({
   commande: CommandeDetail | null
   isLoading: boolean
   isEditing: boolean
-  editDateCommande: string
-  onEditDateCommandeChange: (v: string) => void
   editDateNotif: string
   onEditDateNotifChange: (v: string) => void
   editCommentaire: string
@@ -6386,8 +6401,6 @@ function DetailSidebar({
             <InfoTab
               commande={commande}
               isEditing={isEditing}
-              editDateCommande={editDateCommande}
-              onEditDateCommandeChange={onEditDateCommandeChange}
               editDateNotif={editDateNotif}
               onEditDateNotifChange={onEditDateNotifChange}
               editCommentaire={editCommentaire}
@@ -6487,6 +6500,64 @@ function StatusFooter({
 // Shown in the Info tab when the sst targets Tricotage Malterre (the sister
 // knitter). Status-only — Soldée / En cours derived from the mirrored
 // `commande_client.est_soldee` (server gates on IDsous_traitant=1).
+interface AffectationSst {
+  kind: 'client' | 'stock' | 'don'
+  IDclient: number
+  nom: string
+  commandes: Array<{ IDcommande_client: number; numero: string | null }>
+  pieces: number
+  poids: number
+  metrage: number
+}
+
+/** For whom the order's matter is meant: each client holding pieces of it
+ *  (with its orders, which open Clients › Commandes), don, or stock. Read-only:
+ *  the reservations are made from the client line and the « Affectés » tab. */
+function AffectationsCard({ affectations }: { affectations: AffectationSst[] }) {
+  return (
+    <div className="p-3 rounded-lg border bg-card shadow-sm">
+      <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+        <Users className="h-3.5 w-3.5 text-accent" />Affectations
+      </p>
+      <div className="space-y-2">
+        {affectations.map((a) => {
+          const Icon = a.kind === 'client' ? Building2 : a.kind === 'don' ? Gift : Package
+          const quantite = a.pieces > 0
+            ? `${a.pieces} pièce${a.pieces > 1 ? 's' : ''} · ${fmtNum(a.poids, 1)} kg`
+            : a.kind === 'client' ? 'Aucune pièce affectée' : 'Aucune commande client'
+          return (
+            <div key={`${a.kind}-${a.IDclient}`} className="flex items-start gap-2">
+              <Icon className={cn('h-3.5 w-3.5 mt-0.5 flex-shrink-0', a.kind === 'client' ? 'text-accent' : 'text-muted-foreground')} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className={cn('text-sm truncate', a.kind === 'client' ? 'font-medium' : 'text-muted-foreground')} title={a.nom}>
+                    {a.nom || '—'}
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">{quantite}</span>
+                </div>
+                {a.commandes.length > 0 && (
+                  <div className="text-[11px] text-muted-foreground flex flex-wrap gap-x-1.5">
+                    {a.commandes.map((c) => (
+                      <Link
+                        key={c.IDcommande_client}
+                        to={`/clients/commandes?commande=${c.IDcommande_client}`}
+                        className="text-accent-blue hover:underline tabular-nums"
+                        title="Ouvrir la commande client"
+                      >
+                        Cde {c.numero ?? c.IDcommande_client}
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function TrmMirrorCard({ mirror, sstOpen }: { mirror: TrmMirror; sstOpen: boolean }) {
   const soldée = mirror.est_soldee === 1
   return (
@@ -6620,7 +6691,7 @@ function CycleCard({ commande, cycle, isEditing, editDateNotif, onEditDateNotifC
         )}
       </div>
       {!!cycle.main && (
-        <KV label="La main est à" value={<span className={cn(cycle.main === 'nous' && 'text-amber-700 font-medium')}>{MAIN_LABEL[cycle.main]}</span>} />
+        <KV label="La main est à" value={<span className={cn(cycle.main === 'nous' && 'text-amber-700 font-medium')}>{cycle.main === 'teinturier' ? (commande.sous_traitant_nom || MAIN_LABEL.teinturier) : MAIN_LABEL[cycle.main]}</span>} />
       )}
       {cycle.solde && <p className="text-[11px] text-muted-foreground">Des pièces sont encore chez le teinturier (solde).</p>}
       {cycle.lots.length > 0 && (
@@ -6641,15 +6712,12 @@ function CycleCard({ commande, cycle, isEditing, editDateNotif, onEditDateNotifC
 
 function InfoTab({
   commande, isEditing,
-  editDateCommande, onEditDateCommandeChange,
   editDateNotif, onEditDateNotifChange,
   editCommentaire, onEditCommentaireChange,
   editJournal, onEditJournalChange,
 }: {
   commande: CommandeDetail
   isEditing: boolean
-  editDateCommande: string
-  onEditDateCommandeChange: (v: string) => void
   editDateNotif: string
   onEditDateNotifChange: (v: string) => void
   editCommentaire: string
@@ -6691,24 +6759,7 @@ function InfoTab({
           rolls without leaving the sst screen. */}
       {!!commande.trm_mirror && <TrmMirrorCard mirror={commande.trm_mirror} sstOpen={commande.est_soldee !== 1} />}
 
-      <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
-        <KV label="Sous-traitant" value={commande.sous_traitant_nom || '—'} />
-        <KV label="Type" value={commande.sous_traitant_type ?? '—'} />
-        {commande.sous_traitant_tel && (
-          <KV label="Téléphone" value={commande.sous_traitant_tel} />
-        )}
-        <KV
-          label="Date commande"
-          value={isEditing ? (
-            <input
-              type="date"
-              value={editDateCommande}
-              onChange={(e) => onEditDateCommandeChange(e.target.value)}
-              className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right"
-            />
-          ) : (commande.date_commande ? formatHfsqlDate(commande.date_commande) : '—')}
-        />
-      </div>
+      {commande.affectations && <AffectationsCard affectations={commande.affectations} />}
 
       <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
         <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
