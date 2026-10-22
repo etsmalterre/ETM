@@ -939,6 +939,9 @@ const ETAPE_KEYWORDS_ENNOBLISSEMENT: Array<[string, { commande?: EtapeCommande; 
   ['a envoyer', { commande: 'non_envoye' }],
   ['attente delai', { commande: 'attente_delai' }],
   ['delai', { commande: 'attente_delai' }],
+  // « En traitement » since 2026-10-22 (a dyer also washes only); old words kept.
+  ['en traitement', { commande: 'en_teinture' }],
+  ['traitement', { commande: 'en_teinture' }],
   ['en teinture', { commande: 'en_teinture' }],
   ['teinture', { commande: 'en_teinture' }],
   ['en reception', { commande: 'en_reception' }],
@@ -956,6 +959,8 @@ const ETAPE_KEYWORDS_ENNOBLISSEMENT: Array<[string, { commande?: EtapeCommande; 
   ['tirelle', { lot: 'attente_tirelle' }],
   ['a soumettre', { lot: 'a_soumettre' }],
   ['soumis', { lot: 'soumis' }],
+  ['refuse', { lot: 'refuse_client' }],
+  ['rapport', { lot: 'rc_a_envoyer' }],
   ['a valider', { lot: 'a_valider' }],
   ['valider', { lot: 'a_valider' }],
   ['en reprise', { lot: 'en_reprise' }],
@@ -3993,6 +3998,11 @@ commandesSousTraitantRouter.post('/:id/soumission/email', async (req: Request, r
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+
+    // Sent from Qualité › Suivi lots by the responsable qualité (LIVA #1304).
+    if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'responsable_qualite'))) {
+      res.status(403).json({ error: 'permission denied: responsable_qualite' }); return
+    }
 
     const parsed = soumissionEmailBody.safeParse(req.body)
     if (!parsed.success) {

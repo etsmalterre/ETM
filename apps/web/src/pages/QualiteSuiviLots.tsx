@@ -5,9 +5,13 @@
 //   - center: Récapitulatif de la commande (read-only) + spec banner + Pièces du
 //     lot sub-table (read-only, per-roll Rdt = metrage/poids + Moyenne footer)
 //   - right sidebar tabs: Contrôles (editable) / Documents / Défauts / Client
-//   - status footer pill = lot état (En contrôle / En reprise / Validé / Expédié
-//     / Attente), changed immediately. The En cours / Terminé filters key off the
-//     état (Validé = Terminé), NOT fin_archivage.
+//   - status footer pill = the lot's computed STEP (LIVA #1304: attente contrôle
+//     ennoblisseur / Malterre, à soumettre, soumis, refusé, rapport à envoyer, à
+//     valider, en reprise, validé — components/qualite/LotCycle.tsx); its menu
+//     holds the gestures: client accepts / refuses, Valider (refused by the API
+//     while anything is left to do), Reprendre. The soumission and the rapport
+//     de contrôle are sent from the header. The En cours / Terminé filters key
+//     off the état (Validé = Terminé) — plus validated lots still owing an RC.
 //
 // Edit mode (Modifier → Enregistrer) only touches the Contrôles measurements +
 // observations + emplacement + fin d'archivage (the sample-disposal date — when
@@ -41,6 +45,7 @@ import {
   MessageSquare,
   LineChart,
   ClipboardList,
+  Send,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -58,7 +63,26 @@ import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import { apiFetch, API_URL } from '@/lib/api'
-import { invalidateLotQualityCaches } from '@/lib/cache-sync'
+import { invalidateLotQualityCaches, STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
+import { postEmail } from '@/lib/email'
+import { SendEmailDialog } from '@/components/email/SendEmailDialog'
+import {
+  SoumissionLotPicker,
+  buildSoumissionLotQuery,
+  type EligibleLot,
+  type LotBloque,
+} from '@/components/qualite/SoumissionLotPicker'
+import {
+  CycleCard,
+  ETAPE_LOT_META,
+  LotCycleFooter,
+  RcMenuButton,
+  RefusClientDialog,
+  type ClientRc,
+  type EtapeLot,
+  type GesteLot,
+  type SoumissionLot,
+} from '@/components/qualite/LotCycle'
 import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageLotDialog'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { fmtNum } from '@/lib/format'
@@ -75,6 +99,10 @@ interface ListRow {
   sous_traitant_nom: string
   IDetatLot: number | null
   etat_libelle: string | null
+  /** Computed step (LIVA #1304); null on a lot tied to no dye order. */
+  etape?: EtapeLot | null
+  /** A validated lot still owes a client its rapport de contrôle. */
+  rc_a_envoyer?: boolean
   date: string | null
 }
 
@@ -163,6 +191,13 @@ interface SuiviLotDetail {
   /** Client orders served by the lot, read from its pieces (#1249) — several
    *  when one sst order feeds more than one client order. */
   clients: ClientInfo[]
+  // The lot's cycle (LIVA #1304) — absent on an older API.
+  etape?: EtapeLot | null
+  /** What still blocks « Valider le lot », in order. */
+  prealables?: string[]
+  soumission?: SoumissionLot
+  /** The clients its pieces are affected to: the rapport de contrôle's recipients. */
+  clients_rc?: ClientRc[]
 }
 
 interface RefBounds {
@@ -386,6 +421,43 @@ export function QualiteSuiviLots() {
     onSuccess: () => { invalidateLotQualityCaches(queryClient); setRepriseOpen(false) },
   })
 
+  // The client's answer to the soumission (LIVA #1304): a refusal asks why.
+  const [refusOpen, setRefusOpen] = useState(false)
+  const reponseMut = useMutation({
+    mutationFn: (p: { accepte: boolean; commentaire?: string }) =>
+      apiFetch(`/suivi-lots/${selectedId}/reponse-client`, { method: 'POST', body: JSON.stringify(p) }),
+    onSuccess: () => { invalidateLotQualityCaches(queryClient); setRefusOpen(false) },
+  })
+  const onGeste = useCallback((g: GesteLot) => {
+    etatMut.reset()
+    reponseMut.reset()
+    if (g === 'valider') etatMut.mutate({ etat: 3 })
+    else if (g === 'reprendre') setRepriseOpen(true)
+    else if (g === 'accepte') reponseMut.mutate({ accepte: true })
+    else setRefusOpen(true)
+  }, [etatMut, reponseMut])
+  // A refused lot is taken back for the client's reason.
+  const motifReprise = detail?.etape === 'refuse_client' && detail.soumission?.reponse?.commentaire
+    ? `Refus client : ${detail.soumission.reponse.commentaire}`
+    : ''
+
+  // Soumission — the dye order's endpoints, narrowed to this lot (the picker
+  // still names the client order and why a lot cannot go, LIVA #1302).
+  const cmdId = detail?.IDcommande_sous_traitant ?? 0
+  const { data: soumissionData } = useQuery<{ lots: EligibleLot[]; bloques?: LotBloque[] }>({
+    queryKey: ['commande-sst-lots-eligibles', cmdId],
+    queryFn: () => apiFetch(`/commandes-sous-traitant/${cmdId}/soumission/lots-eligibles`),
+    enabled: canManage && cmdId > 0 && !isEditing,
+    ...STOCK_QUERY_FRESHNESS,
+  })
+  const lotCourant = (detail?.lot ?? '').trim()
+  const soumissionLots = (soumissionData?.lots ?? []).filter((l) => l.kind === 'received' && l.lot.trim() === lotCourant)
+  const soumissionBloques = (soumissionData?.bloques ?? []).filter((b) => b.lot.trim() === lotCourant)
+  const [soumissionPickerOpen, setSoumissionPickerOpen] = useState(false)
+  const [soumissionLot, setSoumissionLot] = useState<EligibleLot | null>(null)
+  // Rapport de contrôle: the client it goes to.
+  const [rcClient, setRcClient] = useState<ClientRc | null>(null)
+
   // ── Guard ───────────────────────────────────────────────
   const guard = useUnsavedGuard({
     isDirty,
@@ -436,8 +508,8 @@ export function QualiteSuiviLots() {
     if (!q) return lots
     return lots.filter((l) => {
       const e = etatOf(l.IDetatLot)
-      const uiLabel = e ? ETAT_META[e].label : '' // matches the renamed "Attente Client"
-      return [l.lot, l.sous_traitant_nom, l.etat_libelle ?? '', uiLabel]
+      const uiLabel = l.etape ? ETAPE_LOT_META[l.etape].label : e ? ETAT_META[e].label : ''
+      return [l.lot, l.sous_traitant_nom, l.etat_libelle ?? '', uiLabel, l.rc_a_envoyer ? 'rapport à envoyer' : '']
         .join(' ')
         .toLowerCase()
         .includes(q)
@@ -488,6 +560,10 @@ export function QualiteSuiviLots() {
               onSave={() => saveMut.mutate()}
               onOpenGraph={() => setGraphOpen(true)}
               onOpenTableau={() => setTableauOpen(true)}
+              soumissionCount={soumissionLots.length + soumissionBloques.length}
+              onSoumettre={() => setSoumissionPickerOpen(true)}
+              clientsRc={detail.clients_rc ?? []}
+              onRapportControle={setRcClient}
             />
           ) : detailLoading ? (
             <div className="flex items-center justify-center h-24">
@@ -519,7 +595,12 @@ export function QualiteSuiviLots() {
               activeTab={activeTab}
               onTabChange={setActiveTab}
               onEtatChange={(e) => (e === 2 ? (etatMut.reset(), setRepriseOpen(true)) : etatMut.mutate({ etat: e }))}
-              etatChanging={etatMut.isPending}
+              etatChanging={etatMut.isPending || reponseMut.isPending}
+              onGeste={onGeste}
+              cycleError={
+                (etatMut.isError && !repriseOpen && etatMut.error instanceof Error ? etatMut.error.message : null)
+                ?? (reponseMut.isError && !refusOpen && reponseMut.error instanceof Error ? reponseMut.error.message : null)
+              }
             />
           ) : null
         }
@@ -543,9 +624,71 @@ export function QualiteSuiviLots() {
         lot={detail?.lot ?? ''}
         isPending={etatMut.isPending}
         error={etatMut.error instanceof Error ? etatMut.error.message : null}
+        initialMotif={motifReprise}
         onCancel={() => setRepriseOpen(false)}
         onConfirm={(motif) => etatMut.mutate({ etat: 2, motif })}
       />
+
+      <RefusClientDialog
+        open={refusOpen}
+        lot={detail?.lot ?? ''}
+        isPending={reponseMut.isPending}
+        error={reponseMut.error instanceof Error ? reponseMut.error.message : null}
+        onCancel={() => setRefusOpen(false)}
+        onConfirm={(commentaire) => reponseMut.mutate({ accepte: false, commentaire })}
+      />
+
+      <SoumissionLotPicker
+        open={soumissionPickerOpen}
+        lots={soumissionLots}
+        bloques={soumissionBloques}
+        onClose={() => setSoumissionPickerOpen(false)}
+        onSelect={(l) => { setSoumissionLot(l); setSoumissionPickerOpen(false) }}
+      />
+      {cmdId > 0 && soumissionLot && (
+        <SendEmailDialog
+          open
+          onClose={() => setSoumissionLot(null)}
+          contextLabel={`Lot ${soumissionLot.lot} · ${soumissionLot.client_nom}`}
+          queryKey={['commande-sst-soumission-email-defaults', cmdId, soumissionLot.key]}
+          loadDefaults={() => apiFetch(`/commandes-sous-traitant/${cmdId}/soumission/email-defaults?${buildSoumissionLotQuery(soumissionLot)}`)}
+          pdfUrl={`${API_URL}/commandes-sous-traitant/${cmdId}/soumission/pdf?${buildSoumissionLotQuery(soumissionLot)}`}
+          pdfAttachmentLabel={`soumission-lot-${soumissionLot.lot}.pdf`}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/commandes-sous-traitant/${cmdId}/soumission/email`, p, {
+              includeAttachPdf: true,
+              extraBody: {
+                ref_fini: soumissionLot.IDref_fini,
+                coloris: soumissionLot.IDColoris,
+                lot: soumissionLot.lot,
+                commande_client: soumissionLot.IDcommande_client,
+              },
+            })
+            // The lot moves to « Soumis au client » here and on the dye order.
+            invalidateLotQualityCaches(queryClient)
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-historique', cmdId] })
+          }}
+        />
+      )}
+      {selectedId !== null && rcClient && (
+        <SendEmailDialog
+          open
+          onClose={() => setRcClient(null)}
+          title="Envoyer le rapport de contrôle"
+          contextLabel={`Lot ${detail?.lot ?? ''} · ${rcClient.nom}`}
+          queryKey={['suivi-lot-rc-email-defaults', selectedId, rcClient.idclient]}
+          loadDefaults={() => apiFetch(`/suivi-lots/${selectedId}/rapport-controle/email-defaults?client=${rcClient.idclient}`)}
+          pdfUrl={`${API_URL}/suivi-lots/${selectedId}/rapport-controle/pdf?client=${rcClient.idclient}`}
+          pdfAttachmentLabel={`rapport-controle-${detail?.lot ?? ''}.pdf`}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/suivi-lots/${selectedId}/rapport-controle/email`, p, {
+              includeAttachPdf: true,
+              extraBody: { client: rcClient.idclient },
+            })
+            invalidateLotQualityCaches(queryClient)
+          }}
+        />
+      )}
     </>
   )
 }
@@ -628,8 +771,10 @@ function LotList({
           rows.map((row) => {
             const isSelected = selectedId === row.IDsuivilot
             const meta = etatOf(row.IDetatLot)
-            const Icon = meta ? ETAT_META[meta].icon : Clock
-            const iconColor = meta ? ETAT_META[meta].iconColor : 'text-muted-foreground'
+            const etapeMeta = row.etape ? ETAPE_LOT_META[row.etape] : null
+            const Icon = etapeMeta?.icon ?? (meta ? ETAT_META[meta].icon : Clock)
+            const iconColor = etapeMeta?.iconColor ?? (meta ? ETAT_META[meta].iconColor : 'text-muted-foreground')
+            const label = etapeMeta?.label ?? (meta ? ETAT_META[meta].label : '')
             return (
               <div
                 key={row.IDsuivilot}
@@ -641,11 +786,19 @@ function LotList({
               >
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-sm truncate flex-1">{row.sous_traitant_nom || '—'}</span>
-                  <span className="flex-shrink-0" title={meta ? ETAT_META[meta].label : ''}>
+                  <span className="flex-shrink-0" title={label}>
                     <Icon className={cn('h-4 w-4', iconColor)} />
                   </span>
                 </div>
-                <div className="text-xs text-muted-foreground mt-1 text-right tabular-nums">{row.lot || '—'}</div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                  <span className="truncate flex-1">{label}</span>
+                  {row.rc_a_envoyer && row.etape === 'valide' && (
+                    <span className="flex-shrink-0 rounded-full border border-amber-200 bg-amber-100 px-1.5 text-[10px] font-medium text-amber-800" title="Rapport de contrôle à envoyer">
+                      RC à envoyer
+                    </span>
+                  )}
+                  <span className="flex-shrink-0 tabular-nums">{row.lot || '—'}</span>
+                </div>
               </div>
             )
           })
@@ -673,6 +826,10 @@ function LotDetailHeader({
   onSave,
   onOpenGraph,
   onOpenTableau,
+  soumissionCount,
+  onSoumettre,
+  clientsRc,
+  onRapportControle,
 }: {
   detail: SuiviLotDetail
   isEditing: boolean
@@ -683,6 +840,12 @@ function LotDetailHeader({
   onSave: () => void
   onOpenGraph: () => void
   onOpenTableau: () => void
+  /** Eligible + blocked soumission candidates for this lot (0 = no button). */
+  soumissionCount: number
+  onSoumettre: () => void
+  /** The lot's clients — the rapport de contrôle's possible recipients. */
+  clientsRc: ClientRc[]
+  onRapportControle: (c: ClientRc) => void
 }) {
   return (
     <div className="flex-shrink-0 pt-0.5">
@@ -749,6 +912,17 @@ function LotDetailHeader({
               >
                 <LineChart className="h-4 w-4" />
               </Button>
+              {canManage && soumissionCount > 0 && (
+                <Button variant="outline" size="icon" className="h-9 w-9 relative" title="Soumettre au client" onClick={onSoumettre}>
+                  <Send className="h-4 w-4" />
+                  {detail.etape === 'a_soumettre' && (
+                    <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
+                  )}
+                </Button>
+              )}
+              {canManage && clientsRc.length > 0 && (
+                <RcMenuButton clients={clientsRc} onSelect={onRapportControle} />
+              )}
               {canManage && (
                 <Button variant="gold" size="sm" onClick={onStartEdit}>
                   <Pencil className="h-3.5 w-3.5 mr-1.5" />
@@ -1254,6 +1428,14 @@ function TrendChart({
 function RecapSection({ detail }: { detail: SuiviLotDetail }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto space-y-4 scrollbar-transparent pr-1">
+      {detail.etape && (
+        <CycleCard
+          etape={detail.etape}
+          prealables={detail.prealables ?? []}
+          soumission={detail.soumission ?? { requise: false, envoyee_le: null, reponse: null }}
+          clients={detail.clients_rc ?? []}
+        />
+      )}
       {/* Récapitulatif */}
       <div className="rounded-xl border bg-card shadow-sm p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -1490,6 +1672,8 @@ function LotSidebar({
   onTabChange,
   onEtatChange,
   etatChanging,
+  onGeste,
+  cycleError,
 }: {
   detail: SuiviLotDetail
   isEditing: boolean
@@ -1500,6 +1684,9 @@ function LotSidebar({
   onTabChange: (t: 'controles' | 'documents' | 'defauts' | 'actions') => void
   onEtatChange: (e: Etat) => void
   etatChanging: boolean
+  onGeste: (g: GesteLot) => void
+  /** A refused gesture (e.g. « Valider » with something left to do). */
+  cycleError: string | null
 }) {
   const tabs = [
     { key: 'controles' as const, label: 'Contrôles', icon: Ruler },
@@ -1551,7 +1738,16 @@ function LotSidebar({
         </div>
       </div>
 
-      {currentEtat && (
+      {detail.etape ? (
+        <LotCycleFooter
+          etape={detail.etape}
+          prealables={detail.prealables ?? []}
+          canManage={canManage}
+          isChanging={etatChanging}
+          disabled={isEditing}
+          onGeste={onGeste}
+        />
+      ) : currentEtat && (
         <EtatFooter
           current={currentEtat}
           canManage={canManage}
@@ -1559,6 +1755,11 @@ function LotSidebar({
           isChanging={etatChanging}
           disabled={isEditing}
         />
+      )}
+      {cycleError && (
+        <div className="flex-shrink-0 flex items-start gap-2 text-xs text-destructive px-1">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /><span>{cycleError}</span>
+        </div>
       )}
     </div>
   )
@@ -2249,17 +2450,19 @@ function ReprisesCard({ reprises }: { reprises: RepriseLot[] }) {
 
 /** « Reprendre »: the motif is asked before the lot goes back to the dyer. */
 function RepriseMotifDialog({
-  open, lot, isPending, error, onCancel, onConfirm,
+  open, lot, isPending, error, initialMotif = '', onCancel, onConfirm,
 }: {
   open: boolean
   lot: string
   isPending: boolean
   error: string | null
+  /** A refused soumission pre-fills the client's reason. */
+  initialMotif?: string
   onCancel: () => void
   onConfirm: (motif: string) => void
 }) {
   const [motif, setMotif] = useState('')
-  useEffect(() => { if (open) setMotif('') }, [open])
+  useEffect(() => { if (open) setMotif(initialMotif) }, [open, initialMotif])
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !isPending) onCancel() }}>
       <DialogContent className="max-w-md" onClose={onCancel}>

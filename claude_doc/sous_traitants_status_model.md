@@ -199,6 +199,8 @@ lot validated), reprise / lot suffixed R. On the 16 open lots of 2026-10-11 ever
 code matched data ETM holds, so the cycle is COMPUTED and he stops typing codes
 and relance dates (decision Vincent: built from his Journal, he conforms).
 
+**Since 2026-10-22 (LIVA #1304) the lot cycle is run from Qualité › Suivi lots** (`screen_notes.md` § 10): steps below were extended (refusé par le client, rapport à envoyer; expédié dropped), the order step « En teinture » is labelled **« En traitement »**, and the « Soumettre au client » button left this screen (picker in `components/qualite/SoumissionLotPicker.tsx`, endpoints unchanged, POST now gated by `responsable_qualite`).
+
 **Lot steps** (`suivilot`, first match wins): Expédié (état 4) · Validé (3) ·
 En reprise (2) · Soumis au client (a soumission email names the lot,
 `envoi_email` 15 `notes`, digits + R kept by `cleLot()`; a soumission sent

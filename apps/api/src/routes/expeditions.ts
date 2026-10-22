@@ -65,7 +65,6 @@ import { esc, n, dateDigits as dateStr, IS_WINDOWS, canNameAccented } from '../l
 import { stripRtf, wrapRtf } from '../lib/rtf-utils.js'
 import { BonLivraisonPdf, type BonLivraisonPdfData, type BlArticle, type BlLot, type BlPiece } from '../lib/pdf/BonLivraisonPdf.js'
 import { BonLivraisonDiversPdf, type BonLivraisonDiversPdfData, type BlDiversCarton } from '../lib/pdf/BonLivraisonDiversPdf.js'
-import { RapportControlePdf, type RapportControlePdfData, type RcArticle, type RcLot, type RcRow } from '../lib/pdf/RapportControlePdf.js'
 import { InfoMatieresPdf, type InfoMatieresPdfData, type ImArticle, type ImEntry } from '../lib/pdf/InfoMatieresPdf.js'
 import { DemandeTransportPdf, type DemandeTransportPdfData } from '../lib/pdf/DemandeTransportPdf.js'
 import { company } from '../lib/pdf/theme.js'
@@ -889,9 +888,9 @@ expeditionsRouter.post('/:kind', async (req: Request, res: Response) => {
       const idAdresse = d.IDadresse ?? (Number(cmdRows[0].IDadresse_livraison) || 0)
       const idTrans = d.IDtransporteur ?? (Number(clientRows[0]?.IDtransporteur) || 0)
       const donation = d.donation ?? (Number(cmdRows[0].donation) === 1 ? 1 : 0)
-      // Per-shipment mirror of the client's "inclure rapports contrôle" flag —
-      // legacy seeds it from the client at creation time.
-      const inclureRc = Number(clientRows[0]?.inclureRapportQualite) === 1 ? 1 : 0
+      // The rapport de contrôle no longer rides on the BL (LIVA #1304: sent per
+      // lot from Qualité › Suivi lots) — the legacy per-shipment flag stays 0.
+      const inclureRc = 0
 
       const before = await maxId('expedition', 'IDexpedition')
       await query(
@@ -2148,41 +2147,6 @@ async function loadLineLotsWithSuivilot(leId: number, refId: number): Promise<{
   return { lots, suiviByLot, rolls: rolls as any[] }
 }
 
-export async function buildRapportControlePdfData(id: number): Promise<RapportControlePdfData | null> {
-  const ctx = await loadFormelleFiniLines(id)
-  if (!ctx || ctx.lines.length === 0) return null
-
-  const articles: RcArticle[] = []
-  for (const line of ctx.lines) {
-    const { lots, suiviByLot } = await loadLineLotsWithSuivilot(line.leId, line.refId)
-    const rf = line.refFini ?? {}
-    // A line whose rolls carry no lot label still prints its tolerance rows.
-    const lotKeys = lots.length > 0 ? lots : ['']
-    const lotBlocks: RcLot[] = lotKeys.map((lot) => {
-      const s = suiviByLot.get(lot) ?? null
-      const rel = (col: string): number | null => (s ? numOf(s[col]) : null)
-      const rows: RcRow[] = [
-        { parametre: 'Laize HT', min: zeroNull(rf.laizeHT_Min), max: zeroNull(rf.laizeHT_Max), releve: rel('laize_tirelle') },
-        { parametre: 'Poids', min: zeroNull(rf.poids_Min), max: zeroNull(rf.poids_Max), releve: rel('poids_tirelle') },
-        { parametre: 'Stab H', min: zeroNull(rf.stab_hauteur), max: null, releve: rel('stabH_tirelle') },
-        { parametre: 'Stab L', min: zeroNull(rf.stab_largeur), max: null, releve: rel('stabL_tirelle') },
-      ]
-      return { lot, hasSuivilot: s != null, rows }
-    })
-    articles.push({ titre: line.titre, sousTitre: line.sousTitre, lots: lotBlocks })
-  }
-  if (articles.length === 0) return null
-
-  return {
-    numero: id,
-    dateLong: formatHfsqlDateLongFr(ctx.dexp),
-    clientNom: ctx.clientNom,
-    commandeNumero: ctx.commandeNumero,
-    refClient: ctx.refClient,
-    articles,
-  }
-}
-
 /** sous_traitant / fournisseur names + pays, batched with encoding repair. */
 async function loadPartnerLookups(sstIds: number[], frsIds: number[]): Promise<{
   sstNames: Map<number, string>
@@ -2466,14 +2430,6 @@ export async function buildInfoMatieresPdfData(id: number): Promise<InfoMatieres
   }
 }
 
-async function renderRapportControleBuffer(data: RapportControlePdfData): Promise<Buffer> {
-  return renderToBuffer(
-    React.createElement(RapportControlePdf, { data }) as unknown as React.ReactElement<
-      import('@react-pdf/renderer').DocumentProps
-    >,
-  )
-}
-
 async function renderInfoMatieresBuffer(data: InfoMatieresPdfData): Promise<Buffer> {
   return renderToBuffer(
     React.createElement(InfoMatieresPdf, { data }) as unknown as React.ReactElement<
@@ -2481,25 +2437,6 @@ async function renderInfoMatieresBuffer(data: InfoMatieresPdfData): Promise<Buff
     >,
   )
 }
-
-expeditionsRouter.get('/formelle/:id/rapport-controle/pdf', async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10)
-    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const data = await buildRapportControlePdfData(id)
-    if (!data) { res.status(404).json({ error: 'Rapport de contrôle indisponible pour cette expédition.' }); return }
-    const buffer = await renderRapportControleBuffer(data)
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="RC-${id}.pdf"`)
-    res.removeHeader('X-Frame-Options')
-    res.removeHeader('Content-Security-Policy')
-    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-    res.send(buffer)
-  } catch (err) {
-    console.error('Error rendering rapport de contrôle PDF:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
 
 expeditionsRouter.get('/formelle/:id/info-matieres/pdf', async (req: Request, res: Response) => {
   try {
@@ -2909,28 +2846,25 @@ async function buildBlEmailDefaults(id: number): Promise<{
   )
   if (rows.length === 0) return null
   const cmdId = Number(rows[0].IDcommande_client) || 0
-  const expRcFlag = Number(rows[0].inclureRapportQualite) === 1
   const cmdRows = cmdId > 0
     ? await query<{ IDclient: number }>(`SELECT IDclient FROM commande_client WHERE IDcommande_client = ${cmdId}`)
     : []
   const IDclient = Number(cmdRows[0]?.IDclient) || 0
 
-  const [clientNames, contactRows, clientFlagRows, leRows] = await Promise.all([
+  const [clientNames, contactRows, leRows] = await Promise.all([
     resolveClientNames([IDclient]),
     IDclient > 0
       ? query<{ IDcontact: number; nom: string | null; prenom: string | null; mail: string | null; envoi_bl: number | null; est_visible: number | null }>(
           `SELECT IDcontact, nom, prenom, mail, envoi_bl, est_visible FROM contact WHERE IDclient = ${IDclient}`,
         )
       : Promise.resolve([]),
-    IDclient > 0
-      ? query<{ inclureRapportQualite: number | null }>(`SELECT inclureRapportQualite FROM client WHERE IDclient = ${IDclient}`)
-      : Promise.resolve([]),
     query<{ IDligne_commande_client: number }>(
       `SELECT IDligne_expedition, IDligne_commande_client FROM ligne_expedition WHERE IDexpedition = ${id}`,
     ),
   ])
 
-  // The RC / Info matières documents only exist for fini lines. Availability
+  // The Info matières document only exists for fini lines (the rapport de
+  // contrôle left the BL for Qualité › Suivi lots, LIVA #1304). Availability
   // gates whether the dialog shows the checkboxes at all.
   const lccIds = (leRows as any[]).map((l) => Number(l.IDligne_commande_client) || 0).filter((x) => x > 0)
   let hasFiniLines = false
@@ -2940,14 +2874,8 @@ async function buildBlEmailDefaults(id: number): Promise<{
     )
     hasFiniLines = (typeRows as any[]).some((t) => lineStockKind(Number(t.type_kind) || 0) === 'fini')
   }
-  // Default: expedition mirror OR live client flag — ETM INSERTs seeded the
-  // mirror to 0 before 2026-07, so the OR keeps those shipments covered.
-  const clientRcFlag = Number((clientFlagRows as any[])[0]?.inclureRapportQualite) === 1
   const optional_attachments = hasFiniLines
-    ? [
-        { id: 'rapport-controle', default_checked: expRcFlag || clientRcFlag },
-        { id: 'info-matieres', default_checked: false },
-      ]
+    ? [{ id: 'info-matieres', default_checked: false }]
     : []
   const clientNom = clientNames.get(IDclient) ?? ''
   const fixedContacts = await fixEncoding(contactRows, 'contact', 'IDcontact', ['nom', 'prenom', 'mail'])
@@ -3016,7 +2944,6 @@ const emailBody = z.object({
   body: z.string().min(1).max(20000),
   attach_pdf: z.boolean().optional(),
   // Optional per-document attachments — formelle only (divers ignores them).
-  attach_rapport_controle: z.boolean().optional(),
   attach_info_matieres: z.boolean().optional(),
   extra_attachments: z.array(extraAttachmentSchema).optional(),
   dev_skip_send: z.boolean().optional(),
@@ -3087,14 +3014,6 @@ expeditionsRouter.post('/formelle/:id/email', async (req: Request, res: Response
       }
       // Ticked optional documents — fail loudly when the data can't be built
       // (the user explicitly asked for the attachment; never skip silently).
-      if (parsed.data.attach_rapport_controle === true) {
-        const rc = await buildRapportControlePdfData(id)
-        if (!rc) {
-          res.status(400).json({ error: 'rc_indisponible', message: 'Rapport de contrôle indisponible pour cette expédition.' })
-          return
-        }
-        attachments.push({ filename: `RC-${id}.pdf`, content: await renderRapportControleBuffer(rc), contentType: 'application/pdf' })
-      }
       if (parsed.data.attach_info_matieres === true) {
         const im = await buildInfoMatieresPdfData(id)
         if (!im) {
@@ -3127,7 +3046,6 @@ expeditionsRouter.post('/formelle/:id/email', async (req: Request, res: Response
     // send is still logged under the avis d'expédition type_doc like legacy.
     const noteParts = [
       ...(parsed.data.attach_pdf !== false ? ['BL'] : []),
-      ...(parsed.data.attach_rapport_controle === true ? ['RC'] : []),
       ...(parsed.data.attach_info_matieres === true ? ['IM'] : []),
     ]
     await logEnvoiEmails(id, allRecipients, societe, TYPE_DOC_AVIS_EXPEDITION, noteParts.join('+'))

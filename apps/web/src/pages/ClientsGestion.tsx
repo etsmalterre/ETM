@@ -1384,7 +1384,7 @@ function InfoTab({ client, isEditing, canEditRapportQualite, draft, onPatch, sec
         <KVSelect label="Activité" value={v.IDactivite} edit={ed} options={activites} onChange={(id) => onPatch({ IDactivite: id })} searchable />
         <div className="space-y-2 pt-1">
           <TogglePill label="Client interne" checked={v.client_interne} disabled={!ed} onChange={(x) => onPatch({ client_interne: x })} />
-          <TogglePill label="Inclure rapports contrôle (exp.)" checked={v.inclureRapportQualite} disabled={!edRapport} onChange={(x) => onPatch({ inclureRapportQualite: x })} />
+          <TogglePill label="Envoyer le rapport de contrôle de chaque lot" checked={v.inclureRapportQualite} disabled={!edRapport} onChange={(x) => onPatch({ inclureRapportQualite: x })} />
           <EtiquettesSwitch clientId={client.IDclient} editable={ed} />
         </div>
       </InfoCard>

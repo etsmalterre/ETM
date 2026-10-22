@@ -965,6 +965,40 @@ ALTER TABLE ref_fil ADD COLUMN idoffre_retenue bigint DEFAULT 0;
 ALTER TABLE colori_fil ADD COLUMN idoffre_retenue bigint DEFAULT 0;
 `,
   },
+  {
+    // Qualité › Suivi lots owns the lot's cycle (LIVA #1304, decision Vincent
+    // 2026-10-22, lib/rapport-controle-lot.ts):
+    // • the rapport de contrôle leaves per lot and per client from Suivi lots,
+    //   no longer on the BL email — one row per send, never updated or deleted;
+    //   `pieces` = the client's rolls the report listed.
+    // • the client's answer to a soumission is recorded there too, on the
+    //   legacy reponse_soumission (empty since 2026-01: nobody recorded it),
+    //   with the why of a refusal and who typed it.
+    name: '0029_rapport_controle_lot',
+    sql: `
+CREATE TABLE rapport_controle_envoi (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idsuivilot bigint NOT NULL,
+  idligne_commande_sous_traitant bigint NOT NULL,
+  lot text NOT NULL,
+  idclient bigint NOT NULL,
+  envoye_le timestamptz NOT NULL DEFAULT now(),
+  envoye_par_id bigint NOT NULL DEFAULT 0,
+  envoye_par text,
+  destinataires text,
+  pieces bigint[] NOT NULL DEFAULT '{}'
+);
+CREATE INDEX rapport_controle_envoi_lot ON rapport_controle_envoi (idligne_commande_sous_traitant, lot);
+${grantApi('SELECT, INSERT', 'rapport_controle_envoi')}
+${grantApi('USAGE, SELECT', 'SEQUENCE rapport_controle_envoi_id_seq')}
+ALTER TABLE reponse_soumission
+  ADD COLUMN commentaire text,
+  ADD COLUMN saisi_le timestamptz,
+  ADD COLUMN saisi_par_id bigint DEFAULT 0,
+  ADD COLUMN saisi_par text,
+  ADD COLUMN idsuivilot bigint DEFAULT 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {

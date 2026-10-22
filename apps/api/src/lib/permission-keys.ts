@@ -251,9 +251,9 @@ export const PERMISSION_KEYS = [
   },
   {
     key: 'edit_client_rapport_qualite',
-    label: 'Inclure rapports contrôle',
+    label: 'Rapport de contrôle des lots',
     description:
-      'Autorise le seul bouton « Inclure rapports contrôle (exp.) » de l’onglet « Info » de Clients > Gestion. Indépendant de « Modifier la fiche client » — peut être accordé seul.',
+      'Autorise le seul bouton « Envoyer le rapport de contrôle de chaque lot » de l’onglet « Info » de Clients > Gestion. Indépendant de « Modifier la fiche client » — peut être accordé seul.',
     category: 'Gestion client',
   },
   {

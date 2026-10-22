@@ -1,7 +1,7 @@
 // Render a Rapport de contrôle PDF for visual inspection. Two modes:
-//  - synthetic (default): data mirroring the legacy RC12162 sample
-//  - live: --exp <id> builds from HFSQL via the exported builder
-// Usage: tsx src/scripts/dump-rapport-controle-pdf.ts [out.pdf] [--exp 11669]
+//  - synthetic (default): one lot, out-of-tolerance laize, three pieces
+//  - live: --lot <idsuivilot> --client <idclient> builds it like Suivi lots does
+// Usage: tsx src/scripts/dump-rapport-controle-pdf.ts [out.pdf] [--lot 6123 --client 137]
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -10,10 +10,10 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { RapportControlePdf, type RapportControlePdfData } from '../lib/pdf/RapportControlePdf.js'
 
 const synthetic: RapportControlePdfData = {
-  numero: 12162,
-  dateLong: '16 juillet 2026',
+  lot: 'MA108821',
+  dateLong: '22 octobre 2026',
   clientNom: 'Le slip Francais',
-  commandeNumero: 3788,
+  commandes: ['3788'],
   refClient: 'Commande 45868 du 15/06/2026',
   articles: [
     {
@@ -24,57 +24,35 @@ const synthetic: RapportControlePdfData = {
           lot: 'MA108821',
           hasSuivilot: true,
           rows: [
-            { parametre: 'Laize HT', min: 147, max: 153, releve: 150 },
+            // Laize above max on purpose — verifies the red rendering.
+            { parametre: 'Laize HT', min: 147, max: 153, releve: 155 },
             { parametre: 'Poids', min: 108, max: 122, releve: 117 },
             { parametre: 'Stab H', min: -8, max: null, releve: -5 },
             { parametre: 'Stab L', min: -8, max: null, releve: -4 },
           ],
         },
-        {
-          lot: 'MA108822',
-          hasSuivilot: false,
-          rows: [
-            { parametre: 'Laize HT', min: 147, max: 153, releve: null },
-            { parametre: 'Poids', min: 108, max: 122, releve: null },
-            { parametre: 'Stab H', min: -8, max: null, releve: null },
-            { parametre: 'Stab L', min: -8, max: null, releve: null },
-          ],
-        },
       ],
-    },
-    {
-      titre: '180A - 0612 marine pant. 19-3922 TCX',
-      sousTitre: '100% lin',
-      lots: [
-        {
-          // Out-of-tolerance values on purpose — verifies the red rendering
-          // (laize above max, stab below min); poids stays green.
-          lot: 'MA107976',
-          hasSuivilot: true,
-          rows: [
-            { parametre: 'Laize HT', min: 150, max: 160, releve: 165 },
-            { parametre: 'Poids', min: 200, max: 220, releve: 217 },
-            { parametre: 'Stab H', min: -5, max: null, releve: -7 },
-            { parametre: 'Stab L', min: -5, max: null, releve: -5 },
-          ],
-        },
+      pieces: [
+        { numero: '3510/1', poids: 21.4, metrage: 62.5 },
+        { numero: '3510/2', poids: 20.9, metrage: 61 },
+        { numero: '3510/3-1', poids: 11.2, metrage: 33.4 },
       ],
     },
   ],
 }
 
 async function main() {
-  const expArgIdx = process.argv.indexOf('--exp')
+  const arg = (k: string) => {
+    const i = process.argv.indexOf(k)
+    return i === -1 ? NaN : parseInt(process.argv[i + 1], 10)
+  }
   let data = synthetic
-  if (expArgIdx !== -1) {
-    const dotenv = await import('dotenv')
-    dotenv.config({ path: '.env' })
-    dotenv.config({ path: `.env.${process.env.NODE_ENV || 'development'}` })
-    const { buildRapportControlePdfData } = await import('../routes/expeditions.js')
-    const id = parseInt(process.argv[expArgIdx + 1], 10)
-    const live = await buildRapportControlePdfData(id)
-    if (!live) { console.error(`No rapport de contrôle data for expedition ${id}`); process.exit(1) }
-    data = live
+  if (!isNaN(arg('--lot'))) {
+    await import('../load-env.js')
+    const { rapportControleLot } = await import('../lib/rapport-controle-lot.js')
+    const rc = await rapportControleLot(arg('--lot'), arg('--client'))
+    if (!rc) { console.error('No pieces of that lot for that client'); process.exit(1) }
+    data = rc.data
   }
 
   const out = process.argv.find((a) => a.endsWith('.pdf')) ?? path.join(os.tmpdir(), 'rapport-controle-preview.pdf')

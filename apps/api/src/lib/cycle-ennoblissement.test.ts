@@ -5,6 +5,7 @@ import {
   etatCommande,
   etatLot,
   plusJoursOuvres,
+  prealablesValidation,
   urgenceCommande,
   type CommandeFait,
   type LotFait,
@@ -37,20 +38,49 @@ describe('etapeLot: Pierre-Emmanuel’s codes, read from the data (16 lots of 20
   it('controlled: à soumettre when the client asks it for this reference, else à valider', () => {
     expect(etapeLot(lot({ mesuresTeinturier: true, tirelleMesuree: true, soumissionRequise: true }))).toBe('a_soumettre')
     expect(etapeLot(lot({ mesuresTeinturier: true, tirelleMesuree: true }))).toBe('a_valider')
-    // Laëtitia measured the tirelle without the dyer's measures (5965, 09/10)
-    expect(etapeLot(lot({ tirelleMesuree: true }))).toBe('a_valider')
+    // #1304: both controls are required — a tirelle measured without the
+    // dyer's measures (5965, 09/10) still waits for the dyer.
+    expect(etapeLot(lot({ tirelleMesuree: true }))).toBe('attente_mesures')
   })
-  it('the lot state wins: reprise, validated (« ok à ramer » after a soumission), shipped', () => {
+  it('the lot state wins: reprise, validated (« ok à ramer » after a soumission); the legacy « expédié » reads validated', () => {
     expect(etapeLot(lot({ etat: 2, soumisLe: '2026-10-01' }))).toBe('en_reprise')
     expect(etapeLot(lot({ etat: 3, soumisLe: '2026-10-01' }))).toBe('valide')
-    expect(etapeLot(lot({ etat: 4 }))).toBe('expedie')
+    expect(etapeLot(lot({ etat: 4 }))).toBe('valide')
   })
   it('an open reprise (lib/reprises.ts) puts the lot at the dyer, whatever the old état', () => {
     expect(etapeLot(lot({ etat: 1, tirelleMesuree: true, repriseOuverte: true }))).toBe('en_reprise')
     expect(etatLot(lot({ repriseOuverte: true, reprises: 2 })).reprises).toBe(2)
   })
-  it('attente de décision without a soumission is ours to decide', () => {
-    expect(etapeLot(lot({ etat: 5, mesuresTeinturier: true }))).toBe('a_valider')
+  it('the legacy « attente décision » (état 5) carries no meaning of its own', () => {
+    expect(etapeLot(lot({ etat: 5, mesuresTeinturier: true }))).toBe('attente_tirelle')
+    expect(etapeLot(lot({ etat: 5, mesuresTeinturier: true, tirelleMesuree: true }))).toBe('a_valider')
+  })
+})
+
+describe('#1304: client answer, rapport de contrôle, what blocks « Valider le lot »', () => {
+  const controle = { mesuresTeinturier: true, tirelleMesuree: true }
+  it('a soumission waits for the answer; accepted moves on, refused must be repris', () => {
+    const soumis = { ...controle, soumissionRequise: true, soumisLe: '2026-10-20' }
+    expect(etapeLot(lot(soumis))).toBe('soumis')
+    expect(etapeLot(lot({ ...soumis, reponseClient: { accepte: true, commentaire: '' } }))).toBe('a_valider')
+    expect(etapeLot(lot({ ...soumis, reponseClient: { accepte: false, commentaire: 'trop foncé' } }))).toBe('refuse_client')
+    expect(etatLot(lot({ ...soumis, reponseClient: { accepte: false, commentaire: '' } })).main).toBe('nous')
+  })
+  it('an owed RC comes after the soumission, before the validation', () => {
+    expect(etapeLot(lot({ ...controle, rcAEnvoyer: ['LEMAHIEU'] }))).toBe('rc_a_envoyer')
+    expect(etapeLot(lot({ ...controle, soumissionRequise: true, rcAEnvoyer: ['LEMAHIEU'] }))).toBe('a_soumettre')
+  })
+  it('prealables: everything still to do, in order; empty when the lot may be validated', () => {
+    expect(prealablesValidation(lot({ soumissionRequise: true, rcAEnvoyer: ['SAS LA FABRIQUE'] }))).toEqual([
+      'Contrôle ennoblisseur manquant (laize / poids de l’ennoblisseur).',
+      'Contrôle Malterre manquant (mesure de la tirelle).',
+      'Soumission au client à envoyer.',
+      'Rapport de contrôle à envoyer à SAS LA FABRIQUE.',
+    ])
+    expect(prealablesValidation(lot({ ...controle, soumisLe: '2026-10-20' }))).toEqual(['Réponse du client à la soumission attendue.'])
+    expect(prealablesValidation(lot({ ...controle, soumisLe: '2026-10-20', reponseClient: { accepte: true, commentaire: '' } }))).toEqual([])
+    expect(prealablesValidation(lot({ ...controle, repriseOuverte: true }))).toEqual(['Le lot est en reprise chez l’ennoblisseur.'])
+    expect(prealablesValidation(lot({ ...controle, etat: 3 }))).toEqual(['Lot déjà validé.'])
   })
 })
 

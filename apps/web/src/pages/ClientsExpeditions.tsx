@@ -20,7 +20,6 @@ import {
   AtSign,
   Printer,
   Layers,
-  ClipboardCheck,
   Package,
   Link2,
   Unlink,
@@ -238,7 +237,6 @@ export function ClientsExpeditions() {
   const [editIDAdresse, setEditIDAdresse] = useState(0)
   const [editIDContact, setEditIDContact] = useState(0)
   const [editDonation, setEditDonation] = useState(0)
-  const [editInclureRc, setEditInclureRc] = useState(0) // inclureRapportQualite (formelle)
   const [editObservation, setEditObservation] = useState('')
   const [editIDClient, setEditIDClient] = useState(0) // divers
   const [editRefClient, setEditRefClient] = useState('') // divers
@@ -292,7 +290,6 @@ export function ClientsExpeditions() {
       IDadresse: detail.IDadresse ?? 0,
       IDcontact: detail.IDcontact ?? 0,
       donation: detail.donation ?? 0,
-      inclureRc: detail.inclureRapportQualite ?? 0,
       observation: detail.observation_bl ?? '',
       IDclient: detail.IDclient ?? 0,
       refClient: detail.ref_client ?? '',
@@ -302,7 +299,6 @@ export function ClientsExpeditions() {
     setEditIDAdresse(snapshot.IDadresse as number)
     setEditIDContact(snapshot.IDcontact as number)
     setEditDonation(snapshot.donation as number)
-    setEditInclureRc(snapshot.inclureRc as number)
     setEditObservation(snapshot.observation as string)
     setEditIDClient(snapshot.IDclient as number)
     setEditRefClient(snapshot.refClient as string)
@@ -322,13 +318,12 @@ export function ClientsExpeditions() {
     if (editIDAdresse !== o.IDadresse) return true
     if (editIDContact !== o.IDcontact) return true
     if (editDonation !== o.donation) return true
-    if (editInclureRc !== o.inclureRc) return true
     if (editObservation !== o.observation) return true
     if (editIDClient !== o.IDclient) return true
     if (editRefClient !== o.refClient) return true
     if (linesDirty) return true
     return false
-  }, [isEditing, editDate, editIDTransporteur, editIDAdresse, editIDContact, editDonation, editInclureRc, editObservation, editIDClient, editRefClient, linesDirty])
+  }, [isEditing, editDate, editIDTransporteur, editIDAdresse, editIDContact, editDonation, editObservation, editIDClient, editRefClient, linesDirty])
 
   const saveHeaderMut = useMutation({
     mutationFn: () => apiFetch(`/expeditions/${bucket}/${selectedId}`, {
@@ -341,7 +336,6 @@ export function ClientsExpeditions() {
               IDadresse: editIDAdresse || 0,
               IDcontact: editIDContact || 0,
               donation: editDonation ? 1 : 0,
-              inclureRapportQualite: editInclureRc ? 1 : 0,
               observation_bl: editObservation,
             }
           : {
@@ -475,7 +469,6 @@ export function ClientsExpeditions() {
             editIDAdresse={editIDAdresse} onEditIDAdresseChange={setEditIDAdresse}
             editIDContact={editIDContact} onEditIDContactChange={setEditIDContact}
             editDonation={editDonation} onEditDonationChange={setEditDonation}
-            editInclureRc={editInclureRc} onEditInclureRcChange={setEditInclureRc}
             editObservation={editObservation} onEditObservationChange={setEditObservation}
             editIDClient={editIDClient} onEditIDClientChange={setEditIDClient}
             editRefClient={editRefClient} onEditRefClientChange={setEditRefClient}
@@ -539,13 +532,11 @@ export function ClientsExpeditions() {
           pdfUrl={`${API_URL}/expeditions/${bucket}/${selectedId}/pdf`}
           pdfAttachmentLabel={bucket === 'formelle' ? `BL-${selectedId}.pdf` : `BL-divers-${selectedId}.pdf`}
           optionalServerAttachments={bucket === 'formelle' ? [
-            { id: 'rapport-controle', label: `RC-${selectedId}.pdf`, url: `${API_URL}/expeditions/formelle/${selectedId}/rapport-controle/pdf`, defaultChecked: false },
             { id: 'info-matieres', label: `Info-matieres-${selectedId}.pdf`, url: `${API_URL}/expeditions/formelle/${selectedId}/info-matieres/pdf`, defaultChecked: false },
           ] : undefined}
           onSend={(p) => postEmail(`${API_URL}/expeditions/${bucket}/${selectedId}/email`, p, {
             includeAttachPdf: true,
             extraBody: bucket === 'formelle' ? {
-              attach_rapport_controle: p.optionalAttachments?.['rapport-controle'] ?? false,
               attach_info_matieres: p.optionalAttachments?.['info-matieres'] ?? false,
             } : {},
           })}
@@ -984,11 +975,11 @@ function PrintMenuButton({ expeditionId, blBlocked }: { expeditionId: number; bl
     setMenuOpen(false)
   }
 
-  // The avis itself is the BL: it waits for a real address (LIVA #1189). The
-  // two quality documents carry no delivery address and stay available.
+  // The avis itself is the BL: it waits for a real address (LIVA #1189). Info
+  // matières carries no delivery address and stays available. (The rapport de
+  // contrôle is sent per lot from Qualité › Suivi lots since LIVA #1304.)
   const items = [
     { label: "Avis d'expédition", icon: Truck, path: '/pdf', blocked: blBlocked },
-    { label: 'Rapport de contrôle', icon: ClipboardCheck, path: '/rapport-controle/pdf', blocked: false },
     { label: 'Info matières', icon: Layers, path: '/info-matieres/pdf', blocked: false },
   ]
 
@@ -1953,7 +1944,6 @@ function DetailSidebar({
   editIDAdresse, onEditIDAdresseChange,
   editIDContact, onEditIDContactChange,
   editDonation, onEditDonationChange,
-  editInclureRc, onEditInclureRcChange,
   editObservation, onEditObservationChange,
   editIDClient, onEditIDClientChange,
   editRefClient, onEditRefClientChange,
@@ -1966,7 +1956,6 @@ function DetailSidebar({
   editIDAdresse: number; onEditIDAdresseChange: (v: number) => void
   editIDContact: number; onEditIDContactChange: (v: number) => void
   editDonation: number; onEditDonationChange: (v: number) => void
-  editInclureRc: number; onEditInclureRcChange: (v: number) => void
   editObservation: string; onEditObservationChange: (v: string) => void
   editIDClient: number; onEditIDClientChange: (v: number) => void
   editRefClient: string; onEditRefClientChange: (v: string) => void
@@ -2030,7 +2019,6 @@ function DetailSidebar({
               editIDAdresse={editIDAdresse} onEditIDAdresseChange={onEditIDAdresseChange}
               editIDContact={editIDContact} onEditIDContactChange={onEditIDContactChange}
               editDonation={editDonation} onEditDonationChange={onEditDonationChange}
-              editInclureRc={editInclureRc} onEditInclureRcChange={onEditInclureRcChange}
               editObservation={editObservation} onEditObservationChange={onEditObservationChange}
               editIDClient={editIDClient} onEditIDClientChange={onEditIDClientChange}
               editRefClient={editRefClient} onEditRefClientChange={onEditRefClientChange}
@@ -2087,7 +2075,6 @@ function InfoTab({
   editIDAdresse, onEditIDAdresseChange,
   editIDContact, onEditIDContactChange,
   editDonation, onEditDonationChange,
-  editInclureRc, onEditInclureRcChange,
   editObservation, onEditObservationChange,
   editIDClient, onEditIDClientChange,
   editRefClient, onEditRefClientChange,
@@ -2102,7 +2089,6 @@ function InfoTab({
   editIDAdresse: number; onEditIDAdresseChange: (v: number) => void
   editIDContact: number; onEditIDContactChange: (v: number) => void
   editDonation: number; onEditDonationChange: (v: number) => void
-  editInclureRc: number; onEditInclureRcChange: (v: number) => void
   editObservation: string; onEditObservationChange: (v: string) => void
   editIDClient: number; onEditIDClientChange: (v: number) => void
   editRefClient: string; onEditRefClientChange: (v: string) => void
@@ -2147,11 +2133,6 @@ function InfoTab({
             <KV label="Donation" value={isEditing ? (
               <ToggleSwitch value={editDonation === 1} onChange={(v) => onEditDonationChange(v ? 1 : 0)} />
             ) : (expedition.donation ? 'Oui' : 'Non')} />
-            {/* Per-shipment mirror of the client's inclureRapportQualite —
-                drives the "Rapport de contrôle" default in the email dialog. */}
-            <KV label="Rapport de contrôle" value={isEditing ? (
-              <ToggleSwitch value={editInclureRc === 1} onChange={(v) => onEditInclureRcChange(v ? 1 : 0)} />
-            ) : (expedition.inclureRapportQualite ? 'Oui' : 'Non')} />
           </>
         )}
       </div>

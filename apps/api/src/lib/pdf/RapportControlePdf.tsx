@@ -1,11 +1,11 @@
-// PDF document for the "Rapport de contrôle" (quality control report) that
-// accompanies a client expedition. Ports the legacy WinDev ETAT_RapportQualité
-// (filename RC<expeditionId>.pdf) to the ETM design language:
-//  - top row: shipment metadata card (client, n° commande, réf. client) —
-//    the avis number doubles as the RC number in the branded header
-//  - one section per shipped article: identity block (ref - coloris,
-//    designation), then a framed 5-column table with the rows grouped per
-//    lot: LOT · PARAMÈTRE · VALEUR MIN · VALEUR MAX · VALEUR RELEVÉE
+// PDF document for the "Rapport de contrôle" (quality control report) of ONE
+// lot, sent to one client from Qualité › Suivi lots (LIVA #1304; it used to
+// ride on the BL of each shipment — the legacy WinDev ETAT_RapportQualité,
+// RC<expeditionId>.pdf). Layout, in the ETM design language:
+//  - top row: metadata card (client, n° commande(s), réf. client, lot)
+//  - the article: identity block (ref - coloris, designation), then a framed
+//    5-column table: LOT · PARAMÈTRE · VALEUR MIN · VALEUR MAX · VALEUR RELEVÉE
+//  - the client's pieces of the lot (numéro, poids, métrage) — only theirs
 // Tolerances come from ref_fini (laizeHT/poids min-max, stab_hauteur/largeur)
 // and the "valeur relevée" is the in-house tirelle measurement from suivilot.
 // Legacy prints the same fixed 4 parameters (Laize HT, Poids, Stab H, Stab L)
@@ -33,21 +33,30 @@ export interface RcLot {
   rows: RcRow[]
 }
 
+export interface RcPiece {
+  numero: string
+  poids: number
+  metrage: number
+}
+
 export interface RcArticle {
   /** "228/122 - 0481 rouge intense 61221/1" (ref · coloris) */
   titre: string
   /** "Jersey Coton 115g" (designation) */
   sousTitre: string | null
   lots: RcLot[]
+  /** The client's pieces of the lot. */
+  pieces: RcPiece[]
 }
 
 export interface RapportControlePdfData {
-  /** The expedition id — RC number == avis d'expédition number. */
-  numero: number
+  /** The lot — the report's reference in the branded header. */
+  lot: string
   /** "17 mars 2026" — long-form French. */
   dateLong: string
   clientNom: string
-  commandeNumero: number | null
+  /** The client's order numbers the pieces are affected to. */
+  commandes: string[]
   refClient: string | null
   articles: RcArticle[]
 }
@@ -130,7 +139,17 @@ const styles = StyleSheet.create({
   releveOk: { color: '#16A34A' },      // within tolerance — green (matches legacy RC)
   releveOut: { color: '#DC2626' },     // out of tolerance — red
   releveMissing: { color: colors.muted },
+
+  piecesTitle: { marginTop: 12, fontSize: sizes.fontXs, color: colors.muted, fontWeight: 900, letterSpacing: 0.5 },
+  colPiece: { flex: 1, paddingRight: 6 },
+  totalRow: { flexDirection: 'row', paddingVertical: 5, paddingHorizontal: 10, backgroundColor: colors.bgMuted },
 })
+
+function fmtDec(value: number, digits: number): string {
+  return value
+    .toLocaleString('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+    .replace(/[  ]/g, ' ')
+}
 
 /** Tolerance check for a measured value. Bounds are open-ended when null
  *  (stab rows only carry a min). No bounds at all → no verdict (neutral). */
@@ -157,27 +176,31 @@ export function RapportControlePdf({ data }: { data: RapportControlePdfData }) {
     <MalterreDocument
       // No accent on purpose — the uppercased Ô renders badly in the header font.
       documentType="Rapport de controle"
-      reference={`N°${data.numero}`}
+      reference={`Lot ${data.lot}`}
       documentDate={data.dateLong || ''}
-      title={`Rapport de contrôle ${data.numero}`}
+      title={`Rapport de contrôle ${data.lot}`}
     >
-      {/* Shipment metadata */}
+      {/* Lot metadata */}
       <View style={styles.topRow}>
         <View style={styles.topRowSlot}>
           <View style={styles.metaCard}>
             <MetaRow icon={<UserIcon />} label="Client" value={data.clientNom || '—'} />
-            {data.commandeNumero != null ? (
-              <MetaRow icon={<TagIcon />} label="N° commande" value={String(data.commandeNumero)} />
+            {data.commandes.length > 0 ? (
+              <MetaRow
+                icon={<TagIcon />}
+                label={data.commandes.length > 1 ? 'N° commandes' : 'N° commande'}
+                value={data.commandes.join(', ')}
+              />
             ) : null}
             {data.refClient ? (
               <MetaRow icon={<MessageSquareIcon />} label="Réf. client" value={data.refClient} />
             ) : null}
-            <MetaRow icon={<TagIcon />} label="Avis d'expédition" value={String(data.numero)} />
+            <MetaRow icon={<TagIcon />} label="Lot" value={data.lot} />
           </View>
         </View>
       </View>
 
-      {/* One section per shipped article */}
+      {/* The lot's article (one; the shape keeps a list) */}
       {data.articles.map((article, ai) => (
         <View key={ai} style={styles.article}>
           <View wrap={false} minPresenceAhead={100}>
@@ -227,6 +250,39 @@ export function RapportControlePdf({ data }: { data: RapportControlePdfData }) {
               )),
             )}
           </View>
+
+          {article.pieces.length > 0 ? (
+            <>
+              <Text style={styles.piecesTitle}>
+                {article.pieces.length > 1 ? `VOS ${article.pieces.length} PIÈCES DE CE LOT` : 'VOTRE PIÈCE DE CE LOT'}
+              </Text>
+              <View style={[styles.table, { marginTop: 4 }]}>
+                <View style={styles.tableHeader} fixed>
+                  <Text style={[styles.tableHeaderCell, styles.colPiece]}>PIÈCE</Text>
+                  <Text style={[styles.tableHeaderCell, styles.colNum]}>POIDS (KG)</Text>
+                  <Text style={[styles.tableHeaderCell, styles.colNum]}>MÉTRAGE (ML)</Text>
+                </View>
+                {article.pieces.map((p, pi) => (
+                  <View key={pi} style={styles.tableRow} wrap={false}>
+                    <Text style={[styles.cellBase, styles.colPiece]}>{p.numero}</Text>
+                    <Text style={[styles.cellBase, styles.colNum]}>{fmtDec(p.poids, 1)}</Text>
+                    <Text style={[styles.cellBase, styles.colNum]}>{fmtDec(p.metrage, 1)}</Text>
+                  </View>
+                ))}
+                {article.pieces.length > 1 ? (
+                  <View style={styles.totalRow} wrap={false}>
+                    <Text style={[styles.cellBase, styles.colPiece, { fontWeight: 900 }]}>Total</Text>
+                    <Text style={[styles.cellBase, styles.colNum, { fontWeight: 900 }]}>
+                      {fmtDec(article.pieces.reduce((t, p) => t + p.poids, 0), 1)}
+                    </Text>
+                    <Text style={[styles.cellBase, styles.colNum, { fontWeight: 900 }]}>
+                      {fmtDec(article.pieces.reduce((t, p) => t + p.metrage, 0), 1)}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            </>
+          ) : null}
         </View>
       ))}
     </MalterreDocument>

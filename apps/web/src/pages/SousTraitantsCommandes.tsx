@@ -149,7 +149,7 @@ interface CommandeListRow {
 
 /** Ennoblissement: an order's cycle (API lib/cycle-ennoblissement.ts). */
 type MainCycle = 'teinturier' | 'nous' | 'client'
-type EtapeLot = 'attente_mesures' | 'attente_tirelle' | 'a_soumettre' | 'soumis' | 'a_valider' | 'en_reprise' | 'valide' | 'expedie'
+type EtapeLot = 'attente_mesures' | 'attente_tirelle' | 'a_soumettre' | 'soumis' | 'refuse_client' | 'rc_a_envoyer' | 'a_valider' | 'en_reprise' | 'valide'
 interface LotCycle {
   lot: string
   idsuivilot: number
@@ -478,45 +478,6 @@ interface TricoteurPiecesPayload {
   coloris_manquant?: boolean
 }
 
-// Returned by GET /:id/soumission/lots-eligibles. One entry per
-// (ref_fini, coloris, lot, commande_client) group; only includes groups
-// whose (client, ref_fini) pair has designation_client.soumettre = 1.
-interface EligibleLot {
-  /** 'received' = lot string is already known from received fini rolls;
-   *  'manual' = no fini received yet, écru affectations identify the
-   *  client, user types the lot at picker time. */
-  kind: 'received' | 'manual'
-  IDref_fini: number
-  IDColoris: number
-  lot: string                  // '' for manual
-  IDcommande_client: number
-  IDclient: number
-  client_nom: string
-  ref_malterre: string
-  client_designation: string
-  coloris_reference: string
-  numero: number               // commande_client.numero
-  date_commande: string        // commande_client.date_commande (YYYYMMDD)
-  nb_rolls: number             // 0 for manual
-  total_metrage: number        // 0 for manual
-  key: string
-}
-
-// A received lot the picker cannot offer, and why (LIVA #1302) — rule in
-// apps/api/src/lib/soumission-lots-bloques.ts.
-interface LotBloque {
-  lot: string
-  /** non_reserve = no roll reserved to a client order line;
-   *  sans_soumission = reserved, but the client asks no soumission for the ref. */
-  raison: 'non_reserve' | 'sans_soumission'
-  nb_rolls: number
-  total_metrage: number
-  /** Client order the écru pieces are still reserved to (non_reserve). */
-  reservation_ecru: { numero: number; client_nom: string } | null
-  /** Client order the rolls are reserved to (sans_soumission). */
-  commande_client: { numero: number; client_nom: string } | null
-}
-
 // ── Shared styling ─────────────────────────────────────
 
 const inputClass = 'w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
@@ -599,7 +560,8 @@ const SST_PHASE_META: Record<SstPhase, {
   a_lancer:       { label: 'À lancer',         icon: Hourglass,    solid: 'bg-yellow-500 border-yellow-500' },
   en_tricotage:   { label: 'En tricotage',     icon: Cog,          solid: 'bg-primary border-primary' },
   // Ennoblissement: the dyer works, lots come back, everything validated.
-  en_teinture:    { label: 'En teinture',      icon: Clock,        solid: 'bg-primary border-primary' },
+  // « En traitement », not « teinture »: a dyer also washes only (2026-10-22).
+  en_teinture:    { label: 'En traitement',    icon: Clock,        solid: 'bg-primary border-primary' },
   en_reception:   { label: 'En réception',     icon: Eye,          solid: 'bg-amber-500 border-amber-500' },
   a_cloturer:     { label: 'À clôturer',       icon: CheckCircle2, solid: 'bg-teal-600 border-teal-600' },
 }
@@ -611,9 +573,10 @@ const ETAPE_LOT_META: Record<EtapeLot, { label: string; classes: string }> = {
   en_reprise:      { label: 'En reprise',      classes: 'bg-orange-100 text-orange-800 border-orange-200' },
   soumis:          { label: 'Soumis au client', classes: 'bg-violet-100 text-violet-800 border-violet-200' },
   a_soumettre:     { label: 'À soumettre',     classes: 'bg-amber-100 text-amber-800 border-amber-200' },
+  refuse_client:   { label: 'Refusé par le client', classes: 'bg-red-100 text-red-700 border-red-200' },
+  rc_a_envoyer:    { label: 'Rapport à envoyer', classes: 'bg-amber-100 text-amber-800 border-amber-200' },
   a_valider:       { label: 'À valider',       classes: 'bg-amber-100 text-amber-800 border-amber-200' },
   valide:          { label: 'Validé',          classes: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
-  expedie:         { label: 'Expédié',         classes: 'bg-zinc-100 text-zinc-700 border-zinc-200' },
 }
 
 const MAIN_LABEL: Record<MainCycle, string> = { teinturier: 'Teinturier', nous: 'À nous', client: 'Client' }
@@ -888,11 +851,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
   // The server's refusal (409 on an order TRM has started work on) —
   // shown in the confirm dialog; a mute spinner was LIVA #1184.
   const [deleteCommandeError, setDeleteCommandeError] = useState<string | null>(null)
-  // Soumission Lot — eligibility-gated workflow that opens the email modal
-  // with a freshly-built soumission PDF attached. See plan file.
-  const [soumissionPickerOpen, setSoumissionPickerOpen] = useState(false)
-  const [soumissionEmailOpen, setSoumissionEmailOpen] = useState(false)
-  const [selectedSoumissionLot, setSelectedSoumissionLot] = useState<EligibleLot | null>(null)
 
   // Edit-mode draft state
   const [editDateCommande, setEditDateCommande] = useState('')
@@ -1040,31 +998,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
     queryFn: () => apiFetch(`/commandes-sous-traitant/${selectedId}`),
     enabled: selectedId !== null,
   })
-
-  // Soumission Lot eligibility — only fires in view mode for the selected
-  // commande. Empty array means the "Soumettre au client" button is hidden.
-  const { data: soumissionEligibility, refetch: refetchSoumission } = useQuery<{ lots: EligibleLot[]; bloques?: LotBloque[] }>({
-    queryKey: ['commande-sst-lots-eligibles', selectedId],
-    queryFn: () => apiFetch(`/commandes-sous-traitant/${selectedId}/soumission/lots-eligibles`),
-    // A client soumission is a dyed lot: never on a knitting order.
-    enabled: famille === 'ennoblissement' && selectedId !== null && !isEditing,
-    // Eligibility hangs on the rolls' client reservation, changed from
-    // Clients › Commandes: never serve a stale list (LIVA #1302 — the
-    // blocked lot only showed after a page refresh).
-    ...STOCK_QUERY_FRESHNESS,
-  })
-  const eligibleLots = soumissionEligibility?.lots ?? []
-  const lotsBloques = soumissionEligibility?.bloques ?? []
-
-  // Always through the picker, even for a single candidate: it names the lot
-  // being sent and lists the received lots that cannot be (LIVA #1302 — a
-  // direct jump to the only candidate's email sent MA109373 again while the
-  // user was looking for MA109374, whose rolls were reserved to no client).
-  const onSoumettreClick = useCallback(() => {
-    if (eligibleLots.length + lotsBloques.length === 0) return
-    void refetchSoumission()
-    setSoumissionPickerOpen(true)
-  }, [eligibleLots, lotsBloques, refetchSoumission])
 
   // Auto-select the first row whenever the list filter changes (initial
   // load, status filter switch, or search query update). When the new
@@ -1301,8 +1234,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
               }
             }}
             onEmailClick={() => setEmailModalOpen(true)}
-            onSoumettreClick={onSoumettreClick}
-            soumettreEligibleCount={eligibleLots.length + lotsBloques.length}
           />
         }
         detail={
@@ -1400,70 +1331,8 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
         />
       )}
 
-      {/* Soumission Lot picker — shown when multiple lots are eligible. */}
-      <SoumissionLotPicker
-        open={soumissionPickerOpen}
-        lots={eligibleLots}
-        bloques={lotsBloques}
-        onClose={() => setSoumissionPickerOpen(false)}
-        onSelect={(lot) => {
-          setSelectedSoumissionLot(lot)
-          setSoumissionPickerOpen(false)
-          setSoumissionEmailOpen(true)
-        }}
-      />
-
-      {/* Soumission Lot email modal — reuses SendEmailDialog with the
-          soumission-specific endpoints. PDF + recipients regenerate
-          server-side per lot when the user sends. */}
-      {selectedId !== null && selectedSoumissionLot && (
-        <SendEmailDialog
-          open={soumissionEmailOpen}
-          onClose={() => {
-            setSoumissionEmailOpen(false)
-            setSelectedSoumissionLot(null)
-          }}
-          contextLabel={`Lot ${selectedSoumissionLot.lot} · ${selectedSoumissionLot.client_nom}`}
-          queryKey={['commande-sst-soumission-email-defaults', selectedId, selectedSoumissionLot.key]}
-          loadDefaults={() => apiFetch(
-            `/commandes-sous-traitant/${selectedId}/soumission/email-defaults?${buildSoumissionLotQuery(selectedSoumissionLot)}`,
-          )}
-          pdfUrl={`${API_URL}/commandes-sous-traitant/${selectedId}/soumission/pdf?${buildSoumissionLotQuery(selectedSoumissionLot)}`}
-          pdfAttachmentLabel={`soumission-lot-${selectedSoumissionLot.lot}.pdf`}
-          onSend={async (p) => {
-            await postEmail(
-              `${API_URL}/commandes-sous-traitant/${selectedId}/soumission/email`,
-              p,
-              {
-                includeAttachPdf: true,
-                extraBody: {
-                  ref_fini: selectedSoumissionLot.IDref_fini,
-                  coloris: selectedSoumissionLot.IDColoris,
-                  lot: selectedSoumissionLot.lot,
-                  commande_client: selectedSoumissionLot.IDcommande_client,
-                },
-              },
-            )
-            // Soumission send logs an envoi_email row (IDtype_doc=15) which the
-            // phase computation reads to flip the commande to 'soumis', AND
-            // sets the lot to "Attente Client" on Qualité › Suivi des lots.
-            // Refresh both screens + the historique tab.
-            invalidateLotQualityCaches(queryClient)
-            queryClient.invalidateQueries({ queryKey: ['commande-sst-historique', selectedId] })
-          }}
-        />
-      )}
     </>
   )
-}
-
-function buildSoumissionLotQuery(lot: EligibleLot): string {
-  return new URLSearchParams({
-    ref_fini: String(lot.IDref_fini),
-    coloris: String(lot.IDColoris),
-    lot: lot.lot,
-    commande_client: String(lot.IDcommande_client),
-  }).toString()
 }
 
 // ── Left Panel: List ───────────────────────────────────
@@ -1696,7 +1565,6 @@ function DetailHeader({
   commande, isLoading, isEditing,
   onStartEdit, onCancelEdit, onSave, isSaving,
   onDelete, onPrintClick, onEmailClick,
-  onSoumettreClick, soumettreEligibleCount,
 }: {
   commande: CommandeDetail | null
   isLoading: boolean
@@ -1708,10 +1576,6 @@ function DetailHeader({
   onDelete: () => void
   onPrintClick: () => void
   onEmailClick: () => void
-  /** Opens the soumission picker. */
-  onSoumettreClick: () => void
-  /** Eligible + blocked lots from /lots-eligibles. Button is hidden when 0. */
-  soumettreEligibleCount: number
 }) {
   if (!commande && !isLoading) return null
 
@@ -1778,17 +1642,6 @@ function DetailHeader({
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmailClick}>
                   <AtSign className="h-4 w-4" />
                 </Button>
-                {soumettreEligibleCount > 0 && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9"
-                    title="Soumettre au client"
-                    onClick={onSoumettreClick}
-                  >
-                    <Send className="h-4 w-4" />
-                  </Button>
-                )}
                 <Button variant="gold" size="sm" onClick={onStartEdit}>
                   <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
                 </Button>
@@ -1802,216 +1655,6 @@ function DetailHeader({
   )
 }
 
-// ── Soumission Lot picker ─────────────────────────────────
-// Modelled on AdressePickerDialog (line ~3494). Renders two flavours of
-// candidate:
-//   - 'received' (lot known) → click sends straight to email modal
-//   - 'manual'   (no fini yet) → expands an inline "Numéro de lot" input;
-//                                user types the lot then clicks Continuer
-function SoumissionLotPicker({
-  open, lots, bloques, onClose, onSelect,
-}: {
-  open: boolean
-  lots: EligibleLot[]
-  /** Received lots that cannot be submitted — shown greyed with the reason. */
-  bloques: LotBloque[]
-  onClose: () => void
-  /** For manual entries the caller receives the candidate with `lot` set
-   *  to the user-typed string — the downstream URL/params machinery is
-   *  identical to the received path. */
-  onSelect: (lot: EligibleLot) => void
-}) {
-  // Which manual entry is currently expanded for lot input, and the typed
-  // value. Keyed by candidate.key.
-  const [manualKey, setManualKey] = useState<string | null>(null)
-  const [manualLot, setManualLot] = useState('')
-  // Reset edit state whenever the dialog reopens.
-  useEffect(() => {
-    if (!open) { setManualKey(null); setManualLot('') }
-  }, [open])
-
-  const received = lots.filter((l) => l.kind === 'received')
-  const manual = lots.filter((l) => l.kind === 'manual')
-
-  const confirmManual = (lot: EligibleLot) => {
-    const v = manualLot.trim()
-    if (!v) return
-    onSelect({ ...lot, lot: v })
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-lg space-y-4" onClose={onClose}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Send className="h-5 w-5 text-accent" />
-            Choisir un lot à soumettre
-          </DialogTitle>
-        </DialogHeader>
-        <div className="max-h-[60vh] overflow-y-auto space-y-3 px-1">
-          {received.length > 0 && (
-            <div className="space-y-2">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground px-1">Lots reçus</div>
-              {received.map((lot) => (
-                <button
-                  key={lot.key}
-                  type="button"
-                  onClick={() => onSelect(lot)}
-                  className="w-full text-left p-3 rounded-md border border-zinc-200 hover:border-accent hover:bg-accent/5 transition-colors"
-                >
-                  <div className="flex items-baseline justify-between gap-3">
-                    <div className="text-sm font-semibold text-primary truncate">
-                      Lot {lot.lot}
-                    </div>
-                    <div className="text-xs text-muted-foreground flex-shrink-0">
-                      {lot.client_nom}
-                    </div>
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {lot.ref_malterre}
-                    {lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}
-                  </div>
-                  {lot.numero > 0 && (
-                    <div className="text-xs mt-1">
-                      <span className="font-medium text-foreground tabular-nums">Commande N° {lot.numero}</span>
-                      {lot.date_commande ? <span className="text-muted-foreground"> · {formatHfsqlDate(lot.date_commande)}</span> : ''}
-                    </div>
-                  )}
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {lot.nb_rolls} rouleau{lot.nb_rolls > 1 ? 'x' : ''} · {fmtNum(lot.total_metrage, 1)} Ml
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {manual.length > 0 && (
-            <div className="space-y-2">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground px-1">
-                Saisir un lot (aucun rouleau réceptionné)
-              </div>
-              {manual.map((lot) => {
-                const expanded = manualKey === lot.key
-                return (
-                  <div
-                    key={lot.key}
-                    className={`p-3 rounded-md border transition-colors ${
-                      expanded ? 'border-accent bg-accent/5' : 'border-zinc-200 hover:border-accent hover:bg-accent/5'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (expanded) { setManualKey(null); setManualLot('') }
-                        else { setManualKey(lot.key); setManualLot('') }
-                      }}
-                      className="w-full text-left"
-                    >
-                      <div className="flex items-baseline justify-between gap-3">
-                        <div className="text-sm font-semibold text-primary truncate">
-                          {lot.client_nom}
-                        </div>
-                        <div className="text-xs text-muted-foreground flex-shrink-0">
-                          {lot.ref_malterre}
-                          {lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}
-                        </div>
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1">
-                        Réf client : {lot.client_designation || '—'}
-                      </div>
-                      {lot.numero > 0 && (
-                        <div className="text-xs mt-1">
-                          <span className="font-medium text-foreground tabular-nums">Commande N° {lot.numero}</span>
-                          {lot.date_commande ? <span className="text-muted-foreground"> · {formatHfsqlDate(lot.date_commande)}</span> : ''}
-                        </div>
-                      )}
-                    </button>
-                    {!!expanded && (
-                      <div className="mt-3 flex items-center gap-2">
-                        <input
-                          autoFocus
-                          type="text"
-                          value={manualLot}
-                          onChange={(e) => setManualLot(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') { e.preventDefault(); confirmManual(lot) }
-                            if (e.key === 'Escape') { e.preventDefault(); setManualKey(null); setManualLot('') }
-                          }}
-                          placeholder="Numéro de lot"
-                          className="flex-1 h-9 px-3 rounded-md border border-zinc-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
-                        />
-                        <Button
-                          variant="gold"
-                          size="sm"
-                          disabled={!manualLot.trim()}
-                          onClick={() => confirmManual(lot)}
-                        >
-                          Continuer
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {lots.length === 0 && (
-            <p className="text-sm text-muted-foreground italic px-2 py-4 text-center">
-              Aucun lot éligible
-            </p>
-          )}
-
-          {bloques.length > 0 && (
-            <div className="space-y-2">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground px-1">
-                Lots reçus non soumissibles
-              </div>
-              {bloques.map((b) => (
-                <div
-                  key={b.lot}
-                  className="p-3 rounded-md border border-dashed border-amber-400/60 bg-amber-50/60 cursor-not-allowed"
-                >
-                  <div className="flex items-baseline justify-between gap-3">
-                    <div className="text-sm font-semibold text-muted-foreground truncate">
-                      Lot {b.lot}
-                    </div>
-                    <div className="text-xs text-muted-foreground flex-shrink-0 tabular-nums">
-                      {b.nb_rolls} rouleau{b.nb_rolls > 1 ? 'x' : ''} · {fmtNum(b.total_metrage, 1)} Ml
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-1.5 mt-1.5 text-xs text-amber-800">
-                    <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
-                    <span>{lotBloqueMessage(b)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={onClose}>Annuler</Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-
-// Why a received lot cannot be submitted, and what to do about it.
-function lotBloqueMessage(b: LotBloque): string {
-  const cde = (c: { numero: number; client_nom: string }) =>
-    `la commande N° ${c.numero}${c.client_nom ? ` (${c.client_nom})` : ''}`
-  if (b.raison === 'sans_soumission') {
-    return `Le client ne demande pas de soumission pour cette référence${b.commande_client ? ` (rouleaux réservés à ${cde(b.commande_client)})` : ''}. À activer dans Clients › Gestion › Références.`
-  }
-  // The écru reservation is the history the fini leaves behind (#1188): state
-  // it as a fact, never as a story about who removed what.
-  return b.reservation_ecru
-    ? `Aucun rouleau n’est réservé à une commande client. Les pièces écru de ce lot sont réservées à ${cde(b.reservation_ecru)} : affectez les rouleaux à cette commande pour pouvoir soumettre ce lot.`
-    : 'Aucun rouleau n’est réservé à une commande client. Affectez-les à une ligne client (Clients › Commandes) pour pouvoir soumettre ce lot.'
-
-}
 
 // ── Center: Detail Main ────────────────────────────────
 
@@ -6908,7 +6551,7 @@ function CycleCard({ commande, cycle, isEditing, editDateNotif, onEditDateNotifC
     <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', relanceEditable && editSectionClass)}>
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-          {/* En teinture: the date is the dyer's délai, not a chase we chose. */}
+          {/* En traitement: the date is the dyer's délai, not a chase we chose. */}
           <BellRing className="h-3.5 w-3.5 text-accent" />{commande.phase === 'en_teinture' ? 'Délai' : 'Relance'}
         </span>
         {relanceEditable ? (
