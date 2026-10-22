@@ -34,6 +34,7 @@ import { etudesColorisRouter } from './routes/etudes-coloris.js'
 import { prospectsRouter } from './routes/prospects.js'
 import { stockRouter } from './routes/stock.js'
 import { stockFiniRouter } from './routes/stock-fini.js'
+import { stockPotentielRouter } from './routes/stock-potentiel.js'
 import { stockEcruRouter } from './routes/stock-ecru.js'
 import { stockEcruTrmRouter } from './routes/stock-ecru-trm.js'
 import { stockFilTrmRouter } from './routes/stock-fil-trm.js'
@@ -198,6 +199,7 @@ app.use('/api/etudes-coloris', etudesColorisRouter)
 app.use('/api/prospects', prospectsRouter)
 app.use('/api/stock', stockRouter)
 app.use('/api/stock', stockFiniRouter)
+app.use('/api/stock', stockPotentielRouter)
 app.use('/api/stock', stockEcruRouter)
 // TRM (IDsociete = 2) écru stock — consumed by the TRM frontend only.
 app.use('/api/stock', stockEcruTrmRouter)

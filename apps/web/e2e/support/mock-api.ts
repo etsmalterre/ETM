@@ -64,7 +64,14 @@ export async function installMockApi(page: Page): Promise<MockApi> {
     if (url.pathname === '/api/fournisseurs') return json(fournisseurs)
 
     if (url.pathname === '/api/stock/fini') {
-      return json(url.searchParams.get('expedie') === 'all' ? stockFiniAll : stockFini)
+      if (url.searchParams.get('expedie') === 'only') {
+        const inStock = new Set(stockFini.map((r) => r.IDstock_fini))
+        return json(stockFiniAll.filter((r) => !inStock.has(r.IDstock_fini)))
+      }
+      return json(stockFini)
+    }
+    if (url.pathname === '/api/stock/fini/lookups/expedies-count') {
+      return json({ count: stockFiniAll.length - stockFini.length })
     }
     if (url.pathname === '/api/stock/fini/lookups/etats') return json(stockFiniEtats)
     if (url.pathname === '/api/stock/fini/lookups/refs') return json(stockFiniRefs)

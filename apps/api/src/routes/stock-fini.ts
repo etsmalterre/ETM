@@ -278,19 +278,38 @@ async function enrichListExtras(rows: StockFini[]): Promise<StockFini[]> {
   return rows
 }
 
+// Written out both ways rather than NOT(...): a NULL column would make the
+// negation NULL and drop the row from both lists.
+const SHIPPED_SQL = `((sf.IDligne_expedition IS NOT NULL AND sf.IDligne_expedition <> 0) OR sf.IDetat_stock_fini = 4)`
+const IN_STOCK_SQL = `(sf.IDligne_expedition IS NULL OR sf.IDligne_expedition = 0) AND (sf.IDetat_stock_fini IS NULL OR sf.IDetat_stock_fini <> 4)`
+
+// GET /api/stock/fini/lookups/expedies-count - how many rolls the « Expédiés »
+// tag would load; the default list never fetches them.
+stockFiniRouter.get('/fini/lookups/expedies-count', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query<{ nb_expedies: number }>(`SELECT COUNT(*) AS nb_expedies FROM stock_fini sf WHERE ${SHIPPED_SQL}`)
+    res.json({ count: Number(rows[0]?.nb_expedies) || 0 })
+  } catch (err) {
+    console.error('Error counting shipped stock_fini:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // GET /api/stock/fini - List stock_fini rows with joined display columns.
 //   ?q=<text>        — fuzzy search across ref/coloris/lot/numero/emplacement/observations/conteneur
 //   ?expedie=all     — include rolls already shipped (default hides them)
+//   ?expedie=only    — only the rolls already shipped (the « Expédiés » tag)
 stockFiniRouter.get('/fini', async (req: Request, res: Response) => {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
-    const showShipped = req.query.expedie === 'all'
+    const expedie = req.query.expedie
 
     const where: string[] = []
-    // HFSQL stores "no FK" as 0 (not NULL). Hide rolls that have shipped:
-    //   - IDligne_expedition = 0 means not on a shipment slip
-    //   - IDetat_stock_fini = 4 means "Expédié" état (manual flag)
-    if (!showShipped) where.push(`(sf.IDligne_expedition IS NULL OR sf.IDligne_expedition = 0) AND (sf.IDetat_stock_fini IS NULL OR sf.IDetat_stock_fini <> 4)`)
+    // HFSQL stores "no FK" as 0 (not NULL). A roll has left stock when either
+    //   - IDligne_expedition > 0 (on a shipment slip), or
+    //   - IDetat_stock_fini = 4 ("Expédié" état — also a donation's exit)
+    if (expedie === 'only') where.push(SHIPPED_SQL)
+    else if (expedie !== 'all') where.push(IN_STOCK_SQL)
     if (q) {
       const e = esc(q)
       where.push(

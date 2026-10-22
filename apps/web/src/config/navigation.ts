@@ -267,6 +267,7 @@ export const mainNavigation: MainMenuItem[] = [
     submenus: [
       { title: 'Références', href: '/finis/references' },
       { title: 'Stock', href: '/finis/stock' },
+      { title: 'Stock potentiel', href: '/finis/stock-potentiel' },
       { title: 'Études coloris', href: '/finis/etudes-coloris' },
       { title: 'Tarifs', href: '/finis/tarifs' },
     ],
@@ -398,6 +399,7 @@ export const routeTitles: Record<string, string> = {
   '/finis': 'Finis',
   '/finis/references': 'Références',
   '/finis/stock': 'Stock',
+  '/finis/stock-potentiel': 'Stock potentiel',
   '/finis/etudes-coloris': 'Études coloris',
   '/finis/tarifs': 'Tarifs',
   // Divers

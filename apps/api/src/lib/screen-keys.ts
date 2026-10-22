@@ -121,6 +121,7 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     screens: [
       { href: '/finis/references', label: 'Références' },
       { href: '/finis/stock', label: 'Stock' },
+      { href: '/finis/stock-potentiel', label: 'Stock potentiel' },
       { href: '/finis/etudes-coloris', label: 'Études coloris' },
       { href: '/finis/tarifs', label: 'Tarifs' },
     ],

@@ -72,7 +72,9 @@ import {
 import {
   SmartSearchInput,
   filterRowsByChips,
+  filterRowsByTags,
   type SearchChip,
+  type SearchTagDef,
 } from '@/components/stock/SmartSearchInput'
 
 // ── Types ──────────────────────────────────────────────
@@ -135,9 +137,9 @@ function withDefaultMagasin(r: StockFiniRow): StockFiniRow {
   return r.magasin_nom ? r : { ...r, magasin_nom: 'Malterre' }
 }
 
-function useStockFiniList(filters: { hideShipped: boolean }) {
+function useStockFiniList(filters: { expedies: boolean }) {
   const params = new URLSearchParams()
-  if (!filters.hideShipped) params.set('expedie', 'all')
+  if (filters.expedies) params.set('expedie', 'only')
   const qs = params.toString()
   return useQuery<StockFiniRow[]>({
     queryKey: ['stock-fini', filters],
@@ -145,6 +147,73 @@ function useStockFiniList(filters: { hideShipped: boolean }) {
     select: (rows) => rows.map(withDefaultMagasin),
     ...STOCK_QUERY_FRESHNESS,
   })
+}
+
+const MAX_RENDERED_ROWS = 1000
+
+function TruncatedNote({ shown, total }: { shown: number; total: number }) {
+  if (total <= shown) return null
+  return (
+    <p className="px-3 py-3 text-center text-xs text-muted-foreground italic">
+      {fmtNum(shown)} premiers rouleaux affichés sur {fmtNum(total)} — affinez la recherche pour voir les autres
+      (les totaux et l'export portent sur les {fmtNum(total)}).
+    </p>
+  )
+}
+
+// How many rolls the « Expédiés » tag would load — the list itself never
+// fetches them unless the tag is picked.
+function useExpediesCount() {
+  return useQuery<{ count: number }>({
+    queryKey: ['stock-fini', 'expedies-count'],
+    queryFn: () => apiFetch<{ count: number }>('/stock/fini/lookups/expedies-count'),
+    ...STOCK_QUERY_FRESHNESS,
+  })
+}
+
+// Search-bar tags (SmartSearchInput, like Clients › Commandes), drawn as the
+// drawer's own chips. « Expédiés » swaps the loaded set (server-side, the
+// default list holds only stock); Don and Déstockage filter what is loaded,
+// independently, and AND-combine with it.
+const TAG_EXPEDIES = 'expedies'
+
+function FiniTagPill({ className, icon: Icon, children }: {
+  className: string
+  icon: React.ElementType
+  children: React.ReactNode
+}) {
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap', className)}>
+      <Icon className="h-3 w-3" />{children}
+    </span>
+  )
+}
+
+function stockFiniTags(rows: StockFiniRow[], expediesCount: number): SearchTagDef<StockFiniRow>[] {
+  const defs: Array<{ key: string; label: string; className: string; icon: React.ElementType; count: number; predicate: (r: StockFiniRow) => boolean }> = [
+    {
+      key: TAG_EXPEDIES, label: 'Expédiés', className: 'bg-zinc-200 text-zinc-700 border-zinc-300', icon: Send,
+      count: expediesCount,
+      predicate: (r) => !!r.IDligne_expedition || r.IDetat_stock_fini === 4,
+    },
+    {
+      key: 'don', label: 'Don', className: 'bg-amber-100 text-amber-800 border-amber-200', icon: Gift,
+      count: rows.filter((r) => !!r.don).length,
+      predicate: (r) => !!r.don,
+    },
+    {
+      key: 'destockage', label: 'Déstockage', className: 'bg-stone-100 text-stone-700 border-stone-300', icon: Trash2,
+      count: rows.filter((r) => !!r.destockage).length,
+      predicate: (r) => !!r.destockage,
+    },
+  ]
+  return defs.map((d) => ({
+    key: d.key,
+    label: d.label,
+    renderPill: (trailing) => <FiniTagPill className={d.className} icon={d.icon}>{d.label}{trailing}</FiniTagPill>,
+    count: d.count,
+    predicate: d.predicate,
+  }))
 }
 
 function useStockFiniDetail(id: number | null) {
@@ -440,7 +509,8 @@ export function FinisStock() {
   const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
   // Mount ONE row branch (table at md+, cards below) — see useMediaQuery.
   const isMdUp = useMediaQuery(MD_UP)
-  const [hideShipped, setHideShipped] = useState(true)
+  const [activeTags, setActiveTags] = useState<string[]>([])
+  const showExpedies = activeTags.includes(TAG_EXPEDIES)
   const [sort, setSort] = useState<SortState>({ key: 'date_saisie', dir: 'desc' })
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
@@ -470,7 +540,14 @@ export function FinisStock() {
   // transition so the click stays responsive instead of freezing the UI.
   const [, startModeTransition] = useTransition()
 
-  const { data: rows, isLoading, isError, error } = useStockFiniList({ hideShipped })
+  const { data: rows, isLoading, isError, error } = useStockFiniList({ expedies: showExpedies })
+  const { data: expediesCount } = useExpediesCount()
+  // Counted over the loaded set, before chips and free text (the popover
+  // tells what a tag would add to the current view, not to the typed search).
+  const tags = useMemo(
+    () => stockFiniTags(rows ?? [], expediesCount?.count ?? 0),
+    [rows, expediesCount],
+  )
 
   // Defer the search term so each keystroke updates the input instantly while
   // the (expensive) 1.4k-row filter+sort+reconcile runs at lower priority.
@@ -482,7 +559,8 @@ export function FinisStock() {
     // SOME column (AND across terms, OR across columns). This lets one search
     // combine criteria from different columns — e.g. "029A marine" matches a
     // row whose ref_fini is "029A" AND whose coloris is "marine".
-    let out = filterRowsByChips(rows ?? [], searchChips, rowHaystacks)
+    let out = filterRowsByTags(rows ?? [], activeTags, tags)
+    out = filterRowsByChips(out, searchChips, rowHaystacks)
     const terms = deferredSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
     if (terms.length > 0) {
       out = out.filter((r) => {
@@ -495,7 +573,14 @@ export function FinisStock() {
       return sort.dir === 'asc' ? cmp : -cmp
     })
     return out
-  }, [rows, deferredSearch, searchChips, sort])
+  }, [rows, activeTags, tags, deferredSearch, searchChips, sort])
+  // The « Expédiés » tag loads ~50k rolls; drawing them all froze the tab.
+  // Only the first MAX_RENDERED_ROWS are drawn — totals, export and the
+  // count still cover every filtered row.
+  const renderedRows = useMemo(
+    () => (filteredSorted.length > MAX_RENDERED_ROWS ? filteredSorted.slice(0, MAX_RENDERED_ROWS) : filteredSorted),
+    [filteredSorted],
+  )
 
   const handleSort = useCallback((key: SortKey) => {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -593,7 +678,7 @@ export function FinisStock() {
   // clicked row's current state: Shift+clicking an already-selected row
   // deselects the whole range (so re-clicking the end of a range clears it).
   const handleSelectRoll = useCallback((id: number, shiftKey: boolean) => {
-    const ids = filteredSorted.map((r) => r.IDstock_fini)
+    const ids = renderedRows.map((r) => r.IDstock_fini)
     const anchor = lastSelectedRollIdRef.current
     if (shiftKey && anchor !== null && anchor !== id) {
       const a = ids.indexOf(anchor)
@@ -619,7 +704,7 @@ export function FinisStock() {
       return next
     })
     lastSelectedRollIdRef.current = id
-  }, [filteredSorted])
+  }, [renderedRows])
 
   // Single, stable per-row click handler. Reading the mode from a ref (mirrored
   // each render) keeps this callback's identity stable across edit-mode toggles
@@ -701,25 +786,18 @@ export function FinisStock() {
             </Badge>
           </div>
         )}
-        <SmartSearchInput<SearchFieldKey>
+        <SmartSearchInput<SearchFieldKey, StockFiniRow>
           className="order-1 sm:order-2 flex-1 min-w-0"
           value={searchQuery}
           onValueChange={setSearchQuery}
           chips={searchChips}
           onChipsChange={setSearchChips}
           fields={SEARCH_FIELDS}
+          tags={tags}
+          activeTags={activeTags}
+          onActiveTagsChange={setActiveTags}
           placeholder="Rechercher (réf, coloris, contexture, lot, numéro, client, magasin, emplacement, observations…)"
         />
-
-        <label className="flex items-center gap-2 text-sm cursor-pointer select-none flex-shrink-0 order-4 sm:order-3 w-full sm:w-auto">
-          <input
-            type="checkbox"
-            checked={hideShipped}
-            onChange={(e) => setHideShipped(e.target.checked)}
-            className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer"
-          />
-          <span>Masquer les rouleaux expédiés</span>
-        </label>
 
         {!isEditing ? (
           <div className="flex items-center gap-2 flex-shrink-0 order-2 sm:order-4">
@@ -848,7 +926,7 @@ export function FinisStock() {
                   <col style={{ width: ICON_COL_WIDTH }} />
                 </colgroup>
                 <tbody className="group" data-editing={isEditing ? 'true' : 'false'}>
-                  {isMdUp && filteredSorted.map((r) => (
+                  {isMdUp && renderedRows.map((r) => (
                     <StockRow
                       key={r.IDstock_fini}
                       row={r}
@@ -860,6 +938,7 @@ export function FinisStock() {
                   ))}
                 </tbody>
               </table>
+              {isMdUp && <TruncatedNote shown={renderedRows.length} total={filteredSorted.length} />}
             </div>
             </div>
 
@@ -872,7 +951,7 @@ export function FinisStock() {
                 className="group flex-1 min-h-0 overflow-y-auto scrollbar-transparent p-2 space-y-2 bg-zinc-100/80"
                 data-editing={isEditing ? 'true' : 'false'}
               >
-                {!isMdUp && filteredSorted.map((r) => (
+                {!isMdUp && renderedRows.map((r) => (
                   <StockFiniCard
                     key={r.IDstock_fini}
                     row={r}
@@ -882,6 +961,7 @@ export function FinisStock() {
                     onRowClick={onRowClick}
                   />
                 ))}
+                {!isMdUp && <TruncatedNote shown={renderedRows.length} total={filteredSorted.length} />}
               </div>
             </div>
           </>

@@ -69,6 +69,7 @@ import { DiversStock } from '@/pages/DiversStock'
 import { FinisReferences } from '@/pages/FinisReferences'
 import { EtudesColoris } from '@/pages/EtudesColoris'
 import { FinisStock } from '@/pages/FinisStock'
+import { FinisStockPotentiel } from '@/pages/FinisStockPotentiel'
 import { FinisTarifs } from '@/pages/FinisTarifs'
 
 // Prospects pages (real)
@@ -150,6 +151,7 @@ export const router = createBrowserRouter([
       { path: 'finis', element: <Navigate to="/finis/references" replace /> },
       { path: 'finis/references', element: <FinisReferences /> },
       { path: 'finis/stock', element: <FinisStock /> },
+      { path: 'finis/stock-potentiel', element: <FinisStockPotentiel /> },
       { path: 'finis/etudes-coloris', element: <EtudesColoris /> },
       { path: 'finis/tarifs', element: <FinisTarifs /> },
 
