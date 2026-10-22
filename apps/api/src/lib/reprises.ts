@@ -133,6 +133,9 @@ export async function ouvrirReprise(opts: {
   lot?: string | null
   rouleaux?: number[] | null
   motif: string
+  /** 'teinture' re-dyes the lot: its coloris is submitted again (LIVA #1313).
+   *  Default 'rame': back on the stenter only. */
+  nature?: 'rame' | 'teinture'
   par: Auteur
 }): Promise<RepriseOuverte[]> {
   const motif = opts.motif.trim()
@@ -161,8 +164,8 @@ export async function ouvrirReprise(opts: {
         const rang = await rangSuivant(tx, opts.ligneId, lot)
         const avant = await mesuresLot(tx, opts.ligneId, lot)
         ;[rep] = await tx<{ id: number; rang: number }[]>`
-          INSERT INTO reprise (idligne_commande_sous_traitant, lot, rang, statut, origine, motif, envoye_le, envoye_par_id, envoye_par, lot_avant)
-          VALUES (${opts.ligneId}, ${lot}, ${rang}, 'ouverte', 'geste', ${motif}, now(), ${opts.par.id}, ${opts.par.nom}, ${avant ? tx.json(avant as never) : null})
+          INSERT INTO reprise (idligne_commande_sous_traitant, lot, rang, statut, origine, motif, nature, envoye_le, envoye_par_id, envoye_par, lot_avant)
+          VALUES (${opts.ligneId}, ${lot}, ${rang}, 'ouverte', 'geste', ${motif}, ${opts.nature ?? 'rame'}, now(), ${opts.par.id}, ${opts.par.nom}, ${avant ? tx.json(avant as never) : null})
           RETURNING id, rang`
       }
       for (const r of rs) {
@@ -251,6 +254,8 @@ export interface RepriseLot {
   statut: 'ouverte' | 'close'
   origine: 'geste' | 'historique'
   motif: string | null
+  /** 'teinture' = re-dyed, 'rame' = back on the stenter (LIVA #1313). */
+  nature: 'rame' | 'teinture'
   envoye_le: string | null
   envoye_par: string | null
   retour_le: string | null
@@ -263,7 +268,7 @@ export interface RepriseLot {
 /** The reprises of a lot on its line, oldest first. */
 export async function reprisesDuLot(ligneId: number, lot: string): Promise<RepriseLot[]> {
   const rows = await mpsPg()<(Omit<RepriseLot, 'rouleaux'> & { rouleaux: number })[]>`
-    SELECT r.id, r.rang, r.statut, r.origine, r.motif,
+    SELECT r.id, r.rang, r.statut, r.origine, r.motif, r.nature,
            to_char(r.envoye_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS envoye_le, r.envoye_par,
            to_char(r.retour_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS retour_le, r.retour_par,
            r.lot_saisi, (SELECT count(*)::int FROM reprise_piece rp WHERE rp.idreprise = r.id) AS rouleaux
@@ -277,6 +282,9 @@ export interface FaitReprisesLot {
   ouverte: boolean
   /** Day the latest reprise came back. 'YYYY-MM-DD' (null: none, or historical). */
   dernierRetour: string | null
+  /** Day the latest RE-DYE came back (nature 'teinture', LIVA #1313): the
+   *  coloris soumission must be made again after it. */
+  dernierRetourTeinture: string | null
 }
 
 /** Per `${ligne}:${lot}`: the reprise facts the Ennoblissement cycle reads. */
@@ -284,10 +292,13 @@ export async function faitsReprises(ligneIds: number[]): Promise<Map<string, Fai
   const out = new Map<string, FaitReprisesLot>()
   const uniques = [...new Set(ligneIds.filter((x) => x > 0))]
   if (uniques.length === 0) return out
-  const rows = await mpsPg()<{ ligne: number; lot: string; nombre: number; ouverte: boolean; retour: string | null }[]>`
+  const rows = await mpsPg()<{ ligne: number; lot: string; nombre: number; ouverte: boolean; retour: string | null; retour_teinture: string | null }[]>`
     SELECT idligne_commande_sous_traitant AS ligne, lot, count(*)::int AS nombre, bool_or(statut = 'ouverte') AS ouverte,
-           to_char(max(retour_le) AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour
+           to_char(max(retour_le) AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour,
+           to_char(max(retour_le) FILTER (WHERE nature = 'teinture') AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour_teinture
     FROM reprise WHERE idligne_commande_sous_traitant = ANY(${uniques}) GROUP BY 1, 2`
-  for (const r of rows) out.set(`${Number(r.ligne)}:${r.lot}`, { nombre: Number(r.nombre), ouverte: !!r.ouverte, dernierRetour: r.retour })
+  for (const r of rows) {
+    out.set(`${Number(r.ligne)}:${r.lot}`, { nombre: Number(r.nombre), ouverte: !!r.ouverte, dernierRetour: r.retour, dernierRetourTeinture: r.retour_teinture })
+  }
   return out
 }

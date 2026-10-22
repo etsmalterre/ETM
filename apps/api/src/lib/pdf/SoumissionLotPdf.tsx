@@ -92,6 +92,9 @@ export interface SoumissionLotPdfData {
   expediteur: string        // current user's prénom
   destinataire: string      // client contact with envoi_soumission=1
   lot: string               // stock_fini.lot ("Lot / Bain" cell)
+  /** What the client checks (LIVA #1313): the coloris on a sample cut after
+   *  the dye, before the stenter — or the dimensional stability of the rolls. */
+  nature: 'coloris' | 'stabilites'
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -218,7 +221,9 @@ const styles = StyleSheet.create({
   // ── Sample frame ─────────────────────────────────────
   sampleFrame: {
     flexGrow: 1,
-    minHeight: 200,
+    // Fills what the page leaves. 200 pushed the whole frame onto a blank
+    // 2nd page when the delivery address runs to 6 lines (Agape, Maroc).
+    minHeight: 100,
     marginTop: 4,
     borderWidth: 1.25,
     borderColor: colors.borderStrong,
@@ -246,10 +251,10 @@ export function SoumissionLotPdf({ data }: { data: SoumissionLotPdfData }) {
     <MalterreDocument
       // ALL CAPS without diacritics: Lato Black renders detached
       // diacritics on uppercase À/É/Œ — keep the title accent-free.
-      documentType="Soumission Lot"
+      documentType={data.nature === 'coloris' ? 'Soumission Coloris' : 'Soumission Lot'}
       reference={data.clientNom}
       documentDate={data.dateSoumission || ''}
-      title={`Soumission Lot ${data.lot} — ${data.clientNom}`}
+      title={`Soumission ${data.nature === 'coloris' ? 'coloris' : 'lot'} ${data.lot} — ${data.clientNom}`}
     >
       {/* Reference strip — 3 cells with icon + label/value */}
       <View style={styles.refStrip}>
@@ -306,12 +311,14 @@ export function SoumissionLotPdf({ data }: { data: SoumissionLotPdfData }) {
       <View style={styles.table} wrap={false}>
         <View style={styles.tableHeader}>
           <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Date Soumission</Text>
+          <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Objet</Text>
           <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Expéditeur</Text>
           <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Destinataire</Text>
           <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Lot / Bain</Text>
         </View>
         <View style={styles.tableRow}>
           <Text style={[styles.tableCell, { flex: 1 }]}>{data.dateSoumission || '—'}</Text>
+          <Text style={[styles.tableCell, { flex: 1 }]}>{data.nature === 'coloris' ? 'Coloris (avant rame)' : 'Stabilités'}</Text>
           <Text style={[styles.tableCell, { flex: 1 }]}>{data.expediteur || '—'}</Text>
           <Text style={[styles.tableCell, { flex: 1 }]}>{data.destinataire || '—'}</Text>
           <Text style={[styles.tableCell, { flex: 1 }]}>{data.lot || '—'}</Text>

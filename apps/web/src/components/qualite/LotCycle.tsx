@@ -1,7 +1,10 @@
 // Qualité › Suivi lots — the lot's cycle (LIVA #1304, decision Vincent
 // 2026-10-22). The responsable qualité runs the whole cycle from here:
-// soumission, the client's answer, the rapport de contrôle per client, then
+// soumissions, the client's answers, the rapport de contrôle per client, then
 // « Valider le lot », refused by the API while anything is left to do.
+// Two soumissions since LIVA #1313: the COLORIS one before the stenter (the
+// client's yes = « coloris validé », mailed to the dyer) and the STABILITÉS one on
+// the received rolls.
 // The step and its blockers are computed by apps/api/src/lib/cycle-ennoblissement.ts.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -11,8 +14,11 @@ import {
   ChevronUp,
   CircleDashed,
   ClipboardCheck,
+  Droplets,
   Hourglass,
   Loader2,
+  MailCheck,
+  Palette,
   RotateCcw,
   Send,
   ShieldCheck,
@@ -27,6 +33,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 
 export type EtapeLot =
+  | 'coloris_soumis'
+  | 'reteinture'
+  | 'ok_ramer_a_envoyer'
+  | 'en_rame'
+  | 'coloris_a_soumettre'
   | 'attente_mesures'
   | 'attente_tirelle'
   | 'a_soumettre'
@@ -58,14 +69,34 @@ export interface SoumissionLot {
   reponse: { accepte: boolean; commentaire: string; par: string; le: string | null } | null
 }
 
+/** coloris = before the stenter, stabilites = the received rolls (LIVA #1313). */
+export type NatureSoumission = 'coloris' | 'stabilites'
+
+export type SoumissionsLot = Record<NatureSoumission, SoumissionLot>
+
+export const SANS_SOUMISSIONS: SoumissionsLot = {
+  coloris: { requise: false, envoyee_le: null, reponse: null },
+  stabilites: { requise: false, envoyee_le: null, reponse: null },
+}
+
+/** The soumission the client is to answer at this step, if any. */
+export function natureEnAttente(etape: EtapeLot): NatureSoumission | null {
+  return etape === 'coloris_soumis' ? 'coloris' : etape === 'soumis' ? 'stabilites' : null
+}
+
 /** The step's look — shared by the list card icon and the footer pill (§29.8).
  *  Colour = whose move: sky the dyer, amber us, violet the client, red a
  *  refusal, orange a reprise, green done. */
 export const ETAPE_LOT_META: Record<EtapeLot, { label: string; icon: LucideIcon; solid: string; iconColor: string }> = {
+  coloris_soumis: { label: 'Coloris soumis', icon: Palette, solid: 'bg-violet-500 border-violet-500', iconColor: 'text-violet-600' },
+  reteinture: { label: 'En reteinture', icon: Droplets, solid: 'bg-sky-600 border-sky-600', iconColor: 'text-sky-600' },
+  ok_ramer_a_envoyer: { label: 'Coloris validé, à transmettre', icon: MailCheck, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
+  en_rame: { label: 'En rame', icon: Hourglass, solid: 'bg-sky-600 border-sky-600', iconColor: 'text-sky-600' },
+  coloris_a_soumettre: { label: 'Coloris à soumettre', icon: Palette, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
   attente_mesures: { label: 'Contrôle ennoblisseur', icon: Hourglass, solid: 'bg-sky-600 border-sky-600', iconColor: 'text-sky-600' },
   attente_tirelle: { label: 'Contrôle Malterre', icon: Hourglass, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
-  a_soumettre: { label: 'À soumettre', icon: Send, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
-  soumis: { label: 'Soumis au client', icon: Send, solid: 'bg-violet-500 border-violet-500', iconColor: 'text-violet-600' },
+  a_soumettre: { label: 'Stabilités à soumettre', icon: Send, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
+  soumis: { label: 'Stabilités soumises', icon: Send, solid: 'bg-violet-500 border-violet-500', iconColor: 'text-violet-600' },
   refuse_client: { label: 'Refusé par le client', icon: XCircle, solid: 'bg-red-600 border-red-600', iconColor: 'text-red-600' },
   rc_a_envoyer: { label: 'Rapport à envoyer', icon: ClipboardCheck, solid: 'bg-amber-500 border-amber-500', iconColor: 'text-amber-600' },
   a_valider: { label: 'À valider', icon: ShieldCheck, solid: 'bg-primary border-primary', iconColor: 'text-primary' },
@@ -91,13 +122,15 @@ const fmtJourHeure = (iso: string | null) => (iso ? `${fmtJour(iso)} ${iso.slice
 
 // ── Footer: the step pill + its gestures (§29.4) ─────────
 
-export type GesteLot = 'valider' | 'reprendre' | 'accepte' | 'refuse'
+export type GesteLot = 'valider' | 'reprendre' | 'accepte' | 'refuse' | 'ok_ramer'
 
 export function LotCycleFooter({
-  etape, prealables, canManage, isChanging, disabled, onGeste,
+  etape, prealables, recu, canManage, isChanging, disabled, onGeste,
 }: {
   etape: EtapeLot
   prealables: string[]
+  /** The lot came back from the dyer: only then has it rolls to take back. */
+  recu: boolean
   canManage: boolean
   isChanging: boolean
   disabled: boolean
@@ -161,8 +194,13 @@ export function LotCycleFooter({
       </div>
       {canManage && menuOpen && (
         <div className="absolute bottom-full right-0 mb-1 w-full min-w-[260px] rounded-lg border bg-white shadow-lg overflow-hidden z-50 divide-y divide-border/50">
-          {etape === 'soumis' && item('accepte', 'Le client accepte le lot', ThumbsUp, 'text-green-600')}
-          {etape === 'soumis' && item('refuse', 'Le client refuse le lot…', ThumbsDown, 'text-red-600')}
+          {etape === 'coloris_soumis' && item('accepte', 'Le client accepte le coloris', ThumbsUp, 'text-green-600')}
+          {etape === 'coloris_soumis' && item('refuse', 'Le client refuse le coloris…', ThumbsDown, 'text-red-600')}
+          {etape === 'soumis' && item('accepte', 'Le client accepte les stabilités', ThumbsUp, 'text-green-600')}
+          {etape === 'soumis' && item('refuse', 'Le client refuse les stabilités…', ThumbsDown, 'text-red-600')}
+          {(etape === 'ok_ramer_a_envoyer' || etape === 'en_rame') && item(
+            'ok_ramer', etape === 'en_rame' ? 'Retransmettre la validation du coloris à l’ennoblisseur…' : 'Transmettre la validation du coloris à l’ennoblisseur…', MailCheck, 'text-amber-600',
+          )}
           {!valide && item(
             'valider', 'Valider le lot', CheckCircle2, 'text-green-600', bloque,
             bloque ? (
@@ -173,7 +211,8 @@ export function LotCycleFooter({
               </ul>
             ) : undefined,
           )}
-          {item('reprendre', 'Reprendre…', RotateCcw, 'text-orange-600', etape === 'en_reprise')}
+          {/* A lot not received has no roll to take back: a refused coloris re-dyes it (« En reteinture »). */}
+          {recu && item('reprendre', 'Reprendre…', RotateCcw, 'text-orange-600', etape === 'en_reprise')}
         </div>
       )}
     </div>
@@ -185,15 +224,20 @@ export function LotCycleFooter({
 /** « Avant validation »: the checklist the validation obeys, the soumission
  *  and its answer, and the rapport de contrôle per client. */
 export function CycleCard({
-  etape, prealables, soumission, clients,
+  etape, prealables, soumissions, okRamerLe, recu, clients,
 }: {
   etape: EtapeLot
   prealables: string[]
-  soumission: SoumissionLot
+  soumissions: SoumissionsLot
+  /** 'YYYY-MM-DD': the « coloris validé » mail to the dyer. */
+  okRamerLe: string | null
+  recu: boolean
   clients: ClientRc[]
 }) {
   const valide = etape === 'valide'
   const rcDus = clients.filter((c) => c.du)
+  const { coloris, stabilites } = soumissions
+  const avecColoris = coloris.requise || !!coloris.envoyee_le
   return (
     <div className={cn(
       'rounded-xl border bg-card shadow-sm p-4 border-l-4',
@@ -226,28 +270,20 @@ export function CycleCard({
         </p>
       )}
 
-      {(soumission.requise || soumission.envoyee_le || clients.length > 0) && (
+      {(avecColoris || stabilites.requise || stabilites.envoyee_le || clients.length > 0) && (
         <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-          <div className="space-y-1">
-            <p className="font-semibold text-muted-foreground uppercase tracking-wide text-[10px]">Soumission</p>
-            {!soumission.requise && !soumission.envoyee_le ? (
-              <p className="text-muted-foreground italic">Non demandée par le client</p>
-            ) : !soumission.envoyee_le ? (
-              <p className="text-amber-700">À envoyer</p>
-            ) : (
-              <>
-                <p>Envoyée le {fmtJour(soumission.envoyee_le)}</p>
-                {soumission.reponse ? (
-                  <p className={soumission.reponse.accepte ? 'text-green-700' : 'text-red-700'}>
-                    {soumission.reponse.accepte ? 'Acceptée' : 'Refusée'} par le client
-                    {soumission.reponse.le ? ` · saisi le ${fmtJourHeure(soumission.reponse.le)}` : ''}
-                    {soumission.reponse.par ? ` par ${soumission.reponse.par}` : ''}
-                    {soumission.reponse.commentaire ? <span className="block italic text-muted-foreground">« {soumission.reponse.commentaire} »</span> : null}
-                  </p>
-                ) : (
-                  <p className="text-violet-700">Réponse du client attendue</p>
+          <div className="space-y-3">
+            {avecColoris && (
+              <SoumissionBloc titre="Soumission coloris (avant rame)" s={coloris}>
+                {coloris.reponse?.accepte && !recu && (
+                  okRamerLe
+                    ? <p className="text-sky-700">Validation du coloris transmise le {fmtJour(okRamerLe)}</p>
+                    : <p className="text-amber-700">Validation du coloris à transmettre à l’ennoblisseur</p>
                 )}
-              </>
+              </SoumissionBloc>
+            )}
+            {(!avecColoris || stabilites.requise || stabilites.envoyee_le) && (
+              <SoumissionBloc titre={avecColoris ? 'Soumission stabilités' : 'Soumission'} s={stabilites} />
             )}
           </div>
           <div className="space-y-1">
@@ -265,6 +301,35 @@ export function CycleCard({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** One soumission in the « Avant validation » card. */
+function SoumissionBloc({ titre, s, children }: { titre: string; s: SoumissionLot; children?: ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold text-muted-foreground uppercase tracking-wide text-[10px]">{titre}</p>
+      {!s.requise && !s.envoyee_le ? (
+        <p className="text-muted-foreground italic">Non demandée par le client</p>
+      ) : !s.envoyee_le ? (
+        <p className="text-amber-700">À envoyer</p>
+      ) : (
+        <>
+          <p>Envoyée le {fmtJour(s.envoyee_le)}</p>
+          {s.reponse ? (
+            <p className={s.reponse.accepte ? 'text-green-700' : 'text-red-700'}>
+              {s.reponse.accepte ? 'Acceptée' : 'Refusée'} par le client
+              {s.reponse.le ? ` · saisi le ${fmtJourHeure(s.reponse.le)}` : ''}
+              {s.reponse.par ? ` par ${s.reponse.par}` : ''}
+              {s.reponse.commentaire ? <span className="block italic text-muted-foreground">« {s.reponse.commentaire} »</span> : null}
+            </p>
+          ) : (
+            <p className="text-violet-700">Réponse du client attendue</p>
+          )}
+        </>
+      )}
+      {children}
     </div>
   )
 }
@@ -317,10 +382,13 @@ export function RcMenuButton({ clients, onSelect }: { clients: ClientRc[]; onSel
 // ── The client refuses the lot: why is required ──────────
 
 export function RefusClientDialog({
-  open, lot, isPending, error, onCancel, onConfirm,
+  open, lot, nature = 'stabilites', recu = true, isPending, error, onCancel, onConfirm,
 }: {
   open: boolean
   lot: string
+  /** Which soumission the client refuses. */
+  nature?: NatureSoumission
+  recu?: boolean
   isPending: boolean
   error: string | null
   onCancel: () => void
@@ -334,7 +402,7 @@ export function RefusClientDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ThumbsDown className="h-5 w-5 text-accent" />
-            Le client refuse le lot {lot}
+            Le client refuse {nature === 'coloris' ? 'le coloris du lot' : 'les stabilités du lot'} {lot}
           </DialogTitle>
         </DialogHeader>
         <div className="mt-4 space-y-3">
@@ -350,7 +418,9 @@ export function RefusClientDialog({
             />
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Le lot ne pourra plus être validé : il est à reprendre chez l’ennoblisseur, puis à soumettre à nouveau.
+            {nature === 'coloris' && !recu
+              ? 'Le lot repart en teinture chez l’ennoblisseur, sous le même numéro. Il sera soumis à nouveau quand l’ennoblisseur l’annoncera.'
+              : 'Le lot ne pourra plus être validé : il est à reprendre chez l’ennoblisseur, puis à soumettre à nouveau.'}
           </p>
           {error && (
             <div className="flex items-start gap-2 text-sm text-destructive">

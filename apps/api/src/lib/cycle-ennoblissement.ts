@@ -4,27 +4,38 @@
 // Built from Pierre-Emmanuel's Journal (571 orders, oct. 2025 → oct. 2026), where
 // he typed one code per lot: ACP (waiting for the dyer's measures; ACB at
 // Bontemps), ACL (waiting for our control on the tirelle), « lot/s » (soumission
-// sent to the client), « ok à ramer » (the client accepted, the lot is validated),
+// sent to the client), « coloris validé » (the client accepted the COLORIS before the
+// stenter — read as « lot validated » until LIVA #1313),
 // « reprise » / lot suffixed R. On the 16 open lots of 2026-10-11 every code
 // matched data ETM already holds, so the steps are COMPUTED here and nothing new
 // is typed: he stops writing codes and relance dates.
 //
 //   Lot steps (first match wins) — since 2026-10-22 (LIVA #1304) the Suivi lots
-//   screen owns the whole cycle: soumission, the client's answer, the rapport de
-//   contrôle and the validation are lot gestures there, and « Valider le lot »
-//   is refused while anything below is still to do (prealablesValidation):
-//     valide           suivilot état 3 (or the legacy état 4 « expédié »)
-//     en_reprise       état 2, or an open reprise (lib/reprises.ts — the dyer reworks it)
-//     soumis           a soumission names the lot, the client has not answered
-//     refuse_client    the client refused it: the only way on is « Reprendre »
-//     attente_mesures  no dyer measure (ACP): shown « Contrôle ennoblisseur »
-//     attente_tirelle  our tirelle measure not yet (ACL): « Contrôle Malterre »
-//     a_soumettre      the client asks soumissions for this reference
-//                      (Clients › Gestion, designation_client.soumettre), none sent
-//                      since the lot's last return from reprise
-//     rc_a_envoyer     a client switched « rapport de contrôle » holds pieces of
-//                      the lot not shipped yet, and has not been sent its report
-//     a_valider        nothing left to do: the responsable qualité validates
+//   screen owns the whole cycle: soumissions, the client's answers, the rapport
+//   de contrôle and the validation are lot gestures there, and « Valider le
+//   lot » is refused while anything below is still to do (prealablesValidation).
+//   Two soumissions since LIVA #1313 (lib/soumission-lot.ts): the COLORIS one,
+//   before the stenter — the lot exists before its reception then — and the
+//   STABILITÉS one, on the received rolls:
+//     valide              suivilot état 3 (or the legacy état 4 « expédié »)
+//     en_reprise          état 2, or an open reprise (lib/reprises.ts — the dyer reworks it)
+//     coloris_soumis      a coloris soumission names the lot, the client has not answered
+//     reteinture          the client refused the coloris before the stenter: MATEL dyes
+//                         the lot again (same number) and tells us when to submit it again
+//     ok_ramer_a_envoyer  coloris accepted, not received, the « coloris validé » mail not sent
+//     en_rame             « coloris validé » sent: the dyer puts the lot on the stenter and ships it
+//     soumis              a stabilités soumission names the lot, no answer yet
+//     refuse_client       the client refused it (or the coloris of a received lot):
+//                         the only way on is « Reprendre »
+//     coloris_a_soumettre a received lot whose coloris the client asks, never submitted
+//     attente_mesures     no dyer measure (ACP): shown « Contrôle ennoblisseur »
+//     attente_tirelle     our tirelle measure not yet (ACL): « Contrôle Malterre »
+//     a_soumettre         the client asks the stabilités for this reference
+//                         (Clients › Gestion, designation_client.soumettre), none sent
+//                         since the lot's last return from reprise
+//     rc_a_envoyer        a client switched « rapport de contrôle » holds pieces of
+//                         the lot not shipped yet, and has not been sent its report
+//     a_valider           nothing left to do: the responsable qualité validates
 //
 // Every step says whose move it is and when to chase: the relance is computed
 // from the step's own date, never typed. Delays below are first estimates, to be
@@ -35,8 +46,14 @@ import { consumedEcruIds } from './fini-sources.js'
 import { faitsReprises } from './reprises.js'
 import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
 import { echeanceDelai, lireFaitsDelai, relanceDue, derniereRelance, historiqueDelai, type EvenementDelai, type FaitsDelai } from './delai-sst.js'
+import { natureInferee, naturesDemandees, type NatureSoumission } from './soumission-lot.js'
 
 export type EtapeLot =
+  | 'coloris_soumis'
+  | 'reteinture'
+  | 'ok_ramer_a_envoyer'
+  | 'en_rame'
+  | 'coloris_a_soumettre'
   | 'attente_mesures'
   | 'attente_tirelle'
   | 'a_soumettre'
@@ -52,24 +69,36 @@ export type Main = 'teinturier' | 'nous' | 'client'
 /** suivilot.idetatlot */
 export const ETAT_LOT = { EN_CONTROLE: 1, EN_REPRISE: 2, VALIDE: 3, EXPEDIE: 4, ATTENTE_DECISION: 5 } as const
 
+/** One soumission of the lot (coloris or stabilités). */
+export interface SoumissionFait {
+  /** The client asks it for this reference (designation_client.soumettre). */
+  requise: boolean
+  /** The latest one sent that still counts. 'YYYY-MM-DD' — a stabilités
+   *  soumission sent before the lot's latest return from reprise, or a coloris
+   *  one before its latest re-dye, was about the old lot. */
+  envoyeeLe: string | null
+  /** The client's answer to it, recorded on Suivi lots. null = not answered yet.
+   *  `le` 'YYYY-MM-DD HH:MM:SS.mmm' (ms: an answer and a new send can share a second). */
+  reponse: { accepte: boolean; commentaire: string; le: string; par?: string } | null
+}
+
+export const SANS_SOUMISSION: SoumissionFait = { requise: false, envoyeeLe: null, reponse: null }
+
 export interface LotFait {
   lot: string
   idsuivilot: number
   etat: number
-  /** suivilot.date: the day the lot was received (BL). 'YYYY-MM-DD' */
+  /** suivilot.date: the day the lot was received (BL). 'YYYY-MM-DD'. null =
+   *  not received yet: the lot exists through its coloris soumission. */
   reception: string | null
   /** laize / poids given by the dyer (laize_sst, poids_sst). */
   mesuresTeinturier: boolean
   /** Our measure of the tirelle (laize_tirelle): our control is done. */
   tirelleMesuree: boolean
-  /** The client asks a soumission for this reference (designation_client.soumettre). */
-  soumissionRequise: boolean
-  /** Last soumission email naming this lot. 'YYYY-MM-DD' — only one sent after
-   *  the lot's latest return from reprise counts (lireCommandesEnnoblissement). */
-  soumisLe: string | null
-  /** The client's answer to that soumission (reponse_soumission, recorded on
-   *  Suivi lots after the soumission). null = not answered yet. */
-  reponseClient?: { accepte: boolean; commentaire: string } | null
+  coloris: SoumissionFait
+  stabilites: SoumissionFait
+  /** The « coloris validé » mail, sent after the client accepted the coloris. 'YYYY-MM-DD' */
+  okRamerLe?: string | null
   /** Clients still owed a rapport de contrôle for this lot (names). */
   rcAEnvoyer?: string[]
   /** A reprise of the lot is open at the dyer (lib/reprises.ts). */
@@ -84,6 +113,8 @@ export const RELANCE_J = {
   attente_mesures: 1,
   /** The client answers a soumission. */
   soumis: 5,
+  /** The dyer rames the lot and ships it after the « coloris validé » (estimate 2026-10-22). */
+  en_rame: 3,
   /** Our own steps: flagged once they wait this long. */
   nous: 1,
 } as const
@@ -115,16 +146,25 @@ export function plusJoursOuvres(iso: string, n: number): string {
   return isoOf(t)
 }
 
+const enAttente = (s: SoumissionFait) => !!s.envoyeeLe && !s.reponse
+const refusee = (s: SoumissionFait) => !!s.envoyeeLe && !!s.reponse && !s.reponse.accepte
+
 export function etapeLot(l: LotFait): EtapeLot {
   if (l.etat === ETAT_LOT.VALIDE || l.etat === ETAT_LOT.EXPEDIE) return 'valide'
   if (l.etat === ETAT_LOT.EN_REPRISE || l.repriseOuverte) return 'en_reprise'
-  // A soumission already out waits on the client whatever else is missing
-  // (one can leave before any BL, 9023 / 9037).
-  if (l.soumisLe && !l.reponseClient) return 'soumis'
-  if (l.soumisLe && l.reponseClient && !l.reponseClient.accepte) return 'refuse_client'
+  const { coloris: c, stabilites: s } = l
+  const recu = !!l.reception
+  // The coloris first: it is decided before the stenter, while the lot is at the dyer.
+  if (enAttente(c)) return 'coloris_soumis'
+  if (refusee(c)) return recu ? 'refuse_client' : 'reteinture'
+  if (!recu) return c.reponse?.accepte ? (l.okRamerLe ? 'en_rame' : 'ok_ramer_a_envoyer') : 'attente_mesures'
+  // A stabilités soumission already out waits on the client whatever else is missing.
+  if (enAttente(s)) return 'soumis'
+  if (refusee(s)) return 'refuse_client'
+  if (c.requise && !c.envoyeeLe) return 'coloris_a_soumettre'
   if (!l.mesuresTeinturier) return 'attente_mesures'
   if (!l.tirelleMesuree) return 'attente_tirelle'
-  if (l.soumissionRequise && !l.soumisLe) return 'a_soumettre'
+  if (s.requise && !s.envoyeeLe) return 'a_soumettre'
   if ((l.rcAEnvoyer?.length ?? 0) > 0) return 'rc_a_envoyer'
   return 'a_valider'
 }
@@ -135,17 +175,32 @@ export function etapeLot(l: LotFait): EtapeLot {
 export function prealablesValidation(l: LotFait): string[] {
   if (l.etat === ETAT_LOT.VALIDE || l.etat === ETAT_LOT.EXPEDIE) return ['Lot déjà validé.']
   const out: string[] = []
+  const recu = !!l.reception
+  const { coloris: c, stabilites: s } = l
   if (l.etat === ETAT_LOT.EN_REPRISE || l.repriseOuverte) out.push('Le lot est en reprise chez l’ennoblisseur.')
+  if (enAttente(c)) out.push('Réponse du client à la soumission coloris attendue.')
+  else if (refusee(c)) out.push(recu ? 'Coloris refusé par le client : le lot est à reprendre.' : 'Coloris refusé par le client : le lot repart en teinture.')
+  else if (c.requise && !c.envoyeeLe) out.push('Soumission coloris à envoyer.')
+  else if (!recu && c.reponse?.accepte && !l.okRamerLe) out.push('Validation du coloris à transmettre à l’ennoblisseur.')
+  if (!recu) {
+    out.push('Lot pas encore réceptionné.')
+    return out
+  }
   if (!l.mesuresTeinturier) out.push('Contrôle ennoblisseur manquant (laize / poids de l’ennoblisseur).')
   if (!l.tirelleMesuree) out.push('Contrôle Malterre manquant (mesure de la tirelle).')
-  if (l.soumisLe && !l.reponseClient) out.push('Réponse du client à la soumission attendue.')
-  else if (l.soumisLe && l.reponseClient && !l.reponseClient.accepte) out.push('Soumission refusée par le client : le lot est à reprendre.')
-  else if (l.soumissionRequise && !l.soumisLe) out.push('Soumission au client à envoyer.')
+  if (enAttente(s)) out.push('Réponse du client à la soumission des stabilités attendue.')
+  else if (refusee(s)) out.push('Stabilités refusées par le client : le lot est à reprendre.')
+  else if (s.requise && !s.envoyeeLe) out.push('Soumission des stabilités à envoyer.')
   for (const nom of l.rcAEnvoyer ?? []) out.push(`Rapport de contrôle à envoyer à ${nom}.`)
   return out
 }
 
 const MAIN: Record<EtapeLot, Main | null> = {
+  coloris_soumis: 'client',
+  reteinture: 'teinturier',
+  ok_ramer_a_envoyer: 'nous',
+  en_rame: 'teinturier',
+  coloris_a_soumettre: 'nous',
   attente_mesures: 'teinturier',
   attente_tirelle: 'nous',
   a_soumettre: 'nous',
@@ -157,14 +212,20 @@ const MAIN: Record<EtapeLot, Main | null> = {
   valide: null,
 }
 
+/** Our steps on a received lot: chased from the reception. */
+const NOTRE_MAIN_RECU: EtapeLot[] = ['attente_tirelle', 'coloris_a_soumettre', 'a_soumettre', 'refuse_client', 'rc_a_envoyer', 'a_valider']
+
 export function etatLot(l: LotFait): EtatLot {
   const etape = etapeLot(l)
   const r = l.reception
   let relance: string | null = null
   if (etape === 'attente_mesures' && r) relance = plusJoursOuvres(r, RELANCE_J.attente_mesures)
-  else if (etape === 'soumis' && l.soumisLe) relance = plusJoursOuvres(l.soumisLe, RELANCE_J.soumis)
-  else if ((etape === 'attente_tirelle' || etape === 'a_soumettre' || etape === 'refuse_client' || etape === 'rc_a_envoyer' || etape === 'a_valider') && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
-  // en_reprise: the dyer gives the date back in the point (§5), nothing to compute.
+  else if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) relance = plusJoursOuvres(l.coloris.envoyeeLe, RELANCE_J.soumis)
+  else if (etape === 'soumis' && l.stabilites.envoyeeLe) relance = plusJoursOuvres(l.stabilites.envoyeeLe, RELANCE_J.soumis)
+  else if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) relance = plusJoursOuvres(l.coloris.reponse.le.slice(0, 10), RELANCE_J.nous)
+  else if (etape === 'en_rame' && l.okRamerLe) relance = plusJoursOuvres(l.okRamerLe, RELANCE_J.en_rame)
+  else if (NOTRE_MAIN_RECU.includes(etape) && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
+  // en_reprise / reteinture: the dyer gives the date back in the point, nothing to compute.
   return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance, reprises: l.reprises ?? 0 }
 }
 
@@ -283,7 +344,6 @@ export function cleLot(s: string): string {
 
 // ── Reading the facts (native PostgreSQL) ────────────────
 
-
 const TYPE_DOC_SOUMISSION = 15
 
 function rang(sstatut: string | null): 0 | 1 | 2 {
@@ -291,6 +351,34 @@ function rang(sstatut: string | null): 0 | 1 | 2 {
   if (s === 'Non_Envoye') return 0
   if (s === 'Attente_Delai') return 1
   return 2
+}
+
+/** One soumission sent, as the reader assembles it. `ts` 'YYYY-MM-DD HH:MM:SS.mmm'. */
+export interface EnvoiSoumission { nature: NatureSoumission; jour: string; ts: string }
+/** One answer of the client, its nature resolved. */
+export interface ReponseSoumission { nature: NatureSoumission; accepte: boolean; commentaire: string; ts: string; par: string }
+
+const plusRecent = <T extends { ts: string }>(xs: T[]): T | null =>
+  xs.reduce<T | null>((m, x) => (!m || x.ts > m.ts ? x : m), null)
+
+/** The lot's soumission of one nature, from its sends and the client's
+ *  answers: the latest send still valid (not before `invalideAvant`, the day
+ *  the lot came back reworked), and the latest answer given after it. Pure. */
+export function faitSoumission(
+  nature: NatureSoumission,
+  requise: boolean,
+  envois: EnvoiSoumission[],
+  reponses: ReponseSoumission[],
+  invalideAvant: string | null,
+): SoumissionFait {
+  const dernier = plusRecent(envois.filter((e) => e.nature === nature && (!invalideAvant || e.jour >= invalideAvant)))
+  if (!dernier) return { requise, envoyeeLe: null, reponse: null }
+  const rep = plusRecent(reponses.filter((r) => r.nature === nature && r.ts >= dernier.ts))
+  return {
+    requise,
+    envoyeeLe: dernier.jour,
+    reponse: rep ? { accepte: rep.accepte, commentaire: rep.commentaire, le: rep.ts, par: rep.par } : null,
+  }
 }
 
 /** The facts of each dye order, in a few flat reads. */
@@ -301,7 +389,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   const sql = mpsPg()
 
   const faitsDelaiP = lireFaitsDelai(cmdIds, sql)
-  const [entetes, lignes, soumissions, reponses] = await Promise.all([
+  const [entetes, lignes, envoisMail, envoisNature, reponses, oksRamer] = await Promise.all([
     sql<{ id: number; est_soldee: number; idcommande_client: number }[]>`
       SELECT idcommande_sous_traitant AS id, est_soldee,
              COALESCE(idcommande_client, 0) AS idcommande_client
@@ -310,16 +398,28 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       SELECT idligne_commande_sous_traitant AS id, idcommande_sous_traitant AS cmd, type, sstatut::text AS sstatut,
              to_char(date_livraison, 'YYYY-MM-DD') AS delai, COALESCE(idreference, 0) AS idref_fini
       FROM ligne_commande_sous_traitant WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
+    // The mail log: one row per recipient — one send per (order, lot, day).
     sql<{ cmd: number; notes: string | null; jour: string; ts: string }[]>`
-      SELECT idreference AS cmd, notes::text AS notes, to_char(max(date), 'YYYY-MM-DD') AS jour,
-             to_char(max(date), 'YYYY-MM-DD HH24:MI:SS') AS ts FROM envoi_email
+      SELECT idreference AS cmd, notes::text AS notes, to_char(date, 'YYYY-MM-DD') AS jour,
+             to_char(max(date), 'YYYY-MM-DD HH24:MI:SS.MS') AS ts FROM envoi_email
       WHERE idtype_doc = ${TYPE_DOC_SOUMISSION} AND idreference = ANY(${cmdIds}) AND COALESCE(invalide, 0) = 0
-      GROUP BY idreference, notes`,
-    // The client's answers, recorded on Suivi lots (LIVA #1304).
-    sql<{ cmd: number; lot: string | null; reponse: number; commentaire: string | null; ts: string }[]>`
-      SELECT idcommande_sous_traitant AS cmd, lot::text AS lot, COALESCE(reponse, 0)::int AS reponse, commentaire,
-             to_char(COALESCE(saisi_le AT TIME ZONE 'Europe/Paris', date::timestamp), 'YYYY-MM-DD HH24:MI:SS') AS ts
+      GROUP BY idreference, notes, to_char(date, 'YYYY-MM-DD')`,
+    // What each send was, since LIVA #1313 (lib/soumission-lot.ts).
+    sql<{ cmd: number; lot: string; nature: NatureSoumission; jour: string; ts: string }[]>`
+      SELECT idcommande_sous_traitant AS cmd, lot, nature,
+             to_char(envoyee_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS jour,
+             to_char(envoyee_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD HH24:MI:SS.MS') AS ts
+      FROM soumission_lot WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
+    // The client's answers, recorded on Suivi lots (LIVA #1304; nature since #1313).
+    sql<{ cmd: number; lot: string | null; nature: NatureSoumission | null; reponse: number; commentaire: string | null; ts: string; par: string | null }[]>`
+      SELECT idcommande_sous_traitant AS cmd, lot::text AS lot, nature, COALESCE(reponse, 0)::int AS reponse, commentaire,
+             to_char(COALESCE(saisi_le AT TIME ZONE 'Europe/Paris', date::timestamp), 'YYYY-MM-DD HH24:MI:SS.MS') AS ts,
+             saisi_par AS par
       FROM reponse_soumission WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
+    sql<{ cmd: number; lot: string; ts: string }[]>`
+      SELECT idcommande_sous_traitant AS cmd, lot,
+             to_char(envoye_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD HH24:MI:SS.MS') AS ts
+      FROM ok_a_ramer_envoi WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
   ])
 
   const faitsDelai = await faitsDelaiP
@@ -350,7 +450,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     return new Map(rows.map((r) => [Number(r.id), Number(r.idclient)]))
   })()
 
-  // Soumission asked per (client, ref fini): Clients › Gestion.
+  // Soumissions asked per (client, ref fini): Clients › Gestion, a bit set.
   const clientsParLigne = new Map<number, Set<number>>()
   const ajouter = (ligne: number, client: number) => {
     if (!(client > 0)) return
@@ -363,40 +463,86 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   for (const r of clientsPieces) ajouter(Number(r.ligne), Number(r.idclient))
   const tousClients = [...new Set([...clientsParLigne.values()].flatMap((s) => [...s]))]
   const refs = [...new Set(lignes.map((l) => Number(l.idref_fini)).filter((x) => x > 0))]
-  const aSoumettre = new Set<string>()
+  const demandes = new Map<string, NatureSoumission[]>()
   if (tousClients.length > 0 && refs.length > 0) {
-    const rows = await sql<{ idclient: number; idref_fini: number }[]>`
-      SELECT idclient, idref_fini FROM designation_client
+    const rows = await sql<{ idclient: number; idref_fini: number; soumettre: number }[]>`
+      SELECT idclient, idref_fini, COALESCE(soumettre, 0)::int AS soumettre FROM designation_client
       WHERE idclient = ANY(${tousClients}) AND idref_fini = ANY(${refs})
-        AND COALESCE(soumettre, 0) = 1 AND COALESCE(archive, 0) = 0`
-    for (const r of rows) aSoumettre.add(`${r.idclient}:${r.idref_fini}`)
+        AND COALESCE(soumettre, 0) > 0 AND COALESCE(archive, 0) = 0`
+    for (const r of rows) {
+      const k = `${r.idclient}:${r.idref_fini}`
+      demandes.set(k, [...new Set([...(demandes.get(k) ?? []), ...naturesDemandees(r.soumettre)])])
+    }
   }
-  const ligneRequiert = (l: { id: number; idref_fini: number }) =>
-    [...(clientsParLigne.get(Number(l.id)) ?? [])].some((c) => aSoumettre.has(`${c}:${Number(l.idref_fini)}`))
+  const naturesLigne = (ligne: number): NatureSoumission[] => {
+    const l = lignes.find((x) => Number(x.id) === ligne)
+    if (!l) return []
+    return [...new Set([...(clientsParLigne.get(ligne) ?? [])].flatMap((c) => demandes.get(`${c}:${Number(l.idref_fini)}`) ?? []))]
+  }
 
   // The « solde »: écru handed over and not back dyed (own fini or merged component).
   const [revenus, reprises] = await Promise.all([consumedEcruIds(ecru.map((r) => Number(r.idecru))), faitsReprises(lineIds)])
   const chezTeinturier = new Map<number, number>()
   for (const r of ecru) if (!revenus.has(Number(r.idecru))) chezTeinturier.set(Number(r.ligne), (chezTeinturier.get(Number(r.ligne)) ?? 0) + 1)
 
-  const soumisParCle = new Map<string, string>()
-  const soumisTsParCle = new Map<string, string>()
-  for (const s of soumissions) {
-    const k = `${s.cmd}:${cleLot(s.notes ?? '')}`
-    const prev = soumisParCle.get(k)
-    if (!prev || s.jour > prev) soumisParCle.set(k, s.jour)
-    const prevTs = soumisTsParCle.get(k)
-    if (!prevTs || s.ts > prevTs) soumisTsParCle.set(k, s.ts)
+  // Each lot by `${cmd}:${digits}`: its line and its reception (the history is
+  // classified against it).
+  const ligneParId = new Map(lignes.map((l) => [Number(l.id), l]))
+  const aDesChiffres = (s: string) => /\d{5,}/.test(s)
+  const lotParCle = new Map<string, { ligne: number; reception: string | null }>()
+  for (const s of lots) {
+    const lot = String(s.lot ?? '').trim()
+    const cmd = Number(ligneParId.get(Number(s.ligne))?.cmd)
+    if (!lot || !cmd) continue
+    const k = `${cmd}:${cleLot(lot)}`
+    const prev = lotParCle.get(k)
+    if (!prev || (s.reception && (!prev.reception || s.reception < prev.reception))) lotParCle.set(k, { ligne: Number(s.ligne), reception: s.reception })
   }
-  // Latest answer per lot; it answers the soumission only if given after it.
-  const reponseParCle = new Map<string, { accepte: boolean; commentaire: string; ts: string }>()
+
+  // The sends: what soumission_lot says, else inferred from the date.
+  const envoisParCle = new Map<string, EnvoiSoumission[]>()
+  const pousser = (k: string, e: EnvoiSoumission) => envoisParCle.set(k, [...(envoisParCle.get(k) ?? []), e])
+  const connusDuJour = new Set<string>()
+  for (const e of envoisNature) {
+    if (!aDesChiffres(e.lot)) continue
+    const k = `${e.cmd}:${cleLot(e.lot)}`
+    connusDuJour.add(`${k}:${e.jour}`)
+    pousser(k, { nature: e.nature, jour: e.jour, ts: e.ts })
+  }
+  for (const e of envoisMail) {
+    const notes = e.notes ?? ''
+    if (!aDesChiffres(notes)) continue // an étude coloris send shares type 15 (no lot in notes)
+    const k = `${e.cmd}:${cleLot(notes)}`
+    if (connusDuJour.has(`${k}:${e.jour}`)) continue
+    const lot = lotParCle.get(k)
+    pousser(k, { nature: natureInferee(e.jour, lot?.reception ?? null, lot ? naturesLigne(lot.ligne) : []), jour: e.jour, ts: e.ts })
+  }
+  // The answers; one typed before #1313 answered the send it followed.
+  const reponsesParCle = new Map<string, ReponseSoumission[]>()
   for (const r of reponses) {
     const k = `${r.cmd}:${cleLot(r.lot ?? '')}`
-    const prev = reponseParCle.get(k)
-    if (!prev || r.ts > prev.ts) reponseParCle.set(k, { accepte: Number(r.reponse) === 1, commentaire: (r.commentaire ?? '').trim(), ts: r.ts })
+    const nature = r.nature ?? plusRecent((envoisParCle.get(k) ?? []).filter((e) => e.ts <= r.ts))?.nature ?? 'stabilites'
+    reponsesParCle.set(k, [...(reponsesParCle.get(k) ?? []), {
+      nature, accepte: Number(r.reponse) === 1, commentaire: (r.commentaire ?? '').trim(), ts: r.ts, par: (r.par ?? '').trim(),
+    }])
+  }
+  const okParCle = new Map<string, string>()
+  for (const o of oksRamer) {
+    const k = `${o.cmd}:${cleLot(o.lot)}`
+    if ((okParCle.get(k) ?? '') < o.ts) okParCle.set(k, o.ts)
   }
   const rcParLot = await clientsDesLots(lots.map((s) => ({ ligne: Number(s.ligne), lot: String(s.lot ?? '') })))
-  const ligneParId = new Map(lignes.map((l) => [Number(l.id), l]))
+
+  /** The soumission facts of one lot. */
+  const soumissionsDuLot = (k: string, natures: NatureSoumission[], rep: { dernierRetour: string | null; dernierRetourTeinture: string | null } | undefined) => {
+    const envois = envoisParCle.get(k) ?? []
+    const reps = reponsesParCle.get(k) ?? []
+    const coloris = faitSoumission('coloris', natures.includes('coloris'), envois, reps, rep?.dernierRetourTeinture ?? null)
+    const stabilites = faitSoumission('stabilites', natures.includes('stabilites'), envois, reps, rep?.dernierRetour ?? null)
+    const ok = okParCle.get(k)
+    const okRamerLe = coloris.reponse?.accepte && ok && ok >= coloris.reponse.le ? ok.slice(0, 10) : null
+    return { coloris, stabilites, okRamerLe }
+  }
 
   for (const e of entetes) {
     const id = Number(e.id)
@@ -404,12 +550,8 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const sesLots: LotFait[] = lots
       .filter((s) => Number(ligneParId.get(Number(s.ligne))?.cmd) === id && String(s.lot ?? '').trim())
       .map((s) => {
-        const ligne = ligneParId.get(Number(s.ligne))!
         const rep = reprises.get(`${Number(s.ligne)}:${String(s.lot).trim()}`)
-        const cle = `${id}:${cleLot(String(s.lot))}`
-        const soumis = soumisParCle.get(cle) ?? null
-        const soumisValable = soumis && (!rep?.dernierRetour || soumis >= rep.dernierRetour) ? soumis : null
-        const reponse = reponseParCle.get(cle)
+        const k = `${id}:${cleLot(String(s.lot))}`
         return {
           lot: String(s.lot).trim(),
           idsuivilot: Number(s.idsuivilot),
@@ -417,24 +559,22 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
           reception: s.reception,
           mesuresTeinturier: Number(s.laize_sst) > 0 || Number(s.poids_sst) > 0,
           tirelleMesuree: Number(s.laize_tirelle) > 0,
-          soumissionRequise: ligneRequiert(ligne),
-          // A soumission sent before the lot came back from reprise was about the old dye.
-          soumisLe: soumisValable,
-          reponseClient: soumisValable && reponse && reponse.ts >= (soumisTsParCle.get(cle) ?? '') ? reponse : null,
+          ...soumissionsDuLot(k, naturesLigne(Number(s.ligne)), rep),
           rcAEnvoyer: (rcParLot.get(cleLotLigne(Number(s.ligne), String(s.lot))) ?? []).filter((c) => c.du).map((c) => c.nom),
           repriseOuverte: rep?.ouverte ?? false,
           reprises: rep?.nombre ?? 0,
         }
       })
-    // A soumission can leave before any BL (a piece already in the dyer's stock,
-    // 9023 / 9037): the lot exists only in the email, it is still « soumis ».
+    // A soumission sent before 2026-10-22 for a lot not received yet (9023 /
+    // 9037) has no suivilot row: the lot exists only in the email. Since
+    // LIVA #1313 the coloris soumission creates the row.
     const connus = new Set(sesLots.map((l) => cleLot(l.lot)))
-    for (const [k, jour] of soumisParCle) {
+    for (const k of envoisParCle.keys()) {
       const [cmd, cle] = k.split(':')
       if (Number(cmd) !== id || connus.has(cle)) continue
       sesLots.push({
-        lot: `MA${cle}`, idsuivilot: 0, etat: 0, reception: null,
-        mesuresTeinturier: false, tirelleMesuree: false, soumissionRequise: true, soumisLe: jour,
+        lot: `MA${cle}`, idsuivilot: 0, etat: 0, reception: null, mesuresTeinturier: false, tirelleMesuree: false,
+        ...soumissionsDuLot(k, [], undefined),
       })
     }
     const delais = sesLignes.filter((l) => !String(l.sstatut ?? '').startsWith('Termin')).map((l) => l.delai).filter((d): d is string => !!d).sort()

@@ -1504,7 +1504,7 @@ const ENVOI_FLAGS = [
 
 // Hue-per-document category chips (mps_designer §36 style): one stable colour
 // per doc type so a contact's send-flags read at a glance. Soumission matches
-// the amber "À soumettre" pill on ref cards; Facturation/Livraison on address
+// the amber « Soumission » pills on ref cards; Facturation/Livraison on address
 // cards reuse the Facture/BL hues.
 const ENVOI_CHIP_CLASS: Record<(typeof ENVOI_FLAGS)[number]['key'], string> = {
   envoi_commande: 'bg-sky-500/10 text-sky-700 border-sky-500/25',
@@ -1909,9 +1909,15 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs, ca
                     {r.ref_interne && <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">{r.ref_interne}</Badge>}
                     {r.unite === 1 && <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">Kg</Badge>}
                     <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
-                      {!!r.soumettre && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border bg-amber-100 text-amber-800 border-amber-200 whitespace-nowrap">
-                          À soumettre
+                      {/* designation_client.soumettre bits (LIVA #1313): 2 coloris, 1 stabilités */}
+                      {(r.soumettre & 2) !== 0 && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border bg-amber-100 text-amber-800 border-amber-200 whitespace-nowrap" title="Soumission du coloris avant rame">
+                          Soumission coloris
+                        </span>
+                      )}
+                      {(r.soumettre & 1) !== 0 && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border bg-amber-100 text-amber-800 border-amber-200 whitespace-nowrap" title="Soumission des stabilités avant expédition">
+                          Soumission stabilités
                         </span>
                       )}
                       {r.associees.length > 0 && (
@@ -2354,6 +2360,12 @@ function RefTarifsTab({ refItem, draftColoris, canManageTarifs, onOpenTarif, onO
   )
 }
 
+/** The two soumissions a client may ask per reference (designation_client.soumettre bits, LIVA #1313). */
+const SOUMISSIONS = [
+  { bit: 2, label: 'Soumission coloris', icon: Palette, aide: 'Un échantillon après teinture, avant rame : le client valide le coloris, puis l’ennoblisseur rame le lot' },
+  { bit: 1, label: 'Soumission stabilités', icon: Send, aide: 'Une tirelle du lot reçu, avant expédition : le client vérifie les stabilités dimensionnelles' },
+] as const
+
 function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs, onOpenTarif, onOpenTarifMode }: {
   open: boolean; existing: ClientReference | null; clientId: number; onClose: () => void
   canManageTarifs: boolean
@@ -2368,7 +2380,8 @@ function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs,
   const [finition, setFinition] = useState<'tm' | 'ennobli'>('ennobli')
   const [refId, setRefId] = useState(0)
   const [unite, setUnite] = useState<1 | 3>(3)
-  const [soumettre, setSoumettre] = useState(false)
+  // designation_client.soumettre is a bit set (LIVA #1313): 1 stabilités, 2 coloris.
+  const [soumettre, setSoumettre] = useState(0)
   const [checkedColoris, setCheckedColoris] = useState<Set<number>>(new Set())
   // Inverted like the legacy storage: the set holds yarns NOT invoiced (unchecked).
   const [uncheckedFils, setUncheckedFils] = useState<Set<number>>(new Set())
@@ -2394,12 +2407,12 @@ function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs,
       setFinition(existing.IDref_ecru > 0 ? 'tm' : 'ennobli')
       setRefId(existing.IDref_fini > 0 ? existing.IDref_fini : existing.IDref_ecru)
       setUnite(existing.unite === 1 ? 1 : 3)
-      setSoumettre(!!existing.soumettre)
+      setSoumettre(Number(existing.soumettre) & 3)
       setCheckedColoris(new Set(existing.coloris.map((c) => c.coloris_id).filter((x) => x > 0)))
       setUncheckedFils(new Set(existing.fil_non_facture))
       setCheckedAssociees(new Set(existing.associees))
     } else {
-      setNom(''); setFinition('ennobli'); setRefId(0); setUnite(3); setSoumettre(false)
+      setNom(''); setFinition('ennobli'); setRefId(0); setUnite(3); setSoumettre(0)
       setCheckedColoris(new Set()); setUncheckedFils(new Set()); setCheckedAssociees(new Set())
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2564,23 +2577,28 @@ function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs,
             )}
           </div>
 
-          {/* Soumission toggle (§35 pill) */}
-          <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border/60 bg-white shadow-sm">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 text-xs font-semibold">
-                <Send className="h-3.5 w-3.5 text-accent" />
-                <span>Soumission</span>
+          {/* Soumission toggles (§35 pills): two moments of the dye, independent (LIVA #1313). */}
+          {SOUMISSIONS.map((so) => {
+            const on = (soumettre & so.bit) !== 0
+            return (
+              <div key={so.bit} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border/60 bg-white shadow-sm">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold">
+                    <so.icon className="h-3.5 w-3.5 text-accent" />
+                    <span>{so.label}</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{so.aide}</p>
+                </div>
+                <button type="button" role="switch" aria-checked={on} onClick={() => setSoumettre((v) => v ^ so.bit)}
+                  className={cn('relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                    on ? 'bg-accent shadow-inner' : 'bg-zinc-300 hover:bg-zinc-400/80')}>
+                  <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
+                    on ? 'translate-x-[18px]' : 'translate-x-0.5')} />
+                </button>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-0.5">Soumettre une tirelle au client avant réception</p>
-            </div>
-            <button type="button" role="switch" aria-checked={soumettre} onClick={() => setSoumettre(!soumettre)}
-              className={cn('relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                soumettre ? 'bg-accent shadow-inner' : 'bg-zinc-300 hover:bg-zinc-400/80')}>
-              <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
-                soumettre ? 'translate-x-[18px]' : 'translate-x-0.5')} />
-            </button>
-          </div>
+            )
+          })}
 
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">

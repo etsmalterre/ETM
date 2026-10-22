@@ -153,7 +153,9 @@ interface CommandeListRow {
 
 /** Ennoblissement: an order's cycle (API lib/cycle-ennoblissement.ts). */
 type MainCycle = 'teinturier' | 'nous' | 'client'
-type EtapeLot = 'attente_mesures' | 'attente_tirelle' | 'a_soumettre' | 'soumis' | 'refuse_client' | 'rc_a_envoyer' | 'a_valider' | 'en_reprise' | 'valide'
+type EtapeLot =
+  | 'coloris_soumis' | 'reteinture' | 'ok_ramer_a_envoyer' | 'en_rame' | 'coloris_a_soumettre'
+  | 'attente_mesures' | 'attente_tirelle' | 'a_soumettre' | 'soumis' | 'refuse_client' | 'rc_a_envoyer' | 'a_valider' | 'en_reprise' | 'valide'
 interface LotCycle {
   lot: string
   idsuivilot: number
@@ -578,11 +580,17 @@ const SST_PHASE_META: Record<SstPhase, {
 /** Lot steps, coloured by whose move it is: dyer sky, client violet, us amber.
  *  `attente`: the two control steps carry an hourglass, which says « attente ». */
 const ETAPE_LOT_META: Record<EtapeLot, { label: string; classes: string; attente?: boolean }> = {
+  // Before the stenter: the coloris soumission (LIVA #1313).
+  coloris_soumis:  { label: 'Coloris soumis',  classes: 'bg-violet-100 text-violet-800 border-violet-200' },
+  reteinture:      { label: 'En reteinture',   classes: 'bg-sky-100 text-sky-800 border-sky-200' },
+  ok_ramer_a_envoyer: { label: 'Coloris validé, à transmettre', classes: 'bg-amber-100 text-amber-800 border-amber-200' },
+  en_rame:         { label: 'En rame',         classes: 'bg-sky-100 text-sky-800 border-sky-200', attente: true },
+  coloris_a_soumettre: { label: 'Coloris à soumettre', classes: 'bg-amber-100 text-amber-800 border-amber-200' },
   attente_mesures: { label: 'Contrôle ennoblisseur', classes: 'bg-sky-100 text-sky-800 border-sky-200', attente: true },
   attente_tirelle: { label: 'Contrôle Malterre', classes: 'bg-amber-100 text-amber-800 border-amber-200', attente: true },
   en_reprise:      { label: 'En reprise',      classes: 'bg-orange-100 text-orange-800 border-orange-200' },
-  soumis:          { label: 'Soumis au client', classes: 'bg-violet-100 text-violet-800 border-violet-200' },
-  a_soumettre:     { label: 'À soumettre',     classes: 'bg-amber-100 text-amber-800 border-amber-200' },
+  soumis:          { label: 'Stabilités soumises', classes: 'bg-violet-100 text-violet-800 border-violet-200' },
+  a_soumettre:     { label: 'Stabilités à soumettre', classes: 'bg-amber-100 text-amber-800 border-amber-200' },
   refuse_client:   { label: 'Refusé par le client', classes: 'bg-red-100 text-red-700 border-red-200' },
   rc_a_envoyer:    { label: 'Rapport à envoyer', classes: 'bg-amber-100 text-amber-800 border-amber-200' },
   a_valider:       { label: 'À valider',       classes: 'bg-amber-100 text-amber-800 border-amber-200' },

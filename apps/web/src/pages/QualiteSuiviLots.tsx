@@ -12,6 +12,10 @@
 //     while anything is left to do), Reprendre. The soumission and the rapport
 //     de contrôle are sent from the header. The En cours / Terminé filters key
 //     off the état (Validé = Terminé) — plus validated lots still owing an RC.
+//   - LIVA #1313: a lot exists BEFORE its reception once its coloris is
+//     submitted (« Soumettre un coloris » under the list: the lot the dyer
+//     announces, typed). The client's yes on the coloris is the « coloris validé »,
+//     mailed to the dyer from the footer / header; a refusal re-dyes the lot.
 //
 // Edit mode (Modifier → Enregistrer) only touches the Contrôles measurements +
 // observations + emplacement + fin d'archivage (the sample-disposal date — when
@@ -45,6 +49,9 @@ import {
   MessageSquare,
   LineChart,
   ClipboardList,
+  MailCheck,
+  Palette,
+  Plus,
   Send,
   type LucideIcon,
 } from 'lucide-react'
@@ -79,10 +86,13 @@ import {
   LotCycleFooter,
   RcMenuButton,
   RefusClientDialog,
+  natureEnAttente,
+  SANS_SOUMISSIONS,
   type ClientRc,
   type EtapeLot,
   type GesteLot,
-  type SoumissionLot,
+  type NatureSoumission,
+  type SoumissionsLot,
 } from '@/components/qualite/LotCycle'
 import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageLotDialog'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
@@ -201,7 +211,12 @@ interface SuiviLotDetail {
   etape?: EtapeLot | null
   /** What still blocks « Valider le lot », in order. */
   prealables?: string[]
-  soumission?: SoumissionLot
+  /** The lot came back from the dyer (false: it exists through its coloris soumission, LIVA #1313). */
+  recu?: boolean
+  /** Coloris (before the stenter) and stabilités soumissions (LIVA #1313). */
+  soumissions?: SoumissionsLot
+  /** 'YYYY-MM-DD': the « coloris validé » mailed to the dyer. */
+  ok_ramer_le?: string | null
   /** The clients its pieces are affected to: the rapport de contrôle's recipients. */
   clients_rc?: ClientRc[]
 }
@@ -419,10 +434,10 @@ export function QualiteSuiviLots() {
   // Reprendre asks its motif first (RepriseMotifDialog): a reprise is recorded.
   const [repriseOpen, setRepriseOpen] = useState(false)
   const etatMut = useMutation({
-    mutationFn: ({ etat, motif }: { etat: Etat; motif?: string }) =>
+    mutationFn: ({ etat, motif, nature }: { etat: Etat; motif?: string; nature?: 'rame' | 'teinture' }) =>
       apiFetch(`/suivi-lots/${selectedId}/etat`, {
         method: 'POST',
-        body: JSON.stringify({ etat, motif }),
+        body: JSON.stringify({ etat, motif, nature }),
       }),
     // Valider/Reprendre changes lot état and (on Reprendre) flags the lot's
     // rolls — both surface on Sous-traitants › Commandes, so refresh both
@@ -430,12 +445,22 @@ export function QualiteSuiviLots() {
     onSuccess: () => { invalidateLotQualityCaches(queryClient); setRepriseOpen(false) },
   })
 
-  // The client's answer to the soumission (LIVA #1304): a refusal asks why.
+  // The client's answer to the soumission waiting for it (LIVA #1304; coloris or
+  // stabilités since #1313): a refusal asks why.
   const [refusOpen, setRefusOpen] = useState(false)
+  // The « coloris validé » mail to the dyer (LIVA #1313).
+  const [okRamerOpen, setOkRamerOpen] = useState(false)
+  const natureReponse: NatureSoumission = (detail?.etape && natureEnAttente(detail.etape)) ?? 'stabilites'
   const reponseMut = useMutation({
     mutationFn: (p: { accepte: boolean; commentaire?: string }) =>
-      apiFetch(`/suivi-lots/${selectedId}/reponse-client`, { method: 'POST', body: JSON.stringify(p) }),
-    onSuccess: () => { invalidateLotQualityCaches(queryClient); setRefusOpen(false) },
+      apiFetch(`/suivi-lots/${selectedId}/reponse-client`, { method: 'POST', body: JSON.stringify({ ...p, nature: natureReponse }) }),
+    onSuccess: (_r, p) => {
+      invalidateLotQualityCaches(queryClient)
+      setRefusOpen(false)
+      // A coloris accepted before the reception goes straight on to the dyer's
+      // mail; cancelling it leaves the step « Coloris validé, à transmettre ».
+      if (p.accepte && natureReponse === 'coloris' && !detail?.recu) setOkRamerOpen(true)
+    },
   })
   const onGeste = useCallback((g: GesteLot) => {
     etatMut.reset()
@@ -443,12 +468,19 @@ export function QualiteSuiviLots() {
     if (g === 'valider') etatMut.mutate({ etat: 3 })
     else if (g === 'reprendre') setRepriseOpen(true)
     else if (g === 'accepte') reponseMut.mutate({ accepte: true })
+    else if (g === 'ok_ramer') setOkRamerOpen(true)
     else setRefusOpen(true)
   }, [etatMut, reponseMut])
-  // A refused lot is taken back for the client's reason.
-  const motifReprise = detail?.etape === 'refuse_client' && detail.soumission?.reponse?.commentaire
-    ? `Refus client : ${detail.soumission.reponse.commentaire}`
-    : ''
+  // A refused lot is taken back for the client's reason — a refused coloris re-dyes it.
+  const soumissions = detail?.soumissions ?? SANS_SOUMISSIONS
+  const refusColoris = soumissions.coloris.reponse && !soumissions.coloris.reponse.accepte ? soumissions.coloris.reponse : null
+  const refus = detail?.etape === 'refuse_client'
+    ? (refusColoris ?? (soumissions.stabilites.reponse && !soumissions.stabilites.reponse.accepte ? soumissions.stabilites.reponse : null))
+    : null
+  const motifReprise = refus?.commentaire ? `Refus client : ${refus.commentaire}` : ''
+  // « Reprendre » asks rame or teinture only where the coloris is a matter (the client checks it).
+  const repriseAvecNature = !!(soumissions.coloris.requise || soumissions.coloris.envoyee_le)
+  const repriseNatureInitiale: 'rame' | 'teinture' = detail?.etape === 'refuse_client' && refusColoris ? 'teinture' : 'rame'
 
   // Soumission — the dye order's endpoints, narrowed to this lot (the picker
   // still names the client order and why a lot cannot go, LIVA #1302).
@@ -460,10 +492,32 @@ export function QualiteSuiviLots() {
     ...STOCK_QUERY_FRESHNESS,
   })
   const lotCourant = (detail?.lot ?? '').trim()
-  const soumissionLots = (soumissionData?.lots ?? []).filter((l) => l.kind === 'received' && l.lot.trim() === lotCourant)
-  const soumissionBloques = (soumissionData?.bloques ?? []).filter((b) => b.lot.trim() === lotCourant)
+  const recu = detail?.recu ?? true
+  // Which soumission the header button sends (LIVA #1313): the coloris while it
+  // is the matter (asked and never sent, or re-dyed), else the stabilités.
+  const natureSoumission: NatureSoumission =
+    !recu || detail?.etape === 'coloris_a_soumettre' || detail?.etape === 'coloris_soumis' ? 'coloris' : 'stabilites'
+  const soumissionLots = (soumissionData?.lots ?? [])
+    .filter((l) => l.natures.includes(natureSoumission))
+    .flatMap((l): EligibleLot[] => {
+      if (recu) return l.kind === 'received' && l.lot.trim() === lotCourant ? [l] : []
+      // Not received: the dyer line's coloris candidate, under this lot's number.
+      return l.kind === 'manual' && l.ligneId === detail?.IDligne_commande_sous_traitant
+        ? [{ ...l, kind: 'received', lot: lotCourant, key: `${l.key}|${lotCourant}` }]
+        : []
+    })
+  const soumissionBloques = recu ? (soumissionData?.bloques ?? []).filter((b) => b.lot.trim() === lotCourant) : []
   const [soumissionPickerOpen, setSoumissionPickerOpen] = useState(false)
-  const [soumissionLot, setSoumissionLot] = useState<EligibleLot | null>(null)
+  // The lot being submitted, its dye order and which soumission.
+  const [soumissionLot, setSoumissionLot] = useState<{ lot: EligibleLot; cmd: number; nature: NatureSoumission } | null>(null)
+  // « Soumettre un coloris »: a lot the dyer announces, not received yet (LIVA #1313).
+  const [colorisPickerOpen, setColorisPickerOpen] = useState(false)
+  const { data: colorisCandidats } = useQuery<EligibleLot[]>({
+    queryKey: ['suivi-lots-soumission-coloris'],
+    queryFn: () => apiFetch('/suivi-lots/soumission-coloris/candidats'),
+    enabled: canManage && colorisPickerOpen,
+    ...STOCK_QUERY_FRESHNESS,
+  })
   // Rapport de contrôle: the client it goes to.
   const [rcClient, setRcClient] = useState<ClientRc | null>(null)
 
@@ -577,6 +631,7 @@ export function QualiteSuiviLots() {
             onToggleUrgence={(n) => setUrgenceOn((v) => ({ ...v, [n]: !v[n] }))}
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilter}
+            onSoumettreColoris={canManage && !isEditing ? () => setColorisPickerOpen(true) : undefined}
           />
         }
         detailHeader={
@@ -592,7 +647,9 @@ export function QualiteSuiviLots() {
               onOpenGraph={() => setGraphOpen(true)}
               onOpenTableau={() => setTableauOpen(true)}
               soumissionCount={soumissionLots.length + soumissionBloques.length}
+              natureSoumission={natureSoumission}
               onSoumettre={() => setSoumissionPickerOpen(true)}
+              onOkRamer={() => setOkRamerOpen(true)}
               clientsRc={detail.clients_rc ?? []}
               onRapportControle={setRcClient}
             />
@@ -656,13 +713,17 @@ export function QualiteSuiviLots() {
         isPending={etatMut.isPending}
         error={etatMut.error instanceof Error ? etatMut.error.message : null}
         initialMotif={motifReprise}
+        avecNature={repriseAvecNature}
+        initialNature={repriseNatureInitiale}
         onCancel={() => setRepriseOpen(false)}
-        onConfirm={(motif) => etatMut.mutate({ etat: 2, motif })}
+        onConfirm={(motif, nature) => etatMut.mutate({ etat: 2, motif, nature })}
       />
 
       <RefusClientDialog
         open={refusOpen}
         lot={detail?.lot ?? ''}
+        nature={natureReponse}
+        recu={recu}
         isPending={reponseMut.isPending}
         error={reponseMut.error instanceof Error ? reponseMut.error.message : null}
         onCancel={() => setRefusOpen(false)}
@@ -673,31 +734,61 @@ export function QualiteSuiviLots() {
         open={soumissionPickerOpen}
         lots={soumissionLots}
         bloques={soumissionBloques}
+        title={natureSoumission === 'coloris' ? 'Soumettre le coloris au client' : 'Soumettre les stabilités au client'}
         onClose={() => setSoumissionPickerOpen(false)}
-        onSelect={(l) => { setSoumissionLot(l); setSoumissionPickerOpen(false) }}
+        onSelect={(l) => { setSoumissionLot({ lot: l, cmd: cmdId, nature: natureSoumission }); setSoumissionPickerOpen(false) }}
       />
-      {cmdId > 0 && soumissionLot && (
+      <SoumissionLotPicker
+        open={colorisPickerOpen}
+        lots={colorisCandidats ?? []}
+        bloques={[]}
+        title="Soumettre un coloris (avant rame)"
+        intro="Le lot que l’ennoblisseur annonce (« on peut soumettre le lot MA… cde N ») : la fiche part à l’ennoblisseur, qui y joint l’échantillon et l’envoie au client. Le lot apparaît ici dès l’envoi."
+        onClose={() => setColorisPickerOpen(false)}
+        onSelect={(l) => {
+          setSoumissionLot({ lot: l, cmd: l.idcommande_sous_traitant ?? 0, nature: 'coloris' })
+          setColorisPickerOpen(false)
+        }}
+      />
+      {soumissionLot && soumissionLot.cmd > 0 && (
         <SendEmailDialog
           open
           onClose={() => setSoumissionLot(null)}
-          contextLabel={`Lot ${soumissionLot.lot} · ${soumissionLot.client_nom}`}
-          queryKey={['commande-sst-soumission-email-defaults', cmdId, soumissionLot.key]}
-          loadDefaults={() => apiFetch(`/commandes-sous-traitant/${cmdId}/soumission/email-defaults?${buildSoumissionLotQuery(soumissionLot)}`)}
-          pdfUrl={`${API_URL}/commandes-sous-traitant/${cmdId}/soumission/pdf?${buildSoumissionLotQuery(soumissionLot)}`}
-          pdfAttachmentLabel={`soumission-lot-${soumissionLot.lot}.pdf`}
+          title={soumissionLot.nature === 'coloris' ? 'Envoyer la soumission coloris' : undefined}
+          contextLabel={`Lot ${soumissionLot.lot.lot} · ${soumissionLot.lot.client_nom}`}
+          queryKey={['commande-sst-soumission-email-defaults', soumissionLot.cmd, soumissionLot.lot.key, soumissionLot.lot.lot, soumissionLot.nature]}
+          loadDefaults={() => apiFetch(`/commandes-sous-traitant/${soumissionLot.cmd}/soumission/email-defaults?${buildSoumissionLotQuery(soumissionLot.lot, soumissionLot.nature)}`)}
+          pdfUrl={`${API_URL}/commandes-sous-traitant/${soumissionLot.cmd}/soumission/pdf?${buildSoumissionLotQuery(soumissionLot.lot, soumissionLot.nature)}`}
+          pdfAttachmentLabel={`soumission-${soumissionLot.nature === 'coloris' ? 'coloris' : 'lot'}-${soumissionLot.lot.lot}.pdf`}
           onSend={async (p) => {
-            await postEmail(`${API_URL}/commandes-sous-traitant/${cmdId}/soumission/email`, p, {
+            await postEmail(`${API_URL}/commandes-sous-traitant/${soumissionLot.cmd}/soumission/email`, p, {
               includeAttachPdf: true,
               extraBody: {
-                ref_fini: soumissionLot.IDref_fini,
-                coloris: soumissionLot.IDColoris,
-                lot: soumissionLot.lot,
-                commande_client: soumissionLot.IDcommande_client,
+                ref_fini: soumissionLot.lot.IDref_fini,
+                coloris: soumissionLot.lot.IDColoris,
+                lot: soumissionLot.lot.lot,
+                commande_client: soumissionLot.lot.IDcommande_client,
+                nature: soumissionLot.nature,
               },
             })
-            // The lot moves to « Soumis au client » here and on the dye order.
+            // The lot moves to « soumis » here and on the dye order (a coloris one is created).
             invalidateLotQualityCaches(queryClient)
-            queryClient.invalidateQueries({ queryKey: ['commande-sst-historique', cmdId] })
+            queryClient.invalidateQueries({ queryKey: ['suivi-lots-soumission-coloris'] })
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-historique', soumissionLot.cmd] })
+          }}
+        />
+      )}
+      {selectedId !== null && okRamerOpen && (
+        <SendEmailDialog
+          open
+          onClose={() => setOkRamerOpen(false)}
+          title="Transmettre la validation du coloris"
+          contextLabel={`Lot ${detail?.lot ?? ''}`}
+          queryKey={['suivi-lot-ok-ramer-email-defaults', selectedId]}
+          loadDefaults={() => apiFetch(`/suivi-lots/${selectedId}/ok-ramer/email-defaults`)}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/suivi-lots/${selectedId}/ok-ramer/email`, p)
+            invalidateLotQualityCaches(queryClient)
           }}
         />
       )}
@@ -760,6 +851,7 @@ const URGENCE_PILLS: Array<{ niveau: NiveauUrgence; title: string; on: string; o
 // Search-bar tags: one per step, in the cycle's order. « Rapport à envoyer » also holds the
 // validated lots still owing a rapport de contrôle (their step reads « Validé »).
 const ETAPE_TAG_ORDER: EtapeLot[] = [
+  'coloris_soumis', 'reteinture', 'ok_ramer_a_envoyer', 'en_rame', 'coloris_a_soumettre',
   'attente_mesures', 'attente_tirelle', 'a_soumettre', 'soumis', 'refuse_client',
   'rc_a_envoyer', 'a_valider', 'en_reprise', 'valide',
 ]
@@ -811,6 +903,7 @@ function LotList({
   onToggleUrgence,
   statusFilter,
   onStatusFilterChange,
+  onSoumettreColoris,
 }: {
   rows: ListRow[]
   totalCount: number
@@ -829,6 +922,8 @@ function LotList({
   onToggleUrgence: (n: NiveauUrgence) => void
   statusFilter: StatusFilter
   onStatusFilterChange: (f: StatusFilter) => void
+  /** « Soumettre un coloris » (LIVA #1313); absent = not allowed / edit mode. */
+  onSoumettreColoris?: () => void
 }) {
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
@@ -927,9 +1022,9 @@ function LotList({
                     {row.urgence.raison}
                   </p>
                 )}
-                {(row.date || rcDu) && (
+                {(row.date || rcDu || row.etape) && (
                   <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
-                    {row.date && <span>Reçu le {formatHfsqlDate(row.date)}</span>}
+                    {row.date ? <span>Reçu le {formatHfsqlDate(row.date)}</span> : row.etape && <span className="italic">Pas encore réceptionné</span>}
                     {rcDu && (
                       <span className="ml-auto flex-shrink-0 rounded-full border border-amber-200 bg-amber-100 px-1.5 text-[10px] font-medium text-amber-800" title="Rapport de contrôle à envoyer">
                         RC à envoyer
@@ -943,10 +1038,24 @@ function LotList({
         )}
       </div>
 
-      {/* Footer count */}
-      <div className="p-3 border-t text-xs text-muted-foreground rounded-b-lg bg-zinc-200/50">
-        {rows.length} lot{rows.length !== 1 ? 's' : ''}
-        {totalCount !== rows.length ? ` / ${totalCount}` : ''}
+      {/* Footer count + « Soumettre un coloris »: the way a lot enters before its
+          reception (§5 « + Nouveau » slot, LIVA #1313). */}
+      <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
+        <span>
+          {rows.length} lot{rows.length !== 1 ? 's' : ''}
+          {totalCount !== rows.length ? ` / ${totalCount}` : ''}
+        </span>
+        {onSoumettreColoris && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-accent hover:text-accent hover:bg-accent/10"
+            title="Soumettre au client le coloris d’un lot que l’ennoblisseur annonce, avant rame"
+            onClick={onSoumettreColoris}
+          >
+            <Plus className="h-3.5 w-3.5 mr-1" />Soumettre un coloris
+          </Button>
+        )}
       </div>
     </div>
   )
@@ -965,7 +1074,9 @@ function LotDetailHeader({
   onOpenGraph,
   onOpenTableau,
   soumissionCount,
+  natureSoumission,
   onSoumettre,
+  onOkRamer,
   clientsRc,
   onRapportControle,
 }: {
@@ -980,7 +1091,10 @@ function LotDetailHeader({
   onOpenTableau: () => void
   /** Eligible + blocked soumission candidates for this lot (0 = no button). */
   soumissionCount: number
+  /** What the soumission button sends: the coloris or the stabilités (LIVA #1313). */
+  natureSoumission: NatureSoumission
   onSoumettre: () => void
+  onOkRamer: () => void
   /** The lot's clients — the rapport de contrôle's possible recipients. */
   clientsRc: ClientRc[]
   onRapportControle: (c: ClientRc) => void
@@ -1051,9 +1165,23 @@ function LotDetailHeader({
                 <LineChart className="h-4 w-4" />
               </Button>
               {canManage && soumissionCount > 0 && (
-                <Button variant="outline" size="icon" className="h-9 w-9 relative" title="Soumettre au client" onClick={onSoumettre}>
-                  <Send className="h-4 w-4" />
-                  {detail.etape === 'a_soumettre' && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 relative"
+                  title={natureSoumission === 'coloris' ? 'Soumettre le coloris au client' : 'Soumettre les stabilités au client'}
+                  onClick={onSoumettre}
+                >
+                  {natureSoumission === 'coloris' ? <Palette className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+                  {(detail.etape === 'a_soumettre' || detail.etape === 'coloris_a_soumettre') && (
+                    <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
+                  )}
+                </Button>
+              )}
+              {canManage && (detail.etape === 'ok_ramer_a_envoyer' || detail.etape === 'en_rame') && (
+                <Button variant="outline" size="icon" className="h-9 w-9 relative" title="Transmettre la validation du coloris à l’ennoblisseur" onClick={onOkRamer}>
+                  <MailCheck className="h-4 w-4" />
+                  {detail.etape === 'ok_ramer_a_envoyer' && (
                     <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
                   )}
                 </Button>
@@ -1570,7 +1698,9 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
         <CycleCard
           etape={detail.etape}
           prealables={detail.prealables ?? []}
-          soumission={detail.soumission ?? { requise: false, envoyee_le: null, reponse: null }}
+          soumissions={detail.soumissions ?? SANS_SOUMISSIONS}
+          okRamerLe={detail.ok_ramer_le ?? null}
+          recu={detail.recu ?? true}
           clients={detail.clients_rc ?? []}
         />
       )}
@@ -1880,6 +2010,7 @@ function LotSidebar({
         <LotCycleFooter
           etape={detail.etape}
           prealables={detail.prealables ?? []}
+          recu={detail.recu ?? true}
           canManage={canManage}
           isChanging={etatChanging}
           disabled={isEditing}
@@ -2588,7 +2719,7 @@ function ReprisesCard({ reprises }: { reprises: RepriseLot[] }) {
 
 /** « Reprendre »: the motif is asked before the lot goes back to the dyer. */
 function RepriseMotifDialog({
-  open, lot, isPending, error, initialMotif = '', onCancel, onConfirm,
+  open, lot, isPending, error, initialMotif = '', avecNature = false, initialNature = 'rame', onCancel, onConfirm,
 }: {
   open: boolean
   lot: string
@@ -2596,11 +2727,16 @@ function RepriseMotifDialog({
   error: string | null
   /** A refused soumission pre-fills the client's reason. */
   initialMotif?: string
+  /** Ask whether the lot goes back on the stenter or back to the dye (LIVA #1313):
+   *  only where the client checks the coloris — a re-dye asks it again. */
+  avecNature?: boolean
+  initialNature?: 'rame' | 'teinture'
   onCancel: () => void
-  onConfirm: (motif: string) => void
+  onConfirm: (motif: string, nature: 'rame' | 'teinture') => void
 }) {
   const [motif, setMotif] = useState('')
-  useEffect(() => { if (open) setMotif(initialMotif) }, [open, initialMotif])
+  const [nature, setNature] = useState<'rame' | 'teinture'>('rame')
+  useEffect(() => { if (open) { setMotif(initialMotif); setNature(initialNature) } }, [open, initialMotif, initialNature])
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !isPending) onCancel() }}>
       <DialogContent className="max-w-md" onClose={onCancel}>
@@ -2611,6 +2747,31 @@ function RepriseMotifDialog({
           </DialogTitle>
         </DialogHeader>
         <div className="mt-4 space-y-3">
+          {avecNature && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Le lot repart</label>
+              <div className="flex gap-1">
+                {([['rame', 'En rame'], ['teinture', 'En teinture']] as const).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setNature(k)}
+                    className={cn(
+                      'flex-1 px-2 py-1.5 text-xs rounded-md border transition-colors',
+                      nature === k
+                        ? 'bg-accent text-accent-foreground border-accent shadow-sm font-medium'
+                        : 'text-muted-foreground border-border hover:bg-accent/10',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {nature === 'teinture' && (
+                <p className="text-[11px] text-muted-foreground">Le coloris sera soumis à nouveau au client au retour du lot.</p>
+              )}
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Motif de la reprise</label>
             <textarea
@@ -2633,7 +2794,7 @@ function RepriseMotifDialog({
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={onCancel} disabled={isPending}>Annuler</Button>
-          <Button onClick={() => onConfirm(motif.trim())} disabled={!motif.trim() || isPending}>
+          <Button onClick={() => onConfirm(motif.trim(), avecNature ? nature : 'rame')} disabled={!motif.trim() || isPending}>
             {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1.5" />}
             Reprendre
           </Button>

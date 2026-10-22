@@ -27,6 +27,7 @@ async function main() {
     IDref_fini: 825,
     IDColoris: 1056,
     lot: 'MA108050',
+    nature: 'stabilites',
     IDcommande_client: 6843,
   }
 

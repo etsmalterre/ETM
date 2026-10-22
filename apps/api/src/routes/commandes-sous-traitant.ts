@@ -74,7 +74,7 @@ import {
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 import { etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
-import { etatCommande, lireCommandesEnnoblissement, urgenceCommande, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
+import { cleLot, etatCommande, lireCommandesEnnoblissement, urgenceCommande, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
 import {
   loadRectiligneRefLabels,
   loadRectiligneColorisLabels,
@@ -93,6 +93,8 @@ import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, reto
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../lib/soumission-lots-bloques.js'
 import { affectationsCommandeSst } from '../lib/affectations-sst.js'
+import { enregistrerSoumission, naturesDemandees, NATURE_LIBELLE, type NatureSoumission } from '../lib/soumission-lot.js'
+import { mpsPg } from '../lib/mps-pg.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -960,6 +962,15 @@ const ETAPE_KEYWORDS_ENNOBLISSEMENT: Array<[string, { commande?: EtapeCommande; 
   ['controle malterre', { lot: 'attente_tirelle' }],
   ['attente tirelle', { lot: 'attente_tirelle' }],
   ['tirelle', { lot: 'attente_tirelle' }],
+  // Before the stenter (LIVA #1313).
+  ['coloris a soumettre', { lot: 'coloris_a_soumettre' }],
+  ['coloris soumis', { lot: 'coloris_soumis' }],
+  ['reteinture', { lot: 'reteinture' }],
+  ['coloris valide', { lot: 'ok_ramer_a_envoyer' }],
+  ['ok a ramer', { lot: 'ok_ramer_a_envoyer' }],
+  ['en rame', { lot: 'en_rame' }],
+  ['stabilites a soumettre', { lot: 'a_soumettre' }],
+  ['stabilites soumises', { lot: 'soumis' }],
   ['a soumettre', { lot: 'a_soumettre' }],
   ['soumis', { lot: 'soumis' }],
   ['refuse', { lot: 'refuse_client' }],
@@ -3220,6 +3231,11 @@ interface EligibleLot {
   date_commande: string        // commande_client.date_commande (YYYYMMDD)
   nb_rolls: number             // 0 for manual
   total_metrage: number        // 0 for manual (planned qty comes from the line at render time)
+  /** The soumissions the client asks for this reference (designation_client.soumettre
+   *  bits, LIVA #1313). A manual candidate is offered only for a coloris one. */
+  natures: NatureSoumission[]
+  /** The dye line the lot belongs to (manual: the line the écru is affected to). */
+  ligneId: number
   // React-friendly key
   key: string
 }
@@ -3256,6 +3272,7 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
   // ── 2a) Received: fini rolls with a client-order reservation.
   interface GroupAcc {
     kind: 'received' | 'manual'
+    ligneId: number
     IDref_fini: number
     IDColoris: number
     lot: string
@@ -3271,8 +3288,9 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
     lot: string | null
     IDligne_commande_client: number
     metrage: number | null
+    IDref_commande_source: number
   }>(
-    `SELECT IDstock_fini, IDref_fini, IDColoris, lot, IDligne_commande_client, metrage
+    `SELECT IDstock_fini, IDref_fini, IDColoris, lot, IDligne_commande_client, metrage, IDref_commande_source
      FROM stock_fini
      WHERE IDref_commande_source IN (${lineIds.join(',')})
        AND IDligne_commande_client > 0`,
@@ -3341,6 +3359,7 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
     const k = `r|${idRefFini}|${idColoris}|${lot}|${ccId}`
     const acc = groups.get(k) ?? {
       kind: 'received' as const,
+      ligneId: n(r.IDref_commande_source),
       IDref_fini: idRefFini,
       IDColoris: idColoris,
       lot,
@@ -3355,12 +3374,10 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
   }
 
   // ── 5b) Build manual groups keyed (IDref_fini, IDColoris, ccId) per
-  //        (line, client) tuple from écru affectations. Suppress when a
-  //        received group already covers the same (ref_fini, coloris, cc).
-  const receivedCoverage = new Set<string>()
-  for (const g of groups.values()) {
-    if (g.kind === 'received') receivedCoverage.add(`${g.IDref_fini}|${g.IDColoris}|${g.IDcommande_client}`)
-  }
+  //        (line, client) tuple from écru affectations. Kept even when a
+  //        received lot covers the same (ref_fini, coloris, cc): a manual
+  //        candidate is a coloris soumission now (LIVA #1313), and the line's
+  //        next lot, still at the dyer, is submitted before its reception.
   for (const r of ecruRows) {
     const lineId = Number(r.IDref_commande_affectation)
     const refInfo = lineRefMap.get(lineId)
@@ -3370,11 +3387,11 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
     const clientId = ccToClient.get(ccId) ?? 0
     if (ccId === 0 || clientId === 0) continue
     const sig = `${refInfo.IDref_fini}|${refInfo.IDColoris}|${ccId}`
-    if (receivedCoverage.has(sig)) continue
     const k = `m|${sig}`
     if (groups.has(k)) continue
     groups.set(k, {
       kind: 'manual',
+      ligneId: lineId,
       IDref_fini: refInfo.IDref_fini,
       IDColoris: refInfo.IDColoris,
       lot: '',
@@ -3398,12 +3415,13 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
   const uniqueRefFini = Array.from(new Set(Array.from(groups.values()).map((g) => g.IDref_fini)))
   const dcMap = new Map<string, string>() // `${IDclient}|${IDref_fini}` → designation (fallback)
   const dcColorisMap = new Map<string, string>() // `${IDclient}|${IDref_fini}|${IDColoris}` → designation
+  const dcNatures = new Map<string, NatureSoumission[]>() // `${IDclient}|${IDref_fini}` → soumissions asked
   if (uniqueClients.length > 0 && uniqueRefFini.length > 0) {
     const dcRows = await query<any>(
       `SELECT * FROM designation_client
        WHERE IDclient IN (${uniqueClients.join(',')})
          AND IDref_fini IN (${uniqueRefFini.join(',')})
-         AND soumettre = 1`,
+         AND soumettre > 0`,
     )
     const dcActive = (dcRows as any[]).filter(
       // `archivé` is accent-mangled on the Linux bridge (`archiv?`): read by
@@ -3412,7 +3430,10 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
     )
     const dcFixed = await fixEncoding(dcActive as any[], 'designation_client', 'IDdesignation_client', ['designation'])
     for (const r of dcFixed as any[]) {
-      dcMap.set(`${n(r.IDclient)}|${n(r.IDref_fini)}`, (r.designation ?? '').toString())
+      const k = `${n(r.IDclient)}|${n(r.IDref_fini)}`
+      dcMap.set(k, (r.designation ?? '').toString())
+      // Several designations of a (client, ref): what any of them asks.
+      dcNatures.set(k, [...new Set([...(dcNatures.get(k) ?? []), ...naturesDemandees(r.soumettre)])])
     }
     // A client may carry SEVERAL designations for the same ref_fini, one per
     // coloris (linked through ref_client_colori). Keying on (client, ref)
@@ -3516,6 +3537,9 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
     // eligibility for coloris without a ref_client_colori row.
     const clientDesignation = dcColorisMap.get(`${dcKey}|${g.IDColoris}`) ?? dcMap.get(dcKey)
     if (clientDesignation === undefined) continue
+    const natures = dcNatures.get(dcKey) ?? []
+    // Before the reception only the coloris is submitted (LIVA #1313).
+    if (g.kind === 'manual' && !natures.includes('coloris')) continue
     // Key encodes kind so the same (ref, coloris, cc) tuple can carry both a
     // received and a manual candidate if we ever want to surface them
     // side-by-side; today we suppress manual when received covers it.
@@ -3537,6 +3561,8 @@ export async function findEligibleLots(commandeId: number): Promise<EligibleLot[
       date_commande: ccInfoMap.get(g.IDcommande_client)?.date_commande ?? '',
       nb_rolls: g.nb_rolls,
       total_metrage: g.total_metrage,
+      natures,
+      ligneId: g.ligneId,
       key,
     })
   }
@@ -3637,29 +3663,57 @@ interface SoumissionLotParams {
   IDColoris: number
   lot: string
   IDcommande_client: number
+  /** Which soumission (LIVA #1313); absent = stabilités, the historical one. */
+  nature: NatureSoumission
 }
 
 function parseSoumissionLotParams(q: any): SoumissionLotParams | null {
   const idRefFini = parseInt(String(q.ref_fini ?? ''), 10)
   const idColoris = parseInt(String(q.coloris ?? ''), 10)
   const idCommandeClient = parseInt(String(q.commande_client ?? ''), 10)
-  const lot = String(q.lot ?? '').trim()
+  // The dyer's number, never a reprise suffix (lib/reprises.ts).
+  const lot = normaliserLot(String(q.lot ?? ''))
+  const nature: NatureSoumission = q.nature === 'coloris' ? 'coloris' : 'stabilites'
   if (!Number.isFinite(idRefFini) || idRefFini <= 0) return null
   if (!Number.isFinite(idColoris) || idColoris < 0) return null
   if (!Number.isFinite(idCommandeClient) || idCommandeClient <= 0) return null
   if (!lot) return null
-  return { IDref_fini: idRefFini, IDColoris: idColoris, lot, IDcommande_client: idCommandeClient }
+  return { IDref_fini: idRefFini, IDColoris: idColoris, lot, IDcommande_client: idCommandeClient, nature }
+}
+
+/** A lot typed as the dyer writes it in her mail (« 109365 ») gets the
+ *  prefix its BL will print (« MA109365 »), read from the dyer's latest lots:
+ *  Suivi lots, the soumission sheet and the point then show one number, and the
+ *  reception completes the lot created by its coloris soumission (LIVA #1313). */
+async function lotDuTeinturier(commandeId: number, lot: string): Promise<string> {
+  if (!/^\d{5,}$/.test(lot)) return lot
+  const rows = await mpsPg()<{ lot: string }[]>`
+    SELECT trim(s.lot::text) AS lot FROM suivilot s
+    JOIN commande_sous_traitant c ON c.idsous_traitant = s.idsous_traitant
+    WHERE c.idcommande_sous_traitant = ${commandeId} AND s.lot::text ~ '^[A-Za-z]{2,3}[0-9]{5,}'
+    ORDER BY s.idsuivilot DESC LIMIT 20`
+  const prefixes = new Map<string, number>()
+  for (const r of rows) {
+    const p = /^([A-Za-z]{2,3})\d/.exec(r.lot)?.[1].toUpperCase()
+    if (p) prefixes.set(p, (prefixes.get(p) ?? 0) + 1)
+  }
+  const [prefixe] = [...prefixes].sort((a, b) => b[1] - a[1])[0] ?? []
+  return prefixe ? `${prefixe}${lot}` : lot
 }
 
 /** Find the eligible candidate matching the params. Received candidates
  *  require exact lot match; manual candidates ignore the lot (user-typed)
- *  and match only on (ref_fini, coloris, commande_client). */
+ *  and match only on (ref_fini, coloris, commande_client). The client must
+ *  ask the soumission of that nature for the reference (LIVA #1313); a lot
+ *  not received yet is submitted for its coloris only. */
 function matchEligibleLot(eligible: EligibleLot[], params: SoumissionLotParams): EligibleLot | null {
   return eligible.find((l) =>
     l.IDref_fini === params.IDref_fini &&
     l.IDColoris === params.IDColoris &&
     l.IDcommande_client === params.IDcommande_client &&
-    (l.kind === 'manual' || l.lot === params.lot),
+    (l.kind === 'manual' || l.lot === params.lot) &&
+    l.natures.includes(params.nature) &&
+    (l.kind === 'received' || params.nature === 'coloris'),
   ) ?? null
 }
 
@@ -3804,6 +3858,7 @@ export async function buildSoumissionLotPdfData(
     expediteur,
     destinataire,
     lot: lotString,
+    nature: params.nature,
   }
 }
 
@@ -3839,6 +3894,7 @@ commandesSousTraitantRouter.get('/:id/soumission/pdf', async (req: Request, res:
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
 
     const params = parseSoumissionLotParams(req.query)
+    if (params) params.lot = await lotDuTeinturier(id, params.lot)
     if (!params) { res.status(400).json({ error: 'Missing or invalid lot params' }); return }
 
     const data = await buildSoumissionLotPdfData(id, params, req.userId)
@@ -3945,13 +4001,21 @@ async function buildSoumissionEmailDefaults(
   const ccFixed = await fixEncoding(ccRows as any[], 'commande_client', 'IDcommande_client', ['ref_client'])
   const refCommandeClient = ((ccFixed[0] as any)?.ref_client ?? '').toString().trim()
 
-  const subject = `Soumission Lot ${lotString} - ${lot.ref_malterre}${lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}${refCommandeClient ? ` · ${refCommandeClient}` : ''}`
-  const body =
-    `Bonjour,\n\n` +
-    `Veuillez trouver ci-joint la soumission du lot ${lotString} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
-    (refCommandeClient ? `Réf commande client : ${refCommandeClient}\n\n` : '') +
-    `Un échantillon est joint au document imprimé.\n\n` +
-    `Cordialement,`
+  const coloris = params.nature === 'coloris'
+  const subject = `Soumission ${coloris ? 'coloris' : 'Lot'} ${lotString} - ${lot.ref_malterre}${lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}${refCommandeClient ? ` · ${refCommandeClient}` : ''}`
+  const body = coloris
+    // MATEL prints the sheet, staples a sample cut after the dye and ships it
+    // to the client, before the stenter (LIVA #1313).
+    ? `Bonjour,\n\n` +
+      `Veuillez trouver ci-joint la fiche de soumission coloris du lot ${lotString} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
+      `Merci d’y joindre un échantillon du lot avant rame et de l’envoyer au client.\n\n` +
+      (refCommandeClient ? `Réf commande client : ${refCommandeClient}\n\n` : '') +
+      `Cordialement,`
+    : `Bonjour,\n\n` +
+      `Veuillez trouver ci-joint la soumission du lot ${lotString} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
+      (refCommandeClient ? `Réf commande client : ${refCommandeClient}\n\n` : '') +
+      `Un échantillon est joint au document imprimé.\n\n` +
+      `Cordialement,`
 
   return {
     recipients: { selected, suggestions },
@@ -3968,6 +4032,7 @@ commandesSousTraitantRouter.get('/:id/soumission/email-defaults', async (req: Re
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const params = parseSoumissionLotParams(req.query)
+    if (params) params.lot = await lotDuTeinturier(id, params.lot)
     if (!params) { res.status(400).json({ error: 'Missing or invalid lot params' }); return }
     const defaults = await buildSoumissionEmailDefaults(id, params)
     if (!defaults) { res.status(404).json({ error: 'Lot not eligible for this commande' }); return }
@@ -3993,6 +4058,7 @@ const soumissionEmailBody = z.object({
   coloris: z.number().int().nonnegative(),
   lot: z.string().min(1).max(200),
   commande_client: z.number().int().positive(),
+  nature: z.enum(['coloris', 'stabilites']).optional(),
   // Dev-only — see emailBody for semantics.
   dev_skip_send: z.boolean().optional(),
 })
@@ -4012,11 +4078,22 @@ commandesSousTraitantRouter.post('/:id/soumission/email', async (req: Request, r
     if (!parsed.success) {
       res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return
     }
+    const refus = refusLotSuffixe(parsed.data.lot)
+    if (refus) { res.status(400).json({ error: 'lot_suffixe', message: refus }); return }
     const lotParams: SoumissionLotParams = {
       IDref_fini: parsed.data.ref_fini,
       IDColoris: parsed.data.coloris,
-      lot: parsed.data.lot,
+      lot: await lotDuTeinturier(id, normaliserLot(parsed.data.lot)),
       IDcommande_client: parsed.data.commande_client,
+      nature: parsed.data.nature ?? 'stabilites',
+    }
+    const candidat = matchEligibleLot(await findEligibleLots(id), lotParams)
+    if (!candidat) {
+      res.status(404).json({
+        error: 'lot_non_soumissible',
+        message: `Ce lot ne peut pas recevoir de soumission ${NATURE_LIBELLE[lotParams.nature]} : le client ne la demande pas pour cette référence, ou le lot n’est pas encore reçu.`,
+      })
+      return
     }
 
     // Dev-only fake send — see the bon-de-commande endpoint above.
@@ -4099,6 +4176,27 @@ commandesSousTraitantRouter.post('/:id/soumission/email', async (req: Request, r
       societe,
       lotParams.lot, // notes — lot identifier (legacy convention)
     )
+
+    // What the send was (LIVA #1313) — envoi_email cannot tell the coloris from
+    // the stabilités. A coloris soumission before the BL creates the lot: it
+    // shows on Suivi lots from now on, the reception completes it.
+    try {
+      const idsuivilot = await upsertSuivilot({
+        commandeId: id, ligneId: candidat.ligneId, lot: lotParams.lot, avantReception: candidat.kind === 'manual',
+      }) ?? 0
+      await enregistrerSoumission({
+        nature: lotParams.nature,
+        idcommande: id,
+        ligneId: candidat.ligneId,
+        idsuivilot,
+        lot: lotParams.lot,
+        idcommandeClient: lotParams.IDcommande_client,
+        par: { id: req.userId, nom: await nomUtilisateur(req.userId) },
+        destinataires: allRecipients,
+      })
+    } catch (err) {
+      console.error(`Soumission journal failed for commande=${id} lot=${lotParams.lot}:`, err)
+    }
 
     // Auto-advance the lot's quality status to "Attente Client" (état 5): the
     // soumission has been sent, so the lot now awaits the customer's decision.
@@ -5028,15 +5126,30 @@ async function upsertSuivilot(opts: {
   commandeId: number
   ligneId: number
   lot: string
-}): Promise<void> {
+  /** LIVA #1313: the lot is created by its coloris soumission, before the BL —
+   *  no reception date yet. The reception then completes this row. */
+  avantReception?: boolean
+}): Promise<number | null> {
   const lot = (opts.lot ?? '').trim()
-  if (lot.length === 0) return
+  if (lot.length === 0) return null
   try {
     const existing = await query<{ IDsuivilot: number }>(
       `SELECT IDsuivilot FROM suivilot
        WHERE IDligne_commande_sous_traitant = ${opts.ligneId} AND lot = '${esc(lot)}'`,
     )
-    if (existing.length > 0) return  // Lot already tracked.
+    if (existing.length > 0) return Number(existing[0].IDsuivilot)  // Lot already tracked.
+
+    // A lot submitted for its coloris before the BL (LIVA #1313) exists
+    // without a reception date, typed from Perrine's mail (« 109547 ») while
+    // the BL prints « MA109547 »: same digits, the BL completes that row. Only
+    // a row not received yet — a received « MA109547B » stays its own lot.
+    const avant = (await mpsPg()<{ id: number; lot: string }[]>`
+      SELECT idsuivilot AS id, trim(lot::text) AS lot FROM suivilot
+      WHERE idligne_commande_sous_traitant = ${opts.ligneId} AND date IS NULL`).find((r) => cleLot(r.lot) === cleLot(lot))
+    if (avant) {
+      if (!opts.avantReception) await mpsPg()`UPDATE suivilot SET date = CURRENT_DATE, lot = ${lot} WHERE idsuivilot = ${avant.id}`
+      return Number(avant.id)
+    }
 
     // Resolve everything else from the line + parent commande + ref_fini.
     const lineRows = await query<{ IDreference: number | null; IDColoris: number | null }>(
@@ -5082,7 +5195,7 @@ async function upsertSuivilot(opts: {
       String(IDColoris),
       String(opts.commandeId),
       String(IDsous_traitant),
-      `'${dateStr}'`,
+      opts.avantReception ? 'NULL' : `'${dateStr}'`,
       `'${esc(lot)}'`,
       String(n(ref.laizeHT_Moy)),
       String(n(ref.poids_Moy)),
@@ -5109,8 +5222,14 @@ async function upsertSuivilot(opts: {
     await query(
       `INSERT INTO suivilot (${baseCols.join(', ')}) VALUES (${baseVals.join(', ')})`,
     )
+    const created = await query<{ IDsuivilot: number }>(
+      `SELECT IDsuivilot FROM suivilot
+       WHERE IDligne_commande_sous_traitant = ${opts.ligneId} AND lot = '${esc(lot)}'`,
+    )
+    return Number(created[0]?.IDsuivilot) || null
   } catch (err) {
     console.error(`upsertSuivilot failed for ligne=${opts.ligneId} lot=${lot}:`, err)
+    return null
   }
 }
 

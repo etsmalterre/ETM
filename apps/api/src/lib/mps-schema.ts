@@ -1031,6 +1031,60 @@ ${grantApi('USAGE, SELECT', 'SEQUENCE delai_sst_evenement_id_seq')}
 `,
   },
   {
+    // Two soumissions, at two moments of the dye (LIVA #1313, decision Vincent
+    // 2026-10-22, lib/soumission-lot.ts):
+    // • designation_client.soumettre becomes a bit set: 1 = stabilités (the
+    //   rolls, before shipping — what it meant so far), 2 = coloris (a sample
+    //   after the dye, before the stenter: the client answers « coloris validé »).
+    //   The clients who only ever submitted before the reception (prod, 2025 →
+    //   2026-10: Empreinte 32 lots, Simone Pérèle 20, Agape 18, Allande 11,
+    //   Séduction Santoul 3 — never after) switch to coloris; Allande had no
+    //   reference ticked, its 228/122 (the one it was submitted) is.
+    // • soumission_lot: what each send was (the envoi_email type 15 row stays
+    //   the mail log, it cannot tell the two apart); history is inferred by
+    //   date against the lot's reception.
+    // • ok_a_ramer_envoi: the mail telling the dyer to put the lot on the
+    //   stenter once the client accepted the coloris.
+    // • reponse_soumission.nature: which soumission the client answered.
+    // • reprise.nature: a reprise re-dyes (asks the coloris again) or only
+    //   goes back on the stenter.
+    name: '0031_soumission_coloris',
+    sql: `
+UPDATE designation_client SET soumettre = 2
+WHERE COALESCE(archive, 0) = 0
+  AND ((idclient IN (22, 31, 48, 234) AND soumettre = 1) OR (idclient = 28 AND idref_fini = 2));
+CREATE TABLE soumission_lot (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nature text NOT NULL CHECK (nature IN ('coloris', 'stabilites')),
+  idcommande_sous_traitant bigint NOT NULL,
+  idligne_commande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idsuivilot bigint NOT NULL DEFAULT 0,
+  lot text NOT NULL,
+  idcommande_client bigint NOT NULL DEFAULT 0,
+  envoyee_le timestamptz NOT NULL DEFAULT now(),
+  envoyee_par_id bigint NOT NULL DEFAULT 0,
+  envoyee_par text,
+  destinataires text
+);
+CREATE INDEX soumission_lot_commande ON soumission_lot (idcommande_sous_traitant);
+CREATE TABLE ok_a_ramer_envoi (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idsuivilot bigint NOT NULL,
+  idcommande_sous_traitant bigint NOT NULL,
+  lot text NOT NULL,
+  envoye_le timestamptz NOT NULL DEFAULT now(),
+  envoye_par_id bigint NOT NULL DEFAULT 0,
+  envoye_par text,
+  destinataires text
+);
+CREATE INDEX ok_a_ramer_envoi_commande ON ok_a_ramer_envoi (idcommande_sous_traitant);
+${grantApi('SELECT, INSERT', 'soumission_lot, ok_a_ramer_envoi')}
+${grantApi('USAGE, SELECT', 'SEQUENCE soumission_lot_id_seq, ok_a_ramer_envoi_id_seq')}
+ALTER TABLE reponse_soumission ADD COLUMN nature text CHECK (nature IN ('coloris', 'stabilites'));
+ALTER TABLE reprise ADD COLUMN nature text NOT NULL DEFAULT 'rame' CHECK (nature IN ('rame', 'teinture'));
+`,
+  },
+  {
     // Clients › Gestion — « Facturation douanière » per client (LIVA #1311,
     // 2026-10-22): the invoice prints the origin declaration and, per avis,
     // HS code + EXW + gross / net weights (lib/facture-douane.ts). ETM's fiche

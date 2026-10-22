@@ -1110,7 +1110,9 @@ const refSettingsBody = z
     designation: z.string().min(1).max(100),
     IDref_fini: z.number().int().nonnegative(),
     IDref_ecru: z.number().int().nonnegative(),
-    soumettre: z.boolean(),
+    // A bit set since LIVA #1313 (lib/soumission-lot.ts): 1 stabilités, 2 coloris.
+    // A boolean still means « stabilités » (what the switch meant before).
+    soumettre: z.union([z.boolean(), z.number().int().min(0).max(3)]),
     unite: z.union([z.literal(1), z.literal(3)]), // 1 = Kg, 3 = Ml
     fil_non_facture: z.array(z.number().int().positive()).max(50),
     coloris: z.array(z.number().int().positive()).max(500),
@@ -1147,7 +1149,7 @@ clientsRouter.post('/:id/references', async (req: Request, res: Response) => {
         archive: 0,
         associee: '',
         cache: 0,
-        soumettre: b.soumettre ? 1 : 0,
+        soumettre: typeof b.soumettre === 'number' ? b.soumettre : b.soumettre ? 1 : 0,
         unite: b.unite,
         fil_non_facture: b.fil_non_facture.join(','),
       },
@@ -1200,7 +1202,7 @@ clientsRouter.put('/:id/references/:did', async (req: Request, res: Response) =>
       designation: b.designation,
       IDref_fini: b.IDref_fini,
       IDref_ecru: b.IDref_ecru,
-      soumettre: b.soumettre ? 1 : 0,
+      soumettre: typeof b.soumettre === 'number' ? b.soumettre : b.soumettre ? 1 : 0,
       unite: b.unite,
       fil_non_facture: b.fil_non_facture.join(','),
     }

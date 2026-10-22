@@ -194,7 +194,7 @@ serves a list called without `famille`.
 the délai was given, then moved daily to the next point while lots were in
 control (60 edits in 3 days), and the lot states lived as codes in the order's
 Journal: ACP (dyer's measures awaited, ACB at Bontemps), ACL (our control on the
-tirelle awaited), « lot/s » (soumission sent), « ok à ramer » (client accepted,
+tirelle awaited), « lot/s » (soumission sent), « coloris validé » (client accepted,
 lot validated), reprise / lot suffixed R. On the 16 open lots of 2026-10-11 every
 code matched data ETM holds, so the cycle is COMPUTED and he stops typing codes
 and relance dates (decision Vincent: built from his Journal, he conforms).
@@ -210,6 +210,11 @@ before any BL makes a lot of its own) · Contrôle ennoblisseur (ACP/ACB, key `a
 2026-10-11, was the dyer's until the label named Malterre; no « tirelle reçue »
 input) · À soumettre (tirelle measured,
 `designation_client.soumettre` for the line's client and ref) · À valider.
+**Since LIVA #1313 two soumissions** — coloris before the stenter (the lot exists
+before its reception: Coloris soumis → Coloris validé, à transmettre → En rame, or En
+reteinture on a refusal) and stabilités on the received rolls (« Stabilités à
+soumettre / soumises »); `soumettre` is a bit set (1 stabilités, 2 coloris).
+Full rules: `screen_notes.md` § 10 « Two soumissions ».
 Each step has whose move (teinturier / nous / client) and a computed chase date
 (`RELANCE_J`: measures +1 working day after reception, tirelle +3, soumission +5,
 our steps +1; estimates to correct from use).

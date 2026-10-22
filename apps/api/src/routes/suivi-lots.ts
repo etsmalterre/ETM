@@ -42,8 +42,10 @@ import { mpsPg } from '../lib/mps-pg.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import {
-  cleLot, etapeLot, lireCommandesEnnoblissement, prealablesValidation, urgenceLot, type EtapeLot, type LotFait,
+  cleLot, etapeLot, lireCommandesEnnoblissement, prealablesValidation, urgenceLot, type EtapeLot, type LotFait, type SoumissionFait,
 } from '../lib/cycle-ennoblissement.js'
+import { enregistrerOkRamer, type NatureSoumission } from '../lib/soumission-lot.js'
+import { findEligibleLots } from './commandes-sous-traitant.js'
 import { clientsDesLots, cleLotLigne, journaliserEnvoiRc, rapportControleLot, type ClientDuLot, type RapportControleLot } from '../lib/rapport-controle-lot.js'
 import { RapportControlePdf } from '../lib/pdf/RapportControlePdf.js'
 
@@ -261,6 +263,42 @@ suiviLotsRouter.get('/', async (req: Request, res: Response) => {
     )
   } catch (err) {
     console.error('Error listing suivi-lots:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Soumission coloris: the lots not received yet (LIVA #1313) ─────
+//
+// GET /suivi-lots/soumission-coloris/candidats
+//
+// Where a lot MATEL announces (« on peut soumettre le lot MA… cde N », in
+// Perrine's answer to the point §3) is submitted for its coloris before the
+// stenter: the open dye lines whose client asks the coloris for the reference
+// (Clients › Gestion), with écru at the dyer reserved to the client order. The
+// lot number is typed at send time; the soumission creates the lot here.
+suiviLotsRouter.get('/soumission-coloris/candidats', async (_req: Request, res: Response) => {
+  try {
+    const sql = mpsPg()
+    const commandes = await sql<{ cmd: number; sst: string | null }[]>`
+      SELECT DISTINCT l.idcommande_sous_traitant AS cmd, st.nom::text AS sst
+      FROM ligne_commande_sous_traitant l
+      JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
+      LEFT JOIN sous_traitant st ON st.idsous_traitant = c.idsous_traitant
+      JOIN stock_ecru se ON se.idref_commande_affectation = l.idligne_commande_sous_traitant AND se.idligne_commande_client > 0
+      JOIN ligne_commande_client lcc ON lcc.idligne_commande_client = se.idligne_commande_client
+      JOIN commande_client cc ON cc.idcommande_client = lcc.idcommande_client
+      JOIN designation_client d ON d.idclient = cc.idclient AND d.idref_fini = l.idreference
+        AND (COALESCE(d.soumettre, 0) & 2) = 2 AND COALESCE(d.archive, 0) = 0
+      WHERE l.type = 2 AND COALESCE(c.est_soldee, 0) = 0 AND COALESCE(l.sstatut::text, '') NOT LIKE 'Termin%'
+      ORDER BY 1 DESC`
+    const out = []
+    for (const c of commandes) {
+      const lots = (await findEligibleLots(Number(c.cmd))).filter((l) => l.kind === 'manual' && l.natures.includes('coloris'))
+      for (const l of lots) out.push({ ...l, idcommande_sous_traitant: Number(c.cmd), sous_traitant_nom: (c.sst ?? '').trim() })
+    }
+    res.json(out)
+  } catch (err) {
+    console.error('Error listing coloris soumission candidates:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -667,33 +705,33 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
   }
 })
 
-/** The detail's cycle block: step, what blocks the validation, the
- *  soumission and the client's answer, the clients a RC can go to. */
+/** One soumission as the detail shows it. */
+function soumissionDuDetail(s: SoumissionFait | undefined) {
+  return {
+    requise: !!s?.requise,
+    envoyee_le: s?.envoyeeLe ?? null,
+    // The answer to the CURRENT soumission (null while it waits).
+    reponse: s?.reponse
+      ? { accepte: s.reponse.accepte, commentaire: s.reponse.commentaire, par: s.reponse.par ?? '', le: s.reponse.le.slice(0, 16) }
+      : null,
+  }
+}
+
+/** The detail's cycle block: step, what blocks the validation, both
+ *  soumissions and the client's answers (LIVA #1313), the « coloris validé », the
+ *  clients a RC can go to. */
 async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: string) {
-  const [e, clients, reponses] = await Promise.all([
+  const [e, clients] = await Promise.all([
     etapesDesLots([{ id, cmd: cmdId }]).then((m) => m.get(id) ?? null),
     ligneId > 0 && lot.trim() ? clientsDesLots([{ ligne: ligneId, lot }]) : Promise.resolve(new Map<string, ClientDuLot[]>()),
-    cmdId > 0
-      ? mpsPg()<{ lot: string | null; par: string | null; le: string | null }[]>`
-          SELECT lot::text AS lot, saisi_par AS par,
-                 to_char(COALESCE(saisi_le AT TIME ZONE 'Europe/Paris', date::timestamp), 'YYYY-MM-DD HH24:MI') AS le
-          FROM reponse_soumission WHERE idcommande_sous_traitant = ${cmdId}
-          ORDER BY COALESCE(saisi_le AT TIME ZONE 'Europe/Paris', date::timestamp) DESC`
-      : Promise.resolve([]),
   ])
   const f = e?.fait
-  const derniere = reponses.find((r) => cleLot(r.lot ?? '') === cleLot(lot))
   return {
     etape: e?.etape ?? null,
     prealables: e?.prealables ?? [],
-    soumission: {
-      requise: !!f?.soumissionRequise,
-      envoyee_le: f?.soumisLe ?? null,
-      // The answer to the CURRENT soumission (null while it waits).
-      reponse: f?.reponseClient
-        ? { accepte: f.reponseClient.accepte, commentaire: f.reponseClient.commentaire, par: derniere?.par ?? '', le: derniere?.le ?? null }
-        : null,
-    },
+    recu: !!f?.reception,
+    soumissions: { coloris: soumissionDuDetail(f?.coloris), stabilites: soumissionDuDetail(f?.stabilites) },
+    ok_ramer_le: f?.okRamerLe ?? null,
     clients_rc: clients.get(cleLotLigne(ligneId, lot)) ?? [],
   }
 }
@@ -936,7 +974,9 @@ suiviLotsRouter.post('/:id/etat', async (req: Request, res: Response) => {
       const lot = (base[0]?.lot ?? '').toString().trim()
       if (!(ligneId > 0) || !lot) { res.status(404).json({ error: 'Lot introuvable' }); return }
       try {
-        await ouvrirReprise({ ligneId, lot, motif, par: { id: req.userId ?? 0, nom: req.userId ? await nomUtilisateur(req.userId) : '' } })
+        // 'teinture' re-dyes the lot: its coloris is submitted again (LIVA #1313).
+        const nature = req.body?.nature === 'teinture' ? 'teinture' : 'rame'
+        await ouvrirReprise({ ligneId, lot, motif, nature, par: { id: req.userId ?? 0, nom: req.userId ? await nomUtilisateur(req.userId) : '' } })
       } catch (err) {
         if (err instanceof RepriseRefusee) { res.status(409).json({ error: err.code, message: err.message }); return }
         throw err
@@ -1008,7 +1048,12 @@ suiviLotsRouter.post('/:id/etat', async (req: Request, res: Response) => {
 // acceptance unblocks the validation; a refusal (why required) leaves
 // « Reprendre » as the way on. The latest answer given after the latest
 // soumission is the one that counts (lib/cycle-ennoblissement.ts).
-const reponseBody = z.object({ accepte: z.boolean(), commentaire: z.string().max(2000).optional() })
+const reponseBody = z.object({
+  accepte: z.boolean(),
+  commentaire: z.string().max(2000).optional(),
+  /** Which soumission it answers (LIVA #1313); default: the one awaiting an answer. */
+  nature: z.enum(['coloris', 'stabilites']).optional(),
+})
 
 suiviLotsRouter.post('/:id/reponse-client', async (req: Request, res: Response) => {
   try {
@@ -1027,8 +1072,13 @@ suiviLotsRouter.post('/:id/reponse-client', async (req: Request, res: Response) 
       FROM suivilot WHERE idsuivilot = ${id}`
     if (!s) { res.status(404).json({ error: 'Lot introuvable' }); return }
     const cycle = await etapeDuLot(id)
-    if (!cycle?.fait.soumisLe) {
-      res.status(409).json({ error: 'pas_de_soumission', message: 'Aucune soumission n’a été envoyée pour ce lot.' })
+    const enAttente = (n: NatureSoumission) => !!cycle?.fait[n].envoyeeLe && !cycle.fait[n].reponse
+    const nature: NatureSoumission = parsed.data.nature ?? (enAttente('coloris') ? 'coloris' : 'stabilites')
+    if (!cycle?.fait[nature].envoyeeLe) {
+      res.status(409).json({
+        error: 'pas_de_soumission',
+        message: `Aucune soumission ${nature === 'coloris' ? 'coloris' : 'des stabilités'} n’a été envoyée pour ce lot.`,
+      })
       return
     }
     if (cycle.etape === 'valide') {
@@ -1039,13 +1089,167 @@ suiviLotsRouter.post('/:id/reponse-client', async (req: Request, res: Response) 
     const idclient = (clients.get(cleLotLigne(Number(s.ligne), s.lot)) ?? [])[0]?.idclient ?? 0
     const par = req.userId ? await nomUtilisateur(req.userId) : ''
     await sql`
-      INSERT INTO reponse_soumission (date, reponse, idcommande_sous_traitant, idclient, lot, commentaire, saisi_le, saisi_par_id, saisi_par, idsuivilot)
+      INSERT INTO reponse_soumission (date, reponse, idcommande_sous_traitant, idclient, lot, commentaire, saisi_le, saisi_par_id, saisi_par, idsuivilot, nature)
       VALUES (CURRENT_DATE, ${parsed.data.accepte ? 1 : 0}, ${Number(s.cmd)}, ${idclient}, ${s.lot}, ${commentaire || null},
-              now(), ${req.userId ?? 0}, ${par}, ${id})`
+              now(), ${req.userId ?? 0}, ${par}, ${id}, ${nature})`
     res.json({ ok: true })
   } catch (err) {
     console.error('Error recording soumission answer:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── « Coloris validé » mail to the dyer (LIVA #1313) ──────────────────────────
+//
+// The client accepted the coloris of a lot still at the dyer: we tell the
+// dyer to put it on the stenter. Until 2026-10-22 Pierre-Emmanuel forwarded
+// the client's answer with « Lot à ramer stp » (contact@, 2025 → 2026); the
+// mail is journaled in ok_a_ramer_envoi — the cycle reads it (« En rame »).
+//   GET  /suivi-lots/:id/ok-ramer/email-defaults
+//   POST /suivi-lots/:id/ok-ramer/email
+
+interface LotOkRamer {
+  id: number
+  cmd: number
+  lot: string
+  idsousTraitant: number
+  sousTraitant: string
+  reference: string
+  coloris: string
+  commentaireClient: string
+}
+
+/** The lot, when its « coloris validé » may leave (coloris accepted, not received). */
+async function lotOkRamer(req: Request, res: Response): Promise<LotOkRamer | null> {
+  const id = parseInt(req.params.id, 10)
+  if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return null }
+  const [s] = await mpsPg()<{ cmd: number; lot: string; sst: number; sst_nom: string | null; reference: string | null; coloris: string | null }[]>`
+    SELECT COALESCE(s.idcommande_sous_traitant, 0) AS cmd, trim(s.lot::text) AS lot, COALESCE(s.idsous_traitant, 0) AS sst,
+           st.nom::text AS sst_nom, rf.reference::text AS reference,
+           CASE WHEN COALESCE(rf.avec_teinture, 1) = 0 THEN ce.reference::text ELSE COALESCE(rfc.reference::text, ce.reference::text) END AS coloris
+    FROM suivilot s
+    LEFT JOIN sous_traitant st ON st.idsous_traitant = s.idsous_traitant
+    LEFT JOIN ref_fini rf ON rf.idref_fini = s.idref_fini
+    LEFT JOIN ref_fini_colori rfc ON rfc.idref_fini_colori = s.idcoloris
+    LEFT JOIN colori_ecru ce ON ce.idcolori_ecru = s.idcoloris
+    WHERE s.idsuivilot = ${id}`
+  if (!s) { res.status(404).json({ error: 'Lot introuvable' }); return null }
+  const cycle = await etapeDuLot(id)
+  if (!cycle || (cycle.etape !== 'ok_ramer_a_envoyer' && cycle.etape !== 'en_rame')) {
+    res.status(409).json({
+      error: 'pas_ok_ramer',
+      message: 'La validation du coloris part quand le client a accepté le coloris d’un lot pas encore réceptionné.',
+    })
+    return null
+  }
+  return {
+    id, cmd: Number(s.cmd), lot: s.lot, idsousTraitant: Number(s.sst), sousTraitant: (s.sst_nom ?? '').trim(),
+    reference: (s.reference ?? '').trim(), coloris: (s.coloris ?? '').trim(),
+    commentaireClient: cycle.fait.coloris.reponse?.commentaire ?? '',
+  }
+}
+
+suiviLotsRouter.get('/:id/ok-ramer/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const l = await lotOkRamer(req, res)
+    if (!l) return
+    // The dyer's contacts: those who receive the soumissions pre-selected.
+    const contacts = l.idsousTraitant > 0
+      ? await mpsPg()<{ id: number; nom: string | null; prenom: string | null; mail: string | null; soumission: number; visible: number }[]>`
+          SELECT idcontact AS id, nom::text AS nom, prenom::text AS prenom, mail::text AS mail,
+                 COALESCE(envoi_soumission, 0)::int AS soumission, COALESCE(est_visible, 1)::int AS visible
+          FROM contact WHERE idsous_traitant = ${l.idsousTraitant}`
+      : []
+    type Destinataire = { email: string; name?: string; source: 'contact'; contactId: number }
+    const selected: Destinataire[] = []
+    const suggestions: Destinataire[] = []
+    const vus = new Set<string>()
+    for (const c of contacts) {
+      const mail = (c.mail ?? '').trim()
+      if (Number(c.visible) === 0 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || vus.has(mail.toLowerCase())) continue
+      vus.add(mail.toLowerCase())
+      const name = [c.prenom, c.nom].map((x) => (x ?? '').trim()).filter(Boolean).join(' ')
+      const r: Destinataire = { email: mail, source: 'contact', contactId: Number(c.id), ...(name ? { name } : {}) }
+      if (Number(c.soumission) === 1) selected.push(r)
+      else suggestions.push(r)
+    }
+    const article = [l.reference, l.coloris].filter(Boolean).join(' · ')
+    res.json({
+      recipients: { selected, suggestions },
+      subject: `Coloris validé - Lot ${l.lot}${l.cmd ? ` - commande ${l.cmd}` : ''}`,
+      body:
+        `Bonjour,\n\n` +
+        `Le client a accepté le coloris du lot ${l.lot}${article ? ` (${article}` : ''}${l.cmd ? `${article ? ', ' : ' ('}notre commande ${l.cmd})` : article ? ')' : ''} : vous pouvez le ramer.\n\n` +
+        (l.commentaireClient ? `Remarque du client : « ${l.commentaireClient} »\n\n` : '') +
+        `Cordialement,`,
+      sousTraitantNom: l.sousTraitant,
+      numero: l.lot,
+    })
+  } catch (err) {
+    console.error('Error building ok à ramer email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const okRamerBody = z.object({
+  to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(20000),
+  extra_attachments: z.array(z.object({
+    filename: z.string().min(1).max(255),
+    content_base64: z.string().min(1),
+    content_type: z.string().min(1).max(100),
+  })).optional(),
+  dev_skip_send: z.boolean().optional(),
+})
+
+suiviLotsRouter.post('/:id/ok-ramer/email', async (req: Request, res: Response) => {
+  try {
+    if (!(await ensureResponsable(req, res))) return
+    const parsed = okRamerBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const l = await lotOkRamer(req, res)
+    if (!l) return
+    const nom = await nomUtilisateur(req.userId!)
+    const devSkip = parsed.data.dev_skip_send === true && process.env.NODE_ENV !== 'production'
+    let messageId: string
+    if (devSkip) {
+      messageId = `dev-skip-${Date.now()}`
+      console.log(`[dev-skip-send] ok à ramer lot=${l.lot} — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const from = await getUserEmail(req.userId!)
+      if (!from) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const attachments = (parsed.data.extra_attachments ?? []).map((a) => ({
+        filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type,
+      }))
+      messageId = await sendMail({
+        from,
+        fromName: `${nom} — ETS Malterre`,
+        to: parsed.data.to,
+        cc: parsed.data.cc,
+        bcc: parsed.data.bcc,
+        subject: parsed.data.subject,
+        body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+    await enregistrerOkRamer({
+      idsuivilot: l.id, idcommande: l.cmd, lot: l.lot,
+      par: { id: req.userId ?? 0, nom }, destinataires: [...parsed.data.to, ...(parsed.data.cc ?? [])],
+    })
+    res.json({ ok: true, messageId })
+  } catch (err) {
+    console.error('Error sending ok à ramer:', err)
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    res.status(500).json({ error: 'send_failed', message })
   }
 })
 

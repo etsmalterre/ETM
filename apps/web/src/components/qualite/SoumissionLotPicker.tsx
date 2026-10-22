@@ -1,7 +1,10 @@
-// The « Soumettre au client » picker: which received lot of a dye order goes
-// to which client order. Sent from Qualité › Suivi lots since LIVA #1304 (it
-// lived on Sous-traitants › Ennoblissement); the endpoints stay on the dye
-// order, /commandes-sous-traitant/:id/soumission/*.
+// The « Soumettre au client » picker: which lot of a dye order goes to which
+// client order. Sent from Qualité › Suivi lots since LIVA #1304 (it lived on
+// Sous-traitants › Ennoblissement); the endpoints stay on the dye order,
+// /commandes-sous-traitant/:id/soumission/*. Two uses since LIVA #1313: a
+// received lot (its stabilités, or a coloris never submitted), and a lot NOT
+// received yet whose coloris the dyer announces — the lot number is typed then
+// (« on peut soumettre le lot MA… cde N »), and the soumission creates the lot.
 
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Send } from 'lucide-react'
@@ -10,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
+import type { NatureSoumission } from './LotCycle'
 
 // Returned by GET /:id/soumission/lots-eligibles. One entry per
 // (ref_fini, coloris, lot, commande_client) group; only includes groups
@@ -32,6 +36,13 @@ export interface EligibleLot {
   date_commande: string        // commande_client.date_commande (YYYYMMDD)
   nb_rolls: number             // 0 for manual
   total_metrage: number        // 0 for manual
+  /** The soumissions the client asks for the reference (LIVA #1313). */
+  natures: NatureSoumission[]
+  /** The dye line the lot belongs to. */
+  ligneId: number
+  /** Coloris candidates across dye orders (GET /suivi-lots/soumission-coloris/candidats). */
+  idcommande_sous_traitant?: number
+  sous_traitant_nom?: string
   key: string
 }
 
@@ -57,12 +68,15 @@ export interface LotBloque {
 //   - 'manual'   (no fini yet) → expands an inline "Numéro de lot" input;
 //                                user types the lot then clicks Continuer
 export function SoumissionLotPicker({
-  open, lots, bloques, onClose, onSelect,
+  open, lots, bloques, title = 'Choisir un lot à soumettre', intro, onClose, onSelect,
 }: {
   open: boolean
   lots: EligibleLot[]
   /** Received lots that cannot be submitted — shown greyed with the reason. */
   bloques: LotBloque[]
+  title?: string
+  /** One line under the title, saying where the lot number comes from. */
+  intro?: string
   onClose: () => void
   /** For manual entries the caller receives the candidate with `lot` set
    *  to the user-typed string — the downstream URL/params machinery is
@@ -93,9 +107,10 @@ export function SoumissionLotPicker({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Send className="h-5 w-5 text-accent" />
-            Choisir un lot à soumettre
+            {title}
           </DialogTitle>
         </DialogHeader>
+        {intro && <p className="text-xs text-muted-foreground px-1">{intro}</p>}
         <div className="max-h-[60vh] overflow-y-auto space-y-3 px-1">
           {received.length > 0 && (
             <div className="space-y-2">
@@ -136,7 +151,7 @@ export function SoumissionLotPicker({
           {manual.length > 0 && (
             <div className="space-y-2">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground px-1">
-                Saisir un lot (aucun rouleau réceptionné)
+                Saisir le lot annoncé par l’ennoblisseur (pas encore réceptionné)
               </div>
               {manual.map((lot) => {
                 const expanded = manualKey === lot.key
@@ -167,6 +182,12 @@ export function SoumissionLotPicker({
                       <div className="text-xs text-muted-foreground mt-1">
                         Réf client : {lot.client_designation || '—'}
                       </div>
+                      {!!lot.idcommande_sous_traitant && (
+                        <div className="text-xs mt-1">
+                          <span className="font-medium text-foreground tabular-nums">Teinture N° {lot.idcommande_sous_traitant}</span>
+                          {lot.sous_traitant_nom ? <span className="text-muted-foreground"> · {lot.sous_traitant_nom}</span> : ''}
+                        </div>
+                      )}
                       {lot.numero > 0 && (
                         <div className="text-xs mt-1">
                           <span className="font-medium text-foreground tabular-nums">Commande N° {lot.numero}</span>
@@ -261,11 +282,12 @@ function lotBloqueMessage(b: LotBloque): string {
 
 }
 
-export function buildSoumissionLotQuery(lot: EligibleLot): string {
+export function buildSoumissionLotQuery(lot: EligibleLot, nature: NatureSoumission): string {
   return new URLSearchParams({
     ref_fini: String(lot.IDref_fini),
     coloris: String(lot.IDColoris),
     lot: lot.lot,
     commande_client: String(lot.IDcommande_client),
+    nature,
   }).toString()
 }
