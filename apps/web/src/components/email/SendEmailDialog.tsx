@@ -153,9 +153,12 @@ interface SendEmailDialogProps {
   /** A quiet alternative left of Annuler (e.g. « Réclamer sans email »). */
   secondaryAction?: { label: string; onClick: () => void }
   /** A « Programmer » button next to Envoyer (Sous-traitants › Point: sent at
-   *  9:00 by the automate). Clicking it calls onSend with `programme: true`.
-   *  `disabledReason` greys it out and becomes its tooltip. */
-  programmer?: { label: string; title?: string; disabledReason?: string | null }
+   *  8:00 by the automate). Clicking it calls onSend with `programme: true`.
+   *  `disabledReason` greys it out and becomes its tooltip. `parDefaut`: while
+   *  it is available, it is the primary button and Envoyer becomes the outline
+   *  « Envoyer maintenant » — the point was sent at once for ten days because
+   *  the eye went to the filled Envoyer (2026-10-22). */
+  programmer?: { label: string; title?: string; disabledReason?: string | null; parDefaut?: boolean }
 
   /** Free-text context chip shown in the dialog header (e.g. fournisseur name). */
   contextLabel?: string
@@ -474,7 +477,8 @@ export function SendEmailDialog({
   }, [])
 
   // ── Send ─────────────────────────────────────────────
-  const handleSend = useCallback(async (programme = false, confirmeSansPoints = false) => {
+  const programmeParDefaut = !!programmer?.parDefaut && !programmer.disabledReason
+  const handleSend =useCallback(async (programme = false, confirmeSansPoints = false) => {
     setErrorMessage(null)
     setSuccessMessage(null)
     const to = selectedRecipients.map((r) => r.email)
@@ -813,7 +817,7 @@ export function SendEmailDialog({
                     </Button>
                     {programmer && (
                       <Button
-                        variant="outline"
+                        variant={programmeParDefaut ? 'default' : 'outline'}
                         onClick={() => handleSend(true)}
                         disabled={isSending || loadingDefaults || !!successMessage || !!programmer.disabledReason}
                         title={programmer.disabledReason ?? programmer.title}
@@ -823,8 +827,10 @@ export function SendEmailDialog({
                       </Button>
                     )}
                     <Button
+                      variant={programmeParDefaut ? 'outline' : 'default'}
                       onClick={() => handleSend()}
                       disabled={isSending || loadingDefaults || !!successMessage}
+                      title={programmeParDefaut ? 'Part tout de suite, sans attendre l’heure programmée' : undefined}
                     >
                       {isSending ? (
                         <>
@@ -834,7 +840,7 @@ export function SendEmailDialog({
                       ) : (
                         <>
                           <Mail className="h-3.5 w-3.5 mr-1.5" />
-                          Envoyer
+                          {programmeParDefaut ? 'Envoyer maintenant' : 'Envoyer'}
                         </>
                       )}
                     </Button>

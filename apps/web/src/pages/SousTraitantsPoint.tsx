@@ -976,7 +976,7 @@ function EmailPointDialog({ open, point, automateActif, heureEnvoi, onClose, onS
       loadDefaults={() => apiFetch<EmailDefaults>(`/points-sst/${point.id}/email-defaults`)}
       extraServerAttachments={[{ id: 'point', label: 'Le point (dans le message)', url: apercu }]}
       optionalServerAttachments={[{ id: 'word', label: nomWord, url: apercu, defaultChecked: point.avecDocx }]}
-      programmer={{ label: `Programmer à ${heureEnvoi} h`, title: `Part tout seul le ${jourLong(point.jour)} à ${heureEnvoi} h ; vous pouvez encore le corriger ou annuler l’envoi jusque-là.`, disabledReason: raison }}
+      programmer={{ label: `Programmer à ${heureEnvoi} h`, title: `Part tout seul le ${jourLong(point.jour)} à ${heureEnvoi} h ; vous pouvez encore le corriger ou annuler l’envoi jusque-là.`, disabledReason: raison, parDefaut: true }}
       onSend={async (p) => {
         await postEmail(`${API_URL}/points-sst/${point.id}/email`, p, {
           extraBody: { word: p.optionalAttachments?.word === true, programme: p.programme === true },
