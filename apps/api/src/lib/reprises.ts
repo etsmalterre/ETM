@@ -285,6 +285,8 @@ export interface FaitReprisesLot {
   /** Day the latest RE-DYE came back (nature 'teinture', LIVA #1313): the
    *  coloris soumission must be made again after it. */
   dernierRetourTeinture: string | null
+  /** The open reprise's nature (null: none open). The point says « reprise teinture ». */
+  natureOuverte: 'rame' | 'teinture' | null
 }
 
 /** Per `${ligne}:${lot}`: the reprise facts the Ennoblissement cycle reads. */
@@ -292,13 +294,14 @@ export async function faitsReprises(ligneIds: number[]): Promise<Map<string, Fai
   const out = new Map<string, FaitReprisesLot>()
   const uniques = [...new Set(ligneIds.filter((x) => x > 0))]
   if (uniques.length === 0) return out
-  const rows = await mpsPg()<{ ligne: number; lot: string; nombre: number; ouverte: boolean; retour: string | null; retour_teinture: string | null }[]>`
+  const rows = await mpsPg()<{ ligne: number; lot: string; nombre: number; ouverte: boolean; retour: string | null; retour_teinture: string | null; nature_ouverte: 'rame' | 'teinture' | null }[]>`
     SELECT idligne_commande_sous_traitant AS ligne, lot, count(*)::int AS nombre, bool_or(statut = 'ouverte') AS ouverte,
            to_char(max(retour_le) AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour,
-           to_char(max(retour_le) FILTER (WHERE nature = 'teinture') AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour_teinture
+           to_char(max(retour_le) FILTER (WHERE nature = 'teinture') AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour_teinture,
+           max(nature) FILTER (WHERE statut = 'ouverte') AS nature_ouverte
     FROM reprise WHERE idligne_commande_sous_traitant = ANY(${uniques}) GROUP BY 1, 2`
   for (const r of rows) {
-    out.set(`${Number(r.ligne)}:${r.lot}`, { nombre: Number(r.nombre), ouverte: !!r.ouverte, dernierRetour: r.retour, dernierRetourTeinture: r.retour_teinture })
+    out.set(`${Number(r.ligne)}:${r.lot}`, { nombre: Number(r.nombre), ouverte: !!r.ouverte, dernierRetour: r.retour, dernierRetourTeinture: r.retour_teinture, natureOuverte: r.nature_ouverte ?? null })
   }
   return out
 }

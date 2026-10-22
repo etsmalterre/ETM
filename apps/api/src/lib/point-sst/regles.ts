@@ -62,8 +62,17 @@ export interface LigneFait {
   clientSoumission: boolean
   /** Lots received whose dyer measures (laize / poids) are still missing, not yet validated (not in reprise). */
   lotsSansControle: string[]
-  /** Lots « En reprise » (suivilot état 2): the dyer reworks them — PE asks their délai (§5 « reprise »). */
+  /** Lots « En reprise » (suivilot état 2 or an open reprise): the dyer reworks them — PE asks their délai (§5 « reprise »). */
   lotsEnReprise: string[]
+  /** One of them is re-dyed, not only back on the stenter (reprise.nature, LIVA #1313). */
+  repriseTeinture: boolean
+  /** v7 (LIVA #1313) — the coloris soumission, before the stenter, from the Suivi lots
+   *  cycle (etapeLot). Coloris submitted, the client has not answered: */
+  lotsColorisSoumis: string[]
+  /** …the client accepted the coloris, the lot is not received: MATEL rames it (« ok à ramer »). */
+  lotsColorisValide: string[]
+  /** …the client refused it before the stenter: MATEL dyes the lot again, same number. */
+  lotsReteinture: string[]
   /** Lots received WITH the dyer measures, still open on our side (en contrôle / attente de décision):
    *  the dyer has answered, the next step is ours (v3, point du 07/10: 9029 « déjà contrôlée par
    *  Perrine, on attend le contrôle de Laëtitia »). */
@@ -120,6 +129,19 @@ const base = (l: LigneFait) => ({
   coloris: l.coloris,
 })
 
+/** §2: lots received without the dyer measures. */
+function ligneControle(l: LigneFait): LignePoint {
+  const s = l.lotsSansControle.length > 1 ? 's' : ''
+  return {
+    ...base(l),
+    section: 2,
+    cle: `controle:${l.idligne}`,
+    datePrevue: null,
+    commentaire: l.lotsSansControle.map(lotCourt).join(' et '),
+    pourquoi: `Lot${s} reçu${s} sans les mesures du teinturier (laize, poids), pas encore validé${s}.`,
+  }
+}
+
 /** The point of day `jour` ('YYYY-MM-DD'), in display order. §6 (« Avez-vous des
  *  études ? ») stays an open question without lines since v3 (point du 07/10,
  *  Pierre-Emmanuel: « je ne mets pas la liste des labos en attente »). */
@@ -136,31 +158,42 @@ export function construirePoint(jour: string, lignes: readonly LigneFait[]): Lig
     }
     if (l.lotsEnReprise.length > 0) {
       // v2 (point du 06/10: 8929 lot 109102): a lot in reprise is a délai question, not a control one.
-      out.push({ ...base(l), section: 5, cle: `reprise:${l.idligne}`, datePrevue: null, commentaire: 'reprise', pourquoi: `Lot${l.lotsEnReprise.length > 1 ? 's' : ''} ${l.lotsEnReprise.map(lotCourt).join(' et ')} en reprise chez le teinturier : quand revient-il ?` })
+      out.push({ ...base(l), section: 5, cle: `reprise:${l.idligne}`, datePrevue: null, commentaire: l.repriseTeinture ? 'reprise teinture' : 'reprise', pourquoi: `Lot${l.lotsEnReprise.length > 1 ? 's' : ''} ${l.lotsEnReprise.map(lotCourt).join(' et ')} en reprise chez le teinturier : quand revient-il ?` })
     }
+    // v7 (LIVA #1313): a coloris refused before the stenter goes back to the dye — same
+    // lot number, the dyer gives the date like a reprise.
+    if (l.lotsReteinture.length > 0) {
+      const lots = l.lotsReteinture.map(lotCourt).join(' et ')
+      out.push({ ...base(l), section: 5, cle: `reteinture:${l.idligne}`, datePrevue: null, commentaire: `reteinture ${lots}`, pourquoi: `Coloris du lot ${lots} refusé par le client avant la rame : le teinturier le reteint, quand revient-il ?` })
+    }
+    // v7 (points du 16/10 au 21/10: six « lot … ok à ramer » typed by PE in §4, and 9023
+    // removed from §3 « ok à ramer, soumission validée par le client »): the client
+    // accepted the coloris, the lot is on the stenter — its métrages are claimed until
+    // the BL comes, and nothing else is asked about the line.
+    if (l.lotsColorisValide.length > 0) {
+      const lots = l.lotsColorisValide.map(lotCourt).join(' et ')
+      out.push({ ...base(l), section: 4, cle: `coloris-valide:${l.idligne}`, datePrevue: null, commentaire: `${lots} coloris validé`, pourquoi: `Le client a validé le coloris du lot ${lots}, pas encore reçu : on réclame les métrages.` })
+    }
+    // A coloris submitted, refused or validated: the line waits on the client or the
+    // dyer's stenter — no « puis-je soumettre », no exit to remind, no other métrages.
+    if (l.lotsColorisSoumis.length > 0 || l.lotsColorisValide.length > 0 || l.lotsReteinture.length > 0) {
+      if (l.lotsSansControle.length > 0) out.push(ligneControle(l))
+      continue
+    }
+
     const complete = recueComplete(l, jour)
     const partielle = l.nbRecus > 0 && !complete
 
-    if (l.lotsSansControle.length > 0) {
-      out.push({
-        ...base(l),
-        section: 2,
-        cle: `controle:${l.idligne}`,
-        datePrevue: null,
-        commentaire: l.lotsSansControle.map(lotCourt).join(' et '),
-        pourquoi: `Lot${l.lotsSansControle.length > 1 ? 's' : ''} reçu${l.lotsSansControle.length > 1 ? 's' : ''} sans les mesures du teinturier (laize, poids), pas encore validé${l.lotsSansControle.length > 1 ? 's' : ''}.`,
-      })
-    }
+    if (l.lotsSansControle.length > 0) out.push(ligneControle(l))
     if (complete || !l.dateLivraison) continue
 
     const retard = ecart(jour, l.dateLivraison) // > 0 = late
     const soumisRecent = !!l.dernierSoumis && ecart(jour, l.dernierSoumis) < SOUMISSION_RECENTE_J
 
     // §4 (métrages): since v4 only on the exit day (below). Not before: v2 (point du 06/10:
-    // 9023, 9013, 8936 all wrong). PE also asks for métrages once the client approved the soumission (« ok à ramer ») or
-    // the dyer announced the lot finished — both arrive by email, ETM records neither
-    // (reponse_soumission is unused since 2025). The person adds them; reading Perrine's
-    // replies (phase 2) is what will fill this section.
+    // 9023, 9013, 8936 all wrong). PE also asks for métrages once the client approved the coloris (« ok à ramer » —
+    // generated since v7, above) or the dyer announced the lot finished — that one
+    // arrives by email only: the person adds it; reading Perrine's replies (phase 2).
     // v3 (point du 07/10, 9029): a lot already measured by the dyer waits for OUR control —
     // « puis-je soumettre ? » would ask MATEL what only we can answer.
     const attenteChezNous = l.lotsAControler.length > 0

@@ -20,7 +20,11 @@ function ligne(p: Partial<LigneFait> & { idligne: number }): LigneFait {
     clientSoumission: false,
     lotsSansControle: [],
     lotsEnReprise: [],
+    repriseTeinture: false,
     lotsAControler: [],
+    lotsColorisSoumis: [],
+    lotsColorisValide: [],
+    lotsReteinture: [],
     relance: null,
     ...p,
   }
@@ -162,6 +166,43 @@ describe('construirePoint', () => {
 
     it('late lines still leave the point (PE moves the date at each of Perrine\'s answers)', () => {
       expect(s4([ligne({ idligne: 1, dateLivraison: '2026-10-08' })])).toEqual([])
+    })
+  })
+
+  // v7 (LIVA #1313): the coloris soumission, read from the Suivi lots cycle.
+  describe('v7 (soumission coloris)', () => {
+    const J = '2026-10-21'
+    const s7 = (l: LigneFait[]) => construirePoint(J, l).map((x) => `${x.section}:${x.idligne}:${x.commentaire}`)
+
+    it('coloris validé, lot not received: §4 claims its métrages, never §3 (9023 lot 109280, point du 21/10)', () => {
+      expect(s7([ligne({ idligne: 1, clientSoumission: true, dateLivraison: '2026-10-21', lotsColorisValide: ['MA109280'] })]))
+        .toEqual(['4:1:109280 coloris validé'])
+    })
+
+    it('coloris validé before the exit date: §4, not a §1 exit', () => {
+      expect(s7([ligne({ idligne: 1, dateLivraison: '2026-10-27', lotsColorisValide: ['MA109368'] })])).toEqual(['4:1:109368 coloris validé'])
+    })
+
+    it('coloris submitted, the client has not answered: nothing to ask MATEL, even after a week', () => {
+      expect(s7([
+        ligne({ idligne: 1, clientSoumission: true, dateLivraison: '2026-10-21', dernierSoumis: '2026-10-01', lotsColorisSoumis: ['MA109368'] }),
+        ligne({ idligne: 2, dateLivraison: '2026-10-25', lotsColorisSoumis: ['MA109369'] }),
+      ])).toEqual([])
+    })
+
+    it('coloris refused before the stenter: §5 « reteinture », nothing else', () => {
+      const p = construirePoint(J, [ligne({ idligne: 1, clientSoumission: true, dateLivraison: '2026-10-21', lotsReteinture: ['MA109547'] })])
+      expect(p).toEqual([expect.objectContaining({ section: 5, cle: 'reteinture:1', commentaire: 'reteinture 109547' })])
+    })
+
+    it('a lot without the dyer measures is still asked beside a coloris in progress', () => {
+      expect(s7([ligne({ idligne: 1, nbRecus: 5, metrageRecu: 400, lotsSansControle: ['MA1'], lotsColorisValide: ['MA2'] })]))
+        .toEqual(['2:1:1', '4:1:2 coloris validé'])
+    })
+
+    it('a re-dye reprise says so', () => {
+      const [l] = construirePoint(J, [ligne({ idligne: 1, nbRecus: 5, metrageRecu: 400, lotsEnReprise: ['MA109102'], repriseTeinture: true })])
+      expect(l).toMatchObject({ section: 5, commentaire: 'reprise teinture' })
     })
   })
 

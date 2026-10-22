@@ -1,16 +1,16 @@
 // Point sous-traitant — reads the facts regles.ts decides on, for one dyer.
-// Native PostgreSQL (lib/mps-pg.ts): flat queries, merged in JS.
+// Native PostgreSQL (lib/mps-pg.ts): flat queries, merged in JS. The lots'
+// steps are the Suivi lots cycle's (lib/cycle-ennoblissement.ts, v7): the point
+// never classifies a lot on its own.
 
 import { mpsPg } from '../mps-pg.js'
 import { consumedEcruIds } from '../fini-sources.js'
 import { plusJours, type LigneFait } from './regles.js'
-import { echeanceDelai, lireFaitsDelai } from '../delai-sst.js'
+import { echeanceDelai } from '../delai-sst.js'
+import { etapeLot, lireCommandesEnnoblissement, type LotFait } from '../cycle-ennoblissement.js'
 
 /** Lots received this long ago or less are still asked about (§2). */
 const CONTROLE_FENETRE_J = 45
-/** Lot states still open: 1 En contrôle, 2 En reprise, 5 Attente de décision (3 Validé, 4 Expédié). */
-const LOT_OUVERT = [1, 2, 5]
-const LOT_EN_REPRISE = 2
 /** envoi_email.IDtype_doc of a soumission lot client (sous_traitants_status_model.md). */
 const TYPE_DOC_SOUMISSION = 15
 
@@ -41,19 +41,13 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
   const idsLigne = lignes.map((l) => l.idligne)
   const idsCommande = [...new Set(lignes.map((l) => l.idcommande))]
 
-  // §5 asks from the délai's échéance — the card's own rule (lib/delai-sst.ts, LIVA #1314).
-  const delais = await lireFaitsDelai(idsCommande, sql)
-  const [recus, lots, soumis, clientsEntete, clientsPieces, ecruLignes] = await Promise.all([
+  // The orders' cycle: each lot's step, and the délai question — §5 asks from the
+  // délai's échéance, the card's own rule (lib/delai-sst.ts, LIVA #1314).
+  const cycle = await lireCommandesEnnoblissement(idsCommande)
+  const [recus, soumis, clientsEntete, clientsPieces, ecruLignes] = await Promise.all([
     sql<{ idligne: number; n: number; metrage: number; dernier: unknown }[]>`
       SELECT idref_commande_source AS idligne, COUNT(*)::int AS n, COALESCE(SUM(metrage), 0)::float AS metrage, to_char(MAX(date_saisie), 'YYYY-MM-DD') AS dernier
       FROM stock_fini WHERE idref_commande_source IN ${sql(idsLigne)} GROUP BY idref_commande_source`,
-    sql<{ idligne: number; lot: string; etat: number; sans_mesures: boolean; recent: boolean }[]>`
-      SELECT idligne_commande_sous_traitant AS idligne, lot, idetatlot::int AS etat,
-             (COALESCE(laize_sst, 0) = 0 OR COALESCE(poids_sst, 0) = 0) AS sans_mesures,
-             (date >= ${plusJours(jour, -CONTROLE_FENETRE_J)}::date) AS recent
-      FROM suivilot
-      WHERE idligne_commande_sous_traitant IN ${sql(idsLigne)} AND idetatlot IN ${sql(LOT_OUVERT)}
-      ORDER BY lot`,
     sql<{ idcommande: number; dernier: unknown }[]>`
       SELECT idreference AS idcommande, to_char(MAX(date), 'YYYY-MM-DD') AS dernier FROM envoi_email
       WHERE idtype_doc = ${TYPE_DOC_SOUMISSION} AND idreference IN ${sql(idsCommande)} GROUP BY idreference`,
@@ -103,24 +97,19 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
 
   const recuParLigne = new Map(recus.map((r) => [Number(r.idligne), r]))
   const soumisParCommande = new Map(soumis.map((r) => [Number(r.idcommande), iso(r.dernier)]))
-  // §2: received recently, dyer measures missing, not in reprise. §5: in reprise (état 2), whatever its age.
-  // Received recently WITH the measures, still open: the next step is ours (§3 is not asked).
-  const sansControle = new Map<number, string[]>()
-  const aControler = new Map<number, string[]>()
-  const enReprise = new Map<number, string[]>()
-  const ranger = (m: Map<number, string[]>, idligne: number, lot: string) => {
-    const a = m.get(idligne) ?? []
-    if (!a.includes(lot)) a.push(lot)
-    m.set(idligne, a)
+  // Each open lot sorted by its step on Suivi lots. A lot known only from a soumission
+  // mail (no suivilot row, before LIVA #1313) belongs to every line of its order.
+  const depuisControle = plusJours(jour, -CONTROLE_FENETRE_J)
+  const lotsParLigne = new Map<number, Lots>()
+  for (const l of lignes) {
+    const lots = videLots()
+    for (const lot of cycle.get(l.idcommande)?.lots ?? []) {
+      if ((lot.idligne ?? 0) > 0 && lot.idligne !== l.idligne) continue
+      rangerLot(lots, lot, depuisControle)
+    }
+    for (const a of Object.values(lots)) if (Array.isArray(a)) a.sort()
+    lotsParLigne.set(l.idligne, lots)
   }
-  for (const r of lots) {
-    const lot = String(r.lot ?? '').trim()
-    if (!lot) continue
-    if (Number(r.etat) === LOT_EN_REPRISE) ranger(enReprise, Number(r.idligne), lot)
-    else if (r.sans_mesures && r.recent) ranger(sansControle, Number(r.idligne), lot)
-    else if (r.recent) ranger(aControler, Number(r.idligne), lot)
-  }
-
   const faits: LigneFait[] = lignes.map((l) => {
     const recu = recuParLigne.get(l.idligne)
     const dernierSoumis = soumisParCommande.get(l.idcommande) ?? null
@@ -140,12 +129,40 @@ export async function lireFaits(idsousTraitant: number, jour: string): Promise<{
       dernierRecu: iso(recu?.dernier),
       dernierSoumis,
       clientSoumission: !!dernierSoumis || [...clients].some((c) => clientsSoumission.has(c)),
-      lotsSansControle: sansControle.get(l.idligne) ?? [],
-      lotsEnReprise: enReprise.get(l.idligne) ?? [],
-      lotsAControler: aControler.get(l.idligne) ?? [],
-      relance: (() => { const f = delais.get(l.idcommande); return f ? echeanceDelai(f) : null })(),
+      ...(lotsParLigne.get(l.idligne) ?? videLots()),
+      relance: (() => { const f = cycle.get(l.idcommande)?.delaiFaits; return f ? echeanceDelai(f) : null })(),
     }
   })
   return { lignes: faits }
 }
 
+
+type Lots = Pick<LigneFait, 'lotsSansControle' | 'lotsAControler' | 'lotsEnReprise' | 'repriseTeinture' | 'lotsColorisSoumis' | 'lotsColorisValide' | 'lotsReteinture'>
+
+const videLots = (): Lots => ({
+  lotsSansControle: [], lotsAControler: [], lotsEnReprise: [], repriseTeinture: false,
+  lotsColorisSoumis: [], lotsColorisValide: [], lotsReteinture: [],
+})
+
+/** One lot into the point's lists, by its Suivi lots step (etapeLot). §2 / « ours to
+ *  control » keep their window: a lot received more than CONTROLE_FENETRE_J days ago
+ *  is no longer asked about. */
+export function rangerLot(lots: Lots, lot: LotFait, depuisControle: string): void {
+  const nom = lot.lot.trim()
+  if (!nom) return
+  const ajouter = (a: string[]) => { if (!a.includes(nom)) a.push(nom) }
+  switch (etapeLot(lot)) {
+    case 'valide': return
+    case 'en_reprise':
+      ajouter(lots.lotsEnReprise)
+      if (lot.repriseNature === 'teinture') lots.repriseTeinture = true
+      return
+    case 'coloris_soumis': return ajouter(lots.lotsColorisSoumis)
+    case 'reteinture': return ajouter(lots.lotsReteinture)
+    case 'ok_ramer_a_envoyer':
+    case 'en_rame': return ajouter(lots.lotsColorisValide)
+    default:
+      if (!lot.reception || lot.reception < depuisControle) return
+      ajouter(lot.mesuresTeinturier ? lots.lotsAControler : lots.lotsSansControle)
+  }
+}

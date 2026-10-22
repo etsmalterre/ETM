@@ -87,6 +87,8 @@ export const SANS_SOUMISSION: SoumissionFait = { requise: false, envoyeeLe: null
 export interface LotFait {
   lot: string
   idsuivilot: number
+  /** Its dye line (suivilot.idligne_commande_sous_traitant); 0 = known only from a soumission mail. */
+  idligne?: number
   etat: number
   /** suivilot.date: the day the lot was received (BL). 'YYYY-MM-DD'. null =
    *  not received yet: the lot exists through its coloris soumission. */
@@ -103,6 +105,8 @@ export interface LotFait {
   rcAEnvoyer?: string[]
   /** A reprise of the lot is open at the dyer (lib/reprises.ts). */
   repriseOuverte?: boolean
+  /** …its nature: back on the stenter or re-dyed (LIVA #1313). */
+  repriseNature?: 'rame' | 'teinture' | null
   /** How many reprises the lot went through (« repris ×N »). */
   reprises?: number
 }
@@ -555,6 +559,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
         return {
           lot: String(s.lot).trim(),
           idsuivilot: Number(s.idsuivilot),
+          idligne: Number(s.ligne),
           etat: Number(s.etat),
           reception: s.reception,
           mesuresTeinturier: Number(s.laize_sst) > 0 || Number(s.poids_sst) > 0,
@@ -562,6 +567,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
           ...soumissionsDuLot(k, naturesLigne(Number(s.ligne)), rep),
           rcAEnvoyer: (rcParLot.get(cleLotLigne(Number(s.ligne), String(s.lot))) ?? []).filter((c) => c.du).map((c) => c.nom),
           repriseOuverte: rep?.ouverte ?? false,
+          repriseNature: rep?.natureOuverte ?? null,
           reprises: rep?.nombre ?? 0,
         }
       })
@@ -573,7 +579,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       const [cmd, cle] = k.split(':')
       if (Number(cmd) !== id || connus.has(cle)) continue
       sesLots.push({
-        lot: `MA${cle}`, idsuivilot: 0, etat: 0, reception: null, mesuresTeinturier: false, tirelleMesuree: false,
+        lot: `MA${cle}`, idsuivilot: 0, idligne: 0, etat: 0, reception: null, mesuresTeinturier: false, tirelleMesuree: false,
         ...soumissionsDuLot(k, [], undefined),
       })
     }

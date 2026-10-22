@@ -20,7 +20,7 @@ import { mpsPg } from '../../mps-pg.js'
 import type { Issue } from '../catalog.js'
 
 export const SLUG = 'point-sst'
-export const VERSION = 6
+export const VERSION = 7
 export const VERSIONS = [
   {
     version: 1,
@@ -51,6 +51,11 @@ export const VERSIONS = [
     version: 6,
     date: '2026-10-22',
     note: 'Les délais suivent l’échéance de la commande, la même que la carte de Sous-traitants › Ennoblissement (LIVA #1314) : une commande « Repoussée » avec un motif n’est plus demandée avant sa nouvelle échéance, et une commande sans date de relance attend bon de commande + 3 jours ouvrés au lieu d’être demandée tout de suite. Chaque point envoyé compte comme une relance des commandes de sa rubrique « délais ».',
+  },
+  {
+    version: 7,
+    date: '2026-10-22',
+    note: 'Suit la soumission coloris avant la rame (LIVA #1313), lue dans le cycle des lots de Qualité › Suivi lots : un lot dont le client a validé le coloris passe en rubrique 4 « coloris validé » jusqu’à sa réception (Pierre-Emmanuel les ajoutait à la main, « ok à ramer ») ; une commande dont le coloris est soumis, validé ou en reteinture n’est plus demandée en soumission ni rappelée en sortie ; un coloris refusé avant la rame est demandé en rubrique 5 « reteinture », une reprise en teinture dit « reprise teinture ».',
   },
 ] as const
 
