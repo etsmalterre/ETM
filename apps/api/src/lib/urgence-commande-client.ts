@@ -7,10 +7,13 @@
 // The order takes the colour of its most urgent line: the line's computed status
 // (lib/statut-ligne-client.ts) crossed with its délai (ligne_commande_client.date_livraison).
 //
+// A line « à lancer » (écru / fini) is red whatever its délai (Vincent, 2026-10-23): there is always
+// something to do now — reserve its yarn (stock or a supplier order, the Fil tab) or launch it, and
+// TRM must be able to start any order it receives (planning is no reason to wait). Once its yarn is
+// reserved on a supplier order the line reads « attente fil » and turns neutral. Until then the
+// délai-based palier (rouge ≤ 35 j / ambre ≤ 56 j fini, ≤ 10 / 21 j écru) applied.
+//
 // Thresholds measured on mps_dev, 1 905 écru/fini lines ordered since 2024 (p50 / p80):
-//   fini   launch → first roll ready: 25 / 36 j on écru stock, 35 / 50 j with knitting;
-//          the office launches 39–51 j before the délai (median)            → rouge ≤ 35 j, ambre ≤ 56 j
-//   écru   knitting → piece: 4 / 10 j (24 lines only)                         → rouge ≤ 10 j, ambre ≤ 21 j
 //   ready  shipped 3–9 j before the délai (median)                           → rouge ≤ 3 j,  ambre ≤ 10 j
 // `screen_notes.md` § 3 « Urgence des commandes ».
 //
@@ -42,10 +45,6 @@ import type { EtatLigneClient } from './statut-ligne-client.js'
 import type { AttenteEtude } from './etude-ligne-client.js'
 
 export const SEUILS_URGENCE = {
-  finiRouge: 35,
-  finiAmbre: 56,
-  ecruRouge: 10,
-  ecruAmbre: 21,
   expedierRouge: 3,
   expedierAmbre: 10,
   /** a ready line this far past its délai is probably a remainder nobody will take */
@@ -176,9 +175,7 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     const jf = joursAvant(due, today)
     return jf < 0 ? { niveau: 'rouge', action: 'relancer_fournisseur', jours: jf, date: due, quoi: 'fil prévu le' } : null
   }
-  if (l.etat === 'a_lancer') {
-    return l.typeKind === 1 ? palier('lancer', S.ecruRouge, S.ecruAmbre) : palier('lancer', S.finiRouge, S.finiAmbre)
-  }
+  if (l.etat === 'a_lancer') return { niveau: 'rouge', action: 'lancer', jours: j, date }
   // tricotage / ennoblisseur: someone else acts; only a passed délai is ours to chase.
   return j < 0 ? { niveau: 'rouge', action: l.etat, jours: j, date } : null
 }

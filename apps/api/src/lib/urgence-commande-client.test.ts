@@ -11,16 +11,11 @@ const l = (etat: LigneUrgence['etat'], j: number | null, typeKind = 2): LigneUrg
 const niveau = (x: LigneUrgence) => urgenceLigne(x, today)?.niveau ?? null
 
 describe('urgenceLigne', () => {
-  it('fini à lancer: rouge ≤ 35 j, ambre ≤ 56 j', () => {
+  it('écru / fini à lancer is rouge whatever the délai: reserving the yarn or launching is ours now', () => {
     expect(niveau(l('a_lancer', 35))).toBe('rouge')
-    expect(niveau(l('a_lancer', 36))).toBe('ambre')
-    expect(niveau(l('a_lancer', 56))).toBe('ambre')
-    expect(niveau(l('a_lancer', 57))).toBe(null)
-  })
-  it('écru à lancer: rouge ≤ 10 j, ambre ≤ 21 j', () => {
-    expect(niveau(l('a_lancer', 10, 1))).toBe('rouge')
-    expect(niveau(l('a_lancer', 21, 1))).toBe('ambre')
-    expect(niveau(l('a_lancer', 22, 1))).toBe(null)
+    expect(niveau(l('a_lancer', 200))).toBe('rouge')
+    expect(niveau(l('a_lancer', 200, 1))).toBe('rouge')
+    expect(niveau(l('a_lancer', -5, 1))).toBe('rouge')
   })
   it('prête à expédier (and an unshipped divers line): rouge ≤ 3 j, ambre ≤ 10 j', () => {
     expect(niveau(l('pae', 3))).toBe('rouge')
@@ -48,8 +43,8 @@ describe('urgenceLigne', () => {
     expect(niveau(l('ennoblisseur', null))).toBe('rouge')
   })
   it('a line waiting for reserved yarn is neutral while the supplier is in time, then asks to chase it', () => {
-    // 3911 bleu 1721: délai in 49 days would be amber « à lancer », but the yarn is ordered, due in 13 days
-    expect(niveau(l('a_lancer', 49))).toBe('ambre')
+    // 3911 bleu 1721: délai in 49 days, red « à lancer » until the yarn is reserved on order 723, due in 13 days
+    expect(niveau(l('a_lancer', 49))).toBe('rouge')
     expect(niveau({ ...l('attente_fil', 49), filAttenduLe: dans(13) })).toBe(null)
     expect(niveau({ ...l('attente_fil', 49), filAttenduLe: dans(0) })).toBe(null)
     expect(niveau({ ...l('attente_fil', 49), filAttenduLe: dans(-1) })).toBe('rouge')
