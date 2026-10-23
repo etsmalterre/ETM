@@ -15,17 +15,19 @@
 //                En Contrôle / En Reprise / Attente de décision (they sit at the dyer, MATEL magasin 9); or a
 //                dyer order launched from the line and still open
 //   tricotage    affectation_cmd_tricotage on a knitting sst line not done, on an order not soldée
+//   attente_fil  yarn reserved for the line on a supplier order still to receive (lib/reservation-fil.ts)
 //   a_lancer     none of the above
 // Divers lines (type 3) carry no rolls: a_lancer / expediee only, partial shown by the shipped share.
 
 import { query } from './hfsql-auto.js'
 import { consumedEcruIds } from './fini-sources.js'
+import { filAttenduParLigne } from './reservation-fil.js'
 
 /** A line counts as shipped from 90 % of its quantity: what people do when they type « soldé » (39 of 44
  *  open lines, 803 of 859 closed ones). Shared with the espace client (lib/espace-commandes.ts). */
 export const SEUIL_EXPEDIE = 0.9
 
-export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'a_lancer'
+export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'a_lancer'
 
 export interface FaitsLigneClient {
   quantite: number
@@ -46,6 +48,8 @@ export interface FaitsLigneClient {
   soumisClient: boolean
   /** kg planned on a knitting sst line not done */
   kgTricotage: number
+  /** yarn reserved for the line on supplier orders still to receive: kg, supplier date (YYYYMMDD), order */
+  filAttendu: { kg: number; date: string | null; commande: number }[]
 }
 
 export interface StatutLigneClient {
@@ -70,6 +74,9 @@ export function statutLigneClient(f: FaitsLigneClient, unite: string): StatutLig
   if (f.nbCommandesEnnoblisseur > 0 && f.nbChezEnnoblisseur === 0) preuves.push(`${pluriel(f.nbCommandesEnnoblisseur, 'commande')} ennoblisseur ouverte${f.nbCommandesEnnoblisseur > 1 ? 's' : ''}`)
   if (f.soumisClient) preuves.push('Soumis au client')
   if (f.kgTricotage > 0) preuves.push(`${fmt(f.kgTricotage)} kg planifiés en tricotage`)
+  for (const a of f.filAttendu) {
+    preuves.push(`${fmt(a.kg)} kg de fil attendus (cde fil N° ${a.commande}${a.date ? `, prévue le ${a.date.slice(6, 8)}/${a.date.slice(4, 6)}` : ''})`)
+  }
 
   const seuil = q * SEUIL_EXPEDIE
   let etat: EtatLigneClient
@@ -78,9 +85,16 @@ export function statutLigneClient(f: FaitsLigneClient, unite: string): StatutLig
   else if (f.pret > 0 && f.expedie + f.pret >= seuil) etat = 'pae'
   else if (f.nbControle > 0 || f.nbChezEnnoblisseur > 0 || f.nbCommandesEnnoblisseur > 0 || f.soumisClient) etat = 'ennoblisseur'
   else if (f.kgTricotage > 0) etat = 'tricotage'
+  else if (f.filAttendu.length > 0) etat = 'attente_fil'
   else if (f.pret > 0) etat = 'pae' // ready but short of the quantity: the remainder is launched nowhere
   else etat = 'a_lancer'
   return { etat, part, preuves }
+}
+
+/** The earliest supplier date of the yarn a line waits for (urgenceLigne), null when none is given. */
+export function filAttenduLe(f: Pick<FaitsLigneClient, 'filAttendu'>): string | null {
+  const dates = f.filAttendu.map((a) => a.date).filter((d): d is string => !!d).sort()
+  return dates[0] ?? null
 }
 
 // ── Facts (I/O) ─────────────────────────────────────────────
@@ -112,7 +126,7 @@ const isTermine = (s: unknown) => String(s ?? '').startsWith('Termin')
 function vide(l: LigneClientMeta): FaitsLigneClient {
   return {
     quantite: l.quantite, soldee: l.soldee, expedie: 0, pret: 0, nbPret: 0, nbControle: 0,
-    nbChezEnnoblisseur: 0, nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0,
+    nbChezEnnoblisseur: 0, nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0, filAttendu: [],
   }
 }
 
@@ -147,7 +161,7 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
   }
   const qteEcru = (lid: number, poids: number, m: number) => (metrage(lid) ? (rdt(lid) > 0 ? poids * rdt(lid) : m) : poids)
 
-  const [fini, ecruRaw, le, tricot, sstHeads] = await Promise.all([
+  const [fini, ecruRaw, le, tricot, sstHeads, filAttendu] = await Promise.all([
     // Donated pieces never keep the line (#1173): filtered anyway, the legacy wrote the two FKs apart.
     queryIn<{ lid: number; metrage: number | null; poids: number | null; etat: number | null; lexp: number | null }>(ids, (inl) =>
       `SELECT IDligne_commande_client AS lid, metrage, poids, IDetat_stock_fini AS etat, IDligne_expedition AS lexp
@@ -162,7 +176,12 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
       `SELECT IDligne_commande_client AS lid, poids_affecte, IDligne_commande_sous_traitant AS lsst FROM affectation_cmd_tricotage WHERE IDligne_commande_client IN (${inl})`),
     queryIn<{ IDcommande_sous_traitant: number; lid: number; est_soldee: number | null }>(ids, (inl) =>
       `SELECT IDcommande_sous_traitant, IDligne_commande_client AS lid, est_soldee FROM commande_sous_traitant WHERE IDligne_commande_client IN (${inl})`),
+    filAttenduParLigne(ids),
   ])
+  for (const [lid, a] of filAttendu) {
+    const f = out.get(lid)
+    if (f) f.filAttendu = a
+  }
 
   // Écru already dyed (own fini child or component of a merged roll) is its fini roll now (#1188).
   const consumed = await consumedEcruIds(ecruRaw.map((r) => num(r.IDstock_ecru)))

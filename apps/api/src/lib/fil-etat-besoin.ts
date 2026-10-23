@@ -86,8 +86,9 @@ export interface BesoinRow {
   /** Remaining need = max(0, reserve − produit). Named `kg` like the other rows. */
   kg: number
   /** 'affectation' = reserve read from asso_fil_lignecmdsst; 'of' = no
-   *  affectation on this fil, reserve derived from the line's OFs (#1159). */
-  source: 'affectation' | 'of'
+   *  affectation on this fil, reserve derived from the line's OFs (#1159);
+   *  'reservation' = reserved for a client line (lib/reservation-fil.ts, added by fil-etat.ts). */
+  source: 'affectation' | 'of' | 'reservation'
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10

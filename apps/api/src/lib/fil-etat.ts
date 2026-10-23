@@ -6,7 +6,9 @@
 
 import { query, fixEncoding } from './hfsql-auto.js'
 import { filEtmSql } from './fil-gere-etm.js'
-import { computeBesoin, type AssoRow, type MirrorLine, type OfRow, type PieceRow, type OfFilRow, type LineRow } from './fil-etat-besoin.js'
+import { computeBesoin, type AssoRow, type MirrorLine, type OfRow, type PieceRow, type OfFilRow, type LineRow, type BesoinRow } from './fil-etat-besoin.js'
+import { reservationsDuFil, etatReservation, compteDansReserve } from './reservation-fil.js'
+import { mpsPg } from './mps-pg.js'
 
 export async function calculerEtatFil(refFil: number, coloriFil: number) {
   // En stock — physical on-hand rolls (stock > 0), with their source
@@ -178,8 +180,38 @@ export async function calculerEtatFil(refFil: number, coloriFil: number) {
       }
     }
   }
-  const { rows: besoin_rows, besoin, reserve: besoin_reserve, produit: besoin_produit } =
-    computeBesoin({ asso, mirrors, ofs, pieces, ofFil, lines })
+  const calc = computeBesoin({ asso, mirrors, ofs, pieces, ofFil, lines })
+  const besoin_rows: (BesoinRow & { commande_client?: number })[] = calc.rows
+  let { besoin, reserve: besoin_reserve } = calc
+  const besoin_produit = calc.produit
+
+  // Yarn reserved for client order lines before any knitting order holds it (lib/reservation-fil.ts):
+  // on a supplier order or on a received lot.
+  // Once a knitting order holds it as an asso row it is counted above — never twice.
+  const resas = (await reservationsDuFil(refFil, coloriFil)).filter((r) => compteDansReserve(etatReservation(r)))
+  if (resas.length > 0) {
+    const numeros = new Map((await mpsPg()<{ lid: number; numero: number }[]>`
+      SELECT l.idligne_commande_client AS lid, c.numero FROM ligne_commande_client l
+        JOIN commande_client c ON c.idcommande_client = l.idcommande_client
+       WHERE l.idligne_commande_client IN ${mpsPg()(resas.map((r) => r.idligne_commande_client))}`)
+      .map((r) => [Number(r.lid), Number(r.numero)]))
+    const lots = new Map((await mpsPg()<{ id: number; lot: string | null }[]>`
+      SELECT idstock_fil AS id, lot FROM stock_fil WHERE idstock_fil IN ${mpsPg()([0, ...resas.map((r) => r.idstock_fil)])}`)
+      .map((r) => [Number(r.id), String(r.lot ?? '').trim()]))
+    for (const r of resas) {
+      const kg = Number(r.quantite) || 0
+      besoin_rows.push({
+        commande_sst: r.idligne_commande_sous_traitant, ligne: 0,
+        lot: r.idstock_fil > 0 ? (lots.get(r.idstock_fil) || '—') : 'en commande',
+        reserve: kg, produit: 0, suivi: false, kg, source: 'reservation',
+        commande_client: numeros.get(r.idligne_commande_client) ?? 0,
+      })
+      besoin += kg
+      besoin_reserve += kg
+    }
+    besoin = Math.round(besoin * 10) / 10
+    besoin_reserve = Math.round(besoin_reserve * 10) / 10
+  }
   const nb_affectations = besoin_rows.length
 
   return {

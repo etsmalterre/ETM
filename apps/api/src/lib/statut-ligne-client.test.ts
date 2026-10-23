@@ -3,7 +3,7 @@ import { statutLigneClient, type FaitsLigneClient } from './statut-ligne-client.
 
 const base: FaitsLigneClient = {
   quantite: 500, soldee: false, expedie: 0, pret: 0, nbPret: 0, nbControle: 0,
-  nbChezEnnoblisseur: 0, nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0,
+  nbChezEnnoblisseur: 0, nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0, filAttendu: [],
 }
 const etat = (f: Partial<FaitsLigneClient>) => statutLigneClient({ ...base, ...f }, 'Ml').etat
 
@@ -30,6 +30,13 @@ describe('statutLigneClient', () => {
   })
   it('is en tricotage on planned knitting alone', () => {
     expect(etat({ kgTricotage: 300 })).toBe('tricotage')
+  })
+  it('waits for the yarn reserved on a supplier order (3911 bleu 1721: 600 kg due 05/11)', () => {
+    const fil = [{ kg: 600, date: '20261105', commande: 723 }]
+    expect(etat({ filAttendu: fil })).toBe('attente_fil')
+    expect(etat({ filAttendu: fil, kgTricotage: 600 })).toBe('tricotage')
+    expect(etat({ filAttendu: fil, pret: 100, nbPret: 3 })).toBe('attente_fil')
+    expect(statutLigneClient({ ...base, filAttendu: fil }, 'Ml').preuves).toContain('600 kg de fil attendus (cde fil N° 723, prévue le 05/11)')
   })
   it('falls back to prête when rolls are ready but nothing else is launched', () => {
     expect(etat({ pret: 100, nbPret: 3 })).toBe('pae')

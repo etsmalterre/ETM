@@ -268,6 +268,12 @@ const ROUTES: Route[] = [
   },
   { m: 'POST', re: new RegExp(`${CC}/lignes/\\d+/supply/tricotage/orders$`), f: ([c], _b, r) => `Lancement du tricotage pour la ${cmd(r, c)}` },
   { m: 'PUT', re: new RegExp(`${CC}/lignes/\\d+/supply/tricotage/(\\d+)/affectation$`), f: ([c, l], _b, r) => `Affectation de fils au tricotage ${sstLigne(r, l)} (${cmd(r, c)})` },
+  {
+    m: 'PUT',
+    re: new RegExp(`${CC}/lignes/\\d+/fil/reservations/source$`),
+    f: ([c], b, r) => `${num(b.kg) > 0 ? `Réservation de ${num(b.kg)} kg de fil` : 'Annulation d’une réservation de fil'} ${b.IDstock_fil ? `sur le lot ${num(b.IDstock_fil)}` : 'en commande fournisseur'} pour la ${cmd(r, c)}`,
+  },
+  { m: 'POST', re: new RegExp(`${CC}/lignes/\\d+/fil/reserver-tout$`), f: ([c], _b, r) => `Réservation de tout le fil d’une ligne de la ${cmd(r, c)}` },
   { m: 'POST', re: new RegExp(`${CC}/lignes/\\d+/expedier(?:-divers)?$`), f: ([c], b, r) => `Expédition de ${pieces(r, b.stockIds)} de la ${cmd(r, c)}` },
   { m: 'POST', re: new RegExp(`${CC}/expeditions-divers$`), f: ([c], _b, r) => `Expédition de divers pour la ${cmd(r, c)}` },
   { m: 'PUT', re: new RegExp(`${CC}/donation-pieces$`), f: ([c], _b, r) => `Pièces de la donation ${cmd(r, c, 'commande')}` },

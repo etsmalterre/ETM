@@ -17,6 +17,8 @@ import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 import { StockFilLabelPdf, type StockFilLabelData } from '../lib/pdf/StockFilLabelPdf.js'
 import { RapportFreintePdf, type RapportFreinteData } from '../lib/pdf/RapportFreintePdf.js'
 import { ID_CLIENT_ETS_MALTERRE, gereParEtmParDefaut, regleFilsEtm, reglesFilsEtm } from '../lib/fil-gere-etm.js'
+import { basculerSurLot, lignesCommandeFil } from '../lib/reservation-fil.js'
+import { mpsPg } from '../lib/mps-pg.js'
 
 export const stockFilTrmRouter: RouterType = Router()
 
@@ -564,6 +566,56 @@ stockFilTrmRouter.get('/fil-trm', async (req: Request, res: Response) => {
   }
 })
 
+// GET /api/stock/fil-trm/commandes-attente — Ets Malterre's yarn order lines still awaited (decision
+// Vincent 2026-10-23): on the ordi visitage, « Nouveau » with client Ets Malterre picks the line the
+// delivery belongs to instead of typing fournisseur / fil / coloris, so the lot is born linked to its
+// order line and the yarn reserved on it for client lines moves onto the lot (lib/reservation-fil.ts).
+// A line stays listed until it reads « reçue » (95 % received, or closed by hand on ETM).
+stockFilTrmRouter.get('/fil-trm/commandes-attente', async (_req: Request, res: Response) => {
+  try {
+    const sql = mpsPg()
+    const rows = await sql<{
+      id: number; idcommande_fil: number; idfournisseur: number; fournisseur: string | null
+      idref_fil: number; ref_fil: string | null; idcolori_fil: number; coloris: string | null
+      quantite: number; date_livraison: Date | null; recu: number; reserve: number; date_commande: Date | null
+    }[]>`
+      SELECT l.idref_fil_commande AS id, l.idcommande_fil, c.idfournisseur, f.nom AS fournisseur,
+             l.idref_fil, rf.reference AS ref_fil, l.idcolori_fil, cf.reference AS coloris,
+             l.quantite::float8 AS quantite, l.date_livraison, c.date_commande,
+             COALESCE((SELECT SUM(s.stock_initial) FROM stock_fil s WHERE s.idref_fil_commande = l.idref_fil_commande), 0)::float8 AS recu,
+             COALESCE((SELECT SUM(r.quantite) FROM reservation_fil r
+                        WHERE r.idref_fil_commande = l.idref_fil_commande AND r.idstock_fil = 0 AND r.liberee_le IS NULL), 0)::float8 AS reserve
+        FROM ref_fil_commande l
+        JOIN commande_fil c ON c.idcommande_fil = l.idcommande_fil
+        LEFT JOIN fournisseur f ON f.idfournisseur = c.idfournisseur
+        LEFT JOIN ref_fil rf ON rf.idref_fil = l.idref_fil
+        LEFT JOIN colori_fil cf ON cf.idcolori_fil = l.idcolori_fil
+       WHERE l.etat = 0 AND c.etat = 0
+       ORDER BY l.date_livraison NULLS LAST, l.idref_fil_commande`
+    const ymd = (d: Date | null) => (d instanceof Date && !isNaN(d.getTime())
+      ? `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}` : null)
+    res.json(rows.map((r) => ({
+      IDref_fil_commande: Number(r.id),
+      IDcommande_fil: Number(r.idcommande_fil),
+      IDfournisseur: Number(r.idfournisseur) || 0,
+      fournisseur: (r.fournisseur ?? '').trim(),
+      IDref_fil: Number(r.idref_fil),
+      ref_fil: (r.ref_fil ?? '').trim(),
+      IDcolori_fil: Number(r.idcolori_fil) || 0,
+      coloris: (r.coloris ?? '').trim(),
+      quantite: Number(r.quantite) || 0,
+      recu: Number(r.recu) || 0,
+      reste: Math.max(0, Math.round(((Number(r.quantite) || 0) - (Number(r.recu) || 0)) * 100) / 100),
+      reserve: Number(r.reserve) || 0,
+      date_livraison: ymd(r.date_livraison),
+      date_commande: ymd(r.date_commande),
+    })))
+  } catch (err) {
+    console.error('Error fetching awaited yarn order lines:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // GET /api/stock/fil-trm/:id — detail: row + titrage reference block +
 // contrôle history + commande N° + certif flags.
 stockFilTrmRouter.get('/fil-trm/:id', async (req: Request, res: Response) => {
@@ -651,10 +703,28 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
   try {
     const body = req.body ?? {}
     const IDclient = intOf(body.IDclient)
-    const IDfournisseur = intOf(body.IDfournisseur)
-    const IDref_fil = intOf(body.IDref_fil)
-    const IDcolori_fil = intOf(body.IDcolori_fil)
+    let IDfournisseur = intOf(body.IDfournisseur)
+    let IDref_fil = intOf(body.IDref_fil)
+    let IDcolori_fil = intOf(body.IDcolori_fil)
     const stock_initial = floatOf(body.stock_initial)
+    // Ets Malterre's yarn is received against its order line (GET /fil-trm/commandes-attente):
+    // the line decides fournisseur, fil and coloris, and the lot is born linked to it.
+    const IDref_fil_commande = intOf(body.IDref_fil_commande)
+    if (IDref_fil_commande > 0) {
+      if (IDclient !== ID_CLIENT_ETS_MALTERRE) {
+        res.status(400).json({ error: 'commande_autre_client', message: 'Une commande de fil fournisseur ne se réceptionne que pour Ets Malterre.' })
+        return
+      }
+      const [ligne] = await lignesCommandeFil({ ids: [IDref_fil_commande] })
+      if (!ligne) { res.status(404).json({ error: 'Ligne de commande de fil introuvable' }); return }
+      if (ligne.etat !== 0 || ligne.etat_commande !== 0) {
+        res.status(409).json({ error: 'commande_fil_recue', message: 'Cette ligne de commande de fil est déjà reçue ou close.' })
+        return
+      }
+      IDfournisseur = ligne.idfournisseur
+      IDref_fil = ligne.idref_fil
+      IDcolori_fil = ligne.idcolori_fil
+    }
 
     if (IDclient <= 0 || IDfournisseur <= 0 || IDref_fil <= 0 || IDcolori_fil <= 0) {
       res.status(400).json({ error: 'IDclient, IDfournisseur, IDref_fil and IDcolori_fil are required' })
@@ -692,7 +762,7 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
       const vals =
         `${IDclient}, ${IDfournisseur}, ${IDref_fil}, ${IDcolori_fil}, ${stock_initial}, ${stock_initial}, ` +
         `'${lot}', ${sqlText(lot_frs)}, ${sqlText(emplacement)}, ${niveau}, '${date_entree}', ` +
-        `'${date_entree}', '${dernier_pointage}', ${sqlText(commentaire)}, 1, 0, ${gere_par_etm}` +
+        `'${date_entree}', '${dernier_pointage}', ${sqlText(commentaire)}, 1, ${IDref_fil_commande}, ${gere_par_etm}` +
         (canNameAccented() ? ', 0, 0' : '')
       try {
         await query(`INSERT INTO stock_fil (${cols}) VALUES (${vals})`)
@@ -711,7 +781,11 @@ stockFilTrmRouter.post('/fil-trm', async (req: Request, res: Response) => {
       return
     }
 
-    res.status(201).json({ IDstock_fil: newId, lot: String(lot) })
+    // The yarn reserved on the order line for client lines moves onto the lot; the line reads
+    // « reçue » from 95 % received — the order itself is closed by a person on ETM.
+    const reception = IDref_fil_commande > 0 ? await basculerSurLot(IDref_fil_commande, newId) : null
+
+    res.status(201).json({ IDstock_fil: newId, lot: String(lot), reception })
   } catch (err) {
     console.error('Error creating TRM stock_fil:', err)
     res.status(500).json({ error: 'Internal server error' })

@@ -95,6 +95,9 @@ import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../
 import { affectationsCommandeSst } from '../lib/affectations-sst.js'
 import { enregistrerSoumission, naturesDemandees, NATURE_LIBELLE, type NatureSoumission } from '../lib/soumission-lot.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import {
+  couvertureLigne, ecrireAffectation, filsALancer, lotsLibres, messageFilNonCouvert, nomsFils, planLancement, type PlanLancement,
+} from '../lib/lancement-tricotage.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 
@@ -4679,6 +4682,25 @@ commandesSousTraitantRouter.delete('/:id', async (req: Request, res: Response) =
 
 // ── Create line ──────────────────────────────────────────
 
+// The yarn a new Tricotage Malterre line can go out with: per yarn of the écru's coloris
+// composition, TRM's lots and what is free on each (lib/lancement-tricotage.ts). The line form
+// picks among them; POST /:id/lignes refuses a line whose yarn is not covered.
+commandesSousTraitantRouter.get('/:id/lots-fil', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const refEcru = parseInt(String(req.query.ref_ecru ?? ''), 10) || 0
+    const coloris = parseInt(String(req.query.coloris ?? ''), 10) || 0
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await isTricotageMalterreSst(id))) { res.json({ applicable: false, yarns: [] }); return }
+    const paires = (await loadCompositionPairs(refEcru, coloris))
+      .map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
+    res.json({ applicable: true, yarns: await filsALancer({ magasin: TRICOTAGE_MALTERRE_ID, paires, ligneClient: 0 }) })
+  } catch (err) {
+    console.error('Error fetching lots-fil for a TRM line:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -4706,6 +4728,30 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
     // cross-ledger commande_client write.
     const isTrm = await isTricotageMalterreSst(id)
     const lineType = d.type ?? (isTricoteur ? 1 : 2)
+    // A knit line at Tricotage Malterre goes out with its yarn (lib/lancement-tricotage.ts): the
+    // lots are planned before anything is written, and the line is refused while a yarn of the
+    // composition is not covered. Cols / bandes knit no écru composition.
+    let planFil: PlanLancement | null = null
+    if (isTrm && !isRectiligneType(lineType)) {
+      const lots = z.array(z.number().int().positive()).safeParse(req.body?.lots ?? [])
+      const paires = (await loadCompositionPairs(d.IDreference ?? 0, d.IDColoris ?? 0))
+        .map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
+      planFil = planLancement({
+        totalKg: Number(d.quantite) || 0, paires, choisis: lots.success ? lots.data : [],
+        lots: await lotsLibres({ magasin: TRICOTAGE_MALTERRE_ID, paires, ligneClient: 0 }),
+      })
+      if (!planFil.ok) {
+        const noms = await nomsFils(paires)
+        res.status(409).json({
+          error: 'fil_non_couvert',
+          message: paires.length === 0
+            ? "La composition de l'écru n'a pas de fil pour ce coloris : complétez-la avant de commander."
+            : messageFilNonCouvert(planFil, (rf, cf) => noms.get(`${rf}:${cf}`) ?? `fil ${rf}`),
+          manques: planFil.manques,
+        })
+        return
+      }
+    }
     let linePrix = d.prix
     let lineUnite = d.unite ?? 0
     if (isRectiligneType(lineType)) {
@@ -4789,6 +4835,10 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
       }
     }
 
+    if (planFil && newSstLineId > 0) {
+      await ecrireAffectation({ sstLine: newSstLineId, ligneClient: 0, entrees: planFil.entrees })
+    }
+
     const body: Record<string, unknown> = { ok: true }
     if (mirrorStatus) body.mirror_status = mirrorStatus
     if (mirrorError) body.mirror_error = mirrorError
@@ -4853,6 +4903,31 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
       if (misfits.length > 0) {
         res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: misfitMessage(misfits, 'Modification refusée') })
         return
+      }
+    }
+
+    // A Tricotage Malterre knit line holds its yarn (lib/lancement-tricotage.ts): another
+    // reference or coloris would knit other yarns, more kg would need more of them. Désaffecter
+    // first (Stock fil tab), then Affecter again. Lines still without yarn (before 2026-10-23) pass.
+    const typeApres = d.type !== undefined ? d.type : (Number(cur.type_kind) || 0)
+    if (!isRectiligneType(typeApres) && await isTricotageMalterreSst(commandeId)) {
+      const refBouge = nextRef !== (Number(cur.IDreference) || 0) || nextColoris !== (Number(cur.IDColoris) || 0)
+      const qtyApres = d.quantite !== undefined ? Number(d.quantite) || 0 : Number(cur.quantite) || 0
+      if (refBouge || qtyApres > (Number(cur.quantite) || 0) + 0.005) {
+        const paires = (await loadCompositionPairs(Number(cur.IDreference) || 0, Number(cur.IDColoris) || 0))
+          .map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
+        const couvert = await couvertureLigne(lineId, paires)
+        if (couvert !== null && refBouge) {
+          res.status(409).json({ error: 'fil_affecte', message: 'Du fil est affecté à cette ligne : désaffectez-le (onglet Stock fil) avant de changer la référence ou le coloris.' })
+          return
+        }
+        if (couvert !== null && qtyApres > couvert + 0.05) {
+          res.status(409).json({
+            error: 'fil_non_couvert',
+            message: `Le fil affecté couvre ${couvert.toLocaleString('fr-FR')} kg : désaffectez puis réaffectez des lots (onglet Stock fil) avant de passer à ${qtyApres.toLocaleString('fr-FR')} kg.`,
+          })
+          return
+        }
       }
     }
 

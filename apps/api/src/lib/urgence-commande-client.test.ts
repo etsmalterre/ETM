@@ -47,6 +47,17 @@ describe('urgenceLigne', () => {
     expect(niveau(l('a_lancer', null))).toBe('rouge')
     expect(niveau(l('ennoblisseur', null))).toBe('rouge')
   })
+  it('a line waiting for reserved yarn is neutral while the supplier is in time, then asks to chase it', () => {
+    // 3911 bleu 1721: délai in 49 days would be amber « à lancer », but the yarn is ordered, due in 13 days
+    expect(niveau(l('a_lancer', 49))).toBe('ambre')
+    expect(niveau({ ...l('attente_fil', 49), filAttenduLe: dans(13) })).toBe(null)
+    expect(niveau({ ...l('attente_fil', 49), filAttenduLe: dans(0) })).toBe(null)
+    expect(niveau({ ...l('attente_fil', 49), filAttenduLe: dans(-1) })).toBe('rouge')
+    expect(niveau({ ...l('attente_fil', 49), filAttenduLe: null })).toBe('rouge')
+    expect(niveau({ ...l('attente_fil', null), filAttenduLe: dans(13) })).toBe('rouge') // no client délai: give one
+    expect(urgenceCommande([{ ...l('attente_fil', 49), filAttenduLe: dans(-3) }], today)?.raison)
+      .toBe(`1 ligne en attente de fil : relancer le fournisseur · fil prévu le ${dans(-3).slice(6, 8)}/${dans(-3).slice(4, 6)} dépassé`)
+  })
   it('a line in étude coloris asks no délai, only a relance once it is due', () => {
     const e = (attente: 'labo' | 'client' | 'acceptee' | 'annulee', j: number | null, delai: number | null = null): LigneUrgence =>
       ({ ...l('a_lancer', delai), etude: { attente, relanceLe: j === null ? null : dans(j) } })
@@ -147,6 +158,8 @@ describe('avancementCommande', () => {
     expect(avancementCommande(['expediee', 'ennoblisseur', 'pae', 'expediee'], false)).toBe('ennoblisseur')
     expect(avancementCommande(['pae', 'a_lancer'], false)).toBe('a_lancer')
     expect(avancementCommande(['tricotage', 'ennoblisseur'], false)).toBe('tricotage')
+    expect(avancementCommande(['tricotage', 'attente_fil'], false)).toBe('attente_fil')
+    expect(avancementCommande(['attente_fil', 'a_lancer'], false)).toBe('a_lancer')
   })
   it('is expédiée once every line left, soldée when closed, null without lines', () => {
     expect(avancementCommande(['expediee', 'expediee'], false)).toBe('expediee')

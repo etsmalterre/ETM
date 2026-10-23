@@ -1144,6 +1144,40 @@ ${grantApi('SELECT, INSERT', 'rapport_controle_dispense')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE rapport_controle_dispense_id_seq')}
 `,
   },
+  {
+    // Yarn reserved for a client order line (decision Vincent 2026-10-23,
+    // lib/reservation-fil.ts): first on a yarn ORDER line still to receive,
+    // moved onto the lot when that lot is created from (or linked to) the
+    // order line, then taken by the knitting order launched from the client
+    // line, which writes the usual asso_fil_lignecmdsst row. State is derived
+    // from the columns (etatReservation); a remainder never received is
+    // released (liberee_le + motif), kept for the line's history.
+    name: '0035_reservation_fil',
+    sql: `
+CREATE TABLE reservation_fil (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idligne_commande_client bigint NOT NULL,
+  idref_fil bigint NOT NULL,
+  idcolori_fil bigint NOT NULL DEFAULT 0,
+  quantite numeric(12, 2) NOT NULL CHECK (quantite > 0),
+  idref_fil_commande bigint NOT NULL DEFAULT 0,
+  idstock_fil bigint NOT NULL DEFAULT 0,
+  idligne_commande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idasso_fil_lignecmdsst bigint NOT NULL DEFAULT 0,
+  liberee_le timestamptz,
+  motif_liberation text,
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  cree_par_id bigint NOT NULL DEFAULT 0,
+  cree_par text
+);
+CREATE INDEX reservation_fil_ligne ON reservation_fil (idligne_commande_client);
+CREATE INDEX reservation_fil_commande_fil ON reservation_fil (idref_fil_commande) WHERE idref_fil_commande > 0;
+CREATE INDEX reservation_fil_lot ON reservation_fil (idstock_fil) WHERE idstock_fil > 0;
+CREATE INDEX reservation_fil_fil ON reservation_fil (idref_fil, idcolori_fil);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'reservation_fil')}
+${grantApi('USAGE, SELECT', 'SEQUENCE reservation_fil_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

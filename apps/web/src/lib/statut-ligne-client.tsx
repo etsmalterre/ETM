@@ -4,10 +4,10 @@
 // ennoblisseur reuse the sous-traitant type hues (sst-type.tsx) so the line reads
 // with the same colour as the subcontractor it is waiting on.
 import type { ComponentType, ReactNode } from 'react'
-import { Archive, CircleDashed, Droplets, Factory, PackageCheck, Truck } from 'lucide-react'
+import { Archive, CircleDashed, Droplets, Factory, PackageCheck, Truck, CalendarClock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'a_lancer'
+export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'a_lancer'
 
 export interface StatutLigneClient {
   etat: EtatLigneClient
@@ -21,6 +21,8 @@ const SEUIL_EXPEDIE = 0.9
 
 export const STATUT_LIGNE_META: Record<EtatLigneClient, { label: string; icon: ComponentType<{ className?: string }>; classes: string }> = {
   a_lancer: { label: 'À lancer', icon: CircleDashed, classes: 'bg-zinc-100 text-zinc-700 border-zinc-300' },
+  // Yarn reserved on a supplier order still to receive (API lib/reservation-fil.ts).
+  attente_fil: { label: 'Attente fil', icon: CalendarClock, classes: 'bg-violet-500/10 text-violet-700 border-violet-500/25' },
   tricotage: { label: 'En tricotage', icon: Factory, classes: 'bg-amber-500/15 text-amber-800 border-amber-500/30' },
   ennoblisseur: { label: 'En ennoblissement', icon: Droplets, classes: 'bg-sky-500/10 text-sky-700 border-sky-500/25' },
   pae: { label: 'Prête à expédier', icon: PackageCheck, classes: 'bg-emerald-100 text-emerald-800 border-emerald-200' },

@@ -35,7 +35,9 @@ interface FilEtat {
    *  affectation on this fil, reserve derived from the OFs launched in TRM (#1159). */
   besoin_rows: {
     lot: string; commande_sst: number; reserve: number; produit: number; suivi: boolean; kg: number
-    source: 'affectation' | 'of'
+    /** 'reservation' = reserved for a client order line (commande_client = its N°), not knitted yet */
+    source: 'affectation' | 'of' | 'reservation'
+    commande_client?: number
   }[]
   disponible: number
 }
@@ -172,11 +174,11 @@ export function FilStockEtatWidget() {
                     iconBox="icon-box-terracotta"
                     info={{
                       title: 'Réservé',
-                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées), déduction faite de ce que leurs OF ont déjà tricoté (reste à tricoter). « * » : fil non affecté sur la commande, réservé déduit des OF lancés. « — » : tricoteur externe, production non suivie.',
+                      text: 'Fil affecté aux commandes de tricotage en cours (non soldées), déduction faite de ce que leurs OF ont déjà tricoté (reste à tricoter), et fil réservé pour une ligne de commande client (« Cde client ») pas encore tricoté. « * » : fil non affecté sur la commande, réservé déduit des OF lancés. « — » : tricoteur externe ou réservation client, production non suivie.',
                       headers: ['N° STT', 'Lot', 'Affecté', 'Tricoté', 'Reste'],
                       numCols: 3,
                       rows: etat.besoin_rows.map((r) => [
-                        `N°${r.commande_sst}`, r.lot,
+                        r.source === 'reservation' ? `Cde client ${r.commande_client ?? ''}` : `N°${r.commande_sst}`, r.lot,
                         r.source === 'of' ? `${fmtNum(r.reserve, 1)} *` : fmtNum(r.reserve, 1),
                         r.suivi ? fmtNum(r.produit, 1) : '—', fmtNum(r.kg, 1),
                       ]),

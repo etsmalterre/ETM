@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
+import { repartitionLot } from '../lib/lancement-tricotage.js'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { calculerEtatFil } from '../lib/fil-etat.js'
 import { userHasPermission } from '../lib/permissions.js'
@@ -294,6 +295,18 @@ stockRouter.get('/fil/la-gentle-stale', async (req: Request, res: Response) => {
 })
 
 // GET /api/stock/fil/:id - Single stock_fil row + has_certif flags
+// Fils › Stock « Réservations »: where the lot's stock is promised (lib/lancement-tricotage.ts).
+stockRouter.get('/fil/:id/reservations', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    res.json(await repartitionLot(id))
+  } catch (err) {
+    console.error('Error reading lot reservations:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 stockRouter.get('/fil/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)

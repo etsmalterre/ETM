@@ -24,6 +24,7 @@ import {
   MessageSquare,
   Eye,
   UserRound,
+  PieChart,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -37,6 +38,7 @@ import { fmtNum } from '@/lib/format'
 import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { CardKV, MobileSortRow } from '@/components/stock/StockCardParts'
+import { ReservationsLot } from '@/components/fils/ReservationsLot'
 import {
   SmartSearchInput,
   filterRowsByChips,
@@ -792,6 +794,11 @@ function StockDetailDrawer({ id, onClose, onMutationSuccess, onDirtyChange, save
                 <KV label="Stock actuel" value={<span className="font-semibold tabular-nums">{formatKg(detail.stock)}</span>} />
                 <KV label="Stock initial" value={<span className="tabular-nums">{formatKg(detail.stock_initial)}</span>} />
               </div>
+            </DrawerCard>
+
+            {/* Where the stock is promised (OFs, knitting orders, client lines) */}
+            <DrawerCard icon={<PieChart className="h-4 w-4 text-accent" />} title="Réservations">
+              <ReservationsLot lotId={detail.IDstock_fil} />
             </DrawerCard>
 
             {/* Provenance */}

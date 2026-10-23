@@ -7,6 +7,7 @@
 // widget itself is only mounted when the user holds it (see Dashboard.tsx).
 
 import { useMemo, useState } from 'react'
+import { donutPath } from '@/lib/donut'
 import { useQuery } from '@tanstack/react-query'
 import {
   TrendingUp,
@@ -604,22 +605,6 @@ function RepartitionChart({ rows }: { rows: CaClientRow[] }) {
 
 function sharePct(value: number, base: number): number {
   return base === 0 ? 0 : (value / base) * 100
-}
-
-/** Donut segment between two fractions of the circle, starting at 12 o'clock
- *  and running clockwise. Radii are viewBox units, centre at (0, 0). */
-function donutPath(from: number, to: number, outer: number, inner: number): string {
-  const a0 = from * 2 * Math.PI - Math.PI / 2
-  const a1 = to * 2 * Math.PI - Math.PI / 2
-  const large = to - from > 0.5 ? 1 : 0
-  const p = (a: number, r: number) => `${(Math.cos(a) * r).toFixed(3)},${(Math.sin(a) * r).toFixed(3)}`
-  return [
-    `M${p(a0, outer)}`,
-    `A${outer},${outer} 0 ${large} 1 ${p(a1, outer)}`,
-    `L${p(a1, inner)}`,
-    `A${inner},${inner} 0 ${large} 0 ${p(a0, inner)}`,
-    'Z',
-  ].join(' ')
 }
 
 // ── Header tiles ──────────────────────────────────────────────

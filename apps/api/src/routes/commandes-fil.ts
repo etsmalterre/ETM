@@ -125,6 +125,7 @@ async function maybeAutoCloseCommande(commandeId: number): Promise<void> {
 // bridge" for the full picture.
 
 import { IS_WINDOWS } from '../lib/sst-shared.js'
+import { basculerSurLot, libererReliquat, retirerDuLot } from '../lib/reservation-fil.js'
 
 const STOCK_LOT_SELECT = IS_WINDOWS
   ? `sf.IDstock_fil, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, rf.reference AS ref_fil, rf.bio, cf.reference AS colori_reference, f.nom AS fournisseur_nom`
@@ -989,7 +990,11 @@ commandesFilRouter.put('/lignes/:lineId', async (req: Request, res: Response) =>
 
     await query(`UPDATE ref_fil_commande SET ${sets.join(', ')} WHERE IDref_fil_commande = ${lineId}`)
 
-    if (d.etat === 1) await maybeAutoCloseCommande(commandeId)
+    if (d.etat === 1) {
+      // The line brings nothing more: yarn still reserved on it for client lines is released.
+      await libererReliquat(lineId, 'close')
+      await maybeAutoCloseCommande(commandeId)
+    }
 
     res.json({ ok: true })
   } catch (err) {
@@ -1114,6 +1119,9 @@ commandesFilRouter.put('/:commandeId/lignes/:ligneId/stock/:stockId', async (req
     }
 
     await query(`UPDATE stock_fil SET IDref_fil_commande = ${ligneId} WHERE IDstock_fil = ${stockId}`)
+    // Yarn reserved on the line for client lines moves onto the lot; the line reads « reçue » from
+    // 95 % received (lib/reservation-fil.ts) — the order itself stays open for a person to close.
+    if (current !== ligneId) await basculerSurLot(ligneId, stockId)
 
     const payload = await fetchLinkedAndAvailable(ctx, ligneId)
     res.json(payload)
@@ -1137,6 +1145,8 @@ commandesFilRouter.delete('/:commandeId/lignes/:ligneId/stock/:stockId', async (
     // Only unlink if the stock row is currently linked to THIS line — guards
     // against racing with a re-assignment from another screen.
     await query(`UPDATE stock_fil SET IDref_fil_commande = 0 WHERE IDstock_fil = ${stockId} AND IDref_fil_commande = ${ligneId}`)
+    // The reservations it took wait on the order line again.
+    await retirerDuLot(ligneId, stockId)
 
     const payload = await fetchLinkedAndAvailable(ctx, ligneId)
     res.json(payload)

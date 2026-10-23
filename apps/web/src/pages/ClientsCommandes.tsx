@@ -79,6 +79,8 @@ import { EtatPill } from '@/lib/etat-stock-fini'
 import { AvancementPill, EtatLigneTag, StatutLignePill, STATUT_LIGNE_META, type EtatLigneClient, type StatutLigneClient } from '@/lib/statut-ligne-client'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
+import { FilLigneTab } from '@/components/fils/FilLigneTab'
+import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -157,6 +159,8 @@ interface LigneCommande {
   total_metrage: number
   total_poids: number
   affecte: number
+  /** The gauge's stages in the line's unit: shipped, ready, at the dyer, being knitted, yarn reserved. */
+  avancement?: { expedie: number; pret: number; ennoblissement: number; tricotage: number; fil: number }
   expedie: number
   /** computed status (API lib/statut-ligne-client.ts), never written to commentaire */
   statut: StatutLigneClient | null
@@ -900,7 +904,7 @@ const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; ho
 // One tag per line status present: an order carries it when at least one of its lines has it.
 // « À faire » / « Bientôt » are not tags: the counter pills right of the bar already filter on them.
 
-const ETAT_TAG_ORDER: EtatLigneClient[] = ['a_lancer', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ETAT_TAG_ORDER: EtatLigneClient[] = ['a_lancer', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 function commandeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
   return ETAT_TAG_ORDER.map((etat): SearchTagDef<CommandeListRow> => {
@@ -2177,20 +2181,9 @@ function LineCard({
           <p className="text-[11px] text-muted-foreground italic">{line.commentaire.trim()}</p>
         </div>
       )}
-      {/* Affectation gauge for écru/fini lines — single row: bar left, quantities right */}
-      {canAffect && (
-        <div className="mt-2 ml-9 flex items-center gap-2">
-          <div className="h-1.5 flex-1 rounded-full bg-zinc-200 overflow-hidden">
-            <div
-              className={cn('h-full rounded-full transition-all', pct >= 99.9 ? 'bg-green-500' : 'bg-accent')}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">
-            Affecté {fmtNum(line.affecte, 1)} / {fmtNum(line.quantite, 1)} {line.unite_label}
-          </span>
-        </div>
-      )}
+      {/* Matter gauge for écru/fini lines: one stage per colour (shipped → ready → at the dyer →
+          being knitted → yarn reserved), full green when every kilo of the line is in the circuit. */}
+      {canAffect && <LigneMatiereGauge line={line} target={target} />}
       {/* Divers lines have nothing to reserve — the gauge tracks what shipped. */}
       {isDivers && (
         <div className="mt-2 ml-9 flex items-center gap-2">
@@ -2372,6 +2365,7 @@ function AffectationDrawer({
     { key: 'affectation', label: 'Affectation', icon: Package },
     ...(ligne.type === 2 ? [{ key: 'enno' as const, label: 'Ennoblissement', icon: Droplets }] : []),
     ...(supplyEnabled ? [{ key: 'trico' as const, label: 'Tricotage', icon: KnitIcon }] : []),
+    ...(supplyEnabled ? [{ key: 'fil' as const, label: 'Fil', icon: BobineIcon }] : []),
     ...(supplyEnabled ? [{ key: 'exped' as const, label: 'Expédition', icon: Truck }] : []),
     ...(ligne.type === 2 && etiquetteClients?.clients.includes(clientId) ? [{ key: 'etiq' as const, label: 'Étiquettes', icon: Barcode }] : []),
   ]
@@ -2599,7 +2593,7 @@ function AffectationDrawer({
             {linked.length > 0 && (
               <section>
                 <div className="flex items-center justify-between mb-1.5">
-                  <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+                  <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold">
                     Affecté à la commande ({linked.length} · {fmtNum(linkedQty, 1)} {dim === 'metrage' ? 'Ml' : 'kg'})
                   </h3>
                   {obsToggle}
@@ -2627,7 +2621,7 @@ function AffectationDrawer({
             {!soldee && available.length > 0 && (
               <section>
                 <div className="flex items-center justify-between mb-1.5">
-                  <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+                  <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold">
                     Stock disponible ({available.length})
                   </h3>
                   {linked.length === 0 ? obsToggle : null}
@@ -2708,7 +2702,7 @@ function AffectationDrawer({
       {tab === 'enno' && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
           <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
+            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
               Commandes ennoblisseur en cours
             </h3>
             <SupplyTable
@@ -2730,7 +2724,7 @@ function AffectationDrawer({
           </section>
 
           <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
+            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
               {ennoLocations?.ecru_ref_label
                 ? `${ennoLocations.ecru_ref_label}${ennoLocations.ecru_coloris_label ? ` /${ennoLocations.ecru_coloris_label}` : ''} — tombé de métier disponible`
                 : 'Tombé de métier disponible'}
@@ -2747,7 +2741,7 @@ function AffectationDrawer({
       {tab === 'trico' && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
           <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
+            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
               Commandes tricoteur en cours
             </h3>
             <SupplyTable
@@ -2769,9 +2763,9 @@ function AffectationDrawer({
           </section>
 
           <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
+            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
               {stockFil?.ecru_ref_label
-                ? `${stockFil.ecru_ref_label} — stock de fil disponible`
+                ? `${stockFil.ecru_ref_label}${stockFil.ecru_coloris_label ? ` /${stockFil.ecru_coloris_label}` : ''} — stock de fil disponible`
                 : 'Stock de fil disponible'}
             </h3>
             <StockFilDispoTable
@@ -2781,6 +2775,10 @@ function AffectationDrawer({
             />
           </section>
         </div>
+      )}
+
+      {tab === 'fil' && (
+        <FilLigneTab commandeId={commandeId} ligneId={ligne.IDligne_commande_client} soldee={soldee} />
       )}
 
       {tab === 'exped' && (
@@ -2906,7 +2904,7 @@ function AffectationDrawer({
   )
 }
 
-type SupplyTab = 'affectation' | 'enno' | 'trico' | 'exped' | 'etiq'
+type SupplyTab = 'affectation' | 'enno' | 'trico' | 'fil' | 'exped' | 'etiq'
 
 function fmtSupplyDate(d: string | null): string {
   return d && d.length === 8 && d !== '00000000' ? formatHfsqlDate(d) : '—'
@@ -2939,8 +2937,8 @@ function SupplyTable<T extends { id: number }>({
   return (
     <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
       <table className="w-full text-xs">
-        <thead className="bg-zinc-200/60 border-b border-border/60">
-          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        <thead className="bg-primary/10 border-b border-primary/10">
+          <tr className="text-[10px] uppercase tracking-wide text-primary/80">
             {columns.map((c) => (
               <th key={c.key} className={cn('px-2.5 py-2 font-semibold whitespace-nowrap', c.align === 'right' ? 'text-right' : 'text-left')}>
                 {c.label}
@@ -4824,11 +4822,15 @@ interface EnnoLocationsPayload {
 
 // Shared chrome for the grouped supply tables below — same container, header
 // band and row typography as SupplyTable so the whole drawer tab reads as one
-// visual grammar. Groups render as full-width zinc band rows inside the table.
-function GroupBandRow({ label, colSpan }: { label: string; colSpan: number }) {
+// visual grammar. Groups render as full-width band rows inside the table: zinc on a white
+// page, light navy inside the line drawer (zinc vanished on the drawer's zinc ground, 2026-10-23).
+function GroupBandRow({ label, colSpan, tiroir = false }: { label: string; colSpan: number; tiroir?: boolean }) {
   return (
     <tr>
-      <td colSpan={colSpan} className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground bg-zinc-200/50 border-b border-border/40">
+      <td colSpan={colSpan} className={cn(
+        'px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide',
+        tiroir ? 'text-primary/80 bg-primary/10 border-b border-primary/10' : 'text-muted-foreground bg-zinc-200/50 border-b border-border/40',
+      )}>
         {label}
       </td>
     </tr>
@@ -4867,7 +4869,7 @@ function EnnoLocationTable({
         <tbody>
           {groups.map((g) => (
             <Fragment key={g.label}>
-              <GroupBandRow label={g.label} colSpan={4} />
+              <GroupBandRow label={g.label} colSpan={4} tiroir />
               {g.rows.map((loc) => (
                 <tr key={loc.IDsous_traitant} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
                   <td className="px-2.5 py-2 whitespace-nowrap">
@@ -4917,6 +4919,7 @@ interface TricoStockFilLocation {
 interface TricoStockFilPayload {
   rendement: number
   ecru_ref_label: string
+  ecru_coloris_label?: string
   locations: TricoStockFilLocation[]
 }
 
@@ -4949,7 +4952,7 @@ function StockFilDispoTable({
                   column takes the flexible width (w-full) so the value
                   columns sit right, next to the content-width launcher column
                   on tricoteur locations. */}
-              <tr className="text-[10px] uppercase tracking-wide text-muted-foreground bg-zinc-200/50 border-b border-border/40">
+              <tr className="text-[10px] uppercase tracking-wide text-primary/80 bg-primary/10 border-b border-primary/10">
                 <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-left w-full">{loc.magasin_nom}</td>
                 <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-right">Compo.</td>
                 <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-right">Poids</td>
@@ -5105,9 +5108,11 @@ function CreateEnnoblisseurOrderDialog({
       const b = orderedIds.indexOf(id)
       if (a >= 0 && b >= 0) {
         const [lo, hi] = a < b ? [a, b] : [b, a]
+        // §44: Shift+clicking an already-selected end clears the range.
+        const deselect = selected.has(id)
         setSelected((prev) => {
           const next = new Set(prev)
-          for (let i = lo; i <= hi; i++) next.add(orderedIds[i])
+          for (let i = lo; i <= hi; i++) { if (deselect) next.delete(orderedIds[i]); else next.add(orderedIds[i]) }
           return next
         })
         return
@@ -5124,6 +5129,11 @@ function CreateEnnoblisseurOrderDialog({
   }
 
   const canSubmit = selected.size > 0 && dateCommande.length > 0 && !busy
+  const blocage = selected.size === 0
+    ? 'Sélectionnez les rouleaux à envoyer'
+    : dateCommande.length === 0
+      ? 'Indiquez la date de commande'
+      : null
   const handleSubmit = async () => {
     if (!canSubmit) return
     setError(null)
@@ -5150,127 +5160,139 @@ function CreateEnnoblisseurOrderDialog({
 
   const inputCls = 'w-full h-9 px-2.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring'
 
+  const lienBtn = 'text-xs px-1 disabled:cursor-default disabled:no-underline'
+
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose() }}>
-      <DialogContent className="max-w-2xl w-[92vw] h-[85vh] flex flex-col p-0 overflow-hidden" onClose={busy ? undefined : onClose}>
-        {/* Header */}
-        <div className="flex-shrink-0 px-6 pt-4 pb-3 border-b bg-gradient-to-r from-gold/25 via-gold/10 to-transparent flex items-start gap-3">
-          <div className="h-10 w-10 rounded-lg icon-box-gold flex items-center justify-center flex-shrink-0">
-            <Droplets className="h-5 w-5" />
+      {/* §18.D banded dialog — same composition as « Lancer le tricotage ». */}
+      <DialogContent className="max-w-4xl w-[94vw] h-[85vh] p-0 border-0 bg-primary overflow-hidden flex flex-col">
+        <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
+          <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+            <Droplets className="h-[18px] w-[18px]" />
           </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-base font-heading font-bold tracking-tight truncate">Nouvelle commande — {location.location_nom}</h2>
-            <p className="text-xs text-muted-foreground mt-0.5 truncate">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+              Envoyer en ennoblissement — {location.location_nom}
+            </h2>
+            <p className="text-xs text-white/70 truncate">
               {ligne.ref_label || `Réf ${ligne.IDreference}`}
               {ligne.colori_reference && ` · ${ligne.colori_reference}`}
+              {clientNom ? ` · ${clientNom}` : ''}
             </p>
-            <p className="text-[10px] text-muted-foreground/80 italic mt-0.5">Astuce : Maj+clic pour sélectionner une plage.</p>
           </div>
+          <Button
+            variant="ghost" size="icon" title="Fermer" disabled={busy} onClick={onClose}
+            className="h-8 w-8 flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </Button>
         </div>
 
-        {/* Order dates */}
-        <div className="flex-shrink-0 px-6 py-3 border-b bg-zinc-200/30 grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Date commande</label>
-            <input type="date" value={dateCommande} onChange={(e) => setDateCommande(e.target.value)} className={inputCls} />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Date d'expédition</label>
-            <input type="date" value={dateLivraison} onChange={(e) => setDateLivraison(e.target.value)} className={inputCls} />
-          </div>
-        </div>
-
-        {/* Disponible chez X — scoped roll list */}
-        <div className="flex-shrink-0 px-4 py-1.5 flex items-center bg-zinc-100/80 border-b">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold flex items-center gap-1.5">
-            <MapPin className="h-3 w-3" />Disponible chez {location.location_nom}
-          </span>
-          {rolls.length > 0 && (
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap">
-                {selected.size > 0
-                  ? `${selected.size} rouleau${selected.size > 1 ? 'x' : ''} · ${fmtNum(selectedKg, 1)} kg · ${fmtNum(selectedMl, 0)} Ml`
-                  : 'Aucun rouleau sélectionné'}
-              </span>
-              <span className="text-muted-foreground/40 text-[11px]">—</span>
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={selectAll} disabled={busy || allSelected}
-                  className="text-[11px] text-accent hover:underline disabled:text-muted-foreground/50 disabled:no-underline disabled:cursor-default px-1">Tout</button>
-                <span className="text-muted-foreground/40 text-[11px]">·</span>
-                <button type="button" onClick={clearSelection} disabled={busy || selected.size === 0}
-                  className="text-[11px] text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 disabled:cursor-default px-1">Aucun</button>
+        <div className="flex-1 min-h-0 bg-zinc-100 p-4 grid grid-cols-1 md:grid-cols-[300px,1fr] gap-4 overflow-y-auto md:overflow-hidden">
+          {/* What the user decides: the dates, and which rolls stay reserved to the client */}
+          <div className="space-y-3 md:overflow-y-auto scrollbar-transparent">
+            <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm p-4 space-y-3">
+              <h3 className="text-sm font-semibold">Commande</h3>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Date de commande</label>
+                <input type="date" value={dateCommande} onChange={(e) => setDateCommande(e.target.value)} className={inputCls} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Date d’expédition</label>
+                <input type="date" value={dateLivraison} onChange={(e) => setDateLivraison(e.target.value)} className={inputCls} />
               </div>
             </div>
-          )}
-        </div>
-        {/* Réservation à la commande client — legacy FEN_Ennoblir's « lien »
-            column + its Tous / Aucun pair (LIVA #1115). Per roll below; here
-            the count and the two bulk controls. */}
-        {rolls.length > 0 && (
-          <div className="flex-shrink-0 px-4 py-1.5 flex items-center bg-zinc-100/80 border-b">
-            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold flex items-center gap-1.5">
-              <Link2 className="h-3 w-3" />Réservés à la commande{clientNom ? ` de ${clientNom}` : ''}
-            </span>
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap">
-                {selected.size === 0
-                  ? '—'
-                  : `${linkedRolls.length} / ${linkable.length} rouleau${linkable.length > 1 ? 'x' : ''}`}
-              </span>
-              <span className="text-muted-foreground/40 text-[11px]">—</span>
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={linkAll} disabled={busy || unlinked.size === 0}
-                  className="text-[11px] text-accent hover:underline disabled:text-muted-foreground/50 disabled:no-underline disabled:cursor-default px-1">Lier tout</button>
-                <span className="text-muted-foreground/40 text-[11px]">·</span>
-                <button type="button" onClick={linkNone} disabled={busy || linkedRolls.length === 0}
-                  className="text-[11px] text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 disabled:cursor-default px-1">Aucun</button>
+
+            <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+              <div className="p-4 space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Rouleaux envoyés</p>
+                <p className="text-xl font-bold tabular-nums">
+                  {selected.size} <span className="text-sm font-medium text-muted-foreground">rouleau{selected.size > 1 ? 'x' : ''}</span>
+                </p>
+                <p className="text-sm tabular-nums text-muted-foreground">
+                  {fmtNum(selectedKg, 1)} kg · {fmtNum(selectedMl, 0)} Ml
+                </p>
+              </div>
+              <div className={cn('px-4 py-3 border-t border-border/60 bg-zinc-50 space-y-1', selected.size === 0 && 'opacity-60')}>
+                <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <Link2 className="h-3.5 w-3.5" />Réservés {clientNom ? `à ${clientNom}` : 'au client'}
+                </p>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-base font-bold tabular-nums">
+                    {linkedRolls.length} <span className="text-sm font-medium text-muted-foreground">/ {linkable.length}</span>
+                  </span>
+                  <div className="ml-auto flex items-center gap-1">
+                    <button type="button" onClick={linkAll} disabled={busy || unlinked.size === 0}
+                      className={cn(lienBtn, 'text-accent hover:underline disabled:text-muted-foreground/50')}>Tous</button>
+                    <span className="text-muted-foreground/40 text-xs">·</span>
+                    <button type="button" onClick={linkNone} disabled={busy || linkedRolls.length === 0}
+                      className={cn(lienBtn, 'text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40')}>Aucun</button>
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">Un rouleau délié est teint pour le stock.</p>
               </div>
             </div>
           </div>
-        )}
-        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5 bg-zinc-100/80 scrollbar-transparent">
-          {isLoading && <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-14 bg-muted animate-pulse rounded-lg" />)}</div>}
-          {isError && (
-            <div className="flex flex-col items-center justify-center py-10 text-destructive">
-              <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
+
+          {/* What it takes: the écru rolls at the dyer */}
+          <section className="min-h-0 flex flex-col gap-2">
+            <div className="flex-shrink-0 flex items-center gap-2">
+              <h3 className="text-sm font-semibold">Rouleaux disponibles chez {location.location_nom}</h3>
+              {rolls.length > 0 && (
+                <div className="ml-auto flex items-center gap-1">
+                  <button type="button" onClick={selectAll} disabled={busy || allSelected}
+                    className={cn(lienBtn, 'text-accent hover:underline disabled:text-muted-foreground/50')}>Tout</button>
+                  <span className="text-muted-foreground/40 text-xs">·</span>
+                  <button type="button" onClick={clearSelection} disabled={busy || selected.size === 0}
+                    className={cn(lienBtn, 'text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40')}>Aucun</button>
+                </div>
+              )}
             </div>
-          )}
-          {!isLoading && !isError && rolls.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-              <Package className="h-10 w-10 mb-2 opacity-40" />
-              <p className="text-sm font-medium">Aucun rouleau disponible</p>
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 p-0.5 scrollbar-transparent">
+              {isLoading && <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-14 bg-card animate-pulse rounded-lg" />)}</div>}
+              {isError && (
+                <div className="flex flex-col items-center justify-center py-10 text-destructive">
+                  <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
+                </div>
+              )}
+              {!isLoading && !isError && rolls.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                  <Package className="h-10 w-10 mb-2 opacity-40" />
+                  <p className="text-sm font-medium">Aucun rouleau disponible</p>
+                </div>
+              )}
+              {rolls.map((roll) => (
+                <SelectableEcruRoll
+                  key={roll.id}
+                  roll={roll}
+                  rendement={rendement}
+                  selected={selected.has(roll.id)}
+                  linked={isLinked(roll)}
+                  canLink={canLink(roll)}
+                  disabled={busy}
+                  onToggle={(shiftKey) => handleToggle(roll.id, shiftKey)}
+                  onToggleLink={() => toggleLink(roll.id)}
+                />
+              ))}
             </div>
-          )}
-          {rolls.map((roll) => (
-            <SelectableEcruRoll
-              key={roll.id}
-              roll={roll}
-              rendement={rendement}
-              selected={selected.has(roll.id)}
-              linked={isLinked(roll)}
-              canLink={canLink(roll)}
-              disabled={busy}
-              onToggle={(shiftKey) => handleToggle(roll.id, shiftKey)}
-              onToggleLink={() => toggleLink(roll.id)}
-            />
-          ))}
+          </section>
         </div>
 
-        {/* Footer */}
-        <div className="flex-shrink-0 px-6 py-3 border-t bg-zinc-200/50">
+        <div className="flex-shrink-0 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3">
           {!!error && (
-            <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
-              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-all">{error}</span>
+            <div className="mb-2 flex items-start gap-1.5 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" /><span className="break-words">{error}</span>
             </div>
           )}
           <div className="flex items-center gap-3">
             <AffecteGauge projected={projected} target={target} uniteLabel={uniteLabel} clientNom={clientNom} />
+            {blocage && !busy && <span className="flex-shrink-0 text-sm text-muted-foreground">{blocage}</span>}
             <div className="flex gap-2 flex-shrink-0">
               <Button variant="outline" onClick={onClose} disabled={busy}>Annuler</Button>
-              <Button onClick={handleSubmit} disabled={!canSubmit}>
+              <Button onClick={handleSubmit} disabled={!canSubmit} title={blocage ?? undefined}>
                 {busy
                   ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Création…</>
-                  : <><Plus className="h-3.5 w-3.5 mr-1.5" />Créer la commande</>}
+                  : <><Droplets className="h-3.5 w-3.5 mr-1.5" />Créer la commande</>}
               </Button>
             </div>
           </div>
@@ -5406,26 +5428,72 @@ function SelectableEcruRoll({
   )
 }
 
+// ── Line matter gauge ──
+// Where the line's matter stands, at a glance (Vincent 2026-10-23): one segment per stage, from
+// the furthest along to the least — sequential greens, darker = further along — and the label says
+// how much of the quantity is in the circuit. The yarn reserved (Fil tab) is its last stage: the
+// écru the scarcest reserved yarn lets the line make, never beyond what the other stages leave.
+
+const ETAPES_MATIERE = [
+  { key: 'expedie', label: 'Expédié', color: '#166534' },
+  { key: 'pret', label: 'Prêt', color: '#16a34a' },
+  { key: 'ennoblissement', label: 'En ennoblissement', color: '#4ade80' },
+  { key: 'tricotage', label: 'En tricotage', color: '#86efac' },
+  { key: 'fil', label: 'Fil réservé', color: '#bbf7d0' },
+] as const
+
+function LigneMatiereGauge({ line, target }: { line: LigneCommande; target: number }) {
+  const a = line.avancement ?? { expedie: 0, pret: line.affecte, ennoblissement: 0, tricotage: 0, fil: 0 }
+  const sansFil = a.expedie + a.pret + a.ennoblissement + a.tricotage
+  const parts = ETAPES_MATIERE.map((e) => ({
+    ...e,
+    v: e.key === 'fil' ? Math.max(0, Math.min(a.fil, target - sansFil)) : a[e.key],
+  })).filter((p) => p.v > 0.05)
+  const total = parts.reduce((s, p) => s + p.v, 0)
+  const base = Math.max(target, total)
+  const complet = target > 0 && total >= target - 0.05
+  const titre = parts.map((p) => `${p.label} : ${fmtNum(p.v, 1)} ${line.unite_label}`).join('\n')
+  return (
+    <div className="mt-2 ml-9">
+      <div className="flex items-center gap-2" title={titre || undefined}>
+        <div className="flex h-2 flex-1 overflow-hidden rounded-full bg-zinc-200">
+          {parts.map((p, i) => (
+            <div
+              key={p.key}
+              className={cn('h-full transition-all', i > 0 && 'border-l border-white')}
+              style={{ width: `${base > 0 ? (p.v / base) * 100 : 0}%`, backgroundColor: p.color }}
+            />
+          ))}
+        </div>
+        <span className={cn('text-xs tabular-nums flex-shrink-0', complet ? 'text-green-700 font-medium' : 'text-muted-foreground')}>
+          {fmtNum(total, 1)} / {fmtNum(target, 1)} {line.unite_label} dans le circuit
+        </span>
+      </div>
+      {parts.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+          {parts.map((p) => (
+            <span key={p.key} className="inline-flex items-center gap-1 tabular-nums">
+              <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: p.color, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
+              {p.label} {fmtNum(p.v, 1)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Tricotage: create a knit order at a yarn-holding knitter ──
 // Mirrors the legacy "Commande de Tricotage Malterre" modal launched from the
 // Tricotage tab, generalized to any tricoteur location of the stock-fil
 // panel: two kg inputs (affecté to this client commande / for the ETM stock)
-// with live ml conversions, info tables (yarn stock at the knitter net of
-// open OFs + yarn on order), and a footer gauge of the line's affected
-// métrage. TRM orders get the cross-ledger mirror + Attente_Delai; external
-// tricoteurs start Non_Envoye (bon de commande sent from the sst screen).
+// with live ml conversions, and the yarn lots the order goes out with
+// (LotsFilPicker — decision Vincent 2026-10-23: no order leaves without all
+// its yarn, API lib/lancement-tricotage.ts), and a footer gauge of the line's
+// affected métrage. TRM orders get the cross-ledger mirror + Attente_Delai;
+// external tricoteurs start Non_Envoye (bon de commande sent from the sst screen).
 
-interface TricoOrderYarnLot { id: number; lot: string; fournisseur: string; poids: number; metrage: number }
-interface TricoOrderYarnPending { id: number; date_livraison: string | null; fournisseur: string; poids: number; metrage: number }
-interface TricoOrderYarn {
-  IDref_fil: number
-  IDcolori_fil: number
-  reference: string
-  coloris: string
-  pourcentage: number
-  stock: TricoOrderYarnLot[]
-  pending: TricoOrderYarnPending[]
-}
+type TricoOrderYarn = FilALancer
 interface TricoNewOrderContext {
   applicable: boolean
   ecru_ref_label?: string
@@ -5453,6 +5521,7 @@ function CreateTricotageOrderDialog({
   const ligneId = ligne.IDligne_commande_client
   const [affecteStr, setAffecteStr] = useState('')
   const [stockStr, setStockStr] = useState('')
+  const [choix, setChoix] = useState<ChoixLots>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -5462,6 +5531,31 @@ function CreateTricotageOrderDialog({
   })
   const rendement = ctx?.rendement ?? 0
   const yarns = ctx?.yarns ?? []
+
+  // « Affecté » = what the line still needs (in kg of écru, rounded up to the
+  // 100 g so it covers it): filled when the dialog opens and, if it was emptied,
+  // when a lot is ticked. Weight and lots stay linked both ways: a weight ticks
+  // the lots that cover it, a ticked lot brings the line's need. Never the
+  // lot's capacity: a 1 648 kg lot would « affect » 1 750 kg to a 28 kg line.
+  const resteKg = (() => {
+    const reste = target - reserved
+    const kg = dim === 'metrage' ? (rendement > 0 ? reste / rendement : 0) : reste
+    return kg > 0 ? String(Math.ceil(kg * 10) / 10).replace('.', ',') : ''
+  })()
+  const prefilled = useRef(false)
+  useEffect(() => {
+    if (prefilled.current || !ctx) return
+    prefilled.current = true
+    if (resteKg) setAffecteStr(resteKg)
+  }, [ctx, resteKg])
+  // A new weight re-picks the lots for it (the reservation first, then the
+  // oldest): ticks made by hand hold only until the weight changes.
+  const saisirAffecte = (v: string) => { setAffecteStr(v); setChoix({}) }
+  const saisirStock = (v: string) => { setStockStr(v); setChoix({}) }
+  const choisirLots = (next: ChoixLots) => {
+    setChoix(next)
+    if (affecteStr.trim() === '' || parseFloat(affecteStr.replace(',', '.')) === 0) setAffecteStr(resteKg)
+  }
 
   const parseKg = (s: string) => {
     const v = parseFloat(s.replace(',', '.'))
@@ -5473,7 +5567,13 @@ function CreateTricotageOrderDialog({
   // Footer gauge: current affected + the new allocation, in the line's dim
   // (legacy: "801 / 800 Ml affecté à la commande de Le slip Français").
   const projected = dim === 'metrage' ? reserved + affecte * rendement : reserved + affecte
-  const canSubmit = total > 0 && stock >= 0 && !busy
+  const fil = couvertureFils(yarns, total, choix)
+  const canSubmit = total > 0 && stock >= 0 && fil.couvert && !busy
+  const blocage = !(total > 0)
+    ? 'Saisissez le poids à tricoter'
+    : !fil.couvert
+      ? 'Les lots cochés ne couvrent pas tout le fil'
+      : null
 
   const handleSubmit = async () => {
     if (!canSubmit) return
@@ -5482,7 +5582,7 @@ function CreateTricotageOrderDialog({
     try {
       await apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/supply/tricotage/orders`, {
         method: 'POST',
-        body: JSON.stringify({ IDsous_traitant: location.magasin_id, poids_affecte: affecte, poids_stock: stock }),
+        body: JSON.stringify({ IDsous_traitant: location.magasin_id, poids_affecte: affecte, poids_stock: stock, lots: fil.lots }),
       })
       onSuccess()
       onClose()
@@ -5495,172 +5595,110 @@ function CreateTricotageOrderDialog({
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose() }}>
-      <DialogContent className="max-w-3xl w-[92vw] max-h-[85vh] flex flex-col p-0 overflow-hidden" onClose={busy ? undefined : onClose}>
-        {/* Header */}
-        <div className="flex-shrink-0 px-6 pt-4 pb-3 border-b bg-gradient-to-r from-gold/25 via-gold/10 to-transparent flex items-start gap-3">
-          <div className="h-10 w-10 rounded-lg icon-box-gold flex items-center justify-center flex-shrink-0">
-            <KnitIcon className="h-5 w-5" />
+      {/* §18.D banded dialog: navy band, zinc body of white cards, zinc footer.
+          bg-primary + border-0 + opaque layers = no white edge at the corners. */}
+      <DialogContent className="max-w-4xl w-[94vw] p-0 border-0 bg-primary overflow-hidden max-h-[90dvh] flex flex-col">
+        <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
+          <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+            <KnitIcon className="h-[18px] w-[18px]" />
           </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-base font-heading font-bold tracking-tight truncate">Nouvelle commande — {location.magasin_nom}</h2>
-            <p className="text-xs text-muted-foreground mt-0.5 truncate">
-              {ctx?.ecru_ref_label
-                ? <>Tricotage de <span className="font-semibold text-foreground">{ctx.ecru_ref_label}{ctx.ecru_coloris_label ? ` · ${ctx.ecru_coloris_label}` : ''}</span></>
-                : '…'}
-              {yarns.length > 0 && (
-                <> — {yarns.map((y) => {
-                  const pct = Math.round(y.pourcentage * 10) / 10
-                  return `${fmtNum(pct, Number.isInteger(pct) ? 0 : 1)} % ${y.reference}`
-                }).join(' + ')}</>
-              )}
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+              Lancer le tricotage — {location.magasin_nom}
+            </h2>
+            <p className="text-xs text-white/70 truncate">
+              {ctx?.ecru_ref_label ? `${ctx.ecru_ref_label}${ctx.ecru_coloris_label ? ` · ${ctx.ecru_coloris_label}` : ''}` : '…'}
+              {clientNom ? ` · ${clientNom}` : ''}
             </p>
           </div>
+          <Button
+            variant="ghost" size="icon" title="Fermer" disabled={busy} onClick={onClose}
+            className="h-8 w-8 flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </Button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 bg-zinc-100/80 scrollbar-transparent">
-          <div className="grid grid-cols-1 md:grid-cols-[280px,1fr] gap-4 items-start">
-            {/* Left: weight split */}
-            <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-              <div className="px-3 py-2 border-b border-border/40 bg-zinc-200/50">
-                <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Répartition du poids</h3>
-              </div>
-              <div className="p-3 space-y-3">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100 p-4 scrollbar-transparent">
+          <div className="grid grid-cols-1 md:grid-cols-[300px,1fr] gap-4 items-start">
+            {/* What the user decides: the weight (gold edge = written by the confirm) */}
+            <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm overflow-hidden">
+              <div className="p-4 space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold">Poids à tricoter</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {(() => {
+                      const reste = target - reserved
+                      if (!(reste > 0)) return 'La ligne est déjà entièrement affectée.'
+                      const kg = dim === 'metrage' ? (rendement > 0 ? reste / rendement : 0) : reste
+                      return `Il reste ${fmtNum(reste, 1)} ${uniteLabel} à affecter${dim === 'metrage' && kg > 0 ? `, soit ${fmtNum(kg, 1)} kg` : ''}.`
+                    })()}
+                  </p>
+                </div>
                 <TricoWeightField
-                  label={`Affecté à la commande${clientNom ? ` ${clientNom}` : ' client'}`}
+                  label={`Pour la commande${clientNom ? ` ${clientNom}` : ' client'}`}
                   value={affecteStr}
-                  onChange={setAffecteStr}
+                  onChange={saisirAffecte}
                   disabled={busy}
                   rendement={rendement}
                   refLabel={ligne.ref_label}
                   autoFocus
                 />
-                <div className="divider-warm" />
                 <TricoWeightField
                   label="Pour le stock Ets Malterre"
                   value={stockStr}
-                  onChange={setStockStr}
+                  onChange={saisirStock}
                   disabled={busy}
                   rendement={rendement}
                   refLabel={ligne.ref_label}
                 />
               </div>
-              <div className="px-3 py-2.5 border-t border-accent/25 bg-gradient-to-r from-gold/20 via-gold/10 to-transparent flex items-baseline justify-between gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Poids total</span>
-                <span className="text-lg font-bold tabular-nums">
-                  {fmtNum(total, 1)} <span className="text-xs font-medium text-muted-foreground">kg</span>
+              <div className="px-4 py-3 border-t border-border/60 bg-zinc-50 flex items-baseline justify-between gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Total à tricoter</span>
+                <span className="text-xl font-bold tabular-nums">
+                  {fmtNum(total, 1)} <span className="text-sm font-medium text-muted-foreground">kg</span>
                 </span>
               </div>
             </div>
 
-            {/* Right: yarn stock at TRM + on order */}
-            <div className="space-y-4 min-w-0">
-              <section>
-                <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
-                  Stock disponible chez {location.magasin_nom}
-                </h3>
-                {isLoading ? (
-                  <div className="space-y-2">{[1, 2].map((i) => <div key={i} className="h-10 bg-muted animate-pulse rounded-md" />)}</div>
-                ) : (
-                  <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-                    <table className="w-full text-xs">
-                      <tbody>
-                        {yarns.map((y) => (
-                          <Fragment key={`${y.IDref_fil}:${y.IDcolori_fil}`}>
-                            <tr className="text-[10px] uppercase tracking-wide text-muted-foreground bg-zinc-200/50 border-b border-border/40">
-                              <td colSpan={3} className="px-2.5 py-1 font-semibold whitespace-nowrap">
-                                <span className="inline-flex items-center gap-1.5">
-                                  <BobineIcon className="h-3.5 w-3.5 text-accent flex-shrink-0" />
-                                  {y.reference}{y.coloris ? ` - ${y.coloris}` : ''}
-                                </span>
-                              </td>
-                              <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-right tabular-nums">
-                                {fmtNum(y.stock.reduce((s, l) => s + l.metrage, 0), 2)} Ml
-                              </td>
-                            </tr>
-                            {y.stock.length === 0 && (
-                              <tr className="border-b border-border/40 last:border-0">
-                                <td colSpan={4} className="px-2.5 py-2 text-muted-foreground italic">Aucun lot en stock</td>
-                              </tr>
-                            )}
-                            {y.stock.map((l) => (
-                              <tr key={l.id} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
-                                <td className="px-2.5 py-1.5 whitespace-nowrap truncate max-w-[140px]">{l.fournisseur || '—'}</td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap tabular-nums">{l.lot || '—'}</td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums">{fmtNum(l.poids, 2)} kg</td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums font-semibold">{fmtNum(l.metrage, 2)} Ml</td>
-                              </tr>
-                            ))}
-                          </Fragment>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </section>
-
-              <section>
-                <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
-                  En commande
-                </h3>
-                {isLoading ? (
-                  <div className="space-y-2">{[1].map((i) => <div key={i} className="h-10 bg-muted animate-pulse rounded-md" />)}</div>
-                ) : (
-                  <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-                    <table className="w-full text-xs">
-                      <tbody>
-                        {yarns.map((y) => (
-                          <Fragment key={`${y.IDref_fil}:${y.IDcolori_fil}`}>
-                            <tr className="text-[10px] uppercase tracking-wide text-muted-foreground bg-zinc-200/50 border-b border-border/40">
-                              <td colSpan={3} className="px-2.5 py-1 font-semibold whitespace-nowrap">
-                                <span className="inline-flex items-center gap-1.5">
-                                  <BobineIcon className="h-3.5 w-3.5 text-accent flex-shrink-0" />
-                                  {y.reference}{y.coloris ? ` - ${y.coloris}` : ''}
-                                </span>
-                              </td>
-                              <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-right tabular-nums">
-                                {fmtNum(y.pending.reduce((s, o) => s + o.metrage, 0), 2)} Ml
-                              </td>
-                            </tr>
-                            {y.pending.length === 0 && (
-                              <tr className="border-b border-border/40 last:border-0">
-                                <td colSpan={4} className="px-2.5 py-2 text-muted-foreground italic">Aucune commande de fil en attente</td>
-                              </tr>
-                            )}
-                            {y.pending.map((o) => (
-                              <tr key={o.id} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
-                                <td className="px-2.5 py-1.5 whitespace-nowrap tabular-nums">{fmtSupplyDate(o.date_livraison)}</td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap truncate max-w-[140px]">{o.fournisseur || '—'}</td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums">{fmtNum(o.poids, 2)} kg</td>
-                                <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums font-semibold">{fmtNum(o.metrage, 2)} Ml</td>
-                              </tr>
-                            ))}
-                          </Fragment>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </section>
-            </div>
+            {/* What it takes: the yarn lots, read live from the weight */}
+            <section className="min-w-0 space-y-2">
+              <h3 className="text-sm font-semibold">
+                Fil pris chez {location.magasin_nom}
+              </h3>
+              {isLoading ? (
+                <div className="space-y-3">{[1, 2].map((i) => <div key={i} className="h-32 bg-card animate-pulse rounded-lg" />)}</div>
+              ) : (
+                <LotsFilPicker
+                  yarns={yarns}
+                  kgCommande={affecte}
+                  kgStock={stock}
+                  choix={choix}
+                  onChoix={choisirLots}
+                  magasinNom={location.magasin_nom}
+                  disabled={busy}
+                  aideEnCommande="Réservez ce fil dans l’onglet Fil de la ligne : le tricotage se lance à son arrivée."
+                />
+              )}
+            </section>
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex-shrink-0 px-6 py-3 border-t bg-zinc-200/50">
+        <div className="flex-shrink-0 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3">
           {!!error && (
-            <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
-              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-all">{error}</span>
+            <div className="mb-2 flex items-start gap-1.5 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" /><span className="break-words">{error}</span>
             </div>
           )}
           <div className="flex items-center gap-3">
             <AffecteGauge projected={projected} target={target} uniteLabel={uniteLabel} clientNom={clientNom} />
+            {blocage && !busy && <span className="flex-shrink-0 text-sm text-muted-foreground">{blocage}</span>}
             <div className="flex gap-2 flex-shrink-0">
               <Button variant="outline" onClick={onClose} disabled={busy}>Annuler</Button>
-              <Button onClick={handleSubmit} disabled={!canSubmit}>
+              <Button onClick={handleSubmit} disabled={!canSubmit} title={blocage ?? undefined}>
                 {busy
                   ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Création…</>
-                  : <><Plus className="h-3.5 w-3.5 mr-1.5" />Créer la commande</>}
+                  : <><KnitIcon className="h-3.5 w-3.5 mr-1.5" />Créer la commande</>}
               </Button>
             </div>
           </div>

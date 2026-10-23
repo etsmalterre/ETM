@@ -26,6 +26,11 @@
 //                  judged like « dès que prête » (meanwhile the lagging line carries the urgency)
 // The production stages always run on the délai, whatever the mode.
 //
+// A line waiting for yarn reserved on a supplier order (lib/reservation-fil.ts, 2026-10-23) is
+// neutral while the supplier is in time: Malterre did its part when it ordered. Once the supplier's
+// date has passed, chasing it is ours to do: red. A supplier order line without a date: red too,
+// asking for one is ours.
+//
 // A line without a délai is red (2026-10-22): giving the client a délai is ours to do now. Except a fini
 // line still waiting for its étude coloris (lib/etude-ligne-client.ts): no délai can be given, the only
 // action is to chase the lab or the client once they take longer than usual — red, never amber.
@@ -82,6 +87,8 @@ export interface LigneUrgence {
   relanceAppel?: number
   /** a fini line waiting for its étude coloris (lib/etude-ligne-client.ts etudeUrgence); absent otherwise */
   etude?: { attente: AttenteEtude; relanceLe: string | null }
+  /** état attente_fil: the earliest supplier date of the yarn it waits for (YYYYMMDD; null = none given) */
+  filAttenduLe?: string | null
 }
 
 /** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
@@ -92,7 +99,7 @@ export function relanceAppelDe(v: unknown): number {
 
 /** A line that has not reached « prête à expédier » yet (divers: no production, ready by nature). */
 function enProduction(l: Pick<LigneUrgence, 'etat' | 'typeKind'>): boolean {
-  return l.etat === 'tricotage' || l.etat === 'ennoblisseur' || (l.etat === 'a_lancer' && l.typeKind !== 3)
+  return l.etat === 'tricotage' || l.etat === 'ennoblisseur' || l.etat === 'attente_fil' || (l.etat === 'a_lancer' && l.typeKind !== 3)
 }
 
 /** True while some line of the order is still in production: a « commande complète » line waits for it. */
@@ -101,6 +108,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
 }
 
 type Action = 'lancer' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+  | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
 interface Verdict {
@@ -162,6 +170,12 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
     return palier('expedier', S.expedierRouge, S.expedierAmbre)
   }
+  if (l.etat === 'attente_fil') {
+    const due = ymd(l.filAttenduLe)
+    if (!due) return { niveau: 'rouge', action: 'fil_sans_date', jours: null, date: null }
+    const jf = joursAvant(due, today)
+    return jf < 0 ? { niveau: 'rouge', action: 'relancer_fournisseur', jours: jf, date: due, quoi: 'fil prévu le' } : null
+  }
   if (l.etat === 'a_lancer') {
     return l.typeKind === 1 ? palier('lancer', S.ecruRouge, S.ecruAmbre) : palier('lancer', S.finiRouge, S.finiAmbre)
   }
@@ -177,6 +191,8 @@ const LIBELLE: Record<Action, [string, string]> = {
   tricotage: ['ligne en tricotage en retard', 'lignes en tricotage en retard'],
   ennoblisseur: ['ligne en ennoblissement en retard', 'lignes en ennoblissement en retard'],
   sans_delai: ['ligne sans délai : en donner un', 'lignes sans délai : en donner un'],
+  relancer_fournisseur: ['ligne en attente de fil : relancer le fournisseur', 'lignes en attente de fil : relancer le fournisseur'],
+  fil_sans_date: ['ligne en attente de fil sans date : la demander au fournisseur', 'lignes en attente de fil sans date : la demander au fournisseur'],
   etude_labo: ['ligne en étude coloris : relancer l’ennoblisseur', 'lignes en étude coloris : relancer l’ennoblisseur'],
   etude_client: ['ligne en étude coloris : relancer le client', 'lignes en étude coloris : relancer le client'],
   etude_acceptee: ['ligne : coloris accepté, à choisir sur la ligne', 'lignes : coloris accepté, à choisir sur la ligne'],
@@ -209,7 +225,7 @@ export function urgenceCommande(lignes: readonly LigneUrgence[], today: Date): U
 }
 
 /** Most advanced last. */
-const ECHELLE: readonly EtatLigneClient[] = ['a_lancer', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ECHELLE: readonly EtatLigneClient[] = ['a_lancer', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 /** Where an order stands, on the line pills' own scale: its least advanced line still to deliver
  *  (that line holds the order back); « expediee » once every line left; « soldee » when closed.

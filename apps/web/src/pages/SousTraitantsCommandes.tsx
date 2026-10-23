@@ -104,6 +104,7 @@ import { postEmail } from '@/lib/email'
 import { sstTypeTagClasses } from '@/lib/sst-type'
 import { pruneSelection } from '@/lib/transfert-picker'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
+import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
 
 // ── Constants ──────────────────────────────────────────
 
@@ -1832,6 +1833,9 @@ function LignesSection({
   // legacy line editor's SEL_TypeRef, offered only on a Tricotage Malterre
   // order. Fixed by the line once it exists (a line never changes catalog).
   const [lineKind, setLineKind] = useState<'circulaire' | 'rectiligne'>('circulaire')
+  // Lots a new Tricotage Malterre knit line goes out with (LotsFilPicker,
+  // API lib/lancement-tricotage.ts: no line leaves without all its yarn).
+  const [choixLots, setChoixLots] = useState<ChoixLots>({})
 
   // Per-lot breakdown of received fini rolls merged across all lines —
   // feeds the "Ml reçus" tooltip in the totals footer.
@@ -1857,6 +1861,19 @@ function LignesSection({
   const linesEditable = isEnnoblisseur || isTricoteur
   const isTrm = commande.IDsous_traitant === TRICOTAGE_MALTERRE_ID
   const formKind: 'fini' | 'ecru' | 'rectiligne' = lineKind === 'rectiligne' ? 'rectiligne' : isTricoteur ? 'ecru' : 'fini'
+  const filALancer = isTrm && formKind === 'ecru' && showLineForm
+  const { data: lotsFil, isLoading: lotsFilLoading } = useQuery<{ applicable: boolean; yarns: FilALancer[] }>({
+    queryKey: ['commande-sst-lots-fil', commande.IDcommande_sous_traitant, lineForm.IDreference, lineForm.IDColoris],
+    queryFn: () => apiFetch(`/commandes-sous-traitant/${commande.IDcommande_sous_traitant}/lots-fil?ref_ecru=${lineForm.IDreference}&coloris=${lineForm.IDColoris}`),
+    enabled: filALancer && lineForm.IDreference > 0 && lineForm.IDColoris > 0,
+    // Lots move on TRM Fils › Stock and with every other launch.
+    staleTime: 0,
+  })
+  // Another écru or coloris knits other yarns, another quantity needs other
+  // lots: the ticks start over (hand ticks hold until one of them changes).
+  useEffect(() => { setChoixLots({}) }, [lineForm.IDreference, lineForm.IDColoris, lineForm.quantite])
+  const quantiteForm = Number(lineForm.quantite) || 0
+  const filForm = couvertureFils(lotsFil?.yarns ?? [], quantiteForm, choixLots)
 
   useEffect(() => {
     if (!isEditing || linesLocked) {
@@ -1912,6 +1929,7 @@ function LignesSection({
         IDColoris: lineForm.IDColoris,
         quantite: Number(lineForm.quantite) || 0,
         date_livraison: inputDateToHfsql(lineForm.date_livraison),
+        ...(filALancer ? { lots: filForm.lots } : {}),
       }),
     }),
     onSuccess: () => { onMutationSuccess(); resetLineForm() },
@@ -1944,6 +1962,7 @@ function LignesSection({
 
   const resetLineForm = () => {
     setLineForm({ IDreference: 0, IDColoris: 0, quantite: '', prix: '', date_livraison: '' })
+    setChoixLots({})
     setShowLineForm(false)
     createLineMut.reset()
     updateLineMut.reset()
@@ -1956,6 +1975,13 @@ function LignesSection({
     : lineForm.IDColoris === 0
       ? 'Choisissez un coloris'
       : null
+  // A new knit line at Tricotage Malterre also needs all its yarn.
+  const newLineBlockedReason = lineSaveBlockedReason
+    ?? (filALancer && !(quantiteForm > 0)
+      ? 'Saisissez la quantité'
+      : filALancer && !filForm.couvert
+        ? 'Choisissez des lots qui couvrent tout le fil de la ligne'
+        : null)
 
   // HFSQL stores quantites as float32 — round-trip via String() leaks digits
   // like "36,20000076293945". Format to a clean decimal for the input.
@@ -2088,7 +2114,7 @@ function LignesSection({
               onSave={() => createLineMut.mutate()}
               onCancel={resetLineForm}
               isSaving={createLineMut.isPending}
-              saveBlockedReason={lineSaveBlockedReason}
+              saveBlockedReason={newLineBlockedReason}
               error={mutationMessage(createLineMut.error)}
             >
               {isTrm && (
@@ -2097,6 +2123,7 @@ function LignesSection({
                   onChange={(k) => {
                     setLineKind(k)
                     setLineForm((f) => ({ ...f, IDreference: 0, IDColoris: 0, prix: '' }))
+                    setChoixLots({})
                   }}
                 />
               )}
@@ -2110,6 +2137,26 @@ function LignesSection({
                 editable={true}
                 autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
               />
+              {filALancer && lineForm.IDreference > 0 && lineForm.IDColoris > 0 && (
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Lots de fil de la ligne — stock chez Tricotage Malterre <span className="text-destructive">*</span>
+                  </label>
+                  {lotsFilLoading ? (
+                    <div className="h-16 bg-muted animate-pulse rounded-md" />
+                  ) : (
+                    <LotsFilPicker
+                      yarns={lotsFil?.yarns ?? []}
+                      kgCommande={quantiteForm}
+                      libelleCommande="Pour la ligne"
+                      choix={choixLots}
+                      onChoix={setChoixLots}
+                      magasinNom="Tricotage Malterre"
+                      disabled={createLineMut.isPending}
+                    />
+                  )}
+                </div>
+              )}
             </InlineForm>
           )}
 
