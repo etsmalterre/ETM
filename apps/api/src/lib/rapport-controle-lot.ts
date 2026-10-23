@@ -16,6 +16,8 @@
 //  - Pieces already shipped are past: shipments before 2026-10-22 carried the
 //    RC on their BL, and only a « Validé » roll ships (#1235).
 //  - Any other client of the lot may be sent one by hand; never owed.
+//  - A client DISPENSED of the lot's RC (rapport_controle_dispense, migration
+//    0034, why required) is never owed one for it.
 // Every send is a row of rapport_controle_envoi (migration 0029), append-only.
 
 import { mpsPg } from './mps-pg.js'
@@ -33,6 +35,8 @@ export interface ClientDuLot {
   piecesNonExpediees: number
   /** Last RC sent to this client for the lot, 'YYYY-MM-DD HH:MM' (Paris), any date. */
   dernierEnvoi: string | null
+  /** Why the client is dispensed of this lot's RC, or null. */
+  dispense: string | null
   /** An RC is owed (see the rules above). */
   du: boolean
 }
@@ -47,7 +51,7 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
   const lignes = [...new Set(lots.map((l) => l.ligne).filter((x) => x > 0))]
   const sql = mpsPg()
 
-  const [rouleaux, envois, reprises] = await Promise.all([
+  const [rouleaux, envois, reprises, dispenses] = await Promise.all([
     sql<{ ligne: number; lot: string; idclient: number; nom: string | null; rc: number; expedie: boolean }[]>`
       SELECT sf.idref_commande_source AS ligne, trim(sf.lot::text) AS lot, cc.idclient, c.nom::text AS nom,
              COALESCE(c.inclurerapportqualite, 0)::int AS rc,
@@ -65,9 +69,13 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
       FROM rapport_controle_envoi WHERE idligne_commande_sous_traitant = ANY(${lignes})
       GROUP BY 1, 2, 3`,
     faitsReprises(lignes),
+    sql<{ ligne: number; lot: string; idclient: number; motif: string }[]>`
+      SELECT idligne_commande_sous_traitant AS ligne, lot, idclient, motif
+      FROM rapport_controle_dispense WHERE idligne_commande_sous_traitant = ANY(${lignes})`,
   ])
 
   const envoiPar = new Map(envois.map((e) => [`${cleLotLigne(Number(e.ligne), e.lot)}:${Number(e.idclient)}`, e]))
+  const dispensePar = new Map(dispenses.map((d) => [`${cleLotLigne(Number(d.ligne), d.lot)}:${Number(d.idclient)}`, d.motif]))
   const parCle = new Map<string, Map<number, ClientDuLot>>()
   for (const r of rouleaux) {
     const cle = cleLotLigne(Number(r.ligne), r.lot ?? '')
@@ -77,7 +85,7 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
     const id = Number(r.idclient)
     const c = clients.get(id) ?? {
       idclient: id, nom: (r.nom ?? '').trim(), rcActif: Number(r.rc) === 1,
-      pieces: 0, piecesNonExpediees: 0, dernierEnvoi: null, du: false,
+      pieces: 0, piecesNonExpediees: 0, dernierEnvoi: null, dispense: null, du: false,
     }
     c.pieces++
     if (!r.expedie) c.piecesNonExpediees++
@@ -89,7 +97,8 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
       const envoi = envoiPar.get(`${cle}:${c.idclient}`)
       // An RC sent before the lot came back from reprise reported the old dye.
       const valable = envoi && (!retour || envoi.jour >= retour)
-      return { ...c, dernierEnvoi: envoi?.dernier ?? null, du: c.rcActif && c.piecesNonExpediees > 0 && !valable }
+      const dispense = dispensePar.get(`${cle}:${c.idclient}`) ?? null
+      return { ...c, dernierEnvoi: envoi?.dernier ?? null, dispense, du: c.rcActif && c.piecesNonExpediees > 0 && !valable && !dispense }
     })
     out.set(cle, liste.sort((a, b) => a.nom.localeCompare(b.nom, 'fr')))
   }

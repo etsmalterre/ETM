@@ -1121,6 +1121,29 @@ ${grantApi('SELECT, INSERT', 'etude_col_relance')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE etude_col_relance_id_seq')}
 `,
   },
+  {
+    // A client may be DISPENSED of a lot's rapport de contrôle (decision
+    // Vincent 2026-10-23): Le teeshirt propre's lots validated before it asked
+    // for RCs owed one after the #1304 switch, and receiving it months later
+    // would puzzle the client. One row per (sst line, lot, client), with its
+    // why; the lot then owes that client nothing (lib/rapport-controle-lot.ts).
+    // Append-only, written by scripts/rc-dispense.ts.
+    name: '0034_rapport_controle_dispense',
+    sql: `
+CREATE TABLE rapport_controle_dispense (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idligne_commande_sous_traitant bigint NOT NULL,
+  lot text NOT NULL,
+  idclient bigint NOT NULL,
+  motif text NOT NULL,
+  saisi_le timestamptz NOT NULL DEFAULT now(),
+  saisi_par text
+);
+CREATE INDEX rapport_controle_dispense_lot ON rapport_controle_dispense (idligne_commande_sous_traitant, lot);
+${grantApi('SELECT, INSERT', 'rapport_controle_dispense')}
+${grantApi('USAGE, SELECT', 'SEQUENCE rapport_controle_dispense_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

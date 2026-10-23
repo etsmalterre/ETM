@@ -58,6 +58,8 @@ export interface ClientRc {
   piecesNonExpediees: number
   /** 'YYYY-MM-DD HH:MM' */
   dernierEnvoi: string | null
+  /** Why the client is dispensed of this lot's RC (never owed), or null. */
+  dispense: string | null
   /** An RC is owed: it blocks the validation (or is a task on a validated lot). */
   du: boolean
 }
@@ -293,8 +295,8 @@ export function CycleCard({
             ) : clients.map((c) => (
               <p key={c.idclient} className="flex items-baseline justify-between gap-2">
                 <span className="truncate">{c.nom} <span className="text-muted-foreground">· {c.pieces} pièce{c.pieces > 1 ? 's' : ''}</span></span>
-                <span className={cn('flex-shrink-0', c.du ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
-                  {c.du ? 'À envoyer' : c.dernierEnvoi ? `Envoyé le ${fmtJour(c.dernierEnvoi)}` : c.rcActif ? 'Pièces expédiées' : 'Facultatif'}
+                <span className={cn('flex-shrink-0', c.du ? 'text-amber-700 font-medium' : 'text-muted-foreground')} title={c.dispense ?? undefined}>
+                  {c.du ? 'À envoyer' : c.dernierEnvoi ? `Envoyé le ${fmtJour(c.dernierEnvoi)}` : c.dispense ? 'Dispensé' : c.rcActif ? 'Pièces expédiées' : 'Facultatif'}
                 </span>
               </p>
             ))}
@@ -368,8 +370,8 @@ export function RcMenuButton({ clients, onSelect }: { clients: ClientRc[]; onSel
             >
               <ClipboardCheck className={cn('h-4 w-4 flex-shrink-0', c.du ? 'text-amber-600' : 'text-muted-foreground')} />
               <span className="min-w-0 flex-1 truncate">{c.nom}</span>
-              <span className={cn('text-[11px] flex-shrink-0', c.du ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
-                {c.du ? 'À envoyer' : c.dernierEnvoi ? `Envoyé ${fmtJour(c.dernierEnvoi)}` : 'Facultatif'}
+              <span className={cn('text-[11px] flex-shrink-0', c.du ? 'text-amber-700 font-medium' : 'text-muted-foreground')} title={c.dispense ?? undefined}>
+                {c.du ? 'À envoyer' : c.dernierEnvoi ? `Envoyé ${fmtJour(c.dernierEnvoi)}` : c.dispense ? 'Dispensé' : 'Facultatif'}
               </span>
             </button>
           ))}
