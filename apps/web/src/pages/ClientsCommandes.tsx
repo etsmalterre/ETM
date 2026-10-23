@@ -720,7 +720,21 @@ export function ClientsCommandes() {
     queryFn: () => apiFetch(`/commandes-client?status=${statusFilter}&q=&limit=200`),
   })
   const tags = useMemo(() => commandeTags(commandesSansTexte ?? []), [commandesSansTexte])
-  const visibleRows = filterRowsByTags(urgenceRows, activeTags, tags)
+  const filteredRows = filterRowsByTags(urgenceRows, activeTags, tags)
+  // The order being worked on stays in the list when a gesture takes it out of the active filter
+  // (« Réserver tout le fil » turns an amber order neutral: it vanished and the selection jumped
+  // to the next card). Kept until another card is picked or the filter changes.
+  const filtreCle = JSON.stringify([statusFilter, debouncedQuery, urgenceActive, activeTags])
+  const [garde, setGarde] = useState<{ id: number; cle: string } | null>(null)
+  useEffect(() => {
+    if (selectedId !== null && filteredRows.some((r) => r.IDcommande_client === selectedId)) {
+      if (garde?.id !== selectedId || garde.cle !== filtreCle) setGarde({ id: selectedId, cle: filtreCle })
+    }
+  }, [selectedId, filteredRows, filtreCle, garde])
+  const gardeId = garde && garde.cle === filtreCle && garde.id === selectedId ? garde.id : null
+  const visibleRows = gardeId !== null && !filteredRows.some((r) => r.IDcommande_client === gardeId)
+    ? rows.filter((r) => r.IDcommande_client === gardeId || filteredRows.includes(r))
+    : filteredRows
 
   // Keep the selection valid against the (server-filtered) list. Skip while the
   // list is refetching: after creating a commande we setSelectedId(newId) before
