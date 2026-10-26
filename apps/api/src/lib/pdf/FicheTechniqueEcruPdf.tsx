@@ -27,7 +27,8 @@ export interface FicheTechniqueEcruData {
   referenceClient: string | null
   laizeTbm: number | null
   poidsM2Tbm: number | null
-  rendement: number | null
+  /** freinte de tricotage, 0..1 (lib/freinte-tricotage.ts) */
+  freinteTricotage: number | null
   poidsPiece: number | null
   vitesseCible: number | null
   ecarteur: number | null
@@ -77,7 +78,7 @@ export interface RefEcruDetailForFiche {
   reference_client: string | null
   laize_tbm: number | null
   poids_m2_tbm: number | null
-  rendement: number | null
+  freinte_tricotage?: { taux: number } | null
   poids: number | null
   vitesse_cible: number | null
   ecarteur: number | null
@@ -154,7 +155,7 @@ export function ficheTechniqueEcruData(d: RefEcruDetailForFiche): FicheTechnique
     referenceClient: blank(d.reference_client),
     laizeTbm: d.laize_tbm || null,
     poidsM2Tbm: d.poids_m2_tbm || null,
-    rendement: d.rendement || null,
+    freinteTricotage: d.freinte_tricotage?.taux ?? null,
     poidsPiece: d.poids || null,
     vitesseCible: d.vitesse_cible || null,
     ecarteur: d.ecarteur || null,
@@ -435,7 +436,7 @@ export function FicheTechniqueEcruPdf({ data, issuer = company }: { data: FicheT
       <View style={styles.figures} wrap={false}>
         <Figure first label="LAIZE TBM" value={fmt(data.laizeTbm)} unit="cm" />
         <Figure label="POIDS TBM" value={fmt(data.poidsM2Tbm)} unit="g/m²" />
-        <Figure label="RENDEMENT" value={fmt(data.rendement)} />
+        <Figure label="FREINTE TRICOTAGE" value={fmtPct(data.freinteTricotage == null ? null : data.freinteTricotage * 100)} />
         <Figure label="POIDS PIECE" value={fmt(data.poidsPiece)} unit="kg" />
       </View>
 

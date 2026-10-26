@@ -147,19 +147,14 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
   const meta = new Map(rolls.map((l) => [l.id, l]))
   const metrage = (lid: number) => meta.get(lid)?.unite === 3
 
-  // rendement: an écru piece counts poids × rendement on a Ml line (lineReservationAggregates' rule).
+  // rendement: an écru piece counts poids × rendement on a Ml FINI line (lineReservationAggregates'
+  // rule). An écru line is in kg — ref_ecru.rendement is retired (2026-10-26).
   const finiRefs = rolls.filter((l) => l.typeKind === 2).map((l) => l.refId)
-  const ecruRefs = rolls.filter((l) => l.typeKind === 1).map((l) => l.refId)
-  const [rdtFini, rdtEcru] = await Promise.all([
-    queryIn<{ IDref_fini: number; rendement: number | null }>(finiRefs, (inl) => `SELECT IDref_fini, rendement FROM ref_fini WHERE IDref_fini IN (${inl})`),
-    queryIn<{ IDref_ecru: number; rendement: number | null }>(ecruRefs, (inl) => `SELECT IDref_ecru, rendement FROM ref_ecru WHERE IDref_ecru IN (${inl})`),
-  ])
+  const rdtFini = await queryIn<{ IDref_fini: number; rendement: number | null }>(finiRefs, (inl) => `SELECT IDref_fini, rendement FROM ref_fini WHERE IDref_fini IN (${inl})`)
   const rdtF = new Map(rdtFini.map((r) => [num(r.IDref_fini), num(r.rendement)]))
-  const rdtE = new Map(rdtEcru.map((r) => [num(r.IDref_ecru), num(r.rendement)]))
   const rdt = (lid: number) => {
     const l = meta.get(lid)
-    if (!l) return 0
-    return (l.typeKind === 2 ? rdtF.get(l.refId) : rdtE.get(l.refId)) ?? 0
+    return l?.typeKind === 2 ? (rdtF.get(l.refId) ?? 0) : 0
   }
   const qteEcru = (lid: number, poids: number, m: number) => (metrage(lid) ? (rdt(lid) > 0 ? poids * rdt(lid) : m) : poids)
 

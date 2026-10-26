@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { etatReservation, compteDansReserve, attendLeFil, repartirSurLot, ligneRecue, planReservation } from './reservation-fil.js'
+import { etatReservation, compteDansReserve, attendLeFil, repartirSurLot, ligneRecue, planReservation, plafondReservation } from './reservation-fil.js'
 
 const r = (o: Partial<{ liberee_le: Date | null; idligne_commande_sous_traitant: number; idasso_fil_lignecmdsst: number; idstock_fil: number }>) => ({
   liberee_le: null, idligne_commande_sous_traitant: 0, idasso_fil_lignecmdsst: 0, idstock_fil: 0, ...o,
@@ -85,5 +85,12 @@ describe('planReservation', () => {
   it('a supplier order without a date is served last', () => {
     const plan = planReservation(10, [{ kind: 'commande', id: 1, dispo: 50, date: null }, { kind: 'commande', id: 2, dispo: 50, date: '20270101' }])
     expect(plan.prises).toEqual([{ kind: 'commande', id: 2, kg: 10 }])
+  })
+})
+
+describe('plafondReservation', () => {
+  it('lets a line hold its need + 10 % (a whole 660 kg order for 650 kg)', () => {
+    expect(plafondReservation(650)).toBe(715)
+    expect(plafondReservation(0)).toBe(0)
   })
 })

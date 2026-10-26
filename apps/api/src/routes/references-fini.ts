@@ -4,6 +4,7 @@ import React from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { calcTarifRefFini } from '../lib/pricing-fini-tarif.js'
+import { freinteTricotage, origineFreinte } from '../lib/freinte-tricotage.js'
 import { loadClientsForRefFini } from '../lib/clients-ref-fini.js'
 import { loadTraitementCatalog, loadRefFiniTraitements, attachTraitement, detachTraitement } from '../lib/traitements.js'
 import { duplicateRefFini } from '../lib/duplicate-ref-fini.js'
@@ -471,6 +472,12 @@ referencesFiniRouter.get('/:id/tarif', async (req: Request, res: Response) => {
     }
 
     const result = await calcTarifRefFini(id, colorisId)
+    // Shown under « Fil », never counted (lib/freinte-tricotage.ts).
+    const ecruId = result.ref_ecru?.IDref_ecru ?? 0
+    if (ecruId > 0 && result.tranches.length > 0) {
+      const f = await freinteTricotage(ecruId)
+      result.freinte_tricotage = { taux: f.taux, source: f.source, origine: origineFreinte(f) }
+    }
     res.json(result)
   } catch (err) {
     console.error('Error computing ref_fini tarif:', err)

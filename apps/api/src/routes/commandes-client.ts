@@ -30,12 +30,14 @@ import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { mpsPg } from '../lib/mps-pg.js'
 import {
   reservationsDesLignes, lignesCommandeFil, reserverSurCommande, reserverSurLot, fixerReservation,
-  etatReservation, compteDansReserve, RefusReservation, planReservation, libreSurLigneCommande, type SourceFil,
+  etatReservation, compteDansReserve, RefusReservation, planReservation, libreSurLigneCommande, plafondReservation, type SourceFil,
 } from '../lib/reservation-fil.js'
 import { lotsLibres, planLancement, ecrireAffectation, messageFilNonCouvert, nomsFils, filsALancer, ordreDeService } from '../lib/lancement-tricotage.js'
+import { freinteTricotage, freintesTricotage, origineFreinte, filPourEcru, ecruPourFil, besoinFil, MARGE_SECURITE_FIL, ARRONDI_FIL_KG } from '../lib/freinte-tricotage.js'
 import { avancementCommande, commandeIncomplete, modeLivraisonDe, MODES_LIVRAISON, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
+import { ecruEnMl, MESSAGE_ECRU_EN_ML } from '../lib/unite-ecru.js'
 import multer from 'multer'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
@@ -1118,10 +1120,10 @@ interface ResolvedMaps {
 /** Batch-resolve all ref + coloris labels for a set of lines. */
 // Total "tombé de métier" (écru) ordered on a commande, aggregated by écru ref
 // AND input coloris. Each line's écru weight: Kg lines (unite=1) count their
-// quantite directly; Ml lines (unite=3) convert via rendement (kg = ml /
-// rendement). Fini lines (type=2) trace to ref_fini.IDref_ecru +
-// ref_fini.rendement; écru lines (type=1) use the ref directly +
-// ref_ecru.rendement. Divers lines (type=3) are excluded.
+// quantite directly; Ml fini lines (unite=3) convert via ref_fini.rendement
+// (kg = ml / rendement). Fini lines (type=2) trace to ref_fini.IDref_ecru;
+// écru lines (type=1) use the ref directly and are in kg (an old Ml écru line
+// counts 0). Divers lines (type=3) are excluded.
 // Input coloris per line: dyed finis (avec_teinture 1/2) consume the natural
 // "ecru" base; wash-only finis (avec_teinture 0) and écru lines carry a
 // colori_ecru id on the line itself — the écru consumed is knitted in that
@@ -1152,13 +1154,13 @@ async function computeTombeMetier(
   }
   const ecruIds = new Set<number>(ecruLineIds)
   for (const v of finiMap.values()) if (v.ecru > 0) ecruIds.add(v.ecru)
-  const ecruMap = new Map<number, { reference: string; rdt: number }>()
+  const ecruMap = new Map<number, { reference: string }>()
   if (ecruIds.size > 0) {
-    const rows = await query<{ IDref_ecru: number; reference: string | null; rendement: number | null }>(
-      `SELECT IDref_ecru, reference, rendement FROM ref_ecru WHERE IDref_ecru IN (${[...ecruIds].join(',')})`,
+    const rows = await query<{ IDref_ecru: number; reference: string | null }>(
+      `SELECT IDref_ecru, reference FROM ref_ecru WHERE IDref_ecru IN (${[...ecruIds].join(',')})`,
     )
     const fixed = await fixEncoding(rows, 'ref_ecru', 'IDref_ecru', ['reference'])
-    for (const r of fixed) ecruMap.set(Number(r.IDref_ecru), { reference: (r.reference ?? '').toString(), rdt: Number(r.rendement) || 0 })
+    for (const r of fixed) ecruMap.set(Number(r.IDref_ecru), { reference: (r.reference ?? '').toString() })
   }
   // Lines that carry a colori_ecru id (écru lines + wash-only fini lines) need
   // its label; dyed fini lines use the fixed "ecru" label.
@@ -1190,7 +1192,6 @@ async function computeTombeMetier(
       coloris = f.avecTeinture === 0 ? (coloriEcruLabels.get(colId) ?? '').trim() : 'ecru'
     } else if (t === 1) {
       ecruRef = ref
-      rdt = ecruMap.get(ref)?.rdt ?? 0
       coloris = (coloriEcruLabels.get(colId) ?? '').trim()
     } else continue
     if (ecruRef <= 0) continue
@@ -1321,27 +1322,20 @@ export async function lineReservationAggregates(
   if (metas.length === 0) return out
   const inList = metas.map((l) => l.id).join(',')
 
-  // rendement per line (fini refs vs écru refs, batched).
+  // rendement per fini line (batched); an écru line has none.
   const finiRefIds = Array.from(new Set(metas.filter((l) => lineStockKind(l.typeKind) === 'fini').map((l) => l.refId).filter((x) => x > 0)))
-  const ecruRefIds = Array.from(new Set(metas.filter((l) => lineStockKind(l.typeKind) === 'ecru').map((l) => l.refId).filter((x) => x > 0)))
   const rdtByFini = new Map<number, number>()
-  const rdtByEcru = new Map<number, number>()
   if (finiRefIds.length > 0) {
     const r = await query<{ IDref_fini: number; rendement: number | null }>(
       `SELECT IDref_fini, rendement FROM ref_fini WHERE IDref_fini IN (${finiRefIds.join(',')})`,
     )
     for (const row of r) rdtByFini.set(Number(row.IDref_fini), Number(row.rendement) || 0)
   }
-  if (ecruRefIds.length > 0) {
-    const r = await query<{ IDref_ecru: number; rendement: number | null }>(
-      `SELECT IDref_ecru, rendement FROM ref_ecru WHERE IDref_ecru IN (${ecruRefIds.join(',')})`,
-    )
-    for (const row of r) rdtByEcru.set(Number(row.IDref_ecru), Number(row.rendement) || 0)
-  }
   const rdtByLine = new Map<number, number>()
   for (const l of metas) {
     const kind = lineStockKind(l.typeKind)
-    rdtByLine.set(l.id, kind === 'fini' ? (rdtByFini.get(l.refId) ?? 0) : kind === 'ecru' ? (rdtByEcru.get(l.refId) ?? 0) : 0)
+    // An écru line is in kg: its pieces count by weight, never through a rendement.
+    rdtByLine.set(l.id, kind === 'fini' ? (rdtByFini.get(l.refId) ?? 0) : 0)
   }
 
   const [ecruRaw, fini, trico, mergedComponents] = await Promise.all([
@@ -2243,6 +2237,7 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
     const typeKind = Number(d.type) || 0
     const mode = d.mode_livraison ?? 'des_que_prete'
     const dateExp = mode === 'date_client' ? dateStr(d.date_expedition_prevue) : ''
@@ -2297,6 +2292,7 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
     let curDelai = { delai: '', initial: '', mode: modeLivraisonDe(0), exp: '' }
     let curEtude = 0
     let nextType = 0
@@ -2988,10 +2984,7 @@ async function fetchSupplyPayload(ctx: ClientLineContext): Promise<SupplyPayload
     if (ecruRefId > 0) ecruColoris = await ennoInputColoriIds(ecruRefId, avecTeinture, ctx.coloriId)
   } else {
     ecruRefId = ctx.refId
-    const r = await query<{ rendement: number | null }>(
-      `SELECT rendement FROM ref_ecru WHERE IDref_ecru = ${ecruRefId}`,
-    )
-    rendement = Number(r[0]?.rendement) || 0
+    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired 2026-10-26).
     if (ctx.coloriId > 0) ecruColoris = [ctx.coloriId]
   }
   // Use the raw rendement (NOT rounded) — the écru→fini métrage must match the
@@ -3684,11 +3677,14 @@ async function openOfPendingByLot(lotIdsIn: number[]): Promise<Map<number, numbe
   )
   const ofIds = Array.from(new Set(assoOf.map((a) => Number(a.IDordre_fabrication)).filter((x) => x > 0)))
   if (ofIds.length === 0) return pendingByLot
-  const openRows = await query<{ IDordre_fabrication: number; quantite: number | null }>(
-    `SELECT IDordre_fabrication, quantite FROM ordre_fabrication
+  const openRows = await query<{ IDordre_fabrication: number; quantite: number | null; IDref_ecru: number | null }>(
+    `SELECT IDordre_fabrication, quantite, IDref_ecru FROM ordre_fabrication
      WHERE IDordre_fabrication IN (${ofIds.join(',')}) AND est_termine = 0`,
   )
   const openQ = new Map(openRows.map((o) => [Number(o.IDordre_fabrication), Number(o.quantite) || 0]))
+  // What an OF has left to knit is écru: the yarn it still draws is that ÷ (1 − freinte de tricotage).
+  const ecruOf = new Map(openRows.map((o) => [Number(o.IDordre_fabrication), Number(o.IDref_ecru) || 0]))
+  const freintes = await freintesTricotage([...ecruOf.values()])
   if (openQ.size === 0) return pendingByLot
   const prodRows = await query<{ ofid: number; kg: number | null }>(
     `SELECT IDordre_fabrication AS ofid, SUM(poids) AS kg FROM stock_ecru
@@ -3702,7 +3698,8 @@ async function openOfPendingByLot(lotIdsIn: number[]): Promise<Map<number, numbe
     if (q === undefined) continue
     const remaining = Math.max(0, q - (prodByOf.get(ofid) ?? 0))
     const lot = Number(a.IDstock_fil)
-    pendingByLot.set(lot, (pendingByLot.get(lot) ?? 0) + remaining * ((Number(a.pourcentage) || 0) / 100))
+    const taux = freintes.get(ecruOf.get(ofid) ?? 0)?.taux ?? 0
+    pendingByLot.set(lot, (pendingByLot.get(lot) ?? 0) + filPourEcru(remaining * ((Number(a.pourcentage) || 0) / 100), taux))
   }
   return pendingByLot
 }
@@ -3768,10 +3765,7 @@ async function fetchTricoStockFil(ctx: ClientLineContext) {
     if (ecruRefId > 0) ecruColoris = await ennoInputColoriIds(ecruRefId, avecTeinture, ctx.coloriId)
   } else {
     ecruRefId = ctx.refId
-    const r = await query<{ rendement: number | null }>(
-      `SELECT rendement FROM ref_ecru WHERE IDref_ecru = ${ecruRefId}`,
-    )
-    rendement = Number(r[0]?.rendement) || 0
+    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired 2026-10-26).
     if (ctx.coloriId > 0) ecruColoris = [ctx.coloriId]
   }
   base.rendement = rendement
@@ -3927,10 +3921,7 @@ async function resolveTricoEcru(ctx: ClientLineContext): Promise<{ ecruRefId: nu
     if (ecruRefId > 0) ecruColoris = await ennoInputColoriIds(ecruRefId, avecTeinture, ctx.coloriId)
   } else if (ctx.kind === 'ecru') {
     ecruRefId = ctx.refId
-    const r = await query<{ rendement: number | null }>(
-      `SELECT rendement FROM ref_ecru WHERE IDref_ecru = ${ecruRefId}`,
-    )
-    rendement = Number(r[0]?.rendement) || 0
+    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired 2026-10-26).
     if (ctx.coloriId > 0) ecruColoris = [ctx.coloriId]
   }
   return { ecruRefId, rendement, ecruColoris }
@@ -3994,10 +3985,11 @@ commandesClientRouter.get('/:id/lignes/:ligneId/supply/tricotage/new-order-conte
     const { ecruRefId, rendement, ecruColoris } = await resolveTricoEcru(ctx)
     if (ecruRefId <= 0) { res.json({ applicable: false }); return }
 
-    const [ecruLabel, coloriNames, pairs] = await Promise.all([
+    const [ecruLabel, coloriNames, pairs, freinte] = await Promise.all([
       resolveEcruRefLabel(ecruRefId),
       resolveEcruColoris(ecruColoris),
       tricoCompositionPairs(ecruRefId, ecruColoris),
+      freinteTricotage(ecruRefId),
     ])
 
     // On-hand lots at the chosen knitter with what is free on each (lib/lancement-tricotage.ts):
@@ -4008,7 +4000,7 @@ commandesClientRouter.get('/:id/lignes/:ligneId/supply/tricotage/new-order-conte
       const pairClause = pairs.map((p) => `(IDref_fil = ${p.IDref_fil} AND IDcolori_fil = ${p.IDcolori_fil})`).join(' OR ')
       const [fils, pending] = await Promise.all([
         filsALancer({
-          magasin, ligneClient: ligneId,
+          magasin, ligneClient: ligneId, freinte: freinte.taux,
           paires: pairs.map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage })),
         }),
         query<{ IDref_fil_commande: number; IDref_fil: number; IDcolori_fil: number; quantite: number | null; date_livraison: string | null }>(
@@ -4018,7 +4010,8 @@ commandesClientRouter.get('/:id/lignes/:ligneId/supply/tricotage/new-order-conte
       ])
       const frsNames = await fournisseurByRfc(pending.map((p) => Number(p.IDref_fil_commande)))
       for (const f of fils) {
-        const mlOf = (kg: number) => (f.pourcentage > 0 ? round2c((kg / (f.pourcentage / 100)) * rendement) : 0)
+        // yarn kg → the écru it makes (freinte de tricotage) → Ml through the fini's rendement.
+        const mlOf = (kg: number) => (f.pourcentage > 0 ? round2c(ecruPourFil(kg / (f.pourcentage / 100), freinte.taux) * rendement) : 0)
         yarns.push({
           ...f,
           stock: f.stock.map((l) => ({ ...l, metrage: mlOf(l.poids) })),
@@ -4040,6 +4033,7 @@ commandesClientRouter.get('/:id/lignes/:ligneId/supply/tricotage/new-order-conte
       ecru_ref_label: ecruLabel,
       ecru_coloris_label: coloriNames.get(ecruColoris[0] ?? 0) ?? '',
       rendement,
+      freinte_tricotage: { taux: freinte.taux, origine: origineFreinte(freinte) },
       yarns,
     })
   } catch (err) {
@@ -4097,7 +4091,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
     const pairs = await tricoCompositionPairs(ecruRefId, ecruColoris)
     const paires = pairs.map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
     const plan = planLancement({
-      totalKg: total, paires, choisis: d.lots,
+      totalKg: total, paires, choisis: d.lots, freinte: (await freinteTricotage(ecruRefId)).taux,
       lots: await lotsLibres({ magasin: d.IDsous_traitant, paires, ligneClient: ligneId }),
     })
     if (!plan.ok) {
@@ -4222,18 +4216,19 @@ export async function resolveTransporteurNamesCC(ids: number[]): Promise<Map<num
 }
 
 /** What a client line still needs of each yarn of its recipe, in kg: its quantity in écru kg, less
- *  what is already affected (rolls, knitting orders — the gauge's « Affecté »), × the yarn's share,
- *  less its open reservations (supplier order, lot). The cap of every reservation (never reserve
+ *  what is already affected (rolls, knitting orders — the gauge's « Affecté »), ÷ (1 − freinte de
+ *  tricotage of the écru), × the yarn's share, less its open reservations (supplier order, lot). The cap of every reservation (never reserve
  *  beyond the line's need) and the base of « Réserver tout le fil ». */
 async function besoinsFilDeLigne(ctx: ClientLineContext) {
   const { ecruRefId, rendement, ecruColoris } = await resolveTricoEcru(ctx)
   if (ecruRefId <= 0) return null
   const metrage = lineDim(ctx.unite) === 'metrage'
   const enKg = (x: number) => (metrage ? (rendement > 0 ? x / rendement : 0) : x)
-  const [pairs, resas, agg] = await Promise.all([
+  const [pairs, resas, agg, freinte] = await Promise.all([
     tricoCompositionPairs(ecruRefId, ecruColoris),
     reservationsDesLignes([ctx.ligneId]),
     lineReservationAggregates([{ id: ctx.ligneId, typeKind: ctx.typeKind, refId: ctx.refId }]),
+    freinteTricotage(ecruRefId),
   ])
   const a = agg.get(ctx.ligneId)
   const kgLigne = round2c(enKg(ctx.quantite))
@@ -4243,14 +4238,20 @@ async function besoinsFilDeLigne(ctx: ClientLineContext) {
     const reserve = round2c(resas
       .filter((r) => r.idref_fil === p.IDref_fil && r.idcolori_fil === p.IDcolori_fil && compteDansReserve(etatReservation(r)))
       .reduce((x, r) => x + r.quantite, 0))
-    // Rounded UP to the centime of kg: reserving the need shown must cover the whole line.
-    const besoin = Math.ceil(round2c(kgAProduire * p.pourcentage)) / 100
-    return { refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage, besoin, reserve, manque: round2c(Math.max(0, besoin - reserve)) }
+    // Freinte + safety margin, rounded up to 10 kg (lib/freinte-tricotage.ts besoinFil).
+    const b = besoinFil(kgAProduire, freinte.taux, p.pourcentage / 100)
+    const besoin = b.besoin
+    // How the need is obtained, step by step (the Fil tab's tooltip).
+    const calcul = { kg_ecru: round2c(kgAProduire * (p.pourcentage / 100)), fil: round2c(b.fil), avec_marge: round2c(b.avecMarge), besoin }
+    // What a single reservation may still add: up to need + 10 % (plafondReservation).
+    const plafond = plafondReservation(besoin)
+    return { refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage, besoin, calcul, reserve, manque: round2c(Math.max(0, besoin - reserve)), plafond, encorePossible: round2c(Math.max(0, plafond - reserve)) }
   })
-  return { ecruRefId, rendement, ecruColoris, kgLigne, kgAffecte, pairs, resas, fils }
+  return { ecruRefId, rendement, ecruColoris, kgLigne, kgAffecte, pairs, resas, fils, freinte }
 }
 
-/** Per line, the open yarn reservations (supplier order, lot) as the écru they let the line make,
+/** Per line, the open yarn reservations (supplier order, lot) as the écru they let the line make
+ *  (yarn × (1 − freinte de tricotage)),
  *  in the line's dim: the scarcest yarn of the recipe decides (a line has its matter only when
  *  every yarn is there). The order screen's gauge shows it as its last stage, « Fil réservé ».
  *  Reservations a knitting order took are counted through its affectation, never here. */
@@ -4268,6 +4269,7 @@ async function filReserveParLigne(
       commandeId: 0, ligneId: l.id, typeKind: l.typeKind, kind, refId: l.refId, coloriId: l.coloriId, unite: l.unite, quantite: 0,
     })
     if (ecruRefId <= 0) continue
+    const freinte = await freinteTricotage(ecruRefId)
     let kg = Infinity
     for (const p of await tricoCompositionPairs(ecruRefId, ecruColoris)) {
       if (!(p.pourcentage > 0)) continue
@@ -4276,6 +4278,8 @@ async function filReserveParLigne(
       kg = Math.min(kg, (r + 0.01) / (p.pourcentage / 100))
     }
     if (!Number.isFinite(kg) || !(kg > 0)) continue
+    // Yarn → the écru it makes, after the freinte de tricotage.
+    kg = ecruPourFil(kg, freinte.taux)
     out.set(l.id, round2c(lineDim(l.unite) === 'metrage' ? kg * rendement : kg))
   }
   return out
@@ -4324,8 +4328,10 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
       // A reservation on a yarn the recipe no longer names still shows.
       ...resas.map((r) => ({ refFil: r.idref_fil, coloriFil: r.idcolori_fil })),
     ].filter((p, i, a) => a.findIndex((q) => q.refFil === p.refFil && q.coloriFil === p.coloriFil) === i)
+    const freinte = await freinteTricotage(ecruRefId)
+    const freinteOut = { taux: freinte.taux, source: freinte.source, origine: origineFreinte(freinte) }
     if (paires.length === 0) {
-      res.json({ applicable: true, ecru_ref_label: ecruLabel, ecru_coloris_label: await libelleColorisEcru(ecruColoris), rendement, kg_ligne: kgLigne, yarns: [], reservations: [] })
+      res.json({ applicable: true, ecru_ref_label: ecruLabel, ecru_coloris_label: await libelleColorisEcru(ecruColoris), rendement, kg_ligne: kgLigne, kg_fil_ligne: besoinFil(kgLigne, freinte.taux).besoin, freinte_tricotage: freinteOut, yarns: [], reservations: [] })
       return
     }
 
@@ -4400,12 +4406,16 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
         reference: nomRef.get(p.refFil) ?? `#${p.refFil}`,
         coloris: nomCol.get(p.coloriFil) ?? '',
         pourcentage,
-        besoin_kg: round2c(kgLigne * (pourcentage / 100)),
+        besoin_kg: besoinFil(kgLigne, freinte.taux, pourcentage / 100).besoin,
+        // How the need still to cover is obtained (on the écru still to make), for the tooltip.
+        calcul: besoins?.fils.find((f) => f.refFil === p.refFil && f.coloriFil === p.coloriFil)?.calcul ?? null,
         reserve_kg: round2c(mesResas.filter((r) => compteDansReserve(etatReservation(r))).reduce((s, r) => s + r.quantite, 0)),
         stock_kg: round2c(Math.max(0, stock)),
         stock_libre_kg: round2c(Math.max(0, stock - reserveSurLots)),
         // What is still to cover once rolls and knitting orders are counted (the reservation cap).
         manque_kg: besoins?.fils.find((f) => f.refFil === p.refFil && f.coloriFil === p.coloriFil)?.manque ?? 0,
+        // The most the line may hold of this yarn (need + 10 %): « Tout affecter » stops there.
+        plafond_kg: besoins?.fils.find((f) => f.refFil === p.refFil && f.coloriFil === p.coloriFil)?.plafond ?? 0,
         lots: lotsReservables
           .filter((l) => l.refFil === p.refFil && l.coloriFil === p.coloriFil)
           .sort(ordreDeService)
@@ -4415,6 +4425,7 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
             magasin: magasins.get(l.magasin) ?? '',
             fournisseur: fournisseurs.get(l.fournisseur) ?? '',
             date_entree: l.dateEntree,
+            stock: round2c(l.stock),
             // Free for anyone else, and what this line already holds on it.
             dispo: round2c(Math.max(0, l.libre - l.reserveLigne)),
             pour_ligne: l.reserveLigne,
@@ -4445,6 +4456,13 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
       ecru_coloris_label: await libelleColorisEcru(ecruColoris),
       rendement,
       kg_ligne: kgLigne,
+      // The yarn the whole line takes (écru ÷ (1 − freinte), + margin, rounded): the 100 % yarn's need.
+      kg_fil_ligne: besoinFil(kgLigne, freinte.taux).besoin,
+      freinte_tricotage: freinteOut,
+      marge_securite: MARGE_SECURITE_FIL,
+      arrondi_kg: ARRONDI_FIL_KG,
+      // One roll of the écru (catalogue ref_ecru.poids, 0 = unknown): the tooltip's roll count.
+      poids_rouleau: Number((await sql<{ poids: number | null }[]>`SELECT poids::float8 AS poids FROM ref_ecru WHERE idref_ecru = ${ecruRefId}`)[0]?.poids) || 0,
       kg_affecte: besoins?.kgAffecte ?? 0,
       yarns,
       reservations: resas.map((r) => {
@@ -4510,7 +4528,7 @@ commandesClientRouter.put('/:id/lignes/:ligneId/fil/reservations/source', async 
       ligneClient: ligneId,
       source: parsed.data.IDstock_fil ? { kind: 'lot', id: parsed.data.IDstock_fil } : { kind: 'commande', id: parsed.data.IDref_fil_commande! },
       kg: parsed.data.kg,
-      max: besoin.manque,
+      max: besoin.encorePossible,
       parId: req.userId ?? 0,
       par: req.userId ? await nomUtilisateur(req.userId) : null,
     })

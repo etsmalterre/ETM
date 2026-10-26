@@ -5510,11 +5510,9 @@ const ETAPES_MATIERE = [
 
 function LigneMatiereGauge({ line, target }: { line: LigneCommande; target: number }) {
   const a = line.avancement ?? { expedie: 0, pret: line.affecte, ennoblissement: 0, tricotage: 0, fil: 0 }
-  const sansFil = a.expedie + a.pret + a.ennoblissement + a.tricotage
-  const parts = ETAPES_MATIERE.map((e) => ({
-    ...e,
-    v: e.key === 'fil' ? Math.max(0, Math.min(a.fil, target - sansFil)) : a[e.key],
-  })).filter((p) => p.v > 0.05)
+  // The reserved yarn counts the écru it will really make (freinte only, no safety margin) and may
+  // go beyond the line (decision Vincent 2026-10-26: a whole 660 kg order for 1 440 Ml → ~1 537 Ml).
+  const parts = ETAPES_MATIERE.map((e) => ({ ...e, v: Math.max(0, a[e.key]) })).filter((p) => p.v > 0.05)
   const total = parts.reduce((s, p) => s + p.v, 0)
   const base = Math.max(target, total)
   const complet = target > 0 && total >= target - 0.05
@@ -5934,6 +5932,10 @@ function LineFormDialog({
   // Reference lookups per type. Écru/fini are restricted to the references
   // assigned to this client in designation_client (the buyable catalogue);
   // divers are generic and stay unrestricted.
+  // A tombé de métier is sold by the kg: no Ml on an écru line (API lib/unite-ecru.ts).
+  useEffect(() => {
+    if (form.type === 1 && form.unite === 3) setForm((f) => ({ ...f, unite: 1 }))
+  }, [form.type, form.unite])
   const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['cc-refs-ecru', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-ecru?client=${commande.IDclient}`), enabled: open && form.type === 1 })
   const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['cc-refs-fini', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-fini?client=${commande.IDclient}`), enabled: open && form.type === 2 })
   // Divers refs come from the shared expéditions lookup — it's the only one
@@ -6275,7 +6277,7 @@ function LineFormDialog({
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Unité</label>
               <PopoverSelect
-                options={[{ id: 1, primary: 'Kg' }, { id: 3, primary: 'Ml' }, { id: 4, primary: 'unité' }, { id: 5, primary: 'm²' }]}
+                options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'unité' }, { id: 5, primary: 'm²' }]}
                 value={form.unite}
                 onChange={(id) => setForm({ ...form, unite: id })}
                 hideEmpty

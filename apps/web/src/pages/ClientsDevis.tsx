@@ -1071,6 +1071,10 @@ function LineFormDialog({
     return () => clearTimeout(t)
   }, [form.quantite])
 
+  // A tombé de métier is sold by the kg: no Ml on an écru line (API lib/unite-ecru.ts).
+  useEffect(() => {
+    if (form.type === 1 && form.unite === 3) setForm((f) => ({ ...f, unite: 1 }))
+  }, [form.type, form.unite])
   const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['devis-refs-ecru'], queryFn: () => apiFetch('/devis/lookups/refs-ecru'), enabled: open && form.type === 1 })
   const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['devis-refs-fini'], queryFn: () => apiFetch('/devis/lookups/refs-fini'), enabled: open && form.type === 2 })
   const { data: refsDivers } = useQuery<RefDivers[]>({ queryKey: ['devis-refs-divers'], queryFn: () => apiFetch('/devis/lookups/refs-divers'), enabled: open && form.type === 3 })
@@ -1201,7 +1205,7 @@ function LineFormDialog({
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Unité</label>
               <PopoverSelect
-                options={[{ id: 1, primary: 'Kg' }, { id: 3, primary: 'Ml' }, { id: 4, primary: 'U' }, { id: 5, primary: 'm²' }]}
+                options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'U' }, { id: 5, primary: 'm²' }]}
                 value={form.unite}
                 onChange={(id) => setForm({ ...form, unite: id })}
                 hideEmpty

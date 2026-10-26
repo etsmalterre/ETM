@@ -31,6 +31,7 @@ import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { readCol } from '../lib/accented-keys.js'
 import { mpsPg } from '../lib/mps-pg.js'
 import { numeroEchantillon } from '../lib/echantillons.js'
+import { freinteTricotage, detailFreinteTricotage, origineFreinte } from '../lib/freinte-tricotage.js'
 import React from 'react'
 import { renderToBuffer, type DocumentProps } from '@react-pdf/renderer'
 import { FicheTechniqueEcruPdf, ficheTechniqueEcruData, type RefEcruDetailForFiche } from '../lib/pdf/FicheTechniqueEcruPdf.js'
@@ -124,7 +125,8 @@ function normalizeRefEcru(row: Record<string, unknown>) {
     ecarteur: toNumOrNull(row.ecarteur),
     laize_tbm: toNumOrNull(row.laize_tbm),
     poids_m2_tbm: toNumOrNull(row.poids_m2_tbm),
-    rendement: round(row.rendement, 4),
+    // NULL = not forced (lib/freinte-tricotage.ts); ref_ecru.rendement is no longer read.
+    freinte_tricotage_forcee: row.freinte_tricotage == null ? null : Number(row.freinte_tricotage),
     vitesse_cible: toNumOrNull(row.vitesse_cible),
     nb_chutes: toNumOrNull(row.nb_chutes),
     nb_aiguilles: toNumOrNull(row.nb_aiguilles),
@@ -582,11 +584,14 @@ export async function loadRefEcruDetail(id: number) {
     console.warn('[references-ecru] origin sample unreadable:', (err as Error).message)
   }
 
+  const freinte = await freinteTricotage(id)
+
   return {
     ...ref,
     contexture_nom,
     client_nom,
     echantillon_origine,
+    freinte_tricotage: { ...freinte, origine: origineFreinte(freinte) },
     composition_lines: compositionLines,
     cout_kg,
     cout_gestion_fil,
@@ -613,6 +618,20 @@ referencesEcruRouter.get('/:id', async (req: Request, res: Response) => {
     res.json(detail)
   } catch (err) {
     console.error('Error fetching ref_ecru detail:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/references-ecru/:id/freinte-tricotage — the fiche's drawer: the value, where it
+// comes from and every measure (group of archived lots + OFs) behind it.
+referencesEcruRouter.get('/:id/freinte-tricotage', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const d = await detailFreinteTricotage(id)
+    res.json({ ...d, origine: origineFreinte(d) })
+  } catch (err) {
+    console.error('Error fetching ref_ecru freinte:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -766,7 +785,8 @@ const refEcruBody = z.object({
   ecarteur: z.number().optional().nullable(),
   laize_tbm: z.number().optional().nullable(),
   poids_m2_tbm: z.number().optional().nullable(),
-  rendement: z.number().optional().nullable(),
+  /** 0..1; null = back to the measured value. Absent = left as is. */
+  freinte_tricotage: z.number().min(0).max(0.49).optional().nullable(),
   vitesse_cible: z.number().optional().nullable(),
   nb_chutes: z.number().optional().nullable(),
   nb_aiguilles: z.number().optional().nullable(),
@@ -807,7 +827,9 @@ function buildRefEcruSets(b: RefEcruBody): string[] {
   sets.push(`ecarteur = ${toNumOrNull(b.ecarteur) ?? 0}`)
   sets.push(`laize_tbm = ${toNumOrNull(b.laize_tbm) ?? 0}`)
   sets.push(`poids_m2_tbm = ${toNumOrNull(b.poids_m2_tbm) ?? 0}`)
-  sets.push(`rendement = ${toNumOrNull(b.rendement) ?? 0}`)
+  if (b.freinte_tricotage !== undefined) {
+    sets.push(`freinte_tricotage = ${b.freinte_tricotage == null ? 'NULL' : Math.round(b.freinte_tricotage * 10000) / 10000}`)
+  }
   sets.push(`vitesse_cible = ${toNumOrNull(b.vitesse_cible) ?? 0}`)
   sets.push(`nb_chutes = ${toNumOrNull(b.nb_chutes) ?? 0}`)
   sets.push(`nb_aiguilles = ${toNumOrNull(b.nb_aiguilles) ?? 0}`)
@@ -919,7 +941,7 @@ const REF_ECRU_PHYSICAL_COLS = [
   'lfa_tour_1', 'lfa_tour_2', 'lfa_tour_3', 'lfa_tour_4', 'poulies_1', 'poulies_2', 'poulies_3', 'poulies_4',
   'ecarteur', 'laize_tbm', 'poids_m2_tbm', 'rendement', 'tombe_metier', 'observations',
   'archive', 'IDcontexture', 'Jauge', 'diametre', 'bio', 'recycle', 'sonneter',
-  'nb_chutes', 'nb_aiguilles', 'vitesse_cible',
+  'nb_chutes', 'nb_aiguilles', 'vitesse_cible', 'freinte_tricotage',
 ] as const
 const TEXT_COL_IDX = new Set([2, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 24, 25]) // text/memo/date columns
 
@@ -937,7 +959,8 @@ async function setArchive(id: number, value: 0 | 1): Promise<void> {
   const archiveIdx = REF_ECRU_PHYSICAL_COLS.indexOf('archive' as any)
   vals[archiveIdx] = value
   const literals = vals.map((v, i) => {
-    if (v == null) return TEXT_COL_IDX.has(i) ? "''" : '0'
+    // freinte_tricotage: NULL means « not forced », never 0.
+    if (v == null) return TEXT_COL_IDX.has(i) ? "''" : REF_ECRU_PHYSICAL_COLS[i] === 'freinte_tricotage' ? 'NULL' : '0'
     if (TEXT_COL_IDX.has(i)) {
       const s = v instanceof ArrayBuffer ? Buffer.from(v).toString('latin1') : String(v)
       return sqlText(s)
@@ -1022,7 +1045,7 @@ referencesEcruRouter.post('/:id/duplicate', async (req: Request, res: Response) 
       tombe_metier: src.tombe_metier,
       lfa_tour_1: src.lfa_tour_1, lfa_tour_2: src.lfa_tour_2, lfa_tour_3: src.lfa_tour_3, lfa_tour_4: src.lfa_tour_4,
       poulies_1: src.poulies_1, poulies_2: src.poulies_2, poulies_3: src.poulies_3, poulies_4: src.poulies_4,
-      ecarteur: src.ecarteur, laize_tbm: src.laize_tbm, poids_m2_tbm: src.poids_m2_tbm, rendement: src.rendement,
+      ecarteur: src.ecarteur, laize_tbm: src.laize_tbm, poids_m2_tbm: src.poids_m2_tbm, freinte_tricotage: src.freinte_tricotage_forcee,
       vitesse_cible: src.vitesse_cible, nb_chutes: src.nb_chutes, nb_aiguilles: src.nb_aiguilles,
       maille_ouverture: !!src.maille_ouverture, ouvert_visiteuse: !!src.ouvert_visiteuse, sonneter: !!src.sonneter,
     }

@@ -18,9 +18,15 @@
 //     runs, the OF term above holds them, never both),
 //   - yarn reserved on it for OTHER client lines (reservation_fil, state « lot »).
 // The client line's own reservation stays inside its libre and is taken first.
+//
+// Yarn = écru ÷ (1 − freinte de tricotage of the écru, lib/freinte-tricotage.ts): a launch of
+// 600 kg of écru at 3 % needs 618,56 kg of each 100 % yarn, and an open OF still needs what it
+// has left to knit ÷ (1 − freinte). The lot's stock only moves by the knitted weight (TRM
+// visitage), the freinte shows on it until it is archived — that is how it is measured.
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
+import { filPourEcru, ecruPourFil, freintesTricotage } from './freinte-tricotage.js'
 
 const round2 = (x: number) => Math.round(x * 100) / 100
 
@@ -81,8 +87,9 @@ export function ordreDeService(a: LotLibre, b: LotLibre): number {
     || a.id - b.id
 }
 
-/** Pure: the asso rows a launch of `totalKg` writes from the chosen lots, or what is missing. */
-export function planLancement(p: { totalKg: number; paires: readonly PaireFil[]; lots: readonly LotLibre[]; choisis: readonly number[] }): PlanLancement {
+/** Pure: the asso rows a launch of `totalKg` of écru writes from the chosen lots, or what is
+ *  missing. `freinte` = the écru's freinte de tricotage (0..1): the yarn covers écru ÷ (1 − f). */
+export function planLancement(p: { totalKg: number; paires: readonly PaireFil[]; lots: readonly LotLibre[]; choisis: readonly number[]; freinte?: number }): PlanLancement {
   const choisis = new Set(p.choisis)
   const parCle = new Map<string, LotLibre[]>()
   for (const l of p.lots) {
@@ -98,7 +105,7 @@ export function planLancement(p: { totalKg: number; paires: readonly PaireFil[];
   const entrees: EntreePlan[] = []
   const manques: FilNonCouvert[] = []
   for (const paire of p.paires) {
-    const besoin = round2(p.totalKg * (paire.pourcentage / 100))
+    const besoin = round2(filPourEcru(p.totalKg * (paire.pourcentage / 100), p.freinte ?? 0))
     if (!(besoin > 0)) continue
     let reste = besoin
     for (const l of [...(parCle.get(cle(paire.refFil, paire.coloriFil)) ?? [])].sort(ordreDeService)) {
@@ -160,16 +167,17 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
   const ids = lots.map((l) => Number(l.id))
 
   const [ofs, assos, resas] = await Promise.all([
-    // What open OFs still have to knit, apportioned to each lot by the OF's composition.
-    sql<{ lot: number; kg: number }[]>`
-      SELECT a.idstock_fil AS lot,
+    // What open OFs still have to knit, apportioned to each lot by the OF's composition (écru kg,
+    // turned into yarn below with each écru's freinte).
+    sql<{ lot: number; ecru: number; kg: number }[]>`
+      SELECT a.idstock_fil AS lot, o.idref_ecru AS ecru,
              SUM(GREATEST(0, o.quantite - COALESCE(p.kg, 0)) * a.pourcentage / 100)::float8 AS kg
         FROM asso_fil_of a
         JOIN ordre_fabrication o ON o.idordre_fabrication = a.idordre_fabrication AND o.est_termine = 0
         LEFT JOIN (SELECT idordre_fabrication, SUM(poids) AS kg FROM stock_ecru GROUP BY idordre_fabrication) p
                ON p.idordre_fabrication = o.idordre_fabrication
        WHERE a.idstock_fil = ANY(${ids})
-       GROUP BY a.idstock_fil`,
+       GROUP BY a.idstock_fil, o.idref_ecru`,
     // Affectations of open knitting lines that no OF knits yet.
     sql<{ lot: number; kg: number }[]>`
       SELECT a.idstock_fil AS lot, SUM(a.quantite)::float8 AS kg
@@ -188,7 +196,12 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
        WHERE idstock_fil = ANY(${ids}) AND liberee_le IS NULL AND idasso_fil_lignecmdsst = 0
        GROUP BY idstock_fil, idligne_commande_client`,
   ])
-  const ofKg = new Map(ofs.map((r) => [Number(r.lot), Number(r.kg) || 0]))
+  const freintes = await freintesTricotage(ofs.map((r) => Number(r.ecru) || 0))
+  const ofKg = new Map<number, number>()
+  for (const r of ofs) {
+    const kg = filPourEcru(Number(r.kg) || 0, freintes.get(Number(r.ecru))?.taux ?? 0)
+    ofKg.set(Number(r.lot), (ofKg.get(Number(r.lot)) ?? 0) + kg)
+  }
   const assoKg = new Map(assos.map((r) => [Number(r.lot), Number(r.kg) || 0]))
   const autres = new Map<number, number>()
   const miennes = new Map<number, number>()
@@ -281,6 +294,8 @@ export interface FilALancer {
   reference: string
   coloris: string
   pourcentage: number
+  /** the écru's freinte de tricotage (0..1): the need of this yarn = écru × % ÷ (1 − freinte) */
+  freinte: number
   /** the knitter's lots of this yarn, in the order they serve a launch */
   stock: {
     id: number
@@ -295,7 +310,7 @@ export interface FilALancer {
 }
 
 /** What a launch dialog shows: per yarn of the composition, the lots at the knitter. */
-export async function filsALancer(p: { magasin: number; paires: readonly PaireFil[]; ligneClient: number }): Promise<FilALancer[]> {
+export async function filsALancer(p: { magasin: number; paires: readonly PaireFil[]; ligneClient: number; freinte?: number }): Promise<FilALancer[]> {
   if (p.paires.length === 0) return []
   const sql = mpsPg()
   const [lots, noms] = await Promise.all([lotsLibres(p, sql), nomsCourts(p.paires, sql)])
@@ -316,6 +331,7 @@ export async function filsALancer(p: { magasin: number; paires: readonly PaireFi
     reference: noms.ref.get(x.refFil) || `#${x.refFil}`,
     coloris: noms.col.get(x.coloriFil) ?? '',
     pourcentage: x.pourcentage,
+    freinte: p.freinte ?? 0,
     stock: lots
       .filter((l) => l.refFil === x.refFil && l.coloriFil === x.coloriFil)
       .sort(ordreDeService)
@@ -341,7 +357,7 @@ async function nomsCourts(paires: readonly PaireFil[], sql: Sql) {
 
 /** kg of écru the yarn affected to a knitting line covers (the scarcest yarn decides), or null
  *  when the line has no affectation at all (an old line still « Fil à affecter »). */
-export async function couvertureLigne(sstLine: number, paires: readonly PaireFil[], sql: Sql = mpsPg()): Promise<number | null> {
+export async function couvertureLigne(sstLine: number, paires: readonly PaireFil[], freinte = 0, sql: Sql = mpsPg()): Promise<number | null> {
   const rows = await sql<{ ref: number; col: number; kg: number }[]>`
     SELECT s.idref_fil AS ref, s.idcolori_fil AS col, SUM(a.quantite)::float8 AS kg
       FROM asso_fil_lignecmdsst a JOIN stock_fil s ON s.idstock_fil = a.idstock_fil
@@ -354,7 +370,8 @@ export async function couvertureLigne(sstLine: number, paires: readonly PaireFil
     if (!(x.pourcentage > 0)) continue
     min = Math.min(min, (kg.get(cle(x.refFil, x.coloriFil)) ?? 0) / (x.pourcentage / 100))
   }
-  return Number.isFinite(min) ? round2(min) : 0
+  // The écru that yarn makes, after the freinte de tricotage.
+  return Number.isFinite(min) ? round2(ecruPourFil(min, freinte)) : 0
 }
 
 export interface PartLot {
@@ -374,8 +391,8 @@ export async function repartitionLot(lotId: number): Promise<{ stock: number; pa
   const stock = round2(Number(lot.stock) || 0)
 
   const [ofs, assos, resas] = await Promise.all([
-    sql<{ id: number; kg: number; numero: number | null }[]>`
-      SELECT o.idordre_fabrication AS id,
+    sql<{ id: number; ecru: number; kg: number; numero: number | null }[]>`
+      SELECT o.idordre_fabrication AS id, o.idref_ecru AS ecru,
              (GREATEST(0, o.quantite - COALESCE(p.kg, 0)) * a.pourcentage / 100)::float8 AS kg,
              cc.numero
         FROM asso_fil_of a
@@ -408,6 +425,10 @@ export async function repartitionLot(lotId: number): Promise<{ stock: number; pa
        GROUP BY cc.numero, cl.nom
        ORDER BY cc.numero`,
   ])
+
+  // An OF's remaining écru → the yarn it still takes (freinte de tricotage), as lotsLibres() counts it.
+  const freintes = await freintesTricotage(ofs.map((o) => Number(o.ecru) || 0))
+  for (const o of ofs) o.kg = filPourEcru(Number(o.kg) || 0, freintes.get(Number(o.ecru))?.taux ?? 0)
 
   // Who a knitting order not started yet is for (« Affecté à la commande … » of its launch).
   const lignes = assos.map((a) => Number(a.ligne))

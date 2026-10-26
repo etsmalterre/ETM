@@ -1611,7 +1611,7 @@ function SpecsCard({
               <TileValue value={detail.rendement} unit="Ml/kg" />
             )}
           </SpecTile>
-          <SpecTile label="Freinte">
+          <SpecTile label="Freinte ennoblissement">
             {isEditing ? (
               <input type="number" step="0.01" value={draft.freinte} onChange={(e) => onDraftChange({ ...draft, freinte: e.target.value })} className={tileInput} />
             ) : (
@@ -2382,6 +2382,8 @@ interface TarifResult {
   rendement: number
   ref_ecru: { IDref_ecru: number; reference: string | null; poids: number; prix: number } | null
   tranches: TarifTranche[]
+  /** The écru's freinte de tricotage — shown, never counted (API lib/freinte-tricotage.ts). */
+  freinte_tricotage?: { taux: number; source: string; origine: string } | null
 }
 
 /** Gold-banded cost-component header with its €/Kg total, mirroring the legacy
@@ -2517,6 +2519,15 @@ function TarifTab({ detail }: { detail: RefFiniDetail }) {
                 ))}
                 {(current.moGestionFil ?? 0) > 0 && (
                   <CostLine label="dont frais de gestion fil (5 % sur l’achat)" value={eurKg(current.moGestionFil!)} />
+                )}
+                {data?.freinte_tricotage && data.freinte_tricotage.taux > 0 && data.freinte_tricotage.taux < 1 && (
+                  // The yarn the knitting loses, paid but not in the price yet (decision Vincent 2026-10-26).
+                  <div className="flex items-start justify-between gap-2 text-[11px] leading-snug text-muted-foreground/70" title={data.freinte_tricotage.origine}>
+                    <span>freinte tricotage {fmtNum(data.freinte_tricotage.taux * 100, 1)} % · non comptée</span>
+                    <span className="tabular-nums flex-shrink-0 whitespace-nowrap">
+                      ({eurKg(current.moFil * data.freinte_tricotage.taux / (1 - data.freinte_tricotage.taux))})
+                    </span>
+                  </div>
                 )}
               </CostSection>
 

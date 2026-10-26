@@ -5,7 +5,7 @@ function detail(over: Partial<RefEcruDetailForFiche> = {}): RefEcruDetailForFich
   return {
     reference: ' 472 ', designation: 'Jersey coton', contexture_nom: 'Jersey', Jauge: 3, diametre: 2,
     bio: 1, recycle: 0, client_nom: null, reference_client: ' ',
-    laize_tbm: 180, poids_m2_tbm: 145.5, rendement: 3.2, poids: 20, vitesse_cible: 0, ecarteur: null,
+    laize_tbm: 180, poids_m2_tbm: 145.5, freinte_tricotage: { taux: 0.028 }, poids: 20, vitesse_cible: 0, ecarteur: null,
     tombe_metier: '-1', maille_ouverture: 1, ouvert_visiteuse: 0, sonneter: 1,
     lfa_tour_1: '28', lfa_tour_2: null, lfa_tour_3: '', lfa_tour_4: '30',
     poulies_1: '40', poulies_2: '41', poulies_3: null, poulies_4: null,

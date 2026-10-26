@@ -1193,6 +1193,19 @@ ALTER TABLE ref_fini
   ADD CONSTRAINT ref_fini_controle_malterre_check CHECK (controle_malterre IN (0, 1));
 `,
   },
+  {
+    // Tombé Métier — the freinte de tricotage typed on the fiche when the
+    // measured one must not be used (decision Vincent 2026-10-26,
+    // lib/freinte-tricotage.ts). NULL on purpose, not the usual DEFAULT 0:
+    // NULL = not forced (measured, else the matière default), 0 = forced to 0 %.
+    // ref_ecru.rendement stays in place but nothing reads or writes it any more.
+    name: '0037_ref_ecru_freinte_tricotage',
+    sql: `
+ALTER TABLE ref_ecru
+  ADD COLUMN freinte_tricotage numeric(6, 4),
+  ADD CONSTRAINT ref_ecru_freinte_tricotage_check CHECK (freinte_tricotage IS NULL OR (freinte_tricotage >= 0 AND freinte_tricotage < 0.5));
+`,
+  },
 ]
 
 export interface MigrationStatus {

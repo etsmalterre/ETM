@@ -729,7 +729,7 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
         ),
         inChunks(refIds, (c) =>
           query<any>(
-            `SELECT IDref_ecru, reference, designation, rendement FROM ref_ecru WHERE IDref_ecru IN (${c})`,
+            `SELECT IDref_ecru, reference, designation FROM ref_ecru WHERE IDref_ecru IN (${c})`,
           ),
         ),
         inChunks(refIds, (c) =>
@@ -747,7 +747,8 @@ rapportsRouter.get('/commandes-clients', async (req: Request, res: Response) => 
         ecruRefs.set(n((r as any).IDref_ecru), {
           reference: ((r as any).reference ?? '').toString().trim(),
           designation: ((r as any).designation ?? '').toString().trim(),
-          rendement: n((r as any).rendement),
+          // An écru line is in kg: no rendement (ref_ecru.rendement retired 2026-10-26).
+          rendement: 0,
           avecTeinture: 0,
         })
       for (const r of await repairText(diversRows, 'ref_divers', 'IDref_divers', ['designation']))

@@ -29,6 +29,7 @@
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
+import { ecruEnMl, MESSAGE_ECRU_EN_ML } from '../lib/unite-ecru.js'
 import multer from 'multer'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
@@ -1048,6 +1049,7 @@ devisRouter.post('/:id/lignes', async (req: Request, res: Response) => {
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
     const typeKind = Number(d.type) || 0
     const idRefEcru = await resolveLineRefEcru(typeKind, Number(d.IDreference) || 0)
     // TYPE written uppercase (reserved word). Never name accented line columns.
@@ -1082,6 +1084,7 @@ devisRouter.put('/lignes/:lineId', async (req: Request, res: Response) => {
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
 
     const sets: string[] = []
     if (d.type !== undefined) {

@@ -3,6 +3,7 @@ import { mpsPg } from '../lib/mps-pg.js'
 import { consumedEcruIds } from '../lib/fini-sources.js'
 import { calculerEtatFil } from '../lib/fil-etat.js'
 import { calculerStockPotentiel, type CompositionRow } from '../lib/stock-potentiel.js'
+import { freintesTricotage } from '../lib/freinte-tricotage.js'
 
 // GET /api/stock/potentiel — Finis › Stock potentiel (rules in
 // lib/stock-potentiel.ts). This file only reads the free stock:
@@ -116,6 +117,7 @@ stockPotentielRouter.get('/potentiel', async (_req: Request, res: Response) => {
 
     const contextureParEcru = new Map(refsEcru.map((r) => [Number(r.idref_ecru), r.contexture?.trim() || null]))
     const ecruParId = new Map(refsEcru.map((r) => [Number(r.idref_ecru), r]))
+    const freintes = await freintesTricotage(refsEcru.map((r) => Number(r.idref_ecru)))
     const lignes = calculerStockPotentiel({
       refsFini: refsFini
         .map((r) => ({
@@ -150,6 +152,7 @@ stockPotentielRouter.get('/potentiel', async (_req: Request, res: Response) => {
       compositions: compo,
       filLibre,
       filLabel,
+      freinteEcru: new Map([...freintes].map(([id, f]) => [id, f.taux])),
     })
     res.json(lignes)
   } catch (err) {

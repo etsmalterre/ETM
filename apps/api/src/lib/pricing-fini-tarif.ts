@@ -143,6 +143,9 @@ export interface TarifResult {
   rendement: number
   ref_ecru: { IDref_ecru: number; reference: string | null; poids: number; prix: number } | null
   tranches: TarifTranche[]
+  /** The écru's freinte de tricotage, attached by the fiche's Tarif route only and printed
+   *  « non comptée »: no tranche counts it yet (decision Vincent 2026-10-26). */
+  freinte_tricotage?: { taux: number; source: string; origine: string } | null
 }
 
 export interface BandRow {
@@ -570,8 +573,8 @@ function fmtPct(v: number): string {
  * `PrixDeVenteV4`: prix de revient = fil + tricotage only (no treatment, no
  * dye), then ÷ margin ÷ port, on the same nine tranches. A tombé de métier is
  * always sold by the Kg (Vincent, 2026-09-10 — LIVA #1144), so `moPrixDeVenteAuKg`
- * is the figure that matters; the Ml figure is derived through `ref_ecru.rendement`
- * when the écru has one and stays 0 otherwise. Shares `TarifResult` with the
+ * is the figure that matters; the Ml figures stay 0 (ref_ecru.rendement is
+ * retired, 2026-10-26). Shares `TarifResult` with the
  * fini engine so the client fiche's tariff dialog, the tarif-mode editor and
  * the line pricer render both kinds from one shape.
  *
@@ -596,15 +599,16 @@ export async function calcTarifRefEcru(
   }
   if (!(IDref_ecru > 0)) return empty
 
-  const ecruRows = await query<{ IDref_ecru: number; reference: string | null; poids: number | null; prix: number | null; rendement: number | null }>(
-    `SELECT IDref_ecru, reference, poids, prix, rendement FROM ref_ecru WHERE IDref_ecru = ${IDref_ecru}`,
+  const ecruRows = await query<{ IDref_ecru: number; reference: string | null; poids: number | null; prix: number | null }>(
+    `SELECT IDref_ecru, reference, poids, prix FROM ref_ecru WHERE IDref_ecru = ${IDref_ecru}`,
   )
   if (ecruRows.length === 0) return empty
   const ecruFixed = await fixEncoding(ecruRows as any[], 'ref_ecru', 'IDref_ecru', ['reference'])
   const ecruReference = (ecruFixed[0]?.reference ?? null) as string | null
   const poidsUnRlx = Number(ecruRows[0].poids) || 0
   const prixTricotage = Number(ecruRows[0].prix) || 0
-  const rendement = Number(ecruRows[0].rendement) || 0
+  // Sold by the Kg only: ref_ecru.rendement is retired (2026-10-26), so no €/Ml figure.
+  const rendement = 0
   const ref_ecru = { IDref_ecru, reference: ecruReference, poids: poidsUnRlx, prix: prixTricotage }
   if (!(poidsUnRlx > 0)) return { ...empty, rendement, ref_ecru }
 

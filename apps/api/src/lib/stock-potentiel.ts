@@ -8,7 +8,7 @@
 //               décision: sellable once the check is done, never promised as
 //               ready (Vincent, 2026-10-22)
 //   a_ennoblir  free écru (tombé de métier) × the fini's rendement
-//   a_tricoter  free yarn through the écru's composition × the rendement
+//   a_tricoter  free yarn through the écru's composition, less the freinte de tricotage, × the rendement
 //
 // Every quantity is « jusqu'à » — the same écru or yarn feeds several fini
 // references, so the lines are NOT additive (decided 2026-10-22) and the
@@ -124,6 +124,8 @@ export interface StockPotentielInput {
   filLibre: Map<string, number>
   /** Same key → « coton bio 30/1 ecru ». */
   filLabel: Map<string, string>
+  /** idref_ecru → freinte de tricotage (0..1, lib/freinte-tricotage.ts); absent = 0. */
+  freinteEcru?: Map<number, number>
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10
@@ -254,7 +256,10 @@ export function calculerStockPotentiel(input: StockPotentielInput): LignePotenti
   const tricotable = new Map<number, { kg: number; limite: string } | null>()
   const tricoter = (c: ColorisEcru) => {
     if (!tricotable.has(c.idcolori_ecru)) {
-      tricotable.set(c.idcolori_ecru, kgTricotable(recetteColoris(input.compositions, c.idref_ecru, c.idcolori_ecru), input.filLibre))
+      const t = kgTricotable(recetteColoris(input.compositions, c.idref_ecru, c.idcolori_ecru), input.filLibre)
+      // The yarn makes that much écru less the freinte de tricotage.
+      const f = input.freinteEcru?.get(c.idref_ecru) ?? 0
+      tricotable.set(c.idcolori_ecru, t ? { ...t, kg: t.kg * (1 - f) } : t)
     }
     return tricotable.get(c.idcolori_ecru) ?? null
   }

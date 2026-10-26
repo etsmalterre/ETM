@@ -10,13 +10,14 @@
 // yarn as its last stage. Yarn on a supplier order makes the line read « attente fil » (neutral
 // until the supplier's date); yarn on a lot leaves it « à lancer », and the launch dialog ticks that
 // lot first. A reservation never goes beyond what the line needs.
-import { Fragment, useState, type ComponentType } from 'react'
+import { Fragment, useState, type ComponentType, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle2, Loader2, Package, Plus, Truck, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Loader2, Plus, X } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Tooltip } from '@/components/ui/tooltip'
 import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
@@ -30,6 +31,8 @@ interface CommandeFilLigne {
   IDcommande_fil: number
   fournisseur: string
   date_livraison: string | null
+  quantite: number
+  recu: number
   reste: number
   /** free for any line (what is still to receive, less every waiting reservation) */
   libre: number
@@ -43,6 +46,7 @@ interface LotReservable {
   magasin: string
   fournisseur: string
   date_entree: string
+  stock: number
   /** free for any other line */
   dispo: number
   /** what this line holds on it */
@@ -58,6 +62,10 @@ interface FilYarn {
   reserve_kg: number
   /** still to cover once rolls, knitting orders and reservations are counted */
   manque_kg: number
+  /** the most the line may hold of this yarn: need + 10 % (API plafondReservation) */
+  plafond_kg: number
+  /** how the need is obtained, on the écru still to make (API besoinFil) */
+  calcul: { kg_ecru: number; fil: number; avec_marge: number; besoin: number } | null
   lots: LotReservable[]
   commandes: CommandeFilLigne[]
 }
@@ -76,7 +84,16 @@ interface FilPayload {
   applicable: boolean
   ecru_ref_label?: string
   ecru_coloris_label?: string
+  /** the line's quantity in écru kg */
   kg_ligne?: number
+  /** the yarn that écru takes: kg_ligne ÷ (1 − freinte de tricotage) */
+  kg_fil_ligne?: number
+  freinte_tricotage?: { taux: number; source: string; origine: string }
+  /** safety margin on top of the freinte (0.05) and the rounding step of a need (kg) */
+  marge_securite?: number
+  arrondi_kg?: number
+  /** one roll of the écru (catalogue), 0 = unknown */
+  poids_rouleau?: number
   kg_affecte?: number
   yarns?: FilYarn[]
   reservations?: Reservation[]
@@ -88,7 +105,10 @@ interface Source {
   id: number
   titre: string
   fournisseur: string
-  ou: string
+  /** what is on the source: a lot's stock, an order line's kg still to receive */
+  total: number
+  /** the « Commandé » cell's hover: ordered / received */
+  totalTitre?: string
   /** free for anyone else */
   libre: number
   pour_ligne: number
@@ -119,7 +139,7 @@ function sourcesDuFil(y: FilYarn): SourceFil[] {
       titre: `Lot ${l.lot || '—'}`,
       fournisseur: l.fournisseur,
       date: l.date_entree ? formatHfsqlDate(l.date_entree) : '—',
-      ou: [l.magasin, l.date_entree ? `entré le ${formatHfsqlDate(l.date_entree)}` : ''].filter(Boolean).join(' · '),
+      total: l.stock,
       libre: l.dispo,
       pour_ligne: l.pour_ligne,
     })),
@@ -134,7 +154,8 @@ function sourcesDuFil(y: FilYarn): SourceFil[] {
         titre: `Cde N° ${c.IDcommande_fil}`,
         fournisseur: c.fournisseur,
         date: c.date_livraison ? formatHfsqlDate(c.date_livraison) : 'sans date',
-        ou: c.date_livraison ? `En commande · prévue le ${formatHfsqlDate(c.date_livraison)}` : 'En commande · sans date',
+        total: c.reste,
+        totalTitre: `${fmtNum(c.quantite, 1)} kg commandés, ${fmtNum(c.recu, 1)} kg reçus`,
         libre: c.libre,
         pour_ligne: c.pour_ligne,
       })),
@@ -219,7 +240,10 @@ export function FilLigneTab({ commandeId, ligneId, soldee }: { commandeId: numbe
         <section>
           <div className="flex items-center gap-2 mb-1.5">
             <h3 className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-primary/70 font-semibold truncate">
-              {data.ecru_ref_label ? `${data.ecru_ref_label}${data.ecru_coloris_label ? ` /${data.ecru_coloris_label}` : ''}` : 'Tombé de métier'} — fil de la ligne : {fmtNum(data.kg_ligne ?? 0, 1)} kg
+              {data.ecru_ref_label ? `${data.ecru_ref_label}${data.ecru_coloris_label ? ` /${data.ecru_coloris_label}` : ''}` : 'Tombé de métier'} — {fmtNum(data.kg_ligne ?? 0, 1)} kg d’écru
+              {data.freinte_tricotage && data.freinte_tricotage.taux > 0 && (
+                <span title={`Freinte de tricotage ${data.freinte_tricotage.origine}`}> → fil {fmtNum(data.kg_fil_ligne ?? 0, 0)} kg (freinte {fmtNum(data.freinte_tricotage.taux * 100, 1)} % + marge {fmtNum((data.marge_securite ?? 0) * 100, 0)} %)</span>
+              )}
               {kgAffecte > 0.05 && <span className="normal-case tracking-normal font-normal"> (dont {fmtNum(kgAffecte, 1)} kg déjà en production ou en stock)</span>}
             </h3>
             {!soldee && (
@@ -266,7 +290,8 @@ export function FilLigneTab({ commandeId, ligneId, soldee }: { commandeId: numbe
           {/* What each yarn of the line still needs — the whole line has its matter only when all are covered. */}
           <div className="mb-2 rounded-lg border border-border/60 bg-card shadow-sm divide-y divide-border/40">
             {yarns.map((y) => {
-              const aCouvrir = y.reserve_kg + y.manque_kg
+              // The need (it stays the denominator when the line holds more, up to + 10 %).
+              const aCouvrir = y.calcul?.besoin ?? y.reserve_kg + y.manque_kg
               const couvert = y.manque_kg <= 0.05
               const pct = Math.round(y.pourcentage * 10) / 10
               return (
@@ -276,7 +301,10 @@ export function FilLigneTab({ commandeId, ligneId, soldee }: { commandeId: numbe
                   <span className="flex-shrink-0 text-muted-foreground">· {fmtNum(pct, Number.isInteger(pct) ? 0 : 1)} %</span>
                   <span className={cn('ml-auto flex-shrink-0 inline-flex items-center gap-1 tabular-nums', couvert ? 'text-green-700 font-medium' : 'text-muted-foreground')}>
                     {couvert && <CheckCircle2 className="h-3.5 w-3.5" />}
-                    Réservé {fmtNum(y.reserve_kg, 1)} / {fmtNum(aCouvrir, 1)} kg
+                    Réservé {fmtNum(y.reserve_kg, 1)} /{' '}
+                    <BesoinFilTooltip yarn={y} data={data} kgAffecte={kgAffecte}>
+                      <span className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-2 cursor-help">{fmtNum(aCouvrir, 1)} kg</span>
+                    </BesoinFilTooltip>
                   </span>
                 </div>
               )
@@ -306,11 +334,12 @@ export function FilLigneTab({ commandeId, ligneId, soldee }: { commandeId: numbe
                             <td className="px-2.5 py-1.5 font-semibold whitespace-nowrap">{enCommande ? 'Cde' : 'Lot'}</td>
                             <td className="px-2.5 py-1.5 font-semibold whitespace-nowrap">Fournisseur</td>
                             <td className="px-2.5 py-1.5 font-semibold whitespace-nowrap">{enCommande ? 'Prévue' : 'Entrée'}</td>
+                            <td className="px-2.5 py-1.5 font-semibold whitespace-nowrap text-right">{enCommande ? 'Commandé' : 'Stock'}</td>
                             <td className="px-2.5 py-1.5 font-semibold whitespace-nowrap text-right">Libre</td>
                             <td className="px-2.5 py-1.5 font-semibold whitespace-nowrap text-right">Pour la ligne</td>
                           </tr>
                           {rows.map((src) => {
-                            const ouvrable = !soldee && (src.pour_ligne > 0 || (src.libre > 0 && src.yarn.manque_kg > 0.05))
+                            const ouvrable = !soldee && (src.pour_ligne > 0 || (src.libre > 0 && src.yarn.plafond_kg - src.yarn.reserve_kg > 0.05))
                             return (
                               <tr
                                 key={`${src.kind}:${src.id}`}
@@ -331,7 +360,8 @@ export function FilLigneTab({ commandeId, ligneId, soldee }: { commandeId: numbe
                                 <td className="px-2.5 py-2 whitespace-nowrap tabular-nums">{src.numero}</td>
                                 <td className="px-2.5 py-2 whitespace-nowrap">{src.fournisseur || '—'}</td>
                                 <td className="px-2.5 py-2 whitespace-nowrap tabular-nums text-muted-foreground">{src.date}</td>
-                                <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums">{fmtNum(src.libre, 1)} kg</td>
+                                <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums" title={src.totalTitre}>{fmtNum(src.total, 1)} kg</td>
+                                <td className={cn('px-2.5 py-2 whitespace-nowrap text-right tabular-nums', src.libre <= 0.05 && 'text-muted-foreground')}>{fmtNum(src.libre, 1)} kg</td>
                                 <td className={cn('px-2.5 py-2 whitespace-nowrap text-right tabular-nums', src.pour_ligne > 0 ? 'font-bold' : 'text-muted-foreground')}>
                                   {src.pour_ligne > 0 ? `${fmtNum(src.pour_ligne, 1)} kg` : '—'}
                                 </td>
@@ -387,9 +417,9 @@ export function FilLigneTab({ commandeId, ligneId, soldee }: { commandeId: numbe
   )
 }
 
-/** Sets what the line holds on one source — opened by a row click, like the Tricotage tab's
- *  « poids affecté » dialog. Starts on the current hold, or on what the line still needs within
- *  what is free; 0 cancels. */
+/** Sets what the line holds on one source — opened by a row click (the row already says which
+ *  order or lot, Vincent 2026-10-26): type a value, « Tout enlever », « Réserver le besoin » or « Tout réserver ». A line
+ *  may hold up to its need + 10 % of a yarn (a whole 660 kg order for a 650 kg need). */
 function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
   commandeId: number
   ligneId: number
@@ -401,13 +431,23 @@ function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
   const [lastKey, setLastKey] = useState<string | null>(null)
   const key = cible ? `${cible.source.kind}:${cible.source.id}` : null
   const mien = cible?.source.pour_ligne ?? 0
-  // Never beyond what the line still needs of this yarn, nor beyond what is free on the source.
-  const plafond = cible ? mien + Math.max(0, Math.min(cible.yarn.manque_kg, cible.source.libre)) : 0
+  const besoin = cible ? cible.yarn.calcul?.besoin ?? cible.yarn.reserve_kg + cible.yarn.manque_kg : 0
+  // What the line holds elsewhere, then what it may take here: never beyond need + 10 %,
+  // nor beyond what is free on the source.
+  const ailleurs = cible ? Math.max(0, cible.yarn.reserve_kg - mien) : 0
+  const surSource = cible ? mien + cible.source.libre : 0
+  const plafond = cible ? Math.min(surSource, Math.max(0, cible.yarn.plafond_kg - ailleurs)) : 0
+  // What the line still needs, taken here (within what is free).
+  const leBesoin = Math.min(surSource, Math.max(0, besoin - ailleurs))
+  const fmtKg = (x: number) => String(Math.round(x * 100) / 100).replace('.', ',')
+  // Button labels: no decimals on a round number, so three buttons fit on one row.
+  const kgBouton = (x: number) => `${fmtNum(x, Math.abs(x - Math.round(x)) < 0.005 ? 0 : 1)} kg`
   if (key !== lastKey) {
     setLastKey(key)
     if (cible) {
-      const depart = mien > 0 ? mien : plafond
-      setKg(depart > 0 ? String(Math.round(depart * 100) / 100).replace('.', ',') : '')
+      // Starts on the current hold, else on what the line still needs within what is free here.
+      const depart = mien > 0 ? mien : Math.min(surSource, Math.max(0, besoin - ailleurs))
+      setKg(depart > 0 ? fmtKg(depart) : '')
     }
   }
   const mut = useMutation({
@@ -424,24 +464,20 @@ function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
   const valid = !!cible && Number.isFinite(value) && value >= 0 && value <= plafond + 0.05 && Math.abs(value - mien) > 0.005
   const close = () => { mut.reset(); onClose() }
 
-  // Read live while typing — same columns + bar as a ticked lot in « Lancer le tricotage ».
   const pourLigne = Number.isFinite(value) ? Math.max(0, value) : 0
-  const total = cible ? cible.source.libre + mien : 0
-  const resteLibre = Math.max(0, total - pourLigne)
-  const aCouvrir = cible ? cible.yarn.reserve_kg + cible.yarn.manque_kg : 0
-  const reserveApres = cible ? cible.yarn.reserve_kg - mien + pourLigne : 0
-  const couvert = aCouvrir > 0 && reserveApres >= aCouvrir - 0.05
+  const reserveApres = ailleurs + pourLigne
+  const couvert = besoin > 0 && reserveApres >= besoin - 0.05
+  const audela = reserveApres - besoin
   const annule = mien > 0 && pourLigne === 0
   const blocage = !cible || mut.isPending
     ? null
     : !Number.isFinite(value) || value < 0
       ? 'Saisissez une quantité'
-      : value > total + 0.05
-        ? `Il n’y a que ${fmtNum(total, 1)} kg ici`
+      : value > surSource + 0.05
+        ? `Il n’y a que ${fmtNum(surSource, 1)} kg ici`
         : value > plafond + 0.05
-          ? `La ligne n’a besoin que de ${fmtNum(plafond, 1)} kg de ce fil ici`
+          ? `Au plus ${fmtNum(plafond, 1)} kg ici (besoin + 10 %)`
           : null
-  const SourceIcon = cible?.source.kind === 'lot' ? Package : Truck
 
   return (
     <Dialog open={cible !== null} onOpenChange={(o) => { if (!o && !mut.isPending) close() }}>
@@ -455,7 +491,7 @@ function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
             <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Réserver du fil pour la ligne</h2>
             {cible && (
               <p className="text-xs text-white/70 truncate">
-                {cible.yarn.reference}{cible.yarn.coloris ? ` - ${cible.yarn.coloris}` : ''}
+                {cible.source.titre} · {cible.yarn.reference}{cible.yarn.coloris ? ` - ${cible.yarn.coloris}` : ''}
               </p>
             )}
           </div>
@@ -468,8 +504,7 @@ function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
         </div>
 
         {cible && (
-          <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100 p-4 space-y-3 scrollbar-transparent">
-            {/* What the user decides */}
+          <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100 p-4 scrollbar-transparent">
             <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm p-4 space-y-2">
               <label className="text-sm font-semibold">Réservé pour la ligne</label>
               <div className="relative">
@@ -481,42 +516,23 @@ function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
                 />
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">kg</span>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {cible.source.kind === 'lot'
-                  ? 'Ce lot sera pris en premier au lancement du tricotage de la ligne.'
-                  : 'À la réception, ce fil passera sur le lot créé depuis cette commande, puis sur la commande de tricotage lancée depuis la ligne.'}
-                {mien > 0 && ' Mettez 0 pour annuler la réservation.'}
-              </p>
-            </div>
-
-            {/* What it takes: the source, read live */}
-            <div className="rounded-lg border border-border/60 bg-card shadow-sm p-4 space-y-3">
-              <div className="flex items-center gap-2.5">
-                <div className={cn(
-                  'h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0',
-                  cible.source.kind === 'lot' ? 'bg-emerald-500/10 text-emerald-700' : 'bg-sky-500/10 text-sky-700',
-                )}>
-                  <SourceIcon className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold truncate">
-                    {cible.source.titre}{cible.source.fournisseur ? ` · ${cible.source.fournisseur}` : ''}
-                  </p>
-                  <p className="text-xs text-muted-foreground truncate">{cible.source.ou}</p>
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <Chiffre label="Libre" kg={total} />
-                <Chiffre label="Pour cette ligne" kg={pourLigne} couleur={COULEUR_LIGNE} />
-                <Chiffre label="Reste libre" kg={resteLibre} fort />
-              </div>
-              <div className="flex h-2 w-full overflow-hidden rounded-full bg-zinc-200">
-                {pourLigne > 0 && total > 0 && (
-                  <div
-                    className="h-full transition-[width] duration-200"
-                    style={{ width: `${Math.min(100, (pourLigne / total) * 100)}%`, backgroundColor: COULEUR_LIGNE }}
-                  />
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" className="flex-1 min-w-0 h-auto min-h-8 px-2 py-1.5 whitespace-normal leading-tight" disabled={mut.isPending || pourLigne === 0} onClick={() => setKg('0')}>
+                  Tout enlever
+                </Button>
+                {/* Hidden when it would do what « Tout réserver » does (the source cannot cover the need). */}
+                {leBesoin > 0.005 && leBesoin < plafond - 0.005 && (
+                  <Button variant="outline" size="sm" className="flex-1 min-w-0 h-auto min-h-8 px-2 py-1.5 whitespace-normal leading-tight" disabled={mut.isPending} onClick={() => setKg(fmtKg(leBesoin))}>
+                    Réserver le besoin ({kgBouton(leBesoin)})
+                  </Button>
                 )}
+                <Button
+                  variant="outline" size="sm" className="flex-1 min-w-0 h-auto min-h-8 px-2 py-1.5 whitespace-normal leading-tight" disabled={mut.isPending || plafond <= 0.005}
+                  title={plafond < surSource - 0.05 ? 'Jusqu’au besoin + 10 %' : 'Tout ce qui est libre ici'}
+                  onClick={() => setKg(fmtKg(plafond))}
+                >
+                  Tout réserver ({kgBouton(plafond)})
+                </Button>
               </div>
             </div>
           </div>
@@ -533,12 +549,13 @@ function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
           <div className="min-w-0">
             <p className={cn('text-xs font-medium tabular-nums truncate', couvert ? 'text-green-600' : 'text-muted-foreground')}>
               <span className={cn('font-bold', !couvert && 'text-foreground')}>{fmtNum(reserveApres, 1)}</span>
-              {' / '}{fmtNum(aCouvrir, 1)} kg de ce fil réservés pour la ligne
+              {' / '}{fmtNum(besoin, 1)} kg de ce fil réservés pour la ligne
+              {audela > 0.05 && <span className="font-normal text-muted-foreground"> · {fmtNum(audela, 1)} kg au-delà du besoin</span>}
             </p>
             <div className="h-1.5 mt-1.5 rounded-full bg-white overflow-hidden">
               <div
                 className={cn('h-full rounded-full transition-all', couvert ? 'bg-green-500' : 'bg-accent')}
-                style={{ width: `${aCouvrir > 0 ? Math.min(100, (reserveApres / aCouvrir) * 100) : 0}%` }}
+                style={{ width: `${besoin > 0 ? Math.min(100, (reserveApres / besoin) * 100) : 0}%` }}
               />
             </div>
           </div>
@@ -561,17 +578,51 @@ function ReservationDialog({ commandeId, ligneId, cible, onClose, onSuccess }: {
   )
 }
 
-/** The source's part for this client line: the « Pour la commande » colour of the launch dialog. */
-const COULEUR_LIGNE = '#2a78d6'
-
-function Chiffre({ label, kg, couleur, fort }: { label: string; kg: number; couleur?: string; fort?: boolean }) {
+/** How a yarn's need is obtained (decision Vincent 2026-10-26): écru still to make ÷ (1 − freinte)
+ *  × (1 + safety margin), rounded up to 10 kg. Same look as the « Rouleaux estimés » tooltip. */
+function BesoinFilTooltip({ yarn, data, kgAffecte, children }: { yarn: FilYarn; data: FilPayload; kgAffecte: number; children: ReactNode }) {
+  const c = yarn.calcul
+  const f = data.freinte_tricotage
+  if (!c || !f) return <>{children}</>
+  const pct = Math.round(yarn.pourcentage * 10) / 10
+  const ecruAFaire = Math.max(0, (data.kg_ligne ?? 0) - kgAffecte)
+  const rouleaux = data.poids_rouleau ? Math.round(ecruAFaire / data.poids_rouleau) : 0
   return (
-    <div className="min-w-0">
-      <p className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground truncate">
-        {couleur && <span className="h-2 w-2 flex-shrink-0 rounded-sm" style={{ backgroundColor: couleur }} />}
-        {label}
-      </p>
-      <p className={cn('text-sm tabular-nums', fort ? 'font-bold' : 'font-medium')}>{fmtNum(kg, 1)} kg</p>
+    <Tooltip
+      side="bottom"
+      content={
+        <div className="w-max min-w-[290px] py-1 font-normal">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Besoin en fil</p>
+          <p className="mt-0.5 flex items-baseline gap-1.5">
+            <span className="text-2xl font-bold tabular-nums text-primary">{fmtNum(c.besoin, 0)}</span>
+            <span className="text-sm text-muted-foreground">kg</span>
+          </p>
+          <div className="mt-2 pt-2 border-t border-border/60 space-y-1 text-xs tabular-nums">
+            <CalculRow
+              label={`${kgAffecte > 0.05 ? 'Écru encore à produire' : 'Écru de la ligne'}${pct < 100 ? ` × ${fmtNum(pct, Number.isInteger(pct) ? 0 : 1)} %` : ''}`}
+              value={`${fmtNum(c.kg_ecru, 1)} kg`}
+            />
+            <CalculRow label={`÷ (1 − ${fmtNum(f.taux * 100, 1)} % freinte tricotage)`} value={`${fmtNum(c.fil, 1)} kg`} />
+            <CalculRow label={`× ${fmtNum(1 + (data.marge_securite ?? 0), 2)} marge de sécurité`} value={`${fmtNum(c.avec_marge, 1)} kg`} />
+            <CalculRow label={`arrondi aux ${fmtNum(data.arrondi_kg ?? 10, 0)} kg supérieurs`} value={`${fmtNum(c.besoin, 0)} kg`} strong />
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Freinte {f.origine}.
+            {rouleaux > 0 && <> ≈ {fmtNum(rouleaux)} rouleau{rouleaux >= 2 ? 'x' : ''} d’écru de {fmtNum(data.poids_rouleau ?? 0, 0)} kg.</>}
+          </p>
+        </div>
+      }
+    >
+      {children}
+    </Tooltip>
+  )
+}
+
+function CalculRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={cn(strong && 'font-semibold text-foreground')}>{value}</span>
     </div>
   )
 }

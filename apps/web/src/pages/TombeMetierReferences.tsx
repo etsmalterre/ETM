@@ -61,6 +61,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 // TRM's own src (see the header of RectiligneReferences.tsx).
 import { RectiligneReferences, RefKindSwitch, type RefKind } from './tombe-metier/RectiligneReferences'
 import { SpecTile, TileValue, TileText, TextTile, tileInput } from './tombe-metier/spec-tiles'
+import { FreinteTricotageTile, type FreinteTricotage } from './tombe-metier/freinte-tricotage'
 import { JAUGE_OPTIONS, DIAM_OPTIONS, jaugeLabel, diametreLabel } from './tombe-metier/ordinals'
 import { ColorisCompoLineRow, type ColorisFilLookup, type CompoDraftLine, type RefFilLookup } from './tombe-metier/composition-fil'
 
@@ -224,7 +225,10 @@ interface RefEcruDetail {
   ecarteur: number | null
   laize_tbm: number | null
   poids_m2_tbm: number | null
-  rendement: number | null
+  /** ref_ecru.freinte_tricotage (0..1), null = not forced */
+  freinte_tricotage_forcee: number | null
+  /** the value every reader uses (API lib/freinte-tricotage.ts) */
+  freinte_tricotage?: FreinteTricotage | null
   vitesse_cible: number | null
   nb_chutes: number | null
   nb_aiguilles: number | null
@@ -480,7 +484,8 @@ interface HeaderDraft {
   ecarteur: string
   laize_tbm: string
   poids_m2_tbm: string
-  rendement: string
+  /** forced freinte de tricotage in %, '' = the measured one */
+  freinte_tricotage: string
   vitesse_cible: string
   nb_chutes: string
   nb_aiguilles: string
@@ -496,7 +501,7 @@ function emptyDraft(): HeaderDraft {
     commentaire: '', observations: '', tombe_metier: '',
     lfa_tour_1: '', lfa_tour_2: '', lfa_tour_3: '', lfa_tour_4: '',
     poulies_1: '', poulies_2: '', poulies_3: '', poulies_4: '',
-    ecarteur: '', laize_tbm: '', poids_m2_tbm: '', rendement: '', vitesse_cible: '',
+    ecarteur: '', laize_tbm: '', poids_m2_tbm: '', freinte_tricotage: '', vitesse_cible: '',
     nb_chutes: '', nb_aiguilles: '', maille_ouverture: false, ouvert_visiteuse: false, sonneter: false,
   }
 }
@@ -522,7 +527,7 @@ function draftFromDetail(d: RefEcruDetail): HeaderDraft {
     ecarteur: numStr(d.ecarteur),
     laize_tbm: numStr(d.laize_tbm),
     poids_m2_tbm: numStr(d.poids_m2_tbm),
-    rendement: numStr(d.rendement),
+    freinte_tricotage: d.freinte_tricotage_forcee == null ? '' : String(Math.round(d.freinte_tricotage_forcee * 1000) / 10),
     vitesse_cible: numStr(d.vitesse_cible),
     nb_chutes: numStr(d.nb_chutes),
     nb_aiguilles: numStr(d.nb_aiguilles),
@@ -554,7 +559,7 @@ function draftToBody(d: HeaderDraft) {
     ecarteur: num(d.ecarteur),
     laize_tbm: num(d.laize_tbm),
     poids_m2_tbm: num(d.poids_m2_tbm),
-    rendement: num(d.rendement),
+    freinte_tricotage: d.freinte_tricotage.trim() === '' ? null : Number(d.freinte_tricotage) / 100,
     vitesse_cible: num(d.vitesse_cible),
     nb_chutes: num(d.nb_chutes),
     nb_aiguilles: num(d.nb_aiguilles),
@@ -729,6 +734,7 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
   const invalidateDetail = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['ref-ecru', selectedId] })
     queryClient.invalidateQueries({ queryKey: ['refs-ecru'] })
+    queryClient.invalidateQueries({ queryKey: ['ref-ecru-freinte', selectedId] })
   }, [queryClient, selectedId])
 
   const saveMutation = useMutation({
@@ -1559,7 +1565,15 @@ function SpecsCard({
         <div className="grid grid-cols-3 gap-2">
           <SpecTile label="Laize TBM">{isEditing ? num('laize_tbm') : <TileValue value={detail.laize_tbm} unit="cm" />}</SpecTile>
           <SpecTile label="Poids TBM">{isEditing ? num('poids_m2_tbm') : <TileValue value={detail.poids_m2_tbm} unit="g/m²" />}</SpecTile>
-          <SpecTile label="Rendement">{isEditing ? num('rendement') : <TileValue value={detail.rendement} />}</SpecTile>
+          <FreinteTricotageTile
+            idRefEcru={detail.IDref_ecru}
+            reference={detail.reference}
+            freinte={detail.freinte_tricotage}
+            forcee={detail.freinte_tricotage_forcee}
+            isEditing={isEditing}
+            draft={draft.freinte_tricotage}
+            onDraftChange={(v) => onDraftChange({ ...draft, freinte_tricotage: v })}
+          />
         </div>
 
         {/* Row 3: the piece and the machine pace */}

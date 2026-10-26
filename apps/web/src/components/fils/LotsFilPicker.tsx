@@ -35,6 +35,8 @@ export interface FilALancer {
   coloris: string
   /** 0..100 */
   pourcentage: number
+  /** the écru's freinte de tricotage (0..1): this yarn covers écru × % ÷ (1 − freinte) */
+  freinte?: number
   stock: LotFilALancer[]
   /** open supplier orders of this yarn — information only, yarn on order never launches */
   pending?: { id: number; date_livraison: string | null; fournisseur: string; poids: number }[]
@@ -45,7 +47,9 @@ export type ChoixLots = Record<string, number[]>
 
 export const cleFil = (y: Pick<FilALancer, 'IDref_fil' | 'IDcolori_fil'>) => `${y.IDref_fil}:${y.IDcolori_fil}`
 
-const besoinDe = (y: FilALancer, totalKg: number) => Math.round(totalKg * (y.pourcentage / 100) * 100) / 100
+/** The yarn kg an écru weight takes, after the freinte de tricotage (same rule as the server's plan). */
+const filPour = (y: FilALancer, kgEcru: number) => (kgEcru * (y.pourcentage / 100)) / (1 - Math.min(0.49, y.freinte ?? 0))
+const besoinDe = (y: FilALancer, totalKg: number) => Math.round(filPour(y, totalKg) * 100) / 100
 
 /** Same order as the server's plan (the lots arrive sorted): as many lots as the need takes. */
 function lotsParDefaut(y: FilALancer, besoin: number): number[] {
@@ -86,8 +90,8 @@ interface Prise { commande: number; stock: number }
 /** Per ticked lot, in the plan's order: the client part first, then the stock part. */
 function prises(y: FilALancer, ids: readonly number[], kgCommande: number, kgStock: number): Map<number, Prise> {
   const out = new Map<number, Prise>()
-  let resteCmd = kgCommande * (y.pourcentage / 100)
-  let resteStock = kgStock * (y.pourcentage / 100)
+  let resteCmd = filPour(y, kgCommande)
+  let resteStock = filPour(y, kgStock)
   for (const l of y.stock) {
     if (!ids.includes(l.id)) continue
     const commande = Math.max(0, Math.min(l.poids, resteCmd))

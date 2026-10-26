@@ -210,15 +210,24 @@ export async function libreSurLigneCommande(ligne: LigneCommandeFil, sql: Sql = 
   return round2(Math.max(0, ligne.quantite - ligne.recu) - Number(kg))
 }
 
+/** A line may hold up to its need + 10 % of a yarn (decision Vincent 2026-10-26: taking a whole
+ *  660 kg supplier order for a 650 kg need is fine, a 2 400 kg stock purchase is not). */
+export const DEPASSEMENT_RESERVATION = 0.10
+
+/** The most a line may hold of a yarn whose need is `besoin` kg. */
+export function plafondReservation(besoin: number): number {
+  return round2(besoin * (1 + DEPASSEMENT_RESERVATION))
+}
+
 function refuserAuDelaDuBesoin(kg: number, max: number | undefined): void {
   if (max === undefined || kg <= max + 0.05) return
   throw new RefusReservation('au_dela_du_besoin', max > 0.05
-    ? `La ligne n’a besoin que de ${max.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} kg de plus de ce fil.`
-    : 'Le besoin de la ligne en ce fil est déjà couvert.')
+    ? `La ligne ne peut réserver que ${max.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} kg de plus de ce fil (besoin + ${DEPASSEMENT_RESERVATION * 100} %).`
+    : `La ligne réserve déjà son besoin en ce fil + ${DEPASSEMENT_RESERVATION * 100} %.`)
 }
 
 /** Reserve kg of a yarn order line for a client line. The caller checked the yarn is in the
- *  line's composition; `max` = what the line still needs of this yarn (never reserve beyond). */
+ *  line's composition; `max` = what the line may still take of this yarn (never reserve beyond). */
 export async function reserverSurCommande(p: { ligneClient: number; ligneCommandeFil: number; kg: number; max?: number; parId: number; par: string | null }): Promise<number> {
   const kg = round2(p.kg)
   if (!(kg > 0)) throw new RefusReservation('quantite', 'La quantité doit être positive.')

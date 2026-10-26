@@ -95,6 +95,7 @@ import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../
 import { affectationsCommandeSst } from '../lib/affectations-sst.js'
 import { enregistrerSoumission, naturesDemandees, NATURE_LIBELLE, type NatureSoumission } from '../lib/soumission-lot.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { freinteTricotage, filPourEcru, ecruPourFil } from '../lib/freinte-tricotage.js'
 import {
   couvertureLigne, ecrireAffectation, filsALancer, lotsLibres, messageFilNonCouvert, nomsFils, planLancement, type PlanLancement,
 } from '../lib/lancement-tricotage.js'
@@ -4694,7 +4695,8 @@ commandesSousTraitantRouter.get('/:id/lots-fil', async (req: Request, res: Respo
     if (!(await isTricotageMalterreSst(id))) { res.json({ applicable: false, yarns: [] }); return }
     const paires = (await loadCompositionPairs(refEcru, coloris))
       .map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
-    res.json({ applicable: true, yarns: await filsALancer({ magasin: TRICOTAGE_MALTERRE_ID, paires, ligneClient: 0 }) })
+    const freinte = (await freinteTricotage(refEcru)).taux
+    res.json({ applicable: true, yarns: await filsALancer({ magasin: TRICOTAGE_MALTERRE_ID, paires, ligneClient: 0, freinte }) })
   } catch (err) {
     console.error('Error fetching lots-fil for a TRM line:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -4738,6 +4740,7 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
         .map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
       planFil = planLancement({
         totalKg: Number(d.quantite) || 0, paires, choisis: lots.success ? lots.data : [],
+        freinte: (await freinteTricotage(d.IDreference ?? 0)).taux,
         lots: await lotsLibres({ magasin: TRICOTAGE_MALTERRE_ID, paires, ligneClient: 0 }),
       })
       if (!planFil.ok) {
@@ -4916,7 +4919,7 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
       if (refBouge || qtyApres > (Number(cur.quantite) || 0) + 0.005) {
         const paires = (await loadCompositionPairs(Number(cur.IDreference) || 0, Number(cur.IDColoris) || 0))
           .map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
-        const couvert = await couvertureLigne(lineId, paires)
+        const couvert = await couvertureLigne(lineId, paires, (await freinteTricotage(Number(cur.IDreference) || 0)).taux)
         if (couvert !== null && refBouge) {
           res.status(409).json({ error: 'fil_affecte', message: 'Du fil est affecté à cette ligne : désaffectez-le (onglet Stock fil) avant de changer la référence ou le coloris.' })
           return
@@ -5930,6 +5933,8 @@ function computeAffectationPlan(args: {
   targetQtyKg: number
   selectedLots: StockLotMini[]
   pairs: CompositionPair[]
+  /** the écru's freinte de tricotage (0..1): the yarn covers écru ÷ (1 − freinte) */
+  freinte?: number
 }): AffectationPlanResult {
   const errors: string[] = []
   const { targetQtyKg, selectedLots, pairs } = args
@@ -5961,7 +5966,7 @@ function computeAffectationPlan(args: {
       errors.push(`Lot manquant pour la composition (ref_fil=${pair.IDref_fil}, coloris=${pair.IDcolori_fil}, ${pair.pourcentage}%).`)
       continue
     }
-    let needed = targetQtyKg * (pair.pourcentage / 100)
+    let needed = filPourEcru(targetQtyKg * (pair.pourcentage / 100), args.freinte ?? 0)
     for (const lot of bucket) {
       if (needed <= 0) break
       const take = Math.min(needed, lot.stock)
@@ -5992,6 +5997,7 @@ function computeAffectationPlan(args: {
 function computeFinirLotPlan(args: {
   selectedLots: StockLotMini[]
   pairs: CompositionPair[]
+  freinte?: number
 }): AffectationPlanResult {
   const errors: string[] = []
   const { selectedLots, pairs } = args
@@ -6022,7 +6028,7 @@ function computeFinirLotPlan(args: {
       continue
     }
     const bucketStock = bucket.reduce((s, l) => s + l.stock, 0)
-    const producible = bucketStock / (pair.pourcentage / 100)
+    const producible = ecruPourFil(bucketStock / (pair.pourcentage / 100), args.freinte ?? 0)
     if (producible < limitingProducible) {
       limitingProducible = producible
       limitingBucketKey = k
@@ -6047,7 +6053,7 @@ function computeFinirLotPlan(args: {
     : undefined
 
   // Re-run the standard plan with the computed targetQtyKg.
-  const std = computeAffectationPlan({ targetQtyKg, selectedLots, pairs })
+  const std = computeAffectationPlan({ targetQtyKg, selectedLots, pairs, freinte: args.freinte })
   return { ...std, limitingLot }
 }
 
@@ -6364,6 +6370,7 @@ commandesSousTraitantRouter.post(
 
       // Load composition + selected lots + current line qty.
       const pairs = await loadCompositionPairs(ctx.IDref_ecru, ctx.IDcolori_ecru)
+      const freinte = (await freinteTricotage(ctx.IDref_ecru)).taux
       const selectedLots = await loadStockLotsByIds(stockFilIds)
       const lineQtyRow = await query<{ quantite: number | null }>(
         `SELECT quantite FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${ligneId}`,
@@ -6371,8 +6378,8 @@ commandesSousTraitantRouter.post(
       const currentQty = Number(lineQtyRow[0]?.quantite) || 0
 
       const planResult = mode === 'finir'
-        ? computeFinirLotPlan({ selectedLots, pairs })
-        : computeAffectationPlan({ targetQtyKg: currentQty, selectedLots, pairs })
+        ? computeFinirLotPlan({ selectedLots, pairs, freinte })
+        : computeAffectationPlan({ targetQtyKg: currentQty, selectedLots, pairs, freinte })
 
       if (!planResult.ok) {
         res.status(400).json({ error: 'plan_invalid', messages: planResult.errors })
