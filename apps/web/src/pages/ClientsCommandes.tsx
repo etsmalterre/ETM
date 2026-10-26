@@ -738,6 +738,25 @@ export function ClientsCommandes() {
     ? rows.filter((r) => r.IDcommande_client === gardeId || filteredRows.includes(r))
     : filteredRows
 
+  // A deep-linked order must also show selected in the LEFT list, not only in the detail:
+  // scroll its card to the top of the list once the list holds it. Absent from the open list (soldée
+  // since), retry once on « Toutes », the latest 200 (same rule as Sous-traitants).
+  const deepLinkRef = useRef<number | null>(linkedCommandeId)
+  const deepLinkRetriedRef = useRef(false)
+  useEffect(() => {
+    const id = deepLinkRef.current
+    if (id === null || !commandes || isFetching) return
+    if (visibleRows.some((r) => r.IDcommande_client === id)) {
+      deepLinkRef.current = null
+      requestAnimationFrame(() => document.querySelector(`[data-commande-client="${id}"]`)?.scrollIntoView({ block: 'start' }))
+      return
+    }
+    if (deepLinkRetriedRef.current || statusFilter === 'all') { deepLinkRef.current = null; return }
+    deepLinkRetriedRef.current = true
+    setStatusFilter('all')
+    setSelectedId(id) // useAutoSelectFirst fell back to the first open row meanwhile
+  }, [commandes, isFetching, visibleRows, statusFilter])
+
   // Keep the selection valid against the (server-filtered) list. Skip while the
   // list is refetching: after creating a commande we setSelectedId(newId) before
   // the refetch settles, so the stale list wouldn't yet contain it — resetting
@@ -1057,9 +1076,10 @@ function CommandeList({
           return (
             <div
               key={row.IDcommande_client}
+              data-commande-client={row.IDcommande_client}
               onClick={() => onSelect(row.IDcommande_client)}
               className={cn(
-                'p-3 border rounded-lg cursor-pointer transition-all bg-white',
+                'p-3 border rounded-lg cursor-pointer transition-all bg-white scroll-mt-[9px]',
                 isSelected
                   ? (u?.selected ?? 'border-zinc-400 ring-1 ring-zinc-400')
                   : (u?.hover ?? 'border-border hover:border-zinc-400/60'),
