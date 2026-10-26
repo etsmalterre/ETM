@@ -137,6 +137,8 @@ interface LigneCommande {
   unite_label: string
   prix: number
   poids: number
+  /** Rolls the quantity represents, sized like the Fiche tarif (API lib/rouleaux-estimes.ts); null = no roll weight. */
+  rouleaux_estimes?: { nb: number; taille: number; poids_rouleau: number; rendement: number; ref_ecru: string | null } | null
   /** délai: when PRODUCTION must be done (YYYYMMDD) */
   date_livraison: string | null
   /** the first délai ever given, frozen by the API; null on lines older than 2026-10-11 */
@@ -2052,6 +2054,56 @@ function DonationPickerDialog({
 
 // Micro label + value stat block used on line cards — same label/value
 // language as the mobile CardKV (uppercase micro label, tabular value).
+/** « Commandé » with, on hover, the rolls it represents — one roll sized as on the Fiche tarif
+ *  (API lib/rouleaux-estimes.ts). Same tooltip grammar as the roll note icons. */
+function CommandeStat({ line }: { line: LigneCommande }) {
+  const value = `${fmtNum(line.quantite, 1)} ${line.unite_label}`
+  const r = line.rouleaux_estimes
+  if (!r) return <LineStat label="Commandé" value={value} />
+  const ml = line.unite === 3
+  const entier = Math.round(r.nb)
+  return (
+    <Tooltip
+      side="bottom"
+      align="start"
+      content={
+        <div className="w-max min-w-[230px] py-1 font-normal">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Rouleaux estimés</p>
+          <p className="mt-0.5 flex items-baseline gap-1.5">
+            <span className="text-2xl font-bold tabular-nums text-primary">{entier < 1 ? '< 1' : `≈ ${fmtNum(entier)}`}</span>
+            <span className="text-sm text-muted-foreground">rouleau{entier >= 2 ? 'x' : ''}</span>
+          </p>
+          <div className="mt-2 pt-2 border-t border-border/60 space-y-1 text-xs tabular-nums">
+            <RouleauRow label={`1 rouleau d'écru${r.ref_ecru ? ` ${r.ref_ecru}` : ''}`} value={`${fmtNum(r.poids_rouleau, 1)} kg`} />
+            {ml && <RouleauRow label="× rendement" value={`${fmtNum(r.rendement || r.taille / r.poids_rouleau, 2)} Ml/kg`} />}
+            {ml && <RouleauRow label="= 1 rouleau fini" value={`${fmtNum(r.taille, 1)} Ml`} strong />}
+            <RouleauRow
+              label={`${fmtNum(line.quantite, 1)} ÷ ${fmtNum(r.taille, 1)} ${line.unite_label}`}
+              value={`${fmtNum(r.nb, 1)} rlx`}
+              strong
+            />
+          </div>
+        </div>
+      }
+    >
+      <LineStat
+        label="Commandé"
+        value={value}
+        valueClass="underline decoration-dotted decoration-muted-foreground/60 underline-offset-2 cursor-help"
+      />
+    </Tooltip>
+  )
+}
+
+function RouleauRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={cn(strong && 'font-semibold text-foreground')}>{value}</span>
+    </div>
+  )
+}
+
 function LineStat({ label, value, className, valueClass, title }: {
   label: string
   value: string
@@ -2142,7 +2194,7 @@ function LineCard({
           Expédié · Prix u. · Montant), expedition date pinned right with
           its urgency color. Single source for the ordered quantity. */}
       <div className="mt-2 ml-9 flex flex-wrap items-end gap-x-6 gap-y-1.5">
-        <LineStat label="Commandé" value={`${fmtNum(line.quantite, 1)} ${line.unite_label}`} />
+        <CommandeStat line={line} />
         {(canAffect || isDivers) && (
           <LineStat
             label="Expédié"

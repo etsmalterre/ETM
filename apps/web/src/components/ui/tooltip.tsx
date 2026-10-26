@@ -5,6 +5,9 @@ interface TooltipProps {
   content: React.ReactNode
   children: React.ReactNode
   side?: 'top' | 'right' | 'bottom' | 'left'
+  /** top / bottom only: 'start' pins the tooltip to the trigger's left edge
+   *  instead of centering it — for a trigger near the left of a clipping panel. */
+  align?: 'center' | 'start'
   delayDuration?: number
 }
 
@@ -12,6 +15,7 @@ function Tooltip({
   content,
   children,
   side = 'right',
+  align = 'center',
   delayDuration = 200,
 }: TooltipProps) {
   const [isVisible, setIsVisible] = React.useState(false)
@@ -51,7 +55,8 @@ function Tooltip({
           role="tooltip"
           className={cn(
             'absolute z-50 px-3 py-1.5 text-xs font-medium text-popover-foreground bg-popover border rounded-md shadow-md animate-in fade-in-0 zoom-in-95',
-            sideClasses[side]
+            sideClasses[side],
+            align === 'start' && (side === 'top' || side === 'bottom') && 'left-0 translate-x-0'
           )}
         >
           {content}

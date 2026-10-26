@@ -23,6 +23,7 @@
 //  - Reservation pointer: stock_ecru.IDligne_commande_client /
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
+import { rouleauxEstimesParLigne } from '../lib/rouleaux-estimes.js'
 import { faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClient } from '../lib/statut-ligne-client.js'
 import { etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE } from '../lib/etude-ligne-client.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
@@ -1628,6 +1629,11 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
     }))
 
     const etudes = await etudesParId(lignesFixed.map((l) => Number(l.IDetude_col) || 0))
+    // Rolls the line represents, sized like the Fiche tarif (lib/rouleaux-estimes.ts) — hover of « Commandé ».
+    const rouleaux = await rouleauxEstimesParLigne(lignesFixed.map((l) => ({
+      id: Number(l.IDligne_commande_client), typeKind: Number(l.type_kind) || 0, refId: Number(l.IDreference) || 0,
+      unite: Number(l.unite) || 0, quantite: Number(l.quantite) || 0,
+    })))
 
     const lignes = lignesFixed.map((l) => {
       const typeKind = Number(l.type_kind) || 0
@@ -1673,6 +1679,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
           ? { id: etude.id, libelle: etude.libelle, attente: etude.attente, depuis: etude.attenteDepuis, relance_le: etude.relanceLe, derniere_relance: etude.derniereRelance }
           : null,
         montant: qty * prix,
+        rouleaux_estimes: rouleaux.get(Number(l.IDligne_commande_client)) ?? null,
         // affectation aggregates + the gauge basis (poids for Kg, metrage for Ml)
         nb_rolls: agg.nb_rolls,
         total_metrage: agg.total_metrage,
