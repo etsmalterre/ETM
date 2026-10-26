@@ -445,6 +445,27 @@ function draftToBody(d: HeaderDraft) {
   }
 }
 
+// ── Rights ─────────────────────────────────────────────
+
+/** What the user may change beyond the general fields (each includes
+ *  edit_ref_fini, the key that opens « Modifier »). */
+interface DroitsRefFini {
+  specifications: boolean
+  controles: boolean
+  traitements: boolean
+  associees: boolean
+}
+
+/** Shown in edit mode on a part of the fiche the user may not change. */
+function LectureSeule({ quoi }: { quoi: string }) {
+  return (
+    <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <Lock className="h-3 w-3 flex-shrink-0" />
+      Lecture seule : vous n’avez pas le droit de modifier {quoi}.
+    </p>
+  )
+}
+
 // ── Page ───────────────────────────────────────────────
 
 export function FinisReferences() {
@@ -467,6 +488,22 @@ export function FinisReferences() {
 
   const { data: refs, isLoading, isError, error } = useRefsFini()
   const { data: detail, isLoading: detailLoading } = useRefFiniDetail(selectedId)
+
+  // Every write is gated (Paramètres › Utilisateurs › « Finis › Références »);
+  // the API enforces the same keys (lib/ref-fini-droits.ts).
+  const canCreate = useHasPermission('create_ref_fini')
+  const canDelete = useHasPermission('delete_ref_fini')
+  const canEdit = useHasPermission('edit_ref_fini')
+  const canSpecs = useHasPermission('edit_ref_fini_specifications')
+  const canControles = useHasPermission('edit_ref_fini_controles')
+  const canTraitements = useHasPermission('edit_ref_fini_traitements')
+  const canAssociees = useHasPermission('edit_ref_fini_associees')
+  const droits: DroitsRefFini = {
+    specifications: canEdit && canSpecs,
+    controles: canEdit && canControles,
+    traitements: canEdit && canTraitements,
+    associees: canEdit && canAssociees,
+  }
   const { data: ecruOptions } = useEcruLookup(isEditing)
 
   const filtered = useMemo(() => {
@@ -658,6 +695,7 @@ export function FinisReferences() {
             onNew={() => createMutation.mutate()}
             isCreating={createMutation.isPending}
             isEditing={isEditing}
+            canCreate={canCreate}
           />
         }
         detailHeader={
@@ -677,6 +715,9 @@ export function FinisReferences() {
             }}
             onDuplicate={() => setDuplicateConfirmOpen(true)}
             isDuplicating={duplicateMutation.isPending}
+            canCreate={canCreate}
+            canEdit={canEdit}
+            canDelete={canDelete}
             onPrintDoc={(doc) => {
               if (selectedId === null) return
               if (doc === 'technique') {
@@ -701,6 +742,7 @@ export function FinisReferences() {
             onDraftChange={setDraft}
             onMutationSuccess={invalidateAll}
             ecruOptions={ecruOptions ?? []}
+            droits={droits}
           />
         }
         sidebar={
@@ -710,6 +752,7 @@ export function FinisReferences() {
               isEditing={isEditing}
               draft={draft}
               onDraftChange={setDraft}
+              droits={droits}
             />
           ) : null
         }
@@ -809,6 +852,7 @@ function RefFiniList({
   onNew,
   isCreating,
   isEditing,
+  canCreate,
 }: {
   refs: RefFiniListRow[]
   totalCount: number
@@ -822,6 +866,7 @@ function RefFiniList({
   onNew: () => void
   isCreating: boolean
   isEditing: boolean
+  canCreate: boolean
 }) {
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
@@ -901,7 +946,7 @@ function RefFiniList({
         <span>
           {totalCount} référence{totalCount !== 1 ? 's' : ''}
         </span>
-        {!isEditing && (
+        {!isEditing && canCreate && (
           <Button
             size="sm"
             variant="ghost"
@@ -933,6 +978,9 @@ function DetailHeader({
   onDelete,
   onDuplicate,
   isDuplicating,
+  canCreate,
+  canEdit,
+  canDelete,
   onPrintDoc,
 }: {
   detail: RefFiniDetail | null
@@ -947,6 +995,9 @@ function DetailHeader({
   onDelete: () => void
   onDuplicate: () => void
   isDuplicating: boolean
+  canCreate: boolean
+  canEdit: boolean
+  canDelete: boolean
   onPrintDoc: (doc: PrintDocKind) => void
 }) {
   if (!detail && !isLoading) return null
@@ -1000,15 +1051,17 @@ function DetailHeader({
                   <Save className="h-3.5 w-3.5 mr-1.5" />
                   {isSaving ? 'Enregistrement...' : 'Enregistrer'}
                 </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
-                  title="Supprimer"
-                  onClick={onDelete}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+                {canDelete && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    title="Supprimer"
+                    onClick={onDelete}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
               </>
             ) : (
               <>
@@ -1022,13 +1075,17 @@ function DetailHeader({
                   ]}
                   onSelect={onPrintDoc}
                 />
-                <Button variant="outline" size="icon" className="h-9 w-9" title="Dupliquer" onClick={onDuplicate} disabled={isDuplicating}>
-                  {isDuplicating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
-                </Button>
-                <Button variant="gold" size="sm" onClick={onStartEdit}>
-                  <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                  Modifier
-                </Button>
+                {canCreate && (
+                  <Button variant="outline" size="icon" className="h-9 w-9" title="Dupliquer" onClick={onDuplicate} disabled={isDuplicating}>
+                    {isDuplicating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+                  </Button>
+                )}
+                {canEdit && (
+                  <Button variant="gold" size="sm" onClick={onStartEdit}>
+                    <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                    Modifier
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -1291,6 +1348,7 @@ function DetailMain({
   onDraftChange,
   onMutationSuccess,
   ecruOptions,
+  droits,
 }: {
   detail: RefFiniDetail | null
   isLoading: boolean
@@ -1300,6 +1358,7 @@ function DetailMain({
   onDraftChange: (d: HeaderDraft) => void
   onMutationSuccess: () => void
   ecruOptions: EcruRef[]
+  droits: DroitsRefFini
 }) {
   const [activeTab, setActiveTab] = useState<MainTab>('specifications')
   // Land on the technical sheet whenever the selection changes.
@@ -1355,14 +1414,14 @@ function DetailMain({
       {/* px-1/pb-1 keep focus rings and hover borders clear of the overflow clip (§31.5) */}
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1 scrollbar-transparent">
         {activeTab === 'specifications' && (
-          <SpecsCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} ecruOptions={ecruOptions} />
+          <SpecsCard detail={detail} isEditing={isEditing} canSpecs={droits.specifications} draft={draft} onDraftChange={onDraftChange} ecruOptions={ecruOptions} />
         )}
         {activeTab === 'coloris' && <ColorisCard detail={detail} isEditing={isEditing} />}
         {activeTab === 'traitements' && (
-          <TraitementsCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
+          <TraitementsCard detail={detail} isEditing={isEditing} canEdit={droits.traitements} onMutationSuccess={onMutationSuccess} />
         )}
         {activeTab === 'associees' && (
-          <AssocieesCard detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} />
+          <AssocieesCard detail={detail} isEditing={isEditing} canEdit={droits.associees} onMutationSuccess={onMutationSuccess} />
         )}
       </div>
     </div>
@@ -1470,23 +1529,29 @@ function TextTile({
 
 function SpecsCard({
   detail,
-  isEditing,
+  isEditing: editGeneral,
+  canSpecs,
   draft,
   onDraftChange,
   ecruOptions,
 }: {
   detail: RefFiniDetail
   isEditing: boolean
+  canSpecs: boolean
   draft: HeaderDraft
   onDraftChange: (d: HeaderDraft) => void
   ecruOptions: EcruRef[]
 }) {
+  // General fields follow edit mode; the technical figures need their own
+  // right (edit_ref_fini_specifications) and stay read-only without it.
+  const isEditing = editGeneral && canSpecs
   const dyed = detail.avec_teinture !== 0
   const tileInput = 'h-8 w-full px-2 text-sm tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring'
   return (
-    <Card className={cn('card-premium', isEditing && editSectionClass)}>
+    <Card className={cn('card-premium', editGeneral && editSectionClass)}>
       <CardContent className="pt-4 pb-4 space-y-3">
-        {isEditing && (
+        {editGeneral && !canSpecs && <LectureSeule quoi="les spécifications" />}
+        {editGeneral && (
           <LabeledInput
             label="Désignation"
             value={draft.designation}
@@ -1679,10 +1744,10 @@ function SpecsCard({
         {/* Prose fields — full-width tiles. The legacy texts are multi-line
             (CRLF-separated on every reference), so they are shown line by line
             and edited in textareas. Empty ones are hidden in view mode. */}
-        <TextTile label="Conditionnement" value={detail.conditionnement} isEditing={isEditing} draft={draft.conditionnement} rows={3} onChange={(v) => onDraftChange({ ...draft, conditionnement: v })} />
-        <TextTile label="Observations (production)" value={detail.observations} isEditing={isEditing} draft={draft.observations} rows={3} onChange={(v) => onDraftChange({ ...draft, observations: v })} />
-        <TextTile label="Observation technique" value={detail.observation_technique} isEditing={isEditing} draft={draft.observation_technique} rows={2} onChange={(v) => onDraftChange({ ...draft, observation_technique: v })} />
-        <TextTile label="Description commerciale" value={detail.description_commercial} isEditing={isEditing} draft={draft.description_commercial} rows={2} onChange={(v) => onDraftChange({ ...draft, description_commercial: v })} />
+        <TextTile label="Conditionnement" value={detail.conditionnement} isEditing={editGeneral} draft={draft.conditionnement} rows={3} onChange={(v) => onDraftChange({ ...draft, conditionnement: v })} />
+        <TextTile label="Observations (production)" value={detail.observations} isEditing={editGeneral} draft={draft.observations} rows={3} onChange={(v) => onDraftChange({ ...draft, observations: v })} />
+        <TextTile label="Observation technique" value={detail.observation_technique} isEditing={editGeneral} draft={draft.observation_technique} rows={2} onChange={(v) => onDraftChange({ ...draft, observation_technique: v })} />
+        <TextTile label="Description commerciale" value={detail.description_commercial} isEditing={editGeneral} draft={draft.description_commercial} rows={2} onChange={(v) => onDraftChange({ ...draft, description_commercial: v })} />
       </CardContent>
     </Card>
   )
@@ -1876,10 +1941,12 @@ interface TraitementLookup {
 }
 
 function TraitementsCard({
-  detail, isEditing, onMutationSuccess,
+  detail, isEditing: editMode, canEdit, onMutationSuccess,
 }: {
-  detail: RefFiniDetail; isEditing: boolean; onMutationSuccess: () => void
+  detail: RefFiniDetail; isEditing: boolean; canEdit: boolean; onMutationSuccess: () => void
 }) {
+  // Adding / removing needs edit_ref_fini_traitements (lib/ref-fini-droits.ts).
+  const isEditing = editMode && canEdit
   const queryClient = useQueryClient()
   const [deleteTarget, setDeleteTarget] = useState<Traitement | null>(null)
   const [addError, setAddError] = useState<string | null>(null)
@@ -1936,6 +2003,7 @@ function TraitementsCard({
     <>
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
           <CardContent className="pt-4 pb-3 space-y-3">
+            {editMode && !canEdit && <LectureSeule quoi="les traitements" />}
             <p className="text-xs text-muted-foreground tabular-nums">
               {steps.length} traitement{steps.length > 1 ? 's' : ''}
               {steps.length > 1 && ' · dans l\u2019ordre du process'}
@@ -2016,10 +2084,12 @@ function TraitementsCard({
 // carries the association (the server names them).
 
 function AssocieesCard({
-  detail, isEditing, onMutationSuccess,
+  detail, isEditing: editMode, canEdit, onMutationSuccess,
 }: {
-  detail: RefFiniDetail; isEditing: boolean; onMutationSuccess: () => void
+  detail: RefFiniDetail; isEditing: boolean; canEdit: boolean; onMutationSuccess: () => void
 }) {
+  // Adding / removing needs edit_ref_fini_associees (lib/ref-fini-droits.ts).
+  const isEditing = editMode && canEdit
   const queryClient = useQueryClient()
   const [deleteTarget, setDeleteTarget] = useState<RefAssociee | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -2071,6 +2141,7 @@ function AssocieesCard({
     <>
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
         <CardContent className="pt-4 pb-3 space-y-3">
+          {editMode && !canEdit && <LectureSeule quoi="les références associées" />}
           <p className="text-xs text-muted-foreground">
             Références vendues avec celle-ci (ex. la côte d'un molleton) : proposées dans la fiche client,
             et tarifées au palier de quantité de la référence principale sur une même commande.
@@ -2502,11 +2573,13 @@ function DetailSidebar({
   isEditing,
   draft,
   onDraftChange,
+  droits,
 }: {
   detail: RefFiniDetail | null
   isEditing: boolean
   draft: HeaderDraft
   onDraftChange: (d: HeaderDraft) => void
+  droits: DroitsRefFini
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('informations')
   if (!detail) {
@@ -2639,6 +2712,7 @@ function DetailSidebar({
             waits for on every dye lot of this reference. On = laize, poids AND stabilités. */}
         <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
           <p className="text-xs font-semibold text-muted-foreground">Contrôles des lots</p>
+          {isEditing && !droits.controles && <LectureSeule quoi="les contrôles des lots" />}
           {([
             ['controle_ennoblisseur', 'Contrôle ennoblisseur', Factory],
             ['controle_malterre', 'Contrôle Malterre', Ruler],
@@ -2648,7 +2722,7 @@ function DetailSidebar({
                 <Icon className="h-3.5 w-3.5" />
                 {label}
               </span>
-              {isEditing ? (
+              {isEditing && droits.controles ? (
                 <Pill value={draft[key]} onChange={(v) => onDraftChange({ ...draft, [key]: v })} />
               ) : (
                 <span className="text-sm">{detail[key] !== 0 ? 'Oui' : 'Non'}</span>

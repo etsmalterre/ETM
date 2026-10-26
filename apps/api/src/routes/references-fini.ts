@@ -16,6 +16,8 @@ import {
   loadRefAssociees, attachRefAssociee, detachRefAssociee, associationUtiliseeMessage,
 } from '../lib/refs-associees.js'
 import { batchRepair } from '../lib/batch-repair.js'
+import type { PermissionKey } from '../lib/permission-keys.js'
+import { clesRequises, groupesModifies, LIBELLES_GROUPE, GROUPES_REF_FINI } from '../lib/ref-fini-droits.js'
 import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } from '../lib/ref-fini-reference.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
 import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } from '../lib/pdf/TarifsClientPdf.js'
@@ -24,6 +26,19 @@ import QRCode from 'qrcode'
 import { chooseCompositionRows, composeMatieres, repairMatiereLibelle } from '../lib/composition-matieres.js'
 
 export const referencesFiniRouter: RouterType = Router()
+
+/** Every write on a finished reference is gated (lib/ref-fini-droits.ts):
+ *  answers 401/403 and returns false unless the user holds EVERY key. */
+async function aLesDroits(req: Request, res: Response, cles: PermissionKey[], message: string): Promise<boolean> {
+  if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return false }
+  for (const cle of cles) {
+    if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), cle))) {
+      res.status(403).json({ error: 'forbidden', permission: cle, message })
+      return false
+    }
+  }
+  return true
+}
 
 // ref_fini is the finished-fabric technical datasheet (43 columns). Three of its
 // column NAMES are accented — dateCréation, archivé, catalogue_privé — which the
@@ -991,6 +1006,7 @@ function buildRefFiniSets(b: RefFiniBody): string[] {
 // « Nouvelle référence », « … 2 »…; an explicit name already used answers 409.
 referencesFiniRouter.post('/', async (req: Request, res: Response) => {
   try {
+    if (!(await aLesDroits(req, res, ['create_ref_fini'], 'Vous n’avez pas le droit de créer une référence.'))) return
     const asked = typeof req.body?.reference === 'string' ? String(req.body.reference).trim() : ''
     const result = await refFiniReferenceLock.run(async () => {
       if (asked && (await refFiniReferenceTaken(asked))) return null
@@ -1018,6 +1034,7 @@ referencesFiniRouter.post('/:id/duplicate', async (req: Request, res: Response) 
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await aLesDroits(req, res, ['create_ref_fini'], 'Vous n’avez pas le droit de créer une référence.'))) return
     const newId = await duplicateRefFini(id)
     if (newId === null) { res.status(404).json({ error: 'Ref fini not found' }); return }
     res.status(201).json({ IDref_fini: newId })
@@ -1037,6 +1054,15 @@ referencesFiniRouter.put('/:id', async (req: Request, res: Response) => {
     if (!parsed.success) {
       res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
       return
+    }
+    // Rights per group that really changed — the form sends every field.
+    const stored = await query<Record<string, unknown>>(`SELECT * FROM ref_fini WHERE IDref_fini = ${id}`)
+    if (stored.length === 0) { res.status(404).json({ error: 'Ref fini not found' }); return }
+    const groupes = groupesModifies(normalizeRefFini(stored[0]), parsed.data)
+    for (const cle of clesRequises(groupes)) {
+      const groupe = groupes.find((g) => GROUPES_REF_FINI[g].cle === cle) ?? 'general'
+      const message = `Vous n’avez pas le droit de modifier ${LIBELLES_GROUPE[groupe]}.`
+      if (!(await aLesDroits(req, res, [cle], message))) return
     }
     // If an écru is set, validate it exists (a stray id would orphan the ref).
     if (parsed.data.IDref_ecru && parsed.data.IDref_ecru > 0) {
@@ -1071,6 +1097,7 @@ referencesFiniRouter.post('/:id/traitements', async (req: Request, res: Response
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const parsed = z.object({ IDtraitement: z.number().int().positive() }).safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed' }); return }
+    if (!(await aLesDroits(req, res, ['edit_ref_fini', 'edit_ref_fini_traitements'], 'Vous n’avez pas le droit de modifier les traitements.'))) return
 
     const result = await attachTraitement(id, parsed.data.IDtraitement)
     if (result === 'ref_not_found') { res.status(404).json({ error: 'Ref fini not found' }); return }
@@ -1095,6 +1122,7 @@ referencesFiniRouter.delete('/:id/traitements/:traitementId', async (req: Reques
     const id = parseInt(req.params.id, 10)
     const traitementId = parseInt(req.params.traitementId, 10)
     if (isNaN(id) || isNaN(traitementId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await aLesDroits(req, res, ['edit_ref_fini', 'edit_ref_fini_traitements'], 'Vous n’avez pas le droit de modifier les traitements.'))) return
     await detachTraitement(id, traitementId)
     res.json(await loadRefFiniTraitements(id))
   } catch (err) {
@@ -1153,6 +1181,7 @@ referencesFiniRouter.post('/:id/associees', async (req: Request, res: Response) 
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const parsed = z.object({ IDref_fini: z.number().int().positive() }).safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed' }); return }
+    if (!(await aLesDroits(req, res, ['edit_ref_fini', 'edit_ref_fini_associees'], 'Vous n’avez pas le droit de modifier les références associées.'))) return
 
     const result = await attachRefAssociee(id, parsed.data.IDref_fini)
     if (result === 'ref_not_found') { res.status(404).json({ error: 'Ref fini not found' }); return }
@@ -1184,6 +1213,7 @@ referencesFiniRouter.delete('/:id/associees/:associeeId', async (req: Request, r
     const id = parseInt(req.params.id, 10)
     const associeeId = parseInt(req.params.associeeId, 10)
     if (isNaN(id) || isNaN(associeeId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await aLesDroits(req, res, ['edit_ref_fini', 'edit_ref_fini_associees'], 'Vous n’avez pas le droit de modifier les références associées.'))) return
     const result = await detachRefAssociee(id, associeeId)
     if (result.status === 'ref_not_found') { res.status(404).json({ error: 'Ref fini not found' }); return }
     if (result.status === 'utilisee') {
@@ -1206,6 +1236,7 @@ referencesFiniRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await aLesDroits(req, res, ['delete_ref_fini'], 'Vous n’avez pas le droit de supprimer une référence.'))) return
 
     const stock = await query<{ n: number }>(
       `SELECT COUNT(*) AS n FROM stock_fini WHERE IDref_fini = ${id}`,

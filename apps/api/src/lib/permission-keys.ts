@@ -361,46 +361,46 @@ export const PERMISSION_KEYS = [
     key: 'cut_stock_fini',
     label: 'Couper un rouleau',
     description: 'Autorise la découpe d’un rouleau en plusieurs dans Finis > Stock.',
-    category: 'Finis',
+    category: 'Finis › Stock',
   },
   {
     key: 'create_stock_fini',
     label: 'Créer un rouleau',
     description: 'Affiche le bouton « Nouveau » et autorise la création de rouleaux dans Finis > Stock.',
-    category: 'Finis',
+    category: 'Finis › Stock',
   },
   {
     key: 'edit_stock_fini',
     label: 'Éditer un rouleau',
     description: 'Affiche le bouton « Modifier » et autorise la modification d’un rouleau dans Finis > Stock.',
-    category: 'Finis',
+    category: 'Finis › Stock',
   },
   {
     key: 'edit_stock_fini_stockage',
     label: 'Stockage',
     description: 'Autorise la modification de l’emplacement, du conteneur et de la date de pointage d’un rouleau.',
-    category: 'Finis',
+    category: 'Finis › Stock',
     parent: 'edit_stock_fini',
   },
   {
     key: 'edit_stock_fini_etat',
     label: 'État',
     description: 'Autorise la modification de l’état d’un rouleau (2ᵉ choix, statut).',
-    category: 'Finis',
+    category: 'Finis › Stock',
     parent: 'edit_stock_fini',
   },
   {
     key: 'edit_stock_fini_affectation',
     label: 'Affectation',
     description: 'Autorise la modification de l’affectation d’un rouleau (donation, déstockage).',
-    category: 'Finis',
+    category: 'Finis › Stock',
     parent: 'edit_stock_fini',
   },
   {
     key: 'edit_stock_fini_notes',
     label: 'Notes',
     description: 'Autorise la modification des observations et de l’observation sous-traitant d’un rouleau.',
-    category: 'Finis',
+    category: 'Finis › Stock',
     parent: 'edit_stock_fini',
   },
   // LIVA #1245: correcting poids / métrage departs from the dyer's BL, so it
@@ -411,7 +411,7 @@ export const PERMISSION_KEYS = [
     label: 'Poids & métrage',
     description:
       'Autorise la correction du poids et du métrage d’un rouleau en stock reçu depuis plus de 60 jours (inventaire). Chaque correction est journalisée sur le rouleau. Cocher « Éditer un rouleau » ne l’accorde PAS, il se coche à part.',
-    category: 'Finis',
+    category: 'Finis › Stock',
     parent: 'edit_stock_fini',
     cascade: false,
   },
@@ -424,14 +424,66 @@ export const PERMISSION_KEYS = [
     label: 'Ml non facturés',
     description:
       'Autorise la saisie des mètres d’un rouleau fini qui ne seront pas facturés au client (taches, défaut…) avec leur motif — à la réception sous-traitant, depuis une commande client ou dans Finis > Stock. Le métrage du rouleau reste le métrage réel ; la facture déduit ces mètres et l’imprime sous la ligne. Refusé sur un rouleau déjà facturé. Chaque changement est journalisé.',
-    category: 'Finis',
+    category: 'Finis › Stock',
   },
   {
     key: 'surteindre_stock_fini',
     label: 'Surteindre des rouleaux finis',
     description:
       'Autorise la surteinture : supprime des rouleaux finis et renvoie leurs tombés de métier en teinture dans Finis > Stock.',
-    category: 'Finis',
+    category: 'Finis › Stock',
+  },
+  // Finis › Références (decision Vincent 2026-10-26): the screen had no write
+  // gate at all. Every key is closed by default — nobody but an admin edits a
+  // finished reference until it is granted, deliberately, no seed script. The
+  // PUT compares each group to the stored row (lib/ref-fini-droits.ts), since
+  // the form sends every field on « Enregistrer ».
+  {
+    key: 'create_ref_fini',
+    label: 'Créer une référence',
+    description: 'Affiche les boutons « Nouveau » et « Dupliquer » et autorise la création d’une référence de produit fini dans Finis › Références.',
+    category: 'Finis › Références',
+  },
+  {
+    key: 'delete_ref_fini',
+    label: 'Supprimer une référence',
+    description: 'Autorise la suppression d’une référence de produit fini. Une référence qui a du stock, des coloris teints ou des traitements reste refusée, quel que soit le droit.',
+    category: 'Finis › Références',
+  },
+  {
+    key: 'edit_ref_fini',
+    label: 'Modifier une référence',
+    description: 'Affiche le bouton « Modifier » dans Finis › Références et autorise la modification du nom, de la désignation, du conditionnement, des observations, de la description commerciale, du responsable et du drapeau « En développement ». Les autres parties de la fiche ont chacune leur sous-droit.',
+    category: 'Finis › Références',
+  },
+  {
+    key: 'edit_ref_fini_specifications',
+    label: 'Spécifications',
+    description: 'Autorise la modification de la référence écru, du rendement, de la freinte, de la température de lavage, des poids, laizes, stabilités et allongements (et leurs tolérances) et des contrôles à réception sous-traitant. Ces valeurs servent de référentiel à Qualité › Suivi lots et Analyse.',
+    category: 'Finis › Références',
+    parent: 'edit_ref_fini',
+  },
+  {
+    key: 'edit_ref_fini_controles',
+    label: 'Contrôles des lots',
+    description: 'Autorise la modification des switches « Contrôle ennoblisseur » et « Contrôle Malterre », qui décident de ce que « Valider le lot », le Point sous-traitant et les relances demandent sur chaque lot de la référence. Cocher « Modifier une référence » ne l’accorde PAS, il se coche à part.',
+    category: 'Finis › Références',
+    parent: 'edit_ref_fini',
+    cascade: false,
+  },
+  {
+    key: 'edit_ref_fini_traitements',
+    label: 'Traitements',
+    description: 'Autorise l’ajout et le retrait des traitements (chaîne d’ennoblissement) d’une référence.',
+    category: 'Finis › Références',
+    parent: 'edit_ref_fini',
+  },
+  {
+    key: 'edit_ref_fini_associees',
+    label: 'Références associées',
+    description: 'Autorise l’ajout et le retrait des références associées (ex. la côte d’un molleton), qui sont proposées dans la fiche client et tarifées au palier de la référence principale.',
+    category: 'Finis › Références',
+    parent: 'edit_ref_fini',
   },
   // Deleting a dyed coloris that nothing uses (an étude accepted on the wrong
   // sample) — LIVA #1254, lib/coloris-fini-suppression.ts.
@@ -441,7 +493,7 @@ export const PERMISSION_KEYS = [
     label: 'Supprimer un coloris',
     description:
       'Autorise la suppression d’un coloris teint dans Finis › Références › Coloris, uniquement s’il n’est utilisé nulle part (aucun rouleau, aucune ligne de commande, de devis ou de sous-traitance, aucune désignation ou étude). Un coloris utilisé reste, quel que soit le droit.',
-    category: 'Finis',
+    category: 'Finis › Références',
   },
   // Études coloris — ONE key covering every write on the screen (étude,
   // statut, soumissions, réponse du sous-traitant, envois email). Ticket #1092.
@@ -453,7 +505,7 @@ export const PERMISSION_KEYS = [
     label: 'Édition des études coloris',
     description:
       'Autorise la création, la modification et la suppression des études et de leurs soumissions dans Finis > Études coloris, le changement de statut, l’enregistrement de la réponse du sous-traitant (Accepter / Refuser) et l’envoi par email. Sans ce droit, l’écran est en lecture seule — l’impression et le téléchargement des PDF restent accessibles à tous.',
-    category: 'Finis',
+    category: 'Finis › Études coloris',
   },
   {
     key: 'create_stock_ecru',
