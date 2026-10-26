@@ -14,7 +14,8 @@
 //   ennoblisseur écru reserved to the line and to a dyer line, not dyed yet; a fini roll of the line still
 //                En Contrôle / En Reprise / Attente de décision (they sit at the dyer, MATEL magasin 9); or a
 //                dyer order launched from the line and still open
-//   tricotage    affectation_cmd_tricotage on a knitting sst line not done, on an order not soldée
+//   tricotage    écru still to knit for the line (lib/tricotage-restant.ts: planned on a knitting sst line not
+//                done, on an order not soldée, less the pieces already knitted — the gauge's « En tricotage »)
 //   attente_fil  yarn reserved for the line on a supplier order still to receive (lib/reservation-fil.ts)
 //   a_lancer     none of the above
 // Divers lines (type 3) carry no rolls: a_lancer / expediee only, partial shown by the shipped share.
@@ -22,6 +23,7 @@
 import { query } from './hfsql-auto.js'
 import { consumedEcruIds } from './fini-sources.js'
 import { filAttenduParLigne } from './reservation-fil.js'
+import { kgATricoterParLigne } from './tricotage-restant.js'
 
 /** A line counts as shipped from 90 % of its quantity: what people do when they type « soldé » (39 of 44
  *  open lines, 803 of 859 closed ones). Shared with the espace client (lib/espace-commandes.ts). */
@@ -46,7 +48,7 @@ export interface FaitsLigneClient {
   nbCommandesEnnoblisseur: number
   /** one of the line's open dyer lines is « Soumis au client » */
   soumisClient: boolean
-  /** kg planned on a knitting sst line not done */
+  /** écru kg still to knit (kgATricoterParLigne) */
   kgTricotage: number
   /** yarn reserved for the line on supplier orders still to receive: kg, supplier date (YYYYMMDD), order */
   filAttendu: { kg: number; date: string | null; commande: number }[]
@@ -73,7 +75,7 @@ export function statutLigneClient(f: FaitsLigneClient, unite: string): StatutLig
   if (f.nbChezEnnoblisseur > 0) preuves.push(`${pluriel(f.nbChezEnnoblisseur, 'pièce')} écru chez l’ennoblisseur`)
   if (f.nbCommandesEnnoblisseur > 0 && f.nbChezEnnoblisseur === 0) preuves.push(`${pluriel(f.nbCommandesEnnoblisseur, 'commande')} ennoblisseur ouverte${f.nbCommandesEnnoblisseur > 1 ? 's' : ''}`)
   if (f.soumisClient) preuves.push('Soumis au client')
-  if (f.kgTricotage > 0) preuves.push(`${fmt(f.kgTricotage)} kg planifiés en tricotage`)
+  if (f.kgTricotage > 0) preuves.push(`${fmt(f.kgTricotage)} kg restant à tricoter`)
   for (const a of f.filAttendu) {
     preuves.push(`${fmt(a.kg)} kg de fil attendus (cde fil N° ${a.commande}${a.date ? `, prévue le ${a.date.slice(6, 8)}/${a.date.slice(4, 6)}` : ''})`)
   }
@@ -172,8 +174,7 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
     // Legacy shipments put rolls on a shipment line without reserving them first (espace-commandes rule).
     queryIn<{ IDligne_expedition: number; lid: number }>(ids, (inl) =>
       `SELECT IDligne_expedition, IDligne_commande_client AS lid FROM ligne_expedition WHERE IDligne_commande_client IN (${inl})`),
-    queryIn<{ lid: number; poids_affecte: number | null; lsst: number }>(ids, (inl) =>
-      `SELECT IDligne_commande_client AS lid, poids_affecte, IDligne_commande_sous_traitant AS lsst FROM affectation_cmd_tricotage WHERE IDligne_commande_client IN (${inl})`),
+    kgATricoterParLigne(ids),
     queryIn<{ IDcommande_sous_traitant: number; lid: number; est_soldee: number | null }>(ids, (inl) =>
       `SELECT IDcommande_sous_traitant, IDligne_commande_client AS lid, est_soldee FROM commande_sous_traitant WHERE IDligne_commande_client IN (${inl})`),
     filAttenduParLigne(ids),
@@ -231,23 +232,14 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
     if (meta.has(lid)) f.expedie = Math.max(expRes.get(lid) ?? 0, expBl.get(lid) ?? 0)
   }
 
-  // Subcontractor lines: knitting planned on the line, dyer orders launched from it.
+  // Knitting still to do for the line; dyer orders launched from it.
   const openHeads = sstHeads.filter((h) => num(h.est_soldee) !== 1)
   const lidParSst = new Map(openHeads.map((h) => [num(h.IDcommande_sous_traitant), num(h.lid)]))
-  const [lsstTricot, lsstEnno] = await Promise.all([
-    queryIn<{ id: number; cmd: number; sstatut: string | null }>(tricot.map((t) => num(t.lsst)), (inl) =>
-      `SELECT IDligne_commande_sous_traitant AS id, IDcommande_sous_traitant AS cmd, sstatut FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant IN (${inl})`),
-    queryIn<{ cmd: number; kind: number; sstatut: string | null }>([...lidParSst.keys()], (inl) =>
-      `SELECT IDcommande_sous_traitant AS cmd, TYPE AS kind, sstatut FROM ligne_commande_sous_traitant WHERE IDcommande_sous_traitant IN (${inl})`),
-  ])
-  // Knitting lines are rarely closed (908 « En_Cours », many on soldée orders): the order head decides too.
-  const tetesSoldees = new Set((await queryIn<{ cmd: number; est_soldee: number | null }>(lsstTricot.map((r) => num(r.cmd)), (inl) =>
-    `SELECT IDcommande_sous_traitant AS cmd, est_soldee FROM commande_sous_traitant WHERE IDcommande_sous_traitant IN (${inl})`))
-    .filter((r) => num(r.est_soldee) === 1).map((r) => num(r.cmd)))
-  const tricotOuvert = new Set(lsstTricot.filter((r) => !isTermine(r.sstatut) && !tetesSoldees.has(num(r.cmd))).map((r) => num(r.id)))
-  for (const t of tricot) {
-    const f = out.get(num(t.lid))
-    if (f && tricotOuvert.has(num(t.lsst))) f.kgTricotage += num(t.poids_affecte)
+  const lsstEnno = await queryIn<{ cmd: number; kind: number; sstatut: string | null }>([...lidParSst.keys()], (inl) =>
+    `SELECT IDcommande_sous_traitant AS cmd, TYPE AS kind, sstatut FROM ligne_commande_sous_traitant WHERE IDcommande_sous_traitant IN (${inl})`)
+  for (const [lid, kg] of tricot) {
+    const f = out.get(lid)
+    if (f) f.kgTricotage = kg
   }
   const cmdsOuvertes = new Map<number, Set<number>>()
   for (const r of lsstEnno) {

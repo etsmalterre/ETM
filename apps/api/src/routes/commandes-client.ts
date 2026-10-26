@@ -66,6 +66,7 @@ import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { fetchDefectsByEcru, defautSummary, type DefautQualite } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
+import { kgATricoterParLigne } from '../lib/tricotage-restant.js'
 import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow } from '../lib/ennoblissement-supply.js'
 import {
   ECRU_AT_DYER_MESSAGE, RESERVATION_MISFIT_ERROR, ecruStillAtDyer, findReservationMisfits, misfitMessage, reservationFitsDyeLine,
@@ -1308,7 +1309,9 @@ const agregatVide = (): AgregatLigne => ({
  *   - stock_ecru rolls reserved to the line — at a dyer or not — whose métrage
  *    contribution is poids × rendement (écru rolls carry metrage = 0; legacy
  *    validates 240.60 kg × 3.548387 = 853.74 Ml),
- *   - affectation_cmd_tricotage planning allocations (poids × rendement).
+ *   - what is still to knit of the affectation_cmd_tricotage planning (poids × rendement): the
+ *     knitted part is already counted as its pieces, a done knitting line counts 0
+ *     (kgATricoterParLigne — order 3885 showed 1 346,3 / 761,6 Ml).
  *  Needs each line's ref to resolve the rendement, hence the meta input. */
 export async function lineReservationAggregates(
   lines: Array<{ id: number; typeKind: number; refId: number }>,
@@ -1362,9 +1365,8 @@ export async function lineReservationAggregates(
        WHERE IDligne_commande_client IN (${inList})
          AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)`,
     ),
-    query<{ IDligne_commande_client: number; poids_affecte: number | null }>(
-      `SELECT IDligne_commande_client, poids_affecte FROM affectation_cmd_tricotage WHERE IDligne_commande_client IN (${inList})`,
-    ),
+    // What is still to knit, never the planning kept forever (lib/tricotage-restant.ts).
+    kgATricoterParLigne(metas.map((l) => l.id)),
     // Pieces merged into a grouped roll (LIVA #1149) are consumed too, but the
     // link table cannot join the NOT EXISTS above — filter them out in JS.
     mergedComponentEcruIds(),
@@ -1385,13 +1387,18 @@ export async function lineReservationAggregates(
     a.nb_rolls += 1
     a.total_metrage += metrage
     a.total_poids += poids
-    // Shipped = état Expédié or attached to an expedition line.
+    // Shipped = état Expédié or attached to an expedition line. Ready = validated only (the one roll
+    // that may ship, lib/fini-expediable.ts); En contrôle / Reprise / Attente décision are still the
+    // dyer's — the line status says « en ennoblissement » for them too (statut-ligne-client.ts).
     if (Number(r.IDetat_stock_fini) === 4 || (Number(r.IDligne_expedition) || 0) > 0) {
       a.exp_metrage += metrage
       a.exp_poids += poids
-    } else {
+    } else if (isFiniExpediable(r.IDetat_stock_fini)) {
       a.pret_metrage += metrage
       a.pret_poids += poids
+    } else {
+      a.enno_metrage += metrage
+      a.enno_poids += poids
     }
   }
   for (const r of ecru) {
@@ -1416,11 +1423,8 @@ export async function lineReservationAggregates(
       a.pret_poids += poids
     }
   }
-  for (const r of trico) {
-    const lid = Number(r.IDligne_commande_client) || 0
-    if (lid === 0) continue
+  for (const [lid, poids] of trico) {
     const a = acc(lid)
-    const poids = Number(r.poids_affecte) || 0
     a.total_metrage += poids * (rdtByLine.get(lid) ?? 0)
     a.total_poids += poids
     a.trico_metrage += poids * (rdtByLine.get(lid) ?? 0)
