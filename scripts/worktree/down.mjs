@@ -102,7 +102,7 @@ if (remove) {
       worktree: entry.worktree, branch: entry.branch, feature: entry.feature,
       project: entryProject(entry, slotKey), main,
     })
-    console.log(`Slot ${slotKey} freed. Servers stopped and merge is done.`)
+    console.log(`Slot ${slotKey} freed. Servers stopped.`)
     console.log(`NOTE: ${entry.worktree} can't be deleted yet — this session (or a`)
     console.log(`      terminal) is cwd'd inside it. Nothing is left running.`)
     console.log(`      It will be removed automatically the next time you run any worktree`)
