@@ -48,6 +48,7 @@ import { enregistrerOkRamer, type NatureSoumission } from '../lib/soumission-lot
 import { findEligibleLots } from './commandes-sous-traitant.js'
 import { clientsDesLots, cleLotLigne, journaliserEnvoiRc, rapportControleLot, type ClientDuLot, type RapportControleLot } from '../lib/rapport-controle-lot.js'
 import { RapportControlePdf } from '../lib/pdf/RapportControlePdf.js'
+import { CONTROLES_PAR_DEFAUT } from '../lib/controles-lot.js'
 
 export const suiviLotsRouter: RouterType = Router()
 
@@ -717,7 +718,7 @@ function soumissionDuDetail(s: SoumissionFait | undefined) {
   }
 }
 
-/** The detail's cycle block: step, what blocks the validation, both
+/** The detail's cycle block: step, the controls the reference asks, what blocks the validation, both
  *  soumissions and the client's answers (LIVA #1313), the « coloris validé », the
  *  clients a RC can go to. */
 async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: string) {
@@ -732,6 +733,8 @@ async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: st
     recu: !!f?.reception,
     soumissions: { coloris: soumissionDuDetail(f?.coloris), stabilites: soumissionDuDetail(f?.stabilites) },
     ok_ramer_le: f?.okRamerLe ?? null,
+    // What the lot's reference asks (Finis › Références, lib/controles-lot.ts).
+    controles: f?.controles ?? CONTROLES_PAR_DEFAUT,
     clients_rc: clients.get(cleLotLigne(ligneId, lot)) ?? [],
   }
 }

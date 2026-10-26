@@ -132,6 +132,9 @@ function normalizeRefFini(row: Record<string, unknown>) {
     controle_sst_stab: Number(row.controle_sst_stab) ? 1 : 0,
     controle_sst_allongement: Number(row.controle_sst_allongement) ? 1 : 0,
     en_developpement: Number(row.en_developpement) ? 1 : 0,
+    // lot controls (lib/controles-lot.ts) — on unless explicitly 0
+    controle_ennoblisseur: Number(row.controle_ennoblisseur ?? 1) !== 0 ? 1 : 0,
+    controle_malterre: Number(row.controle_malterre ?? 1) !== 0 ? 1 : 0,
     // accented column names — resolved by prefix, never named in SQL
     archive: Number(pickKey(row, /^archiv/i)) ? 1 : 0,
     catalogue_prive: Number(pickKey(row, /^catalogue_priv/i)) ? 1 : 0,
@@ -944,6 +947,8 @@ const refFiniBody = z.object({
   controle_sst_stab: z.boolean().optional(),
   controle_sst_allongement: z.boolean().optional(),
   en_developpement: z.boolean().optional(),
+  controle_ennoblisseur: z.boolean().optional(),
+  controle_malterre: z.boolean().optional(),
 })
 
 type RefFiniBody = z.infer<typeof refFiniBody>
@@ -973,6 +978,10 @@ function buildRefFiniSets(b: RefFiniBody): string[] {
   sets.push(`IDref_ecru = ${Number(b.IDref_ecru) || 0}`)
   for (const c of NUMERIC_COLS) sets.push(`${c} = ${toNumOrNull(b[c]) ?? 0}`)
   for (const c of BOOL_COLS) sets.push(`${c} = ${b[c] ? 1 : 0}`)
+  // On by default (lib/controles-lot.ts): written only when sent, never reset by omission.
+  for (const c of ['controle_ennoblisseur', 'controle_malterre'] as const) {
+    if (b[c] !== undefined) sets.push(`${c} = ${b[c] ? 1 : 0}`)
+  }
   return sets
 }
 

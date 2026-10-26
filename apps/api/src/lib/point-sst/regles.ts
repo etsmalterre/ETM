@@ -60,7 +60,8 @@ export interface LigneFait {
   dernierSoumis: string | null
   /** The client asks for soumissions (a contact with envoi_soumission, or the order already had one). */
   clientSoumission: boolean
-  /** Lots received whose dyer measures (laize / poids) are still missing, not yet validated (not in reprise). */
+  /** Lots received whose dyer control (laize, poids, stabilités) is incomplete, not yet validated (not in
+   *  reprise). v8: a reference without « Contrôle ennoblisseur » never lands here (lib/controles-lot.ts). */
   lotsSansControle: string[]
   /** Lots « En reprise » (suivilot état 2 or an open reprise): the dyer reworks them — PE asks their délai (§5 « reprise »). */
   lotsEnReprise: string[]
@@ -138,7 +139,7 @@ function ligneControle(l: LigneFait): LignePoint {
     cle: `controle:${l.idligne}`,
     datePrevue: null,
     commentaire: l.lotsSansControle.map(lotCourt).join(' et '),
-    pourquoi: `Lot${s} reçu${s} sans les mesures du teinturier (laize, poids), pas encore validé${s}.`,
+    pourquoi: `Lot${s} reçu${s} sans toutes les mesures du teinturier (laize, poids, stabilités), pas encore validé${s}.`,
   }
 }
 

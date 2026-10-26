@@ -92,10 +92,14 @@ describe('#1304: client answer, rapport de contrôle, what blocks « Valider le 
   })
   it('prealables: everything still to do, in order; empty when the lot may be validated', () => {
     expect(prealablesValidation(lot({ stabilites: soum(), rcAEnvoyer: ['SAS LA FABRIQUE'] }))).toEqual([
-      'Contrôle ennoblisseur manquant (laize / poids de l’ennoblisseur).',
-      'Contrôle Malterre manquant (mesure de la tirelle).',
+      'Contrôle ennoblisseur incomplet (laize, poids, stabilités de l’ennoblisseur).',
+      'Contrôle Malterre incomplet (laize, poids, stabilités de la tirelle).',
       'Soumission des stabilités à envoyer.',
       'Rapport de contrôle à envoyer à SAS LA FABRIQUE.',
+    ])
+    // Only what is still missing is named (lib/controles-lot.ts, 2026-10-26).
+    expect(prealablesValidation(lot({ tirelleMesuree: true, manqueTeinturier: ['stabilités'] }))).toEqual([
+      'Contrôle ennoblisseur incomplet (stabilités de l’ennoblisseur).',
     ])
     expect(prealablesValidation(lot({ ...controle, stabilites: soum({ le: '2026-10-20' }) }))).toEqual(['Réponse du client à la soumission des stabilités attendue.'])
     expect(prealablesValidation(lot({ ...controle, stabilites: soum({ le: '2026-10-20', accepte: true }) }))).toEqual([])

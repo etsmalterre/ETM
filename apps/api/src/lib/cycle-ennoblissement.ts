@@ -28,8 +28,11 @@
 //     refuse_client       the client refused it (or the coloris of a received lot):
 //                         the only way on is « Reprendre »
 //     coloris_a_soumettre a received lot whose coloris the client asks, never submitted
-//     attente_mesures     no dyer measure (ACP): shown « Contrôle ennoblisseur »
-//     attente_tirelle     our tirelle measure not yet (ACL): « Contrôle Malterre »
+//     attente_mesures     the dyer's laize / poids / stabilités incomplete (ACP):
+//                         shown « Contrôle ennoblisseur »
+//     attente_tirelle     our tirelle laize / poids / stabilités incomplete (ACL):
+//                         « Contrôle Malterre » — either control is skipped when
+//                         the reference does not ask it (lib/controles-lot.ts)
 //     a_soumettre         the client asks the stabilités for this reference
 //                         (Clients › Gestion, designation_client.soumettre), none sent
 //                         since the lot's last return from reprise
@@ -47,6 +50,7 @@ import { faitsReprises } from './reprises.js'
 import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
 import { echeanceDelai, lireFaitsDelai, relanceDue, derniereRelance, historiqueDelai, type EvenementDelai, type FaitsDelai } from './delai-sst.js'
 import { natureInferee, naturesDemandees, type NatureSoumission } from './soumission-lot.js'
+import { CONTROLES_PAR_DEFAUT, controlesDeRef, mesuresManquantes, type ControlesRef } from './controles-lot.js'
 
 export type EtapeLot =
   | 'coloris_soumis'
@@ -93,10 +97,16 @@ export interface LotFait {
   /** suivilot.date: the day the lot was received (BL). 'YYYY-MM-DD'. null =
    *  not received yet: the lot exists through its coloris soumission. */
   reception: string | null
-  /** laize / poids given by the dyer (laize_sst, poids_sst). */
+  /** The dyer's control is done: laize, poids and stabilités given (*_sst), or
+   *  the reference does not ask it (lib/controles-lot.ts). */
   mesuresTeinturier: boolean
-  /** Our measure of the tirelle (laize_tirelle): our control is done. */
+  /** Our control of the tirelle is done (*_tirelle), or not asked. */
   tirelleMesuree: boolean
+  /** The measures still missing of each control asked (for the reasons shown). */
+  manqueTeinturier?: string[]
+  manqueMalterre?: string[]
+  /** What the lot's reference asks. Absent = both controls. */
+  controles?: ControlesRef
   coloris: SoumissionFait
   stabilites: SoumissionFait
   /** The « coloris validé » mail, sent after the client accepted the coloris. 'YYYY-MM-DD' */
@@ -190,8 +200,8 @@ export function prealablesValidation(l: LotFait): string[] {
     out.push('Lot pas encore réceptionné.')
     return out
   }
-  if (!l.mesuresTeinturier) out.push('Contrôle ennoblisseur manquant (laize / poids de l’ennoblisseur).')
-  if (!l.tirelleMesuree) out.push('Contrôle Malterre manquant (mesure de la tirelle).')
+  if (!l.mesuresTeinturier) out.push(`Contrôle ennoblisseur incomplet (${(l.manqueTeinturier?.length ? l.manqueTeinturier : ['laize', 'poids', 'stabilités']).join(', ')} de l’ennoblisseur).`)
+  if (!l.tirelleMesuree) out.push(`Contrôle Malterre incomplet (${(l.manqueMalterre?.length ? l.manqueMalterre : ['laize', 'poids', 'stabilités']).join(', ')} de la tirelle).`)
   if (enAttente(s)) out.push('Réponse du client à la soumission des stabilités attendue.')
   else if (refusee(s)) out.push('Stabilités refusées par le client : le lot est à reprendre.')
   else if (s.requise && !s.envoyeeLe) out.push('Soumission des stabilités à envoyer.')
@@ -429,10 +439,17 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   const faitsDelai = await faitsDelaiP
   const lineIds = lignes.map((l) => Number(l.id))
   const [lots, ecru, clientsPieces] = lineIds.length === 0 ? [[], [], []] : await Promise.all([
-    sql<{ idsuivilot: number; ligne: number; lot: string | null; etat: number; reception: string | null; laize_sst: number; poids_sst: number; laize_tirelle: number }[]>`
+    sql<{
+      idsuivilot: number; ligne: number; lot: string | null; etat: number; reception: string | null; idref_fini: number
+      laize_sst: number; poids_sst: number; stabh_sst: number; stabl_sst: number
+      laize_tirelle: number; poids_tirelle: number; stabh_tirelle: number; stabl_tirelle: number
+    }[]>`
       SELECT idsuivilot, idligne_commande_sous_traitant AS ligne, lot::text AS lot, COALESCE(idetatlot, 0)::int AS etat,
-             to_char(date, 'YYYY-MM-DD') AS reception, COALESCE(laize_sst, 0) AS laize_sst,
-             COALESCE(poids_sst, 0) AS poids_sst, COALESCE(laize_tirelle, 0) AS laize_tirelle
+             to_char(date, 'YYYY-MM-DD') AS reception, COALESCE(idref_fini, 0) AS idref_fini,
+             COALESCE(laize_sst, 0) AS laize_sst, COALESCE(poids_sst, 0) AS poids_sst,
+             COALESCE(stabh_sst, 0) AS stabh_sst, COALESCE(stabl_sst, 0) AS stabl_sst,
+             COALESCE(laize_tirelle, 0) AS laize_tirelle, COALESCE(poids_tirelle, 0) AS poids_tirelle,
+             COALESCE(stabh_tirelle, 0) AS stabh_tirelle, COALESCE(stabl_tirelle, 0) AS stabl_tirelle
       FROM suivilot WHERE idligne_commande_sous_traitant = ANY(${lineIds})`,
     sql<{ ligne: number; idecru: number }[]>`
       SELECT idref_commande_affectation AS ligne, idstock_ecru AS idecru
@@ -482,6 +499,32 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const l = lignes.find((x) => Number(x.id) === ligne)
     if (!l) return []
     return [...new Set([...(clientsParLigne.get(ligne) ?? [])].flatMap((c) => demandes.get(`${c}:${Number(l.idref_fini)}`) ?? []))]
+  }
+
+  // The controls each reference asks (lib/controles-lot.ts): the lot's own
+  // ref first (suivilot.idref_fini), else its dye line's.
+  const refsLots = [...new Set([...refs, ...lots.map((s) => Number(s.idref_fini))].filter((x) => x > 0))]
+  const controlesParRef = new Map<number, ControlesRef>()
+  if (refsLots.length > 0) {
+    const rows = await sql<{ id: number; controle_ennoblisseur: number; controle_malterre: number }[]>`
+      SELECT idref_fini AS id, controle_ennoblisseur, controle_malterre FROM ref_fini WHERE idref_fini = ANY(${refsLots})`
+    for (const r of rows) controlesParRef.set(Number(r.id), controlesDeRef(r))
+  }
+  /** The control facts of one suivilot row. */
+  const controlesDuLot = (s: (typeof lots)[number]) => {
+    const ref = Number(s.idref_fini) > 0 ? Number(s.idref_fini) : Number(ligneParId.get(Number(s.ligne))?.idref_fini)
+    const controles = controlesParRef.get(ref) ?? CONTROLES_PAR_DEFAUT
+    const manqueTeinturier = controles.ennoblisseur
+      ? mesuresManquantes({ laize: s.laize_sst, poids: s.poids_sst, stabH: s.stabh_sst, stabL: s.stabl_sst }) : []
+    const manqueMalterre = controles.malterre
+      ? mesuresManquantes({ laize: s.laize_tirelle, poids: s.poids_tirelle, stabH: s.stabh_tirelle, stabL: s.stabl_tirelle }) : []
+    return {
+      mesuresTeinturier: manqueTeinturier.length === 0,
+      tirelleMesuree: manqueMalterre.length === 0,
+      manqueTeinturier,
+      manqueMalterre,
+      controles,
+    }
   }
 
   // The « solde »: écru handed over and not back dyed (own fini or merged component).
@@ -562,8 +605,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
           idligne: Number(s.ligne),
           etat: Number(s.etat),
           reception: s.reception,
-          mesuresTeinturier: Number(s.laize_sst) > 0 || Number(s.poids_sst) > 0,
-          tirelleMesuree: Number(s.laize_tirelle) > 0,
+          ...controlesDuLot(s),
           ...soumissionsDuLot(k, naturesLigne(Number(s.ligne)), rep),
           rcAEnvoyer: (rcParLot.get(cleLotLigne(Number(s.ligne), String(s.lot))) ?? []).filter((c) => c.du).map((c) => c.nom),
           repriseOuverte: rep?.ouverte ?? false,

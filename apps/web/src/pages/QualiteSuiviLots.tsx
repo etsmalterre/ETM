@@ -217,6 +217,8 @@ interface SuiviLotDetail {
   soumissions?: SoumissionsLot
   /** 'YYYY-MM-DD': the « coloris validé » mailed to the dyer. */
   ok_ramer_le?: string | null
+  /** The controls the lot's reference asks (Finis › Références, 2026-10-26). Absent = both. */
+  controles?: { ennoblisseur: boolean; malterre: boolean }
   /** The clients its pieces are affected to: the rapport de contrôle's recipients. */
   clients_rc?: ClientRc[]
 }
@@ -2337,10 +2339,11 @@ function ControlesTab({
   // Only flag conformity when a ref_fini is attached (otherwise there's nothing
   // to compare against and stab would falsely flag any shrinkage as non-conforme).
   const bounds = detail.reference ? detail.ref_bounds : undefined
+  const controles = detail.controles ?? { ennoblisseur: true, malterre: true }
   return (
     <>
       {/* Sous-Traitant */}
-      <SidebarCard title="Sous-Traitant" icon={<Factory className="h-3.5 w-3.5 text-accent" />} highlight={isEditing}>
+      <SidebarCard title="Sous-Traitant" icon={<Factory className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={controles.ennoblisseur ? null : <SansControle qui="ennoblisseur" />}>
         <KVNum label="Laize" field="laize_sst" detailVal={detail.laize_sst} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_sst" detailVal={detail.poids_sst} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab H" field="stabH_sst" detailVal={detail.stabH_sst} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
@@ -2348,7 +2351,7 @@ function ControlesTab({
       </SidebarCard>
 
       {/* Tirelle */}
-      <SidebarCard title="Tirelle" icon={<Ruler className="h-3.5 w-3.5 text-accent" />} highlight={isEditing}>
+      <SidebarCard title="Tirelle" icon={<Ruler className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={controles.malterre ? null : <SansControle qui="Malterre" />}>
         <KVNum label="Laize" field="laize_tirelle" detailVal={detail.laize_tirelle} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_tirelle" detailVal={detail.poids_tirelle} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
@@ -2408,15 +2411,29 @@ function ControlesTab({
   )
 }
 
-function SidebarCard({ title, icon, highlight, children }: { title: string; icon: React.ReactNode; highlight?: boolean; children: React.ReactNode }) {
+function SidebarCard({ title, icon, highlight, aside, children }: { title: string; icon: React.ReactNode; highlight?: boolean; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className={cn('rounded-lg border bg-card p-3 shadow-sm', highlight && editCardClass)}>
       <div className="flex items-center gap-2 mb-2">
         {icon}
         <h3 className="text-sm font-semibold">{title}</h3>
+        {aside}
       </div>
       <div className="space-y-1.5">{children}</div>
     </div>
+  )
+}
+
+/** Neutral chip: the lot's reference does not ask this control (Finis ›
+ *  Références › Informations) — nothing to measure, nothing to chase. */
+function SansControle({ qui }: { qui: string }) {
+  return (
+    <span
+      className="ml-auto rounded-full border border-border/60 bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+      title={`La référence ne demande pas de contrôle ${qui} (Finis › Références › Informations) : aucune mesure n’est attendue.`}
+    >
+      Sans contrôle {qui} (réf.)
+    </span>
   )
 }
 

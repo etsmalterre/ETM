@@ -1177,6 +1177,21 @@ CREATE INDEX reservation_fil_fil ON reservation_fil (idref_fil, idcolori_fil);
 ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'reservation_fil')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE reservation_fil_id_seq')}
 `,
+  },  {
+    // Finis › Références — the two controls of a received dye lot, per finished
+    // reference (decision Vincent 2026-10-26, order 3885: the fencing-piste
+    // matter 119B is measured by nobody, by agreement). 1 = asked IN FULL
+    // (laize, poids, stabilités), 0 = never asked by the lot cycle, the Point
+    // to the dyer nor Qualité › Analyse (lib/controles-lot.ts). Both on by
+    // default: no change for the existing references.
+    name: '0036_ref_fini_controles',
+    sql: `
+ALTER TABLE ref_fini
+  ADD COLUMN controle_ennoblisseur smallint NOT NULL DEFAULT 1,
+  ADD COLUMN controle_malterre smallint NOT NULL DEFAULT 1,
+  ADD CONSTRAINT ref_fini_controle_ennoblisseur_check CHECK (controle_ennoblisseur IN (0, 1)),
+  ADD CONSTRAINT ref_fini_controle_malterre_check CHECK (controle_malterre IN (0, 1));
+`,
   },
 ]
 

@@ -35,6 +35,7 @@ import {
   Circle,
   Package,
   Ruler,
+  Factory,
   Palette,
   Droplets,
   Droplet,
@@ -51,7 +52,6 @@ import {
   Link2,
   QrCode,
   ExternalLink,
-  Check,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -153,6 +153,9 @@ interface RefFiniDetail {
   controle_sst_stab: number
   controle_sst_allongement: number
   en_developpement: number
+  /** Lot controls asked (lib/controles-lot.ts) — 1 unless switched off. */
+  controle_ennoblisseur: number
+  controle_malterre: number
   archive: number
   catalogue_prive: number
   date_creation: string | null
@@ -318,6 +321,8 @@ interface HeaderDraft {
   controle_sst_stab: boolean
   controle_sst_allongement: boolean
   en_developpement: boolean
+  controle_ennoblisseur: boolean
+  controle_malterre: boolean
 }
 
 const numStr = (n: number | null | undefined): string => (n == null ? '' : String(n))
@@ -356,6 +361,8 @@ function emptyDraft(): HeaderDraft {
     controle_sst_stab: false,
     controle_sst_allongement: false,
     en_developpement: false,
+    controle_ennoblisseur: true,
+    controle_malterre: true,
   }
 }
 
@@ -393,6 +400,8 @@ function draftFromDetail(d: RefFiniDetail): HeaderDraft {
     controle_sst_stab: !!d.controle_sst_stab,
     controle_sst_allongement: !!d.controle_sst_allongement,
     en_developpement: !!d.en_developpement,
+    controle_ennoblisseur: d.controle_ennoblisseur !== 0,
+    controle_malterre: d.controle_malterre !== 0,
   }
 }
 
@@ -431,6 +440,8 @@ function draftToBody(d: HeaderDraft) {
     controle_sst_stab: d.controle_sst_stab,
     controle_sst_allongement: d.controle_sst_allongement,
     en_developpement: d.en_developpement,
+    controle_ennoblisseur: d.controle_ennoblisseur,
+    controle_malterre: d.controle_malterre,
   }
 }
 
@@ -2221,17 +2232,7 @@ function echantillonUrl(id: number): string {
 }
 
 function EchantillonCard({ refId, archive }: { refId: number; archive: boolean }) {
-  const [copied, setCopied] = useState(false)
-  useEffect(() => { setCopied(false) }, [refId])
   const url = echantillonUrl(refId)
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-    } catch {
-      // Clipboard refused (insecure origin): the link stays selectable below.
-    }
-  }
   return (
     <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
       <div className="flex items-center gap-1.5">
@@ -2248,19 +2249,7 @@ function EchantillonCard({ refId, archive }: { refId: number; archive: boolean }
           <p className="text-[11px] text-muted-foreground">
             Page publique de la référence : description, coloris, tarifs et fiche technique.
           </p>
-          <a
-            href={url}
-            target="_blank"
-            rel="noreferrer"
-            className="block text-xs text-accent hover:underline break-all"
-          >
-            {url.replace('https://', '')}
-          </a>
           <div className="flex items-center gap-1">
-            <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={copy} title="Copier le lien">
-              {copied ? <Check className="h-3.5 w-3.5 mr-1" /> : <Copy className="h-3.5 w-3.5 mr-1" />}
-              {copied ? 'Copié' : 'Copier'}
-            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -2557,47 +2546,6 @@ function DetailSidebar({
         {activeTab === 'tarif' && <TarifTab key={detail.IDref_fini} detail={detail} />}
         {activeTab === 'informations' && (
         <div className="space-y-3">
-        {!isEditing && (
-          <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-            <p className="text-xs font-semibold text-muted-foreground">Statistiques</p>
-            <KV label="Coloris" value={<span className="tabular-nums">{detail.coloris.length}</span>} />
-            <KV label="Traitements" value={<span className="tabular-nums">{detail.traitements.length}</span>} />
-          </div>
-        )}
-
-        {/* Stock actuel — read-only aggregate, moved here from the centre panel */}
-        {!isEditing && (
-          <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-            <div className="flex items-center gap-1.5">
-              <Warehouse className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="text-xs font-semibold text-muted-foreground">Stock actuel</p>
-              <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">
-                {detail.stock_lots} lot{detail.stock_lots !== 1 ? 's' : ''}
-              </Badge>
-            </div>
-            {detail.stock_lots === 0 ? (
-              <p className="text-sm text-muted-foreground italic">Aucun stock en cours</p>
-            ) : (
-              <>
-                <KV label="Poids" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_kg, 1)} kg</span>} />
-                <KV label="Métrage" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_m, 1)} Ml</span>} />
-                {detail.reference && (
-                  <a
-                    href={`/finis/stock?q=${encodeURIComponent(detail.reference)}`}
-                    className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline pt-1"
-                  >
-                    <Warehouse className="h-3.5 w-3.5" />
-                    Voir les lots dans Stock Finis
-                  </a>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* QR du tag échantillon (#1222) — read-only, view mode */}
-        {!isEditing && <EchantillonCard refId={detail.IDref_fini} archive={!!detail.archive} />}
-
         {/* Métadonnées */}
         <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
           <p className="text-xs font-semibold text-muted-foreground">Métadonnées</p>
@@ -2656,6 +2604,65 @@ function DetailSidebar({
 
         {/* Clients ayant commandé la référence (#1155) — read-only, view mode */}
         {!isEditing && <ClientsCard refId={detail.IDref_fini} />}
+
+        {/* Stock actuel — read-only aggregate, moved here from the centre panel */}
+        {!isEditing && (
+          <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Warehouse className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-semibold text-muted-foreground">Stock actuel</p>
+              <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">
+                {detail.stock_lots} lot{detail.stock_lots !== 1 ? 's' : ''}
+              </Badge>
+            </div>
+            {detail.stock_lots === 0 ? (
+              <p className="text-sm text-muted-foreground italic">Aucun stock en cours</p>
+            ) : (
+              <>
+                <KV label="Poids" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_kg, 1)} kg</span>} />
+                <KV label="Métrage" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_m, 1)} Ml</span>} />
+                {detail.reference && (
+                  <a
+                    href={`/finis/stock?q=${encodeURIComponent(detail.reference)}`}
+                    className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline pt-1"
+                  >
+                    <Warehouse className="h-3.5 w-3.5" />
+                    Voir les lots dans Stock Finis
+                  </a>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Contrôles des lots (2026-10-26, lib/controles-lot.ts): what « Valider le lot »
+            waits for on every dye lot of this reference. On = laize, poids AND stabilités. */}
+        <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
+          <p className="text-xs font-semibold text-muted-foreground">Contrôles des lots</p>
+          {([
+            ['controle_ennoblisseur', 'Contrôle ennoblisseur', Factory],
+            ['controle_malterre', 'Contrôle Malterre', Ruler],
+          ] as const).map(([key, label, Icon]) => (
+            <div key={key} className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </span>
+              {isEditing ? (
+                <Pill value={draft[key]} onChange={(v) => onDraftChange({ ...draft, [key]: v })} />
+              ) : (
+                <span className="text-sm">{detail[key] !== 0 ? 'Oui' : 'Non'}</span>
+              )}
+            </div>
+          ))}
+          <p className="text-[11px] text-muted-foreground">
+            Un contrôle activé demande la laize, le poids et les stabilités avant « Valider le lot » ; désactivé, il n’est jamais demandé.
+          </p>
+        </div>
+
+        {/* QR du tag échantillon (#1222) — read-only, view mode */}
+        {!isEditing && <EchantillonCard refId={detail.IDref_fini} archive={!!detail.archive} />}
+
         </div>
         )}
       </div>
