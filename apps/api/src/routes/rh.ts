@@ -1,13 +1,10 @@
-// RH menu (ETM): employees and their workload — Vincent and Isabelle only.
+// RH menu (Console Administration): employees and their workload.
 //
-// Every route but the lock ones goes through requireRh() (lib/rh-acces.ts):
-// 404 for anyone not on the list, 401 `rh_verrouille` until the person has
-// typed their code RH. The data lives in PostgreSQL `rh` (lib/rh-store.ts).
+// Mounted behind the console membership (index.ts). Every route but /acces
+// goes through requireRh() (lib/rh-acces.ts): 404 without the Écrans grant.
+// The data lives in PostgreSQL `rh` (lib/rh-store.ts).
 //
-//   GET    /api/rh/acces                         — anyone: may I, and am I unlocked?
-//   POST   /api/rh/deverrouiller   { code }      — sets the mps_rh cookie
-//   POST   /api/rh/dev-deverrouiller             — same as Vincent, developer's machine only (lib/dev-login.ts)
-//   POST   /api/rh/verrouiller                   — clears it
+//   GET    /api/rh/acces                         — anyone: may I?
 //   GET    /api/rh/employes
 //   POST   /api/rh/employes        { prenom, nom }
 //   GET    /api/rh/employes/:id
@@ -29,26 +26,11 @@ import { Router, type Request, type Response, type NextFunction, type Router as 
 import multer from 'multer'
 import sharp from 'sharp'
 import { z } from 'zod'
-import {
-  requireRh,
-  personneRhAutorisee,
-  lireSessionRh,
-  signerSessionRh,
-  rhCookieOptions,
-  RH_COOKIE_NAME,
-  verifierCode,
-  blocageRestant,
-  noterEchec,
-  noterSucces,
-} from '../lib/rh-acces.js'
-import { mpsPg } from '../lib/mps-pg.js'
-import { devLoginAutorise } from '../lib/dev-login.js'
-import { verifierMotDePasse } from '../lib/passwords.js'
+import { requireRh, personneRhAutorisee } from '../lib/rh-acces.js'
 import {
   RhIndisponible,
   rhConfigure,
   journaliser,
-  lireCode,
   listerEmployes,
   lireEmploye,
   creerEmploye,
@@ -74,14 +56,6 @@ import { SuiviRhPdf } from '../lib/pdf/SuiviRhPdf.js'
 import { normaliserTache, estMesuree, heuresSemaine, totauxSimples, evolutionMensuelle, moisListe, volumeLisse, lundiDe } from '../lib/rh-charge.js'
 import { INDICATEURS, volumesPour } from '../lib/rh-indicateurs.js'
 
-/** The password hash of the account RH is opened as, or null. */
-async function hashDuCompte(userId: number | undefined): Promise<string | null> {
-  if (userId === undefined) return null
-  const [row] = await mpsPg()<{ password_hash: string | null }[]>`
-    SELECT password_hash FROM utilisateur WHERE idutilisateur = ${userId}`
-  return row?.password_hash ?? null
-}
-
 export const rhRouter: RouterType = Router()
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } })
@@ -105,7 +79,7 @@ const idParam = (req: Request) => {
   return Number.isInteger(id) && id > 0 ? id : null
 }
 
-// ── Lock ─────────────────────────────────────────────────
+// ── Access ───────────────────────────────────────────────
 
 rhRouter.get('/acces', h(async (req, res) => {
   const personne = await personneRhAutorisee(req)
@@ -113,86 +87,10 @@ rhRouter.get('/acces', h(async (req, res) => {
     res.json({ autorise: false })
     return
   }
-  const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {}
-  const deverrouille = lireSessionRh(cookies[RH_COOKIE_NAME]) === personne.cle
-  // Since password login (2026-09-30) the account password unlocks RH; the
-  // server-set code RH remains only for an account without a password yet.
-  const methode = (await hashDuCompte(req.userId)) ? 'mot_de_passe' : 'code'
-  const codeDefini = methode === 'mot_de_passe' || (rhConfigure() ? (await lireCode(personne.cle)) !== null : false)
-  // Dev convenience, same gate as « dev · Se connecter comme Vincent » (lib/dev-login.ts).
-  const devDeverrouillage = personne.cle === 'vincent' && devLoginAutorise(req)
-  res.json({ autorise: true, personne: personne.label, deverrouille, codeDefini, methode, configure: rhConfigure(), devDeverrouillage })
+  res.json({ autorise: true, personne: personne.label, configure: rhConfigure() })
 }))
 
-// The RH twin of /auth/dev-login: an RH session for `vincent` without typing the
-// password — developer's machine only (NODE_ENV, database not `mps`, loopback).
-rhRouter.post('/dev-deverrouiller', h(async (req, res) => {
-  const personne = await personneRhAutorisee(req)
-  if (!personne || personne.cle !== 'vincent' || !devLoginAutorise(req)) {
-    res.status(404).json({ error: 'Not found' })
-    return
-  }
-  await journaliser(personne.cle, 'deverrouillage_dev', req.ip)
-  res.cookie(RH_COOKIE_NAME, signerSessionRh(personne.cle), rhCookieOptions())
-  res.json({ ok: true })
-}))
-
-rhRouter.post('/deverrouiller', h(async (req, res) => {
-  const personne = await personneRhAutorisee(req)
-  if (!personne) {
-    res.status(404).json({ error: 'Not found' })
-    return
-  }
-  const attente = blocageRestant(personne.cle)
-  if (attente > 0) {
-    res.status(429).json({
-      error: 'trop_d_essais',
-      message: `Trop d’essais. Réessayez dans ${Math.ceil(attente / 60_000)} min.`,
-    })
-    return
-  }
-  const hash = await hashDuCompte(req.userId)
-  if (hash) {
-    const motDePasse = String(req.body?.motDePasse ?? '')
-    if (!motDePasse || !(await verifierMotDePasse(motDePasse, hash))) {
-      noterEchec(personne.cle)
-      await journaliser(personne.cle, 'echec_mot_de_passe', req.ip)
-      res.status(403).json({ error: 'mot_de_passe_invalide', message: 'Mot de passe incorrect.' })
-      return
-    }
-    noterSucces(personne.cle)
-    await journaliser(personne.cle, 'deverrouillage', req.ip)
-    res.cookie(RH_COOKIE_NAME, signerSessionRh(personne.cle), rhCookieOptions())
-    res.json({ ok: true })
-    return
-  }
-  const code = String(req.body?.code ?? '')
-  const stocke = await lireCode(personne.cle)
-  if (!stocke) {
-    res.status(409).json({
-      error: 'code_non_defini',
-      message: 'Aucun code RH n’est encore défini pour vous. Il se définit sur le serveur (scripts/rh-code.ts).',
-    })
-    return
-  }
-  if (!code || !verifierCode(code, stocke.hash, stocke.sel)) {
-    noterEchec(personne.cle)
-    await journaliser(personne.cle, 'echec_code', req.ip)
-    res.status(403).json({ error: 'code_invalide', message: 'Code incorrect.' })
-    return
-  }
-  noterSucces(personne.cle)
-  await journaliser(personne.cle, 'deverrouillage', req.ip)
-  res.cookie(RH_COOKIE_NAME, signerSessionRh(personne.cle), rhCookieOptions())
-  res.json({ ok: true })
-}))
-
-rhRouter.post('/verrouiller', (_req, res) => {
-  res.clearCookie(RH_COOKIE_NAME, { httpOnly: true, sameSite: 'lax', path: '/' })
-  res.json({ ok: true })
-})
-
-// Everything below needs the unlocked person.
+// Everything below needs the RH grant.
 rhRouter.use(requireRh())
 
 // ── Employees ────────────────────────────────────────────

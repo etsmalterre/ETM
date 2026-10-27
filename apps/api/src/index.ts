@@ -267,7 +267,7 @@ app.use('/api/agents-ia-trm', exigerConsole(POINTS_TABLEAU_DE_BORD), createAgent
 enregistrerTaches(tachesAutomates())
 app.use('/api/automates', exigerConsole(), createAutomatesRouter(AGENTS_IA_ETM))
 app.use('/api/automates-trm', exigerConsole(), createAutomatesRouter(AGENTS_IA_TRM))
-// RH (Console Administration, then its grant + a code RH) — lib/rh-acces.ts, PostgreSQL `rh`.
+// RH (Console Administration, then its Écrans grant): lib/rh-acces.ts, PostgreSQL `rh`.
 app.use('/api/rh', exigerConsole(), rhRouter)
 // The website (etsmalterre.fr customer space + QR sample page) — replaces the
 // WinDev webservice MPS_WS. PUBLIC through Caddy (alpha.etsmalterre.com →

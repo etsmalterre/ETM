@@ -180,21 +180,6 @@ export async function journaliser(personne: string, action: string, detail?: str
   await s`INSERT INTO journal (personne, action, detail) VALUES (${personne}, ${action}, ${detail ?? null})`
 }
 
-// ── RH codes ─────────────────────────────────────────────
-
-export async function lireCode(personne: string): Promise<{ hash: string; sel: string } | null> {
-  const s = await conn()
-  const [row] = await s<{ hash: string; sel: string }[]>`SELECT hash, sel FROM code_acces WHERE personne = ${personne}`
-  return row ?? null
-}
-
-export async function ecrireCode(personne: string, hash: string, sel: string): Promise<void> {
-  const s = await conn()
-  await s`
-    INSERT INTO code_acces (personne, hash, sel) VALUES (${personne}, ${hash}, ${sel})
-    ON CONFLICT (personne) DO UPDATE SET hash = EXCLUDED.hash, sel = EXCLUDED.sel, modifie_le = now()`
-}
-
 // ── Employees ────────────────────────────────────────────
 
 export interface Employe {

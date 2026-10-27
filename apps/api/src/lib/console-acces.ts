@@ -1,8 +1,8 @@
 // The gate of the Console Administration (admin.intra.etsmalterre.com,
 // repo admin-malterre): the routes only the console calls answer members of 'admin'
 // only (table `utilisateur_app`, lib/utilisateur-apps.ts). Membership is the
-// whole right to enter; inside, each section keeps its own locks: RH its grant
-// + code RH (lib/rh-acces.ts), Utilisateurs the admin (est_admin), every write
+// whole right to enter; inside, each section keeps its own locks: RH its Écrans
+// grant (lib/rh-acces.ts), Utilisateurs the admin (est_admin), every write
 // its company's action key (edit_agents_ia…).
 //
 // A route an ERP screen still calls stays outside: the Superviseur points are
