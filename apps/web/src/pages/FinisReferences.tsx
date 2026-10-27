@@ -43,6 +43,7 @@ import {
   FileText,
   FlaskConical,
   Archive,
+  ArchiveRestore,
   Lock,
   BadgeEuro,
   Printer,
@@ -262,10 +263,10 @@ function teintureLabel(avec: number): string {
 
 // ── API helpers ────────────────────────────────────────
 
-function useRefsFini() {
+function useRefsFini(archived: boolean) {
   return useQuery<RefFiniListRow[]>({
-    queryKey: ['refs-fini'],
-    queryFn: () => apiFetch('/references-fini'),
+    queryKey: ['refs-fini', archived],
+    queryFn: () => apiFetch(`/references-fini?archived=${archived ? 1 : 0}`),
   })
 }
 
@@ -474,6 +475,10 @@ export function FinisReferences() {
   // `?q=<reference>` (link from Tombé Métier › Références « Finis issus ») pre-fills the search.
   const [initialParams] = useSearchParams()
   const [searchQuery, setSearchQuery] = useState(() => initialParams.get('q') ?? '')
+  // LIVA #1330: archived refs stay reachable (a roll in stock may point at one).
+  const [archivedFilter, setArchivedFilter] = useState(false)
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false)
+  const [archiveError, setArchiveError] = useState<string | null>(null)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState<HeaderDraft>(emptyDraft())
   const originalDraftRef = useRef<HeaderDraft | null>(null)
@@ -486,7 +491,7 @@ export function FinisReferences() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
 
-  const { data: refs, isLoading, isError, error } = useRefsFini()
+  const { data: refs, isLoading, isError, error } = useRefsFini(archivedFilter)
   const { data: detail, isLoading: detailLoading } = useRefFiniDetail(selectedId)
 
   // Every write is gated (Paramètres › Utilisateurs › « Finis › Références »);
@@ -498,6 +503,8 @@ export function FinisReferences() {
   const canControles = useHasPermission('edit_ref_fini_controles')
   const canTraitements = useHasPermission('edit_ref_fini_traitements')
   const canAssociees = useHasPermission('edit_ref_fini_associees')
+  // Archiving = who may edit the specifications (decision Vincent 2026-10-27).
+  const canArchive = canEdit && canSpecs
   const droits: DroitsRefFini = {
     specifications: canEdit && canSpecs,
     controles: canEdit && canControles,
@@ -627,7 +634,7 @@ export function FinisReferences() {
     onSuccess: () => {
       setDeleteConfirmOpen(false)
       setDeleteError(null)
-      const cached = queryClient.getQueryData<RefFiniListRow[]>(['refs-fini']) ?? []
+      const cached = queryClient.getQueryData<RefFiniListRow[]>(['refs-fini', archivedFilter]) ?? []
       const remaining = cached.filter((r) => r.IDref_fini !== selectedId)
       queryClient.invalidateQueries({ queryKey: ['refs-fini'] })
       setSelectedId(remaining.length > 0 ? remaining[0].IDref_fini : null)
@@ -647,6 +654,30 @@ export function FinisReferences() {
         /* keep default */
       }
       setDeleteError(msg)
+    },
+  })
+
+  const archiveMutation = useMutation({
+    mutationFn: ({ id, archive }: { id: number; archive: boolean }) =>
+      apiFetch(`/references-fini/${id}/${archive ? 'archive' : 'unarchive'}`, { method: 'POST' }),
+    onSuccess: (_data, { id }) => {
+      setArchiveConfirmOpen(false)
+      const cached = queryClient.getQueryData<RefFiniListRow[]>(['refs-fini', archivedFilter]) ?? []
+      const remaining = cached.filter((r) => r.IDref_fini !== id)
+      queryClient.invalidateQueries({ queryKey: ['refs-fini'] })
+      queryClient.invalidateQueries({ queryKey: ['ref-fini', id] })
+      // The row leaves the current filter: land on its neighbour.
+      setSelectedId(remaining.length > 0 ? remaining[0].IDref_fini : null)
+    },
+    onError: (err: Error & { status?: number }) => {
+      setArchiveConfirmOpen(false)
+      setArchiveError(
+        err.status === 401
+          ? 'Votre session a expiré. Veuillez vous reconnecter, puis réessayer.'
+          : err.status === 403
+            ? 'Vous n’avez pas le droit d’archiver ou de désarchiver une référence.'
+            : 'Le changement d’archivage a échoué. Veuillez réessayer.',
+      )
     },
   })
 
@@ -678,6 +709,18 @@ export function FinisReferences() {
     [guard],
   )
 
+  const handleFilterChange = useCallback(
+    (archived: boolean) => {
+      guard.guardAction(() => {
+        setIsEditing(false)
+        originalDraftRef.current = null
+        setArchivedFilter(archived)
+        setSelectedId(null)
+      })
+    },
+    [guard],
+  )
+
   return (
     <>
       <MasterDetailLayout
@@ -692,6 +735,8 @@ export function FinisReferences() {
             onSelect={handleSelect}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            archivedFilter={archivedFilter}
+            onArchivedFilterChange={handleFilterChange}
             onNew={() => createMutation.mutate()}
             isCreating={createMutation.isPending}
             isEditing={isEditing}
@@ -718,6 +763,14 @@ export function FinisReferences() {
             canCreate={canCreate}
             canEdit={canEdit}
             canDelete={canDelete}
+            canArchive={canArchive}
+            onArchive={() => {
+              if (!detail) return
+              // Archiving asks first (it hides the ref); bringing it back does not.
+              if (detail.archive) archiveMutation.mutate({ id: detail.IDref_fini, archive: false })
+              else setArchiveConfirmOpen(true)
+            }}
+            isArchiving={archiveMutation.isPending}
             onPrintDoc={(doc) => {
               if (selectedId === null) return
               if (doc === 'technique') {
@@ -805,6 +858,39 @@ export function FinisReferences() {
           if (selectedId !== null) duplicateMutation.mutate(selectedId)
         }}
       />
+      <ConfirmDialog
+        open={archiveConfirmOpen}
+        variant="default"
+        title="Archiver la référence"
+        description={
+          detail
+            ? `« ${detail.reference ?? ''} » quittera la liste « En cours » et restera consultable sous « Archivées ».` +
+              (detail.stock_lots > 0
+                ? ` Attention : ${detail.stock_lots} rouleau${detail.stock_lots > 1 ? 'x sont' : ' est'} encore en stock sur cette référence.`
+                : '')
+            : undefined
+        }
+        confirmLabel="Archiver"
+        isPending={archiveMutation.isPending}
+        onCancel={() => setArchiveConfirmOpen(false)}
+        onConfirm={() => {
+          if (detail) archiveMutation.mutate({ id: detail.IDref_fini, archive: true })
+        }}
+      />
+      <AlertDialog open={archiveError !== null} onOpenChange={(o) => { if (!o) setArchiveError(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              Archivage impossible
+            </AlertDialogTitle>
+            <AlertDialogDescription>{archiveError}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-2 mt-4">
+            <Button onClick={() => setArchiveError(null)}>OK</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={saveError !== null} onOpenChange={(o) => { if (!o) setSaveError(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -849,6 +935,8 @@ function RefFiniList({
   onSelect,
   searchQuery,
   onSearchChange,
+  archivedFilter,
+  onArchivedFilterChange,
   onNew,
   isCreating,
   isEditing,
@@ -863,14 +951,21 @@ function RefFiniList({
   onSelect: (id: number) => void
   searchQuery: string
   onSearchChange: (q: string) => void
+  archivedFilter: boolean
+  onArchivedFilterChange: (archived: boolean) => void
   onNew: () => void
   isCreating: boolean
   isEditing: boolean
   canCreate: boolean
 }) {
+  const filterOptions: { key: 'en_cours' | 'archive'; label: string }[] = [
+    { key: 'en_cours', label: 'En cours' },
+    { key: 'archive', label: 'Archivées' },
+  ]
+  const activeKey = archivedFilter ? 'archive' : 'en_cours'
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
-      <div className="p-3 border-b rounded-t-lg bg-zinc-200/50">
+      <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
@@ -881,6 +976,23 @@ function RefFiniList({
             autoComplete="off"
             className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
           />
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {filterOptions.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => onArchivedFilterChange(opt.key === 'archive')}
+              className={cn(
+                'px-2 py-1 text-xs rounded-md transition-colors flex-grow basis-[calc(50%-0.25rem)]',
+                activeKey === opt.key
+                  ? 'bg-accent text-accent-foreground shadow-sm font-medium'
+                  : 'text-muted-foreground hover:bg-accent/10',
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
       </div>
       <div className="flex-1 overflow-auto p-3 space-y-2 scrollbar-transparent">
@@ -945,8 +1057,9 @@ function RefFiniList({
       <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
         <span>
           {totalCount} référence{totalCount !== 1 ? 's' : ''}
+          {archivedFilter ? ` archivée${totalCount !== 1 ? 's' : ''}` : ''}
         </span>
-        {!isEditing && canCreate && (
+        {!isEditing && canCreate && !archivedFilter && (
           <Button
             size="sm"
             variant="ghost"
@@ -981,6 +1094,9 @@ function DetailHeader({
   canCreate,
   canEdit,
   canDelete,
+  canArchive,
+  onArchive,
+  isArchiving,
   onPrintDoc,
 }: {
   detail: RefFiniDetail | null
@@ -998,6 +1114,9 @@ function DetailHeader({
   canCreate: boolean
   canEdit: boolean
   canDelete: boolean
+  canArchive: boolean
+  onArchive: () => void
+  isArchiving: boolean
   onPrintDoc: (doc: PrintDocKind) => void
 }) {
   if (!detail && !isLoading) return null
@@ -1078,6 +1197,24 @@ function DetailHeader({
                 {canCreate && (
                   <Button variant="outline" size="icon" className="h-9 w-9" title="Dupliquer" onClick={onDuplicate} disabled={isDuplicating}>
                     {isDuplicating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+                  </Button>
+                )}
+                {canArchive && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9"
+                    title={detail.archive ? 'Désarchiver' : 'Archiver'}
+                    onClick={onArchive}
+                    disabled={isArchiving}
+                  >
+                    {isArchiving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : detail.archive ? (
+                      <ArchiveRestore className="h-4 w-4" />
+                    ) : (
+                      <Archive className="h-4 w-4" />
+                    )}
                   </Button>
                 )}
                 {canEdit && (
@@ -2095,8 +2232,9 @@ function AssocieesCard({
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [addError, setAddError] = useState<string | null>(null)
 
-  // The left list's query — already cached, no extra fetch.
-  const { data: allRefs } = useRefsFini()
+  // The left list's « En cours » query (cached unless the list shows the
+  // archived refs): an archived ref is never offered as an association.
+  const { data: allRefs } = useRefsFini(false)
 
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['ref-fini', detail.IDref_fini] })

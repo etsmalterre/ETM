@@ -18,6 +18,7 @@ import {
 } from '../lib/refs-associees.js'
 import { batchRepair } from '../lib/batch-repair.js'
 import type { PermissionKey } from '../lib/permission-keys.js'
+import { mpsPg } from '../lib/mps-pg.js'
 import { clesRequises, groupesModifies, LIBELLES_GROUPE, GROUPES_REF_FINI } from '../lib/ref-fini-droits.js'
 import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } from '../lib/ref-fini-reference.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
@@ -49,8 +50,9 @@ async function aLesDroits(req: Request, res: Response, cles: PermissionKey[], me
 //   • reads   — SELECT * (Windows returns the accented keys verbatim; Linux
 //               returns them truncated). normalizeRefFini() resolves each by a
 //               case-insensitive prefix regex (pickKey), never by a hardcoded name.
-//   • writes  — we only ever SET ascii-named columns; the accented flags
-//               (archivé / catalogue_privé) and the dates are read-only here.
+//   • writes  — we only ever SET ascii-named columns; archivé is flipped by
+//               its own routes through native PG (`archive`), catalogue_privé
+//               and the dates are read-only here.
 // Accented VALUES (designation, observations, …) corrupt to U+FFFD through ODBC
 // and are repaired via fixEncoding (single rows) or a batched CONVERT (lists).
 //
@@ -197,7 +199,7 @@ referencesFiniRouter.get('/lookups/ecru', async (_req: Request, res: Response) =
 // LIST
 // ──────────────────────────────────────────────────────────
 
-// GET /api/references-fini — non-archived ref_fini with coloris + stock summary.
+// GET /api/references-fini[?archived=1]: ref_fini (non-archived by default) with coloris + stock summary.
 // GET /api/references-fini/lookups/traitements — the ennoblissement catalog
 // (same shape as /tarifs-fini/lookups/traitements; shared loader).
 referencesFiniRouter.get('/lookups/traitements', async (_req: Request, res: Response) => {
@@ -209,12 +211,14 @@ referencesFiniRouter.get('/lookups/traitements', async (_req: Request, res: Resp
   }
 })
 
-referencesFiniRouter.get('/', async (_req: Request, res: Response) => {
+referencesFiniRouter.get('/', async (req: Request, res: Response) => {
   try {
-    // SELECT * works on ref_fini even with accented column names; the archivé
-    // filter is applied in JS (naming the accented column would storm Linux).
+    // ?archived=1 lists the archived refs instead (LIVA #1330: a roll in stock
+    // could point at a ref nobody could open). SELECT * works on ref_fini even
+    // with accented column names; the archivé filter is applied in JS.
+    const wantArchived = req.query.archived === '1'
     const rawRows = await query<Record<string, unknown>>(`SELECT * FROM ref_fini ORDER BY reference`)
-    const visible = rawRows.filter((r) => !isArchive(r))
+    const visible = rawRows.filter((r) => isArchive(r) === wantArchived)
     let refs = visible.map((r) => normalizeRefFini(r))
     refs = await batchRepair(refs as any, 'ref_fini', 'IDref_fini', ['reference', 'designation']) as RefFini[]
 
@@ -1095,6 +1099,29 @@ referencesFiniRouter.put('/:id', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+// POST /api/references-fini/:id/archive  &  /unarchive (LIVA #1330). Only who
+// may edit the specifications may archive (decision Vincent 2026-10-27).
+// Native PG: the column is the unaccented `archive` there.
+for (const [chemin, valeur] of [['archive', 1], ['unarchive', 0]] as const) {
+  referencesFiniRouter.post(`/:id/${chemin}`, async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10)
+      if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+      const message = valeur
+        ? 'Vous n’avez pas le droit d’archiver une référence.'
+        : 'Vous n’avez pas le droit de désarchiver une référence.'
+      if (!(await aLesDroits(req, res, ['edit_ref_fini', 'edit_ref_fini_specifications'], message))) return
+      const sql = mpsPg()
+      const rows = await sql`UPDATE ref_fini SET archive = ${valeur} WHERE idref_fini = ${id} RETURNING idref_fini`
+      if (rows.length === 0) { res.status(404).json({ error: 'Ref fini not found' }); return }
+      res.json({ ok: true })
+    } catch (err) {
+      console.error(`Error ${chemin} ref_fini:`, err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  })
+}
 
 // POST /api/references-fini/:id/traitements — attach a treatment (LIVA #1136).
 // The junction is a set: attaching one already present answers 409.
