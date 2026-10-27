@@ -2247,6 +2247,13 @@ function LineCard({
                   valueClass={surLivraison ? undefined : tint}
                 />
               )}
+              {/* The default mode is shown too: the reader sees it was chosen, not forgotten. */}
+              {(line.mode_livraison ?? 'des_que_prete') === 'des_que_prete' && (
+                <LineStat label="Livraison" value="Dès que prête" title="Expédiée dès que la ligne est prête" />
+              )}
+              {line.mode_livraison === 'date_client' && !line.date_expedition_prevue && (
+                <LineStat label="Livraison" value="Date convenue" title="Date d’expédition convenue avec le client, pas encore saisie" />
+              )}
               {line.mode_livraison === 'sur_appel' && (
                 <LineStat label="Livraison" value="Sur appel" valueClass={surLivraison ? tint : undefined} />
               )}
