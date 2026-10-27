@@ -3,12 +3,13 @@ import { accesEffectifs, emailValide, normaliserEmail, type AccesRow, type Clien
 
 const contact = (IDcontact: number, IDclient: number, mail: string, visible = true): ContactErp =>
   ({ IDcontact, IDclient, nom: `Nom${IDcontact}`, prenom: '', mail, visible })
-const client = (IDclient: number, visible = true, societe = 1): ClientErp => ({ IDclient, nom: `Client ${IDclient}`, visible, societe })
+const client = (IDclient: number, visible = true, societe = 1, archive = false): ClientErp =>
+  ({ IDclient, nom: `Client ${IDclient}`, visible, societe, archive })
 const row = (idcontact: number, idclient: number, jour: number, actif = true): AccesRow =>
   ({ idcontact, idclient, actif, modifie_le: new Date(2026, 8, jour) })
 
 describe('accesEffectifs', () => {
-  const clients = new Map([[1, client(1)], [2, client(2)], [3, client(3, false)], [4, client(4, true, 2)]])
+  const clients = new Map([[1, client(1)], [2, client(2)], [3, client(3, false)], [4, client(4, true, 2)], [5, client(5, true, 1, true)]])
 
   it('keeps an active row of a visible contact with an e-mail, lowercased', () => {
     const contacts = new Map([[10, contact(10, 1, ' Achats@Client.FR ')]])
@@ -24,8 +25,9 @@ describe('accesEffectifs', () => {
       [13, contact(13, 3, 'e@f.fr')],        // client hidden
       [14, contact(14, 4, 'g@h.fr')],        // TRM client
       [15, contact(15, 1, 'pas-un-email')],  // no valid e-mail
+      [17, contact(17, 5, 'i@j.fr')],        // client archived
     ])
-    const rows = [row(11, 1, 1), row(12, 1, 1), row(13, 3, 1), row(14, 4, 1), row(15, 1, 1), row(16, 1, 1), row(10, 1, 1, false)]
+    const rows = [row(11, 1, 1), row(12, 1, 1), row(13, 3, 1), row(14, 4, 1), row(15, 1, 1), row(16, 1, 1), row(10, 1, 1, false), row(17, 5, 1)]
     expect(accesEffectifs(rows, contacts, clients)).toEqual([])
   })
 

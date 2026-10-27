@@ -49,6 +49,8 @@ import {
 import { normalizeSiren, isValidSiren } from '../lib/siren.js'
 import { parseAssocieeCsv } from '../lib/refs-associees.js'
 import { statsClient, type StatsLigne } from '../lib/stats-client.js'
+import { retirerAccesClient } from '../lib/espace-client-acces.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 
 export const clientsRouter: RouterType = Router()
 
@@ -563,6 +565,13 @@ clientsRouter.post('/:id/archive', async (req: Request, res: Response) => {
     if (!(await requireDeleteClientPermission(req, res))) return
     const found = await setClientFlag(id, 'archive', 1)
     if (!found) { res.status(404).json({ error: 'Client not found' }); return }
+    // An archived client's contacts lose the espace client. If this fails the portal still drops
+    // them (accesEffectifs skips archived clients); only the switches in Contacts stay on.
+    try {
+      await retirerAccesClient(id, await nomUtilisateur(req.userId!))
+    } catch (err) {
+      console.error(`Archive client ${id}: espace client access not removed:`, err)
+    }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error archiving client:', err)

@@ -112,6 +112,7 @@ export interface ClientErp {
   nom: string
   visible: boolean
   societe: number
+  archive: boolean
 }
 
 export interface AccesRow {
@@ -132,8 +133,8 @@ export interface AccesPortail {
 
 /**
  * The accounts the portal must honour: active rows whose contact still exists, still
- * belongs to that client, is visible and has a valid e-mail, at a visible ETS Malterre
- * client. An e-mail is a login, so it may appear once: on a clash the oldest grant wins
+ * belongs to that client, is visible and has a valid e-mail, at a visible, non-archived
+ * ETS Malterre client. An e-mail is a login, so it may appear once: on a clash the oldest grant wins
  * (the grant route refuses a clash; this only covers an e-mail changed in the ERP later).
  */
 export function accesEffectifs(
@@ -149,7 +150,7 @@ export function accesEffectifs(
     const c = contacts.get(r.idcontact)
     if (!c || !c.visible || c.IDclient !== r.idclient) continue
     const cl = clients.get(c.IDclient)
-    if (!cl || !cl.visible || cl.societe !== 1) continue
+    if (!cl || !cl.visible || cl.archive || cl.societe !== 1) continue
     const email = normaliserEmail(c.mail)
     if (!emailValide(email) || vus.has(email)) continue
     vus.add(email)
@@ -196,9 +197,14 @@ export async function clientsErp(ids: number[]): Promise<Map<number, ClientErp>>
       ),
       'client', 'IDclient', ['nom'],
     )
+    // `archivé` is accented: a WHERE-only probe, never named in the SELECT list (CLAUDE.md § Accents).
+    const archives = new Set((await query<{ IDclient: number }>(
+      `SELECT IDclient FROM client WHERE IDclient IN (${part.join(',')}) AND archivé = 1`,
+    )).map((r) => Number(r.IDclient)))
     for (const r of rows) {
-      m.set(Number(r.IDclient), {
-        IDclient: Number(r.IDclient), nom: str(r.nom), visible: Number(r.est_visible) === 1, societe: Number(r.IDsociete),
+      const id = Number(r.IDclient)
+      m.set(id, {
+        IDclient: id, nom: str(r.nom), visible: Number(r.est_visible) === 1, societe: Number(r.IDsociete), archive: archives.has(id),
       })
     }
   }
@@ -239,6 +245,7 @@ export async function changerAcces(idcontact: number, idclient: number, actif: b
     if (!emailValide(email)) throw new AccesRefuse('Ce contact n’a pas d’adresse e-mail valide : renseignez-la d’abord.')
     const cl = (await clientsErp([idclient])).get(idclient)
     if (!cl || !cl.visible || cl.societe !== 1) throw new AccesRefuse('Ce client n’est pas un client ETS Malterre actif.')
+    if (cl.archive) throw new AccesRefuse('Ce client est archivé : désarchivez-le d’abord.')
     const autres = await s<{ idcontact: number; idclient: number }[]>`
       SELECT idcontact, idclient FROM acces WHERE actif AND idcontact <> ${idcontact}`
     const erp = await contactsErp(autres.map((a) => a.idcontact))
@@ -261,6 +268,28 @@ export async function changerAcces(idcontact: number, idclient: number, actif: b
       VALUES (${idcontact}, ${idclient}, ${actif ? 'accorde' : 'retire'}, ${par})`
   })
   cacheListe = null
+}
+
+/** Archiving a client removes the access of all its contacts (Vincent, 2026-10-27), journaled
+ *  like a removal by hand. Unarchiving gives nothing back: access is granted again contact by
+ *  contact. Without ESPACE_CLIENT_PG_URL there is nothing to remove. Returns the count removed. */
+export async function retirerAccesClient(idclient: number, par: string): Promise<number> {
+  if (!espaceConfigure()) return 0
+  const s = await conn()
+  const retires = await s.begin(async (t) => {
+    const tx = t as unknown as Sql // postgres.js typing: TransactionSql loses its call signatures
+    const rows = await tx<{ idcontact: number }[]>`
+      UPDATE acces SET actif = false, modifie_le = now(), modifie_par = ${par}
+      WHERE idclient = ${idclient} AND actif RETURNING idcontact`
+    for (const r of rows) {
+      await tx`
+        INSERT INTO journal (idcontact, idclient, action, par, detail)
+        VALUES (${r.idcontact}, ${idclient}, 'retire', ${par}, 'client archivé')`
+    }
+    return rows.length
+  })
+  cacheListe = null
+  return retires
 }
 
 // ── Portal side ─────────────────────────────────────────────
