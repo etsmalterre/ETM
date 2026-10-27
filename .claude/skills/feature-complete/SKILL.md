@@ -82,11 +82,12 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
   this command exists to avoid.) The one genuine `<MAIN>` stop is a **diverged** local
   `master` — see "Run it end to end".
 - **Other repos this feature touched — land them too, before teardown.** This skill lands
-  ONLY the repo it runs in. A feature built across repos (ETM + `etsmalterre-site`, ETM + TRM)
-  leaves its other half in a sibling worktree that nothing lands — and teardown exits the only
-  session that knows about it. List the dirty or unpushed sibling worktrees:
+  ONLY the repo it runs in. A feature built across repos (ETM + `etsmalterre-site`, ETM + TRM,
+  ETM + the Console Administration `admin-malterre`) leaves its other half in a sibling
+  worktree that nothing lands — and teardown exits the only session that knows about it. List
+  the dirty or unpushed sibling worktrees:
   ```bash
-  for r in ../TRM ../etsmalterre-site; do [ -d "$r" ] || continue
+  for r in ../TRM ../etsmalterre-site ../admin-malterre; do [ -d "$r" ] || continue
     git -C "$r" worktree list --porcelain | sed -n 's/^worktree //p' | while read w; do
       [ "$w" = "$(cd "$r" && pwd)" ] && continue
       d=$(git -C "$w" status --porcelain | wc -l); a=$(git -C "$w" rev-list --count origin/master..HEAD 2>/dev/null)
@@ -97,6 +98,9 @@ Below, **`<MAIN>`** = the main checkout for this project. Get it programmaticall
   `origin/master`, its `down.mjs`), then land this one. One that belongs to another live session
   → leave it, one line in the report. (2026-09-28, #1222: the ETM half landed, the
   `etsmalterre-site-echantillon-qr` page stayed uncommitted, the QR opened « Page introuvable ».)
+  An `admin-malterre-<name>` half lands with **its own** `/feature-complete`
+  (`admin-malterre/.claude/skills/feature-complete`), AFTER this one: the console builds
+  against ETM master.
 - **TRM only — shared-API guardrail.** A TRM feature's endpoints live in the **MPS API**
   (`C:\dev\etsmalterre\ETM\apps\api`), not in this repo. Before landing, check whether
   API work for this feature is still unlanded:
