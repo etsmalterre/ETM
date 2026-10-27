@@ -4,18 +4,24 @@
 // each company has its own users — API lib/utilisateur-apps.ts): a refusal
 // with a way out. Else the app — plus, while an admin looks through another
 // account, a pill to come back. Name kept for main.tsx (ETM and TRM mount it
-// the same way, each with its `app`).
+// the same way, each with its `app`; the Console Administration, repo admin-malterre,
+// with app="admin": no poste enrolment there, and the company context is set
+// by each console section).
 
 import { Loader2, LogOut, ShieldX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { APP_NAMES, AppCodeProvider, useUser, type AppCode } from '@/contexts/UserContext'
+import { APP_NAMES, AppCodeProvider, AppMembreProvider, useUser, type AppMembre } from '@/contexts/UserContext'
 import { AuthCard, AuthLayout } from './AuthLayout'
 import { LoginScreen } from './LoginScreen'
 import { ForcedPasswordChange } from './ChangePasswordForm'
 import { VoirCommeBandeau } from './VoirComme'
 
-export function UserPickerGate({ app, children }: { app: AppCode; children: React.ReactNode }) {
+export function UserPickerGate({ app, children }: { app: AppMembre; children: React.ReactNode }) {
   const { user, isLoading } = useUser()
+  // The ERP's company; the console has none of its own.
+  const societe = app === 'admin' ? null : app
+  const avecSociete = (node: React.ReactNode) =>
+    societe ? <AppCodeProvider value={societe}>{node}</AppCodeProvider> : node
 
   if (isLoading) {
     return (
@@ -26,32 +32,36 @@ export function UserPickerGate({ app, children }: { app: AppCode; children: Reac
   }
 
   // The login screen reads the app too: a PC enrolled from it records which one.
-  if (!user) return <AppCodeProvider value={app}><LoginScreen /></AppCodeProvider>
+  if (!user) return avecSociete(<LoginScreen postes={!!societe} />)
   if (user.doitChangerMdp) return <ForcedPasswordChange />
 
   return (
-    <AppCodeProvider value={app}>
-      {/* `apps` absent = an API older than the membership: let it through. */}
-      {user.apps && !user.apps.includes(app) ? <PasMembre app={app} /> : children}
-      {user.voirComme && <VoirCommeBandeau />}
-    </AppCodeProvider>
+    <AppMembreProvider value={app}>
+      {avecSociete(
+        <>
+          {/* `apps` absent = an API older than the membership: let it through. */}
+          {user.apps && !user.apps.includes(app) ? <PasMembre app={app} /> : children}
+          {user.voirComme && <VoirCommeBandeau />}
+        </>,
+      )}
+    </AppMembreProvider>
   )
 }
 
 /** Alias with the name the auth rework gave it. */
 export const AuthGate = UserPickerGate
 
-function PasMembre({ app }: { app: AppCode }) {
+function PasMembre({ app }: { app: AppMembre }) {
   const { user, logout } = useUser()
-  const autre = (user?.apps ?? []).find((a) => a !== app)
+  const autre = (user?.apps ?? []).find((a) => a !== app && a !== 'admin')
   return (
     <AuthLayout>
       <AuthCard icon={<ShieldX className="h-5 w-5" />} title="Accès non autorisé" subtitle={APP_NAMES[app]}>
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
             Le compte <span className="font-medium text-foreground">{[user?.prenom, user?.nom].filter(Boolean).join(' ')}</span>{' '}
-            n’a pas accès à l’application {APP_NAMES[app]}
-            {autre ? <> : il appartient à {APP_NAMES[autre]}.</> : '.'}
+            n’a pas accès {app === 'admin' ? 'à la console' : 'à l’application'} {APP_NAMES[app]}
+            {autre && app !== 'admin' ? <> : il appartient à {APP_NAMES[autre]}.</> : '.'}
           </p>
           <p className="text-xs text-muted-foreground">
             Si vous devriez y avoir accès, demandez-le à un administrateur.

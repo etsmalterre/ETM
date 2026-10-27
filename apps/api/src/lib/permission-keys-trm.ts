@@ -255,9 +255,8 @@ export const TRM_PERMISSION_KEYS = [
     category: 'Rapports',
     parent: 'view_rapport_finance',
   },
-  // Paramètres > Outils has NO key: who sees the screen is the Écrans axis
-  // (menu `screen_settings`, lib/screen-keys-trm.ts), and its routes check
-  // that grant server-side.
+  // Console › Outils has NO key: entering the Console Administration
+  // (membership 'admin', lib/console-acces.ts) is the right.
   // Qualité > Retour client. Only the WRITE side is gated: a retour client is
   // the atelier's own quality record, not confidential data, and who sees the
   // screen at all is already the Écrans axis's job. What this key protects is
@@ -321,15 +320,15 @@ export const TRM_PERMISSION_KEYS = [
       'Affiche l’entrée « TRS » du menu Production et autorise la lecture du tableau de bord d’équipe : timeline et TRS de chaque métier, pièces produites, visitées et déclassées, bonnetiers pointés et leurs heures. Lecture seule ; fermé par défaut.',
     category: 'Production',
   },
-  // Agents IA — TRM's menu (its automates: the pointage report emails). Same
-  // two keys as ETM's, in TRM's store: reading needs only the menu
-  // (screen_agents_ia); every write of /api/agents-ia-trm and
+  // Agents IA — TRM's agents and automates (the pointage report emails), in
+  // the Console Administration. Same keys as ETM's, in TRM's store: reading
+  // needs only the console (lib/console-acces.ts); every write of /api/agents-ia-trm and
   // /api/automates-trm checks these (lib/agents/app-scope.ts AGENTS_IA_TRM).
   {
     key: 'edit_agents_ia',
     label: 'Piloter les agents IA et les automates',
     description:
-      'Autorise, dans Agents IA, à mettre un agent ou un automate en service, en essai ou à l’arrêt (par exemple le rapport de pointage par e-mail), à le relancer et à écrire les retours sur un automate. Sans ce droit les écrans sont en lecture seule.',
+      'Autorise, dans la console Administration › Agents IA, à mettre un agent ou un automate en service, en essai ou à l’arrêt (par exemple le rapport de pointage par e-mail), à le relancer et à écrire les retours sur un automate. Sans ce droit les écrans sont en lecture seule.',
     category: 'Agents IA',
   },
   {

@@ -48,7 +48,7 @@ export interface TrmMenuDef {
   label: string
   screens: readonly TrmScreenDef[]
   /** false = the grandfathering script never hands this menu out: it is
-   *  granted person by person, never to the whole company (Paramètres). */
+   *  granted person by person, never to the whole company. */
   seed?: false
 }
 
@@ -107,6 +107,7 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
       { href: '/production/visitage', label: 'Visitage' },
       { href: '/production/prime', label: 'Prime' },
       { href: '/production/trs', label: 'TRS' },
+      { href: '/production/planning', label: 'Planning' },
     ],
   },
   {
@@ -148,28 +149,9 @@ export const TRM_SCREEN_MENUS: readonly TrmMenuDef[] = [
       { href: '/pointage/salaries', label: 'Salariés' },
     ],
   },
-  // Agents IA — TRM's own agents and automates (lib/agents/app-scope.ts): the
-  // two pointage report emails since 2026-10-01. Granted person by person.
-  {
-    id: 'agents-ia',
-    href: '/agents-ia',
-    label: 'Agents IA',
-    screens: [
-      { href: '/agents-ia/agents', label: 'Agents' },
-      { href: '/agents-ia/automates', label: 'Automates' },
-    ],
-    seed: false,
-  },
-  // Paramètres — same rule as ETM's (lib/screen-keys.ts): Utilisateurs is
-  // admin-only and stays out of the tree; Outils is gated server-side by this
-  // grant (trmUserCanOpenScreen, routes/import-sage.ts), no action key.
-  {
-    id: 'settings',
-    href: '/settings',
-    label: 'Paramètres',
-    screens: [{ href: '/settings/outils', label: 'Outils' }],
-    seed: false,
-  },
+  // Agents IA and Paramètres left this axis on 2026-10-27 for the Console
+  // Administration (admin.intra…, lib/console-acces.ts): entering it is their
+  // right now, so their old keys are no longer storable.
 ] as const
 
 /** '/tombe-metier/references' → 'tombe_metier_references' */

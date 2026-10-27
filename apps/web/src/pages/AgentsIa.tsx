@@ -21,7 +21,7 @@
 // sent for a BL « à vérifier » links here with ?agent=<slug>&run=<id>.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -87,8 +87,10 @@ import {
   ilYA,
   KV,
   MODE_META,
+  LienErp,
   ModeFooter,
   useBaseApi,
+  useOuvrirErp,
   useLancement,
   type Mode,
   type Lancement,
@@ -2147,7 +2149,7 @@ function FactureRunDialog({ agent, runId, canPilot, onClose, onOpenRun, onChange
   const base = useBaseApi()
   const slug = agent.slug
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
+  const ouvrirErp = useOuvrirErp()
   const [toutes, setToutes] = useState(false)
   const [showOcr, setShowOcr] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -2233,7 +2235,7 @@ function FactureRunDialog({ agent, runId, canPilot, onClose, onOpenRun, onChange
                     <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5" />
                     <span className="flex-1">Facture enregistrée{ecriture.numFactureEcrits.length ? `, n° reporté sur ${ecriture.numFactureEcrits.length} ligne(s) de commande` : ''}.</span>
                     <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-accent hover:text-accent hover:bg-accent/10 flex-shrink-0"
-                      onClick={() => navigate(`/sous-traitants/factures?facture=${ecriture.idFacture}`)}>
+                      onClick={() => ouvrirErp(`/sous-traitants/factures?facture=${ecriture.idFacture}`)}>
                       Ouvrir<ExternalLink className="h-3 w-3 ml-1" />
                     </Button>
                   </div>
@@ -2555,9 +2557,9 @@ function PointLigne({ p, deplie, onToggle }: { p: PointHistorique; deplie: boole
                 <span>Apparu le {fmtDateHeure(p.depuis)}</span>
                 <span>{p.fermeLe ? `Plus relevé le ${fmtDateHeure(p.fermeLe)}` : `Encore relevé le ${fmtDateHeure(p.vuLe)}`}</span>
                 {p.lien && (
-                  <Link to={p.lien} className="inline-flex items-center gap-1 text-accent-blue hover:underline">
+                  <LienErp to={p.lien} className="inline-flex items-center gap-1 text-accent-blue hover:underline">
                     <ExternalLink className="h-3 w-3" />Ouvrir dans ETM
-                  </Link>
+                  </LienErp>
                 )}
               </div>
               {p.raisonFermeture && (
@@ -2632,10 +2634,10 @@ function ConstatCard({ c, avis, resolution, textes, estompe }: {
               </button>
             )}
             {c.lien && (
-              <Link to={c.lien} title="Ouvrir dans ETM"
+              <LienErp to={c.lien} title="Ouvrir dans ETM"
                 className="h-7 w-7 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-accent hover:bg-accent/10 transition-colors">
                 <ExternalLink className="h-3.5 w-3.5" />
-              </Link>
+              </LienErp>
             )}
           </div>
         </div>

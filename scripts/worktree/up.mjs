@@ -1,5 +1,5 @@
 // Create a feature worktree on a free slot and spin up its dev server(s).
-//   node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]
+//   node scripts/worktree/up.mjs <feature-name> [ng|trm|admin] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]
 //
 // --restart reuses an EXISTING worktree + slot instead of creating anything:
 // it kills whatever is still alive, respawns the dev server(s) on the slot's
@@ -87,11 +87,11 @@ if (apiIdx !== -1) {
 const feature = (argv[0] || '').trim()
 const projectKey = (argv[1] || detectDefaultProject()).trim().toLowerCase()
 if (!/^[a-z0-9][a-z0-9-]*$/.test(feature)) {
-  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]  (feature kebab-case)')
+  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm|admin] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]  (feature kebab-case)')
   process.exit(1)
 }
-if (projectKey !== 'ng' && projectKey !== 'trm') {
-  console.error(`Unknown project "${projectKey}". Use "ng" or "trm".`)
+if (!['ng', 'trm', 'admin'].includes(projectKey)) {
+  console.error(`Unknown project "${projectKey}". Use "ng", "trm" or "admin".`)
   process.exit(1)
 }
 const proj = getProject(projectKey)
@@ -143,9 +143,16 @@ async function pickMainApi(preferred) {
 // VITE_WORKTREE_LABEL in dev (see its main.tsx). Returns the files it changed.
 const TRM_APPS = ['apps/web', 'apps/atelier', 'apps/trs', 'apps/pointage']
 function writeTrmEnvLocal(wt, api, feature) {
-  const next = `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n`
+  // The Console Administration served beside that API (NG slot N: API 808N,
+  // console 310N): TRM's old Agents IA / Paramètres URLs redirect there; the
+  // console links back to the ETM web of the same slot (300N).
+  const n = api >= 8080 && api <= 8086 ? api - 8080 : null
+  const extra = n === null ? ''
+    : projectKey === 'admin' ? `VITE_ETM_URL=http://localhost:${3000 + n}\n`
+    : `VITE_ADMIN_URL=http://localhost:${3100 + n}\n`
+  const next = `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n${extra}`
   const changed = []
-  for (const app of TRM_APPS) {
+  for (const app of projectKey === 'admin' ? ['apps/web'] : TRM_APPS) {
     if (!fs.existsSync(path.join(wt, app))) continue
     const envLocal = path.join(wt, app, '.env.development.local')
     const prev = fs.existsSync(envLocal) ? fs.readFileSync(envLocal, 'utf8') : ''
@@ -211,7 +218,7 @@ if (isRestart) {
   console.log(`Fetching origin in ${main} …`)
   execFileSync('git', ['-C', main, 'fetch', 'origin'], { stdio: 'inherit' })
 
-  slot = await allocateSlot(projectKey)
+  slot = await allocateSlot(projectKey, proj.slotFromApi && apiOverride >= 8081 && apiOverride <= 8086 ? apiOverride - 8080 : null)
   api = proj.hasApi ? proj.apiPort(slot) : (apiOverride || proj.defaultApiPort)
   if (!proj.hasApi && !apiOverride) api = await pickMainApi(api)
   web = proj.webPort(slot)
@@ -309,8 +316,8 @@ if (isRestart) {
 } else {
   // TRM: web-only. Point VITE_API_URL at the chosen ETM API and label the tab.
   // The dev:517N scripts don't bake VITE_API_URL, so this .env value wins.
-  writeTrmEnvLocal(wt, api, feature)
-  console.log(`Wrote .env.development.local for ${TRM_APPS.join(', ')} (API → :${api}, tab label "${feature}").`)
+  const ecrits = writeTrmEnvLocal(wt, api, feature)
+  console.log(`Wrote ${ecrits.join(', ') || 'no .env.development.local'} (API → :${api}, tab label "${feature}").`)
 }
 
 const logDir = path.join(wt, '.dev-logs')

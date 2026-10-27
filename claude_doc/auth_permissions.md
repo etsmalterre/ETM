@@ -88,6 +88,32 @@ A **second axis**, stored in the same per-user array as the action keys but with
 - **Paramètres is a menu of the axis** (`screen_settings`, screen `hide_settings_outils`) although the sidebar renders it apart (`settingsItem`; the web iterates `screenAccessMenus()` = `mainNavigation` + `settingsItem`). Utilisateurs stays `adminOnly` and is left out of the Écrans tree. `seed: false` on the manifest entry: the grandfathering scripts never hand Paramètres out, and the Écrans tab's « Tout » does not tick it — granted person by person. **Outils is where the curtain is also the lock**: `routes/import-sage.ts` checks `userCanOpenScreen` / `trmUserCanOpenScreen` (menu grant + no hide, admin bypass) — the same exception shape as TRM Pointage's `trmUserHasMenu`.
 - **TRM has the same axis over its own tree and its own store.** Manifest `lib/screen-keys-trm.ts` (`TRM_SCREEN_MENUS`, `trmMenuAccessKey`/`trmScreenHideKey`/`isTrmScreenAccessKey`) mirrors the sibling repo's `TRM/apps/web/src/config/navigation.ts`; keys land in `data/permissions-trm.json` via `/api/permissions-trm` (catalog also exposed at `GET /permissions-trm/screens`). Guard `check-screen-access-trm.ts` (`--nav <abs path>` to diff against a TRM worktree instead of the `../TRM` sibling), grandfathering `seed-screen-access-trm.ts --write` (**run on the server**, same reasons). Some key strings coincide with ETM's (`screen_clients`, `hide_clients_facturation`) — harmless, the two stores never meet, and each `PUT` filters against its own catalog. The TRM web mirrors the whole enforcement path (`navigation.ts` helpers, `useSubmenuFilter.ts`, `AppShell` guard, its own `navigation.test.ts`).
 
+## Console Administration — the third membership (2026-10-27)
+
+`utilisateur_app.app` takes `etm`, `trm` and, since migration `0038_console_admin`,
+`admin`: the gate of `admin.intra.etsmalterre.com` (repo `admin-malterre`). Seeded for Vincent and
+Isabelle (plus any `est_admin`). It carries **no permission store** (`PermissionApp` stays
+`etm | trm`; `AppCode` in `lib/utilisateur-apps.ts` is the membership): inside the console
+each section keeps its company's rights.
+
+- **Who enters**: the web gate (`UserPickerGate app="admin"`, no poste enrolment there) and
+  the API (`lib/console-acces.ts` `exigerConsole`): `/agents-ia[-trm]` (except
+  `/:slug/points/*`, which the ERP dashboard's Notifications widget calls),
+  `/automates[-trm]`, `/rh`, `/outils[-trm]/import-sage`. Non-member = 404, no session = 401.
+  Membership unknown (0004 missing) = the admin only.
+- **Rules** (`lib/types-compte.ts refusAppsDuType`): `admin` alone is not enough (a person
+  belongs to a company), a `poste` never enters, an `appareils` account holds nothing.
+- **Inside**: Utilisateurs = the effective admin; RH = `screen_rh` (ETM store, still on the
+  Écrans axis as a `console: true` menu of `screen-keys.ts`, drawn in the console's Écrans
+  tab) + the code RH; Agents IA / Automates / Outils = membership alone (decision
+  2026-10-27: their old grants `screen_agents_ia`, `screen_settings` are no longer storable
+  and are dropped at the next save of a user's keys); writes = each company's action keys,
+  the TRM sections reading TRM's store (`PermissionsProvider path="/permissions-trm"`).
+- **Utilisateurs per company** (`/utilisateurs/etm|trm`): the shared screen, its Écrans tree
+  from `GET /permissions[-trm]/screens` (the console cannot import TRM's navigation) —
+  the API manifests must therefore list every ERP screen (`check-screen-access[-trm].ts`).
+- The ERPs' profile menu shows « Administration » to members (`useAccountMenu`).
+
 ## Dev login — « dev · Se connecter comme Vincent » (2026-09-30)
 
 On a developer's machine the login screen offers a one-click session as `vincent` (so a Claude

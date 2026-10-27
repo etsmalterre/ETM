@@ -21,9 +21,17 @@ import type {
   TicketStatus,
 } from './types'
 
+// The proxy mount = the tracker product. ETM's by default; the Console
+// Administration (repo admin-malterre), which renders this widget, sets its
+// own once at start-up (`/tickets-admin`, product admin-malterre).
+let ticketsBase = '/tickets'
+export function setTicketsBase(base: string): void {
+  ticketsBase = base
+}
+
 export async function ticketFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const isForm = options?.body instanceof FormData
-  const res = await fetch(`${API_URL}/tickets${path}`, {
+  const res = await fetch(`${API_URL}${ticketsBase}${path}`, {
     ...options,
     credentials: 'include',
     // Never set Content-Type on multipart — the browser adds the boundary.

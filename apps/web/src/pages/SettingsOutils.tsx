@@ -98,8 +98,10 @@ export function SettingsOutils({
 }: SettingsOutilsProps = {}) {
   // Every hook before the permission early-returns (§28.6).
   const { isLoading: permsLoading } = usePermissions()
-  // Seeing the screen is the right (Écrans › Paramètres › Outils) — the API
-  // checks the same grant. No action key.
+  // Seeing the screen is the right — in the Console Administration since
+  // 2026-10-27, whose membership the API checks (lib/console-acces.ts); no
+  // action key. '/settings/outils' is no screen of ETM's navigation any more
+  // (open to all); it still is in TRM's until TRM drops it.
   const canImport = useScreenAccess().canOpen('/settings/outils')
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)

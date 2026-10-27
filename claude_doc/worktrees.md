@@ -37,6 +37,7 @@ an NG slot and a TRM slot with the same number never collide:
 |---|---|---|
 | API port | `8080 + N` (pnpm `@mps/api dev:808N`) | *none* — targets an MPS API over HTTP |
 | Web port | `3000 + N` (pnpm `@mps/web dev:300N`, targets API `808N`) | `5170 + N` (pnpm `@mps-trm/web dev:517N`) |
+| Console port | none (the console is its own repo, project `admin`: `up.mjs <feature> admin --api 808N` → slot N, port `310N`; the ERP's dev « Administration » link derives 300N → 310N) | none (a TRM tree's `VITE_ADMIN_URL` targets the console beside its API: `808N` → `310N`) |
 | Worktree | `../ETM-<feature>` | `../TRM-<feature>` |
 | Branch | `feat/<feature>` | `feat/<feature>` |
 | URL | `http://localhost:300N` | `http://localhost:517N` |

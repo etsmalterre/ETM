@@ -544,10 +544,9 @@ export const PERMISSION_KEYS = [
     category: 'Rapports',
     parent: 'view_rapport_finance',
   },
-  // Paramètres > Outils has NO key: who sees the screen is the Écrans axis
-  // (menu `screen_settings`, lib/screen-keys.ts), and its routes check that
-  // grant server-side. A key only earns its place when several users see the
-  // same screen with different rights.
+  // Console › Outils has NO key: entering the Console Administration
+  // (membership 'admin', lib/console-acces.ts) is the right. A key only earns
+  // its place when several users see the same screen with different rights.
   {
     key: 'dashboard_charges',
     label: 'Widget « Charges » du tableau de bord',
@@ -577,7 +576,8 @@ export const PERMISSION_KEYS = [
       'Autorise la validation / reprise des lots et la saisie des contrôles dans Qualité > Suivi des lots, ainsi que la création et la modification des dossiers de non-conformité dans Qualité > Dossiers. Sans cette permission, ces écrans sont en lecture seule.',
     category: 'Qualité',
   },
-  // Agents IA — reading the screens needs only the menu (screen_agents_ia);
+  // Agents IA — reading needs only the Console Administration (membership
+  // 'admin', lib/console-acces.ts);
   // changing an agent or an automate (mode, prompt version, relaunch, feedback)
   // needs this key, checked server-side on every write of /api/agents-ia and
   // /api/automates.
@@ -585,7 +585,7 @@ export const PERMISSION_KEYS = [
     key: 'edit_agents_ia',
     label: 'Piloter les agents IA et les automates',
     description:
-      'Autorise, dans Agents IA, à mettre un agent ou un automate en service, en essai ou à l’arrêt, à publier ou réactiver une version du prompt d’un agent, à relancer une exécution, à retraiter une exécution d’agent et à écrire les retours sur un automate. Sans ce droit les écrans sont en lecture seule.',
+      'Autorise, dans la console Administration › Agents IA, à mettre un agent ou un automate en service, en essai ou à l’arrêt, à publier ou réactiver une version du prompt d’un agent, à relancer une exécution, à retraiter une exécution d’agent et à écrire les retours sur un automate. Sans ce droit les écrans sont en lecture seule.',
     category: 'Agents IA',
   },
   // Scoring is separate from piloting (decision 2026-09-23): the people who

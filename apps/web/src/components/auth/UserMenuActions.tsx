@@ -1,5 +1,7 @@
 // The account entries of the header profile menu — shared by the ETM and TRM
 // headers (TRM imports it through `@etm`), so both apps offer the same three:
+//   • « Administration »           — members of the console (admin.intra…),
+//                                    from an ERP only
 //   • « Voir comme… »              — admins only (VoirComme.tsx)
 //   • « Changer mon mot de passe » — a person's own browser session
 //   • « Se déconnecter »
@@ -9,8 +11,8 @@
 // header root). `items(close)` goes in the popover, `dialogs` at the root.
 
 import { useState, type ReactNode } from 'react'
-import { Eye, KeyRound, LogOut } from 'lucide-react'
-import { canSwitchUser, useUser } from '@/contexts/UserContext'
+import { Eye, KeyRound, LogOut, ShieldCheck } from 'lucide-react'
+import { adminConsoleUrl, canSwitchUser, estMembreConsole, useEstConsole, useUser } from '@/contexts/UserContext'
 import { ChangePasswordDialog } from './ChangePasswordForm'
 import { VoirCommeDialog } from './VoirComme'
 
@@ -22,9 +24,19 @@ export function useAccountMenu(): { items: (close: () => void) => ReactNode; dia
   const [voirCommeOpen, setVoirCommeOpen] = useState(false)
   const [mdpOpen, setMdpOpen] = useState(false)
   const sessionPersonnelle = user?.sessionType === 'navigateur' && !user.voirComme
+  const enConsole = useEstConsole()
+  // The steering screens left the ERPs for the console (2026-10-27): its
+  // members reach it from here. A link, not an in-app route: its own host.
+  const versConsole = !enConsole && estMembreConsole(user) && !user?.voirComme
 
   const items = (close: () => void) => (
     <>
+      {versConsole && (
+        <a href={adminConsoleUrl()} className={itemClass} onClick={close}>
+          <ShieldCheck className="h-3 w-3" />
+          Administration
+        </a>
+      )}
       {canSwitchUser(user) && (
         <button type="button" className={itemClass} onClick={() => { close(); setVoirCommeOpen(true) }}>
           <Eye className="h-3 w-3" />

@@ -9,9 +9,6 @@ import {
   ShieldCheck,
   FileBarChart,
   Globe,
-  Settings,
-  Bot,
-  IdCard,
 } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -100,8 +97,7 @@ export function canOpenMenu(menuHref: string, opts: NavAccess): boolean {
 
 /** The main navigation as this viewer sees it: menus they hold the grant for,
  *  each carrying only the submenus they may open, and menus left with no
- *  submenu at all dropped entirely (same rule the Paramètres menu already
- *  follows when its only entry is admin-only). */
+ *  submenu at all dropped entirely. */
 export function visibleMainNavigation(opts: NavAccess): MainMenuItem[] {
   const out: MainMenuItem[] = []
   for (const item of mainNavigation) {
@@ -113,20 +109,12 @@ export function visibleMainNavigation(opts: NavAccess): MainMenuItem[] {
   return out
 }
 
-/** Paramètres as this viewer sees it, or null when nothing is left. Same
- *  rules as any other menu: the `screen_settings` grant, then its screens
- *  (Utilisateurs stays admin-only on top of that). */
-export function visibleSettingsItem(opts: NavAccess): MainMenuItem | null {
-  if (!canOpenMenu(settingsItem.href, opts)) return null
-  const submenus = visibleSubmenus(settingsItem.submenus, opts)
-  return submenus.length > 0 ? { ...settingsItem, submenus } : null
-}
-
-/** Every menu of the Écrans axis: the main navigation plus Paramètres, which
- *  the sidebar renders apart at the bottom. A function because `settingsItem`
- *  and `mainNavigation` are declared further down this file. */
+/** Every menu of the Écrans axis in this ERP: the main navigation. Paramètres,
+ *  Agents IA and RH left for the Console Administration on 2026-10-27
+ *  (repo admin-malterre), which draws each company's tree from the API manifest. Kept
+ *  as a function for the shared Utilisateurs screen's default. */
 export function screenAccessMenus(): MainMenuItem[] {
-  return [...mainNavigation, settingsItem]
+  return [...mainNavigation]
 }
 
 /** Route of the first screen the viewer may open under a menu, or null. Used
@@ -169,23 +157,7 @@ export const dashboardItem: MainMenuItem = {
 /** Route prefix of the non-primary dashboards. */
 export const DASHBOARD_ROUTE_PREFIX = '/tableau-de-bord'
 
-// Settings - standalone item at bottom
-export const settingsItem: MainMenuItem = {
-  id: 'settings',
-  title: 'Paramètres',
-  icon: Settings,
-  href: '/settings',
-  submenus: [
-    { title: 'Utilisateurs', href: '/settings/utilisateurs', adminOnly: true },
-    // Import de la balance Sage (legacy FEN_upload_compta). Given like any
-    // screen, in Écrans (menu Paramètres) — Isabelle runs it every week. No
-    // action key: the API checks the same screen grant (routes/import-sage.ts).
-    { title: 'Outils', href: '/settings/outils' },
-  ],
-}
-
-
-// Main navigation items (between dashboard and settings).
+// Main navigation items (below the dashboard).
 // Order mirrors the legacy WinDev MPS main menu: Marketing, Clients,
 // Sous-traitants, Transferts, Fils, Tombé Métier, Finis, Divers, Qualité,
 // Rapports, Réseau.
@@ -316,30 +288,9 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Entreprises', href: '/reseau/entreprises' },
     ],
   },
-  {
-    id: 'agents-ia',
-    title: 'Agents IA',
-    icon: Bot,
-    href: '/agents-ia',
-    submenus: [
-      { title: 'Agents', href: '/agents-ia/agents' },
-      { title: 'Automates', href: '/agents-ia/automates' },
-    ],
-  },
-  // RH — a menu of the Écrans axis since 2026-09-28, granted person by person
-  // (`seed: false` in the API manifest). The grant is also the API's first lock
-  // (lib/rh-acces.ts peutOuvrirRh); the personal code RH is the second
-  // (RhGate, GET /rh/acces).
-  {
-    id: 'rh',
-    title: 'RH',
-    icon: IdCard,
-    href: '/rh',
-    submenus: [
-      { title: 'Employés', href: '/rh/employes' },
-      { title: 'Charge de travail', href: '/rh/charge' },
-    ],
-  },
+  // Agents IA, RH and Paramètres moved to the Console Administration
+  // (admin.intra.etsmalterre.com, repo admin-malterre) on 2026-10-27; their old URLs
+  // redirect there (router.tsx, ConsoleRedirect).
 ]
 
 // Helper to find active menu based on current path
@@ -347,10 +298,6 @@ export function getActiveMenu(pathname: string): MainMenuItem | undefined {
   // Check dashboard — `/` plus every secondary dashboard of the current user
   if (pathname === dashboardItem.href || pathname.startsWith(DASHBOARD_ROUTE_PREFIX)) {
     return dashboardItem
-  }
-  // Check settings
-  if (pathname === settingsItem.href || pathname.startsWith(settingsItem.href + '/')) {
-    return settingsItem
   }
   // Check main navigation
   return mainNavigation.find(
@@ -422,16 +369,4 @@ export const routeTitles: Record<string, string> = {
   // Réseau
   '/reseau': 'Réseau',
   '/reseau/entreprises': 'Entreprises',
-  // Agents IA
-  '/agents-ia': 'Agents IA',
-  '/agents-ia/agents': 'Agents',
-  '/agents-ia/automates': 'Automates',
-  // RH
-  '/rh': 'RH',
-  '/rh/employes': 'Employés',
-  '/rh/charge': 'Charge de travail',
-  // Settings
-  '/settings': 'Paramètres',
-  '/settings/utilisateurs': 'Utilisateurs',
-  '/settings/outils': 'Outils',
 }

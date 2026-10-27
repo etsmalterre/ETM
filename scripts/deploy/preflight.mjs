@@ -28,6 +28,7 @@ function mainCheckout(start) {
 }
 const ETM = mainCheckout(here)
 const TRM = path.resolve(ETM, '..', 'TRM')
+const ADMIN = path.resolve(ETM, '..', 'admin-malterre')
 const API_HOST = 'debian@10.10.20.3'
 const WEB_HOST = 'debian@10.10.20.4'
 
@@ -82,6 +83,7 @@ const WEB_TIERS = [
   { key: 'atelier', label: 'atelier', repo: TRM, dir: 'mps_atelier', src: 'apps/atelier', head: 'TRM' },
   { key: 'trs',     label: 'TRS',     repo: TRM, dir: 'mps_trs',     src: 'apps/trs',     head: 'TRM' },
   { key: 'pointage', label: 'pointage', repo: TRM, dir: 'mps_pointage', src: 'apps/pointage', head: 'TRM' },
+  { key: 'admin',   label: 'admin',   repo: ADMIN, dir: 'mps_admin',  src: 'apps/web',     head: 'ADMIN' },
 ]
 
 const stamps = {
@@ -96,7 +98,7 @@ if (Object.values(stamps).every((v) => v === null)) {
   process.exit(2)
 }
 
-const heads = { ETM: git(ETM, ['rev-parse', 'origin/master']), TRM: git(TRM, ['rev-parse', 'origin/master']) }
+const heads = { ETM: git(ETM, ['rev-parse', 'origin/master']), TRM: git(TRM, ['rev-parse', 'origin/master']), ADMIN: git(ADMIN, ['rev-parse', 'origin/master']) }
 const short = (s) => (s && s !== 'none' ? s.slice(0, 7) : String(s))
 
 say('\n\u2500\u2500 MPS platform \u2500 what is live \u2500\u2500')

@@ -3,7 +3,6 @@ import { usePermissions } from '@/contexts/PermissionsContext'
 import {
   visibleSubmenus,
   visibleMainNavigation,
-  visibleSettingsItem,
   canOpenScreen,
   firstVisibleScreenHref,
   type NavAccess,
@@ -40,12 +39,6 @@ export function useSubmenuFilter(): (submenus: SubMenuItem[]) => SubMenuItem[] {
 export function useVisibleMainNavigation(): MainMenuItem[] {
   const opts = useNavAccessOpts()
   return useMemo(() => visibleMainNavigation(opts), [opts])
-}
-
-/** Paramètres as the current viewer sees it (menu grant + screens), or null. */
-export function useVisibleSettingsItem(): MainMenuItem | null {
-  const opts = useNavAccessOpts()
-  return useMemo(() => visibleSettingsItem(opts), [opts])
 }
 
 /** Route-guard helpers, used by AppShell to keep bookmarks and stale links

@@ -1206,6 +1206,26 @@ ALTER TABLE ref_ecru
   ADD CONSTRAINT ref_ecru_freinte_tricotage_check CHECK (freinte_tricotage IS NULL OR (freinte_tricotage >= 0 AND freinte_tricotage < 0.5));
 `,
   },
+  {
+    // Console Administration (admin.intra.etsmalterre.com, 2026-10-27): a third
+    // membership beside the two companies, the console's gate
+    // (lib/utilisateur-apps.ts). It carries no permission store: inside, each
+    // section keeps its company's rights. Vincent and Isabelle at first.
+    name: '0038_console_admin',
+    sql: `
+ALTER TABLE utilisateur_app
+  DROP CONSTRAINT utilisateur_app_app_check,
+  ADD CONSTRAINT utilisateur_app_app_check CHECK (app IN ('etm', 'trm', 'admin'));
+
+INSERT INTO utilisateur_app (idutilisateur, app)
+SELECT idutilisateur, 'admin' FROM utilisateur
+WHERE type_compte = 'personne'
+  AND (est_admin
+   OR translate(lower(trim(coalesce(prenom, '')) || '|' || trim(coalesce(nom, ''))), 'àâäéèêëîïôöùûüç', 'aaaeeeeiioouuuc') IN (
+        'vincent|malterre', 'isabelle|malterre'))
+ON CONFLICT DO NOTHING;
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -17,7 +17,8 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isKnownNotificationKey, type NotificationKey } from './notification-keys.js'
-import { membres, type AppCode } from './utilisateur-apps.js'
+import { membres } from './utilisateur-apps.js'
+import type { PermissionApp } from './permission-store.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -43,7 +44,7 @@ export interface NotificationStore<K extends string> {
 }
 
 export function createNotificationStore<K extends string>(
-  app: AppCode,
+  app: PermissionApp,
   fileName: string,
   isKnown: (k: string) => k is K,
 ): NotificationStore<K> {

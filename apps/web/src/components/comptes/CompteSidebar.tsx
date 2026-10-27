@@ -22,7 +22,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { apiFetch } from '@/lib/api'
-import { APP_NAMES, messageErreur, useAppCode, type AppCode } from '@/contexts/UserContext'
+import { APP_NAMES, messageErreur, useAppCode, type AppMembre } from '@/contexts/UserContext'
 import { cn } from '@/lib/utils'
 
 /** personne = a person; poste = a PC that uses an app (its Écrans /
@@ -54,10 +54,10 @@ export interface Compte {
   /** Enrolled PCs + phones + pointeuses — the « Appareils » tab. */
   appareils: number
   /** The apps it belongs to — each app's Utilisateurs screen lists its members. */
-  apps: AppCode[]
+  apps: AppMembre[]
 }
 
-const APP_ORDER: AppCode[] = ['etm', 'trm']
+const APP_ORDER: AppMembre[] = ['etm', 'trm', 'admin']
 
 interface SessionRow {
   ref: string
@@ -180,7 +180,7 @@ function CompteTab({ compte }: { compte: Compte }) {
   const app = useAppCode()
 
   const patch = useMutation({
-    mutationFn: (body: Partial<{ identifiant: string; actif: boolean; estAdmin: boolean; apps: AppCode[] }>) =>
+    mutationFn: (body: Partial<{ identifiant: string; actif: boolean; estAdmin: boolean; apps: AppMembre[] }>) =>
       apiFetch(`/comptes/${compte.IDutilisateur}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: () => {
       invalider()
@@ -189,7 +189,7 @@ function CompteTab({ compte }: { compte: Compte }) {
   })
   // Its own mutation so a refusal (409 apps_refusees) shows under its card.
   const appsMut = useMutation({
-    mutationFn: (apps: AppCode[]) =>
+    mutationFn: (apps: AppMembre[]) =>
       apiFetch(`/comptes/${compte.IDutilisateur}`, { method: 'PATCH', body: JSON.stringify({ apps }) }),
     onSuccess: () => {
       invalider()
@@ -197,7 +197,7 @@ function CompteTab({ compte }: { compte: Compte }) {
     },
   })
   useEffect(() => { appsMut.reset() }, [compte.IDutilisateur]) // eslint-disable-line react-hooks/exhaustive-deps
-  const basculerApp = (a: AppCode, membre: boolean) => {
+  const basculerApp = (a: AppMembre, membre: boolean) => {
     // Leaving THIS app takes the account off this very list: confirm first.
     if (!membre && a === app) { setConfirmQuitter(true); return }
     const apps = membre ? [...compte.apps, a] : compte.apps.filter((x) => x !== a)
@@ -352,13 +352,18 @@ function CompteTab({ compte }: { compte: Compte }) {
           </p>
         ) : (
         <div className="space-y-3">
-          {APP_ORDER.map((a) => (
+          {/* A poste never enters the console (API lib/types-compte.ts). */}
+          {APP_ORDER.filter((a) => !(a === 'admin' && estPoste)).map((a) => (
             <SwitchRow
               key={a}
-              label={`${APP_NAMES[a]} (${a.toUpperCase()})`}
-              detail={compte.apps.includes(a)
-                ? (a === app ? 'Membre — cette application.' : 'Membre.')
-                : 'Pas d’accès : l’application lui est refusée.'}
+              label={a === 'admin' ? 'Console Administration' : `${APP_NAMES[a]} (${a.toUpperCase()})`}
+              detail={a === 'admin'
+                ? (compte.apps.includes(a)
+                  ? 'Membre : Agents IA, Automates, Outils, et RH ou Utilisateurs selon ses droits.'
+                  : 'Pas d’accès à la console.')
+                : compte.apps.includes(a)
+                  ? (a === app ? 'Membre — cette application.' : 'Membre.')
+                  : 'Pas d’accès : l’application lui est refusée.'}
               value={compte.apps.includes(a)}
               disabled={appsMut.isPending}
               onChange={(v) => basculerApp(a, v)}

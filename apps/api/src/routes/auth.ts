@@ -41,7 +41,8 @@ import {
 import { hacherMotDePasse, motDePasseRefuse, verifierMotDePasse } from '../lib/passwords.js'
 import { attenteConnexion, journaliserConnexion } from '../lib/login-throttle.js'
 import { consommerCodePoste } from '../lib/postes.js'
-import { APPS, appsDe, appsParUtilisateur, type AppCode } from '../lib/utilisateur-apps.js'
+import { APPS, SOCIETES, appsDe, appsParUtilisateur } from '../lib/utilisateur-apps.js'
+import type { PermissionApp } from '../lib/permission-store.js'
 import type { TypeCompte } from '../lib/types-compte.js'
 import { DEV_LOGIN_IDENTIFIANT, devLoginActif, devLoginAutorise } from '../lib/dev-login.js'
 
@@ -83,7 +84,7 @@ function publicUser(c: Compte) {
 }
 
 async function ouvrirSession(
-  req: Request, res: Response, c: Compte, type: TypeSession = 'navigateur', libelle: string | null = null, app: AppCode | null = null,
+  req: Request, res: Response, c: Compte, type: TypeSession = 'navigateur', libelle: string | null = null, app: PermissionApp | null = null,
 ): Promise<void> {
   const jeton = await creerSession({
     idutilisateur: c.idutilisateur,
@@ -210,8 +211,9 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 // ── POST /poste — enrol this PC as a station account ─────────
 authRouter.post('/poste', async (req: Request, res: Response) => {
   const code = typeof req.body?.code === 'string' ? req.body.code.replace(/\s/g, '') : ''
-  // The app whose login screen enrolled the PC (Appareils tab shows it).
-  const app = (APPS as readonly string[]).includes(req.body?.app) ? (req.body.app as AppCode) : null
+  // The app whose login screen enrolled the PC (Appareils tab shows it). A
+  // company's ERP only: the console enrols no poste (lib/types-compte.ts).
+  const app = (SOCIETES as readonly string[]).includes(req.body?.app) ? (req.body.app as PermissionApp) : null
   const ip = clientIp(req)
   try {
     const attente = await attenteConnexion('poste', ip)

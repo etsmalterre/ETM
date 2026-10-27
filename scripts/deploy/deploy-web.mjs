@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deploy ONE web bundle of the MPS platform, end to end, in the only safe order:
 //
-//   node scripts/deploy/deploy-web.mjs --app <etm|trm|atelier|trs|pointage> [--dry-run] [--skip-build]
+//   node scripts/deploy/deploy-web.mjs --app <etm|trm|admin|atelier|trs|pointage> [--dry-run] [--skip-build]
 //
 //   1. guard   the app's main checkout is clean, on master, at origin/master
 //   2. build   `pnpm --filter <pkg> build` with VITE_API_URL=/api set IN THE CHILD ENV
@@ -22,7 +22,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  ETM, TRM, WEB_HOST, assertReachable, die, git, guardTree, httpBody, httpCode, ok,
+  ADMIN, ETM, TRM, WEB_HOST, assertReachable, die, git, guardTree, httpBody, httpCode, ok,
   remoteScript, scp, short, stagingDir, step, tarCreate,
 } from './lib.mjs'
 
@@ -31,6 +31,8 @@ import {
 const APPS = {
   etm:     { repo: ETM, pkg: '@mps/web',         src: 'apps/web',     dir: 'mps_erp',     host: 'etm.intra.etsmalterre.com',   versionFrom: 'root' },
   trm:     { repo: TRM, pkg: '@mps-trm/web',     src: 'apps/web',     dir: 'mps_trm',     host: 'trm.intra.etsmalterre.com',     versionFrom: 'root' },
+  // Console Administration (repo admin-malterre, 2026-10-27): ETM's screens through @etm, its own root version.
+  admin:   { repo: ADMIN, pkg: '@mps-admin/web', src: 'apps/web',     dir: 'mps_admin',   host: 'admin.intra.etsmalterre.com', versionFrom: 'root' },
   atelier: { repo: TRM, pkg: '@mps-trm/atelier', src: 'apps/atelier', dir: 'mps_atelier', host: 'atelier.intra.etsmalterre.com', versionFrom: 'app' },
   trs:     { repo: TRM, pkg: '@mps-trm/trs',     src: 'apps/trs',     dir: 'mps_trs',     host: 'trs.intra.etsmalterre.com',     versionFrom: 'app' },
   pointage: { repo: TRM, pkg: '@mps-trm/pointage', src: 'apps/pointage', dir: 'mps_pointage', host: 'pointage.intra.etsmalterre.com', versionFrom: 'app' },
@@ -56,8 +58,8 @@ const version = JSON.parse(fs.readFileSync(
 // 1. guard
 step(`guard — ${label} builds from ${app.repo}`)
 const sha = guardTree(app.repo, `${appKey} checkout`)
-if (appKey === 'trm') {
-  // TRM's web imports shared screens from the ETM checkout via the @etm alias.
+if (appKey === 'trm' || appKey === 'admin') {
+  // TRM's web and the console import shared screens from the ETM checkout via the @etm alias.
   guardTree(ETM, 'ETM checkout (shared screens)')
 }
 if (!dryRun) assertReachable(WEB_HOST)

@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   mainNavigation,
-  settingsItem,
   screenAccessMenus,
-  visibleSettingsItem,
   visibleMainNavigation,
   visibleSubmenus,
   canOpenScreen,
@@ -113,73 +111,35 @@ describe('screen access — interaction with the action catalog', () => {
     expect(canOpenScreen('/rapports/finance', withKey)).toBe(true)
   })
 
-  it('leaves non-nav routes alone (dashboard, unknown) but gates Paramètres', () => {
+  it('leaves non-nav routes alone (dashboard, unknown)', () => {
     const v = viewer([])
     expect(canOpenScreen('/', v)).toBe(true)
     expect(canOpenScreen('/nulle-part', v)).toBe(true)
-    expect(canOpenScreen('/settings/outils', v)).toBe(false)
   })
 })
 
 describe('screen access — the Laetitia case', () => {
-  it('grants everything but the 7 menus she does not need (and RH)', () => {
+  it('grants everything but the 7 menus she does not need', () => {
     const unwanted = [
       '/sous-traitants', '/transferts', '/fils',
-      '/tombe-metier', '/divers', '/rapports', '/reseau', '/rh',
+      '/tombe-metier', '/divers', '/rapports', '/reseau',
     ].map(menuAccessKey)
     const v = viewer(ALL_MENUS.filter((k) => !unwanted.includes(k)))
-    expect(ids(visibleMainNavigation(v))).toEqual(['prospects', 'clients', 'finis', 'qualite', 'agents-ia'])
+    expect(ids(visibleMainNavigation(v))).toEqual(['prospects', 'clients', 'finis', 'qualite'])
   })
 })
 
-describe('RH — a menu of the Écrans axis (2026-09-28)', () => {
-  const RH = menuAccessKey('/rh')
-  const rhTitles = (v: NavAccess) =>
-    visibleMainNavigation(v).find((m) => m.id === 'rh')?.submenus.map((s) => s.title) ?? null
-
-  it('shows only to a holder of its grant', () => {
-    expect(rhTitles(viewer([]))).toBeNull()
-    expect(rhTitles(viewer([RH]))).toEqual(['Employés', 'Charge de travail'])
+describe('Console Administration — not menus of the ERP (2026-10-27)', () => {
+  it('has no Agents IA, RH nor Paramètres in the navigation, whatever the grants', () => {
+    const v = viewer([...ALL_MENUS, menuAccessKey('/rh'), menuAccessKey('/agents-ia'), menuAccessKey('/settings')])
+    expect(ids(visibleMainNavigation(v))).not.toContain('rh')
+    expect(ids(visibleMainNavigation(admin()))).not.toContain('agents-ia')
+    // Their old routes are not screens of the ERP any more: the router sends
+    // them to the console (ConsoleRedirect), the screen guard lets them pass.
+    expect(firstVisibleScreenHref('/settings', admin())).toBeNull()
   })
 
-  it('hides one screen, and drops the menu when both are hidden', () => {
-    expect(rhTitles(viewer([RH, screenHideKey('/rh/charge')]))).toEqual(['Employés'])
-    expect(canOpenScreen('/rh/charge', viewer([RH, screenHideKey('/rh/charge')]))).toBe(false)
-    expect(rhTitles(viewer([RH, screenHideKey('/rh/charge'), screenHideKey('/rh/employes')]))).toBeNull()
-  })
-})
-
-describe('Paramètres — a menu of the Écrans axis', () => {
-  const titles = (v: NavAccess) => visibleSettingsItem(v)?.submenus.map((s) => s.title) ?? null
-  const SETTINGS = menuAccessKey('/settings')
-
-  it('shows Outils to a non-admin granted the Paramètres menu, and nothing else', () => {
-    expect(titles(viewer([SETTINGS]))).toEqual(['Outils'])
-    expect(canOpenScreen('/settings/outils', viewer([SETTINGS]))).toBe(true)
-  })
-
-  it('hides the whole menu from a non-admin without the grant, even holding every other menu', () => {
-    expect(titles(viewer(ALL_MENUS))).toBeNull()
-    expect(canOpenScreen('/settings/outils', viewer(ALL_MENUS))).toBe(false)
-  })
-
-  it('drops the menu when its only screen is hidden', () => {
-    const v = viewer([SETTINGS, screenHideKey('/settings/outils')])
-    expect(titles(v)).toBeNull()
-    expect(firstVisibleScreenHref('/settings', v)).toBeNull()
-  })
-
-  it('never opens Utilisateurs to a non-admin, whatever they hold', () => {
-    expect(canOpenScreen('/settings/utilisateurs', viewer([SETTINGS]))).toBe(false)
-    expect(firstVisibleScreenHref('/settings', viewer([SETTINGS]))).toBe('/settings/outils')
-  })
-
-  it('shows both entries to the effective admin', () => {
-    expect(titles(admin())).toEqual(['Utilisateurs', 'Outils'])
-    expect(firstVisibleScreenHref('/settings', admin())).toBe('/settings/utilisateurs')
-  })
-
-  it('is part of the Écrans tree next to the main menus', () => {
-    expect(screenAccessMenus().map((m) => m.id)).toEqual([...ids(mainNavigation), settingsItem.id])
+  it('keeps the Écrans tree to the main navigation', () => {
+    expect(screenAccessMenus().map((m) => m.id)).toEqual(ids(mainNavigation))
   })
 })

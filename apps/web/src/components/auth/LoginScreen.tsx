@@ -18,7 +18,8 @@ import { UserPicker } from './UserPicker'
 
 type Mode = 'login' | 'poste' | 'picker'
 
-export function LoginScreen() {
+/** `postes`: offer to enrol this PC as a station (the ERPs; never the console). */
+export function LoginScreen({ postes = true }: { postes?: boolean } = {}) {
   const [mode, setMode] = useState<Mode>('login')
   const { loginDev } = useUser()
   const [devErreur, setDevErreur] = useState<string | null>(null)
@@ -35,7 +36,7 @@ export function LoginScreen() {
     <AuthLayout>
       {mode === 'poste' ? <PosteForm /> : <LoginForm />}
       <div className="mt-5 flex flex-col items-center gap-2">
-        {mode === 'login' ? (
+        {!postes ? null : mode === 'login' ? (
           <button
             type="button"
             onClick={() => setMode('poste')}

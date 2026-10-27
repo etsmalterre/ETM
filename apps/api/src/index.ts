@@ -62,7 +62,7 @@ import { fournituresTrmRouter } from './routes/fournitures-trm.js'
 import { retoursClientTrmRouter } from './routes/retours-client-trm.js'
 import { authRouter } from './routes/auth.js'
 import { comptesRouter } from './routes/comptes.js'
-import { ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
+import { ticketsAdminRouter, ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
 import { permissionsTrmRouter } from './routes/permissions-trm.js'
 import { notificationsRouter } from './routes/notifications.js'
@@ -79,6 +79,7 @@ import { userEmailsRouter } from './routes/user-emails.js'
 import { userProfilesRouter } from './routes/user-profiles.js'
 import { query, dbBackend, dbName } from './lib/hfsql-auto.js'
 import { attachUser } from './lib/auth.js'
+import { exigerConsole, POINTS_TABLEAU_DE_BORD } from './lib/console-acces.js'
 import { closeConnection } from './lib/hfsql-auto.js'
 import { probeFiniSourceTable, FINI_SOURCE_TABLE } from './lib/fini-sources.js'
 
@@ -144,6 +145,8 @@ app.use('/api/comptes', comptesRouter)
 app.use('/api/tickets', ticketsRouter)
 // Same proxy, product "trm-erp" — the TRM web app's ticket widget.
 app.use('/api/tickets-trm', ticketsTrmRouter)
+// The Console Administration's tickets (product admin-malterre), its members only.
+app.use('/api/tickets-admin', exigerConsole(), ticketsAdminRouter)
 app.use('/api/permissions', permissionsRouter)
 // TRM's own permission catalog + store (Paramètres > Utilisateurs of the
 // sister TRM app) — separate from /api/permissions so neither admin screen
@@ -210,9 +213,9 @@ app.use('/api/actions-qualite', actionsQualiteRouter)
 app.use('/api/analyse-qualite', analyseQualiteRouter)
 app.use('/api/rapports', rapportsRouter)
 app.use('/api/rapports-trm', rapportsTrmRouter)
-// Paramètres › Outils › Import de la balance Sage — one router per société.
-app.use('/api/outils/import-sage', importSageRouter)
-app.use('/api/outils-trm/import-sage', importSageTrmRouter)
+// Console › Outils › Import de la balance Sage — one router per société.
+app.use('/api/outils/import-sage', exigerConsole(), importSageRouter)
+app.use('/api/outils-trm/import-sage', exigerConsole(), importSageTrmRouter)
 // TRM atelier planning — consumed by the TRM web app (C:\dev\etsmalterre\TRM)
 app.use('/api/planning-atelier', planningAtelierRouter)
 // TRM production orders (Gestion des OF) — consumed by the TRM web app.
@@ -252,18 +255,20 @@ app.use('/api/fournitures-trm', fournituresTrmRouter)
 // TRM client returns (Qualité › Retour client) — the receiving end of an ETM
 // FNC, answered here and republished onto the dossier. Consumed by the TRM web app.
 app.use('/api/retours-client-trm', retoursClientTrmRouter)
-// Agents IA (menu Agents IA) — the BL Ennoblisseur agent and its successors, lib/agents/.
+// Agents IA (Console Administration since 2026-10-27, lib/console-acces.ts:
+// members of 'admin' only, except the Superviseur points of the dashboard) —
+// the BL Ennoblisseur agent and its successors, lib/agents/.
 // Each app has its own menu: one route set per screen, mounted once per app,
 // listing only that app's agents / automates (lib/agents/app-scope.ts).
-app.use('/api/agents-ia', createAgentsIaRouter(AGENTS_IA_ETM))
-app.use('/api/agents-ia-trm', createAgentsIaRouter(AGENTS_IA_TRM))
+app.use('/api/agents-ia', exigerConsole(POINTS_TABLEAU_DE_BORD), createAgentsIaRouter(AGENTS_IA_ETM))
+app.use('/api/agents-ia-trm', exigerConsole(POINTS_TABLEAU_DE_BORD), createAgentsIaRouter(AGENTS_IA_TRM))
 // Agents IA › Automates — deterministic scripts on the agents' engine,
 // lib/automates/ (ETM: Vidéosurveillance; TRM: the two pointage report emails).
 enregistrerTaches(tachesAutomates())
-app.use('/api/automates', createAutomatesRouter(AGENTS_IA_ETM))
-app.use('/api/automates-trm', createAutomatesRouter(AGENTS_IA_TRM))
-// RH (Vincent + Isabelle only, behind a code RH) — lib/rh-acces.ts, PostgreSQL `rh`.
-app.use('/api/rh', rhRouter)
+app.use('/api/automates', exigerConsole(), createAutomatesRouter(AGENTS_IA_ETM))
+app.use('/api/automates-trm', exigerConsole(), createAutomatesRouter(AGENTS_IA_TRM))
+// RH (Console Administration, then its grant + a code RH) — lib/rh-acces.ts, PostgreSQL `rh`.
+app.use('/api/rh', exigerConsole(), rhRouter)
 // The website (etsmalterre.fr customer space + QR sample page) — replaces the
 // WinDev webservice MPS_WS. PUBLIC through Caddy (alpha.etsmalterre.com →
 // /api/site/*): read-only documents + the catalogue-request form only.

@@ -29,12 +29,18 @@ export function enrolementsPossibles(type: TypeCompte, apps: readonly AppCode[])
 }
 
 /** Why this account cannot hold `apps`, or null. An appareils account holds
- *  none; the others at least one (to shut one out of both, deactivate it). */
+ *  none; the others at least one company (to shut one out of both, deactivate
+ *  it), a poste never the console. */
 export function refusAppsDuType(type: TypeCompte, apps: readonly AppCode[]): string | null {
   if (type === 'appareils') {
     return apps.length ? 'Un compte d’appareils n’appartient à aucune application : ses appareils ont la leur.' : null
   }
-  if (apps.length === 0) {
+  // The console is steering, used by a person: never a station PC.
+  if (type === 'poste' && apps.includes('admin')) {
+    return 'Un poste n’entre pas dans la console Administration.'
+  }
+  // 'admin' alone is not enough: an account belongs to a company.
+  if (!apps.some((a) => a !== 'admin')) {
     return 'Un compte appartient au moins à une application. Pour lui retirer tout accès, désactivez le compte.'
   }
   return null

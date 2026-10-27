@@ -28,11 +28,12 @@
 //
 // Keys are stored verbatim in permissions.json — renaming one needs a migration.
 //
-// This manifest MIRRORS apps/web/src/config/navigation.ts (the web builds the
-// admin tree and the nav filters from `mainNavigation` directly, so it can
-// never drift; this copy exists so the API can validate what it stores and so
-// the seed script knows the menu list). Kept honest by
-// `src/scripts/check-screen-access.ts`, which diffs the two files.
+// This manifest MIRRORS apps/web/src/config/navigation.ts (the web builds its
+// nav filters from `mainNavigation` directly; this copy exists so the API can
+// validate what it stores, so the seed script knows the menu list, and so the
+// Console Administration's Écrans tab can draw it — GET /permissions/ecrans).
+// Kept honest by `src/scripts/check-screen-access.ts`, which diffs the two
+// files (menus flagged `console` excepted).
 
 export interface ScreenDef {
   /** Route of the screen, e.g. '/clients/facturation'. */
@@ -48,8 +49,12 @@ export interface MenuDef {
   label: string
   screens: readonly ScreenDef[]
   /** false = the grandfathering script never hands this menu out: it is
-   *  granted person by person, never to the whole company (Paramètres). */
+   *  granted person by person, never to the whole company (RH). */
   seed?: false
+  /** true = a section of the Console Administration (repo admin-malterre), not a menu
+   *  of the ERP's navigation: check-screen-access.ts leaves it out of the
+   *  diff, the console's Utilisateurs shows it in Écrans. */
+  console?: true
 }
 
 export const SCREEN_MENUS: readonly MenuDef[] = [
@@ -164,18 +169,14 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
     label: 'Réseau',
     screens: [{ href: '/reseau/entreprises', label: 'Entreprises' }],
   },
-  {
-    id: 'agents-ia',
-    href: '/agents-ia',
-    label: 'Agents IA',
-    screens: [
-      { href: '/agents-ia/agents', label: 'Agents' },
-      { href: '/agents-ia/automates', label: 'Automates' },
-    ],
-  },
-  // RH — HR data (birthdays, photos, workload). Granted person by person
-  // (seed: false), and here too the curtain is the lock: every /rh route
-  // checks this grant (peutOuvrirRh, lib/rh-acces.ts) before the personal code.
+  // RH — HR data (birthdays, photos, workload). In the Console Administration
+  // since 2026-10-27 (`console: true`: not a menu of the ERP's navigation),
+  // granted person by person (seed: false), and here too the curtain is the
+  // lock: every /rh route checks this grant (peutOuvrirRh, lib/rh-acces.ts)
+  // after the console membership and before the personal code.
+  // Agents IA and Paramètres left this axis for the console the same day:
+  // entering the console (membership 'admin') is their right now, so their
+  // old keys (screen_agents_ia, screen_settings…) are no longer storable.
   {
     id: 'rh',
     href: '/rh',
@@ -185,19 +186,7 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
       { href: '/rh/charge', label: 'Charge de travail' },
     ],
     seed: false,
-  },
-  // Paramètres sits at the bottom of the sidebar (`settingsItem`, outside
-  // `mainNavigation`) but is a menu of this axis like any other. Utilisateurs
-  // is admin-only and stays out of the tree — ticking it could open nothing.
-  // Outils is the one place where the curtain is also the lock: its routes
-  // check this grant server-side (userCanOpenScreen, routes/import-sage.ts) —
-  // the screen IS the right, there is no action key behind it.
-  {
-    id: 'settings',
-    href: '/settings',
-    label: 'Paramètres',
-    screens: [{ href: '/settings/outils', label: 'Outils' }],
-    seed: false,
+    console: true,
   },
 ] as const
 

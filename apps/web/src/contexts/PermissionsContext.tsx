@@ -39,7 +39,10 @@ interface PermissionsContextValue {
 
 const PermissionsContext = createContext<PermissionsContextValue | undefined>(undefined)
 
-export function PermissionsProvider({ children }: { children: React.ReactNode }) {
+/** `path`: the permission store read — ETM's by default; the Console
+ *  Administration nests a `/permissions-trm` provider around its TRM sections,
+ *  so their buttons follow TRM's rights like the server does. */
+export function PermissionsProvider({ children, path = '/permissions' }: { children: React.ReactNode; path?: string }) {
   const { user, isLoading: userLoading } = useUser()
   const [granted, setGranted] = useState<Set<string>>(new Set())
   const [isAdmin, setIsAdmin] = useState<boolean>(false)
@@ -61,7 +64,7 @@ export function PermissionsProvider({ children }: { children: React.ReactNode })
     }
     setIsLoading(true)
     try {
-      const me = await apiFetch<MeResponse>('/permissions/me')
+      const me = await apiFetch<MeResponse>(`${path}/me`)
       setGranted(new Set(me.granted))
       setIsAdmin(me.isAdmin)
       setIsEffectiveAdmin(me.isEffectiveAdmin)
@@ -74,7 +77,7 @@ export function PermissionsProvider({ children }: { children: React.ReactNode })
       setChargePour(user.IDutilisateur)
       setIsLoading(false)
     }
-  }, [user])
+  }, [user, path])
 
   // Refetch whenever the identified user changes (login, switch, logout).
   useEffect(() => {

@@ -45,8 +45,7 @@ function navFilePath(): string {
   return DEFAULT_NAV_FILE
 }
 
-/** Pull `mainNavigation`'s menu ids and their submenu hrefs out of the source,
- *  plus Paramètres (`settingsItem`) without its admin-only entries. */
+/** Pull `mainNavigation`'s menu ids and their submenu hrefs out of the source. */
 function parseNav(src: string): Array<{ id: string; href: string; screens: string[] }> {
   const start = src.indexOf('export const mainNavigation')
   if (start < 0) throw new Error('mainNavigation not found in navigation.ts')
@@ -66,18 +65,8 @@ function parseNav(src: string): Array<{ id: string; href: string; screens: strin
     out.push({ id, href, screens })
   }
 
-  // Paramètres lives in `settingsItem`, outside mainNavigation, but is a menu
-  // of the Écrans axis too. Its admin-only entries (Utilisateurs) are not.
-  const sStart = src.indexOf('export const settingsItem')
-  if (sStart < 0) throw new Error('settingsItem not found in navigation.ts')
-  const sm = /id:\s*'([^']+)',[\s\S]*?href:\s*'([^']+)',\s*submenus:\s*\[([\s\S]*?)\],\s*\}/.exec(src.slice(sStart))
-  if (!sm) throw new Error('settingsItem: shape not recognised — the regex is stale')
-  const settingsScreens = [...sm[3].matchAll(/\{[^{}]*\}/g)]
-    .map((e) => e[0])
-    .filter((e) => !/adminOnly:\s*true/.test(e))
-    .map((e) => /href:\s*'([^']+)'/.exec(e)?.[1])
-    .filter((h): h is string => !!h)
-  out.push({ id: sm[1], href: sm[2], screens: settingsScreens })
+  // Paramètres (`settingsItem`) left the ERP for the Console Administration
+  // on 2026-10-27: nothing below the sidebar belongs to this axis any more.
   return out
 }
 

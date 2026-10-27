@@ -1,4 +1,5 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
+import { ConsoleRedirect } from '@/components/layout/ConsoleRedirect'
 import { AppShell } from '@/components/layout/AppShell'
 import { PagePlaceholder } from '@/components/shared/PagePlaceholder'
 import { Dashboard } from '@/pages/Dashboard'
@@ -84,15 +85,7 @@ import { RapportFinance } from '@/pages/RapportFinance'
 
 // Réseau pages
 import { Entreprises } from '@/pages/Entreprises'
-import { AgentsIa } from '@/pages/AgentsIa'
-import { Automates } from '@/pages/Automates'
-import { RhEmployes } from '@/pages/RhEmployes'
-import { RhCharge } from '@/pages/RhCharge'
 
-// Settings
-import { SettingsUtilisateurs } from '@/pages/SettingsUtilisateurs'
-import { SettingsIndex } from '@/pages/SettingsIndex'
-import { SettingsOutils } from '@/pages/SettingsOutils'
 
 export const router = createBrowserRouter([
   {
@@ -180,20 +173,17 @@ export const router = createBrowserRouter([
       // Réseau
       { path: 'reseau', element: <Navigate to="/reseau/entreprises" replace /> },
       { path: 'reseau/entreprises', element: <Entreprises /> },
-      // Agents IA
-      { path: 'agents-ia', element: <Navigate to="/agents-ia/agents" replace /> },
-      { path: 'agents-ia/agents', element: <AgentsIa /> },
-      { path: 'agents-ia/automates', element: <Automates /> },
-      // RH — Vincent + Isabelle only, behind the code RH (components/rh/RhGate.tsx)
-      { path: 'rh', element: <Navigate to="/rh/employes" replace /> },
-      { path: 'rh/employes', element: <RhEmployes /> },
-      { path: 'rh/charge', element: <RhCharge /> },
-
-      // Settings — Utilisateurs is admin-only, Outils is granted in Écrans;
-      // the index lands on the first one the viewer may open.
-      { path: 'settings', element: <SettingsIndex /> },
-      { path: 'settings/utilisateurs', element: <SettingsUtilisateurs /> },
-      { path: 'settings/outils', element: <SettingsOutils /> },
+      // Agents IA, RH, Paramètres — in the Console Administration since
+      // 2026-10-27 (repo admin-malterre): the old addresses lead there.
+      { path: 'agents-ia', element: <ConsoleRedirect to="/agents/etm" /> },
+      { path: 'agents-ia/agents', element: <ConsoleRedirect to="/agents/etm" /> },
+      { path: 'agents-ia/automates', element: <ConsoleRedirect to="/automates/etm" /> },
+      { path: 'rh', element: <ConsoleRedirect to="/rh/employes" /> },
+      { path: 'rh/employes', element: <ConsoleRedirect to="/rh/employes" /> },
+      { path: 'rh/charge', element: <ConsoleRedirect to="/rh/charge" /> },
+      { path: 'settings', element: <ConsoleRedirect to="/utilisateurs/etm" /> },
+      { path: 'settings/utilisateurs', element: <ConsoleRedirect to="/utilisateurs/etm" /> },
+      { path: 'settings/outils', element: <ConsoleRedirect to="/outils/etm" /> },
     ],
   },
 ])

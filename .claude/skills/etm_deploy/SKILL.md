@@ -288,9 +288,22 @@ otherwise). The script stamps what it shipped and tells you to rerun for the new
 
 ```bash
 cd /c/dev/etsmalterre/ETM && node scripts/deploy/deploy-web.mjs --app etm     # --dry-run / --skip-build
+cd /c/dev/etsmalterre/ETM && node scripts/deploy/deploy-web.mjs --app admin   # Console Administration
 ```
 
-Same script for every web bundle of the platform (`--app etm|trm|atelier|trs`, one row per
+**Console Administration (`--app admin`, since 2026-10-27).** Repo `admin-malterre`
+(checkout `../admin-malterre`, next to ETM), built like TRM against the ETM checkout (its
+`@etm` alias): a change to a screen it shows (Agents IA, Automates, Utilisateurs, RH,
+Outils) needs **both** `--app etm` and `--app admin`. Its version is its repo's root
+`package.json`. Infra in place since 2026-10-27: nginx site `admin.malterre` on
+`10.10.20.4` (dist `/home/debian/mps_admin/dist`, copy of `trs.malterre`), Caddy `@admin`
+on `10.10.20.5` (the `*.intra` wildcard DNS already covered the name), smoke probe in
+`deploy-api.mjs`, tier in `preflight.mjs`, `ISSUE_TRACKER_PRODUCT_SLUG_ADMIN=admin-malterre`
+in the host `.env` and `.env.production`, tracker product `admin-malterre` attached to
+Ets Malterre. Before the FIRST console deploy only:
+- the API deployed first (migration `0038_console_admin` = the gate).
+
+Same script for every web bundle of the platform (`--app etm|trm|admin|atelier|trs`, one row per
 app in its `APPS` table — a per-app difference is a row, never a fork). It: guards the
 checkout; `pnpm install` (the main checkout's `node_modules` lags whenever a landed
 feature added a dependency — seen 2026-07-23, `html-to-image`); builds

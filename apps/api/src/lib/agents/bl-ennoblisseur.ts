@@ -433,7 +433,8 @@ export async function etiqueterVerifie(messageId: string): Promise<void> {
 export async function prevenir(runs: AgentRun[]): Promise<void> {
   const aVoir = runs.filter((r) => r.statut === 'a_verifier' || r.statut === 'erreur')
   if (!aVoir.length) return
-  const base = process.env.ERP_BASE_URL?.trim() || 'https://etm.intra.etsmalterre.com'
+  // Agents IA lives in the Console Administration since 2026-10-27.
+  const base = process.env.ADMIN_BASE_URL?.trim() || 'https://admin.intra.etsmalterre.com'
   for (const r of aVoir) {
     const res = r.resultat as unknown as ResultatBl
     const profil = profilDe(res.profil)
@@ -450,7 +451,7 @@ export async function prevenir(runs: AgentRun[]): Promise<void> {
           { label: 'Mail', value: r.message ? `${r.message.sujet} (${r.message.de})` : '—' },
           { label: 'Motif', value: r.erreur ?? res.controles?.filter((c) => c.gravite === 'bloquant').map((c) => c.message).join(' ') ?? '—' },
         ],
-        callout: `Voir l’exécution dans ETM : ${base}/agents-ia/agents?agent=${BL_ENNOBLISSEUR_SLUG}&run=${r.id}`,
+        callout: `Voir l’exécution dans la console Administration : ${base}/agents/etm?agent=${BL_ENNOBLISSEUR_SLUG}&run=${r.id}`,
       },
     })
   }

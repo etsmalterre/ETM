@@ -7,6 +7,8 @@
 //
 //   /api/tickets      → product ISSUE_TRACKER_PRODUCT_SLUG      (ETM web app)
 //   /api/tickets-trm  → product ISSUE_TRACKER_PRODUCT_SLUG_TRM  (TRM web app)
+//   /api/tickets-admin → product ISSUE_TRACKER_PRODUCT_SLUG_ADMIN (Console
+//                        Administration, repo admin-malterre; slug admin-malterre)
 //
 // The browser only ever calls these same-origin routes; the tracker API key
 // and product slug live server-side in env and are injected here. Reporter
@@ -42,6 +44,7 @@
 //   ISSUE_TRACKER_API_KEY          — company-scoped key (shared by both mounts)
 //   ISSUE_TRACKER_PRODUCT_SLUG     — ETM product slug in the tracker
 //   ISSUE_TRACKER_PRODUCT_SLUG_TRM — TRM product slug in the tracker
+//   ISSUE_TRACKER_PRODUCT_SLUG_ADMIN — the console's (admin-malterre)
 //
 // Missing key/slug → 503 (graceful, not a crash). Tracker timeout → 504,
 // unreachable → 502. A tracker 401 (bad key) is remapped to 502 so it can
@@ -488,3 +491,4 @@ function createTicketsRouter(slugEnvVar: string): RouterType {
 
 export const ticketsRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG')
 export const ticketsTrmRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG_TRM')
+export const ticketsAdminRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG_ADMIN')

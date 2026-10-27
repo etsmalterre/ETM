@@ -33,8 +33,7 @@ function useScreenGuard(): { redirectTo: string | null; waiting: boolean } {
     const path = location.pathname.replace(/\/+$/, '') || '/'
 
     // Never gated: `/` and the user's other dashboards (the landing page every
-    // user keeps — its widgets have their own `dashboard_*` keys). Paramètres
-    // IS gated: it is a menu of the Écrans axis like the others.
+    // user keeps — its widgets have their own `dashboard_*` keys).
     if (path === '/' || path.startsWith(DASHBOARD_ROUTE_PREFIX)) return { redirectTo: null, waiting: false }
 
     const menus = screenAccessMenus()

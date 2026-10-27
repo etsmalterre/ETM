@@ -14,6 +14,11 @@ import fs from 'node:fs'
 export const SLOTS = [1, 2, 3, 4, 5, 6]
 export const apiPort = (n) => 8080 + n
 export const webPort = (n) => 3000 + n
+// Console Administration (repo admin-malterre, 2026-10-27): its slot N serves
+// on 310N, and takes the slot of the NG API it targets when free, so the
+// console of ETM slot N sits on 310N beside its web 300N (the ERP derives the
+// console's dev address from its own port the same way).
+export const adminPort = (n) => 3100 + n
 export const IS_WIN = process.platform === 'win32'
 
 // ── Projects ────────────────────────────────────────────────────────────────
@@ -67,11 +72,26 @@ export const PROJECTS = {
     // MPS API (served via /serve-main). Overridable per worktree (up --api).
     defaultApiPort: 8080,
   },
+  // The Console Administration (2026-10-27): web only, a client of the MPS API
+  // like TRM, importing ETM's screens through @etm (ETM_WEB_SRC in its
+  // apps/web/.env.local repoints them at a paired ETM worktree, by hand).
+  admin: {
+    key: 'admin',
+    label: 'ADMIN',
+    dirName: 'admin-malterre',
+    hasApi: false,
+    webPkg: '@mps-admin/web',
+    webPort: (n) => 3100 + n,
+    webScript: (n) => `dev:${3100 + n}`,
+    defaultApiPort: 8080,
+    // Take the slot of the NG API it targets (808N → 310N) when free.
+    slotFromApi: true,
+  },
 }
 
 export function getProject(key) {
   const p = PROJECTS[(key || 'ng').toLowerCase()]
-  if (!p) throw new Error(`Unknown project "${key}". Use "ng" or "trm".`)
+  if (!p) throw new Error(`Unknown project "${key}". Use "ng", "trm" or "admin".`)
   return p
 }
 
@@ -96,6 +116,8 @@ export const DEV_WEB_ORIGINS = [
     ...TRM_PWA_PORTS,
     webPort(MAIN_SLOT),
     ...SLOTS.map(webPort),
+    adminPort(MAIN_SLOT),
+    ...SLOTS.map(adminPort),
     ...SLOTS.map(PROJECTS.trm.webPort),
   ]),
 ].map((p) => `http://localhost:${p}`)
@@ -402,10 +424,11 @@ export function pidOnPort(port) {
  *  the project's port(s) actually free. Projects have disjoint port ranges, so
  *  an NG slot and a TRM slot with the same number don't collide. Throws if all
  *  six of the project's slots are taken. */
-export async function allocateSlot(projectKey = 'ng') {
+export async function allocateSlot(projectKey = 'ng', preferred = null) {
   const proj = getProject(projectKey)
   const reg = readRegistry()
-  for (const n of SLOTS) {
+  const order = preferred && SLOTS.includes(preferred) ? [preferred, ...SLOTS.filter((n) => n !== preferred)] : SLOTS
+  for (const n of order) {
     if (reg.slots[slotKey(projectKey, n)]) continue
     if (proj.hasApi && (await isPortInUse(proj.apiPort(n)))) continue
     if (await isPortInUse(proj.webPort(n))) continue

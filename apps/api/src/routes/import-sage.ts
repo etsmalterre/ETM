@@ -15,10 +15,10 @@
 //   GET    /:id/fichier      the stored export, as Sage wrote it
 //   DELETE /:id              undo the société's LATEST import
 //
-// Every route is gated by the screen itself — Écrans › Paramètres › Outils in
-// the app's own store (menu grant `screen_settings`, screen not hidden), reads
-// included: the balance names payroll accounts. Seeing the screen is the
-// right; there is deliberately no action key behind it.
+// Every route is gated by the screen itself — Console Administration › Outils
+// since 2026-10-27 (membership 'admin', lib/console-acces.ts; was Écrans ›
+// Paramètres › Outils), reads included: the balance names payroll accounts.
+// Entering the console is the right; there is deliberately no action key.
 //
 // HFSQL: no transactions. The header row (`upload_compta`) is written LAST
 // and is what every reader keys on, so an import that dies half-way leaves
@@ -30,8 +30,7 @@ import { z } from 'zod'
 import { query, queryRaw } from '../lib/hfsql-auto.js'
 import { dateDigits, esc, n } from '../lib/sst-shared.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
-import { userCanOpenScreen } from '../lib/permissions.js'
-import { trmUserCanOpenScreen } from '../lib/permissions-trm.js'
+import { estMembreConsole } from '../lib/utilisateur-apps.js'
 import {
   EMPREINTE_NB_FICHIERS,
   aujourdhuiHfsql,
@@ -57,7 +56,7 @@ export interface ImportSageScope {
   /** Short names used in messages. */
   nom: string
   nomAutre: string
-  /** Écrans › Paramètres › Outils, in the app's own store. Admins pass. */
+  /** The Console Administration (membership 'admin'), whichever société. */
   canOpen(userId: number, admin: boolean): Promise<boolean>
   /** Accounts that must get a releve row at every import even when the file
    *  does not carry them (a 0 / 0 row). ETM: 603700, which the legacy stock
@@ -67,15 +66,12 @@ export interface ImportSageScope {
   comptesToujoursReleves: readonly number[]
 }
 
-const SETTINGS_MENU = '/settings'
-const OUTILS_SCREEN = '/settings/outils'
-
 export const IMPORT_SAGE_SCOPE_ETM: ImportSageScope = {
   societe: 1,
   autreSociete: 2,
   nom: 'ETS Malterre',
   nomAutre: 'Tricotage Malterre',
-  canOpen: (userId, admin) => userCanOpenScreen(userId, admin, SETTINGS_MENU, OUTILS_SCREEN),
+  canOpen: estMembreConsole,
   comptesToujoursReleves: [NUMERO_VARIATION_STOCK],
 }
 
@@ -84,7 +80,7 @@ export const IMPORT_SAGE_SCOPE_TRM: ImportSageScope = {
   autreSociete: 1,
   nom: 'Tricotage Malterre',
   nomAutre: 'ETS Malterre',
-  canOpen: (userId, admin) => trmUserCanOpenScreen(userId, admin, SETTINGS_MENU, OUTILS_SCREEN),
+  canOpen: estMembreConsole,
   comptesToujoursReleves: [],
 }
 

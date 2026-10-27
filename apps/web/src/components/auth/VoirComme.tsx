@@ -12,14 +12,14 @@ import { Eye, Loader2, Search, Undo2 } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { useAppCode, useUser, type AppCode } from '@/contexts/UserContext'
+import { useAppMembre, useUser, type AppMembre } from '@/contexts/UserContext'
 
 interface CompteListe {
   IDutilisateur: number
   prenom: string | null
   nom: string | null
   typeCompte: 'personne' | 'poste' | 'appareils'
-  apps?: AppCode[]
+  apps?: AppMembre[]
 }
 
 async function voirComme(id: number | null): Promise<void> {
@@ -32,7 +32,7 @@ const nomDe = (c: { prenom: string | null; nom: string | null }) =>
 
 export function VoirCommeDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user } = useUser()
-  const app = useAppCode()
+  const app = useAppMembre()
   const [recherche, setRecherche] = useState('')
   const [enCours, setEnCours] = useState<number | null>(null)
   const { data, isLoading } = useQuery<CompteListe[]>({

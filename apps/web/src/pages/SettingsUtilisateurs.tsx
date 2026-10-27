@@ -49,7 +49,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { SignaturePreview } from '@/components/ui/signature-preview'
 import { SearchableCombobox } from '@/components/ui/popover-select'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { mainNavigation, menuAccessKey, screenAccessMenus, screenHideKey, type MainMenuItem } from '@/config/navigation'
+import { menuAccessKey, screenAccessMenus, screenHideKey, type MainMenuItem } from '@/config/navigation'
 import { cn } from '@/lib/utils'
 // Relative on purpose: TRM mounts this file, and its `@/` has no comptes/.
 import { CompteSidebar, COMPTES_KEY, type Compte, type TypeCompte } from '../components/comptes/CompteSidebar'
@@ -147,6 +147,18 @@ export interface SettingsUtilisateursProps {
    *  chosen in each automate's « Destinataires » tab). */
   NotificationsTab?: ComponentType<NotificationsTabProps> | null
   extraTabs?: ExtraTab[]
+  /** The Écrans tree of this app. Default: the importing app's own navigation
+   *  (`screenAccessMenus`). The Console Administration passes each company's
+   *  tree read from the API manifest (GET /permissions[-trm]/screens), since
+   *  it cannot import TRM's navigation. */
+  ecrans?: EcransArbre
+}
+
+/** The Écrans tab's tree and the menus « Tout » never grants (given person by
+ *  person: `seed: false` in the API manifest). */
+export interface EcransArbre {
+  menus: MainMenuItem[]
+  personneParPersonne: ReadonlySet<string>
 }
 
 function userPhotoUrl(userId: number, photoVersion: number | null): string {
@@ -191,6 +203,7 @@ export function SettingsUtilisateurs({
   permissionsPath = '/permissions',
   NotificationsTab = EtmNotificationsTab,
   extraTabs = [],
+  ecrans = ECRANS_PAR_DEFAUT,
 }: SettingsUtilisateursProps = {}) {
   const { user } = useUser()
   const app = useAppCode()
@@ -376,6 +389,7 @@ export function SettingsUtilisateurs({
           keys={keys ?? []}
           NotificationsTab={NotificationsTab}
           extraTabs={extraTabs}
+          ecrans={ecrans}
           isUpdating={updateMut.isPending}
           onToggle={(key, nextValue) => {
             if (!selected) return
@@ -652,7 +666,7 @@ function tabsDuCompte(compte: Compte | null, avecNotifications = true): string[]
 function DetailBody({
   user, compte, profile, currentEmail, onSaveEmail, isSavingEmail, emailSaveError,
   keys, isUpdating, onToggle,
-  NotificationsTab, extraTabs,
+  NotificationsTab, extraTabs, ecrans,
   onGrantedChange, onCopyRights,
 }: {
   user: PermissionUser | null
@@ -667,6 +681,7 @@ function DetailBody({
   onToggle: (key: string, nextValue: boolean) => void
   NotificationsTab: ComponentType<NotificationsTabProps> | null
   extraTabs: ExtraTab[]
+  ecrans: EcransArbre
   onGrantedChange: (mutateSet: (s: Set<string>) => void) => void
   onCopyRights: () => void
 }) {
@@ -776,6 +791,7 @@ function DetailBody({
 
         {activeTab === 'ecrans' && (
           <EcransTab
+            ecrans={ecrans}
             isVin={isVin}
             isUpdating={isUpdating}
             grantedSet={grantedSet}
@@ -933,32 +949,36 @@ function EtmNotificationsTab({ user, currentEmail }: NotificationsTabProps) {
 
 // ── Écrans tab: the navigation tree as a checkbox tree ─────────────────
 //
-// Built from `mainNavigation` + Paramètres (`screenAccessMenus`) itself, so it
-// can never drift from the real nav (and the menu icons come for free).
-// Admin-only entries (Utilisateurs) are left out: ticking them could open
-// nothing. « Tout » never grants Paramètres nor RH — they are given person by
-// person (`seed: false` in apps/api/src/lib/screen-keys.ts).
+// By default built from the app's own navigation (`screenAccessMenus`), so it
+// can never drift from the real nav (and the menu icons come for free); the
+// Console Administration passes each company's tree from the API manifest
+// (`ecrans` prop). Admin-only entries are left out: ticking them could open
+// nothing. « Tout » never grants the menus given person by person (`seed:
+// false` in apps/api/src/lib/screen-keys.ts: RH).
 // Storage runs in two directions — a menu
 // is a grant, a screen is a hide — but the UI shows plain "visible" checkboxes
 // in both cases, so the admin never has to think about it. See the header
 // comment of apps/api/src/lib/screen-keys.ts for why.
 
-/** Menus of `mainNavigation` that « Tout » skips (Paramètres is not in it). */
-const MENUS_PERSONNE_PAR_PERSONNE = new Set(['/rh'])
-
-const ECRANS_MENUS: MainMenuItem[] = screenAccessMenus().map((m) => ({
-  ...m,
-  submenus: m.submenus.filter((s) => !s.adminOnly),
-}))
+const ECRANS_PAR_DEFAUT: EcransArbre = {
+  menus: screenAccessMenus(),
+  // TRM's Paramètres still sits in its navigation until it moves to the console.
+  personneParPersonne: new Set(['/rh', '/settings']),
+}
 
 function EcransTab({
-  isVin, isUpdating, grantedSet, onGrantedChange,
+  ecrans, isVin, isUpdating, grantedSet, onGrantedChange,
 }: {
+  ecrans: EcransArbre
   isVin: boolean
   isUpdating: boolean
   grantedSet: Set<string>
   onGrantedChange: (mutateSet: (s: Set<string>) => void) => void
 }) {
+  const ECRANS_MENUS = useMemo(
+    () => ecrans.menus.map((m) => ({ ...m, submenus: m.submenus.filter((s) => !s.adminOnly) })),
+    [ecrans.menus],
+  )
   const menuOn = (href: string) => isVin || grantedSet.has(menuAccessKey(href))
   const screenOn = (href: string) => isVin || !grantedSet.has(screenHideKey(href))
 
@@ -985,7 +1005,7 @@ function EcransTab({
 
   const setAllMenus = (next: boolean) => {
     onGrantedChange((s) => {
-      for (const m of next ? mainNavigation.filter((x) => !MENUS_PERSONNE_PAR_PERSONNE.has(x.href)) : ECRANS_MENUS) {
+      for (const m of next ? ECRANS_MENUS.filter((x) => !ecrans.personneParPersonne.has(x.href)) : ECRANS_MENUS) {
         if (next) s.add(menuAccessKey(m.href))
         else s.delete(menuAccessKey(m.href))
         for (const sub of m.submenus) s.delete(screenHideKey(sub.href))

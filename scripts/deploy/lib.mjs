@@ -30,6 +30,8 @@ export function mainCheckout(start) {
 }
 export const ETM = mainCheckout(here)
 export const TRM = path.resolve(ETM, '..', 'TRM')
+// The Console Administration's repo (2026-10-27): builds against the ETM checkout (@etm).
+export const ADMIN = path.resolve(ETM, '..', 'admin-malterre')
 
 export const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim()

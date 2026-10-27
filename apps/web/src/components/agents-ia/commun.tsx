@@ -6,7 +6,9 @@
 import { createContext, useContext, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, ChevronUp, CircleSlash, FlaskConical, Loader2, Power } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch, API_URL } from '@/lib/api'
+import { erpUrl, useAppCode, useEstConsole } from '@/contexts/UserContext'
 import { cn } from '@/lib/utils'
 
 export type Mode = 'off' | 'essai' | 'actif'
@@ -172,4 +174,26 @@ export function useLancement<T extends { sondage: Sondage }>({ detailKey, detail
   }, [suivi, attente])
 
   return { enAttente: attente !== null, attendre: setAttente, abandonner: () => setAttente(null) }
+}
+
+/** A link to a screen of the ERP (an order, a point's subject…). In an ERP,
+ *  an in-app route; in the Console Administration (2026-10-27), the same
+ *  route on the company's ERP host, in a new tab. */
+export function LienErp({ to, className, title, children }: { to: string; className?: string; title?: string; children: ReactNode }) {
+  const enConsole = useEstConsole()
+  const app = useAppCode()
+  return enConsole
+    ? <a href={erpUrl(app, to)} target="_blank" rel="noreferrer" className={className} title={title}>{children}</a>
+    : <Link to={to} className={className} title={title}>{children}</Link>
+}
+
+/** The same, for a button: open an ERP route from a handler. */
+export function useOuvrirErp(): (to: string) => void {
+  const enConsole = useEstConsole()
+  const app = useAppCode()
+  const navigate = useNavigate()
+  return (to) => {
+    if (enConsole) window.open(erpUrl(app, to), '_blank', 'noreferrer')
+    else navigate(to)
+  }
 }

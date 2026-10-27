@@ -28,15 +28,45 @@ export interface CurrentUser {
   /** Set while an admin looks at the app as this user: the admin's own identity. */
   voirComme?: { IDutilisateur: number; prenom: string | null; nom: string | null } | null
   /** The apps this account belongs to — AuthGate refuses a non-member. */
-  apps?: AppCode[]
+  apps?: AppMembre[]
 }
 
-/** Which app this bundle is: ETM (ETS Malterre) or TRM (Tricotage Malterre). */
+/** Which company a bundle (or a console section) works for: ETM (ETS
+ *  Malterre) or TRM (Tricotage Malterre) — each has its own permission store. */
 export type AppCode = 'etm' | 'trm'
 
-export const APP_NAMES: Record<AppCode, string> = {
+/** A membership (API lib/utilisateur-apps.ts): a company's ERP, or the
+ *  Console Administration (admin.intra…, repo admin-malterre), which has no rights of
+ *  its own — each of its sections keeps its company's. */
+export type AppMembre = AppCode | 'admin'
+
+export const APP_NAMES: Record<AppMembre, string> = {
   etm: 'ETS Malterre',
   trm: 'Tricotage Malterre',
+  admin: 'Administration',
+}
+
+/** Where the Console Administration lives (repo admin-malterre): VITE_ADMIN_URL
+ *  when set; in dev, the console of the same worktree slot (web 300N → 310N,
+ *  scripts/worktree); the production host otherwise. */
+export function adminConsoleUrl(path = '/'): string {
+  const env = (import.meta.env.VITE_ADMIN_URL as string | undefined)?.replace(/\/+$/, '')
+  const port = Number(window.location.port)
+  const dev = import.meta.env.DEV && port >= 3000 && port <= 3006 ? `http://localhost:${port + 100}` : null
+  return `${env || dev || 'https://admin.intra.etsmalterre.com'}${path}`
+}
+
+/** A company's ERP, from the console (its screens link into the ERPs):
+ *  VITE_ETM_URL / VITE_TRM_URL in dev, the production hosts otherwise. */
+export function erpUrl(app: AppCode, path = '/'): string {
+  const env = (app === 'trm' ? import.meta.env.VITE_TRM_URL : import.meta.env.VITE_ETM_URL) as string | undefined
+  const base = env?.replace(/\/+$/, '') || `https://${app}.intra.etsmalterre.com`
+  return `${base}${path}`
+}
+
+/** The account may enter the Console Administration. */
+export function estMembreConsole(user: CurrentUser | null): boolean {
+  return !!user?.apps?.includes('admin')
 }
 
 // Set once by AuthGate (main.tsx passes the app), read by the shared auth
@@ -48,6 +78,23 @@ export const AppCodeProvider = AppCodeContext.Provider
 export function useAppCode(): AppCode {
   const app = useContext(AppCodeContext)
   if (!app) throw new Error('useAppCode must be used below AuthGate')
+  return app
+}
+
+// The membership the gate checked: the ERP's company, or 'admin' in the
+// console (where AppCodeProvider is set per section, by the société chosen).
+const AppMembreContext = createContext<AppMembre | undefined>(undefined)
+export const AppMembreProvider = AppMembreContext.Provider
+
+/** True inside the Console Administration — never throws (a screen shared
+ *  with an ERP may sit below an older gate that provides no membership). */
+export function useEstConsole(): boolean {
+  return useContext(AppMembreContext) === 'admin'
+}
+
+export function useAppMembre(): AppMembre {
+  const app = useContext(AppMembreContext)
+  if (!app) throw new Error('useAppMembre must be used below AuthGate')
   return app
 }
 

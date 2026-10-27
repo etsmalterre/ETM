@@ -1,5 +1,5 @@
-// Which company's app an account belongs to — table `utilisateur_app`
-// (migration 0004_utilisateur_app). One login for ETM and TRM, but each app
+// Which app an account belongs to — table `utilisateur_app`
+// (migration 0004_utilisateur_app; 'admin' since 0038_console_admin). One login for ETM and TRM, but each app
 // has its own members, managed from its Paramètres › Utilisateurs:
 //   • the app's gate refuses a non-member (`apps` of GET /api/auth/me,
 //     AuthGate on the web);
@@ -22,8 +22,14 @@ import { mpsPg } from './mps-pg.js'
 import { oublierPermissions, type PermissionApp } from './permission-store.js'
 import { refusAppsDuType, type TypeCompte } from './types-compte.js'
 
-export type AppCode = PermissionApp
-export const APPS: readonly AppCode[] = ['etm', 'trm']
+/** A membership: one of the two companies' ERPs, or the Console
+ *  Administration (admin.intra…, 'admin'). Only the companies carry a
+ *  permission store (PermissionApp): the console has no rights of its own,
+ *  each of its sections keeps its company's. */
+export type AppCode = PermissionApp | 'admin'
+export const APPS: readonly AppCode[] = ['etm', 'trm', 'admin']
+/** The companies — what « an account keeps one app » counts. */
+export const SOCIETES: readonly PermissionApp[] = ['etm', 'trm']
 
 const CACHE_MS = 30_000
 let cache: { at: number; byUser: Map<number, AppCode[]> | null } | null = null
@@ -74,6 +80,14 @@ export async function membres(app: AppCode): Promise<Set<number> | null> {
   const out = new Set<number>()
   for (const [id, apps] of byUser) if (apps.includes(app)) out.add(id)
   return out
+}
+
+/** Whether an account may enter the Console Administration: a member of
+ *  'admin'. Membership unknown (migration 0004 missing): the admin only. */
+export async function estMembreConsole(userId: number | undefined, admin: boolean): Promise<boolean> {
+  if (!userId) return false
+  const apps = await appsDe(userId)
+  return apps ? apps.includes('admin') : admin
 }
 
 /** Why a membership change is refused, or null. `soiMeme`: the admin edits

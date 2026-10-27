@@ -16,7 +16,6 @@
 
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
 import {
   AlertCircle,
   AlertTriangle,
@@ -65,6 +64,7 @@ import {
   ilYA,
   KV,
   MODE_META,
+  LienErp,
   ModeFooter,
   useBaseApi,
   useLancement,
@@ -996,7 +996,7 @@ function RetoursTab({ automate, canPilot }: { automate: AutomateVue; canPilot: b
                     <div className="min-w-0 flex-1">
                       {r.cible && (
                         r.cible.lien
-                          ? <Link to={r.cible.lien} className="text-[11px] font-medium text-accent hover:underline">{r.cible.libelle}</Link>
+                          ? <LienErp to={r.cible.lien} className="text-[11px] font-medium text-accent hover:underline">{r.cible.libelle}</LienErp>
                           : <p className="text-[11px] font-medium text-muted-foreground">{r.cible.libelle}</p>
                       )}
                       <p className="text-sm whitespace-pre-line">{r.texte}</p>

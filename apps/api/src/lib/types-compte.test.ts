@@ -27,4 +27,11 @@ describe('refusAppsDuType', () => {
     expect(refusAppsDuType('appareils', [])).toBeNull()
     expect(refusAppsDuType('appareils', ['etm'])).toMatch(/aucune application/)
   })
+
+  it('the console is never enough on its own, and never for a poste', () => {
+    expect(refusAppsDuType('personne', ['admin'])).toMatch(/désactivez/)
+    expect(refusAppsDuType('personne', ['etm', 'admin'])).toBeNull()
+    expect(refusAppsDuType('poste', ['trm', 'admin'])).toMatch(/console/)
+    expect(refusAppsDuType('appareils', ['admin'])).toMatch(/aucune application/)
+  })
 })
