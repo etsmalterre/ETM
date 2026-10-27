@@ -1,6 +1,6 @@
 # Doctrine des délais
 
-> Décidée avec Vincent le 2026-10-27. **Rien n'est codé** : ce document fixe les règles avant le moteur. Elle sera la première page de la section Doctrines de la console Administration (`admin.intra.etsmalterre.com`), où ses réglages (standards, plafond, réserve) deviendront modifiables. Les mesures citées viennent de `mps_dev` (méthode en fin de document).
+> Décidée avec Vincent le 2026-10-27. **Rien n'est codé** : ce document fixe les règles avant le moteur. Ce fichier est la **source unique** de la doctrine, réglages compris (standards, plafond, réserve). La console Administration (`admin.intra.etsmalterre.com`, section Doctrines) l'affiche en lecture seule pour la direction, embarqué à la compilation : toute modification passe par ce fichier, puis par un déploiement de la console. Les mesures citées viennent de `mps_dev` (méthode en fin de document).
 
 ## Pourquoi
 
