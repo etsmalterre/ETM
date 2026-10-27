@@ -604,19 +604,49 @@ export async function calcTarifRefEcru(
   )
   if (ecruRows.length === 0) return empty
   const ecruFixed = await fixEncoding(ecruRows as any[], 'ref_ecru', 'IDref_ecru', ['reference'])
-  const ecruReference = (ecruFixed[0]?.reference ?? null) as string | null
-  const poidsUnRlx = Number(ecruRows[0].poids) || 0
-  const prixTricotage = Number(ecruRows[0].prix) || 0
+  const ref_ecru = {
+    IDref_ecru,
+    reference: (ecruFixed[0]?.reference ?? null) as string | null,
+    poids: Number(ecruRows[0].poids) || 0,
+    prix: Number(ecruRows[0].prix) || 0,
+  }
+  const detailFil = ref_ecru.poids > 0 ? await computePrixFil(IDref_ecru, IDcolori_ecru) : []
+  return assembleTarifEcru({ IDcolori_ecru, ref_ecru, detailFil, coefficient: opts?.coefficient })
+}
+
+export interface TarifEcruInputs {
+  IDcolori_ecru: number
+  ref_ecru: { IDref_ecru: number; reference: string | null; poids: number; prix: number }
+  /** The écru's yarn cost lines (`computePrixFil` / `prixFilLines`). */
+  detailFil: TarifDetailLine[]
+  coefficient?: number
+}
+
+/** Pure half of `calcTarifRefEcru`: the nine tranches from loaded inputs. The
+ *  website catalogue (lib/webservice-site.ts) prices from its in-memory
+ *  snapshot through this, so the espace client quotes what the ERP quotes. */
+export function assembleTarifEcru(inputs: TarifEcruInputs): TarifResult {
+  const { IDcolori_ecru, ref_ecru, detailFil, coefficient } = inputs
+  const ecruReference = ref_ecru.reference
+  const poidsUnRlx = ref_ecru.poids
+  const prixTricotage = ref_ecru.prix
   // Sold by the Kg only: ref_ecru.rendement is retired (2026-10-26), so no €/Ml figure.
   const rendement = 0
-  const ref_ecru = { IDref_ecru, reference: ecruReference, poids: poidsUnRlx, prix: prixTricotage }
-  if (!(poidsUnRlx > 0)) return { ...empty, rendement, ref_ecru }
+  const result: TarifResult = {
+    kind: 'ecru',
+    IDref_fini: 0,
+    IDref_ecru: ref_ecru.IDref_ecru,
+    IDcoloris: IDcolori_ecru,
+    avec_teinture: 0,
+    rendement,
+    ref_ecru,
+    tranches: [],
+  }
+  if (!(poidsUnRlx > 0)) return result
 
-  const detailFil = await computePrixFil(IDref_ecru, IDcolori_ecru)
   const moFil = round2(detailFil.reduce((s, d) => s + d.valueKg, 0))
   const rdt2 = Math.round(rendement * 100) / 100
 
-  const tranches: TarifTranche[] = []
   for (let i = 0; i < ROLL_MULT.length; i++) {
     const poidsRef = poidsUnRlx * ROLL_MULT[i] + 1
     let moTricotage = prixTricotage
@@ -635,13 +665,13 @@ export async function calcTarifRefEcru(
     const moRevient = moFil + moTricotage
     const tauxPort = i === 8 ? TAUX_FRAIS_DE_PORT_30RLX : TAUX_FRAIS_DE_PORT
     const rCoeff =
-      opts?.coefficient !== undefined && opts.coefficient > 0 && opts.coefficient < 1
-        ? opts.coefficient
+      coefficient !== undefined && coefficient > 0 && coefficient < 1
+        ? coefficient
         : COEFFICIENT_V2[i]
     const venteAvantPortKg = moRevient / (1 - rCoeff)
     const moPrixDeVenteAuKg = round2(venteAvantPortKg / (1 - tauxPort))
     const moPrixDeVenteAuMl = rdt2 > 0 ? round2(venteAvantPortKg / rdt2 / (1 - tauxPort)) : 0
-    tranches.push({
+    result.tranches.push({
       rolls: ROLL_LABEL[i],
       isMetrage: i === 0,
       qte_ml: rendement > 0 ? Math.round(ROLL_MULT[i] * poidsUnRlx * rendement) : 0,
@@ -665,7 +695,7 @@ export async function calcTarifRefEcru(
       moPrixDeVenteAuMl,
     })
   }
-  return { ...empty, rendement, ref_ecru, tranches }
+  return result
 }
 
 /** Legacy `PrixFil()` — Σ(pourcentage × yarn €/Kg)/100 over the écru's

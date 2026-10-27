@@ -59,6 +59,8 @@ import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { postEmail } from '@/lib/email'
 import { cn } from '@/lib/utils'
+import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
+import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { hfsqlDateToInput, inputDateToHfsql, formatHfsqlDate } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -1902,7 +1904,13 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs, ca
                 'cursor-pointer hover:bg-zinc-100 hover:border-accent/40 transition-colors',
                 drawerRefId === r.IDdesignation_client && 'ring-1 ring-accent bg-accent/[0.06] border-accent/50')}>
               <div className="flex items-center gap-2">
-                <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10"><Tag className="h-3.5 w-3.5 text-amber-600" /></div>
+                {/* Domain glyph: fini roll vs tombé de métier roll, same icons as Facturation / Expéditions (#1327) */}
+                <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10"
+                  title={r.IDref_ecru > 0 ? 'Tombé de métier' : 'Fini'}>
+                  {r.IDref_ecru > 0
+                    ? <TmRollIcon className="h-5 w-5 text-amber-600" />
+                    : <FiniRollIcon className="h-5 w-5 text-amber-600" />}
+                </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 min-w-0">
                     <p className="text-sm font-medium truncate">{r.client_ref || '—'}</p>

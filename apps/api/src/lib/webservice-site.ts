@@ -1,6 +1,8 @@
 // The website catalogue — replacement of the WinDev REST webservice MPS_WS
-// (alpha.etsmalterre.com), consumed server-to-server by the WordPress plugin
-// `malterre-api` of etsmalterre.fr/client (customer space + QR sample page).
+// (alpha.etsmalterre.com), read server-to-server by the espace client of repo
+// etsmalterre-site (client.etsmalterre.fr: catalogue + QR sample page). The
+// WordPress plugin `malterre-api` it was first built for is retired since
+// 2026-09-24; comments citing « the plugin » say why a guard was born.
 // Legacy map, measurements and consumers: claude_doc/webservice_legacy.md.
 //
 // This file is PURE: it turns a loaded `Catalog` (lib/webservice-site-data.ts)
@@ -22,12 +24,12 @@
 //     reached the shop.
 
 import {
-  assembleTarifFini, prixFilLines,
+  assembleTarifEcru, assembleTarifFini, prixFilLines,
   type TarifFiniInputs, type TarifTranche,
 } from './pricing-fini-tarif.js'
-import { parseLstTrancheIdx, contratPrixForTrancheIdx, type ContratTarifInfo } from './tarif-client.js'
+import { parseLstTrancheIdx, contratPrixForTrancheIdx, prixUnitOf, type ContratTarifInfo } from './tarif-client.js'
 import { chooseCompositionRows, composeMatieres } from './composition-matieres.js'
-import type { Catalog, DesignationRow, RccRow, RefFiniRow } from './webservice-site-data.js'
+import type { Catalog, DesignationRow, RccRow, RefEcruRow, RefFiniRow } from './webservice-site-data.js'
 
 /** Legacy `ListeVertus` — hard-coded in WinDev too (no table). */
 export const VERTUS = [
@@ -43,7 +45,9 @@ export const PUBLIC_TRANCHE_IDX = [1, 2, 3, 4, 5, 6]
 /** `nb_rouleau` of each of the engine's 9 tranches (0 = « < 1 rouleau »). */
 const NB_ROULEAU = [0, 1, 2, 3, 4, 5, 10, 15, 30]
 
-export interface TrancheJson { nb_rouleau: number; qte_ml: number; prix: string }
+/** One price tier. `prix` is in the document's `unite` (€/Ml or €/Kg); a
+ *  tombé de métier has no metre length, so its `qte_ml` is 0. */
+export interface TrancheJson { nb_rouleau: number; qte_ml: number; qte_kg: number; prix: string }
 export interface MatiereJson { label: string; proportion: number }
 export type VertuJson = { IDVertu: number; Label: string }
 
@@ -73,6 +77,10 @@ export interface RefProduitDoc {
     titre: string
     reference: string
     ref_client: string
+    /** What is sold: a finished fabric, or a tombé de métier (greige, by the Kg). */
+    type_ref: 'fini' | 'tombe_metier'
+    /** Unit of every `prix` of this document. */
+    unite: 'Ml' | 'Kg'
     contexture: string
     poids: number
     CategoriePoids: string
@@ -206,6 +214,28 @@ function priceTranches(cat: Catalog, memo: PriceMemo, IDref_fini: number, IDcolo
   return tranches
 }
 
+/** calcTarifRefEcru over the in-memory catalogue (same engine, `assembleTarifEcru`). */
+function priceTranchesEcru(cat: Catalog, memo: PriceMemo, IDref_ecru: number, IDcolori_ecru: number, opts: PriceOpts): TarifTranche[] {
+  const key = `e|${IDref_ecru}|${IDcolori_ecru}|${opts.coefficient ?? ''}|${(opts.filExclu ?? []).join(',')}`
+  const hit = memo.get(key)
+  if (hit) return hit
+  const ecru = cat.refEcru.get(IDref_ecru)
+  let tranches: TarifTranche[] = []
+  if (ecru && ecru.poids > 0 && IDcolori_ecru > 0) {
+    const all = cat.compositionByEcru.get(IDref_ecru) ?? []
+    let comp = all.filter((c) => c.IDcolori_ecru === IDcolori_ecru)
+    if (comp.length === 0) comp = all.filter((c) => c.IDcolori_ecru === 0)
+    tranches = assembleTarifEcru({
+      IDcolori_ecru,
+      ref_ecru: { IDref_ecru, reference: ecru.reference || null, poids: ecru.poids, prix: ecru.prix },
+      detailFil: prixFilLines(comp, cat.refFil, cat.coloriFil, opts.filExclu),
+      coefficient: opts.coefficient,
+    }).tranches
+  }
+  memo.set(key, tranches)
+  return tranches
+}
+
 const prix = (v: number): string => v.toFixed(2)
 
 // ── Shared reference header ─────────────────────────────────
@@ -231,6 +261,31 @@ function refHeader(cat: Catalog, ref: RefFiniRow, thresholds: Map<number, { min:
     // One roll in metres = roll weight × rendement (legacy printed the float32 noise).
     longueur_rouleaux: ecru ? Math.round(ecru.poids * ref.rendement * 1000) / 1000 : 0,
     fiche_technique: `${o.publicBaseUrl}/fichiers/documents/FT${ref.IDref_fini}.pdf`,
+    vertus: vertus.length > 0 ? vertus : null,
+    matiere,
+  }
+}
+
+/** A tombé de métier's header: the écru's own name, knitted laize and weight,
+ *  no roll length in metres (sold by the Kg) and no technical sheet. */
+function ecruHeader(cat: Catalog, ecru: RefEcruRow, thresholds: Map<number, { min: number; max: number }>) {
+  const vertus: VertuJson[] = []
+  if (ecru.bio) vertus.push({ IDVertu: 1, Label: 'Bio' })
+  if (ecru.recycle) vertus.push({ IDVertu: 2, Label: 'Recyclé' })
+  const matiere = composeMatieres(
+    chooseCompositionRows(cat.compositionByEcru.get(ecru.IDref_ecru) ?? [], 0),
+    cat.assoByFil,
+    cat.matiereLibelle,
+  ).map((m) => ({ label: m.matiere, proportion: Math.round(m.pourcentage * 100) / 100 }))
+  return {
+    titre: ecru.designation || ecru.reference,
+    reference: ecru.reference,
+    contexture: cat.contexture.get(ecru.IDcontexture) ?? '',
+    poids: ecru.poidsM2,
+    CategoriePoids: categoriePoids(ecru.poidsM2, thresholds.get(ecru.IDcontexture)),
+    laize: ecru.laize,
+    longueur_rouleaux: 0,
+    fiche_technique: '',
     vertus: vertus.length > 0 ? vertus : null,
     matiere,
   }
@@ -279,6 +334,7 @@ export function buildRefInterne(
           tranche_tarifaire: PUBLIC_TRANCHE_IDX.map((i) => ({
             nb_rouleau: NB_ROULEAU[i],
             qte_ml: t[i].qte_ml,
+            qte_kg: t[i].qte_kg,
             prix: prix(t[i].moPrixDeVenteAuMl),
           })),
         }]
@@ -321,30 +377,47 @@ function rccMode(cat: Catalog, rcc: RccRow, today: string): {
  *  reference the engine refuses (no roll weight, no rendement…).
  *
  *  ⚠️ An unpriced coloris must be LEFT OUT, never sent with an empty grid: the
- *  plugin (malterre-api.php, « Mise à jour des coloris et des variations »)
+ *  retired WordPress plugin (malterre-api.php, « Mise à jour des coloris et des variations »)
  *  creates the variation in stock at its 1 € base wholesale price with no
  *  quantity rule — sellable at 1 €/Ml. The legacy service did send some
  *  expired-contract coloris that way. */
 export function clientTranches(
-  cat: Catalog, memo: PriceMemo, d: DesignationRow, rcc: RccRow, ref: RefFiniRow, today: string,
+  cat: Catalog, memo: PriceMemo, d: DesignationRow, rcc: RccRow, today: string,
 ): TrancheJson[] | null {
   const idxs = parseLstTrancheIdx(rcc.lst_tranche)
-  const colorisId = ref.avec_teinture !== 0 ? rcc.IDref_fini_colori : rcc.IDcolori_ecru
   const m = rccMode(cat, rcc, today)
-  const grid = priceTranches(cat, memo, ref.IDref_fini, colorisId, {
+  const opts: PriceOpts = {
     coefficient: m.mode === 'coefficient' ? m.coefficient / 100 : undefined,
     filExclu: d.filExclu,
-  })
+  }
+  let grid: TarifTranche[]
+  if (d.IDref_fini > 0) {
+    const ref = cat.refFini.get(d.IDref_fini)
+    if (!ref) return null
+    const colorisId = ref.avec_teinture !== 0 ? rcc.IDref_fini_colori : rcc.IDcolori_ecru
+    grid = priceTranches(cat, memo, ref.IDref_fini, colorisId, opts)
+  } else {
+    grid = priceTranchesEcru(cat, memo, d.IDref_ecru, rcc.IDcolori_ecru, opts)
+  }
   if (grid.length === 0) return null
-  let priceAt: (i: number) => number = (i) => grid[i].moPrixDeVenteAuMl
+  // The designation's selling unit, as on the client fiche and the order line:
+  // a tombé de métier and a fini sold by the Kg (#1253) price per Kg.
+  const parKg = prixUnitOf(d) === 'Kg'
+  let priceAt: (i: number) => number = (i) => (parKg ? grid[i].moPrixDeVenteAuKg : grid[i].moPrixDeVenteAuMl)
   if (m.mode === 'contrat') {
     // Same rule as the ERP order line: the largest negotiated band at or below
-    // the tranche, else the contract's smallest one.
+    // the tranche, else the contract's smallest one. Contract prices are already
+    // in the designation's unit.
     const actif = m.actif
     if (!actif || contratPrixForTrancheIdx(actif, 8) == null) return null
     priceAt = (i) => contratPrixForTrancheIdx(actif, i) ?? 0
   }
-  return shopSafeTrancheIdx(idxs).map((i) => ({ nb_rouleau: NB_ROULEAU[i], qte_ml: grid[i].qte_ml, prix: prix(priceAt(i)) }))
+  return shopSafeTrancheIdx(idxs).map((i) => ({
+    nb_rouleau: NB_ROULEAU[i],
+    qte_ml: grid[i].qte_ml,
+    qte_kg: grid[i].qte_kg,
+    prix: prix(priceAt(i)),
+  }))
 }
 
 /** The plugin prices the quantities BELOW a grid's last row at the previous
@@ -358,23 +431,26 @@ export function shopSafeTrancheIdx(idxs: readonly number[]): number[] {
   return [idxs[0] === 1 ? 0 : 1, idxs[0]]
 }
 
-function colorisName(cat: Catalog, ref: RefFiniRow, rcc: RccRow): string {
-  return ref.avec_teinture !== 0
+function colorisName(cat: Catalog, d: DesignationRow, rcc: RccRow): string {
+  const ref = cat.refFini.get(d.IDref_fini)
+  return ref && ref.avec_teinture !== 0
     ? cat.refFiniColori.get(rcc.IDref_fini_colori)?.reference ?? ''
     : cat.coloriEcru.get(rcc.IDcolori_ecru)?.reference ?? ''
 }
 
 export function buildRefProduit(
-  cat: Catalog, memo: PriceMemo, d: DesignationRow, ref: RefFiniRow,
+  cat: Catalog, memo: PriceMemo, d: DesignationRow,
   thresholds: Map<number, { min: number; max: number }>, o: BuildOptions,
 ): RefProduitDoc {
-  const h = refHeader(cat, ref, thresholds, o)
+  const ref = d.IDref_fini > 0 ? cat.refFini.get(d.IDref_fini) : undefined
+  const ecru = ref ? undefined : cat.refEcru.get(d.IDref_ecru)
+  const h = ref ? refHeader(cat, ref, thresholds, o) : ecruHeader(cat, ecru!, thresholds)
   const coloris: RefProduitDoc['ref_produit']['coloris'] = []
   for (const rcc of cat.rccByDesignation.get(d.IDdesignation_client) ?? []) {
     if (rcc.archive) continue
-    const tranche_tarifaire = clientTranches(cat, memo, d, rcc, ref, o.today)
+    const tranche_tarifaire = clientTranches(cat, memo, d, rcc, o.today)
     if (tranche_tarifaire === null) continue
-    coloris.push({ id_ref_coloris: rcc.IDref_client_colori, photo: '', vignette: '', Nom: colorisName(cat, ref, rcc), tranche_tarifaire })
+    coloris.push({ id_ref_coloris: rcc.IDref_client_colori, photo: '', vignette: '', Nom: colorisName(cat, d, rcc), tranche_tarifaire })
   }
   return {
     ref_produit: {
@@ -383,6 +459,8 @@ export function buildRefProduit(
       titre: h.titre,
       reference: h.reference,
       ref_client: d.designation,
+      type_ref: ref ? 'fini' : 'tombe_metier',
+      unite: prixUnitOf(d),
       contexture: h.contexture,
       poids: h.poids,
       CategoriePoids: h.CategoriePoids,
@@ -399,10 +477,14 @@ export function buildRefProduit(
   }
 }
 
-/** A designation the shop sells: live, visible, a finished reference, and a
- *  client that still exists. */
+/** A designation the espace client shows: live, visible, a finished reference
+ *  or a live tombé de métier (LIVA #1327: Atelier Bulle buys both), and a client
+ *  that still exists. */
 export function isShopDesignation(cat: Catalog, d: DesignationRow): boolean {
-  return !d.archive && !d.cache && d.IDref_fini > 0 && cat.refFini.has(d.IDref_fini) && cat.client.has(d.IDclient)
+  if (d.archive || d.cache || !cat.client.has(d.IDclient)) return false
+  if (d.IDref_fini > 0) return cat.refFini.has(d.IDref_fini)
+  const ecru = d.IDref_ecru > 0 ? cat.refEcru.get(d.IDref_ecru) : undefined
+  return !!ecru && !ecru.archive
 }
 
 // ── Whole build ─────────────────────────────────────────────
@@ -428,9 +510,8 @@ export function buildSite(cat: Catalog, o: BuildOptions): SiteBuild {
     }
     refColorisByClient.set(d.IDclient, pairs)
     if (!isShopDesignation(cat, d)) continue
-    const ref = cat.refFini.get(d.IDref_fini)!
     refProduit.set(d.IDdesignation_client, {
-      doc: buildRefProduit(cat, memo, d, ref, thresholds, o),
+      doc: buildRefProduit(cat, memo, d, thresholds, o),
       sourceMs: d.modifiedMs,
       IDclient: d.IDclient,
     })

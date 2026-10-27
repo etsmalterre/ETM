@@ -53,7 +53,13 @@ export interface RefFiniRow {
 export interface RefEcruRow {
   IDref_ecru: number
   reference: string
+  designation: string
+  /** Roll weight, kg. */
   poids: number
+  /** Tombé de métier laize (cm) and weight (g/m²), as knitted. */
+  laize: number
+  poidsM2: number
+  archive: boolean
   prix: number
   IDcontexture: number
   bio: boolean
@@ -81,6 +87,8 @@ export interface DesignationRow {
   IDref_fini: number
   IDref_ecru: number
   designation: string
+  /** Selling unit: 1 = Kg, else Ml (read through `prixUnitOf`). */
+  unite: number
   associee: string
   archive: boolean
   cache: boolean
@@ -187,7 +195,8 @@ export async function loadCatalog(): Promise<Catalog> {
     })
   }
 
-  const reRows = await query<Record<string, unknown>>(`SELECT * FROM ref_ecru`)
+  let reRows = await query<Record<string, unknown>>(`SELECT * FROM ref_ecru`)
+  reRows = await batchRepair(reRows, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'])
   const refEcru = new Map<number, RefEcruRow>()
   for (const r of reRows) {
     const id = num(r.IDref_ecru)
@@ -195,7 +204,11 @@ export async function loadCatalog(): Promise<Catalog> {
     refEcru.set(id, {
       IDref_ecru: id,
       reference: str(r.reference),
+      designation: str(r.designation),
       poids: num(r.poids),
+      laize: num(r.laize_tbm),
+      poidsM2: num(r.poids_m2_tbm),
+      archive: flag(pickVal(r, /^archiv/i)),
       prix: num(r.prix),
       IDcontexture: num(r.IDcontexture),
       bio: flag(r.bio),
@@ -323,6 +336,7 @@ export async function loadCatalog(): Promise<Catalog> {
       IDref_fini: num(r.IDref_fini),
       IDref_ecru: num(r.IDref_ecru),
       designation: str(r.designation),
+      unite: num(r.unite),
       associee: associee(r.associee),
       archive: flag(pickVal(r, /^archiv/i)),
       cache: flag(pickVal(r, /^cach/i)),

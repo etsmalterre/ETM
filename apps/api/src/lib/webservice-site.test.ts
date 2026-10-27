@@ -32,8 +32,9 @@ function fakeCatalog(): Catalog {
     loadedAt: 0,
     refFini,
     refEcru: new Map([
-      [100, { IDref_ecru: 100, reference: 'E100', poids: 20, prix: 2, IDcontexture: 8, bio: true, recycle: false }],
-      [101, { IDref_ecru: 101, reference: 'E101', poids: 0, prix: 2, IDcontexture: 8, bio: false, recycle: false }],
+      [100, { IDref_ecru: 100, reference: 'E100', designation: 'Molleton écru', poids: 20, laize: 180, poidsM2: 280, archive: false, prix: 2, IDcontexture: 8, bio: true, recycle: false }],
+      [101, { IDref_ecru: 101, reference: 'E101', designation: '', poids: 0, laize: 0, poidsM2: 0, archive: false, prix: 2, IDcontexture: 8, bio: false, recycle: false }],
+      [102, { IDref_ecru: 102, reference: 'E102', designation: 'Archivé', poids: 20, laize: 0, poidsM2: 0, archive: true, prix: 2, IDcontexture: 8, bio: false, recycle: false }],
     ]),
     contexture: new Map([[8, 'molleton']]),
     compositionByEcru: new Map([[100, [
@@ -57,13 +58,14 @@ function fakeCatalog(): Catalog {
       [501, { id: 501, IDref_fini: 10, reference: 'Noir', IDteinture: 7, gots: false }],
       [510, { id: 510, IDref_fini: 11, reference: 'Blanc', IDteinture: 7, gots: false }],
     ]),
-    coloriEcruByEcru: new Map(),
-    coloriEcru: new Map(),
+    coloriEcruByEcru: new Map([[100, [{ id: 3, IDref_ecru: 100, reference: 'ecru' }]]]),
+    coloriEcru: new Map([[3, { id: 3, IDref_ecru: 100, reference: 'ecru' }]]),
     designation: new Map([
-      [900, { IDdesignation_client: 900, IDclient: 7, IDref_fini: 10, IDref_ecru: 0, designation: 'MOL-7', associee: '0', archive: false, cache: false, filExclu: [], modifiedMs: 0 }],
-      [901, { IDdesignation_client: 901, IDclient: 999, IDref_fini: 10, IDref_ecru: 0, designation: 'orphan', associee: '', archive: false, cache: false, filExclu: [], modifiedMs: 0 }],
-      [902, { IDdesignation_client: 902, IDclient: 7, IDref_fini: 0, IDref_ecru: 100, designation: 'écru', associee: '', archive: false, cache: false, filExclu: [], modifiedMs: 0 }],
-      [903, { IDdesignation_client: 903, IDclient: 7, IDref_fini: 10, IDref_ecru: 0, designation: 'hidden', associee: '', archive: false, cache: true, filExclu: [], modifiedMs: 0 }],
+      [900, { IDdesignation_client: 900, IDclient: 7, IDref_fini: 10, IDref_ecru: 0, designation: 'MOL-7', unite: 3, associee: '0', archive: false, cache: false, filExclu: [], modifiedMs: 0 }],
+      [901, { IDdesignation_client: 901, IDclient: 999, IDref_fini: 10, IDref_ecru: 0, designation: 'orphan', unite: 3, associee: '', archive: false, cache: false, filExclu: [], modifiedMs: 0 }],
+      [902, { IDdesignation_client: 902, IDclient: 7, IDref_fini: 0, IDref_ecru: 100, designation: 'écru', unite: 1, associee: '', archive: false, cache: false, filExclu: [], modifiedMs: 0 }],
+      [904, { IDdesignation_client: 904, IDclient: 7, IDref_fini: 0, IDref_ecru: 102, designation: 'écru archivé', unite: 1, associee: '', archive: false, cache: false, filExclu: [], modifiedMs: 0 }],
+      [903, { IDdesignation_client: 903, IDclient: 7, IDref_fini: 10, IDref_ecru: 0, designation: 'hidden', unite: 3, associee: '', archive: false, cache: true, filExclu: [], modifiedMs: 0 }],
     ]),
     rccByDesignation: new Map([
       [900, [{ IDref_client_colori: 7001, IDdesignation_client: 900, IDref_fini_colori: 500, IDcolori_ecru: 0, lst_tranche: '0,1,2', contrat: 0, archive: false }]],
@@ -160,20 +162,19 @@ describe('Ref_Interne — the public grid', () => {
 describe('clientTranches — the client tarif modes', () => {
   const cat = fakeCatalog()
   const d = cat.designation.get(900)! as DesignationRow
-  const ref = cat.refFini.get(10)!
-  const standard = clientTranches(cat, new Map(), d, rcc(), ref, O.today)!
+  const standard = clientTranches(cat, new Map(), d, rcc(), O.today)!
 
   it('standard: the engine grid on lst_tranche', () => {
     expect(standard.map((t) => t.nb_rouleau)).toEqual([0, 1, 2])
     expect(Number(standard[0].prix)).toBeGreaterThan(Number(standard[2].prix))
   })
   it('fil_non_facturé lowers the price', () => {
-    const noFil = clientTranches(cat, new Map(), { ...d, filExclu: [1] }, rcc(), ref, O.today)!
+    const noFil = clientTranches(cat, new Map(), { ...d, filExclu: [1] }, rcc(), O.today)!
     expect(Number(noFil[1].prix)).toBeLessThan(Number(standard[1].prix))
   })
   it('coefficient fixe: one margin on every tranche', () => {
     cat.tranchesByRcc.set(7001, [{ IDref_client_colori: 7001, IDcontrat_tarif: 0, nb_rouleaux: 1, coefficient: 20, prix_saisi: 0 }])
-    const coef = clientTranches(cat, new Map(), d, rcc(), ref, O.today)!
+    const coef = clientTranches(cat, new Map(), d, rcc(), O.today)!
     expect(coef.map((t) => t.nb_rouleau)).toEqual([0, 1, 2])
     expect(Number(coef[0].prix)).toBeLessThan(Number(standard[0].prix))
     cat.tranchesByRcc.delete(7001)
@@ -181,20 +182,60 @@ describe('clientTranches — the client tarif modes', () => {
   it('active contract: the negotiated price on every tranche', () => {
     cat.tranchesByRcc.set(7001, [{ IDref_client_colori: 7001, IDcontrat_tarif: 55, nb_rouleaux: 1, coefficient: 0, prix_saisi: 6.65 }])
     cat.contratsByRcc.set(7001, [{ IDcontrat_tarif: 55, IDref_client_colori: 7001, date_debut: '20260101', date_expiration: '20261231' }])
-    const c = clientTranches(cat, new Map(), d, rcc({ contrat: 1 }), ref, O.today)!
+    const c = clientTranches(cat, new Map(), d, rcc({ contrat: 1 }), O.today)!
     expect(c.map((t) => t.prix)).toEqual(['6.65', '6.65', '6.65'])
   })
   it('expired contract: not offered at all', () => {
-    expect(clientTranches(cat, new Map(), d, rcc({ contrat: 1 }), ref, '20270101')).toBeNull()
+    expect(clientTranches(cat, new Map(), d, rcc({ contrat: 1 }), '20270101')).toBeNull()
     cat.tranchesByRcc.delete(7001)
     cat.contratsByRcc.delete(7001)
   })
 })
 
+describe('clientTranches — a tombé de métier prices like the ERP (calcTarifRefEcru)', () => {
+  const cat = fakeCatalog()
+  const d = cat.designation.get(902)! as DesignationRow
+  const r = rcc({ IDref_client_colori: 7002, IDdesignation_client: 902, IDref_fini_colori: 0, IDcolori_ecru: 3, lst_tranche: '1' })
+  it('fil + tricotage ÷ margin ÷ port, per Kg', async () => {
+    const { assembleTarifEcru } = await import('./pricing-fini-tarif.js')
+    const ref = assembleTarifEcru({
+      IDcolori_ecru: 3,
+      ref_ecru: { IDref_ecru: 100, reference: 'E100', poids: 20, prix: 2 },
+      detailFil: prixFilLines(cat.compositionByEcru.get(100)!, cat.refFil, cat.coloriFil),
+    })
+    const t = clientTranches(cat, new Map(), d, r, O.today)!
+    expect(t.map((x) => x.prix)).toEqual([ref.tranches[0].moPrixDeVenteAuKg, ref.tranches[1].moPrixDeVenteAuKg].map((v) => v.toFixed(2)))
+  })
+  it('a contract price is kept as is (already €/Kg)', () => {
+    cat.tranchesByRcc.set(7002, [{ IDref_client_colori: 7002, IDcontrat_tarif: 56, nb_rouleaux: 1, coefficient: 0, prix_saisi: 9.69 }])
+    cat.contratsByRcc.set(7002, [{ IDcontrat_tarif: 56, IDref_client_colori: 7002, date_debut: '20250904', date_expiration: '20261230' }])
+    expect(clientTranches(cat, new Map(), d, rcc({ ...r, contrat: 1 }), O.today)!.map((x) => x.prix)).toEqual(['9.69', '9.69'])
+  })
+  it('a fini sold by the Kg (#1253) takes the €/Kg column of the same grid', () => {
+    const fini = cat.designation.get(900)! as DesignationRow
+    const ml = clientTranches(cat, new Map(), fini, rcc(), O.today)!
+    const kg = clientTranches(cat, new Map(), { ...fini, unite: 1 }, rcc(), O.today)!
+    expect(Number(kg[1].prix)).toBeCloseTo(Number(ml[1].prix) * 2, 1) // rendement 2 Ml/Kg
+  })
+})
+
 describe('buildSite — what the shop lists', () => {
   const site = buildSite(fakeCatalog(), O)
-  it('lists live, visible finished designations of existing clients only', () => {
-    expect([...site.refProduit.keys()]).toEqual([900])
+  it('lists live, visible designations of existing clients, tombés de métier included (#1327)', () => {
+    expect([...site.refProduit.keys()]).toEqual([900, 902])
+  })
+  it('a fini is sold by the metre, with its roll length', () => {
+    const p = site.refProduit.get(900)!.doc.ref_produit
+    expect([p.type_ref, p.unite, p.longueur_rouleaux]).toEqual(['fini', 'Ml', 40])
+  })
+  it('a tombé de métier is sold by the Kg: écru name, knitted laize and weight, no metres, no sheet', () => {
+    const p = site.refProduit.get(902)!.doc.ref_produit
+    expect([p.type_ref, p.unite, p.titre, p.reference, p.laize, p.poids, p.longueur_rouleaux, p.fiche_technique])
+      .toEqual(['tombe_metier', 'Kg', 'Molleton écru', 'E100', 180, 280, 0, ''])
+    expect(p.coloris.map((c) => c.Nom)).toEqual(['ecru'])
+    const t = p.coloris[0].tranche_tarifaire
+    expect(t.length).toBeGreaterThan(0)
+    for (const x of t) expect([x.qte_ml, x.qte_kg]).toEqual([0, Math.max(x.nb_rouleau, 1) * 20])
   })
   it("Ref_Client keeps every live designation's coloris", () => {
     expect(site.refColorisByClient.get(7)).toEqual([

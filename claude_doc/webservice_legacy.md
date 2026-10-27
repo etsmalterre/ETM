@@ -179,6 +179,15 @@ QR on the sample tag (EtiquetteRefFiniPdf / legacy FI_Ref_Fini)
 - The migration plan (`windev_migration/docs/plan.md` §A1) lists this webservice as an HFSQL client to port or retire
   before the PostgreSQL cutover. `legacy-activity-report.ts` already tags 10.10.55.2.
 
+## 7b. Since 2026-09-24: no WordPress any more
+
+etsmalterre.fr and the espace client (`client.etsmalterre.fr`) run on the sites VPS, repo `etsmalterre-site`
+(`apps/espace-client` reads `/api/site` live through a BFF). The WooCommerce shop and the `malterre-api` plugin are not
+served (the OVH hosting is kept only for rollback until it is cancelled). Everything below that cites « the plugin » or
+« the shop » explains why a rule was born; the rules that protect a price (no empty grid, no one-row grid, an
+unpriceable coloris left out) are kept because the espace client reads the same grids. Response shapes may now evolve
+together with `@etsm/api` in the site repo.
+
 ## 7. The replacement in the MPS API (built 2026-09-23, branch `feat/webservice`)
 
 **Mount `/api/site`, drop-in compatible**: same 9 routes, verbs, JSON shapes and key order, so the WordPress plugin needs
@@ -236,6 +245,14 @@ then cached for an hour.
    - `associee` is "" when the column holds "0";
    - `fiche_technique` points to a real PDF (`/fichiers/documents/FT<id>.pdf` → `buildFicheTechniquePdfData`);
    - unknown `Ref_Interne` → 404 (same body « Erreur »).
+
+10. **Tombés de métier are listed** (LIVA #1327, 2026-10-27, Atelier Bulle buys both). The legacy `Ref_Produit` knew finis
+    only, so a client's écru designations sat in `Ref_Client` with no product behind them. Since #1327 every live
+    designation on a live `ref_ecru` gets a document: `type_ref: 'tombe_metier'`, `unite: 'Kg'`, the écru's own name,
+    knitted laize (`laize_tbm`) and weight (`poids_m2_tbm`), `longueur_rouleaux` 0, no `fiche_technique`; each tranche
+    carries `qte_kg` (and `qte_ml` 0). Prices = `assembleTarifEcru` (the pure half of `calcTarifRefEcru`), so the site
+    quotes what the order line quotes: 566/566 standard prices identical on mps_dev. Every document now says its
+    `unite` (`prixUnitOf`): a fini sold by the Kg (Sigvaris, #1253) gets its standard grid in €/Kg, matching its contracts.
 
 **Kept as-is on purpose:**
 - `commande_catalogue` rejects a known prospect (same email, or same street + postcode) with 500 « Ce client existe
