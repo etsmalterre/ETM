@@ -1,4 +1,4 @@
-// A customer's own orders, as the espace client (etsmalterre-site) shows them — read by
+// A customer's own orders, as the espace client (espace-client-etsmalterre) shows them — read by
 // GET /api/site/espace/clients/:id/commandes[/:idCommande] (routes/webservice-site.ts).
 //
 // Same data and rules as Clients › Commandes (routes/commandes-client.ts, whose helpers are reused), with two

@@ -17,7 +17,7 @@ QR on the sample tag (EtiquetteRefFiniPdf / legacy FI_Ref_Fini)
                     └─ HFSQL mps.malterre (10.10.20.2:4900)
 ```
 
-- **Website** (repo `etsmalterre/etsmalterre-site`, checkout `C:\dev\etsmalterre\etsmalterre-site`, since 2026-09-23; sister repo `malterrefencing-site`): two WordPress installs on OVH cluster128.
+- **Website** (repo `etsmalterre/etsmalterre-site` since 2026-09-23, split on 2026-10-27 into `site-etsmalterre`, `espace-client-etsmalterre` and `infra-sites`; sister repo `site-malterre-fencing`, formerly `malterrefencing-site`): two WordPress installs on OVH cluster128.
   - `etsmalterre.fr` (Astra child + Elementor): two Elementor forms POST to `commande_catalogue`.
   - `etsmalterre.fr/client` (sunergy-child + WooCommerce + wholesale prices + **`malterre-api.php`**, 5 748 lines, local copy):
     the customer space. The theme and page templates are on the server only.
@@ -181,7 +181,7 @@ QR on the sample tag (EtiquetteRefFiniPdf / legacy FI_Ref_Fini)
 
 ## 7b. Since 2026-09-24: no WordPress any more
 
-etsmalterre.fr and the espace client (`client.etsmalterre.fr`) run on the sites VPS, repo `etsmalterre-site`
+etsmalterre.fr and the espace client (`client.etsmalterre.fr`) run on the sites VPS, repos `site-etsmalterre` and `espace-client-etsmalterre`
 (`apps/espace-client` reads `/api/site` live through a BFF). The WooCommerce shop and the `malterre-api` plugin are not
 served (the OVH hosting is kept only for rollback until it is cancelled). Everything below that cites « the plugin » or
 « the shop » explains why a rule was born; the rules that protect a price (no empty grid, no one-row grid, an

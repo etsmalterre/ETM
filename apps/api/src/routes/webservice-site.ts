@@ -282,7 +282,7 @@ webserviceSiteRouter.post('/commande_catalogue', handle(async (req, res) => {
 
 // ── Health of the snapshot (monitoring) ─────────────────────
 
-// ── Espace client (etsmalterre-site) ─────────────────────────
+// ── Espace client (espace-client-etsmalterre) ─────────────────────────
 // Reached only by the sites VPS through the WireGuard tunnel (factory Caddy api-sites.intra…:9443, route allowlist +
 // X-Site-Key). New routes live under espace/: the WordPress plugin never calls them, so their shapes are ours.
 //

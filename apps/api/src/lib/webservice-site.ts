@@ -1,6 +1,6 @@
 // The website catalogue — replacement of the WinDev REST webservice MPS_WS
 // (alpha.etsmalterre.com), read server-to-server by the espace client of repo
-// etsmalterre-site (client.etsmalterre.fr: catalogue + QR sample page). The
+// espace-client-etsmalterre (client.etsmalterre.fr: catalogue + QR sample page). The
 // WordPress plugin `malterre-api` it was first built for is retired since
 // 2026-09-24; comments citing « the plugin » say why a guard was born.
 // Legacy map, measurements and consumers: claude_doc/webservice_legacy.md.
