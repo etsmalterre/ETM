@@ -1,12 +1,12 @@
 # Doctrine des délais
 
-> Décidée avec Vincent le 2026-10-27. **Rien n'est codé** : ce document fixe les règles avant le moteur. Ce fichier est la **source unique** de la doctrine, réglages compris (standards, plafond, réserve). La console Administration (`admin.intra.etsmalterre.com`, section Doctrines) l'affiche en lecture seule pour la direction, embarqué à la compilation : toute modification passe par ce fichier, puis par un déploiement de la console. Les mesures citées viennent de `mps_dev` (méthode en fin de document).
+> Décidée avec Vincent le 2026-10-27, révisée le 2026-10-28 (pas de marge à l'ennoblisseur, groupage, affectation souple : échange avec Pierrot sur la commande Thuasne 3923). **Rien n'est codé** : ce document fixe les règles avant le moteur. Ce fichier est la **source unique** de la doctrine, réglages compris (standards, plafond, réserve). La console Administration (`admin.intra.etsmalterre.com`, section Doctrines) l'affiche en lecture seule pour la direction, embarqué à la compilation : toute modification passe par ce fichier, puis par un déploiement de la console. Les mesures citées viennent de `mps_dev` (méthode en fin de document).
 
 ## Pourquoi
 
-Pierrot quitte l'entreprise vers le 26/11/2026 et n'est pas remplacé : plus personne ne décidera « à la main » quand lancer une commande fil, tricotage ou ennoblissement, ni quelle date demander. Cas d'origine : la commande Thuasne 3923 (ligne 13360, 1732 / Blanc, 330 Ml, délai 08/01/2027), tout simplement jamais lancée.
+Pierrot quitte l'entreprise vers le 26/11/2026 et n'est pas remplacé : plus personne ne décidera « à la main » quand lancer une commande fil, tricotage ou ennoblissement, ni quelle date demander. Aujourd'hui ces dates ne sont écrites nulle part : Pierrot passe toutes les commandes en revue deux fois par semaine. Cas d'origine : la commande Thuasne 3923 (ligne 13360, 1732 / Blanc, 330 Ml, délai 08/01/2027), en attente sans date visible. Elle n'était pas oubliée : Pierrot l'aurait lancée chez MATEL vers le 16/11, en comptant ~4 semaines, Noël, et pour grouper le coloris avec une commande qui arriverait entre-temps (mail du 2026-10-28).
 
-Malterre est un intermédiaire qui met en mouvement filateurs et sous-traitants. Attendre avant de lancer ne fait que cacher l'échéance : elle vaut plus donnée aux partenaires, qui peuvent alors organiser leur charge. Mais une date doit rester **crédible** : un teinturier à qui l'on demande son délai standard et qui stocke ensuite la matière dix semaines finira par penser que nos dates sont fausses.
+Malterre est un intermédiaire qui met en mouvement filateurs et sous-traitants. Une date doit rester **crédible** : un teinturier à qui l'on demande son délai standard et qui stocke ensuite la matière dix semaines finira par penser que nos dates sont fausses. Et la marge a une valeur pour Malterre : tant que la matière attend en écru, une commande arrivée entre-temps peut grossir la passe d'ennoblissement (moins chère au kilo) ou prendre l'écru.
 
 ## 1. Unité : le jour ouvré du partenaire
 
@@ -47,12 +47,13 @@ Les filateurs sont des grossistes internationaux, pas des ateliers : leur donner
 
 **La marge** d'une ligne = délai client − aujourd'hui − somme des standards restants − transport et contrôle − réserve Malterre.
 
-- **Plafond : 4 semaines ouvrées de marge par partenaire** (tricoteur, ennoblisseur), en plus de son standard. Au-delà, une commande reste dans les systèmes et se fait oublier ; en deçà, le partenaire a de quoi lisser la charge de son atelier.
-- **Partage** : la marge va au tricoteur et à l'ennoblisseur, moitié chacun, chacun dans la limite de son plafond. Jamais au filateur.
-- **On rejalonne à chaque lancement** : quand une étape part, sa date souhaitée = son standard + sa part de la marge restante à ce moment-là. Ce qu'une étape amont gagne profite à l'aval, dans la limite du plafond.
+- **L'ennoblisseur n'a jamais de marge** : on lui demande son standard (3 semaines ouvrées), rien de plus. La matière attend chez Malterre, en écru, le stade le plus souple (§5) : un fini teint ne se réaffecte presque plus. Et un délai demandé sans marge est un délai qu'on peut exiger : il est suivi en Qualité de service (Sous-traitants › Gestion).
+- **Le tricoteur reçoit la marge, plafonnée à 4 semaines ouvrées** en plus de son standard. Au-delà, une commande reste dans les systèmes et se fait oublier ; en deçà, l'atelier a de quoi lisser la charge de ses machines. Jamais de marge au filateur.
+- **On rejalonne à chaque lancement** : quand le tricotage part, sa date souhaitée = son standard + la marge restante à ce moment-là, dans la limite du plafond.
 - **Une étape amont en retard** : l'aval garde au moins son standard ; c'est la réserve Malterre qui absorbe.
-- **La marge au-delà des plafonds devient une date de lancement** (§5) : la prochaine étape ne part pas avant.
-- **La réserve Malterre** est placée en fin de chaîne, avant la livraison client, et une seule pour toute la chaîne (les avances et les retards des étapes se compensent). Elle se dimensionne sur la variabilité des partenaires, l'écart médiane → p80 : ~7 jours ouvrés pour MATEL. Le standard tricoteur est déjà proche de son p80, il n'y ajoute presque rien.
+- **La marge au-delà du plafond tricoteur devient une date de lancement** (§5) : la première étape (consultation fil, ou tricotage si le fil est en stock) ne part pas avant.
+- **La réserve Malterre : 1,5 semaine ouvrée**, placée en fin de chaîne, avant la livraison client, et une seule pour toute la chaîne (les avances et les retards des étapes se compensent). Elle couvre la variabilité des partenaires, l'écart médiane → p80 : ~7 jours ouvrés pour MATEL. Le standard tricoteur est déjà proche de son p80, il n'y ajoute presque rien.
+- **La date client est la date convenue**, sans avance par client. Un client qui demande sa matière plus tôt que la date qu'il a fixée (Thuasne le fait souvent d'1 ou 2 semaines) n'est pas un cas à structurer : on lui explique que la matière n'est garantie qu'à la date convenue, à lui de demander la bonne date.
 
 **Marge nulle ou négative** : on demande les standards seuls, et la ligne est signalée dès la saisie (orange ou rouge, à développer plus tard : c'est l'avertissement « délai intenable », §6).
 
@@ -61,9 +62,10 @@ Les filateurs sont des grossistes internationaux, pas des ateliers : leur donner
 Ligne fini de 400 kg, fil à acheter, délai client dans 20 semaines ouvrées. Hypothèses : fil estimé 4 semaines (p80), transport et contrôle 1 semaine, réserve 1,5 semaine.
 
 - Standards : fil 4 + tricotage 1 + ennoblissement 3 + transport 1 + réserve 1,5 = 10,5 semaines. Marge = 9,5.
-- Tricoteur et ennoblisseur prennent 4 semaines chacun (plafonds) ; reste 1,5 semaine : **date de consultation fil = dans 1,5 semaine**.
-- À la consultation, le filateur retenu annonce 3 semaines au lieu de 4 : la semaine gagnée ne peut aller ni au tricoteur ni à l'ennoblisseur (déjà au plafond), elle repousse la **date de lancement du tricotage** d'une semaine après l'arrivée du fil.
-- Le tricotage part avec une date souhaitée de 1 + 4 = 5 semaines ; s'il rend l'écru en 2, l'ennoblisseur reçoit quand même au plus 3 + 4 = 7 semaines, et l'écru attend chez nous jusqu'à la date de lancement de l'ennoblissement.
+- L'ennoblisseur ne prend rien, le tricoteur prend 4 semaines (plafond) ; reste 5,5 semaines : **date de consultation fil = dans 5,5 semaines**.
+- En partant de la fin : **lancement de l'ennoblissement en semaine 14,5** (20 − réserve 1,5 − transport 1 − 3), date souhaitée 3 semaines plus tard ; lancement du tricotage au plus tard en semaine 9,5, date souhaitée 1 + 4 = 5 semaines plus tard.
+- Si TRM rend l'écru en 1 semaine, l'écru attend 4 semaines chez nous jusqu'à la date de lancement de l'ennoblissement. C'est voulu : pendant ce temps, il peut être groupé ou réaffecté (§5).
+- À la consultation, le filateur retenu annonce 3 semaines au lieu de 4 : la semaine gagnée allonge aussi l'attente en écru, les dates de lancement ne bougent pas.
 
 ## 5. Les dates de lancement : un seul mécanisme d'attente
 
@@ -72,13 +74,16 @@ Une ligne porte une **date de lancement de sa prochaine étape**, quel que soit 
 - **Avant la date** : la ligne est **neutre** (personne n'a rien à faire). **À la date** : elle devient **rouge**, une action Malterre à faire maintenant. C'est exactement la règle des couleurs (`mps_designer §41`).
 - **Date calculée par la doctrine** (« au plus tard ») : agir plus tôt reste libre.
 - **Mise en attente manuelle** (« pas avant », **avec un motif**) : client qui demande d'attendre, coloris en attente de validation, risque d'annulation sur un coloris propre au client, « ne pas commencer avant X » demandé par l'ennoblisseur. Elle prend le pas sur le calcul, reste dans l'historique (comme les « Repousser » d'Attente délai), et l'écran signale une action faite avant elle.
-- **Où la matière attend** : seulement quand l'amont finit en avance, et alors naturellement au stade **écru** (le plus souple : 40 % de l'écru tricoté pour une ligne finit sur une autre, 7,5 % chez un autre client ; presque jamais une fois teint) ou **fil** (ne se périme pas, se réaffecte).
+- **Où la matière attend** : au stade **écru** (le plus souple : 40 % de l'écru tricoté pour une ligne finit sur une autre, 7,5 % chez un autre client ; presque jamais une fois teint), puisque l'ennoblisseur n'a pas de marge (§4), ou au stade **fil** (ne se périme pas, se réaffecte).
+- **Groupage à la date de lancement de l'ennoblissement** : quand une ligne arrive à sa date, l'écran propose les autres lignes de même réf. fini et même coloris dont la date de lancement tombe dans les **4 semaines** suivantes, à lancer dans la même passe, plus un complément pour le stock sur les coloris de gamme (blanc, noir, écru), comme le faisait Pierrot. La passe plus grosse coûte moins cher au kilo (tarif par tranche de poids) et évite de relancer le même coloris quelques semaines plus tard. Lancer une ligne en avance dans un groupage reste libre (« au plus tard », ci-dessus).
+- **Affectation souple** : réserver tôt de la matière (fil, écru, fini) à une ligne lointaine ne la gèle pas. Une ligne dont la date de lancement est plus proche peut la reprendre ; la ligne lointaine retrouve alors un besoin à couvrir. On peut donc affecter dès que la matière est là, sans craindre la commande qui arrivera entre-temps (Pierrot n'affectait pas tôt pour cette raison). Un écru vraiment disputé entre deux clients reste rare (~2 % des lignes, 20 sur 962, en hausse : 4 / 5 / 11 en 2024 / 25 / 26) : la ligne la plus proche passe d'abord, le seul arbitrage humain qui reste.
 
 ## 6. Écarté, et pourquoi
 
-- **Dates calculées à rebours sans plafond** : toute la marge part au tricoteur, l'ennoblisseur n'a que son standard.
+- **Dates calculées à rebours sans plafond** : toute la marge part au tricoteur, et une commande ouverte depuis des mois finit oubliée.
+- **De la marge à l'ennoblisseur** (première version de cette doctrine, moitié de la marge, plafond 4 semaines, 2026-10-27) : son délai est une file d'attente qui ne dépend presque pas de la quantité, rien ne montre qu'il ferait mieux avec un préavis, et la matière y serait déjà teinte, donc figée. Gardée en écru chez nous, la marge permet de grouper les passes et de réaffecter. Écartée le 2026-10-28.
+- **Une avance par client** (Thuasne demande souvent sa matière 1 ou 2 semaines avant la date convenue) : on en parle au client plutôt que de grossir les marges de tout le monde.
 - **Dates « standard seulement » envoyées au plus tôt** : l'ennoblisseur reçoit l'écru des semaines avant d'en avoir besoin, le stocke, et ne croit plus nos dates.
-- **Garder l'écru chez Malterre jusqu'au dernier moment comme règle générale** : utile seulement sur les ~2 % de lignes où un écru est disputé entre deux clients (20 lignes sur 962, en hausse : 4 / 5 / 11 en 2024 / 25 / 26) ; là, on réserve l'écru à la ligne la plus proche, le seul arbitrage humain qui reste.
 - **Une limite de délai par type de matière pour les filateurs** : c'est le fournisseur et la référence qui font le délai, pas la matière.
 - **Le p80 comme standard** : délais trop longs, marge consommée ; la sécurité est la réserve Malterre, une seule, en fin de chaîne.
 
@@ -86,10 +91,11 @@ Une ligne porte une **date de lancement de sa prochaine étape**, quel que soit 
 
 1. **Transport et contrôle** entre les étapes : pas encore mesurés.
 2. **Les vraies dates de fermeture** de MATEL, Bontemps, TAD et TRM. Celles des mesures sont **déduites des trous dans nos réceptions**, qui mêlent la fermeture du partenaire et celle de Malterre (MATEL : fin juillet ou début août à fin août, ~2 semaines à Noël ; TRM : ~3 semaines en août, ~1,5 à Noël).
-3. **La réserve Malterre** : calée sur l'écart médiane → p80 de l'ennoblisseur (~7 jours ouvrés pour MATEL), à confirmer à l'usage.
+3. **La réserve Malterre** : 1,5 semaine ouvrée, calée sur l'écart médiane → p80 de l'ennoblisseur (~7 jours ouvrés pour MATEL), à confirmer à l'usage.
 4. **Le signalement « délai intenable »** : date de fin au plus tôt (aujourd'hui + standards restants depuis l'étape où en est la ligne) postérieure au délai client. À part des couleurs rouge / ambre, qui gardent leur sens d'action Malterre tant que tout n'est pas automatisé.
 5. **Le champ délai sur les offres fil** (§3).
-6. **Plus tard** : qualité de service des ennoblisseurs (part des commandes livrées dans les 3 semaines), aide à l'achat de fil au bon cours (historique des prix des offres), points à caler avec MATEL avant de lui envoyer des dates (date confirmée distincte de la nôtre, « ne pas commencer avant X »).
+6. **La fenêtre de groupage** (4 semaines) et la liste des coloris de gamme : à confirmer à l'usage ; mesurer l'écart de prix au kilo entre tranches MATEL et la part des passes qui servent plusieurs lignes.
+7. **Plus tard** : qualité de service des ennoblisseurs (part des commandes livrées dans les 3 semaines, devenue une exigence puisqu'elles n'ont plus de marge), aide à l'achat de fil au bon cours (historique des prix des offres), points à caler avec MATEL avant de lui envoyer des dates (date confirmée distincte de la nôtre, « ne pas commencer avant X »).
 
 ## Méthode des mesures
 
