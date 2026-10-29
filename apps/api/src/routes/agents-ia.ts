@@ -48,6 +48,7 @@ import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reade
 import { corrigerTriage, CorrectionInvalide, TRIAGE_BOITE, TRIAGE_SLUG } from '../lib/agents/triage/agent.js'
 import { CATEGORIES } from '../lib/agents/triage/categories.js'
 import { BL_ENNOBLISSEUR_SLUG, etiqueterVerifie } from '../lib/agents/bl-ennoblisseur.js'
+import { rouleauxEnStock, type RouleauEnStock } from '../lib/agents/bl-ennoblisseur-db.js'
 import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
 import { relaisTriage } from '../lib/agents/triage/relais.js'
 
@@ -381,7 +382,17 @@ routes.get('/:slug/runs/:id', async (req, res) => {
   if (!def) return
   const r = await lireRun(def.slug, req.params.id)
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
-  res.json(r)
+  // A BL: the rolls of its lot as they stand in stock, so the dialog shows what
+  // the réception kept, whether or not Tricobot pre-filled it. Best effort.
+  let enStock: RouleauEnStock[] | null = null
+  const resolution = def.slug === BL_ENNOBLISSEUR_SLUG ? (r.resultat as { resolution?: { ligneId?: number | null; lot?: string } | null }).resolution : null
+  if (resolution?.ligneId && resolution.lot) {
+    enStock = await rouleauxEnStock(resolution.ligneId, resolution.lot).catch((err) => {
+      console.error('[agents-ia] rouleaux en stock failed:', err)
+      return null
+    })
+  }
+  res.json(enStock ? { ...r, enStock } : r)
 })
 
 routes.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {

@@ -434,3 +434,30 @@ export async function contactsEnnoblisseurs(): Promise<Array<{ mail: string; idS
     .map((r) => ({ mail: String(r.mail ?? '').trim(), idSousTraitant: Number(r.IDsous_traitant) }))
     .filter((c) => c.mail.includes('@'))
 }
+
+/** A roll as it stands in stock, for the run dialog's « en stock » comparison. */
+export interface RouleauEnStock {
+  numero: string
+  poids: number | null
+  metrage: number | null
+  observation_sst: string
+}
+
+/** The fini rolls of this lot received on this sst line, as they stand now
+ *  (2026-10-29: a BL blocked « à vérifier » writes no pre-fill, the rolls are
+ *  then typed by hand and no Tricobot retour links them to the run). Raw rows:
+ *  the dialog folds a roll cut afterwards (`<numero>-N`, lib/roll-cut.ts) back
+ *  into its piece only when the BL itself does not list that numero. */
+export async function rouleauxEnStock(ligneId: number, lot: string): Promise<RouleauEnStock[]> {
+  const cible = lot.toUpperCase().replace(/\s+/g, '')
+  const rows = await mpsPg()<{ numero: string | null; lot: string | null; poids: number | null; metrage: number | null; observation_sst: string | null }[]>`
+    SELECT numero, lot, poids, metrage, observation_sst FROM stock_fini WHERE idref_commande_source = ${ligneId}`
+  return rows
+    .filter((r) => (r.lot ?? '').toUpperCase().replace(/\s+/g, '') === cible && String(r.numero ?? '').trim() !== '')
+    .map((r) => ({
+      numero: String(r.numero).trim(),
+      poids: r.poids == null ? null : Number(r.poids),
+      metrage: r.metrage == null ? null : Number(r.metrage),
+      observation_sst: (r.observation_sst ?? '').trim(),
+    }))
+}

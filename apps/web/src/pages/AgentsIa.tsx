@@ -79,6 +79,7 @@ import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { cn } from '@/lib/utils'
+import { ecartsAuStock, type RouleauEnStock } from '@/lib/bl-ecarts-stock'
 import {
   BaseApiProvider,
   callApi,
@@ -244,7 +245,7 @@ interface RunLigne {
 const PROFIL_NOM: Record<string, string> = { matel: 'MATEL', bontemps: 'Bontemps', tad: 'TAD' }
 
 interface Controle { code: string; gravite: 'bloquant' | 'avertissement'; message: string }
-interface BlPiece { numero_piece: string; poids: number | null; metrage: number | null; observations: string }
+interface BlPiece { numero_piece: string; composants?: string[]; poids: number | null; metrage: number | null; observations: string }
 interface PieceResolue { numero_piece: string; statut: 'ok' | 'affectee_ailleurs' | 'non_affectee' | 'inconnue' }
 
 /** A pilot's note on a run, for the next version (POST /:slug/runs/:id/notes-dev). */
@@ -252,6 +253,8 @@ interface NoteDev { commentaire: string; par: Auteur; le: string }
 
 interface RunComplet extends Omit<RunLigne, 'bordereau' | 'commande' | 'nbPieces'> {
   notesDev?: NoteDev[]
+  /** BL: the rolls of its lot as they stand in stock (GET /:slug/runs/:id only). */
+  enStock?: RouleauEnStock[]
   /** A pilot marked the run checked (POST /:slug/runs/:id/verifie): the original statut. */
   verification?: { statutAvant: Statut; commentaire: string; par: Auteur; le: string } | null
   resultat: {
@@ -549,6 +552,24 @@ export function AgentsIa({ basePath = '/agents-ia' }: { basePath?: string } = {}
 
 // ── Left list ────────────────────────────────────────────
 
+const SCORE_MIN_NOTES = 10
+const MODE_DOT: Record<Mode, string> = { actif: 'bg-success', essai: 'bg-sky-600', off: 'bg-zinc-400' }
+
+/** The active version's score for the list card: the same figures as the
+ *  sidebar (« Réussites / échecs », or the point agents' précision). */
+function scoreVersion(s: AgentVue['stats']): { label: string; title: string; cls: string } {
+  const reussite = s.points ? s.points.reussite : s.evaluations.reussite
+  const echec = s.points ? s.points.echec : s.evaluations.echec
+  const evalues = reussite + echec
+  if (evalues === 0) return { label: '—', title: 'Version en service : rien de noté encore', cls: 'bg-zinc-100 text-muted-foreground' }
+  const title = `Version en service : ${fmtNum(reussite)} réussite${reussite > 1 ? 's' : ''} / ${fmtNum(echec)} échec${echec > 1 ? 's' : ''}`
+  // Too few scores for a percentage to mean anything (one échec read « 0 % » in red).
+  if (evalues < SCORE_MIN_NOTES) return { label: `${fmtNum(reussite)}/${fmtNum(evalues)}`, title: `${title} (trop peu de notes pour un pourcentage)`, cls: 'bg-zinc-100 text-muted-foreground' }
+  const pct = Math.round((reussite / evalues) * 100)
+  const cls = pct >= 80 ? 'bg-success/10 text-green-700' : pct >= 50 ? 'bg-amber-500/10 text-amber-800' : 'bg-destructive/10 text-destructive'
+  return { label: `${pct} %`, title, cls }
+}
+
 function AgentList({ agents, total, isLoading, isError, error, selectedSlug, onSelect, searchQuery, onSearchChange }: {
   agents: AgentVue[]; total: number; isLoading: boolean; isError: boolean; error: Error | null
   selectedSlug: string | null; onSelect: (slug: string) => void; searchQuery: string; onSearchChange: (q: string) => void
@@ -568,20 +589,22 @@ function AgentList({ agents, total, isLoading, isError, error, selectedSlug, onS
         : agents.length === 0 ? <div className="flex flex-col items-center justify-center py-8 text-muted-foreground"><Bot className="h-12 w-12 mb-3 opacity-50" /><p className="text-sm">Aucun agent</p></div>
         : agents.map((a) => {
           const aVerifier = a.stats.parStatut.a_verifier ?? 0
-          const m = MODE_META[a.mode]
-          const MIcon = m.icon
+          const score = scoreVersion(a.stats)
           return (
             <div key={a.slug} onClick={() => onSelect(a.slug)}
               className={cn('p-3 border rounded-lg cursor-pointer transition-all bg-white',
                 selectedSlug === a.slug ? 'border-accent ring-1 ring-accent' : 'border-border hover:border-accent/50')}>
               <div className="flex items-center gap-2">
-                <Bot className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                {/* En service is the normal state: a dot says it, only the others get a word. */}
+                <span title={MODE_META[a.mode].label} className={cn('h-2 w-2 rounded-full flex-shrink-0', MODE_DOT[a.mode])} />
                 <p className="font-medium text-sm truncate flex-1">{a.nom}</p>
-                <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white flex-shrink-0', m.solid)}>
-                  <MIcon className="h-2.5 w-2.5" />{m.label}
-                </Badge>
+                {a.mode !== 'actif' && <span className="text-[10px] text-muted-foreground flex-shrink-0">{MODE_META[a.mode].label}</span>}
+                <span title={score.title}
+                  className={cn('flex-shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums', score.cls)}>
+                  {score.label}
+                </span>
               </div>
-              <div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted-foreground">
+              <div className="flex items-center gap-2 mt-1.5 pl-4 text-[11px] text-muted-foreground">
                 <span className="truncate">v{a.versionActive.version} · {a.versionActive.model}</span>
                 {aVerifier > 0 && (
                   <span className="ml-auto flex-shrink-0 inline-flex items-center gap-1 text-destructive font-medium">
@@ -1787,7 +1810,8 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   })
   // Dev actions, one click each: the why goes in a « Note pour la vN+1 ».
   const apresAction = (r: RunComplet) => {
-    queryClient.setQueryData(['agent-ia-run', slug, r.id], r)
+    // The action answers the run without its live `enStock`: keep the one read.
+    queryClient.setQueryData<RunComplet>(['agent-ia-run', slug, r.id], (prev) => (prev?.enStock ? { ...r, enStock: prev.enStock } : r))
     queryClient.invalidateQueries({ queryKey: ['agent-ia-retours', slug] })
     onChanged()
   }
@@ -1813,6 +1837,17 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
   const { modifsParPiece, correctionsVues } = modifsDuTableau(retourReception?.corrections ?? [], new Set(e?.pieces.map((p) => p.numero_piece) ?? []))
   const nbModifs = correctionsVues.length
   const auteurModifs = retourReception?.par.nom ?? null
+  // What the stock holds now, for the fields no retour already names: a BL
+  // blocked « à vérifier » is received by hand, without any retour (2026-10-29).
+  const auStock = run?.enStock && e ? ecartsAuStock(e.pieces, run.enStock) : null
+  let nbEcartsStock = 0
+  for (const [piece, ecart] of auStock?.ecarts ?? []) {
+    const m = modifsParPiece.get(piece) ?? {}
+    for (const k of ['poids', 'metrage', 'observation'] as const) {
+      if (ecart[k] !== undefined && m[k] === undefined) { m[k] = ecart[k]; nbEcartsStock++ }
+    }
+    modifsParPiece.set(piece, m)
+  }
   const pdfUrl = run && run.fichiers.length > 0 ? `${API_URL}${base}/${slug}/runs/${run.id}/fichiers/${page}#view=FitH` : null
   const somme = (k: 'poids' | 'metrage') => e ? e.pieces.reduce((s, p) => s + (p[k] ?? 0), 0) : 0
   // Runs before 2026-09-28 carry no profil: they were all MATEL BLs.
@@ -1884,6 +1919,7 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                   {profil && profil !== 'matel' && <KV label="Poids" value="non repris (Malterre pèse les rouleaux)" />}
                   <KV label="Totaux imprimés" value={`${e.nombre_pieces ?? '—'} pc · ${e.poids_total != null ? fmtNum(e.poids_total, 2) : '—'} kg · ${e.metrage_total != null ? fmtNum(e.metrage_total, 2) : '—'} m`} mono />
                   <KV label="Totaux lus" value={`${e.pieces.length} pc · ${fmtNum(somme('poids'), 2)} kg · ${fmtNum(somme('metrage'), 2)} m`} mono />
+                  {auStock && <KV label="En stock" value={`${auStock.recues} / ${e.pieces.length} rouleaux reçus`} mono />}
                 </div>
               )}
               {e && e.pieces.length > 0 && (
@@ -1892,6 +1928,12 @@ function RunDialog({ agent, runId, canPilot, canEvaluate, onClose, onOpenRun, on
                     <p className="px-2.5 py-1.5 text-[11px] text-amber-800 bg-amber-400/10 border-b border-amber-400/30 flex items-center gap-1.5">
                       <Pencil className="h-3 w-3 flex-shrink-0" />
                       {nbModifs} champ{nbModifs > 1 ? 's' : ''} modifié{nbModifs > 1 ? 's' : ''} à la réception{auteurModifs ? ` par ${auteurModifs}` : ''} : lu par Tricobot barré, saisi en gras.
+                    </p>
+                  )}
+                  {nbEcartsStock > 0 && (
+                    <p className="px-2.5 py-1.5 text-[11px] text-amber-800 bg-amber-400/10 border-b border-amber-400/30 flex items-center gap-1.5">
+                      <Pencil className="h-3 w-3 flex-shrink-0" />
+                      {nbEcartsStock} champ{nbEcartsStock > 1 ? 's' : ''} diffère{nbEcartsStock > 1 ? 'nt' : ''} du stock : lu par Tricobot barré, en stock en gras.
                     </p>
                   )}
                   <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
