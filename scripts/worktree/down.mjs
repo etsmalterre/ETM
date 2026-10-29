@@ -28,11 +28,16 @@ if (swept.reaped.length) {
   console.log(`Reaped leftover worktree dir(s): ${swept.reaped.map((e) => e.feature).join(', ')}`)
 }
 
-const target = (process.argv[2] || '').trim()
+const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
+const target = (args[0] || '').trim()
+// Optional project: a paired worktree (same feature name in ETM and TRM or the
+// console) matches several slots, and the first one is not necessarily the
+// caller's: the console's /feature-complete tore down nothing of its own.
+const projectArg = (args[1] || '').trim().toLowerCase() || null
 const remove = process.argv.includes('--remove')
 if (!target) {
-  console.error('Usage: node scripts/worktree/down.mjs <feature|slot> [--remove]')
-  console.error('  slot may be a bare number (NG) or "trm:N" — feature name is unambiguous.')
+  console.error('Usage: node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin] [--remove]')
+  console.error('  slot may be a bare number (NG), "trm:N" or "admin:N"; a paired feature name needs the project.')
   process.exit(1)
 }
 
@@ -42,7 +47,13 @@ let slotKey = null
 if (reg.slots[target]) {
   slotKey = target
 } else {
-  slotKey = Object.keys(reg.slots).find((k) => reg.slots[k].feature === target) ?? null
+  const hits = Object.keys(reg.slots).filter((k) => reg.slots[k].feature === target
+    && (!projectArg || entryProject(reg.slots[k], k) === projectArg))
+  if (hits.length > 1) {
+    console.error(`"${target}" names ${hits.length} slots (${hits.join(', ')}): pass the project (ng|trm|admin) or the slot key.`)
+    process.exit(1)
+  }
+  slotKey = hits[0] ?? null
 }
 if (!slotKey) {
   const active = Object.entries(reg.slots)

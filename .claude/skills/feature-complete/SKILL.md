@@ -272,11 +272,11 @@ Deploys are separate per repo: `/etm_deploy` (from the ETM checkout) ships the A
 
 7. **Tear down** — run from the main checkout dir (`<MAIN>`):
    ```bash
-   cd <MAIN> && node scripts/worktree/down.mjs <name> --remove
+   cd <MAIN> && node scripts/worktree/down.mjs <name> ng --remove
    ```
    (The worktree scripts live in the **ETM** checkout. For a TRM worktree, run the script
    from ETM — it resolves the TRM repo from the registry entry — i.e.
-   `cd /c/dev/etsmalterre/ETM && node scripts/worktree/down.mjs <name> --remove`.)
+   `cd /c/dev/etsmalterre/ETM && node scripts/worktree/down.mjs <name> ng --remove`.)
    This stops the slot's API + web process trees, frees the slot, and removes the worktree +
    branch. **Expected on Windows:** because this very session (and your terminal) is still
    cwd'd inside the worktree, the OS won't let the directory be deleted — so the script

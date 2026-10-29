@@ -2,7 +2,7 @@
 
 ## When to use
 
-Invoke with `/new-feature-worktree <feature-name> [ng|trm]` to start work on a new
+Invoke with `/new-feature-worktree <feature-name> [ng|trm|admin]` to start work on a new
 screen/feature in an isolated git worktree with its own local dev stack on a dedicated
 port slot. Run this from the **ETM main checkout** (`C:\dev\etsmalterre\ETM`, which
 stays on `master`). The **project** defaults to `ng`; pass `trm` to spin up an TRM
@@ -13,6 +13,10 @@ worktree instead. Up to 6 worktrees per project can run at once.
 **`ng` (ETM — API + web):**
 - branch `feat/<feature-name>`, worktree dir `../ETM-<feature-name>`
 - lowest free slot N (1–6) → API on `808N`, web on `300N`
+
+**`admin` (Console Administration, web only):** worktree `../admin-malterre-<name>`, web on
+`310N`. From the console's repo, its own `/new-feature-worktree` covers it (pairing with an
+ETM worktree of the same name included).
 
 **`trm` (TRM — web only):**
 - branch `feat/<feature-name>`, worktree dir `../TRM-<feature-name>`
@@ -37,7 +41,7 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
 
 1. **Validate the arguments.** If no feature name was given, ask for one. It must match
    `^[a-z0-9][a-z0-9-]*$` (kebab-case). Reject names with spaces/uppercase/slashes. The
-   optional project must be `ng` (default) or `trm`.
+   optional project must be `ng` (default), `trm` or `admin`.
 
 2. **Run the spin-up script** from the ETM main checkout:
    ```bash

@@ -168,8 +168,9 @@ one lingers.
 node scripts/worktree/status.mjs                       # what's running
 node scripts/worktree/up.mjs   <feature>               # create + start
 node scripts/worktree/up.mjs   <feature> --restart     # existing tree: kill + respawn on its slot
-node scripts/worktree/down.mjs <feature|slot>          # stop servers, free slot, keep tree
-node scripts/worktree/down.mjs <feature|slot> --remove # + remove worktree & branch
+node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin]          # stop servers, free slot, keep tree
+node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin] --remove # + remove worktree & branch
+# the project is required when the name matches several slots (a paired worktree)
 git worktree list                                      # ground truth from git
 ```
 

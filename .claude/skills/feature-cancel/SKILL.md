@@ -16,8 +16,8 @@ Only Vincent typing `/feature-cancel` starts this (the frontmatter sets
 
 A worktree was created with `/new-feature-worktree` and is finally not needed. Run it:
 - **from inside that worktree's session** (the usual case): `/feature-cancel`;
-- or from any other session with the name: `/feature-cancel <feature-name>` (ETM or TRM,
-  the registry knows which).
+- or from any other session with the name: `/feature-cancel <feature-name>` (ETM, TRM or
+  the console, the registry knows which).
 
 ## Steps
 
@@ -47,15 +47,16 @@ A worktree was created with `/new-feature-worktree` and is finally not needed. R
 3. **Tear down**, from the ETM main checkout (the worktree scripts live there, and they
    resolve a TRM worktree from the registry):
    ```bash
-   cd <ETM main checkout> && node scripts/worktree/down.mjs <name> --remove
+   cd <ETM main checkout> && node scripts/worktree/down.mjs <name> <ng|trm|admin> --remove
    ```
    It stops the slot's API + web, frees the slot, deletes the worktree dir, the local branch
    and `origin/feat/<name>` if it was pushed, and inside Herdr closes the worktree's tabs.
    For the calling tab, a detached helper waits for this session to go idle, submits
    `/exit`, then closes the tab about 5 s later. A dir still locked by a terminal is
    **deferred** and reaped automatically by the next worktree skill.
-   A paired worktree confirmed in step 2: run the same command for it too (with `trm` /
-   `ng` if the name is ambiguous: `down.mjs <name>` picks by feature name).
+   Always pass the project: a paired worktree shares the feature name, and `down.mjs`
+   refuses a name that matches several slots. A paired worktree confirmed in step 2: run
+   the same command for it too, with its own project.
 
 4. **Report in two lines, as the LAST thing this session does** (no tool call after it:
    the session quits right after the report inside Herdr): what was deleted (worktree, slot,

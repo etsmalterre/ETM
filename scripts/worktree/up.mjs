@@ -103,6 +103,20 @@ const main = projectMainCheckout(projectKey)
 const branch = `feat/${feature}`
 const wt = path.join(path.dirname(main), `${proj.dirName}-${feature}`)
 
+// Console worktree paired with an ETM worktree of the same name (the screens it
+// shows are ETM's): target that worktree's API unless --api says otherwise, and
+// (below, writeEtmOverride) point @etm / @ at its sources.
+const pairedEtm = projectKey === 'admin' ? path.join(path.dirname(main), `ETM-${feature}`) : null
+const hasPairedEtm = !!pairedEtm && fs.existsSync(path.join(pairedEtm, 'apps/web/src'))
+if (hasPairedEtm && !apiOverride) {
+  const ng = Object.entries(readRegistry().slots ?? {}).find(
+    ([key, e]) => entryProject(e, key) === 'ng' && e.feature === feature)
+  if (ng) {
+    apiOverride = ng[1].apiPort
+    console.log(`Paired ETM worktree ${pairedEtm} (slot ${ng[0]}) → API :${apiOverride}.`)
+  }
+}
+
 // Guards: don't clobber an existing branch or directory (create path only —
 // --restart *requires* them to exist).
 if (!isRestart) {
@@ -318,6 +332,20 @@ if (isRestart) {
   // The dev:517N scripts don't bake VITE_API_URL, so this .env value wins.
   const ecrits = writeTrmEnvLocal(wt, api, feature)
   console.log(`Wrote ${ecrits.join(', ') || 'no .env.development.local'} (API → :${api}, tab label "${feature}").`)
+}
+
+// Paired console worktree: the gitignored override pair of admin-malterre's
+// CLAUDE.md (vite reads ETM_WEB_SRC from .env.local, tsc reads tsconfig.local.json).
+// Written on create and on --restart, never removed here: /feature-complete drops
+// it once the ETM half has landed.
+if (hasPairedEtm) {
+  const rel = `../../../ETM-${feature}/apps/web/src`
+  fs.writeFileSync(path.join(wt, 'apps/web/.env.local'), `ETM_WEB_SRC=${rel}\n`)
+  fs.writeFileSync(path.join(wt, 'apps/web/tsconfig.local.json'), JSON.stringify({
+    extends: './tsconfig.json',
+    compilerOptions: { paths: { '@admin/*': ['./src/*'], '@etm/*': [`${rel}/*`], '@/*': [`${rel}/*`] } },
+  }, null, 2) + '\n')
+  console.log(`Wrote apps/web/.env.local + tsconfig.local.json (@etm → ETM-${feature}).`)
 }
 
 const logDir = path.join(wt, '.dev-logs')
