@@ -365,11 +365,14 @@ routes.get('/:slug/runs', async (req, res) => {
     // Triage: ?categorie=qualite — the runs whose categories (as they stand) include it.
     const cat = typeof req.query.categorie === 'string' && req.query.categorie ? req.query.categorie : null
     const parCategorie = (r: AgentRun) => !cat || ((r.resultat as { categories?: string[] }).categories ?? []).includes(cat)
+    // ?version=3 — the runs of one prompt version (the Exécutions tab opens on the active one).
+    const version = parseInt(String(req.query.version ?? ''), 10) || null
     const runs = (await lireRuns(def.slug))
-      .filter((r) => (!statut || statut.includes(r.statut)) && !sans.includes(r.statut) && parNote(r) && parCategorie(r))
+      .filter((r) => (!version || r.version === version) && (!statut || statut.includes(r.statut)) && !sans.includes(r.statut) && parNote(r) && parCategorie(r))
       .reverse()
     const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '200'), 10) || 200))
-    res.json({ total: runs.length, runs: runs.slice(0, limit).map(allege) })
+    // `notes`: the scores ?note= matches on, so the screen can filter its tags without a round trip.
+    res.json({ total: runs.length, runs: runs.slice(0, limit).map((r) => ({ ...allege(r), notes: [...notesDuRun(r)] })) })
   } catch (err) {
     console.error('[agents-ia] runs failed:', err)
     res.status(500).json({ error: 'Internal server error' })
