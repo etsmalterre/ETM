@@ -32,7 +32,8 @@ const APPS = {
   etm:     { repo: ETM, pkg: '@mps/web',         src: 'apps/web',     dir: 'mps_erp',     host: 'etm.intra.etsmalterre.com',   versionFrom: 'root' },
   trm:     { repo: TRM, pkg: '@mps-trm/web',     src: 'apps/web',     dir: 'mps_trm',     host: 'trm.intra.etsmalterre.com',     versionFrom: 'root' },
   // Console Administration (repo admin-malterre, 2026-10-27): ETM's screens through @etm, its own root version.
-  admin:   { repo: ADMIN, pkg: '@mps-admin/web', src: 'apps/web',     dir: 'mps_admin',   host: 'admin.intra.etsmalterre.com', versionFrom: 'root' },
+  // etmStamp: also stamps DEPLOYED_ETM_SHA (the ETM it was built against), read by preflight.mjs.
+  admin:   { repo: ADMIN, pkg: '@mps-admin/web', src: 'apps/web',     dir: 'mps_admin',   host: 'admin.intra.etsmalterre.com', versionFrom: 'root', etmStamp: true },
   atelier: { repo: TRM, pkg: '@mps-trm/atelier', src: 'apps/atelier', dir: 'mps_atelier', host: 'atelier.intra.etsmalterre.com', versionFrom: 'app' },
   trs:     { repo: TRM, pkg: '@mps-trm/trs',     src: 'apps/trs',     dir: 'mps_trs',     host: 'trs.intra.etsmalterre.com',     versionFrom: 'app' },
   pointage: { repo: TRM, pkg: '@mps-trm/pointage', src: 'apps/pointage', dir: 'mps_pointage', host: 'pointage.intra.etsmalterre.com', versionFrom: 'app' },
@@ -58,9 +59,16 @@ const version = JSON.parse(fs.readFileSync(
 // 1. guard
 step(`guard — ${label} builds from ${app.repo}`)
 const sha = guardTree(app.repo, `${appKey} checkout`)
+let etmSha = null
 if (appKey === 'trm' || appKey === 'admin') {
   // TRM's web and the console import shared screens from the ETM checkout via the @etm alias.
-  guardTree(ETM, 'ETM checkout (shared screens)')
+  etmSha = guardTree(ETM, 'ETM checkout (shared screens)')
+  // ETM_WEB_SRC (gitignored, so invisible to guardTree) repoints @etm at a worktree:
+  // the bundle would ship unlanded ETM code under ETM master's stamp.
+  const envLocal = path.join(appDir, '.env.local')
+  if (fs.existsSync(envLocal) && /^\s*ETM_WEB_SRC\s*=/m.test(fs.readFileSync(envLocal, 'utf8'))) {
+    die(`${envLocal} sets ETM_WEB_SRC (paired-worktree override): land the ETM worktree, delete the override, then deploy`)
+  }
 }
 if (!dryRun) assertReachable(WEB_HOST)
 
@@ -141,5 +149,11 @@ const tip = git(app.repo, ['rev-parse', 'origin/master'])
 if (tip !== sha) console.log(`  \u26a0 origin/master moved to ${short(tip)} during the deploy; stamping what was SHIPPED (${short(sha)}) — rerun to ship the new tip`)
 const st = remoteScript(WEB_HOST, `echo ${sha} > ${stampFile} && cat ${stampFile}`, { quiet: true })
 if (st.code !== 0 || st.out.trim() !== sha) die(`stamp failed: ${st.out}`)
+if (app.etmStamp) {
+  const etmStampFile = `/home/debian/${app.dir}/DEPLOYED_ETM_SHA`
+  const se = remoteScript(WEB_HOST, `echo ${etmSha} > ${etmStampFile} && cat ${etmStampFile}`, { quiet: true })
+  if (se.code !== 0 || se.out.trim() !== etmSha) die(`ETM stamp failed: ${se.out}`)
+  ok(`built against ETM ${short(etmSha)}, stamped ${etmStampFile}`)
+}
 ok(`${label} ${short(sha)} v${version} live on https://${app.host}/ — stamped ${stampFile}`)
 console.log('  Users may need « Actualiser l\'application » / Ctrl+Shift+R to pick up the new bundle.')

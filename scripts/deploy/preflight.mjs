@@ -68,7 +68,7 @@ const BLOCK = (s) => { blockers++; say('  \u001b[31m\u2718\u001b[0m ' + s) }
 const TODO  = (s) => { actions++;  say('  \u001b[33m\u2192\u001b[0m ' + s) }
 const OK    = (s) => say('  \u001b[32m\u2713\u001b[0m ' + s)
 
-for (const [name, repo] of [['ETM', ETM], ['TRM', TRM]]) git(repo, ['fetch', '-q', 'origin'])
+for (const [name, repo] of [['ETM', ETM], ['TRM', TRM], ['admin', ADMIN]]) git(repo, ['fetch', '-q', 'origin'])
 
 // Every web bundle the platform serves, each with its own dist dir, its own
 // stamp and its own source path. THIS TABLE IS THE WHOLE POINT: a tier missing
@@ -83,7 +83,8 @@ const WEB_TIERS = [
   { key: 'atelier', label: 'atelier', repo: TRM, dir: 'mps_atelier', src: 'apps/atelier', head: 'TRM' },
   { key: 'trs',     label: 'TRS',     repo: TRM, dir: 'mps_trs',     src: 'apps/trs',     head: 'TRM' },
   { key: 'pointage', label: 'pointage', repo: TRM, dir: 'mps_pointage', src: 'apps/pointage', head: 'TRM' },
-  { key: 'admin',   label: 'admin',   repo: ADMIN, dir: 'mps_admin',  src: 'apps/web',     head: 'ADMIN' },
+  // etm: the console's screens and doctrines are ETM's files (see the ETM check below).
+  { key: 'admin',   label: 'admin',   repo: ADMIN, dir: 'mps_admin',  src: 'apps/web',     head: 'ADMIN', etm: true },
 ]
 
 const stamps = {
@@ -91,6 +92,14 @@ const stamps = {
 }
 for (const t of WEB_TIERS) {
   stamps[t.key] = remote(WEB_HOST, `cat /home/debian/${t.dir}/DEPLOYED_SHA 2>/dev/null || echo none`)
+}
+// A tier built against ETM: the ETM SHA it was built with, and the ETM files the
+// live bundle embeds (dist/etm-sources.txt, written by its vite build).
+const etmStamps = {}, etmSources = {}
+for (const t of WEB_TIERS.filter((x) => x.etm)) {
+  etmStamps[t.key] = remote(WEB_HOST, `cat /home/debian/${t.dir}/DEPLOYED_ETM_SHA 2>/dev/null || echo none`)
+  const list = remote(WEB_HOST, `cat /home/debian/${t.dir}/dist/etm-sources.txt 2>/dev/null`)
+  etmSources[t.key] = list ? new Set(list.split('\n').filter(Boolean)) : null
 }
 if (Object.values(stamps).every((v) => v === null)) {
   console.error('Cannot reach the servers. Off the factory LAN/VPN, or the claude_deploy key is not enabled.')
@@ -105,6 +114,7 @@ say('\n\u2500\u2500 MPS platform \u2500 what is live \u2500\u2500')
 say(`  ${'MPS API'.padEnd(8)}  ${short(stamps.api)}   (ETM master ${short(heads.ETM)})`)
 for (const t of WEB_TIERS) {
   say(`  ${t.label.padEnd(8)}  ${short(stamps[t.key])}   (${t.head} master ${short(heads[t.head])})`)
+  if (t.etm) say(`  ${''.padEnd(8)}  ${short(etmStamps[t.key])}   (built against ETM; ETM master ${short(heads.ETM)})`)
 }
 
 const rangeFiles = (repo, from, pathspec) => {
@@ -151,6 +161,20 @@ for (const t of WEB_TIERS) {
     TODO(`${t.label} is BEHIND - ${f.length} file(s) under ${t.src}`)
     f.slice(0, 4).forEach((x) => say(`       ${x}`))
   }
+  if (t.etm) {
+    // The ETM files this bundle shows, changed since the ETM it was built against.
+    // Without the list (older build), every ETM web or doctrine change counts.
+    // A doctrine_*.md always counts: a new one joins the import.meta.glob.
+    const shown = etmSources[t.key]
+    const e = rangeFiles(ETM, etmStamps[t.key], '.').filter((x) => x.startsWith('<')
+      || /^claude_doc\/doctrine_[^/]+\.md$/.test(x)
+      || (shown ? shown.has(x) : x.startsWith('apps/web/src/')))
+    if (e.length === 0) OK(`${t.label} is current with ETM (no shown ETM file changed since its ETM stamp)`)
+    else {
+      TODO(`${t.label} is BEHIND ETM - ${e.length} ETM file(s) it shows changed. Bump ${t.label}'s root version, then deploy-web.mjs --app ${t.key}`)
+      e.slice(0, 4).forEach((x) => say(`       ${x}`))
+    }
+  }
 }
 // Not covered: TRM's web imports shared screens from the ETM checkout via the
 // @etm alias, so an ETM apps/web change can oblige a TRM web deploy that no diff
@@ -158,7 +182,7 @@ for (const t of WEB_TIERS) {
 
 // 3. clean trees — a dist built from master PLUS an uncommitted edit ships unreviewed code
 say('\n\u2500\u2500 Working trees \u2500\u2500')
-for (const [name, repo] of [['ETM', ETM], ['TRM', TRM]]) {
+for (const [name, repo] of [['ETM', ETM], ['TRM', TRM], ['admin', ADMIN]]) {
   // Since 2026-09-02 /feature-complete lands by pushing the branch to origin/master and
   // only best-effort fast-forwards the main checkout, so a checkout BEHIND origin is a
   // normal outcome (someone's uncommitted edit overlapped the landing). The build reads

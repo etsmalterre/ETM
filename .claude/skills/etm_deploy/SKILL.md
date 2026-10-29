@@ -300,7 +300,15 @@ Outils) needs **both** `--app etm` and `--app admin`. Its version is its repo's 
 on `10.10.20.5` (the `*.intra` wildcard DNS already covered the name), smoke probe in
 `deploy-api.mjs`, tier in `preflight.mjs`, `ISSUE_TRACKER_PRODUCT_SLUG_ADMIN=admin-malterre`
 in the host `.env` and `.env.production`, tracker product `admin-malterre` attached to
-Ets Malterre. Before the FIRST console deploy only:
+Ets Malterre. **From the console's repo, `/admin_deploy` drives it end to end**
+(`admin-malterre/.claude/skills/admin_deploy`). Since 2026-10-29 the console carries a
+second stamp, `DEPLOYED_ETM_SHA` (the ETM it was built against), and its build writes
+`dist/etm-sources.txt` (the ETM files it embeds): `preflight.mjs` intersects the ETM
+commits since that stamp with the list, so an ETM change to a screen or doctrine the
+console shows reports « admin is BEHIND ETM » (before, only admin-malterre's own commits
+counted, and an ETM-only change left the console stale under a green preflight). After an
+ETM web deploy that preflight flags this way, bump the console (patch or minor) and
+`/admin_deploy`. Before the FIRST console deploy only:
 - the API deployed first (migration `0038_console_admin` = the gate).
 
 Same script for every web bundle of the platform (`--app etm|trm|admin|atelier|trs`, one row per
