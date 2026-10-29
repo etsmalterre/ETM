@@ -24,6 +24,9 @@ export interface SearchTagDef<T> {
   renderPill: (trailing?: ReactNode) => ReactNode
   /** Rows carrying the tag, shown in the popover (0 = not offered). */
   count: number
+  /** Optional header the popover draws above the first tag of each group
+   *  (Agents IA: « Traitement », « Score »). Tags of a group are listed together. */
+  groupe?: string
   predicate: (row: T) => boolean
 }
 
@@ -312,20 +315,28 @@ export function SmartSearchInput<K extends string, T = unknown>({
               const active = idx === i
               if (sug.kind === 'tag') {
                 const tag = tags.find((t) => t.key === sug.key)!
+                const prev = suggestions[i - 1]
+                const groupe = tag.groupe && (prev?.kind !== 'tag' || tags.find((t) => t.key === prev.key)?.groupe !== tag.groupe) ? tag.groupe : null
                 return (
-                  <button
-                    key={`tag:${sug.key}`}
-                    type="button"
-                    onClick={() => pick(sug)}
-                    onMouseEnter={() => setSuggestIdx(i)}
-                    className={cn(
-                      'w-full px-3 py-1.5 text-sm text-left transition-colors flex items-center gap-2',
-                      active ? 'bg-accent/10' : 'hover:bg-zinc-100',
+                  <div key={`tag:${sug.key}`}>
+                    {groupe && (
+                      <div className={cn('px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', i > 0 ? 'pt-2 mt-1 border-t border-border/60' : 'pt-1')}>
+                        {groupe}
+                      </div>
                     )}
-                  >
-                    {tag.renderPill()}
-                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">{tag.count}</span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => pick(sug)}
+                      onMouseEnter={() => setSuggestIdx(i)}
+                      className={cn(
+                        'w-full px-3 py-1.5 text-sm text-left transition-colors flex items-center gap-2',
+                        active ? 'bg-accent/10' : 'hover:bg-zinc-100',
+                      )}
+                    >
+                      {tag.renderPill()}
+                      <span className="ml-auto text-xs text-muted-foreground tabular-nums">{tag.count}</span>
+                    </button>
+                  </div>
                 )
               }
               return sug.field === null ? (
