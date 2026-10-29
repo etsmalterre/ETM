@@ -17,22 +17,28 @@
 //   ready  shipped 3–9 j before the délai (median)                           → rouge ≤ 3 j,  ambre ≤ 10 j
 // `screen_notes.md` § 3 « Urgence des commandes ».
 //
-// The délai (date_livraison) is when PRODUCTION must be done. When a ready line leaves is the
-// client's call, kept on the line as its mode de livraison (2026-10-11, Isabelle's review: ready
+// ONE date per line, D = date_livraison = « Prête le » (doctrine des délais §5 bis, Vincent 2026-10-28):
+// production always runs on D (the Malterre reserve of the doctrine is the margin). How a ready line
+// leaves is the ORDER's (lib/mode-expedition.ts), two questions (2026-10-11, Isabelle's review: ready
 // orders the client will call for were red for months):
-//   des_que_prete  ships as soon as ready: the délai is the shipping date (the rule above)
-//   date_client    the client named a date: the ready line is judged on date_expedition_prevue
-//   sur_appel      the client will call: nothing to do until 4 months past the délai, then chase
-//                  (per client: client.relance_sur_appel, 0 = these 4 months — 2026-10-14)
-//   commande_complete  ships with the whole order (2026-10-13, Vincent): a ready line waits, neutral,
-//                  while another line of the order is still in production; once none is, it is
-//                  judged like « dès que prête » (meanwhile the lagging line carries the urgency)
-// The production stages always run on the délai, whatever the mode.
+//   départ des_que_prete  ship as soon as ready, at the latest on D: amber ahead, red near D
+//   départ date_client    ship ON the date the client asked for (dateClient, else D): red from a few
+//                         days before (book the transport), never amber — early is not what was agreed
+//   départ sur_appel      ready from D, the client will call: nothing to do until 4 months past D, then
+//                         chase (per client: client.relance_sur_appel, 0 = these 4 months — 2026-10-14)
+//   groupee (« ensemble », with any départ)  a ready line waits, neutral, while another line of the
+//                         order is still in production (the lagging line carries the urgency)
+// (« commande_complete » as a mode = dès que prête + groupee, kept for old callers.)
+// The first D is the engagement (delai_annonce), moving D is a journaled report (lib/report-ligne-client.ts).
 //
 // A line waiting for yarn reserved on a supplier order (lib/reservation-fil.ts, 2026-10-23) is
 // neutral while the supplier is in time: Malterre did its part when it ordered. Once the supplier's
 // date has passed, chasing it is ours to do: red. A supplier order line without a date: red too,
 // asking for one is ours.
+//
+// A line « à lancer » carrying a launch date (lib/lancement-ligne.ts, doctrine des délais §5, 2026-10-28)
+// waits on purpose: neutral before the date, red from it (« lancement prévu le JJ/MM »). The date is the
+// only way to hold a line; it acts on « à lancer » alone (once launched, the status moves on).
 //
 // A line without a délai is red (2026-10-22): giving the client a délai is ours to do now. Except a fini
 // line still waiting for its étude coloris (lib/etude-ligne-client.ts): no délai can be given, the only
@@ -73,13 +79,15 @@ export interface LigneUrgence {
   etat: EtatLigneClient
   /** ligne_commande_client.TYPE: 1 écru, 2 fini, 3 divers */
   typeKind: number
-  /** YYYYMMDD, or anything else for « no délai » */
+  /** D, YYYYMMDD (« ready to ship on »), or anything else for « no date » */
   dateLivraison: string | null
-  /** absent = « dès que prête » */
+  /** the order's départ; absent = « dès que prête » */
   modeLivraison?: ModeLivraison
-  /** YYYYMMDD, the date agreed with the client (mode date_client only) */
-  dateExpedition?: string | null
-  /** mode commande_complete only: another line of the order is still in production */
+  /** the order ships all its lines together (with any départ) */
+  groupee?: boolean
+  /** départ date_client: the date the client asked for (YYYYMMDD; absent = D) */
+  dateClient?: string | null
+  /** groupee only: another line of the order is still in production */
   commandeIncomplete?: boolean
   /** mode sur_appel only: the client's own relance delay in days (client.relance_sur_appel);
    *  absent or 0 = SEUILS_URGENCE.relanceAppel */
@@ -88,6 +96,10 @@ export interface LigneUrgence {
   etude?: { attente: AttenteEtude; relanceLe: string | null }
   /** état attente_fil: the earliest supplier date of the yarn it waits for (YYYYMMDD; null = none given) */
   filAttenduLe?: string | null
+  /** the launch date of the line's next step (ligne_commande_client.date_lancement, YYYYMMDD); absent = none */
+  lancementLe?: string | null
+  /** what waits for that date (the tab where it was planned): the red reason names that action */
+  lancementEtape?: 'fil' | 'tricotage' | 'ennoblissement' | null
 }
 
 /** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
@@ -98,7 +110,7 @@ export function relanceAppelDe(v: unknown): number {
 
 /** A line that has not reached « prête à expédier » yet (divers: no production, ready by nature). */
 function enProduction(l: Pick<LigneUrgence, 'etat' | 'typeKind'>): boolean {
-  return l.etat === 'tricotage' || l.etat === 'ennoblisseur' || l.etat === 'attente_fil' || (l.etat === 'a_lancer' && l.typeKind !== 3)
+  return l.etat === 'tricotage' || l.etat === 'ennoblisseur' || l.etat === 'attente_fil' || l.etat === 'planifiee' || (l.etat === 'a_lancer' && l.typeKind !== 3)
 }
 
 /** True while some line of the order is still in production: a « commande complète » line waits for it. */
@@ -106,7 +118,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
   return lignes.some(enProduction)
 }
 
-type Action = 'lancer' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
   | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
@@ -115,7 +127,7 @@ interface Verdict {
   action: Action
   jours: number | null
   date: string | null
-  /** what `date` is, printed before it: « délai », « expédition prévue », « sur appel depuis » */
+  /** what `date` is, printed before it: « délai », « expédition convenue le », « depuis le » */
   quoi?: string
 }
 
@@ -129,9 +141,19 @@ function joursAvant(date: string, today: Date): number {
   return Math.round((t.getTime() - d.getTime()) / 86_400_000)
 }
 
+/** The état SHOWN (pill, order scale, list tags): a line « à lancer » held by a launch date still to
+ *  come is « planifiée » — a decision taken, nothing to do before the date (Vincent 2026-10-28). From
+ *  the date on it is « à lancer » again, red. Divers lines have no launch. urgenceLigne keeps reading
+ *  the computed a_lancer + lancementLe, so the colour rule does not move. */
+export function etatAffiche(etat: EtatLigneClient, typeKind: number, lancementLe: string | null | undefined, today: Date): EtatLigneClient {
+  if (etat !== 'a_lancer' || typeKind === 3) return etat
+  const d = ymd(lancementLe)
+  return d && joursAvant(d, today) > 0 ? 'planifiee' : etat
+}
+
 /** One line's verdict, null when there is nothing to do on our side. */
 export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
-  if (l.etat === 'soldee' || l.etat === 'expediee') return null
+  if (l.etat === 'soldee' || l.etat === 'expediee' || l.etat === 'planifiee') return null
   // Waiting for its étude coloris: the délai means nothing yet, only the relance does.
   if (l.etude) {
     const { attente, relanceLe } = l.etude
@@ -155,16 +177,17 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
   // Divers lines carry no production: « à lancer » means « not shipped yet ».
   if (l.etat === 'pae' || (l.etat === 'a_lancer' && l.typeKind === 3)) {
     const mode = l.modeLivraison ?? 'des_que_prete'
-    if (mode === 'commande_complete' && l.commandeIncomplete) return null
+    if ((mode === 'commande_complete' || l.groupee) && l.commandeIncomplete) return null
     if (mode === 'sur_appel') {
       return j < -relanceAppelDe(l.relanceAppel) ? { niveau: 'rouge', action: 'relancer', jours: j, date, quoi: 'délai' } : null
     }
-    const exp = mode === 'date_client' ? ymd(l.dateExpedition) : null
-    if (exp) {
-      const je = joursAvant(exp, today)
-      const v = (niveau: NiveauUrgence, action: Action): Verdict => ({ niveau, action, jours: je, date: exp, quoi: 'expédition prévue' })
-      if (je < -S.soldeApres) return v('rouge', 'solder')
-      return je <= S.expedierRouge ? v('rouge', 'expedier') : je <= S.expedierAmbre ? v('ambre', 'expedier') : null
+    if (mode === 'date_client') {
+      // Ship ON the date the client asked for: never amber (early is not what the client asked).
+      const dc = ymd(l.dateClient) ?? date
+      const jc = joursAvant(dc, today)
+      const v = (action: Action): Verdict => ({ niveau: 'rouge', action, jours: jc, date: dc, quoi: 'expédition demandée le' })
+      if (jc < -S.soldeApres) return v('solder')
+      return jc <= S.expedierRouge ? v('expedier') : null
     }
     if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
     return palier('expedier', S.expedierRouge, S.expedierAmbre)
@@ -175,13 +198,27 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     const jf = joursAvant(due, today)
     return jf < 0 ? { niveau: 'rouge', action: 'relancer_fournisseur', jours: jf, date: due, quoi: 'fil prévu le' } : null
   }
-  if (l.etat === 'a_lancer') return { niveau: 'rouge', action: 'lancer', jours: j, date }
+  if (l.etat === 'a_lancer') {
+    // Held on purpose until its launch date: nothing to do before it.
+    const lancement = ymd(l.lancementLe)
+    if (lancement) {
+      const jl = joursAvant(lancement, today)
+      if (jl > 0) return null
+      const parEtape = { fil: 'commander_fil', tricotage: 'tricoter', ennoblissement: 'ennoblir' } as const
+      const action: Action = l.lancementEtape ? parEtape[l.lancementEtape] : 'lancer'
+      return { niveau: 'rouge', action, jours: jl, date: lancement, quoi: l.lancementEtape ? 'prévu' : 'lancement prévu' }
+    }
+    return { niveau: 'rouge', action: 'lancer', jours: j, date }
+  }
   // tricotage / ennoblisseur: someone else acts; only a passed délai is ours to chase.
   return j < 0 ? { niveau: 'rouge', action: l.etat, jours: j, date } : null
 }
 
 const LIBELLE: Record<Action, [string, string]> = {
   lancer: ['ligne à lancer', 'lignes à lancer'],
+  commander_fil: ['ligne : fil à commander', 'lignes : fil à commander'],
+  tricoter: ['ligne à tricoter', 'lignes à tricoter'],
+  ennoblir: ['ligne à ennoblir', 'lignes à ennoblir'],
   expedier: ['ligne à expédier', 'lignes à expédier'],
   solder: ['ligne à expédier ou solder', 'lignes à expédier ou solder'],
   relancer: ['ligne sur appel : relancer le client', 'lignes sur appel : relancer le client'],
@@ -222,7 +259,7 @@ export function urgenceCommande(lignes: readonly LigneUrgence[], today: Date): U
 }
 
 /** Most advanced last. */
-const ECHELLE: readonly EtatLigneClient[] = ['a_lancer', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ECHELLE: readonly EtatLigneClient[] = ['a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 /** Where an order stands, on the line pills' own scale: its least advanced line still to deliver
  *  (that line holds the order back); « expediee » once every line left; « soldee » when closed.

@@ -46,6 +46,7 @@ import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { ADRESSE_A_DEFINIR } from '../lib/adresse-a-definir.js'
 import { CGV_MENTION, cgvAttachment } from '../lib/cgv.js'
+import { mettreEnPreparation } from '../lib/preparation-commande.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const devisRouter: RouterType = Router()
@@ -1204,6 +1205,8 @@ devisRouter.post('/:id/convert', async (req: Request, res: Response) => {
        WHERE IDsociete = 1 AND numero = ${newNumero} ORDER BY IDcommande_client DESC`,
     )
     const newId = Number(newRows[0]?.IDcommande_client) || 0
+    // An order born from a devis is prepared before it commits (doctrine des délais §5 ter).
+    if (newId > 0) await mettreEnPreparation(newId)
     if (!newId) throw new Error('could not resolve new commande id')
 
     // Copy each devis line into the order.

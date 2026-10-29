@@ -559,6 +559,9 @@ export async function createKnitOrder(opts: {
   quantiteKg: number
   /** YYYYMMDD; defaults to today. */
   dateCommande?: string
+  /** YYYYMMDD the date we ask the knitter for (ligne_commande_sous_traitant.date_demandee, 0048), never
+   *  its délai: the line stays in Attente_Delai until the knitter answers. */
+  dateDemandee?: string
 }): Promise<KnitOrderResult> {
   const sstId = opts.sstId
   const isTrm = sstId === TRICOTAGE_MALTERRE_ID
@@ -630,6 +633,11 @@ export async function createKnitOrder(opts: {
   )
   const lineId = Number(lineRows[0]?.IDligne_commande_sous_traitant) || 0
   if (lineId <= 0) throw new Error('Line insert lookup failed')
+  if (opts.dateDemandee && /^\d{8}$/.test(opts.dateDemandee)) {
+    const d = opts.dateDemandee
+    await mpsPg()`UPDATE ligne_commande_sous_traitant SET date_demandee = ${`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`}::date
+      WHERE idligne_commande_sous_traitant = ${lineId}`
+  }
 
   // Mirror line on the TRM cc (lowercase IDcolori quirk preserved).
   if (mirrorStatus === 'created') {
@@ -1737,7 +1745,7 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         `SELECT lcs.IDligne_commande_sous_traitant, lcs.IDcommande_sous_traitant,
                 lcs.type AS type_kind, lcs.IDreference, lcs.IDColoris,
                 lcs.quantite, lcs.unite, lcs.prix, lcs.date_livraison, lcs.date_delai,
-                lcs.date_reception, lcs.commentaire, lcs.sstatut, lcs.num_facture
+                to_char(lcs.date_demandee, 'YYYYMMDD') AS date_demandee, lcs.date_reception, lcs.commentaire, lcs.sstatut, lcs.num_facture
          FROM ligne_commande_sous_traitant lcs
          WHERE lcs.IDcommande_sous_traitant = ${id}
          ORDER BY lcs.IDligne_commande_sous_traitant`,
@@ -2201,7 +2209,8 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
       // type aliased — see detail endpoint comment on the HFSQL reserved-word
       // quirk that uppercases `type` otherwise.
       `SELECT lcs.IDligne_commande_sous_traitant, lcs.type AS type_kind, lcs.IDreference,
-              lcs.IDColoris, lcs.quantite, lcs.unite, lcs.prix, lcs.date_livraison, lcs.date_delai
+              lcs.IDColoris, lcs.quantite, lcs.unite, lcs.prix, lcs.date_livraison, lcs.date_delai,
+              to_char(lcs.date_demandee, 'YYYYMMDD') AS date_demandee
        FROM ligne_commande_sous_traitant lcs
        WHERE lcs.IDcommande_sous_traitant = ${id}
        ORDER BY lcs.IDligne_commande_sous_traitant`,
@@ -2493,6 +2502,11 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
     .map((l) => (typeof l.date_livraison === 'string' ? l.date_livraison : ''))
     .filter((s: string) => /^\d{8}$/.test(s)) as string[])
     .sort()[0] ?? null
+  // No délai yet: the date we ask for (0048, proposed at the launch from the doctrine), the knitter confirms.
+  const earliestDemandee = (fixedLignes
+    .map((l) => (typeof l.date_demandee === 'string' ? l.date_demandee : ''))
+    .filter((s: string) => /^\d{8}$/.test(s)) as string[])
+    .sort()[0] ?? null
 
   // Quantity unit for the PDF table header + totals row. Tricoteur lines
   // (type=1) order kg of écru output; ennoblisseur (type=2) orders Ml of
@@ -2513,6 +2527,7 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
     sousTraitantAdresse: cleanAddress(fixedAdresseSt[0] as any),
     adresseLivraison: cleanAddress(fixedAdresseLiv[0] as any),
     delaiLivraison: earliestDelivery ? formatHfsqlDateLongFr(earliestDelivery) : null,
+    dateSouhaitee: !earliestDelivery && earliestDemandee ? formatHfsqlDateLongFr(earliestDemandee) : null,
     commentaire: (header.commentaire ?? null) as string | null,
     // Automatic quality comments (Qualité › Actions). Resolved live rather than
     // copied into commande_sous_traitant.commentaire — legacy never persisted

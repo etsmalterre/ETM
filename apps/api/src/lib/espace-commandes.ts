@@ -17,6 +17,7 @@ import { LIBELLE_COLORIS_EN_ETUDE } from './etude-ligne-client.js'
 import { query, fixEncoding } from './hfsql-auto.js'
 import { stripRtf } from './rtf-utils.js'
 import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
+import { commandesEnPreparation, estEnPreparation } from './preparation-commande.js'
 import { withAdresseADefinir, isAdresseADefinir } from './adresse-a-definir.js'
 import {
   diversKey,
@@ -243,7 +244,7 @@ async function expedieParLigne(lignes: LigneRow[]): Promise<Map<number, number |
 /** Every order of the client, newest first. Shipped quantities are only worked out for open orders (a soldée order
  *  is « Soldée » whatever shipped), which keeps a 500-order history to a handful of flat queries. */
 export async function listeCommandesClient(idClient: number): Promise<CommandeResume[]> {
-  const heads = (await fixEncoding(
+  let heads = (await fixEncoding(
     await query<{ IDcommande_client: number; numero: number | null; date_commande: string | null; ref_client: string | null; est_soldee: number | null; donation: number | null }>(
       `SELECT IDcommande_client, numero, date_commande, ref_client, est_soldee, donation FROM commande_client
        WHERE IDclient = ${idClient} AND IDsociete = 1 AND IDcommande_ETM = 0
@@ -251,6 +252,9 @@ export async function listeCommandesClient(idClient: number): Promise<CommandeRe
     ),
     'commande_client', 'IDcommande_client', ['ref_client'],
   )).filter((h) => Number(h.donation) !== 1)
+  // An order still « En préparation » is not the client's to see yet (doctrine des délais §5 ter).
+  const enPreparation = await commandesEnPreparation(heads.map((h) => Number(h.IDcommande_client)))
+  heads = heads.filter((h) => !enPreparation.has(Number(h.IDcommande_client)))
   if (heads.length === 0) return []
 
   const lignes = await queryIn<LigneRow>(heads.map((h) => Number(h.IDcommande_client)),
@@ -438,6 +442,7 @@ export async function commandeClient(idClient: number, idCommande: number): Prom
   )
   const h = (await fixEncoding(rows, 'commande_client', 'IDcommande_client', ['ref_client', 'commentaire']))[0] as any
   if (!h || Number(h.IDclient) !== idClient || Number(h.IDsociete) !== 1 || Number(h.IDcommande_ETM) !== 0 || Number(h.donation) === 1) return null
+  if (await estEnPreparation(idCommande)) return null
 
   const lignesRaw = await query<LigneRow>(
     `SELECT ${LIGNE_COLS} FROM ligne_commande_client WHERE IDcommande_client = ${idCommande} ORDER BY IDligne_commande_client`,
@@ -525,6 +530,7 @@ export async function confirmationCommandePdf(idClient: number, idCommande: numb
   )
   const h = rows[0]
   if (!h || Number(h.IDclient) !== idClient || Number(h.IDsociete) !== 1 || Number(h.IDcommande_ETM) !== 0 || Number(h.donation) === 1) return null
+  if (await estEnPreparation(idCommande)) return null
   const data = await buildClientPdfData(idCommande)
   if (!data) return null
   return { numero: data.numero || null, pdf: await renderClientPdfBuffer(data) }

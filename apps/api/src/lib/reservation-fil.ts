@@ -328,34 +328,6 @@ export async function fixerReservation(p: {
   })
 }
 
-export interface SourceFil {
-  kind: 'lot' | 'commande'
-  id: number
-  /** what can still be taken for this line */
-  dispo: number
-  /** YYYYMMDD: lot entry date (oldest first) or supplier date (earliest first; none last) */
-  date: string | null
-}
-
-/** Pure: « Réserver tout le fil » for one yarn — stock first (Vincent 2026-10-23: it is there and
- *  depends on no supplier), oldest lot first, then supplier orders by arrival date. */
-export function planReservation(manqueKg: number, sources: readonly SourceFil[]): { prises: { kind: 'lot' | 'commande'; id: number; kg: number }[]; reste: number } {
-  const ordre = [...sources].sort((a, b) =>
-    (a.kind === b.kind ? 0 : a.kind === 'lot' ? -1 : 1)
-    || (a.date ?? '99999999').localeCompare(b.date ?? '99999999')
-    || a.id - b.id)
-  const prises: { kind: 'lot' | 'commande'; id: number; kg: number }[] = []
-  let reste = round2(manqueKg)
-  for (const s of ordre) {
-    if (!(reste > 0.005)) break
-    const kg = round2(Math.min(s.dispo, reste))
-    if (!(kg > 0)) continue
-    prises.push({ kind: s.kind, id: s.id, kg })
-    reste = round2(reste - kg)
-  }
-  return { prises, reste: Math.max(0, reste) }
-}
-
 /** Waiting reservations of an order line move onto a lot of it (created from the line, or linked
  *  to it), earliest client délai first. Then the line reads « reçue » from SEUIL_RECEPTION, and what it will never bring is released. */
 export async function basculerSurLot(ligneCommandeFil: number, stockFilId: number): Promise<{ basculees: number; recue: boolean }> {

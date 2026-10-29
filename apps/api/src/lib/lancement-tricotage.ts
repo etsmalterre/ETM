@@ -88,8 +88,12 @@ export function ordreDeService(a: LotLibre, b: LotLibre): number {
 }
 
 /** Pure: the asso rows a launch of `totalKg` of écru writes from the chosen lots, or what is
- *  missing. `freinte` = the écru's freinte de tricotage (0..1): the yarn covers écru ÷ (1 − f). */
-export function planLancement(p: { totalKg: number; paires: readonly PaireFil[]; lots: readonly LotLibre[]; choisis: readonly number[]; freinte?: number }): PlanLancement {
+ *  missing. `freinte` = the écru's freinte de tricotage (0..1): the yarn covers écru ÷ (1 − f).
+ *  `emporterReserve` (a launch from a client line, decision Vincent 2026-10-29): each yarn takes at
+ *  least ALL that is reserved to the line on the chosen lots, its 5 % safety margin included: the
+ *  margin is there for knitting defects, so it goes to the knitter, who gives back the écru it makes;
+ *  none of it stays reserved at home doing nothing. */
+export function planLancement(p: { totalKg: number; paires: readonly PaireFil[]; lots: readonly LotLibre[]; choisis: readonly number[]; freinte?: number; emporterReserve?: boolean }): PlanLancement {
   const choisis = new Set(p.choisis)
   const parCle = new Map<string, LotLibre[]>()
   for (const l of p.lots) {
@@ -105,10 +109,12 @@ export function planLancement(p: { totalKg: number; paires: readonly PaireFil[];
   const entrees: EntreePlan[] = []
   const manques: FilNonCouvert[] = []
   for (const paire of p.paires) {
+    const mesLots = parCle.get(cle(paire.refFil, paire.coloriFil)) ?? []
     const besoin = round2(filPourEcru(p.totalKg * (paire.pourcentage / 100), p.freinte ?? 0))
     if (!(besoin > 0)) continue
-    let reste = besoin
-    for (const l of [...(parCle.get(cle(paire.refFil, paire.coloriFil)) ?? [])].sort(ordreDeService)) {
+    const reserve = p.emporterReserve ? round2(mesLots.reduce((x, l) => x + l.reserveLigne, 0)) : 0
+    let reste = Math.max(besoin, reserve)
+    for (const l of [...mesLots].sort(ordreDeService)) {
       if (!(reste > 0.005)) break
       const kg = round2(Math.min(l.libre, reste))
       if (!(kg > 0)) continue
@@ -118,6 +124,38 @@ export function planLancement(p: { totalKg: number; paires: readonly PaireFil[];
     if (reste > 0.005) manques.push({ refFil: paire.refFil, coloriFil: paire.coloriFil, besoin, couvert: round2(besoin - reste) })
   }
   return { ok: manques.length === 0 && horsComposition.length === 0 && p.paires.length > 0, entrees, manques, horsComposition }
+}
+
+/** Pure (decision Vincent 2026-10-28): a launch from a client line knits the line's part ONLY with
+ *  the yarn reserved to it at that knitter — reserving and ordering are two gestures, and an order is
+ *  possible only once the matter is reserved. What is knitted on top « pour le stock » may take free
+ *  yarn. Returns the yarns whose reserved kg at the knitter do not cover the line's part (empty = ok);
+ *  `affecteKg` = the écru knitted for the line. */
+export function filNonReserve(p: { affecteKg: number; paires: readonly PaireFil[]; lots: readonly LotLibre[]; freinte?: number }): FilNonCouvert[] {
+  const out: FilNonCouvert[] = []
+  for (const paire of p.paires) {
+    const besoin = round2(filPourEcru(p.affecteKg * (paire.pourcentage / 100), p.freinte ?? 0))
+    if (!(besoin > 0)) continue
+    const reserve = round2(p.lots
+      .filter((l) => l.refFil === paire.refFil && l.coloriFil === paire.coloriFil)
+      .reduce((s, l) => s + l.reserveLigne, 0))
+    if (besoin > reserve + 0.05) out.push({ refFil: paire.refFil, coloriFil: paire.coloriFil, besoin, couvert: reserve })
+  }
+  return out
+}
+
+/** Pure: the écru the yarn reserved to the line at a knitter lets it knit (the scarcest yarn
+ *  decides, after the freinte): the most a launch can give the line. */
+export function ecruCouvertParReservation(p: { paires: readonly PaireFil[]; lots: readonly LotLibre[]; freinte?: number }): number {
+  let min = Infinity
+  for (const paire of p.paires) {
+    if (!(paire.pourcentage > 0)) continue
+    const reserve = p.lots
+      .filter((l) => l.refFil === paire.refFil && l.coloriFil === paire.coloriFil)
+      .reduce((s, l) => s + l.reserveLigne, 0)
+    min = Math.min(min, reserve / (paire.pourcentage / 100))
+  }
+  return Number.isFinite(min) ? Math.max(0, Math.floor(ecruPourFil(min, p.freinte ?? 0) * 100) / 100) : 0
 }
 
 /** Pure: the lots a launch dialog ticks by default for a yarn — the same order as the plan, as

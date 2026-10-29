@@ -1,12 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
-import { AlertCircle, BellRing, CalendarClock, Hourglass, Info, Loader2, Timer, Truck } from 'lucide-react'
+import { AlertCircle, Loader2, Timer, Truck } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
+import { GrapheDelais } from './GrapheDelais'
 
 // ── Types (mirror GET /sous-traitants/:id/qualite-service, API lib/qualite-service-sst.ts) ──
 interface CommandeReponse {
@@ -24,6 +23,9 @@ interface LigneRespect {
   idligne: number
   reference: string
   delaiPromis: string
+  commandeLe: string | null
+  /** working days from the order to the first lot (to today while open) */
+  dureeJours: number | null
   premiereReception: string | null
   retard: number
   enRetardOuvert: boolean
@@ -40,6 +42,8 @@ interface QualiteService {
   }
   reponses: CommandeReponse[]
   lignes: LigneRespect[]
+  /** the dyer's délai standard (Gestion › Info), the target of the respect chart */
+  standardJours: number
 }
 
 type Periode = '3' | '12' | 'tout'
@@ -57,7 +61,6 @@ function depuisDe(p: Periode): string {
 }
 
 const jjmmaa = (iso: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(2, 4)}` : '—')
-const pct = (x: number | null) => (x === null ? '—' : `${fmtNum(Math.round(x * 100))} %`)
 const jours = (n: number) => `${fmtNum(n)} j`
 
 /** Sous-traitants › Gestion › « Qualité de service » (LIVA #1314): how the
@@ -105,20 +108,7 @@ export function QualiteServiceSection({ sousTraitantId, respect, className }: {
   )
 }
 
-function Chiffre({ icon: Icon, label, value, detail }: {
-  icon: React.ComponentType<{ className?: string }>; label: string; value: string; detail?: string
-}) {
-  return (
-    <div className="rounded-lg border border-border/60 bg-zinc-100/80 p-3 min-w-0">
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <Icon className="h-3.5 w-3.5 text-accent flex-shrink-0" /><span className="truncate">{label}</span>
-      </div>
-      <div className="text-2xl font-bold tabular-nums mt-1">{value}</div>
-      {detail && <div className="text-[11px] text-muted-foreground mt-0.5">{detail}</div>}
-    </div>
-  )
-}
-
+// Graphs only for now (Vincent 2026-10-29): the figures and tables are left out of this tab.
 function ReponseCard({ data }: { data: QualiteService }) {
   const r = data.synthese.reponse
   return (
@@ -128,55 +118,19 @@ function ReponseCard({ data }: { data: QualiteService }) {
         <CardTitle className="text-sm font-semibold">Réponse au délai</CardTitle>
         <span className="text-[11px] text-muted-foreground ml-auto">Du bon de commande envoyé au délai reçu</span>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-          <Chiffre icon={Timer} label="Délai de réponse moyen" value={r.moyenneJours === null ? '—' : `${fmtNum(r.moyenneJours, 1)} j`}
-            detail={`jours ouvrés, sur ${fmtNum(r.mesurees)} commande${r.mesurees > 1 ? 's' : ''}`} />
-          <Chiffre icon={CalendarClock} label={`Réponse sous ${r.seuilJours} jours`} value={pct(r.partDansLesTemps)} detail="ouvrés après le bon de commande" />
-          <Chiffre icon={BellRing} label="Relances par commande" value={r.relancesMoyennes === null ? '—' : fmtNum(r.relancesMoyennes, 1)} detail="Point du jour, e-mail ou téléphone" />
-          <Chiffre icon={Hourglass} label="En attente de délai" value={fmtNum(r.enAttente)}
-            detail={r.reportsSst > 0 ? `${fmtNum(r.reportsSst)} report${r.reportsSst > 1 ? 's' : ''} de son fait` : undefined} />
-        </div>
-        <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
-          <Info className="h-3 w-3 flex-shrink-0 mt-0.5" />
-          <span>
-            {`Mesuré sur les délais reçus depuis le ${jjmmaa(data.reponseMesureeDepuis)}. `}
-            {r.neutralisees > 0 && `${fmtNum(r.neutralisees)} commande${r.neutralisees > 1 ? 's' : ''} hors moyenne : attente repoussée de notre fait. `}
-            {r.nonMesurees > 0 && `${fmtNum(r.nonMesurees)} commande${r.nonMesurees > 1 ? 's' : ''} sans date de réponse.`}
-          </span>
-        </p>
-        {data.reponses.length > 0 && (
-          <div className="rounded-lg border border-border/60 bg-white overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-zinc-200/60 border-b border-border/60">
-                <tr className="text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 text-left font-semibold">Commande</th>
-                  <th className="px-3 py-2 text-left font-semibold">Demandé le</th>
-                  <th className="px-3 py-2 text-left font-semibold">Répondu le</th>
-                  <th className="px-3 py-2 text-right font-semibold">Jours ouvrés</th>
-                  <th className="px-3 py-2 text-right font-semibold">Relances</th>
-                  <th className="px-3 py-2 text-right font-semibold"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.reponses.map((c) => (
-                  <tr key={c.idcommande} className="border-b border-border/40 last:border-0">
-                    <td className="px-3 py-1.5"><LienCommande id={c.idcommande} /></td>
-                    <td className="px-3 py-1.5 tabular-nums">{jjmmaa(c.demandeLe)}</td>
-                    <td className="px-3 py-1.5 tabular-nums">{jjmmaa(c.reponduLe)}</td>
-                    <td className={cn('px-3 py-1.5 text-right tabular-nums', !c.enAttente && !c.neutralisee && c.jours > data.synthese.reponse.seuilJours && 'text-amber-700 font-medium')}>
-                      {jours(c.jours)}
-                    </td>
-                    <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(c.relances)}</td>
-                    <td className="px-3 py-1.5 text-right">
-                      {c.enAttente && <Badge variant="outline" className="text-[10px] py-0 bg-amber-500/10 text-amber-800 border-amber-500/30">En attente</Badge>}
-                      {!c.enAttente && c.neutralisee && <Badge variant="outline" className="text-[10px] py-0 text-muted-foreground">De notre fait</Badge>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      <CardContent>
+        {data.reponses.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic py-4 text-center">Aucun délai demandé sur la période</p>
+        ) : (
+          <GrapheDelais
+            points={data.reponses.map((c) => ({
+              key: c.idcommande, date: c.demandeLe, jours: c.jours, ouvert: c.enAttente,
+              infos: [`N° ${c.idcommande}`, `Demandé le ${jjmmaa(c.demandeLe)}`,
+                c.reponduLe ? `Répondu le ${jjmmaa(c.reponduLe)} · ${jours(c.jours)}` : `En attente depuis ${jours(c.jours)}`,
+                `${fmtNum(c.relances)} relance${c.relances > 1 ? 's' : ''}`],
+            }))}
+            cible={{ jours: r.seuilJours, libelle: `Réponse attendue sous ${r.seuilJours} j` }}
+            legendeOuvert="en attente de réponse" />
         )}
       </CardContent>
     </Card>
@@ -184,57 +138,30 @@ function ReponseCard({ data }: { data: QualiteService }) {
 }
 
 function RespectCard({ data }: { data: QualiteService }) {
-  const r = data.synthese.respect
+  const lignes = data.lignes.filter((l) => l.dureeJours != null)
   return (
     <Card className="card-premium">
       <CardHeader className="flex flex-row items-center gap-2 pb-2">
         <Truck className="h-4 w-4 text-accent" />
         <CardTitle className="text-sm font-semibold">Respect du délai</CardTitle>
-        <span className="text-[11px] text-muted-foreground ml-auto">Premier délai donné, comparé au premier lot reçu</span>
+        <span className="text-[11px] text-muted-foreground ml-auto">De la commande au premier lot reçu</span>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-          <Chiffre icon={CalendarClock} label="Lignes livrées à temps" value={pct(r.partALHeure)} detail={`${fmtNum(r.aLHeure)} sur ${fmtNum(r.lignes)}`} />
-          <Chiffre icon={Timer} label="Retard moyen" value={r.retardMoyen === null ? '—' : `${fmtNum(r.retardMoyen, 1)} j`} detail="jours ouvrés, lignes en retard" />
-          <Chiffre icon={Hourglass} label="En retard, rien reçu" value={fmtNum(r.enRetardOuvertes)} detail="lignes en cours, délai passé" />
-        </div>
-        {data.lignes.length > 0 && (
-          <div className="rounded-lg border border-border/60 bg-white overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-zinc-200/60 border-b border-border/60">
-                <tr className="text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 text-left font-semibold">Commande</th>
-                  <th className="px-3 py-2 text-left font-semibold">Référence</th>
-                  <th className="px-3 py-2 text-left font-semibold">Délai donné</th>
-                  <th className="px-3 py-2 text-left font-semibold">1er lot reçu</th>
-                  <th className="px-3 py-2 text-right font-semibold">Retard</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.lignes.map((l) => (
-                  <tr key={l.idligne} className="border-b border-border/40 last:border-0">
-                    <td className="px-3 py-1.5"><LienCommande id={l.idcommande} /></td>
-                    <td className="px-3 py-1.5 truncate max-w-[220px]" title={l.reference}>{l.reference || '—'}</td>
-                    <td className="px-3 py-1.5 tabular-nums">{jjmmaa(l.delaiPromis)}</td>
-                    <td className="px-3 py-1.5 tabular-nums">{l.premiereReception ? jjmmaa(l.premiereReception) : <span className="text-muted-foreground italic">pas encore</span>}</td>
-                    <td className={cn('px-3 py-1.5 text-right tabular-nums', l.retard > 0 && 'text-red-600 font-medium')}>
-                      {l.retard > 0 ? `+${jours(l.retard)}` : 'à temps'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      <CardContent>
+        {lignes.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic py-4 text-center">Aucun lot reçu sur la période</p>
+        ) : (
+          /* The real délai of each line (order → first lot) against the dyer's délai standard (Vincent 2026-10-29). */
+          <GrapheDelais
+            points={lignes.map((l) => ({
+              key: l.idligne, date: l.premiereReception ?? new Date().toISOString().slice(0, 10), jours: l.dureeJours!, ouvert: l.enRetardOuvert,
+              infos: [`N° ${l.idcommande}${l.reference ? ` · ${l.reference}` : ''}`, `Commandé le ${jjmmaa(l.commandeLe)}`,
+                l.premiereReception ? `1er lot le ${jjmmaa(l.premiereReception)} · ${jours(l.dureeJours!)}` : `Rien reçu, ${jours(l.dureeJours!)} à ce jour`,
+                l.retard > 0 ? `+${jours(l.retard)} sur le délai donné` : 'À temps sur le délai donné'],
+            }))}
+            cible={{ jours: data.standardJours, libelle: `Standard ${data.standardJours} j` }}
+            legendeOuvert="rien reçu, compté jusqu'à aujourd'hui" />
         )}
       </CardContent>
     </Card>
-  )
-}
-
-function LienCommande({ id }: { id: number }) {
-  return (
-    <Link to={`/sous-traitants/commandes?commande=${id}`} className="font-medium tabular-nums text-accent-blue hover:underline">
-      N° {id}
-    </Link>
   )
 }

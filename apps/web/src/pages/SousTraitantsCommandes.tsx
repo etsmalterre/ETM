@@ -192,6 +192,9 @@ interface LigneCommande {
   prix: number | null
   date_livraison: string | null
   date_delai: string | null
+  /** YYYYMMDD the date we asked for (proposed at the launch from the doctrine, migration 0048); the
+   *  partner's own délai stays date_livraison */
+  date_demandee?: string | null
   date_reception: string | null
   commentaire: string | null
   sstatut: string | null
@@ -2341,6 +2344,7 @@ function LineCard({
   const dateDelaiRaw = line.date_delai && /^\d{8}$/.test(line.date_delai) ? line.date_delai : ''
   const dateLivRaw = line.date_livraison && /^\d{8}$/.test(line.date_livraison) ? line.date_livraison : ''
   const showDelaiInitial = !!dateDelaiRaw && !!dateLivRaw && dateDelaiRaw !== dateLivRaw
+  const dateDemRaw = line.date_demandee && /^\d{8}$/.test(line.date_demandee) ? line.date_demandee : ''
   // Attente délai: bon de commande sent, no délai confirmed yet. The line
   // shows how long we've been waiting instead of a Livraison date.
   const isAttenteDelai = (line.sstatut ?? '').trim() === 'Attente_Delai'
@@ -2474,9 +2478,12 @@ function LineCard({
                 >
                   <Hourglass className="h-3.5 w-3.5" />
                   {label}
+                  {dateDemRaw && <span className="text-xs italic font-normal text-muted-foreground">(demandée : {formatHfsqlDate(dateDemRaw)})</span>}
                 </span>
               )
-            })() : null}
+            })() : dateDemRaw ? (
+              <span className="ml-auto text-muted-foreground">Demandée pour le {formatHfsqlDate(dateDemRaw)}</span>
+            ) : null}
           </div>
         )}
         {/* Prix unitaire — independent value, €/Kg of finished fabric. */}

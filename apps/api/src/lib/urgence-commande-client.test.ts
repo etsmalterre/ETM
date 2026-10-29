@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { avancementCommande, modeLivraisonDe, urgenceCommande, urgenceLigne, type LigneUrgence } from './urgence-commande-client.js'
+import { avancementCommande, etatAffiche, modeLivraisonDe, urgenceCommande, urgenceLigne, type LigneUrgence } from './urgence-commande-client.js'
 
 const today = new Date(2026, 9, 8) // 08/10/2026
 const dans = (j: number) => {
@@ -53,6 +53,29 @@ describe('urgenceLigne', () => {
     expect(urgenceCommande([{ ...l('attente_fil', 49), filAttenduLe: dans(-3) }], today)?.raison)
       .toBe(`1 ligne en attente de fil : relancer le fournisseur · fil prévu le ${dans(-3).slice(6, 8)}/${dans(-3).slice(4, 6)} dépassé`)
   })
+  it('a line « à lancer » held by a launch date is neutral before it, red from it', () => {
+    const held = (lancement: number, delai: number | null = 60, etat: LigneUrgence['etat'] = 'a_lancer'): LigneUrgence =>
+      ({ ...l(etat, delai), lancementLe: dans(lancement) })
+    expect(niveau(held(5))).toBe(null)
+    expect(niveau(held(1))).toBe(null)
+    expect(niveau(held(0))).toBe('rouge')
+    expect(niveau(held(-3))).toBe('rouge')
+    expect(urgenceCommande([held(-3)], today)?.raison)
+      .toBe(`1 ligne à lancer · lancement prévu ${dans(-3).slice(6, 8)}/${dans(-3).slice(4, 6)} dépassé`)
+    // the date only holds a line still to launch, never one without a délai or already launched
+    expect(niveau(held(10, null))).toBe('rouge')
+    expect(niveau(held(10, -2, 'tricotage'))).toBe('rouge')
+    expect(niveau({ ...held(10, 49, 'attente_fil'), filAttenduLe: dans(-1) })).toBe('rouge')
+    expect(niveau({ ...l('a_lancer', 60), lancementLe: 'n/a' })).toBe('rouge')
+  })
+  it('the step planned names the action of the red reason', () => {
+    const held = (etape: LigneUrgence['lancementEtape']): LigneUrgence => ({ ...l('a_lancer', 60), lancementLe: dans(-2), lancementEtape: etape })
+    const jj = `${dans(-2).slice(6, 8)}/${dans(-2).slice(4, 6)}`
+    expect(urgenceCommande([held('ennoblissement')], today)?.raison).toBe(`1 ligne à ennoblir · prévu ${jj} dépassé`)
+    expect(urgenceCommande([held('tricotage'), held('tricotage')], today)?.raison).toBe(`2 lignes à tricoter · prévu ${jj} dépassé`)
+    expect(urgenceCommande([held('fil')], today)?.raison).toBe(`1 ligne : fil à commander · prévu ${jj} dépassé`)
+    expect(niveau({ ...held('ennoblissement'), lancementLe: dans(3) })).toBe(null)
+  })
   it('a line in étude coloris asks no délai, only a relance once it is due', () => {
     const e = (attente: 'labo' | 'client' | 'acceptee' | 'annulee', j: number | null, delai: number | null = null): LigneUrgence =>
       ({ ...l('a_lancer', delai), etude: { attente, relanceLe: j === null ? null : dans(j) } })
@@ -70,8 +93,8 @@ describe('urgenceLigne', () => {
 })
 
 describe('urgenceLigne: mode de livraison of a ready line', () => {
-  const pae = (j: number, modeLivraison: LigneUrgence['modeLivraison'], exp: number | null = null): LigneUrgence =>
-    ({ etat: 'pae', typeKind: 2, dateLivraison: dans(j), modeLivraison, dateExpedition: exp === null ? null : dans(exp) })
+  const pae = (j: number, modeLivraison: LigneUrgence['modeLivraison']): LigneUrgence =>
+    ({ etat: 'pae', typeKind: 2, dateLivraison: dans(j), modeLivraison })
 
   it('« sur appel » is neutral until 4 months past the délai, then asks to chase the client', () => {
     expect(niveau(pae(-30, 'sur_appel'))).toBe(null)
@@ -86,14 +109,23 @@ describe('urgenceLigne: mode de livraison of a ready line', () => {
     // only « sur appel » reads it
     expect(niveau({ ...pae(-5, 'des_que_prete'), relanceAppel: 365 })).toBe('rouge')
   })
-  it('« date client » is judged on the agreed date, not on the délai', () => {
-    expect(niveau(pae(-20, 'date_client', 30))).toBe(null)
-    expect(niveau(pae(-20, 'date_client', 10))).toBe('ambre')
-    expect(niveau(pae(-20, 'date_client', 3))).toBe('rouge')
-    expect(urgenceLigne(pae(-90, 'date_client', -61), today)?.action).toBe('solder')
+  it('« date convenue » ships ON its date D (one date per line, 2026-10-28): red near it, never amber', () => {
+    expect(niveau(pae(30, 'date_client'))).toBe(null)
+    expect(niveau(pae(10, 'date_client'))).toBe(null)
+    expect(niveau(pae(3, 'date_client'))).toBe('rouge')
+    expect(urgenceLigne(pae(-61, 'date_client'), today)?.action).toBe('solder')
   })
-  it('« date client » without a date falls back to the délai', () => {
-    expect(niveau(pae(2, 'date_client'))).toBe('rouge')
+  it('« date demandée » is judged on the client’s date, not on D', () => {
+    expect(niveau({ ...pae(-20, 'date_client'), dateClient: dans(30) })).toBe(null)
+    expect(niveau({ ...pae(-20, 'date_client'), dateClient: dans(2) })).toBe('rouge')
+  })
+  it('« ensemble » holds a ready line whatever the départ, while another is in production', () => {
+    expect(niveau({ ...pae(-5, 'des_que_prete'), groupee: true, commandeIncomplete: true })).toBe(null)
+    expect(niveau({ ...pae(2, 'date_client'), groupee: true, commandeIncomplete: true })).toBe(null)
+    expect(niveau({ ...pae(-5, 'des_que_prete'), groupee: true })).toBe('rouge')
+  })
+  it('« date convenue » without its date is a line without date: red, give one', () => {
+    expect(urgenceLigne({ etat: 'pae', typeKind: 2, dateLivraison: null, modeLivraison: 'date_client' }, today)?.action).toBe('sans_delai')
   })
   it('the mode never changes the production stages, which run on the délai', () => {
     const lancer: LigneUrgence = { etat: 'a_lancer', typeKind: 2, dateLivraison: dans(20), modeLivraison: 'sur_appel' }
@@ -109,8 +141,8 @@ describe('urgenceLigne: mode de livraison of a ready line', () => {
     expect(urgenceCommande([pae(-5, 'commande_complete'), { ...l('a_lancer', 30), typeKind: 3 }], today)?.niveau).toBe('rouge')
   })
   it('the reason names the date it is about', () => {
-    expect(urgenceCommande([pae(-20, 'date_client', 2)], today)?.raison)
-      .toBe(`1 ligne à expédier · expédition prévue ${dans(2).slice(6, 8)}/${dans(2).slice(4, 6)}`)
+    expect(urgenceCommande([pae(2, 'date_client')], today)?.raison)
+      .toBe(`1 ligne à expédier · expédition demandée le ${dans(2).slice(6, 8)}/${dans(2).slice(4, 6)}`)
     expect(urgenceCommande([pae(-130, 'sur_appel')], today)?.raison)
       .toBe(`1 ligne sur appel : relancer le client · délai ${dans(-130).slice(6, 8)}/${dans(-130).slice(4, 6)} dépassé`)
   })
@@ -161,5 +193,28 @@ describe('avancementCommande', () => {
     expect(avancementCommande(['a_lancer'], true)).toBe('soldee')
     expect(avancementCommande([], true)).toBe('soldee')
     expect(avancementCommande([], false)).toBe(null)
+  })
+})
+
+describe('etatAffiche: « planifiée » (Vincent 2026-10-28)', () => {
+  const today = new Date(2026, 9, 28)
+  it('shows a line to launch held by a date still to come as planifiée', () => {
+    expect(etatAffiche('a_lancer', 2, '20261116', today)).toBe('planifiee')
+  })
+  it('is à lancer again from the date on', () => {
+    expect(etatAffiche('a_lancer', 2, '20261028', today)).toBe('a_lancer')
+    expect(etatAffiche('a_lancer', 2, '20261020', today)).toBe('a_lancer')
+  })
+  it('leaves any other état, a divers line and a line without date alone', () => {
+    expect(etatAffiche('tricotage', 2, '20261116', today)).toBe('tricotage')
+    expect(etatAffiche('a_lancer', 3, '20261116', today)).toBe('a_lancer')
+    expect(etatAffiche('a_lancer', 1, null, today)).toBe('a_lancer')
+  })
+  it('ranks just above à lancer on the order scale', () => {
+    expect(avancementCommande(['planifiee', 'a_lancer'], false)).toBe('a_lancer')
+    expect(avancementCommande(['planifiee', 'tricotage'], false)).toBe('planifiee')
+  })
+  it('a planifiée line is neutral', () => {
+    expect(urgenceLigne({ etat: 'planifiee', typeKind: 2, dateLivraison: '20261001' }, today)).toBeNull()
   })
 })

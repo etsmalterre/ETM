@@ -26,9 +26,9 @@ describe('qualité de service', () => {
   })
   it('respect: on time vs late lines, open late lines counted apart', () => {
     const s = synthese([], 0, [
-      { idcommande: 1, idligne: 1, reference: 'A', delaiPromis: '2026-10-10', premiereReception: '2026-10-09', retard: 0, enRetardOuvert: false },
-      { idcommande: 1, idligne: 2, reference: 'A', delaiPromis: '2026-10-10', premiereReception: '2026-10-14', retard: 2, enRetardOuvert: false },
-      { idcommande: 2, idligne: 3, reference: 'B', delaiPromis: '2026-10-10', premiereReception: null, retard: 8, enRetardOuvert: true },
+      { idcommande: 1, idligne: 1, reference: 'A', delaiPromis: '2026-10-10', commandeLe: null, dureeJours: null, premiereReception: '2026-10-09', retard: 0, enRetardOuvert: false },
+      { idcommande: 1, idligne: 2, reference: 'A', delaiPromis: '2026-10-10', commandeLe: null, dureeJours: null, premiereReception: '2026-10-14', retard: 2, enRetardOuvert: false },
+      { idcommande: 2, idligne: 3, reference: 'B', delaiPromis: '2026-10-10', commandeLe: null, dureeJours: null, premiereReception: null, retard: 8, enRetardOuvert: true },
     ])
     expect(s.respect).toMatchObject({ lignes: 2, aLHeure: 1, partALHeure: 0.5, retardMoyen: 2, enRetardOuvertes: 1 })
   })

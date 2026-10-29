@@ -1,6 +1,13 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { userCanOpenScreen } from '../lib/permissions.js'
+import { isEffectiveAdmin } from '../lib/auth.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
+import {
+  ajouterFermeture, fermetures, fixerStandards, refusStandards, standards, standardsStockes, STANDARDS_DEFAUT,
+  supprimerFermeture, type StandardsStockes,
+} from '../lib/delais-standards.js'
 import { consumedEcruIds } from '../lib/fini-sources.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { etatEcruChezSst, type SstLineInfo } from '../lib/ecru-etat-sst.js'
@@ -760,6 +767,92 @@ sousTraitantsRouter.post('/:id/tarifs-ennoblissement/copier', async (req: Reques
 })
 
 // POST /api/sous-traitants — create (placeholder row, then auto-edit on the client)
+// ── Délais standards + fermetures (doctrine des délais §1-§2, lib/delais-standards.ts) ──
+// The screen grant is the guard of these writes (CLAUDE.md « Écrans » rule): who may open Sous-traitants ›
+// Gestion may set its partners' délais.
+async function gardeGestion(req: Request, res: Response): Promise<boolean> {
+  if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return false }
+  if (!(await userCanOpenScreen(req.userId, isEffectiveAdmin(req), '/sous-traitants', '/sous-traitants/gestion'))) {
+    res.status(403).json({ error: 'écran non accessible' }); return false
+  }
+  return true
+}
+
+sousTraitantsRouter.get('/:id/delais', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const [eff, stockes, ferm] = await Promise.all([standards([id]), standardsStockes([id]), fermetures([id])])
+    res.json({ standards: eff.get(id), stockes: stockes.get(id) ?? null, defauts: STANDARDS_DEFAUT, fermetures: ferm.get(id) ?? [] })
+  } catch (err) {
+    console.error('Error fetching sst délais:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const nombreOuNull = z.number().int().positive().nullable()
+const standardsBody = z.object({
+  ennoblissement_jours: nombreOuNull, tricot_seuil1_kg: nombreOuNull, tricot_seuil2_kg: nombreOuNull,
+  tricot_jours1: nombreOuNull, tricot_jours2: nombreOuNull, tricot_jours3: nombreOuNull,
+})
+
+sousTraitantsRouter.put('/:id/delais', async (req: Request, res: Response) => {
+  try {
+    if (!(await gardeGestion(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = standardsBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues }); return }
+    const stocke = parsed.data as StandardsStockes
+    // Checked as they will apply: the stored values over the doctrine's defaults.
+    const eff = { ...STANDARDS_DEFAUT }
+    for (const [k, v] of Object.entries(stocke)) if (v != null) (eff as any)[k] = v
+    const refus = refusStandards(eff)
+    if (refus) { res.status(400).json({ error: 'standards_invalides', message: refus }); return }
+    await fixerStandards(id, stocke, req.userId ? await nomUtilisateur(req.userId) : null)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error saving sst délais:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const fermetureBody = z.object({
+  du: z.string().regex(/^\d{8}$/),
+  au: z.string().regex(/^\d{8}$/),
+  motif: z.string().trim().max(120).optional(),
+})
+
+sousTraitantsRouter.post('/:id/fermetures', async (req: Request, res: Response) => {
+  try {
+    if (!(await gardeGestion(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = fermetureBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues }); return }
+    if (parsed.data.au < parsed.data.du) { res.status(400).json({ error: 'dates_inversees', message: 'La fin de la fermeture précède son début.' }); return }
+    await ajouterFermeture(id, { du: parsed.data.du, au: parsed.data.au, motif: parsed.data.motif || null }, req.userId ? await nomUtilisateur(req.userId) : null)
+    res.status(201).json({ ok: true })
+  } catch (err) {
+    console.error('Error adding sst fermeture:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+sousTraitantsRouter.delete('/:id/fermetures/:fid', async (req: Request, res: Response) => {
+  try {
+    if (!(await gardeGestion(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    const fid = parseInt(req.params.fid, 10)
+    if (isNaN(id) || isNaN(fid)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (!(await supprimerFermeture(id, fid))) { res.status(404).json({ error: 'Fermeture introuvable' }); return }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error deleting sst fermeture:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 sousTraitantsRouter.post('/', async (req: Request, res: Response) => {
   try {
     const parsed = stBody.safeParse(req.body)

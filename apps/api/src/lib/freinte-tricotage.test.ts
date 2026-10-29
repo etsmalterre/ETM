@@ -94,13 +94,15 @@ describe('conversions', () => {
     expect(ecruPourFil(filPourEcru(600, 0.03), 0.03)).toBeCloseTo(600, 6)
     expect(filPourEcru(600, 0)).toBe(600)
   })
-  it('adds the safety margin and rounds the need up to 10 kg', () => {
+  it('adds the safety margin and rounds the need up to the kilo', () => {
     // 3911 040A: 600 kg écru, freinte 2.96 % → 618.3 → 649.2 → 650
     expect(besoinFil(600, 0.0296)).toMatchObject({ besoin: 650 })
+    // 3928 029A, 142 Ml = 40 kg écru, freinte 2.8 %: 6 % elastane → 2.6 kg → 3 (was 10 under the 10 kg rounding)
+    expect(besoinFil(40.02, 0.028, 0.06).besoin).toBe(3)
     expect(besoinFil(600, 0.0296).fil).toBeCloseTo(618.30, 2)
     expect(besoinFil(600, 0.0296).avecMarge).toBeCloseTo(649.22, 2)
     // a 45 % yarn of the same line
-    expect(besoinFil(600, 0.0296, 0.45).besoin).toBe(300)
+    expect(besoinFil(600, 0.0296, 0.45).besoin).toBe(293) // 292.15
     // an exact multiple stays put, nothing to make = nothing to order
     expect(besoinFil(200 / 1.05, 0).besoin).toBe(200)
     expect(besoinFil(0, 0.03).besoin).toBe(0)

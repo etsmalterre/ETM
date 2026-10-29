@@ -310,7 +310,7 @@ export function SmartSearchInput<K extends string, T = unknown>({
       {/* Suggestion popover: tags first, then one row per scoped field ("toutes les colonnes" first) */}
       {popoverVisible && (
         <div className="absolute left-0 right-0 top-full mt-1 z-40 rounded-md border border-border/60 bg-white shadow-lg overflow-hidden">
-          <div className="max-h-64 overflow-y-auto py-1 scrollbar-transparent">
+          <div className="max-h-[min(26rem,60vh)] overflow-y-auto py-1 scrollbar-transparent">
             {suggestions.map((sug, i) => {
               const active = idx === i
               if (sug.kind === 'tag') {

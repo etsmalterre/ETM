@@ -3112,6 +3112,10 @@ Rules — do not deviate:
 
 Reference implementation: `PiecesDrawer` in `apps/web/src/pages/SousTraitantsCommandes.tsx` — every convention above is set there.
 
+#### Supply tabs: two zones, matter on top, orders below (Clients › Commandes, 2026-10-28)
+
+A tab that follows one stage of a line's matter (Fil, Tricotage, Ennoblissement of the client order line drawer) is split by `ZoneLigne` (`components/commandes/ZonesLigne.tsx`) into **two zones, always in this order**: `kind="matiere"` (what is reserved to the line at the stage's input) then `kind="commandes"` (the supplier / partner orders that consume it, a `pt-3 border-t` divider above). Each zone header = icon + uppercase title + optional one-line `resume` (need, what remains) + right-aligned `zoneActionClass` ghost buttons. **The matter zone is ONE clickable block** (need vs held, the sources held listed under it; hover = gold edge + a gold pencil badge top-right, `cursor-pointer`, keyboard Enter/Space), no « Réserver » button, no caption: a click opens the §18.D selector where what the line holds starts ticked (untick = release) and one « Réserver » applies. Free stock is never listed in the zone. Empty zone = `ZoneVide` (dashed, italic, says what to do). A new stage tab copies this shape, never the old « orders on top, free stock below ». **Reserving never orders**: the order buttons live in the bottom zone header (`BoutonsCommande`, one per place holding reserved matter), active only when that matter allows the order, greyed when the reservation there is incomplete (hover = what is missing), and absent when nothing is reserved: the clickable top block is the way to reserve.
+
 ### 31.5 Gotcha: `overflow-auto` clips ring-based highlights
 
 The shrunk rows container has `overflow-auto`, which **clips the `ring-1` + `border-accent` highlight on the selected row** if there's no padding between the cards and the scrollable edge. Always add `p-1` (or wider) to the scrollable div:

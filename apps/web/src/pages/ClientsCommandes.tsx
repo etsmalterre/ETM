@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef, Fragment, type ReactNode, type ComponentType } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode, type ComponentType } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -73,13 +73,16 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
-import { invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
+import { invalidateCommandeClientCaches, invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { EtatPill } from '@/lib/etat-stock-fini'
 import { AvancementPill, EtatLigneTag, StatutLignePill, STATUT_LIGNE_META, type EtatLigneClient, type StatutLigneClient } from '@/lib/statut-ligne-client'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
-import { FilLigneTab } from '@/components/fils/FilLigneTab'
+import { FilEnStockZone, FilLigneTab, filLigneQueryKey, tricoteursPrets, useFilLigne, type FilPayload } from '@/components/fils/FilLigneTab'
+import { EcruLigneZone, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
+import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
+import { LancementLabel, PlanifierBouton, type EtapeLancement } from '@/components/commandes/LancementLigne'
 import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
 
 // ── Types ──────────────────────────────────────────────
@@ -100,6 +103,8 @@ const DOC_PATH: Record<CommandeDocKind, string> = {
 
 interface CommandeListRow {
   IDcommande_client: number
+  /** « En préparation » until « Valider la commande » (API lib/preparation-commande.ts): red, « à préparer » */
+  en_preparation?: boolean
   IDclient: number
   numero: number | null
   date_commande: string | null
@@ -109,6 +114,11 @@ interface CommandeListRow {
   avancement: EtatLigneClient | null
   /** what there is to do and when (API lib/urgence-commande-client.ts); null = neutral */
   urgence: UrgenceCommande | null
+  /** the order's mode d'expédition; « en une fois »: when it leaves (latest D still to ship, null = a line has no date) */
+  depart?: Depart
+  expedition_groupee?: boolean
+  date_expedition_client?: string | null
+  depart_commande?: string | null
   /** distinct statuses of its lines (a soldée order: ['soldee']), for the search tags */
   etats_lignes: EtatLigneClient[]
   total_eur: number
@@ -139,14 +149,18 @@ interface LigneCommande {
   poids: number
   /** Rolls the quantity represents, sized like the Fiche tarif (API lib/rouleaux-estimes.ts); null = no roll weight. */
   rouleaux_estimes?: { nb: number; taille: number; poids_rouleau: number; rendement: number; ref_ecru: string | null } | null
-  /** délai: when PRODUCTION must be done (YYYYMMDD) */
+  /** the earliest date it can be ready, from where its matter sits (API lib/delai-au-plus-tot.ts); null = divers / closed */
+  au_plus_tot?: AuPlusTot | null
+  /** D (YYYYMMDD): the line is ready to ship on it, whatever the mode (doctrine des délais §8) */
   date_livraison: string | null
-  /** the first délai ever given, frozen by the API; null on lines older than 2026-10-11 */
+  /** the engagement: the first D ever given, frozen by the API; null on lines older than 2026-10-11 */
   delai_initial: string | null
-  /** how a ready line leaves (API lib/urgence-commande-client.ts) */
+  /** what follows « ready » (API lib/urgence-commande-client.ts) */
   mode_livraison: ModeLivraison
-  /** YYYYMMDD, only with mode « date_client » */
-  date_expedition_prevue: string | null
+  /** the launch date of the next step (API lib/lancement-ligne.ts): a line « à lancer » waits, neutral, until then */
+  date_lancement: string | null
+  /** what waits for that date: the drawer tab where it was planned */
+  etape_lancement: EtapeLancement | null
   /** the line's own colour on the order list's rule */
   urgence: 'rouge' | 'ambre' | null
   commentaire: string | null
@@ -169,6 +183,8 @@ interface LigneCommande {
 }
 
 type ModeLivraison = 'des_que_prete' | 'date_client' | 'sur_appel' | 'commande_complete'
+/** The order's mode d'expédition (API lib/mode-expedition.ts): one for every line, « par_ligne » = each its own. */
+type Depart = 'des_que_prete' | 'date_client' | 'sur_appel'
 
 /** Who holds the étude now (API etatEtude): the lab, the client, or nobody. */
 type AttenteEtude = 'labo' | 'client' | 'acceptee' | 'annulee'
@@ -189,12 +205,115 @@ const ATTENTE_ETUDE_LABEL: Record<AttenteEtude, string> = {
   annulee: 'annulée',
 }
 
-// PopoverSelect ids (0 is its « none » sentinel).
-const MODES_LIVRAISON: { id: number; mode: ModeLivraison; label: string }[] = [
-  { id: 1, mode: 'des_que_prete', label: 'Dès que prête' },
-  { id: 2, mode: 'date_client', label: 'Date convenue avec le client' },
-  { id: 3, mode: 'sur_appel', label: 'Sur appel du client' },
-  { id: 4, mode: 'commande_complete', label: 'Commande complète' },
+interface AuPlusTot {
+  date: string
+  etapes: { libelle: string; du: string; au: string; jours: number; estime?: boolean }[]
+  /** part of the quantity has no matter reserved */
+  sansMatiere: boolean
+  /** working days between this date and the date retained, null without one */
+  marge?: number | null
+  /** how the doctrine (§4) would spend that margin: proposed, never written */
+  plan?: {
+    marge: number
+    tricotage: { standard: number; marge: number; jours: number; fin: string } | null
+    attenteEcru: number
+    ennoblirLe: string | null
+  } | null
+  /** what to ask the knitter if launched today: standard + its share of the margin (launch dialog) */
+  tricotageDemande?: { jours: number; date: string } | null
+}
+
+const fmtJours = (n: number) => `${String(n).replace('.', ',')} j`
+/** One swatch per step: the gauge's greens for the matter's stages, Malterre's blue for its reserve, amber
+ *  for the margin (Vincent 2026-10-29: temporary, still to spread at the launches). */
+const COULEUR_ETAPE: Record<string, string> = {
+  Fil: '#bbf7d0', Tricotage: '#86efac', Ennoblissement: '#4ade80', 'Réserve Malterre': 'hsl(var(--primary))', Marge: '#f59e0b',
+}
+
+/** The hover of a line's date (Vincent 2026-10-29: designed like the gauge's): the date given, its
+ *  engagement and how the order leaves, then the earliest date as a timeline of its steps. */
+function DelaiLigneDetail({ auPlusTot: a, entete }: {
+  auPlusTot: AuPlusTot | null | undefined
+  /** the date given and its context; absent = the line has no date yet (earliest date only) */
+  entete?: { date: string; lignes: string[] }
+}) {
+  return (
+    <div className="w-max min-w-[260px] max-w-[340px] py-1 font-normal">
+      {entete && (
+        <>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Prête le</p>
+          <p className="text-sm font-semibold tabular-nums">{formatHfsqlDate(entete.date)}</p>
+          {entete.lignes.map((l) => <p key={l} className="text-xs text-muted-foreground">{l}</p>)}
+        </>
+      )}
+      {a && (
+        <div className={cn(entete && 'mt-2 pt-2 border-t border-border/60')}>
+          {/* The margin between the two dates, amber (temporary, still to spread at the launches): read
+              downwards, « Prête le » → margin → « Prête au plus tôt » → its steps (Vincent 2026-10-29). */}
+          {entete && a.marge != null && a.marge !== 0 && (
+            <div className="mb-2 flex items-center gap-2 text-xs tabular-nums">
+              <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: COULEUR_ETAPE.Marge, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
+              <span className="flex-1">Marge</span>
+              <span className="text-muted-foreground">{formatHfsqlDate(a.date).slice(0, 5)} → {formatHfsqlDate(entete.date).slice(0, 5)}</span>
+              <span className={cn('w-10 text-right font-semibold', a.marge < 0 && 'text-amber-700')}>{fmtJours(a.marge)}</span>
+            </div>
+          )}
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Prête au plus tôt</p>
+            <p className={cn('tabular-nums', entete ? 'text-xs font-semibold' : 'text-sm font-semibold')}>{formatHfsqlDate(a.date)}</p>
+          </div>
+          {a.etapes.length === 0 ? (
+            <p className="mt-1 text-xs text-green-700">Toute la matière est prête</p>
+          ) : (
+            <div className="mt-1.5 space-y-1">
+              {/* Latest step on top, read from the date down to today (Vincent 2026-10-29). */}
+              {[...a.etapes].reverse().map((e) => (
+                <div key={e.libelle} className="flex items-center gap-2 text-xs tabular-nums">
+                  <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: COULEUR_ETAPE[e.libelle] ?? '#e4e4e7', boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
+                  <span className="flex-1">{e.libelle}{e.estime && <span className="text-muted-foreground"> (estimé)</span>}</span>
+                  <span className="text-muted-foreground">{formatHfsqlDate(e.du).slice(0, 5)} → {formatHfsqlDate(e.au).slice(0, 5)}</span>
+                  <span className={cn('w-10 text-right font-semibold', e.jours < 0 && 'text-amber-700')}>{fmtJours(e.jours)}</span>
+                </div>
+              ))}
+              <p className="pt-0.5 text-[10px] text-muted-foreground">En jours ouvrés, fermetures des partenaires comprises</p>
+            </div>
+          )}
+          {a.sansMatiere && (
+            <p className="mt-1.5 pt-1.5 border-t border-border/60 flex items-center gap-1.5 text-xs text-amber-700">
+              <Info className="h-3.5 w-3.5 flex-shrink-0" />Réservez de la matière pour améliorer ce délai
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** How an order leaves (API lib/mode-expedition.ts, Vincent 2026-10-28): « Départ » = who triggers the
+ *  shipment, + « ensemble ». Every line has ONE date, « Prête le » (the engagement). */
+const DEPARTS: { id: number; depart: Depart; label: string }[] = [
+  { id: 1, depart: 'des_que_prete', label: 'Dès que prête' },
+  { id: 2, depart: 'date_client', label: 'À la date demandée par le client' },
+  { id: 3, depart: 'sur_appel', label: 'Sur appel du client' },
+]
+interface Expedition { depart: Depart; groupee: boolean; dateClient: string | null }
+
+/** One sentence for the order (Info, list, line hover; the espace client will read the same). */
+function phraseExpedition(e: Expedition, depart: string | null): string {
+  const base = e.depart === 'date_client'
+    ? (e.dateClient ? `Expédiée le ${formatHfsqlDate(e.dateClient)} (date demandée)` : 'Date demandée par le client : à obtenir')
+    : e.depart === 'sur_appel' ? 'Sur appel du client' : 'Expédiée dès que prête'
+  return e.groupee ? `${base}, toutes les lignes ensemble${depart && e.depart !== 'date_client' ? ` vers le ${formatHfsqlDate(depart)}` : ''}` : base
+}
+
+function expeditionDe(c: Pick<CommandeDetail, 'depart' | 'expedition_groupee' | 'date_expedition_client'>): Expedition {
+  return { depart: c.depart ?? 'des_que_prete', groupee: !!c.expedition_groupee, dateClient: c.date_expedition_client ?? null }
+}
+
+const IMPUTABLES: { id: 'malterre' | 'client' | 'partenaire'; label: string }[] = [
+  { id: 'malterre', label: 'Malterre' },
+  { id: 'client', label: 'Client' },
+  { id: 'partenaire', label: 'Partenaire' },
 ]
 
 /** Days from one YYYYMMDD to another (positive = later). */
@@ -333,6 +452,17 @@ interface CommandeDetail {
   observations_facturation: string | null
   est_soldee: number
   donation: number
+  /** « En préparation » until « Valider la commande » (doctrine des délais §5 ter): free editing, nothing leaves */
+  en_preparation: boolean
+  validee_le: string | null
+  validee_par: string | null
+  /** why it can no longer go back to « En préparation » (null = it can) */
+  retour_preparation_bloque: string | null
+  /** how the order leaves (API lib/mode-expedition.ts, Info › Expédition): départ + « ensemble » */
+  depart: Depart
+  expedition_groupee: boolean
+  /** YYYYMMDD, départ « date_client » */
+  date_expedition_client: string | null
   /** Stock pieces attached via IDcommande_donation (donation orders only). */
   nb_donation_pieces: number
   remise: number
@@ -469,14 +599,6 @@ function SupplyEtatPill({ label }: { label: string | null | undefined }) {
   )
 }
 
-// Line type chip — category color per écru / fini / divers.
-function lineTypeChip(type: number): { label: string; classes: string } | null {
-  if (type === 1) return { label: 'Écru', classes: 'bg-amber-500/15 text-amber-800 border border-amber-500/30' }
-  if (type === 2) return { label: 'Fini', classes: 'bg-sky-500/10 text-sky-700 border border-sky-500/25' }
-  if (type === 3) return { label: 'Divers', classes: 'bg-stone-500/10 text-stone-700 border border-stone-500/25' }
-  return null
-}
-
 function lineCardColors(line: LigneCommande) {
   // Fully-reserved → green; some reserved → amber; none → neutral.
   if (line.type === 3) return { border: 'border-l-stone-400/60', iconBg: 'bg-stone-400/10', iconColor: 'text-stone-600' }
@@ -545,6 +667,7 @@ export function ClientsCommandes() {
   const [editRemise, setEditRemise] = useState('')
   const [editFraisPort, setEditFraisPort] = useState('')
   const [editDonation, setEditDonation] = useState(false)
+  const [editExpedition, setEditExpedition] = useState<Expedition>({ depart: 'des_que_prete', groupee: false, dateClient: null })
   const [editIDAdresseFacturation, setEditIDAdresseFacturation] = useState(0)
   const [editIDAdresseLivraison, setEditIDAdresseLivraison] = useState(0)
 
@@ -596,6 +719,7 @@ export function ClientsCommandes() {
       remise: detail.remise ? String(detail.remise) : '',
       fraisPort: detail.frais_port ? String(detail.frais_port) : '',
       donation: detail.donation ? 1 : 0,
+      expedition: JSON.stringify(expeditionDe(detail)),
       IDadresseFact: detail.IDadresse_facturation ?? 0,
       IDadresseLiv: detail.IDadresse_livraison ?? 0,
     }
@@ -608,6 +732,7 @@ export function ClientsCommandes() {
     setEditRemise(snapshot.remise)
     setEditFraisPort(snapshot.fraisPort)
     setEditDonation(snapshot.donation === 1)
+    setEditExpedition(expeditionDe(detail))
     setEditIDAdresseFacturation(snapshot.IDadresseFact)
     setEditIDAdresseLivraison(snapshot.IDadresseLiv)
     originalDraftRef.current = snapshot
@@ -630,11 +755,12 @@ export function ClientsCommandes() {
     if (editRemise !== o.remise) return true
     if (editFraisPort !== o.fraisPort) return true
     if ((editDonation ? 1 : 0) !== o.donation) return true
+    if (JSON.stringify(editExpedition) !== o.expedition) return true
     if (editIDAdresseFacturation !== o.IDadresseFact) return true
     if (editIDAdresseLivraison !== o.IDadresseLiv) return true
     if (linesDirty) return true
     return false
-  }, [isEditing, editDateCommande, editRefClient, editCommentaire, editCommentaireInterne, editIDModePaiement, editIDEcheance, editRemise, editFraisPort, editDonation, editIDAdresseFacturation, editIDAdresseLivraison, linesDirty])
+  }, [isEditing, editDateCommande, editRefClient, editCommentaire, editCommentaireInterne, editIDModePaiement, editIDEcheance, editRemise, editFraisPort, editDonation, editExpedition, editIDAdresseFacturation, editIDAdresseLivraison, linesDirty])
 
   const saveHeaderMut = useMutation({
     mutationFn: () => apiFetch(`/commandes-client/${selectedId}`, {
@@ -650,6 +776,9 @@ export function ClientsCommandes() {
         frais_port: Number(editFraisPort) || 0,
         // Permission-gated field — omit entirely when the user can't set it.
         ...(canMarkDonation ? { donation: editDonation ? 1 : 0 } : {}),
+        depart: editExpedition.depart,
+        expedition_groupee: editExpedition.groupee,
+        date_expedition_client: editExpedition.depart === 'date_client' ? (editExpedition.dateClient ?? '') : '',
         IDadresse_facturation: editIDAdresseFacturation || 0,
         IDadresse_livraison: editIDAdresseLivraison || 0,
       }),
@@ -842,6 +971,7 @@ export function ClientsCommandes() {
             editRemise={editRemise} onEditRemiseChange={setEditRemise}
             editFraisPort={editFraisPort} onEditFraisPortChange={setEditFraisPort}
             editDonation={editDonation} onEditDonationChange={setEditDonation}
+            editExpedition={editExpedition} onEditExpeditionChange={setEditExpedition}
             editIDAdresseFacturation={editIDAdresseFacturation} onEditIDAdresseFacturationChange={setEditIDAdresseFacturation}
             editIDAdresseLivraison={editIDAdresseLivraison} onEditIDAdresseLivraisonChange={setEditIDAdresseLivraison}
             onToggleEtat={() => toggleEtatMut.mutate(detail?.est_soldee === 1 ? 0 : 1)}
@@ -939,10 +1069,19 @@ const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; ho
 // One tag per line status present: an order carries it when at least one of its lines has it.
 // « À faire » / « Bientôt » are not tags: the counter pills right of the bar already filter on them.
 
-const ETAT_TAG_ORDER: EtatLigneClient[] = ['a_lancer', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ETAT_TAG_ORDER: EtatLigneClient[] = ['a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 function commandeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
-  return ETAT_TAG_ORDER.map((etat): SearchTagDef<CommandeListRow> => {
+  // « En préparation » is an ORDER state (doctrine des délais §5 ter), first: the orders to prepare.
+  const enPreparation = (r: CommandeListRow) => !!r.en_preparation
+  const preparation: SearchTagDef<CommandeListRow> = {
+    key: 'etat:preparation',
+    label: 'En préparation',
+    renderPill: (trailing) => <PreparationPill>{trailing}</PreparationPill>,
+    count: rows.filter(enPreparation).length,
+    predicate: enPreparation,
+  }
+  return [preparation, ...ETAT_TAG_ORDER.map((etat): SearchTagDef<CommandeListRow> => {
     const predicate = (r: CommandeListRow) => (r.etats_lignes ?? []).includes(etat)
     return {
       key: `etat:${etat}`,
@@ -951,7 +1090,7 @@ function commandeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] 
       count: rows.filter(predicate).length,
       predicate,
     }
-  })
+  })]
 }
 
 const URGENCE_PILLS: Array<{ niveau: NiveauUrgence; title: string; on: string; off: string }> = [
@@ -1089,7 +1228,9 @@ function CommandeList({
               <div className="flex items-center gap-2">
                 <ShoppingCart className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <span className="font-medium text-sm">N° {row.numero ?? row.IDcommande_client}</span>
-                {row.avancement && <AvancementPill etat={row.avancement} className="ml-auto" />}
+                {row.en_preparation
+                  ? <PreparationPill className="ml-auto" />
+                  : row.avancement && <AvancementPill etat={row.avancement} className="ml-auto" />}
               </div>
               <p className="text-xs text-muted-foreground mt-1 truncate">{row.client_nom || '—'}</p>
               {row.urgence && u && (
@@ -1097,6 +1238,17 @@ function CommandeList({
                   {row.urgence.raison}
                 </p>
               )}
+              {/* Only what departs from the default (dès que prête, line by line). */}
+              {(row.expedition_groupee || (row.depart && row.depart !== 'des_que_prete')) && (() => {
+                const phrase = phraseExpedition(
+                  { depart: row.depart ?? 'des_que_prete', groupee: !!row.expedition_groupee, dateClient: row.date_expedition_client ?? null },
+                  row.depart_commande ?? null)
+                return (
+                  <p className="flex items-center gap-1 text-[11px] text-muted-foreground mt-1 truncate" title={phrase}>
+                    <Truck className="h-3 w-3 flex-shrink-0" />{phrase}
+                  </p>
+                )
+              })()}
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                 {row.date_commande && <span>{formatHfsqlDate(row.date_commande)}</span>}
                 <span className="ml-auto text-muted-foreground/70">{row.nb_lignes} ligne{row.nb_lignes > 1 ? 's' : ''}</span>
@@ -1277,7 +1429,9 @@ function DetailHeader({
                   </Button>
                 )}
                 <DocMenuButton icon={Printer} title="Imprimer" items={docItems} onSelect={onPrintDoc} />
-                <DocMenuButton icon={AtSign} title="Envoyer un email" items={docItems} onSelect={onEmailDoc} />
+                {/* The confirmation is sent once the order is validated (its dates are then engagements). */}
+                <DocMenuButton icon={AtSign} title="Envoyer un email"
+                  items={commande?.en_preparation ? docItems.filter((d) => d.key !== 'confirmation') : docItems} onSelect={onEmailDoc} />
                 {canEdit && (
                   <Button variant="gold" size="sm" onClick={onStartEdit}>
                     <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
@@ -1369,7 +1523,9 @@ const emptyLineForm = {
   prix: '',
   date_livraison: '',
   mode_livraison: 'des_que_prete' as ModeLivraison,
-  date_expedition_prevue: '',
+  // Moving a D already given (an engagement): why, and who it is due to.
+  report_motif: '',
+  report_imputable: '' as '' | 'malterre' | 'client' | 'partenaire',
   commentaire: '',
   // Fini only: the line waits for an étude coloris instead of a coloris (one line = one étude).
   enEtude: false,
@@ -1488,6 +1644,9 @@ function LignesSection({
           ) : (
             commande.lignes.map((l) => (
               <LineCard
+                expedition={expeditionDe(commande)}
+                departCommande={departCommande(commande.lignes)}
+                enPreparation={!!commande.en_preparation}
                 key={l.IDligne_commande_client}
                 line={l}
                 isEditing={isEditing}
@@ -1531,6 +1690,7 @@ function LignesSection({
                 clientNom={commande.client_nom}
                 clientId={commande.IDclient}
                 soldee={Number(commande.est_soldee) === 1}
+                enPreparation={!!commande.en_preparation}
                 onClose={() => onOpenAffectation(null)}
                 onSuccess={onMutationSuccess}
               />
@@ -2109,7 +2269,7 @@ function CommandeStat({ line }: { line: LigneCommande }) {
       <LineStat
         label="Commandé"
         value={value}
-        valueClass="underline decoration-dotted decoration-muted-foreground/60 underline-offset-2 cursor-help"
+        valueClass={SOULIGNE_INFO}
       />
     </Tooltip>
   )
@@ -2123,6 +2283,9 @@ function RouleauRow({ label, value, strong }: { label: string; value: string; st
     </div>
   )
 }
+
+/** A figure with a hover (Vincent 2026-10-29): dotted underline, the card's own cursor kept (the hand). */
+const SOULIGNE_INFO = 'underline decoration-dotted decoration-muted-foreground/60 underline-offset-2'
 
 function LineStat({ label, value, className, valueClass, title }: {
   label: string
@@ -2139,10 +2302,24 @@ function LineStat({ label, value, className, valueClass, title }: {
   )
 }
 
+/** « Commande complète »: the order leaves when its last line still to ship is ready, i.e. the latest D
+ *  among them (doctrine des délais §5 bis). Null when one of them has no date yet. */
+function departCommande(lignes: LigneCommande[]): string | null {
+  const restantes = lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
+  if (restantes.some((l) => !l.date_livraison)) return null
+  return restantes.reduce<string | null>((m, l) => (!m || l.date_livraison! > m ? l.date_livraison : m), null)
+}
+
 function LineCard({
-  line, isEditing, linesLocked, isDrawerOpen, onEdit, onDelete, onOpenAffectation,
+  line, expedition, departCommande, enPreparation, isEditing, linesLocked, isDrawerOpen, onEdit, onDelete, onOpenAffectation,
 }: {
   line: LigneCommande
+  /** how the order leaves: the line's hover says it */
+  expedition: Expedition
+  /** when the whole order can leave (hover of its lines) */
+  departCommande: string | null
+  /** « En préparation »: a line without a date shows its earliest date, neutral (the validation gives it) */
+  enPreparation: boolean
   isEditing: boolean
   linesLocked: boolean
   isDrawerOpen: boolean
@@ -2151,10 +2328,11 @@ function LineCard({
   onOpenAffectation: (lineId: number | null) => void
 }) {
   const { border, iconBg, iconColor } = lineCardColors(line)
-  const chip = lineTypeChip(line.type)
-  // Domain icon per line type — same visual language as the sidebar nav:
-  // écru → TmRollIcon, fini → FiniRollIcon, divers → Box.
+  // Domain icon per line type — same visual language as the sidebar nav: écru → TmRollIcon,
+  // fini → FiniRollIcon, divers → Box. Large, in its own column: it IS the type (no « Fini » chip
+  // since Vincent 2026-10-28), the hover names it.
   const TypeIcon = line.type === 2 ? FiniRollIcon : line.type === 3 ? Box : TmRollIcon
+  const typeLabel = line.type === 2 ? 'Fini' : line.type === 3 ? 'Divers' : 'Tombé de métier'
   const canAffect = line.type === 1 || line.type === 2
   // Divers lines carry no rolls, but they DO open a drawer — theirs ships
   // catalog articles through the expedition_divers ledger.
@@ -2172,32 +2350,36 @@ function LineCard({
     <div
       data-line-id={line.IDligne_commande_client}
       className={cn(
-        'group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
+        'group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3.5',
         border,
         clickable && 'cursor-pointer hover:bg-zinc-100 hover:border-accent/40 transition-colors',
         isDrawerOpen && 'ring-1 ring-accent bg-accent/[0.06] border-accent/50',
       )}
       onClick={clickable ? () => onOpenAffectation(isDrawerOpen ? null : line.IDligne_commande_client) : undefined}
     >
+      {/* Top row: icon, reference / coloris, status; the body below starts at the card's left edge,
+          under the icon (Vincent 2026-10-28). */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={cn('h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0', iconBg)}>
-            <TypeIcon className={cn('h-3.5 w-3.5', iconColor)} />
+        <div className="flex items-center gap-3 min-w-0">
+          <div title={typeLabel} className={cn('h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0', iconBg)}>
+            <TypeIcon className={cn('h-[22px] w-[22px]', iconColor)} />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium truncate">
+            {/* The card's title, one step above the figures (16 px): the reference semibold, the rest muted. */}
+            <p className="text-base font-semibold truncate">
               {line.ref_label || '—'}
-              {line.colori_reference ? <span className="text-muted-foreground"> / {line.colori_reference}</span> : null}
-              {enEtude ? <span className="text-muted-foreground"> / en étude : {line.etude?.libelle || '—'}</span> : null}
-              {variations ? <span className="text-muted-foreground"> · {variations}</span> : null}
+              {line.colori_reference ? <span className="font-normal text-muted-foreground"> - {line.colori_reference}</span> : null}
+              {enEtude ? <span className="font-normal text-muted-foreground"> - en étude : {line.etude?.libelle || '—'}</span> : null}
+              {variations ? <span className="font-normal text-muted-foreground"> · {variations}</span> : null}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {line.statut && <StatutLignePill statut={line.statut} />}
-          {chip && (
-            <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-medium', chip.classes)}>{chip.label}</span>
+          {/* The launch date beside the pill (« Planifiée » before it, « À lancer » red from it). */}
+          {canAffect && !linesLocked && (line.statut?.etat === 'planifiee' || line.statut?.etat === 'a_lancer') && (
+            <LancementLabel date={line.date_lancement} etape={line.etape_lancement} rouge={line.statut?.etat === 'a_lancer' && line.urgence === 'rouge'} />
           )}
+          {line.statut && <StatutLignePill statut={line.statut} />}
           {isEditing && !linesLocked && (
             <div className="flex gap-0.5">
               <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onEdit() }}>
@@ -2213,7 +2395,7 @@ function LineCard({
       {/* Stat row — mirrors the PDF lines-table vocabulary (Commandé ·
           Expédié · Prix u. · Montant), expedition date pinned right with
           its urgency color. Single source for the ordered quantity. */}
-      <div className="mt-2 ml-9 flex flex-wrap items-end gap-x-6 gap-y-1.5">
+      <div className="mt-3 flex flex-wrap items-end gap-x-6 gap-y-1.5">
         <CommandeStat line={line} />
         {(canAffect || isDivers) && (
           <LineStat
@@ -2225,51 +2407,64 @@ function LineCard({
         {line.prix > 0 && <LineStat label="Prix u." value={`${fmtNum(line.prix, 2)} €`} />}
         {line.montant > 0 && <LineStat label="Montant" value={`${fmtNum(line.montant, 2)} €`} />}
         {(() => {
-          // The tint follows the line's verdict (API urgenceLigne) and sits on the date that verdict is
-          // about: once the line is ready and the client decides when it leaves, the livraison stat.
+          // The tint follows the line's verdict (API urgenceLigne) and sits on D, the one date it is about.
           const tint = line.urgence === 'rouge' ? 'text-red-600' : line.urgence === 'ambre' ? 'text-amber-600' : undefined
           const etat = line.statut?.etat
-          const prete = etat === 'pae' || (isDivers && etat === 'a_lancer')
-          // « commande complète » ships like « dès que prête » once nothing else is in production: tint on the délai.
-          const surLivraison = prete && (line.mode_livraison === 'sur_appel' || line.mode_livraison === 'date_client')
           const retard = line.delai_initial && line.date_livraison && line.delai_initial !== line.date_livraison
             ? joursEntre(line.delai_initial, line.date_livraison) : 0
+          // A line with a launch date (doctrine des délais §5, label beside the pill): its colour is
+          // about that date, not the délai.
+          const parLancement = canAffect && (etat === 'a_lancer' || etat === 'planifiee') && !!line.date_lancement && !!line.date_livraison
           return (
             <div className="ml-auto flex items-end gap-4 text-right">
               {enEtude && !line.date_livraison && (
-                <LineStat label="Délai" value="Après l’étude" valueClass="text-muted-foreground font-medium" title="Pas de délai tant que le client n’a pas validé le coloris" />
+                <LineStat label="Date" value="Après l’étude" valueClass="text-muted-foreground font-medium" title="Pas de délai tant que le client n’a pas validé le coloris" />
               )}
-              {line.date_livraison && (
-                <LineStat
-                  label={retard > 0 ? `Délai · +${retard} j` : 'Délai'}
-                  value={formatHfsqlDate(line.date_livraison)}
-                  title={line.delai_initial && retard !== 0 ? `Délai initial ${formatHfsqlDate(line.delai_initial)}` : undefined}
-                  valueClass={surLivraison ? undefined : tint}
-                />
-              )}
-              {/* The default mode is shown too: the reader sees it was chosen, not forgotten. */}
-              {(line.mode_livraison ?? 'des_que_prete') === 'des_que_prete' && (
-                <LineStat label="Livraison" value="Dès que prête" title="Expédiée dès que la ligne est prête" />
-              )}
-              {line.mode_livraison === 'date_client' && !line.date_expedition_prevue && (
-                <LineStat label="Livraison" value="Date convenue" title="Date d’expédition convenue avec le client, pas encore saisie" />
-              )}
-              {line.mode_livraison === 'sur_appel' && (
-                <LineStat label="Livraison" value="Sur appel" valueClass={surLivraison ? tint : undefined} />
-              )}
-              {line.mode_livraison === 'commande_complete' && (
-                <LineStat label="Livraison" value="Commande complète" title="Expédiée avec toute la commande, quand plus aucune ligne n’est en production" />
-              )}
-              {line.mode_livraison === 'date_client' && line.date_expedition_prevue && (
-                <LineStat label="Expédition prévue" value={formatHfsqlDate(line.date_expedition_prevue)} valueClass={surLivraison ? tint : undefined} />
-              )}
+              {/* ONE date per line, always « Prête le » (doctrine des délais §5 bis): how it then leaves is the
+                  order's, in the hover. Without a date: its earliest date (doctrine §5 ter), neutral while the
+                  order is in préparation (the validation gives it), red once validated (ours to get). */}
+              {!(enEtude && !line.date_livraison) && (() => {
+                // Shipped or closed: nothing to obtain any more.
+                const partie = etat === 'expediee' || etat === 'soldee'
+                const plusTot = line.au_plus_tot
+                if (!line.date_livraison && !partie && plusTot) {
+                  return (
+                    <Tooltip side="top" content={<DelaiLigneDetail auPlusTot={plusTot} />}>
+                      <LineStat
+                        label="Prête au plus tôt le"
+                        value={formatHfsqlDate(plusTot.date)}
+                        valueClass={cn(SOULIGNE_INFO, !enPreparation && 'text-red-600')}
+                      />
+                    </Tooltip>
+                  )
+                }
+                const stat = (
+                  <LineStat
+                    label={`Prête le${retard > 0 ? ` · +${retard} j` : ''}`}
+                    value={line.date_livraison ? formatHfsqlDate(line.date_livraison) : partie ? '—' : 'À obtenir'}
+                    valueClass={!line.date_livraison ? (partie ? 'text-muted-foreground' : 'text-red-600') : cn(SOULIGNE_INFO, !(parLancement || enPreparation) && tint)}
+                  />
+                )
+                if (!line.date_livraison) return stat
+                return (
+                  <Tooltip side="top" content={
+                    <DelaiLigneDetail auPlusTot={partie ? null : line.au_plus_tot} entete={{
+                      date: line.date_livraison,
+                      lignes: [
+                        line.delai_initial && retard !== 0 ? `Engagement ${formatHfsqlDate(line.delai_initial)}` : enPreparation ? 'Date libre jusqu’à la validation' : 'Notre engagement',
+                        phraseExpedition(expedition, departCommande),
+                      ],
+                    }} />
+                  }>{stat}</Tooltip>
+                )
+              })()}
             </div>
           )
         })()}
       </div>
       {enEtude && <EtudeLigneBandeau line={line} canRelancer={!isEditing} />}
       {!!line.commentaire?.trim() && (
-        <div className="flex items-start gap-1.5 mt-2 ml-9">
+        <div className="flex items-start gap-1.5 mt-2">
           <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />
           <p className="text-[11px] text-muted-foreground italic">{line.commentaire.trim()}</p>
         </div>
@@ -2279,7 +2474,7 @@ function LineCard({
       {canAffect && <LigneMatiereGauge line={line} target={target} />}
       {/* Divers lines have nothing to reserve — the gauge tracks what shipped. */}
       {isDivers && (
-        <div className="mt-2 ml-9 flex items-center gap-2">
+        <div className="mt-2 flex items-center gap-2">
           <div className="h-1.5 flex-1 rounded-full bg-zinc-200 overflow-hidden">
             <div
               className={cn('h-full rounded-full transition-all', shipPct >= 99.9 ? 'bg-green-500' : 'bg-accent')}
@@ -2316,7 +2511,7 @@ function EtudeLigneBandeau({ line, canRelancer }: { line: LigneCommande; canRela
   const url = `/commandes-client/lignes/${line.IDligne_commande_client}/relance-etude`
   return (
     // The dialog sits inside this wrapper so its clicks never reach the line card (which opens the drawer).
-    <div className="flex items-center gap-1.5 mt-2 ml-9 text-[11px]" onClick={(ev) => ev.stopPropagation()}>
+    <div className="flex items-center gap-1.5 mt-2 text-[11px]" onClick={(ev) => ev.stopPropagation()}>
       <FlaskConical className={cn('h-3 w-3 flex-shrink-0', due ? 'text-red-600' : 'text-muted-foreground/60')} />
       <span className={cn('truncate', due ? 'text-red-600 font-medium' : 'text-muted-foreground')}>{texte}</span>
       {e?.derniere_relance && (
@@ -2356,10 +2551,12 @@ function EtudeLigneBandeau({ line, canRelancer }: { line: LigneCommande; canRela
 // ── Affectation drawer (reserve écru/fini rolls) ────────
 
 function AffectationDrawer({
-  commandeId, ligne, clientNom, clientId = 0, soldee = false, onClose, onSuccess,
+  commandeId, ligne, clientNom, clientId = 0, soldee = false, enPreparation = false, onClose, onSuccess,
 }: {
   commandeId: number
   ligne: LigneCommande
+  /** the order is « En préparation »: reserving is free, ordering from partners and planning wait for the validation */
+  enPreparation?: boolean
   clientNom?: string
   /** Drives the « Étiquettes » tab (clients whose roll labels are switched on). */
   clientId?: number
@@ -2463,16 +2660,49 @@ function AffectationDrawer({
     ...(ligne.type === 2 && etiquetteClients?.clients.includes(clientId) ? [{ key: 'etiq' as const, label: 'Étiquettes', icon: Barcode }] : []),
   ]
   const [tab, setTab] = useState<SupplyTab>('affectation')
+  // What the line holds at the knitting and dyeing stages: the bottom zones' « Lancer » / « Ennoblir »
+  // are active only where reserved matter sits (decision Vincent 2026-10-28). Shared caches with the zones.
+  const { data: filLigne } = useFilLigne(commandeId, ligne.IDligne_commande_client, supplyEnabled && (tab === 'trico' || tab === 'fil'))
+  const { data: matiereEcru } = useMatiereEcru(commandeId, ligne.IDligne_commande_client, ligne.type === 2 && tab === 'enno')
+  // « Planifier » next to the bottom zones' order buttons (Vincent 2026-10-28): the line's launch date
+  // (lib/lancement-ligne.ts), the tab giving the step that waits. Shown only where it means something:
+  // on a line still to launch, in the tab of the step the date holds (« Ennoblir le 16/11 »), or in a
+  // tab whose step could go now — écru reserved at a dyer, yarn lots reserved at a knitter, yarn still
+  // to order. A date without a step (before 0040) shows in every tab.
+  const aPlanifier: Record<EtapeLancement, boolean> = {
+    ennoblissement: lieuxAEnnoblir(matiereEcru).length > 0,
+    tricotage: tricoteursPrets(filLigne).length > 0,
+    fil: (filLigne?.yarns ?? []).some((y) => y.pourcentage > 0 && y.manque_kg > 0.05),
+  }
+  // « En préparation »: an order button stays visible but waits for the validation (doctrine des délais §5 ter).
+  const tantQuePreparation = <T extends { actif: boolean; titre: string }>(l: T): T =>
+    enPreparation ? { ...l, actif: false, titre: 'Commande en préparation : validez-la (pied de page) avant de passer commande' } : l
+  const planifier = (etape: EtapeLancement) => {
+    if (enPreparation) return null
+    // Once something is launched the date no longer acts (and launching from the line removes it).
+    if (soldee || (ligne.statut?.etat !== 'a_lancer' && ligne.statut?.etat !== 'planifiee')) return null
+    const ici = !!ligne.date_lancement && (ligne.etape_lancement === etape || !ligne.etape_lancement)
+    if (!ici && !aPlanifier[etape]) return null
+    // The doctrine's dyeing launch date (§4: what is left of the margin after the knitter, the écru
+    // waiting with us), proposed in the dialog, never written by itself (Vincent 2026-10-29).
+    const plan = ligne.au_plus_tot?.plan
+    const proposee = etape === 'ennoblissement' && plan?.ennoblirLe && plan.attenteEcru > 0
+      ? { date: plan.ennoblirLe, pourquoi: `${plan.attenteEcru} j ouvrés de marge laissés à l’écru en stock, selon la doctrine` }
+      : null
+    return <PlanifierBouton commandeId={commandeId} ligneId={ligne.IDligne_commande_client}
+      date={ici ? ligne.date_lancement : null} etapeActuelle={ligne.etape_lancement} etape={etape} proposee={proposee} />
+  }
+
   // Ennoblissement row clicked → open the roll-affectation modal for that dyer order.
   const [ennoTarget, setEnnoTarget] = useState<SupplyEnnoRow | null>(null)
   // Tricotage row clicked → adjust this line's planning allocation on that knitting order.
   const [tricoTarget, setTricoTarget] = useState<SupplyTricoRow | null>(null)
   // "Nouvelle commande" on a location row → open the create-order modal scoped to it.
-  const [createEnnoLocation, setCreateEnnoLocation] = useState<EnnoLocationRow | null>(null)
+  const [createEnnoLocation, setCreateEnnoLocation] = useState<LieuEnnoblisseur | null>(null)
   // "Nouvelle commande" on a stock-fil location band → knit-order modal
   // scoped to that tricoteur (legacy "Commande de Tricotage Malterre" modal,
   // generalized to any knitter holding matching yarn).
-  const [createTricoLocation, setCreateTricoLocation] = useState<TricoStockFilLocation | null>(null)
+  const [createTricoLocation, setCreateTricoLocation] = useState<LieuTricoteur | null>(null)
 
   // Quick-ship (legacy Affectation tab "Expédier"): select affected rolls →
   // one new expedition carrying them, then jump to the Expédition tab.
@@ -2494,22 +2724,6 @@ function AffectationDrawer({
       onSuccess()
       setTab('exped')
     },
-  })
-
-  // Tombé-de-métier (écru) of this ref available, aggregated by sous-traitant
-  // location — the legacy "029 - écru disponible" panel below the orders table.
-  const { data: ennoLocations, isLoading: ennoLocLoading } = useQuery<EnnoLocationsPayload>({
-    queryKey: ['commande-client-enno-locations', commandeId, ligne.IDligne_commande_client],
-    queryFn: () => apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/supply/ennoblissement/available-by-location`),
-    enabled: ligne.type === 2,
-  })
-
-  // Yarn on hand usable to knit this line's écru, aggregated by location —
-  // the legacy "Stock de fil disponible" panel of the Tricotage tab.
-  const { data: stockFil, isLoading: stockFilLoading } = useQuery<TricoStockFilPayload>({
-    queryKey: ['commande-client-trico-stockfil', commandeId, ligne.IDligne_commande_client],
-    queryFn: () => apiFetch(`/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}/supply/tricotage/stock-fil`),
-    enabled: supplyEnabled,
   })
 
   const linked = data?.linked ?? []
@@ -2794,16 +3008,36 @@ function AffectationDrawer({
 
       {tab === 'enno' && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
-          <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
-              Commandes ennoblisseur en cours
-            </h3>
+          {/* Two zones (components/commandes/ZonesLigne.tsx): the écru reserved to the line, then
+              the dyer orders that turn it into the line's fini. */}
+          <EcruLigneZone
+            commandeId={commandeId}
+            ligneId={ligne.IDligne_commande_client}
+            soldee={soldee}
+            onChanged={() => {
+              queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
+              queryClient.invalidateQueries({ queryKey })
+              onSuccess()
+            }}
+          />
+          <ZoneLigne
+            kind="commandes"
+            titre="Commandes ennoblisseur"
+            actions={soldee ? null : <>{planifier('ennoblissement')}<BoutonsCommande
+              icon={Droplets}
+              verbe="Ennoblir"
+              lieux={lieuxAEnnoblir(matiereEcru).map((l) => tantQuePreparation({
+                key: l.IDsous_traitant, nom: l.location_nom, actif: true,
+                titre: `Envoyer chez ${l.location_nom} les ${l.nb} pièce${l.nb > 1 ? 's' : ''} réservée${l.nb > 1 ? 's' : ''} à la ligne (${fmtNum(l.kg, 1)} kg)`,
+                onClick: () => setCreateEnnoLocation({ IDsous_traitant: l.IDsous_traitant, location_nom: l.location_nom }),
+              }))}
+            /></>}
+          >
             <SupplyTable
               loading={supplyLoading}
               rows={supply?.ennoblissement ?? []}
               emptyLabel="Aucune commande ennoblisseur en cours"
               emptyIcon={Droplets}
-              onRowClick={setEnnoTarget}
               columns={[
                 { key: 'no', label: 'N°', align: 'left', render: (r) => <span className="tabular-nums font-medium">{r.commande_id}</span> },
                 { key: 'dc', label: 'Date', align: 'left', render: (r) => fmtSupplyDate(r.date_commande) },
@@ -2814,37 +3048,69 @@ function AffectationDrawer({
                 { key: 'af', label: 'Affecté', align: 'right', render: (r) => <span className="font-semibold">{fmtNum(r.qte_affecte, 1)} Ml</span> },
               ]}
             />
-          </section>
-
-          <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
-              {ennoLocations?.ecru_ref_label
-                ? `${ennoLocations.ecru_ref_label}${ennoLocations.ecru_coloris_label ? ` /${ennoLocations.ecru_coloris_label}` : ''} — tombé de métier disponible`
-                : 'Tombé de métier disponible'}
-            </h3>
-            <EnnoLocationTable
-              loading={ennoLocLoading}
-              locations={ennoLocations?.locations ?? []}
-              onNewOrder={setCreateEnnoLocation}
-            />
-          </section>
+          </ZoneLigne>
         </div>
       )}
 
       {tab === 'trico' && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
-          <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
-              Commandes tricoteur en cours
-            </h3>
+          {/* Two zones: the yarn reserved IN STOCK at a knitter (what a knitting order goes out
+              with), then the knitting orders that turn it into écru. */}
+          <FilEnStockZone
+            commandeId={commandeId}
+            ligneId={ligne.IDligne_commande_client}
+            soldee={soldee}
+          />
+          <ZoneLigne
+            kind="commandes"
+            titre="Commandes tricoteur"
+            actions={soldee ? null : <>{planifier('tricotage')}<BoutonsCommande
+              icon={KnitIcon}
+              verbe="Tricoter"
+              lieux={tricoteursPrets(filLigne).map((t) => tantQuePreparation({
+                key: t.magasin_id, nom: t.magasin_nom, actif: t.complet,
+                titre: t.complet
+                  ? `Tricoter chez ${t.magasin_nom} avec le fil réservé à la ligne`
+                  : `Tout le fil doit être réservé chez ${t.magasin_nom} : manque ${t.manquants.join(', ')}`,
+                onClick: () => setCreateTricoLocation({ magasin_id: t.magasin_id, magasin_nom: t.magasin_nom }),
+              }))}
+            /></>}
+          >
             <SupplyTable
               loading={supplyLoading}
               rows={supply?.tricotage ?? []}
               emptyLabel="Aucune commande tricotage en cours"
               emptyIcon={KnitIcon}
+              // A knitting order's share of the line is set here, every line kind (the Ennoblissement
+              // selector offers available écru only since 2026-10-29); the launch already fixes it.
               onRowClick={setTricoTarget}
               columns={[
-                { key: 'no', label: 'N°', align: 'left', render: (r) => <span className="tabular-nums font-medium">{r.commande_id}</span> },
+                { key: 'no', label: 'N°', align: 'left', render: (r) => {
+                  // The yarn this order took from the line's reservation (it carries the matter now).
+                  const pris = (filLigne?.reservations ?? []).filter((x) => x.etat === 'consommee' && x.IDligne_commande_sous_traitant === r.id)
+                  const n = <span className={cn('tabular-nums font-medium', pris.length > 0 && SOULIGNE_INFO)}>{r.commande_id}</span>
+                  if (pris.length === 0) return n
+                  const nom = (x: (typeof pris)[number]) => {
+                    const y = filLigne?.yarns?.find((f) => f.IDref_fil === x.IDref_fil && f.IDcolori_fil === x.IDcolori_fil)
+                    return y ? `${y.reference}${y.coloris ? ` - ${y.coloris}` : ''}` : ''
+                  }
+                  return (
+                    <Tooltip side="top" align="start" content={
+                      <div className="w-max min-w-[220px] py-1 font-normal">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Fil pris par la commande</p>
+                        <div className="mt-1.5 space-y-1">
+                          {pris.map((x) => (
+                            <div key={x.id} className="flex items-center gap-2 text-xs tabular-nums">
+                              <span className="flex-1">{nom(x)}</span>
+                              <span className="text-muted-foreground">lot {x.lot ?? '—'}</span>
+                              <span className="w-14 text-right font-semibold">{fmtNum(x.kg, 1)} kg</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    }>{n}</Tooltip>
+                  )
+                } },
                 { key: 'dc', label: 'Date', align: 'left', render: (r) => fmtSupplyDate(r.date_commande) },
                 { key: 'sst', label: 'Tricoteur', align: 'left', render: (r) => r.sous_traitant_nom || '—' },
                 { key: 'dl', label: 'Délai', align: 'left', render: (r) => fmtSupplyDate(r.date_livraison) },
@@ -2853,25 +3119,12 @@ function AffectationDrawer({
                 { key: 'mp', label: 'Métrage pot.', align: 'right', render: (r) => <span className="font-semibold">{fmtNum(r.metrage_potentiel, 0)} Ml</span> },
               ]}
             />
-          </section>
-
-          <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">
-              {stockFil?.ecru_ref_label
-                ? `${stockFil.ecru_ref_label}${stockFil.ecru_coloris_label ? ` /${stockFil.ecru_coloris_label}` : ''} — stock de fil disponible`
-                : 'Stock de fil disponible'}
-            </h3>
-            <StockFilDispoTable
-              loading={stockFilLoading}
-              locations={stockFil?.locations ?? []}
-              onNewOrder={setCreateTricoLocation}
-            />
-          </section>
+          </ZoneLigne>
         </div>
       )}
 
       {tab === 'fil' && (
-        <FilLigneTab commandeId={commandeId} ligneId={ligne.IDligne_commande_client} soldee={soldee} />
+        <FilLigneTab commandeId={commandeId} ligneId={ligne.IDligne_commande_client} soldee={soldee} planifier={planifier('fil')} />
       )}
 
       {tab === 'exped' && (
@@ -2907,7 +3160,11 @@ function AffectationDrawer({
         ligneId={ligne.IDligne_commande_client}
         row={ennoTarget}
         onClose={() => setEnnoTarget(null)}
-        onSuccess={onSuccess}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: matiereEcruQueryKey(commandeId, ligne.IDligne_commande_client) })
+          queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
+          onSuccess()
+        }}
       />
     )}
     {tricoTarget && (
@@ -2920,7 +3177,7 @@ function AffectationDrawer({
         target={target}
         dim={dim}
         uniteLabel={uniteLabel}
-        rendement={stockFil?.rendement ?? 0}
+        rendement={queryClient.getQueryData<FilPayload>(filLigneQueryKey(commandeId, ligne.IDligne_commande_client))?.rendement ?? 0}
         refLabel={ligne.ref_label}
         onClose={() => setTricoTarget(null)}
         onSuccess={() => {
@@ -2928,6 +3185,7 @@ function AffectationDrawer({
           // affecté gauge (pieces payload).
           queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
           queryClient.invalidateQueries({ queryKey })
+          queryClient.invalidateQueries({ queryKey: matiereEcruQueryKey(commandeId, ligne.IDligne_commande_client) })
           onSuccess()
         }}
       />
@@ -2948,7 +3206,8 @@ function AffectationDrawer({
           // rolls) + the location pool, plus the parent line list.
           queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
           queryClient.invalidateQueries({ queryKey })
-          queryClient.invalidateQueries({ queryKey: ['commande-client-enno-locations', commandeId, ligne.IDligne_commande_client] })
+          queryClient.invalidateQueries({ queryKey: matiereEcruQueryKey(commandeId, ligne.IDligne_commande_client) })
+          queryClient.invalidateQueries({ queryKey: ['commande-client-enno-available', commandeId, ligne.IDligne_commande_client] })
           // The new order must show up on Sous-traitants › Commandes at once
           // (#1178), and the écru rolls it affects are no longer "disponible"
           // on Tombé Métier › Stock.
@@ -2984,7 +3243,8 @@ function AffectationDrawer({
           // New knit order + its allocation land in the supply table; the yarn
           // reservations change the stock-fil panel too.
           queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
-          queryClient.invalidateQueries({ queryKey: ['commande-client-trico-stockfil', commandeId, ligne.IDligne_commande_client] })
+          // The launch takes the reserved lots: the Tricotage / Fil tabs' yarn.
+          queryClient.invalidateQueries({ queryKey: filLigneQueryKey(commandeId, ligne.IDligne_commande_client) })
           // The new order must show up on Sous-traitants › Commandes at once
           // (#1178); the yarn it reserves changes Fils › Stock's « Besoin ».
           invalidateSstCommandeCaches(queryClient)
@@ -2998,6 +3258,9 @@ function AffectationDrawer({
 }
 
 type SupplyTab = 'affectation' | 'enno' | 'trico' | 'fil' | 'exped' | 'etiq'
+
+/** A knitter holding the line's reserved yarn: the « Lancer le tricotage » dialog's location. */
+interface LieuTricoteur { magasin_id: number; magasin_nom: string }
 
 function fmtSupplyDate(d: string | null): string {
   return d && d.length === 8 && d !== '00000000' ? formatHfsqlDate(d) : '—'
@@ -4894,25 +5157,6 @@ interface AvailableRollsPayload {
   rendement: number
   rolls: AvailableEcruRoll[]
 }
-interface EnnoLocationRow {
-  IDsous_traitant: number
-  location_nom: string
-  is_ennoblisseur: boolean
-  group: 'ennoblisseur' | 'usine'
-  nb_rolls: number
-  poids: number
-  metrage_potentiel: number
-}
-interface EnnoLocationsPayload {
-  rendement: number
-  unite_label: string
-  ecru_ref_label: string
-  /** Coloris the pool is filtered on ("ecru" for dyed finis, the line's own
-   *  colori_ecru for wash-only finis); '' when unfiltered. */
-  ecru_coloris_label: string
-  locations: EnnoLocationRow[]
-}
-
 // Shared chrome for the grouped supply tables below — same container, header
 // band and row typography as SupplyTable so the whole drawer tab reads as one
 // visual grammar. Groups render as full-width band rows inside the table: zinc on a white
@@ -4927,170 +5171,6 @@ function GroupBandRow({ label, colSpan, tiroir = false }: { label: string; colSp
         {label}
       </td>
     </tr>
-  )
-}
-
-// Aggregated écru-by-location table. Two labelled groups; the "Nouvelle
-// commande" button shows only on ennoblisseur rows (you commission the dyer
-// that holds the écru — matches the legacy launcher on the MATEL row).
-function EnnoLocationTable({
-  loading, locations, onNewOrder,
-}: {
-  loading: boolean
-  locations: EnnoLocationRow[]
-  onNewOrder: (loc: EnnoLocationRow) => void
-}) {
-  if (loading) {
-    return <div className="space-y-2">{[1, 2].map((i) => <div key={i} className="h-10 bg-muted animate-pulse rounded-md" />)}</div>
-  }
-  if (locations.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-        <TmRollIcon className="h-8 w-8 mb-2 opacity-50" />
-        <p className="text-sm font-medium">Aucun tombé de métier disponible</p>
-        <p className="text-xs mt-1">Aucun rouleau écru disponible chez un sous-traitant.</p>
-      </div>
-    )
-  }
-  const groups: { label: string; rows: EnnoLocationRow[] }[] = [
-    { label: 'Chez les ennoblisseurs', rows: locations.filter((l) => l.group === 'ennoblisseur') },
-    { label: "À l'usine", rows: locations.filter((l) => l.group === 'usine') },
-  ].filter((g) => g.rows.length > 0)
-  return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-      <table className="w-full text-xs">
-        <tbody>
-          {groups.map((g) => (
-            <Fragment key={g.label}>
-              <GroupBandRow label={g.label} colSpan={4} tiroir />
-              {g.rows.map((loc) => (
-                <tr key={loc.IDsous_traitant} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
-                  <td className="px-2.5 py-2 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1.5 font-medium">
-                      <MapPin className="h-3.5 w-3.5 text-accent flex-shrink-0" />
-                      {loc.location_nom}
-                    </span>
-                  </td>
-                  <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums">{fmtNum(loc.poids, 1)} kg</td>
-                  <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums font-semibold">{fmtNum(loc.metrage_potentiel, 0)} Ml</td>
-                  <td className="px-2.5 py-1 whitespace-nowrap text-right">
-                    {loc.is_ennoblisseur && (
-                      <Button variant="ghost" size="sm" onClick={() => onNewOrder(loc)} className="h-7 text-accent hover:text-accent hover:bg-accent/10">
-                        <Plus className="h-3.5 w-3.5 mr-1" />Nouvelle commande
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-// ── Tricotage: "Stock de fil disponible" (legacy right-hand panel) ──
-// Yarn on hand matching the écru's composition, grouped by holding location.
-// Métrage potentiel = fabric the yarn weight can produce (poids / % × rendement).
-
-interface TricoStockFilYarn {
-  IDref_fil: number
-  IDcolori_fil: number
-  reference: string
-  coloris: string
-  pourcentage: number
-  poids: number
-  metrage_potentiel: number
-}
-interface TricoStockFilLocation {
-  magasin_id: number
-  magasin_nom: string
-  is_tricoteur: boolean
-  yarns: TricoStockFilYarn[]
-}
-interface TricoStockFilPayload {
-  rendement: number
-  ecru_ref_label: string
-  ecru_coloris_label?: string
-  locations: TricoStockFilLocation[]
-}
-
-function StockFilDispoTable({
-  loading, locations, onNewOrder,
-}: {
-  loading: boolean
-  locations: TricoStockFilLocation[]
-  onNewOrder: (loc: TricoStockFilLocation) => void
-}) {
-  if (loading) {
-    return <div className="space-y-2">{[1, 2].map((i) => <div key={i} className="h-10 bg-muted animate-pulse rounded-md" />)}</div>
-  }
-  if (locations.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-        <BobineIcon className="h-8 w-8 mb-2 opacity-50" />
-        <p className="text-sm font-medium">Aucun stock de fil disponible</p>
-        <p className="text-xs mt-1">Aucun lot de fil correspondant à la composition de cet écru.</p>
-      </div>
-    )
-  }
-  return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-      <table className="w-full text-xs">
-        <tbody>
-          {locations.map((loc) => (
-            <Fragment key={loc.magasin_id}>
-              {/* Group band doubles as the header row: the location-name
-                  column takes the flexible width (w-full) so the value
-                  columns sit right, next to the content-width launcher column
-                  on tricoteur locations. */}
-              <tr className="text-[10px] uppercase tracking-wide text-primary/80 bg-primary/10 border-b border-primary/10">
-                <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-left w-full">{loc.magasin_nom}</td>
-                <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-right">Compo.</td>
-                <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-right">Poids</td>
-                <td className="px-2.5 py-1 font-semibold whitespace-nowrap text-right">Métrage pot.</td>
-                <td className="px-2.5 py-0.5 whitespace-nowrap text-right">
-                  {loc.is_tricoteur && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onNewOrder(loc)}
-                      className="h-6 px-2 text-[11px] normal-case tracking-normal text-accent hover:text-accent hover:bg-accent/10"
-                    >
-                      <Plus className="h-3 w-3 mr-1" />Nouvelle commande
-                    </Button>
-                  )}
-                </td>
-              </tr>
-              {loc.yarns.map((y) => {
-                const noStock = !(y.poids > 0)
-                // Legacy stores 6.4 as 6.400000095… — show one decimal only when needed.
-                const pct = Math.round(y.pourcentage * 10) / 10
-                return (
-                  <tr key={`${y.IDref_fil}:${y.IDcolori_fil}`} className={cn('border-b border-border/40 last:border-0 hover:bg-accent/5', noStock && 'text-muted-foreground')}>
-                    <td className="px-2.5 py-2 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1.5 font-medium">
-                        <BobineIcon className={cn('h-3.5 w-3.5 flex-shrink-0', noStock ? 'text-muted-foreground/50' : 'text-accent')} />
-                        {y.reference}{y.coloris ? ` - ${y.coloris}` : ''}
-                      </span>
-                    </td>
-                    <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums">
-                      {pct > 0 ? `${fmtNum(pct, Number.isInteger(pct) ? 0 : 1)} %` : '—'}
-                    </td>
-                    <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums">{fmtNum(y.poids, 1)} kg</td>
-                    <td className={cn('px-2.5 py-2 whitespace-nowrap text-right tabular-nums', y.metrage_potentiel > 0 && 'font-semibold')}>
-                      {y.metrage_potentiel > 0 ? `${fmtNum(y.metrage_potentiel, 0)} Ml` : '—'}
-                    </td>
-                    <td />
-                  </tr>
-                )
-              })}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
-    </div>
   )
 }
 
@@ -5120,15 +5200,16 @@ function AffecteGauge({
   )
 }
 
-// Create a new ennoblisseur order from the écru held at ONE location (the row's
-// sous-traitant = the dyer). Scoped roll list ("disponible chez X"), multi-
-// select (nothing pre-selected), then POST creates the order + affects the rolls.
+// Create a new ennoblisseur order at ONE dyer, from the line (decision Vincent 2026-10-28: reserving
+// and ordering are two gestures). The order dyes the écru reserved to the line at that dyer (all
+// pre-selected, the Ennoblissement tab's top zone reserves it); free pieces there may be added on top,
+// dyed for the stock. Without a piece reserved to the line, no order (API 409 sans_matiere_reservee).
 function CreateEnnoblisseurOrderDialog({
   commandeId, ligne, location, clientNom, reserved, target, dim, uniteLabel, onClose, onSuccess,
 }: {
   commandeId: number
   ligne: LigneCommande
-  location: EnnoLocationRow
+  location: LieuEnnoblisseur
   clientNom?: string
   /** Combined affecté already on the line / commanded qty, in the line's dim. */
   reserved: number
@@ -5142,10 +5223,6 @@ function CreateEnnoblisseurOrderDialog({
   const [dateCommande, setDateCommande] = useState(() => new Date().toISOString().slice(0, 10))
   const [dateLivraison, setDateLivraison] = useState('')
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  // Selected rolls the user chose NOT to reserve to this client line (LIVA
-  // #1115 — legacy FEN_Ennoblir's per-roll « lien » icon). Default linked, so
-  // the set holds the exceptions: a roll dyed for stock.
-  const [unlinked, setUnlinked] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastSelectedRef = useRef<number | null>(null)
@@ -5155,44 +5232,32 @@ function CreateEnnoblisseurOrderDialog({
     queryFn: () => apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/supply/ennoblissement/available-rolls?magasin=${location.IDsous_traitant}`),
   })
 
-  // Ascending by roll number (3377/1, 3377/2, … 3377/1001) — numeric-aware so
-  // the suffix sorts as a number, not lexically.
+  // Ascending by roll number (3377/1, 3377/2, … 3377/1001) — numeric-aware. Another line's piece is
+  // never sent from here.
   const rolls = useMemo(
-    () => [...(data?.rolls ?? [])].sort((a, b) =>
-      (a.numero ?? '').localeCompare(b.numero ?? '', 'fr', { numeric: true, sensitivity: 'base' })),
+    () => [...(data?.rolls ?? [])]
+      .filter((r) => !r.reserved_elsewhere)
+      .sort((a, b) => (a.numero ?? '').localeCompare(b.numero ?? '', 'fr', { numeric: true, sensitivity: 'base' })),
     [data],
   )
+  const pourLigne = rolls.filter((r) => r.reserved_to_line)
+  const pourStock = rolls.filter((r) => !r.reserved_to_line)
+  // The line's reserved pieces start selected: they are what the order is for.
+  const preselected = useRef(false)
+  useEffect(() => {
+    if (preselected.current || !data) return
+    preselected.current = true
+    setSelected(new Set(pourLigne.map((r) => r.id)))
+  }, [data, pourLigne])
   const rendement = data?.rendement ?? 0
-  // Nothing is pre-selected: the user picks the rolls to commission.
 
-  const orderedIds = rolls.map((r) => r.id)
-  const selectedKg = rolls.filter((r) => selected.has(r.id)).reduce((s, r) => s + (Number(r.poids) || 0), 0)
+  const orderedIds = [...pourLigne, ...pourStock].map((r) => r.id)
+  const kgDe = (rs: AvailableEcruRoll[]) => rs.filter((r) => selected.has(r.id)).reduce((s, r) => s + (Number(r.poids) || 0), 0)
+  const kgLigne = kgDe(pourLigne)
+  const kgStock = kgDe(pourStock)
+  const nbLigne = pourLigne.filter((r) => selected.has(r.id)).length
+  const selectedKg = kgLigne + kgStock
   const selectedMl = selectedKg * rendement
-  const allSelected = rolls.length > 0 && rolls.every((r) => selected.has(r.id))
-  // A roll can carry the link only when it is free or already ours: a roll
-  // reserved to another line keeps that reservation whatever the toggle says.
-  const canLink = (r: AvailableEcruRoll) => !r.reserved_elsewhere
-  const isLinked = (r: AvailableEcruRoll) => canLink(r) && !unlinked.has(r.id)
-  const linkable = rolls.filter((r) => selected.has(r.id) && canLink(r))
-  const linkedRolls = linkable.filter(isLinked)
-  // Gauge projection: only FREE, LINKED selected rolls add to the line's
-  // affecté — rolls already reserved to this line are inside `reserved`,
-  // rolls reserved to another line keep their reservation on create, and a
-  // roll dyed for stock reserves nothing.
-  const newKg = linkedRolls
-    .filter((r) => !r.reserved_to_line)
-    .reduce((s, r) => s + (Number(r.poids) || 0), 0)
-  const projected = dim === 'metrage' ? reserved + newKg * rendement : reserved + newKg
-
-  const selectAll = () => { setSelected(new Set(rolls.map((r) => r.id))); lastSelectedRef.current = rolls[rolls.length - 1]?.id ?? null }
-  const clearSelection = () => { setSelected(new Set()); setUnlinked(new Set()); lastSelectedRef.current = null }
-  const toggleLink = (id: number) => setUnlinked((prev) => {
-    const next = new Set(prev)
-    if (next.has(id)) next.delete(id); else next.add(id)
-    return next
-  })
-  const linkAll = () => setUnlinked(new Set())
-  const linkNone = () => setUnlinked(new Set(linkable.map((r) => r.id)))
 
   const handleToggle = (id: number, shiftKey: boolean) => {
     const anchor = lastSelectedRef.current
@@ -5216,17 +5281,17 @@ function CreateEnnoblisseurOrderDialog({
       if (next.has(id)) next.delete(id); else next.add(id)
       return next
     })
-    // A deselected roll forgets its link choice: re-selecting it starts linked.
-    setUnlinked((prev) => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next })
     lastSelectedRef.current = id
   }
 
-  const canSubmit = selected.size > 0 && dateCommande.length > 0 && !busy
-  const blocage = selected.size === 0
-    ? 'Sélectionnez les rouleaux à envoyer'
-    : dateCommande.length === 0
-      ? 'Indiquez la date de commande'
-      : null
+  const canSubmit = nbLigne > 0 && dateCommande.length > 0 && !busy
+  const blocage = pourLigne.length === 0
+    ? `Aucune pièce réservée à la ligne chez ${location.location_nom}`
+    : nbLigne === 0
+      ? 'Sélectionnez les pièces réservées à envoyer'
+      : dateCommande.length === 0
+        ? 'Indiquez la date de commande'
+        : null
   const handleSubmit = async () => {
     if (!canSubmit) return
     setError(null)
@@ -5239,7 +5304,6 @@ function CreateEnnoblisseurOrderDialog({
           date_commande: inputDateToHfsql(dateCommande),
           date_livraison: dateLivraison ? inputDateToHfsql(dateLivraison) : undefined,
           stockEcruIds: Array.from(selected),
-          linkStockEcruIds: linkedRolls.map((r) => r.id),
         }),
       })
       onSuccess()
@@ -5252,8 +5316,20 @@ function CreateEnnoblisseurOrderDialog({
   }
 
   const inputCls = 'w-full h-9 px-2.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring'
-
   const lienBtn = 'text-xs px-1 disabled:cursor-default disabled:no-underline'
+  const listeRouleaux = (rs: AvailableEcruRoll[]) => rs.map((roll) => (
+    <SelectableEcruRoll
+      key={roll.id}
+      roll={roll}
+      rendement={rendement}
+      selected={selected.has(roll.id)}
+      linked={roll.reserved_to_line}
+      canLink={false}
+      disabled={busy}
+      onToggle={(shiftKey) => handleToggle(roll.id, shiftKey)}
+      onToggleLink={() => {}}
+    />
+  ))
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose() }}>
@@ -5282,7 +5358,7 @@ function CreateEnnoblisseurOrderDialog({
         </div>
 
         <div className="flex-1 min-h-0 bg-zinc-100 p-4 grid grid-cols-1 md:grid-cols-[300px,1fr] gap-4 overflow-y-auto md:overflow-hidden">
-          {/* What the user decides: the dates, and which rolls stay reserved to the client */}
+          {/* What the user decides: the dates; what goes: the line's pieces, plus any for the stock */}
           <div className="space-y-3 md:overflow-y-auto scrollbar-transparent">
             <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm p-4 space-y-3">
               <h3 className="text-sm font-semibold">Commande</h3>
@@ -5306,68 +5382,53 @@ function CreateEnnoblisseurOrderDialog({
                   {fmtNum(selectedKg, 1)} kg · {fmtNum(selectedMl, 0)} Ml
                 </p>
               </div>
-              <div className={cn('px-4 py-3 border-t border-border/60 bg-zinc-50 space-y-1', selected.size === 0 && 'opacity-60')}>
-                <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <Link2 className="h-3.5 w-3.5" />Réservés {clientNom ? `à ${clientNom}` : 'au client'}
+              <div className="px-4 py-3 border-t border-border/60 bg-zinc-50 space-y-1 text-xs tabular-nums">
+                <p className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-muted-foreground"><Link2 className="h-3.5 w-3.5" />Pour {clientNom ?? 'la ligne'}</span>
+                  <span className="font-semibold">{fmtNum(kgLigne, 1)} kg</span>
                 </p>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-base font-bold tabular-nums">
-                    {linkedRolls.length} <span className="text-sm font-medium text-muted-foreground">/ {linkable.length}</span>
-                  </span>
-                  <div className="ml-auto flex items-center gap-1">
-                    <button type="button" onClick={linkAll} disabled={busy || unlinked.size === 0}
-                      className={cn(lienBtn, 'text-accent hover:underline disabled:text-muted-foreground/50')}>Tous</button>
-                    <span className="text-muted-foreground/40 text-xs">·</span>
-                    <button type="button" onClick={linkNone} disabled={busy || linkedRolls.length === 0}
-                      className={cn(lienBtn, 'text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40')}>Aucun</button>
-                  </div>
-                </div>
-                <p className="text-[11px] text-muted-foreground">Un rouleau délié est teint pour le stock.</p>
+                <p className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-muted-foreground"><Unlink className="h-3.5 w-3.5" />Pour le stock</span>
+                  <span className="font-semibold">{fmtNum(kgStock, 1)} kg</span>
+                </p>
               </div>
             </div>
           </div>
 
-          {/* What it takes: the écru rolls at the dyer */}
-          <section className="min-h-0 flex flex-col gap-2">
-            <div className="flex-shrink-0 flex items-center gap-2">
-              <h3 className="text-sm font-semibold">Rouleaux disponibles chez {location.location_nom}</h3>
-              {rolls.length > 0 && (
-                <div className="ml-auto flex items-center gap-1">
-                  <button type="button" onClick={selectAll} disabled={busy || allSelected}
-                    className={cn(lienBtn, 'text-accent hover:underline disabled:text-muted-foreground/50')}>Tout</button>
-                  <span className="text-muted-foreground/40 text-xs">·</span>
-                  <button type="button" onClick={clearSelection} disabled={busy || selected.size === 0}
-                    className={cn(lienBtn, 'text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40')}>Aucun</button>
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 p-0.5 scrollbar-transparent">
-              {isLoading && <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-14 bg-card animate-pulse rounded-lg" />)}</div>}
-              {isError && (
-                <div className="flex flex-col items-center justify-center py-10 text-destructive">
-                  <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
-                </div>
-              )}
-              {!isLoading && !isError && rolls.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                  <Package className="h-10 w-10 mb-2 opacity-40" />
-                  <p className="text-sm font-medium">Aucun rouleau disponible</p>
-                </div>
-              )}
-              {rolls.map((roll) => (
-                <SelectableEcruRoll
-                  key={roll.id}
-                  roll={roll}
-                  rendement={rendement}
-                  selected={selected.has(roll.id)}
-                  linked={isLinked(roll)}
-                  canLink={canLink(roll)}
-                  disabled={busy}
-                  onToggle={(shiftKey) => handleToggle(roll.id, shiftKey)}
-                  onToggleLink={() => toggleLink(roll.id)}
-                />
-              ))}
-            </div>
+          {/* The pieces at the dyer: the line's reserved ones, then free ones for the stock */}
+          <section className="min-h-0 flex flex-col gap-2 overflow-y-auto scrollbar-transparent p-0.5">
+            {isLoading && <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-14 bg-card animate-pulse rounded-lg" />)}</div>}
+            {isError && (
+              <div className="flex flex-col items-center justify-center py-10 text-destructive">
+                <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
+              </div>
+            )}
+            {!isLoading && !isError && (
+              <>
+                <h3 className="text-sm font-semibold">Réservées à la ligne chez {location.location_nom} ({pourLigne.length})</h3>
+                {pourLigne.length === 0
+                  ? <p className="text-xs text-muted-foreground italic">Aucune : réservez d’abord le tombé de métier dans l’onglet Ennoblissement.</p>
+                  : <div className="space-y-1.5">{listeRouleaux(pourLigne)}</div>}
+                {pourStock.length > 0 && (
+                  <>
+                    <div className="mt-2 flex items-center gap-2">
+                      <h3 className="text-sm font-semibold">En plus pour le stock ({pourStock.length})</h3>
+                      <div className="ml-auto flex items-center gap-1">
+                        <button type="button" disabled={busy || pourStock.every((r) => selected.has(r.id))}
+                          onClick={() => setSelected((prev) => new Set([...prev, ...pourStock.map((r) => r.id)]))}
+                          className={cn(lienBtn, 'text-accent hover:underline disabled:text-muted-foreground/50')}>Tout</button>
+                        <span className="text-muted-foreground/40 text-xs">·</span>
+                        <button type="button" disabled={busy || !pourStock.some((r) => selected.has(r.id))}
+                          onClick={() => setSelected((prev) => new Set([...prev].filter((id) => !pourStock.some((r) => r.id === id))))}
+                          className={cn(lienBtn, 'text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40')}>Aucun</button>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground -mt-1">Pièces libres teintes pour le stock Ets Malterre : elles ne sont pas réservées à la ligne.</p>
+                    <div className="space-y-1.5">{listeRouleaux(pourStock)}</div>
+                  </>
+                )}
+              </>
+            )}
           </section>
         </div>
 
@@ -5378,7 +5439,7 @@ function CreateEnnoblisseurOrderDialog({
             </div>
           )}
           <div className="flex items-center gap-3">
-            <AffecteGauge projected={projected} target={target} uniteLabel={uniteLabel} clientNom={clientNom} />
+            <AffecteGauge projected={reserved} target={target} uniteLabel={uniteLabel} clientNom={clientNom} />
             {blocage && !busy && <span className="flex-shrink-0 text-sm text-muted-foreground">{blocage}</span>}
             <div className="flex gap-2 flex-shrink-0">
               <Button variant="outline" onClick={onClose} disabled={busy}>Annuler</Button>
@@ -5543,38 +5604,63 @@ function LigneMatiereGauge({ line, target }: { line: LigneCommande; target: numb
   const total = parts.reduce((s, p) => s + p.v, 0)
   const base = Math.max(target, total)
   const complet = target > 0 && total >= target - 0.05
-  const titre = parts.map((p) => `${p.label} : ${fmtNum(p.v, 1)} ${line.unite_label}`).join('\n')
-  return (
-    <div className="mt-2 ml-9">
-      <div className="flex items-center gap-2" title={titre || undefined}>
-        <div className="flex h-2 flex-1 overflow-hidden rounded-full bg-zinc-200">
-          {parts.map((p, i) => (
-            <div
-              key={p.key}
-              className={cn('h-full transition-all', i > 0 && 'border-l border-white')}
-              style={{ width: `${base > 0 ? (p.v / base) * 100 : 0}%`, backgroundColor: p.color }}
-            />
-          ))}
-        </div>
-        <span className={cn('text-xs tabular-nums flex-shrink-0', complet ? 'text-green-700 font-medium' : 'text-muted-foreground')}>
-          {fmtNum(total, 1)} / {fmtNum(target, 1)} {line.unite_label} dans le circuit
-        </span>
+  // The split by stage is in the hover (Vincent 2026-10-28: no legend under the bar): the status
+  // pill already says where the line stands, the figure on the right how much is in the circuit.
+  const detail = parts.length === 0 ? null : (
+    <div className="w-max min-w-[220px] py-1 font-normal">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Matière de la ligne</p>
+      <div className="mt-1.5 space-y-1">
+        {parts.map((p) => (
+          <div key={p.key}>
+            <div className="flex items-center gap-2 text-xs tabular-nums">
+              <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: p.color, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
+              <span className="flex-1">{p.label}</span>
+              <span className="font-semibold">{fmtNum(p.v, 1)} {line.unite_label}</span>
+            </div>
+            {/* The reserved yarn carries a 5 % margin for knitting defects, hence a gauge beyond the order;
+                the freinte is not said: that yarn is really lost (Vincent 2026-10-29). Once launched the margin
+                is in the knitting (the launch takes every kg reserved): said there only while the gauge is
+                beyond the order, i.e. while the margin is still there. */}
+            {(p.key === 'fil' || (p.key === 'tricotage' && total > target + 0.05)) && (
+              <p className="pl-[18px] text-[11px] text-muted-foreground">dont 5 % pour les défauts de tricotage</p>
+            )}
+          </div>
+        ))}
       </div>
-      {parts.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
-          {parts.map((p) => (
-            <span key={p.key} className="inline-flex items-center gap-1 tabular-nums">
-              <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: p.color, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
-              {p.label} {fmtNum(p.v, 1)}
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="mt-1.5 pt-1.5 border-t border-border/60 flex items-center gap-2 text-xs tabular-nums">
+        <span className="flex-1 text-muted-foreground">Dans le circuit</span>
+        <span className={cn('font-semibold', complet && 'text-green-700')}>{fmtNum(total, 1)} / {fmtNum(target, 1)} {line.unite_label}</span>
+      </div>
+    </div>
+  )
+  const jauge = (
+    // py-1.5 widens the hover target well beyond the 8 px bar.
+    <div className="flex items-center gap-2 py-1.5">
+      <div className="flex h-2 flex-1 overflow-hidden rounded-full bg-zinc-200">
+        {parts.map((p, i) => (
+          <div
+            key={p.key}
+            className={cn('h-full transition-all', i > 0 && 'border-l border-white')}
+            style={{ width: `${base > 0 ? (p.v / base) * 100 : 0}%`, backgroundColor: p.color }}
+          />
+        ))}
+      </div>
+      <span className={cn('text-xs tabular-nums flex-shrink-0', complet ? 'text-green-700 font-medium' : 'text-muted-foreground')}>
+        {fmtNum(total, 1)} / {fmtNum(target, 1)} {line.unite_label}
+      </span>
+    </div>
+  )
+  return (
+    <div className="mt-1">
+      {detail ? <Tooltip followCursor content={detail} className="flex w-full [&>div]:flex-1">{jauge}</Tooltip> : jauge}
     </div>
   )
 }
 
 // ── Tricotage: create a knit order at a yarn-holding knitter ──
+// Since 2026-10-28 (Vincent: reserving and ordering are two gestures) the line's part is knitted only
+// with the yarn reserved to it here, the « pour le stock » part may take free lots (API 409
+// sans_matiere_reservee / fil_non_reserve).
 // Mirrors the legacy "Commande de Tricotage Malterre" modal launched from the
 // Tricotage tab, generalized to any tricoteur location of the stock-fil
 // panel: two kg inputs (affecté to this client commande / for the ETM stock)
@@ -5598,8 +5684,8 @@ function CreateTricotageOrderDialog({
 }: {
   commandeId: number
   ligne: LigneCommande
-  /** The knitter whose stock-fil band launched the dialog. */
-  location: TricoStockFilLocation
+  /** The knitter whose band (reserved yarn in stock) launched the dialog. */
+  location: LieuTricoteur
   clientNom?: string
   /** Already affected to this line / commanded quantity, in the line's dim. */
   reserved: number
@@ -5613,6 +5699,10 @@ function CreateTricotageOrderDialog({
   const [affecteStr, setAffecteStr] = useState('')
   const [stockStr, setStockStr] = useState('')
   const [choix, setChoix] = useState<ChoixLots>({})
+  // The date asked of the knitter, proposed by the doctrine (standard + the line's margin, §4); the
+  // knitter still confirms its own délai (Attente délai). '' = none asked.
+  const propose = ligne.au_plus_tot?.tricotageDemande ?? null
+  const [dateDemandee, setDateDemandee] = useState(() => propose ? hfsqlDateToInput(propose.date) : '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -5628,10 +5718,26 @@ function CreateTricotageOrderDialog({
   // when a lot is ticked. Weight and lots stay linked both ways: a weight ticks
   // the lots that cover it, a ticked lot brings the line's need. Never the
   // lot's capacity: a 1 648 kg lot would « affect » 1 750 kg to a 28 kg line.
+  // From the line, its part is knitted ONLY with the yarn reserved to it at this knitter (decision
+  // Vincent 2026-10-28, API filNonReserve): the most it can take = the écru that yarn makes, the
+  // scarcest yarn deciding, after the freinte. Free yarn only goes « pour le stock ».
+  const couvertKg = (() => {
+    let min = Infinity
+    for (const y of yarns) {
+      if (!(y.pourcentage > 0)) continue
+      const kg = y.stock.reduce((s, l) => s + (Number(l.reserve_ligne) || 0), 0)
+      min = Math.min(min, (kg / (y.pourcentage / 100)) * (1 - (y.freinte || 0)))
+    }
+    return Number.isFinite(min) ? Math.floor(min * 10) / 10 : 0
+  })()
+  // Option A (Vincent 2026-10-29): the line's part = ALL the écru its reserved yarn makes, its 5 % safety
+  // margin included — the knitter gets every kg reserved and gives back the écru; the line then reads
+  // beyond its quantity until knitting defects eat the margin (150 / 142 Ml → 142 / 142 at 5 % defects).
   const resteKg = (() => {
     const reste = target - reserved
-    const kg = dim === 'metrage' ? (rendement > 0 ? reste / rendement : 0) : reste
-    return kg > 0 ? String(Math.ceil(kg * 10) / 10).replace('.', ',') : ''
+    const besoin = Math.ceil((dim === 'metrage' ? (rendement > 0 ? reste / rendement : 0) : reste) * 10) / 10
+    const kg = couvertKg > 0 && besoin > 0 ? couvertKg : Math.min(couvertKg, besoin)
+    return kg > 0 ? String(kg).replace('.', ',') : ''
   })()
   const prefilled = useRef(false)
   useEffect(() => {
@@ -5659,12 +5765,17 @@ function CreateTricotageOrderDialog({
   // (legacy: "801 / 800 Ml affecté à la commande de Le slip Français").
   const projected = dim === 'metrage' ? reserved + affecte * rendement : reserved + affecte
   const fil = couvertureFils(yarns, total, choix)
-  const canSubmit = total > 0 && stock >= 0 && fil.couvert && !busy
-  const blocage = !(total > 0)
-    ? 'Saisissez le poids à tricoter'
-    : !fil.couvert
-      ? 'Les lots cochés ne couvrent pas tout le fil'
-      : null
+  const surReserve = affecte > couvertKg + 0.05
+  const canSubmit = affecte > 0 && !surReserve && stock >= 0 && fil.couvert && !busy
+  const blocage = !(couvertKg > 0)
+    ? `Aucun fil réservé à la ligne chez ${location.magasin_nom}`
+    : !(affecte > 0)
+      ? 'Saisissez le poids à tricoter pour la commande'
+      : surReserve
+        ? `Au plus ${fmtNum(couvertKg, 1)} kg pour la commande : c’est ce que couvre le fil réservé`
+        : !fil.couvert
+          ? 'Les lots cochés ne couvrent pas tout le fil'
+          : null
 
   const handleSubmit = async () => {
     if (!canSubmit) return
@@ -5673,7 +5784,10 @@ function CreateTricotageOrderDialog({
     try {
       await apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/supply/tricotage/orders`, {
         method: 'POST',
-        body: JSON.stringify({ IDsous_traitant: location.magasin_id, poids_affecte: affecte, poids_stock: stock, lots: fil.lots }),
+        body: JSON.stringify({
+          IDsous_traitant: location.magasin_id, poids_affecte: affecte, poids_stock: stock, lots: fil.lots,
+          ...(dateDemandee ? { date_demandee: inputDateToHfsql(dateDemandee) } : {}),
+        }),
       })
       onSuccess()
       onClose()
@@ -5724,6 +5838,7 @@ function CreateTricotageOrderDialog({
                       const kg = dim === 'metrage' ? (rendement > 0 ? reste / rendement : 0) : reste
                       return `Il reste ${fmtNum(reste, 1)} ${uniteLabel} à affecter${dim === 'metrage' && kg > 0 ? `, soit ${fmtNum(kg, 1)} kg` : ''}.`
                     })()}
+                    {' '}Le fil réservé à la ligne ici couvre {fmtNum(couvertKg, 1)} kg ; le stock peut prendre du fil libre.
                   </p>
                 </div>
                 <TricoWeightField
@@ -5750,6 +5865,16 @@ function CreateTricotageOrderDialog({
                   {fmtNum(total, 1)} <span className="text-sm font-medium text-muted-foreground">kg</span>
                 </span>
               </div>
+              <div className="px-4 py-3 border-t border-border/60 space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Date demandée au tricoteur</label>
+                <input type="date" value={dateDemandee} onChange={(e) => setDateDemandee(e.target.value)} disabled={busy} autoComplete="off"
+                  className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
+                <p className="text-[11px] text-muted-foreground">
+                  {propose
+                    ? `Proposée : ${propose.jours} j ouvrés${ligne.au_plus_tot?.plan?.tricotage?.marge ? `, dont ${ligne.au_plus_tot.plan.tricotage.marge} j de marge de la ligne` : ''}. Le tricoteur confirme son délai.`
+                    : 'Le tricoteur confirme son délai.'}
+                </p>
+              </div>
             </div>
 
             {/* What it takes: the yarn lots, read live from the weight */}
@@ -5769,6 +5894,7 @@ function CreateTricotageOrderDialog({
                   magasinNom={location.magasin_nom}
                   disabled={busy}
                   aideEnCommande="Réservez ce fil dans l’onglet Fil de la ligne : le tricotage se lance à son arrivée."
+                  emporterReserve
                 />
               )}
             </section>
@@ -5865,9 +5991,13 @@ function LineFormDialog({
   // resolver + free manual override as the Expéditions article dialog — no
   // padlock, because this is a catalogue price, not a computed tariff.
   const [diversPrixTouched, setDiversPrixTouched] = useState(false)
+  // In préparation the line's date is computed (doctrine des délais §5 ter): shown, never stored, until
+  // the person picks another one (Vincent 2026-10-29). Open = a date of its own is being typed.
+  const [autreDate, setAutreDate] = useState(false)
 
   useEffect(() => {
     if (!open) return
+    setAutreDate(!!line?.date_livraison)
     if (line) {
       setForm({
         type: line.type || 2,
@@ -5881,7 +6011,8 @@ function LineFormDialog({
         prix: line.prix != null ? String(Math.round(Number(line.prix) * 100) / 100) : '',
         date_livraison: hfsqlDateToInput(line.date_livraison),
         mode_livraison: line.mode_livraison ?? 'des_que_prete',
-        date_expedition_prevue: hfsqlDateToInput(line.date_expedition_prevue),
+        report_motif: '',
+        report_imputable: '',
         commentaire: line.commentaire ?? '',
         enEtude: line.type === 2 && line.IDetude_col > 0 && !line.IDcolori,
         IDetude_col: line.IDetude_col || 0,
@@ -5902,6 +6033,19 @@ function LineFormDialog({
     const t = setTimeout(() => setDebouncedQuantite(form.quantite), 300)
     return () => clearTimeout(t)
   }, [form.quantite])
+
+  // The earliest date of the line as typed (API lookups/au-plus-tot): from its matter reserved when it
+  // exists, none for a new one; recomputed on référence, coloris, unité, quantité. `date` = the margin.
+  const quantiteNum = Number(String(debouncedQuantite).replace(',', '.')) || 0
+  const auPlusTotQ = useQuery<AuPlusTot | null>({
+    queryKey: ['commande-client-au-plus-tot', line?.IDligne_commande_client ?? 0, form.type, form.IDreference, form.IDcolori, form.unite, quantiteNum, autreDate ? form.date_livraison : ''],
+    queryFn: () => apiFetch(`/commandes-client/lookups/au-plus-tot?${new URLSearchParams({
+      ligne: String(line?.IDligne_commande_client ?? 0), type: String(form.type), ref: String(form.IDreference), colori: String(form.IDcolori),
+      unite: String(form.unite), quantite: String(quantiteNum), date: autreDate ? form.date_livraison : '',
+    })}`),
+    enabled: open && !!commande.en_preparation && form.type !== 3 && !form.enEtude && form.IDreference > 0 && quantiteNum > 0,
+    placeholderData: (prev) => prev,
+  })
 
   // Auto-price + roll-count note (PrixDeVenteV4 port). Écru/fini + Kg/Ml only.
   const priceableType = form.type === 1 || form.type === 2
@@ -6045,10 +6189,9 @@ function LineFormDialog({
         quantite: Number(form.quantite) || 0,
         unite: form.unite,
         prix: Number(form.prix) || 0,
-        date_livraison: form.date_livraison ? inputDateToHfsql(form.date_livraison) : '',
-        mode_livraison: form.mode_livraison,
-        date_expedition_prevue: form.mode_livraison === 'date_client' && form.date_expedition_prevue
-          ? inputDateToHfsql(form.date_expedition_prevue) : '',
+        // In préparation the computed date is never stored: only a date the person picked.
+        date_livraison: form.date_livraison && (!commande.en_preparation || autreDate) ? inputDateToHfsql(form.date_livraison) : '',
+        ...(estReport ? { report: { motif: form.report_motif.trim(), imputable: form.report_imputable } } : {}),
         commentaire: form.commentaire,
       })
       return isNew
@@ -6103,10 +6246,18 @@ function LineFormDialog({
     setForm({ ...form, type: t, IDreference: 0, IDcolori: 0, IDVariation1: 0, IDVariation2: 0, unite: t === 1 ? 1 : t === 3 ? 4 : 3, enEtude: false, IDetude_col: 0 })
   }
 
+  // D already given = an engagement (doctrine des délais §8): moving it is a report, with why and whom.
+  const dateSaisie = form.date_livraison ? inputDateToHfsql(form.date_livraison) : ''
+  // While the order is prepared the dates move freely: no engagement, no report (doctrine des délais §5 ter).
+  const valide = !commande.en_preparation
+  const estReport = valide && !isNew && !!line?.date_livraison && dateSaisie !== line.date_livraison
+  const engagement = valide ? (line?.delai_initial || line?.date_livraison || null) : null
+  const ecartEngagement = engagement && dateSaisie ? joursEntre(engagement, dateSaisie) : 0
+
   // An expired contract makes the reference unsellable — same rule as the fiche
   // client, enforced again on the API (409 contrat_expire).
   const canSave = form.IDreference > 0 && Number(form.quantite) > 0 && !contratBlocksSave
-    && (form.mode_livraison !== 'date_client' || !!form.date_expedition_prevue)
+    && (!estReport || (!!form.report_motif.trim() && !!form.report_imputable))
     && !(form.type === 2 && form.enEtude && !form.IDetude_col)
 
   if (!open) return null
@@ -6429,43 +6580,98 @@ function LineFormDialog({
               </div>
             )
           })()}
-          {/* Délai = end of production; when the ready line leaves is the client's call (mode de livraison). */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <LabeledInput label="Délai de production" type="date" value={form.date_livraison} onChange={(v) => setForm({ ...form, date_livraison: v })} />
-              {(() => {
-                const initial = line?.delai_initial
-                const actuel = form.date_livraison ? inputDateToHfsql(form.date_livraison) : ''
-                if (!initial || !actuel || initial === actuel) return null
-                const j = joursEntre(initial, actuel)
-                return (
-                  <p className={cn('text-[11px]', j > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
-                    Délai initial {formatHfsqlDate(initial)} · {j > 0 ? `+${j}` : j} j
-                  </p>
-                )
-              })()}
+          {/* ONE date per line, « Prête le » (doctrine des délais §5 bis). While the order is in préparation the
+              line has no date to type: the card shows its earliest date (doctrine §5 ter) and the validation gives
+              it. Once validated, the date is an engagement: moving it asks why and who it is due to (QS). How the
+              order leaves is set once for the whole order, in Info › Expédition. */}
+          {valide && (
+            <div className="space-y-1 sm:w-1/2">
+              <label className="text-xs font-medium text-muted-foreground cursor-help" title="Prête à expédier à cette date : notre engagement">Prête le</label>
+              <input type="date" value={form.date_livraison} onChange={(e) => setForm({ ...form, date_livraison: e.target.value })} autoComplete="off" className={inputClass} />
+              {engagement && (
+                <p className={cn('text-[11px]', ecartEngagement > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
+                  Engagement {formatHfsqlDate(engagement)}{ecartEngagement !== 0 ? ` · ${ecartEngagement > 0 ? '+' : ''}${ecartEngagement} j` : ''}
+                </p>
+              )}
+              {line?.au_plus_tot && !!dateSaisie && dateSaisie < line.au_plus_tot.date && (
+                <Tooltip side="bottom" align="start" content={<DelaiLigneDetail auPlusTot={line.au_plus_tot} />}>
+                  <p className="text-[11px] text-amber-700 cursor-help">Avant le délai au plus tôt ({formatHfsqlDate(line.au_plus_tot.date)})</p>
+                </Tooltip>
+              )}
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Livraison</label>
-              <PopoverSelect
-                options={MODES_LIVRAISON.map((m) => ({
-                  id: m.id,
-                  primary: m.label,
-                  // The client's relance delay, as a muted hint (set on Clients › Gestion).
-                  secondary: m.mode === 'sur_appel' && commande.relance_sur_appel > 0 ? `relance à ${commande.relance_sur_appel} j` : undefined,
-                }))}
-                value={MODES_LIVRAISON.find((m) => m.mode === form.mode_livraison)?.id ?? 1}
-                onChange={(id) => setForm({ ...form, mode_livraison: MODES_LIVRAISON.find((m) => m.id === id)?.mode ?? 'des_que_prete' })}
-                hideEmpty
-                mutedSecondary
-              />
-            </div>
-            {form.mode_livraison === 'date_client' && (
-              <div className="col-span-full sm:col-start-2 sm:col-span-1">
-                <LabeledInput label="Expédition convenue" type="date" value={form.date_expedition_prevue} onChange={(v) => setForm({ ...form, date_expedition_prevue: v })} />
+          )}
+          {/* In préparation: the earliest date, computed as the line is typed (hover = the steps), and
+              « Choisir une autre date » for a later one; the calendar starts at the earliest date and the API
+              refuses one before it (409 delai_intenable). Divers and lines waiting for an étude have none. */}
+          {!valide && form.type !== 3 && !form.enEtude && (() => {
+            const a = auPlusTotQ.data ?? null
+            const minIso = a ? `${a.date.slice(0, 4)}-${a.date.slice(4, 6)}-${a.date.slice(6, 8)}` : undefined
+            const plusTot = a ? (
+              <Tooltip side="bottom" align="start" content={<DelaiLigneDetail auPlusTot={a} />}>
+                <span className={cn(SOULIGNE_INFO, 'font-semibold tabular-nums')}>{formatHfsqlDate(a.date)}</span>
+              </Tooltip>
+            ) : null
+            return (
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Prête le</label>
+                {!autreDate ? (
+                  <div className="h-9 px-3 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm">
+                    {a ? <span className="text-muted-foreground">Au plus tôt le</span>
+                      : <span className="text-muted-foreground italic">{auPlusTotQ.isFetching ? 'Calcul…' : 'Choisissez la référence et la quantité'}</span>}
+                    {plusTot}
+                    {a && (
+                      <button type="button" onClick={() => { setAutreDate(true); setForm({ ...form, date_livraison: minIso ?? '' }) }}
+                        className="ml-auto text-xs font-medium text-accent-blue hover:underline">
+                        Choisir une autre date
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1.5 sm:w-1/2">
+                      <input type="date" value={form.date_livraison} min={minIso} autoComplete="off" className={inputClass}
+                        onChange={(e) => setForm({ ...form, date_livraison: e.target.value })} />
+                      <Button type="button" variant="ghost" size="icon" className="h-9 w-9 flex-shrink-0" title="Revenir au délai au plus tôt"
+                        onClick={() => { setAutreDate(false); setForm({ ...form, date_livraison: '' }) }}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    {a && (
+                      <p className={cn('text-[11px]', (a.marge ?? 0) < 0 ? 'text-amber-700' : 'text-muted-foreground')}>
+                        Au plus tôt le {plusTot}{a.marge == null ? '' : a.marge < 0 ? ` · ${-a.marge} j ouvrés trop tôt` : a.marge === 0 ? ' · sans marge' : ` · marge ${a.marge} j ouvré${a.marge > 1 ? 's' : ''}`}
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
-            )}
-          </div>
+            )
+          })()}
+          {/* The first D given is the engagement: said, full width, when it is being given (new line, or a line without one). */}
+          {valide && !line?.date_livraison && !!dateSaisie && (
+            <p className="flex items-start gap-1.5 text-xs font-medium text-amber-700">
+              <Info className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+              Cette date est un engagement : la modifier ensuite sera un report, compté dans la qualité de service Malterre s’il nous est dû.
+            </p>
+          )}
+          {estReport && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3 space-y-2">
+              <p className="text-xs text-amber-800">
+                La date du {formatHfsqlDate(line!.date_livraison!)} était un engagement : pourquoi change-t-elle, et à qui le report est-il dû ?
+              </p>
+              <div className="flex gap-1">
+                {IMPUTABLES.map((i) => (
+                  <button key={i.id} type="button" onClick={() => setForm({ ...form, report_imputable: i.id })}
+                    className={cn('px-3 py-1 rounded-md text-xs font-medium border transition-colors',
+                      form.report_imputable === i.id ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
+                    {i.label}
+                  </button>
+                ))}
+              </div>
+              <input value={form.report_motif} onChange={(e) => setForm({ ...form, report_motif: e.target.value })}
+                placeholder="Motif du report (ex. : le client décale sa date, retard ennoblisseur…)"
+                className="w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
             <textarea value={form.commentaire} onChange={(e) => setForm({ ...form, commentaire: e.target.value })} rows={2}
@@ -6504,6 +6710,7 @@ function DetailSidebar({
   editRemise, onEditRemiseChange,
   editFraisPort, onEditFraisPortChange,
   editDonation, onEditDonationChange,
+  editExpedition, onEditExpeditionChange,
   editIDAdresseFacturation, onEditIDAdresseFacturationChange,
   editIDAdresseLivraison, onEditIDAdresseLivraisonChange,
   onToggleEtat, isTogglingEtat,
@@ -6520,6 +6727,7 @@ function DetailSidebar({
   editRemise: string; onEditRemiseChange: (v: string) => void
   editFraisPort: string; onEditFraisPortChange: (v: string) => void
   editDonation: boolean; onEditDonationChange: (v: boolean) => void
+  editExpedition: Expedition; onEditExpeditionChange: (v: Expedition) => void
   editIDAdresseFacturation: number; onEditIDAdresseFacturationChange: (v: number) => void
   editIDAdresseLivraison: number; onEditIDAdresseLivraisonChange: (v: number) => void
   onToggleEtat: () => void
@@ -6595,6 +6803,7 @@ function DetailSidebar({
               editRemise={editRemise} onEditRemiseChange={onEditRemiseChange}
               editFraisPort={editFraisPort} onEditFraisPortChange={onEditFraisPortChange}
               editDonation={editDonation} onEditDonationChange={onEditDonationChange}
+              editExpedition={editExpedition} onEditExpeditionChange={onEditExpeditionChange}
             />
           )}
           {activeTab === 'adresses' && (
@@ -6608,7 +6817,9 @@ function DetailSidebar({
           {activeTab === 'historique' && <HistoriqueTab commandeId={commande.IDcommande_client} />}
         </div>
       </div>
-      <StatusFooter etat={commande.est_soldee} onToggle={onToggleEtat} isToggling={isTogglingEtat} disabled={isEditing} />
+      {commande.en_preparation
+        ? <PreparationFooter commande={commande} disabled={isEditing} />
+        : <StatusFooter etat={commande.est_soldee} onToggle={onToggleEtat} isToggling={isTogglingEtat} disabled={isEditing} />}
     </div>
   )
 }
@@ -6642,7 +6853,216 @@ function StatusFooter({ etat, onToggle, isToggling, disabled }: { etat: number; 
   )
 }
 
+/** « En préparation » (doctrine des délais §5 ter): neutral pill on the list card; the red reason beside it
+ *  says what to do (« Commande à préparer puis valider »). */
+function PreparationPill({ className, children }: { className?: string; children?: React.ReactNode }) {
+  return (
+    <span title="Commande en préparation : lignes, matière et dates libres, rien ne part avant la validation"
+      className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap border-dashed bg-white text-zinc-700 border-zinc-400', className)}>
+      <ClipboardList className="h-3 w-3" />En préparation{children}
+    </span>
+  )
+}
+
+/** The footer while the order is prepared: its state + « Valider la commande », the only way out. Validation
+ *  freezes every line's date as an engagement and opens partner orders, planning, confirmation, shipping. */
+function PreparationFooter({ commande, disabled }: { commande: CommandeDetail; disabled: boolean }) {
+  const queryClient = useQueryClient()
+  const canEdit = useHasPermission('edit_commandes_client')
+  const mut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-client/${commande.IDcommande_client}/valider`, { method: 'POST' }),
+    onSuccess: () => {
+      invalidateCommandeClientCaches(queryClient)
+      queryClient.invalidateQueries({ queryKey: ['commande-client', commande.IDcommande_client] })
+    },
+  })
+  return (
+    <div className="flex-shrink-0 space-y-1.5">
+      {mut.error && (
+        <p className="flex items-start gap-1.5 text-xs text-destructive px-1">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />{(mut.error as any).body?.message ?? 'La validation a échoué'}
+        </p>
+      )}
+      <div className="rounded-xl border shadow-sm overflow-hidden flex items-stretch h-11 bg-zinc-600 border-zinc-600">
+        <div className="flex items-center gap-2 px-3 flex-1 text-white min-w-0">
+          <ClipboardList className="h-4 w-4 flex-shrink-0" />
+          <span className="text-sm font-bold uppercase tracking-wide truncate">En préparation</span>
+        </div>
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => mut.mutate()}
+            disabled={disabled || mut.isPending}
+            title={disabled ? 'Enregistrez d’abord vos modifications'
+              : 'Chaque ligne sans date prend son délai au plus tôt. Les dates deviennent des engagements ; les commandes aux partenaires, la planification, la confirmation et l’expédition s’ouvrent.'}
+            className="px-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 disabled:bg-white/5 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold border-l border-white/25 flex items-center gap-1.5 transition-colors"
+          >
+            {mut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}Valider la commande
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Info: when the order was validated, and the way back to « En préparation » while nothing has left. */
+function ValidationKV({ commande }: { commande: CommandeDetail }) {
+  const queryClient = useQueryClient()
+  const canEdit = useHasPermission('edit_commandes_client')
+  const mut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-client/${commande.IDcommande_client}/repasser-en-preparation`, { method: 'POST' }),
+    onSuccess: () => {
+      invalidateCommandeClientCaches(queryClient)
+      queryClient.invalidateQueries({ queryKey: ['commande-client', commande.IDcommande_client] })
+    },
+  })
+  if (commande.en_preparation || !commande.validee_le) return null
+  const bloque = commande.retour_preparation_bloque
+  return (
+    <div className="space-y-0.5">
+      <KV label="Validée le" value={`${new Date(commande.validee_le).toLocaleDateString('fr-FR')}${commande.validee_par ? `, ${commande.validee_par}` : ''}`} />
+      {canEdit && Number(commande.est_soldee) !== 1 && (
+        <div className="flex justify-end">
+          <button type="button" disabled={!!bloque || mut.isPending} onClick={() => mut.mutate()}
+            title={bloque ? `Impossible : ${bloque}` : 'Revenir en préparation : les dates déjà données restent des engagements'}
+            className="text-[11px] font-medium text-accent hover:underline disabled:text-muted-foreground disabled:no-underline disabled:cursor-not-allowed">
+            Repasser en préparation
+          </button>
+        </div>
+      )}
+      {mut.error && <p className="text-[11px] text-destructive text-right">{(mut.error as any).body?.message ?? 'Échec'}</p>}
+    </div>
+  )
+}
+
 // ── Sidebar Tab: Info ──────────────────────────────────
+
+/** Info › Expédition (Vincent 2026-10-28, doctrine des délais §5 bis): how the whole order leaves, as two
+ *  simple questions — « Départ » (dès que prête / à la date demandée par le client / sur appel) and « toutes
+ *  les lignes ensemble » — never per line. Every line keeps its own « Prête le » (the engagement); in edit
+ *  mode one date can be written on every line still to ship (API PUT …/:id/lignes-date), a line that had
+ *  another date being a report (one why / whom for all). */
+function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
+  commande: CommandeDetail
+  isEditing: boolean
+  expedition: Expedition
+  onChange: (e: Expedition) => void
+}) {
+  const queryClient = useQueryClient()
+  const restantes = commande.lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
+  const dates = restantes.map((l) => l.date_livraison).filter((d): d is string => !!d).sort()
+  const sansDate = restantes.length - dates.length
+  const [date, setDate] = useState('')
+  const [imputable, setImputable] = useState<'' | 'malterre' | 'client' | 'partenaire'>('')
+  const [motif, setMotif] = useState('')
+  const choisie = date ? inputDateToHfsql(date) : ''
+  // Lines that already had another D: an engagement moved.
+  // Validated order only: before, the dates move freely (doctrine des délais §5 ter).
+  const reports = choisie && !commande.en_preparation ? restantes.filter((l) => l.date_livraison && l.date_livraison !== choisie).length : 0
+  const mut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-client/${commande.IDcommande_client}/lignes-date`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        date: choisie,
+        ligneIds: restantes.map((l) => l.IDligne_commande_client),
+        ...(reports > 0 ? { report: { motif: motif.trim(), imputable } } : {}),
+      }),
+    }),
+    onSuccess: () => {
+      setDate(''); setMotif(''); setImputable('')
+      invalidateCommandeClientCaches(queryClient)
+      queryClient.invalidateQueries({ queryKey: ['commande-client', commande.IDcommande_client] })
+    },
+  })
+
+  const depart = expedition.groupee ? departCommande(commande.lignes) : null
+  let pretes: React.ReactNode
+  if (restantes.length === 0) pretes = '—'
+  else if (sansDate > 0 && commande.en_preparation) {
+    // In préparation a line without a date reads its earliest date (the validation gives it), neutral.
+    const eff = restantes.map((l) => l.date_livraison ?? l.au_plus_tot?.date ?? null)
+    const d = eff.filter((x): x is string => !!x).sort()
+    pretes = eff.some((x) => !x) || d.length === 0 ? `${sansDate} ligne${sansDate > 1 ? 's' : ''} sans date`
+      : d[0] === d[d.length - 1] ? `Au plus tôt le ${formatHfsqlDate(d[0])}`
+      : `Au plus tôt du ${formatHfsqlDate(d[0])} au ${formatHfsqlDate(d[d.length - 1])}`
+  }
+  else if (sansDate > 0) pretes = <span className="text-red-600">{sansDate} ligne{sansDate > 1 ? 's' : ''} sans date</span>
+  else if (dates[0] === dates[dates.length - 1]) pretes = `Le ${formatHfsqlDate(dates[0])}`
+  else pretes = `Du ${formatHfsqlDate(dates[0])} au ${formatHfsqlDate(dates[dates.length - 1])}`
+  const peutAppliquer = !!choisie && restantes.length > 0 && (reports === 0 || (!!imputable && !!motif.trim()))
+
+  return (
+    <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
+      <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+        <Truck className="h-3.5 w-3.5" />Expédition
+      </p>
+      {isEditing ? (
+        <>
+          <KV label="Départ" value={
+            <PopoverSelect size="sm" options={DEPARTS.map((d) => ({ id: d.id, primary: d.label }))}
+              value={DEPARTS.find((d) => d.depart === expedition.depart)?.id ?? 1}
+              onChange={(id) => onChange({ ...expedition, depart: DEPARTS.find((d) => d.id === id)?.depart ?? 'des_que_prete' })} hideEmpty />
+          } />
+          {expedition.depart === 'date_client' && (
+            <KV label="Date demandée" value={
+              <input type="date" value={hfsqlDateToInput(expedition.dateClient)}
+                onChange={(e) => onChange({ ...expedition, dateClient: e.target.value ? inputDateToHfsql(e.target.value) : null })}
+                className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+            } />
+          )}
+          <div className="pt-1">
+            <TogglePill label="Toutes les lignes ensemble" checked={expedition.groupee} disabled={false}
+              onChange={(v) => onChange({ ...expedition, groupee: v })} />
+          </div>
+        </>
+      ) : (
+        <p className="text-sm">{phraseExpedition(expedition, depart)}</p>
+      )}
+      <KV label="Lignes prêtes" value={pretes} />
+      {isEditing && restantes.length > 0 && (
+        <div className="pt-2 border-t border-border/60 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground flex-1">Prête le (toutes les lignes)</span>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={mut.isPending}
+              className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+          </div>
+          {!!choisie && !commande.en_preparation && restantes.some((l) => !l.date_livraison) && (
+            <p className="text-[11px] text-amber-700">Cette date est un engagement : la modifier ensuite sera un report, compté dans la qualité de service Malterre s’il nous est dû.</p>
+          )}
+          {reports > 0 && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/[0.06] p-2 space-y-1.5">
+              <p className="text-[11px] text-amber-800">
+                {reports} ligne{reports > 1 ? 's avaient' : ' avait'} une autre date : c’était un engagement. À qui le report est-il dû, et pourquoi ?
+              </p>
+              <div className="flex gap-1">
+                {IMPUTABLES.map((i) => (
+                  <button key={i.id} type="button" onClick={() => setImputable(i.id)}
+                    className={cn('px-2.5 py-0.5 rounded-md text-[11px] font-medium border transition-colors',
+                      imputable === i.id ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
+                    {i.label}
+                  </button>
+                ))}
+              </div>
+              <input value={motif} onChange={(e) => setMotif(e.target.value)} placeholder="Motif du report"
+                className="w-full h-7 px-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+            </div>
+          )}
+          {mut.error && (
+            <p className="flex items-center gap-1 text-[11px] text-destructive">
+              <AlertCircle className="h-3 w-3" />{(mut.error as any).body?.message ?? 'L’enregistrement a échoué'}
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" className="h-7 text-xs" disabled={!peutAppliquer || mut.isPending} onClick={() => mut.mutate()}>
+              {mut.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+              Appliquer à {restantes.length} ligne{restantes.length > 1 ? 's' : ''}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function InfoTab({
   commande, isEditing, modesPaiement, echeances,
@@ -6655,6 +7075,7 @@ function InfoTab({
   editRemise, onEditRemiseChange,
   editFraisPort, onEditFraisPortChange,
   editDonation, onEditDonationChange,
+  editExpedition, onEditExpeditionChange,
 }: {
   commande: CommandeDetail
   isEditing: boolean
@@ -6669,6 +7090,7 @@ function InfoTab({
   editRemise: string; onEditRemiseChange: (v: string) => void
   editFraisPort: string; onEditFraisPortChange: (v: string) => void
   editDonation: boolean; onEditDonationChange: (v: boolean) => void
+  editExpedition: Expedition; onEditExpeditionChange: (v: Expedition) => void
 }) {
   const canMarkDonation = useHasPermission('donation_commande_client')
   const modeLabel = modesPaiement.find((m) => m.IDmode_paiement === commande.IDmode_paiement)?.libelle
@@ -6676,12 +7098,17 @@ function InfoTab({
   const smallInput = 'h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[120px]'
   return (
     <div className="space-y-3">
+      {commande.donation !== 1 && (
+        <ExpeditionSection commande={commande} isEditing={isEditing} expedition={isEditing ? editExpedition : expeditionDe(commande)}
+          onChange={onEditExpeditionChange} />
+      )}
       <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
         <KV label="Client" value={commande.client_nom || '—'} />
         <KV label="Date commande" value={isEditing ? (
           <input type="date" value={editDateCommande} onChange={(e) => onEditDateCommandeChange(e.target.value)}
             className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right" />
         ) : (commande.date_commande ? formatHfsqlDate(commande.date_commande) : '—')} />
+        {!isEditing && <ValidationKV commande={commande} />}
         {/* Réf. client carries long free text ("Commande 0006293 du 06/11/2025")
             — in edit mode the input flexes to all the width left of the label
             instead of the narrow fixed KV value slot. */}
@@ -6822,8 +7249,10 @@ function AdressesTab({
 }
 
 function AdresseCard({
-  label, adresse, isEditing, options, selectedId, onSelect,
+  label, adresse, isEditing, options, selectedId, onSelect, plain = false,
 }: {
+  /** inside a form dialog: no edit-mode accent frame (everything there is editable) */
+  plain?: boolean
   label: string
   adresse: AdresseLite | null
   isEditing: boolean
@@ -6834,7 +7263,7 @@ function AdresseCard({
   const [pickerOpen, setPickerOpen] = useState(false)
   const displayAdresse: AdresseLite | null = isEditing ? (options.find((o) => o.IDadresse === selectedId) ?? adresse) : adresse
   return (
-    <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
+    <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && !plain && editSectionClass)}>
       <div className="flex items-center justify-between gap-2 mb-2">
         <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5" />{label}</p>
         {isEditing && (
@@ -7385,55 +7814,80 @@ function CreateCommandeDialog({ open, onClose, onCreated }: { open: boolean; onC
 
   const canSave = clientId > 0 && dateCommande.length > 0
 
+  const facturation = realAdresses(adresses ?? []).find((a) => a.IDadresse === adresseFactId) ?? null
+  const sectionTitle = 'text-[10px] font-semibold uppercase tracking-wide text-muted-foreground'
+
+  // Two columns (Vincent 2026-10-29): the order on the left, its two addresses on the right shown WHOLE
+  // (name, street lines, postcode + town, country), as on the Adresses tab — a truncated select hid the
+  // very part that tells two addresses apart.
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-md" onClose={onClose}>
+      <DialogContent className="max-w-3xl w-[94vw]" onClose={onClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><ShoppingCart className="h-5 w-5 text-accent" />Nouvelle commande</DialogTitle>
         </DialogHeader>
-        <div className="mt-4 space-y-3">
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Client</label>
-            <SearchableCombobox<ClientLite>
-              options={clients ?? []}
-              value={clientId}
-              onChange={setClientId}
-              getId={(c) => c.IDclient}
-              getPrimary={(c) => c.nom}
-              placeholder="Choisir un client"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="space-y-3">
+            <p className={sectionTitle}>Commande</p>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Date commande</label>
-              <input type="date" value={dateCommande} onChange={(e) => setDateCommande(e.target.value)} className={cn(inputClass, 'h-9')} />
+              <label className="text-xs font-medium text-muted-foreground">Client</label>
+              <SearchableCombobox<ClientLite>
+                options={clients ?? []}
+                value={clientId}
+                onChange={setClientId}
+                getId={(c) => c.IDclient}
+                getPrimary={(c) => c.nom}
+                placeholder="Choisir un client"
+              />
             </div>
-            <LabeledInput label="Réf. client" value={refClient} onChange={setRefClient} />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Mode paiement</label>
-              <PopoverSelect options={(modesPaiement ?? []).map((m) => ({ id: m.IDmode_paiement, primary: m.libelle }))} value={modePaiementId} onChange={setModePaiementId} emptyLabel="—" />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Échéance</label>
-              <PopoverSelect options={(echeances ?? []).map((e) => ({ id: e.IDecheance, primary: e.libelle }))} value={echeanceId} onChange={setEcheanceId} emptyLabel="—" />
-            </div>
-          </div>
-          {clientId > 0 && (
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Adr. facturation</label>
-                <PopoverSelect options={realAdresses(adresses ?? []).map(adresseOption)} value={adresseFactId} onChange={setAdresseFactId} emptyLabel="—" />
+                <label className="text-xs font-medium text-muted-foreground">Date commande</label>
+                <input type="date" value={dateCommande} onChange={(e) => setDateCommande(e.target.value)} className={cn(inputClass, 'h-9')} />
+              </div>
+              <LabeledInput label="Réf. client" value={refClient} onChange={setRefClient} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Mode paiement</label>
+                <PopoverSelect options={(modesPaiement ?? []).map((m) => ({ id: m.IDmode_paiement, primary: m.libelle }))} value={modePaiementId} onChange={setModePaiementId} emptyLabel="—" />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Adr. livraison</label>
-                <PopoverSelect options={livraisonAdresses(adresses ?? []).map(adresseOption)} value={adresseLivId} onChange={setAdresseLivId} emptyLabel="—" />
+                <label className="text-xs font-medium text-muted-foreground">Échéance</label>
+                <PopoverSelect options={(echeances ?? []).map((e) => ({ id: e.IDecheance, primary: e.libelle }))} value={echeanceId} onChange={setEcheanceId} emptyLabel="—" />
               </div>
             </div>
-          )}
+          </div>
+          <div className="space-y-3">
+            <p className={sectionTitle}>Adresses</p>
+            {clientId > 0 ? (
+              <>
+                <div className="space-y-1">
+                  <AdresseCard plain label="Facturation" adresse={facturation} isEditing
+                    options={realAdresses(adresses ?? [])} selectedId={adresseFactId} onSelect={setAdresseFactId} />
+                  {facturation && !facturation.pays?.trim() && (
+                    <p className="text-[11px] text-amber-700 px-1">Adresse sans pays : à compléter sur la fiche client (TVA, mentions de la facture).</p>
+                  )}
+                </div>
+                <AdresseCard plain label="Livraison" isEditing
+                  adresse={livraisonAdresses(adresses ?? []).find((a) => a.IDadresse === adresseLivId) ?? null}
+                  options={livraisonAdresses(adresses ?? [])} selectedId={adresseLivId} onSelect={setAdresseLivId} />
+              </>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border/70 bg-white/50 px-3 py-6 text-center text-xs text-muted-foreground italic">
+                Choisissez d’abord le client : ses adresses par défaut se remplissent.
+              </div>
+            )}
+          </div>
         </div>
-        <DialogFooter className="mt-4">
+        {createMut.error && (
+          <p className="mt-3 flex items-center gap-1.5 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />{(createMut.error as any).body?.message ?? 'La création a échoué'}
+          </p>
+        )}
+        <DialogFooter className="mt-5 items-center">
+          {/* The new status, said when it applies (doctrine des délais §5 ter). */}
+          <p className="mr-auto text-xs text-muted-foreground">Créée en préparation : rien ne part avant sa validation.</p>
           <Button variant="outline" onClick={onClose}>Annuler</Button>
           <Button onClick={() => createMut.mutate()} disabled={!canSave || createMut.isPending}>
             {createMut.isPending ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Création...</> : <><Save className="h-3.5 w-3.5 mr-1.5" />Créer</>}

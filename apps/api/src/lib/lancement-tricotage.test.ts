@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planLancement, lotsParDefaut, type LotLibre } from './lancement-tricotage.js'
+import { planLancement, lotsParDefaut, filNonReserve, ecruCouvertParReservation, type LotLibre } from './lancement-tricotage.js'
 
 const lot = (o: Partial<LotLibre> & { id: number }): LotLibre => ({
   refFil: 1, coloriFil: 10, lot: `L${o.id}`, dateEntree: '20260101', idRefFilCommande: 0, magasin: 1, fournisseur: 0,
@@ -10,6 +10,13 @@ const lot = (o: Partial<LotLibre> & { id: number }): LotLibre => ({
 const paires = [{ refFil: 1, coloriFil: 10, pourcentage: 94 }, { refFil: 2, coloriFil: 20, pourcentage: 6 }]
 
 describe('planLancement', () => {
+  it('from a client line, takes every kg reserved to it, safety margin included (3928)', () => {
+    // 142 Ml = 40 kg of écru at 2,8 %: 38,7 kg of cotton and 2,47 of elastane needed; 41 and 3 reserved.
+    const lots = [lot({ id: 1, libre: 41, reserveLigne: 41 }), lot({ id: 2, refFil: 2, coloriFil: 20, libre: 3, reserveLigne: 3 })]
+    const plan = planLancement({ totalKg: 40, paires, lots, choisis: [1, 2], freinte: 0.028, emporterReserve: true })
+    expect(plan.entrees.map((e) => e.kg)).toEqual([41, 3])
+    expect(planLancement({ totalKg: 40, paires, lots, choisis: [1, 2], freinte: 0.028 }).entrees.map((e) => e.kg)).toEqual([38.68, 2.47])
+  })
   it('covers every yarn from the chosen lots, the oldest lot first', () => {
     const lots = [
       lot({ id: 1, libre: 20, dateEntree: '20260301' }),
@@ -65,5 +72,25 @@ describe('lotsParDefaut', () => {
     ]
     expect(lotsParDefaut(lots, 45)).toEqual([3, 1])
     expect(lotsParDefaut(lots, 500)).toEqual([3, 1, 2])
+  })
+})
+
+describe('filNonReserve: the line part of a launch takes reserved yarn only (2026-10-28)', () => {
+  const paires = [{ refFil: 1, coloriFil: 0, pourcentage: 90 }, { refFil: 2, coloriFil: 0, pourcentage: 10 }]
+  it('a part covered by the line’s reservations goes; a free lot does not count for the line', () => {
+    const lots = [
+      lot({ id: 1, refFil: 1, coloriFil: 0, libre: 700, reserveLigne: 110 }),
+      lot({ id: 2, refFil: 2, coloriFil: 0, libre: 250, reserveLigne: 20 }),
+    ]
+    expect(filNonReserve({ affecteKg: 110.8, paires, lots })).toEqual([])
+    // élasthanne: nothing reserved, 700 kg of free coton does not help
+    const sansElasthanne = [lots[0], lot({ id: 2, refFil: 2, coloriFil: 0, libre: 250, reserveLigne: 0 })]
+    expect(filNonReserve({ affecteKg: 50, paires, lots: sansElasthanne }).map((m) => m.refFil)).toEqual([2])
+  })
+  it('the écru the reservations cover: the scarcest yarn, after the freinte', () => {
+    const lots = [lot({ id: 1, refFil: 1, coloriFil: 0, libre: 700, reserveLigne: 90 }), lot({ id: 2, refFil: 2, coloriFil: 0, libre: 50, reserveLigne: 5 })]
+    expect(ecruCouvertParReservation({ paires, lots })).toBe(50)
+    expect(ecruCouvertParReservation({ paires, lots, freinte: 0.1 })).toBe(45)
+    expect(ecruCouvertParReservation({ paires, lots: [] })).toBe(0)
   })
 })

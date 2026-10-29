@@ -23,18 +23,18 @@
 //  - Reservation pointer: stock_ecru.IDligne_commande_client /
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
-import { rouleauxEstimesParLigne } from '../lib/rouleaux-estimes.js'
-import { faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClient } from '../lib/statut-ligne-client.js'
+import { rouleauxEstimesParLigne, type RouleauxEstimes } from '../lib/rouleaux-estimes.js'
+import { faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClient, type FaitsLigneClient } from '../lib/statut-ligne-client.js'
 import { etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE } from '../lib/etude-ligne-client.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { mpsPg } from '../lib/mps-pg.js'
 import {
-  reservationsDesLignes, lignesCommandeFil, reserverSurCommande, reserverSurLot, fixerReservation,
-  etatReservation, compteDansReserve, RefusReservation, planReservation, libreSurLigneCommande, plafondReservation, type SourceFil,
+  reservationsDesLignes, lignesCommandeFil, fixerReservation,
+  etatReservation, compteDansReserve, RefusReservation, plafondReservation,
 } from '../lib/reservation-fil.js'
-import { lotsLibres, planLancement, ecrireAffectation, messageFilNonCouvert, nomsFils, filsALancer, ordreDeService } from '../lib/lancement-tricotage.js'
+import { lotsLibres, planLancement, ecrireAffectation, messageFilNonCouvert, nomsFils, filsALancer, ordreDeService, filNonReserve } from '../lib/lancement-tricotage.js'
 import { freinteTricotage, freintesTricotage, origineFreinte, filPourEcru, ecruPourFil, besoinFil, MARGE_SECURITE_FIL, ARRONDI_FIL_KG } from '../lib/freinte-tricotage.js'
-import { avancementCommande, commandeIncomplete, modeLivraisonDe, MODES_LIVRAISON, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
+import { avancementCommande, commandeIncomplete, etatAffiche, modeLivraisonDe, MODES_LIVRAISON, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { ecruEnMl, MESSAGE_ECRU_EN_ML } from '../lib/unite-ecru.js'
@@ -75,6 +75,13 @@ import {
 } from '../lib/reservation-teinture.js'
 import { adresseADefinirRow, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
+import { appliquerDateLignes, DEPARTS, EXPEDITION_DEFAUT, expeditions, fixerExpedition, type Expedition } from '../lib/mode-expedition.js'
+import { blocageRetourPreparation, commandesEnPreparation, estEnPreparation, mettreEnPreparation, refuseSiEnPreparation, repasserEnPreparation, validation, validerCommande } from '../lib/preparation-commande.js'
+import { enregistrerReport, estUnReport, IMPUTABLES, reportsLigne } from '../lib/report-ligne-client.js'
+import { ETAPES_LANCEMENT, datesLancement, fixerDateLancement, historiqueLancement, leverAuLancement, versDatePg } from '../lib/lancement-ligne.js'
+import { besoinsParStade, type StadesLigne } from '../lib/besoin-stades.js'
+import { aujourdhuiYmd, delaiAuPlusTot, FIL_ESTIME_JOURS, partenairesParDefaut, type DelaiAuPlusTot } from '../lib/delai-au-plus-tot.js'
+import { ajouterJoursOuvres, joursOuvresEntre } from '../lib/jours-ouvres.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
 export const commandesClientRouter: RouterType = Router()
@@ -245,7 +252,15 @@ async function nextNumero(): Promise<number> {
   return (Number(r[0]?.m) || 0) + 1
 }
 
-type EtatCommande = { urgence: UrgenceCommande | null; avancement: EtatLigneClient | null; etats: EtatLigneClient[] }
+type EtatCommande = {
+  urgence: UrgenceCommande | null
+  avancement: EtatLigneClient | null
+  etats: EtatLigneClient[]
+  /** how the order leaves (lib/mode-expedition.ts) */
+  expedition: Expedition
+  /** « ensemble »: the latest D of its lines still to ship, null when one has none */
+  depart: string | null
+}
 
 /** Each open order's state (lib/urgence-commande-client.ts): the line status ladder over all the
  *  given lines, batched, then per order what there is to do and when (urgence) and where it stands
@@ -269,7 +284,11 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
         : undefined,
     }
   }))
-  const etudes = await etudesParId(lignes.map((l) => Number(l.IDetude_col) || 0))
+  const [etudes, lancements, exps] = await Promise.all([
+    etudesParId(lignes.map((l) => Number(l.IDetude_col) || 0)),
+    datesLancement(lignes.map((l) => Number(l.IDligne_commande_client) || 0)),
+    expeditions(lignes.map((l) => Number(l.IDcommande_client) || 0)),
+  ])
   const parCommande = new Map<number, LigneUrgence[]>()
   for (const l of lignes) {
     const f = faits.get(Number(l.IDligne_commande_client))
@@ -280,23 +299,42 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       etat: statutLigneClient(f, '').etat,
       typeKind: Number(l.type_kind) || 0,
       dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
-      modeLivraison: modeLivraisonDe(l.mode_livraison),
-      dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
+      ...urgenceExpedition(exps.get(cid)),
       relanceAppel: relanceParCommande.get(cid),
       etude: etudeUrgence(Number(l.IDetude_col) || 0, Number(l.IDcolori) || 0, etudes),
       filAttenduLe: filAttenduLe(f),
+      lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
+      lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
     })
     parCommande.set(cid, arr)
   }
   const today = new Date()
   for (const [cid, ls] of parCommande) {
+    // Pill and tags show « planifiée »; the colour reads the computed état + its launch date.
+    const affiches = ls.map((x) => etatAffiche(x.etat, x.typeKind, x.lancementLe, today))
+    const restantes = ls.filter((x) => x.etat !== 'expediee' && x.etat !== 'soldee')
     out.set(cid, {
       urgence: urgenceCommande(ls, today),
-      avancement: avancementCommande(ls.map((x) => x.etat), false),
-      etats: [...new Set(ls.map((x) => x.etat))],
+      avancement: avancementCommande(affiches, false),
+      etats: [...new Set(affiches)],
+      expedition: exps.get(cid) ?? EXPEDITION_DEFAUT,
+      depart: exps.get(cid)?.groupee ? departDe(restantes.map((x) => x.dateLivraison)) : null,
     })
   }
   return out
+}
+
+/** The order's expédition as the urgency rule reads it on each line (lib/urgence-commande-client.ts). */
+function urgenceExpedition(e: Expedition | undefined): Pick<LigneUrgence, 'modeLivraison' | 'groupee' | 'dateClient'> {
+  const x = e ?? EXPEDITION_DEFAUT
+  return { modeLivraison: x.depart, groupee: x.groupee, dateClient: x.dateClient }
+}
+
+/** « Ensemble »: the order leaves around the latest D of its lines still to ship; null when
+ *  one of them has no date yet (or none is left). */
+function departDe(dates: (string | null)[]): string | null {
+  if (dates.length === 0 || dates.some((d) => !d || !/^\d{8}$/.test(d))) return null
+  return (dates as string[]).reduce((m, d) => (d > m ? d : m))
 }
 
 // ── Client name resolution (batched, flat — never SELECT *) ──
@@ -341,6 +379,10 @@ const commandeBody = z.object({
   frais_port: z.number().optional(),
   est_soldee: z.number().int().min(0).max(1).optional(),
   donation: z.number().int().min(0).max(1).optional(),
+  // How the order leaves (lib/mode-expedition.ts): départ + « ensemble » + the client's date (YYYYMMDD, '' = none).
+  depart: z.enum(DEPARTS).optional(),
+  expedition_groupee: z.boolean().optional(),
+  date_expedition_client: z.string().regex(/^(\d{8})?$/).optional(),
 })
 
 const ligneBody = z.object({
@@ -358,23 +400,22 @@ const ligneBody = z.object({
   unite: z.number().int().optional(),
   prix: z.number().optional(),
   poids: z.number().optional(),
+  // D: the line is ready to ship on it, whatever the mode (doctrine des délais §8). The mode only
+  // says what follows « ready » (lib/urgence-commande-client.ts); date_expedition_prevue is retired.
   date_livraison: z.string().optional(),
   commentaire: z.string().optional(),
-  // How a ready line leaves (lib/urgence-commande-client.ts); the date only with « date_client ».
   mode_livraison: z.enum(MODES_LIVRAISON).optional(),
-  date_expedition_prevue: z.string().optional(),
+  // Moving a D already given: why, and who it is due to (lib/report-ligne-client.ts). Required then.
+  report: z.object({ motif: z.string().trim().min(1), imputable: z.enum(IMPUTABLES) }).optional(),
 })
 
-/** '' or YYYYMMDD → a SQL date literal; NULL when empty (the new column is not in
- *  pg-datecols.json, so a '' would not be rewritten to NULL by the backend). */
-const dateOuNull = (v: unknown) => { const d = dateStr(v); return d ? `'${d}'` : 'NULL' }
-
-/** A « date client » line without its date would silently fall back to the délai. */
-function refuseIfDateExpeditionManquante(res: Response, mode: string, date: string): boolean {
-  if (mode !== 'date_client' || date) return false
-  res.status(400).json({ error: 'date_expedition_requise', message: 'Indiquez la date d’expédition convenue avec le client.' })
+/** « Commande complète » is the order's « expédier en une fois » since 2026-10-28, no longer a line mode. */
+function refuseModeCommandeComplete(res: Response, mode: string): boolean {
+  if (mode !== 'commande_complete') return false
+  res.status(400).json({ error: 'mode_commande', message: '« Commande complète » se règle sur la commande : « Expédier en une fois ».' })
   return true
 }
+
 
 // ════════════════════════════════════════════════════════
 //  LOOKUPS  (literal paths — must register before /:id)
@@ -703,6 +744,22 @@ commandesClientRouter.get('/lookups/refs-divers', async (_req: Request, res: Res
     })))
   } catch (err) {
     console.error('Error fetching refs-divers lookup:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// The earliest date of a line being typed (line dialog, doctrine des délais §5 ter): from its matter
+// reserved when it exists (?ligne=), none for a new one. Computed, never stored here.
+commandesClientRouter.get('/lookups/au-plus-tot', async (req: Request, res: Response) => {
+  try {
+    const num = (k: string) => Number(req.query[k]) || 0
+    const l: LigneAuPlusTot = { id: num('ligne'), typeKind: num('type'), refId: num('ref'), coloriId: num('colori'), unite: num('unite'), quantite: num('quantite') }
+    if (l.refId <= 0 || !(l.quantite > 0)) { res.json(null); return }
+    const date = String(req.query.date ?? '').replace(/-/g, '')
+    const a = (await auPlusTotLignes([l], /^\d{8}$/.test(date) ? date : null)).get(l.id) ?? null
+    res.json(a ? { ...a, marge: margeJours(a, date) } : null)
+  } catch (err) {
+    console.error('Error computing au-plus-tot:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1048,6 +1105,8 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
     const ids = commandes.map((c: any) => Number(c.IDcommande_client)).filter(Boolean)
     const clientIds = commandes.map((c: any) => Number(c.IDclient)).filter(Boolean)
     const clientNames = await resolveClientNames(clientIds)
+    // « En préparation »: red from its creation, preparing it is ours to do now (lib/preparation-commande.ts).
+    const enPreparation = await commandesEnPreparation(commandes.map((c: any) => Number(c.IDcommande_client)))
 
     // Line aggregates: nb_lignes, total_qte, total_eur (Σ qty×prix), earliest.
     const totalsMap = new Map<number, { total_eur: number; total_qte: number; nb_lignes: number; earliest_delivery: string | null }>()
@@ -1055,7 +1114,7 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
     if (ids.length > 0) {
       const lignes = await query<any>(
         `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDcolori, IDVariation1, IDVariation2,
-                unite, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue, IDetude_col
+                unite, quantite, prix, date_livraison, mode_livraison, IDetude_col
          FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
       )
       const ouvertes = new Set(commandes.filter((c: any) => Number(c.est_soldee) !== 1).map((c: any) => Number(c.IDcommande_client)))
@@ -1091,7 +1150,13 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
         client_nom: clientNames.get(Number(c.IDclient)) ?? '',
         // where it stands (line pills' scale) + what there is to do and when; soldée = neutral
         avancement: Number(c.est_soldee) === 1 ? 'soldee' : (etatMap.get(cid)?.avancement ?? null),
-        urgence: etatMap.get(cid)?.urgence ?? null,
+        urgence: enPreparation.has(cid) ? { niveau: 'rouge', raison: 'Commande à préparer puis valider' } : (etatMap.get(cid)?.urgence ?? null),
+        en_preparation: enPreparation.has(cid),
+        // How it leaves and when (« ensemble »: latest D of the lines still to ship; date demandée: the client's).
+        depart: (etatMap.get(cid)?.expedition ?? EXPEDITION_DEFAUT).depart,
+        expedition_groupee: (etatMap.get(cid)?.expedition ?? EXPEDITION_DEFAUT).groupee,
+        date_expedition_client: (etatMap.get(cid)?.expedition ?? EXPEDITION_DEFAUT).dateClient,
+        depart_commande: etatMap.get(cid)?.depart ?? null,
         // distinct statuses of its lines: the list's search tags (« au moins une ligne ») filter on it
         etats_lignes: Number(c.est_soldee) === 1 ? ['soldee'] : (etatMap.get(cid)?.etats ?? []),
         ...totals,
@@ -1296,11 +1361,17 @@ export interface AgregatLigne {
   enno_poids: number
   trico_metrage: number
   trico_poids: number
+  /** by form, whatever the stage (lib/besoin-stades.ts): fini rolls, écru pieces not dyed yet */
+  fini_metrage: number
+  fini_poids: number
+  ecru_metrage: number
+  ecru_poids: number
 }
 
 const agregatVide = (): AgregatLigne => ({
   nb_rolls: 0, total_metrage: 0, total_poids: 0, exp_metrage: 0, exp_poids: 0,
   pret_metrage: 0, pret_poids: 0, enno_metrage: 0, enno_poids: 0, trico_metrage: 0, trico_poids: 0,
+  fini_metrage: 0, fini_poids: 0, ecru_metrage: 0, ecru_poids: 0,
 })
 
 /** Per-line "affecté" aggregates keyed by IDligne_commande_client. The gauge
@@ -1381,6 +1452,8 @@ export async function lineReservationAggregates(
     a.nb_rolls += 1
     a.total_metrage += metrage
     a.total_poids += poids
+    a.fini_metrage += metrage
+    a.fini_poids += poids
     // Shipped = état Expédié or attached to an expedition line. Ready = validated only (the one roll
     // that may ship, lib/fini-expediable.ts); En contrôle / Reprise / Attente décision are still the
     // dyer's — the line status says « en ennoblissement » for them too (statut-ligne-client.ts).
@@ -1405,6 +1478,8 @@ export async function lineReservationAggregates(
     a.nb_rolls += 1
     a.total_metrage += metrage
     a.total_poids += poids
+    a.ecru_metrage += metrage
+    a.ecru_poids += poids
     if ((Number(r.IDligne_expedition_ETM) || 0) > 0) {
       a.exp_metrage += metrage
       a.exp_poids += poids
@@ -1562,7 +1637,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind,
                 IDreference, IDcolori, IDVariation1, IDVariation2,
                 quantite, unite, prix, poids, date_livraison, commentaire,
-                mode_livraison, date_expedition_prevue, IDetude_col${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
+                mode_livraison, IDetude_col${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
          FROM ligne_commande_client
          WHERE IDcommande_client = ${id}
          ORDER BY IDligne_commande_client`,
@@ -1626,12 +1701,20 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       return f ? [{ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0 }] : []
     }))
 
-    const etudes = await etudesParId(lignesFixed.map((l) => Number(l.IDetude_col) || 0))
+    const [etudes, lancements, exps] = await Promise.all([
+      etudesParId(lignesFixed.map((l) => Number(l.IDetude_col) || 0)),
+      datesLancement(lignesFixed.map((l) => Number(l.IDligne_commande_client) || 0)),
+      expeditions([id]),
+    ])
+    const expedition = exps.get(id) ?? EXPEDITION_DEFAUT
     // Rolls the line represents, sized like the Fiche tarif (lib/rouleaux-estimes.ts) — hover of « Commandé ».
     const rouleaux = await rouleauxEstimesParLigne(lignesFixed.map((l) => ({
       id: Number(l.IDligne_commande_client), typeKind: Number(l.type_kind) || 0, refId: Number(l.IDreference) || 0,
       unite: Number(l.unite) || 0, quantite: Number(l.quantite) || 0,
     })))
+    // Earliest date per line while it is still to make (doctrine des délais §5 ter).
+    const partenaires = soldee ? null : await partenairesParDefaut()
+    const today = aujourdhuiYmd()
 
     const lignes = lignesFixed.map((l) => {
       const typeKind = Number(l.type_kind) || 0
@@ -1663,10 +1746,12 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         prix,
         poids: Number(l.poids) || 0,
         date_livraison: l.date_livraison ?? null,
-        // The first délai given (frozen), null when unknown (lines older than 2026-10-11).
+        // The engagement: the first D given (frozen, doctrine des délais §8), null when unknown (lines older than 2026-10-11).
         delai_initial: typeof l.delai_initial === 'string' && /^\d{8}$/.test(l.delai_initial) ? l.delai_initial : null,
         mode_livraison: modeLivraisonDe(l.mode_livraison),
-        date_expedition_prevue: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
+        // The launch date of the next step (lib/lancement-ligne.ts): holds a line « à lancer » until then.
+        date_lancement: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
+        etape_lancement: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
         commentaire: l.commentaire ?? null,
         ref_label: resolved.label || null,
         ref_kind: resolved.kind,
@@ -1678,6 +1763,14 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
           : null,
         montant: qty * prix,
         rouleaux_estimes: rouleaux.get(Number(l.IDligne_commande_client)) ?? null,
+        au_plus_tot: partenaires
+          ? (() => {
+            const a = auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
+              agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, today,
+              typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : null)
+            return a ? { ...a, marge: margeJours(a, typeof l.date_livraison === 'string' ? l.date_livraison : null) } : null
+          })()
+          : null,
         // affectation aggregates + the gauge basis (poids for Kg, metrage for Ml)
         nb_rolls: agg.nb_rolls,
         total_metrage: agg.total_metrage,
@@ -1698,19 +1791,24 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         expedie: typeKind === 3
           ? (diversShipped.get(diversKey(refId, v1, v2)) ?? 0)
           : lineDim(l.unite) === 'metrage' ? agg.exp_metrage : agg.exp_poids,
-        statut,
+        // Shown état: « planifiée » while its launch date is to come (etatAffiche); the colour below
+        // still reads the computed état + the date.
+        statut: statut && !soldee
+          ? { ...statut, etat: etatAffiche(statut.etat, typeKind, lancements.get(Number(l.IDligne_commande_client))?.date, new Date()) }
+          : statut,
         // The line's own colour on the list's rule (closed order: neutral), drives the délai's tint.
         urgence: statut && !soldee
           ? urgenceLigne({
             etat: statut.etat,
             typeKind,
             dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
-            modeLivraison: modeLivraisonDe(l.mode_livraison),
-            dateExpedition: typeof l.date_expedition_prevue === 'string' ? l.date_expedition_prevue : null,
+            ...urgenceExpedition(expedition),
             commandeIncomplete: incomplete,
             relanceAppel: relanceAppelDe(ficheRows[0]?.relance_sur_appel),
             etude: etudeUrgence(etudeId, colId, etudes),
             filAttenduLe: f ? filAttenduLe(f) : null,
+            lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
+            lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -1735,10 +1833,20 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       unite: Number(l.unite) || 0,
     })))
 
+    // « En préparation » until « Valider la commande » (lib/preparation-commande.ts, doctrine des délais §5 ter).
+    const [enPrep, valid] = await Promise.all([commandesEnPreparation([id]), validation(id)])
+    const enPreparation = enPrep.has(id)
+    const retourBloque = enPreparation ? null : await blocageRetourPreparation(id)
+
     res.json({
       IDcommande_client: id,
       IDclient,
       client_nom: clientNames.get(IDclient) ?? '',
+      en_preparation: enPreparation,
+      validee_le: enPreparation ? null : valid.validee_le,
+      validee_par: enPreparation ? null : valid.validee_par,
+      /** why it cannot go back to « En préparation » (null = it can) */
+      retour_preparation_bloque: retourBloque,
       client_fiche: clientFiche,
       // Days after the délai before a ready « sur appel » line turns red (client's own or 120).
       relance_sur_appel: relanceAppelDe(ficheRows[0]?.relance_sur_appel),
@@ -1754,6 +1862,10 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       observations_facturation: h.observations_facturation ?? null,
       est_soldee: Number(h.est_soldee) || 0,
       donation: Number(h.donation) || 0,
+      // How the order leaves (lib/mode-expedition.ts): every line follows it, each with its « Prête le ».
+      depart: expedition.depart,
+      expedition_groupee: expedition.groupee,
+      date_expedition_client: expedition.dateClient,
       nb_donation_pieces: nbDonationPieces,
       remise: Number(h.remise) || 0,
       frais_port: Number(h.frais_port) || 0,
@@ -1834,6 +1946,8 @@ commandesClientRouter.post('/', async (req: Request, res: Response) => {
        WHERE IDsociete = 1 AND numero = ${newNumero} ORDER BY IDcommande_client DESC`,
     )
     const newId = Number(newRows[0]?.IDcommande_client) || 0
+    // A new order is prepared before it commits to anything (doctrine des délais §5 ter).
+    if (newId > 0) await mettreEnPreparation(newId)
     res.status(201).json({ IDcommande_client: newId })
   } catch (err) {
     console.error('Error creating commande-client:', err)
@@ -1903,12 +2017,61 @@ commandesClientRouter.put('/:id', async (req: Request, res: Response) => {
         sets.push(`donation = ${d.donation}`)
       }
     }
-    if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
+    const expeditionChange = d.depart !== undefined || d.expedition_groupee !== undefined || d.date_expedition_client !== undefined
+    if (sets.length === 0 && !expeditionChange) { res.status(400).json({ error: 'No fields to update' }); return }
 
-    await query(`UPDATE commande_client SET ${sets.join(', ')} WHERE IDcommande_client = ${id}`)
+    if (sets.length > 0) await query(`UPDATE commande_client SET ${sets.join(', ')} WHERE IDcommande_client = ${id}`)
+    if (expeditionChange) {
+      await fixerExpedition(id, {
+        depart: d.depart,
+        groupee: d.expedition_groupee,
+        dateClient: d.date_expedition_client === undefined ? undefined : (d.date_expedition_client || null),
+      })
+    }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating commande-client:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// « Valider la commande » / « Repasser en préparation » (doctrine des délais §5 ter, lib/preparation-commande.ts).
+commandesClientRouter.post('/:id/valider', async (req: Request, res: Response) => {
+  try {
+    if (!(await requireEditCommandes(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
+    if (!(await estEnPreparation(id))) { res.status(409).json({ error: 'deja_validee', message: 'La commande est déjà validée.' }); return }
+    // A line without a date takes its earliest date (doctrine des délais §5 ter).
+    const lignes = await mpsPg()<{ id: number; t: number; r: number; c: number; u: number; q: number }[]>`
+      SELECT idligne_commande_client AS id, type AS t, idreference AS r, idcolori AS c, unite AS u, quantite AS q
+        FROM ligne_commande_client WHERE idcommande_client = ${id} AND date_livraison IS NULL`
+    const plusTot = await auPlusTotLignes(lignes.map((l) => ({
+      id: Number(l.id), typeKind: Number(l.t) || 0, refId: Number(l.r) || 0, coloriId: Number(l.c) || 0, unite: Number(l.u) || 0, quantite: Number(l.q) || 0,
+    })))
+    const dates = new Map([...plusTot].flatMap(([lid, d]) => (d ? [[lid, d.date] as [number, string]] : [])))
+    const r = await validerCommande(id, req.userId ?? 0, req.userId ? await nomUtilisateur(req.userId) : null, dates)
+    if (!r.ok) { res.status(409).json({ error: 'validation_impossible', message: r.message }); return }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error validating commande-client:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesClientRouter.post('/:id/repasser-en-preparation', async (req: Request, res: Response) => {
+  try {
+    if (!(await requireEditCommandes(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
+    if (await estEnPreparation(id)) { res.json({ ok: true }); return }
+    const r = await repasserEnPreparation(id)
+    if (!r.ok) { res.status(409).json({ error: 'retour_impossible', message: r.message }); return }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error moving commande-client back to préparation:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -2240,8 +2403,7 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
     const typeKind = Number(d.type) || 0
     const mode = d.mode_livraison ?? 'des_que_prete'
-    const dateExp = mode === 'date_client' ? dateStr(d.date_expedition_prevue) : ''
-    if (refuseIfDateExpeditionManquante(res, mode, dateExp)) return
+    if (refuseModeCommandeComplete(res, mode)) return
     if (await refuseIfContratExpire(res, id, {
       type: typeKind, IDreference: d.IDreference ?? 0, IDcolori: d.IDcolori ?? 0,
     })) return
@@ -2255,20 +2417,24 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     // accent-safe via sqlText. The first délai is frozen in delai_annonce (accented
     // under HFSQL: named only where it can be).
     const delai = d.date_livraison ? dateStr(d.date_livraison) : ''
-    const annonce = canNameAccented() && delai
+    if (await refuseDelaiIntenable(res, id, {
+      id: 0, typeKind, refId: d.IDreference ?? 0, coloriId: d.IDcolori ?? 0, unite: d.unite ?? 0, quantite: Number(d.quantite) || 0,
+    }, delai)) return
+    // In préparation nothing is an engagement yet: the validation freezes the dates (§5 ter).
+    const annonce = canNameAccented() && delai && !(await estEnPreparation(id))
     await query(
       `INSERT INTO ligne_commande_client
          (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
           IDVariation1, IDVariation2,
           quantite, unite, prix, poids, date_livraison, commentaire,
-          mode_livraison, date_expedition_prevue, IDetude_col${annonce ? ', delai_annonce' : ''})
+          mode_livraison, IDetude_col${annonce ? ', delai_annonce' : ''})
        VALUES
          (${id}, 0, ${typeKind}, ${n(d.IDreference ?? 0)}, ${etudeId > 0 ? 0 : n(d.IDcolori ?? 0)},
           ${n(typeKind === 3 ? (d.IDVariation1 ?? 0) : 0)}, ${n(typeKind === 3 ? (d.IDVariation2 ?? 0) : 0)},
           ${Number(d.quantite) || 0}, ${n(d.unite ?? 0)}, ${Number(d.prix) || 0},
           ${Number(d.poids) || 0}, '${delai}',
           ${sqlText(d.commentaire ?? '')},
-          ${MODES_LIVRAISON.indexOf(mode)}, ${dateOuNull(dateExp)}, ${etudeId}${annonce ? `, '${delai}'` : ''})`,
+          ${MODES_LIVRAISON.indexOf(mode)}, ${etudeId}${annonce ? `, '${delai}'` : ''})`,
     )
     const newRows = await query<{ IDligne_commande_client: number }>(
       `SELECT IDligne_commande_client FROM ligne_commande_client
@@ -2293,10 +2459,11 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
     if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
-    let curDelai = { delai: '', initial: '', mode: modeLivraisonDe(0), exp: '' }
+    let curDelai = { delai: '', initial: '', mode: modeLivraisonDe(0) }
     let curEtude = 0
     let nextType = 0
     let nextRef = 0
+    let ligneSuivante: LigneAuPlusTot = { id: lineId, typeKind: 0, refId: 0, coloriId: 0, unite: 0, quantite: 0 }
 
     // Contract guard on update. The body is partial, so the check runs on the
     // line as it WOULD be, and only when the payload actually changes something
@@ -2305,12 +2472,12 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     // blocking those would punish the user for a lapse they can't fix here.
     {
       const cur = await query<Record<string, unknown>>(
-        `SELECT TYPE, IDreference, IDcolori, quantite, prix, date_livraison, mode_livraison, date_expedition_prevue, IDetude_col${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
+        `SELECT TYPE, IDreference, IDcolori, quantite, unite, prix, date_livraison, mode_livraison, IDetude_col${canNameAccented() ? ', delai_annonce AS delai_initial' : ''}
          FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
       )
       const row = cur[0] ?? {}
       curEtude = Number(row.IDetude_col) || 0
-      curDelai = { delai: dateStr(row.date_livraison), initial: dateStr(row.delai_initial), mode: modeLivraisonDe(row.mode_livraison), exp: dateStr(row.date_expedition_prevue) }
+      curDelai = { delai: dateStr(row.date_livraison), initial: dateStr(row.delai_initial), mode: modeLivraisonDe(row.mode_livraison) }
       // TYPE is a reserved word — ODBC hands the key back uppercased.
       const curType = Number(row.TYPE ?? (row as { type?: unknown }).type) || 0
       const next = {
@@ -2328,6 +2495,10 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
       if (commercialChange && await refuseIfContratExpire(res, commandeId, next)) return
       nextType = next.type
       nextRef = next.IDreference
+      ligneSuivante = {
+        id: lineId, typeKind: next.type, refId: next.IDreference, coloriId: next.IDcolori,
+        unite: d.unite ?? (Number(row.unite) || 0), quantite: d.quantite !== undefined ? Number(d.quantite) || 0 : Number(row.quantite) || 0,
+      }
 
       // Pieces reserved to the line were picked for its article + coloris; a
       // new one would leave them promised to a product nobody ordered
@@ -2375,29 +2546,103 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     if (d.unite !== undefined) sets.push(`unite = ${n(d.unite)}`)
     if (d.prix !== undefined) sets.push(`prix = ${Number(d.prix) || 0}`)
     if (d.poids !== undefined) sets.push(`poids = ${Number(d.poids) || 0}`)
+    // Moving a D already given is a report: why and who it is due to are required (QS, §8) — once the
+    // order is validated; while it is prepared the dates move freely (doctrine des délais §5 ter).
+    const enPreparation = await estEnPreparation(commandeId)
+    const nextDelai = d.date_livraison !== undefined ? dateStr(d.date_livraison) : curDelai.delai
+    const report = !enPreparation && estUnReport(curDelai.delai, nextDelai)
+    if (report && !d.report) {
+      res.status(400).json({ error: 'report_requis', message: 'La date était un engagement : indiquez pourquoi elle change et à qui le report est dû.' })
+      return
+    }
+    if (enPreparation && nextDelai !== curDelai.delai && await refuseDelaiIntenable(res, commandeId, ligneSuivante, nextDelai)) return
     if (d.date_livraison !== undefined) {
-      const next = dateStr(d.date_livraison)
+      const next = nextDelai
       sets.push(`date_livraison = '${next}'`)
       // Freeze the first délai ever given: the one already on the line when this change
       // replaces it (a line from before 2026-10-11 has no delai_annonce), else this one.
-      if (canNameAccented() && !curDelai.initial && next !== curDelai.delai) {
+      if (canNameAccented() && !enPreparation && !curDelai.initial && next !== curDelai.delai) {
         const premier = curDelai.delai || next
         if (premier) sets.push(`delai_annonce = '${premier}'`)
       }
     }
-    if (d.mode_livraison !== undefined || d.date_expedition_prevue !== undefined) {
-      const mode = d.mode_livraison ?? curDelai.mode
-      const exp = mode !== 'date_client' ? '' : d.date_expedition_prevue !== undefined ? dateStr(d.date_expedition_prevue) : curDelai.exp
-      if (refuseIfDateExpeditionManquante(res, mode, exp)) return
-      sets.push(`mode_livraison = ${MODES_LIVRAISON.indexOf(mode)}`, `date_expedition_prevue = ${dateOuNull(exp)}`)
+    if (d.mode_livraison !== undefined) {
+      if (refuseModeCommandeComplete(res, d.mode_livraison)) return
+      sets.push(`mode_livraison = ${MODES_LIVRAISON.indexOf(d.mode_livraison)}`)
     }
     if (d.commentaire !== undefined) sets.push(`commentaire = ${sqlText(d.commentaire)}`)
     if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
 
     await query(`UPDATE ligne_commande_client SET ${sets.join(', ')} WHERE IDligne_commande_client = ${lineId}`)
+    if (report && d.report) {
+      await enregistrerReport({
+        ligneId: lineId, ancienne: curDelai.delai, nouvelle: nextDelai, motif: d.report.motif, imputable: d.report.imputable,
+        parId: req.userId ?? 0, par: req.userId ? await nomUtilisateur(req.userId) : null,
+      })
+    }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating ligne-commande-client:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// One date D written on several lines at once (Info › Expédition: the date convenue, or « même date
+// pour toutes les lignes »). Lines that had another D need one why / whom for all (400 report_requis).
+const datesLignesBody = z.object({
+  date: z.string().regex(/^\d{8}$/),
+  ligneIds: z.array(z.number().int().positive()).min(1),
+  report: z.object({ motif: z.string().trim().min(1), imputable: z.enum(IMPUTABLES) }).optional(),
+})
+
+commandesClientRouter.put('/:id/lignes-date', async (req: Request, res: Response) => {
+  try {
+    if (!(await requireEditCommandes(req, res))) return
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
+    const parsed = datesLignesBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    if (await estEnPreparation(id)) {
+      // Never below a line's earliest date (doctrine §5 ter): the latest of them is the floor.
+      const ls = await mpsPg()<{ id: number; t: number; r: number; c: number; u: number; q: number }[]>`
+        SELECT idligne_commande_client AS id, type AS t, idreference AS r, idcolori AS c, unite AS u, quantite AS q
+          FROM ligne_commande_client WHERE idcommande_client = ${id} AND idligne_commande_client = ANY(${parsed.data.ligneIds})`
+      const plusTot = await auPlusTotLignes(ls.map((l) => ({
+        id: Number(l.id), typeKind: Number(l.t) || 0, refId: Number(l.r) || 0, coloriId: Number(l.c) || 0, unite: Number(l.u) || 0, quantite: Number(l.q) || 0,
+      })))
+      const plancher = [...plusTot.values()].map((a) => a?.date ?? '').sort().at(-1) ?? ''
+      if (plancher && parsed.data.date < plancher) {
+        res.status(409).json({ error: 'delai_intenable', message: `Toutes ces lignes ne peuvent pas être prêtes avant le ${plancher.slice(6, 8)}/${plancher.slice(4, 6)}/${plancher.slice(0, 4)} (le plus lointain de leurs délais au plus tôt).` })
+        return
+      }
+    }
+    const r = await appliquerDateLignes({
+      commandeId: id, ligneIds: parsed.data.ligneIds, date: parsed.data.date, report: parsed.data.report ?? null,
+      engager: !(await estEnPreparation(id)),
+      parId: req.userId ?? 0, par: req.userId ? await nomUtilisateur(req.userId) : null,
+    })
+    if (!r.ok) {
+      res.status(400).json({ error: 'report_requis', message: `${r.reportRequis} ligne${r.reportRequis > 1 ? 's avaient' : ' avait'} déjà une date : c'était un engagement, indiquez pourquoi elle change et à qui le report est dû.` })
+      return
+    }
+    res.json({ ok: true, lignes: r.lignes })
+  } catch (err) {
+    console.error('Error applying a date to the lines:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// The reports of a line's date D (doctrine des délais §8): every move of the engagement since it was given.
+commandesClientRouter.get('/lignes/:lineId/reports', async (req: Request, res: Response) => {
+  try {
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const commandeId = await loadCommandeIdForLine(lineId)
+    if (commandeId == null) { res.status(404).json({ error: 'Line not found' }); return }
+    res.json({ reports: await reportsLigne(lineId) })
+  } catch (err) {
+    console.error('Error fetching line reports:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -3401,6 +3646,11 @@ interface AvailableEcruRoll extends RollLite {
   /** Already reserved to THIS client line (counted in affecte_total) — the
    *  create-order gauge must not add it a second time. */
   reserved_to_line: boolean
+  /** Where the piece is (0 = the factory) and whether that place is a dyer: the
+   *  Ennoblissement tab's « Réserver » selector groups by it and offers
+   *  « Réserver et ennoblir » on a dyer's group. */
+  magasin_id: number
+  magasin_ennoblisseur: boolean
 }
 
 /** type_sst per sous-traitant (2 = Ennoblisseur — memory project_type_sst_ids). */
@@ -3492,6 +3742,7 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
   const kept = rows.filter((x: any) => !consumed.has(Number(x.IDstock_ecru)))
   const fixed = await fixEncoding(kept, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   const magNames = await resolveMagasinNames(fixed.map((x: any) => Number(x.IDmagasin)))
+  const magTypes = await resolveSousTraitantTypes(fixed.map((x: any) => Number(x.IDmagasin) || 0))
   const colNames = await resolveEcruColoris(fixed.map((x: any) => Number(x.IDcolori_ecru)))
   const defectsByEcru = await fetchDefectsByEcru(fixed.map((x: any) => Number(x.IDstock_ecru) || 0))
   base.rolls = fixed.map((x: any): AvailableEcruRoll => ({
@@ -3512,6 +3763,8 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
     reserved_elsewhere:
       (Number(x.IDligne_commande_client) || 0) > 0 && Number(x.IDligne_commande_client) !== ctx.ligneId,
     reserved_to_line: Number(x.IDligne_commande_client) === ctx.ligneId,
+    magasin_id: Number(x.IDmagasin) || 0,
+    magasin_ennoblisseur: (Number(x.IDmagasin) || 0) > 0 && magTypes.get(Number(x.IDmagasin)) === 2,
   }))
   return base
 }
@@ -3527,6 +3780,192 @@ commandesClientRouter.get('/:id/lignes/:ligneId/supply/ennoblissement/available-
     res.json(await fetchEnnoAvailableRolls(ctx, magasinId))
   } catch (err) {
     console.error('Error fetching ennoblissement available rolls:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Matière écru of a fini line: the Ennoblissement tab's top zone (decision Vincent 2026-10-28) ──
+// The écru pieces reserved to the line (stock_ecru.IDligne_commande_client), wherever they are — at
+// the factory, at the knitter, already on a dyer order — plus the écru still to knit for it, against
+// what the line still needs in écru once its fini rolls are counted (lib/besoin-stades.ts). The
+// selector reserves free pieces (PUT), a piece is released one by one (DELETE). A piece already on a
+// dyer order may only be reserved to a line of that order's article + coloris (LIVA #1261).
+
+interface EcruReserve extends RollLite {
+  magasin_id: number
+  magasin_ennoblisseur: boolean
+  /** the dyer order the piece is on, 0 = none yet */
+  IDcommande_sous_traitant: number
+  sst_nom: string | null
+}
+
+async function fetchMatiereEcru(ctx: ClientLineContext) {
+  const r = await query<{ IDref_ecru: number | null; rendement: number | null }>(
+    `SELECT IDref_ecru, rendement FROM ref_fini WHERE IDref_fini = ${ctx.refId}`,
+  )
+  const ecruRefId = Number(r[0]?.IDref_ecru) || 0
+  const rendement = Number(r[0]?.rendement) || 0
+  const dim = lineDim(ctx.unite)
+  const [agg, rows] = await Promise.all([
+    lineReservationAggregates([{ id: ctx.ligneId, typeKind: ctx.typeKind, refId: ctx.refId }]),
+    query<any>(
+      `SELECT IDstock_ecru, numero, lot, poids, metrage, IDcolori_ecru, IDmagasin, second_choix, observations,
+              IDref_commande_affectation, IDcommande_donation
+         FROM stock_ecru WHERE IDligne_commande_client = ${ctx.ligneId}
+        ORDER BY date_saisie, IDstock_ecru`,
+    ),
+  ])
+  const stades = stadesDeAgregat(ctx, agg.get(ctx.ligneId))
+  // Same pieces as the gauge counts: never a donated one, never one already dyed.
+  const vivantes = rows.filter((x: any) => (Number(x.IDcommande_donation) || 0) === 0)
+  const consumed = await consumedEcruIds(vivantes.map((x: any) => Number(x.IDstock_ecru)))
+  const fixed = await fixEncoding(liveEcruRolls(vivantes, consumed), 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
+  const sstLines = [...new Set(fixed.map((x: any) => Number(x.IDref_commande_affectation) || 0).filter((x) => x > 0))]
+  const commandeDeLigne = new Map<number, { cmd: number; sst: number }>()
+  if (sstLines.length > 0) {
+    const ls = await query<{ lid: number; cid: number; sstid: number }>(
+      `SELECT lcs.IDligne_commande_sous_traitant AS lid, cst.IDcommande_sous_traitant AS cid, cst.IDsous_traitant AS sstid
+         FROM ligne_commande_sous_traitant lcs
+         JOIN commande_sous_traitant cst ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant
+        WHERE lcs.IDligne_commande_sous_traitant IN (${sstLines.join(',')})`,
+    )
+    for (const l of ls) commandeDeLigne.set(Number(l.lid), { cmd: Number(l.cid), sst: Number(l.sstid) })
+  }
+  const [magNames, colNames, magTypes] = await Promise.all([
+    resolveMagasinNames([...fixed.map((x: any) => Number(x.IDmagasin) || 0), ...[...commandeDeLigne.values()].map((c) => c.sst)]),
+    resolveEcruColoris(fixed.map((x: any) => Number(x.IDcolori_ecru))),
+    resolveSousTraitantTypes(fixed.map((x: any) => Number(x.IDmagasin) || 0)),
+  ])
+  const pieces = fixed.map((x: any): EcruReserve => {
+    const c = commandeDeLigne.get(Number(x.IDref_commande_affectation) || 0)
+    const mag = Number(x.IDmagasin) || 0
+    return {
+      id: Number(x.IDstock_ecru),
+      numero: x.numero ?? null,
+      lot: x.lot ?? null,
+      poids: Number(x.poids) || 0,
+      metrage: Number(x.metrage) || 0,
+      coloris_reference: colNames.get(Number(x.IDcolori_ecru)) ?? null,
+      magasin_nom: mag > 0 ? (magNames.get(mag) ?? null) : 'Malterre',
+      second_choix: Number(x.second_choix) || 0,
+      observations: x.observations ?? null,
+      observation_sst: null,
+      etat_label: null,
+      expedie: false,
+      expediable: true,
+      magasin_id: mag,
+      // A piece reserved at a dyer and on no dyer order yet: the line can be dyed there.
+      magasin_ennoblisseur: mag > 0 && magTypes.get(mag) === 2,
+      IDcommande_sous_traitant: c?.cmd ?? 0,
+      sst_nom: c ? (magNames.get(c.sst) ?? null) : null,
+    }
+  })
+  return {
+    applicable: ecruRefId > 0,
+    unite_label: uniteLabel(ctx.unite),
+    dim,
+    rendement,
+    ecru_ref_label: await resolveEcruRefLabel(ecruRefId),
+    // In the line's unit: what the fini rolls cover, then the écru (pieces + still to knit).
+    stades,
+    pieces,
+  }
+}
+
+commandesClientRouter.get('/:id/lignes/:ligneId/matiere/ecru', async (req: Request, res: Response) => {
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const ctx = await loadClientLineContext(commandeId, ligneId)
+    if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
+    res.json(await fetchMatiereEcru(ctx))
+  } catch (err) {
+    console.error('Error fetching the line écru:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const reserverEcruBody = z.object({ stockIds: z.array(z.number().int().positive()).min(1) })
+
+// Reserve écru pieces to the fini line, all or nothing: each must be this fini's écru base, ETM's,
+// still écru, not shipped, not donated, free (or already this line's), and when it sits on a dyer
+// order, that order must dye this line's article + coloris.
+commandesClientRouter.put('/:id/lignes/:ligneId/matiere/ecru', async (req: Request, res: Response) => {
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = reserverEcruBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const ctx = await loadClientLineContext(commandeId, ligneId)
+    if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
+    const ids = [...new Set(parsed.data.stockIds)]
+    const ref = await query<{ IDref_ecru: number | null; avec_teinture: number | null }>(
+      `SELECT IDref_ecru, avec_teinture FROM ref_fini WHERE IDref_fini = ${ctx.refId}`,
+    )
+    const ecruRefId = Number(ref[0]?.IDref_ecru) || 0
+    if (ecruRefId <= 0) { res.status(400).json({ error: 'sans_ecru', message: "La référence finie n'a pas de tombé de métier." }); return }
+    const coloris = await ennoInputColoriIds(ecruRefId, Number(ref[0]?.avec_teinture) || 0, ctx.coloriId)
+    const rows = await query<any>(
+      `SELECT IDstock_ecru, numero, IDref_ecru, IDcolori_ecru, IDsociete, IDligne_commande_client, IDcommande_donation,
+              IDref_commande_affectation, IDligne_expedition_ETM
+         FROM stock_ecru WHERE IDstock_ecru IN (${ids.join(',')})`,
+    )
+    if (rows.length !== ids.length) { res.status(404).json({ error: 'introuvable', message: 'Une pièce sélectionnée est introuvable.' }); return }
+    const consumed = await consumedEcruIds(ids)
+    const dyeLines = [...new Set(rows.map((x: any) => Number(x.IDref_commande_affectation) || 0).filter((x) => x > 0))]
+    const dyeKey = new Map<number, { ref: number; coloris: number }>()
+    if (dyeLines.length > 0) {
+      for (const d of await query<{ lid: number; IDreference: number | null; IDColoris: number | null }>(
+        `SELECT IDligne_commande_sous_traitant AS lid, IDreference, IDColoris FROM ligne_commande_sous_traitant
+          WHERE IDligne_commande_sous_traitant IN (${dyeLines.join(',')})`,
+      )) dyeKey.set(Number(d.lid), { ref: Number(d.IDreference) || 0, coloris: Number(d.IDColoris) || 0 })
+    }
+    const refus = (code: string, message: string) => { res.status(409).json({ error: code, message }); return }
+    for (const x of rows) {
+      const nom = String(x.numero ?? x.IDstock_ecru).trim()
+      if (Number(x.IDref_ecru) !== ecruRefId || (coloris.length > 0 && !coloris.includes(Number(x.IDcolori_ecru)))) {
+        return refus('autre_ecru', `La pièce ${nom} n'est pas le tombé de métier de cette référence.`)
+      }
+      if (Number(x.IDsociete) !== 1) return refus('piece_trm', `La pièce ${nom} est encore à TRM : elle sera réservable une fois expédiée à Ets Malterre.`)
+      if ((Number(x.IDcommande_donation) || 0) > 0) return refus('piece_donnee', `La pièce ${nom} est attachée à une commande de donation.`)
+      if (consumed.has(Number(x.IDstock_ecru))) return refus(ECRU_CONSUMED_ERROR.error, ECRU_CONSUMED_ERROR.message)
+      if ((Number(x.IDligne_expedition_ETM) || 0) > 0) return refus('piece_expediee', `La pièce ${nom} est expédiée.`)
+      const lcc = Number(x.IDligne_commande_client) || 0
+      if (lcc !== 0 && lcc !== ligneId) return refus('piece_reservee', `La pièce ${nom} est réservée à une autre ligne.`)
+      const dye = dyeKey.get(Number(x.IDref_commande_affectation) || 0)
+      if (dye && !reservationFitsDyeLine({ type: ctx.typeKind, ref: ctx.refId, coloris: ctx.coloriId }, dye)) {
+        return refus(RESERVATION_MISFIT_ERROR, `La pièce ${nom} est sur une commande d’ennoblissement d’une autre référence ou d’un autre coloris.`)
+      }
+    }
+    await query(
+      `UPDATE stock_ecru SET IDligne_commande_client = ${ligneId}
+        WHERE IDstock_ecru IN (${ids.join(',')}) AND (IDligne_commande_client IS NULL OR IDligne_commande_client = 0)`,
+    )
+    res.json(await fetchMatiereEcru(ctx))
+  } catch (err) {
+    console.error('Error reserving écru to the line:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesClientRouter.delete('/:id/lignes/:ligneId/matiere/ecru/:stockId', async (req: Request, res: Response) => {
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    const stockId = parseInt(req.params.stockId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId) || isNaN(stockId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const ctx = await loadClientLineContext(commandeId, ligneId)
+    if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
+    // A dyed piece is a fini roll now: its affectation moves on the Affectation tab.
+    if ((await consumedEcruIds([stockId])).has(stockId)) { res.status(409).json(ECRU_CONSUMED_ERROR); return }
+    await query(`UPDATE stock_ecru SET IDligne_commande_client = 0 WHERE IDstock_ecru = ${stockId} AND IDligne_commande_client = ${ligneId}`)
+    res.json(await fetchMatiereEcru(ctx))
+  } catch (err) {
+    console.error('Error releasing écru from the line:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -4051,6 +4490,9 @@ const tricoOrderBody = z.object({
   // Kg knitted for the ETM general stock — never negative.
   poids_stock: z.number().finite().min(0).default(0),
   date_commande: z.string().optional(),
+  // The date asked of the knitter (YYYYMMDD): the dialog proposes the doctrine's (standard + the line's
+  // margin, doctrine des délais §4); the knitter still confirms its own délai (Attente_Delai).
+  date_demandee: z.string().regex(/^\d{8}$/).optional(),
   // The yarn lots the order goes out with (stock_fil ids at the knitter) — every yarn of the
   // composition must be covered (lib/lancement-tricotage.ts).
   lots: z.array(z.number().int().positive()).default([]),
@@ -4061,6 +4503,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
     const commandeId = parseInt(req.params.id, 10)
     const ligneId = parseInt(req.params.ligneId, 10)
     if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, commandeId, 'de lancer le tricotage')) return
     const parsed = tricoOrderBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
@@ -4090,10 +4533,29 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
     // BEFORE writing anything (lib/lancement-tricotage.ts).
     const pairs = await tricoCompositionPairs(ecruRefId, ecruColoris)
     const paires = pairs.map((p) => ({ refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage }))
-    const plan = planLancement({
-      totalKg: total, paires, choisis: d.lots, freinte: (await freinteTricotage(ecruRefId)).taux,
-      lots: await lotsLibres({ magasin: d.IDsous_traitant, paires, ligneClient: ligneId }),
-    })
+    const freinte = (await freinteTricotage(ecruRefId)).taux
+    const lots = await lotsLibres({ magasin: d.IDsous_traitant, paires, ligneClient: ligneId })
+    // Reserving and ordering are two gestures (decision Vincent 2026-10-28): from the line, an order
+    // knits the line's part with the yarn reserved to it at this knitter, never with free yarn; only
+    // what is knitted on top « pour le stock » may take free lots. No reserved matter, no order.
+    if (!(d.poids_affecte > 0)) {
+      res.status(409).json({ error: 'sans_matiere_reservee', message: 'Une commande lancée depuis la ligne tricote pour la ligne, avec le fil qui lui est réservé. Pour du stock seul, passez par Sous-traitants › Tricotage.' })
+      return
+    }
+    const nonReserve = filNonReserve({ affecteKg: d.poids_affecte, paires, lots, freinte })
+    if (nonReserve.length > 0) {
+      const noms = await nomsFils(paires)
+      const fmt = (x: number) => x.toLocaleString('fr-FR', { maximumFractionDigits: 1 })
+      res.status(409).json({
+        error: 'fil_non_reserve',
+        message: `Le fil réservé à la ligne chez ce tricoteur ne couvre pas sa part : ${nonReserve
+          .map((m) => `${noms.get(`${m.refFil}:${m.coloriFil}`) ?? `fil ${m.refFil}`} : ${fmt(m.couvert)} kg réservés sur ${fmt(m.besoin)} kg`)
+          .join(' ; ')}. Réservez d'abord le fil (onglet Fil ou Tricotage).`,
+      })
+      return
+    }
+    // From the line: every kg reserved to it goes to the knitter, safety margin included (planLancement).
+    const plan = planLancement({ totalKg: total, paires, choisis: d.lots, freinte, lots, emporterReserve: true })
     if (!plan.ok) {
       const noms = await nomsFils(paires)
       res.status(409).json({
@@ -4112,6 +4574,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
       coloriEcruId: ecruColoris[0] ?? 0,
       quantiteKg: total,
       dateCommande: d.date_commande,
+      dateDemandee: d.date_demandee,
     })
 
     // Planning allocation to this client line (the "Poids affecté" input) —
@@ -4125,6 +4588,8 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
 
     // One asso row per lot taken; the line's reservations on those lots go to the order.
     await ecrireAffectation({ sstLine: created.IDligne_commande_sous_traitant, ligneClient: ligneId, entrees: plan.entrees })
+    // The knitting is launched: a launch date that held it is over (lib/lancement-ligne.ts).
+    await leverAuLancement({ ligneId, etape: 'tricotage', parId: req.userId ?? 0, par: req.userId ? await nomUtilisateur(req.userId) : null })
 
     res.status(201).json({ ok: true, ...created })
   } catch (err) {
@@ -4193,6 +4658,63 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
   }
 })
 
+// ── Lancement: the launch date of the line's next step (lib/lancement-ligne.ts) ──
+// Doctrine des délais §5 (decision Vincent 2026-10-28): the only way to hold a line « à lancer » on
+// purpose. Before the date the line is neutral, from it red. Every change is kept with its why.
+
+commandesClientRouter.get('/:id/lignes/:ligneId/lancement', async (req: Request, res: Response) => {
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const ctx = await loadClientLineContext(commandeId, ligneId)
+    if (!ctx) { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
+    const [dates, historique] = await Promise.all([datesLancement([ligneId]), historiqueLancement(ligneId)])
+    res.json({ date: dates.get(ligneId)?.date ?? null, etape: dates.get(ligneId)?.etape ?? null, historique })
+  } catch (err) {
+    console.error('Error fetching line launch date:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const lancementBody = z.object({
+  /** YYYYMMDD, null = remove the date */
+  date: z.string().regex(/^\d{8}$/).nullable(),
+  /** the tab where « Planifier » was clicked: what waits for the date */
+  etape: z.enum(ETAPES_LANCEMENT).nullable().optional(),
+})
+
+commandesClientRouter.put('/:id/lignes/:ligneId/lancement', async (req: Request, res: Response) => {
+  try {
+    if (!(await requireEditCommandes(req, res))) return
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, commandeId, 'de planifier un lancement')) return
+    const parsed = lancementBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const ctx = await loadClientLineContext(commandeId, ligneId)
+    if (!ctx || ctx.kind === 'none') { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
+    if (parsed.data.date !== null && !versDatePg(parsed.data.date)) {
+      res.status(400).json({ error: 'date_invalide', message: 'Date de lancement invalide.' })
+      return
+    }
+    await fixerDateLancement({
+      ligneId,
+      date: parsed.data.date,
+      etape: parsed.data.etape ?? null,
+      parId: req.userId ?? 0,
+      par: req.userId ? await nomUtilisateur(req.userId) : null,
+    })
+    const [dates, historique] = await Promise.all([datesLancement([ligneId]), historiqueLancement(ligneId)])
+    res.json({ date: dates.get(ligneId)?.date ?? null, etape: dates.get(ligneId)?.etape ?? null, historique })
+  } catch (err) {
+    console.error('Error setting line launch date:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ════════════════════════════════════════════════════════
 //  EXPÉDITIONS — per-line shipment view + quick-ship
 //  Mirrors the legacy "Gestion ligne de commande" Expédition tab (list the
@@ -4215,10 +4737,23 @@ export async function resolveTransporteurNamesCC(ids: number[]): Promise<Map<num
   return out
 }
 
+/** The line's stages from its gauge aggregate, in the line's dim (lib/besoin-stades.ts). */
+function stadesDeAgregat(ctx: Pick<ClientLineContext, 'kind' | 'unite' | 'quantite'>, a: AgregatLigne | undefined): StadesLigne {
+  const m = lineDim(ctx.unite) === 'metrage'
+  const x = a ?? agregatVide()
+  return besoinsParStade({
+    kind: ctx.kind === 'fini' ? 'fini' : 'ecru',
+    quantite: ctx.quantite,
+    fini: m ? x.fini_metrage : x.fini_poids,
+    ecru: m ? x.ecru_metrage : x.ecru_poids,
+    tricotage: m ? x.trico_metrage : x.trico_poids,
+  })
+}
+
 /** What a client line still needs of each yarn of its recipe, in kg: its quantity in écru kg, less
  *  what is already affected (rolls, knitting orders — the gauge's « Affecté »), ÷ (1 − freinte de
  *  tricotage of the écru), × the yarn's share, less its open reservations (supplier order, lot). The cap of every reservation (never reserve
- *  beyond the line's need) and the base of « Réserver tout le fil ». */
+ *  beyond the line's need) and the need each tab shows. */
 async function besoinsFilDeLigne(ctx: ClientLineContext) {
   const { ecruRefId, rendement, ecruColoris } = await resolveTricoEcru(ctx)
   if (ecruRefId <= 0) return null
@@ -4233,12 +4768,13 @@ async function besoinsFilDeLigne(ctx: ClientLineContext) {
   const a = agg.get(ctx.ligneId)
   const kgLigne = round2c(enKg(ctx.quantite))
   const kgAffecte = round2c(enKg(a ? (metrage ? a.total_metrage : a.total_poids) : 0))
-  const kgAProduire = Math.max(0, kgLigne - kgAffecte)
+  // Écru still to make = what the fini rolls, the écru pieces and the knitting leave (lib/besoin-stades.ts).
+  const kgAProduire = enKg(stadesDeAgregat(ctx, a).aTricoter)
   const fils = pairs.map((p) => {
     const reserve = round2c(resas
       .filter((r) => r.idref_fil === p.IDref_fil && r.idcolori_fil === p.IDcolori_fil && compteDansReserve(etatReservation(r)))
       .reduce((x, r) => x + r.quantite, 0))
-    // Freinte + safety margin, rounded up to 10 kg (lib/freinte-tricotage.ts besoinFil).
+    // Freinte + safety margin, rounded up to the kilo (lib/freinte-tricotage.ts besoinFil).
     const b = besoinFil(kgAProduire, freinte.taux, p.pourcentage / 100)
     const besoin = b.besoin
     // How the need is obtained, step by step (the Fil tab's tooltip).
@@ -4283,6 +4819,71 @@ async function filReserveParLigne(
     out.set(l.id, round2c(lineDim(l.unite) === 'metrage' ? kg * rendement : kg))
   }
   return out
+}
+
+// ── Earliest date per line (lib/delai-au-plus-tot.ts, doctrine des délais §5 ter) ──
+
+interface LigneAuPlusTot { id: number; typeKind: number; refId: number; coloriId: number; unite: number; quantite: number }
+type Partenaires = Awaited<ReturnType<typeof partenairesParDefaut>>
+
+/** The latest arrival of the yarn reserved on supplier orders (an undated one = the yarn estimate). */
+function arriveeFil(f: FaitsLigneClient | undefined, today: string): string | null {
+  if (!f || f.filAttendu.length === 0) return null
+  if (f.filAttendu.some((a) => !a.date)) return ajouterJoursOuvres(today, FIL_ESTIME_JOURS)
+  return f.filAttendu.map((a) => String(a.date)).sort().at(-1) ?? null
+}
+
+/** From the facts the detail route already holds; null on a divers line. */
+function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: FaitsLigneClient | undefined,
+  rouleaux: RouleauxEstimes | null | undefined, p: Partenaires, today: string, dateRetenue: string | null = null): DelaiAuPlusTot | null {
+  const kind = lineStockKind(l.typeKind)
+  if (kind === 'none') return null
+  const m = lineDim(l.unite) === 'metrage'
+  return delaiAuPlusTot({
+    kind,
+    quantite: l.quantite,
+    fini: m ? agg.fini_metrage : agg.fini_poids,
+    ecru: m ? agg.ecru_metrage : agg.ecru_poids,
+    tricotage: m ? agg.trico_metrage : agg.trico_poids,
+    fil,
+    filAttenduLe: arriveeFil(f, today),
+    kgParUnite: !m ? 1 : rouleaux && rouleaux.rendement > 0 ? 1 / rouleaux.rendement : null,
+    aujourdhui: today,
+    dateRetenue,
+    ...p,
+  })
+}
+
+/** The same, fetching the facts (validation of an order). */
+async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | null = null): Promise<Map<number, DelaiAuPlusTot | null>> {
+  const ls = lignes.filter((l) => lineStockKind(l.typeKind) !== 'none')
+  const [agg, fil, faits, rouleaux, p] = await Promise.all([
+    lineReservationAggregates(ls),
+    filReserveParLigne(ls),
+    faitsLignesClient(ls.map((l) => ({ id: l.id, typeKind: l.typeKind, refId: l.refId, unite: l.unite, quantite: l.quantite, soldee: false }))),
+    rouleauxEstimesParLigne(ls),
+    partenairesParDefaut(),
+  ])
+  const today = aujourdhuiYmd()
+  return new Map(ls.map((l) => [l.id, auPlusTotDe(l, agg.get(l.id) ?? agregatVide(), fil.get(l.id) ?? 0, faits.get(l.id), rouleaux.get(l.id), p, today, dateRetenue)]))
+}
+
+/** Working days between the earliest date and the date retained (Malterre's calendar), null without a date. */
+function margeJours(a: DelaiAuPlusTot, date: string | null | undefined): number | null {
+  return date && /^\d{8}$/.test(date) ? joursOuvresEntre(a.date, date) : null
+}
+
+/** A date retained before the earliest date is refused while the order is in préparation (doctrine
+ *  §5 ter: never below the minimum, « délai intenable »); answers 409 and returns true when it is. */
+async function refuseDelaiIntenable(res: Response, commandeId: number, l: LigneAuPlusTot, date: string): Promise<boolean> {
+  if (!/^\d{8}$/.test(date) || !(await estEnPreparation(commandeId))) return false
+  const a = (await auPlusTotLignes([l])).get(l.id)
+  if (!a || date >= a.date) return false
+  res.status(409).json({
+    error: 'delai_intenable',
+    message: `Cette ligne ne peut pas être prête avant le ${a.date.slice(6, 8)}/${a.date.slice(4, 6)}/${a.date.slice(0, 4)} (délai au plus tôt).`,
+  })
+  return true
 }
 
 /** Magasin names for lots (0 = the factory, « Malterre », as on the stock screens). */
@@ -4377,7 +4978,10 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
       magasin: null, ligneClient: ligneId,
       paires: paires.map((p) => ({ refFil: p.refFil, coloriFil: p.coloriFil, pourcentage: pct.get(`${p.refFil}:${p.coloriFil}`) ?? 0 })),
     })
-    const magasins = await nomsMagasins(lotsReservables.map((l) => l.magasin))
+    const [magasins, typesMagasins] = await Promise.all([
+      nomsMagasins(lotsReservables.map((l) => l.magasin)),
+      resolveSousTraitantTypes(lotsReservables.map((l) => l.magasin)),
+    ])
     const fournisseurs = new Map<number, string>()
     const frsIds = [...new Set(lotsReservables.map((l) => l.fournisseur).filter((x) => x > 0))]
     if (frsIds.length > 0) {
@@ -4423,6 +5027,9 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
             IDstock_fil: l.id,
             lot: l.lot,
             magasin: magasins.get(l.magasin) ?? '',
+            // The Tricotage tab groups the reserved lots per knitter and launches from a knitter's group.
+            magasin_id: l.magasin,
+            tricoteur: l.magasin > 0 && typesMagasins.get(l.magasin) === 1,
             fournisseur: fournisseurs.get(l.fournisseur) ?? '',
             date_entree: l.dateEntree,
             stock: round2c(l.stock),
@@ -4540,60 +5147,6 @@ commandesClientRouter.put('/:id/lignes/:ligneId/fil/reservations/source', async 
   }
 })
 
-// « Réserver tout le fil »: per yarn, what the line still needs, from Tricotage Malterre's free stock
-// first (oldest lot first), then from supplier orders by arrival date (planReservation). Says
-// what nothing could cover.
-commandesClientRouter.post('/:id/lignes/:ligneId/fil/reserver-tout', async (req: Request, res: Response) => {
-  try {
-    const commandeId = parseInt(req.params.id, 10)
-    const ligneId = parseInt(req.params.ligneId, 10)
-    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const ctx = await loadClientLineContext(commandeId, ligneId)
-    if (!ctx || ctx.kind === 'none') { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
-    if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
-    const besoins = await besoinsFilDeLigne(ctx)
-    if (!besoins) { res.status(400).json({ error: 'sans_ecru', message: "La ligne n'a pas de tombé de métier à tricoter." }); return }
-    const qui = { parId: req.userId ?? 0, par: req.userId ? await nomUtilisateur(req.userId) : null }
-    const aFaire = besoins.fils.filter((f) => f.manque > 0.005)
-    const paires = aFaire.map((f) => ({ refFil: f.refFil, coloriFil: f.coloriFil, pourcentage: f.pourcentage }))
-    const [lots, lignesCmd, noms] = await Promise.all([
-      lotsLibres({ magasin: TRICOTAGE_MALTERRE_ID, paires, ligneClient: ligneId }),
-      paires.length > 0 ? lignesCommandeFil({ paires, ouvertes: true }) : Promise.resolve([]),
-      nomsFils(paires),
-    ])
-    const reserve: { fil: string; kind: 'lot' | 'commande'; kg: number }[] = []
-    const manques: { fil: string; kg: number }[] = []
-    for (const f of aFaire) {
-      const sources: SourceFil[] = [
-        ...lots.filter((l) => l.refFil === f.refFil && l.coloriFil === f.coloriFil)
-          .map((l) => ({ kind: 'lot' as const, id: l.id, dispo: round2c(l.libre - l.reserveLigne), date: l.dateEntree || null })),
-        ...(await Promise.all(lignesCmd.filter((l) => l.idref_fil === f.refFil && l.idcolori_fil === f.coloriFil)
-          .map(async (l) => ({ kind: 'commande' as const, id: l.id, dispo: await libreSurLigneCommande(l), date: l.date_livraison })))),
-      ]
-      const plan = planReservation(f.manque, sources)
-      const nom = noms.get(`${f.refFil}:${f.coloriFil}`) ?? `fil ${f.refFil}`
-      let reste = plan.reste
-      for (const pr of plan.prises) {
-        try {
-          if (pr.kind === 'lot') await reserverSurLot({ ligneClient: ligneId, stockFil: pr.id, kg: pr.kg, ...qui })
-          else await reserverSurCommande({ ligneClient: ligneId, ligneCommandeFil: pr.id, kg: pr.kg, ...qui })
-          reserve.push({ fil: nom, kind: pr.kind, kg: pr.kg })
-        } catch (e) {
-          // Taken meanwhile by someone else: what it would have brought stays to cover.
-          if (!(e instanceof RefusReservation)) throw e
-          reste = round2c(reste + pr.kg)
-        }
-      }
-      if (reste > 0.005) manques.push({ fil: nom, kg: reste })
-    }
-    res.json({ reserve, manques })
-  } catch (err) {
-    if (err instanceof RefusReservation) { res.status(409).json({ error: err.code, message: err.message }); return }
-    console.error('Error reserving all the yarn of a client line:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
 commandesClientRouter.get('/:id/lignes/:ligneId/expeditions', async (req: Request, res: Response) => {
   try {
     const commandeId = parseInt(req.params.id, 10)
@@ -4706,6 +5259,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
     const commandeId = parseInt(req.params.id, 10)
     const ligneId = parseInt(req.params.ligneId, 10)
     if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, commandeId, 'd’expédier')) return
     const parsed = expedierBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const ctx = await loadClientLineContext(commandeId, ligneId)
@@ -5065,6 +5619,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier-divers', async (req: R
     const commandeId = parseInt(req.params.id, 10)
     const ligneId = parseInt(req.params.ligneId, 10)
     if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, commandeId, 'd’expédier')) return
     const parsed = expedierDiversBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const ctx = await loadDiversLineContext(commandeId, ligneId)
@@ -5187,6 +5742,7 @@ commandesClientRouter.post('/:id/expeditions-divers', async (req: Request, res: 
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, id, 'd’expédier')) return
     if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
     const expId = await createDiversExpeditionForCommande(id)
     if (expId <= 0) { res.status(400).json({ error: 'Commande introuvable' }); return }
@@ -5217,10 +5773,8 @@ const ennoOrderBody = z.object({
   date_commande: z.string().optional(),
   date_livraison: z.string().optional(),
   stockEcruIds: z.array(z.number().int().positive()).min(1),
-  /** Subset of stockEcruIds to ALSO reserve to this client line (LIVA #1115).
-   *  Omitted → every free selected roll is reserved (the pre-#1115 behaviour,
-   *  and legacy's default when a roll enters the dyer order). A selected roll
-   *  left out of it is dyed for stock: affected to the dyer line, no client. */
+  /** Ignored since 2026-10-28 (was LIVA #1115's per-roll « lien »): the order no longer reserves.
+   *  A roll already reserved to the line is dyed for it, a free roll for the stock. */
   linkStockEcruIds: z.array(z.number().int().positive()).optional(),
 })
 
@@ -5229,6 +5783,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     const commandeId = parseInt(req.params.id, 10)
     const ligneId = parseInt(req.params.ligneId, 10)
     if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, commandeId, 'd’envoyer à l’ennoblisseur')) return
     const parsed = ennoOrderBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
@@ -5254,9 +5809,9 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     // a stale client cache).
     const rollRows = await query<{
       IDstock_ecru: number; IDref_ecru: number; poids: number | null
-      IDref_commande_affectation: number | null; IDcommande_donation: number | null
+      IDref_commande_affectation: number | null; IDcommande_donation: number | null; IDligne_commande_client: number | null
     }>(
-      `SELECT IDstock_ecru, IDref_ecru, poids, IDref_commande_affectation, IDcommande_donation
+      `SELECT IDstock_ecru, IDref_ecru, poids, IDref_commande_affectation, IDcommande_donation, IDligne_commande_client
          FROM stock_ecru WHERE IDstock_ecru IN (${d.stockEcruIds.join(',')})`,
     )
     const usable = rollRows.filter(
@@ -5266,6 +5821,18 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
         (Number(r.IDcommande_donation) || 0) === 0,
     )
     if (usable.length === 0) { res.status(400).json({ error: 'No usable rolls in selection' }); return }
+    // Reserving and ordering are two gestures (decision Vincent 2026-10-28): the order dyes the écru
+    // reserved to the line (Ennoblissement tab, top zone); free pieces may only go on top, for the
+    // stock. No reserved piece, no order from the line; another line's piece is never sent from here.
+    const lcc = (r: { IDligne_commande_client: number | null }) => Number(r.IDligne_commande_client) || 0
+    if (usable.some((r) => lcc(r) !== 0 && lcc(r) !== ligneId)) {
+      res.status(409).json({ error: 'piece_reservee', message: 'Une pièce choisie est réservée à une autre ligne.' })
+      return
+    }
+    if (!usable.some((r) => lcc(r) === ligneId)) {
+      res.status(409).json({ error: 'sans_matiere_reservee', message: "Aucune pièce réservée à la ligne : réservez d'abord le tombé de métier (onglet Ennoblissement), puis lancez l'ennoblissement. Pour du stock seul, passez par Sous-traitants › Ennoblissement." })
+      return
+    }
     // A roll already promised to a line of another article/coloris keeps that
     // reservation here — it would be dyed into the wrong product (LIVA #1261).
     const misfits = await findReservationMisfits(usable.map((r) => Number(r.IDstock_ecru)), { ref: ctx.refId, coloris: ctx.coloriId })
@@ -5274,9 +5841,6 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
       return
     }
     const totalPoids = usable.reduce((s, r) => s + (Number(r.poids) || 0), 0)
-    // Which of the usable rolls get the client-line reservation (legacy's
-    // « lien » icon in FEN_Ennoblir, LIVA #1115). Default: all of them.
-    const linkSet = d.linkStockEcruIds ? new Set(d.linkStockEcruIds) : null
 
     // ── Create the dyer order header. Ennoblisseurs are external sous-
     //    traitants → NO TRM cross-ledger mirror (and no bridge-storm risk).
@@ -5322,22 +5886,12 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     const newLineId = Number(lineRows[0]?.IDligne_commande_sous_traitant) || 0
     if (newLineId <= 0) { res.status(500).json({ error: 'Line insert lookup failed' }); return }
 
-    // ── Affect rolls to the new dyer line; reserve the linked FREE ones to
-    //    this client line (rolls already reserved elsewhere keep their
-    //    reservation; unlinked rolls stay at IDligne_commande_client = 0 and
-    //    show as « disponible » on the Ennoblissement tab, where the
-    //    Affecter-le-stock dialog can still link them later).
-    let linked = 0
+    // ── Affect rolls to the new dyer line. The reservations stay as they are: the line's pieces are
+    //    dyed for it, the free ones for the stock (« disponible » on the Ennoblissement tab).
     for (const r of usable) {
-      const sid = Number(r.IDstock_ecru)
-      await query(`UPDATE stock_ecru SET IDref_commande_affectation = ${newLineId} WHERE IDstock_ecru = ${sid}`)
-      if (linkSet && !linkSet.has(sid)) continue
-      await query(
-        `UPDATE stock_ecru SET IDligne_commande_client = ${ligneId}
-          WHERE IDstock_ecru = ${sid} AND (IDligne_commande_client IS NULL OR IDligne_commande_client = 0)`,
-      )
-      linked++
+      await query(`UPDATE stock_ecru SET IDref_commande_affectation = ${newLineId} WHERE IDstock_ecru = ${Number(r.IDstock_ecru)}`)
     }
+    const linked = usable.filter((r) => lcc(r) === ligneId).length
 
     // ── Auto-price (best-effort: stays 0 when the dyer has no tariff data).
     let prix = 0
@@ -5354,6 +5908,9 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     } catch (e) {
       console.error('[enno-order] auto-price failed for line', newLineId, e)
     }
+
+    // The dyeing is launched: a launch date that held it is over (lib/lancement-ligne.ts).
+    await leverAuLancement({ ligneId, etape: 'ennoblissement', parId: req.userId ?? 0, par: req.userId ? await nomUtilisateur(req.userId) : null })
 
     res.status(201).json({
       ok: true,
@@ -5891,6 +6448,7 @@ commandesClientRouter.post('/:id/email', async (req: Request, res: Response) => 
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, id, 'd’envoyer la confirmation au client')) return
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
     const parsed = emailBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }

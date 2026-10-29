@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { etatReservation, compteDansReserve, attendLeFil, repartirSurLot, ligneRecue, planReservation, plafondReservation } from './reservation-fil.js'
+import { etatReservation, compteDansReserve, attendLeFil, repartirSurLot, ligneRecue, plafondReservation } from './reservation-fil.js'
 
 const r = (o: Partial<{ liberee_le: Date | null; idligne_commande_sous_traitant: number; idasso_fil_lignecmdsst: number; idstock_fil: number }>) => ({
   liberee_le: null, idligne_commande_sous_traitant: 0, idasso_fil_lignecmdsst: 0, idstock_fil: 0, ...o,
@@ -56,35 +56,6 @@ describe('ligneRecue', () => {
     expect(ligneRecue(660, 626.9)).toBe(false)
     expect(ligneRecue(660, 680)).toBe(true)
     expect(ligneRecue(0, 10)).toBe(false)
-  })
-})
-
-describe('planReservation', () => {
-  it('takes the stock first, oldest lot first, then supplier orders by arrival date', () => {
-    const plan = planReservation(500, [
-      { kind: 'commande', id: 721, dispo: 1000, date: '20261210' },
-      { kind: 'commande', id: 700, dispo: 100, date: '20261105' },
-      { kind: 'lot', id: 2, dispo: 150, date: '20260901' },
-      { kind: 'lot', id: 1, dispo: 100, date: '20260105' },
-    ])
-    expect(plan.prises).toEqual([
-      { kind: 'lot', id: 1, kg: 100 },
-      { kind: 'lot', id: 2, kg: 150 },
-      { kind: 'commande', id: 700, kg: 100 },
-      { kind: 'commande', id: 721, kg: 150 },
-    ])
-    expect(plan.reste).toBe(0)
-  })
-
-  it('says what nothing can cover (3874: 685 kg needed, 197 kg anywhere)', () => {
-    const plan = planReservation(685.43, [{ kind: 'lot', id: 1, dispo: 197.3, date: '20260101' }])
-    expect(plan.prises).toEqual([{ kind: 'lot', id: 1, kg: 197.3 }])
-    expect(plan.reste).toBe(488.13)
-  })
-
-  it('a supplier order without a date is served last', () => {
-    const plan = planReservation(10, [{ kind: 'commande', id: 1, dispo: 50, date: null }, { kind: 'commande', id: 2, dispo: 50, date: '20270101' }])
-    expect(plan.prises).toEqual([{ kind: 'commande', id: 2, kg: 10 }])
   })
 })
 

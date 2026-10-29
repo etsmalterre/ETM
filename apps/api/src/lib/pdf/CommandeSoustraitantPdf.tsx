@@ -52,6 +52,8 @@ export interface CommandeSoustraitantPdfData {
   } | null
   /** Earliest delivery date across all open lines (long-form French) */
   delaiLivraison: string | null
+  /** No délai on any line yet: the date we ask for (proposed at the launch), the partner confirms */
+  dateSouhaitee?: string | null
   commentaire: string | null
   /** Automatic quality comments from Qualité › Actions that apply to this
    *  order's lines (deduped, order-level). Rendered in their own boxed block so
@@ -696,8 +698,8 @@ export function CommandeSoustraitantPdf({
               <View style={styles.comboMetaIconBox}>
                 <ClockIcon />
               </View>
-              <Text style={styles.comboMetaLabel}>Délai de livraison</Text>
-              <Text style={styles.comboMetaValue}>{data.delaiLivraison || '—'}</Text>
+              <Text style={styles.comboMetaLabel}>{!data.delaiLivraison && data.dateSouhaitee ? 'Date souhaitée' : 'Délai de livraison'}</Text>
+              <Text style={styles.comboMetaValue}>{data.delaiLivraison || data.dateSouhaitee || '—'}</Text>
             </View>
             <View style={styles.comboDivider} />
             <View style={styles.comboCardHeader}>

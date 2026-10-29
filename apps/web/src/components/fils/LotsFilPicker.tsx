@@ -88,9 +88,12 @@ const COULEUR = { commande: '#2a78d6', stock: '#1baf7a', reste: '#e4e4e7' }
 interface Prise { commande: number; stock: number }
 
 /** Per ticked lot, in the plan's order: the client part first, then the stock part. */
-function prises(y: FilALancer, ids: readonly number[], kgCommande: number, kgStock: number): Map<number, Prise> {
+function prises(y: FilALancer, ids: readonly number[], kgCommande: number, kgStock: number, emporterReserve = false): Map<number, Prise> {
   const out = new Map<number, Prise>()
-  let resteCmd = filPour(y, kgCommande)
+  // From a client line the order takes ALL the yarn reserved to it, safety margin included (API
+  // planLancement emporterReserve, Vincent 2026-10-29): the margin covers knitting defects at the knitter.
+  const reserve = emporterReserve ? y.stock.filter((l) => ids.includes(l.id)).reduce((s, l) => s + (Number(l.reserve_ligne) || 0), 0) : 0
+  let resteCmd = kgCommande > 0 ? Math.max(filPour(y, kgCommande), reserve) : 0
   let resteStock = filPour(y, kgStock)
   for (const l of y.stock) {
     if (!ids.includes(l.id)) continue
@@ -104,7 +107,7 @@ function prises(y: FilALancer, ids: readonly number[], kgCommande: number, kgSto
 }
 
 export function LotsFilPicker({
-  yarns, kgCommande, kgStock, choix, onChoix, magasinNom, disabled, aideEnCommande, libelleCommande = 'Pour la commande',
+  yarns, kgCommande, kgStock, choix, onChoix, magasinNom, disabled, aideEnCommande, libelleCommande = 'Pour la commande', emporterReserve = false,
 }: {
   yarns: readonly FilALancer[]
   /** kg of écru for the client order (or the sst line) */
@@ -119,6 +122,8 @@ export function LotsFilPicker({
   /** what to do with yarn still on order, under a short yarn's supplier orders */
   aideEnCommande?: string
   libelleCommande?: string
+  /** a launch from a client line: the order part takes every kg reserved to the line (margin included) */
+  emporterReserve?: boolean
 }) {
   // §44 Shift+click range, one anchor per yarn.
   const ancres = useRef<Record<string, number>>({})
@@ -146,7 +151,7 @@ export function LotsFilPicker({
         // Yarn on order is only worth showing when the knitter's lots, all of them, fall short:
         // otherwise the answer is to tick a lot, right above.
         const stockInsuffisant = saisi && y.stock.reduce((s, l) => s + l.poids, 0) < besoin - 0.005
-        const parLot = prises(y, ids, kgCommande, kgStock ?? 0)
+        const parLot = prises(y, ids, kgCommande, kgStock ?? 0, emporterReserve)
         const toggle = (id: number, shift: boolean) => {
           const order = y.stock.filter((l) => l.poids > 0).map((l) => l.id)
           const next = new Set(ids)

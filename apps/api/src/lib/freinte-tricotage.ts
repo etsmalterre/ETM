@@ -93,8 +93,10 @@ export function filPourEcru(kgEcru: number, taux: number): number {
 /** Safety margin on top of the freinte when yarn is reserved or ordered for a client line
  *  (decision Vincent 2026-10-26: the old practice was +10 % ≈ freinte 3 % + 7 % margin). */
 export const MARGE_SECURITE_FIL = 0.05
-/** A yarn need is rounded up to a multiple of this (kg). */
-export const ARRONDI_FIL_KG = 10
+/** A line's yarn need is rounded up to a multiple of this (kg). 1 kg since 2026-10-29 (Vincent): the
+ *  10 kg rounding only exists to order a spinner a round figure (650, not 642,35), it belongs to the
+ *  purchase, never to the line — on a 40 kg line it reserved +23 % of cotton and 10 kg of elastane for 2,6. */
+export const ARRONDI_FIL_KG = 1
 
 export interface BesoinFil {
   /** écru × part ÷ (1 − freinte) */
@@ -106,7 +108,7 @@ export interface BesoinFil {
 }
 
 /** The yarn to reserve / order so a line makes `kgEcru` of écru, for a yarn that is `part`
- *  (0..1) of the recipe: freinte, then safety margin, then rounded up to 10 kg.
+ *  (0..1) of the recipe: freinte, then safety margin, then rounded up to the kilo.
  *  Launching a knitting order checks the freinte alone (filPourEcru), never this. */
 export function besoinFil(kgEcru: number, taux: number, part = 1): BesoinFil {
   const fil = filPourEcru(Math.max(0, kgEcru) * part, taux)

@@ -18,6 +18,9 @@
 //                done, on an order not soldée, less the pieces already knitted — the gauge's « En tricotage »)
 //   attente_fil  yarn reserved for the line on a supplier order still to receive (lib/reservation-fil.ts)
 //   a_lancer     none of the above
+//   planifiee    a_lancer held on purpose by a launch date still to come (lib/lancement-ligne.ts): shown
+//                instead of a_lancer by etatAffiche() (urgence-commande-client.ts), never computed here — the
+//                facts have no date; the line's colour still reads a_lancer + the date (Vincent 2026-10-28)
 // Divers lines (type 3) carry no rolls: a_lancer / expediee only, partial shown by the shipped share.
 
 import { query } from './hfsql-auto.js'
@@ -29,7 +32,7 @@ import { kgATricoterParLigne } from './tricotage-restant.js'
  *  open lines, 803 of 859 closed ones). Shared with the espace client (lib/espace-commandes.ts). */
 export const SEUIL_EXPEDIE = 0.9
 
-export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'a_lancer'
+export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'planifiee' | 'a_lancer'
 
 export interface FaitsLigneClient {
   quantite: number

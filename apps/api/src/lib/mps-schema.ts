@@ -1226,6 +1226,208 @@ WHERE type_compte = 'personne'
 ON CONFLICT DO NOTHING;
 `,
   },
+  {
+    // Clients › Commandes — the launch date of a line's next step (doctrine des
+    // délais §5, decision Vincent 2026-10-28, lib/lancement-ligne.ts): the only
+    // way to hold a line « à lancer » on purpose. Before the date the line is
+    // neutral, from it red. NULL = no date (the line is red as before). Every
+    // change is kept in lancement_ligne_client (append-only), the column holds
+    // the latest value for the list's colour.
+    name: '0039_ligne_client_lancement',
+    sql: `
+ALTER TABLE ligne_commande_client ADD COLUMN date_lancement date;
+CREATE TABLE lancement_ligne_client (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idligne_commande_client bigint NOT NULL,
+  date_lancement date,
+  motif text,
+  saisi_le timestamptz NOT NULL DEFAULT now(),
+  saisi_par_id bigint NOT NULL DEFAULT 0,
+  saisi_par text
+);
+CREATE INDEX lancement_ligne_client_ligne ON lancement_ligne_client (idligne_commande_client);
+${grantApi('SELECT, INSERT', 'lancement_ligne_client')}
+${grantApi('USAGE, SELECT', 'SEQUENCE lancement_ligne_client_id_seq')}
+`,
+  },
+  {
+    // The step a launch date holds (Vincent 2026-10-28): the tab where « Planifier » was clicked says
+    // what waits — commander le fil, tricoter, ennoblir — so no free-text why is asked any more
+    // (lancement_ligne_client.motif stays, unused). NULL = a date set before the step was kept.
+    name: '0040_ligne_client_lancement_etape',
+    sql: `
+ALTER TABLE ligne_commande_client
+  ADD COLUMN etape_lancement text,
+  ADD CONSTRAINT ligne_commande_client_etape_lancement_check CHECK (etape_lancement IS NULL OR etape_lancement IN ('fil', 'tricotage', 'ennoblissement'));
+ALTER TABLE lancement_ligne_client
+  ADD COLUMN etape text,
+  ADD CONSTRAINT lancement_ligne_client_etape_check CHECK (etape IS NULL OR etape IN ('fil', 'tricotage', 'ennoblissement'));
+`,
+  },
+  {
+    // ONE date per client line (Vincent 2026-10-28, doctrine des délais §8): date_livraison = « the line is
+    // ready to ship on D », whatever the mode de livraison; the mode only says what follows « ready ». A
+    // « date convenue » line's client date (date_expedition_prevue) becomes that D; the column stays,
+    // no longer read nor written. delai_annonce keeps the first D = the engagement, never moved.
+    // Moving D afterwards is a « report », journaled with its why and who it is due to (the QS reads
+    // it: a client moving his own date is not a Malterre delay), append-only like the other journals.
+    name: '0041_ligne_client_date_unique_reports',
+    sql: `
+UPDATE ligne_commande_client SET date_livraison = date_expedition_prevue
+ WHERE mode_livraison = 1 AND date_expedition_prevue IS NOT NULL;
+CREATE TABLE report_ligne_client (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idligne_commande_client bigint NOT NULL,
+  ancienne_date date,
+  nouvelle_date date,
+  motif text NOT NULL,
+  imputable text NOT NULL CHECK (imputable IN ('malterre', 'client', 'partenaire')),
+  saisi_le timestamptz NOT NULL DEFAULT now(),
+  saisi_par_id bigint NOT NULL DEFAULT 0,
+  saisi_par text
+);
+CREATE INDEX report_ligne_client_ligne ON report_ligne_client (idligne_commande_client);
+${grantApi('SELECT, INSERT', 'report_ligne_client')}
+${grantApi('USAGE, SELECT', 'SEQUENCE report_ligne_client_id_seq')}
+`,
+  },
+  {
+    // « Commande complète » is a property of the ORDER, not of a line (Vincent 2026-10-28, doctrine
+    // des délais §5 bis): the order ships in one go once every line is ready, around the latest D of
+    // its lines. It was a line mode (3, migration 0019): an order mixing it with « dès que prête » lines
+    // read both ways. Orders holding such a line switch to the flag; their lines go back to « dès que
+    // prête » (mode 0), the only line mode meaningful under the flag.
+    name: '0042_commande_client_expedition_complete',
+    sql: `
+ALTER TABLE commande_client ADD COLUMN expedition_complete boolean NOT NULL DEFAULT false;
+UPDATE commande_client SET expedition_complete = true
+ WHERE idcommande_client IN (SELECT idcommande_client FROM ligne_commande_client WHERE mode_livraison = 3);
+UPDATE ligne_commande_client SET mode_livraison = 0 WHERE mode_livraison = 3;
+`,
+  },
+  {
+    // The mode d'expédition belongs to the ORDER (Vincent 2026-10-28, doctrine des délais §5 bis): one
+    // choice in the Info tab — 0 dès que prête, 1 date convenue, 2 sur appel, 3 en une fois (same codes
+    // as the line modes), 4 par ligne (only then each line's mode_livraison counts). Replaces the
+    // expedition_complete flag of 0042. Existing orders: en une fois when flagged; else the mode all
+    // their lines share, « par ligne » when they differ; dès que prête without lines.
+    name: '0043_commande_client_mode_expedition',
+    sql: `
+ALTER TABLE commande_client ADD COLUMN mode_expedition smallint NOT NULL DEFAULT 0
+  CHECK (mode_expedition BETWEEN 0 AND 4);
+UPDATE commande_client c SET mode_expedition = CASE
+    WHEN c.expedition_complete THEN 3
+    WHEN m.n = 1 THEN m.mode
+    ELSE 4 END
+  FROM (SELECT idcommande_client, count(DISTINCT mode_livraison) AS n, min(mode_livraison) AS mode
+          FROM ligne_commande_client GROUP BY idcommande_client) m
+ WHERE m.idcommande_client = c.idcommande_client;
+UPDATE commande_client SET mode_expedition = 3 WHERE expedition_complete;
+ALTER TABLE commande_client DROP COLUMN expedition_complete;
+`,
+  },
+  {
+    // Two simple questions instead of one list mixing three (Vincent 2026-10-28, doctrine des délais §5 bis):
+    // « Départ » = who triggers the shipment — 0 dès que prête (us), 1 date demandée par le client
+    // (date_expedition_client), 2 sur appel du client — and « expédier toutes les lignes ensemble »
+    // (expedition_groupee), which combines with any of them. « Par ligne » is gone: every line has ONE date,
+    // « Prête le » (date_livraison), and follows its order. En une fois (3) → dès que prête + ensemble;
+    // par ligne (4) → sur appel if a line was, else date convenue if a line was, else dès que prête;
+    // a date convenue order takes the latest date of its lines.
+    name: '0044_commande_client_depart_groupee',
+    sql: `
+ALTER TABLE commande_client
+  ADD COLUMN expedition_groupee boolean NOT NULL DEFAULT false,
+  ADD COLUMN date_expedition_client date;
+UPDATE commande_client SET expedition_groupee = true WHERE mode_expedition = 3;
+UPDATE commande_client c SET date_expedition_client = m.d
+  FROM (SELECT idcommande_client, max(date_livraison) AS d FROM ligne_commande_client GROUP BY idcommande_client) m
+ WHERE m.idcommande_client = c.idcommande_client AND c.mode_expedition = 1;
+-- « par ligne »: the client decides if any line waited for him (sur appel, else a date convenue).
+UPDATE commande_client c SET mode_expedition = CASE WHEN m.appel THEN 2 WHEN m.convenue THEN 1 ELSE 0 END,
+       date_expedition_client = CASE WHEN NOT m.appel AND m.convenue THEN m.d END
+  FROM (SELECT idcommande_client, bool_or(mode_livraison = 2) AS appel, bool_or(mode_livraison = 1) AS convenue,
+               max(date_livraison) FILTER (WHERE mode_livraison = 1) AS d
+          FROM ligne_commande_client GROUP BY idcommande_client) m
+ WHERE m.idcommande_client = c.idcommande_client AND c.mode_expedition = 4;
+UPDATE commande_client SET mode_expedition = 0 WHERE mode_expedition IN (3, 4);
+ALTER TABLE commande_client DROP CONSTRAINT IF EXISTS commande_client_mode_expedition_check;
+ALTER TABLE commande_client ADD CONSTRAINT commande_client_mode_expedition_check CHECK (mode_expedition BETWEEN 0 AND 2);
+`,
+  },
+  {
+    // « En préparation » → « Valider la commande » (Vincent 2026-10-28, doctrine des délais §5 ter):
+    // validee_le NULL = an ETM order still being prepared (lines, matter, dates, freely); the ETM create
+    // routes write NULL, every other writer (TRM, the sst mirror, legacy) gets the DEFAULT now(), and
+    // every existing order is validated by this ALTER. Validation freezes the engagements (delai_annonce).
+    name: '0045_commande_client_validation',
+    sql: `
+ALTER TABLE commande_client
+  ADD COLUMN validee_le timestamptz DEFAULT now(),
+  ADD COLUMN validee_par_id bigint NOT NULL DEFAULT 0,
+  ADD COLUMN validee_par text;
+-- An order from before the validation existed counts as validated on its own order date, never « today ».
+UPDATE commande_client SET validee_le = date_commande::timestamptz WHERE date_commande IS NOT NULL;
+`,
+  },
+  {
+    // Partner délai standards and closures (doctrine des délais §1-§2, Vincent 2026-10-29), set per
+    // sous-traitant in Sous-traitants › Gestion; they feed the earliest date of a client line (§5 ter).
+    // A NULL column = the doctrine's default (lib/delais-standards.ts), so a partner never set reads the
+    // doctrine. Closures: one or two periods a year, counted out of its working days.
+    name: '0046_delais_standards_sst',
+    sql: `
+CREATE TABLE delai_standard_sst (
+  idsous_traitant bigint PRIMARY KEY,
+  ennoblissement_sem numeric(4,1),
+  tricot_seuil1_kg integer,
+  tricot_seuil2_kg integer,
+  tricot_sem1 numeric(4,1),
+  tricot_sem2 numeric(4,1),
+  tricot_sem3 numeric(4,1),
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par text
+);
+CREATE TABLE fermeture_sst (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idsous_traitant bigint NOT NULL,
+  du date NOT NULL,
+  au date NOT NULL CHECK (au >= du),
+  motif text,
+  saisi_le timestamptz NOT NULL DEFAULT now(),
+  saisi_par text
+);
+CREATE INDEX fermeture_sst_sst ON fermeture_sst (idsous_traitant, au);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'delai_standard_sst, fermeture_sst')}
+${grantApi('USAGE, SELECT', 'SEQUENCE fermeture_sst_id_seq')}
+`,
+  },
+  {
+    // Délai standards in WORKING DAYS, not weeks (Vincent 2026-10-29): the unit of the doctrine (§1), and
+    // what a partner's closures are counted against. Weeks × 5.
+    name: '0047_delais_standards_jours',
+    sql: `
+ALTER TABLE delai_standard_sst RENAME COLUMN ennoblissement_sem TO ennoblissement_jours;
+ALTER TABLE delai_standard_sst RENAME COLUMN tricot_sem1 TO tricot_jours1;
+ALTER TABLE delai_standard_sst RENAME COLUMN tricot_sem2 TO tricot_jours2;
+ALTER TABLE delai_standard_sst RENAME COLUMN tricot_sem3 TO tricot_jours3;
+ALTER TABLE delai_standard_sst
+  ALTER COLUMN ennoblissement_jours TYPE integer USING round(ennoblissement_jours * 5),
+  ALTER COLUMN tricot_jours1 TYPE integer USING round(tricot_jours1 * 5),
+  ALTER COLUMN tricot_jours2 TYPE integer USING round(tricot_jours2 * 5),
+  ALTER COLUMN tricot_jours3 TYPE integer USING round(tricot_jours3 * 5);
+`,
+  },
+  {
+    // The date WE ask a partner for on an order line (doctrine des délais §4, Vincent 2026-10-29): the
+    // knitter's standard + its share of the line's margin, proposed at the launch. Never the partner's
+    // answer: date_livraison stays its délai (writing it flips Attente_Delai → En_Cours, sstDelaiSets),
+    // so the confirmation circuit (relances, qualité de service) is unchanged.
+    name: '0048_ligne_sst_date_demandee',
+    sql: `
+ALTER TABLE ligne_commande_sous_traitant ADD COLUMN IF NOT EXISTS date_demandee date;
+`,
+  },
 ]
 
 export interface MigrationStatus {

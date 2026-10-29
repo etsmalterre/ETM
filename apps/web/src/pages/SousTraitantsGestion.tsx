@@ -38,6 +38,7 @@ import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { TariffsSection } from './sous-traitants/TariffsSection'
 import { QualiteServiceSection } from './sous-traitants/QualiteServiceSection'
+import { brouillonDe, corpsDe, DelaisInfo, delaisQueryKey, useDelaisSst, type BrouillonDelais, type DelaisPayload } from './sous-traitants/DelaisSection'
 import { SstTypeTag } from '@/lib/sst-type'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
@@ -205,9 +206,13 @@ export function SousTraitantsGestion() {
   const originalDraftRef = useRef<{ nom: string; tel: string; fax: string; typeSst: number; visible: boolean; commentaire: string } | null>(null)
   // Dirty state surfaced from the Contacts / Adresses sub-forms.
   const [subFormsDirty, setSubFormsDirty] = useState(false)
+  // Info › Délai standard: a draft of the fiche like the type and the comment (null = not edited yet).
+  const [editDelais, setEditDelais] = useState<BrouillonDelais | null>(null)
 
   const { data: sousTraitants, isLoading, isError, error } = useSousTraitants()
   const { data: detail, isLoading: detailLoading } = useSousTraitantDetail(selectedId)
+  const delaisKind = delaisKindDe(detail?.IDtype_sst)
+  const { data: delais } = useDelaisSst(selectedId, !!delaisKind)
 
   const filtered = useMemo(() => {
     if (!sousTraitants) return []
@@ -252,6 +257,7 @@ export function SousTraitantsGestion() {
       setEditVisible(snapshot.visible)
       setEditCommentaire(snapshot.commentaire)
       originalDraftRef.current = snapshot
+      setEditDelais(null)
       setIsEditing(true)
     }
   }, [detail])
@@ -269,8 +275,9 @@ export function SousTraitantsGestion() {
     if (editVisible !== o.visible) return true
     if (editCommentaire !== o.commentaire) return true
     if (subFormsDirty) return true
+    if (editDelais && delais && JSON.stringify(editDelais) !== JSON.stringify(brouillonDe(delais))) return true
     return false
-  }, [isEditing, editNom, editTel, editFax, editTypeSst, editVisible, editCommentaire, subFormsDirty])
+  }, [isEditing, editNom, editTel, editFax, editTypeSst, editVisible, editCommentaire, subFormsDirty, editDelais, delais])
 
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['sous-traitants'] })
@@ -278,10 +285,17 @@ export function SousTraitantsGestion() {
   }, [queryClient, selectedId])
 
   const saveMutation = useMutation({
-    mutationFn: () => apiFetch(`/sous-traitants/${selectedId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ nom: editNom, tel: editTel, fax: editFax, commentaire: editCommentaire, IDtype_sst: editTypeSst, est_visible: editVisible }),
-    }),
+    mutationFn: async () => {
+      await apiFetch(`/sous-traitants/${selectedId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ nom: editNom, tel: editTel, fax: editFax, commentaire: editCommentaire, IDtype_sst: editTypeSst, est_visible: editVisible }),
+      })
+      // The délai standards, when edited (Info › Délai standard).
+      if (editDelais && delais && JSON.stringify(editDelais) !== JSON.stringify(brouillonDe(delais))) {
+        await apiFetch(`/sous-traitants/${selectedId}/delais`, { method: 'PUT', body: JSON.stringify(corpsDe(editDelais)) })
+        await queryClient.invalidateQueries({ queryKey: delaisQueryKey(selectedId ?? 0) })
+      }
+    },
     onSuccess: () => { invalidateAll(); setIsEditing(false) },
   })
 
@@ -326,6 +340,7 @@ export function SousTraitantsGestion() {
           editTypeSst={editTypeSst} onEditTypeSstChange={setEditTypeSst}
           editVisible={editVisible} onEditVisibleChange={setEditVisible}
           editCommentaire={editCommentaire} onEditCommentaireChange={setEditCommentaire}
+          delais={delaisKind ? { kind: delaisKind, data: delais, brouillon: editDelais, onBrouillonChange: setEditDelais } : null}
           onSubFormsDirtyChange={setSubFormsDirty} /> : null}
         sidebarTitle="Informations" hasSelection={selectedId !== null}
         onBack={() => guard.guardAction(() => { setIsEditing(false); setSelectedId(null) })}
@@ -928,7 +943,8 @@ function InlineForm({ title, children, onSave, onCancel, isSaving }: {
 
 type SidebarTab = 'info' | 'contacts' | 'adresses'
 
-function DetailSidebar({ sousTraitant, isLoading, isEditing, sousTraitantId, onMutationSuccess, editTypeSst, onEditTypeSstChange, editVisible, onEditVisibleChange, editCommentaire, onEditCommentaireChange, onSubFormsDirtyChange }: {
+function DetailSidebar({ sousTraitant, isLoading, isEditing, sousTraitantId, onMutationSuccess, editTypeSst, onEditTypeSstChange, editVisible, onEditVisibleChange, editCommentaire, onEditCommentaireChange, delais, onSubFormsDirtyChange }: {
+  delais: DelaisInfoProps | null
   sousTraitant: SousTraitantDetail | null; isLoading: boolean; isEditing: boolean; sousTraitantId: number; onMutationSuccess: () => void
   editTypeSst: number; onEditTypeSstChange: (v: number) => void
   editVisible: boolean; onEditVisibleChange: (v: boolean) => void
@@ -965,7 +981,7 @@ function DetailSidebar({ sousTraitant, isLoading, isEditing, sousTraitantId, onM
         })}
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {activeTab === 'info' && <InfoTab sousTraitant={sousTraitant} isEditing={isEditing} editTypeSst={editTypeSst} onEditTypeSstChange={onEditTypeSstChange} editVisible={editVisible} onEditVisibleChange={onEditVisibleChange} editCommentaire={editCommentaire} onEditCommentaireChange={onEditCommentaireChange} />}
+        {activeTab === 'info' && <InfoTab sousTraitant={sousTraitant} isEditing={isEditing} editTypeSst={editTypeSst} onEditTypeSstChange={onEditTypeSstChange} editVisible={editVisible} onEditVisibleChange={onEditVisibleChange} editCommentaire={editCommentaire} onEditCommentaireChange={onEditCommentaireChange} delais={delais} />}
         {activeTab === 'contacts' && <ContactsTab contacts={sousTraitant.contacts} isEditing={isEditing} sousTraitantId={sousTraitantId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
         {activeTab === 'adresses' && <AdressesTab adresses={sousTraitant.adresses} isEditing={isEditing} sousTraitantId={sousTraitantId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
       </div>
@@ -975,8 +991,9 @@ function DetailSidebar({ sousTraitant, isLoading, isEditing, sousTraitantId, onM
 
 // ── Sidebar Tab: Info ─────────────────────────────────
 
-function InfoTab({ sousTraitant, isEditing, editTypeSst, onEditTypeSstChange, editVisible, onEditVisibleChange, editCommentaire, onEditCommentaireChange }: {
+function InfoTab({ sousTraitant, isEditing, editTypeSst, onEditTypeSstChange, editVisible, onEditVisibleChange, editCommentaire, onEditCommentaireChange, delais }: {
   sousTraitant: SousTraitantDetail; isEditing: boolean
+  delais: DelaisInfoProps | null
   editTypeSst: number; onEditTypeSstChange: (v: number) => void
   editVisible: boolean; onEditVisibleChange: (v: boolean) => void
   editCommentaire: string; onEditCommentaireChange: (v: string) => void
@@ -1028,8 +1045,25 @@ function InfoTab({ sousTraitant, isEditing, editTypeSst, onEditTypeSstChange, ed
           <p className="text-sm text-muted-foreground whitespace-pre-line">{sousTraitant.commentaire}</p>
         ) : <p className="text-sm text-muted-foreground italic">Aucun commentaire</p>}
       </div>
+      {/* Délai standard + fermetures (dyers and knitters only): part of the fiche's edit mode. */}
+      {delais && (
+        <DelaisInfo sousTraitantId={sousTraitant.IDsous_traitant} kind={delais.kind} data={delais.data} isEditing={isEditing}
+          brouillon={delais.brouillon} onBrouillonChange={delais.onBrouillonChange} />
+      )}
     </div>
   )
+}
+
+interface DelaisInfoProps {
+  kind: 'ennoblisseur' | 'tricoteur'
+  data: DelaisPayload | undefined
+  brouillon: BrouillonDelais | null
+  onBrouillonChange: (b: BrouillonDelais) => void
+}
+
+/** Délai standards are set for dyers and knitters only (doctrine des délais §2). */
+function delaisKindDe(type: number | null | undefined): 'ennoblisseur' | 'tricoteur' | null {
+  return Number(type) === ENNOBLISSEUR_TYPE ? 'ennoblisseur' : Number(type) === TRICOTEUR_TYPE ? 'tricoteur' : null
 }
 
 // ── Sidebar Tab: Contacts ──────────────────────────────

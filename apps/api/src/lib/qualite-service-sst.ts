@@ -19,23 +19,13 @@
 
 import { mpsPg } from './mps-pg.js'
 import { DELAI_PREMIERE_DEMANDE_J, lireFaitsDelai, type FaitsDelai } from './delai-sst.js'
+import { fermetures as lireFermetures, standards, STANDARDS_DEFAUT } from './delais-standards.js'
+import { joursOuvresEntre as joursOuvresYmd, type Periode } from './jours-ouvres.js'
 
-const DAY = 86_400_000
-const ms = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10))
-
-/** Working days from `a` to `b` (b after a → positive; Sat/Sun skipped). Pure. */
-export function joursOuvresEntre(a: string, b: string): number {
-  if (a === b) return 0
-  const sens = b > a ? 1 : -1
-  let t = ms(a)
-  const fin = ms(b)
-  let n = 0
-  while (sens > 0 ? t < fin : t > fin) {
-    t += sens * DAY
-    const dow = new Date(t).getUTCDay()
-    if (dow !== 0 && dow !== 6) n += sens
-  }
-  return n
+/** Working days from `a` to `b` (YYYY-MM-DD; b after a → positive): weekends, French holidays and the
+ *  partner's closures out (lib/jours-ouvres.ts). Pure. */
+export function joursOuvresEntre(a: string, b: string, fermetures: readonly Periode[] = []): number {
+  return joursOuvresYmd(a.replace(/-/g, ''), b.replace(/-/g, ''), fermetures)
 }
 
 export interface CommandeReponse {
@@ -74,6 +64,11 @@ export interface LigneRespect {
   idligne: number
   reference: string
   delaiPromis: string
+  /** The order date (commande_sous_traitant.date_commande), YYYY-MM-DD */
+  commandeLe: string | null
+  /** Working days from the order to the first lot received (to today while open): the real délai, compared
+   *  with the partner's délai standard on the chart (lib/delais-standards.ts). */
+  dureeJours: number | null
   premiereReception: string | null
   /** Working days late (0 = on time). For an open line not received, late so far. */
   retard: number
@@ -147,6 +142,8 @@ export interface QualiteService {
   synthese: SyntheseQualite
   reponses: CommandeReponse[]
   lignes: LigneRespect[]
+  /** The partner's délai standard in working days (dyers: Sous-traitants › Gestion › Info), the chart's target. */
+  standardJours: number
 }
 
 export async function qualiteService(idsousTraitant: number, depuis: string, aujourdhui: string): Promise<QualiteService> {
@@ -179,8 +176,9 @@ export async function qualiteService(idsousTraitant: number, depuis: string, auj
 
   // 2. Lines with a promised délai: first lot received in the period, or still
   //    open and past their promise.
-  const lignesRows = await sql<{ cmd: number; id: number; reference: string | null; promis: string | null; recu: string | null; termine: boolean; soldee: number; donne: string | null }[]>`
+  const lignesRows = await sql<{ cmd: number; id: number; reference: string | null; promis: string | null; recu: string | null; termine: boolean; soldee: number; donne: string | null; commande: string | null }[]>`
     SELECT l.idcommande_sous_traitant AS cmd, l.idligne_commande_sous_traitant AS id, rf.reference::text AS reference,
+           to_char(c.date_commande, 'YYYY-MM-DD') AS commande,
            to_char(COALESCE(l.date_delai, l.date_livraison), 'YYYY-MM-DD') AS promis,
            to_char(s.premier, 'YYYY-MM-DD') AS recu,
            COALESCE(l.sstatut::text, '') LIKE 'Termin%' AS termine, COALESCE(c.est_soldee, 0)::int AS soldee,
@@ -197,17 +195,23 @@ export async function qualiteService(idsousTraitant: number, depuis: string, auj
       AND trim(COALESCE(l.sstatut::text, '')) NOT IN ('Non_Envoye', 'Attente_Delai')
       AND (s.premier >= ${depuis}::date
            OR (s.premier IS NULL AND COALESCE(c.est_soldee, 0) = 0 AND c.date_commande >= ${depuis}::date))`
+  // Its closures, past ones included: a closed month is no délai (MATEL, August 2026).
+  const fermes = (await lireFermetures([idsousTraitant], true)).get(idsousTraitant) ?? []
+  const jo = (a: string, b: string) => joursOuvresEntre(a, b, fermes)
   const lignes: LigneRespect[] = []
   for (const l of lignesRows) {
     const promis = l.donne ?? l.promis
     if (!promis) continue
+    const base = { idcommande: Number(l.cmd), idligne: Number(l.id), reference: (l.reference ?? '').trim(), delaiPromis: promis, commandeLe: l.commande }
+    const duree = (fin: string) => (l.commande ? Math.max(0, jo(l.commande, fin)) : null)
     if (l.recu) {
-      lignes.push({ idcommande: Number(l.cmd), idligne: Number(l.id), reference: (l.reference ?? '').trim(), delaiPromis: promis, premiereReception: l.recu, retard: Math.max(0, joursOuvresEntre(promis, l.recu)), enRetardOuvert: false })
+      lignes.push({ ...base, dureeJours: duree(l.recu), premiereReception: l.recu, retard: Math.max(0, jo(promis, l.recu)), enRetardOuvert: false })
     } else if (!l.termine && !Number(l.soldee) && promis < aujourdhui) {
-      lignes.push({ idcommande: Number(l.cmd), idligne: Number(l.id), reference: (l.reference ?? '').trim(), delaiPromis: promis, premiereReception: null, retard: Math.max(0, joursOuvresEntre(promis, aujourdhui)), enRetardOuvert: true })
+      lignes.push({ ...base, dureeJours: duree(aujourdhui), premiereReception: null, retard: Math.max(0, jo(promis, aujourdhui)), enRetardOuvert: true })
     }
   }
   lignes.sort((a, b) => (b.premiereReception ?? '9999').localeCompare(a.premiereReception ?? '9999') || b.idligne - a.idligne)
 
-  return { depuis, reponseMesureeDepuis: REPONSE_MESUREE_DEPUIS, synthese: synthese(reponses, nonMesurees, lignes), reponses, lignes }
+  const standardJours = (await standards([idsousTraitant])).get(idsousTraitant)?.ennoblissement_jours ?? STANDARDS_DEFAUT.ennoblissement_jours
+  return { depuis, reponseMesureeDepuis: REPONSE_MESUREE_DEPUIS, synthese: synthese(reponses, nonMesurees, lignes), reponses, lignes, standardJours }
 }
