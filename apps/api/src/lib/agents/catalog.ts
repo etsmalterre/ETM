@@ -55,6 +55,7 @@ import { deLApp, type AppIa } from './app-scope.js'
 import {
   PLANNING_ATELIER_SLUG,
   PLANNING_ATELIER_VERSION_INITIALE,
+  PLANNING_ATELIER_PROMPT_LIVRE,
   resultatPlanning,
   sonder as sonderPlanningAtelier,
 } from './planning-atelier/agent.js'
@@ -395,6 +396,7 @@ export const AGENTS: readonly AgentDef[] = [
       actif: 'Prépare et écrit la semaine demandée depuis Atelier › Planning.',
     },
     versionInitiale: PLANNING_ATELIER_VERSION_INITIALE,
+    promptLivre: PLANNING_ATELIER_PROMPT_LIVRE,
     modeles: MODELES_MISTRAL,
     sonder: sonderPlanningAtelier,
     ligne: (run) => {

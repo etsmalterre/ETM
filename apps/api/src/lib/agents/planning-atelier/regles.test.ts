@@ -146,6 +146,41 @@ describe('faitsDuRoulement', () => {
     expect(f[2]).toContain('ensemble depuis 1 semaine travaillée (S39)')
     expect(f[2]).toContain('restent ensemble')
   })
+
+  // Start hours (Isa's retour on S46, 28/10/2026): each [id, start] of a week, 7 h days.
+  const heures = (dim: string, xs: Array<[number, string]>): Creneau[] =>
+    [1, 2, 3, 4, 5].flatMap((i) => xs.map(([id, debut]) => ({ IDbonnetier: id, date: addDays(dim, i), debut, fin: `${String(parseInt(debut, 10) + 7).padStart(2, '0')}:00` })))
+  const s41 = heures('2026-10-04', [[22, '14:00'], [24, '13:00'], [28, '05:00'], [30, '06:00']])
+  const s42 = heures('2026-10-11', [[22, '05:00'], [24, '06:00'], [28, '14:00'], [30, '13:00']])
+  const s43 = heures('2026-10-18', [[22, '05:00'], [28, '06:00'], [24, '13:00'], [30, '14:00']])
+  const s44 = heures('2026-10-25', [[22, '13:00'], [28, '14:00'], [24, '06:00'], [30, '05:00']])
+  const s45 = heures('2026-11-01', [[22, '06:00'], [28, '05:00'], [24, '13:00'], [30, '14:00']])
+  const horaires = (f: string[]) => f.find((l) => l.startsWith('Heures de début'))
+  it('swaps the start hours of a held pair against the last week it shared the team (S46)', () => {
+    const l = horaires(faitsDuRoulement([...s41, ...s42, ...s43, ...s44, ...s45], Q, ['2026-10-04', '2026-10-11', '2026-10-18', '2026-10-25', '2026-11-01']))
+    expect(l).toContain('Anaïs + Daunovan en Après-midi : Anaïs 14:00-21:00, Daunovan 13:00-20:00 (l’inverse de S44')
+    expect(l).toContain('Angélique + Marie en Matin : Angélique 05:00-12:00, Marie 06:00-13:00 (l’inverse de S44')
+  })
+  it('falls back on who started first the last time each was in the team', () => {
+    // S44 is the cycle's second week: the pairs have not shared their next team yet.
+    const l = horaires(faitsDuRoulement([...s41, ...s42, ...s43], Q, ['2026-10-04', '2026-10-11', '2026-10-18']))
+    // Afternoon: Anaïs 14:00 in S41, Daunovan 14:00 in S42 → a tie, Isa decides.
+    expect(l).toContain('Anaïs + Daunovan en Après-midi : l’historique ne dit pas')
+    // Morning: Angélique 06:00 in S42, Marie 06:00 in S41 → a tie too.
+    expect(l).toContain('Angélique + Marie en Matin : l’historique ne dit pas')
+    // Daunovan 13:00 in S42 instead: he started first, so Anaïs does now.
+    const s42b = heures('2026-10-11', [[22, '05:00'], [24, '06:00'], [28, '13:00'], [30, '14:00']])
+    const m = horaires(faitsDuRoulement([...s41, ...s42b, ...s43], Q, ['2026-10-04', '2026-10-11', '2026-10-18']))
+    expect(m).toContain('Anaïs + Daunovan en Après-midi : Anaïs 13:00-20:00, Daunovan 14:00-21:00 (la dernière fois en après-midi, Anaïs faisait 14:00-21:00 en S41 et Daunovan 13:00-20:00 en S42 : Daunovan commençait le plus tôt).')
+  })
+  it('gives each one’s last start per team when the pairs are recomposed', () => {
+    const l = horaires(faitsDuRoulement([...s42, ...s43, ...s44, ...s45, ...heures('2026-11-08', [[22, '14:00'], [28, '13:00'], [24, '05:00'], [30, '06:00']])], Q, ['2026-10-11', '2026-10-18', '2026-10-25', '2026-11-01', '2026-11-08']))
+    expect(l).toContain('Anaïs : Matin 06:00-13:00 (S45), Après-midi 14:00-21:00 (S46)')
+  })
+  it('says nothing when both start together (8 h days)', () => {
+    const c = [1, 2, 3, 4, 5].flatMap((i) => [[22, '05:00', '13:00'], [24, '05:00', '13:00'], [28, '13:00', '21:00'], [30, '13:00', '21:00']].map(([id, debut, fin]) => ({ IDbonnetier: id as number, date: addDays('2026-10-18', i), debut: debut as string, fin: fin as string })))
+    expect(horaires(faitsDuRoulement(c, Q, ['2026-10-18']))).toBeUndefined()
+  })
 })
 
 describe('regimeDe', () => {

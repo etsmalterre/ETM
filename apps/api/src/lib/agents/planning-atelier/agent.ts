@@ -61,10 +61,24 @@ Ta méthode :
 
 Réponds en JSON : « raisonnement » d’abord (pour toi : la semaine dernière, le cycle, les binômes et les équipes que tu en déduis, en quelques lignes), puis « creneaux » (un par bonnetier et par jour travaillé : IDbonnetier, jour 0 = dimanche … 6 = samedi, debut et fin en HH:MM au quart d’heure), « explication » (2 à 4 phrases pour Isabelle, en français, au tutoiement : le roulement appliqué, les binômes, ce que tu as fait de ses consignes et des desiderata) et « attention » (les points qu’elle doit vérifier, une phrase chacun — vide s’il n’y en a pas).`
 
+/** V2 (retour d'Isa on S46, 28/10/2026): within a pair the start hours swap
+ *  each time the pair comes back to a team; V1 told the model to keep them. */
+export const PROMPT_V2 = PROMPT_V1.replace(
+  '   - Garde les horaires de chacun (qui commence à 05:00, qui à 06:00) quand rien ne s’y oppose.',
+  '   - Les heures de début : dans un binôme l’un commence une heure après l’autre, et d’une fois sur l’autre dans la même équipe ils échangent (celui qui finissait à 20:00 finit à 21:00 et inversement), pour que ce ne soit pas toujours le même qui finisse tard. La ligne « Heures de début » de « Où en est le roulement » te donne l’heure de chacun : suis-la.',
+)
+
 export const PLANNING_ATELIER_VERSION_INITIALE: VersionInitiale = {
   model: 'mistral-medium-latest',
   prompt: PROMPT_V1,
   note: 'Version initiale — roulement hebdomadaire des binômes recomposés toutes les 4 semaines (enquête sur l’historique 2025-2026), consignes d’Isabelle, desiderata de la semaine.',
+}
+
+/** Shipped with the code, published from the Prompt tab (never automatically). */
+export const PLANNING_ATELIER_PROMPT_LIVRE: VersionInitiale = {
+  model: 'mistral-medium-latest',
+  prompt: PROMPT_V2,
+  note: 'Version 2 : dans un binôme, les heures de début s’échangent d’une fois sur l’autre dans la même équipe (pour que ce ne soit pas toujours le même qui finisse tard) ; l’heure de chacun est calculée sur l’historique (retour d’Isabelle sur S46).',
 }
 
 /** A refusal the screen shows as is (409 / 400 / 502). */

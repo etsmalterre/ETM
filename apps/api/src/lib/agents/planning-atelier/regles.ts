@@ -190,7 +190,79 @@ export function faitsDuRoulement(entries: readonly Creneau[], bonnetiers: readon
   }
   const avant = cycles.slice(0, -1).reverse()
   if (avant.length) lignes.push(`Binômes des cycles précédents (du plus récent au plus ancien) : ${avant.map((c) => `${plage(c)} : ${c.binomes}`).join(' ; ')}.`)
+  lignes.push(...faitsDesHoraires(semaines, cours.du, cours.n >= SEMAINES_PAR_CYCLE))
   return lignes
+}
+
+type SemaineEquipes = { dim: string; equipes: ReturnType<typeof equipesDeLaSemaine> }
+
+/** The team a pair takes next week: Matin ↔ Après-midi, or Matin → Nuit →
+ *  Après-midi → Matin when a night runs. */
+function equipeSuivante(e: Equipe, avecNuit: boolean): Equipe {
+  if (!avecNuit) return e === 'M' ? 'A' : 'M'
+  return e === 'M' ? 'N' : e === 'N' ? 'A' : 'M'
+}
+
+/** Who starts first within a pair (Isa's retour of 28/10/2026, checked on
+ *  S27–S45): in a team, one starts an hour after the other, and each time a
+ *  pair comes back to a team they swap, so it is never the same one who
+ *  finishes late. Held pairs get their exact hours (the swap of the last week
+ *  they shared that team in the cycle, else who started first the last time
+ *  each was in it); recomposed pairs get each one's last start per team. A
+ *  team where both start at the same hour (8 h days) says nothing. */
+function faitsDesHoraires(semaines: readonly SemaineEquipes[], debutCycle: string, recomposer: boolean): string[] {
+  const derniere = semaines[semaines.length - 1]
+  const decales = derniere.equipes.filter((g) => g.membres.length === 2 && g.membres[0].horaire !== g.membres[1].horaire)
+  if (decales.length === 0) return []
+  const S = (dim: string) => `S${semaineIso(dim)}`
+  /** The member's horaire the last time they were in `equipe`, newest first. */
+  const derniereFois = (prenom: string, equipe: Equipe) => {
+    for (let k = semaines.length - 1; k >= 0; k--) {
+      const m = semaines[k].equipes.find((g) => g.equipe === equipe)?.membres.find((x) => x.prenom === prenom)
+      if (m) return { horaire: m.horaire, dim: semaines[k].dim }
+    }
+    return null
+  }
+  const regle = 'dans un binôme l’un commence une heure après l’autre, et d’une fois sur l’autre dans la même équipe ils échangent, pour que ce ne soit pas toujours le même qui finisse tard'
+
+  if (recomposer) {
+    const noms = derniere.equipes.flatMap((g) => g.membres.map((m) => m.prenom)).sort((a, b) => a.localeCompare(b, 'fr'))
+    const parNom = noms.map((n) => {
+      const xs = (['M', 'A', 'N'] as const).map((e) => ({ e, d: derniereFois(n, e) })).filter((x) => x.d)
+      return `${n} : ${xs.map((x) => `${EQUIPE_LIBELLE[x.e]} ${x.d!.horaire} (${S(x.d!.dim)})`).join(', ')}`
+    })
+    return [`Heures de début (${regle}) : dans un nouveau binôme, celui qui commençait le plus tôt la dernière fois dans cette équipe commence une heure après l’autre. Dernière fois de chacun par équipe : ${parNom.join(' · ')}.`]
+  }
+
+  const avecNuit = derniere.equipes.some((g) => g.equipe === 'N')
+  const cycle = semaines.filter((s) => s.dim >= debutCycle)
+  const lignes: string[] = []
+  for (const g of decales) {
+    const cible = equipeSuivante(g.equipe, avecNuit)
+    const [a, b] = g.membres.map((m) => m.prenom).sort((x, y) => x.localeCompare(y, 'fr'))
+    let fait: string | null = null
+    for (let k = cycle.length - 1; k >= 0 && !fait; k--) {
+      const h = cycle[k].equipes.find((x) => x.equipe === cible)
+      const ma = h?.membres.find((m) => m.prenom === a)
+      const mb = h?.membres.find((m) => m.prenom === b)
+      if (ma && mb && ma.horaire !== mb.horaire) {
+        fait = `${a} + ${b} en ${EQUIPE_LIBELLE[cible]} : ${a} ${mb.horaire}, ${b} ${ma.horaire} (l’inverse de ${S(cycle[k].dim)}, où ${a} faisait ${ma.horaire} et ${b} ${mb.horaire}).`
+      }
+    }
+    if (!fait) {
+      const da = derniereFois(a, cible)
+      const db = derniereFois(b, cible)
+      if (da && db && da.horaire !== db.horaire) {
+        const [tot, tard] = da.horaire < db.horaire ? [a, b] : [b, a]
+        const [hTot, hTard] = [da.horaire, db.horaire].sort()
+        fait = `${a} + ${b} en ${EQUIPE_LIBELLE[cible]} : ${tard} ${hTot}, ${tot} ${hTard} (la dernière fois en ${EQUIPE_LIBELLE[cible].toLowerCase()}, ${a} faisait ${da.horaire} en ${S(da.dim)} et ${b} ${db.horaire} en ${S(db.dim)} : ${tot} commençait le plus tôt).`
+      } else {
+        fait = `${a} + ${b} en ${EQUIPE_LIBELLE[cible]} : l’historique ne dit pas qui doit commencer le plus tôt : choisis et signale-le dans « attention ».`
+      }
+    }
+    lignes.push(fait)
+  }
+  return [`Heures de début de cette semaine (${regle}) : ${lignes.join(' ')}`]
 }
 
 // ── The model's answer ───────────────────────────────────
