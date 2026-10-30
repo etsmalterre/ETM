@@ -962,7 +962,7 @@ function EmailPointDialog({ open, point, automateActif, heureEnvoi, onClose, onS
 }) {
   const depart = new Date(`${point.jour}T${String(heureEnvoi).padStart(2, '0')}:00:00`)
   const raison = !automateActif
-    ? 'L’automate « Point sous-traitant » n’est pas actif (Agents IA › Automates) : un envoi programmé ne partirait pas.'
+    ? 'L’automate « Point sous-traitant » n’est pas actif (Console Administration › Automates) : un envoi programmé ne partirait pas.'
     : depart.getTime() <= Date.now() ? `${heureEnvoi} h est déjà passé pour ce point.` : null
   const apercu = `${API_URL}/points-sst/${point.id}/apercu`
   const nomWord = `point ${point.sousTraitant.toLowerCase()} ${point.jour.slice(8, 10)}${point.jour.slice(5, 7)}${point.jour.slice(0, 4)}.docx`

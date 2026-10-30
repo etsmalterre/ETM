@@ -1,6 +1,6 @@
 // Agents IA › Automates — /api/automates (ETM) and /api/automates-trm (TRM).
-// The screen Agents IA › Automates (ETM apps/web pages/Automates.tsx, imported
-// by TRM) reads and pilots the automates of lib/automates/.
+// The screen Automates (Console Administration, admin-malterre pages/Automates.tsx,
+// one per company) reads and pilots the automates of lib/automates/.
 //
 // One route set, mounted once per app (createAutomatesRouter): each mount lists
 // only its app's automates and checks its app's permission store
