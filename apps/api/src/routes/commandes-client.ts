@@ -34,7 +34,7 @@ import {
 } from '../lib/reservation-fil.js'
 import { lotsLibres, planLancement, ecrireAffectation, messageFilNonCouvert, nomsFils, filsALancer, ordreDeService, filNonReserve } from '../lib/lancement-tricotage.js'
 import { freinteTricotage, freintesTricotage, origineFreinte, filPourEcru, ecruPourFil, besoinFil, MARGE_SECURITE_FIL, ARRONDI_FIL_KG } from '../lib/freinte-tricotage.js'
-import { avancementCommande, commandeIncomplete, etatAffiche, modeLivraisonDe, MODES_LIVRAISON, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
+import { avancementCommande, commandeIncomplete, etatAffiche, modeLivraisonDe, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { ecruEnMl, MESSAGE_ECRU_EN_ML } from '../lib/unite-ecru.js'
@@ -52,7 +52,7 @@ import { attachDonationSql, detachDonationSql, planDonationSet } from '../lib/do
 import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable } from '../lib/fini-expediable.js'
 import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-ligne-client.js'
 import { cotesARevoir, appliquerReprix } from '../lib/reprix-associes.js'
-import { resolveLigneTarifMode } from '../lib/tarif-client.js'
+import { prixUnitOf, resolveLigneTarifMode } from '../lib/tarif-client.js'
 import { calcTarifSST } from '../lib/pricing-sst.js'
 import { loadClientTvaRate, loadMentionTva } from '../lib/tva.js'
 import { sendMail } from '../lib/gmail.js'
@@ -75,7 +75,7 @@ import {
 } from '../lib/reservation-teinture.js'
 import { adresseADefinirRow, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
-import { appliquerDateLignes, DEPARTS, EXPEDITION_DEFAUT, expeditions, fixerExpedition, type Expedition } from '../lib/mode-expedition.js'
+import { appliquerDateLignes, codeDepartLigne, DEPARTS_LIGNE, departLigne, EXPEDITION_DEFAUT, expeditions, fixerExpedition, type Expedition } from '../lib/mode-expedition.js'
 import { blocageRetourPreparation, commandesEnPreparation, estEnPreparation, mettreEnPreparation, refuseSiEnPreparation, repasserEnPreparation, validation, validerCommande } from '../lib/preparation-commande.js'
 import { enregistrerReport, estUnReport, IMPUTABLES, reportsLigne } from '../lib/report-ligne-client.js'
 import { ETAPES_LANCEMENT, datesLancement, fixerDateLancement, historiqueLancement, leverAuLancement, versDatePg } from '../lib/lancement-ligne.js'
@@ -299,7 +299,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       etat: statutLigneClient(f, '').etat,
       typeKind: Number(l.type_kind) || 0,
       dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
-      ...urgenceExpedition(exps.get(cid)),
+      ...urgenceExpedition(exps.get(cid), l.mode_livraison),
       relanceAppel: relanceParCommande.get(cid),
       etude: etudeUrgence(Number(l.IDetude_col) || 0, Number(l.IDcolori) || 0, etudes),
       filAttenduLe: filAttenduLe(f),
@@ -324,10 +324,10 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
   return out
 }
 
-/** The order's expédition as the urgency rule reads it on each line (lib/urgence-commande-client.ts). */
-function urgenceExpedition(e: Expedition | undefined): Pick<LigneUrgence, 'modeLivraison' | 'groupee' | 'dateClient'> {
-  const x = e ?? EXPEDITION_DEFAUT
-  return { modeLivraison: x.depart, groupee: x.groupee, dateClient: x.dateClient }
+/** How a line leaves, as the urgency rule reads it (lib/urgence-commande-client.ts): its own départ, the
+ *  order's « ensemble ». */
+function urgenceExpedition(e: Expedition | undefined, modeLigne: unknown): Pick<LigneUrgence, 'modeLivraison' | 'groupee'> {
+  return { modeLivraison: departLigne(modeLigne), groupee: (e ?? EXPEDITION_DEFAUT).groupee }
 }
 
 /** « Ensemble »: the order leaves around the latest D of its lines still to ship; null when
@@ -379,10 +379,8 @@ const commandeBody = z.object({
   frais_port: z.number().optional(),
   est_soldee: z.number().int().min(0).max(1).optional(),
   donation: z.number().int().min(0).max(1).optional(),
-  // How the order leaves (lib/mode-expedition.ts): départ + « ensemble » + the client's date (YYYYMMDD, '' = none).
-  depart: z.enum(DEPARTS).optional(),
+  // « Expédier toutes les lignes ensemble » (lib/mode-expedition.ts); the départ is each line's.
   expedition_groupee: z.boolean().optional(),
-  date_expedition_client: z.string().regex(/^(\d{8})?$/).optional(),
 })
 
 const ligneBody = z.object({
@@ -404,17 +402,12 @@ const ligneBody = z.object({
   // says what follows « ready » (lib/urgence-commande-client.ts); date_expedition_prevue is retired.
   date_livraison: z.string().optional(),
   commentaire: z.string().optional(),
-  mode_livraison: z.enum(MODES_LIVRAISON).optional(),
+  // The line's départ (lib/mode-expedition.ts departLigne).
+  mode_livraison: z.enum(DEPARTS_LIGNE).optional(),
   // Moving a D already given: why, and who it is due to (lib/report-ligne-client.ts). Required then.
   report: z.object({ motif: z.string().trim().min(1), imputable: z.enum(IMPUTABLES) }).optional(),
 })
 
-/** « Commande complète » is the order's « expédier en une fois » since 2026-10-28, no longer a line mode. */
-function refuseModeCommandeComplete(res: Response, mode: string): boolean {
-  if (mode !== 'commande_complete') return false
-  res.status(400).json({ error: 'mode_commande', message: '« Commande complète » se règle sur la commande : « Expédier en une fois ».' })
-  return true
-}
 
 
 // ════════════════════════════════════════════════════════
@@ -630,10 +623,17 @@ commandesClientRouter.get('/lookups/refs-fini', async (req: Request, res: Respon
     // designation_client (the buyable catalogue).
     const cid = parseInt(String(req.query.client ?? ''), 10)
     let idFilter = ''
+    // The selling unit is the client's designation's (lib/tarif-client.ts prixUnitOf): Ml, or Kg when
+    // the designation says so (Sigvaris, #1253). The line form shows it instead of a unit picker.
+    const auKg = new Set<number>()
     if (!isNaN(cid) && cid > 0) {
       const ids = await assignedRefIds(cid, 'IDref_fini')
       if (ids.length === 0) { res.json([]); return }
       idFilter = `WHERE IDref_fini IN (${ids.join(',')})`
+      const unites = await query<{ IDref_fini: number; unite: number | null }>(
+        `SELECT IDref_fini, unite FROM designation_client WHERE IDclient = ${cid} AND IDref_fini IN (${ids.join(',')})`,
+      )
+      for (const u of unites) if (prixUnitOf({ IDref_fini: Number(u.IDref_fini), unite: Number(u.unite) || 0 }) === 'Kg') auKg.add(Number(u.IDref_fini))
     }
     const rows = await query<{
       IDref_fini: number; reference: string | null; designation: string | null; avec_teinture: number | null
@@ -646,6 +646,7 @@ commandesClientRouter.get('/lookups/refs-fini', async (req: Request, res: Respon
       reference: r.reference ?? '',
       designation: r.designation ?? '',
       avec_teinture: Number(r.avec_teinture) || 0,
+      unite_vente: auKg.has(Number(r.IDref_fini)) ? 1 : 3,
     })))
   } catch (err) {
     console.error('Error fetching refs-fini lookup:', err)
@@ -1153,9 +1154,7 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
         urgence: enPreparation.has(cid) ? { niveau: 'rouge', raison: 'Commande à préparer puis valider' } : (etatMap.get(cid)?.urgence ?? null),
         en_preparation: enPreparation.has(cid),
         // How it leaves and when (« ensemble »: latest D of the lines still to ship; date demandée: the client's).
-        depart: (etatMap.get(cid)?.expedition ?? EXPEDITION_DEFAUT).depart,
         expedition_groupee: (etatMap.get(cid)?.expedition ?? EXPEDITION_DEFAUT).groupee,
-        date_expedition_client: (etatMap.get(cid)?.expedition ?? EXPEDITION_DEFAUT).dateClient,
         depart_commande: etatMap.get(cid)?.depart ?? null,
         // distinct statuses of its lines: the list's search tags (« au moins une ligne ») filter on it
         etats_lignes: Number(c.est_soldee) === 1 ? ['soldee'] : (etatMap.get(cid)?.etats ?? []),
@@ -1748,7 +1747,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         date_livraison: l.date_livraison ?? null,
         // The engagement: the first D given (frozen, doctrine des délais §8), null when unknown (lines older than 2026-10-11).
         delai_initial: typeof l.delai_initial === 'string' && /^\d{8}$/.test(l.delai_initial) ? l.delai_initial : null,
-        mode_livraison: modeLivraisonDe(l.mode_livraison),
+        mode_livraison: departLigne(l.mode_livraison),
         // The launch date of the next step (lib/lancement-ligne.ts): holds a line « à lancer » until then.
         date_lancement: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
         etape_lancement: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
@@ -1802,7 +1801,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             etat: statut.etat,
             typeKind,
             dateLivraison: typeof l.date_livraison === 'string' ? l.date_livraison : null,
-            ...urgenceExpedition(expedition),
+            ...urgenceExpedition(expedition, l.mode_livraison),
             commandeIncomplete: incomplete,
             relanceAppel: relanceAppelDe(ficheRows[0]?.relance_sur_appel),
             etude: etudeUrgence(etudeId, colId, etudes),
@@ -1862,10 +1861,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       observations_facturation: h.observations_facturation ?? null,
       est_soldee: Number(h.est_soldee) || 0,
       donation: Number(h.donation) || 0,
-      // How the order leaves (lib/mode-expedition.ts): every line follows it, each with its « Prête le ».
-      depart: expedition.depart,
+      // « Expédier toutes les lignes ensemble » (lib/mode-expedition.ts); the départ is each line's.
       expedition_groupee: expedition.groupee,
-      date_expedition_client: expedition.dateClient,
       nb_donation_pieces: nbDonationPieces,
       remise: Number(h.remise) || 0,
       frais_port: Number(h.frais_port) || 0,
@@ -2017,17 +2014,10 @@ commandesClientRouter.put('/:id', async (req: Request, res: Response) => {
         sets.push(`donation = ${d.donation}`)
       }
     }
-    const expeditionChange = d.depart !== undefined || d.expedition_groupee !== undefined || d.date_expedition_client !== undefined
-    if (sets.length === 0 && !expeditionChange) { res.status(400).json({ error: 'No fields to update' }); return }
+    if (sets.length === 0 && d.expedition_groupee === undefined) { res.status(400).json({ error: 'No fields to update' }); return }
 
     if (sets.length > 0) await query(`UPDATE commande_client SET ${sets.join(', ')} WHERE IDcommande_client = ${id}`)
-    if (expeditionChange) {
-      await fixerExpedition(id, {
-        depart: d.depart,
-        groupee: d.expedition_groupee,
-        dateClient: d.date_expedition_client === undefined ? undefined : (d.date_expedition_client || null),
-      })
-    }
+    if (d.expedition_groupee !== undefined) await fixerExpedition(id, { groupee: d.expedition_groupee })
     res.json({ ok: true })
   } catch (err) {
     console.error('Error updating commande-client:', err)
@@ -2403,7 +2393,6 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
     const typeKind = Number(d.type) || 0
     const mode = d.mode_livraison ?? 'des_que_prete'
-    if (refuseModeCommandeComplete(res, mode)) return
     if (await refuseIfContratExpire(res, id, {
       type: typeKind, IDreference: d.IDreference ?? 0, IDcolori: d.IDcolori ?? 0,
     })) return
@@ -2434,7 +2423,7 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
           ${Number(d.quantite) || 0}, ${n(d.unite ?? 0)}, ${Number(d.prix) || 0},
           ${Number(d.poids) || 0}, '${delai}',
           ${sqlText(d.commentaire ?? '')},
-          ${MODES_LIVRAISON.indexOf(mode)}, ${etudeId}${annonce ? `, '${delai}'` : ''})`,
+          ${codeDepartLigne(mode)}, ${etudeId}${annonce ? `, '${delai}'` : ''})`,
     )
     const newRows = await query<{ IDligne_commande_client: number }>(
       `SELECT IDligne_commande_client FROM ligne_commande_client
@@ -2566,10 +2555,7 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
         if (premier) sets.push(`delai_annonce = '${premier}'`)
       }
     }
-    if (d.mode_livraison !== undefined) {
-      if (refuseModeCommandeComplete(res, d.mode_livraison)) return
-      sets.push(`mode_livraison = ${MODES_LIVRAISON.indexOf(d.mode_livraison)}`)
-    }
+    if (d.mode_livraison !== undefined) sets.push(`mode_livraison = ${codeDepartLigne(d.mode_livraison)}`)
     if (d.commentaire !== undefined) sets.push(`commentaire = ${sqlText(d.commentaire)}`)
     if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
 
@@ -2593,6 +2579,8 @@ const datesLignesBody = z.object({
   date: z.string().regex(/^\d{8}$/),
   ligneIds: z.array(z.number().int().positive()).min(1),
   report: z.object({ motif: z.string().trim().min(1), imputable: z.enum(IMPUTABLES) }).optional(),
+  /** « Expédier toutes les lignes ensemble »: the common date is written with the option itself */
+  groupee: z.boolean().optional(),
 })
 
 commandesClientRouter.put('/:id/lignes-date', async (req: Request, res: Response) => {
@@ -2626,6 +2614,7 @@ commandesClientRouter.put('/:id/lignes-date', async (req: Request, res: Response
       res.status(400).json({ error: 'report_requis', message: `${r.reportRequis} ligne${r.reportRequis > 1 ? 's avaient' : ' avait'} déjà une date : c'était un engagement, indiquez pourquoi elle change et à qui le report est dû.` })
       return
     }
+    if (parsed.data.groupee !== undefined) await fixerExpedition(id, { groupee: parsed.data.groupee })
     res.json({ ok: true, lignes: r.lignes })
   } catch (err) {
     console.error('Error applying a date to the lines:', err)

@@ -288,13 +288,17 @@ export function SearchableCombobox<T>({
   const popoverRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<PopoverPos | null>(null)
 
-  const selectedLabel = useMemo(() => {
+  const isSm = size === 'sm'
+  // The selected item: its primary in the field, its secondary small, grey and on the right (Vincent
+  // 2026-10-30, no em dash). The right-aligned sm field has no room for that: it joins them with « · ».
+  const { selectedLabel, selectedSecondary } = useMemo(() => {
     const sel = options.find((o) => getId(o) === value)
-    if (!sel) return ''
+    if (!sel) return { selectedLabel: '', selectedSecondary: '' }
     const primary = getPrimary(sel) || ''
     const secondary = getSecondary?.(sel) || ''
-    return secondary ? `${primary} — ${secondary}` : primary
-  }, [options, value, getId, getPrimary, getSecondary])
+    if (isSm) return { selectedLabel: secondary ? `${primary} · ${secondary}` : primary, selectedSecondary: '' }
+    return { selectedLabel: primary, selectedSecondary: secondary }
+  }, [options, value, getId, getPrimary, getSecondary, isSm])
 
   useEffect(() => {
     if (disabled) {
@@ -344,8 +348,7 @@ export function SearchableCombobox<T>({
   }, [options, query, getPrimary, getSecondary])
 
   const displayValue = open ? query : selectedLabel
-
-  const isSm = size === 'sm'
+  const showSecondary = !open && !!selectedSecondary
   return (
     <div className={cn('relative inline-block align-middle', isSm ? 'w-[220px]' : 'w-full')}>
       <input
@@ -366,7 +369,13 @@ export function SearchableCombobox<T>({
           disabled && 'bg-zinc-100 text-muted-foreground cursor-not-allowed',
           inputClassName,
         )}
+        title={selectedSecondary ? `${selectedLabel} · ${selectedSecondary}` : undefined}
       />
+      {showSecondary && (
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 max-w-[60%] truncate text-xs text-muted-foreground">
+          {selectedSecondary}
+        </span>
+      )}
       {open && !disabled && pos && createPortal(
         <div
           ref={popoverRef}

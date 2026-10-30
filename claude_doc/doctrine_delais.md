@@ -86,18 +86,17 @@ Une ligne porte une **date de lancement de sa prochaine étape**, quel que soit 
 Décidé avec Vincent le 2026-10-28, **codé le même jour** (migration 0041, `lib/urgence-commande-client.ts`, `lib/report-ligne-client.ts`).
 
 - **Une seule date par ligne, « Prête le » D** (`ligne_commande_client.date_livraison`) : la ligne est prête à expédier le D. Le libellé ne change jamais ; la production vise toujours D, la marge est la réserve Malterre (§7.3), jamais une seconde date.
-- **Comment la commande part se règle UNE fois, pour toute la commande** (onglet Info › Expédition, `lib/mode-expedition.ts`, migration 0044), en deux questions — jamais par ligne (« Par ligne » supprimé le 2026-10-28 : une seule liste mêlait trois questions et l'utilisateur ne savait pas quoi choisir) :
+- **Le départ est celui de CHAQUE LIGNE** (révisé avec Vincent le 2026-10-30, migration 0050 ; l'essai du 2026-10-28 « un départ pour toute la commande » est abandonné) : dans la fenêtre de la ligne, « Départ » = **Dès que prête** (par défaut) ou **Sur appel du client** (`ligne_commande_client.mode_livraison` 0 / 2, `departLigne()` dans `lib/mode-expedition.ts`).
 
-| Départ | Ce qui suit « prête » | Couleur une fois prête |
+| Départ (ligne) | Ce qui suit « prête » | Couleur une fois prête |
 |---|---|---|
 | Dès que prête | expédier tout de suite, au plus tard à D | ambre en avance, rouge près de D |
-| À la date demandée par le client (`date_expedition_client`) | attendre cette date, expédier ce jour-là | rouge quelques jours avant (préparer le transport), jamais ambre |
 | Sur appel du client | attendre l'appel | relance 120 j après D (ou le délai du client) |
 
-  + **« Toutes les lignes ensemble »** (`expedition_groupee`), combinable avec chaque départ : une ligne prête attend tant qu'une autre est en production ; la commande part vers la plus tardive des D de ses lignes restantes.
-- Une phrase par commande, la même pour nous et pour l'espace client : « Expédiée dès que prête », « Expédiée le 15/01 (date demandée) », « Sur appel du client », « …, toutes les lignes ensemble vers le 22/03 ».
+- **La commande ne dit qu'une chose** (Info › Expédition) : **« Expédier toutes les lignes ensemble »** (`expedition_groupee`). Cochée, on choisit UNE date, jamais avant la plus tardive des dates au plus tôt des lignes, écrite sur toutes les lignes restantes (`PUT …/lignes-date`, un seul motif de report si la commande est validée) ; une ligne prête attend les autres. Décochée, les dates restent (ce sont des engagements). Une ligne ajoutée prend la date commune ; si elle ne peut pas la tenir, on repousse la date de toutes. « À la date demandée par le client » n'existe plus : c'est cette date commune.
+- Une phrase par ligne : « Expédiée dès que prête » / « Sur appel du client », + « avec toutes les lignes le 22/03 » ; la commande : « Toutes les lignes ensemble, le 22/03 ».
 - Pas prête et D passée : rouge, quel que soit le départ. Une ligne sans D : rouge, la donner.
-- `date_expedition_prevue` (ligne) et le mode par ligne (`mode_livraison`) ne sont plus lus.
+- `date_expedition_prevue` (ligne) et le départ de la commande (`commande_client.mode_expedition`) ne sont plus lus.
 - **L'engagement** : la D d'une ligne devient un engagement **à la validation de la commande** (§5 ter) — copiée dans `delai_annonce`, jamais modifiée, jamais rétro-remplie. **Déplacer D ensuite est un report** : motif et imputable obligatoires (Malterre / client / partenaire), journal append-only `report_ligne_client`. Un client qui déplace sa date ne compte pas contre nous. Avant la validation, D bouge librement.
 - **Qualité de service** (à construire sur ce journal) : engagement contre date réelle d'expédition (dès que prête, date convenue) ou **date où la ligne est devenue prête** (sur appel, commande complète).
 

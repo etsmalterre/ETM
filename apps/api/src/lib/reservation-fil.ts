@@ -397,3 +397,54 @@ export async function libererReliquat(ligneCommandeFil: number, motif: 'reçue' 
      RETURNING id`
   return rows.length
 }
+
+/** For whom the yarn of a supplier order is held (Fils › Commandes, Vincent 2026-10-30): every
+ *  reservation on its lines (still to receive) or on the lots born from them (received), with the
+ *  client order it serves. Consumed ones (taken by a knitting order) stay, the yarn is still that
+ *  client's; released ones too (« libéré, non livré », kept for history: callers filter by etat). */
+export interface ReservationCommandeFil {
+  idref_fil_commande: number
+  idstock_fil: number
+  lot: string | null
+  etat: EtatReservation
+  kg: number
+  idligne_commande_client: number
+  idcommande_client: number
+  numero: string | null
+  client: string | null
+  /** the client line's délai (YYYYMMDD), the order the reception serves them in */
+  delai: string | null
+}
+
+export async function reservationsDeCommandeFil(ligneIds: readonly number[]): Promise<ReservationCommandeFil[]> {
+  const ids = [...new Set(ligneIds.filter((x) => x > 0))]
+  if (ids.length === 0) return []
+  const rows = await mpsPg().unsafe<{
+    idref_fil_commande: number; idstock_fil: number; lot: string | null; idligne_commande_sous_traitant: number; liberee_le: Date | null
+    quantite: number; idligne_commande_client: number; idcommande_client: number | null; numero: unknown; client: string | null
+    delai: string | null
+  }[]>(
+    `SELECT r.idref_fil_commande, r.idstock_fil, sf.lot, r.idligne_commande_sous_traitant, r.liberee_le, r.quantite,
+            r.idligne_commande_client, l.idcommande_client, c.numero, cl.nom AS client,
+            to_char(l.date_livraison, 'YYYYMMDD') AS delai
+       FROM reservation_fil r
+       LEFT JOIN stock_fil sf ON sf.idstock_fil = r.idstock_fil AND r.idstock_fil > 0
+       LEFT JOIN ligne_commande_client l ON l.idligne_commande_client = r.idligne_commande_client
+       LEFT JOIN commande_client c ON c.idcommande_client = l.idcommande_client
+       LEFT JOIN client cl ON cl.idclient = c.idclient
+      WHERE (r.idref_fil_commande = ANY($1::bigint[])
+             OR r.idstock_fil IN (SELECT idstock_fil FROM stock_fil WHERE idref_fil_commande = ANY($1::bigint[])))
+      ORDER BY r.id`, [ids as any])
+  return rows.map((r) => ({
+    idref_fil_commande: Number(r.idref_fil_commande) || 0,
+    idstock_fil: Number(r.idstock_fil) || 0,
+    lot: r.lot != null ? String(r.lot) : null,
+    etat: etatReservation({ liberee_le: r.liberee_le, idligne_commande_sous_traitant: Number(r.idligne_commande_sous_traitant) || 0, idasso_fil_lignecmdsst: 0, idstock_fil: Number(r.idstock_fil) || 0 }),
+    kg: Number(r.quantite) || 0,
+    idligne_commande_client: Number(r.idligne_commande_client) || 0,
+    idcommande_client: Number(r.idcommande_client) || 0,
+    numero: r.numero != null ? String(r.numero) : null,
+    client: r.client ?? null,
+    delai: r.delai ?? null,
+  }))
+}

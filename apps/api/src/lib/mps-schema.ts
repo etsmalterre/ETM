@@ -1428,6 +1428,38 @@ ALTER TABLE delai_standard_sst
 ALTER TABLE ligne_commande_sous_traitant ADD COLUMN IF NOT EXISTS date_demandee date;
 `,
   },
+  {
+    // A yarn order line received short of what client lines reserved on it needs a person's say
+    // (Vincent 2026-10-30): the reception splits the yarn by client délai, someone at Malterre checks
+    // it or changes it before the order ends (lib/arbitrage-fil.ts). One row per check, append-only:
+    // valid while the line's received kg (recu_kg) is unchanged — a new lot asks again.
+    name: '0049_arbitrage_fil',
+    sql: `
+CREATE TABLE arbitrage_fil (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idref_fil_commande bigint NOT NULL,
+  recu_kg numeric(12, 2) NOT NULL,
+  modifie boolean NOT NULL DEFAULT false,
+  le timestamptz NOT NULL DEFAULT now(),
+  par_id bigint NOT NULL DEFAULT 0,
+  par text
+);
+CREATE INDEX arbitrage_fil_ligne ON arbitrage_fil (idref_fil_commande);
+${grantApi('SELECT, INSERT', 'arbitrage_fil')}
+${grantApi('USAGE, SELECT', 'SEQUENCE arbitrage_fil_id_seq')}
+`,
+  },
+  {
+    // The départ goes back to each LINE (Vincent 2026-10-30): dès que prête (0) or sur appel (2). The order
+    // keeps only « expédier toutes les lignes ensemble » + one date written on its lines; « date demandée
+    // par le client » is that date. A line's legacy « date convenue » (1) and « commande complète » (3) leave
+    // as soon as ready; the order's own départ (mode_expedition, 0043/0044) is no longer read.
+    name: '0050_depart_par_ligne',
+    sql: `
+UPDATE ligne_commande_client SET mode_livraison = 0 WHERE mode_livraison IN (1, 3);
+ALTER TABLE commande_client DROP COLUMN date_expedition_client;
+`,
+  },
 ]
 
 export interface MigrationStatus {

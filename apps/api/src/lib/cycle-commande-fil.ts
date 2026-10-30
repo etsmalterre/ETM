@@ -20,14 +20,17 @@
 // and their gaps are shown for information (`manques`).
 
 import { mpsPg } from './mps-pg.js'
+import { etatsArbitrage } from './arbitrage-fil.js'
 
 import { TYPE_DOC_FACTURE_FIL } from './facture-fil-reglement.js'
 export const TYPE_DOC_CERTIFICAT_GOTS = 5
 /** First order date (inclusive, ISO) the cycle applies to. */
 export const DEBUT_CYCLE_COMMANDE_FIL = '2026-01-01'
 
-export type AttenteCommandeFil = 'certificat' | 'facture' | 'paiement'
-export const ORDRE_ATTENTES: AttenteCommandeFil[] = ['certificat', 'facture', 'paiement']
+// arbitrage: a line received short of what client lines reserved on it, its split not yet checked by
+// a person (lib/arbitrage-fil.ts, Vincent 2026-10-30).
+export type AttenteCommandeFil = 'arbitrage' | 'certificat' | 'facture' | 'paiement'
+export const ORDRE_ATTENTES: AttenteCommandeFil[] = ['arbitrage', 'certificat', 'facture', 'paiement']
 
 export interface LotBio {
   IDstock_fil: number
@@ -57,6 +60,8 @@ export interface FaitsCommandeFil {
   premiereReception: string | null
   /** The order's échéance in days (« à réception » = 0), null = not set. */
   delaiPaiementJours: number | null
+  /** Lines received short whose split between client lines no person has checked yet. */
+  lignesAArbitrer?: number
 }
 
 export interface CycleCommandeFil {
@@ -75,11 +80,13 @@ export interface CycleCommandeFil {
   cloture_forcee: ClotureForcee | null
   premiere_reception: string | null
   delai_paiement_jours: number | null
+  lignes_a_arbitrer: number
 }
 
 export function cycleCommandeFil(f: FaitsCommandeFil): CycleCommandeFil {
   const sansCertificat = f.lotsBio.filter((l) => !l.certifie).length
   const manques: AttenteCommandeFil[] = []
+  if ((f.lignesAArbitrer ?? 0) > 0) manques.push('arbitrage')
   if (sansCertificat > 0) manques.push('certificat')
   if (f.nbFactures === 0) manques.push('facture')
   if (f.nbFacturesARegler > 0) manques.push('paiement')
@@ -87,7 +94,11 @@ export function cycleCommandeFil(f: FaitsCommandeFil): CycleCommandeFil {
   let etape: CycleCommandeFil['etape']
   let attentes: AttenteCommandeFil[] = []
   if (f.etat !== 1) etape = 'en_cours'
-  else if (!f.sousRegle || f.clotureForcee) etape = 'terminee'
+  // The split of a short reception is checked by a person whatever the order's date (never by a forced close).
+  else if (!f.sousRegle || f.clotureForcee) {
+    attentes = manques.filter((a) => a === 'arbitrage')
+    etape = attentes.length > 0 ? 'attente' : 'terminee'
+  }
   else {
     attentes = manques
     etape = attentes.length > 0 ? 'attente' : 'terminee'
@@ -106,6 +117,7 @@ export function cycleCommandeFil(f: FaitsCommandeFil): CycleCommandeFil {
     cloture_forcee: f.etat === 1 ? f.clotureForcee : null,
     premiere_reception: f.premiereReception,
     delai_paiement_jours: f.delaiPaiementJours,
+    lignes_a_arbitrer: f.lignesAArbitrer ?? 0,
   }
 }
 
@@ -165,19 +177,23 @@ export function urgenceCommandeFil(
   const S = SEUILS_URGENCE_FIL
 
   if (c.etape === 'terminee') return null
+  // A short reception to check: amber, the default split is sound, checking it gets us ahead.
+  const arbitrage: UrgenceCommandeFil | null = c.lignes_a_arbitrer > 0
+    ? { niveau: 'ambre', raison: 'Répartition du fil reçu à vérifier' } : null
   if (c.etape === 'en_cours') {
     if (!earliestDelivery || !/^\d{8}$/.test(earliestDelivery)) return { niveau: 'rouge', raison: 'Sans date de livraison' }
     const iso = `${earliestDelivery.slice(0, 4)}-${earliestDelivery.slice(4, 6)}-${earliestDelivery.slice(6, 8)}`
     const d = jourIso(iso) - t
     if (d <= 0) return { niveau: 'rouge', raison: `Livraison en retard · ${ddmm(iso)}` }
     if (d <= S.livraisonAmbreJours) return { niveau: 'ambre', raison: `Livraison le ${ddmm(iso)}` }
-    return null
+    return arbitrage
   }
 
   // attente: each missing document on its own clock, the most urgent wins.
   const found: UrgenceCommandeFil[] = []
   const recu = c.premiere_reception
   for (const a of c.attentes) {
+    if (a === 'arbitrage') { if (arbitrage) found.push(arbitrage); continue }
     if (a === 'certificat') {
       const dates = c.lots_bio.filter((l) => !l.certifie && l.date_entree).map((l) => jourIso(l.date_entree!))
       if (dates.length === 0) { found.push({ niveau: 'ambre', raison: 'Certificat GOTS manquant' }); continue }
@@ -213,7 +229,7 @@ export async function cyclesCommandesFil(ids: number[]): Promise<Map<number, Cyc
   if (ids.length === 0) return out
   const sql = mpsPg()
 
-  const [entetes, lots, certificats, factures, clotures] = await Promise.all([
+  const [entetes, lots, certificats, factures, clotures, lignes] = await Promise.all([
     sql<{ id: number; etat: number; sous_regle: boolean; delai: number | null; premiere_reception: string | null }[]>`
       SELECT cf.idcommande_fil::int AS id, coalesce(cf.etat, 0)::int AS etat,
              coalesce(cf.date_commande >= ${DEBUT_CYCLE_COMMANDE_FIL}::date, false) AS sous_regle,
@@ -252,7 +268,13 @@ export async function cyclesCommandesFil(ids: number[]): Promise<Map<number, Cyc
       FROM commande_fil_cloture
       WHERE idcommande_fil = ANY(${ids})
       ORDER BY idcommande_fil, le DESC, id DESC`,
+    sql<{ id: number; ligne: number }[]>`
+      SELECT idcommande_fil::int AS id, idref_fil_commande::int AS ligne FROM ref_fil_commande
+      WHERE idcommande_fil = ANY(${ids})`,
   ])
+  const arbitrages = await etatsArbitrage(lignes.map((l) => l.ligne))
+  const aArbitrer = new Map<number, number>()
+  for (const l of lignes) if (arbitrages.get(l.ligne)?.a_arbitrer) aArbitrer.set(l.id, (aArbitrer.get(l.id) ?? 0) + 1)
 
   const certsParCommande = new Map<number, Array<{ lots: number[] }>>()
   for (const c of certificats) {
@@ -287,6 +309,7 @@ export async function cyclesCommandesFil(ids: number[]): Promise<Map<number, Cyc
       clotureForcee: c && c.action === 'cloture' ? { le: c.le, par: c.par, motif: c.motif } : null,
       premiereReception: e.premiere_reception,
       delaiPaiementJours: e.delai,
+      lignesAArbitrer: aArbitrer.get(e.id) ?? 0,
     }))
   }
   return out

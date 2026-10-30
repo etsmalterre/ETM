@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode, type ComponentType } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { ADRESSE_A_DEFINIR_BLOQUE, AdresseADefinirNotice } from '@/components/shared/AdresseADefinirNotice'
@@ -115,9 +115,7 @@ interface CommandeListRow {
   /** what there is to do and when (API lib/urgence-commande-client.ts); null = neutral */
   urgence: UrgenceCommande | null
   /** the order's mode d'expédition; « en une fois »: when it leaves (latest D still to ship, null = a line has no date) */
-  depart?: Depart
   expedition_groupee?: boolean
-  date_expedition_client?: string | null
   depart_commande?: string | null
   /** distinct statuses of its lines (a soldée order: ['soldee']), for the search tags */
   etats_lignes: EtatLigneClient[]
@@ -155,7 +153,7 @@ interface LigneCommande {
   date_livraison: string | null
   /** the engagement: the first D ever given, frozen by the API; null on lines older than 2026-10-11 */
   delai_initial: string | null
-  /** what follows « ready » (API lib/urgence-commande-client.ts) */
+  /** the line's départ: dès que prête, or when the client calls (API lib/mode-expedition.ts) */
   mode_livraison: ModeLivraison
   /** the launch date of the next step (API lib/lancement-ligne.ts): a line « à lancer » waits, neutral, until then */
   date_lancement: string | null
@@ -182,9 +180,8 @@ interface LigneCommande {
   statut: StatutLigneClient | null
 }
 
-type ModeLivraison = 'des_que_prete' | 'date_client' | 'sur_appel' | 'commande_complete'
-/** The order's mode d'expédition (API lib/mode-expedition.ts): one for every line, « par_ligne » = each its own. */
-type Depart = 'des_que_prete' | 'date_client' | 'sur_appel'
+/** A line's départ (API lib/mode-expedition.ts departLigne). */
+type ModeLivraison = 'des_que_prete' | 'sur_appel'
 
 /** Who holds the étude now (API etatEtude): the lab, the client, or nobody. */
 type AttenteEtude = 'labo' | 'client' | 'acceptee' | 'annulee'
@@ -289,25 +286,27 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
   )
 }
 
-/** How an order leaves (API lib/mode-expedition.ts, Vincent 2026-10-28): « Départ » = who triggers the
- *  shipment, + « ensemble ». Every line has ONE date, « Prête le » (the engagement). */
-const DEPARTS: { id: number; depart: Depart; label: string }[] = [
-  { id: 1, depart: 'des_que_prete', label: 'Dès que prête' },
-  { id: 2, depart: 'date_client', label: 'À la date demandée par le client' },
-  { id: 3, depart: 'sur_appel', label: 'Sur appel du client' },
+/** How an order leaves (API lib/mode-expedition.ts, Vincent 2026-10-30): the ORDER only says « expédier
+ *  toutes les lignes ensemble » (one date on its lines); the DÉPART is each line's. */
+const DEPARTS_LIGNE: { mode: ModeLivraison; label: string }[] = [
+  { mode: 'des_que_prete', label: 'Dès que prête' },
+  { mode: 'sur_appel', label: 'Sur appel du client' },
 ]
-interface Expedition { depart: Depart; groupee: boolean; dateClient: string | null }
+interface Expedition { groupee: boolean }
 
-/** One sentence for the order (Info, list, line hover; the espace client will read the same). */
-function phraseExpedition(e: Expedition, depart: string | null): string {
-  const base = e.depart === 'date_client'
-    ? (e.dateClient ? `Expédiée le ${formatHfsqlDate(e.dateClient)} (date demandée)` : 'Date demandée par le client : à obtenir')
-    : e.depart === 'sur_appel' ? 'Sur appel du client' : 'Expédiée dès que prête'
-  return e.groupee ? `${base}, toutes les lignes ensemble${depart && e.depart !== 'date_client' ? ` vers le ${formatHfsqlDate(depart)}` : ''}` : base
+/** The order's sentence (Info, list): only when its lines leave together. */
+function phraseEnsemble(depart: string | null): string {
+  return `Toutes les lignes ensemble${depart ? `, le ${formatHfsqlDate(depart)}` : ''}`
 }
 
-function expeditionDe(c: Pick<CommandeDetail, 'depart' | 'expedition_groupee' | 'date_expedition_client'>): Expedition {
-  return { depart: c.depart ?? 'des_que_prete', groupee: !!c.expedition_groupee, dateClient: c.date_expedition_client ?? null }
+/** A line's sentence (its hover): its own départ, then the order's « ensemble ». */
+function phraseLigne(mode: ModeLivraison, e: Expedition, depart: string | null): string {
+  const base = mode === 'sur_appel' ? 'Sur appel du client' : 'Expédiée dès que prête'
+  return e.groupee ? `${base}, avec toutes les lignes${depart ? ` le ${formatHfsqlDate(depart)}` : ''}` : base
+}
+
+function expeditionDe(c: Pick<CommandeDetail, 'expedition_groupee'>): Expedition {
+  return { groupee: !!c.expedition_groupee }
 }
 
 const IMPUTABLES: { id: 'malterre' | 'client' | 'partenaire'; label: string }[] = [
@@ -458,11 +457,8 @@ interface CommandeDetail {
   validee_par: string | null
   /** why it can no longer go back to « En préparation » (null = it can) */
   retour_preparation_bloque: string | null
-  /** how the order leaves (API lib/mode-expedition.ts, Info › Expédition): départ + « ensemble » */
-  depart: Depart
+  /** « expédier toutes les lignes ensemble » (API lib/mode-expedition.ts, Info › Expédition) */
   expedition_groupee: boolean
-  /** YYYYMMDD, départ « date_client » */
-  date_expedition_client: string | null
   /** Stock pieces attached via IDcommande_donation (donation orders only). */
   nb_donation_pieces: number
   remise: number
@@ -498,7 +494,9 @@ interface ClientLite { IDclient: number; nom: string; IDmode_paiement?: number; 
 interface ModePaiement { IDmode_paiement: number; libelle: string }
 interface Echeance { IDecheance: number; libelle: string }
 interface RefEcru { IDref_ecru: number; reference: string }
-interface RefFini { IDref_fini: number; reference: string; designation: string; avec_teinture: number }
+interface RefFini { IDref_fini: number; reference: string; designation: string; avec_teinture: number
+  /** the client's selling unit for it (API prixUnitOf): 3 Ml, 1 Kg (Sigvaris, #1253) */
+  unite_vente?: number }
 /** ref_divers catalog row (from the shared /expeditions/divers lookup — it
  *  carries the two variation-axis labels the line form needs). */
 interface RefDivers {
@@ -667,7 +665,7 @@ export function ClientsCommandes() {
   const [editRemise, setEditRemise] = useState('')
   const [editFraisPort, setEditFraisPort] = useState('')
   const [editDonation, setEditDonation] = useState(false)
-  const [editExpedition, setEditExpedition] = useState<Expedition>({ depart: 'des_que_prete', groupee: false, dateClient: null })
+  const [editExpedition, setEditExpedition] = useState<Expedition>({ groupee: false })
   const [editIDAdresseFacturation, setEditIDAdresseFacturation] = useState(0)
   const [editIDAdresseLivraison, setEditIDAdresseLivraison] = useState(0)
 
@@ -776,9 +774,7 @@ export function ClientsCommandes() {
         frais_port: Number(editFraisPort) || 0,
         // Permission-gated field — omit entirely when the user can't set it.
         ...(canMarkDonation ? { donation: editDonation ? 1 : 0 } : {}),
-        depart: editExpedition.depart,
         expedition_groupee: editExpedition.groupee,
-        date_expedition_client: editExpedition.depart === 'date_client' ? (editExpedition.dateClient ?? '') : '',
         IDadresse_facturation: editIDAdresseFacturation || 0,
         IDadresse_livraison: editIDAdresseLivraison || 0,
       }),
@@ -1238,11 +1234,9 @@ function CommandeList({
                   {row.urgence.raison}
                 </p>
               )}
-              {/* Only what departs from the default (dès que prête, line by line). */}
-              {(row.expedition_groupee || (row.depart && row.depart !== 'des_que_prete')) && (() => {
-                const phrase = phraseExpedition(
-                  { depart: row.depart ?? 'des_que_prete', groupee: !!row.expedition_groupee, dateClient: row.date_expedition_client ?? null },
-                  row.depart_commande ?? null)
+              {/* Only what departs from the default (each line on its own). */}
+              {!!row.expedition_groupee && (() => {
+                const phrase = phraseEnsemble(row.depart_commande ?? null)
                 return (
                   <p className="flex items-center gap-1 text-[11px] text-muted-foreground mt-1 truncate" title={phrase}>
                     <Truck className="h-3 w-3 flex-shrink-0" />{phrase}
@@ -2440,7 +2434,7 @@ function LineCard({
                 }
                 const stat = (
                   <LineStat
-                    label={`Prête le${retard > 0 ? ` · +${retard} j` : ''}`}
+                    label={`Prête le${retard > 0 ? ` · +${retard} j` : ''}${line.mode_livraison === 'sur_appel' ? ' · sur appel' : ''}`}
                     value={line.date_livraison ? formatHfsqlDate(line.date_livraison) : partie ? '—' : 'À obtenir'}
                     valueClass={!line.date_livraison ? (partie ? 'text-muted-foreground' : 'text-red-600') : cn(SOULIGNE_INFO, !(parLancement || enPreparation) && tint)}
                   />
@@ -2452,7 +2446,7 @@ function LineCard({
                       date: line.date_livraison,
                       lignes: [
                         line.delai_initial && retard !== 0 ? `Engagement ${formatHfsqlDate(line.delai_initial)}` : enPreparation ? 'Date libre jusqu’à la validation' : 'Notre engagement',
-                        phraseExpedition(expedition, departCommande),
+                        phraseLigne(line.mode_livraison, expedition, departCommande),
                       ],
                     }} />
                   }>{stat}</Tooltip>
@@ -5812,7 +5806,7 @@ function CreateTricotageOrderDialog({
               Lancer le tricotage — {location.magasin_nom}
             </h2>
             <p className="text-xs text-white/70 truncate">
-              {ctx?.ecru_ref_label ? `${ctx.ecru_ref_label}${ctx.ecru_coloris_label ? ` · ${ctx.ecru_coloris_label}` : ''}` : '…'}
+              {ctx?.ecru_ref_label ? `${ctx.ecru_ref_label}${ctx.ecru_coloris_label ? ` - ${ctx.ecru_coloris_label}` : ''}` : '…'}
               {clientNom ? ` · ${clientNom}` : ''}
             </p>
           </div>
@@ -5994,6 +5988,7 @@ function LineFormDialog({
   // In préparation the line's date is computed (doctrine des délais §5 ter): shown, never stored, until
   // the person picks another one (Vincent 2026-10-29). Open = a date of its own is being typed.
   const [autreDate, setAutreDate] = useState(false)
+  const autreDateRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -6022,7 +6017,10 @@ function LineFormDialog({
       // (lines created before divers were grid-priced) — let the grid fill it.
       setDiversPrixTouched(Number(line.prix) > 0)
     } else {
-      setForm(emptyLineForm)
+      // An order shipped « ensemble »: a new line starts at the common date (Vincent 2026-10-30).
+      const commune = commande.expedition_groupee ? dateCommune(commande.lignes) : ''
+      setForm(commune ? { ...emptyLineForm, date_livraison: hfsqlDateToInput(commune) } : emptyLineForm)
+      setAutreDate(!!commune)
       setPriceLocked(true)
       setDiversPrixTouched(false)
     }
@@ -6103,12 +6101,19 @@ function LineFormDialog({
   // Reference lookups per type. Écru/fini are restricted to the references
   // assigned to this client in designation_client (the buyable catalogue);
   // divers are generic and stay unrestricted.
-  // A tombé de métier is sold by the kg: no Ml on an écru line (API lib/unite-ecru.ts).
+  const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['cc-refs-ecru', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-ecru?client=${commande.IDclient}`), enabled: open })
+  const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['cc-refs-fini', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-fini?client=${commande.IDclient}`), enabled: open })
+  // The unit is the article's, never picked (Vincent 2026-10-30): a tombé de métier by the Kg (API
+  // lib/unite-ecru.ts), a fini by the Ml unless the client's designation sells it by the Kg (Sigvaris,
+  // #1253). Only a divers line picks its unit. A line saved in another unit keeps the picker, so an
+  // old line is never silently re-labelled.
+  const uniteImposee: number | null = form.type === 1 ? 1
+    : form.type === 2 && form.IDreference > 0 ? (refsFini?.find((r) => r.IDref_fini === form.IDreference)?.unite_vente ?? null)
+    : null
+  const uniteHeritee = !!line && line.type === form.type && line.IDreference === form.IDreference && line.unite !== uniteImposee
   useEffect(() => {
-    if (form.type === 1 && form.unite === 3) setForm((f) => ({ ...f, unite: 1 }))
-  }, [form.type, form.unite])
-  const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['cc-refs-ecru', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-ecru?client=${commande.IDclient}`), enabled: open && form.type === 1 })
-  const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['cc-refs-fini', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-fini?client=${commande.IDclient}`), enabled: open && form.type === 2 })
+    if (uniteImposee != null && !uniteHeritee && form.unite !== uniteImposee) setForm((f) => ({ ...f, unite: uniteImposee }))
+  }, [uniteImposee, uniteHeritee, form.unite])
   // Divers refs come from the shared expéditions lookup — it's the only one
   // that exposes the sTypeVariation1/2 axis labels the variation pickers need.
   const { data: refsDivers } = useQuery<RefDivers[]>({
@@ -6193,6 +6198,7 @@ function LineFormDialog({
         date_livraison: form.date_livraison && (!commande.en_preparation || autreDate) ? inputDateToHfsql(form.date_livraison) : '',
         ...(estReport ? { report: { motif: form.report_motif.trim(), imputable: form.report_imputable } } : {}),
         commentaire: form.commentaire,
+        mode_livraison: form.mode_livraison,
       })
       return isNew
         ? apiFetch(`/commandes-client/${commande.IDcommande_client}/lignes`, { method: 'POST', body })
@@ -6276,7 +6282,11 @@ function LineFormDialog({
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Type</label>
             <div className="flex gap-1">
-              {([{ t: 1, l: 'Écru' }, { t: 2, l: 'Fini' }, { t: 3, l: 'Divers' }] as const).map((o) => (
+              {/* Écru / Fini only when the client's catalogue holds one (Vincent 2026-10-30); the line's own
+                  type always stays, and divers is never catalogue-bound. */}
+              {([{ t: 1, l: 'Écru' }, { t: 2, l: 'Fini' }, { t: 3, l: 'Divers' }] as const)
+                .filter((o) => o.t === 3 || o.t === form.type || ((o.t === 1 ? refsEcru : refsFini)?.length ?? 0) > 0)
+                .map((o) => (
                 <button
                   key={o.t}
                   type="button"
@@ -6454,12 +6464,19 @@ function LineFormDialog({
             </div>
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Unité</label>
-              <PopoverSelect
-                options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'unité' }, { id: 5, primary: 'm²' }]}
-                value={form.unite}
-                onChange={(id) => setForm({ ...form, unite: id })}
-                hideEmpty
-              />
+              {form.type === 3 || uniteHeritee ? (
+                <PopoverSelect
+                  options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'unité' }, { id: 5, primary: 'm²' }]}
+                  value={form.unite}
+                  onChange={(id) => setForm({ ...form, unite: id })}
+                  hideEmpty
+                />
+              ) : (
+                <div className="h-9 px-3 flex items-center rounded-md border border-dashed border-input bg-muted/40 text-sm"
+                  title={form.type === 1 ? 'Un tombé de métier se vend au Kg' : 'L’unité de vente de la désignation du client'}>
+                  {uniteImposee === 1 ? 'Kg' : uniteImposee === 3 ? 'Ml' : '—'}
+                </div>
+              )}
             </div>
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Prix (€)</label>
@@ -6614,19 +6631,11 @@ function LineFormDialog({
             return (
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Prête le</label>
-                {!autreDate ? (
-                  <div className="h-9 px-3 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm">
-                    {a ? <span className="text-muted-foreground">Au plus tôt le</span>
-                      : <span className="text-muted-foreground italic">{auPlusTotQ.isFetching ? 'Calcul…' : 'Choisissez la référence et la quantité'}</span>}
-                    {plusTot}
-                    {a && (
-                      <button type="button" onClick={() => { setAutreDate(true); setForm({ ...form, date_livraison: minIso ?? '' }) }}
-                        className="ml-auto text-xs font-medium text-accent-blue hover:underline">
-                        Choisir une autre date
-                      </button>
-                    )}
-                  </div>
-                ) : (
+                {/* One dashed box before and after the choice (Vincent 2026-10-30): the link opens the calendar
+                    straight away (a hidden date input under it, starting at the earliest date); a picked date
+                    shows in the box with its margin, × goes back to the earliest. Without showPicker (old
+                    browser) the picked state falls back to a plain date field. */}
+                {autreDate && !PICKER_DATE ? (
                   <>
                     <div className="flex items-center gap-1.5 sm:w-1/2">
                       <input type="date" value={form.date_livraison} min={minIso} autoComplete="off" className={inputClass}
@@ -6636,16 +6645,68 @@ function LineFormDialog({
                         <X className="h-4 w-4" />
                       </Button>
                     </div>
-                    {a && (
-                      <p className={cn('text-[11px]', (a.marge ?? 0) < 0 ? 'text-amber-700' : 'text-muted-foreground')}>
-                        Au plus tôt le {plusTot}{a.marge == null ? '' : a.marge < 0 ? ` · ${-a.marge} j ouvrés trop tôt` : a.marge === 0 ? ' · sans marge' : ` · marge ${a.marge} j ouvré${a.marge > 1 ? 's' : ''}`}
-                      </p>
-                    )}
+                    {a && <p className="text-[11px] text-muted-foreground">Au plus tôt le {plusTot}</p>}
                   </>
+                ) : (
+                  <div className={cn('px-3 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm',
+                    a && autreDate && form.date_livraison ? 'py-1.5' : 'h-9')}>
+                    {!a ? <span className="text-muted-foreground italic">{auPlusTotQ.isFetching ? 'Calcul…' : 'Choisissez la référence et la quantité'}</span>
+                      : autreDate && form.date_livraison ? (
+                        // Two lines once a date is picked (Vincent 2026-10-30): the date, then what it is measured against.
+                        <div className="min-w-0 leading-tight">
+                          <div>Le <span className="font-semibold tabular-nums">{formatHfsqlDate(inputDateToHfsql(form.date_livraison))}</span></div>
+                          <div className={cn('text-xs truncate', (a.marge ?? 0) < 0 ? 'text-amber-700' : 'text-muted-foreground')}>
+                            Au plus tôt le {plusTot}
+                            {a.marge == null ? '' : a.marge < 0 ? ` · ${-a.marge} j ouvrés trop tôt` : a.marge === 0 ? ' · sans marge' : ` · marge ${a.marge} j ouvré${a.marge > 1 ? 's' : ''}`}
+                          </div>
+                        </div>
+                      ) : (<><span className="text-muted-foreground">Au plus tôt le</span>{plusTot}</>)}
+                    {a && (
+                      <span className="ml-auto relative flex items-center gap-1 flex-shrink-0">
+                        <input ref={autreDateRef} type="date" tabIndex={-1} aria-hidden min={minIso}
+                          value={autreDate && form.date_livraison ? form.date_livraison : (minIso ?? '')}
+                          className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
+                          onChange={(e) => { if (e.target.value) { setAutreDate(true); setForm({ ...form, date_livraison: e.target.value }) } }} />
+                        <button type="button"
+                          onClick={() => {
+                            try { if (PICKER_DATE) { autreDateRef.current?.showPicker(); return } } catch { /* fall back to the field */ }
+                            setAutreDate(true); setForm({ ...form, date_livraison: form.date_livraison || minIso || '' })
+                          }}
+                          className="relative text-xs font-medium text-accent-blue hover:underline">
+                          {autreDate ? 'Changer' : 'Choisir une autre date'}
+                        </button>
+                        {autreDate && (
+                          <button type="button" title="Revenir au délai au plus tôt"
+                            onClick={() => { setAutreDate(false); setForm({ ...form, date_livraison: '' }) }}
+                            className="relative h-6 w-6 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-zinc-200/70">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {commande.expedition_groupee && a && autreDate && !!form.date_livraison && inputDateToHfsql(form.date_livraison) < a.date && (
+                  <p className="text-[11px] text-amber-700">
+                    Cette ligne ne peut pas être prête à la date commune : repoussez-la pour toutes les lignes dans Info › Expédition.
+                  </p>
                 )}
               </div>
             )
           })()}
+          {/* The line's départ (Vincent 2026-10-30): dès que prête by default, or when the client calls. */}
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Départ</label>
+            <div className="flex gap-1">
+              {DEPARTS_LIGNE.map((d) => (
+                <button key={d.mode} type="button" onClick={() => setForm({ ...form, mode_livraison: d.mode })}
+                  className={cn('px-3 py-1 rounded-md text-xs font-medium border transition-colors',
+                    form.mode_livraison === d.mode ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
+                  {d.label}
+                </button>
+              ))}
+            </div>
+          </div>
           {/* The first D given is the engagement: said, full width, when it is being given (new line, or a line without one). */}
           {valide && !line?.date_livraison && !!dateSaisie && (
             <p className="flex items-start gap-1.5 text-xs font-medium text-amber-700">
@@ -6869,20 +6930,25 @@ function PreparationPill({ className, children }: { className?: string; children
 function PreparationFooter({ commande, disabled }: { commande: CommandeDetail; disabled: boolean }) {
   const queryClient = useQueryClient()
   const canEdit = useHasPermission('edit_commandes_client')
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const mut = useMutation({
     mutationFn: () => apiFetch(`/commandes-client/${commande.IDcommande_client}/valider`, { method: 'POST' }),
     onSuccess: () => {
+      setConfirmOpen(false)
       invalidateCommandeClientCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['commande-client', commande.IDcommande_client] })
     },
   })
   return (
     <div className="flex-shrink-0 space-y-1.5">
-      {mut.error && (
-        <p className="flex items-start gap-1.5 text-xs text-destructive px-1">
-          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />{(mut.error as any).body?.message ?? 'La validation a échoué'}
-        </p>
-      )}
+      <ValiderCommandeDialog
+        open={confirmOpen}
+        commande={commande}
+        isPending={mut.isPending}
+        error={mut.error ? ((mut.error as any).body?.message ?? 'La validation a échoué') : null}
+        onCancel={() => { setConfirmOpen(false); mut.reset() }}
+        onConfirm={() => mut.mutate()}
+      />
       <div className="rounded-xl border shadow-sm overflow-hidden flex items-stretch h-11 bg-zinc-600 border-zinc-600">
         <div className="flex items-center gap-2 px-3 flex-1 text-white min-w-0">
           <ClipboardList className="h-4 w-4 flex-shrink-0" />
@@ -6891,10 +6957,9 @@ function PreparationFooter({ commande, disabled }: { commande: CommandeDetail; d
         {canEdit && (
           <button
             type="button"
-            onClick={() => mut.mutate()}
+            onClick={() => setConfirmOpen(true)}
             disabled={disabled || mut.isPending}
-            title={disabled ? 'Enregistrez d’abord vos modifications'
-              : 'Chaque ligne sans date prend son délai au plus tôt. Les dates deviennent des engagements ; les commandes aux partenaires, la planification, la confirmation et l’expédition s’ouvrent.'}
+            title={disabled ? 'Enregistrez d’abord vos modifications' : 'Valider la commande'}
             className="px-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 disabled:bg-white/5 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold border-l border-white/25 flex items-center gap-1.5 transition-colors"
           >
             {mut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}Valider la commande
@@ -6902,6 +6967,117 @@ function PreparationFooter({ commande, disabled }: { commande: CommandeDetail; d
         )}
       </div>
     </div>
+  )
+}
+
+/** Free matter a line could hold before its date is frozen (Vincent 2026-10-30): validating on a date
+ *  computed without matter, then reserving, moves the engagement earlier and flatters the qualité de
+ *  service. Read from the line drawer's own sources (Affectation pool, free écru, yarn lots + supplier
+ *  orders); amber = something we could do now, never a block — waiting before ordering yarn is normal. */
+function MatiereLibreAvertissement({ commandeId, ligne }: { commandeId: number; ligne: LigneCommande }) {
+  const base = `/commandes-client/${commandeId}/lignes/${ligne.IDligne_commande_client}`
+  const fini = ligne.type === 2
+  const [pieces, ecru, fil] = useQueries({
+    queries: [
+      { queryKey: ['commande-client-pieces', commandeId, ligne.IDligne_commande_client], queryFn: () => apiFetch(base + '/pieces') as Promise<AffectationPayload>, staleTime: 0 },
+      { queryKey: ['commande-client-enno-available', commandeId, ligne.IDligne_commande_client, 0], queryFn: () => apiFetch(base + '/supply/ennoblissement/available-rolls') as Promise<{ rolls: { poids: number | null; reserved_elsewhere: boolean; reserved_to_line: boolean }[] }>, staleTime: 0, enabled: fini },
+      { queryKey: filLigneQueryKey(commandeId, ligne.IDligne_commande_client), queryFn: () => apiFetch(base + '/fil') as Promise<FilPayload>, staleTime: 0 },
+    ],
+  })
+  if (pieces.isLoading || (fini && ecru.isLoading) || fil.isLoading) {
+    return <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Recherche de matière libre…</p>
+  }
+  const parts: string[] = []
+  const dispo = pieces.data?.available ?? []
+  if (dispo.length > 0) {
+    const metrage = pieces.data?.dim === 'metrage'
+    const total = dispo.reduce((s, r) => s + (Number(metrage ? r.metrage : r.poids) || 0), 0)
+    const nom = fini ? 'rouleau' : 'pièce'
+    parts.push(`${dispo.length} ${nom}${dispo.length > 1 ? 's' : ''} ${fini ? 'fini' : 'écru'}${dispo.length > 1 ? 's' : ''} (${fmtNum(total)} ${metrage ? 'Ml' : 'kg'})`)
+  }
+  const ecruLibre = (ecru.data?.rolls ?? []).filter((r) => !r.reserved_elsewhere && !r.reserved_to_line)
+  if (fini && ecruLibre.length > 0) {
+    const kg = ecruLibre.reduce((s, r) => s + (Number(r.poids) || 0), 0)
+    parts.push(`${ecruLibre.length} pièce${ecruLibre.length > 1 ? 's' : ''} écru (${fmtNum(kg)} kg)`)
+  }
+  const yarns = (fil.data?.yarns ?? []).filter((y) => y.manque_kg > 0)
+  const enStock = yarns.reduce((s, y) => s + y.lots.reduce((t, x) => t + Math.max(0, x.dispo), 0), 0)
+  const enCommande = yarns.reduce((s, y) => s + y.commandes.reduce((t, c) => t + Math.max(0, c.libre), 0), 0)
+  if (enStock >= 1) parts.push(`${fmtNum(enStock)} kg de fil en stock`)
+  if (enCommande >= 1) parts.push(`${fmtNum(enCommande)} kg de fil en commande`)
+  if (parts.length === 0) return null
+  return (
+    <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700">
+      <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+      <span>Matière libre : {parts.join(' · ')}. Réservez-la d’abord, la date sera plus juste.</span>
+    </p>
+  )
+}
+
+/** The browser can open a date input's calendar from a click elsewhere (Chrome / Edge 99+, Firefox 101+). */
+const PICKER_DATE = typeof HTMLInputElement !== 'undefined' && 'showPicker' in HTMLInputElement.prototype
+
+/** The pause before « Valider la commande »: the dates about to become engagements, read line by line,
+ *  and what moving one costs afterwards (a report, counted in the qualité de service). */
+function ValiderCommandeDialog({ open, commande, isPending, error, onCancel, onConfirm }: {
+  open: boolean
+  commande: CommandeDetail
+  isPending: boolean
+  error: string | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const lignes = commande.lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !isPending) onCancel() }}>
+      <DialogContent className="max-w-lg" onClose={isPending ? undefined : onCancel}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-accent" />
+            Valider la commande {commande.numero ?? ''}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <p className="text-sm">Ces dates deviennent nos engagements envers le client :</p>
+          <div className="rounded-lg border border-border/60 bg-zinc-100/80 divide-y divide-border/60 max-h-64 overflow-y-auto scrollbar-transparent">
+            {lignes.map((l) => {
+              const date = l.date_livraison ?? l.au_plus_tot?.date ?? null
+              return (
+                <div key={l.IDligne_commande_client} className="px-3 py-2 text-sm">
+                  <div className="flex items-baseline justify-between gap-3">
+                  <span className="min-w-0 truncate">
+                    {[l.ref_label, l.colori_reference].filter(Boolean).join(' · ') || 'Ligne'}
+                    <span className="text-muted-foreground"> · {fmtNum(l.quantite)} {l.unite_label}</span>
+                  </span>
+                  {date
+                    ? <span className="flex-shrink-0 tabular-nums">prête le <span className="font-semibold">{formatHfsqlDate(date)}</span>{!l.date_livraison && <span className="text-muted-foreground"> (au plus tôt)</span>}</span>
+                    : <span className="flex-shrink-0 text-red-600">sans date</span>}
+                  </div>
+                  {open && l.au_plus_tot?.sansMatiere && (l.type === 1 || l.type === 2) && (
+                    <MatiereLibreAvertissement commandeId={commande.IDcommande_client} ligne={l} />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Ensuite, déplacer une date sera un report (motif + responsable), compté dans la qualité de service Malterre.
+          </p>
+          {error && (
+            <p className="flex items-start gap-1.5 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 flex-shrink-0 mt-px" />{error}
+            </p>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onCancel} disabled={isPending}>Annuler</Button>
+          <Button onClick={onConfirm} disabled={isPending}>
+            {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
+            Valider la commande
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -6937,11 +7113,18 @@ function ValidationKV({ commande }: { commande: CommandeDetail }) {
 
 // ── Sidebar Tab: Info ──────────────────────────────────
 
-/** Info › Expédition (Vincent 2026-10-28, doctrine des délais §5 bis): how the whole order leaves, as two
- *  simple questions — « Départ » (dès que prête / à la date demandée par le client / sur appel) and « toutes
- *  les lignes ensemble » — never per line. Every line keeps its own « Prête le » (the engagement); in edit
- *  mode one date can be written on every line still to ship (API PUT …/:id/lignes-date), a line that had
- *  another date being a report (one why / whom for all). */
+/** The date every line still to ship shares (YYYYMMDD), '' when they differ or one has none. */
+function dateCommune(lignes: LigneCommande[]): string {
+  const ds = lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee').map((l) => l.date_livraison ?? '')
+  return ds.length > 0 && ds[0] && ds.every((d) => d === ds[0]) ? ds[0] : ''
+}
+
+/** Info › Expédition (doctrine des délais §5 bis, revised by Vincent 2026-10-30): the order only says
+ *  « Expédier toutes les lignes ensemble »; the départ (dès que prête / sur appel) is each line's, in its
+ *  dialog. Ticking « ensemble » asks for ONE date, never
+ *  before the latest earliest date of the lines, written on every line still to ship (API PUT
+ *  …/:id/lignes-date with the option, Vincent 2026-10-30). On a validated order a line that had another
+ *  date is a report: one why / whom for all. Unticking keeps the dates (they are engagements). */
 function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
   commande: CommandeDetail
   isEditing: boolean
@@ -6952,28 +7135,40 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
   const restantes = commande.lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
   const dates = restantes.map((l) => l.date_livraison).filter((d): d is string => !!d).sort()
   const sansDate = restantes.length - dates.length
-  const [date, setDate] = useState('')
+  const commune = dateCommune(commande.lignes)
+  // The floor: no line can be ready before its own earliest date, so the common one starts at the latest.
+  const plancher = restantes.map((l) => l.au_plus_tot?.date ?? '').filter(Boolean).sort().at(-1) ?? ''
+  const minIso = plancher ? hfsqlDateToInput(plancher) : undefined
+  const pickerRef = useRef<HTMLInputElement>(null)
+  // A date picked on a validated order that moves engagements: waits for its why / whom.
+  const [enAttente, setEnAttente] = useState('')
   const [imputable, setImputable] = useState<'' | 'malterre' | 'client' | 'partenaire'>('')
   const [motif, setMotif] = useState('')
-  const choisie = date ? inputDateToHfsql(date) : ''
-  // Lines that already had another D: an engagement moved.
-  // Validated order only: before, the dates move freely (doctrine des délais §5 ter).
-  const reports = choisie && !commande.en_preparation ? restantes.filter((l) => l.date_livraison && l.date_livraison !== choisie).length : 0
+  const reportsPour = (d: string) => commande.en_preparation ? 0 : restantes.filter((l) => l.date_livraison && l.date_livraison !== d).length
+  const reports = enAttente ? reportsPour(enAttente) : 0
   const mut = useMutation({
-    mutationFn: () => apiFetch(`/commandes-client/${commande.IDcommande_client}/lignes-date`, {
+    mutationFn: (d: string) => apiFetch(`/commandes-client/${commande.IDcommande_client}/lignes-date`, {
       method: 'PUT',
       body: JSON.stringify({
-        date: choisie,
+        date: d,
         ligneIds: restantes.map((l) => l.IDligne_commande_client),
-        ...(reports > 0 ? { report: { motif: motif.trim(), imputable } } : {}),
+        groupee: true,
+        ...(reportsPour(d) > 0 ? { report: { motif: motif.trim(), imputable } } : {}),
       }),
     }),
     onSuccess: () => {
-      setDate(''); setMotif(''); setImputable('')
+      setEnAttente(''); setMotif(''); setImputable('')
       invalidateCommandeClientCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['commande-client', commande.IDcommande_client] })
     },
   })
+  const choisir = (iso: string) => {
+    if (!iso) return
+    const d = inputDateToHfsql(iso)
+    if (d === commune) return
+    if (reportsPour(d) > 0) setEnAttente(d)
+    else mut.mutate(d)
+  }
 
   const depart = expedition.groupee ? departCommande(commande.lignes) : null
   let pretes: React.ReactNode
@@ -6989,7 +7184,11 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
   else if (sansDate > 0) pretes = <span className="text-red-600">{sansDate} ligne{sansDate > 1 ? 's' : ''} sans date</span>
   else if (dates[0] === dates[dates.length - 1]) pretes = `Le ${formatHfsqlDate(dates[0])}`
   else pretes = `Du ${formatHfsqlDate(dates[0])} au ${formatHfsqlDate(dates[dates.length - 1])}`
-  const peutAppliquer = !!choisie && restantes.length > 0 && (reports === 0 || (!!imputable && !!motif.trim()))
+
+  const affichee = enAttente || commune
+  // Ticked but the lines do not share a date (a line added since, or the option just ticked): pick it.
+  // A common date before a line's earliest one (a later line added): push everyone.
+  const aChoisir = expedition.groupee && restantes.length > 0 && !enAttente && (!commune || (!!plancher && commune < plancher))
 
   return (
     <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
@@ -6998,67 +7197,88 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
       </p>
       {isEditing ? (
         <>
-          <KV label="Départ" value={
-            <PopoverSelect size="sm" options={DEPARTS.map((d) => ({ id: d.id, primary: d.label }))}
-              value={DEPARTS.find((d) => d.depart === expedition.depart)?.id ?? 1}
-              onChange={(id) => onChange({ ...expedition, depart: DEPARTS.find((d) => d.id === id)?.depart ?? 'des_que_prete' })} hideEmpty />
-          } />
-          {expedition.depart === 'date_client' && (
-            <KV label="Date demandée" value={
-              <input type="date" value={hfsqlDateToInput(expedition.dateClient)}
-                onChange={(e) => onChange({ ...expedition, dateClient: e.target.value ? inputDateToHfsql(e.target.value) : null })}
-                className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
-            } />
-          )}
-          <div className="pt-1">
-            <TogglePill label="Toutes les lignes ensemble" checked={expedition.groupee} disabled={false}
-              onChange={(v) => onChange({ ...expedition, groupee: v })} />
+          <div>
+            <TogglePill label="Expédier toutes les lignes ensemble" checked={expedition.groupee} disabled={false}
+              onChange={(v) => { onChange({ ...expedition, groupee: v }); if (!v) setEnAttente('') }} />
           </div>
-        </>
-      ) : (
-        <p className="text-sm">{phraseExpedition(expedition, depart)}</p>
-      )}
-      <KV label="Lignes prêtes" value={pretes} />
-      {isEditing && restantes.length > 0 && (
-        <div className="pt-2 border-t border-border/60 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground flex-1">Prête le (toutes les lignes)</span>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={mut.isPending}
-              className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
-          </div>
-          {!!choisie && !commande.en_preparation && restantes.some((l) => !l.date_livraison) && (
-            <p className="text-[11px] text-amber-700">Cette date est un engagement : la modifier ensuite sera un report, compté dans la qualité de service Malterre s’il nous est dû.</p>
-          )}
-          {reports > 0 && (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/[0.06] p-2 space-y-1.5">
-              <p className="text-[11px] text-amber-800">
-                {reports} ligne{reports > 1 ? 's avaient' : ' avait'} une autre date : c’était un engagement. À qui le report est-il dû, et pourquoi ?
-              </p>
-              <div className="flex gap-1">
-                {IMPUTABLES.map((i) => (
-                  <button key={i.id} type="button" onClick={() => setImputable(i.id)}
-                    className={cn('px-2.5 py-0.5 rounded-md text-[11px] font-medium border transition-colors',
-                      imputable === i.id ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
-                    {i.label}
-                  </button>
-                ))}
+          {expedition.groupee && restantes.length > 0 && (
+            <div className="space-y-2">
+              {/* One dashed box like the line's « Prête le »: the link opens the calendar straight away, starting at
+                  the floor; the floor sits under the date, small and grey. */}
+              <div className="px-3 py-1.5 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm">
+                <div className="min-w-0 leading-tight">
+                  {affichee
+                    ? <div>Le <span className="font-semibold tabular-nums">{formatHfsqlDate(affichee)}</span></div>
+                    : <div className="text-muted-foreground italic">Date commune à choisir</div>}
+                  {plancher && <div className="text-xs text-muted-foreground truncate">Au plus tôt le {formatHfsqlDate(plancher)}</div>}
+                </div>
+                <span className="ml-auto relative flex items-center flex-shrink-0">
+                  {PICKER_DATE ? (
+                    <>
+                      <input ref={pickerRef} type="date" tabIndex={-1} aria-hidden min={minIso}
+                        value={affichee ? hfsqlDateToInput(affichee) : (minIso ?? '')}
+                        className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
+                        onChange={(e) => choisir(e.target.value)} />
+                      <button type="button" disabled={mut.isPending}
+                        onClick={() => { try { pickerRef.current?.showPicker() } catch { /* no picker */ } }}
+                        className="relative text-xs font-medium text-accent-blue hover:underline disabled:opacity-50">
+                        {mut.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : affichee ? 'Changer' : 'Choisir la date'}
+                      </button>
+                    </>
+                  ) : (
+                    <input type="date" min={minIso} value={affichee ? hfsqlDateToInput(affichee) : ''} disabled={mut.isPending}
+                      onChange={(e) => choisir(e.target.value)}
+                      className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+                  )}
+                </span>
               </div>
-              <input value={motif} onChange={(e) => setMotif(e.target.value)} placeholder="Motif du report"
-                className="w-full h-7 px-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+              {aChoisir && (
+                <p className="text-[11px] text-amber-700">
+                  {!commune
+                    ? 'Les lignes n’ont pas toutes la même date : choisissez la date commune.'
+                    : `Une ligne ne peut pas être prête avant le ${formatHfsqlDate(plancher)} : repoussez la date commune.`}
+                </p>
+              )}
+              {reports > 0 && (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/[0.06] p-2 space-y-1.5">
+                  <p className="text-[11px] text-amber-800">
+                    {reports} ligne{reports > 1 ? 's avaient' : ' avait'} une autre date : c’était un engagement. À qui le report est-il dû, et pourquoi ?
+                  </p>
+                  <div className="flex gap-1">
+                    {IMPUTABLES.map((i) => (
+                      <button key={i.id} type="button" onClick={() => setImputable(i.id)}
+                        className={cn('px-2.5 py-0.5 rounded-md text-[11px] font-medium border transition-colors',
+                          imputable === i.id ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
+                        {i.label}
+                      </button>
+                    ))}
+                  </div>
+                  <input value={motif} onChange={(e) => setMotif(e.target.value)} placeholder="Motif du report"
+                    className="w-full h-7 px-2 text-xs rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+                  <div className="flex justify-end gap-1.5">
+                    <Button variant="ghost" size="sm" className="h-7 text-xs" disabled={mut.isPending}
+                      onClick={() => { setEnAttente(''); setMotif(''); setImputable('') }}>Annuler</Button>
+                    <Button variant="outline" size="sm" className="h-7 text-xs" disabled={!imputable || !motif.trim() || mut.isPending}
+                      onClick={() => mut.mutate(enAttente)}>
+                      {mut.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                      Reporter {reports} ligne{reports > 1 ? 's' : ''}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {mut.error && (
+                <p className="flex items-center gap-1 text-[11px] text-destructive">
+                  <AlertCircle className="h-3 w-3" />{(mut.error as any).body?.message ?? 'L’enregistrement a échoué'}
+                </p>
+              )}
             </div>
           )}
-          {mut.error && (
-            <p className="flex items-center gap-1 text-[11px] text-destructive">
-              <AlertCircle className="h-3 w-3" />{(mut.error as any).body?.message ?? 'L’enregistrement a échoué'}
-            </p>
-          )}
-          <div className="flex justify-end">
-            <Button variant="outline" size="sm" className="h-7 text-xs" disabled={!peutAppliquer || mut.isPending} onClick={() => mut.mutate()}>
-              {mut.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-              Appliquer à {restantes.length} ligne{restantes.length > 1 ? 's' : ''}
-            </Button>
-          </div>
-        </div>
+        </>
+      ) : (
+        <>
+          <p className="text-sm">{expedition.groupee ? phraseEnsemble(depart) : 'Chaque ligne part selon son départ'}</p>
+          <KV label="Lignes prêtes" value={pretes} />
+        </>
       )}
     </div>
   )
@@ -7195,7 +7415,7 @@ function InfoTab({
           <div className="space-y-1.5">
             {commande.tombe_metier.map((t) => (
               <div key={`${t.IDref_ecru}|${t.coloris_label}`} className="flex items-center justify-between gap-2">
-                <span className="text-sm">{t.ref_label}{t.coloris_label ? ` /${t.coloris_label}` : ''}</span>
+                <span className="text-sm">{t.ref_label}{t.coloris_label ? ` - ${t.coloris_label}` : ''}</span>
                 <span className="text-sm font-semibold tabular-nums text-accent">{fmtNum(t.poids_kg, 1)} kg</span>
               </div>
             ))}

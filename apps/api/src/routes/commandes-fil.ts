@@ -125,7 +125,9 @@ async function maybeAutoCloseCommande(commandeId: number): Promise<void> {
 // bridge" for the full picture.
 
 import { IS_WINDOWS } from '../lib/sst-shared.js'
-import { basculerSurLot, libererReliquat, retirerDuLot } from '../lib/reservation-fil.js'
+import { basculerSurLot, libererReliquat, reservationsDeCommandeFil, retirerDuLot } from '../lib/reservation-fil.js'
+import { resolveColorisLabel, resolveLineLabels, resolveRefLabel } from './commandes-client.js'
+import { confirmerArbitrage, etatsArbitrage, repartirLigne, RefusArbitrage } from '../lib/arbitrage-fil.js'
 
 const STOCK_LOT_SELECT = IS_WINDOWS
   ? `sf.IDstock_fil, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, rf.reference AS ref_fil, rf.bio, cf.reference AS colori_reference, f.nom AS fournisseur_nom`
@@ -354,6 +356,25 @@ commandesFilRouter.get('/', async (req: Request, res: Response) => {
 
 // ── Get one commande with full detail ───────────────────
 
+/** The order's reservations, each with the client line's article (« 040A - gris8985 »): the line
+ *  drawer's « Réservations » tab (Vincent 2026-10-30). */
+async function reservationsAvecArticle(lineIds: number[]) {
+  const resas = await reservationsDeCommandeFil(lineIds)
+  const ids = [...new Set(resas.map((r) => r.idligne_commande_client).filter((x) => x > 0))]
+  if (ids.length === 0) return resas.map((r) => ({ ...r, article: null as string | null }))
+  const lignes = await query<{ IDligne_commande_client: number; type_kind: number; IDreference: number; IDcolori: number }>(
+    `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori FROM ligne_commande_client WHERE IDligne_commande_client IN (${ids.join(',')})`)
+  const maps = await resolveLineLabels(lignes.map((l) => ({ IDreference: Number(l.IDreference) || 0, IDcolori: Number(l.IDcolori) || 0, type_kind: Number(l.type_kind) || 0 })))
+  const article = new Map<number, string>()
+  for (const l of lignes) {
+    const t = Number(l.type_kind) || 0
+    const ref = Number(l.IDreference) || 0
+    const col = resolveColorisLabel(maps, Number(l.IDcolori) || 0, t, ref)
+    article.set(Number(l.IDligne_commande_client), [resolveRefLabel(maps, ref, t).label, col].filter(Boolean).join(' - '))
+  }
+  return resas.map((r) => ({ ...r, article: article.get(r.idligne_commande_client) || null }))
+}
+
 commandesFilRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -400,9 +421,11 @@ commandesFilRouter.get('/:id', async (req: Request, res: Response) => {
         linkedMap.set(lid, acc)
       }
     }
+    // A line received short of its client reservations: the split to check (lib/arbitrage-fil.ts).
+    const arbitrages = await etatsArbitrage(lineIds)
     const lignesWithLinked = (fixedLignes as any[]).map((l) => {
       const agg = linkedMap.get(Number(l.IDref_fil_commande)) ?? { nb_lots_lies: 0, total_kg_lie: 0 }
-      return { ...l, ...agg }
+      return { ...l, ...agg, arbitrage: arbitrages.get(Number(l.IDref_fil_commande)) ?? null }
     })
 
     res.json({
@@ -414,6 +437,8 @@ commandesFilRouter.get('/:id', async (req: Request, res: Response) => {
       adresse_livraison: fixedAdresseLiv[0] ?? null,
       lignes: lignesWithLinked,
       cycle: (await cyclesCommandesFil([id])).get(id) ?? null,
+      // For whom its yarn is held: on its lines (to receive) and on the lots born from them.
+      reservations: await reservationsAvecArticle(lineIds),
     })
   } catch (err) {
     console.error('Error fetching commande-fil detail:', err)
@@ -840,7 +865,12 @@ commandesFilRouter.put('/:id', async (req: Request, res: Response) => {
     // (maybeAutoCloseCommande) only runs the other direction, so the manual
     // "Clôturer" toggle used to leave lines at etat = 0.
     if (d.etat === 1) {
+      // Lines still open bring nothing more: yarn still reserved on them for client lines is released,
+      // as when a line is closed on its own (PUT /lignes/:lineId) — the header close left it waiting.
+      const ouvertes = await query<{ IDref_fil_commande: number }>(
+        `SELECT IDref_fil_commande FROM ref_fil_commande WHERE IDcommande_fil = ${id} AND etat = 0`)
       await query(`UPDATE ref_fil_commande SET etat = 1 WHERE IDcommande_fil = ${id} AND etat = 0`)
+      for (const l of ouvertes) await libererReliquat(Number(l.IDref_fil_commande), 'close')
     }
     // Reopening (yarn awaited again) ends a « Clôturer quand même »: once the
     // order is received again it must earn its terminée like any other.
@@ -955,6 +985,47 @@ commandesFilRouter.post('/:id/lignes', async (req: Request, res: Response) => {
     res.status(201).json({ ok: true })
   } catch (err) {
     console.error('Error creating ref_fil_commande:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Arbitrage of a line received short (lib/arbitrage-fil.ts, Vincent 2026-10-30) ──
+// POST …/arbitrage keeps the split in place; PUT …/repartition sets another one (kg on the lots per
+// client line) and records the check. A person decides; the reception only proposed.
+
+const repartitionBody = z.object({
+  parts: z.array(z.object({ idligne_commande_client: z.number().int().positive(), kg_lot: z.number().finite().min(0) })).min(1),
+})
+
+async function auteur(req: Request): Promise<{ id: number; nom: string | null }> {
+  return { id: req.userId ?? 0, nom: req.userId ? await nomUtilisateur(req.userId) : null }
+}
+
+commandesFilRouter.post('/lignes/:lineId/arbitrage', async (req: Request, res: Response) => {
+  try {
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const etat = (await etatsArbitrage([lineId])).get(lineId)
+    if (!etat?.a_arbitrer) { res.status(409).json({ error: 'rien_a_arbitrer', message: 'Cette ligne n’a pas de répartition à vérifier.' }); return }
+    await confirmerArbitrage(lineId, await auteur(req))
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error confirming arbitrage fil:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesFilRouter.put('/lignes/:lineId/repartition', async (req: Request, res: Response) => {
+  try {
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = repartitionBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    await repartirLigne(lineId, parsed.data.parts, await auteur(req))
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof RefusArbitrage) { res.status(409).json({ error: err.code, message: err.message }); return }
+    console.error('Error splitting yarn line:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

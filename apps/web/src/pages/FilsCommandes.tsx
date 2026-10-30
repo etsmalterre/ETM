@@ -1,10 +1,12 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import {
+  ClipboardList,
+  Scale,
   ShoppingCart,
   Search,
   Loader2,
@@ -76,7 +78,7 @@ type NiveauUrgence = 'rouge' | 'ambre'
 // The order's stage once its yarn is received (API lib/cycle-commande-fil.ts):
 // terminée only when its organic lots are GOTS-certified and its invoices
 // attached and paid — or closed anyway (« Clôturer quand même »).
-type AttenteCommande = 'certificat' | 'facture' | 'paiement'
+type AttenteCommande = 'arbitrage' | 'certificat' | 'facture' | 'paiement'
 type EtapeCommande = 'en_cours' | 'attente' | 'terminee'
 
 interface ClotureForcee {
@@ -95,6 +97,8 @@ interface CycleResume {
   nb_factures: number
   factures_a_regler: number
   cloture_forcee: ClotureForcee | null
+  /** lines received short whose split between client lines is still to check */
+  lignes_a_arbitrer?: number
 }
 
 interface LotBio {
@@ -126,6 +130,8 @@ interface LigneCommande {
   ref_fil_bio: number | null
   nb_lots_lies?: number
   total_kg_lie?: number
+  /** received short of its client reservations (API lib/arbitrage-fil.ts): the split to check */
+  arbitrage?: ArbitrageLigne | null
 }
 
 interface StockLotLite {
@@ -183,6 +189,50 @@ interface CommandeDetail {
   adresse_livraison: AdresseLite | null
   lignes: LigneCommande[]
   cycle: CycleCommande | null
+  /** for whom its yarn is held (API reservationsDeCommandeFil): on its lines or on the lots born from them */
+  reservations?: ReservationCommande[]
+}
+
+/** A line received short (API EtatArbitrage): kg received, kg reserved that no lot serves, check due. */
+interface ArbitrageLigne {
+  recu_kg: number
+  manque_kg: number
+  a_arbitrer: boolean
+  confirme: { le: string; par: string | null; modifie: boolean } | null
+}
+
+/** One client line's hold on this order's yarn: still to receive (« commande »), on a received lot
+ *  (« lot »), or taken by the knitting order launched from that line (« consommee »). */
+interface ReservationCommande {
+  idref_fil_commande: number
+  idstock_fil: number
+  lot: string | null
+  etat: 'commande' | 'lot' | 'consommee' | 'liberee'
+  kg: number
+  idligne_commande_client: number
+  idcommande_client: number
+  numero: string | null
+  client: string | null
+  /** the client line's article: « 040A - gris8985 » */
+  article: string | null
+  /** the client line's délai (YYYYMMDD): the reception serves the earliest first */
+  delai: string | null
+}
+
+/** kg reserved still to receive on these order lines (what a reception close would release). */
+function kgAReceptionner(reservations: ReservationCommande[] | undefined, lineIds?: number[]): number {
+  return (reservations ?? [])
+    .filter((r) => r.etat === 'commande' && (!lineIds || lineIds.includes(r.idref_fil_commande)))
+    .reduce((s, r) => s + r.kg, 0)
+}
+
+/** « Cde 3929 (Le teeshirt propre) » for each client order in the list, once. */
+function commandesClientes(reservations: ReservationCommande[]): string {
+  const vus = new Map<number, string>()
+  for (const r of reservations) {
+    if (!vus.has(r.idcommande_client)) vus.set(r.idcommande_client, `Cde ${r.numero ?? '—'}${r.client ? ` (${r.client})` : ''}`)
+  }
+  return [...vus.values()].join(', ')
 }
 
 interface ModePaiement {
@@ -233,6 +283,7 @@ function CommandeEtatBadge({ etat, className }: { etat: number | null; className
 }
 
 const ATTENTE_LABEL: Record<AttenteCommande, string> = {
+  arbitrage: 'répartition',
   certificat: 'certificat GOTS',
   facture: 'facture',
   paiement: 'paiement',
@@ -244,7 +295,11 @@ function attenteLabel(attentes: AttenteCommande[]): string {
 }
 
 /** What each gap means, in a sentence (tooltips, the forced-close dialog). */
-function attenteDetail(a: AttenteCommande, cycle: Pick<CycleResume, 'lots_bio_sans_certificat' | 'factures_a_regler'>): string {
+function attenteDetail(a: AttenteCommande, cycle: Pick<CycleResume, 'lots_bio_sans_certificat' | 'factures_a_regler' | 'lignes_a_arbitrer'>): string {
+  if (a === 'arbitrage') {
+    const n = cycle.lignes_a_arbitrer ?? 1
+    return `${n} ligne${n > 1 ? 's' : ''} reçue${n > 1 ? 's' : ''} en partie : répartition entre les commandes client à vérifier`
+  }
   if (a === 'certificat') {
     const n = cycle.lots_bio_sans_certificat
     return `${n} lot${n > 1 ? 's' : ''} bio sans certificat GOTS`
@@ -493,6 +548,10 @@ export function FilsCommandes() {
     onSuccess: invalidateAll,
   })
 
+  // Closing the reception while client lines still wait for yarn on it (Vincent 2026-10-30): a pause
+  // naming what will be released (a line's own close has the same pause, in LignesSection).
+  const [closeReceptionOpen, setCloseReceptionOpen] = useState(false)
+
   // « Clôturer quand même » — its own right; the dialog asks the reason.
   const canForceClose = useHasPermission(PERMISSION_CLOTURER)
   const [forceCloseOpen, setForceCloseOpen] = useState(false)
@@ -634,7 +693,12 @@ export function FilsCommandes() {
             onEditIDAdresseFacturationChange={setEditIDAdresseFacturation}
             editIDAdresseLivraison={editIDAdresseLivraison}
             onEditIDAdresseLivraisonChange={setEditIDAdresseLivraison}
-            onToggleEtat={() => toggleEtatMut.mutate(detail?.etat === 1 ? 0 : 1)}
+            onToggleEtat={() => {
+              const next = detail?.etat === 1 ? 0 : 1
+              // Closing the reception releases what client lines still wait for on it: say so first.
+              if (next === 1 && kgAReceptionner(detail?.reservations) > 0.05) setCloseReceptionOpen(true)
+              else toggleEtatMut.mutate(next)
+            }}
             isTogglingEtat={toggleEtatMut.isPending || cancelForceCloseMut.isPending}
             canForceClose={canForceClose}
             onForceClose={() => setForceCloseOpen(true)}
@@ -663,6 +727,15 @@ export function FilsCommandes() {
           // soon as its detail query resolves.
           setAutoEditForId(newId)
         }}
+      />
+
+      <ClotureReceptionDialog
+        open={closeReceptionOpen}
+        titre="Clôturer la réception"
+        reservations={(detail?.reservations ?? []).filter((r) => r.etat === 'commande')}
+        isPending={toggleEtatMut.isPending}
+        onCancel={() => setCloseReceptionOpen(false)}
+        onConfirm={() => toggleEtatMut.mutate(1, { onSuccess: () => setCloseReceptionOpen(false) })}
       />
 
       {detail?.cycle && (
@@ -706,6 +779,7 @@ export function FilsCommandes() {
 // ── Left Panel: List ───────────────────────────────────
 
 const GAP_CHIP_LABEL: Record<AttenteCommande, string> = {
+  arbitrage: 'Répartition',
   certificat: 'GOTS',
   facture: 'Facture',
   paiement: 'À régler',
@@ -765,6 +839,7 @@ function etapeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
   const etape = (r: CommandeListRow): EtapeCommande => r.cycle?.etape ?? (r.etat === 1 ? 'terminee' : 'en_cours')
   const defs: Array<{ key: string; label: string; tone: 'primary' | 'amber' | 'success'; icon: React.ElementType; predicate: (r: CommandeListRow) => boolean }> = [
     { key: 'etape:en_cours', label: 'Fil attendu', tone: 'primary', icon: Clock, predicate: (r) => etape(r) === 'en_cours' },
+    { key: 'attente:arbitrage', label: 'Attente répartition', tone: 'amber', icon: Scale, predicate: (r) => !!r.cycle?.manques.includes('arbitrage') },
     { key: 'attente:certificat', label: 'Attente certificat GOTS', tone: 'amber', icon: ShieldAlert, predicate: (r) => !!r.cycle?.attentes.includes('certificat') },
     { key: 'attente:facture', label: 'Attente facture', tone: 'amber', icon: ReceiptText, predicate: (r) => !!r.cycle?.attentes.includes('facture') },
     { key: 'attente:paiement', label: 'Attente paiement', tone: 'amber', icon: ReceiptText, predicate: (r) => !!r.cycle?.attentes.includes('paiement') },
@@ -784,8 +859,11 @@ function etapeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
  *  since an invoice may be paid before the yarn arrives. */
 function gapsOnCard(row: CommandeListRow): AttenteCommande[] {
   if (!row.cycle) return row.factures_a_regler > 0 ? ['paiement'] : []
-  if (row.cycle.etape === 'attente') return row.cycle.attentes
-  return row.cycle.manques.includes('paiement') && !row.cycle.cloture_forcee ? ['paiement'] : []
+  // The split to check is never a chip: the card's amber line already names it.
+  if (row.cycle.etape === 'attente') return row.cycle.attentes.filter((a) => a !== 'arbitrage')
+  const gaps: AttenteCommande[] = []
+  if (row.cycle.manques.includes('paiement') && !row.cycle.cloture_forcee) gaps.push('paiement')
+  return gaps
 }
 
 function CommandeList({
@@ -905,9 +983,9 @@ function CommandeList({
             >
               <div className="flex items-center gap-2">
                 <ShoppingCart className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                <span className="font-medium text-sm">N° {row.IDcommande_fil}</span>
+                <span className="font-medium text-sm whitespace-nowrap">N° {row.IDcommande_fil}</span>
                 {gapsOnCard(row).map((a) => {
-                  const GapIcon = a === 'certificat' ? ShieldAlert : ReceiptText
+                  const GapIcon = a === 'certificat' ? ShieldAlert : a === 'arbitrage' ? Scale : ReceiptText
                   return (
                     <span
                       key={a}
@@ -918,7 +996,7 @@ function CommandeList({
                     </span>
                   )
                 })}
-                <CommandeEtapeBadge cycle={row.cycle} etat={row.etat} className="ml-auto" />
+                <CommandeEtapeBadge cycle={row.cycle} etat={row.etat} className="ml-auto whitespace-nowrap flex-shrink-0" />
               </div>
               <p className="text-xs text-muted-foreground mt-1 truncate">{row.fournisseur_nom || '—'}</p>
               {row.urgence && u && (
@@ -1100,6 +1178,8 @@ function LignesSection({
   const [editingLineId, setEditingLineId] = useState<number | null>(null)
   const [showLineForm, setShowLineForm] = useState(false)
   const [deleteLineConfirmId, setDeleteLineConfirmId] = useState<number | null>(null)
+  // « Marquer livrée » on a line client lines still wait for yarn on: the same pause as the order's close.
+  const [closeLineId, setCloseLineId] = useState<number | null>(null)
   const [lineForm, setLineForm] = useState({
     IDref_fil: 0,
     IDcolori_fil: 0,
@@ -1270,7 +1350,11 @@ function LignesSection({
                 isStockDrawerOpen={stockDrawerLineId === l.IDref_fil_commande}
                 onEdit={() => startEditLine(l)}
                 onDelete={() => setDeleteLineConfirmId(l.IDref_fil_commande)}
-                onToggleEtat={() => toggleLineEtatMut.mutate({ lineId: l.IDref_fil_commande, etat: l.etat === 1 ? 0 : 1 })}
+                aRecevoirKg={l.etat === 1 ? 0 : kgAReceptionner(commande.reservations, [l.IDref_fil_commande])}
+                onToggleEtat={() => {
+                  if (l.etat !== 1 && kgAReceptionner(commande.reservations, [l.IDref_fil_commande]) > 0.05) setCloseLineId(l.IDref_fil_commande)
+                  else toggleLineEtatMut.mutate({ lineId: l.IDref_fil_commande, etat: l.etat === 1 ? 0 : 1 })
+                }}
                 onOpenStockDrawer={onOpenStockDrawer}
               />
             )
@@ -1306,6 +1390,7 @@ function LignesSection({
           <StockLinkDrawer
             commandeId={commande.IDcommande_fil}
             ligne={drawerLigne}
+            reservations={commande.reservations ?? []}
             onClose={() => onOpenStockDrawer(null)}
             onSuccess={onMutationSuccess}
           />
@@ -1326,6 +1411,16 @@ function LignesSection({
       )}
     </div>
 
+    <ClotureReceptionDialog
+      open={closeLineId !== null}
+      titre="Marquer la ligne livrée"
+      reservations={(commande.reservations ?? []).filter((r) => r.etat === 'commande' && r.idref_fil_commande === closeLineId)}
+      isPending={toggleLineEtatMut.isPending}
+      onCancel={() => setCloseLineId(null)}
+      onConfirm={() => {
+        if (closeLineId !== null) toggleLineEtatMut.mutate({ lineId: closeLineId, etat: 1 }, { onSuccess: () => setCloseLineId(null) })
+      }}
+    />
     <ConfirmDialog
       open={deleteLineConfirmId !== null}
       title="Supprimer la ligne"
@@ -1346,9 +1441,11 @@ function LignesSection({
 }
 
 function LineCard({
-  line, isEditing, linesLocked, isStockDrawerOpen, onEdit, onDelete, onToggleEtat, onOpenStockDrawer,
+  line, isEditing, linesLocked, isStockDrawerOpen, aRecevoirKg, onEdit, onDelete, onToggleEtat, onOpenStockDrawer,
 }: {
   line: LigneCommande
+  /** kg client lines still wait for on this line (0 once received) */
+  aRecevoirKg: number
   isEditing: boolean
   linesLocked: boolean
   isStockDrawerOpen: boolean
@@ -1397,6 +1494,19 @@ function LineCard({
               <Package className="h-2.5 w-2.5" />
               {nbLotsLies} lot{nbLotsLies > 1 ? 's' : ''}
               {totalKgLie > 0 ? ` · ${fmtNum(totalKgLie, 1)} kg` : ''}
+            </Badge>
+          )}
+          {!!line.arbitrage?.a_arbitrer && (
+            <Badge variant="outline" className="text-[10px] py-0 px-1.5 gap-0.5 border-amber-500/40 bg-amber-500/10 text-amber-800"
+              title="Reçu en partie : la répartition entre les commandes client est à vérifier (onglet Réservations)">
+              <Scale className="h-2.5 w-2.5" />Répartition à vérifier
+            </Badge>
+          )}
+          {aRecevoirKg > 0.05 && (
+            <Badge variant="secondary" className="text-[10px] py-0 px-1.5 gap-0.5"
+              title="Fil réservé pour des lignes de commande client, encore à recevoir sur cette ligne">
+              <ClipboardList className="h-2.5 w-2.5" />
+              {fmtNum(aRecevoirKg, 1)} kg réservés à recevoir
             </Badge>
           )}
           <CommandeEtatBadge etat={line.etat} />
@@ -1450,10 +1560,12 @@ function LineCard({
 // ── Stock linkage drawer ───────────────────────────────
 
 function StockLinkDrawer({
-  commandeId, ligne, onClose, onSuccess,
+  commandeId, ligne, reservations, onClose, onSuccess,
 }: {
   commandeId: number
   ligne: LigneCommande
+  /** the order's reservations: a linked lot shows what client lines hold on it */
+  reservations: ReservationCommande[]
   onClose: () => void
   onSuccess: () => void
 }) {
@@ -1489,24 +1601,47 @@ function StockLinkDrawer({
 
   const linked = data?.linked ?? []
   const available = data?.available ?? []
+  // Two contents (Vincent 2026-10-30): the line's lots, and for whom its yarn is held (§31.4 tab strip).
+  const [onglet, setOnglet] = useState<'lots' | 'reservations'>('lots')
+  const resasLigne = reservations.filter((r) => r.idref_fil_commande === ligne.IDref_fil_commande)
+  const onglets = [
+    { key: 'lots' as const, label: 'Lots', icon: Package },
+    { key: 'reservations' as const, label: 'Réservations', icon: ClipboardList },
+  ]
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-zinc-100/80">
-      {/* Minimal top bar — close X on a darker zinc strip, matching the
-          §31.4 chrome convention (right DetailSidebar's tab header band). */}
-      <div className="flex-shrink-0 px-2 py-1 border-b bg-zinc-200/50 flex items-center justify-end">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onClose}
-          className="h-7 w-7"
-          title="Fermer"
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
+      <div className="flex-shrink-0 flex items-center border-b bg-zinc-200/50 p-1 gap-1">
+        {onglets.map((t) => {
+          const Icon = t.icon
+          const active = onglet === t.key
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setOnglet(t.key)}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer',
+                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              <span>{t.label}</span>
+            </button>
+          )
+        })}
+        <div className="ml-auto flex items-center pr-1">
+          <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7" title="Fermer">
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
-      {/* Body */}
+      {onglet === 'reservations' ? (
+        <div className="flex-1 overflow-y-auto p-3 scrollbar-transparent">
+          <ReservationsLigne ligne={ligne} reservations={resasLigne} onChanged={onSuccess} />
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
         {isLoading && (
           <div className="space-y-2">
@@ -1537,6 +1672,7 @@ function StockLinkDrawer({
                 <StockLotRow
                   key={lot.IDstock_fil}
                   lot={lot}
+                  reservations={reservations.filter((r) => r.idstock_fil === lot.IDstock_fil)}
                   action="unlink"
                   onAction={() => unlinkMut.mutate(lot.IDstock_fil)}
                   isBusy={unlinkMut.isPending && unlinkMut.variables === lot.IDstock_fil}
@@ -1571,14 +1707,17 @@ function StockLinkDrawer({
           </p>
         )}
       </div>
+      )}
     </div>
   )
 }
 
 function StockLotRow({
-  lot, action, onAction, isBusy,
+  lot, reservations = [], action, onAction, isBusy,
 }: {
   lot: StockLotLite
+  /** client lines holding yarn on this lot: shown before anyone dissociates it */
+  reservations?: ReservationCommande[]
   action: 'link' | 'unlink'
   onAction: () => void
   isBusy: boolean
@@ -1617,6 +1756,12 @@ function StockLotRow({
             <span>entré {formatHfsqlDate(lot.date_entree)}</span>
           )}
         </div>
+        {reservations.length > 0 && (
+          <p className="mt-1 text-[11px] text-muted-foreground truncate">
+            <span className="font-medium text-foreground tabular-nums">{fmtNum(reservations.reduce((t, r) => t + r.kg, 0), 1)} kg réservés</span>
+            {' : '}{commandesClientes(reservations)}
+          </p>
+        )}
       </div>
       <Button
         size="sm"
@@ -2016,6 +2161,322 @@ function ForceCloseDialog({ open, commandeId, cycle, onClose, onDone }: {
           <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Annuler</Button>
           <Button onClick={() => mut.mutate()} disabled={mut.isPending || motif.trim().length === 0}>
             {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
+            Clôturer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Réservations of one order line (Vincent 2026-10-30) ──
+// For whom the line's yarn is held. A stacked bar worth the ordered quantity (one segment per client
+// order, the free part grey: lengths on one line read better than pie angles and the free part has
+// its place), then one row per client line: article, where the yarn is (to receive, on a lot, at the
+// knitter), kg; released yarn (« libéré, non livré ») struck through, kept for history. Neutral.
+
+const SEGMENTS = ['bg-accent-blue', 'bg-teal', 'bg-terracotta', 'bg-primary', 'bg-gold'] as const
+
+function ReservationsLigne({ ligne, reservations, onChanged }: { ligne: LigneCommande; reservations: ReservationCommande[]; onChanged: () => void }) {
+  const [repartirOpen, setRepartirOpen] = useState(false)
+  const confirmerMut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-fil/lignes/${ligne.IDref_fil_commande}/arbitrage`, { method: 'POST' }),
+    onSuccess: onChanged,
+  })
+  const vivantes = reservations.filter((r) => r.etat !== 'liberee')
+  const parCommande = new Map<number, { r: ReservationCommande; kg: number }>()
+  for (const r of vivantes) {
+    const e = parCommande.get(r.idcommande_client) ?? { r, kg: 0 }
+    e.kg += r.kg
+    parCommande.set(r.idcommande_client, e)
+  }
+  const segments = [...parCommande.values()]
+  const reserve = segments.reduce((t, x) => t + x.kg, 0)
+  const quantite = Number(ligne.quantite) || 0
+  const total = Math.max(quantite, reserve)
+  const libre = Math.max(0, quantite - reserve)
+  const couleur = new Map(segments.map((x, i) => [x.r.idcommande_client, SEGMENTS[i % SEGMENTS.length]]))
+  const etatLabel = (r: ReservationCommande) =>
+    r.etat === 'lot' ? `en lot ${r.lot ?? '—'}` : r.etat === 'consommee' ? 'au tricotage' : r.etat === 'liberee' ? 'libéré, non livré' : 'à recevoir'
+
+  if (reservations.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+        <ClipboardList className="h-8 w-8 mb-2 opacity-50" />
+        <p className="text-sm font-medium">Aucune réservation</p>
+        <p className="text-xs mt-1">Le fil de cette ligne n’est réservé pour aucune commande client : {fmtNum(quantite, 1)} kg libres.</p>
+      </div>
+    )
+  }
+
+  const arb = ligne.arbitrage
+  // Who still waits (on the order) or lost yarn (released) after the reception's split.
+  const enManque = new Map<number, { r: ReservationCommande; kg: number }>()
+  for (const r of reservations) {
+    if (r.etat !== 'commande' && r.etat !== 'liberee') continue
+    const e = enManque.get(r.idcommande_client) ?? { r, kg: 0 }
+    e.kg += r.kg
+    enManque.set(r.idcommande_client, e)
+  }
+  const manqueTexte = [...enManque.values()]
+    .map((x) => `la Cde ${x.r.numero ?? '—'} ${x.r.etat === 'liberee' ? 'perd' : 'attend encore'} ${fmtNum(x.kg, 1)} kg`).join(', ')
+
+  return (
+    <div className="space-y-3">
+      {arb && arb.manque_kg > 0.05 && arb.recu_kg > 0.005 && (arb.a_arbitrer ? (
+        <div className="rounded-lg border-l-4 border-l-amber-500/70 border border-border/60 bg-card shadow-sm p-3 space-y-2">
+          <p className="flex items-start gap-1.5 text-xs text-amber-900">
+            <Scale className="h-3.5 w-3.5 mt-px flex-shrink-0 text-amber-600" />
+            <span>
+              <span className="font-semibold tabular-nums">{fmtNum(arb.recu_kg, 1)} kg reçus</span> pour {fmtNum(reservations.reduce((t, r) => t + r.kg, 0), 1)} kg réservés.
+              {' '}Répartition proposée par délai client : {manqueTexte || '—'}.
+            </span>
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            {confirmerMut.isError && (
+              <span className="mr-auto text-xs text-destructive">{(confirmerMut.error as { body?: { message?: string } })?.body?.message ?? 'La validation a échoué'}</span>
+            )}
+            <Button variant="outline" size="sm" onClick={() => setRepartirOpen(true)} disabled={confirmerMut.isPending}>
+              <Pencil className="h-3.5 w-3.5 mr-1.5" />Répartir autrement
+            </Button>
+            <Button size="sm" onClick={() => confirmerMut.mutate()} disabled={confirmerMut.isPending}>
+              {confirmerMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
+              Valider la répartition
+            </Button>
+          </div>
+        </div>
+      ) : arb.confirme && (
+        <div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+          <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+          <span className="min-w-0 truncate">
+            Répartition {arb.confirme.modifie ? 'modifiée' : 'vérifiée'} le {formatHfsqlDate(arb.confirme.le.slice(0, 10).replace(/-/g, ''))} à {arb.confirme.le.slice(11, 16)}
+            {arb.confirme.par ? ` par ${arb.confirme.par}` : ''}{manqueTexte ? ` : ${manqueTexte}` : ''}
+          </span>
+          <button type="button" onClick={() => setRepartirOpen(true)} className="ml-auto flex-shrink-0 text-accent-blue hover:underline">Répartir autrement</button>
+        </div>
+      ))}
+      <RepartirDialog open={repartirOpen} ligne={ligne} reservations={reservations}
+        onClose={() => setRepartirOpen(false)} onDone={() => { setRepartirOpen(false); onChanged() }} />
+      <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-2">
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-muted-foreground">{fmtNum(quantite, 1)} kg commandés</span>
+          <span className="tabular-nums"><span className="font-semibold">{fmtNum(reserve, 1)} kg</span> réservés · {fmtNum(libre, 1)} kg libres</span>
+        </div>
+        <div className="flex h-7 w-full overflow-hidden rounded-md bg-zinc-200">
+          {segments.map((x) => {
+            const pct = total > 0 ? (x.kg / total) * 100 : 0
+            const nom = `Cde ${x.r.numero ?? '—'}${x.r.client ? ` · ${x.r.client}` : ''}`
+            return (
+              <div key={x.r.idcommande_client} title={`${nom} : ${fmtNum(x.kg, 1)} kg`}
+                className={cn('h-full flex items-center px-2 min-w-0 text-[11px] font-medium text-white border-r border-white/60 last:border-r-0', couleur.get(x.r.idcommande_client))}
+                style={{ width: `${pct}%` }}>
+                {pct >= 18 && <span className="truncate">Cde {x.r.numero ?? '—'} · {fmtNum(x.kg, 0)} kg</span>}
+              </div>
+            )
+          })}
+          {libre > 0.05 && (
+            <div title={`Libre : ${fmtNum(libre, 1)} kg`} className="h-full flex items-center px-2 min-w-0 text-[11px] text-muted-foreground"
+              style={{ width: `${(libre / total) * 100}%` }}>
+              {libre / total >= 0.18 && <span className="truncate">libre · {fmtNum(libre, 0)} kg</span>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-x-auto scrollbar-transparent">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wide text-primary/80 bg-primary/10 border-b border-primary/10">
+              <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">Client · Cde</th>
+              <th className="px-2.5 py-1.5 font-semibold text-left w-full">Article</th>
+              <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">État</th>
+              <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">kg</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...vivantes, ...reservations.filter((r) => r.etat === 'liberee')].map((r, i) => {
+              const liberee = r.etat === 'liberee'
+              return (
+                <tr key={i} className={cn('border-b border-border/40 last:border-0', liberee && 'text-muted-foreground')}>
+                  <td className="px-2.5 py-2 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5">
+                      {!liberee && <span className={cn('h-2.5 w-2.5 rounded-sm flex-shrink-0', couleur.get(r.idcommande_client))} />}
+                      <span className="truncate max-w-[10rem]">{r.client || '—'}</span>
+                      <Link to={`/clients/commandes?commande=${r.idcommande_client}`} className="text-accent-blue hover:underline tabular-nums">
+                        {r.numero ?? '—'}
+                      </Link>
+                    </span>
+                  </td>
+                  <td className="px-2.5 py-2 whitespace-nowrap">{r.article || '—'}</td>
+                  <td className="px-2.5 py-2 whitespace-nowrap">{etatLabel(r)}</td>
+                  <td className={cn('px-2.5 py-2 whitespace-nowrap text-right tabular-nums', liberee ? 'line-through' : 'font-semibold')}>{fmtNum(r.kg, 1)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/** « Répartir autrement » (Vincent 2026-10-30): per client line, the kg it takes from the line's lots.
+ *  The lots' total stays what the reception placed; a line takes at least what its knitting order
+ *  already took, at most what it reserved; the rest waits on the order (or is released once the line
+ *  is closed). Rows by client délai, the order the reception served them in. */
+function RepartirDialog({ open, ligne, reservations, onClose, onDone }: {
+  open: boolean
+  ligne: LigneCommande
+  reservations: ReservationCommande[]
+  onClose: () => void
+  onDone: () => void
+}) {
+  const clients = useMemo(() => {
+    const m = new Map<number, { r: ReservationCommande; total: number; lot: number; tricotage: number }>()
+    for (const r of reservations) {
+      const e = m.get(r.idligne_commande_client) ?? { r, total: 0, lot: 0, tricotage: 0 }
+      e.total += r.kg
+      if (r.etat === 'lot') e.lot += r.kg
+      if (r.etat === 'consommee') e.tricotage += r.kg
+      m.set(r.idligne_commande_client, e)
+    }
+    return [...m.values()].sort((a, b) => (a.r.delai ?? '99999999').localeCompare(b.r.delai ?? '99999999'))
+  }, [reservations])
+  const surLots = clients.reduce((t, c) => t + c.lot, 0)
+  const [saisie, setSaisie] = useState<Map<number, string>>(new Map())
+  const [ouvert, setOuvert] = useState(false)
+  if (open !== ouvert) {
+    setOuvert(open)
+    if (open) setSaisie(new Map(clients.map((c) => [c.r.idligne_commande_client, String(Math.round((c.lot + c.tricotage) * 100) / 100).replace('.', ',')])))
+  }
+  const kgDe = (id: number) => {
+    const v = Number((saisie.get(id) ?? '').replace(',', '.').replace(/\s/g, ''))
+    return Number.isFinite(v) && v >= 0 ? v : NaN
+  }
+  const place = clients.reduce((t, c) => t + (kgDe(c.r.idligne_commande_client) || 0) - c.tricotage, 0)
+  const ecart = Math.round((place - surLots) * 100) / 100
+  const horsBornes = clients.find((c) => {
+    const v = kgDe(c.r.idligne_commande_client)
+    return !Number.isFinite(v) || v < c.tricotage - 0.005 || v > c.total + 0.005
+  })
+  const mut = useMutation({
+    mutationFn: () => apiFetch(`/commandes-fil/lignes/${ligne.IDref_fil_commande}/repartition`, {
+      method: 'PUT',
+      body: JSON.stringify({ parts: clients.map((c) => ({ idligne_commande_client: c.r.idligne_commande_client, kg_lot: Math.round(kgDe(c.r.idligne_commande_client) * 100) / 100 })) }),
+    }),
+    onSuccess: onDone,
+  })
+  const peutValider = !horsBornes && Math.abs(ecart) <= 0.05 && !mut.isPending
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !mut.isPending) onClose() }}>
+      <DialogContent className="max-w-xl" onClose={mut.isPending ? undefined : onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Scale className="h-5 w-5 text-accent" />Répartir le fil reçu
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <p className="text-xs text-muted-foreground">
+            {fmtNum(surLots, 1)} kg reçus à partager. Ce qu’une commande ne prend pas sur le lot reste à recevoir sur la commande de fil
+            {ligne.etat === 1 ? ' (ligne close : il sera libéré)' : ''}.
+          </p>
+          <div className="rounded-lg border border-border/60 overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wide text-primary/80 bg-primary/10 border-b border-primary/10">
+                  <th className="px-2.5 py-1.5 font-semibold text-left">Client · Cde</th>
+                  <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">Délai</th>
+                  <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">Réservé</th>
+                  <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">Sur le lot</th>
+                  <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">Manque</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clients.map((c) => {
+                  const id = c.r.idligne_commande_client
+                  const v = kgDe(id)
+                  const faux = !Number.isFinite(v) || v < c.tricotage - 0.005 || v > c.total + 0.005
+                  const manque = Number.isFinite(v) ? Math.max(0, c.total - v) : 0
+                  return (
+                    <tr key={id} className="border-b border-border/40 last:border-0">
+                      <td className="px-2.5 py-2">
+                        <span className="block truncate max-w-[12rem]">{c.r.client || '—'}</span>
+                        <span className="text-[11px] text-muted-foreground">Cde {c.r.numero ?? '—'}{c.r.article ? ` · ${c.r.article}` : ''}</span>
+                      </td>
+                      <td className="px-2.5 py-2 whitespace-nowrap tabular-nums">{c.r.delai ? formatHfsqlDate(c.r.delai) : '—'}</td>
+                      <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums">{fmtNum(c.total, 1)}</td>
+                      <td className="px-2.5 py-2 whitespace-nowrap text-right">
+                        <span className="relative inline-block">
+                          <input type="text" inputMode="decimal" value={saisie.get(id) ?? ''} disabled={mut.isPending}
+                            onChange={(e) => setSaisie((prev) => new Map(prev).set(id, e.target.value))}
+                            title={`Entre ${fmtNum(c.tricotage, 1)} et ${fmtNum(c.total, 1)} kg`}
+                            className={cn('w-24 h-8 pl-2 pr-7 text-sm text-right tabular-nums font-semibold rounded-md border bg-white focus:outline-none focus:ring-2 focus:ring-ring',
+                              faux ? 'border-destructive text-destructive' : 'border-input')} />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground pointer-events-none">kg</span>
+                        </span>
+                      </td>
+                      <td className={cn('px-2.5 py-2 whitespace-nowrap text-right tabular-nums', manque > 0.05 ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
+                        {manque > 0.05 ? fmtNum(manque, 1) : '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className={cn('text-xs tabular-nums', Math.abs(ecart) > 0.05 ? 'text-destructive' : 'text-muted-foreground')}>
+            {fmtNum(place, 1)} kg placés sur {fmtNum(surLots, 1)} kg reçus
+            {ecart > 0.05 ? ` : ${fmtNum(ecart, 1)} kg de trop` : ecart < -0.05 ? ` : encore ${fmtNum(-ecart, 1)} kg à placer` : ''}
+          </p>
+          {mut.isError && (
+            <p className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-px flex-shrink-0" />
+              {(mut.error as { body?: { message?: string } })?.body?.message ?? 'La répartition a échoué'}
+            </p>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Annuler</Button>
+          <Button onClick={() => mut.mutate()} disabled={!peutValider}>
+            {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
+            Valider la répartition
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Closing a reception (the order, or one line) while client lines still wait for yarn on it: their
+ *  reservations are released (« Libéré, non livré ») and those lines must find their yarn elsewhere. */
+function ClotureReceptionDialog({ open, titre, reservations, isPending, onCancel, onConfirm }: {
+  open: boolean
+  titre: string
+  reservations: ReservationCommande[]
+  isPending: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const kg = reservations.reduce((t, r) => t + r.kg, 0)
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !isPending) onCancel() }}>
+      <DialogContent className="max-w-md" onClose={isPending ? undefined : onCancel}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-accent" />{titre}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900">
+            <span className="font-semibold tabular-nums">{fmtNum(kg, 1)} kg</span> réservés pour {commandesClientes(reservations)}{' '}
+            ne sont pas encore reçus : ils seront libérés, et ces lignes devront trouver leur fil ailleurs.
+          </div>
+          <p className="text-[11px] text-muted-foreground">Les lots déjà reçus gardent leurs réservations.</p>
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onCancel} disabled={isPending}>Annuler</Button>
+          <Button onClick={onConfirm} disabled={isPending}>
+            {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
             Clôturer
           </Button>
         </DialogFooter>

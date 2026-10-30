@@ -132,7 +132,7 @@ export function SoumissionLotPicker({
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
                     {lot.ref_malterre}
-                    {lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}
+                    {lot.coloris_reference ? ` - ${lot.coloris_reference}` : ''}
                   </div>
                   {lot.numero > 0 && (
                     <div className="text-xs mt-1">
@@ -176,7 +176,7 @@ export function SoumissionLotPicker({
                         </div>
                         <div className="text-xs text-muted-foreground flex-shrink-0">
                           {lot.ref_malterre}
-                          {lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}
+                          {lot.coloris_reference ? ` - ${lot.coloris_reference}` : ''}
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground mt-1">

@@ -358,7 +358,12 @@ function FilFormeZone({ commandeId, ligneId, soldee, forme }: { commandeId: numb
   )
 }
 
-/** The « Fil » tab: yarn reserved on supplier orders (top), the supplier orders (bottom). */
+/** The « Fil » tab (Vincent 2026-10-30): yarn is reserved on supplier ORDERS, not on physical matter,
+ *  so matter and orders are one list. Per yarn of the recipe a band with what the line holds on order
+ *  against its need (what the stock leaves), then every supplier order of that yarn the line can use,
+ *  first to arrive on top (« Pour la ligne » shows which ones it uses). A click on a row reserves
+ *  what is still missing (within what is free there, no kilos to type) or releases what the line holds
+ *  there: the API's per-source route, same rules as the selector (need + 10 % cap). */
 export function FilLigneTab({ commandeId, ligneId, soldee, planifier }: {
   commandeId: number
   ligneId: number
@@ -366,57 +371,174 @@ export function FilLigneTab({ commandeId, ligneId, soldee, planifier }: {
   /** « Planifier » (the line's launch date): ordering the yarn can be the next step to hold */
   planifier?: ReactNode
 }) {
-  const { data } = useFilLigne(commandeId, ligneId)
-  const commandes = (data?.yarns ?? []).flatMap((y) => y.commandes.filter((c) => c.pour_ligne > 0).map((c) => ({ yarn: y, c })))
+  const { data, isLoading, isError } = useFilLigne(commandeId, ligneId)
+  const refresh = useRafraichirFil(commandeId, ligneId)
+  const [enCours, setEnCours] = useState<number | null>(null)
+  const [erreur, setErreur] = useState<string | null>(null)
   const aujourdhui = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-  return (
-    <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
-      <FilFormeZone commandeId={commandeId} ligneId={ligneId} soldee={soldee} forme="commande" />
-      <ZoneLigne kind="commandes" titre="Commandes de fil" actions={planifier ?? undefined}
-        aide="Le fil se commande dans Fils › Commandes, puis se réserve sur la ligne (zone du haut)">
-        {commandes.length === 0 ? (
-          // Same empty state as the Tricotage / Ennoblissement order tables (SupplyTable).
-          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-            <BobineIcon className="h-8 w-8 mb-2 opacity-50" />
-            <p className="text-sm font-medium">Aucune commande de fil en cours</p>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-x-auto scrollbar-transparent">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-[10px] uppercase tracking-wide text-primary/80 bg-primary/10 border-b border-primary/10">
-                  <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">Cde</th>
-                  <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">Fournisseur</th>
-                  <th className="px-2.5 py-1.5 font-semibold text-left w-full">Fil</th>
-                  <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">Prévue</th>
-                  <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">Reçu</th>
-                  <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">Pour la ligne</th>
-                </tr>
-              </thead>
-              <tbody>
-                {commandes.map(({ yarn, c }) => {
-                  // Late = the supplier's date has passed (or none given): chasing it is ours (red).
-                  const enRetard = !c.date_livraison || c.date_livraison < aujourdhui
+  const yarns = data?.yarns ?? []
+  const applicable = !!data?.applicable && yarns.length > 0
+
+  // On order, the need is what the stock leaves (the Tricotage tab holds the lots).
+  const besoinCommande = (y: FilYarn) => Math.max(0, besoinTotal(y) - enStock(y))
+  const aReserverSur = (y: FilYarn, c: CommandeFilLigne) =>
+    Math.max(0, Math.min(c.libre, besoinCommande(y) - enCommande(y), y.plafond_kg - enStock(y) - enCommande(y)))
+
+  const basculer = async (y: FilYarn, c: CommandeFilLigne) => {
+    const kg = c.pour_ligne > 0 ? 0 : Math.round(aReserverSur(y, c) * 100) / 100
+    if (c.pour_ligne <= 0 && kg <= 0.05) return
+    setEnCours(c.IDref_fil_commande)
+    setErreur(null)
+    try {
+      await apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/fil/reservations/source`, {
+        method: 'PUT',
+        body: JSON.stringify({ IDref_fil_commande: c.IDref_fil_commande, kg }),
+      })
+    } catch (e) {
+      setErreur((e as { body?: { message?: string } })?.body?.message ?? 'La réservation a échoué')
+    } finally {
+      refresh()
+      setEnCours(null)
+    }
+  }
+
+  const liberees = (data?.reservations ?? []).filter((r) => r.etat === 'liberee')
+
+  let contenu: ReactNode
+  if (isLoading) contenu = <Chargement />
+  else if (isError || !data) contenu = <ErreurChargement />
+  else if (!applicable) contenu = <PasDeFil />
+  else contenu = (
+    <>
+      {erreur && (
+        <p className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5 mt-px flex-shrink-0" /><span className="break-words">{erreur}</span>
+        </p>
+      )}
+      {/* One table per yarn of the recipe (Vincent 2026-10-30): the yarn and what the line holds of it
+          as the table's title, its usable supplier orders below. */}
+      <div className="space-y-3">
+          {yarns.map((y) => {
+            const besoin = besoinCommande(y)
+            const tient = enCommande(y)
+            const couvert = tient >= besoin - 0.05
+            const enTrop = besoin <= 0.05 && tient > 0.05
+            const pct = Math.round(y.pourcentage * 10) / 10
+            const lignes = y.commandes
+              .filter((c) => c.libre > 0.05 || c.pour_ligne > 0)
+              // First to arrive on top, rows never move on a click (Vincent 2026-10-30); « sans date » last.
+              .sort((a, b) => (a.date_livraison ?? '99999999').localeCompare(b.date_livraison ?? '99999999')
+                || a.IDcommande_fil - b.IDcommande_fil)
+            return (
+              <section key={`${y.IDref_fil}:${y.IDcolori_fil}`} className="space-y-1.5">
+                    <div className="flex items-center gap-2 px-1 text-xs">
+                      <BobineIcon className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
+                      <span className="min-w-0 truncate font-semibold">{nomDuFil(y)}</span>
+                      <span className="flex-shrink-0 text-muted-foreground">· {fmtNum(pct, Number.isInteger(pct) ? 0 : 1)} %</span>
+                      <span className={cn('ml-auto flex-shrink-0 inline-flex items-center gap-1 tabular-nums',
+                        enTrop ? 'text-amber-700 font-medium' : couvert ? 'text-green-700 font-medium' : 'text-muted-foreground')}
+                        title={enTrop ? 'La ligne n’a plus besoin de ce fil en commande : cliquez la commande pour le libérer' : undefined}>
+                        {couvert && !enTrop && <CheckCircle2 className="h-3.5 w-3.5" />}
+                        {besoin <= 0.05 && tient <= 0.05 ? 'Couvert par le stock'
+                          : <>En commande {fmtNum(tient, 1)} /{' '}
+                            <BesoinFilTooltip yarn={y} data={data} kgAffecte={data.kg_affecte ?? 0}>
+                              <span className="underline decoration-dotted underline-offset-2 cursor-help">{fmtNum(besoin, 1)} kg</span>
+                            </BesoinFilTooltip>
+                            {enTrop && ' · en trop'}</>}
+                      </span>
+                    </div>
+                <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-x-auto scrollbar-transparent">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wide text-primary/80 bg-primary/10 border-b border-primary/10">
+                      <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">Cde</th>
+                      <th className="px-2.5 py-1.5 font-semibold text-left w-full">Fournisseur</th>
+                      <th className="px-2.5 py-1.5 font-semibold text-left whitespace-nowrap">Prévue</th>
+                      <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">Libre</th>
+                      <th className="px-2.5 py-1.5 font-semibold text-right whitespace-nowrap">Pour la ligne</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                {lignes.length === 0 ? (
+                  <tr className="border-b border-border/40 last:border-0">
+                    <td colSpan={5} className="px-2.5 py-2.5 text-muted-foreground italic">
+                      Aucune commande en cours de ce fil : commandez-le dans Fils › Commandes.
+                    </td>
+                  </tr>
+                ) : lignes.map((c) => {
+                  const utilisee = c.pour_ligne > 0
+                  const kg = aReserverSur(y, c)
+                  const cliquable = !soldee && enCours === null && (utilisee || kg > 0.05)
+                  // Late = the supplier's date has passed (or none given): chasing it is ours, but only
+                  // when the line waits on it (red = a Malterre action).
+                  const enRetard = utilisee && (!c.date_livraison || c.date_livraison < aujourdhui)
+                  const titre = soldee ? undefined
+                    : utilisee ? `Cliquer pour libérer les ${fmtNum(c.pour_ligne, 1)} kg réservés sur cette commande`
+                    : kg > 0.05 ? `Cliquer pour réserver ${fmtNum(kg, 1)} kg sur cette commande`
+                    : 'Le fil de la ligne est déjà couvert'
                   return (
-                    <tr key={c.IDref_fil_commande} className="border-b border-border/40 last:border-0">
-                      <td className="px-2.5 py-2 whitespace-nowrap tabular-nums font-medium">{c.IDcommande_fil}</td>
+                    <tr key={c.IDref_fil_commande} title={titre}
+                      role={cliquable ? 'button' : undefined} tabIndex={cliquable ? 0 : undefined}
+                      onClick={cliquable ? () => basculer(y, c) : undefined}
+                      onKeyDown={cliquable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); basculer(y, c) } } : undefined}
+                      className={cn('border-b border-border/40 last:border-0 select-none transition-colors',
+                        utilisee ? 'bg-accent/[0.07]' : 'text-muted-foreground',
+                        cliquable && 'cursor-pointer hover:bg-accent/10')}>
+                      <td className={cn('px-2.5 py-2 whitespace-nowrap tabular-nums', utilisee && 'font-medium text-foreground')}>{c.IDcommande_fil}</td>
                       <td className="px-2.5 py-2 whitespace-nowrap">{c.fournisseur || '—'}</td>
-                      <td className="px-2.5 py-2 whitespace-nowrap">{nomDuFil(yarn)}</td>
-                      <td className={cn('px-2.5 py-2 whitespace-nowrap tabular-nums', enRetard ? 'text-red-600 font-medium' : 'text-muted-foreground')}
+                      <td className={cn('px-2.5 py-2 whitespace-nowrap tabular-nums', enRetard && 'text-red-600 font-medium')}
                         title={enRetard ? 'Date du fournisseur dépassée ou absente : le relancer' : undefined}>
                         {c.date_livraison ? formatHfsqlDate(c.date_livraison) : 'sans date'}
                       </td>
-                      <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums">
-                        {fmtNum(c.recu, 1)} / {fmtNum(c.quantite, 1)} kg
+                      <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums"
+                        title={`${fmtNum(c.quantite, 1)} kg commandés, ${fmtNum(c.recu, 1)} kg reçus`}>
+                        {fmtNum(c.libre, 1)} kg
                       </td>
-                      <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums font-bold">{fmtNum(c.pour_ligne, 1)} kg</td>
+                      <td className={cn('px-2.5 py-2 whitespace-nowrap text-right tabular-nums', utilisee && 'font-bold text-foreground')}>
+                        {enCours === c.IDref_fil_commande ? <Loader2 className="inline h-3.5 w-3.5 animate-spin text-accent" />
+                          : utilisee ? `${fmtNum(c.pour_ligne, 1)} kg` : '—'}
+                      </td>
                     </tr>
                   )
                 })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                  </tbody>
+                </table>
+                </div>
+              </section>
+            )
+          })}
+      </div>
+      {liberees.length > 0 && (
+        <div className="mt-2 rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+          <table className="w-full text-xs">
+            <tbody>
+              <tr className="text-[10px] uppercase tracking-wide text-primary/80 bg-primary/10 border-b border-primary/10">
+                <td colSpan={3} className="px-2.5 py-1.5 font-semibold">Libéré, non livré</td>
+              </tr>
+              {liberees.map((r) => {
+                const meta = ETAT_FIGE[r.etat]!
+                const Icon = meta.icon
+                const y = yarns.find((x) => x.IDref_fil === r.IDref_fil && x.IDcolori_fil === r.IDcolori_fil)
+                return (
+                  <tr key={r.id} className="border-b border-border/40 last:border-0 text-muted-foreground">
+                    <td className="px-2.5 py-2 whitespace-nowrap"><span className="inline-flex items-center gap-1.5"><Icon className="h-3.5 w-3.5" />{meta.label(r)}</span></td>
+                    <td className="px-2.5 py-2 w-full truncate">{y ? nomDuFil(y) : ''}</td>
+                    <td className="px-2.5 py-2 whitespace-nowrap text-right tabular-nums line-through">{fmtNum(r.kg, 1)} kg</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  )
+
+  return (
+    <div className="flex-1 overflow-y-auto p-3 scrollbar-transparent">
+      <ZoneLigne kind="commandes" seule titre="Commandes de fil" actions={planifier ?? undefined}
+        aide="Le fil se commande dans Fils › Commandes ; un clic sur une commande y réserve ce qui manque à la ligne, ou libère ce qu’elle y tient">
+        {contenu}
       </ZoneLigne>
     </div>
   )
@@ -589,7 +711,7 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">{F.selecteur}</h2>
             <p className="text-xs text-white/70 truncate">
-              {data.ecru_ref_label ? `${data.ecru_ref_label}${data.ecru_coloris_label ? ` /${data.ecru_coloris_label}` : ''}` : 'Tombé de métier'}
+              {data.ecru_ref_label ? `${data.ecru_ref_label}${data.ecru_coloris_label ? ` - ${data.ecru_coloris_label}` : ''}` : 'Tombé de métier'}
               {` · ${F.selecteurSous}`}
             </p>
           </div>

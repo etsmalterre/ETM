@@ -14,8 +14,10 @@ import { ClipboardList, PackageCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
-export function ZoneLigne({ kind, titre, aide, resume, actions, children }: {
+export function ZoneLigne({ kind, titre, aide, resume, actions, seule, children }: {
   kind: 'matiere' | 'commandes'
+  /** the tab's only zone (Fil, 2026-10-30): no divider above it */
+  seule?: boolean
   titre: string
   /** hover of the title: how the zone works, read once (not repeated in the empty state) */
   aide?: string
@@ -27,7 +29,7 @@ export function ZoneLigne({ kind, titre, aide, resume, actions, children }: {
 }) {
   const Icon: ComponentType<{ className?: string }> = kind === 'matiere' ? PackageCheck : ClipboardList
   return (
-    <section className={cn(kind === 'commandes' && 'pt-3 border-t border-border/60')}>
+    <section className={cn(kind === 'commandes' && !seule && 'pt-3 border-t border-border/60')}>
       <div className="flex items-center gap-2 mb-1.5 min-h-6">
         <Icon className="h-3.5 w-3.5 flex-shrink-0 text-primary/70" />
         <h3 title={aide} className="flex-shrink-0 text-[10px] uppercase tracking-wide text-primary/70 font-semibold">{titre}</h3>

@@ -633,7 +633,7 @@ function DetailMain({ fournisseur, isLoading, hasSelection, isEditing, fournisse
                       <div key={l.IDref_fil_commande} className="flex items-center justify-between text-[11px] text-muted-foreground">
                         <span className="truncate max-w-[220px]">
                           {l.ref_fil || '—'}
-                          {l.colori_reference ? ` / ${l.colori_reference}` : ''}
+                          {l.colori_reference ? ` - ${l.colori_reference}` : ''}
                         </span>
                         <div className="flex items-center gap-3 flex-shrink-0">
                           {l.quantite != null && <span>{Number(l.quantite).toFixed(1)} kg</span>}

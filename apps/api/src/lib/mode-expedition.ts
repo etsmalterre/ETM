@@ -1,54 +1,46 @@
-// Clients › Commandes: how an order leaves (Vincent 2026-10-28, doctrine des délais §5 bis, migration 0044).
-// Two simple questions in Info › Expédition, for the whole order (no line has its own mode):
-//   « Départ »  who triggers the shipment — des_que_prete (us, as soon as a line is ready),
-//               date_client (the date the client asked for, commande_client.date_expedition_client),
-//               sur_appel (the client calls)
-//   « Expédier toutes les lignes ensemble »  (expedition_groupee) combines with any départ: a ready
-//               line waits while another is still in production, the order leaves around the latest D.
-// Every line carries ONE date, « Prête le » (date_livraison, the engagement).
+// Clients › Commandes: how an order leaves (doctrine des délais §5 bis; revised by Vincent 2026-10-30).
+// The ORDER answers one question, Info › Expédition: « Expédier toutes les lignes ensemble »
+// (expedition_groupee) — ticked, one date is written on every line still to ship and a ready line waits
+// for the others. The DÉPART is each LINE's (ligne_commande_client.mode_livraison): dès que prête (0) or
+// sur appel du client (2), read by departLigne(). Every line carries ONE date, « Prête le »
+// (date_livraison, the engagement).
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { versDatePg } from './lancement-ligne.js'
 import { estUnReport, type Imputable } from './report-ligne-client.js'
 
-export const DEPARTS = ['des_que_prete', 'date_client', 'sur_appel'] as const
-export type Depart = (typeof DEPARTS)[number]
+/** A line's départ: the client calls for it, or it leaves as soon as it is ready (every other stored value). */
+export const DEPARTS_LIGNE = ['des_que_prete', 'sur_appel'] as const
+export type DepartLigne = (typeof DEPARTS_LIGNE)[number]
+export function departLigne(v: unknown): DepartLigne {
+  return Number(v) === 2 ? 'sur_appel' : 'des_que_prete'
+}
+/** The stored value (ligne_commande_client.mode_livraison, the legacy scale). */
+export function codeDepartLigne(d: DepartLigne): number {
+  return d === 'sur_appel' ? 2 : 0
+}
 
 export interface Expedition {
-  depart: Depart
   groupee: boolean
-  /** YYYYMMDD, départ « date_client » only (null = not given yet) */
-  dateClient: string | null
 }
 
-export const EXPEDITION_DEFAUT: Expedition = { depart: 'des_que_prete', groupee: false, dateClient: null }
-
-export function departDe(v: unknown): Depart {
-  return DEPARTS[Number(v)] ?? 'des_que_prete'
-}
+export const EXPEDITION_DEFAUT: Expedition = { groupee: false }
 
 /** Each order's expédition (absent ids: the default). */
 export async function expeditions(ids: readonly number[]): Promise<Map<number, Expedition>> {
   const u = [...new Set(ids.filter((x) => x > 0))]
   const out = new Map<number, Expedition>()
   if (u.length === 0) return out
-  const rows = await mpsPg().unsafe<{ id: number; m: number; g: boolean; d: string | null }[]>(
-    `SELECT idcommande_client AS id, mode_expedition AS m, expedition_groupee AS g, to_char(date_expedition_client, 'YYYYMMDD') AS d
-       FROM commande_client WHERE idcommande_client = ANY($1::bigint[])`, [u as any])
-  for (const r of rows) {
-    const depart = departDe(r.m)
-    out.set(Number(r.id), { depart, groupee: !!r.g, dateClient: depart === 'date_client' ? r.d : null })
-  }
+  const rows = await mpsPg().unsafe<{ id: number; g: boolean }[]>(
+    `SELECT idcommande_client AS id, expedition_groupee AS g FROM commande_client WHERE idcommande_client = ANY($1::bigint[])`, [u as any])
+  for (const r of rows) out.set(Number(r.id), { groupee: !!r.g })
   return out
 }
 
-/** Writes the order's expédition (only the fields given). */
-export async function fixerExpedition(commandeId: number, p: { depart?: Depart; groupee?: boolean; dateClient?: string | null }): Promise<void> {
-  const sql = mpsPg()
-  if (p.depart !== undefined) await sql`UPDATE commande_client SET mode_expedition = ${DEPARTS.indexOf(p.depart)} WHERE idcommande_client = ${commandeId}`
-  if (p.groupee !== undefined) await sql`UPDATE commande_client SET expedition_groupee = ${p.groupee} WHERE idcommande_client = ${commandeId}`
-  if (p.dateClient !== undefined) await sql`UPDATE commande_client SET date_expedition_client = ${versDatePg(p.dateClient)}::date WHERE idcommande_client = ${commandeId}`
+/** Writes the order's « ensemble ». */
+export async function fixerExpedition(commandeId: number, p: { groupee: boolean }): Promise<void> {
+  await mpsPg()`UPDATE commande_client SET expedition_groupee = ${p.groupee} WHERE idcommande_client = ${commandeId}`
 }
 
 /** One « Prête le » written on several lines of the order at once. A line that already had another D is

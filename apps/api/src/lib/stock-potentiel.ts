@@ -186,7 +186,7 @@ export function calculerStockPotentiel(input: StockPotentielInput): LignePotenti
   const ecruLabel = (idrefEcru: number, coloris: string | null) => {
     const ref = input.refsEcru.get(idrefEcru)
     if (!ref) return null
-    return coloris ? `${ref} · ${coloris}` : ref
+    return coloris ? `${ref} - ${coloris}` : ref
   }
 
   // ── Dispo: free fini rolls per (reference, coloris) ──
