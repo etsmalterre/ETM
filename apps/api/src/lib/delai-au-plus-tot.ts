@@ -6,6 +6,9 @@
 //   écru still to knit (orders)    → knitter, then dyer
 //   yarn reserved                  → from the supplier's date (or today if in stock), knitter, then dyer
 //   nothing reserved               → a yarn estimate, knitter, then dyer
+// A line whose matter covers SEUIL_EXPEDIE (90 %) of it is served by that matter: the uncovered rest is
+// ignored, as shipping counts the line done at the same threshold (AGAPE 3892: 1,1 Ml short of 214 Ml
+// put a whole yarn + knitting chain on the line, six weeks later).
 // The line's earliest date = the latest portion + the Malterre reserve (doctrine §4, 1.5 working weeks),
 // added only when a partner step is left. An écru line has no dyer step. The knitter's band reads the kg
 // still to knit on the whole line (one knitting order). Pure, pinned by delai-au-plus-tot.test.ts.
@@ -13,6 +16,7 @@
 import { ajouterJoursOuvres, joursOuvresEntre, type Periode } from './jours-ouvres.js'
 import { MARGE_TRICOTEUR_MAX_JOURS, RESERVE_MALTERRE_JOURS, fermetures, standards, tricotageJours, type StandardsSst } from './delais-standards.js'
 import { MATEL_IDSOUS_TRAITANT } from './pricing-sst.js'
+import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 
 /** v1: no measured yarn délai yet (lib/fil-appro.ts later): 4 working weeks. */
 export const FIL_ESTIME_JOURS = 20
@@ -94,7 +98,7 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   const ecru = prendre(e.ecru)
   const tricotage = prendre(e.tricotage)
   const fil = prendre(e.fil)
-  const rien = reste
+  const rien = reste <= pos(e.quantite) * (1 - SEUIL_EXPEDIE) + 1e-9 ? 0 : reste
 
   // Knitter's band: the kg still to knit on the line; unknown conversion = the longest band (prudent).
   const aTricoterKg = e.kgParUnite != null && e.kgParUnite > 0 ? (tricotage + fil + rien) * e.kgParUnite : Infinity

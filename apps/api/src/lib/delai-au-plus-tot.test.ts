@@ -24,6 +24,12 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
     expect(d.etapes.map((x) => x.libelle)).toEqual(['Ennoblissement', 'Réserve Malterre'])
     expect(d.date).toBe('20261204') // 15 j → 24/11 (11/11 off), + 8 j → 04/12
   })
+  it('matter covering 90 % of the line serves it: the rest is ignored', () => {
+    const d = delaiAuPlusTot(base({ ecru: 995 }))!
+    expect(d.sansMatiere).toBe(false)
+    expect(d.etapes.map((x) => x.libelle)).toEqual(['Ennoblissement', 'Réserve Malterre'])
+    expect(delaiAuPlusTot(base({ ecru: 899 }))!.sansMatiere).toBe(true)
+  })
   it('all fini rolls: ready today, no reserve', () => {
     expect(delaiAuPlusTot(base({ fini: 1000 }))).toEqual({ date: '20261102', etapes: [], sansMatiere: false })
   })
