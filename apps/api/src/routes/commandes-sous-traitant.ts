@@ -963,6 +963,8 @@ const ETAPE_KEYWORDS_ENNOBLISSEMENT: Array<[string, { commande?: EtapeCommande; 
   ['teinture', { commande: 'en_teinture' }],
   ['en reception', { commande: 'en_reception' }],
   ['reception', { commande: 'en_reception' }],
+  // Everything back, lots still open (2026-10-30).
+  ['en controle', { commande: 'en_controle' }],
   ['a cloturer', { commande: 'a_cloturer' }],
   ['cloturer', { commande: 'a_cloturer' }],
   ['terminee', { commande: 'terminee' }],

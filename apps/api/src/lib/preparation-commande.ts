@@ -64,29 +64,3 @@ export async function validerCommande(id: number, parId: number, par: string | n
     return { ok: true as const }
   })
 }
-
-/** Why the order can no longer go back to « En préparation » (something left or was launched), or null. */
-export async function blocageRetourPreparation(id: number): Promise<string | null> {
-  const sql = mpsPg()
-  const [sst] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM commande_sous_traitant WHERE idcommande_client = ${id}`
-  if (sst.n > 0) return 'une commande partenaire a été passée depuis cette commande'
-  const [trico] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM affectation_cmd_tricotage a JOIN ligne_commande_client l ON l.idligne_commande_client = a.idligne_commande_client
-     WHERE l.idcommande_client = ${id}`
-  if (trico.n > 0) return 'une part de commande de tricotage lui est affectée'
-  const [exp] = await sql<{ n: number }[]>`
-    SELECT (SELECT count(*) FROM stock_fini f JOIN ligne_commande_client l ON l.idligne_commande_client = f.idligne_commande_client
-             WHERE l.idcommande_client = ${id} AND f.idligne_expedition > 0)
-         + (SELECT count(*) FROM stock_ecru e JOIN ligne_commande_client l ON l.idligne_commande_client = e.idligne_commande_client
-             WHERE l.idcommande_client = ${id} AND e.idligne_expedition_etm > 0) AS n`
-  if (Number(exp.n) > 0) return 'des pièces ont été expédiées'
-  return null
-}
-
-/** « Repasser en préparation »: only while nothing was launched nor shipped; engagements given stay. */
-export async function repasserEnPreparation(id: number): Promise<{ ok: true } | { ok: false; message: string }> {
-  const blocage = await blocageRetourPreparation(id)
-  if (blocage) return { ok: false, message: `Impossible de repasser en préparation : ${blocage}.` }
-  await mettreEnPreparation(id)
-  return { ok: true }
-}

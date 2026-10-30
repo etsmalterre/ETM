@@ -28,6 +28,7 @@ import { faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClien
 import { etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE } from '../lib/etude-ligne-client.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { LIBELLE_ETAPE_COMMANDE, etatCommande, lireCommandesEnnoblissement } from '../lib/cycle-ennoblissement.js'
 import {
   reservationsDesLignes, lignesCommandeFil, fixerReservation,
   etatReservation, compteDansReserve, RefusReservation, plafondReservation,
@@ -67,7 +68,7 @@ import { computeDateEcheance, loadEcheanceRule } from './factures.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { fetchDefectsByEcru, defautSummary, type DefautQualite } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
-import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
+import { consumedEcruIds, finiIdsByComponentEcru, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { kgATricoterParLigne } from '../lib/tricotage-restant.js'
 import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow } from '../lib/ennoblissement-supply.js'
 import {
@@ -76,7 +77,7 @@ import {
 import { adresseADefinirRow, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { appliquerDateLignes, codeDepartLigne, DEPARTS_LIGNE, departLigne, EXPEDITION_DEFAUT, expeditions, fixerExpedition, type Expedition } from '../lib/mode-expedition.js'
-import { blocageRetourPreparation, commandesEnPreparation, estEnPreparation, mettreEnPreparation, refuseSiEnPreparation, repasserEnPreparation, validation, validerCommande } from '../lib/preparation-commande.js'
+import { commandesEnPreparation, estEnPreparation, mettreEnPreparation, refuseSiEnPreparation, validation, validerCommande } from '../lib/preparation-commande.js'
 import { enregistrerReport, estUnReport, IMPUTABLES, reportsLigne } from '../lib/report-ligne-client.js'
 import { ETAPES_LANCEMENT, datesLancement, fixerDateLancement, historiqueLancement, leverAuLancement, versDatePg } from '../lib/lancement-ligne.js'
 import { besoinsParStade, type StadesLigne } from '../lib/besoin-stades.js'
@@ -289,6 +290,14 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
     datesLancement(lignes.map((l) => Number(l.IDligne_commande_client) || 0)),
     expeditions(lignes.map((l) => Number(l.IDcommande_client) || 0)),
   ])
+  // A launch date planned too late is red now (lib/urgence-commande-client.ts).
+  const pretes = await preteSiLanceLe(lignes
+    .filter((l) => faits.get(Number(l.IDligne_commande_client)) && statutLigneClient(faits.get(Number(l.IDligne_commande_client))!, '').etat === 'a_lancer')
+    .map((l) => ({
+      id: Number(l.IDligne_commande_client) || 0, typeKind: Number(l.type_kind) || 0, refId: Number(l.IDreference) || 0,
+      coloriId: Number(l.IDcolori) || 0, unite: Number(l.unite) || 0, quantite: Number(l.quantite) || 0,
+      lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date,
+    })))
   const parCommande = new Map<number, LigneUrgence[]>()
   for (const l of lignes) {
     const f = faits.get(Number(l.IDligne_commande_client))
@@ -305,13 +314,14 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       filAttenduLe: filAttenduLe(f),
       lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
       lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
+      preteSiLanceLe: pretes.get(Number(l.IDligne_commande_client)) ?? null,
     })
     parCommande.set(cid, arr)
   }
   const today = new Date()
   for (const [cid, ls] of parCommande) {
     // Pill and tags show « planifiée »; the colour reads the computed état + its launch date.
-    const affiches = ls.map((x) => etatAffiche(x.etat, x.typeKind, x.lancementLe, today))
+    const affiches = ls.map((x) => etatAffiche(x.etat, x.typeKind, x.lancementLe, today, x.etude))
     const restantes = ls.filter((x) => x.etat !== 'expediee' && x.etat !== 'soldee')
     out.set(cid, {
       urgence: urgenceCommande(ls, today),
@@ -1729,6 +1739,12 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       const prix = Number(l.prix) || 0
       const v1 = Number(l.IDVariation1) || 0
       const v2 = Number(l.IDVariation2) || 0
+      // Launched on its planned date, ready on… (a planning too late is red now, lib/urgence-commande-client.ts).
+      const lance = lancements.get(Number(l.IDligne_commande_client))?.date
+      const preteSiLance = partenaires && statut?.etat === 'a_lancer' && lance && lance > today
+        ? auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
+          agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, lance)?.date ?? null
+        : null
       return {
         IDligne_commande_client: Number(l.IDligne_commande_client),
         IDcommande_client: Number(l.IDcommande_client),
@@ -1751,6 +1767,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         // The launch date of the next step (lib/lancement-ligne.ts): holds a line « à lancer » until then.
         date_lancement: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
         etape_lancement: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
+        /** the earliest ready date if launched on date_lancement (YYYYMMDD), null without a date to come */
+        prete_si_lance_le: preteSiLance,
         commentaire: l.commentaire ?? null,
         ref_label: resolved.label || null,
         ref_kind: resolved.kind,
@@ -1793,7 +1811,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         // Shown état: « planifiée » while its launch date is to come (etatAffiche); the colour below
         // still reads the computed état + the date.
         statut: statut && !soldee
-          ? { ...statut, etat: etatAffiche(statut.etat, typeKind, lancements.get(Number(l.IDligne_commande_client))?.date, new Date()) }
+          ? { ...statut, etat: etatAffiche(statut.etat, typeKind, lancements.get(Number(l.IDligne_commande_client))?.date, new Date(), etudeUrgence(etudeId, colId, etudes)) }
           : statut,
         // The line's own colour on the list's rule (closed order: neutral), drives the délai's tint.
         urgence: statut && !soldee
@@ -1808,6 +1826,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             filAttenduLe: f ? filAttenduLe(f) : null,
             lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
             lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
+            preteSiLanceLe: preteSiLance,
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -1835,7 +1854,6 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
     // « En préparation » until « Valider la commande » (lib/preparation-commande.ts, doctrine des délais §5 ter).
     const [enPrep, valid] = await Promise.all([commandesEnPreparation([id]), validation(id)])
     const enPreparation = enPrep.has(id)
-    const retourBloque = enPreparation ? null : await blocageRetourPreparation(id)
 
     res.json({
       IDcommande_client: id,
@@ -1844,8 +1862,6 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       en_preparation: enPreparation,
       validee_le: enPreparation ? null : valid.validee_le,
       validee_par: enPreparation ? null : valid.validee_par,
-      /** why it cannot go back to « En préparation » (null = it can) */
-      retour_preparation_bloque: retourBloque,
       client_fiche: clientFiche,
       // Days after the délai before a ready « sur appel » line turns red (client's own or 120).
       relance_sur_appel: relanceAppelDe(ficheRows[0]?.relance_sur_appel),
@@ -2025,7 +2041,7 @@ commandesClientRouter.put('/:id', async (req: Request, res: Response) => {
   }
 })
 
-// « Valider la commande » / « Repasser en préparation » (doctrine des délais §5 ter, lib/preparation-commande.ts).
+// « Valider la commande », one way: no road back to « En préparation » (doctrine des délais §5 ter, lib/preparation-commande.ts).
 commandesClientRouter.post('/:id/valider', async (req: Request, res: Response) => {
   try {
     if (!(await requireEditCommandes(req, res))) return
@@ -2046,22 +2062,6 @@ commandesClientRouter.post('/:id/valider', async (req: Request, res: Response) =
     res.json({ ok: true })
   } catch (err) {
     console.error('Error validating commande-client:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-commandesClientRouter.post('/:id/repasser-en-preparation', async (req: Request, res: Response) => {
-  try {
-    if (!(await requireEditCommandes(req, res))) return
-    const id = parseInt(req.params.id, 10)
-    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
-    if (await estEnPreparation(id)) { res.json({ ok: true }); return }
-    const r = await repasserEnPreparation(id)
-    if (!r.ok) { res.status(409).json({ error: 'retour_impossible', message: r.message }); return }
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('Error moving commande-client back to préparation:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -2939,7 +2939,7 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
       poids: Number(r.poids) || 0,
       metrage: Number(r.metrage) || 0,
       coloris_reference: colNames.get(Number(r.IDcolori_ecru)) ?? null,
-      magasin_nom: magNames.get(Number(r.IDmagasin)) ?? null,
+      magasin_nom: Number(r.IDmagasin) > 0 ? (magNames.get(Number(r.IDmagasin)) ?? null) : 'Malterre',
       second_choix: Number(r.second_choix) || 0,
       observations: r.observations ?? null,
       observation_sst: null,
@@ -2987,7 +2987,7 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
     poids: Number(r.poids) || 0,
     metrage: Number(r.metrage) || 0,
     coloris_reference: colNames.get(Number(r.IDColoris)) ?? null,
-    magasin_nom: magNames.get(Number(r.IDmagasin)) ?? null,
+    magasin_nom: Number(r.IDmagasin) > 0 ? (magNames.get(Number(r.IDmagasin)) ?? null) : 'Malterre',
     second_choix: Number(r.second_choix) || 0,
     observations: r.observations ?? null,
     observation_sst: r.observation_sst ?? null,
@@ -3181,15 +3181,19 @@ async function buildEnnoblissement(finiRefId: number, rendement: number, coloriI
     ;({ affKg, dispoKg } = ennoSupplyBuckets(shaped, ligneId, consumed))
   }
   const sstNames = await resolveMagasinNames(lines.map((l: any) => Number(l.sstid)))
+  // The order's step, as Sous-traitants › Ennoblissement computes it (lib/cycle-ennoblissement.ts) —
+  // never the legacy line sstatut, which said « En cours » on an order in réception (9090, 2026-10-30).
+  const faits = await lireCommandesEnnoblissement([...new Set(lines.map((l: any) => Number(l.cid)))])
   return lines.map((l: any) => {
     const lid = Number(l.lid)
+    const f = faits.get(Number(l.cid))
     return {
       id: lid,
       commande_id: Number(l.cid),
       date_commande: l.dc ?? null,
       sous_traitant_nom: sstNames.get(Number(l.sstid)) ?? null,
       date_livraison: l.dl ?? null,
-      etat_label: sstatutLabel(l.st),
+      etat_label: f ? LIBELLE_ETAPE_COMMANDE[etatCommande(f).etape] : sstatutLabel(l.st),
       qte_disponible: round2c((dispoKg.get(lid) ?? 0) * rendement),
       qte_affecte: round2c((affKg.get(lid) ?? 0) * rendement),
     }
@@ -3485,49 +3489,147 @@ async function loadEnnoLineMeta(sstLineId: number, finiRefId: number): Promise<{
   return { rendement, sstNom }
 }
 
+/** Who a piece is for, as the dialog prints it: this line, another client order, a donation, or stock. */
+type ReservationPiece = { kind: 'ligne' | 'autre' | 'don' | 'stock'; label: string }
+
+/** « Cde 3922 · Le slip Français » for each client line id. */
+async function libellesLignesClient(ids: number[]): Promise<Map<number, string>> {
+  const u = [...new Set(ids.filter((x) => x > 0))]
+  if (u.length === 0) return new Map()
+  const rows = await mpsPg()<{ id: number; numero: number | null; nom: string | null }[]>`
+    SELECT l.idligne_commande_client AS id, c.numero, cl.nom
+      FROM ligne_commande_client l
+      JOIN commande_client c ON c.idcommande_client = l.idcommande_client
+      LEFT JOIN client cl ON cl.idclient = c.idclient
+     WHERE l.idligne_commande_client = ANY(${u})`
+  return new Map(rows.map((r) => [Number(r.id), `Cde ${r.numero ?? '?'}${r.nom?.trim() ? ` · ${r.nom.trim()}` : ''}`]))
+}
+
+function reservationPiece(lcc: number, donation: number, ligneId: number, libelles: Map<number, string>): ReservationPiece {
+  if (donation > 0) return { kind: 'don', label: 'Don' }
+  if (lcc === ligneId) return { kind: 'ligne', label: 'Cette ligne' }
+  if (lcc > 0) return { kind: 'autre', label: libelles.get(lcc) ?? 'Autre commande' }
+  return { kind: 'stock', label: 'Stock' }
+}
+
+interface FiniDePiece {
+  id: number
+  numero: string | null
+  poids: number
+  metrage: number
+  etat_label: string | null
+  expedie: boolean
+  /** where the roll is: its magasin, « Expédiée » once shipped */
+  localisation: string
+  reservation: ReservationPiece
+  observations: string | null
+  /** the dyer's defect report (stock_fini.observation_sst) */
+  defauts: string | null
+  second_choix: boolean
+}
+
+interface PieceEnno {
+  id: number
+  numero: string | null
+  poids: number
+  /** the écru's own length when it was measured (usually 0 on a tombé de métier) */
+  metrage: number
+  /** where the écru is (its magasin, normally the dyer) */
+  localisation: string
+  /** chez_ennoblisseur = still écru at the dyer; recue = back as fini (its rolls in `finis`) */
+  situation: 'chez_ennoblisseur' | 'recue'
+  /** at the dyer, free or this line's, not donated: the tick-box moves it */
+  modifiable: boolean
+  /** at the dyer only */
+  reservation: ReservationPiece | null
+  observations: string | null
+  /** visitage defects (defaut_qualite) */
+  defauts: string | null
+  second_choix: boolean
+  finis: FiniDePiece[]
+}
+
+/** Every piece of a dyer line, as the « Pièces de la commande » table shows it (Vincent 2026-10-30):
+ *  still at the dyer (reserved to this line, free, or held elsewhere) or back as fini (the rolls, their
+ *  état and who they are reserved to). Only a piece at the dyer, free or this line's, is modifiable here;
+ *  a fini roll's reservation is changed in the Affectation tab. */
 async function fetchEnnoRollsPayload(ctx: ClientLineContext, sstLineId: number) {
   const { rendement, sstNom } = await loadEnnoLineMeta(sstLineId, ctx.refId)
   const dim = lineDim(ctx.unite)
-  const cols = 'IDstock_ecru, numero, lot, poids, metrage, IDcolori_ecru, IDmagasin, second_choix, observations'
-  const [linkedRaw, availRaw] = await Promise.all([
-    query<any>(
-      `SELECT ${cols} FROM stock_ecru
-        WHERE IDref_commande_affectation = ${sstLineId} AND IDligne_commande_client = ${ctx.ligneId}
-        ORDER BY date_saisie DESC, IDstock_ecru DESC`,
-    ),
-    query<any>(
-      `SELECT ${cols} FROM stock_ecru
-        WHERE IDref_commande_affectation = ${sstLineId}
-          AND (IDligne_commande_client IS NULL OR IDligne_commande_client = 0)
-        ORDER BY date_saisie DESC, IDstock_ecru DESC`,
-    ),
+  const sql = mpsPg()
+  const ecrus = await sql<{ id: number; numero: string | null; poids: number | null; metrage: number | null; mag: number | null; lcc: number | null; don: number | null; obs: string | null; sc: number | null }[]>`
+    SELECT idstock_ecru AS id, numero, poids, metrage, idmagasin AS mag, idligne_commande_client AS lcc, idcommande_donation AS don,
+           observations AS obs, second_choix AS sc
+      FROM stock_ecru WHERE idref_commande_affectation = ${sstLineId}`
+  const ecruIds = ecrus.map((e) => Number(e.id))
+  const consumed = await consumedEcruIds(ecruIds)
+  // Fini rolls born from these pieces: first piece (stock_fini.idstock_ecru) or component of a merged roll.
+  const [directs, fusion, defects] = await Promise.all([
+    ecruIds.length > 0
+      ? sql<{ id: number; ecru: number }[]>`SELECT idstock_fini AS id, idstock_ecru AS ecru FROM stock_fini WHERE idstock_ecru = ANY(${ecruIds})`
+      : Promise.resolve([] as { id: number; ecru: number }[]),
+    finiIdsByComponentEcru(ecruIds),
+    fetchDefectsByEcru(ecruIds.filter((id) => !consumed.has(id))),
   ])
-  // A dyed roll is a fini roll now (Affectation tab): neither linked nor
-  // available here, whatever its écru row still says (LIVA #1188).
-  const consumed = await consumedEcruIds([...linkedRaw, ...availRaw].map((r: any) => Number(r.IDstock_ecru)))
-  const linkedFixed = await fixEncoding(liveEcruRolls(linkedRaw, consumed), 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
-  const availFixed = await fixEncoding(liveEcruRolls(availRaw, consumed), 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
-  const magNames = await resolveMagasinNames([...linkedFixed, ...availFixed].map((r: any) => Number(r.IDmagasin)))
-  const colNames = await resolveEcruColoris([...linkedFixed, ...availFixed].map((r: any) => Number(r.IDcolori_ecru)))
-  const toRoll = (r: any): RollLite => ({
-    id: Number(r.IDstock_ecru),
-    numero: r.numero ?? null,
-    lot: r.lot ?? null,
-    poids: Number(r.poids) || 0,
-    metrage: Number(r.metrage) || 0,
-    coloris_reference: colNames.get(Number(r.IDcolori_ecru)) ?? null,
-    magasin_nom: magNames.get(Number(r.IDmagasin)) ?? null,
-    second_choix: Number(r.second_choix) || 0,
-    observations: r.observations ?? null,
-    observation_sst: null,
-    etat_label: null,
-    expedie: false,
-    expediable: true,
+  const finiParEcru = new Map<number, Set<number>>()
+  const ajoute = (e: number, f: number) => { const set = finiParEcru.get(e) ?? new Set<number>(); set.add(f); finiParEcru.set(e, set) }
+  for (const d of directs) ajoute(Number(d.ecru), Number(d.id))
+  for (const [e, fs] of fusion) for (const f of fs) ajoute(e, f)
+  const finiIds = [...new Set([...finiParEcru.values()].flatMap((set) => [...set]))]
+  const finis = finiIds.length > 0
+    ? await sql<{ id: number; numero: string | null; poids: number | null; metrage: number | null; mag: number | null; etat: number | null; lcc: number | null; don: number | null; exp: number | null; obs: string | null; sst: string | null; sc: number | null }[]>`
+        SELECT idstock_fini AS id, numero, poids, metrage, idmagasin AS mag, idetat_stock_fini AS etat, idligne_commande_client AS lcc,
+               idcommande_donation AS don, idligne_expedition AS exp, observations AS obs, observation_sst AS sst, second_choix AS sc
+          FROM stock_fini WHERE idstock_fini = ANY(${finiIds})`
+    : []
+  const finiById = new Map(finis.map((f) => [Number(f.id), f]))
+  const libelles = await libellesLignesClient([...ecrus.map((e) => Number(e.lcc) || 0), ...finis.map((f) => Number(f.lcc) || 0)])
+  const texte = (v: string | null | undefined) => (v ?? '').trim() || null
+  // Where a piece is: its magasin (0 = the factory, « Malterre »), « Expédiée » once on an expedition.
+  const magNoms = await resolveMagasinNames([...ecrus.map((e) => Number(e.mag) || 0), ...finis.map((f) => Number(f.mag) || 0)])
+  const lieu = (mag: number) => (mag > 0 ? (magNoms.get(mag)?.trim() || sstNom || '—') : 'Malterre')
+
+  const pieces: PieceEnno[] = ecrus.map((e) => {
+    const id = Number(e.id)
+    const lcc = Number(e.lcc) || 0
+    const don = Number(e.don) || 0
+    const recue = consumed.has(id)
+    return {
+      id,
+      numero: texte(e.numero),
+      poids: Number(e.poids) || 0,
+      metrage: Number(e.metrage) || 0,
+      localisation: lieu(Number(e.mag) || 0),
+      situation: recue ? 'recue' : 'chez_ennoblisseur',
+      modifiable: !recue && don === 0 && (lcc === 0 || lcc === ctx.ligneId),
+      reservation: recue ? null : reservationPiece(lcc, don, ctx.ligneId, libelles),
+      observations: texte(e.obs),
+      defauts: recue ? null : defautSummary(defects.get(id) ?? []) || null,
+      second_choix: Number(e.sc) > 0,
+      finis: recue
+        ? [...(finiParEcru.get(id) ?? [])].map((fid) => finiById.get(fid)).filter((f): f is NonNullable<typeof f> => !!f).map((f) => ({
+          id: Number(f.id),
+          numero: texte(f.numero),
+          poids: Number(f.poids) || 0,
+          metrage: Number(f.metrage) || 0,
+          etat_label: ETAT_FINI_LABELS[Number(f.etat)] ?? null,
+          expedie: Number(f.etat) === 4 || (Number(f.exp) || 0) > 0,
+          localisation: Number(f.etat) === 4 || (Number(f.exp) || 0) > 0 ? 'Expédiée' : lieu(Number(f.mag) || 0),
+          reservation: reservationPiece(Number(f.lcc) || 0, Number(f.don) || 0, ctx.ligneId, libelles),
+          observations: texte(f.obs),
+          defauts: texte(f.sst),
+          second_choix: Number(f.sc) > 0,
+        }))
+        : [],
+    }
   })
-  const linked = linkedFixed.map(toRoll)
-  const available = availFixed.map(toRoll)
-  // Reserved contribution toward the client line target, in the line's unite.
-  const reserved = linked.reduce((s, r) => s + (dim === 'metrage' ? (r.poids ?? 0) * rendement : (r.poids ?? 0)), 0)
+  // Modifiable first (this line's, then free), then the others; by piece number inside.
+  const rang = (x: PieceEnno) => (x.modifiable ? (x.reservation?.kind === 'ligne' ? 0 : 1) : x.situation === 'chez_ennoblisseur' ? 2 : 3)
+  pieces.sort((a, b) => rang(a) - rang(b) || String(a.numero ?? '').localeCompare(String(b.numero ?? ''), 'fr', { numeric: true }))
+  // Reserved toward the client line target, in the line's unite: pieces at the dyer held by this line.
+  const reserved = pieces
+    .filter((x) => x.situation === 'chez_ennoblisseur' && x.reservation?.kind === 'ligne')
+    .reduce((acc, x) => acc + (dim === 'metrage' ? x.poids * rendement : x.poids), 0)
   return {
     kind: 'ecru' as const,
     unite: ctx.unite,
@@ -3537,8 +3639,7 @@ async function fetchEnnoRollsPayload(ctx: ClientLineContext, sstLineId: number) 
     rendement,
     sst_nom: sstNom,
     reserved: Math.round(reserved * 100) / 100,
-    linked,
-    available,
+    pieces,
   }
 }
 
@@ -3557,60 +3658,69 @@ commandesClientRouter.get('/:id/lignes/:ligneId/supply/ennoblissement/:sstLineId
   }
 })
 
-// Reserve a dyer's input écru roll to this client fini line.
-commandesClientRouter.put('/:id/lignes/:ligneId/supply/ennoblissement/:sstLineId/rolls/:stockId', async (req: Request, res: Response) => {
-  try {
-    const commandeId = parseInt(req.params.id, 10)
-    const ligneId = parseInt(req.params.ligneId, 10)
-    const sstLineId = parseInt(req.params.sstLineId, 10)
-    const stockId = parseInt(req.params.stockId, 10)
-    if (isNaN(commandeId) || isNaN(ligneId) || isNaN(sstLineId) || isNaN(stockId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const ctx = await loadClientLineContext(commandeId, ligneId)
-    if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
-    if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
-    const rollRows = await query<{ IDref_commande_affectation: number | null; IDligne_commande_client: number | null; IDcommande_donation: number | null }>(
-      `SELECT IDref_commande_affectation, IDligne_commande_client, IDcommande_donation FROM stock_ecru WHERE IDstock_ecru = ${stockId}`,
-    )
-    if (rollRows.length === 0) { res.status(404).json({ error: 'Stock ecru not found' }); return }
-    if (Number(rollRows[0].IDref_commande_affectation) !== sstLineId) { res.status(400).json({ error: 'Roll does not belong to this ennoblisseur order' }); return }
-    if (refuseIfDonated(res, rollRows[0].IDcommande_donation)) return
-    // Belt and braces: the dialog no longer lists a dyed roll (#1188), but a
-    // stale list or the legacy could still name one.
-    if ((await consumedEcruIds([stockId])).has(stockId)) { res.status(409).json(ECRU_CONSUMED_ERROR); return }
-    const current = Number(rollRows[0].IDligne_commande_client) || 0
-    if (current !== 0 && current !== ligneId) { res.status(409).json({ error: 'Roll already reserved to another line' }); return }
-    // The dyer line must make this line's article + coloris (LIVA #1261) —
-    // the tab only lists those, but the route is the gate.
-    const dyeRows = await query<{ IDreference: number | null; IDColoris: number | null }>(
-      `SELECT IDreference, IDColoris FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${sstLineId}`,
-    )
-    const dye = { ref: Number(dyeRows[0]?.IDreference) || 0, coloris: Number(dyeRows[0]?.IDColoris) || 0 }
-    if (!reservationFitsDyeLine({ type: ctx.typeKind, ref: ctx.refId, coloris: ctx.coloriId }, dye)) {
-      res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: 'Cette commande d’ennoblissement teint une autre référence ou un autre coloris que la ligne.' })
-      return
-    }
-    await query(`UPDATE stock_ecru SET IDligne_commande_client = ${ligneId} WHERE IDstock_ecru = ${stockId}`)
-    res.json(await fetchEnnoRollsPayload(ctx, sstLineId))
-  } catch (err) {
-    console.error('Error reserving ennoblissement roll:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
+const ennoRollsBody = z.object({
+  /** écru pieces of the dyer line to reserve to this client line */
+  reserver: z.array(z.number().int().positive()).max(500).default([]),
+  /** écru pieces of the dyer line to release (only this line's) */
+  liberer: z.array(z.number().int().positive()).max(500).default([]),
 })
 
-commandesClientRouter.delete('/:id/lignes/:ligneId/supply/ennoblissement/:sstLineId/rolls/:stockId', async (req: Request, res: Response) => {
+// The « Pièces de la commande » table's « Enregistrer »: reserve / release a dyer line's input écru for this
+// client fini line, all checked before anything is written (a refusal names the piece, nothing moves).
+commandesClientRouter.put('/:id/lignes/:ligneId/supply/ennoblissement/:sstLineId/rolls', async (req: Request, res: Response) => {
   try {
+    if (!(await requireEditCommandes(req, res))) return
     const commandeId = parseInt(req.params.id, 10)
     const ligneId = parseInt(req.params.ligneId, 10)
     const sstLineId = parseInt(req.params.sstLineId, 10)
-    const stockId = parseInt(req.params.stockId, 10)
-    if (isNaN(commandeId) || isNaN(ligneId) || isNaN(sstLineId) || isNaN(stockId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (isNaN(commandeId) || isNaN(ligneId) || isNaN(sstLineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = ennoRollsBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const ctx = await loadClientLineContext(commandeId, ligneId)
     if (!ctx || ctx.kind !== 'fini') { res.status(404).json({ error: 'Fini line not found' }); return }
     if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
-    await query(`UPDATE stock_ecru SET IDligne_commande_client = 0 WHERE IDstock_ecru = ${stockId} AND IDligne_commande_client = ${ligneId}`)
+    const { reserver, liberer } = parsed.data
+    if (reserver.length > 0) {
+      // The dyer line must make this line's article + coloris (LIVA #1261).
+      const dyeRows = await query<{ IDreference: number | null; IDColoris: number | null }>(
+        `SELECT IDreference, IDColoris FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${sstLineId}`,
+      )
+      const dye = { ref: Number(dyeRows[0]?.IDreference) || 0, coloris: Number(dyeRows[0]?.IDColoris) || 0 }
+      if (!reservationFitsDyeLine({ type: ctx.typeKind, ref: ctx.refId, coloris: ctx.coloriId }, dye)) {
+        res.status(409).json({ error: RESERVATION_MISFIT_ERROR, message: 'Cette commande d’ennoblissement teint une autre référence ou un autre coloris que la ligne.' })
+        return
+      }
+      const rows = await mpsPg()<{ id: number; numero: string | null; sst: number | null; lcc: number | null; don: number | null }[]>`
+        SELECT idstock_ecru AS id, numero, idref_commande_affectation AS sst, idligne_commande_client AS lcc, idcommande_donation AS don
+          FROM stock_ecru WHERE idstock_ecru = ANY(${reserver})`
+      const consumed = await consumedEcruIds(reserver)
+      const byId = new Map(rows.map((r) => [Number(r.id), r]))
+      for (const id of reserver) {
+        const r = byId.get(id)
+        const nom = r?.numero?.trim() || `#${id}`
+        if (!r || Number(r.sst) !== sstLineId) { res.status(400).json({ error: 'piece_hors_commande', message: `La pièce ${nom} n’est pas sur cette commande d’ennoblissement.` }); return }
+        if ((Number(r.don) || 0) > 0) { res.status(409).json({ error: 'piece_donnee', message: `La pièce ${nom} est attachée à une commande de donation.` }); return }
+        if (consumed.has(id)) { res.status(409).json({ ...ECRU_CONSUMED_ERROR, message: `La pièce ${nom} est déjà revenue en fini : réservez son rouleau dans l’onglet Affectation.` }); return }
+        const lcc = Number(r.lcc) || 0
+        if (lcc !== 0 && lcc !== ligneId) { res.status(409).json({ error: 'piece_reservee_ailleurs', message: `La pièce ${nom} est réservée à une autre commande.` }); return }
+      }
+    }
+    await mpsPg().begin(async (trx) => {
+      const tx = trx as unknown as ReturnType<typeof mpsPg> // postgres.js typing: TransactionSql loses its call signatures
+      if (reserver.length > 0) {
+        await tx`UPDATE stock_ecru SET idligne_commande_client = ${ligneId}
+                  WHERE idstock_ecru = ANY(${reserver}) AND idref_commande_affectation = ${sstLineId}
+                    AND (idligne_commande_client IS NULL OR idligne_commande_client = 0 OR idligne_commande_client = ${ligneId})`
+      }
+      if (liberer.length > 0) {
+        await tx`UPDATE stock_ecru SET idligne_commande_client = 0
+                  WHERE idstock_ecru = ANY(${liberer}) AND idref_commande_affectation = ${sstLineId}
+                    AND idligne_commande_client = ${ligneId}`
+      }
+    })
     res.json(await fetchEnnoRollsPayload(ctx, sstLineId))
   } catch (err) {
-    console.error('Error releasing ennoblissement roll:', err)
+    console.error('Error reserving ennoblissement pieces:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -4666,6 +4776,28 @@ commandesClientRouter.get('/:id/lignes/:ligneId/lancement', async (req: Request,
   }
 })
 
+// What a launch date gives (the Planifier dialog's warning, before saving): the earliest ready date if
+// the line is launched that day, and whether it misses the line's « Prête le ».
+commandesClientRouter.get('/:id/lignes/:ligneId/lancement/prete-le', async (req: Request, res: Response) => {
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    const date = String(req.query.date ?? '')
+    if (isNaN(commandeId) || isNaN(ligneId) || !/^\d{8}$/.test(date)) { res.status(400).json({ error: 'Invalid parameters' }); return }
+    const ctx = await loadClientLineContext(commandeId, ligneId)
+    if (!ctx || ctx.kind === 'none') { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
+    const l = { id: ligneId, typeKind: ctx.typeKind, refId: ctx.refId, coloriId: ctx.coloriId, unite: ctx.unite, quantite: ctx.quantite }
+    const a = (await auPlusTotLignes([l], null, new Map([[ligneId, date]]))).get(ligneId)
+    const [row] = await mpsPg()<{ d: string | null }[]>`
+      SELECT to_char(date_livraison, 'YYYYMMDD') AS d FROM ligne_commande_client WHERE idligne_commande_client = ${ligneId}`
+    const delai = row?.d ?? null
+    res.json({ prete_le: a?.date ?? null, delai, trop_tard: !!(a && delai && a.date > delai) })
+  } catch (err) {
+    console.error('Error computing the ready date of a launch date:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 const lancementBody = z.object({
   /** YYYYMMDD, null = remove the date */
   date: z.string().regex(/^\d{8}$/).nullable(),
@@ -4843,8 +4975,9 @@ function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: Faits
   })
 }
 
-/** The same, fetching the facts (validation of an order). */
-async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | null = null): Promise<Map<number, DelaiAuPlusTot | null>> {
+/** The same, fetching the facts (validation of an order). `depuis` = a line's launch date: computed as
+ *  if it started that day (a planning too late, lib/urgence-commande-client.ts). */
+async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | null = null, depuis?: Map<number, string>): Promise<Map<number, DelaiAuPlusTot | null>> {
   const ls = lignes.filter((l) => lineStockKind(l.typeKind) !== 'none')
   const [agg, fil, faits, rouleaux, p] = await Promise.all([
     lineReservationAggregates(ls),
@@ -4854,7 +4987,22 @@ async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | n
     partenairesParDefaut(),
   ])
   const today = aujourdhuiYmd()
-  return new Map(ls.map((l) => [l.id, auPlusTotDe(l, agg.get(l.id) ?? agregatVide(), fil.get(l.id) ?? 0, faits.get(l.id), rouleaux.get(l.id), p, today, dateRetenue)]))
+  return new Map(ls.map((l) => [l.id, auPlusTotDe(l, agg.get(l.id) ?? agregatVide(), fil.get(l.id) ?? 0, faits.get(l.id), rouleaux.get(l.id), p,
+    apresAujourdhui(depuis?.get(l.id), today), dateRetenue)]))
+}
+
+/** The later of a launch date (YYYYMMDD) and today: a passed date launches today. */
+function apresAujourdhui(d: string | null | undefined, today: string): string {
+  return d && /^\d{8}$/.test(d) && d > today ? d : today
+}
+
+/** Lines held by a launch date still to come: their earliest ready date if launched on it (YYYYMMDD). */
+async function preteSiLanceLe(lignes: (LigneAuPlusTot & { lancementLe: string | null | undefined })[]): Promise<Map<number, string>> {
+  const today = aujourdhuiYmd()
+  const tenues = lignes.filter((l) => l.lancementLe && /^\d{8}$/.test(l.lancementLe) && l.lancementLe > today)
+  if (tenues.length === 0) return new Map()
+  const a = await auPlusTotLignes(tenues, null, new Map(tenues.map((l) => [l.id, l.lancementLe!])))
+  return new Map([...a].flatMap(([id, d]) => (d ? [[id, d.date] as [number, string]] : [])))
 }
 
 /** Working days between the earliest date and the date retained (Malterre's calendar), null without a date. */

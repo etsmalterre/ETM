@@ -203,19 +203,25 @@ describe('etatCommande', () => {
     expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ demandeLe: '2026-10-09' }) })).relance).toBe('2026-10-14')
     expect(etatCommande(commande())).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-10-20' })
   })
-  it('en réception: the earliest chase among the open lots (9016: soumis + ACP)', () => {
+  it('received, all back: en contrôle, the earliest chase among the open lots (9016: soumis + ACP)', () => {
     const e = etatCommande(commande({
       lots: [
         lot({ lot: 'MA109328', etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-08' }) }),
         lot({ lot: 'MA109329', reception: '2026-10-09' }),
       ],
     }))
-    expect(e).toMatchObject({ etape: 'en_reception', main: 'teinturier', relance: '2026-10-12' })
+    expect(e).toMatchObject({ etape: 'en_controle', main: 'teinturier', relance: '2026-10-12' })
     expect(e.lots.map((l) => l.etape)).toEqual(['soumis', 'attente_mesures'])
   })
   it('validated lots drop out; « solde » while écru is still at the dyer', () => {
     const e = etatCommande(commande({ lots: [lot({ etat: 3 })], ecruChezTeinturier: 11 }))
     expect(e).toMatchObject({ etape: 'en_reception', main: 'teinturier', relance: '2026-10-20', solde: true, lots: [] })
+  })
+  it('everything back, a lot still open: « en contrôle », not « en réception » (9090, 2026-10-30)', () => {
+    const tout = etatCommande(commande({ lots: [lot({ etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-20' }) })], ecruChezTeinturier: 0 }))
+    expect(tout.etape).toBe('en_controle')
+    const partiel = etatCommande(commande({ lots: [lot({ etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-20' }) })], ecruChezTeinturier: 4 }))
+    expect(partiel.etape).toBe('en_reception')
   })
   it('everything validated and back: ours to close (8565)', () => {
     expect(etatCommande(commande({ lots: [lot({ etat: 3 })] }))).toMatchObject({ etape: 'a_cloturer', main: 'nous' })

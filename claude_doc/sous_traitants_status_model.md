@@ -221,11 +221,13 @@ our steps +1; estimates to correct from use).
 
 **Order steps**: À envoyer · Attente délai (relance = `date_notif`, the only date
 a person still moves) · En teinture (date shown = the earliest délai) ·
-En réception (chase = earliest among open lots; « solde » while affected écru is
-not back) · À clôturer (every lot validated, nothing at the dyer) · Terminée.
+En réception (chase = earliest among open lots; only while affected écru is still at
+the dyer, the « solde ») · En contrôle (everything back, lots still open: measures,
+tirelle, soumission, reprise — Vincent 2026-10-30, 9090) · À clôturer (every lot validated, nothing at the dyer) · Terminée.
 The card's red / amber frame and the header counters follow the chase date
 (`urgenceCommande`). Search keywords match an order step or a lot step
-(« tirelle », « soumis », « reprise »…).
+(« tirelle », « soumis », « reprise »…). A client line's Ennoblissement tab shows the same step
+(`LIBELLE_ETAPE_COMMANDE`), never the legacy line `sstatut`.
 
 ## Soumission Lot Client feature
 

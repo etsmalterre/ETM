@@ -4,10 +4,10 @@
 // ennoblisseur reuse the sous-traitant type hues (sst-type.tsx) so the line reads
 // with the same colour as the subcontractor it is waiting on.
 import type { ComponentType, ReactNode } from 'react'
-import { Archive, CalendarCheck, CircleDashed, Droplets, Factory, PackageCheck, Truck, CalendarClock } from 'lucide-react'
+import { Archive, CalendarCheck, CircleDashed, Droplets, Factory, FlaskConical, PackageCheck, Truck, CalendarClock, UserRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'planifiee' | 'a_lancer'
+export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'planifiee' | 'a_lancer' | 'etude_client' | 'etude_labo'
 
 export interface StatutLigneClient {
   etat: EtatLigneClient
@@ -20,6 +20,10 @@ export interface StatutLigneClient {
 const SEUIL_EXPEDIE = 0.9
 
 export const STATUT_LIGNE_META: Record<EtatLigneClient, { label: string; icon: ComponentType<{ className?: string }>; classes: string }> = {
+  // À lancer still waiting for its étude coloris (API etatAffiche): at the dyer's lab, or submitted to the
+  // client. Neutral: the line turns red only when the relance is due.
+  etude_labo: { label: 'En étude', icon: FlaskConical, classes: 'bg-white text-fuchsia-700 border-fuchsia-500/25' },
+  etude_client: { label: 'Attente client', icon: UserRound, classes: 'bg-white text-fuchsia-700 border-fuchsia-500/25' },
   a_lancer: { label: 'À lancer', icon: CircleDashed, classes: 'bg-zinc-100 text-zinc-700 border-zinc-300' },
   // À lancer held on purpose by its launch date still to come (API etatAffiche): neutral, nothing to do before it.
   planifiee: { label: 'Planifiée', icon: CalendarCheck, classes: 'bg-white text-indigo-700 border-indigo-500/25' },

@@ -245,8 +245,21 @@ export function etatLot(l: LotFait): EtatLot {
 
 // ── The order ─────────────────────────────────────────────
 
-/** Order steps, replacing the old phases on Sous-traitants › Ennoblissement. */
-export type EtapeCommande = 'non_envoye' | 'attente_delai' | 'en_teinture' | 'en_reception' | 'a_cloturer' | 'terminee'
+/** Order steps, replacing the old phases on Sous-traitants › Ennoblissement. « En réception » only while
+ *  pieces are still at the dyer; everything back and lots still open = « En contrôle » (Vincent
+ *  2026-10-30, 9090: all received, the lot waits for the client's answer on its stabilités). */
+export type EtapeCommande = 'non_envoye' | 'attente_delai' | 'en_teinture' | 'en_reception' | 'en_controle' | 'a_cloturer' | 'terminee'
+
+/** The step as every screen prints it (Sous-traitants › Ennoblissement, a client line's Ennoblissement tab). */
+export const LIBELLE_ETAPE_COMMANDE: Record<EtapeCommande, string> = {
+  non_envoye: 'À envoyer',
+  attente_delai: 'Attente délai',
+  en_teinture: 'En traitement',
+  en_reception: 'En réception',
+  en_controle: 'En contrôle',
+  a_cloturer: 'À clôturer',
+  terminee: 'Terminée',
+}
 
 export interface CommandeFait {
   est_soldee: boolean
@@ -300,13 +313,14 @@ export function etatCommande(c: CommandeFait): EtatCommande {
     return { etape: 'en_teinture', main: 'teinturier', relance: c.delai, lots: [], solde: false }
   }
   // Received: the earliest chase among the open lots, else the délai of what is
-  // still at the dyer.
+  // still at the dyer. Still pieces at the dyer = « en réception », all back = « en contrôle ».
+  const recue: EtapeCommande = solde ? 'en_reception' : 'en_controle'
   const datees = ouverts.filter((l) => l.relance).sort((a, b) => a.relance!.localeCompare(b.relance!))
   if (datees.length > 0) {
-    return { etape: 'en_reception', main: datees[0].main, relance: datees[0].relance, lots: ouverts, solde }
+    return { etape: recue, main: datees[0].main, relance: datees[0].relance, lots: ouverts, solde }
   }
   const enReprise = ouverts.find((l) => l.etape === 'en_reprise')
-  if (enReprise) return { etape: 'en_reception', main: 'teinturier', relance: null, lots: ouverts, solde }
+  if (enReprise) return { etape: recue, main: 'teinturier', relance: null, lots: ouverts, solde }
   if (solde) return { etape: 'en_reception', main: 'teinturier', relance: c.delai, lots: ouverts, solde }
   // Every lot validated, nothing left at the dyer: ours to close (8565).
   return { etape: 'a_cloturer', main: 'nous', relance: null, lots: ouverts, solde }

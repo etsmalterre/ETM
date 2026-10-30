@@ -39,13 +39,16 @@
 // A line « à lancer » carrying a launch date (lib/lancement-ligne.ts, doctrine des délais §5, 2026-10-28)
 // waits on purpose: neutral before the date, red from it (« lancement prévu le JJ/MM »). The date is the
 // only way to hold a line; it acts on « à lancer » alone (once launched, the status moves on).
+// Except a launch date planned too late (Vincent 2026-10-30): launched on it, the line would be ready
+// after its délai, so the delay is known today — red now, the person moves the planning, asks the
+// dyer for an urgency or calls the client for a report.
 //
 // A line without a délai is red (2026-10-22): giving the client a délai is ours to do now. Except a fini
 // line still waiting for its étude coloris (lib/etude-ligne-client.ts): no délai can be given, the only
 // action is to chase the lab or the client once they take longer than usual — red, never amber.
 //
-// The card says two things, never mixed: the liseré + reason = what there is to do and when
-// (urgenceCommande), the pill = where the order stands (avancementCommande).
+// The card says two things, never mixed: the liseré + reason = what there is to do (no date: the card
+// orients, the detail tells why; urgenceCommande), the pill = where the order stands (avancementCommande).
 
 import type { EtatLigneClient } from './statut-ligne-client.js'
 import type { AttenteEtude } from './etude-ligne-client.js'
@@ -71,7 +74,7 @@ export type NiveauUrgence = 'rouge' | 'ambre'
 
 export interface UrgenceCommande {
   niveau: NiveauUrgence
-  /** French, shown on the card: « 2 lignes à lancer · délai 14/10 » */
+  /** French, shown on the card: the action only, « 2 lignes à lancer » */
   raison: string
 }
 
@@ -100,6 +103,9 @@ export interface LigneUrgence {
   lancementLe?: string | null
   /** what waits for that date (the tab where it was planned): the red reason names that action */
   lancementEtape?: 'fil' | 'tricotage' | 'ennoblissement' | null
+  /** the earliest ready date if the line is launched on lancementLe (lib/delai-au-plus-tot.ts from that
+   *  day, YYYYMMDD); after dateLivraison = planned too late */
+  preteSiLanceLe?: string | null
 }
 
 /** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
@@ -118,7 +124,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
   return lignes.some(enProduction)
 }
 
-type Action = 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
   | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
@@ -126,9 +132,8 @@ interface Verdict {
   niveau: NiveauUrgence
   action: Action
   jours: number | null
+  /** the date that ranks it (never printed: the card only orients, the detail tells why) */
   date: string | null
-  /** what `date` is, printed before it: « délai », « expédition convenue le », « depuis le » */
-  quoi?: string
 }
 
 const ymd = (v: string | null | undefined) => (v && /^\d{8}$/.test(v) ? v : null)
@@ -144,9 +149,14 @@ function joursAvant(date: string, today: Date): number {
 /** The état SHOWN (pill, order scale, list tags): a line « à lancer » held by a launch date still to
  *  come is « planifiée » — a decision taken, nothing to do before the date (Vincent 2026-10-28). From
  *  the date on it is « à lancer » again, red. Divers lines have no launch. urgenceLigne keeps reading
- *  the computed a_lancer + lancementLe, so the colour rule does not move. */
-export function etatAffiche(etat: EtatLigneClient, typeKind: number, lancementLe: string | null | undefined, today: Date): EtatLigneClient {
+ *  the computed a_lancer + lancementLe, so the colour rule does not move. Same for a line waiting for its
+ *  étude coloris: « en étude » (lab) / « attente client », before à lancer on the order's scale. */
+export function etatAffiche(etat: EtatLigneClient, typeKind: number, lancementLe: string | null | undefined, today: Date,
+  etude?: { attente: AttenteEtude } | null): EtatLigneClient {
   if (etat !== 'a_lancer' || typeKind === 3) return etat
+  // Waiting for its étude coloris: who holds it (Vincent 2026-10-30). Accepted / cancelled = à lancer, red.
+  if (etude?.attente === 'labo') return 'etude_labo'
+  if (etude?.attente === 'client') return 'etude_client'
   const d = ymd(lancementLe)
   return d && joursAvant(d, today) > 0 ? 'planifiee' : etat
 }
@@ -163,7 +173,7 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     if (!due) return null
     const jr = joursAvant(due, today)
     return jr <= 0
-      ? { niveau: 'rouge', action: attente === 'labo' ? 'etude_labo' : 'etude_client', jours: jr, date: due, quoi: 'depuis le' }
+      ? { niveau: 'rouge', action: attente === 'labo' ? 'etude_labo' : 'etude_client', jours: jr, date: due }
       : null
   }
   const date = ymd(l.dateLivraison)
@@ -179,13 +189,13 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     const mode = l.modeLivraison ?? 'des_que_prete'
     if ((mode === 'commande_complete' || l.groupee) && l.commandeIncomplete) return null
     if (mode === 'sur_appel') {
-      return j < -relanceAppelDe(l.relanceAppel) ? { niveau: 'rouge', action: 'relancer', jours: j, date, quoi: 'délai' } : null
+      return j < -relanceAppelDe(l.relanceAppel) ? { niveau: 'rouge', action: 'relancer', jours: j, date } : null
     }
     if (mode === 'date_client') {
       // Ship ON the date the client asked for: never amber (early is not what the client asked).
       const dc = ymd(l.dateClient) ?? date
       const jc = joursAvant(dc, today)
-      const v = (action: Action): Verdict => ({ niveau: 'rouge', action, jours: jc, date: dc, quoi: 'expédition demandée le' })
+      const v = (action: Action): Verdict => ({ niveau: 'rouge', action, jours: jc, date: dc })
       if (jc < -S.soldeApres) return v('solder')
       return jc <= S.expedierRouge ? v('expedier') : null
     }
@@ -196,17 +206,21 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     const due = ymd(l.filAttenduLe)
     if (!due) return { niveau: 'rouge', action: 'fil_sans_date', jours: null, date: null }
     const jf = joursAvant(due, today)
-    return jf < 0 ? { niveau: 'rouge', action: 'relancer_fournisseur', jours: jf, date: due, quoi: 'fil prévu le' } : null
+    return jf < 0 ? { niveau: 'rouge', action: 'relancer_fournisseur', jours: jf, date: due } : null
   }
   if (l.etat === 'a_lancer') {
     // Held on purpose until its launch date: nothing to do before it.
     const lancement = ymd(l.lancementLe)
     if (lancement) {
       const jl = joursAvant(lancement, today)
+      const prete = ymd(l.preteSiLanceLe)
+      if (jl > 0 && prete && prete > date) {
+        return { niveau: 'rouge', action: 'planif_tardive', jours: j, date }
+      }
       if (jl > 0) return null
       const parEtape = { fil: 'commander_fil', tricotage: 'tricoter', ennoblissement: 'ennoblir' } as const
       const action: Action = l.lancementEtape ? parEtape[l.lancementEtape] : 'lancer'
-      return { niveau: 'rouge', action, jours: jl, date: lancement, quoi: l.lancementEtape ? 'prévu' : 'lancement prévu' }
+      return { niveau: 'rouge', action, jours: jl, date: lancement }
     }
     return { niveau: 'rouge', action: 'lancer', jours: j, date }
   }
@@ -215,6 +229,7 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
 }
 
 const LIBELLE: Record<Action, [string, string]> = {
+  planif_tardive: ['ligne planifiée trop tard', 'lignes planifiées trop tard'],
   lancer: ['ligne à lancer', 'lignes à lancer'],
   commander_fil: ['ligne : fil à commander', 'lignes : fil à commander'],
   tricoter: ['ligne à tricoter', 'lignes à tricoter'],
@@ -233,7 +248,6 @@ const LIBELLE: Record<Action, [string, string]> = {
   etude_annulee: ['ligne sur une étude annulée : choisir un coloris', 'lignes sur une étude annulée : choisir un coloris'],
 }
 
-const jjmm = (d: string) => `${d.slice(6, 8)}/${d.slice(4, 6)}`
 
 /** The order's colour = its most urgent line; the reason names that line's action, how many lines
  *  share it at any level (3900: 3 lines due 06/11 + 3 due 27/11 are launched together, « 6 lignes
@@ -251,15 +265,12 @@ export function urgenceCommande(lignes: readonly LigneUrgence[], today: Date): U
   const memes = verdicts.filter((v) => v.action === top.action)
   const [un, plusieurs] = LIBELLE[top.action]
   const n = memes.length
-  let raison = `${n} ${n > 1 ? plusieurs : un}`
-  // « dépassé » qualifies a délai or a date agreed with the client, never a relance date (« depuis le »).
-  const depasse = top.jours! < 0 && top.quoi !== 'depuis le'
-  if (top.date) raison += ` · ${top.quoi ?? 'délai'} ${jjmm(top.date)}${depasse ? ' dépassé' : ''}`
-  return { niveau: top.niveau, raison }
+  // The action only, no date (Vincent 2026-10-30): the card orients, the detail screen tells why.
+  return { niveau: top.niveau, raison: `${n} ${n > 1 ? plusieurs : un}` }
 }
 
 /** Most advanced last. */
-const ECHELLE: readonly EtatLigneClient[] = ['a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ECHELLE: readonly EtatLigneClient[] = ['etude_labo', 'etude_client', 'a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 /** Where an order stands, on the line pills' own scale: its least advanced line still to deliver
  *  (that line holds the order back); « expediee » once every line left; « soldee » when closed.

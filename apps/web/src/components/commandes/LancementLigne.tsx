@@ -23,21 +23,29 @@ interface LancementPayload { date: string | null; etape: EtapeLancement | null; 
 const VERBE: Record<EtapeLancement, string> = { fil: 'Commander le fil', tricotage: 'Tricoter', ennoblissement: 'Ennoblir' }
 const jjmm = (d: string) => formatHfsqlDate(d).slice(0, 5)
 const libelle = (date: string, etape: EtapeLancement | null) => `${etape ? VERBE[etape] : 'Lancer'} le ${jjmm(date)}`
+/** A launch date planned too late: the delay is known today (API lib/urgence-commande-client.ts). */
+const messageTropTard = (lance: string, prete: string, delai: string) =>
+  `Lancée le ${jjmm(lance)}, la ligne sera prête au plus tôt le ${formatHfsqlDate(prete)}, après son délai du ${formatHfsqlDate(delai)}`
+const GESTES_TROP_TARD = 'avancer la planification, demander une urgence au partenaire ou reporter le délai avec le client'
 
 /** Next to the line card's status pill, read only: « 📅 Ennoblir le 16/11 » (Vincent 2026-10-28, was a
  *  « Lancement » stat). The pill says « Planifiée » before the date; from it the line is « À lancer »
  *  again and this label turns red. Nothing without a date — planning is done from the drawer's tabs. */
-export function LancementLabel({ date, etape, rouge }: {
+export function LancementLabel({ date, etape, rouge, tropTard = null }: {
   /** YYYYMMDD or null */
   date: string | null
   etape: EtapeLancement | null
   /** the line is red because its launch date has come */
   rouge: boolean
+  /** launched on this date, the line is ready after its délai (Vincent 2026-10-30): red now, says what to do */
+  tropTard?: { preteLe: string; delai: string } | null
 }) {
   if (!date) return null
   return (
-    <span title="Lancement prévu : la ligne reste neutre jusqu’à cette date, puis passe au rouge (« Planifier » dans les onglets de la ligne)"
-      className={cn('inline-flex items-center gap-1 text-[11px] font-medium tabular-nums whitespace-nowrap', rouge ? 'text-red-600' : 'text-muted-foreground')}>
+    <span title={tropTard
+      ? `${messageTropTard(date, tropTard.preteLe, tropTard.delai)} : ${GESTES_TROP_TARD}.`
+      : 'Lancement prévu : la ligne reste neutre jusqu’à cette date, puis passe au rouge (« Planifier » dans les onglets de la ligne)'}
+      className={cn('inline-flex items-center gap-1 text-[11px] font-medium tabular-nums whitespace-nowrap', rouge || tropTard ? 'text-red-600' : 'text-muted-foreground')}>
       <CalendarClock className="h-3.5 w-3.5" />
       {libelle(date, etape)}
     </span>
@@ -102,6 +110,12 @@ function LancementDialog({ commandeId, ligneId, etape, proposee, onClose }: {
   })
   const actuelle = data?.date ?? null
   const choisie = date ? inputDateToHfsql(date) : null
+  // Launched on the date typed, when would the line be ready? Warned before saving, never refused.
+  const { data: prete } = useQuery<{ prete_le: string | null; delai: string | null; trop_tard: boolean }>({
+    queryKey: ['commande-client-lancement-prete', ligneId, choisie],
+    queryFn: () => apiFetch(`${url}/prete-le?date=${choisie}`),
+    enabled: !!choisie && /^\d{8}$/.test(choisie),
+  })
   // Same date planned from another tab = a change of step, worth saving.
   const change = choisie !== actuelle || (choisie !== null && data?.etape !== etape)
 
@@ -121,7 +135,17 @@ function LancementDialog({ commandeId, ligneId, etape, proposee, onClose }: {
             <>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={mut.isPending} autoFocus
                 className="w-full h-9 px-2.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
-              <p className="text-xs text-muted-foreground">La ligne reste neutre jusqu’à cette date, puis passe au rouge.</p>
+              {prete?.trop_tard && prete.prete_le && prete.delai && choisie ? (
+                <p className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
+                  <AlertCircle className="h-3.5 w-3.5 mt-px flex-shrink-0" />
+                  <span>{messageTropTard(choisie, prete.prete_le, prete.delai)}. La ligne sera rouge dès l’enregistrement : {GESTES_TROP_TARD}.</span>
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  La ligne reste neutre jusqu’à cette date, puis passe au rouge.
+                  {prete?.prete_le && ` Prête au plus tôt le ${formatHfsqlDate(prete.prete_le)}.`}
+                </p>
+              )}
               {!actuelle && proposee && (
                 <p className="text-xs text-muted-foreground">Proposée : {proposee.pourquoi}.</p>
               )}

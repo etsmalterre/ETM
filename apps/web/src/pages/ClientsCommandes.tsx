@@ -23,6 +23,9 @@ import {
   MessageSquare,
   AlertTriangle,
   CheckCircle2,
+  Check,
+  Eye,
+  Minus,
   Clock,
   Package,
   Link2,
@@ -54,7 +57,7 @@ import {
   BadgeEuro,
   FlaskConical,
 } from 'lucide-react'
-import { ML_NON_FACTURES_PERMISSION, MlNonFacturesDialog, MlNonFacturesMention } from '@/components/shared/MlNonFactures'
+import { ML_NON_FACTURES_PERMISSION, MlNonFacturesDialog } from '@/components/shared/MlNonFactures'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
@@ -159,6 +162,8 @@ interface LigneCommande {
   date_lancement: string | null
   /** what waits for that date: the drawer tab where it was planned */
   etape_lancement: EtapeLancement | null
+  /** the earliest ready date if launched on date_lancement (YYYYMMDD); after date_livraison = planned too late */
+  prete_si_lance_le?: string | null
   /** the line's own colour on the order list's rule */
   urgence: 'rouge' | 'ambre' | null
   commentaire: string | null
@@ -455,8 +460,6 @@ interface CommandeDetail {
   en_preparation: boolean
   validee_le: string | null
   validee_par: string | null
-  /** why it can no longer go back to « En préparation » (null = it can) */
-  retour_preparation_bloque: string | null
   /** « expédier toutes les lignes ensemble » (API lib/mode-expedition.ts, Info › Expédition) */
   expedition_groupee: boolean
   /** Stock pieces attached via IDcommande_donation (donation orders only). */
@@ -583,6 +586,12 @@ const SUPPLY_ETAT_META: Record<string, { solid: string; icon: React.ElementType 
   'En cours': { solid: 'bg-primary border-primary', icon: Clock },
   'Attente délai': { solid: 'bg-yellow-500 border-yellow-500', icon: Hourglass },
   'Non envoyé': { solid: 'bg-slate-500 border-slate-500', icon: Mail },
+  // Dyer orders: the step Sous-traitants › Ennoblissement shows (API LIBELLE_ETAPE_COMMANDE), same colours.
+  'À envoyer': { solid: 'bg-slate-500 border-slate-500', icon: Mail },
+  'En traitement': { solid: 'bg-primary border-primary', icon: Clock },
+  'En réception': { solid: 'bg-amber-500 border-amber-500', icon: Eye },
+  'En contrôle': { solid: 'bg-amber-500 border-amber-500', icon: Eye },
+  'À clôturer': { solid: 'bg-teal-600 border-teal-600', icon: CheckCircle2 },
 }
 
 function SupplyEtatPill({ label }: { label: string | null | undefined }) {
@@ -1065,7 +1074,7 @@ const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; ho
 // One tag per line status present: an order carries it when at least one of its lines has it.
 // « À faire » / « Bientôt » are not tags: the counter pills right of the bar already filter on them.
 
-const ETAT_TAG_ORDER: EtatLigneClient[] = ['a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ETAT_TAG_ORDER: EtatLigneClient[] = ['etude_labo', 'etude_client', 'a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 function commandeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
   // « En préparation » is an ORDER state (doctrine des délais §5 ter), first: the orders to prepare.
@@ -2371,7 +2380,9 @@ function LineCard({
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {/* The launch date beside the pill (« Planifiée » before it, « À lancer » red from it). */}
           {canAffect && !linesLocked && (line.statut?.etat === 'planifiee' || line.statut?.etat === 'a_lancer') && (
-            <LancementLabel date={line.date_lancement} etape={line.etape_lancement} rouge={line.statut?.etat === 'a_lancer' && line.urgence === 'rouge'} />
+            <LancementLabel date={line.date_lancement} etape={line.etape_lancement} rouge={line.statut?.etat === 'a_lancer' && line.urgence === 'rouge'}
+              tropTard={line.prete_si_lance_le && line.date_livraison && line.prete_si_lance_le > line.date_livraison
+                ? { preteLe: line.prete_si_lance_le, delai: line.date_livraison } : null} />
           )}
           {line.statut && <StatutLignePill statut={line.statut} />}
           {isEditing && !linesLocked && (
@@ -2811,8 +2822,6 @@ function AffectationDrawer({
     linkSelected.length > 0 ? 'link' : shipSelected.length > 0 ? 'ship' : null
   const selRolls = selMode === 'link' ? linkSelected : shipSelected
   const selQty = selMode === 'link' ? linkQty : shipQty
-  const selAllCount = selMode === 'link' ? available.length : shippable.length
-  const selBusy = shipMut.isPending || linkBatchMut.isPending
 
   // Obs edit toggle rides the first section heading row of the Affectation
   // tab (title left, action right — §23 header pattern) instead of claiming
@@ -2899,21 +2908,39 @@ function AffectationDrawer({
                   </h3>
                   {obsToggle}
                 </div>
-                <div className="space-y-1.5">
-                  {linked.map((roll) => (
-                    <RollRow key={roll.id} roll={roll} dim={dim} action="unlink"
-                      kind={kind === 'fini' ? 'fini' : 'ecru'}
-                      readOnly={soldee}
+                <RollTable
+                  rolls={linked}
+                  kind={kind === 'fini' ? 'fini' : 'ecru'}
+                  // Expédier: only validated rolls not shipped yet (#1235); a terminée order selects nothing.
+                  selection={soldee ? undefined : {
+                    selected: shipSel,
+                    onToggle: toggleShip,
+                    blockedReason: (r) => (r.expedie ? 'Déjà expédié' : !r.expediable ? ROLL_NON_VALIDE_TITLE : undefined),
+                    allTitle: 'Tout sélectionner pour expédier',
+                    onToggleAll: () => {
+                      setLinkSel(new Set()); lastLinkIdRef.current = null
+                      const all = shippable.length > 0 && shippable.every((r) => shipSel.has(r.id))
+                      setShipSel(all ? new Set() : new Set(shippable.map((r) => r.id)))
+                      lastShipIdRef.current = all ? null : (shippable.at(-1)?.id ?? null)
+                    },
+                  }}
+                  notes={(roll) => (
+                    <RollNotes roll={roll} kind={kind === 'fini' ? 'fini' : 'ecru'}
                       onEditObs={soldee || !obsEditMode || !canEditObs ? undefined : () => setEditObsRoll(roll)}
                       onOpenMlNf={kind === 'fini' ? () => setMlNfRoll(roll) : undefined}
-                      mlNfEditable={canEditMlNf && obsEditMode && !soldee}
-                      onAction={() => unlinkMut.mutate(roll.id)}
-                      isBusy={unlinkMut.isPending && unlinkMut.variables === roll.id}
-                      selected={!soldee && !roll.expedie && roll.expediable && shipSel.has(roll.id)}
-                      onToggleSelect={soldee || roll.expedie || !roll.expediable ? undefined : (shiftKey) => toggleShip(roll.id, shiftKey)}
-                      selectBlockedReason={!soldee && !roll.expedie && !roll.expediable ? ROLL_NON_VALIDE_TITLE : undefined} />
+                      mlNfEditable={canEditMlNf && obsEditMode && !soldee} />
+                  )}
+                  action={(roll) => (soldee || roll.expedie ? null : (
+                    // A shipped roll's affectation is locked (the expedition owns it).
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
+                      onClick={(e) => { e.stopPropagation(); unlinkMut.mutate(roll.id) }}
+                      disabled={unlinkMut.isPending && unlinkMut.variables === roll.id}>
+                      {unlinkMut.isPending && unlinkMut.variables === roll.id
+                        ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Unlink className="h-3 w-3 mr-1" />}
+                      Retirer
+                    </Button>
                   ))}
-                </div>
+                />
               </section>
             )}
 
@@ -2927,17 +2954,27 @@ function AffectationDrawer({
                   </h3>
                   {linked.length === 0 ? obsToggle : null}
                 </div>
-                <div className="space-y-1.5">
-                  {available.map((roll) => (
-                    <RollRow key={roll.id} roll={roll} dim={dim}
-                      kind={kind === 'fini' ? 'fini' : 'ecru'}
+                <RollTable
+                  rolls={available}
+                  kind={kind === 'fini' ? 'fini' : 'ecru'}
+                  selection={{
+                    selected: linkSel,
+                    onToggle: toggleLink,
+                    allTitle: 'Tout sélectionner pour affecter',
+                    onToggleAll: () => {
+                      setShipSel(new Set()); lastShipIdRef.current = null
+                      const all = available.length > 0 && available.every((r) => linkSel.has(r.id))
+                      setLinkSel(all ? new Set() : new Set(available.map((r) => r.id)))
+                      lastLinkIdRef.current = all ? null : (available.at(-1)?.id ?? null)
+                    },
+                  }}
+                  notes={(roll) => (
+                    <RollNotes roll={roll} kind={kind === 'fini' ? 'fini' : 'ecru'}
                       onEditObs={obsEditMode && canEditObs ? () => setEditObsRoll(roll) : undefined}
                       onOpenMlNf={kind === 'fini' ? () => setMlNfRoll(roll) : undefined}
-                      mlNfEditable={canEditMlNf && obsEditMode}
-                      selected={linkSel.has(roll.id)}
-                      onToggleSelect={(shiftKey) => toggleLink(roll.id, shiftKey)} />
-                  ))}
-                </div>
+                      mlNfEditable={canEditMlNf && obsEditMode} />
+                  )}
+                />
               </section>
             )}
 
@@ -2955,27 +2992,6 @@ function AffectationDrawer({
           )}
           {!soldee && selMode !== null && (
             <div className="flex-shrink-0 px-3 py-2 border-t bg-zinc-200/50 flex items-center gap-2">
-              <div className="flex items-center gap-1">
-                <button type="button"
-                  onClick={() => {
-                    if (selMode === 'link') {
-                      setLinkSel(new Set(available.map((r) => r.id)))
-                      lastLinkIdRef.current = available[available.length - 1]?.id ?? null
-                    } else {
-                      setShipSel(new Set(shippable.map((r) => r.id)))
-                      lastShipIdRef.current = shippable[shippable.length - 1]?.id ?? null
-                    }
-                  }}
-                  disabled={selBusy || selRolls.length === selAllCount}
-                  className="text-[11px] text-accent hover:underline disabled:text-muted-foreground/50 disabled:no-underline disabled:cursor-default px-1">Tout</button>
-                <span className="text-muted-foreground/40 text-[11px]">·</span>
-                <button type="button" onClick={() => {
-                  setLinkSel(new Set()); setShipSel(new Set())
-                  lastLinkIdRef.current = null; lastShipIdRef.current = null
-                }}
-                  disabled={selBusy}
-                  className="text-[11px] text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40 disabled:cursor-default px-1">Aucun</button>
-              </div>
               <p className="text-[11px] text-muted-foreground tabular-nums ml-auto whitespace-nowrap">
                 {selRolls.length} rouleau{selRolls.length > 1 ? 'x' : ''} · {fmtNum(selQty, 1)} {uniteLabel}
               </p>
@@ -3032,6 +3048,8 @@ function AffectationDrawer({
               rows={supply?.ennoblissement ?? []}
               emptyLabel="Aucune commande ennoblisseur en cours"
               emptyIcon={Droplets}
+              // A fini line only: the pieces of that dyer order, reserved / free / back as fini (Vincent 2026-10-30).
+              onRowClick={ligne.type === 2 ? setEnnoTarget : undefined}
               columns={[
                 { key: 'no', label: 'N°', align: 'left', render: (r) => <span className="tabular-nums font-medium">{r.commande_id}</span> },
                 { key: 'dc', label: 'Date', align: 'left', render: (r) => fmtSupplyDate(r.date_commande) },
@@ -3320,153 +3338,148 @@ function SupplyTable<T extends { id: number }>({
   )
 }
 
-function RollRow({
-  roll, dim, action, onAction, isBusy, kind = 'ecru', onEditObs, selected, onToggleSelect, selectBlockedReason, readOnly = false,
-  onOpenMlNf, mlNfEditable = false,
-}: {
+// ── Rolls as a table (Affectation tab, Vincent 2026-10-30) ──
+// Same look as the « Pièces de la commande » dialog: type icon + Pièce, Poids and Métrage held together
+// on the left, then Lot, Magasin (where the roll leaves from, free stock only), État; notes and the row
+// action at the right. A selectable row is the click target (Shift+click range, §44); the header box
+// ticks all / none. Light-navy header: the table sits on the drawer's zinc panel (§31.4).
+
+interface RollTableSelection {
+  selected: Set<number>
+  onToggle: (id: number, shiftKey: boolean) => void
+  /** why a row cannot be picked (undefined = it can) */
+  blockedReason?: (r: RollLite) => string | undefined
+  onToggleAll: () => void
+  allTitle: string
+}
+
+function RollTable({ rolls, kind, selection, notes, action }: {
+  rolls: RollLite[]
+  kind: 'ecru' | 'fini'
+  selection?: RollTableSelection
+  notes: (r: RollLite) => ReactNode
+  action?: (r: RollLite) => ReactNode
+}) {
+  const choisissables = selection ? rolls.filter((r) => !selection.blockedReason?.(r)) : []
+  // A tombé de métier is weighed, not measured: no Métrage column unless a roll has one.
+  const avecMetrage = kind === 'fini' || rolls.some((r) => Number(r.metrage) > 0)
+  const nbCoches = choisissables.filter((r) => selection?.selected.has(r.id)).length
+  const etatTout: 'oui' | 'non' | 'partiel' = nbCoches === 0 ? 'non' : nbCoches === choisissables.length ? 'oui' : 'partiel'
+  return (
+    <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+      <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
+        <colgroup>
+          {selection && <col style={{ width: '40px' }} />}
+          <col style={{ width: '150px' }} />
+          <col style={{ width: '80px' }} />
+          {avecMetrage && <col style={{ width: '86px' }} />}
+          <col style={{ width: '120px' }} />
+          <col style={{ width: '110px' }} />
+          {kind === 'fini' && <col style={{ width: '120px' }} />}
+          <col />
+        </colgroup>
+        <thead className="bg-primary/10 border-b border-primary/10">
+          <tr className="text-[10px] uppercase tracking-wide text-primary/80">
+            {selection && (
+              <th className="px-2.5 py-2 text-center">
+                {choisissables.length > 0 && (
+                  <button type="button" role="checkbox" aria-checked={etatTout === 'oui'} onClick={selection.onToggleAll}
+                    title={etatTout === 'oui' ? 'Tout désélectionner' : selection.allTitle} className="inline-flex align-middle cursor-pointer">
+                    <CaseACocher etat={etatTout} />
+                  </button>
+                )}
+              </th>
+            )}
+            <th className="px-2.5 py-2 text-left font-semibold">Pièce</th>
+            <th className="px-2.5 py-2 text-right font-semibold">Poids</th>
+            {avecMetrage && <th className="px-2.5 py-2 text-right font-semibold">Métrage</th>}
+            <th className="pl-5 pr-2.5 py-2 text-left font-semibold">Lot</th>
+            <th className="px-2.5 py-2 text-left font-semibold">Localisation</th>
+            {kind === 'fini' && <th className="px-2.5 py-2 text-left font-semibold">État</th>}
+            <th className="px-2.5 py-2" />
+          </tr>
+        </thead>
+        <tbody>
+          {rolls.map((r) => {
+            const bloque = selection?.blockedReason?.(r)
+            const choisissable = !!selection && !bloque
+            const coche = choisissable && selection!.selected.has(r.id)
+            return (
+              <tr key={r.id}
+                onClick={choisissable ? (e) => selection!.onToggle(r.id, e.shiftKey) : undefined}
+                className={cn('border-b border-border/40 last:border-0',
+                  choisissable && 'cursor-pointer select-none',
+                  coche ? 'bg-accent/10' : choisissable && 'hover:bg-accent/5')}>
+                {selection && (
+                  <td className="px-2.5 py-1.5 text-center">
+                    {choisissable ? <CaseACocher etat={coche ? 'oui' : 'non'} /> : bloque ? (
+                      <span title={bloque} className="inline-flex h-4 w-4 items-center justify-center rounded border border-input bg-muted align-middle cursor-not-allowed">
+                        <Ban className="h-2.5 w-2.5 text-muted-foreground/70" />
+                      </span>
+                    ) : null}
+                  </td>
+                )}
+                <td className="px-2.5 py-1.5">
+                  <span className="inline-flex items-center gap-2 font-medium tabular-nums min-w-0">
+                    <span title={kind === 'fini' ? 'Fini' : 'Tombé de métier'} className="inline-flex flex-shrink-0">
+                      {kind === 'fini' ? <FiniRollIcon className="h-4 w-4 text-green-700" /> : <TmRollIcon className="h-4 w-4 text-muted-foreground" />}
+                    </span>
+                    <span className="truncate">{r.numero || `Rouleau ${r.id}`}</span>
+                  </span>
+                </td>
+                <td className="px-2.5 py-1.5 text-right tabular-nums">{Number(r.poids) > 0 ? `${fmtNum(Number(r.poids), 1)} kg` : '—'}</td>
+                {avecMetrage && <td className="px-2.5 py-1.5 text-right tabular-nums">{Number(r.metrage) > 0 ? `${fmtNum(Number(r.metrage), 1)} Ml` : ''}</td>}
+                <td className="pl-5 pr-2.5 py-1.5 truncate text-muted-foreground" title={r.lot ?? undefined}>{r.lot || '—'}</td>
+                {/* Where it is; on an expedition = shipped, whatever the roll row still says. */}
+                <td className="px-2.5 py-1.5 truncate" title={r.expedie ? 'Expédié' : r.magasin_nom ?? undefined}>{r.expedie ? 'Expédié' : r.magasin_nom || '—'}</td>
+                {/* A fini's quality état (can it ship?); a tombé de métier gives its location only. */}
+                {kind === 'fini' && <td className="px-2.5 py-1.5">{r.expedie ? null : <EtatPill libelle={r.etat_label} />}</td>}
+                <td className="px-2.5 py-1.5">
+                  <div className="flex items-center justify-end gap-1.5">
+                    {notes(r)}
+                    {action?.(r)}
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** A roll's notes at the end of its table row: défauts (dyer report, 2e choix), Ml non facturés, observations. */
+function RollNotes({ roll, onEditObs, onOpenMlNf, mlNfEditable = false }: {
   roll: RollLite
-  /** Fini: opens the « Ml non facturés » dialog. The amber icon shows whenever
-   *  the roll carries some; in « Modifier les observations » mode a grey icon
-   *  also shows on every empty roll for whoever holds edit_ml_non_factures
-   *  (`mlNfEditable`). */
+  kind: 'ecru' | 'fini'
+  onEditObs?: () => void
   onOpenMlNf?: () => void
   mlNfEditable?: boolean
-  dim: 'metrage' | 'poids'
-  /** Per-row action button. Omit action/onAction for checkbox-only rows
-   *  (batch selection lists — the batch button lives in the section header). */
-  action?: 'link' | 'unlink'
-  onAction?: () => void
-  isBusy?: boolean
-  /** Drives the domain icon: fini → green FiniRollIcon, écru → TmRollIcon
-   *  (mirrors the sous-traitant commande pieces drawer). */
-  kind?: 'ecru' | 'fini'
-  /** When set, a pencil opens the observations edit dialog for this roll. */
-  onEditObs?: () => void
-  /** Batch selection (Affectation tab): when onToggleSelect is set the row
-   *  shows a checkbox and highlights when selected. `shiftKey` is forwarded
-   *  so the caller can implement Shift+click range selection (§44). */
-  selected?: boolean
-  onToggleSelect?: (shiftKey: boolean) => void
-  /** In a selectable list, a row that cannot be picked shows a greyed box in
-   *  the checkbox slot with this reason as its tooltip (keeps rows aligned). */
-  selectBlockedReason?: string
-  /** Commande terminée: display only — no action button. */
-  readOnly?: boolean
 }) {
-  const primary = dim === 'metrage' ? Number(roll.metrage) || 0 : Number(roll.poids) || 0
-  const primaryLabel = dim === 'metrage' ? 'Ml' : 'kg'
-  const secondary = dim === 'metrage' ? Number(roll.poids) || 0 : Number(roll.metrage) || 0
-  const secondaryLabel = dim === 'metrage' ? 'kg' : 'Ml'
-  // Notes surface as hover icons on the right of the card (tooltip carries
-  // the text) instead of full-width banners — keeps the roll list compact.
   const obsText = roll.observations?.trim() ?? ''
-  const defautText = (roll.observation_sst ?? '').trim()
-  const isSecondChoix = Number(roll.second_choix) > 0
   const mlNf = Number(roll.ml_non_factures) || 0
   return (
-    <div
-      // When the row is selectable, the whole card is the click target —
-      // inner action buttons stop propagation so they don't also toggle.
-      onClick={onToggleSelect ? (e) => onToggleSelect(e.shiftKey) : undefined}
-      className={cn(
-        'rounded-lg border border-border/60 bg-card shadow-sm p-3',
-        // select-none: Shift+click must extend the selection, not highlight text.
-        onToggleSelect && 'cursor-pointer select-none hover:border-accent/40 transition-colors',
-        selected && 'border-accent ring-1 ring-accent bg-accent/[0.06]',
+    <>
+      <RollDefautsIcon secondChoix={Number(roll.second_choix) > 0} text={(roll.observation_sst ?? '').trim()} />
+      {onOpenMlNf && (mlNf > 0 || mlNfEditable) && (
+        <button type="button"
+          title={mlNf > 0 ? `${fmtNum(mlNf, 1)} Ml non facturés${roll.ml_non_factures_motif ? ` (${roll.ml_non_factures_motif})` : ''}` : 'Saisir des Ml non facturés'}
+          onClick={(e) => { e.stopPropagation(); onOpenMlNf() }}
+          className={cn('h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors cursor-pointer',
+            mlNf > 0 ? 'border border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100' : 'text-muted-foreground hover:text-amber-600 hover:bg-amber-50')}>
+          <BadgeEuro className="h-3.5 w-3.5" />
+        </button>
       )}
-    >
-      <div className="flex items-center gap-3">
-        {onToggleSelect && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onToggleSelect(e.shiftKey) }}
-            title={selected ? 'Retirer de la sélection' : 'Sélectionner'}
-            className={cn(
-              'h-5 w-5 rounded flex items-center justify-center flex-shrink-0 border transition-colors',
-              selected ? 'bg-accent border-accent text-accent-foreground' : 'border-input bg-background hover:border-accent/60',
-            )}
-          >
-            {selected && <CheckCircle2 className="h-3.5 w-3.5" />}
-          </button>
-        )}
-        {!onToggleSelect && selectBlockedReason && (
-          <span
-            title={selectBlockedReason}
-            className="h-5 w-5 rounded flex items-center justify-center flex-shrink-0 border border-input bg-muted cursor-not-allowed"
-          >
-            <Ban className="h-3 w-3 text-muted-foreground/70" />
-          </span>
-        )}
-        <div className={cn(
-          'h-10 w-10 rounded-md flex items-center justify-center flex-shrink-0',
-          kind === 'fini' ? 'bg-green-500/10' : 'bg-zinc-100',
-        )}>
-          {kind === 'fini'
-            ? <FiniRollIcon className="h-7 w-7 text-green-600" />
-            : <TmRollIcon className="h-7 w-7 text-muted-foreground" />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold truncate">{roll.numero || `Rouleau ${roll.id}`}</span>
-            {roll.lot && <span className="text-xs text-muted-foreground truncate">· Lot {roll.lot}</span>}
-          </div>
-          <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground tabular-nums">
-            <span className="font-medium text-foreground">{fmtNum(primary, 1)} {primaryLabel}</span>
-            {secondary > 0 && <span>· {fmtNum(secondary, 1)} {secondaryLabel}</span>}
-            {/* No coloris here — every roll in the drawer already matches the
-                line's coloris, so repeating it per row is pure noise. */}
-            {roll.magasin_nom && <span className="flex items-center gap-0.5 truncate"><MapPin className="h-2.5 w-2.5" />{roll.magasin_nom}</span>}
-          </div>
-          {mlNf > 0 && (
-            <MlNonFacturesMention ml={mlNf} motif={roll.ml_non_factures_motif} className="mt-1 text-[11px]" />
-          )}
-        </div>
-        <RollDefautsIcon secondChoix={isSecondChoix} text={defautText} />
-        {onOpenMlNf && (mlNf > 0 || mlNfEditable) && (
-          <button
-            type="button"
-            title={mlNf > 0 ? 'Ml non facturés' : 'Saisir des Ml non facturés'}
-            onClick={(e) => { e.stopPropagation(); onOpenMlNf() }}
-            className={cn(
-              'h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors cursor-pointer',
-              mlNf > 0
-                ? 'border border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100'
-                : 'text-muted-foreground hover:text-amber-600 hover:bg-amber-50',
-            )}
-          >
-            <BadgeEuro className="h-3.5 w-3.5" />
-          </button>
-        )}
-        {/* Observations: single affordance replacing the old pencil — gray
-            ghost when empty (click to add), blue framed when filled (hover
-            shows the text, click edits). */}
-        {obsText.length > 0 ? (
-          <RollObservationsIcon text={obsText} onClick={onEditObs} />
-        ) : onEditObs ? (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onEditObs() }}
-            className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 text-muted-foreground hover:text-blue-600 hover:bg-blue-50 transition-colors"
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
-          </button>
-        ) : null}
-        {/* A shipped roll's affectation is locked (the expedition owns it) —
-            no "Retirer"; the état pill already says why. Read-only mode
-            (commande terminée) hides the action entirely. */}
-        {!readOnly && action && onAction && !(action === 'unlink' && roll.expedie) && (
-          <Button size="sm" variant={action === 'link' ? 'default' : 'outline'} onClick={(e) => { e.stopPropagation(); onAction() }} disabled={isBusy} className="flex-shrink-0">
-            {isBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-              : action === 'link' ? <Link2 className="h-3.5 w-3.5 mr-1.5" /> : <Unlink className="h-3.5 w-3.5 mr-1.5" />}
-            {action === 'link' ? 'Affecter' : 'Retirer'}
-          </Button>
-        )}
-        {/* État pill anchored at the far right — the one element present on
-            every row, so it lands on the same spot regardless of which icons
-            or buttons happen to render on its left (mps_designer §37). */}
-        <EtatPill libelle={roll.etat_label} variant="solid" className="flex-shrink-0" />
-      </div>
-    </div>
+      {obsText.length > 0 ? (
+        <RollObservationsIcon text={obsText} onClick={onEditObs} />
+      ) : onEditObs ? (
+        <button type="button" title="Ajouter une observation" onClick={(e) => { e.stopPropagation(); onEditObs() }}
+          className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 text-muted-foreground hover:text-blue-600 hover:bg-blue-50 transition-colors">
+          <MessageSquare className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </>
   )
 }
 
@@ -4612,7 +4625,7 @@ function ExpeditionGroupeeDialog({
                         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent">
                           {editingContent ? (
                             <table className="w-full text-xs">
-                              <thead className="bg-zinc-200/60 border-b border-border/60 sticky top-0 z-10">
+                              <thead className="bg-zinc-200 border-b border-border/60 sticky top-0 z-10">
                                 <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
                                   <th className="px-2.5 py-2 font-semibold text-left w-full">Référence</th>
                                   <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">Variation 1</th>
@@ -4734,7 +4747,7 @@ function ExpeditionGroupeeDialog({
                             </table>
                           ) : (
                             <table className="w-full text-xs">
-                              <thead className="bg-zinc-200/60 border-b border-border/60 sticky top-0 z-10">
+                              <thead className="bg-zinc-200 border-b border-border/60 sticky top-0 z-10">
                                 <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
                                   <th className="px-2.5 py-2 font-semibold text-left w-full">Référence</th>
                                   <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">Variation 1</th>
@@ -4873,22 +4886,73 @@ function EditRollObsDialog({
   )
 }
 
-// ── Ennoblissement roll affectation modal ──────────────
-// Click an Ennoblissement supply row → reserve the dyer's input écru rolls
-// (stock_ecru via IDref_commande_affectation) to this client fini line.
-// Two-panel transfer (mps_designer §18.C): left = affected, right = available.
+// ── Ennoblissement: the pieces of one dyer order ───────
+// Click an Ennoblissement order row → every piece of that dyer line in ONE table (Vincent 2026-10-30):
+// still at the dyer (tick = reserved to this line, untick = released; Shift+click ranges, mps_designer
+// §44; header box = all / none), held elsewhere, or back as fini (roll, état, who it is reserved to —
+// changed in the Affectation tab). Nothing moves before « Enregistrer ».
 
+interface ReservationPiece { kind: 'ligne' | 'autre' | 'don' | 'stock'; label: string }
+interface FiniDePiece {
+  id: number
+  numero: string | null
+  poids: number
+  metrage: number
+  etat_label: string | null
+  expedie: boolean
+  localisation: string
+  reservation: ReservationPiece
+  observations: string | null
+  defauts: string | null
+  second_choix: boolean
+}
+interface PieceEnno {
+  id: number
+  numero: string | null
+  poids: number
+  metrage: number
+  localisation: string
+  situation: 'chez_ennoblisseur' | 'recue'
+  modifiable: boolean
+  reservation: ReservationPiece | null
+  observations: string | null
+  defauts: string | null
+  second_choix: boolean
+  finis: FiniDePiece[]
+}
 interface EnnoRollsPayload {
-  kind: 'ecru'
-  unite: number
   unite_label: string
   dim: 'metrage' | 'poids'
   target_qty: number
   rendement: number
   sst_nom: string | null
   reserved: number
-  linked: RollLite[]
-  available: RollLite[]
+  pieces: PieceEnno[]
+}
+
+/** Who a piece is for: this line in gold, another order in sky, a donation in amber, stock neutral. */
+function ReservationChip({ r }: { r: ReservationPiece }) {
+  return (
+    <span className={cn('inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[10px] font-medium truncate',
+      r.kind === 'ligne' ? 'bg-accent/15 text-amber-800 border-accent/40'
+        : r.kind === 'autre' ? 'bg-sky-500/10 text-sky-700 border-sky-500/25'
+          : r.kind === 'don' ? 'bg-amber-500/10 text-amber-800 border-amber-500/30'
+            : 'bg-zinc-100 text-zinc-700 border-zinc-300')}
+      title={r.label}>
+      {r.label}
+    </span>
+  )
+}
+
+/** A tick box drawn by hand: the row click owns the state (never preventDefault on a controlled checkbox, #1207). */
+function CaseACocher({ etat }: { etat: 'oui' | 'non' | 'partiel' }) {
+  return (
+    <span className={cn('inline-flex h-4 w-4 items-center justify-center rounded border transition-colors',
+      etat === 'non' ? 'border-input bg-background' : 'border-accent bg-accent text-accent-foreground')}>
+      {etat === 'oui' && <Check className="h-3 w-3" />}
+      {etat === 'partiel' && <Minus className="h-3 w-3" />}
+    </span>
+  )
 }
 
 function EnnoblissementAffectationDialog({
@@ -4904,105 +4968,218 @@ function EnnoblissementAffectationDialog({
   const sstLineId = row.id
   const queryKey = ['commande-client-enno-rolls', commandeId, ligneId, sstLineId]
   const base = `/commandes-client/${commandeId}/lignes/${ligneId}/supply/ennoblissement/${sstLineId}/rolls`
+  const { data, isLoading, isError } = useQuery<EnnoRollsPayload>({ queryKey, queryFn: () => apiFetch(base) })
 
-  const { data, isLoading, isError } = useQuery<EnnoRollsPayload>({
-    queryKey,
-    queryFn: () => apiFetch(base),
-  })
-  // Affecting a roll writes stock_ecru.IDref_commande_affectation /
-  // IDligne_commande_client — it leaves the free pool the stock screens list.
-  // A refusal (409 `piece_teinte` — the roll came back dyed since the list
-  // loaded, #1188 — or `piece_donnee`) is shown, never silent (#1184 lesson),
-  // and the lists are reloaded so the stale roll disappears.
-  const [linkError, setLinkError] = useState<string | null>(null)
-  const linkMut = useMutation({
-    mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'PUT' }),
-    onSuccess: (payload: EnnoRollsPayload) => { setLinkError(null); queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
+  const pieces = data?.pieces ?? []
+  const modifiables = useMemo(() => pieces.filter((x) => x.modifiable), [pieces])
+  // Métrage and État only mean something once a piece is back as fini (a tombé de métier has neither,
+  // Vincent 2026-10-30): shown as soon as one row needs them, blank on the tombé de métier rows.
+  const avecFini = pieces.some((x) => x.finis.length > 0)
+  const avecMetrage = avecFini || pieces.some((x) => x.metrage > 0)
+  // What the line holds on the server, then the ticks the person is making.
+  const initial = useMemo(() => new Set(modifiables.filter((x) => x.reservation?.kind === 'ligne').map((x) => x.id)), [modifiables])
+  const [coches, setCoches] = useState<Set<number> | null>(null)
+  const sel = coches ?? initial
+  const ancreRef = useRef<number | null>(null)
+  const [erreur, setErreur] = useState<string | null>(null)
+
+  const cocher = (id: number, shiftKey: boolean) => {
+    const ids = modifiables.map((x) => x.id)
+    const ancre = ancreRef.current
+    const next = new Set(sel)
+    if (shiftKey && ancre !== null && ancre !== id && ids.includes(ancre)) {
+      const [a, b] = [ids.indexOf(ancre), ids.indexOf(id)].sort((x, y) => x - y)
+      const retirer = sel.has(id)
+      for (let i = a; i <= b; i++) { if (retirer) next.delete(ids[i]); else next.add(ids[i]) }
+    } else {
+      if (next.has(id)) next.delete(id); else next.add(id)
+      ancreRef.current = id
+    }
+    setCoches(next)
+  }
+  const tout = sel.size > 0 && sel.size === modifiables.length
+  const basculerTout = () => {
+    setCoches(tout ? new Set() : new Set(modifiables.map((x) => x.id)))
+    ancreRef.current = tout ? null : (modifiables.at(-1)?.id ?? null)
+  }
+
+  const reserver = [...sel].filter((id) => !initial.has(id))
+  const liberer = [...initial].filter((id) => !sel.has(id))
+  const change = reserver.length + liberer.length > 0
+
+  const mut = useMutation({
+    mutationFn: () => apiFetch<EnnoRollsPayload>(base, { method: 'PUT', body: JSON.stringify({ reserver, liberer }) }),
+    onSuccess: (payload) => {
+      setErreur(null)
+      queryClient.setQueryData(queryKey, payload)
+      setCoches(null)
+      ancreRef.current = null
+      invalidateStockCaches(queryClient)
+      onSuccess()
+    },
     onError: (err: any) => {
-      setLinkError(err?.body?.message ?? 'Affectation refusée.')
+      setErreur(err?.body?.message ?? 'L’enregistrement a échoué.')
       queryClient.invalidateQueries({ queryKey })
     },
   })
-  const unlinkMut = useMutation({
-    mutationFn: (stockId: number) => apiFetch(`${base}/${stockId}`, { method: 'DELETE' }),
-    onSuccess: (payload: EnnoRollsPayload) => { queryClient.setQueryData(queryKey, payload); invalidateStockCaches(queryClient); onSuccess() },
-  })
 
-  const linked = data?.linked ?? []
-  const available = data?.available ?? []
-  const uniteLabel = data?.unite_label ?? 'Ml'
+  // The gauge follows the ticks before saving: what the line would hold.
+  const dim = data?.dim ?? 'metrage'
+  const rendement = data?.rendement ?? 0
+  const enUnite = (poids: number) => (dim === 'metrage' ? poids * rendement : poids)
+  const projete = modifiables.filter((x) => sel.has(x.id)).reduce((acc, x) => acc + enUnite(x.poids), 0)
+    + pieces.filter((x) => !x.modifiable && x.situation === 'chez_ennoblisseur' && x.reservation?.kind === 'ligne').reduce((acc, x) => acc + enUnite(x.poids), 0)
   const target = data?.target_qty ?? 0
-  const reserved = data?.reserved ?? 0
-  const pct = target > 0 ? Math.min(100, (reserved / target) * 100) : 0
+  const uniteLabel = data?.unite_label ?? 'Ml'
+  const pct = target > 0 ? Math.min(100, (projete / target) * 100) : 0
   const sstNom = data?.sst_nom ?? row.sous_traitant_nom ?? '—'
 
+  const notes = (obs: string | null, defauts: string | null, secondChoix: boolean) => (
+    <span className="inline-flex items-center gap-1">
+      <RollObservationsIcon text={obs} />
+      {(defauts || secondChoix) && <RollDefautsIcon text={defauts} secondChoix={secondChoix} />}
+    </span>
+  )
+
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-5xl h-[85vh] flex flex-col" onClose={onClose}>
+    <Dialog open onOpenChange={(o) => { if (!o && !mut.isPending) onClose() }}>
+      <DialogContent className="max-w-5xl h-[85vh] flex flex-col" onClose={mut.isPending ? undefined : onClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Droplets className="h-5 w-5 text-accent" />
-            Affecter le stock — {sstNom}
+            Pièces de la commande N°{row.commande_id} — {sstNom}
           </DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground">
-          Commande ennoblisseur N°<span className="tabular-nums">{row.commande_id}</span> · {fmtSupplyDate(row.date_commande)}
+          Commande du {fmtSupplyDate(row.date_commande)} · cochez les pièces encore chez l’ennoblisseur à réserver à la ligne, décochez pour les libérer
         </p>
 
-        {/* Progress: reserved toward the client line target */}
         <div className="mt-2 flex-shrink-0">
           <div className="flex items-center justify-between text-[11px] font-medium tabular-nums mb-1">
-            <span className="text-muted-foreground uppercase tracking-wide">Affecté à la commande</span>
+            <span className="text-muted-foreground uppercase tracking-wide">Réservé à la ligne</span>
             <span className={cn(pct >= 99.9 ? 'text-green-600' : 'text-foreground')}>
-              {fmtNum(reserved, 1)} / {fmtNum(target, 1)} {uniteLabel}
+              {fmtNum(projete, 1)} / {fmtNum(target, 1)} {uniteLabel}
             </span>
           </div>
           <div className="h-1.5 rounded-full bg-zinc-200 overflow-hidden">
             <div className={cn('h-full rounded-full transition-all', pct >= 99.9 ? 'bg-green-500' : 'bg-accent')} style={{ width: `${pct}%` }} />
           </div>
-          {linkError && <p className="text-xs text-destructive mt-1.5">{linkError}</p>}
         </div>
 
-        {/* Two-panel transfer */}
-        <div className="flex-1 min-h-0 flex gap-4 mt-3">
-          {/* Left: affected to this client order */}
-          <div className="flex-1 min-w-0 flex flex-col">
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5 flex-shrink-0">
-              Affecté à la commande ({linked.length})
-            </h3>
-            <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 px-1 scrollbar-transparent">
-              {linked.map((roll) => (
-                <RollRow key={roll.id} roll={roll} dim="poids" action="unlink"
-                  onAction={() => unlinkMut.mutate(roll.id)}
-                  isBusy={unlinkMut.isPending && unlinkMut.variables === roll.id} />
-              ))}
-              {!isLoading && linked.length === 0 && (
-                <p className="text-xs text-muted-foreground italic text-center py-6">Aucun rouleau affecté.</p>
-              )}
+        <div className="flex-1 min-h-0 mt-3 overflow-y-auto rounded-lg border border-border/60 bg-card scrollbar-transparent">
+          {isLoading ? (
+            <div className="p-3 space-y-2">{[1, 2, 3, 4].map((i) => <div key={i} className="h-8 bg-muted animate-pulse rounded" />)}</div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center py-8 text-destructive">
+              <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
             </div>
-          </div>
+          ) : pieces.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic text-center py-8">Aucune pièce sur cette commande.</p>
+          ) : (
+            <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
+              <colgroup>
+                {/* Pièce, Poids and Métrage held together on the left (Vincent 2026-10-30) */}
+                <col style={{ width: '40px' }} />
+                <col style={{ width: '150px' }} />
+                <col style={{ width: '80px' }} />
+                {avecMetrage && <col style={{ width: '86px' }} />}
+                <col style={{ width: '110px' }} />
+                {avecFini && <col style={{ width: '110px' }} />}
+                <col />
+                <col style={{ width: '64px' }} />
+              </colgroup>
+              <thead className="bg-zinc-200 border-b border-border/60 sticky top-0 z-10">
+                <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <th className="px-2.5 py-2 text-center">
+                    {modifiables.length > 0 && (
+                      <button type="button" role="checkbox" aria-checked={tout} onClick={basculerTout} disabled={mut.isPending}
+                        title={tout ? 'Tout retirer' : 'Tout réserver'} className="inline-flex align-middle cursor-pointer">
+                        <CaseACocher etat={tout ? 'oui' : sel.size > 0 ? 'partiel' : 'non'} />
+                      </button>
+                    )}
+                  </th>
+                  <th className="px-2.5 py-2 text-left font-semibold">Pièce</th>
+                  <th className="px-2.5 py-2 text-right font-semibold">Poids</th>
+                  {avecMetrage && <th className="px-2.5 py-2 text-right font-semibold">Métrage</th>}
+                  <th className="pl-5 pr-2.5 py-2 text-left font-semibold">Localisation</th>
+                  {avecFini && <th className="px-2.5 py-2 text-left font-semibold">État</th>}
+                  <th className="px-2.5 py-2 text-left font-semibold">Réservé à</th>
+                  <th className="px-2.5 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {pieces.flatMap((x) => {
+                  const coche = sel.has(x.id)
+                  if (x.situation === 'chez_ennoblisseur' || x.finis.length === 0) {
+                    const resa: ReservationPiece | null = x.modifiable
+                      ? (coche ? { kind: 'ligne', label: 'Cette ligne' } : { kind: 'stock', label: 'Stock' })
+                      : x.reservation
+                    return [(
+                      <tr key={`e${x.id}`}
+                        onClick={x.modifiable && !mut.isPending ? (e) => cocher(x.id, e.shiftKey) : undefined}
+                        className={cn('border-b border-border/40 last:border-0 select-none',
+                          x.modifiable ? 'cursor-pointer' : 'text-muted-foreground',
+                          x.modifiable && (coche ? 'bg-accent/10' : 'hover:bg-accent/5'))}>
+                        <td className="px-2.5 py-1.5 text-center">{x.modifiable && <CaseACocher etat={coche ? 'oui' : 'non'} />}</td>
+                        <td className="px-2.5 py-1.5">
+                          <span className="inline-flex items-center gap-2 font-medium tabular-nums text-foreground">
+                            <span title="Tombé de métier" className="inline-flex"><TmRollIcon className="h-4 w-4 text-muted-foreground" /></span>
+                            {x.numero ?? '—'}
+                          </span>
+                        </td>
+                        <td className="px-2.5 py-1.5 text-right tabular-nums">{fmtNum(x.poids, 1)} kg</td>
+                        {avecMetrage && <td className="px-2.5 py-1.5 text-right tabular-nums text-muted-foreground">{x.metrage > 0 ? `${fmtNum(x.metrage, 1)} Ml` : ''}</td>}
+                        <td className="pl-5 pr-2.5 py-1.5 truncate" title={x.localisation}>{x.localisation}</td>
+                        {avecFini && <td className="px-2.5 py-1.5" />}
+                        <td className="px-2.5 py-1.5">{resa && <ReservationChip r={resa} />}</td>
+                        <td className="px-2.5 py-1.5 text-right">{notes(x.observations, x.defauts, x.second_choix)}</td>
+                      </tr>
+                    )]
+                  }
+                  return x.finis.map((f, i) => (
+                    <tr key={`f${x.id}-${f.id}`} className="border-b border-border/40 last:border-0">
+                      <td className="px-2.5 py-1.5" />
+                      <td className="px-2.5 py-1.5">
+                        <span className="inline-flex items-center gap-2 font-medium tabular-nums">
+                          <span title="Fini" className="inline-flex"><FiniRollIcon className="h-4 w-4 text-green-700" /></span>
+                          {i === 0 ? (x.numero ?? '—') : null}
+                          {/* the roll's own number only when the dyer cut or joined pieces */}
+                          {f.numero && f.numero !== x.numero && (
+                            <span className="text-[11px] font-normal text-muted-foreground" title="Numéro du rouleau fini">{f.numero}</span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums">{fmtNum(f.poids || (i === 0 ? x.poids : 0), 1)} kg</td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums">{fmtNum(f.metrage, 1)} Ml</td>
+                      <td className="pl-5 pr-2.5 py-1.5 truncate" title={f.localisation}>{f.localisation}</td>
+                      <td className="px-2.5 py-1.5">{!f.expedie && f.etat_label ? <EtatPill libelle={f.etat_label} /> : null}</td>
+                      <td className="px-2.5 py-1.5"><ReservationChip r={f.reservation} /></td>
+                      <td className="px-2.5 py-1.5 text-right">{notes(f.observations, f.defauts, f.second_choix)}</td>
+                    </tr>
+                  ))
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
 
-          {/* Right: available at the dyer */}
-          <div className="flex-1 min-w-0 flex flex-col">
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5 flex-shrink-0">
-              Disponible chez l'ennoblisseur ({available.length})
-            </h3>
-            <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 px-1 scrollbar-transparent">
-              {isLoading && [1, 2, 3].map((i) => <div key={i} className="h-16 bg-muted animate-pulse rounded-lg" />)}
-              {isError && (
-                <div className="flex flex-col items-center justify-center py-6 text-destructive">
-                  <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
-                </div>
-              )}
-              {available.map((roll) => (
-                <RollRow key={roll.id} roll={roll} dim="poids" action="link"
-                  onAction={() => linkMut.mutate(roll.id)}
-                  isBusy={linkMut.isPending && linkMut.variables === roll.id} />
-              ))}
-              {!isLoading && !isError && available.length === 0 && (
-                <p className="text-xs text-muted-foreground italic text-center py-6">Aucun rouleau disponible.</p>
-              )}
-            </div>
+        <div className="mt-3 flex items-center gap-3 flex-shrink-0">
+          {erreur && (
+            <p className="flex items-center gap-1.5 text-xs text-destructive min-w-0">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" /><span className="truncate">{erreur}</span>
+            </p>
+          )}
+          {change && !erreur && (
+            <p className="text-xs text-muted-foreground">
+              {[reserver.length > 0 && `${reserver.length} à réserver`, liberer.length > 0 && `${liberer.length} à libérer`].filter(Boolean).join(' · ')}
+            </p>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Fermer</Button>
+            <Button onClick={() => mut.mutate()} disabled={!change || mut.isPending}>
+              {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+              Enregistrer
+            </Button>
           </div>
         </div>
       </DialogContent>
@@ -7081,34 +7258,10 @@ function ValiderCommandeDialog({ open, commande, isPending, error, onCancel, onC
   )
 }
 
-/** Info: when the order was validated, and the way back to « En préparation » while nothing has left. */
+/** Info: when the order was validated. One way: changing a date afterwards is a report, never a return to « En préparation ». */
 function ValidationKV({ commande }: { commande: CommandeDetail }) {
-  const queryClient = useQueryClient()
-  const canEdit = useHasPermission('edit_commandes_client')
-  const mut = useMutation({
-    mutationFn: () => apiFetch(`/commandes-client/${commande.IDcommande_client}/repasser-en-preparation`, { method: 'POST' }),
-    onSuccess: () => {
-      invalidateCommandeClientCaches(queryClient)
-      queryClient.invalidateQueries({ queryKey: ['commande-client', commande.IDcommande_client] })
-    },
-  })
   if (commande.en_preparation || !commande.validee_le) return null
-  const bloque = commande.retour_preparation_bloque
-  return (
-    <div className="space-y-0.5">
-      <KV label="Validée le" value={`${new Date(commande.validee_le).toLocaleDateString('fr-FR')}${commande.validee_par ? `, ${commande.validee_par}` : ''}`} />
-      {canEdit && Number(commande.est_soldee) !== 1 && (
-        <div className="flex justify-end">
-          <button type="button" disabled={!!bloque || mut.isPending} onClick={() => mut.mutate()}
-            title={bloque ? `Impossible : ${bloque}` : 'Revenir en préparation : les dates déjà données restent des engagements'}
-            className="text-[11px] font-medium text-accent hover:underline disabled:text-muted-foreground disabled:no-underline disabled:cursor-not-allowed">
-            Repasser en préparation
-          </button>
-        </div>
-      )}
-      {mut.error && <p className="text-[11px] text-destructive text-right">{(mut.error as any).body?.message ?? 'Échec'}</p>}
-    </div>
-  )
+  return <KV label="Validée le" value={`${new Date(commande.validee_le).toLocaleDateString('fr-FR')}${commande.validee_par ? `, ${commande.validee_par}` : ''}`} />
 }
 
 // ── Sidebar Tab: Info ──────────────────────────────────

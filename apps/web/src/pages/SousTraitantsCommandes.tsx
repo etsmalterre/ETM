@@ -578,6 +578,7 @@ const SST_PHASE_META: Record<SstPhase, {
   // « En traitement », not « teinture »: a dyer also washes only (2026-10-22).
   en_teinture:    { label: 'En traitement',    icon: Clock,        solid: 'bg-primary border-primary' },
   en_reception:   { label: 'En réception',     icon: Eye,          solid: 'bg-amber-500 border-amber-500' },
+  // en_controle (above) also serves Ennoblissement since 2026-10-30: everything back, lots still open.
   a_cloturer:     { label: 'À clôturer',       icon: CheckCircle2, solid: 'bg-teal-600 border-teal-600' },
 }
 
