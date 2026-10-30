@@ -78,7 +78,7 @@ export interface LigneFait {
    *  the dyer has answered, the next step is ours (v3, point du 07/10: 9029 « déjà contrôlée par
    *  Perrine, on attend le contrôle de Laëtitia »). */
   lotsAControler: string[]
-  /** From when the délai is due (lib/delai-sst.ts echeanceDelai: latest « Repousser », else date_notif, else bon de commande + 3 working days). */
+  /** From when the délai is due (lib/delai-sst.ts echeanceDelai: latest « Repousser », else date_notif, else bon de commande + 3 working days, + 1 when the pieces were already at the dyer). */
   relance: string | null
 }
 
@@ -199,7 +199,10 @@ export function construirePoint(jour: string, lignes: readonly LigneFait[]): Lig
     // « puis-je soumettre ? » would ask MATEL what only we can answer.
     const attenteChezNous = l.lotsAControler.length > 0
     // v4 (point du 09/10, 9017 due 12/10): from the exit date only; before it, the line is a §1 exit.
-    if (l.clientSoumission && !soumisRecent && !attenteChezNous && retard >= 0 && retard <= HORIZON_SOUMISSION_J) {
+    // v9 (point du 02/11, 9081 « c'est une référence que l'on soumet (LSF), la demande doit
+    // apparaître dans la rubrique 3 »): a « solde » is asked as a soumission even when the lots
+    // already back were just submitted or wait for our control: the question is about the rest.
+    if (l.clientSoumission && (partielle || (!soumisRecent && !attenteChezNous)) && retard >= 0 && retard <= HORIZON_SOUMISSION_J) {
       out.push({ ...base(l), section: 3, cle: `soumission:${l.idligne}`, datePrevue: null, commentaire: partielle ? 'solde' : '', pourquoi: `Le client demande des soumissions ; sortie prévue le ${jjmm(l.dateLivraison)}, pas de soumission envoyée depuis ${SOUMISSION_RECENTE_J} jours.` })
       continue
     }

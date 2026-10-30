@@ -19,7 +19,8 @@
 //
 // Two dates come out of them:
 //   - the ÉCHÉANCE: from when the délai is due — the latest report, else
-//     date_notif, else bon + 3 working days. The Point asks from that day on,
+//     date_notif, else bon + 3 working days; bon + 1 when every écru piece of
+//     the order was already at the dyer before the bon (v9 of the Point). The Point asks from that day on,
 //     every day until answered (lib/point-sst/regles.ts §5).
 //   - the RELANCE (what the card shows): the échéance, pushed back
 //     RELANCE_SUIVANTE_J working days after each relance. Red = it has come
@@ -34,6 +35,15 @@ import { plusJoursOuvres } from './cycle-ennoblissement.js'
 
 /** Working days the dyer gets after the bon de commande before we ask (the old seed). */
 export const DELAI_PREMIERE_DEMANDE_J = 3
+/** …when every piece was already at the dyer before the bon (Point v9, PE on the
+ *  points du 22/10 and 30/10: 9120, 9133, 9135 « pièces en stock chez Matel, inutile
+ *  d'attendre jusqu'au 3/11 pour demander un délai »): nothing to receive first. */
+export const DELAI_STOCK_J = 1
+/** « In stock there » = the last piece left us at least this many days before the
+ *  bon. A BL of the days just before is the shipment made FOR the order (9130 to
+ *  9132, shipped 27/10, bon 28/10: PE did not ask them early); the stock cases
+ *  were 34 to 63 days old. */
+export const STOCK_ANCIEN_J = 7
 /** Working days the dyer gets after a relance before it is ours to chase again. */
 export const RELANCE_SUIVANTE_J = 2
 
@@ -67,14 +77,21 @@ export interface FaitsDelai {
   reports: Report[]
   /** First délai received on a line, 'YYYY-MM-DD' (null: none recorded). */
   reponduLe: string | null
+  /** Every écru piece handed over for the order was shipped to the dyer before the
+   *  bon de commande (a surteinture, a new coloris on pieces in stock there). */
+  stockChezSst?: boolean
 }
 
-/** From when the délai is due: the latest report, else date_notif, else bon + 3. Pure. */
+/** From when the délai is due: the latest report, else date_notif, else bon + 3
+ *  (bon + 1 with the pieces already at the dyer). date_notif is seeded at bon + 3
+ *  when the bon is made: only a date moved by hand overrides the stock rule. Pure. */
 export function echeanceDelai(f: FaitsDelai): string | null {
   const report = [...f.reports].sort((a, b) => a.le.localeCompare(b.le)).at(-1)
   if (report) return report.echeance
-  if (f.dateNotif) return f.dateNotif
-  return f.demandeLe ? plusJoursOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
+  const seed = f.demandeLe ? plusJoursOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
+  if (f.dateNotif && f.dateNotif !== seed) return f.dateNotif
+  if (f.stockChezSst && f.demandeLe) return plusJoursOuvres(f.demandeLe, DELAI_STOCK_J)
+  return f.dateNotif ?? seed
 }
 
 /** The latest relance on or after the day the question was asked. Pure. */
@@ -107,7 +124,7 @@ export async function lireFaitsDelai(ids: number[], sql: Sql = mpsPg()): Promise
   if (cmdIds.length === 0) return out
   for (const id of cmdIds) out.set(id, vide())
 
-  const [entetes, bons, points, evenements] = await Promise.all([
+  const [entetes, bons, points, evenements, pieces] = await Promise.all([
     sql<{ id: number; date_notif: string | null }[]>`
       SELECT idcommande_sous_traitant AS id, to_char(date_notif, 'YYYY-MM-DD') AS date_notif
       FROM commande_sous_traitant WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
@@ -128,6 +145,17 @@ export async function lireFaitsDelai(ids: number[], sql: Sql = mpsPg()): Promise
              to_char(le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS jour,
              canal, note, to_char(echeance, 'YYYY-MM-DD') AS echeance, motif, imputable, par
       FROM delai_sst_evenement WHERE idcommande_sous_traitant = ANY(${cmdIds}) ORDER BY le`,
+    // The écru handed over per order, and when the last of it was shipped to the dyer
+    // (TRM's or ETM's BL); a piece with no BL keeps the order out of the stock rule.
+    sql<{ id: number; n: number; expedies: number; derniere: string | null }[]>`
+      SELECT l.idcommande_sous_traitant AS id, count(*)::int AS n, count(e.date)::int AS expedies,
+             to_char(max(e.date), 'YYYY-MM-DD') AS derniere
+      FROM stock_ecru se
+      JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = se.idref_commande_affectation
+      LEFT JOIN ligne_expedition le ON le.idligne_expedition = COALESCE(NULLIF(se.idligne_expedition_trm, 0), NULLIF(se.idligne_expedition_etm, 0))
+      LEFT JOIN expedition e ON e.idexpedition = le.idexpedition
+      WHERE l.idcommande_sous_traitant = ANY(${cmdIds})
+      GROUP BY l.idcommande_sous_traitant`,
   ])
 
   for (const e of entetes) out.get(Number(e.id))!.dateNotif = e.date_notif
@@ -138,6 +166,11 @@ export async function lireFaitsDelai(ids: number[], sql: Sql = mpsPg()): Promise
     if (e.type === 'relance') f.relances.push({ jour: e.jour, canal: (e.canal as CanalRelance) ?? 'email', par: e.par, note: e.note })
     else if (e.type === 'report' && e.echeance) f.reports.push({ le: e.le, echeance: e.echeance, motif: e.motif ?? '', imputable: (e.imputable as Imputable) ?? 'sous_traitant', par: e.par })
     else if (e.type === 'delai_recu' && (!f.reponduLe || e.jour < f.reponduLe)) f.reponduLe = e.jour
+  }
+  for (const p of pieces) {
+    const f = out.get(Number(p.id))!
+    const limite = f.demandeLe ? new Date(Date.parse(`${f.demandeLe}T00:00:00Z`) - STOCK_ANCIEN_J * 86_400_000).toISOString().slice(0, 10) : null
+    f.stockChezSst = p.n > 0 && p.expedies === p.n && !!p.derniere && !!limite && p.derniere <= limite
   }
   for (const f of out.values()) f.relances.sort((a, b) => a.jour.localeCompare(b.jour))
   return out

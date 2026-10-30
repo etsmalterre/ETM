@@ -169,6 +169,21 @@ describe('construirePoint', () => {
     })
   })
 
+  // v9: Pierre-Emmanuel's correction on the point du 02/11.
+  describe('v9 (point du 02/11)', () => {
+    const J = '2026-11-02'
+    const s9 = (l: LigneFait[]) => construirePoint(J, l).map((x) => `${x.section}:${x.idligne}:${x.commentaire}`)
+
+    it('a solde of a submitted reference, due today: §3 « solde », even just submitted and with a lot to control (9081)', () => {
+      expect(s9([ligne({ idligne: 1, dateLivraison: J, quantite: 6860, nbRecus: 65, metrageRecu: 4691, ecruAffectes: 95, clientSoumission: true, dernierSoumis: '2026-10-29', lotsAControler: ['MA109521'] })]))
+        .toEqual(['3:1:solde'])
+    })
+
+    it('nothing back yet, just submitted: unchanged, the order waits for the client (v3, 9037)', () => {
+      expect(s9([ligne({ idligne: 1, dateLivraison: J, clientSoumission: true, dernierSoumis: '2026-10-29' })])).toEqual([])
+    })
+  })
+
   // v7 (LIVA #1313): the coloris soumission, read from the Suivi lots cycle.
   describe('v7 (soumission coloris)', () => {
     const J = '2026-10-21'

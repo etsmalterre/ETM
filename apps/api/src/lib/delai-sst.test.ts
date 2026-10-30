@@ -24,6 +24,19 @@ describe('échéance du délai', () => {
   })
 })
 
+describe('v9: pieces already at the dyer before the bon', () => {
+  it('asked the next working day (9133, bon 29/10, pieces shipped 27/08)', () => {
+    expect(echeanceDelai(faits({ demandeLe: '2026-10-29', dateNotif: '2026-11-03', stockChezSst: true }))).toBe('2026-10-30')
+  })
+  it('Friday bon: Monday', () => {
+    expect(echeanceDelai(faits({ demandeLe: '2026-10-30', stockChezSst: true }))).toBe('2026-11-02')
+  })
+  it('a date_notif moved by hand, or a report, still wins', () => {
+    expect(echeanceDelai(faits({ demandeLe: '2026-10-29', dateNotif: '2026-11-05', stockChezSst: true }))).toBe('2026-11-05')
+    expect(echeanceDelai(faits({ demandeLe: '2026-10-29', stockChezSst: true, reports: [{ le: '2026-10-29T10:00', echeance: '2026-11-04', motif: 'a', imputable: 'malterre', par: null }] }))).toBe('2026-11-04')
+  })
+})
+
 describe('relance due (what turns the card red)', () => {
   // 9117: bon 19/10, échéance 22/10, MATEL asked in the Point sent 22/10.
   const p9117 = faits({ demandeLe: '2026-10-19', relances: [{ jour: '2026-10-22', canal: 'point', par: null, note: null }] })

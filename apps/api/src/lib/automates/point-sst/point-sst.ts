@@ -21,7 +21,7 @@ import type { Issue } from '../catalog.js'
 import type { AutomateRun } from '../store.js'
 
 export const SLUG = 'point-sst'
-export const VERSION = 8
+export const VERSION = 9
 export const VERSIONS = [
   {
     version: 1,
@@ -62,6 +62,11 @@ export const VERSIONS = [
     version: 8,
     date: '2026-10-26',
     note: 'Suit les contrôles par référence de Finis › Références (commande 3885, piste d’escrime 119B que personne ne mesure) : la rubrique 2 « contrôles » demande au teinturier toutes ses mesures — laize, poids et stabilités, plus seulement laize ou poids — et ne demande plus rien pour une référence dont le « Contrôle ennoblisseur » est désactivé.',
+  },
+  {
+    version: 9,
+    date: '2026-10-30',
+    note: 'Corrigée sur les retours de Pierre-Emmanuel aux points du 30/10 et du 02/11. Quand toutes les pièces de la commande étaient déjà chez le teinturier au moins 7 jours avant le bon de commande (surteinture, nouveau coloris sur des pièces en stock chez MATEL : 9120, 9133, 9135), le délai est demandé dès le jour ouvré suivant le bon au lieu de bon + 3 jours ouvrés, sauf date de relance changée à la main ; la carte de Sous-traitants › Ennoblissement suit la même échéance. Un solde d’une référence que le client fait soumettre est demandé en rubrique 3 « solde » le jour de sa sortie, même si les lots déjà revenus viennent d’être soumis ou attendent notre contrôle (9081, Le Slip Français), au lieu de ses métrages en rubrique 4.',
   },
 ] as const
 
