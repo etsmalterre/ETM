@@ -135,7 +135,14 @@ routes.get('/:slug/runs/:id', async (req, res) => {
   if (!def) return
   const run = await lireRun(def.slug, req.params.id)
   if (!run) { res.status(404).json({ error: 'exécution introuvable' }); return }
-  res.json({ run })
+  try {
+    const detail = def.detailRun ? await def.detailRun(run) : null
+    const notes = (await lireEtat(def.slug)).retours.filter((r) => r.runId === run.id)
+    res.json({ run, detail, notes })
+  } catch (err) {
+    console.error('[automates] run detail failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
 })
 
 /** Live view of the device (read-only; logs in and out of the NVR). */
@@ -157,7 +164,9 @@ routes.get('/:slug/retours', async (req, res) => {
   const def = automateOu404(req, res)
   if (!def) return
   const state = await lireEtat(def.slug)
-  res.json({ retours: [...state.retours].reverse() })
+  // A note on a run carries the run's date (the card names the run it is about).
+  const runLe = new Map((await lireRuns(def.slug)).map((r) => [r.id, r.createdAt]))
+  res.json({ retours: [...state.retours].reverse().map((r) => (r.runId ? { ...r, runLe: runLe.get(r.runId) ?? null } : r)) })
 })
 
 // ── destinataires (automates that mail subscribers, lib/automates/abonnement.ts) ──
@@ -323,6 +332,20 @@ routes.post('/:slug/retours', async (req, res) => {
   const version = parsed.data.version ?? def.version
   if (!def.versions.some((v) => v.version === version)) { res.status(400).json({ error: 'version inconnue' }); return }
   const retour = await ajouterRetour(def.slug, { version, texte: parsed.data.texte, par: await auteur(uid) })
+  res.status(201).json({ retour })
+})
+
+/** A developer's note on one run, for the next version (Retours › Développeur). */
+routes.post('/:slug/runs/:id/retours', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = automateOu404(req, res)
+  if (!def) return
+  const parsed = retourBody.safeParse(req.body)
+  if (!parsed.success) { res.status(400).json({ error: 'Écrivez la note.' }); return }
+  const run = await lireRun(def.slug, req.params.id)
+  if (!run) { res.status(404).json({ error: 'exécution introuvable' }); return }
+  const retour = await ajouterRetour(def.slug, { version: run.version, texte: parsed.data.texte, par: await auteur(uid), runId: run.id })
   res.status(201).json({ retour })
 })
 

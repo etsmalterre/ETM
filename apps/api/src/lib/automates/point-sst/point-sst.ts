@@ -12,12 +12,13 @@
 
 import { msHeureParis, partiesParis } from '../../pointage-etat.js'
 import { jourSuivantOuvre } from '../../point-sst/regles.js'
-import { pointsAEnvoyer, preparerPoint, marquerErreurEnvoi } from '../../point-sst/db.js'
+import { lirePoint, pointsAEnvoyer, preparerPoint, marquerErreurEnvoi, PointIntrouvable } from '../../point-sst/db.js'
 import { envoyerPoint } from '../../point-sst/envoi.js'
 import { lireFaits } from '../../point-sst/lecture.js'
 import { construirePoint } from '../../point-sst/regles.js'
 import { mpsPg } from '../../mps-pg.js'
 import type { Issue } from '../catalog.js'
+import type { AutomateRun } from '../store.js'
 
 export const SLUG = 'point-sst'
 export const VERSION = 8
@@ -145,4 +146,25 @@ export async function executer(mode: 'essai' | 'actif', resultat: Record<string,
 
   if (applique) return { statut: 'applique', resume: faits.join(' ') }
   return { statut: 'inchange', resume: faits.join(' ') || 'Rien à faire.' }
+}
+
+/** A run's dialog (Vincent 2026-10-30): the point it prepared or sent as it
+ *  stands now, line by line: what the automate proposed (`auto`), what a person
+ *  corrected, removed (with their « pourquoi ») or added by hand. An essai run
+ *  carries its proposal in `resultat.proposes`. A point deleted since: null. */
+export async function detailRun(run: AutomateRun): Promise<{ points: Array<{ id: number; point: Awaited<ReturnType<typeof lirePoint>> | null }> }> {
+  const r = run.resultat ?? {}
+  const ids = [...(Array.isArray(r.prepares) ? r.prepares : []), ...(Array.isArray(r.envois) ? r.envois : [])]
+    .map((x) => Number((x as { point?: unknown }).point))
+    .filter((n, i, a) => n > 0 && a.indexOf(n) === i)
+  const points = []
+  for (const id of ids) {
+    try {
+      points.push({ id, point: await lirePoint(id) })
+    } catch (err) {
+      if (!(err instanceof PointIntrouvable)) throw err
+      points.push({ id, point: null })
+    }
+  }
+  return { points }
 }

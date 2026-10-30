@@ -14,7 +14,7 @@
 // VideoRun / VideoEtat; TRM's two pointage report emails (rapport-pointage,
 // bilan-heures) share RapportRun.
 
-import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -24,6 +24,7 @@ import {
   Camera,
   CheckCircle2,
   CircleDashed,
+  CircleSlash,
   Clock,
   Cog,
   Eye,
@@ -33,8 +34,10 @@ import {
   Info,
   Loader2,
   Mail,
+  Pencil,
   MessagesSquare,
   Play,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -48,6 +51,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
+import { PopoverSelect } from '@/components/ui/popover-select'
+import { SmartSearchInput, foldSearchText, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { useHasPermission } from '@/contexts/PermissionsContext'
@@ -72,6 +77,15 @@ import {
   type Mode,
   type Sondage,
 } from '@/components/agents-ia/commun'
+import {
+  CarteRetour,
+  CommentaireUtilisateur,
+  EntreeRetour,
+  NoteDev,
+  VideRetours,
+  VueRetoursBoutons,
+  type VueRetours,
+} from '@/components/agents-ia/retours'
 
 // ── Types (mirror routes/automates.ts) ───────────────────
 
@@ -120,7 +134,11 @@ interface AutomateVue {
   retoursVersion: number
 }
 
-interface Retour { id: string; version: number; texte: string; par: Auteur; le: string; cible?: { libelle: string; lien?: string } }
+interface Retour {
+  id: string; version: number; texte: string; par: Auteur; le: string; cible?: { libelle: string; lien?: string }
+  /** A developer's note on one run, and that run's date (GET /:slug/retours). */
+  runId?: string; runLe?: string | null
+}
 
 const STATUT_META: Record<Statut, { label: string; solid: string; text: string; icon: ComponentType<{ className?: string }> }> = {
   applique: { label: 'Appliqué', solid: 'bg-success border-success', text: 'text-success', icon: CheckCircle2 },
@@ -229,7 +247,7 @@ export function Automates({ basePath = '/automates' }: { basePath?: string } = {
         hasSelection={selectedSlug !== null}
         onBack={() => setSelectedSlug(null)}
       />
-      {selectedSlug && <RunDialog slug={selectedSlug} runId={openRunId} onClose={() => setOpenRunId(null)} />}
+      {selectedSlug && <RunDialog slug={selectedSlug} runId={openRunId} canPilot={canPilot} onClose={() => setOpenRunId(null)} />}
     </BaseApiProvider>
   )
 }
@@ -377,9 +395,9 @@ function DetailMain({ automate, isLoading, hasSelection, canPilot, onOpenRun }: 
         })}
       </div>
       <div className="flex-1 min-h-0 overflow-auto space-y-2 pt-3 px-1 pb-1">
-        {activeTab === 'executions' && <ExecutionsTab slug={automate.slug} onOpenRun={onOpenRun} />}
+        {activeTab === 'executions' && <ExecutionsTab automate={automate} onOpenRun={onOpenRun} />}
         {activeTab === 'etat' && <EtatTab slug={automate.slug} />}
-        {activeTab === 'retours' && <RetoursTab automate={automate} canPilot={canPilot} />}
+        {activeTab === 'retours' && <RetoursTab automate={automate} canPilot={canPilot} onOpenRun={onOpenRun} />}
         {activeTab === 'fonctionnement' && <FonctionnementTab automate={automate} />}
       </div>
     </div>
@@ -388,42 +406,109 @@ function DetailMain({ automate, isLoading, hasSelection, canPilot, onOpenRun }: 
 
 // ── Exécutions ───────────────────────────────────────────
 
-const RUN_FILTERS: Array<{ key: string; label: string; query: string }> = [
-  { key: 'tout', label: 'Toutes', query: '' },
-  { key: 'applique', label: 'Appliquées', query: '?statut=applique' },
-  { key: 'simule', label: 'Simulées', query: '?statut=simule' },
-  { key: 'erreur', label: 'Erreurs', query: '?statut=erreur' },
+type RunTag = SearchTagDef<AutomateRun> & { groupe: 'Statut' | 'Source' }
+
+const RUN_TAG_DEFS: Array<{ key: string; label: string; groupe: RunTag['groupe']; match: (r: AutomateRun) => boolean; cls: string; icon: ComponentType<{ className?: string }> }> = [
+  ...(Object.keys(STATUT_META) as Statut[]).map((s) => ({
+    key: s, label: STATUT_META[s].label, groupe: 'Statut' as const, match: (r: AutomateRun) => r.statut === s,
+    cls: cn('text-white', STATUT_META[s].solid), icon: STATUT_META[s].icon,
+  })),
+  ...(Object.keys(SOURCE_LABEL) as Source[]).map((s) => ({
+    key: `source-${s}`, label: SOURCE_LABEL[s], groupe: 'Source' as const, match: (r: AutomateRun) => r.source === s,
+    cls: 'border-border/60 bg-zinc-100/80 text-muted-foreground', icon: s === 'manuel' ? Play : s === 'arret' ? CircleSlash : Clock,
+  })),
 ]
 
-function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: string) => void }) {
+/** The tags with their counts on the loaded runs. */
+function runTags(runs: AutomateRun[]): RunTag[] {
+  return RUN_TAG_DEFS.map((d) => ({
+    key: d.key,
+    label: d.label,
+    groupe: d.groupe,
+    predicate: d.match,
+    count: runs.filter(d.match).length,
+    renderPill: (trailing?: ReactNode) => {
+      const Icon = d.icon
+      return (
+        <span className={cn('inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap', d.cls)}>
+          <Icon className="h-3 w-3" />{d.label}{trailing}
+        </span>
+      )
+    },
+  }))
+}
+
+/** Tags (OR within a family, AND across), then the typed text on the summary and who launched it. */
+function filtrerRuns(runs: AutomateRun[], tags: RunTag[], actifs: readonly string[], texte: string): AutomateRun[] {
+  const choisis = tags.filter((t) => actifs.includes(t.key))
+  const familles = (['Statut', 'Source'] as const).map((g) => choisis.filter((t) => t.groupe === g)).filter((g) => g.length > 0)
+  const t = foldSearchText(texte.trim())
+  return runs.filter((r) =>
+    familles.every((g) => g.some((tag) => tag.predicate(r)))
+    && (!t || [r.resume, r.lancePar?.nom, r.erreur].some((v) => v != null && foldSearchText(v).includes(t))))
+}
+
+/** Version selector value for « every version ». */
+const TOUTES_VERSIONS = -1
+
+/** Options of the version selector, newest first, « Toutes les versions » last when asked. */
+function optionsVersions(automate: AutomateVue, toutes: boolean) {
+  return [
+    ...[...automate.versions].sort((a, b) => b.version - a.version).map((v) => ({
+      id: v.version,
+      primary: `Version ${v.version}`,
+      secondary: v.version === automate.version ? 'active' : undefined,
+    })),
+    ...(toutes ? [{ id: TOUTES_VERSIONS, primary: 'Toutes les versions' }] : []),
+  ]
+}
+
+// Same toolbar as Agents IA › Exécutions (Vincent 2026-10-30): the version,
+// then one search bar whose tags filter by statut and source.
+function ExecutionsTab({ automate, onOpenRun }: { automate: AutomateVue; onOpenRun: (id: string) => void }) {
   const base = useBaseApi()
-  const [filtre, setFiltre] = useState('tout')
-  const query = RUN_FILTERS.find((f) => f.key === filtre)?.query ?? ''
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['automate-runs', slug, filtre],
-    queryFn: () => apiFetch<{ runs: AutomateRun[] }>(`${base}/${slug}/runs${query}`).then((r) => r.runs),
+  const slug = automate.slug
+  // null = follow the current version.
+  const [choix, setChoix] = useState<number | null>(null)
+  const version = choix ?? automate.version
+  const [texte, setTexte] = useState('')
+  const [actifs, setActifs] = useState<string[]>([])
+  const { data: tous, isLoading, isError } = useQuery({
+    queryKey: ['automate-runs', slug],
+    queryFn: () => apiFetch<{ runs: AutomateRun[] }>(`${base}/${slug}/runs`).then((r) => r.runs),
     refetchInterval: 30_000,
   })
+  const brut = useMemo(() => (tous ?? []).filter((r) => version === TOUTES_VERSIONS || r.version === version), [tous, version])
+  const tags = useMemo(() => runTags(brut), [brut])
+  const runs = filtrerRuns(brut, tags, actifs, texte)
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-1">
-        {RUN_FILTERS.map((f) => (
-          <button key={f.key} type="button" onClick={() => setFiltre(f.key)}
-            className={cn('px-3 py-1 text-xs rounded-md transition-colors',
-              filtre === f.key ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10')}>
-            {f.label}
-          </button>
-        ))}
+      <div className="flex items-center gap-2">
+        <PopoverSelect size="sm" widthClass="w-[190px]" hideEmpty mutedSecondary options={optionsVersions(automate, true)} value={version}
+          onChange={(v) => { if (v) setChoix(v === automate.version ? null : v) }} />
+        <SmartSearchInput<never, AutomateRun>
+          className="flex-1 min-w-0"
+          value={texte}
+          onValueChange={setTexte}
+          tags={tags}
+          activeTags={actifs}
+          onActiveTagsChange={setActifs}
+          placeholder="Rechercher (résumé, lancé par…) ou filtrer"
+          chipPlaceholder="Rechercher…"
+        />
+        {tous && (
+          <span className="flex-shrink-0 text-xs text-muted-foreground tabular-nums">
+            {runs.length} exécution{runs.length !== 1 ? 's' : ''}
+          </span>
+        )}
       </div>
-      <p className="text-[11px] text-muted-foreground">
-        Une vérification horaire sans changement n’est pas listée : elle met seulement à jour « Dernier contrôle » dans l’aperçu.
-      </p>
       {isLoading ? <div className="flex items-center justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
       : isError ? <div className="flex items-center gap-2 text-sm text-destructive py-4"><AlertCircle className="h-4 w-4" />Impossible de charger les exécutions.</div>
-      : !data?.length ? (
+      : runs.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-          <History className="h-12 w-12 mb-3 opacity-40" /><p className="text-sm">Aucune exécution</p>
+          <History className="h-12 w-12 mb-3 opacity-40" />
+          <p className="text-sm">{brut.length > 0 ? 'Aucune exécution ne correspond' : version === TOUTES_VERSIONS ? 'Aucune exécution' : `Aucune exécution sur la version ${version}`}</p>
         </div>
       ) : (
         <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
@@ -442,7 +527,7 @@ function ExecutionsTab({ slug, onOpenRun }: { slug: string; onOpenRun: (id: stri
               </tr>
             </thead>
             <tbody>
-              {data.map((r) => (
+              {runs.map((r) => (
                 <tr key={r.id} onClick={() => onOpenRun(r.id)} className="border-b border-border/40 last:border-0 cursor-pointer hover:bg-accent/5 transition-colors">
                   <td className="px-3 py-2 tabular-nums whitespace-nowrap">{fmtDateCourte(r.createdAt)}</td>
                   <td className="px-3 py-2 text-muted-foreground truncate" title={r.lancePar?.nom}>
@@ -758,18 +843,211 @@ function RapportRun({ run }: { run: AutomateRun }) {
 
 // ── Run dialog (§18.D banded « bilan ») ──────────────────
 
-function RunDialog({ slug, runId, onClose }: { slug: string; runId: string | null; onClose: () => void }) {
+// ── Point sous-traitant run (Vincent 2026-10-30) ─────────
+// What the automate proposed and what the person did with it, line by line:
+// the point as it stands now (GET /:slug/runs/:id `detail`, read from
+// point_sst). An essai run shows its proposal, nothing was saved.
+
+/** Mirror of lib/point-sst/regles.ts SECTIONS (short titles). */
+const SECTIONS_POINT: Record<number, string> = { 1: 'Sorties prévues', 2: 'Contrôles', 3: 'Soumissions', 4: 'Métrages', 5: 'Délais', 6: 'Études' }
+
+interface ChampsPoint { commande: string; reference: string; coloris: string; datePrevue: string | null; commentaire: string }
+interface LignePointRun extends ChampsPoint {
+  id: number
+  section: number
+  origine: 'auto' | 'manuel'
+  pourquoi: string
+  auto: ChampsPoint | null
+  modifiee: boolean
+  retiree: boolean
+  retour: { id: string; texte: string; par: string | null } | null
+  modifieLe: string | null
+  modifiePar: string | null
+}
+interface PointRun {
+  id: number
+  sousTraitant: string
+  jour: string
+  statut: 'brouillon' | 'programme' | 'envoye'
+  envoiPrevuLe: string | null
+  programmePar: string | null
+  envoyeLe: string | null
+  envoyePar: string | null
+  lignes: LignePointRun[]
+}
+interface DetailPointSst { points: Array<{ id: number; point: PointRun | null }> }
+interface PropositionEssai { jour: string; lignes: Array<{ section: number; commande: string; reference: string; coloris: string; commentaire: string; pourquoi: string }> }
+
+const jjmmPoint = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+
+/** « 9013 · 3560/3 · violet · 03/11 », the fields that are filled. */
+const identite = (c: Pick<ChampsPoint, 'commande' | 'reference' | 'coloris'> & { datePrevue?: string | null }) =>
+  [c.commande, c.reference, c.coloris, c.datePrevue ? jjmmPoint(c.datePrevue) : ''].filter(Boolean).join(' · ')
+
+function PointSstRun({ run, detail }: { run: AutomateRun; detail: DetailPointSst | null }) {
+  const proposes = (run.resultat?.proposes as PropositionEssai[] | undefined) ?? []
+  const points = detail?.points ?? []
+  if (proposes.length === 0 && points.length === 0) return null
+  return (
+    <>
+      {proposes.map((p, i) => (
+        <div key={`essai-${i}`} className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-3">
+          <p className="text-sm font-semibold">Point du {jjmmPoint(p.jour)} proposé <span className="font-normal text-muted-foreground">· essai, rien n’a été enregistré</span></p>
+          {Object.keys(SECTIONS_POINT).map(Number).filter((s) => p.lignes.some((l) => l.section === s)).map((s) => (
+            <SectionPoint key={s} section={s}>
+              {p.lignes.filter((l) => l.section === s).map((l, j) => (
+                <li key={j} className="py-1.5 space-y-0.5">
+                  <p className="text-sm"><span className="font-medium tabular-nums">{identite(l)}</span>{l.commentaire && <span> : {l.commentaire}</span>}</p>
+                  {l.pourquoi && <p className="text-[11px] text-muted-foreground">{l.pourquoi}</p>}
+                </li>
+              ))}
+            </SectionPoint>
+          ))}
+        </div>
+      ))}
+      {points.map(({ id, point }) => point
+        ? <PointDetail key={id} point={point} />
+        : <p key={id} className="text-xs text-muted-foreground italic">Le point {id} n’existe plus.</p>)}
+    </>
+  )
+}
+
+function PointDetail({ point }: { point: PointRun }) {
+  const auto = point.lignes.filter((l) => l.origine === 'auto')
+  const n = {
+    proposees: auto.length,
+    corrigees: auto.filter((l) => l.modifiee && !l.retiree).length,
+    retirees: auto.filter((l) => l.retiree).length,
+    ajoutees: point.lignes.filter((l) => l.origine === 'manuel').length,
+  }
+  const etat = point.statut === 'envoye'
+    ? `envoyé${point.envoyeLe ? ` le ${fmtDateHeure(point.envoyeLe)}` : ''}${point.envoyePar ? ` par ${point.envoyePar}` : ''}`
+    : point.statut === 'programme'
+    ? `programmé${point.envoiPrevuLe ? ` pour le ${fmtDateHeure(point.envoiPrevuLe)}` : ''}${point.programmePar ? ` par ${point.programmePar}` : ''}`
+    : 'en brouillon'
+  return (
+    <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-3">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="text-sm font-semibold truncate">Point du {jjmmPoint(point.jour)} · {point.sousTraitant}</p>
+          <LienErp to="/sous-traitants/point" className="ml-auto flex-shrink-0 text-xs text-accent hover:underline">Ouvrir le point</LienErp>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {etat} · {n.proposees} ligne{n.proposees !== 1 ? 's' : ''} proposée{n.proposees !== 1 ? 's' : ''} par l’automate, {n.corrigees} corrigée{n.corrigees !== 1 ? 's' : ''}, {n.retirees} retirée{n.retirees !== 1 ? 's' : ''}, {n.ajoutees} ajoutée{n.ajoutees !== 1 ? 's' : ''} à la main
+        </p>
+      </div>
+      {Object.keys(SECTIONS_POINT).map(Number).filter((s) => point.lignes.some((l) => l.section === s)).map((s) => (
+        <SectionPoint key={s} section={s}>
+          {point.lignes.filter((l) => l.section === s).map((l) => <LignePointDetail key={l.id} l={l} />)}
+        </SectionPoint>
+      ))}
+    </div>
+  )
+}
+
+function SectionPoint({ section, children }: { section: number; children: ReactNode }) {
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">{section}. {SECTIONS_POINT[section]}</p>
+      <ul className="divide-y divide-border/40">{children}</ul>
+    </div>
+  )
+}
+
+/** One line: as sent, then what the person did to the automate's proposal. */
+function LignePointDetail({ l }: { l: LignePointRun }) {
+  const qui = [l.modifiePar, l.modifieLe ? fmtDateHeure(l.modifieLe) : ''].filter(Boolean).join(', ')
+  // A corrected line: the automate's fields that differ, struck through.
+  const avant = l.origine === 'auto' && l.modifiee && l.auto
+    ? (['commande', 'reference', 'coloris', 'datePrevue', 'commentaire'] as const).filter((k) => (l.auto![k] ?? '') !== (l[k] ?? ''))
+    : []
+  return (
+    <li className="py-2 space-y-1">
+      <div className="flex items-start gap-2">
+        <p className={cn('text-sm min-w-0 flex-1', l.retiree && 'line-through text-muted-foreground')}>
+          <span className="font-medium tabular-nums">{identite(l)}</span>{l.commentaire && <span> : {l.commentaire}</span>}
+        </p>
+        {l.retiree ? <EtiquetteLigne icon={CircleSlash} label="Retirée" />
+          : l.origine === 'manuel' ? <EtiquetteLigne icon={Plus} label="Ajoutée à la main" />
+          : l.modifiee ? <EtiquetteLigne icon={Pencil} label="Corrigée" />
+          : null}
+      </div>
+      {avant.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Proposé : <span className="line-through">{avant.map((k) => (k === 'datePrevue' ? (l.auto!.datePrevue ? jjmmPoint(l.auto!.datePrevue) : 'sans date') : l.auto![k] || 'vide')).join(' · ')}</span>
+        </p>
+      )}
+      {l.pourquoi && l.origine === 'auto' && <p className="text-[11px] text-muted-foreground">Pourquoi l’automate l’a mise : {l.pourquoi}</p>}
+      {(l.retiree || l.modifiee || l.origine === 'manuel') && qui && <p className="text-[11px] text-muted-foreground">{l.retiree ? 'Retirée' : l.origine === 'manuel' ? 'Ajoutée' : 'Corrigée'} par {qui}</p>}
+      {l.retour && <CommentaireUtilisateur>{l.retour.par ? `${l.retour.par} : ` : ''}{l.retour.texte}</CommentaireUtilisateur>}
+    </li>
+  )
+}
+
+function EtiquetteLigne({ icon: Icon, label }: { icon: ComponentType<{ className?: string }>; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-zinc-100/80 px-2 py-0.5 text-[11px] font-medium text-muted-foreground whitespace-nowrap flex-shrink-0">
+      <Icon className="h-3 w-3" />{label}
+    </span>
+  )
+}
+
+// ── Notes on a run (the developer's, for the next version) ──
+
+function NotesRun({ slug, run, notes, canPilot }: { slug: string; run: AutomateRun; notes: Retour[]; canPilot: boolean }) {
   const base = useBaseApi()
-  const { data: run, isLoading, isError } = useQuery({
+  const queryClient = useQueryClient()
+  const [texte, setTexte] = useState('')
+  const [erreur, setErreur] = useState<string | null>(null)
+  const ajouterMut = useMutation({
+    mutationFn: () => callApi(`${base}/${slug}/runs/${run.id}/retours`, { method: 'POST', body: JSON.stringify({ texte }) }),
+    onSuccess: () => {
+      setTexte('')
+      setErreur(null)
+      queryClient.invalidateQueries({ queryKey: ['automate-run', slug, run.id] })
+      queryClient.invalidateQueries({ queryKey: ['automate-retours', slug] })
+      queryClient.invalidateQueries({ queryKey: ['automate', slug] })
+    },
+    onError: (e: Error) => setErreur(e.message),
+  })
+  if (!canPilot && notes.length === 0) return null
+  return (
+    <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-3">
+      <p className="text-sm font-semibold">Notes pour la version suivante</p>
+      {notes.map((n) => (
+        <EntreeRetour key={n.id} par={n.par} le={n.le}>
+          <NoteDev>{n.texte}</NoteDev>
+        </EntreeRetour>
+      ))}
+      {canPilot && (
+        <div className="space-y-2">
+          <textarea rows={2} value={texte} onChange={(e) => setTexte(e.target.value)} className={textareaClass}
+            placeholder="Ce que la prochaine version doit faire autrement sur ce point…" />
+          <div className="flex items-center gap-2">
+            {erreur && <span className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</span>}
+            <Button size="sm" className="ml-auto" disabled={!texte.trim() || ajouterMut.isPending} onClick={() => ajouterMut.mutate()}>
+              {ajouterMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Send className="h-3.5 w-3.5 mr-1.5" />}Enregistrer
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RunDialog({ slug, runId, canPilot, onClose }: { slug: string; runId: string | null; canPilot: boolean; onClose: () => void }) {
+  const base = useBaseApi()
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['automate-run', slug, runId],
-    queryFn: () => apiFetch<{ run: AutomateRun }>(`${base}/${slug}/runs/${runId}`).then((r) => r.run),
+    queryFn: () => apiFetch<{ run: AutomateRun; detail: unknown; notes?: Retour[] }>(`${base}/${slug}/runs/${runId}`),
     enabled: runId !== null,
   })
+  const run = data?.run
   const m = run ? STATUT_META[run.statut] : null
   const Icon = m?.icon ?? History
   return (
     <Dialog open={runId !== null} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-2xl p-0 border-0 bg-primary overflow-hidden max-h-[90dvh] flex flex-col">
+      <DialogContent className={cn('p-0 border-0 bg-primary overflow-hidden max-h-[90dvh] flex flex-col', slug === 'point-sst' ? 'max-w-4xl' : 'max-w-2xl')}>
         <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5 rounded-t-lg">
           <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
             <Icon className="h-[18px] w-[18px]" />
@@ -803,6 +1081,8 @@ function RunDialog({ slug, runId, onClose }: { slug: string; runId: string | nul
               </div>
               {slug === 'videosurveillance' && <VideoRun run={run} />}
               {(slug === 'rapport-pointage' || slug === 'bilan-heures') && <RapportRun run={run} />}
+              {slug === 'point-sst' && <PointSstRun run={run} detail={data?.detail as DetailPointSst | null} />}
+              <NotesRun slug={slug} run={run} notes={data?.notes ?? []} canPilot={canPilot} />
             </>
           )}
         </div>
@@ -934,11 +1214,17 @@ function DestinatairesPanel({ slug, canPilot }: { slug: string; canPilot: boolea
 
 const textareaClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y'
 
-function RetoursTab({ automate, canPilot }: { automate: AutomateVue; canPilot: boolean }) {
+// Same layout as Agents IA › Retours (Vincent 2026-10-30), one version at a
+// time: « Utilisateurs » = the retours given where the work is done (a line of
+// Sous-traitants › Point: they carry a `cible`), « Développeur » = the notes
+// typed here, with the form to add one on the current version.
+function RetoursTab({ automate, canPilot, onOpenRun }: { automate: AutomateVue; canPilot: boolean; onOpenRun: (id: string) => void }) {
   const base = useBaseApi()
   const queryClient = useQueryClient()
   const { user } = useUser()
-  const [texte, setTexte] = useState('')
+  const [choix, setChoix] = useState<number | null>(null)
+  const version = choix ?? automate.version
+  const [vue, setVue] = useState<VueRetours>('utilisateurs')
   const [erreur, setErreur] = useState<string | null>(null)
   const [aSupprimer, setASupprimer] = useState<Retour | null>(null)
   const key = ['automate-retours', automate.slug]
@@ -950,71 +1236,59 @@ function RetoursTab({ automate, canPilot }: { automate: AutomateVue; canPilot: b
     queryClient.invalidateQueries({ queryKey: key })
     queryClient.invalidateQueries({ queryKey: ['automate', automate.slug] })
   }
-  const ajouterMut = useMutation({
-    mutationFn: () => callApi(`${base}/${automate.slug}/retours`, { method: 'POST', body: JSON.stringify({ texte }) }),
-    onSuccess: () => { setTexte(''); setErreur(null); refresh() },
-    onError: (e: Error) => setErreur(e.message),
-  })
   const supprimerMut = useMutation({
     mutationFn: (id: string) => callApi(`${base}/${automate.slug}/retours/${id}`, { method: 'DELETE' }),
     onSuccess: () => { setASupprimer(null); refresh() },
     onError: (e: Error) => { setASupprimer(null); setErreur(e.message) },
   })
-  const versions = [...automate.versions].reverse()
+  // Newest first.
+  const deVersion = (retours ?? []).filter((r) => r.version === version).sort((a, b) => b.le.localeCompare(a.le))
+  const utilisateurs = deVersion.filter((r) => r.cible)
+  const developpeur = deVersion.filter((r) => !r.cible)
+  const supprimer = (r: Retour) => canPilot && user?.IDutilisateur === r.par.id && (
+    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+      title="Supprimer ce retour" onClick={(e) => { e.stopPropagation(); setASupprimer(r) }}>
+      <Trash2 className="h-3 w-3" />
+    </Button>
+  )
 
   return (
     <>
-      {canPilot && (
-        <div className="rounded-lg border border-border/60 border-l-4 border-l-accent/70 bg-card shadow-sm p-3 space-y-2">
-          <p className="text-xs font-semibold text-muted-foreground">Nouveau retour sur la version {automate.version}</p>
-          <textarea rows={3} value={texte} onChange={(e) => setTexte(e.target.value)} className={textareaClass}
-            placeholder="Ce qui ne va pas, ce qu’il faudrait changer dans la prochaine version (trop d’alertes le samedi matin, caméra à exclure…)" />
-          <div className="flex items-center gap-2">
-            {erreur && <span className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</span>}
-            <Button size="sm" className="ml-auto" disabled={!texte.trim() || ajouterMut.isPending} onClick={() => ajouterMut.mutate()}>
-              {ajouterMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Send className="h-3.5 w-3.5 mr-1.5" />}Enregistrer
-            </Button>
-          </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <PopoverSelect size="sm" widthClass="w-[190px]" hideEmpty mutedSecondary options={optionsVersions(automate, false)} value={version}
+          onChange={(v) => { if (v) setChoix(v === automate.version ? null : v) }} />
+        <VueRetoursBoutons vue={vue} onChange={setVue}
+          nombres={retours ? { utilisateurs: utilisateurs.length, developpeur: developpeur.length } : null} />
+        {erreur && <span className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" />{erreur}</span>}
+      </div>
+      {isLoading ? <div className="flex items-center justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
+      : vue === 'utilisateurs' ? (
+        <div className="space-y-3 pt-1">
+          {utilisateurs.length === 0 && <VideRetours texte={`Aucun retour utilisateur sur la version ${version}`} />}
+          {utilisateurs.map((r) => (
+            <CarteRetour key={r.id}
+              contexte={r.cible && (r.cible.lien
+                ? <LienErp to={r.cible.lien} className="hover:underline hover:text-accent">{r.cible.libelle}</LienErp>
+                : r.cible.libelle)}>
+              <EntreeRetour par={r.par} le={r.le} actions={supprimer(r)}>
+                <CommentaireUtilisateur>{r.texte}</CommentaireUtilisateur>
+              </EntreeRetour>
+            </CarteRetour>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-3 pt-1">
+          {developpeur.length === 0 && <VideRetours texte={`Aucune note sur la version ${version}`} />}
+          {developpeur.map((r) => (
+            <CarteRetour key={r.id} onOpen={r.runId ? () => onOpenRun(r.runId!) : undefined}
+              contexte={r.runId ? (r.runLe ? `Exécution du ${fmtDateCourte(r.runLe)}` : 'Exécution') : undefined}>
+              <EntreeRetour par={r.par} le={r.le} actions={supprimer(r)}>
+                <NoteDev>{r.texte}</NoteDev>
+              </EntreeRetour>
+            </CarteRetour>
+          ))}
         </div>
       )}
-      {isLoading ? <div className="flex items-center justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
-      : versions.map((v) => {
-        const liste = (retours ?? []).filter((r) => r.version === v.version)
-        return (
-          <div key={v.version} className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-            <div className="flex items-center gap-2 mb-1">
-              <Badge variant={v.version === automate.version ? 'default' : 'secondary'} className="text-xs">Version {v.version}</Badge>
-              <span className="text-xs text-muted-foreground">{new Date(v.date).toLocaleDateString('fr-FR')}</span>
-              <span className="ml-auto text-xs text-muted-foreground">{liste.length} retour{liste.length !== 1 ? 's' : ''}</span>
-            </div>
-            <p className="text-sm text-muted-foreground">{v.note}</p>
-            {liste.length > 0 && (
-              <ul className="mt-2 pt-2 border-t border-border/50 space-y-2">
-                {liste.map((r) => (
-                  <li key={r.id} className="group flex items-start gap-2">
-                    <MessagesSquare className="h-3.5 w-3.5 text-muted-foreground/60 flex-shrink-0 mt-0.5" />
-                    <div className="min-w-0 flex-1">
-                      {r.cible && (
-                        r.cible.lien
-                          ? <LienErp to={r.cible.lien} className="text-[11px] font-medium text-accent hover:underline">{r.cible.libelle}</LienErp>
-                          : <p className="text-[11px] font-medium text-muted-foreground">{r.cible.libelle}</p>
-                      )}
-                      <p className="text-sm whitespace-pre-line">{r.texte}</p>
-                      <p className="text-[11px] text-muted-foreground">{r.par.nom} · {fmtDateHeure(r.le)}</p>
-                    </div>
-                    {canPilot && user?.IDutilisateur === r.par.id && (
-                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-                        title="Supprimer ce retour" onClick={() => setASupprimer(r)}>
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )
-      })}
       <ConfirmDialog
         open={aSupprimer !== null}
         title="Supprimer le retour"

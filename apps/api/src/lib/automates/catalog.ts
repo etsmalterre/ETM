@@ -5,7 +5,7 @@
 // execution.ts. Adding an automate = one entry here + its module.
 
 import type { Declenchement } from '../agents/catalog.js'
-import { declarerEtatInitial, type AutomateMode, type AutomateState, type AutomateStatut } from './store.js'
+import { declarerEtatInitial, type AutomateMode, type AutomateRun, type AutomateState, type AutomateStatut } from './store.js'
 import * as videosurveillance from './videosurveillance/videosurveillance.js'
 import * as rapportsPointage from './rapports-pointage/rapports-pointage.js'
 import * as pointSst from './point-sst/point-sst.js'
@@ -45,6 +45,9 @@ export interface AutomateDef {
   quitterActif?(resultat: Record<string, unknown>): Promise<Issue>
   /** Live view of what the automate drives (« État » tab). Read-only. */
   etat?(): Promise<unknown>
+  /** What a run's dialog shows beyond its result, read now (Point sous-traitant:
+   *  the point it prepared or sent, line by line, with what a person changed). Read-only. */
+  detailRun?(run: AutomateRun): Promise<unknown>
   /** It mails subscribers: the « Destinataires » tab edits them (abonnement.ts). */
   abonnement?: AbonnementAutomate
   /** State before the first one is stored (default: « off »), store.ts. */
@@ -165,6 +168,7 @@ export const AUTOMATES: readonly AutomateDef[] = [
       actif: 'Prépare le point à 17 h et envoie les points programmés.',
     },
     executer: pointSst.executer,
+    detailRun: pointSst.detailRun,
     // Writes only drafts and sends only what a person scheduled: live in
     // production from the deploy; never on a dev or worktree API.
     etatInitial: () => ({ mode: process.env.NODE_ENV === 'production' ? 'actif' : 'essai' }),
