@@ -7125,6 +7125,18 @@ function dateCommune(lignes: LigneCommande[]): string {
  *  before the latest earliest date of the lines, written on every line still to ship (API PUT
  *  …/:id/lignes-date with the option, Vincent 2026-10-30). On a validated order a line that had another
  *  date is a report: one why / whom for all. Unticking keeps the dates (they are engagements). */
+const lignesAExpedier = (lignes: CommandeDetail['lignes']) =>
+  lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
+
+/** Shown only when it says something (Vincent 2026-10-30): in view mode when « ensemble » is ticked (the
+ *  default, each line on its own, is already on every line); in edit mode when at least 2 lines are left
+ *  to ship, or when the option is already ticked so it can still be unticked. */
+function expeditionVisible(commande: CommandeDetail, isEditing: boolean, edit: Expedition): boolean {
+  const cochee = !!commande.expedition_groupee
+  if (!isEditing) return cochee
+  return cochee || edit.groupee || lignesAExpedier(commande.lignes).length >= 2
+}
+
 function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
   commande: CommandeDetail
   isEditing: boolean
@@ -7132,7 +7144,7 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
   onChange: (e: Expedition) => void
 }) {
   const queryClient = useQueryClient()
-  const restantes = commande.lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
+  const restantes = lignesAExpedier(commande.lignes)
   const dates = restantes.map((l) => l.date_livraison).filter((d): d is string => !!d).sort()
   const sansDate = restantes.length - dates.length
   const commune = dateCommune(commande.lignes)
@@ -7318,7 +7330,7 @@ function InfoTab({
   const smallInput = 'h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[120px]'
   return (
     <div className="space-y-3">
-      {commande.donation !== 1 && (
+      {commande.donation !== 1 && expeditionVisible(commande, isEditing, editExpedition) && (
         <ExpeditionSection commande={commande} isEditing={isEditing} expedition={isEditing ? editExpedition : expeditionDe(commande)}
           onChange={onEditExpeditionChange} />
       )}
