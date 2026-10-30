@@ -19,7 +19,7 @@
 import * as fs from 'node:fs/promises'
 import { noteBinaire } from '../store.js'
 import * as path from 'node:path'
-import { AGENTS_DIR, type Auteur, type Note } from '../store.js'
+import { AGENTS_DIR, type AgentRun, type Auteur, type Note } from '../store.js'
 import type { ConstatRun } from './constats.js'
 import type { Domaine, Gravite } from './types.js'
 
@@ -195,4 +195,30 @@ export async function lireHistorique(): Promise<PointHistorique[]> {
   const activite = (e: PointHistorique) =>
     [e.fermeLe, e.traitement?.le, e.vuLe, ...(e.lecons ?? []).map((l) => l.le)].filter(Boolean).sort().pop() as string
   return Object.values(j).sort((a, b) => activite(b).localeCompare(activite(a)))
+}
+
+/** The prompt version that raised each point, what Agents IA's « Points » tab
+ *  filters on (same rule as scorePoints: a version owns the points it raised
+ *  first). superviseur.ts stamps a new point's `depuis` with its run's
+ *  `createdAt`, so the run is found exactly; failing that (a run past the runs
+ *  file's cap), the last run before it. Only runs that updated the memory can
+ *  raise a point (a manual preview does not). Null when no run is that old. */
+export function versionDesPoints<P extends Pick<PointHistorique, 'depuis'>>(
+  points: P[],
+  runs: Array<Pick<AgentRun, 'createdAt' | 'version' | 'resultat'>>,
+): Array<P & { version: number | null }> {
+  const lanceurs = runs
+    .filter((r) => (r.resultat as { memoireMiseAJour?: boolean } | null)?.memoireMiseAJour !== false)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const exact = new Map(lanceurs.map((r) => [r.createdAt, r.version]))
+  return points.map((p) => {
+    let version = exact.get(p.depuis) ?? null
+    if (version === null) {
+      for (const r of lanceurs) {
+        if (r.createdAt > p.depuis) break
+        version = r.version
+      }
+    }
+    return { ...p, version }
+  })
 }

@@ -9,13 +9,20 @@
 // COMMENT does not count: it is the instruction printed for the knitter
 // (« urgent - merci »), measured empty of explanations on prod.
 // Thresholds and texts: regles.ts (evaluerOrphelins).
+//
+// v4 (Isabelle on sst N°8891, 2026-10-29: « il aurait fallu vérifier si la
+// quantité lancée correspondait à la quantité du client ; si elle était ok,
+// c'est sûrement que nous avons fait de l'avance »): the point says whether the
+// client's order already has its quantity (pièces d'avance, or an order soldée)
+// or still lacks it (affect them to it).
 
 import { query } from '../../../hfsql-auto.js'
 import { consumedEcruIds } from '../../../fini-sources.js'
 import { parseDtMs } from '../../../production-trm.js'
 import { stripRtf } from '../../../rtf-utils.js'
 import type { Constat, Controle } from '../types.js'
-import { evaluerOrphelins, fmt, ORPHELIN_DEPUIS, ORPHELIN_JOURS, raisonOrphelins } from './regles.js'
+import { COUVERTURE_SEUIL, evaluerOrphelins, fmt, ORPHELIN_DEPUIS, ORPHELIN_JOURS, raisonOrphelins } from './regles.js'
+import { lineReservationAggregates } from '../../../../routes/commandes-client.js'
 import { noms } from './noms.js'
 
 const CHUNK = 300
@@ -69,8 +76,8 @@ export const controleEcruOrphelin: Controle = {
     const pourClient = entetes.filter((e) => Number(e.IDcommande_client) > 0 || Number(e.IDligne_commande_client) > 0)
     const clientCmdIds = [...new Set(pourClient.map((e) => Number(e.IDcommande_client)).filter((x) => x > 0))]
     const cmdClients = clientCmdIds.length
-      ? await query<{ IDcommande_client: number; numero: number | string; IDclient: number }>(
-        `SELECT IDcommande_client, numero, IDclient FROM commande_client WHERE IDcommande_client IN (${clientCmdIds.join(',')})`)
+      ? await query<{ IDcommande_client: number; numero: number | string; IDclient: number; est_soldee: number | null }>(
+        `SELECT IDcommande_client, numero, IDclient, est_soldee FROM commande_client WHERE IDcommande_client IN (${clientCmdIds.join(',')})`)
       : []
     const cmdClient = new Map(cmdClients.map((c) => [Number(c.IDcommande_client), c]))
     const clients = await noms('client', cmdClients.map((c) => Number(c.IDclient)))
@@ -82,6 +89,32 @@ export const controleEcruOrphelin: Controle = {
       const l = parCmd.get(cmd) ?? []
       l.push(p)
       parCmd.set(cmd, l)
+    }
+
+    // v4 — the client line each order was launched for: what it already has.
+    const lignesClient = [...new Set(pourClient.map((e) => Number(e.IDligne_commande_client)).filter((x) => x > 0))]
+    const lc = lignesClient.length
+      ? await query<{ IDligne_commande_client: number; type_kind: number; IDreference: number; quantite: number | null; unite: number | null }>(
+        `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, quantite, unite FROM ligne_commande_client WHERE IDligne_commande_client IN (${lignesClient.join(',')})`)
+      : []
+    const jauges = await lineReservationAggregates(lc.filter((l) => [1, 2].includes(Number(l.type_kind)))
+      .map((l) => ({ id: Number(l.IDligne_commande_client), typeKind: Number(l.type_kind), refId: Number(l.IDreference) || 0 })))
+    const ligneClient = new Map(lc.map((l) => [Number(l.IDligne_commande_client), l]))
+    /** « La ligne du client … » + what to do, or null when unknown. */
+    const emploi = (e: Entete): string | null => {
+      const cc = cmdClient.get(Number(e.IDcommande_client))
+      if (cc && Number(cc.est_soldee) === 1) {
+        return `La commande N°${String(cc.numero)} est soldée : ces pièces ne lui serviront plus. À faire : écrire au journal de la commande sous-traitant ce qu’elles deviennent ; elles restent disponibles pour d’autres commandes.`
+      }
+      const l = ligneClient.get(Number(e.IDligne_commande_client))
+      const a = l && jauges.get(Number(l.IDligne_commande_client))
+      const q = Number(l?.quantite) || 0
+      if (!l || !(q > 0) || ![1, 3].includes(Number(l.unite))) return null
+      const u = Number(l.unite) === 3 ? 'Ml' : 'kg'
+      const aff = a ? (Number(l.unite) === 3 ? a.total_metrage : a.total_poids) : 0
+      return aff >= q * COUVERTURE_SEUIL
+        ? `La ligne du client a déjà son compte (${fmt(aff)} ${u} affectés ou expédiés pour ${fmt(q)} ${u}) : ce sont sûrement des pièces d’avance. À faire : l’écrire au journal de la commande sous-traitant ; elles restent disponibles pour d’autres commandes.`
+        : `La ligne du client n’a que ${fmt(aff)} ${u} sur ${fmt(q)} ${u}. À faire : lui affecter ces pièces.`
     }
 
     const out: Constat[] = []
@@ -110,7 +143,7 @@ export const controleEcruOrphelin: Controle = {
         domaine: 'stock',
         gravite: r.gravite,
         titre: `Commande sous-traitant N°${id} · ${ps.length} pièce${ps.length > 1 ? 's' : ''} écru sans emploi`,
-        message: `${ps.length} pièce${ps.length > 1 ? 's' : ''} (${fmt(kg)} kg : ${numeros.slice(0, 8).join(', ')}${numeros.length > 8 ? '…' : ''})${pourQui}, en stock sans affectation depuis ${c.ageJours} j, et rien d’écrit au journal de la commande. À faire : les affecter, ou écrire au journal de la commande sous-traitant pourquoi elles existent (pièces d’avance, accord avec le client…).`,
+        message: `${ps.length} pièce${ps.length > 1 ? 's' : ''} (${fmt(kg)} kg : ${numeros.slice(0, 8).join(', ')}${numeros.length > 8 ? '…' : ''})${pourQui}, en stock sans affectation depuis ${c.ageJours} j, et rien d’écrit au journal de la commande. ${emploi(e) ?? 'À faire : les affecter, ou écrire au journal de la commande sous-traitant pourquoi elles existent (pièces d’avance, accord avec le client…).'}`,
         lien: `/sous-traitants/tricotage?commande=${id}`,
       })
     }

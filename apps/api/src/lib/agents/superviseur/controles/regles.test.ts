@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluerOrphelins, raisonOrphelins, ORPHELIN_JOURS, delaiTexte, evaluerConfirmation, evaluerRetard, joursOuvresDepuis, messageRetard, raisonRetard, evaluerPalierSuivant, raisonPalierSuivant, evaluerAffectationFil, evaluerCouverture, evaluerEnnoblissement, evaluerFil, joursAvant, raisonCouverture, raisonEnnoblissement, horsPortee, adresseConnue, listeEnvois, BOITE_LECTRICE_DELAI_H } from './regles.js'
+import { evaluerOrphelins, raisonOrphelins, ORPHELIN_JOURS, delaiTexte, evaluerConfirmation, evaluerRetard, joursOuvresDepuis, messageRetard, raisonRetard, evaluerPalierSuivant, raisonPalierSuivant, evaluerAffectationFil, evaluerCouverture, evaluerEnnoblissement, evaluerFil, joursAvant, raisonCouverture, raisonEnnoblissement, horsPortee, adresseConnue, listeEnvois, BOITE_LECTRICE_DELAI_H , estSoldeSurAppel, delaiAppelHabituel, evaluerSoldeSurAppel, SOLDE_APPEL_DEFAUT_J, evaluerAttenteReglement, REGLEMENT_RELANCE_JO, ECHEANCES_AVANT_LIVRAISON, SUJET_CONFIRMATION, ecruEnTrop, parleDeLaCommande } from './regles.js'
 
 const today = new Date(2026, 8, 23) // Wed 23/09/2026
 
@@ -246,5 +246,57 @@ describe('evaluerOrphelins (sst 8904, 2026-10-08)', () => {
   it('orders before the start date are the backlog, never a point', () => {
     expect(evaluerOrphelins({ ...base, dateCommande: '20260218' })).toBeNull()
     expect(raisonOrphelins({ ...base, dateCommande: '20260218' })).toMatch(/hors du tableau de bord/)
+  })
+})
+
+describe('v4 — solde sur appel (C2TEC N°3790)', () => {
+  it('reads the mention in the order comments', () => {
+    expect(estSoldeSurAppel('1000 m s38, solde sur appel', null)).toBe(true)
+    expect(estSoldeSurAppel(null, 'Livrable sur appel du client')).toBe(true)
+    expect(estSoldeSurAppel('appel le 12/10', '')).toBe(false)
+  })
+  it('takes the median first → last delivery of the client, the default without history', () => {
+    expect(delaiAppelHabituel([30, 120, 60])).toBe(60)
+    expect(delaiAppelHabituel([30, 60])).toBe(45)
+    expect(delaiAppelHabituel([0])).toBeNull()
+    expect(evaluerSoldeSurAppel(50, 60)).toEqual({ habituel: 60, enRetard: false })
+    expect(evaluerSoldeSurAppel(61, 60).enRetard).toBe(true)
+    expect(evaluerSoldeSurAppel(91, null)).toEqual({ habituel: SOLDE_APPEL_DEFAUT_J, enRetard: true })
+  })
+})
+
+describe('v4 — règlement avant livraison (N°3927)', () => {
+  it('waits for the payment after a proforma, then chases', () => {
+    expect(evaluerAttenteReglement(null)).toEqual({ etat: 'sans_proforma' })
+    expect(evaluerAttenteReglement(2)).toEqual({ etat: 'attente', jours: 2 })
+    expect(evaluerAttenteReglement(REGLEMENT_RELANCE_JO).etat).toBe('a_relancer')
+  })
+  it('knows the pay-before-shipping terms', () => {
+    expect(ECHEANCES_AVANT_LIVRAISON.has(11)).toBe(true) // Avant livraison
+    expect(ECHEANCES_AVANT_LIVRAISON.has(21)).toBe(false) // avant lancement
+  })
+})
+
+describe('v4 — confirmation by mail and écru en trop', () => {
+  it('recognises a confirmation subject', () => {
+    expect(SUJET_CONFIRMATION.test('Confirmation de votre commande 1234')).toBe(true)
+    expect(SUJET_CONFIRMATION.test('AR commande THUASNE')).toBe(true)
+    expect(SUJET_CONFIRMATION.test('Accusé de réception de commande')).toBe(true)
+    expect(SUJET_CONFIRMATION.test('Arrivée de votre colis')).toBe(false)
+  })
+  it('says the écru is surplus once 90 % of the line is at the dyer or beyond', () => {
+    expect(ecruEnTrop(90, 95)).toBe(true)
+    expect(ecruEnTrop(90, 50)).toBe(false)
+    expect(ecruEnTrop(0, 10)).toBe(false)
+  })
+})
+
+describe('v4 — a mail of ours about this order (Lapsuss N°3854)', () => {
+  it('needs the order in the subject, its number or the client reference', () => {
+    expect(parleDeLaCommande('Re: où en est ma commande ?', 3854, '')).toBe(true)
+    expect(parleDeLaCommande('Re: délai teinture', 3854, '')).toBe(true)
+    expect(parleDeLaCommande('Re: CF5344 solde', 3790, 'Commande CF5344 du 16/06/2026')).toBe(true)
+    expect(parleDeLaCommande('N°3854', 3854, '')).toBe(true)
+    expect(parleDeLaCommande('Re: Sourcing – Matières plaid et Sherpa 100 % polyester', 3853, 'Commande du 15/07/2026')).toBe(false)
   })
 })

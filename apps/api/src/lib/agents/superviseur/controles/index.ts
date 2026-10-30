@@ -8,6 +8,7 @@
 import type { Controle } from '../types.js'
 import { controleCouverture, controleEnnoblissement, controleRetard } from './commandes-client.js'
 import { controleConfirmation } from './confirmation.js'
+import { controleTransmissionExpedition } from './transmission.js'
 import { controleAffectationFil, controleFilACommander } from './fils.js'
 import { controleClientsSansReponse } from './mails-clients.js'
 import { controleCommandesMails } from './commandes-mails.js'
@@ -18,6 +19,7 @@ export const CONTROLES: readonly Controle[] = [
   controleClientsSansReponse,
   controleCommandesMails,
   controleConfirmation,
+  controleTransmissionExpedition,
   controlePalierSuivant,
   controleCouverture,
   controleRetard,

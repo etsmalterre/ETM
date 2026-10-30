@@ -10,6 +10,11 @@
 //
 // Limits (v1): spreadsheet attachments are not read (only the mail text and
 // PDFs); a modification of an existing order is recognised but not checked.
+//
+// v4 (Isabelle on SIMONE PERELE N°3916: « nous avons un contrat avec Simone
+// pour ces tarifs, il est à jour dans la fiche client, tu aurais pu faire le
+// lien »): a price difference says what the client's contract gives for each
+// line, and which side is wrong.
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
@@ -23,6 +28,7 @@ import { detailLignes, rapprocher, type CommandeEtm, type CommandeExtraite } fro
 import { noms } from './noms.js'
 import type { Constat, Controle } from '../types.js'
 import { fmt, REPONSE_ATTENTION_H, REPONSE_URGENT_H } from './regles.js'
+import { calcLignePriceClient } from '../../../pricing-ligne-client.js'
 
 /** Words that make a client mail worth reading as a possible order. */
 export const SIGNAL_COMMANDE = /\b(commande|order|purchase|bon de commande|b\.?c\.?|p\.?o\.?|achat|o\.?a\.?)\b/i
@@ -153,6 +159,46 @@ async function versCommandes(cmds: LigneCmd[]): Promise<CommandeEtm[]> {
   }))
 }
 
+/** v4 — the client's tariff contract on the order's lines, priced like the
+ *  order form does (calcLignePriceClient: the contract band of the line's roll
+ *  count). '' when no line is under contract. */
+export async function phraseContrat(idCommande: number): Promise<string> {
+  const lignes = await query<{ IDligne_commande_client: number; type_kind: number; IDreference: number | null; IDcolori: number | null; quantite: number | null; unite: number | null; prix: number | null; IDclient: number }>(
+    `SELECT l.IDligne_commande_client, l.TYPE AS type_kind, l.IDreference, l.IDcolori, l.quantite, l.unite, l.prix, c.IDclient
+     FROM ligne_commande_client l JOIN commande_client c ON c.IDcommande_client = l.IDcommande_client
+     WHERE l.IDcommande_client = ${Math.trunc(idCommande)}`,
+  )
+  const [ecrus, finis] = await Promise.all([
+    noms('ref_ecru', lignes.filter((l) => Number(l.type_kind) === 1).map((l) => Number(l.IDreference) || 0)),
+    noms('ref_fini', lignes.filter((l) => Number(l.type_kind) === 2).map((l) => Number(l.IDreference) || 0)),
+  ])
+  const vues: Array<{ texte: string; conforme: boolean; expiration: string }> = []
+  for (const l of lignes) {
+    const type = Number(l.type_kind)
+    if (type !== 1 && type !== 2) continue
+    const quantite = Number(l.quantite) || 0
+    const unite = Number(l.unite) || 0
+    const r = await calcLignePriceClient({
+      type, IDreference: Number(l.IDreference) || 0, IDcolori: Number(l.IDcolori) || 0, quantite, unite,
+      IDclient: Number(l.IDclient) || 0, IDcommande_client: Math.trunc(idCommande), IDligne_commande_client: Number(l.IDligne_commande_client),
+    })
+    if (r.tarif_mode !== 'contrat' || r.prix == null) continue
+    const u = unite === 3 ? 'Ml' : 'kg'
+    const ref = (type === 2 ? finis : ecrus).get(Number(l.IDreference) || 0) ?? ''
+    vues.push({
+      texte: `${fmt(quantite)} ${u}${ref ? ` ${ref}` : ''} (${r.trancheRolls} rouleau${r.trancheRolls > 1 ? 'x' : ''}) à ${fmt(r.prix, 2)} €`,
+      conforme: Math.abs((Number(l.prix) || 0) - r.prix) < 0.005,
+      expiration: r.contrat_date_expiration,
+    })
+  }
+  if (!vues.length) return ''
+  const exp = vues.map((v) => v.expiration).filter((d) => /^\d{8}$/.test(d)).sort()[0]
+  const contrat = `Contrat tarifaire du client${exp ? ` (jusqu’au ${exp.slice(6, 8)}/${exp.slice(4, 6)}/${exp.slice(0, 4)})` : ''} : ${vues.map((v) => v.texte).join(' ; ')}.`
+  return vues.every((v) => v.conforme)
+    ? `${contrat} La saisie suit le contrat : c’est le prix de la commande du client qui est faux. À faire : le signaler au client.`
+    : `${contrat} À faire : corriger le prix saisi dans ETM.`
+}
+
 const ymd = (ms: number) => new Date(ms).toISOString().slice(0, 10).replace(/-/g, '')
 const court = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
@@ -222,6 +268,8 @@ export const controleCommandesMails: Controle = {
           lien: null,
         })
       } else if (r.ecarts.length) {
+        // A price difference on a matched order: what the contract says (v4).
+        const contrat = r.par !== 'date' && r.ecarts.some((e) => e.startsWith('prix')) ? await phraseContrat(r.commande.id) : ''
         out.push({
           cle,
           empreinte: m.messageId || m.id,
@@ -237,7 +285,8 @@ export const controleCommandesMails: Controle = {
               ? `Commande reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} (${resume}) : aucune commande avec ce numéro ou cette quantité. La plus proche est N°${r.commande.numero} (${r.ecarts.join(' ; ')}) — vérifier qu’elle a bien été saisie.`
               : `La commande reçue le ${new Date(m.date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} (${m.boite.split('@')[0]}, « ${court(m.sujet)} ») diffère de la saisie : ${r.ecarts.join(' ; ')}.`,
             detailLignes(ext, r.commande),
-          ].join(' '),
+            contrat,
+          ].filter(Boolean).join(' '),
           lien: `/clients/commandes?commande=${r.commande.id}`,
         })
       } else {

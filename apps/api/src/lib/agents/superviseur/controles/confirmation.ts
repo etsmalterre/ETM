@@ -6,12 +6,18 @@
 //
 // Measured on prod 2026-10-07: 3 of the 7 orders entered since the WinDev
 // cutover (29/09) had none (N°3895, 3898, 3899).
+//
+// v4 (Isabelle on those three): Unicycle's orders do not follow the standard
+// flow (PROCESS_NON_STANDARD: entered when they ship, their shipment is checked
+// instead, transmission.ts); an order confirmed by a mail of ours (THUASNE) is
+// confirmed, ETM or not.
 
 import { query } from '../../../hfsql-auto.js'
 import { TYPE_DOC_COMMANDE_CLIENT } from '../../../../routes/commandes-client.js'
 import type { Constat, Controle } from '../types.js'
-import { CONFIRMATION_ATTENTION_JO, CONFIRMATION_DEPUIS, CONFIRMATION_URGENT_JO, evaluerConfirmation, joursOuvresDepuis } from './regles.js'
+import { CONFIRMATION_ATTENTION_JO, CONFIRMATION_DEPUIS, CONFIRMATION_URGENT_JO, evaluerConfirmation, joursAvant, joursOuvresDepuis, PROCESS_NON_STANDARD, SUJET_CONFIRMATION } from './regles.js'
 import { noms } from './noms.js'
+import { mailsEnvoyesParClient, mailTexte } from './echanges.js'
 
 const jjmm = (d: string) => `${d.slice(6, 8)}/${d.slice(4, 6)}`
 
@@ -20,7 +26,7 @@ export const controleConfirmation: Controle = {
   domaine: 'commandes_client',
   libelle: 'Confirmation de commande non envoyée',
   description:
-    `Commande client sans confirmation envoyée depuis ETM (bouton « Envoyer » de la confirmation ; une proforma ne compte pas) ${CONFIRMATION_ATTENTION_JO} jours ouvrés après sa date, urgent à ${CONFIRMATION_URGENT_JO}. La confirmation porte la mention d’acceptation des CGV. Hors sociétés du groupe et donations ; commandes depuis le ${jjmm(CONFIRMATION_DEPUIS)} (avant, WinDev).`,
+    `Commande client sans confirmation envoyée depuis ETM (bouton « Envoyer » de la confirmation ; une proforma ne compte pas) ${CONFIRMATION_ATTENTION_JO} jours ouvrés après sa date, urgent à ${CONFIRMATION_URGENT_JO}. La confirmation porte la mention d’acceptation des CGV. Hors sociétés du groupe et donations ; commandes depuis le ${jjmm(CONFIRMATION_DEPUIS)} (avant, WinDev). Pas signalée (v4) quand un mail de nous au client après la commande porte une confirmation dans son objet (« confirmation », « accusé de réception », « AR »), ni pour un client au fonctionnement non standard (Unicycle : commande saisie à l’expédition, c’est l’envoi de l’expédition qui est contrôlé).`,
   raisonAbsent: 'Commande soldée ou supprimée.',
   async executer(ctx) {
     const today = new Date(ctx.nowMs)
@@ -38,17 +44,25 @@ export const controleConfirmation: Controle = {
     )
     const confirmees = new Set(envois.filter((e) => String(e.notes ?? '').trim().toLowerCase() !== 'proforma').map((e) => Number(e.IDreference)))
     const clients = await noms('client', aVoir.map((c) => Number(c.IDclient)))
+    const aSignaler = aVoir.filter((c) => !confirmees.has(Number(c.IDcommande_client)) && evaluerConfirmation(c.date_commande, today))
+    const mails = aSignaler.length ? await mailsEnvoyesParClient(ctx.nowMs) : null
     const out: Constat[] = []
     for (const c of aVoir) {
       const id = Number(c.IDcommande_client)
       const cle = `confirmation:${id}`
       if (confirmees.has(id)) { ctx.raison(cle, 'Confirmation envoyée depuis ETM.'); continue }
+      const process = PROCESS_NON_STANDARD.get(Number(c.IDclient))
+      if (process) { ctx.raison(cle, `Pas de confirmation attendue (${process}).`); continue }
       const r = evaluerConfirmation(c.date_commande, today)
       if (!r) {
         const j = joursOuvresDepuis(c.date_commande, today) ?? 0
         ctx.raison(cle, `Commande d’il y a ${j} jour${j > 1 ? 's' : ''} ouvré${j > 1 ? 's' : ''} : la confirmation a encore le temps.`)
         continue
       }
+      // v4 — confirmed by a mail of ours, not from ETM: sent from the day before the order on.
+      const debut = ctx.nowMs + (joursAvant(c.date_commande, today) ?? 0) * 86_400_000 - 86_400_000
+      const m = (mails?.get(Number(c.IDclient)) ?? []).find((x) => x.date >= debut && SUJET_CONFIRMATION.test(x.sujet))
+      if (m) { ctx.raison(cle, `Confirmée par mail, pas depuis ETM : ${mailTexte(m)}.`); continue }
       out.push({
         cle,
         controle: 'confirmation',

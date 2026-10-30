@@ -50,11 +50,14 @@ export const SUPERVISEUR_VERSION_INITIALE: VersionInitiale = {
   note: 'Version initiale — tri des fils de mail (les contrôles de la base sont du code, sans prompt).',
 }
 
-/** v3 (2026-10-07), from Isabelle's scores on v1 + v2 — prompt.ts. */
+/** v4 (2026-10-30), from Isabelle's comments on v3 (9 fausses alertes, 4 leçons).
+ *  Every change is code (controles/, « v4 » in each file); the mail-triage
+ *  prompt is v3's, unchanged — a new version so that v4 is scored on its own
+ *  points. v3 was 2026-10-07, from the scores on v1 + v2 (prompt.ts). */
 export const SUPERVISEUR_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: TRI_PROMPT_V3,
-  note: 'Version 3 — un mail archivé est traité (règle de la maison), commande reçue comparée ligne à ligne avec la source de chaque ligne, stock non affecté indiqué sur les pièces à affecter, un client qui « reviendra vers nous » n’attend rien (seule cette dernière règle est dans le prompt, le reste est du code).',
+  note: 'Version 4 — retard : le solde d’une commande « sur appel » attend l’appel du client (son délai habituel), une commande payable avant livraison attend le règlement après la proforma (relance au bout de 5 jours ouvrés), un retard dont on a parlé au client par mail n’est plus signalé ; confirmation : une confirmation envoyée par mail compte, Unicycle (commande saisie à l’expédition) n’en attend pas mais son expédition doit lui être envoyée ; commande reçue par mail : le prix du contrat tarifaire est cité ; écru réservé ou sans emploi : dit si la commande du client a déjà son compte (à désaffecter, pièces d’avance). Tout est du code, le prompt du tri des mails est celui de la v3.',
 }
 
 /** What a Superviseur run stores in `resultat` (read by the web screen). */

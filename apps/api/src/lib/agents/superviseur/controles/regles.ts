@@ -409,3 +409,103 @@ export function raisonOrphelins(c: OrphelinsCommande): string {
   if (c.dateCommande < ORPHELIN_DEPUIS) return 'Commande d’avant le 01/07/2026 : reprise une fois, hors du tableau de bord.'
   return `Pièces tricotées il y a ${c.ageJours} j : on attend ${ORPHELIN_JOURS} j avant de demander pourquoi.`
 }
+
+// ── v4 (2026-10-30), from Isabelle's comments on v3 ──
+// v3 raised 48 points: 9 fausses alertes and 4 « tu pouvais aller chercher plus
+// loin », every one with a comment. Each rule below answers one of them; the
+// readers in the sibling files only fetch what the rule needs.
+
+/** « Solde sur appel » written on the order (C2TEC N°3790: « 1000 m s38, solde
+ *  sur appel »): once the first part has left, the rest waits for the client's
+ *  call. Not a delay of ours until the client is later than he usually is. */
+export const SOLDE_SUR_APPEL = /\bsur\s+appel\b/i
+
+export const estSoldeSurAppel = (...textes: Array<string | null | undefined>) => textes.some((t) => SOLDE_SUR_APPEL.test(String(t ?? '')))
+
+/** Days between first and last delivery of an order, used as the client's
+ *  usual call delay when its history has none. */
+export const SOLDE_APPEL_DEFAUT_J = 90
+
+/** The client's usual call delay: the median of first → last delivery over its
+ *  orders delivered in several times (Isabelle: « regarde l'historique de C2TEC
+ *  et vois combien de temps après la première livraison il fait l'appel du
+ *  solde »). Null without history. */
+export function delaiAppelHabituel(ecartsJours: readonly number[]): number | null {
+  const xs = ecartsJours.filter((x) => x > 0).sort((a, b) => a - b)
+  if (!xs.length) return null
+  const m = Math.floor(xs.length / 2)
+  return xs.length % 2 ? xs[m] : Math.round((xs[m - 1] + xs[m]) / 2)
+}
+
+/** A late solde sur appel: reported only once the client is later than usual. */
+export function evaluerSoldeSurAppel(joursDepuisPremiereLivraison: number, habituel: number | null): { habituel: number; enRetard: boolean } {
+  const h = habituel ?? SOLDE_APPEL_DEFAUT_J
+  return { habituel: h, enRetard: joursDepuisPremiereLivraison > h }
+}
+
+/** Payment terms (echeance) that make the client pay before we ship: « Avant
+ *  livraison » and the « … solde avant expédition » ones. Not 21 « avant
+ *  lancement »: paid before production, nothing waits at shipping time. */
+export const ECHEANCES_AVANT_LIVRAISON: ReadonlySet<number> = new Set([11, 15, 19, 20, 22])
+
+/** Working days a sent proforma is left to the client before we chase the payment. */
+export const REGLEMENT_RELANCE_JO = 5
+
+export type AttenteReglement =
+  | { etat: 'sans_proforma' }
+  | { etat: 'attente'; jours: number }
+  | { etat: 'a_relancer'; jours: number }
+
+/** Ready pieces of a pay-before-delivery order (Création Annette Hardouin
+ *  N°3927: « J'ai envoyé une facture proforma, j'attends le règlement avant
+ *  d'expédier »). Waiting for the client is not ours to do (neutral) until the
+ *  moment we must chase him. */
+export function evaluerAttenteReglement(joursOuvresDepuisProforma: number | null): AttenteReglement {
+  if (joursOuvresDepuisProforma === null) return { etat: 'sans_proforma' }
+  return joursOuvresDepuisProforma < REGLEMENT_RELANCE_JO
+    ? { etat: 'attente', jours: joursOuvresDepuisProforma }
+    : { etat: 'a_relancer', jours: joursOuvresDepuisProforma }
+}
+
+/** A mail of ours to the client from this many days before the délai on means
+ *  the delay is being talked about (Lapsuss N°3854, Le Slip Français N°3836:
+ *  « le client a demandé où en était sa commande, PE a déjà répondu »). */
+export const CLIENT_INFORME_AVANT_DELAI_J = 7
+
+/** Words of a mail subject about an order's follow-up. Headers only: a mail to
+ *  the client about something else (« Sourcing – Matières plaid », replay
+ *  2026-10-30) says nothing of the delay. */
+export const SUJET_SUIVI_COMMANDE = /command|\bcde\b|livr|d[ée]lai|exp[ée]di|retard|\border\b|deliver|shipping/i
+
+/** Does a mail of ours speak of this order: its number, a number from its
+ *  client reference (« Commande CF5344 du 16/06 » → CF5344), or follow-up words? */
+export function parleDeLaCommande(sujet: string, numero: number, refClient: string): boolean {
+  if (SUJET_SUIVI_COMMANDE.test(sujet)) return true
+  const s = plier(sujet)
+  const refs = [String(numero), ...(refClient.match(/[A-Za-z0-9-]*\d{4,}[A-Za-z0-9-]*/g) ?? [])].map(plier).filter((x) => x.length >= 4)
+  return refs.some((r) => s.includes(r))
+}
+
+/** Clients whose orders do not follow the standard flow. IDclient → how, in
+ *  words. Unicycle (Isabelle 2026-10-08, again 2026-10-26: « nous le mettrons
+ *  standard d'ici quelques semaines »): the order comes on paper, Olivier
+ *  prepares the cartons and the order is entered when they leave, so no
+ *  confirmation is sent; what matters is that the shipment reaches the client. */
+export const PROCESS_NON_STANDARD: ReadonlyMap<number, string> = new Map([
+  [15, 'Unicycle : commande papier, saisie dans ETM au moment de l’expédition'],
+])
+
+/** Subject of a mail of ours that confirms an order outside ETM (THUASNE
+ *  N°3895: « vérifie dans les mails ce qu'il a envoyé comme confirmation »). */
+export const SUJET_CONFIRMATION = /confirm|accus[ée]\s+de\s+r[ée]ception|\bA\.?R\.?\b|acknowledg/i
+
+/** Working days a shipment has to be emailed to the client. */
+export const TRANSMISSION_EXPEDITION_JO = 1
+
+/** A fini line with écru not sent to the dyer: is that écru still needed?
+ *  (LEMAHIEU N°3891: « vérifier si la quantité lancée en teinture correspond à
+ *  la quantité voulue par le client. Si oui, ces pièces sont à désaffecter. »)
+ *  `lance` = what is at the dyer, dyed or shipped, in the line's unit. */
+export function ecruEnTrop(quantite: number, lance: number): boolean {
+  return quantite > 0 && lance >= quantite * COUVERTURE_SEUIL
+}

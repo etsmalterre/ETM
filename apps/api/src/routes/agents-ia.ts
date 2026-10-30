@@ -42,7 +42,7 @@ import { etatSondage, lancerSondage, prochainQuotidien, SondageEnCoursError } fr
 import { SUPERVISEUR_SLUG, type ResultatSuperviseur } from '../lib/agents/superviseur/superviseur.js'
 import { notesDuBilan } from '../lib/agents/superviseur/score.js'
 import { formerTricobot, traiterPoint, TraitementInvalide } from '../lib/agents/superviseur/points.js'
-import { lireHistorique } from '../lib/agents/superviseur/historique.js'
+import { lireHistorique, versionDesPoints } from '../lib/agents/superviseur/historique.js'
 import { CHAT_MODELS } from '../lib/mistral.js'
 import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reader.js'
 import { corrigerTriage, CorrectionInvalide, TRIAGE_BOITE, TRIAGE_SLUG } from '../lib/agents/triage/agent.js'
@@ -723,7 +723,8 @@ routes.post('/:slug/points/tricobot', async (req, res) => {
 })
 
 /** Every point the agent raised, open or closed, and how it was handled —
- *  the widget's « Historique » and the agent's « Points » tab in Agents IA.
+ *  the widget's « Historique » and the agent's « Points » tab in Agents IA,
+ *  each with the prompt version that raised it (the tab's version picker).
  *  Readable by any session, like the runs that carry the same points. */
 routes.get('/:slug/points/historique', async (req, res) => {
   if (session(req, res) === null) return
@@ -731,7 +732,8 @@ routes.get('/:slug/points/historique', async (req, res) => {
   if (!def) return
   if (def.slug !== SUPERVISEUR_SLUG) { res.json({ points: [] }); return }
   try {
-    res.json({ points: (await lireHistorique()).slice(0, 500) })
+    const [points, runs] = await Promise.all([lireHistorique(), lireRuns(def.slug)])
+    res.json({ points: versionDesPoints(points.slice(0, 500), runs) })
   } catch (err) {
     console.error('[agents-ia] historique points failed:', err)
     res.status(500).json({ error: 'Internal server error' })
