@@ -8,7 +8,8 @@
 //              (no shell in between, so git-bash cannot mangle it into
 //              C:/Program Files/Git/api — Footgun A — and it cannot be unset — Footgun B)
 //   3. verify  the dist: no dev fallback, no mangled path, `="/api"` present, the
-//              app's own version string baked in
+//              app's own version string baked in, and not a changed bundle under the
+//              version already live (--same-version overrides)
 //   4. upload  tarball → extract OVER the dist (never wipe: open tabs still lazy-load
 //              old chunks) → sweep hashed assets untouched for 14 days
 //   5. verify  the SERVED bundle through nginx: same greps on what a browser gets
@@ -43,10 +44,11 @@ const argv = process.argv.slice(2)
 const flag = (f) => { const i = argv.indexOf(f); if (i === -1) return false; argv.splice(i, 1); return true }
 const dryRun = flag('--dry-run')
 const skipBuild = flag('--skip-build')
+const sameVersion = flag('--same-version')
 const appIdx = argv.indexOf('--app')
 const appKey = appIdx !== -1 ? argv[appIdx + 1] : argv[0]
 const app = APPS[appKey]
-if (!app) die(`usage: deploy-web.mjs --app <${Object.keys(APPS).join('|')}> [--dry-run] [--skip-build]`)
+if (!app) die(`usage: deploy-web.mjs --app <${Object.keys(APPS).join('|')}> [--dry-run] [--skip-build] [--same-version]`)
 
 const label = `${appKey} web`
 const appDir = path.join(app.repo, app.src)
@@ -112,6 +114,19 @@ const rendersVersion = (() => {
   return walk(path.join(appDir, 'src')).some((f) => fs.readFileSync(f, 'utf8').includes('__APP_VERSION__'))
 })()
 checkBundle((c) => fs.readFileSync(path.join(assets, c), 'utf8'), 'local dist')
+
+// 3b. a changed bundle needs a new version. Index chunk names are content hashes:
+// same names = same bundle (a rerun, or a commit outside the bundle, e.g. API-only),
+// new names under the version already served = users cannot tell the two builds apart
+// (2026-10-30: admin 1.3.2 was live, a feature landed, /admin_deploy 1.3.2 was asked).
+if (rendersVersion && !sameVersion) {
+  const live = httpBody(`https://${app.host}/`)
+  const liveChunks = (live.match(/assets\/index-[^"']+\.js/g) || []).map((p) => p.replace('assets/', ''))
+  const changed = liveChunks.length > 0 && liveChunks.some((c) => !chunks.includes(c))
+  if (changed && liveChunks.some((c) => httpBody(`https://${app.host}/assets/${c}`).includes(`"${version}"`))) {
+    die(`${label}: v${version} is already live and this bundle differs from it: bump the version (or --same-version to ship it anyway)`)
+  }
+}
 
 if (dryRun) { ok(`dry run — ${label} ${short(sha)} v${version} is ready to ship; nothing uploaded`); process.exit(0) }
 
