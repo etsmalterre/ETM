@@ -76,12 +76,14 @@ export const BL_ENNOBLISSEUR_VERSION_INITIALE: VersionInitiale = {
 /** v2 (2026-09-28, published): every dyer, BLs only (bl-profils.ts).
  *  v3 (2026-10-12, from the v2 feedback — bl-diagnostics.ts): the prompt is
  *  unchanged again (the reading was never at fault), the behaviour changed,
- *  so its runs are scored under a new version. Never a version number in the
- *  note: the store numbers versions in publication order. */
+ *  so its runs are scored under a new version.
+ *  v4 (2026-10-30, from the v3 feedback, bl-diagnostics.ts): prompt unchanged,
+ *  two checks against the stock and the BL itself. Never a version number in
+ *  the note: the store numbers versions in publication order. */
 export const BL_ENNOBLISSEUR_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: BL_PROMPT_V1,
-  note: 'Retours de la v2, prompt inchangé : deux bordereaux du même lot dans un mail (109269 A et B) sont deux BL ; un BL bloqué dit pourquoi — pièce affectée à aucune commande ou à la commande N (nommée), BL probablement mal numéroté (toutes les pièces sur une autre commande, même article), BL commun à plusieurs commandes (« 9040+9045 » : quelle pièce va où, réception à la main), pièce introuvable avec le numéro probable (3570/50 → 3572/50, jamais remplacé seul) ; le BL TAD qui suit la mise à dispo est classé comme preuve d’expédition ; plus d’alerte « livré directement chez le client » (c’est la règle pour tous les ennoblisseurs).',
+  note: 'Retours de la v3, prompt inchangé : un métrage sans rapport avec le poids (moins de la moitié ou plus d’une fois et demie les m/kg des autres pièces du même OF sur le BL, ex. 3546/11 à 19,8 m pour 21,6 kg à côté de ~108 m) bloque le BL et dit le métrage attendu, à demander à l’ennoblisseur ; un BL qui arrive sur des pièces déjà réceptionnées sans reprise ouverte (BL rectifié, BL en retard) est comparé au stock : rien à faire quand le stock porte déjà ses valeurs, sinon chaque écart est nommé avec le geste (« Corriger la réception » ou « Envoyer en reprise ») et un mail part.',
 }
 
 /** The mailbox n8n polled. Every dyer mails its BLs there (Bontemps asked to
@@ -429,27 +431,35 @@ export async function etiqueterVerifie(messageId: string): Promise<void> {
   }
 }
 
+/** A written run that still asks for a gesture: rolls received with other
+ *  figures than the BL (v4), which only a person can correct in the stock. */
+const aCorrigerEnStock = (r: AgentRun) =>
+  ((r.resultat as unknown as Partial<ResultatBl>).controles ?? []).some((c) => c.code === 'recu_autres_valeurs')
+
 /** Mail the subscribers of notif_agent_bl about the runs a human must look at. */
 export async function prevenir(runs: AgentRun[]): Promise<void> {
-  const aVoir = runs.filter((r) => r.statut === 'a_verifier' || r.statut === 'erreur')
+  const aVoir = runs.filter((r) => r.statut === 'a_verifier' || r.statut === 'erreur' || aCorrigerEnStock(r))
   if (!aVoir.length) return
   // Agents IA lives in the Console Administration since 2026-10-27.
   const base = process.env.ADMIN_BASE_URL?.trim() || 'https://admin.intra.etsmalterre.com'
   for (const r of aVoir) {
     const res = r.resultat as unknown as ResultatBl
     const profil = profilDe(res.profil)
+    const bloque = r.statut === 'a_verifier' || r.statut === 'erreur'
     await notify('notif_agent_bl', {
       subject: `BL Ennoblisseur à vérifier${profil ? ` — ${profil.nom}` : ''}${res.extraction?.numero_bordereau ? ` ${res.extraction.numero_bordereau}` : ''}`,
       content: {
         title: r.statut === 'erreur' ? 'BL Ennoblisseur : lecture en erreur' : 'BL Ennoblisseur à vérifier',
         tone: 'alert',
-        intro: 'L’agent « BL Ennoblisseur » n’a rien enregistré pour ce bordereau : une vérification est nécessaire avant la réception.',
+        intro: bloque
+          ? 'L’agent « BL Ennoblisseur » n’a rien enregistré pour ce bordereau : une vérification est nécessaire avant la réception.'
+          : 'Ce bordereau change des pièces déjà réceptionnées : le stock est à corriger.',
         rows: [
           { label: 'Ennoblisseur', value: profil?.nom ?? '—' },
           { label: 'Bordereau', value: res.extraction?.numero_bordereau || '—' },
           { label: 'Commande', value: res.extraction?.numero_commande || '—' },
           { label: 'Mail', value: r.message ? `${r.message.sujet} (${r.message.de})` : '—' },
-          { label: 'Motif', value: r.erreur ?? res.controles?.filter((c) => c.gravite === 'bloquant').map((c) => c.message).join(' ') ?? '—' },
+          { label: 'Motif', value: r.erreur ?? res.controles?.filter((c) => (bloque ? c.gravite === 'bloquant' : c.code === 'recu_autres_valeurs')).map((c) => c.message).join(' ') ?? '—' },
         ],
         callout: `Voir l’exécution dans la console Administration : ${base}/agents/etm?agent=${BL_ENNOBLISSEUR_SLUG}&run=${r.id}`,
       },

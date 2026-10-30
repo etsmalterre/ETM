@@ -21,8 +21,8 @@ import { nomGed, PROFILS, type ProfilEnnoblisseur, type TypeDocument } from './b
 import { mpsPg } from '../mps-pg.js'
 import { consumedEcruIds } from '../fini-sources.js'
 import {
-  candidatProbable, commandesImprimees, controlesAilleurs, listeCommandes, messageIntrouvables, messagePlusieursCommandes,
-  type ArticleLigne,
+  candidatProbable, commandesImprimees, controlesAilleurs, ecartsRecus, listeCommandes, messageEcartsRecus, messageIntrouvables,
+  messagePlusieursCommandes, type ArticleLigne, type EcartRecu, type Valeurs,
 } from './bl-diagnostics.js'
 
 /** ged.IDtype_doc — « BL retour ennoblisseur » (whitelist in routes/commandes-sous-traitant.ts). */
@@ -56,6 +56,9 @@ export interface Resolution {
    *  (lib/reprises.ts). `idreprise` = the open reprise they belong to, null when
    *  none was recorded (the run warns). Absent on runs before 2026-10-12. */
   reprise?: { idreprise: number | null; rang: number | null; pieces: string[] } | null
+  /** Rolls already received, no reprise open, that the stock holds with other
+   *  figures than this BL's (v4). Absent before 2026-10-30. */
+  ecartsRecus?: EcartRecu[]
 }
 
 /** Identity of a data_bl_tricotbot row: same piece, same poids, same métrage
@@ -136,6 +139,8 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
   const ligneDe = new Map<string, number>()
   /** Numero → roll already received on a line of this order (a reprise BL). */
   const finiRecu = new Map<string, number>()
+  /** Numero → that roll's figures as they stand in stock. */
+  const valeursRecues = new Map<string, Valeurs>()
   /** Numero found off these lines → the line it is on, 0 = an écru affected to none. */
   const ailleurs = new Map<string, number>()
   const noterAilleurs = (n: string, l: number) => { if (!ailleurs.get(n)) ailleurs.set(n, l) }
@@ -149,14 +154,15 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
       if (lignesSet.has(l)) ligneDe.set(String(r.numero).trim(), l)
       else noterAilleurs(String(r.numero).trim(), l)
     }
-    const finis = await query<{ IDstock_fini: number; numero: string; IDref_commande_source: number }>(
-      `SELECT IDstock_fini, numero, IDref_commande_source FROM stock_fini WHERE numero IN (${inList})`,
+    const finis = await query<{ IDstock_fini: number; numero: string; IDref_commande_source: number; poids: number | null; metrage: number | null }>(
+      `SELECT IDstock_fini, numero, IDref_commande_source, poids, metrage FROM stock_fini WHERE numero IN (${inList})`,
     )
     for (const r of finis) {
       const l = Number(r.IDref_commande_source) || 0
       if (lignesSet.has(l)) {
         ligneDe.set(String(r.numero).trim(), l)
         finiRecu.set(String(r.numero).trim(), Number(r.IDstock_fini))
+        valeursRecues.set(String(r.numero).trim(), { poids: r.poids == null ? null : Number(r.poids), metrage: r.metrage == null ? null : Number(r.metrage) })
       }
       else noterAilleurs(String(r.numero).trim(), l)
     }
@@ -262,6 +268,7 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
   const recues = [...new Set(e.pieces.flatMap((p) => p.composants).filter((n) => finiRecu.has(n)))]
   let repriseDepuis: string | null = null
   let sansReprise: Controle | null = null
+  let horsReprise: string[] = []
   if (recues.length > 0) {
     const ids = recues.map((n) => finiRecu.get(n)!)
     const ouvertes = await mpsPg()<{ idreprise: number; rang: number; idstock_fini: number; depuis: string | null }[]>`
@@ -273,6 +280,7 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
     const rep = ouvertes[0]
     res.reprise = { idreprise: rep && hors.length === 0 ? Number(rep.idreprise) : null, rang: rep ? Number(rep.rang) : null, pieces: recues }
     repriseDepuis = rep && hors.length === 0 ? rep.depuis : null
+    horsReprise = hors
     if (hors.length > 0) {
       sansReprise = {
         code: 'reprise_non_enregistree',
@@ -281,15 +289,19 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
       }
     }
   }
+  /** Latest figures this lot's previous BLs pre-filled, per piece. */
+  const avant = new Map<string, Valeurs>()
 
   if (res.ligneId != null && lot) {
     // A reprise BL repeating the first BL's figures is still new: only rows
     // written since the reprise was opened count as already imported.
     const depuis = repriseDepuis && /^\d{8}$/.test(repriseDepuis) ? ` AND DATE >= '${repriseDepuis}'` : ''
     const deja = await query<{ num_piece: string; poids: number; metrage: number }>(
-      `SELECT num_piece, poids, metrage FROM data_bl_tricotbot WHERE IDligne_commande_sous_traitant = ${res.ligneId} AND lot = '${esc(lot)}'${depuis}`,
+      `SELECT num_piece, poids, metrage FROM data_bl_tricotbot WHERE IDligne_commande_sous_traitant = ${res.ligneId} AND lot = '${esc(lot)}'${depuis}
+       ORDER BY IDdata_bl_tricotbot`,
     )
     res.dejaImportees = [...new Set(deja.map((d) => cleDeLigne(String(d.num_piece ?? ''), d.poids, d.metrage)))]
+    for (const d of deja) avant.set(String(d.num_piece ?? '').trim(), { poids: d.poids, metrage: d.metrage })
   }
   // Rolls already received, no open reprise, and every figure already
   // imported: the same document again, not a reprise — a resent BL, or TAD's
@@ -302,8 +314,29 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
       sansReprise = null
     }
   }
+  // No reprise open: a rectified BL (109368, 3546/11 19,8 → 109,8 m) or a late
+  // one looks the same as an unrecorded reprise. The stock decides (v4): it
+  // already carries the BL's figures = nothing to do; otherwise each difference
+  // is named with the gesture for either case.
+  if (sansReprise && res.reprise) {
+    const recus = new Map([...valeursRecues].filter(([n]) => horsReprise.includes(n)))
+    const ecarts = ecartsRecus(e.pieces, recus, avant, profil.ecritPoids)
+    if (ecarts.length) {
+      res.ecartsRecus = ecarts
+      sansReprise = { code: 'recu_autres_valeurs', gravite: 'avertissement', message: messageEcartsRecus(ecarts) }
+    } else {
+      res.reprise = null
+      sansReprise = null
+    }
+  }
   if (sansReprise) controles.push(sansReprise)
   if (res.reprise && res.nomGed) res.nomGed = `${res.nomGed}-reprise${res.reprise.rang ?? ''}`
+  // A rectified BL (a figure changed since the lot's previous BL) is another
+  // paper: filed beside the first one, never folded into its ged (v4).
+  else if (res.nomGed && e.pieces.some((p) => {
+    const a = avant.get(p.numero_piece)
+    return a && cleDeLigne(p.numero_piece, a.poids, a.metrage) !== cleDeLigne(p.numero_piece, poidsEcrit(profil, p.poids), p.metrage)
+  })) res.nomGed = `${res.nomGed}-rectifie`
   if (res.nomGed) {
     const [g] = await query<{ IDged: number }>(
       `SELECT IDged FROM ged WHERE IDcommande_sous_traitant = ${cmd} AND IDtype_doc = ${GED_TYPE_BL_ENNOBLISSEUR} AND nom = '${esc(res.nomGed)}.pdf'`,

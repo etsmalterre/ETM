@@ -14,6 +14,7 @@
 //     shorthand « 3067/17+3 » (= 3067/17 + 3067/3), totals « Nbre roules /
 //     Poids total en Kg / Métrage total ».
 
+import { messageMetragesSuspects, metragesSuspects } from './bl-diagnostics.js'
 export const BL_PROMPT_V1 = `Tu extrais les données d'un bordereau de livraison (BL) du teinturier MATEL COULEURS TEXTILES adressé à Malterre.
 
 Champs :
@@ -264,6 +265,10 @@ export function controlerExtraction(e: BlExtraction, regles: ReglesControle = RE
   if (e.metrage_total != null && Math.abs(somme('metrage') - e.metrage_total) > 0.051 && Math.abs(premierChoix - e.metrage_total) > 0.051) {
     bloque('total_metrage', `La somme des métrages (${somme('metrage')} m) ne correspond pas au total imprimé (${e.metrage_total} m).`)
   }
+  // A métrage out of proportion with its weight (v4, BL 109368A: 19,8 m for
+  // 21,6 kg beside ~108 m): the dyer's typo, which the totals repeat.
+  const suspects = metragesSuspects(e.pieces)
+  if (suspects.length) bloque('metrage_suspect', messageMetragesSuspects(suspects))
   if (e.nombre_pieces != null && e.nombre_pieces !== e.pieces.length) {
     avertit('total_nombre', `Le BL annonce ${e.nombre_pieces} pièce(s), ${e.pieces.length} ligne(s) lue(s).`)
   }

@@ -4,7 +4,11 @@ import {
   candidatProbable,
   commandesImprimees,
   controlesAilleurs,
+  ecartsRecus,
   listeCommandes,
+  messageEcartsRecus,
+  messageMetragesSuspects,
+  metragesSuspects,
   messageIntrouvables,
   messagePlusieursCommandes,
   poidsCoherent,
@@ -92,5 +96,63 @@ describe('BL common to several orders (109402A)', () => {
   it('lists orders in words', () => {
     expect(listeCommandes([9045, 9040])).toBe('9040 et 9045')
     expect(listeCommandes([9045, 9040, 9041])).toBe('9040, 9041 et 9045')
+  })
+})
+
+// v3 feedback (prod data, 2026-10-30).
+const piece = (numero_piece: string, poids: number | null, metrage: number | null) => ({ numero_piece, composants: [numero_piece], poids, metrage })
+
+describe('metragesSuspects', () => {
+  // BL 109368A: MATEL printed 19,80 m for 3546/11.
+  const bl109368 = [piece('3546/10', 21.3, 105.2), piece('3546/11', 21.6, 19.8), piece('3546/7', 21.5, 108), piece('3546/8', 21.4, 110), piece('3546/9', 21.5, 109.1)]
+  it('flags a métrage out of proportion with its weight, with the expected one', () => {
+    const s = metragesSuspects(bl109368)
+    expect(s).toHaveLength(1)
+    expect(s[0]).toMatchObject({ numero: '3546/11', of: '3546', attendu: 109 })
+    expect(messageMetragesSuspects(s)).toContain('3546/11 : 19,8 m pour 21,6 kg')
+    expect(metragesSuspects(bl109368.map((p) => (p.numero_piece === '3546/11' ? { ...p, metrage: 109.8 } : p)))).toEqual([])
+  })
+  it('flags 3560/16 (BL 109452A, 14 m for 20 kg beside 37 and 41 m)', () => {
+    expect(metragesSuspects([piece('3560/13', 20.9, 41), piece('3560/15', 20.2, 37), piece('3560/16', 20, 14)]).map((s) => s.numero)).toEqual(['3560/16'])
+  })
+  it('lets the real spreads of the history through (BL 109464A, 3476/71 at -47 %)', () => {
+    expect(metragesSuspects([piece('3476/70', 20.5, 52.5), piece('3476/71', 20.4, 27.5), piece('3476/72', 20.3, 52), piece('3476/73', 20.6, 53)])).toEqual([])
+  })
+  it('compares within an OF, and only with 3 comparable pieces', () => {
+    expect(metragesSuspects([piece('3546/10', 21.3, 105.2), piece('3546/11', 21.6, 19.8), piece('3570/1', 20, 40)])).toEqual([])
+    expect(metragesSuspects([piece('3546/10', 21.3, 105.2), piece('3546/7', 21.5, 108), piece('3546/11', 21.6, 19.8), piece('3570/1', 20, 40)]).map((s) => s.numero)).toEqual(['3546/11'])
+  })
+  it('leaves out a cut piece (printed twice), a merged roll and an unweighed piece', () => {
+    const base = [piece('3351/1', 20, 100), piece('3351/2', 20, 101), piece('3351/3', 20, 99)]
+    expect(metragesSuspects([...base, piece('3351/18', 0, 40), piece('3351/18', 21.1, 65)])).toEqual([])
+    expect(metragesSuspects([...base, { numero_piece: '3351/4+3351/5', composants: ['3351/4', '3351/5'], poids: 20, metrage: 20 }])).toEqual([])
+    expect(metragesSuspects([...base, piece('3351/6', null, 20)])).toEqual([])
+  })
+})
+
+describe('ecartsRecus', () => {
+  const stock = (xs: Array<[string, number, number]>) => new Map(xs.map(([n, poids, metrage]) => [n, { poids, metrage }]))
+  it('nothing to do when the stock already carries the BL (TAD 345676, received at 88,7 m)', () => {
+    expect(ecartsRecus([piece('3526/13', 20.3, 88.7)], stock([['3526/13', 20.3, 88.7]]), new Map(), false)).toEqual([])
+  })
+  it('accepts Malterre’s own réception measure (105,2 m on the BL, 104,8 m in stock)', () => {
+    expect(ecartsRecus([piece('3546/10', 21.3, 105.2)], stock([['3546/10', 21.3, 104.8]]), new Map(), true)).toEqual([])
+  })
+  it('accepts a stock already moved toward the rectified BL (3546/11: 19,8 → 109,8, stock 103,8)', () => {
+    const avant = new Map([['3546/11', { poids: 21.6, metrage: 19.8 }]])
+    expect(ecartsRecus([piece('3546/11', 21.6, 109.8)], stock([['3546/11', 21.6, 103.8]]), avant, true)).toEqual([])
+  })
+  it('names a roll the stock still holds at the old figure', () => {
+    const avant = new Map([['3546/11', { poids: 21.6, metrage: 19.8 }]])
+    const es = ecartsRecus([piece('3546/11', 21.6, 109.8)], stock([['3546/11', 21.6, 19.8]]), avant, true)
+    expect(es).toEqual([{ numero: '3546/11', champ: 'metrage', bl: 109.8, stock: 19.8 }])
+    expect(messageEcartsRecus(es)).toContain('3546/11 (BL 109,8 m, en stock 19,8 m)')
+    expect(messageEcartsRecus(es)).toContain('« Corriger la réception »')
+  })
+  it('compares the weight only for a dyer whose weight is written', () => {
+    const p = [piece('3589/5', 19.4, 46.8)]
+    const s = stock([['3589/5', 21, 46.8]])
+    expect(ecartsRecus(p, s, new Map(), false)).toEqual([])
+    expect(ecartsRecus(p, s, new Map(), true)).toEqual([{ numero: '3589/5', champ: 'poids', bl: 19.4, stock: 21 }])
   })
 })

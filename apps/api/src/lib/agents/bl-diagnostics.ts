@@ -127,3 +127,127 @@ export function messagePlusieursCommandes(commandes: readonly number[], repartit
   const parts = repartition.filter((r) => r.pieces.length).map((r) => `${r.pieces.length} pièce${r.pieces.length > 1 ? 's' : ''} sur la ${r.commande} (${r.pieces.join(', ')})`)
   return `BL commun aux commandes ${listeCommandes(commandes)} : ${parts.join(' ; ')}. À réceptionner à la main, commande par commande${lot ? `, avec le même lot ${lot}` : ''}.`
 }
+
+// ── v4 (2026-10-30, from the v3 feedback) ────────────────
+//
+//   - BL 109368A printed 3546/11 at 19,80 m for 21,6 kg, its four sisters at
+//     ~5 m/kg (~108 m). The OCR read it right: the dyer's typo went into the
+//     pre-fill. A piece whose m/kg is less than half or more than 1,5 times the
+//     median of its OF on the BL now blocks it. Over the 1 089 pieces of the
+//     history this flags 2, both real errors (the other: 3560/16, 14 m for
+//     20 kg on BL 109452A, its sisters at 37 and 41 m).
+//   - The rectified BL MATEL sent the same morning (19,8 → 109,8 m) was told
+//     « Envoyer en reprise »: its rolls were already received and no reprise
+//     was open. The agent now compares the BL with the stock: nothing to do when
+//     the stock already carries the BL's values; otherwise it names each
+//     difference and the two gestures (rectified BL or reprise).
+
+const fr = (v: number, dec = 1) => String(Math.round(v * 10 ** dec) / 10 ** dec).replace('.', ',')
+
+export const ECART_RATIO_METRAGE = 0.5
+const MIN_PIECES_OF = 3
+
+export interface MetrageSuspect {
+  numero: string
+  poids: number
+  metrage: number
+  of: string
+  /** Median m/kg of the other pieces of the OF on the BL. */
+  ratioOf: number
+  /** The métrage that median gives for this piece's weight. */
+  attendu: number
+}
+
+const mediane = (xs: readonly number[]) => {
+  const s = [...xs].sort((a, b) => a - b)
+  const m = Math.floor(s.length / 2)
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+
+/** Pieces whose métrage is out of proportion with their weight, against the
+ *  other pieces of the same OF on the BL (at least 3 comparable). A merged roll,
+ *  a cut piece (printed twice) and an unweighed piece are left out. */
+export function metragesSuspects(
+  pieces: ReadonlyArray<{ numero_piece: string; composants: readonly string[]; poids: number | null; metrage: number | null }>,
+): MetrageSuspect[] {
+  const fois = new Map<string, number>()
+  for (const p of pieces) fois.set(p.numero_piece, (fois.get(p.numero_piece) ?? 0) + 1)
+  const parOf = new Map<string, Array<{ numero: string; poids: number; metrage: number }>>()
+  for (const p of pieces) {
+    if (p.composants.length !== 1 || (fois.get(p.numero_piece) ?? 0) > 1) continue
+    if (!p.poids || !p.metrage || p.poids <= 0 || p.metrage <= 0) continue
+    const of = /^(\d+)\//.exec(p.composants[0])?.[1]
+    if (!of) continue
+    parOf.set(of, [...(parOf.get(of) ?? []), { numero: p.numero_piece, poids: p.poids, metrage: p.metrage }])
+  }
+  const out: MetrageSuspect[] = []
+  for (const [of, ps] of parOf) {
+    if (ps.length < MIN_PIECES_OF) continue
+    const med = mediane(ps.map((p) => p.metrage / p.poids))
+    for (const p of ps) {
+      if (Math.abs(p.metrage / p.poids / med - 1) <= ECART_RATIO_METRAGE) continue
+      const autres = mediane(ps.filter((x) => x !== p).map((x) => x.metrage / x.poids))
+      out.push({ numero: p.numero, poids: p.poids, metrage: p.metrage, of, ratioOf: autres, attendu: Math.round(p.poids * autres) })
+    }
+  }
+  return out
+}
+
+/** The blocking message for out-of-proportion métrages: what to do, the
+ *  figures to ask the dyer about. */
+export function messageMetragesSuspects(ss: readonly MetrageSuspect[]): string {
+  const parts = ss.map((s) => `${s.numero} : ${fr(s.metrage)} m pour ${fr(s.poids)} kg, les autres pièces de l’OF ${s.of} font ${fr(s.ratioOf)} m/kg (environ ${s.attendu} m attendus)`)
+  return `Métrage suspect, faute de frappe probable de l’ennoblisseur : ${parts.join(' ; ')}. Demandez-lui le bon métrage avant de réceptionner : il n’est jamais corrigé sans vous.`
+}
+
+/** A received roll's figure within this share of the BL's is the same figure
+ *  (Malterre's own réception moves a métrage by ~0,5 %: 105,2 m → 104,8 m). */
+export const TOLERANCE_RECU = 0.02
+
+export interface Valeurs { poids: number | null; metrage: number | null }
+
+export interface EcartRecu {
+  numero: string
+  champ: 'poids' | 'metrage'
+  bl: number
+  stock: number
+}
+
+/** Rolls already received (no reprise open) whose stock figures disagree with
+ *  this BL. A figure counts as up to date when the stock is within
+ *  TOLERANCE_RECU of the BL, or when the stock is closer to the BL than to the
+ *  figure the previous BL of the lot gave (`avant`): somebody already moved it
+ *  (3546/11: 19,8 on the first BL, 109,8 on the rectified one, 103,8 in stock).
+ *  The weight is compared only for a dyer whose weight is written (MATEL). */
+export function ecartsRecus(
+  pieces: ReadonlyArray<{ numero_piece: string; composants: readonly string[]; poids: number | null; metrage: number | null }>,
+  stock: ReadonlyMap<string, Valeurs>,
+  avant: ReadonlyMap<string, Valeurs>,
+  comparerPoids: boolean,
+): EcartRecu[] {
+  const out: EcartRecu[] = []
+  const champs: Array<'poids' | 'metrage'> = comparerPoids ? ['poids', 'metrage'] : ['metrage']
+  for (const p of pieces) {
+    if (p.composants.length !== 1) continue
+    const s = stock.get(p.composants[0])
+    if (!s) continue
+    for (const champ of champs) {
+      const b = p[champ]
+      const v = s[champ]
+      if (b == null || b <= 0 || v == null || v <= 0) continue
+      if (Math.abs(v - b) <= Math.max(0.05, TOLERANCE_RECU * b)) continue
+      const a = avant.get(p.numero_piece)?.[champ]
+      if (a != null && Math.abs(a - b) > 0.05 && Math.abs(v - b) < Math.abs(v - a)) continue
+      out.push({ numero: p.numero_piece, champ, bl: b, stock: v })
+    }
+  }
+  return out
+}
+
+/** The warning for received rolls the BL changes: each difference, and the
+ *  gesture for each of the two cases. */
+export function messageEcartsRecus(es: readonly EcartRecu[]): string {
+  const unite = (e: EcartRecu) => (e.champ === 'poids' ? 'kg' : 'm')
+  const parts = es.map((e) => `${e.numero} (BL ${fr(e.bl)} ${unite(e)}, en stock ${fr(e.stock)} ${unite(e)})`)
+  return `Pièce(s) déjà réceptionnée(s) avec d’autres valeurs que ce BL : ${parts.join(', ')}. BL rectifié : « Corriger la réception » de ces pièces ; reprise : sélectionnez-les dans l’onglet Réception et « Envoyer en reprise » avant de réceptionner.`
+}
