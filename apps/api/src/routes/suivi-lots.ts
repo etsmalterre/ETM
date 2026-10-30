@@ -1089,7 +1089,16 @@ suiviLotsRouter.post('/:id/reponse-client', async (req: Request, res: Response) 
       return
     }
     const clients = await clientsDesLots([{ ligne: Number(s.ligne), lot: s.lot }])
-    const idclient = (clients.get(cleLotLigne(Number(s.ligne), s.lot)) ?? [])[0]?.idclient ?? 0
+    // A lot not received yet has no roll to name its client (a coloris answer
+    // before the stenter, LIVA #1313): the soumission's client order does.
+    const idclient = (clients.get(cleLotLigne(Number(s.ligne), s.lot)) ?? [])[0]?.idclient ?? (await (async () => {
+      const [r] = await sql<{ idclient: number }[]>`
+        SELECT cc.idclient FROM soumission_lot sl
+        JOIN commande_client cc ON cc.idcommande_client = sl.idcommande_client
+        WHERE sl.idsuivilot = ${id} AND sl.nature = ${nature}
+        ORDER BY sl.envoyee_le DESC LIMIT 1`
+      return Number(r?.idclient) || 0
+    })())
     const par = req.userId ? await nomUtilisateur(req.userId) : ''
     await sql`
       INSERT INTO reponse_soumission (date, reponse, idcommande_sous_traitant, idclient, lot, commentaire, saisi_le, saisi_par_id, saisi_par, idsuivilot, nature)
