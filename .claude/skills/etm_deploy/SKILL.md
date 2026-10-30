@@ -322,6 +322,10 @@ no shell in between, so neither footgun below can happen; verifies **every**
 over** the dist; sweeps hashed assets untouched for 14 days; re-fetches the served
 `index.html` and greps the chunk **nginx actually serves**; and stamps last.
 
+**A changed bundle needs a new version** (2026-10-30): the script refuses when the live
+index chunks differ from the build's while the live bundle already carries this version
+(admin 1.3.2 was redeployed as 1.3.2 after a landing). Bump, or `--same-version` to force.
+
 **Footgun A — git-bash path mangling (caused a prod outage 2026-06-15):** the Claude
 Code Bash tool on this machine is git-bash, whose MSYS path conversion rewrites any
 value that looks like an absolute Unix path. `VITE_API_URL=/api … build` typed through
