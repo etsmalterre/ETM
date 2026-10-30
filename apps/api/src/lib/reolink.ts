@@ -5,6 +5,12 @@
 //   POST /api.cgi?token=<t>  [ …commands… ]   (batching works, one answer per command)
 //   Logout ALWAYS at the end: the NVR has few session slots.
 //
+// A token can be dropped by the NVR right after Login (rspCode -6 « please login
+// first »), seen 2026-10-25 and 2026-10-29 for hours on end: the account is
+// likely open elsewhere (Reolink app or client on the same `admin`). A run then
+// logs in once more; a second drop fails with the action to take and who is
+// connected (`GetOnline`), see `avecReprise`.
+//
 // Credentials: env REOLINK_USER / REOLINK_PASSWORD (an admin account — Set* needs
 // it), read at call time. The NVR presents a self-signed certificate: the check
 // is skipped for this request only (node:https agent), never process-wide.
@@ -24,7 +30,20 @@ export const HEURES_SEMAINE = 168
 
 const TIMEOUT_MS = 10_000
 
-export class ReolinkError extends Error {}
+export class ReolinkError extends Error {
+  constructor(
+    message: string,
+    /** The NVR's `rspCode` when it refused a command. */
+    readonly rspCode?: number,
+  ) {
+    super(message)
+  }
+}
+
+/** rspCode of « please login first »: the NVR no longer knows the token. */
+export const SESSION_PERDUE = -6
+
+const sessionPerdue = (err: unknown) => err instanceof ReolinkError && err.rspCode === SESSION_PERDUE
 
 interface ReolinkReponse {
   cmd: string
@@ -75,7 +94,7 @@ export function valeur(r: ReolinkReponse | undefined, cmd: string): Record<strin
   if (!r) throw new ReolinkError(`NVR : pas de réponse à ${cmd}.`)
   if (r.code !== 0 || !r.value) {
     const detail = r.error ? `${r.error.detail} (${r.error.rspCode})` : `code ${r.code}`
-    throw new ReolinkError(`NVR : ${cmd} refusé — ${detail}.`)
+    throw new ReolinkError(`NVR : ${cmd} refusé — ${detail}.`, r.error?.rspCode)
   }
   return r.value
 }
@@ -85,8 +104,14 @@ export interface Session {
   commandes(cmds: Array<{ cmd: string; action?: number; param?: unknown }>): Promise<ReolinkReponse[]>
 }
 
-/** Login, run `fn`, Logout — even when `fn` throws. */
+/** Login, run `fn`, Logout — even when `fn` throws. A token the NVR drops
+ *  (`SESSION_PERDUE`) gets one fresh login, `fn` run again from the start
+ *  (every caller reads the NVR before writing, so a second run is safe). */
 export async function avecSession<T>(fn: (s: Session) => Promise<T>): Promise<T> {
+  return avecReprise(() => uneSession(fn), connectes)
+}
+
+async function uneSession<T>(fn: (s: Session) => Promise<T>): Promise<T> {
   const { url, user, password } = config()
   const login = await poster(`${url}/api.cgi?cmd=Login`, [
     { cmd: 'Login', action: 0, param: { User: { Version: '0', userName: user, password } } },
@@ -98,6 +123,40 @@ export async function avecSession<T>(fn: (s: Session) => Promise<T>): Promise<T>
     return await fn({ commandes: (cmds) => poster(endpoint, cmds.map((c) => ({ action: 0, ...c }))) })
   } finally {
     await poster(endpoint, [{ cmd: 'Logout', action: 0, param: {} }]).catch(() => undefined)
+  }
+}
+
+/** Who is connected to the NVR now (« admin depuis 10.10.20.3 »), the
+ *  automate's own session included; null when the NVR does not say. */
+async function connectes(): Promise<string[] | null> {
+  try {
+    const [r] = await uneSession((s) => s.commandes([{ cmd: 'GetOnline' }]))
+    const users = (valeur(r, 'GetOnline').User ?? []) as Array<{ userName?: string; ip?: string }>
+    return users.map((u) => `${u.userName ?? '?'} depuis ${u.ip ?? '?'}`)
+  } catch {
+    return null
+  }
+}
+
+/** Run `essai`; on a dropped session, once more; on a second drop, an error
+ *  that says what to do (the run's summary, shown in red in Automates). */
+export async function avecReprise<T>(essai: () => Promise<T>, diagnostic: () => Promise<string[] | null>): Promise<T> {
+  try {
+    return await essai()
+  } catch (err) {
+    if (!sessionPerdue(err)) throw err
+  }
+  try {
+    return await essai()
+  } catch (err) {
+    if (!sessionPerdue(err)) throw err
+    const liste = await diagnostic()
+    const compte = process.env.REOLINK_USER || 'admin'
+    throw new ReolinkError(
+      `NVR : session coupée juste après la connexion, deux fois de suite. Le compte « ${compte} » est sans doute ouvert ailleurs (application ou client Reolink) : le fermer là-bas, ou donner à l’automate son propre compte NVR, puis « Lancer maintenant ».` +
+        (liste?.length ? ` Connectés au NVR (l’automate compris) : ${liste.join(', ')}.` : ''),
+      SESSION_PERDUE,
+    )
   }
 }
 
