@@ -11,35 +11,28 @@ import { invalidateSstCommandeCaches } from '@/lib/cache-sync'
 export interface DelaiCycle {
   /** From when the délai is due — the Point asks from that day. 'YYYY-MM-DD' */
   echeance: string | null
+  /** The day the délai was asked (first bon de commande sent). 'YYYY-MM-DD' */
+  demandeLe?: string | null
+  /** Working days since it was asked (0 = today). */
+  joursDepuisDemande?: number | null
   derniereRelance: { jour: string; canal: 'point' | 'email' | 'telephone' } | null
   historique: { le: string; type: 'demande' | 'relance' | 'report' | 'delai_recu'; texte: string; par: string | null }[]
 }
 
-const CANAL: Record<'point' | 'email' | 'telephone', string> = { point: 'Point du jour', email: 'e-mail', telephone: 'téléphone' }
 const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 const jjmmaaaa = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`
 const isoJour = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
-function KV({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-sm text-right truncate">{value}</span>
-    </div>
-  )
-}
-
-/** Échéance, latest relance, history and the two gestures of an order waiting
+/** When it was asked, the history (every relance in it — no separate « Dernière
+ *  relance » row, Vincent 2026-11-02) and the two gestures of an order waiting
  *  for the dyer's délai. A Point sent with the order counts as a relance by
  *  itself; « Relancer » records a call or an e-mail sent apart. */
-export function DelaiQuestion({ commandeId, delai, disabled }: { commandeId: number; delai: DelaiCycle; disabled: boolean }) {
+export function DelaiQuestion({ commandeId, delai, disabled, enRetard }: { commandeId: number; delai: DelaiCycle; disabled: boolean; enRetard?: boolean }) {
   const [dialog, setDialog] = useState<'relance' | 'report' | null>(null)
-  const r = delai.derniereRelance
   const raison = disabled ? 'Terminez la modification d’abord' : undefined
   return (
     <div className="pt-2 border-t border-border/50 space-y-1.5">
-      <KV label="Délai attendu depuis" value={delai.echeance ? jjmmaaaa(delai.echeance) : '—'} />
-      <KV label="Dernière relance" value={r ? `${jjmm(r.jour)} · ${CANAL[r.canal]}` : 'aucune'} />
+      <DemandeLigne demandeLe={delai.demandeLe ?? null} jours={delai.joursDepuisDemande ?? null} enRetard={!!enRetard} />
       {delai.historique.length > 0 && (
         <div className="pt-1 space-y-0.5">
           {delai.historique.map((h, i) => (
@@ -63,6 +56,51 @@ export function DelaiQuestion({ commandeId, delai, disabled }: { commandeId: num
       <RelanceDialog open={dialog === 'relance'} commandeId={commandeId} onClose={() => setDialog(null)} />
       <ReportDialog open={dialog === 'report'} commandeId={commandeId} echeance={delai.echeance} onClose={() => setDialog(null)} />
     </div>
+  )
+}
+
+/** One dated fact of the délai question: the date in bold, what it means in small
+ *  grey beside it — red only when the relance is due and nobody chased
+ *  (mps_designer §41, 2026-11-02). The value never truncates, the label gives way. */
+function LigneFait({ label, date, detail, enRetard, vide = '—' }: {
+  label: string
+  date: string | null
+  detail?: string | null
+  enRetard?: boolean
+  vide?: string
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-xs text-muted-foreground truncate">{label}</span>
+      {date ? (
+        <span className="flex items-baseline gap-1.5 whitespace-nowrap">
+          <span className={cn('text-sm font-semibold tabular-nums', enRetard && 'text-red-600')}>{date}</span>
+          {detail && (
+            <span className={cn('inline-flex items-center gap-1 text-[11px]', enRetard ? 'text-red-600 font-medium' : 'text-muted-foreground')}>
+              {detail}
+            </span>
+          )}
+        </span>
+      ) : (
+        <span className="text-sm text-muted-foreground italic">{vide}</span>
+      )}
+    </div>
+  )
+}
+
+/** « Délai demandé le 28/10/2026 · il y a 3 jours ouvrés » — the day the bon de
+ *  commande asked it, not the échéance (Vincent 2026-11-02). */
+function DemandeLigne({ demandeLe, jours, enRetard }: { demandeLe: string | null; jours: number | null; enRetard: boolean }) {
+  const depuis = jours === null || jours < 0 ? null
+    : jours === 0 ? 'aujourd’hui'
+    : `il y a ${jours} jour${jours > 1 ? 's' : ''} ouvré${jours > 1 ? 's' : ''}`
+  return (
+    <LigneFait
+      label="Délai demandé le"
+      date={demandeLe ? jjmmaaaa(demandeLe) : null}
+      detail={depuis && enRetard ? `${depuis} · à relancer` : depuis}
+      enRetard={enRetard}
+    />
   )
 }
 

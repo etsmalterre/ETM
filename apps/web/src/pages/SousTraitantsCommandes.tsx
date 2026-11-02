@@ -537,7 +537,6 @@ export type SstPhase =
   | 'en_tricotage'
   // Sous-traitants › Ennoblissement (API lib/cycle-ennoblissement.ts).
   | 'en_teinture'
-  | 'en_reception'
   | 'a_cloturer'
 
 /** Sous-traitants › Ennoblissement (dyers, and every non-knitter) or
@@ -577,8 +576,8 @@ const SST_PHASE_META: Record<SstPhase, {
   // Ennoblissement: the dyer works, lots come back, everything validated.
   // « En traitement », not « teinture »: a dyer also washes only (2026-10-22).
   en_teinture:    { label: 'En traitement',    icon: Clock,        solid: 'bg-primary border-primary' },
-  en_reception:   { label: 'En réception',     icon: Eye,          solid: 'bg-amber-500 border-amber-500' },
-  // en_controle (above) also serves Ennoblissement since 2026-10-30: everything back, lots still open.
+  // en_controle (above) also serves Ennoblissement: a lot still open, its detail on
+  // Qualité › Suivi lots (« En réception » merged into it, 2026-11-02).
   a_cloturer:     { label: 'À clôturer',       icon: CheckCircle2, solid: 'bg-teal-600 border-teal-600' },
 }
 
@@ -617,9 +616,9 @@ function EtapeLotPill({ etape, compact, prefix, children }: { etape: EtapeLot; c
   )
 }
 
-/** Search-bar tags (as on Clients › Commandes): the order's phase, then on
- *  Ennoblissement the step one of its open lots is at — each drawn as the card's
- *  own pill. Only the tags some loaded order carries are offered. */
+/** Search-bar tags (as on Clients › Commandes): the order's phase only — a lot's
+ *  step is Qualité › Suivi lots' business (Vincent 2026-11-02). Only the tags some
+ *  loaded order carries are offered. */
 function commandeTags(rows: CommandeListRow[], famille: SstFamille): SearchTagDef<CommandeListRow>[] {
   const phases = (Object.keys(SST_PHASE_META) as SstPhase[]).map((phase): SearchTagDef<CommandeListRow> => {
     const predicate = (r: CommandeListRow) => r.phase === phase
@@ -631,35 +630,20 @@ function commandeTags(rows: CommandeListRow[], famille: SstFamille): SearchTagDe
       predicate,
     }
   })
-  if (famille !== 'ennoblissement') return phases
-  const etapes = (Object.keys(ETAPE_LOT_META) as EtapeLot[]).map((etape): SearchTagDef<CommandeListRow> => {
-    const predicate = (r: CommandeListRow) => (r.lots ?? []).some((l) => l.etape === etape)
-    return {
-      key: `lot:${etape}`,
-      label: ETAPE_LOT_META[etape].label,
-      renderPill: (trailing) => <EtapeLotPill etape={etape}>{trailing}</EtapeLotPill>,
-      count: rows.filter(predicate).length,
-      predicate,
-    }
-  })
-  return [...phases, ...etapes]
+  return phases
 }
 
-/** Ennoblissement card: the open lots by step. Whose move, the relance and the
- *  solde stay in the detail panel: on the card the urgency colour says enough
- *  (Vincent 2026-10-11). */
-function CycleResume({ row }: { row: CommandeListRow }) {
-  const parEtape = new Map<EtapeLot, number>()
-  for (const l of row.lots ?? []) parEtape.set(l.etape, (parEtape.get(l.etape) ?? 0) + 1)
-  if (parEtape.size === 0) return null
+/** Ennoblissement card: a coloured card prints what to do (mps_designer §41) —
+ *  whom to chase, and for which lot. The lot steps themselves stay on Qualité ›
+ *  Suivi lots and in the detail panel (2026-11-02). */
+function CycleResume({ row, urgency }: { row: CommandeListRow; urgency: 'late' | 'soon' | null }) {
+  if (!urgency || row.phase !== 'en_controle' || !row.relance) return null
+  const lot = (row.lots ?? []).find((l) => l.relance === row.relance)
+  const quoi = row.main === 'teinturier' ? 'Relancer l’ennoblisseur' : row.main === 'client' ? 'Relancer le client' : 'Lot à traiter dans Suivi lots'
   return (
-    <div className="mt-1.5">
-      <div className="flex flex-wrap gap-1">
-        {[...parEtape].map(([etape, n]) => (
-          <EtapeLotPill key={etape} etape={etape} compact prefix={n > 1 ? `${n} · ` : ''} />
-        ))}
-      </div>
-    </div>
+    <p className={cn('mt-1 text-[11px] font-medium truncate', urgency === 'late' ? 'text-red-600' : 'text-amber-700')}>
+      {quoi}{lot ? ` · lot ${lot.lot}` : ''}
+    </p>
   )
 }
 
@@ -1597,7 +1581,7 @@ function CommandeList({
                 )}
               </div>
               {!!row.jauge && <JaugeTricotageBar jauge={row.jauge} />}
-              {famille === 'ennoblissement' && <CycleResume row={row} />}
+              {famille === 'ennoblissement' && <CycleResume row={row} urgency={urgency} />}
             </div>
           )
         })}
@@ -2104,6 +2088,7 @@ function LignesSection({
                   isDrawerOpen={piecesDrawerLineId === l.IDligne_commande_sous_traitant}
                   bonEnvoyeAt={commande.bon_envoye_at}
                   dateNotif={commande.date_notif}
+                  cycleUrgence={commande.cycle ? commande.cycle.urgence : undefined}
                   onEdit={() => startEditLine(l)}
                   onDelete={() => setDeleteLineConfirmId(l.IDligne_commande_sous_traitant)}
                   onOpenDrawer={onOpenPiecesDrawer}
@@ -2271,7 +2256,7 @@ function LignesSection({
 }
 
 function LineCard({
-  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, onEdit, onDelete, onOpenDrawer,
+  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, cycleUrgence, onEdit, onDelete, onOpenDrawer,
 }: {
   line: LigneCommande
   isEditing: boolean
@@ -2283,6 +2268,10 @@ function LineCard({
   /** Commande-level relance date (`date_notif`, HFSQL YYYYMMDD or null),
    *  drives the Attente_Delai urgency colour. */
   dateNotif: string | null
+  /** Ennoblissement: the order's urgency from its délai cycle (lib/delai-sst.ts).
+   *  When present it colours the line, and the count lives in the side panel
+   *  (« Délai attendu depuis … · N jours ouvrés », 2026-11-02). */
+  cycleUrgence?: 'late' | 'soon' | null
   /** True when the parent commande's sst supports inline line editing in
    *  ETM (ennoblisseur OR tricoteur). Drives the per-card edit/delete
    *  affordances regardless of which exact type. */
@@ -2462,8 +2451,10 @@ function LineCard({
             })() : isAttenteDelai ? (() => {
               // Bon de commande sent, no délai confirmed yet — show how long
               // we've been waiting. Colour mirrors the card urgency frame.
-              const urgency = attenteDelaiUrgency(dateNotif, bonEnvoyeAt)
-              const label = attenteDays == null
+              const urgency = cycleUrgence !== undefined ? cycleUrgence : attenteDelaiUrgency(dateNotif, bonEnvoyeAt)
+              const label = cycleUrgence !== undefined
+                ? (cycleUrgence === 'late' ? 'Délai à relancer' : 'En attente du délai')
+                : attenteDays == null
                 ? 'En attente du délai'
                 : attenteDays === 0
                   ? 'En attente du délai'
@@ -6749,7 +6740,7 @@ function CycleCard({ commande, cycle, isEditing }: {
         <KV label="La main est à" value={<span className={cn(cycle.main === 'nous' && 'text-amber-700 font-medium')}>{cycle.main === 'teinturier' ? (commande.sous_traitant_nom || MAIN_LABEL.teinturier) : MAIN_LABEL[cycle.main]}</span>} />
       )}
       {commande.phase === 'attente_delai' && cycle.delai && (
-        <DelaiQuestion commandeId={commande.IDcommande_sous_traitant} delai={cycle.delai} disabled={isEditing} />
+        <DelaiQuestion commandeId={commande.IDcommande_sous_traitant} delai={cycle.delai} disabled={isEditing} enRetard={cycle.urgence === 'late'} />
       )}
       {cycle.solde && <p className="text-[11px] text-muted-foreground">Des pièces sont encore chez le teinturier (solde).</p>}
       {cycle.lots.length > 0 && (
@@ -6757,7 +6748,13 @@ function CycleCard({ commande, cycle, isEditing }: {
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Lots en cours</p>
           {cycle.lots.map((l) => (
             <div key={`${l.lot}-${l.idsuivilot}`} className="flex items-center gap-2 text-sm">
-              <span className="font-medium tabular-nums">{l.lot.replace(/^MA/i, '')}</span>
+              {l.idsuivilot > 0 ? (
+                <Link to={`/qualite/suivi-lots?lot=${l.idsuivilot}&statut=en_cours`} className="font-medium tabular-nums text-accent hover:underline" title="Ouvrir le lot dans Qualité › Suivi lots">
+                  {l.lot}
+                </Link>
+              ) : (
+                <span className="font-medium tabular-nums">{l.lot}</span>
+              )}
               <EtapeLotPill etape={l.etape} />
               <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">{l.relance ? `relance ${jjmm(l.relance)}` : ''}</span>
             </div>

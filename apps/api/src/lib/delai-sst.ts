@@ -32,6 +32,19 @@
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { plusJoursOuvres } from './cycle-ennoblissement.js'
+import { ajouterJoursOuvres, joursOuvresEntre } from './jours-ouvres.js'
+
+/** `iso` + n working days: no weekend, no French public holiday (lib/jours-ouvres.ts,
+ *  2026-11-02 — the old count skipped weekends only). 'YYYY-MM-DD'. */
+export function plusOuvres(iso: string, n: number): string {
+  const r = ajouterJoursOuvres(iso.replace(/-/g, ''), n)
+  return `${r.slice(0, 4)}-${r.slice(4, 6)}-${r.slice(6, 8)}`
+}
+
+/** Working days from `a` to `b` ('YYYY-MM-DD'; b later → positive, same day → 0). */
+export function ouvresEntre(a: string, b: string): number {
+  return joursOuvresEntre(a.replace(/-/g, ''), b.replace(/-/g, ''))
+}
 
 /** Working days the dyer gets after the bon de commande before we ask (the old seed). */
 export const DELAI_PREMIERE_DEMANDE_J = 3
@@ -84,14 +97,17 @@ export interface FaitsDelai {
 
 /** From when the délai is due: the latest report, else date_notif, else bon + 3
  *  (bon + 1 with the pieces already at the dyer). date_notif is seeded at bon + 3
- *  when the bon is made: only a date moved by hand overrides the stock rule. Pure. */
+ *  when the bon is made: only a date moved by hand overrides the seed. A seed
+ *  written before 2026-11-02 counted weekends only: it is a seed too, and is
+ *  recomputed with the public holidays. Pure. */
 export function echeanceDelai(f: FaitsDelai): string | null {
   const report = [...f.reports].sort((a, b) => a.le.localeCompare(b.le)).at(-1)
   if (report) return report.echeance
-  const seed = f.demandeLe ? plusJoursOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
-  if (f.dateNotif && f.dateNotif !== seed) return f.dateNotif
-  if (f.stockChezSst && f.demandeLe) return plusJoursOuvres(f.demandeLe, DELAI_STOCK_J)
-  return f.dateNotif ?? seed
+  const seed = f.demandeLe ? plusOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
+  const ancienSeed = f.demandeLe ? plusJoursOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
+  if (f.dateNotif && f.dateNotif !== seed && f.dateNotif !== ancienSeed) return f.dateNotif
+  if (f.stockChezSst && f.demandeLe) return plusOuvres(f.demandeLe, DELAI_STOCK_J)
+  return seed ?? f.dateNotif
 }
 
 /** The latest relance on or after the day the question was asked. Pure. */
@@ -100,15 +116,17 @@ export function derniereRelance(f: FaitsDelai): Relance | null {
   return rs.length ? rs.reduce((a, b) => (b.jour > a.jour ? b : a)) : null
 }
 
-/** When it is ours to chase: the échéance, or RELANCE_SUIVANTE_J working days
- *  after the latest relance if later. Pure. */
+/** When it is ours to chase: the working day AFTER the échéance — on the
+ *  échéance itself the Point of 17:00 asks, nobody has anything to do
+ *  (Vincent 2026-11-02) — or RELANCE_SUIVANTE_J working days after the latest
+ *  relance if later. Pure. */
 export function relanceDue(f: FaitsDelai): string | null {
   const e = echeanceDelai(f)
   const r = derniereRelance(f)
-  if (!e) return r ? plusJoursOuvres(r.jour, RELANCE_SUIVANTE_J) : null
-  if (!r) return e
-  const apres = plusJoursOuvres(r.jour, RELANCE_SUIVANTE_J)
-  return apres > e ? apres : e
+  const apres = r ? plusOuvres(r.jour, RELANCE_SUIVANTE_J) : null
+  if (!e) return apres
+  const lendemain = plusOuvres(e, 1)
+  return apres && apres > lendemain ? apres : lendemain
 }
 
 // ── Reads ────────────────────────────────────────────────

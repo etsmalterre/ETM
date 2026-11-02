@@ -221,12 +221,17 @@ our steps +1; estimates to correct from use).
 
 **Order steps**: À envoyer · Attente délai (relance = `date_notif`, the only date
 a person still moves) · En teinture (date shown = the earliest délai) ·
-En réception (chase = earliest among open lots; only while affected écru is still at
-the dyer, the « solde ») · En contrôle (everything back, lots still open: measures,
-tirelle, soumission, reprise — Vincent 2026-10-30, 9090) · À clôturer (every lot validated, nothing at the dyer) · Terminée.
+En contrôle (at least one lot open, chase = earliest among them; the lot's own step —
+contrôle ennoblisseur / Malterre, soumissions, reprise — is detailed on Qualité › Suivi
+lots only) · back to En traitement once every lot is validated while écru is still at the
+dyer (the « solde ») · À clôturer (every lot validated, nothing at the dyer) · Terminée.
+« En réception » existed 2026-10-30 → 11-02 and was merged into En contrôle (Vincent:
+the most important move is a lot's control). The list's search tags are the order steps
+only; a coloured card prints its action (« Relancer le client · lot N »), and the detail
+panel's « Lots en cours » link to Suivi lots.
 The card's red / amber frame and the header counters follow the chase date
-(`urgenceCommande`). Search keywords match an order step or a lot step
-(« tirelle », « soumis », « reprise »…). A client line's Ennoblissement tab shows the same step
+(`urgenceCommande`). Typed search keywords still match a lot step
+(« tirelle », « soumis », « reprise »…); the tags offer order steps only. A client line's Ennoblissement tab shows the same step
 (`LIBELLE_ETAPE_COMMANDE`), never the legacy line `sstatut`.
 
 ## Soumission Lot Client feature

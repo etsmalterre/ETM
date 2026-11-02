@@ -197,10 +197,10 @@ describe('etatLot: whose move and when to chase', () => {
 })
 
 describe('etatCommande', () => {
-  it('before any lot: à envoyer, attente délai (relance, else bon + 3 working days), en teinture (the délai)', () => {
+  it('before any lot: à envoyer, attente délai (ours the working day after the échéance: date_notif, else bon + 3), en teinture (the délai)', () => {
     expect(etatCommande(commande({ rangStatut: 0 })).etape).toBe('non_envoye')
-    expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ dateNotif: '2026-10-12' }) }))).toMatchObject({ etape: 'attente_delai', main: 'teinturier', relance: '2026-10-12' })
-    expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ demandeLe: '2026-10-09' }) })).relance).toBe('2026-10-14')
+    expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ dateNotif: '2026-10-12' }) }))).toMatchObject({ etape: 'attente_delai', main: 'teinturier', relance: '2026-10-13' })
+    expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ demandeLe: '2026-10-09' }) })).relance).toBe('2026-10-15')
     expect(etatCommande(commande())).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-10-20' })
   })
   it('received, all back: en contrôle, the earliest chase among the open lots (9016: soumis + ACP)', () => {
@@ -213,15 +213,17 @@ describe('etatCommande', () => {
     expect(e).toMatchObject({ etape: 'en_controle', main: 'teinturier', relance: '2026-10-12' })
     expect(e.lots.map((l) => l.etape)).toEqual(['soumis', 'attente_mesures'])
   })
-  it('validated lots drop out; « solde » while écru is still at the dyer', () => {
+  it('every lot validated, écru still at the dyer: back « en traitement » on the délai (2026-11-02)', () => {
     const e = etatCommande(commande({ lots: [lot({ etat: 3 })], ecruChezTeinturier: 11 }))
-    expect(e).toMatchObject({ etape: 'en_reception', main: 'teinturier', relance: '2026-10-20', solde: true, lots: [] })
+    expect(e).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-10-20', solde: true, lots: [] })
   })
-  it('everything back, a lot still open: « en contrôle », not « en réception » (9090, 2026-10-30)', () => {
+  it('a lot still open: « en contrôle », écru at the dyer or not (2026-11-02)', () => {
     const tout = etatCommande(commande({ lots: [lot({ etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-20' }) })], ecruChezTeinturier: 0 }))
     expect(tout.etape).toBe('en_controle')
     const partiel = etatCommande(commande({ lots: [lot({ etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-20' }) })], ecruChezTeinturier: 4 }))
-    expect(partiel.etape).toBe('en_reception')
+    expect(partiel).toMatchObject({ etape: 'en_controle', solde: true })
+    const repris = etatCommande(commande({ lots: [lot({ etat: 2 })], ecruChezTeinturier: 4 }))
+    expect(repris).toMatchObject({ etape: 'en_controle', main: 'teinturier', relance: null })
   })
   it('everything validated and back: ours to close (8565)', () => {
     expect(etatCommande(commande({ lots: [lot({ etat: 3 })] }))).toMatchObject({ etape: 'a_cloturer', main: 'nous' })
@@ -258,10 +260,15 @@ describe('helpers', () => {
     expect(plusJoursOuvres('2026-10-07', 3)).toBe('2026-10-12')
   })
   it('urgency: red on the chase day, amber the working day before', () => {
-    const e = etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ dateNotif: '2026-10-12' }) }))
+    const e = etatCommande(commande()) // en traitement, délai 20/10
+    expect(urgenceCommande(e, '2026-10-20')).toBe('late')
+    expect(urgenceCommande(e, '2026-10-19')).toBe('soon')
+    expect(urgenceCommande(e, '2026-10-16')).toBeNull()
+  })
+  it('waiting for the délai: neutral on the échéance, red the next working day, never amber (2026-11-02)', () => {
+    const e = etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ dateNotif: '2026-10-09' }) })) // Friday
+    expect(urgenceCommande(e, '2026-10-09')).toBeNull()
     expect(urgenceCommande(e, '2026-10-12')).toBe('late')
-    expect(urgenceCommande(e, '2026-10-09')).toBe('soon')
-    expect(urgenceCommande(e, '2026-10-08')).toBeNull()
   })
   it('lot keys: the digits — an old reprise suffix names the same lot (reprise is data now)', () => {
     expect(cleLot('MA109331')).toBe('109331')

@@ -86,7 +86,7 @@ import { uniteLabel } from './expeditions.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
-import { DelaiRefuse, noterDelaiRecu, noterRelance, repousserEcheance } from '../lib/delai-sst.js'
+import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
@@ -198,12 +198,6 @@ function sqlText(value: string | null | undefined): string {
     }),
   )
   return `x'${bytes.toString('hex')}'`
-}
-
-/** Today + `n` working days, formatted as an HFSQL `YYYYMMDD` date string. */
-function hfsqlDatePlusWorkingDays(n: number): string {
-  const d = addWorkingDays(new Date(), n)
-  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 }
 
 // ── Commande lifecycle helpers ───────────────────────────
@@ -941,7 +935,8 @@ function cycleFields(e: EtatCommande) {
     relance: e.relance,
     solde: e.solde,
     lots: e.lots.map((l) => ({ lot: l.lot, idsuivilot: l.idsuivilot, etape: l.etape, main: l.main, relance: l.relance })),
-    ...(e.delai ? { delai: e.delai } : {}),
+    // joursDepuisDemande: working days since the délai was asked (0 = today).
+    ...(e.delai ? { delai: { ...e.delai, joursDepuisDemande: e.delai.demandeLe ? ouvresEntre(e.delai.demandeLe, todayIso()) : null } } : {}),
   }
 }
 
@@ -961,10 +956,9 @@ const ETAPE_KEYWORDS_ENNOBLISSEMENT: Array<[string, { commande?: EtapeCommande; 
   ['traitement', { commande: 'en_teinture' }],
   ['en teinture', { commande: 'en_teinture' }],
   ['teinture', { commande: 'en_teinture' }],
-  ['en reception', { commande: 'en_reception' }],
-  ['reception', { commande: 'en_reception' }],
-  // Everything back, lots still open (2026-10-30).
+  // A lot still open (« En réception » merged into it, 2026-11-02).
   ['en controle', { commande: 'en_controle' }],
+  ['controle', { commande: 'en_controle' }],
   ['a cloturer', { commande: 'a_cloturer' }],
   ['cloturer', { commande: 'a_cloturer' }],
   ['terminee', { commande: 'terminee' }],
@@ -2898,7 +2892,7 @@ commandesSousTraitantRouter.post('/:id/email', async (req: Request, res: Respons
       const dn = (cur[0]?.date_notif ?? '').toString()
       if (!/^\d{8}$/.test(dn)) {
         await query(
-          `UPDATE commande_sous_traitant SET date_notif = '${hfsqlDatePlusWorkingDays(3)}'
+          `UPDATE commande_sous_traitant SET date_notif = '${plusOuvres(todayIso(), DELAI_PREMIERE_DEMANDE_J).replace(/-/g, '')}'
            WHERE IDcommande_sous_traitant = ${id}`,
         )
       }

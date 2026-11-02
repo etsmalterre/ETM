@@ -589,7 +589,6 @@ const SUPPLY_ETAT_META: Record<string, { solid: string; icon: React.ElementType 
   // Dyer orders: the step Sous-traitants › Ennoblissement shows (API LIBELLE_ETAPE_COMMANDE), same colours.
   'À envoyer': { solid: 'bg-slate-500 border-slate-500', icon: Mail },
   'En traitement': { solid: 'bg-primary border-primary', icon: Clock },
-  'En réception': { solid: 'bg-amber-500 border-amber-500', icon: Eye },
   'En contrôle': { solid: 'bg-amber-500 border-amber-500', icon: Eye },
   'À clôturer': { solid: 'bg-teal-600 border-teal-600', icon: CheckCircle2 },
 }

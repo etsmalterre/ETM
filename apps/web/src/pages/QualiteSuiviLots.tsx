@@ -24,7 +24,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   ShieldCheck,
   Search,
@@ -328,23 +328,31 @@ export function QualiteSuiviLots() {
   // Only the responsable qualité (and admins) can interact — everyone else
   // sees the screen read-only (no Modifier, no status change).
   const canManage = useHasPermission('responsable_qualite')
-  // Deep link ?lot=<IDsuivilot> (Qualité › Analyse opens a lot here): only
-  // validated lots are analysed, so the link lands on the « Terminés » list.
+  // Deep link ?lot=<IDsuivilot>[&statut=en_cours|termine|tous]: the link names the
+  // list holding the lot, or the lot is not in it and the first row steals the
+  // selection. Without `statut`: « Terminés » (Qualité › Analyse links validated lots);
+  // Sous-traitants › Ennoblissement links its open lots with statut=en_cours.
   const [searchParams, setSearchParams] = useSearchParams()
   const linkedLotId = (() => {
     const raw = parseInt(searchParams.get('lot') ?? '', 10)
     return isNaN(raw) || raw <= 0 ? null : raw
   })()
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(linkedLotId !== null ? 'termine' : 'en_cours')
+  const linkedStatut = searchParams.get('statut')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(
+    linkedLotId === null ? 'en_cours'
+      : linkedStatut === 'en_cours' || linkedStatut === 'tous' ? linkedStatut
+      : 'termine',
+  )
   const [searchQuery, setSearchQuery] = useState('')
   // Counter-pill toggles (mps_designer §41) and the search-bar step tag (one at a time).
   const [urgenceOn, setUrgenceOn] = useState<Record<NiveauUrgence, boolean>>({ rouge: false, ambre: false })
   const [activeTags, setActiveTags] = useState<string[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(linkedLotId)
   useEffect(() => {
-    if (searchParams.has('lot')) {
+    if (searchParams.has('lot') || searchParams.has('statut')) {
       const next = new URLSearchParams(searchParams)
       next.delete('lot')
+      next.delete('statut')
       setSearchParams(next, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1725,7 +1733,14 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <RecapGroup icon={Factory} title="Commande sous-traitant">
             <RecapField label="Date commande" value={detail.date_commande ? formatHfsqlDate(detail.date_commande) : '—'} />
-            <RecapField label="Commande N°" value={detail.IDcommande_sous_traitant ? String(detail.IDcommande_sous_traitant) : '—'} mono />
+            <RecapField
+              label="Commande N°"
+              value={detail.IDcommande_sous_traitant ? String(detail.IDcommande_sous_traitant) : '—'}
+              mono
+              // The old path redirects to Ennoblissement or Tricotage by the order's type.
+              to={detail.IDcommande_sous_traitant ? `/sous-traitants/commandes?commande=${detail.IDcommande_sous_traitant}` : undefined}
+              toTitle="Ouvrir la commande dans Sous-traitants"
+            />
             <RecapField label="Coloris" value={detail.coloris || '—'} />
           </RecapGroup>
 
@@ -1737,7 +1752,13 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
                 {detail.clients.map((c) => (
                   <div key={c.IDcommande_client} className="py-1.5 first:pt-0 last:pb-0">
                     <RecapField label="Client final" value={c.nom || '—'} />
-                    <RecapField label="Commande N°" value={c.numero || '—'} mono />
+                    <RecapField
+                      label="Commande N°"
+                      value={c.numero ? String(c.numero) : '—'}
+                      mono
+                      to={c.IDcommande_client ? `/clients/commandes?commande=${c.IDcommande_client}` : undefined}
+                      toTitle="Ouvrir la commande dans Clients › Commandes"
+                    />
                     <RecapField label="Réf. client" value={c.ref_client || '—'} />
                   </div>
                 ))}
@@ -1897,13 +1918,16 @@ function RecapGroup({
 /** Label left / value right. No per-row rule: inside a bounded panel the
  *  ledger lines just added noise, and the panel border already does the
  *  containing. `mono` gives ids tabular figures so they align. */
-function RecapField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function RecapField({ label, value, mono, to, toTitle }: { label: string; value: string; mono?: boolean; to?: string; toTitle?: string }) {
+  const cls = cn('text-sm text-right truncate font-medium', mono && 'tabular-nums')
   return (
     <div className="flex items-baseline justify-between gap-3">
       <span className="text-xs text-muted-foreground flex-shrink-0">{label}</span>
-      <span className={cn('text-sm text-right truncate font-medium', mono && 'tabular-nums')} title={value}>
-        {value}
-      </span>
+      {to ? (
+        <Link to={to} className={cn(cls, 'text-accent hover:underline')} title={toTitle ?? value}>{value}</Link>
+      ) : (
+        <span className={cls} title={value}>{value}</span>
+      )}
     </div>
   )
 }
