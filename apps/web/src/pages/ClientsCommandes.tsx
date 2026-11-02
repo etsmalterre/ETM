@@ -6786,11 +6786,14 @@ function LineFormDialog({
             </div>
           )}
           {/* In préparation: the earliest date, computed as the line is typed (hover = the steps), and
-              « Choisir une autre date » for a later one; the calendar starts at the earliest date and the API
-              refuses one before it (409 delai_intenable). Divers and lines waiting for an étude have none. */}
+              « Choisir une autre date »; the calendar opens on the earliest date but goes back to today (#1341: an
+              urgency arranged with the partners, shown amber), the API refuses a past date (409 date_passee).
+              Divers and lines waiting for an étude have none. */}
           {!valide && form.type !== 3 && !form.enEtude && (() => {
             const a = auPlusTotQ.data ?? null
-            const minIso = a ? `${a.date.slice(0, 4)}-${a.date.slice(4, 6)}-${a.date.slice(6, 8)}` : undefined
+            const plusTotIso = a ? `${a.date.slice(0, 4)}-${a.date.slice(4, 6)}-${a.date.slice(6, 8)}` : undefined
+            const minIso = aujourdhuiIso()
+            const avantPlusTot = !!a && autreDate && !!form.date_livraison && inputDateToHfsql(form.date_livraison) < a.date
             const plusTot = a ? (
               <Tooltip side="bottom" align="start" content={<DelaiLigneDetail auPlusTot={a} />}>
                 <span className={cn(SOULIGNE_INFO, 'font-semibold tabular-nums')}>{formatHfsqlDate(a.date)}</span>
@@ -6806,7 +6809,7 @@ function LineFormDialog({
                 {autreDate && !PICKER_DATE ? (
                   <>
                     <div className="flex items-center gap-1.5 sm:w-1/2">
-                      <input type="date" value={form.date_livraison} min={minIso} autoComplete="off" className={inputClass}
+                      <input type="date" value={form.date_livraison} min={minIso} autoComplete="off" className={cn(inputClass, avantPlusTot && 'border-amber-500')}
                         onChange={(e) => setForm({ ...form, date_livraison: e.target.value })} />
                       <Button type="button" variant="ghost" size="icon" className="h-9 w-9 flex-shrink-0" title="Revenir au délai au plus tôt"
                         onClick={() => { setAutreDate(false); setForm({ ...form, date_livraison: '' }) }}>
@@ -6832,13 +6835,13 @@ function LineFormDialog({
                     {a && (
                       <span className="ml-auto relative flex items-center gap-1 flex-shrink-0">
                         <input ref={autreDateRef} type="date" tabIndex={-1} aria-hidden min={minIso}
-                          value={autreDate && form.date_livraison ? form.date_livraison : (minIso ?? '')}
+                          value={autreDate && form.date_livraison ? form.date_livraison : (plusTotIso ?? '')}
                           className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
                           onChange={(e) => { if (e.target.value) { setAutreDate(true); setForm({ ...form, date_livraison: e.target.value }) } }} />
                         <button type="button"
                           onClick={() => {
                             try { if (PICKER_DATE) { autreDateRef.current?.showPicker(); return } } catch { /* fall back to the field */ }
-                            setAutreDate(true); setForm({ ...form, date_livraison: form.date_livraison || minIso || '' })
+                            setAutreDate(true); setForm({ ...form, date_livraison: form.date_livraison || plusTotIso || '' })
                           }}
                           className="relative text-xs font-medium text-accent-blue hover:underline">
                           {autreDate ? 'Changer' : 'Choisir une autre date'}
@@ -6854,9 +6857,9 @@ function LineFormDialog({
                     )}
                   </div>
                 )}
-                {commande.expedition_groupee && a && autreDate && !!form.date_livraison && inputDateToHfsql(form.date_livraison) < a.date && (
+                {avantPlusTot && (
                   <p className="text-[11px] text-amber-700">
-                    Cette ligne ne peut pas être prête à la date commune : repoussez-la pour toutes les lignes dans Info › Expédition.
+                    Avant le délai au plus tôt : urgence à obtenir des sous-traitants.
                   </p>
                 )}
               </div>
@@ -7183,6 +7186,12 @@ function MatiereLibreAvertissement({ commandeId, ligne }: { commandeId: number; 
 }
 
 /** The browser can open a date input's calendar from a click elsewhere (Chrome / Edge 99+, Firefox 101+). */
+/** Today as a date-input value: the floor of every « Prête le » picker in préparation (#1341: a date before
+ *  the earliest one is allowed, an urgency arranged with the partners; never in the past). */
+function aujourdhuiIso(d = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const PICKER_DATE = typeof HTMLInputElement !== 'undefined' && 'showPicker' in HTMLInputElement.prototype
 
 /** The pause before « Valider la commande »: the dates about to become engagements, read line by line,
@@ -7295,9 +7304,11 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
   const dates = restantes.map((l) => l.date_livraison).filter((d): d is string => !!d).sort()
   const sansDate = restantes.length - dates.length
   const commune = dateCommune(commande.lignes)
-  // The floor: no line can be ready before its own earliest date, so the common one starts at the latest.
+  // The latest of the lines' earliest dates: where the calendar opens. A common date before it is allowed
+  // (#1341, an urgency arranged with the partners, amber), never one in the past.
   const plancher = restantes.map((l) => l.au_plus_tot?.date ?? '').filter(Boolean).sort().at(-1) ?? ''
-  const minIso = plancher ? hfsqlDateToInput(plancher) : undefined
+  const plancherIso = plancher ? hfsqlDateToInput(plancher) : undefined
+  const minIso = aujourdhuiIso()
   const pickerRef = useRef<HTMLInputElement>(null)
   // A date picked on a validated order that moves engagements: waits for its why / whom.
   const [enAttente, setEnAttente] = useState('')
@@ -7346,7 +7357,7 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
 
   const affichee = enAttente || commune
   // Ticked but the lines do not share a date (a line added since, or the option just ticked): pick it.
-  // A common date before a line's earliest one (a later line added): push everyone.
+  // A common date before a line's earliest one: allowed (#1341), said amber so the urgency is arranged.
   const aChoisir = expedition.groupee && restantes.length > 0 && !enAttente && (!commune || (!!plancher && commune < plancher))
 
   return (
@@ -7375,7 +7386,7 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
                   {PICKER_DATE ? (
                     <>
                       <input ref={pickerRef} type="date" tabIndex={-1} aria-hidden min={minIso}
-                        value={affichee ? hfsqlDateToInput(affichee) : (minIso ?? '')}
+                        value={affichee ? hfsqlDateToInput(affichee) : (plancherIso ?? '')}
                         className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
                         onChange={(e) => choisir(e.target.value)} />
                       <button type="button" disabled={mut.isPending}
@@ -7395,7 +7406,7 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
                 <p className="text-[11px] text-amber-700">
                   {!commune
                     ? 'Les lignes n’ont pas toutes la même date : choisissez la date commune.'
-                    : `Une ligne ne peut pas être prête avant le ${formatHfsqlDate(plancher)} : repoussez la date commune.`}
+                    : `Avant le délai au plus tôt d’une ligne (${formatHfsqlDate(plancher)}) : urgence à obtenir des sous-traitants.`}
                 </p>
               )}
               {reports > 0 && (

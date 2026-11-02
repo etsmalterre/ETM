@@ -2451,9 +2451,7 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     // accent-safe via sqlText. The first délai is frozen in delai_annonce (accented
     // under HFSQL: named only where it can be).
     const delai = d.date_livraison ? dateStr(d.date_livraison) : ''
-    if (await refuseDelaiIntenable(res, id, {
-      id: 0, typeKind, refId: d.IDreference ?? 0, coloriId: d.IDcolori ?? 0, unite: d.unite ?? 0, quantite: Number(d.quantite) || 0,
-    }, delai)) return
+    if (await refuseDatePassee(res, id, delai)) return
     // In préparation nothing is an engagement yet: the validation freezes the dates (§5 ter).
     const annonce = canNameAccented() && delai && !(await estEnPreparation(id))
     await query(
@@ -2497,7 +2495,6 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     let curEtude = 0
     let nextType = 0
     let nextRef = 0
-    let ligneSuivante: LigneAuPlusTot = { id: lineId, typeKind: 0, refId: 0, coloriId: 0, unite: 0, quantite: 0 }
 
     // Contract guard on update. The body is partial, so the check runs on the
     // line as it WOULD be, and only when the payload actually changes something
@@ -2529,10 +2526,6 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
       if (commercialChange && await refuseIfContratExpire(res, commandeId, next)) return
       nextType = next.type
       nextRef = next.IDreference
-      ligneSuivante = {
-        id: lineId, typeKind: next.type, refId: next.IDreference, coloriId: next.IDcolori,
-        unite: d.unite ?? (Number(row.unite) || 0), quantite: d.quantite !== undefined ? Number(d.quantite) || 0 : Number(row.quantite) || 0,
-      }
 
       // Pieces reserved to the line were picked for its article + coloris; a
       // new one would leave them promised to a product nobody ordered
@@ -2589,7 +2582,7 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
       res.status(400).json({ error: 'report_requis', message: 'La date était un engagement : indiquez pourquoi elle change et à qui le report est dû.' })
       return
     }
-    if (enPreparation && nextDelai !== curDelai.delai && await refuseDelaiIntenable(res, commandeId, ligneSuivante, nextDelai)) return
+    if (enPreparation && nextDelai !== curDelai.delai && await refuseDatePassee(res, commandeId, nextDelai)) return
     if (d.date_livraison !== undefined) {
       const next = nextDelai
       sets.push(`date_livraison = '${next}'`)
@@ -2636,19 +2629,10 @@ commandesClientRouter.put('/:id/lignes-date', async (req: Request, res: Response
     if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
     const parsed = datesLignesBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
-    if (await estEnPreparation(id)) {
-      // Never below a line's earliest date (doctrine §5 ter): the latest of them is the floor.
-      const ls = await mpsPg()<{ id: number; t: number; r: number; c: number; u: number; q: number }[]>`
-        SELECT idligne_commande_client AS id, type AS t, idreference AS r, idcolori AS c, unite AS u, quantite AS q
-          FROM ligne_commande_client WHERE idcommande_client = ${id} AND idligne_commande_client = ANY(${parsed.data.ligneIds})`
-      const plusTot = await auPlusTotLignes(ls.map((l) => ({
-        id: Number(l.id), typeKind: Number(l.t) || 0, refId: Number(l.r) || 0, coloriId: Number(l.c) || 0, unite: Number(l.u) || 0, quantite: Number(l.q) || 0,
-      })))
-      const plancher = [...plusTot.values()].map((a) => a?.date ?? '').sort().at(-1) ?? ''
-      if (plancher && parsed.data.date < plancher) {
-        res.status(409).json({ error: 'delai_intenable', message: `Toutes ces lignes ne peuvent pas être prêtes avant le ${plancher.slice(6, 8)}/${plancher.slice(4, 6)}/${plancher.slice(0, 4)} (le plus lointain de leurs délais au plus tôt).` })
-        return
-      }
+    // Before the lines' earliest dates is allowed (#1341: an urgency arranged with the partners), never in the past.
+    if (await estEnPreparation(id) && parsed.data.date < aujourdhuiYmd()) {
+      res.status(409).json({ error: 'date_passee', message: 'La date ne peut pas être avant aujourd\u2019hui.' })
+      return
     }
     const r = await appliquerDateLignes({
       commandeId: id, ligneIds: parsed.data.ligneIds, date: parsed.data.date, report: parsed.data.report ?? null,
@@ -5123,16 +5107,13 @@ function margeJours(a: DelaiAuPlusTot, date: string | null | undefined): number 
   return date && /^\d{8}$/.test(date) ? joursOuvresEntre(a.date, date) : null
 }
 
-/** A date retained before the earliest date is refused while the order is in préparation (doctrine
- *  §5 ter: never below the minimum, « délai intenable »); answers 409 and returns true when it is. */
-async function refuseDelaiIntenable(res: Response, commandeId: number, l: LigneAuPlusTot, date: string): Promise<boolean> {
+/** A date retained in the past is refused while the order is in préparation. A date before the earliest
+ *  one is allowed (#1341, Vincent 2026-11-02: an order can be taken and rushed with the partners); the
+ *  screen shows it amber with how many working days it is short. Answers 409 and returns true when refused. */
+async function refuseDatePassee(res: Response, commandeId: number, date: string): Promise<boolean> {
   if (!/^\d{8}$/.test(date) || !(await estEnPreparation(commandeId))) return false
-  const a = (await auPlusTotLignes([l])).get(l.id)
-  if (!a || date >= a.date) return false
-  res.status(409).json({
-    error: 'delai_intenable',
-    message: `Cette ligne ne peut pas être prête avant le ${a.date.slice(6, 8)}/${a.date.slice(4, 6)}/${a.date.slice(0, 4)} (délai au plus tôt).`,
-  })
+  if (date >= aujourdhuiYmd()) return false
+  res.status(409).json({ error: 'date_passee', message: 'La date ne peut pas être avant aujourd\u2019hui.' })
   return true
 }
 
