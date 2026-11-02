@@ -2,7 +2,8 @@
 // 3885 — the fencing-piste matter 119B, which nobody measures by agreement):
 //
 //   Contrôle ennoblisseur  the dyer's laize, poids AND stabilités (suivilot *_sst)
-//   Contrôle Malterre      our laize, poids AND stabilités on the tirelle (*_tirelle)
+//   Contrôle Malterre      our laize, poids AND stabilités on the tirelle (*_tirelle),
+//                          + the coloris against the rond 0 on a dyed fini (lib/coloris-lot.ts, #1332)
 //
 // Each one is switched per finished reference (ref_fini.controle_ennoblisseur /
 // controle_malterre, Finis › Références › Informations, both on by default).
@@ -20,6 +21,8 @@ export interface MesuresLot {
   poids: number
   stabH: number
   stabL: number
+  /** Malterre only: the coloris is owed (dyed fini, not the rond 0) and not given yet. */
+  colorisManquant?: boolean
 }
 
 /** What the reference asks (ref_fini). Absent = both asked, the default. */
@@ -36,6 +39,7 @@ export function mesuresManquantes(m: MesuresLot): string[] {
   if (!(Number(m.laize) > 0)) out.push('laize')
   if (!(Number(m.poids) > 0)) out.push('poids')
   if (!(Number(m.stabH) !== 0 || Number(m.stabL) !== 0)) out.push('stabilités')
+  if (m.colorisManquant) out.push('coloris')
   return out
 }
 

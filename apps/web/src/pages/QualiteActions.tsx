@@ -30,6 +30,7 @@ import {
   Plus,
   Search,
   Save,
+  Ruler,
   Target,
   Trash2,
   X,
@@ -92,6 +93,8 @@ interface CommandeRow {
   IDmention_qualite: number
   sous_traitant_nom: string
   conformite: Conformite
+  /** Computed from the vrillage of these lots (LIVA #1332); null = typed in Suivi lots. */
+  lots_controle?: Array<{ lot: string; verdict: Conformite }> | null
 }
 
 interface ActionDetail {
@@ -100,6 +103,8 @@ interface ActionDetail {
   description: string
   date_creation: string
   termine: 0 | 1
+  /** 'vrillage' => every verdict is computed from the lots' vrillage (LIVA #1332). */
+  controle?: 'vrillage' | null
   objectif: number | null
   objectif_atteint: boolean
   conforme_count: number
@@ -208,7 +213,8 @@ export function QualiteActions() {
   const [editTitre, setEditTitre] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [editObjectif, setEditObjectif] = useState('')
-  const originalDraftRef = useRef<{ titre: string; description: string; objectif: string } | null>(null)
+  const [editVrillage, setEditVrillage] = useState(false)
+  const originalDraftRef = useRef<{ titre: string; description: string; objectif: string; vrillage: boolean } | null>(null)
 
   // Mention dialog state (a sub-form → feeds the dirty flag, §28.3.a)
   const [mentionDialogOpen, setMentionDialogOpen] = useState(false)
@@ -237,10 +243,12 @@ export function QualiteActions() {
       titre: detail.titre,
       description: detail.description,
       objectif: detail.objectif === null ? '' : String(detail.objectif),
+      vrillage: detail.controle === 'vrillage',
     }
     setEditTitre(snapshot.titre)
     setEditDescription(snapshot.description)
     setEditObjectif(snapshot.objectif)
+    setEditVrillage(snapshot.vrillage)
     originalDraftRef.current = snapshot
     setIsEditing(true)
   }, [detail])
@@ -266,6 +274,12 @@ export function QualiteActions() {
         method: 'PUT',
         body: JSON.stringify({ objectif: parsed }),
       })
+      if (editVrillage !== (originalDraftRef.current?.vrillage ?? false)) {
+        await apiFetch(`/actions-qualite/${selectedId}/controle`, {
+          method: 'PUT',
+          body: JSON.stringify({ controle: editVrillage ? 'vrillage' : null }),
+        })
+      }
     },
     onSuccess: () => {
       invalidateAll()
@@ -314,10 +328,11 @@ export function QualiteActions() {
     if (editTitre !== o.titre) return true
     if (editDescription !== o.description) return true
     if (editObjectif !== o.objectif) return true
+    if (editVrillage !== o.vrillage) return true
     // An open mention dialog counts as unsaved work.
     if (mentionDialogOpen) return true
     return false
-  }, [isEditing, editTitre, editDescription, editObjectif, mentionDialogOpen])
+  }, [isEditing, editTitre, editDescription, editObjectif, editVrillage, mentionDialogOpen])
 
   const guard = useUnsavedGuard({
     isDirty,
@@ -449,6 +464,8 @@ export function QualiteActions() {
               isEditing={isEditing}
               editObjectif={editObjectif}
               onObjectifChange={setEditObjectif}
+              editVrillage={editVrillage}
+              onVrillageChange={setEditVrillage}
               activeTab={sidebarTab}
               onTabChange={setSidebarTab}
               canManage={canManage}
@@ -903,7 +920,9 @@ function ActionDetailMain({
         </CardHeader>
         <CardContent>
           <p className="text-[11px] text-muted-foreground mb-2">
-            Se renseigne depuis Qualité › Suivi lots, sur le lot correspondant.
+            {detail.controle === 'vrillage'
+              ? 'Calculée par le vrillage saisi dans Qualité › Suivi lots, sur les lots contrôlés depuis la création de l’action.'
+              : 'Se renseigne depuis Qualité › Suivi lots, sur le lot correspondant.'}
           </p>
           {detail.commandes.length === 0 ? (
             <p className="text-sm text-muted-foreground italic py-4 text-center">
@@ -936,7 +955,17 @@ function ActionDetailMain({
                           {c.sous_traitant_nom || '—'}
                         </td>
                         <td className="px-3 py-2">
-                          <ConformitePill value={c.conformite} />
+                          <span
+                            className="inline-flex items-center gap-1.5"
+                            title={c.lots_controle ? c.lots_controle.map((l) => `${l.lot} : ${CONFORMITE_META[l.verdict].label}`).join('\n') : undefined}
+                          >
+                            <ConformitePill value={c.conformite} />
+                            {c.lots_controle && (
+                              <span className="text-[10px] text-muted-foreground tabular-nums">
+                                {c.lots_controle.length} lot{c.lots_controle.length > 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </span>
                         </td>
                       </tr>
                     ))}
@@ -1029,13 +1058,15 @@ const SIDEBAR_TABS = [
 ]
 
 function ActionSidebar({
-  detail, isEditing, editObjectif, onObjectifChange, activeTab, onTabChange,
+  detail, isEditing, editObjectif, onObjectifChange, editVrillage, onVrillageChange, activeTab, onTabChange,
   canManage, onToggleTermine, isToggling,
 }: {
   detail: ActionDetail
   isEditing: boolean
   editObjectif: string
   onObjectifChange: (v: string) => void
+  editVrillage: boolean
+  onVrillageChange: (v: boolean) => void
   activeTab: 'suivi' | 'infos'
   onTabChange: (t: 'suivi' | 'infos') => void
   canManage: boolean
@@ -1075,6 +1106,8 @@ function ActionSidebar({
               isEditing={isEditing}
               editObjectif={editObjectif}
               onObjectifChange={onObjectifChange}
+              editVrillage={editVrillage}
+              onVrillageChange={onVrillageChange}
             />
           ) : (
             <InfosTab detail={detail} />
@@ -1093,13 +1126,16 @@ function ActionSidebar({
 }
 
 function SuiviTab({
-  detail, isEditing, editObjectif, onObjectifChange,
+  detail, isEditing, editObjectif, onObjectifChange, editVrillage, onVrillageChange,
 }: {
   detail: ActionDetail
   isEditing: boolean
   editObjectif: string
   onObjectifChange: (v: string) => void
+  editVrillage: boolean
+  onVrillageChange: (v: boolean) => void
 }) {
+  const vrillage = isEditing ? editVrillage : detail.controle === 'vrillage'
   // Progress is measured on the objectif being edited when in edit mode, so the
   // bar responds live while the user types a new target.
   const objectif = isEditing
@@ -1169,6 +1205,44 @@ function SuiviTab({
             Définissez un objectif pour suivre la progression de cette action.
           </p>
         )}
+      </div>
+
+      {/* LIVA #1332: an action about the vrillage is checked by the measures typed in
+          Suivi lots > Contrôles: its verdicts are computed, never typed. */}
+      <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-sm font-semibold">
+              <Ruler className="h-3.5 w-3.5 text-accent" />
+              <span>Vérifiée par le vrillage</span>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              {vrillage
+                ? `Conforme quand le vrillage de la tirelle est mesuré et ne dépasse pas 5 %, sur chaque lot contrôlé depuis le ${detail.date_creation ? formatHfsqlDate(detail.date_creation) : 'début de l’action'}.`
+                : 'Les contrôles se saisissent à la main dans Suivi lots.'}
+            </p>
+          </div>
+          {isEditing && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={editVrillage}
+              onClick={() => onVrillageChange(!editVrillage)}
+              className={cn(
+                'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                editVrillage ? 'bg-accent shadow-inner' : 'bg-zinc-300 hover:bg-zinc-400/80',
+              )}
+            >
+              <span
+                className={cn(
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
+                  editVrillage ? 'translate-x-[18px]' : 'translate-x-0.5',
+                )}
+              />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="p-3 rounded-lg border bg-card shadow-sm">

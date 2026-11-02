@@ -1460,6 +1460,29 @@ UPDATE ligne_commande_client SET mode_livraison = 0 WHERE mode_livraison IN (1, 
 ALTER TABLE commande_client DROP COLUMN date_expedition_client;
 `,
   },
+  {
+    // Vrillage of a lot (LIVA #1332, lib/vrillage.ts): columns and rows, the dyer's and our tirelle's.
+    // NULL = not measured — deliberately no DEFAULT 0: 0 % is a real measure, and only the new code
+    // reads these columns. An action qualité can be followed by the vrillage (controle = 'vrillage'):
+    // its conformité per sst line is then computed from the lots, never typed.
+    name: '0051_vrillage_lot',
+    sql: `
+ALTER TABLE suivilot
+  ADD COLUMN vrillage_colonnes_sst double precision CHECK (vrillage_colonnes_sst >= 0),
+  ADD COLUMN vrillage_rangs_sst double precision CHECK (vrillage_rangs_sst >= 0),
+  ADD COLUMN vrillage_colonnes_tirelle double precision CHECK (vrillage_colonnes_tirelle >= 0),
+  ADD COLUMN vrillage_rangs_tirelle double precision CHECK (vrillage_rangs_tirelle >= 0);
+ALTER TABLE action_qualite ADD COLUMN controle text CHECK (controle IN ('vrillage'));
+`,
+  },
+  {
+    // Malterre's coloris control of a dyed lot (LIVA #1332, lib/coloris-lot.ts): the tirelle's round
+    // against the « rond 0 » of the ref + coloris. NULL = not done yet.
+    name: '0052_coloris_tirelle',
+    sql: `
+ALTER TABLE suivilot ADD COLUMN coloris_tirelle text CHECK (coloris_tirelle IN ('conforme', 'ecart'));
+`,
+  },
 ]
 
 export interface MigrationStatus {

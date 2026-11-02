@@ -49,6 +49,11 @@ import { findEligibleLots } from './commandes-sous-traitant.js'
 import { clientsDesLots, cleLotLigne, journaliserEnvoiRc, rapportControleLot, type ClientDuLot, type RapportControleLot } from '../lib/rapport-controle-lot.js'
 import { RapportControlePdf } from '../lib/pdf/RapportControlePdf.js'
 import { CONTROLES_PAR_DEFAUT } from '../lib/controles-lot.js'
+import {
+  CHAMPS_VRILLAGE, ecrireVrillages, lireSaisieVrillage, VrillageInvalide, vrillagesDuLot,
+  actionsSuiviesParVrillage, verdictsVrillage, VRILLAGE_MAX, type ChampVrillage, type VrillagesLot,
+} from '../lib/vrillage.js'
+import { colorisAControler, colorisDemande, historiqueColoris, lireVerdictColoris, rondsZero, rondZeroDe } from '../lib/coloris-lot.js'
 
 export const suiviLotsRouter: RouterType = Router()
 
@@ -669,6 +674,29 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
       stabH_tirelle: n(raw.stabH_tirelle),
       stabL_tirelle: n(raw.stabL_tirelle),
 
+      // Vrillage (LIVA #1332, lib/vrillage.ts): null = not measured, 0 is a measure.
+      ...(await vrillagesDuLot(id).then((v) => ({
+        vrillage_colonnes_sst: v.colonnesSst,
+        vrillage_rangs_sst: v.rangsSst,
+        vrillage_colonnes_tirelle: v.colonnesTirelle,
+        vrillage_rangs_tirelle: v.rangsTirelle,
+      }))),
+      vrillage_max: VRILLAGE_MAX,
+
+      // Coloris against the rond 0 (LIVA #1332, lib/coloris-lot.ts).
+      coloris_tirelle: lireVerdictColoris((await mpsPg()<{ v: string | null }[]>`
+        SELECT coloris_tirelle AS v FROM suivilot WHERE idsuivilot = ${id}`)[0]?.v),
+      coloris_controle: await (async () => {
+        if (!colorisDemande(avecTeinture)) return { demande: false, rond0: null, est_rond0: false, historique: [] }
+        const r0 = rondZeroDe(await rondsZero([{ ref: IDref_fini, coloris: IDref_fini_colori }]), IDref_fini, IDref_fini_colori)
+        return {
+          demande: colorisAControler(avecTeinture, id, r0),
+          rond0: r0,
+          est_rond0: r0?.idsuivilot === id,
+          historique: await historiqueColoris(IDref_fini, IDref_fini_colori),
+        }
+      })(),
+
       observations: (fixedSelf?.observations ?? '').toString(),
       emplacement_tirelle: (fixedSelf?.emplacement_tirelle ?? '').toString(),
       fin_archivage: (raw.fin_archivage ?? '').toString(),
@@ -928,6 +956,20 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
     )
     if (exists.length === 0) { res.status(404).json({ error: 'Lot not found' }); return }
 
+    // Vrillage first: a refused value (negative…) must leave the lot untouched.
+    let vrillages: VrillagesLot
+    try {
+      // A field the body leaves out keeps its value (a web build older than #1332 sends none).
+      const v = await vrillagesDuLot(id)
+      for (const [champ, cle] of Object.entries(CHAMPS_VRILLAGE)) {
+        if (champ in b) v[cle] = lireSaisieVrillage(champ as ChampVrillage, b[champ])
+      }
+      vrillages = v
+    } catch (e) {
+      if (e instanceof VrillageInvalide) { res.status(400).json({ error: 'vrillage_invalide', champ: e.champ, message: e.message }); return }
+      throw e
+    }
+
     await query(
       `UPDATE suivilot SET
          laize_sst = ${n(b.laize_sst)}, poids_sst = ${n(b.poids_sst)}, rendement_sst = ${n(b.rendement_sst)},
@@ -938,6 +980,14 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
          fin_archivage = '${dateStr(b.fin_archivage)}'
        WHERE IDsuivilot = ${id}`,
     )
+    await ecrireVrillages(id, vrillages)
+    // The coloris verdict (#1332): 'conforme' | 'ecart' | null; left as is when absent.
+    if ('coloris_tirelle' in b) {
+      if (b.coloris_tirelle !== null && b.coloris_tirelle !== '' && !lireVerdictColoris(b.coloris_tirelle)) {
+        res.status(400).json({ error: 'coloris_invalide' }); return
+      }
+      await mpsPg()`UPDATE suivilot SET coloris_tirelle = ${lireVerdictColoris(b.coloris_tirelle)} WHERE idsuivilot = ${id}`
+    }
     res.json({ ok: true })
   } catch (err) {
     console.error('Error saving suivi-lot:', err)
@@ -1460,10 +1510,11 @@ suiviLotsRouter.get('/:id/actions', async (req: Request, res: Response) => {
       IDsous_traitant: Number(baseRows[0].IDsous_traitant) || 0,
     }
 
-    const [allMentions, actions, verdicts] = await Promise.all([
+    const [allMentions, actions, verdicts, parVrillage] = await Promise.all([
       loadAllMentions(),
       loadActions(),
       loadConformites({ ligneIds: [ligneId] }),
+      actionsSuiviesParVrillage(),
     ])
     const actionById = new Map(actions.map((a) => [a.IDaction_qualite, a]))
     const verdictByMention = new Map(verdicts.map((v) => [v.IDmention_qualite, v.conformite]))
@@ -1481,9 +1532,15 @@ suiviLotsRouter.get('/:id/actions', async (req: Request, res: Response) => {
       (m) => !seen.has(m.IDmention_qualite) && verdictByMention.has(m.IDmention_qualite),
     )
 
+    // An action followed by the vrillage: the line's verdict is computed from its
+    // lots controlled since the action was set up (lib/vrillage.ts), never typed.
+    const calcules = new Map<number, Awaited<ReturnType<typeof verdictsVrillage>>>()
+    for (const [actionId, depuis] of parVrillage) calcules.set(actionId, await verdictsVrillage([ligneId], depuis))
+
     res.json(
       [...openMatches, ...historic].map((m) => {
         const action = actionById.get(m.IDaction_qualite)
+        const calcul = calcules.get(m.IDaction_qualite)?.get(ligneId) ?? null
         return {
           IDmention_qualite: m.IDmention_qualite,
           IDaction_qualite: m.IDaction_qualite,
@@ -1491,10 +1548,15 @@ suiviLotsRouter.get('/:id/actions', async (req: Request, res: Response) => {
           action_description: action?.description ?? '',
           action_termine: action?.termine ?? 0,
           mention: m.mention,
-          conformite: verdictByMention.get(m.IDmention_qualite) ?? 'non_controle',
+          conformite: calcul?.conformite ?? verdictByMention.get(m.IDmention_qualite) ?? 'non_controle',
           /** false ⇒ shown only because a verdict already exists (action closed
            *  or the line no longer matches); the UI greys it out. */
           applicable: seen.has(m.IDmention_qualite),
+          /** 'vrillage' ⇒ the verdict is computed from the vrillage, not typed. */
+          controle: parVrillage.has(m.IDaction_qualite) ? 'vrillage' : null,
+          /** The lots the computed verdict counts (empty when none since the action). */
+          lots_controle: (calcul?.lots ?? []).map((l) => ({ lot: l.lot, verdict: l.verdict })),
+          controle_depuis: parVrillage.get(m.IDaction_qualite) ?? null,
         }
       }),
     )
@@ -1533,8 +1595,15 @@ suiviLotsRouter.put('/:id/actions/:mentionId', async (req: Request, res: Respons
 
     // Scope guard: refuse to invent a verdict against a mention that doesn't exist.
     const mentions = await loadAllMentions()
-    if (!mentions.some((m) => m.IDmention_qualite === mentionId)) {
+    const mention = mentions.find((m) => m.IDmention_qualite === mentionId)
+    if (!mention) {
       res.status(404).json({ error: 'Mention not found' }); return
+    }
+    // An action followed by the vrillage computes its verdict from the lots' measures (#1332).
+    const depuis = (await actionsSuiviesParVrillage()).get(mention.IDaction_qualite)
+    if (depuis && (await verdictsVrillage([ligneId], depuis)).has(ligneId)) {
+      res.status(409).json({ error: 'verdict_calcule', message: 'Le verdict de cette action est calculé à partir du vrillage du lot : saisissez le vrillage dans Contrôles.' })
+      return
     }
 
     await setConformite(ligneId, mentionId, code as Conformite)

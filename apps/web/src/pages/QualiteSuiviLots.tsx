@@ -22,7 +22,7 @@
 // the physical swatch can be discarded; not a status). Plugged into the shared
 // unsaved-changes guard.
 
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
@@ -99,6 +99,7 @@ import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/compone
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
+import { SchemaControle, type SchemaKind } from '@/components/qualite/SchemaControle'
 import { cn } from '@/lib/utils'
 
 // ── Types ────────────────────────────────────────────────
@@ -192,6 +193,16 @@ interface SuiviLotDetail {
   rendement_tirelle: number
   stabH_tirelle: number
   stabL_tirelle: number
+  /** Vrillage in % (LIVA #1332): null = not measured, 0 is a measure. Absent on an older API. */
+  vrillage_colonnes_sst?: number | null
+  vrillage_rangs_sst?: number | null
+  vrillage_colonnes_tirelle?: number | null
+  vrillage_rangs_tirelle?: number | null
+  /** In tolerance up to this %, included. */
+  vrillage_max?: number
+  /** Malterre's coloris check against the rond 0 (LIVA #1332). Absent on an older API. */
+  coloris_tirelle?: 'conforme' | 'ecart' | null
+  coloris_controle?: ColorisControle
   observations: string
   emplacement_tirelle: string
   fin_archivage: string
@@ -221,6 +232,23 @@ interface SuiviLotDetail {
   controles?: { ennoblisseur: boolean; malterre: boolean }
   /** The clients its pieces are affected to: the rapport de contrôle's recipients. */
   clients_rc?: ClientRc[]
+}
+
+interface LotColoris {
+  idsuivilot: number
+  lot: string
+  date: string | null
+  verdict: 'conforme' | 'ecart' | null
+}
+
+interface ColorisControle {
+  /** The lot owes the check: dyed fini and not the rond 0. */
+  demande: boolean
+  /** The first lot of this ref + coloris: its round is the reference in the binder. */
+  rond0: { idsuivilot: number; lot: string; date: string | null } | null
+  est_rond0: boolean
+  /** Last lots of the ref + coloris, newest first. */
+  historique: LotColoris[]
 }
 
 interface RefBounds {
@@ -294,6 +322,11 @@ interface EditState {
   rendement_tirelle: string
   stabH_tirelle: string
   stabL_tirelle: string
+  vrillage_colonnes_sst: string
+  vrillage_rangs_sst: string
+  vrillage_colonnes_tirelle: string
+  vrillage_rangs_tirelle: string
+  coloris_tirelle: '' | 'conforme' | 'ecart'
   observations: string
   emplacement_tirelle: string
   fin_archivage: string // yyyy-mm-dd
@@ -315,6 +348,12 @@ function snapshotEdit(d: SuiviLotDetail): EditState {
     rendement_tirelle: numStr(d.rendement_tirelle),
     stabH_tirelle: numStr(d.stabH_tirelle),
     stabL_tirelle: numStr(d.stabL_tirelle),
+    // 0 is a real vrillage: only null (not measured) is empty.
+    vrillage_colonnes_sst: d.vrillage_colonnes_sst == null ? '' : String(d.vrillage_colonnes_sst),
+    vrillage_rangs_sst: d.vrillage_rangs_sst == null ? '' : String(d.vrillage_rangs_sst),
+    vrillage_colonnes_tirelle: d.vrillage_colonnes_tirelle == null ? '' : String(d.vrillage_colonnes_tirelle),
+    vrillage_rangs_tirelle: d.vrillage_rangs_tirelle == null ? '' : String(d.vrillage_rangs_tirelle),
+    coloris_tirelle: d.coloris_tirelle ?? '',
     observations: d.observations ?? '',
     emplacement_tirelle: d.emplacement_tirelle ?? '',
     fin_archivage: hfsqlDateToInput(d.fin_archivage),
@@ -383,6 +422,10 @@ export function QualiteSuiviLots() {
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['suivi-lots'] })
     queryClient.invalidateQueries({ queryKey: ['suivi-lot', selectedId] })
+    // A verdict « calculé par le vrillage » follows the measures just saved (#1332).
+    queryClient.invalidateQueries({ queryKey: ['suivi-lot-actions'] })
+    queryClient.invalidateQueries({ queryKey: ['actions-qualite'] })
+    queryClient.invalidateQueries({ queryKey: ['action-qualite'] })
   }, [queryClient, selectedId])
 
   // ── Edit lifecycle ──────────────────────────────────────
@@ -427,6 +470,11 @@ export function QualiteSuiviLots() {
           rendement_tirelle: edit.rendement_tirelle,
           stabH_tirelle: edit.stabH_tirelle,
           stabL_tirelle: edit.stabL_tirelle,
+          vrillage_colonnes_sst: edit.vrillage_colonnes_sst,
+          vrillage_rangs_sst: edit.vrillage_rangs_sst,
+          vrillage_colonnes_tirelle: edit.vrillage_colonnes_tirelle,
+          vrillage_rangs_tirelle: edit.vrillage_rangs_tirelle,
+          coloris_tirelle: edit.coloris_tirelle || null,
           observations: edit.observations,
           emplacement_tirelle: edit.emplacement_tirelle,
           fin_archivage: inputDateToHfsql(edit.fin_archivage),
@@ -1785,13 +1833,14 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
         )}
         {/* Spec banner — the lot's target values, so it keeps a divider above:
             it belongs to the lot, not to either order panel. */}
-        <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-2 sm:grid-cols-6 gap-2">
+        <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-2 sm:grid-cols-7 gap-2">
           <SpecStat label="Laize" value={fmtNum(detail.laize_demandee)} />
           <SpecStat label="Poids" value={fmtNum(detail.poids_demande)} />
           <SpecStat label="Freinte" value={fmtNum(detail.freinte_demandee * 100, 0)} suffix="%" />
           <SpecStat label="Rendement" value={fmtNum(detail.rendement_demande, 2)} highlight />
           <SpecStat label="Stab H" value={fmtNum(detail.stabH_demandee)} />
           <SpecStat label="Stab L" value={fmtNum(detail.stabL_demandee)} />
+          <SpecStat label="Vrillage" value={`≤ ${fmtNum(detail.vrillage_max ?? 5)}`} suffix=" %" />
         </div>
       </div>
 
@@ -2080,6 +2129,12 @@ interface LotActionRow {
   /** false ⇒ listed only because a verdict already exists (action closed since,
    *  or the line no longer matches). Read-only history, not a live instruction. */
   applicable: boolean
+  /** 'vrillage' ⇒ the verdict is computed from the lots' vrillage (LIVA #1332), never typed. */
+  controle?: 'vrillage' | null
+  /** The lots the computed verdict counts (controlled since the action was set up). */
+  lots_controle?: Array<{ lot: string; verdict: LotConformite }>
+  /** 'YYYY-MM-DD': the action's date, from which lots count. */
+  controle_depuis?: string | null
 }
 
 const LOT_CONFORMITE_CHOICES: { key: LotConformite; label: string; active: string }[] = [
@@ -2179,6 +2234,9 @@ function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boo
               </div>
             )}
 
+            {row.controle === 'vrillage' ? (
+              <VerdictVrillage row={row} />
+            ) : (
             <div className="flex gap-1 mt-2.5">
               {LOT_CONFORMITE_CHOICES.map((c) => {
                 const active = row.conformite === c.key
@@ -2204,10 +2262,53 @@ function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boo
                 )
               })}
             </div>
+            )}
           </div>
         )
       })}
     </>
+  )
+}
+
+/** An action followed by the vrillage: the verdict is computed from the lots of
+ *  this sst line controlled since the action was set up — no button to press,
+ *  the measure is typed in Contrôles (LIVA #1332). */
+function VerdictVrillage({ row }: { row: LotActionRow }) {
+  const lots = row.lots_controle ?? []
+  const choice = LOT_CONFORMITE_CHOICES.find((c) => c.key === row.conformite) ?? LOT_CONFORMITE_CHOICES[2]
+  const depuis = row.controle_depuis ? formatHfsqlDate(row.controle_depuis.replace(/-/g, '')) : null
+  return (
+    <div className="mt-2.5 space-y-1.5">
+      <div className="flex items-center gap-2">
+        <span className={cn('px-2 py-0.5 text-[11px] rounded-md border font-medium', choice.active)}>{choice.label}</span>
+        <span className="text-[11px] text-muted-foreground">calculé par le vrillage</span>
+      </div>
+      {lots.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {lots.map((l, i) => (
+            <span
+              key={`${l.lot}-${i}`}
+              className={cn(
+                'px-1.5 py-0.5 rounded text-[10px] tabular-nums border',
+                l.verdict === 'conforme' && 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                l.verdict === 'non_conforme' && 'bg-red-50 text-red-700 border-red-200',
+                l.verdict === 'non_controle' && 'bg-zinc-100 text-zinc-600 border-zinc-200',
+              )}
+              title={l.verdict === 'non_controle' ? 'Vrillage de la tirelle non saisi' : l.verdict === 'conforme' ? 'Vrillage dans la tolérance' : 'Vrillage hors tolérance'}
+            >
+              {l.lot || '—'}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground italic">
+          Aucun lot contrôlé{depuis ? ` depuis le ${depuis}` : ''} sur cette commande.
+        </p>
+      )}
+      {row.conformite === 'non_controle' && lots.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">Saisissez le vrillage de la tirelle dans Contrôles.</p>
+      )}
+    </div>
   )
 }
 
@@ -2273,7 +2374,7 @@ function ConformMarker({ conform }: { conform: boolean | null }) {
 // measured value is a needle — green inside tolerance, red outside, grey when
 // not yet measured. Bound labels sit under the band edges. Updates live as the
 // value is typed in edit mode. Returns null when no bound is defined.
-function ToleranceGauge({ value, tol, conform, dec }: { value: number; tol: Tolerance; conform: boolean | null; dec: number }) {
+function ToleranceGauge({ value, tol, conform, dec, zeroIsValue }: { value: number; tol: Tolerance; conform: boolean | null; dec: number; zeroIsValue?: boolean }) {
   if (tol.min == null && tol.max == null) return null
   const hasMax = tol.max != null
   const lo = tol.min ?? 0
@@ -2301,11 +2402,11 @@ function ToleranceGauge({ value, tol, conform, dec }: { value: number; tol: Tole
   // 0 = control not made yet, so no needle. Any non-zero reading shows —
   // including negative stab values (shrinkage).
   const centered = hasMax && lo < 0 && hi > 0
-  const showNeedle = value !== 0
+  const showNeedle = zeroIsValue ? conform !== null : value !== 0
   const needleColor = conform === false ? 'bg-destructive' : conform === true ? 'bg-green-600' : 'bg-zinc-400'
 
   return (
-    <div className="mt-1.5">
+    <div className="w-full">
       <div className="relative h-1.5 rounded-full bg-zinc-200">
         {/* Acceptable band */}
         <div
@@ -2364,22 +2465,38 @@ function ControlesTab({
   // to compare against and stab would falsely flag any shrinkage as non-conforme).
   const bounds = detail.reference ? detail.ref_bounds : undefined
   const controles = detail.controles ?? { ennoblisseur: true, malterre: true }
+  const vrillageMax = detail.vrillage_max ?? 5
+  /** Does one side hold any measure? (0 is empty for laize / poids / stab, a value for vrillage.) */
+  const aDesValeurs = (cote: 'sst' | 'tirelle') =>
+    [detail[`laize_${cote}`], detail[`poids_${cote}`], detail[`stabH_${cote}`], detail[`stabL_${cote}`]].some((v) => Number(v) !== 0)
+    || [detail[`vrillage_colonnes_${cote}`], detail[`vrillage_rangs_${cote}`]].some((v) => v != null)
   return (
     <>
       {/* Sous-Traitant */}
       <SidebarCard title="Sous-Traitant" icon={<Factory className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={controles.ennoblisseur ? null : <SansControle qui="ennoblisseur" />}>
+        <CarteSansValeur.Provider value={!aDesValeurs('sst')}>
         <KVNum label="Laize" field="laize_sst" detailVal={detail.laize_sst} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_sst" detailVal={detail.poids_sst} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab H" field="stabH_sst" detailVal={detail.stabH_sst} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab L" field="stabL_sst" detailVal={detail.stabL_sst} conformKind="stabL" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVVrillage label="Vrillage col." field="vrillage_colonnes_sst" detailVal={detail.vrillage_colonnes_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVVrillage label="Vrillage rangs" field="vrillage_rangs_sst" detailVal={detail.vrillage_rangs_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        </CarteSansValeur.Provider>
       </SidebarCard>
 
       {/* Tirelle */}
       <SidebarCard title="Tirelle" icon={<Ruler className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={controles.malterre ? null : <SansControle qui="Malterre" />}>
+        <CarteSansValeur.Provider value={!aDesValeurs('tirelle')}>
         <KVNum label="Laize" field="laize_tirelle" detailVal={detail.laize_tirelle} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_tirelle" detailVal={detail.poids_tirelle} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab L" field="stabL_tirelle" detailVal={detail.stabL_tirelle} conformKind="stabL" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVVrillage label="Vrillage col." field="vrillage_colonnes_tirelle" detailVal={detail.vrillage_colonnes_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVVrillage label="Vrillage rangs" field="vrillage_rangs_tirelle" detailVal={detail.vrillage_rangs_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        {detail.coloris_controle && (detail.coloris_controle.demande || detail.coloris_controle.est_rond0) && (
+          <KVColoris controle={detail.coloris_controle} detailVal={detail.coloris_tirelle ?? null} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        )}
+        </CarteSansValeur.Provider>
       </SidebarCard>
 
       {/* Observations + emplacement + archivage */}
@@ -2499,26 +2616,216 @@ function KVNum({
   const tol = conformKind ? resolveTolerance(conformKind, bounds, rdtBounds) : null
   const conform = tol ? checkConform(currentVal, tol) : null
   return (
-    <div className="min-h-[1.75rem]">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        <span className="inline-flex items-center justify-end gap-1.5">
+    <MesureRow
+      label={label}
+      gauge={tol && <ToleranceGauge value={currentVal} tol={tol} conform={conform} dec={dec} />}
+      schema={conformKind && conformKind !== 'rendement' ? conformKind : undefined}
+      isEditing={isEditing && !!edit}
+    >
+      <ConformMarker conform={conform} />
+      {isEditing && edit ? (
+        <input
+          type="number"
+          step="any"
+          value={edit[field]}
+          onChange={(e) => onEditField(field, e.target.value)}
+          className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[72px] tabular-nums"
+        />
+      ) : (
+        <span className="tabular-nums text-sm">{detailVal === 0 ? '' : fmtNum(detailVal, dec)}</span>
+      )}
+    </MesureRow>
+  )
+}
+
+/** One measure on one line: label | tolerance gauge | marker + value (Vincent
+ *  2026-11-02 — the label used to sit above the gauge, a line per measure lost).
+ *  Aligned on the gauge's bar: label and value are nudged so their text centre
+ *  meets the bar, the bound labels hang under the bar. */
+/** True inside a card with no value at all (view mode): the value slot then
+ *  collapses and every gauge starts right after its label (Vincent 2026-11-02). */
+const CarteSansValeur = createContext(false)
+
+function MesureRow({ label, gauge, isEditing, schema, children }: { label: string; gauge: React.ReactNode; isEditing: boolean; schema?: SchemaKind; children: React.ReactNode }) {
+  const sansValeur = useContext(CarteSansValeur) && !isEditing
+  return (
+    <div className="flex items-start gap-2 min-h-[1.75rem]">
+      <LabelMesure label={label} aide={schema && <SchemaControle kind={schema} />} />
+      {/* The value sits between the label and the gauge, so every gauge runs to
+          the card's edge whether the lot is measured or not (Vincent 2026-11-02). */}
+      {!sansValeur && (
+        <span className={cn('flex-shrink-0 inline-flex items-center justify-end gap-1.5', isEditing ? 'w-[96px] -mt-1.5' : 'w-[58px] -mt-0.5')}>
+          {children}
+        </span>
+      )}
+      <div className="flex-1 min-w-0 pt-[5px] pl-1">{gauge}</div>
+    </div>
+  )
+}
+
+/** A measure's label. With `aide`, hovering it explains the measure (the
+ *  drawing): on the TITLE, not the gauge — the title is what one wonders about,
+ *  and the gauge stays free while typing (Vincent 2026-11-02). Dotted underline
+ *  + help cursor say it can be hovered. */
+function LabelMesure({ label, aide }: { label: string; aide?: React.ReactNode }) {
+  const cls = 'text-xs leading-4 text-muted-foreground whitespace-nowrap'
+  if (!aide) return <span className={cn('w-[82px] flex-shrink-0', cls)}>{label}</span>
+  return (
+    <span className="w-[82px] flex-shrink-0">
+      <Tooltip side="left" content={aide}>
+        <span className={cn(cls, 'cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-2')}>{label}</span>
+      </Tooltip>
+    </span>
+  )
+}
+
+/** A vrillage measure (LIVA #1332): a % ≥ 0, conforme up to `max` included.
+ *  Unlike KVNum, 0 is a measure (perfect) and empty means « not measured ». */
+function KVVrillage({
+  label,
+  field,
+  detailVal,
+  max,
+  isEditing,
+  edit,
+  onEditField,
+}: {
+  label: string
+  field: 'vrillage_colonnes_sst' | 'vrillage_rangs_sst' | 'vrillage_colonnes_tirelle' | 'vrillage_rangs_tirelle'
+  detailVal: number | null
+  max: number
+  isEditing: boolean
+  edit: EditState | null
+  onEditField: <K extends keyof EditState>(key: K, value: string) => void
+}) {
+  const raw = isEditing && edit ? edit[field].trim().replace(',', '.') : null
+  const currentVal: number | null = raw === null ? detailVal : raw === '' || isNaN(Number(raw)) ? null : Number(raw)
+  const conform = currentVal === null ? null : currentVal <= max
+  return (
+    <MesureRow
+      label={label}
+      gauge={<ToleranceGauge value={currentVal ?? 0} tol={{ min: 0, max }} conform={conform} dec={0} zeroIsValue />}
+      schema={field.startsWith('vrillage_colonnes') ? 'vrillageColonnes' : 'vrillageRangs'}
+      isEditing={isEditing && !!edit}
+    >
           <ConformMarker conform={conform} />
           {isEditing && edit ? (
-            <input
-              type="number"
-              step="any"
-              value={edit[field]}
-              onChange={(e) => onEditField(field, e.target.value)}
-              className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[110px] tabular-nums"
-            />
+            <span className="inline-flex items-center gap-1">
+              <input
+                type="number"
+                step="any"
+                min={0}
+                inputMode="decimal"
+                value={edit[field]}
+                // A vrillage is never negative: the minus sign is not accepted.
+                onChange={(e) => onEditField(field, e.target.value.replace(/-/g, ''))}
+                onKeyDown={(e) => { if (e.key === '-') e.preventDefault() }}
+                className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[56px] tabular-nums"
+              />
+              <span className="text-xs text-muted-foreground">%</span>
+            </span>
           ) : (
-            <span className="tabular-nums text-sm">{detailVal === 0 ? '' : fmtNum(detailVal, dec)}</span>
+            <span className="tabular-nums text-sm">{detailVal === null ? '' : `${fmtNum(detailVal, Number.isInteger(detailVal) ? 0 : 1)} %`}</span>
           )}
-        </span>
-      </div>
-      {tol && <ToleranceGauge value={currentVal} tol={tol} conform={conform} dec={dec} />}
+    </MesureRow>
+  )
+}
+
+/** Malterre's coloris check (LIVA #1332): Laetitia's round of the tirelle
+ *  against the rond 0 of the ref + coloris in the binder — Conforme or Écart,
+ *  the why in the observations. The rond 0 lot owes nothing: its round IS the
+ *  reference. Hover: the drawing + the binder as ETM sees it. */
+function KVColoris({
+  controle,
+  detailVal,
+  isEditing,
+  edit,
+  onEditField,
+}: {
+  controle: ColorisControle
+  detailVal: 'conforme' | 'ecart' | null
+  isEditing: boolean
+  edit: EditState | null
+  onEditField: <K extends keyof EditState>(key: K, value: string) => void
+}) {
+  const current = isEditing && edit ? (edit.coloris_tirelle || null) : detailVal
+  const sansValeur = useContext(CarteSansValeur) && !(isEditing && !!edit)
+  const r0 = controle.rond0
+  const classeur = (
+    <div className="w-[220px]">
+      <SchemaControle kind="coloris" />
+      <p className="mt-1 text-[11px] font-normal">
+        {r0
+          ? `Rond 0 : lot ${r0.lot || '—'}${r0.date ? ` du ${formatHfsqlDate(r0.date.replace(/-/g, ''))}` : ''}`
+          : 'Rond 0 inconnu (coloris du lot non renseigné).'}
+      </p>
+      {controle.historique.length > 0 && (
+        <div className="mt-2 border-t border-border/60 pt-1.5 space-y-0.5">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Derniers lots</p>
+          {controle.historique.map((h) => (
+            <div key={h.idsuivilot} className="flex items-center justify-between gap-2 text-[11px] font-normal">
+              <span className="tabular-nums truncate">
+                {h.lot || '—'}
+                {h.idsuivilot === r0?.idsuivilot && <span className="ml-1 text-amber-700 font-medium">rond 0</span>}
+              </span>
+              <span className={cn(
+                h.verdict === 'conforme' && 'text-green-700',
+                h.verdict === 'ecart' && 'text-destructive',
+                !h.verdict && 'text-muted-foreground',
+              )}>
+                {h.verdict === 'conforme' ? 'Conforme' : h.verdict === 'ecart' ? 'Écart' : '—'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
+  )
+  return (
+    <>
+      {/* Same line as the measures: label | verdict centred under the gauges. */}
+      <div className="w-full flex items-center gap-2 min-h-[1.75rem]">
+        <LabelMesure label="Coloris" aide={classeur} />
+        {/* Empty value slot, as wide as the measures', so the verdict centres on the gauges above. */}
+        {!sansValeur && <span className={cn('flex-shrink-0', isEditing ? 'w-[96px]' : 'w-[58px]')} />}
+        <div className="flex-1 min-w-0 pl-1 flex justify-center">
+        {controle.est_rond0 ? (
+          <span className="text-xs text-amber-700 font-medium">Rond 0 de la réf. - coloris</span>
+        ) : (
+          <>
+            {isEditing && edit ? (
+              <span className="flex-shrink-0 inline-flex rounded-md border border-input bg-white overflow-hidden">
+                {([['conforme', 'Conforme'], ['ecart', 'Écart']] as const).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    // A second click on the active choice clears it (not compared yet).
+                    onClick={() => onEditField('coloris_tirelle', edit.coloris_tirelle === k ? '' : k)}
+                    className={cn(
+                      'px-2.5 h-7 text-xs transition-colors',
+                      k === 'ecart' && 'border-l border-input',
+                      edit.coloris_tirelle === k
+                        ? (k === 'conforme' ? 'bg-green-600 text-white font-medium' : 'bg-destructive text-white font-medium')
+                        : 'text-muted-foreground hover:bg-accent/10',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </span>
+            ) : current ? (
+              <span className="flex-shrink-0 inline-flex items-center gap-1.5 text-sm">
+                <ConformMarker conform={current === 'conforme'} />
+                {current === 'conforme' ? 'Conforme' : 'Écart'}
+              </span>
+            ) : (
+              <span className="flex-shrink-0 text-xs italic text-muted-foreground">à comparer</span>
+            )}
+          </>
+        )}
+        </div>
+      </div>
+    </>
   )
 }
 

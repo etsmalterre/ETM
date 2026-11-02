@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { controlesDeRef, mesuresManquantes, CONTROLES_PAR_DEFAUT } from './controles-lot.js'
 
 describe('mesuresManquantes', () => {
+  it('the coloris joins the Malterre control when owed (#1332)', () => {
+    expect(mesuresManquantes({ laize: 160, poids: 210, stabH: -3, stabL: 0, colorisManquant: true })).toEqual(['coloris'])
+    expect(mesuresManquantes({ laize: 160, poids: 210, stabH: -3, stabL: 0, colorisManquant: false })).toEqual([])
+  })
   it('a complete control: laize, poids and one stabilité side', () => {
     expect(mesuresManquantes({ laize: 160, poids: 210, stabH: -3, stabL: 0 })).toEqual([])
     expect(mesuresManquantes({ laize: 160, poids: 210, stabH: 0, stabL: 2 })).toEqual([])

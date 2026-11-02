@@ -51,6 +51,7 @@ import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
 import { echeanceDelai, lireFaitsDelai, relanceDue, derniereRelance, historiqueDelai, type EvenementDelai, type FaitsDelai } from './delai-sst.js'
 import { natureInferee, naturesDemandees, type NatureSoumission } from './soumission-lot.js'
 import { CONTROLES_PAR_DEFAUT, controlesDeRef, mesuresManquantes, type ControlesRef } from './controles-lot.js'
+import { colorisAControler, rondsZero, rondZeroDe, type RondZero } from './coloris-lot.js'
 
 export type EtapeLot =
   | 'coloris_soumis'
@@ -464,13 +465,15 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       idsuivilot: number; ligne: number; lot: string | null; etat: number; reception: string | null; idref_fini: number
       laize_sst: number; poids_sst: number; stabh_sst: number; stabl_sst: number
       laize_tirelle: number; poids_tirelle: number; stabh_tirelle: number; stabl_tirelle: number
+      idref_fini_colori: number; coloris_tirelle: string | null
     }[]>`
       SELECT idsuivilot, idligne_commande_sous_traitant AS ligne, lot::text AS lot, COALESCE(idetatlot, 0)::int AS etat,
              to_char(date, 'YYYY-MM-DD') AS reception, COALESCE(idref_fini, 0) AS idref_fini,
              COALESCE(laize_sst, 0) AS laize_sst, COALESCE(poids_sst, 0) AS poids_sst,
              COALESCE(stabh_sst, 0) AS stabh_sst, COALESCE(stabl_sst, 0) AS stabl_sst,
              COALESCE(laize_tirelle, 0) AS laize_tirelle, COALESCE(poids_tirelle, 0) AS poids_tirelle,
-             COALESCE(stabh_tirelle, 0) AS stabh_tirelle, COALESCE(stabl_tirelle, 0) AS stabl_tirelle
+             COALESCE(stabh_tirelle, 0) AS stabh_tirelle, COALESCE(stabl_tirelle, 0) AS stabl_tirelle,
+             COALESCE(idref_fini_colori, 0) AS idref_fini_colori, coloris_tirelle
       FROM suivilot WHERE idligne_commande_sous_traitant = ANY(${lineIds})`,
     sql<{ ligne: number; idecru: number }[]>`
       SELECT idref_commande_affectation AS ligne, idstock_ecru AS idecru
@@ -526,10 +529,19 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   // ref first (suivilot.idref_fini), else its dye line's.
   const refsLots = [...new Set([...refs, ...lots.map((s) => Number(s.idref_fini))].filter((x) => x > 0))]
   const controlesParRef = new Map<number, ControlesRef>()
+  const teinteParRef = new Map<number, number>()
   if (refsLots.length > 0) {
-    const rows = await sql<{ id: number; controle_ennoblisseur: number; controle_malterre: number }[]>`
-      SELECT idref_fini AS id, controle_ennoblisseur, controle_malterre FROM ref_fini WHERE idref_fini = ANY(${refsLots})`
-    for (const r of rows) controlesParRef.set(Number(r.id), controlesDeRef(r))
+    const rows = await sql<{ id: number; controle_ennoblisseur: number; controle_malterre: number; avec_teinture: number }[]>`
+      SELECT idref_fini AS id, controle_ennoblisseur, controle_malterre, COALESCE(avec_teinture, 0)::int AS avec_teinture
+      FROM ref_fini WHERE idref_fini = ANY(${refsLots})`
+    for (const r of rows) { controlesParRef.set(Number(r.id), controlesDeRef(r)); teinteParRef.set(Number(r.id), Number(r.avec_teinture)) }
+  }
+  // The coloris control (#1332) skips the rond 0, the first lot of a ref + coloris.
+  const rond0 = await rondsZero(lots.map((s) => ({ ref: Number(s.idref_fini), coloris: Number(s.idref_fini_colori) })))
+  const colorisManquant = (s: (typeof lots)[number], ref: number) => {
+    if (s.coloris_tirelle) return false
+    const r0: RondZero | null = rondZeroDe(rond0, ref, Number(s.idref_fini_colori))
+    return colorisAControler(teinteParRef.get(ref) ?? 0, Number(s.idsuivilot), r0)
   }
   /** The control facts of one suivilot row. */
   const controlesDuLot = (s: (typeof lots)[number]) => {
@@ -538,7 +550,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const manqueTeinturier = controles.ennoblisseur
       ? mesuresManquantes({ laize: s.laize_sst, poids: s.poids_sst, stabH: s.stabh_sst, stabL: s.stabl_sst }) : []
     const manqueMalterre = controles.malterre
-      ? mesuresManquantes({ laize: s.laize_tirelle, poids: s.poids_tirelle, stabH: s.stabh_tirelle, stabL: s.stabl_tirelle }) : []
+      ? mesuresManquantes({ laize: s.laize_tirelle, poids: s.poids_tirelle, stabH: s.stabh_tirelle, stabL: s.stabl_tirelle, colorisManquant: colorisManquant(s, ref) }) : []
     return {
       mesuresTeinturier: manqueTeinturier.length === 0,
       tirelleMesuree: manqueMalterre.length === 0,
