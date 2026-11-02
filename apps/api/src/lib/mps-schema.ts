@@ -1483,6 +1483,20 @@ ALTER TABLE action_qualite ADD COLUMN controle text CHECK (controle IN ('vrillag
 ALTER TABLE suivilot ADD COLUMN coloris_tirelle text CHECK (coloris_tirelle IN ('conforme', 'ecart'));
 `,
   },
+  {
+    // ONE vrillage per side (Vincent 2026-11-02, the day after 0051): the « rangs » measure is dropped,
+    // the columns' becomes « vrillage ». A rangs value typed meanwhile is kept as the worst of the two.
+    name: '0053_vrillage_une_mesure',
+    sql: `
+UPDATE suivilot SET
+  vrillage_colonnes_sst = GREATEST(vrillage_colonnes_sst, vrillage_rangs_sst),
+  vrillage_colonnes_tirelle = GREATEST(vrillage_colonnes_tirelle, vrillage_rangs_tirelle)
+WHERE vrillage_rangs_sst IS NOT NULL OR vrillage_rangs_tirelle IS NOT NULL;
+ALTER TABLE suivilot DROP COLUMN vrillage_rangs_sst, DROP COLUMN vrillage_rangs_tirelle;
+ALTER TABLE suivilot RENAME COLUMN vrillage_colonnes_sst TO vrillage_sst;
+ALTER TABLE suivilot RENAME COLUMN vrillage_colonnes_tirelle TO vrillage_tirelle;
+`,
+  },
 ]
 
 export interface MigrationStatus {

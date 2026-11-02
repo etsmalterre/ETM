@@ -676,10 +676,8 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
 
       // Vrillage (LIVA #1332, lib/vrillage.ts): null = not measured, 0 is a measure.
       ...(await vrillagesDuLot(id).then((v) => ({
-        vrillage_colonnes_sst: v.colonnesSst,
-        vrillage_rangs_sst: v.rangsSst,
-        vrillage_colonnes_tirelle: v.colonnesTirelle,
-        vrillage_rangs_tirelle: v.rangsTirelle,
+        vrillage_sst: v.sst,
+        vrillage_tirelle: v.tirelle,
       }))),
       vrillage_max: VRILLAGE_MAX,
 

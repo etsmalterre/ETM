@@ -4,7 +4,7 @@
 //
 // Dry run by default (read-only transaction). Reads « Vrillage = 5% » / « 5 à 7% »
 // (our tirelle, worst value of a range) and « M V 5 % » / « MV 5% » (MATEL) from
-// suivilot.observations (vrillagesDesObservations) into the colonnes fields —
+// suivilot.observations (vrillagesDesObservations) into the vrillage fields —
 // nobody wrote the rows. Never overwrites a value already typed in the new
 // fields, never touches the observations text. Run after migration 0051.
 import { config } from 'dotenv'
@@ -22,7 +22,7 @@ const sql = mpsPg()
 
 const rows = await sql<{ id: string; lot: string | null; o: string; col_sst: number | null; col_tir: number | null }[]>`
   SELECT idsuivilot AS id, trim(lot::text) AS lot, observations::text AS o,
-         vrillage_colonnes_sst AS col_sst, vrillage_colonnes_tirelle AS col_tir
+         vrillage_sst AS col_sst, vrillage_tirelle AS col_tir
   FROM suivilot
   WHERE observations::text ~* 'vrill|M ?V ?[0-9]'
   ORDER BY date, idsuivilot`
@@ -50,8 +50,8 @@ if (write && ajouts.length) {
     for (const a of ajouts) {
       await tx`
         UPDATE suivilot SET
-          vrillage_colonnes_tirelle = COALESCE(vrillage_colonnes_tirelle, ${a.tirelle}),
-          vrillage_colonnes_sst = COALESCE(vrillage_colonnes_sst, ${a.sst})
+          vrillage_tirelle = COALESCE(vrillage_tirelle, ${a.tirelle}),
+          vrillage_sst = COALESCE(vrillage_sst, ${a.sst})
         WHERE idsuivilot = ${a.id}`
     }
   })

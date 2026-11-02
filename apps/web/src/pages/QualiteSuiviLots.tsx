@@ -194,10 +194,8 @@ interface SuiviLotDetail {
   stabH_tirelle: number
   stabL_tirelle: number
   /** Vrillage in % (LIVA #1332): null = not measured, 0 is a measure. Absent on an older API. */
-  vrillage_colonnes_sst?: number | null
-  vrillage_rangs_sst?: number | null
-  vrillage_colonnes_tirelle?: number | null
-  vrillage_rangs_tirelle?: number | null
+  vrillage_sst?: number | null
+  vrillage_tirelle?: number | null
   /** In tolerance up to this %, included. */
   vrillage_max?: number
   /** Malterre's coloris check against the rond 0 (LIVA #1332). Absent on an older API. */
@@ -322,10 +320,8 @@ interface EditState {
   rendement_tirelle: string
   stabH_tirelle: string
   stabL_tirelle: string
-  vrillage_colonnes_sst: string
-  vrillage_rangs_sst: string
-  vrillage_colonnes_tirelle: string
-  vrillage_rangs_tirelle: string
+  vrillage_sst: string
+  vrillage_tirelle: string
   coloris_tirelle: '' | 'conforme' | 'ecart'
   observations: string
   emplacement_tirelle: string
@@ -349,10 +345,8 @@ function snapshotEdit(d: SuiviLotDetail): EditState {
     stabH_tirelle: numStr(d.stabH_tirelle),
     stabL_tirelle: numStr(d.stabL_tirelle),
     // 0 is a real vrillage: only null (not measured) is empty.
-    vrillage_colonnes_sst: d.vrillage_colonnes_sst == null ? '' : String(d.vrillage_colonnes_sst),
-    vrillage_rangs_sst: d.vrillage_rangs_sst == null ? '' : String(d.vrillage_rangs_sst),
-    vrillage_colonnes_tirelle: d.vrillage_colonnes_tirelle == null ? '' : String(d.vrillage_colonnes_tirelle),
-    vrillage_rangs_tirelle: d.vrillage_rangs_tirelle == null ? '' : String(d.vrillage_rangs_tirelle),
+    vrillage_sst: d.vrillage_sst == null ? '' : String(d.vrillage_sst),
+    vrillage_tirelle: d.vrillage_tirelle == null ? '' : String(d.vrillage_tirelle),
     coloris_tirelle: d.coloris_tirelle ?? '',
     observations: d.observations ?? '',
     emplacement_tirelle: d.emplacement_tirelle ?? '',
@@ -470,10 +464,8 @@ export function QualiteSuiviLots() {
           rendement_tirelle: edit.rendement_tirelle,
           stabH_tirelle: edit.stabH_tirelle,
           stabL_tirelle: edit.stabL_tirelle,
-          vrillage_colonnes_sst: edit.vrillage_colonnes_sst,
-          vrillage_rangs_sst: edit.vrillage_rangs_sst,
-          vrillage_colonnes_tirelle: edit.vrillage_colonnes_tirelle,
-          vrillage_rangs_tirelle: edit.vrillage_rangs_tirelle,
+          vrillage_sst: edit.vrillage_sst,
+          vrillage_tirelle: edit.vrillage_tirelle,
           coloris_tirelle: edit.coloris_tirelle || null,
           observations: edit.observations,
           emplacement_tirelle: edit.emplacement_tirelle,
@@ -2469,7 +2461,7 @@ function ControlesTab({
   /** Does one side hold any measure? (0 is empty for laize / poids / stab, a value for vrillage.) */
   const aDesValeurs = (cote: 'sst' | 'tirelle') =>
     [detail[`laize_${cote}`], detail[`poids_${cote}`], detail[`stabH_${cote}`], detail[`stabL_${cote}`]].some((v) => Number(v) !== 0)
-    || [detail[`vrillage_colonnes_${cote}`], detail[`vrillage_rangs_${cote}`]].some((v) => v != null)
+    || detail[`vrillage_${cote}`] != null
   return (
     <>
       {/* Sous-Traitant */}
@@ -2479,8 +2471,7 @@ function ControlesTab({
         <KVNum label="Poids" field="poids_sst" detailVal={detail.poids_sst} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab H" field="stabH_sst" detailVal={detail.stabH_sst} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab L" field="stabL_sst" detailVal={detail.stabL_sst} conformKind="stabL" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVVrillage label="Vrillage col." field="vrillage_colonnes_sst" detailVal={detail.vrillage_colonnes_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVVrillage label="Vrillage rangs" field="vrillage_rangs_sst" detailVal={detail.vrillage_rangs_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVVrillage label="Vrillage" field="vrillage_sst" detailVal={detail.vrillage_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         </CarteSansValeur.Provider>
       </SidebarCard>
 
@@ -2491,8 +2482,7 @@ function ControlesTab({
         <KVNum label="Poids" field="poids_tirelle" detailVal={detail.poids_tirelle} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab L" field="stabL_tirelle" detailVal={detail.stabL_tirelle} conformKind="stabL" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVVrillage label="Vrillage col." field="vrillage_colonnes_tirelle" detailVal={detail.vrillage_colonnes_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVVrillage label="Vrillage rangs" field="vrillage_rangs_tirelle" detailVal={detail.vrillage_rangs_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVVrillage label="Vrillage" field="vrillage_tirelle" detailVal={detail.vrillage_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         {detail.coloris_controle && (detail.coloris_controle.demande || detail.coloris_controle.est_rond0) && (
           <KVColoris controle={detail.coloris_controle} detailVal={detail.coloris_tirelle ?? null} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         )}
@@ -2691,7 +2681,7 @@ function KVVrillage({
   onEditField,
 }: {
   label: string
-  field: 'vrillage_colonnes_sst' | 'vrillage_rangs_sst' | 'vrillage_colonnes_tirelle' | 'vrillage_rangs_tirelle'
+  field: 'vrillage_sst' | 'vrillage_tirelle'
   detailVal: number | null
   max: number
   isEditing: boolean
@@ -2705,7 +2695,7 @@ function KVVrillage({
     <MesureRow
       label={label}
       gauge={<ToleranceGauge value={currentVal ?? 0} tol={{ min: 0, max }} conform={conform} dec={0} zeroIsValue />}
-      schema={field.startsWith('vrillage_colonnes') ? 'vrillageColonnes' : 'vrillageRangs'}
+      schema="vrillage"
       isEditing={isEditing && !!edit}
     >
           <ConformMarker conform={conform} />

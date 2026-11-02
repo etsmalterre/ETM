@@ -2,15 +2,10 @@
 //
 // Measured on the tirelle by Malterre (Laetitia) and by the dyer (MATEL's
 // « V = …% »), until now typed into the lot's free observations
-// (« Vrillage = 5% », « M V 5 % »). Two measures per side:
-//
-//   colonnes  the columns of stitches drift sideways between the top and the
-//             bottom of the tirelle (the classic vrillage)
-//   rangs     the rows drift between the left and the right of the tirelle
-//
-// Never « H / L »: on the same screen Stab H / Stab L mean hauteur / largeur,
-// and « vrillage H » would read as the opposite of horizontal. Never chaîne /
-// trame either: those are weaving words, a knit has columns and rows.
+// (« Vrillage = 5% », « M V 5 % »). ONE measure per side, « vrillage »: the
+// columns of stitches drift sideways between the top and the bottom of the
+// tirelle. A second « rangs » measure (0051) was dropped the same day by
+// Vincent (0053): nobody measures it, one figure is what MATEL sends.
 //
 // A vrillage is a percentage ≥ 0, in tolerance up to VRILLAGE_MAX included,
 // for every reference. NULL = not measured (0 is a real, perfect measure —
@@ -30,17 +25,13 @@ export const VRILLAGE_MAX = 5
 const VRILLAGE_SAISIE_MAX = 100
 
 export interface VrillagesLot {
-  colonnesSst: number | null
-  rangsSst: number | null
-  colonnesTirelle: number | null
-  rangsTirelle: number | null
+  sst: number | null
+  tirelle: number | null
 }
 
 export const CHAMPS_VRILLAGE = {
-  vrillage_colonnes_sst: 'colonnesSst',
-  vrillage_rangs_sst: 'rangsSst',
-  vrillage_colonnes_tirelle: 'colonnesTirelle',
-  vrillage_rangs_tirelle: 'rangsTirelle',
+  vrillage_sst: 'sst',
+  vrillage_tirelle: 'tirelle',
 } as const satisfies Record<string, keyof VrillagesLot>
 
 export type ChampVrillage = keyof typeof CHAMPS_VRILLAGE
@@ -75,13 +66,12 @@ export function vrillageConforme(v: number | null): boolean | null {
   return v <= VRILLAGE_MAX
 }
 
-/** One lot under a « vrillage » action: any measure out of tolerance (either
- *  side) = non conforme; the tirelle measured and all in tolerance = conforme;
- *  no tirelle measure = non contrôlé — the action asks OUR control on each lot. */
+/** One lot under a « vrillage » action: either side out of tolerance = non
+ *  conforme; the tirelle measured and in tolerance = conforme; no tirelle
+ *  measure = non contrôlé — the action asks OUR control on each lot. */
 export function verdictLot(v: VrillagesLot): 'conforme' | 'non_conforme' | 'non_controle' {
-  const toutes = [v.colonnesSst, v.rangsSst, v.colonnesTirelle, v.rangsTirelle]
-  if (toutes.some((x) => x !== null && x > VRILLAGE_MAX)) return 'non_conforme'
-  if (v.colonnesTirelle !== null || v.rangsTirelle !== null) return 'conforme'
+  if ([v.sst, v.tirelle].some((x) => x !== null && x > VRILLAGE_MAX)) return 'non_conforme'
+  if (v.tirelle !== null) return 'conforme'
   return 'non_controle'
 }
 
@@ -97,7 +87,7 @@ export function verdictLigne(lots: VrillagesLot[]): Conformite {
 /** The vrillage written in a lot's observations before ETM had the fields:
  *  « Vrillage = 5% » / « Vrillage = 5 à 7% » (tirelle, the worst value kept)
  *  or « V = 6% », and « M V 5 % » / « MV 5% » / « vrillage mesuré matel : 5 % »
- *  (MATEL). Columns only — nobody wrote rows. A « léger vrillage » has no value. */
+ *  (MATEL). A « léger vrillage » has no value. */
 export function vrillagesDesObservations(texte: string): { tirelle: number | null; sst: number | null } {
   const max = (a: string, b?: string) => Math.max(Number(a.replace(',', '.')), b ? Number(b.replace(',', '.')) : -Infinity)
   const t = /vrillage\s*[=:]?\s*(\d+(?:[.,]\d+)?)\s*(?:%?\s*(?:à|a|-)\s*(\d+(?:[.,]\d+)?))?\s*%/i.exec(texte)
@@ -109,28 +99,24 @@ export function vrillagesDesObservations(texte: string): { tirelle: number | nul
 
 // ── Reads ────────────────────────────────────────────────
 
-/** The four measures of one lot. */
+/** The two measures of one lot. */
 export async function vrillagesDuLot(idsuivilot: number): Promise<VrillagesLot> {
   const [r] = await mpsPg()<Record<string, unknown>[]>`
-    SELECT vrillage_colonnes_sst, vrillage_rangs_sst, vrillage_colonnes_tirelle, vrillage_rangs_tirelle
+    SELECT vrillage_sst, vrillage_tirelle
     FROM suivilot WHERE idsuivilot = ${idsuivilot}`
   return depuisLigne(r)
 }
 
 function depuisLigne(r: Record<string, unknown> | undefined): VrillagesLot {
   return {
-    colonnesSst: valeurVrillage(r?.vrillage_colonnes_sst),
-    rangsSst: valeurVrillage(r?.vrillage_rangs_sst),
-    colonnesTirelle: valeurVrillage(r?.vrillage_colonnes_tirelle),
-    rangsTirelle: valeurVrillage(r?.vrillage_rangs_tirelle),
+    sst: valeurVrillage(r?.vrillage_sst),
+    tirelle: valeurVrillage(r?.vrillage_tirelle),
   }
 }
 
 export async function ecrireVrillages(idsuivilot: number, v: VrillagesLot): Promise<void> {
   await mpsPg()`
-    UPDATE suivilot SET
-      vrillage_colonnes_sst = ${v.colonnesSst}, vrillage_rangs_sst = ${v.rangsSst},
-      vrillage_colonnes_tirelle = ${v.colonnesTirelle}, vrillage_rangs_tirelle = ${v.rangsTirelle}
+    UPDATE suivilot SET vrillage_sst = ${v.sst}, vrillage_tirelle = ${v.tirelle}
     WHERE idsuivilot = ${idsuivilot}`
 }
 
@@ -158,7 +144,7 @@ export async function verdictsVrillage(ligneIds: number[], depuis: string): Prom
   if (ids.length === 0) return out
   const rows = await mpsPg()<Record<string, unknown>[]>`
     SELECT idligne_commande_sous_traitant AS ligne, trim(lot::text) AS lot,
-           vrillage_colonnes_sst, vrillage_rangs_sst, vrillage_colonnes_tirelle, vrillage_rangs_tirelle
+           vrillage_sst, vrillage_tirelle
     FROM suivilot
     WHERE idligne_commande_sous_traitant = ANY(${ids}) AND date >= ${depuis}::date
     ORDER BY date, idsuivilot`

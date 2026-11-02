@@ -4,20 +4,20 @@ import {
   type VrillagesLot,
 } from './vrillage.js'
 
-const lot = (p: Partial<VrillagesLot>): VrillagesLot => ({ colonnesSst: null, rangsSst: null, colonnesTirelle: null, rangsTirelle: null, ...p })
+const lot = (p: Partial<VrillagesLot>): VrillagesLot => ({ sst: null, tirelle: null, ...p })
 
 describe('lireSaisieVrillage', () => {
   it('empty = not measured, 0 is a measure', () => {
-    expect(lireSaisieVrillage('vrillage_colonnes_tirelle', '')).toBeNull()
-    expect(lireSaisieVrillage('vrillage_colonnes_tirelle', null)).toBeNull()
-    expect(lireSaisieVrillage('vrillage_colonnes_tirelle', '0')).toBe(0)
-    expect(lireSaisieVrillage('vrillage_colonnes_tirelle', '4,5')).toBe(4.5)
-    expect(lireSaisieVrillage('vrillage_colonnes_tirelle', '5 %')).toBe(5)
+    expect(lireSaisieVrillage('vrillage_tirelle', '')).toBeNull()
+    expect(lireSaisieVrillage('vrillage_tirelle', null)).toBeNull()
+    expect(lireSaisieVrillage('vrillage_tirelle', '0')).toBe(0)
+    expect(lireSaisieVrillage('vrillage_tirelle', '4,5')).toBe(4.5)
+    expect(lireSaisieVrillage('vrillage_tirelle', '5 %')).toBe(5)
   })
   it('refuses a negative or absurd value', () => {
-    expect(() => lireSaisieVrillage('vrillage_rangs_sst', '-2')).toThrow(VrillageInvalide)
-    expect(() => lireSaisieVrillage('vrillage_rangs_sst', '150')).toThrow(VrillageInvalide)
-    expect(() => lireSaisieVrillage('vrillage_rangs_sst', 'abc')).toThrow(VrillageInvalide)
+    expect(() => lireSaisieVrillage('vrillage_sst', '-2')).toThrow(VrillageInvalide)
+    expect(() => lireSaisieVrillage('vrillage_sst', '150')).toThrow(VrillageInvalide)
+    expect(() => lireSaisieVrillage('vrillage_sst', 'abc')).toThrow(VrillageInvalide)
   })
 })
 
@@ -33,22 +33,22 @@ describe('tolerance', () => {
 describe('verdictLot', () => {
   it('needs our tirelle measure', () => {
     expect(verdictLot(lot({}))).toBe('non_controle')
-    expect(verdictLot(lot({ colonnesSst: 4 }))).toBe('non_controle')
-    expect(verdictLot(lot({ colonnesTirelle: 5 }))).toBe('conforme')
-    expect(verdictLot(lot({ rangsTirelle: 0 }))).toBe('conforme')
+    expect(verdictLot(lot({ sst: 4 }))).toBe('non_controle')
+    expect(verdictLot(lot({ tirelle: 5 }))).toBe('conforme')
+    expect(verdictLot(lot({ tirelle: 0 }))).toBe('conforme')
   })
   it('any side out of tolerance is non conforme', () => {
-    expect(verdictLot(lot({ colonnesSst: 7 }))).toBe('non_conforme')
-    expect(verdictLot(lot({ colonnesTirelle: 3, rangsTirelle: 6 }))).toBe('non_conforme')
+    expect(verdictLot(lot({ sst: 7 }))).toBe('non_conforme')
+    expect(verdictLot(lot({ tirelle: 3, sst: 6 }))).toBe('non_conforme')
   })
 })
 
 describe('verdictLigne', () => {
   it('one bad lot spoils the line, all good lots make it conforme', () => {
     expect(verdictLigne([])).toBe('non_controle')
-    expect(verdictLigne([lot({ colonnesTirelle: 3 }), lot({ colonnesTirelle: 5 })])).toBe('conforme')
-    expect(verdictLigne([lot({ colonnesTirelle: 3 }), lot({})])).toBe('non_controle')
-    expect(verdictLigne([lot({ colonnesTirelle: 3 }), lot({ colonnesTirelle: 8 })])).toBe('non_conforme')
+    expect(verdictLigne([lot({ tirelle: 3 }), lot({ tirelle: 5 })])).toBe('conforme')
+    expect(verdictLigne([lot({ tirelle: 3 }), lot({})])).toBe('non_controle')
+    expect(verdictLigne([lot({ tirelle: 3 }), lot({ tirelle: 8 })])).toBe('non_conforme')
   })
 })
 

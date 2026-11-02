@@ -4,15 +4,14 @@
 // drawn by hand; the gold arrow is what the figure measures; a dashed outline is
 // the tirelle before washing.
 
-export type SchemaKind = 'laize' | 'poids' | 'stabH' | 'stabL' | 'vrillageColonnes' | 'vrillageRangs' | 'coloris'
+export type SchemaKind = 'laize' | 'poids' | 'stabH' | 'stabL' | 'vrillage' | 'coloris'
 
 const LEGENDES: Record<SchemaKind, { titre: string; texte: string }> = {
   laize: { titre: 'Laize', texte: 'Largeur du tissu, en cm.' },
   poids: { titre: 'Poids', texte: 'Masse d’un mètre carré de tissu, en g/m².' },
   stabH: { titre: 'Stabilité hauteur', texte: 'Retrait dans la hauteur après lavage, en % (négatif = le tissu rétrécit).' },
   stabL: { titre: 'Stabilité largeur', texte: 'Retrait dans la largeur après lavage, en % (négatif = le tissu rétrécit).' },
-  vrillageColonnes: { titre: 'Vrillage colonnes', texte: 'Les colonnes de mailles se décalent sur le côté entre le haut et le bas de la tirelle. Conforme jusqu’à 5 %.' },
-  vrillageRangs: { titre: 'Vrillage rangs', texte: 'Les rangs se décalent en hauteur entre la gauche et la droite de la tirelle. Conforme jusqu’à 5 %.' },
+  vrillage: { titre: 'Vrillage', texte: 'Les colonnes de mailles se décalent sur le côté entre le haut et le bas de la tirelle. Conforme jusqu’à 5 %.' },
   // No sentence: the hover already names the rond 0 and lists the last lots (Vincent 2026-11-02).
   coloris: { titre: 'Coloris', texte: '' },
 }
@@ -96,7 +95,7 @@ function Dessin({ kind }: { kind: SchemaKind }) {
         </>
       )
     }
-    case 'vrillageColonnes': {
+    case 'vrillage': {
       // The columns lean: bottom shifted right of the top by `d`.
       const d = 16
       const dx = (y: number) => ((y - Y0) / (Y1 - Y0)) * d
@@ -120,21 +119,6 @@ function Dessin({ kind }: { kind: SchemaKind }) {
           <Fleche x1={72} y1={55} x2={88} y2={55} />
         </>
       )
-    case 'vrillageRangs': {
-      // The rows lean: the right end of each row sits lower than its left end by `d`.
-      const d = 14
-      const dy = (x: number) => ((x - X0) / (X1 - X0)) * d
-      return (
-        <>
-          <path d={`M${X0},${Y0} L${X1},${Y0 + d} L${X1},${Y1 + d - 6} L${X0},${Y1 - 6} Z`} className={tissu} strokeWidth={1.5} strokeLinejoin="round" />
-          <path d={mailles(X0, X1, Y0, Y1 - 6, undefined, dy)} className={maille} fill="none" strokeWidth={1.2} />
-          {/* where the bottom row should end: the gap is measured IN the matter,
-              like the columns' (Vincent 2026-11-02) */}
-          <line x1={X0} y1={Y1 - 6} x2={X1 + 8} y2={Y1 - 6} className="stroke-zinc-400" strokeDasharray="3 3" strokeWidth={1.2} />
-          <Fleche x1={X1 + 12} y1={Y1 - 6} x2={X1 + 12} y2={Y1 + d - 6} />
-        </>
-      )
-    }
   }
 }
 
