@@ -74,6 +74,7 @@ import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow
 import {
   ECRU_AT_DYER_MESSAGE, RESERVATION_MISFIT_ERROR, ecruStillAtDyer, findReservationMisfits, misfitMessage, reservationFitsDyeLine,
 } from '../lib/reservation-teinture.js'
+import { chargerAutresLignes } from '../lib/enno-autres-lignes.js'
 import { adresseADefinirRow, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { appliquerDateLignes, codeDepartLigne, DEPARTS_LIGNE, departLigne, EXPEDITION_DEFAUT, expeditions, fixerExpedition, type Expedition } from '../lib/mode-expedition.js'
@@ -3745,6 +3746,9 @@ interface AvailableEcruRoll extends RollLite {
   /** Already reserved to THIS client line (counted in affecte_total) — the
    *  create-order gauge must not add it a second time. */
   reserved_to_line: boolean
+  /** The other client line a reserved_elsewhere piece is promised to, and whether it may still go on
+   *  an order made from this line (lib/enno-autres-lignes.ts: same article, order validated). */
+  reservee_a: { ligne_id: number; commande_id: number; numero: string; client_nom: string; raison: string | null } | null
   /** Where the piece is (0 = the factory) and whether that place is a dyer: the
    *  Ennoblissement tab's « Réserver » selector groups by it and offers
    *  « Réserver et ennoblir » on a dyer's group. */
@@ -3844,6 +3848,11 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
   const magTypes = await resolveSousTraitantTypes(fixed.map((x: any) => Number(x.IDmagasin) || 0))
   const colNames = await resolveEcruColoris(fixed.map((x: any) => Number(x.IDcolori_ecru)))
   const defectsByEcru = await fetchDefectsByEcru(fixed.map((x: any) => Number(x.IDstock_ecru) || 0))
+  const lccOf = (x: any) => Number(x.IDligne_commande_client) || 0
+  const autres = await chargerAutresLignes(
+    fixed.map(lccOf).filter((l: number) => l > 0 && l !== ctx.ligneId),
+    { ref: ctx.refId, coloris: ctx.coloriId },
+  )
   base.rolls = fixed.map((x: any): AvailableEcruRoll => ({
     id: Number(x.IDstock_ecru),
     numero: x.numero ?? null,
@@ -3862,6 +3871,10 @@ async function fetchEnnoAvailableRolls(ctx: ClientLineContext, magasinId = 0) {
     reserved_elsewhere:
       (Number(x.IDligne_commande_client) || 0) > 0 && Number(x.IDligne_commande_client) !== ctx.ligneId,
     reserved_to_line: Number(x.IDligne_commande_client) === ctx.ligneId,
+    reservee_a: (() => {
+      const a = autres.get(lccOf(x))
+      return a ? { ligne_id: a.ligneId, commande_id: a.commandeId, numero: a.numero, client_nom: a.client_nom, raison: a.raison } : null
+    })(),
     magasin_id: Number(x.IDmagasin) || 0,
     magasin_ennoblisseur: (Number(x.IDmagasin) || 0) > 0 && magTypes.get(Number(x.IDmagasin)) === 2,
   }))
@@ -5909,6 +5922,8 @@ const ennoOrderBody = z.object({
   IDsous_traitant: z.number().int().positive(),
   date_commande: z.string().optional(),
   date_livraison: z.string().optional(),
+  /** The dyer order's comment (commande_sous_traitant.commentaire, RTF like the Sous-traitants screen writes it). */
+  commentaire: z.string().max(4000).optional(),
   stockEcruIds: z.array(z.number().int().positive()).min(1),
   /** Ignored since 2026-10-28 (was LIVA #1115's per-roll « lien »): the order no longer reserves.
    *  A roll already reserved to the line is dyed for it, a free roll for the stock. */
@@ -5960,11 +5975,18 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
     if (usable.length === 0) { res.status(400).json({ error: 'No usable rolls in selection' }); return }
     // Reserving and ordering are two gestures (decision Vincent 2026-10-28): the order dyes the écru
     // reserved to the line (Ennoblissement tab, top zone); free pieces may only go on top, for the
-    // stock. No reserved piece, no order from the line; another line's piece is never sent from here.
+    // stock. No reserved piece, no order from the line. Pieces reserved to ANOTHER client line of the
+    // same article may ride along, any client (2026-11-02, lib/enno-autres-lignes.ts), when that
+    // line's order could have sent them itself.
     const lcc = (r: { IDligne_commande_client: number | null }) => Number(r.IDligne_commande_client) || 0
-    if (usable.some((r) => lcc(r) !== 0 && lcc(r) !== ligneId)) {
-      res.status(409).json({ error: 'piece_reservee', message: 'Une pièce choisie est réservée à une autre ligne.' })
-      return
+    const autresIds = [...new Set(usable.map(lcc).filter((l) => l !== 0 && l !== ligneId))]
+    const autres = await chargerAutresLignes(autresIds, { ref: ctx.refId, coloris: ctx.coloriId })
+    for (const id of autresIds) {
+      const a = autres.get(id)
+      if (!a || a.raison) {
+        res.status(409).json({ error: 'piece_reservee', message: a ? `Une pièce choisie est réservée à la commande ${a.numero} (${a.raison}).` : 'Une pièce choisie est réservée à une autre ligne.' })
+        return
+      }
     }
     if (!usable.some((r) => lcc(r) === ligneId)) {
       res.status(409).json({ error: 'sans_matiere_reservee', message: "Aucune pièce réservée à la ligne : réservez d'abord le tombé de métier (onglet Ennoblissement), puis lancez l'ennoblissement. Pour du stock seul, passez par Sous-traitants › Ennoblissement." })
@@ -5993,7 +6015,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
       `INSERT INTO commande_sous_traitant
        (IDsous_traitant, date_commande, est_soldee, commentaire, journal,
         IDadresse_sous_traitant, IDadresse_livraison, IDdossier, IDcommande_client, IDligne_commande_client)
-       VALUES (${d.IDsous_traitant}, '${dateCmd}', 0, '', '',
+       VALUES (${d.IDsous_traitant}, '${dateCmd}', 0, '${esc(wrapRtf(d.commentaire?.trim() ?? ''))}', '',
                ${adr.principal}, ${adr.livraison}, 0, ${commandeId}, ${ligneId})`,
     )
     const hdr = await query<{ IDcommande_sous_traitant: number }>(
@@ -6046,8 +6068,12 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
       console.error('[enno-order] auto-price failed for line', newLineId, e)
     }
 
-    // The dyeing is launched: a launch date that held it is over (lib/lancement-ligne.ts).
-    await leverAuLancement({ ligneId, etape: 'ennoblissement', parId: req.userId ?? 0, par: req.userId ? await nomUtilisateur(req.userId) : null })
+    // The dyeing is launched for every line whose pieces go: a launch date that held it is over
+    // (lib/lancement-ligne.ts).
+    const par = req.userId ? await nomUtilisateur(req.userId) : null
+    for (const l of [ligneId, ...autresIds]) {
+      await leverAuLancement({ ligneId: l, etape: 'ennoblissement', parId: req.userId ?? 0, par })
+    }
 
     res.status(201).json({
       ok: true,
@@ -6055,6 +6081,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
       IDligne_commande_sous_traitant: newLineId,
       affected: usable.length,
       linked,
+      autres_lignes: autresIds.length,
       prix,
     })
   } catch (err) {

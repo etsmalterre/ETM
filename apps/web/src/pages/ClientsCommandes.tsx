@@ -83,7 +83,7 @@ import { AvancementPill, EtatLigneTag, StatutLignePill, STATUT_LIGNE_META, type 
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 import { FilEnStockZone, FilLigneTab, filLigneQueryKey, tricoteursPrets, useFilLigne, type FilPayload } from '@/components/fils/FilLigneTab'
-import { EcruLigneZone, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
+import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
 import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
 import { LancementLabel, PlanifierBouton, type EtapeLancement } from '@/components/commandes/LancementLigne'
 import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
@@ -2112,16 +2112,13 @@ function DonationPickerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v && !applyMut.isPending) onClose() }}>
-      <DialogContent className="max-w-6xl w-[92vw] h-[85vh] flex flex-col" onClose={onClose}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Gift className="h-5 w-5 text-accent" />
-            Pièces en donation
-          </DialogTitle>
-        </DialogHeader>
+      <DialogContent className="max-w-6xl w-[92vw] h-[85vh] p-0 border-0 bg-primary overflow-hidden flex flex-col">
+        <BandeauDialog icon={Gift} titre="Pièces en donation" sousTitre="Cochez les pièces données avec cette commande"
+          disabled={applyMut.isPending} onClose={onClose} />
 
-        <div className="mt-3 flex-shrink-0 flex items-center gap-3">
-          <div className="flex items-center gap-1 p-1 rounded-lg bg-zinc-200/50">
+        <div className="flex-1 min-h-0 bg-zinc-100 p-4 flex flex-col">
+        <div className="flex-shrink-0 flex items-center gap-3">
+          <div className="flex items-center gap-1 p-1 rounded-lg bg-zinc-200">
             {([
               { key: 'ecru' as const, label: 'Tombé de métier', Icon: TmRollIcon, count: ecruQ.data?.length },
               { key: 'fini' as const, label: 'Fini', Icon: FiniRollIcon, count: finiQ.data?.length },
@@ -2152,7 +2149,7 @@ function DonationPickerDialog({
           </div>
         </div>
 
-        <div className="mt-2 flex-1 min-h-0 flex flex-col rounded-lg border border-border/60 bg-white overflow-hidden">
+        <div className="mt-3 flex-1 min-h-0 flex flex-col rounded-lg border border-border/60 bg-white shadow-sm overflow-hidden">
           <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
             <colgroup>
               {pickerCols.map((c, i) => <col key={`${c.label}${i}`} style={{ width: c.width }} />)}
@@ -2214,7 +2211,9 @@ function DonationPickerDialog({
           </div>
         </div>
 
-        <DialogFooter className="mt-3 flex items-center gap-2">
+        </div>
+
+        <div className="flex-shrink-0 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3 flex items-center gap-2">
           {error ? (
             <p className="text-xs text-destructive mr-auto">{error}</p>
           ) : (
@@ -2229,9 +2228,36 @@ function DonationPickerDialog({
               : <CheckCircle2 className="h-4 w-4 mr-1.5" />}
             Valider
           </Button>
-        </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The navy band of a §18.D dialog (mps_designer §43): gold tile, white title, subtitle, close.
+ *  Its DialogContent is `p-0 border-0 bg-primary overflow-hidden flex flex-col`, an opaque
+ *  bg-zinc-100 body and a bg-zinc-200 rounded-b-lg footer. */
+function BandeauDialog({ icon: Icon, titre, sousTitre, disabled, onClose }: {
+  icon: ComponentType<{ className?: string }>
+  titre: ReactNode
+  sousTitre?: ReactNode
+  disabled?: boolean
+  onClose: () => void
+}) {
+  return (
+    <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
+      <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+        <Icon className="h-[18px] w-[18px]" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">{titre}</h2>
+        {sousTitre && <div className="text-xs text-white/70 truncate">{sousTitre}</div>}
+      </div>
+      <Button variant="ghost" size="icon" title="Fermer" disabled={disabled} onClick={onClose}
+        className="h-8 w-8 flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white">
+        <X className="h-4 w-4" />
+      </Button>
+    </div>
   )
 }
 
@@ -3220,6 +3246,11 @@ function AffectationDrawer({
           queryClient.invalidateQueries({ queryKey })
           queryClient.invalidateQueries({ queryKey: matiereEcruQueryKey(commandeId, ligne.IDligne_commande_client) })
           queryClient.invalidateQueries({ queryKey: ['commande-client-enno-available', commandeId, ligne.IDligne_commande_client] })
+          // Pieces of other orders may have gone too (2026-11-02): their lines' drawers and list cards.
+          for (const root of ['commande-client-supply', 'commande-client-matiere-ecru', 'commande-client-enno-available']) {
+            queryClient.invalidateQueries({ queryKey: [root] })
+          }
+          invalidateCommandeClientCaches(queryClient)
           // The new order must show up on Sous-traitants › Commandes at once
           // (#1178), and the écru rolls it affects are no longer "disponible"
           // on Tombé Métier › Stock.
@@ -5031,7 +5062,6 @@ function EnnoblissementAffectationDialog({
     + pieces.filter((x) => !x.modifiable && x.situation === 'chez_ennoblisseur' && x.reservation?.kind === 'ligne').reduce((acc, x) => acc + enUnite(x.poids), 0)
   const target = data?.target_qty ?? 0
   const uniteLabel = data?.unite_label ?? 'Ml'
-  const pct = target > 0 ? Math.min(100, (projete / target) * 100) : 0
   const sstNom = data?.sst_nom ?? row.sous_traitant_nom ?? '—'
 
   const notes = (obs: string | null, defauts: string | null, secondChoix: boolean) => (
@@ -5043,30 +5073,17 @@ function EnnoblissementAffectationDialog({
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !mut.isPending) onClose() }}>
-      <DialogContent className="max-w-5xl h-[85vh] flex flex-col" onClose={mut.isPending ? undefined : onClose}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Droplets className="h-5 w-5 text-accent" />
-            Pièces de la commande N°{row.commande_id} — {sstNom}
-          </DialogTitle>
-        </DialogHeader>
-        <p className="text-xs text-muted-foreground">
-          Commande du {fmtSupplyDate(row.date_commande)} · cochez les pièces encore chez l’ennoblisseur à réserver à la ligne, décochez pour les libérer
-        </p>
+      <DialogContent className="max-w-5xl w-[94vw] h-[85vh] p-0 border-0 bg-primary overflow-hidden flex flex-col">
+        <BandeauDialog
+          icon={Droplets}
+          titre={`Pièces de la commande N°${row.commande_id} — ${sstNom}`}
+          sousTitre={`Commande du ${fmtSupplyDate(row.date_commande)} · cochez les pièces encore chez l’ennoblisseur pour les réserver à la ligne · Maj+clic pour une plage`}
+          disabled={mut.isPending}
+          onClose={onClose}
+        />
 
-        <div className="mt-2 flex-shrink-0">
-          <div className="flex items-center justify-between text-[11px] font-medium tabular-nums mb-1">
-            <span className="text-muted-foreground uppercase tracking-wide">Réservé à la ligne</span>
-            <span className={cn(pct >= 99.9 ? 'text-green-600' : 'text-foreground')}>
-              {fmtNum(projete, 1)} / {fmtNum(target, 1)} {uniteLabel}
-            </span>
-          </div>
-          <div className="h-1.5 rounded-full bg-zinc-200 overflow-hidden">
-            <div className={cn('h-full rounded-full transition-all', pct >= 99.9 ? 'bg-green-500' : 'bg-accent')} style={{ width: `${pct}%` }} />
-          </div>
-        </div>
-
-        <div className="flex-1 min-h-0 mt-3 overflow-y-auto rounded-lg border border-border/60 bg-card scrollbar-transparent">
+        <div className="flex-1 min-h-0 bg-zinc-100 p-4 flex flex-col">
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-lg border border-border/60 bg-card shadow-sm scrollbar-transparent">
           {isLoading ? (
             <div className="p-3 space-y-2">{[1, 2, 3, 4].map((i) => <div key={i} className="h-8 bg-muted animate-pulse rounded" />)}</div>
           ) : isError ? (
@@ -5163,23 +5180,28 @@ function EnnoblissementAffectationDialog({
           )}
         </div>
 
-        <div className="mt-3 flex items-center gap-3 flex-shrink-0">
+        </div>
+
+        <div className="flex-shrink-0 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3">
           {erreur && (
-            <p className="flex items-center gap-1.5 text-xs text-destructive min-w-0">
+            <p className="mb-2 flex items-center gap-1.5 text-xs text-destructive min-w-0">
               <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" /><span className="truncate">{erreur}</span>
             </p>
           )}
-          {change && !erreur && (
-            <p className="text-xs text-muted-foreground">
+          <div className="flex items-center gap-3">
+          <AffecteGauge projected={projete} target={target} uniteLabel={uniteLabel} libelle="réservé à la ligne" />
+          {change && (
+            <p className="flex-shrink-0 text-xs text-muted-foreground">
               {[reserver.length > 0 && `${reserver.length} à réserver`, liberer.length > 0 && `${liberer.length} à libérer`].filter(Boolean).join(' · ')}
             </p>
           )}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex-shrink-0 flex items-center gap-2">
             <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Fermer</Button>
             <Button onClick={() => mut.mutate()} disabled={!change || mut.isPending}>
               {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
               Enregistrer
             </Button>
+          </div>
           </div>
         </div>
       </DialogContent>
@@ -5245,25 +5267,19 @@ function TricotageAffectationDialog({
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose() }}>
-      <DialogContent className="max-w-md flex flex-col p-0 overflow-hidden" onClose={busy ? undefined : onClose}>
-        {/* Header */}
-        <div className="flex-shrink-0 px-6 pt-4 pb-3 border-b bg-gradient-to-r from-gold/25 via-gold/10 to-transparent flex items-start gap-3">
-          <div className="h-10 w-10 rounded-lg icon-box-gold flex items-center justify-center flex-shrink-0">
-            <KnitIcon className="h-5 w-5" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-base font-heading font-bold tracking-tight truncate">
-              Affectation — Commande N° {row.commande_id}
-            </h2>
-            <p className="text-xs text-muted-foreground mt-0.5 truncate">
-              {row.sous_traitant_nom || 'Tricoteur'} · {fmtSupplyDate(row.date_commande)}
-              {row.etat_label && <> · <SupplyEtatPill label={row.etat_label} /></>}
-            </p>
-          </div>
-        </div>
+      <DialogContent className="max-w-lg p-0 border-0 bg-primary overflow-hidden flex flex-col">
+        <BandeauDialog
+          icon={KnitIcon}
+          titre={`Affectation — Commande N° ${row.commande_id}`}
+          sousTitre={<>
+            {row.sous_traitant_nom || 'Tricoteur'} · {fmtSupplyDate(row.date_commande)}
+            {row.etat_label && <> · <SupplyEtatPill label={row.etat_label} /></>}
+          </>}
+          disabled={busy}
+          onClose={onClose}
+        />
 
-        {/* Body */}
-        <div className="p-4 bg-zinc-100/80 space-y-3">
+        <div className="p-4 bg-zinc-100 space-y-3">
           <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
             <TricoWeightField
               label={`Affecté à la commande${clientNom ? ` ${clientNom}` : ' client'}`}
@@ -5284,8 +5300,7 @@ function TricotageAffectationDialog({
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex-shrink-0 px-6 py-3 border-t bg-zinc-200/50">
+        <div className="flex-shrink-0 rounded-b-lg px-4 py-3 border-t border-border/60 bg-zinc-200">
           {!!error && (
             <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-all">{error}</span>
@@ -5320,6 +5335,9 @@ interface AvailableEcruRoll extends RollLite {
   reserved_elsewhere: boolean
   /** Already reserved to this client line — counted in affecte_total. */
   reserved_to_line: boolean
+  /** The other client line a reserved_elsewhere piece is promised to; raison null = it may go on an
+   *  order made from this line (same article, order validated — API lib/enno-autres-lignes.ts). */
+  reservee_a?: { ligne_id: number; commande_id: number; numero: string; client_nom: string; raison: string | null } | null
 }
 interface AvailableRollsPayload {
   unite: number
@@ -5347,14 +5365,16 @@ function GroupBandRow({ label, colSpan, tiroir = false }: { label: string; colSp
 
 // Shared footer gauge of the create-order modals: projected affecté vs the
 // commanded quantity, with a mini progress bar (legacy: "801 / 800 Ml affecté
-// à la commande de Le slip Français", green once covered).
+// à la commande de Le slip Français", green once covered). `libelle` replaces
+// the words after the figures.
 function AffecteGauge({
-  projected, target, uniteLabel, clientNom,
+  projected, target, uniteLabel, clientNom, libelle,
 }: {
   projected: number
   target: number
   uniteLabel: string
   clientNom?: string
+  libelle?: string
 }) {
   const covered = target > 0 && projected >= target
   const pct = target > 0 ? Math.min(100, Math.max(0, (projected / target) * 100)) : 0
@@ -5362,7 +5382,7 @@ function AffecteGauge({
     <div className="min-w-0 flex-1">
       <p className={cn('text-xs font-medium tabular-nums truncate', covered ? 'text-green-600' : 'text-muted-foreground')}>
         <span className={cn('font-bold', !covered && 'text-foreground')}>{fmtNum(projected, 1)}</span>
-        {' / '}{fmtNum(target, 1)} {uniteLabel} affecté à la commande{clientNom ? ` de ${clientNom}` : ''}
+        {' / '}{fmtNum(target, 1)} {uniteLabel} {libelle ?? `affecté à la commande${clientNom ? ` de ${clientNom}` : ''}`}
       </p>
       <div className="h-1.5 mt-1.5 rounded-full bg-white overflow-hidden">
         <div className={cn('h-full rounded-full transition-all', covered ? 'bg-green-500' : 'bg-accent')} style={{ width: `${pct}%` }} />
@@ -5373,8 +5393,22 @@ function AffecteGauge({
 
 // Create a new ennoblisseur order at ONE dyer, from the line (decision Vincent 2026-10-28: reserving
 // and ordering are two gestures). The order dyes the écru reserved to the line at that dyer (all
-// pre-selected, the Ennoblissement tab's top zone reserves it); free pieces there may be added on top,
-// dyed for the stock. Without a piece reserved to the line, no order (API 409 sans_matiere_reservee).
+// pre-selected, the Ennoblissement tab's top zone reserves it). On top, unticked: pieces reserved there
+// to OTHER orders of the same article, any client (2026-11-02, one order and one weight band for
+// several orders), and free pieces dyed for the stock. Without a piece reserved to the line, no order
+// (API 409 sans_matiere_reservee). Rows = the reservation selector's (PieceEcruLigne).
+const AUTRE_ARTICLE = 'réservée pour un autre article'
+
+/** A recap row's figures: kg, then the Ml they make (kg × rendement), in two aligned columns. */
+function RecapPoids({ kg, rendement }: { kg: number; rendement: number }) {
+  return (
+    <span className="flex-shrink-0 flex items-baseline gap-3">
+      <span className="w-16 text-right font-semibold">{fmtNum(kg, 1)} kg</span>
+      <span className="w-14 text-right text-muted-foreground">{rendement > 0 ? `${fmtNum(kg * rendement, 0)} Ml` : ''}</span>
+    </span>
+  )
+}
+
 function CreateEnnoblisseurOrderDialog({
   commandeId, ligne, location, clientNom, reserved, target, dim, uniteLabel, onClose, onSuccess,
 }: {
@@ -5393,6 +5427,7 @@ function CreateEnnoblisseurOrderDialog({
   const ligneId = ligne.IDligne_commande_client
   const [dateCommande, setDateCommande] = useState(() => new Date().toISOString().slice(0, 10))
   const [dateLivraison, setDateLivraison] = useState('')
+  const [commentaire, setCommentaire] = useState('')
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -5403,16 +5438,28 @@ function CreateEnnoblisseurOrderDialog({
     queryFn: () => apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/supply/ennoblissement/available-rolls?magasin=${location.IDsous_traitant}`),
   })
 
-  // Ascending by roll number (3377/1, 3377/2, … 3377/1001) — numeric-aware. Another line's piece is
-  // never sent from here.
+  // Ascending by roll number (3377/1, 3377/2, … 3377/1001) — numeric-aware. A piece reserved to another
+  // article is never offered here (it would be dyed into the wrong product, #1261).
   const rolls = useMemo(
     () => [...(data?.rolls ?? [])]
-      .filter((r) => !r.reserved_elsewhere)
+      .filter((r) => !r.reserved_elsewhere || (r.reservee_a && r.reservee_a.raison !== AUTRE_ARTICLE))
       .sort((a, b) => (a.numero ?? '').localeCompare(b.numero ?? '', 'fr', { numeric: true, sensitivity: 'base' })),
     [data],
   )
   const pourLigne = rolls.filter((r) => r.reserved_to_line)
-  const pourStock = rolls.filter((r) => !r.reserved_to_line)
+  const pourStock = rolls.filter((r) => !r.reserved_to_line && !r.reserved_elsewhere)
+  // Other orders' pieces, one group per order line (by order number).
+  const autres = useMemo(() => {
+    const m = new Map<number, { a: NonNullable<AvailableEcruRoll['reservee_a']>; rolls: AvailableEcruRoll[] }>()
+    for (const r of rolls) {
+      if (!r.reserved_elsewhere || !r.reservee_a) continue
+      const g = m.get(r.reservee_a.ligne_id) ?? { a: r.reservee_a, rolls: [] }
+      g.rolls.push(r)
+      m.set(r.reservee_a.ligne_id, g)
+    }
+    return [...m.values()].sort((x, y) => x.a.numero.localeCompare(y.a.numero, 'fr', { numeric: true }))
+  }, [rolls])
+  const envoyable = (r: AvailableEcruRoll) => !r.reserved_elsewhere || r.reservee_a?.raison === null
   // The line's reserved pieces start selected: they are what the order is for.
   const preselected = useRef(false)
   useEffect(() => {
@@ -5421,13 +5468,16 @@ function CreateEnnoblisseurOrderDialog({
     setSelected(new Set(pourLigne.map((r) => r.id)))
   }, [data, pourLigne])
   const rendement = data?.rendement ?? 0
+  const mlParKg = dim === 'metrage' ? rendement : 0
 
-  const orderedIds = [...pourLigne, ...pourStock].map((r) => r.id)
+  // Shift+click ranges run over the selectable rows, in the order shown (§44).
+  const orderedIds = [...pourLigne, ...autres.flatMap((g) => g.rolls), ...pourStock].filter(envoyable).map((r) => r.id)
   const kgDe = (rs: AvailableEcruRoll[]) => rs.filter((r) => selected.has(r.id)).reduce((s, r) => s + (Number(r.poids) || 0), 0)
   const kgLigne = kgDe(pourLigne)
   const kgStock = kgDe(pourStock)
+  const kgAutres = autres.map((g) => ({ a: g.a, kg: kgDe(g.rolls) }))
   const nbLigne = pourLigne.filter((r) => selected.has(r.id)).length
-  const selectedKg = kgLigne + kgStock
+  const selectedKg = kgLigne + kgStock + kgAutres.reduce((s, g) => s + g.kg, 0)
   const selectedMl = selectedKg * rendement
 
   const handleToggle = (id: number, shiftKey: boolean) => {
@@ -5474,6 +5524,7 @@ function CreateEnnoblisseurOrderDialog({
           IDsous_traitant: location.IDsous_traitant,
           date_commande: inputDateToHfsql(dateCommande),
           date_livraison: dateLivraison ? inputDateToHfsql(dateLivraison) : undefined,
+          commentaire: commentaire.trim() || undefined,
           stockEcruIds: Array.from(selected),
         }),
       })
@@ -5487,25 +5538,57 @@ function CreateEnnoblisseurOrderDialog({
   }
 
   const inputCls = 'w-full h-9 px-2.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring'
-  const lienBtn = 'text-xs px-1 disabled:cursor-default disabled:no-underline'
-  const listeRouleaux = (rs: AvailableEcruRoll[]) => rs.map((roll) => (
-    <SelectableEcruRoll
-      key={roll.id}
-      roll={roll}
-      rendement={rendement}
-      selected={selected.has(roll.id)}
-      linked={roll.reserved_to_line}
-      canLink={false}
-      disabled={busy}
-      onToggle={(shiftKey) => handleToggle(roll.id, shiftKey)}
-      onToggleLink={() => {}}
-    />
-  ))
+  const lien = 'flex-shrink-0 normal-case tracking-normal font-medium hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-default'
+  // A group = a heading on the dialog's ground (same grammar as the reservation selector: title,
+  // count + kg, Tout / Aucun over its selectable pieces), then the white card of rows.
+  const groupe = (titre: string, rs: AvailableEcruRoll[]) => {
+    const choisissables = rs.filter(envoyable)
+    return (
+      <section className="space-y-1.5">
+        <div className="flex items-baseline gap-2 px-1 text-[11px] uppercase tracking-wide">
+          <span className="min-w-0 truncate font-semibold text-muted-foreground">{titre}</span>
+          <span className="ml-auto flex-shrink-0 normal-case tracking-normal text-muted-foreground tabular-nums">
+            {rs.length} pièce{rs.length > 1 ? 's' : ''} · {fmtNum(rs.reduce((s, r) => s + (Number(r.poids) || 0), 0), 1)} kg
+          </span>
+          {choisissables.length > 0 && (
+            <>
+              <button type="button" disabled={busy || choisissables.every((r) => selected.has(r.id))}
+                onClick={() => setSelected((prev) => new Set([...prev, ...choisissables.map((r) => r.id)]))}
+                className={cn(lien, 'text-accent')}>Tout</button>
+              <button type="button" disabled={busy || !choisissables.some((r) => selected.has(r.id))}
+                onClick={() => setSelected((prev) => new Set([...prev].filter((id) => !choisissables.some((r) => r.id === id))))}
+                className={cn(lien, 'text-muted-foreground')}>Aucun</button>
+            </>
+          )}
+        </div>
+        <PiecesEcruCarte>
+          {rs.map((r) => {
+            const ok = envoyable(r)
+            return (
+              <PieceEcruLigne
+                key={r.id}
+                piece={r}
+                mlParKg={mlParKg}
+                choisi={selected.has(r.id)}
+                bloquee={!ok || busy}
+                estompee={!ok}
+                title={ok ? undefined : `Commande ${r.reservee_a?.numero} : ${r.reservee_a?.raison}`}
+                onBasculer={(shift) => handleToggle(r.id, shift)}
+                note={!ok && (
+                  <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-zinc-300 text-muted-foreground bg-zinc-100">{r.reservee_a?.raison}</Badge>
+                )}
+              />
+            )
+          })}
+        </PiecesEcruCarte>
+      </section>
+    )
+  }
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose() }}>
       {/* §18.D banded dialog — same composition as « Lancer le tricotage ». */}
-      <DialogContent className="max-w-4xl w-[94vw] h-[85vh] p-0 border-0 bg-primary overflow-hidden flex flex-col">
+      <DialogContent className="max-w-5xl w-[94vw] h-[85vh] p-0 border-0 bg-primary overflow-hidden flex flex-col">
         <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
           <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
             <Droplets className="h-[18px] w-[18px]" />
@@ -5516,8 +5599,8 @@ function CreateEnnoblisseurOrderDialog({
             </h2>
             <p className="text-xs text-white/70 truncate">
               {ligne.ref_label || `Réf ${ligne.IDreference}`}
-              {ligne.colori_reference && ` · ${ligne.colori_reference}`}
-              {clientNom ? ` · ${clientNom}` : ''}
+              {ligne.colori_reference && ` - ${ligne.colori_reference}`}
+              {clientNom ? ` · ${clientNom}` : ''} · Maj+clic pour une plage
             </p>
           </div>
           <Button
@@ -5528,10 +5611,10 @@ function CreateEnnoblisseurOrderDialog({
           </Button>
         </div>
 
-        <div className="flex-1 min-h-0 bg-zinc-100 p-4 grid grid-cols-1 md:grid-cols-[300px,1fr] gap-4 overflow-y-auto md:overflow-hidden">
-          {/* What the user decides: the dates; what goes: the line's pieces, plus any for the stock */}
-          <div className="space-y-3 md:overflow-y-auto scrollbar-transparent">
-            <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm p-4 space-y-3">
+        <div className="flex-1 min-h-0 bg-zinc-100 p-4 grid grid-cols-1 md:grid-cols-[360px,1fr] gap-4 overflow-y-auto md:overflow-hidden">
+          {/* What the user decides: the dates and the comment, which takes the height left by the recap */}
+          <div className="flex flex-col gap-3 md:min-h-0 md:overflow-y-auto scrollbar-transparent">
+            <div className="flex-1 flex flex-col rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm p-4 space-y-3">
               <h3 className="text-sm font-semibold">Commande</h3>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Date de commande</label>
@@ -5541,9 +5624,15 @@ function CreateEnnoblisseurOrderDialog({
                 <label className="text-xs font-medium text-muted-foreground">Date d’expédition</label>
                 <input type="date" value={dateLivraison} onChange={(e) => setDateLivraison(e.target.value)} className={inputCls} />
               </div>
+              <div className="flex-1 flex flex-col gap-1">
+                <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
+                <textarea value={commentaire} onChange={(e) => setCommentaire(e.target.value)} disabled={busy}
+                  placeholder="Commentaire de la commande ennoblisseur"
+                  className="flex-1 min-h-[6rem] w-full rounded-md border border-input bg-background px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none" />
+              </div>
             </div>
 
-            <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+            <div className="flex-shrink-0 rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
               <div className="p-4 space-y-1">
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Rouleaux envoyés</p>
                 <p className="text-xl font-bold tabular-nums">
@@ -5555,20 +5644,29 @@ function CreateEnnoblisseurOrderDialog({
               </div>
               <div className="px-4 py-3 border-t border-border/60 bg-zinc-50 space-y-1 text-xs tabular-nums">
                 <p className="flex items-center justify-between gap-2">
-                  <span className="flex items-center gap-1.5 text-muted-foreground"><Link2 className="h-3.5 w-3.5" />Pour {clientNom ?? 'la ligne'}</span>
-                  <span className="font-semibold">{fmtNum(kgLigne, 1)} kg</span>
+                  <span className="flex items-center gap-1.5 text-muted-foreground min-w-0"><Link2 className="h-3.5 w-3.5 flex-shrink-0" /><span className="truncate">Cette commande</span></span>
+                  <RecapPoids kg={kgLigne} rendement={rendement} />
                 </p>
+                {kgAutres.map(({ a, kg }) => (
+                  <p key={a.ligne_id} className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5 text-muted-foreground min-w-0">
+                      <Link2 className="h-3.5 w-3.5 flex-shrink-0" />
+                      <span className="truncate" title={`Commande ${a.numero}${a.client_nom ? ` · ${a.client_nom}` : ''}`}>Commande {a.numero}{a.client_nom ? ` · ${a.client_nom}` : ''}</span>
+                    </span>
+                    <RecapPoids kg={kg} rendement={rendement} />
+                  </p>
+                ))}
                 <p className="flex items-center justify-between gap-2">
-                  <span className="flex items-center gap-1.5 text-muted-foreground"><Unlink className="h-3.5 w-3.5" />Pour le stock</span>
-                  <span className="font-semibold">{fmtNum(kgStock, 1)} kg</span>
+                  <span className="flex items-center gap-1.5 text-muted-foreground"><Unlink className="h-3.5 w-3.5" />Stock</span>
+                  <RecapPoids kg={kgStock} rendement={rendement} />
                 </p>
               </div>
             </div>
           </div>
 
-          {/* The pieces at the dyer: the line's reserved ones, then free ones for the stock */}
-          <section className="min-h-0 flex flex-col gap-2 overflow-y-auto scrollbar-transparent p-0.5">
-            {isLoading && <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-14 bg-card animate-pulse rounded-lg" />)}</div>}
+          {/* The pieces at the dyer: the line's reserved ones, other orders' of the same article, the free ones */}
+          <section className="min-h-0 flex flex-col gap-4 overflow-y-auto scrollbar-transparent p-0.5">
+            {isLoading && <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-12 bg-card animate-pulse rounded-lg" />)}</div>}
             {isError && (
               <div className="flex flex-col items-center justify-center py-10 text-destructive">
                 <AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">Erreur de chargement</p>
@@ -5576,28 +5674,20 @@ function CreateEnnoblisseurOrderDialog({
             )}
             {!isLoading && !isError && (
               <>
-                <h3 className="text-sm font-semibold">Réservées à la ligne chez {location.location_nom} ({pourLigne.length})</h3>
                 {pourLigne.length === 0
-                  ? <p className="text-xs text-muted-foreground italic">Aucune : réservez d’abord le tombé de métier dans l’onglet Ennoblissement.</p>
-                  : <div className="space-y-1.5">{listeRouleaux(pourLigne)}</div>}
-                {pourStock.length > 0 && (
-                  <>
-                    <div className="mt-2 flex items-center gap-2">
-                      <h3 className="text-sm font-semibold">En plus pour le stock ({pourStock.length})</h3>
-                      <div className="ml-auto flex items-center gap-1">
-                        <button type="button" disabled={busy || pourStock.every((r) => selected.has(r.id))}
-                          onClick={() => setSelected((prev) => new Set([...prev, ...pourStock.map((r) => r.id)]))}
-                          className={cn(lienBtn, 'text-accent hover:underline disabled:text-muted-foreground/50')}>Tout</button>
-                        <span className="text-muted-foreground/40 text-xs">·</span>
-                        <button type="button" disabled={busy || !pourStock.some((r) => selected.has(r.id))}
-                          onClick={() => setSelected((prev) => new Set([...prev].filter((id) => !pourStock.some((r) => r.id === id))))}
-                          className={cn(lienBtn, 'text-muted-foreground hover:text-foreground disabled:text-muted-foreground/40')}>Aucun</button>
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground -mt-1">Pièces libres teintes pour le stock Ets Malterre : elles ne sont pas réservées à la ligne.</p>
-                    <div className="space-y-1.5">{listeRouleaux(pourStock)}</div>
-                  </>
-                )}
+                  ? (
+                    <section className="space-y-1.5">
+                      <p className="px-1 text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">Réservées à la ligne chez {location.location_nom}</p>
+                      <p className="px-1 text-xs text-muted-foreground italic">Aucune : réservez d’abord le tombé de métier dans l’onglet Ennoblissement.</p>
+                    </section>
+                  )
+                  : groupe(`Réservées à la ligne chez ${location.location_nom}`, pourLigne)}
+                {autres.map((g) => (
+                  <div key={g.a.ligne_id}>
+                    {groupe(`Réservées à la commande ${g.a.numero}${g.a.client_nom ? ` · ${g.a.client_nom}` : ''}`, g.rolls)}
+                  </div>
+                ))}
+                {pourStock.length > 0 && groupe('En plus pour le stock', pourStock)}
               </>
             )}
           </section>
@@ -5624,132 +5714,6 @@ function CreateEnnoblisseurOrderDialog({
         </div>
       </DialogContent>
     </Dialog>
-  )
-}
-
-// Selectable écru roll row. Click (or Shift+click for a range) toggles
-// selection; shows poids + métrage potentiel (poids × rendement). A selected
-// roll also carries the « lien » toggle (legacy FEN_Ennoblir's lien_fermé /
-// lien_cassé icon): linked = reserved to the client line, broken = dyed for
-// stock. The row is a <button>, so the toggle is a role="button" span.
-function SelectableEcruRoll({
-  roll, rendement, selected, linked, canLink, disabled, onToggle, onToggleLink,
-}: {
-  roll: AvailableEcruRoll
-  rendement: number
-  selected: boolean
-  linked: boolean
-  canLink: boolean
-  disabled: boolean
-  onToggle: (shiftKey: boolean) => void
-  onToggleLink: () => void
-}) {
-  const poids = Number(roll.poids) || 0
-  const LinkIcon = linked ? Link2 : Unlink
-  const linkTitle = linked ? 'Réservé à la commande client — cliquer pour teindre pour le stock' : 'Teint pour le stock — cliquer pour réserver à la commande client'
-  const obsText = roll.observations?.trim() ?? ''
-  const isSecondChoix = Number(roll.second_choix) > 0
-  // Same wording as RollNotes: the precise description, else type + size.
-  const defectLines = (roll.defects ?? [])
-    .map((d) => {
-      const desc = (d.description ?? '').trim()
-      const size = Number(d.taille_cm) || 0
-      const text = desc || [(d.type_defaut ?? '').trim(), size > 0 ? `${size} cm` : ''].filter(Boolean).join(' ')
-      return { id: d.IDdefaut_qualite, text }
-    })
-    .filter((d) => d.text.length > 0)
-  const hasDefect = isSecondChoix || defectLines.length > 0
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={(e) => onToggle(e.shiftKey)}
-      className={cn(
-        'w-full text-left rounded-lg border p-2.5 flex items-center gap-3 transition-colors disabled:opacity-60 select-none',
-        selected ? 'border-accent ring-1 ring-accent bg-accent/[0.06]' : 'border-border/60 bg-card hover:border-accent/40',
-      )}
-    >
-      <div className={cn('h-5 w-5 rounded flex items-center justify-center flex-shrink-0 border', selected ? 'bg-accent border-accent text-accent-foreground' : 'border-input bg-background')}>
-        {selected && <CheckCircle2 className="h-3.5 w-3.5" />}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold truncate">{roll.numero || `Rouleau ${roll.id}`}</span>
-          {roll.lot && <span className="text-xs text-muted-foreground truncate">· Lot {roll.lot}</span>}
-          {!!roll.second_choix && <Badge variant="secondary" className="text-[10px] py-0 px-1.5">2nd choix</Badge>}
-          {roll.reserved_elsewhere && (
-            <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-amber-500/40 text-amber-700 bg-amber-500/10">Réservé ailleurs</Badge>
-          )}
-        </div>
-        <div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground tabular-nums">
-          <span className="font-medium text-foreground">{fmtNum(poids, 1)} kg</span>
-          {rendement > 0 && <span>· {fmtNum(poids * rendement, 0)} Ml</span>}
-          {roll.coloris_reference && <span className="truncate">· {roll.coloris_reference}</span>}
-        </div>
-      </div>
-      {/* Notes as hover icons, same as the affectation drawer's RollRow (#1282):
-          red = 2e choix + visitage defects, blue = observations. Spans, not
-          buttons — the whole card is already a button. */}
-      {hasDefect && (
-        <Tooltip
-          side="left"
-          content={
-            <div className="w-max max-w-[320px] space-y-1.5 py-1">
-              <p className="text-xs font-semibold uppercase tracking-wide text-red-700 whitespace-nowrap">Défauts</p>
-              {isSecondChoix && (
-                <p className="text-xs font-bold uppercase tracking-wide text-red-700">2e choix</p>
-              )}
-              {defectLines.map((d) => (
-                <p key={d.id} className="text-sm font-normal">{d.text}</p>
-              ))}
-            </div>
-          }
-        >
-          <span
-            className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 border border-red-200 bg-red-50"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
-          </span>
-        </Tooltip>
-      )}
-      {obsText.length > 0 && (
-        <Tooltip
-          side="left"
-          content={
-            <div className="w-max max-w-[320px] space-y-1.5 py-1">
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 whitespace-nowrap">Observations</p>
-              <p className="text-sm font-normal whitespace-pre-line">{obsText}</p>
-            </div>
-          }
-        >
-          <span
-            className="h-6 w-6 rounded-md flex items-center justify-center flex-shrink-0 border border-blue-200 bg-blue-50"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <MessageSquare className="h-3.5 w-3.5 text-blue-600" />
-          </span>
-        </Tooltip>
-      )}
-      {selected && canLink && (
-        <span
-          role="button"
-          tabIndex={disabled ? -1 : 0}
-          aria-pressed={linked}
-          title={linkTitle}
-          onClick={(e) => { e.stopPropagation(); if (!disabled) onToggleLink() }}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); if (!disabled) onToggleLink() } }}
-          className={cn(
-            'h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 border transition-colors',
-            linked
-              ? 'bg-accent/15 border-accent/40 text-accent hover:bg-accent/25'
-              : 'bg-background border-input text-muted-foreground hover:text-foreground hover:border-accent/40',
-          )}
-        >
-          <LinkIcon className="h-3.5 w-3.5" />
-        </span>
-      )}
-    </button>
   )
 }
 
@@ -7207,23 +7171,24 @@ function ValiderCommandeDialog({ open, commande, isPending, error, onCancel, onC
   const lignes = commande.lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !isPending) onCancel() }}>
-      <DialogContent className="max-w-lg" onClose={isPending ? undefined : onCancel}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <CheckCircle2 className="h-5 w-5 text-accent" />
-            Valider la commande {commande.numero ?? ''}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="mt-4 space-y-3">
+      <DialogContent className="max-w-lg p-0 border-0 bg-primary overflow-hidden max-h-[90dvh] flex flex-col">
+        <BandeauDialog
+          icon={CheckCircle2}
+          titre={`Valider la commande ${commande.numero ?? ''}`}
+          sousTitre={commande.client_nom ?? undefined}
+          disabled={isPending}
+          onClose={onCancel}
+        />
+        <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100 p-4 space-y-3 scrollbar-transparent">
           <p className="text-sm">Ces dates deviennent nos engagements envers le client :</p>
-          <div className="rounded-lg border border-border/60 bg-zinc-100/80 divide-y divide-border/60 max-h-64 overflow-y-auto scrollbar-transparent">
+          <div className="rounded-lg border border-border/60 bg-card shadow-sm divide-y divide-border/60 max-h-72 overflow-y-auto scrollbar-transparent">
             {lignes.map((l) => {
               const date = l.date_livraison ?? l.au_plus_tot?.date ?? null
               return (
                 <div key={l.IDligne_commande_client} className="px-3 py-2 text-sm">
                   <div className="flex items-baseline justify-between gap-3">
                   <span className="min-w-0 truncate">
-                    {[l.ref_label, l.colori_reference].filter(Boolean).join(' · ') || 'Ligne'}
+                    {[l.ref_label, l.colori_reference].filter(Boolean).join(' - ') || 'Ligne'}
                     <span className="text-muted-foreground"> · {fmtNum(l.quantite)} {l.unite_label}</span>
                   </span>
                   {date
@@ -7240,19 +7205,21 @@ function ValiderCommandeDialog({ open, commande, isPending, error, onCancel, onC
           <p className="text-xs text-muted-foreground">
             Ensuite, déplacer une date sera un report (motif + responsable), compté dans la qualité de service Malterre.
           </p>
+        </div>
+        <div className="flex-shrink-0 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3 flex items-center gap-2">
           {error && (
-            <p className="flex items-start gap-1.5 text-sm text-destructive">
+            <p className="min-w-0 flex items-start gap-1.5 text-sm text-destructive">
               <AlertCircle className="h-4 w-4 flex-shrink-0 mt-px" />{error}
             </p>
           )}
+          <div className="ml-auto flex gap-2 flex-shrink-0">
+            <Button variant="outline" onClick={onCancel} disabled={isPending}>Annuler</Button>
+            <Button onClick={onConfirm} disabled={isPending}>
+              {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
+              Valider la commande
+            </Button>
+          </div>
         </div>
-        <DialogFooter className="mt-4">
-          <Button variant="outline" onClick={onCancel} disabled={isPending}>Annuler</Button>
-          <Button onClick={onConfirm} disabled={isPending}>
-            {isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />}
-            Valider la commande
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

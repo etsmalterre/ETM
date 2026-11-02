@@ -7,7 +7,7 @@
 // available écru only, nothing on an order (Vincent 2026-10-29). Reserving never orders: the dyer order is launched from the
 // bottom zone, « Ennoblir chez X », only where pieces reserved to the line sit (lieuxAEnnoblir).
 // API GET/PUT …/lignes/:id/matiere/ecru, DELETE …/matiere/ecru/:stockId.
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, CheckCircle2, Loader2, Pencil, X } from 'lucide-react'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
@@ -315,56 +315,23 @@ function ReserverEcruDialog({ commandeId, ligneId, matiere, onReserve, onClose }
                     </button>
                   )}
                 </div>
-                <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden divide-y divide-border/40">
-                {ps.map((p) => {
-                  const choisi = sel.has(p.id)
-                  const poids = Number(p.poids) || 0
-                  const bloquee = p.reserved_elsewhere || reserveMut.isPending
-                  // A div, not a button: the defect / observation icons inside are buttons.
-                  return (
-                    <div
+                <PiecesEcruCarte>
+                  {ps.map((p) => (
+                    <PieceEcruLigne
                       key={p.id}
-                      role="button"
-                      tabIndex={bloquee ? -1 : 0}
-                      aria-pressed={choisi}
-                      aria-disabled={bloquee}
-                      onClick={(ev) => { if (!bloquee) basculer(p.id, ev.shiftKey) }}
-                      onKeyDown={(ev) => { if (!bloquee && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); basculer(p.id, ev.shiftKey) } }}
+                      piece={p}
+                      mlParKg={matiere.dim === 'metrage' ? rendement : 0}
+                      choisi={sel.has(p.id)}
+                      bloquee={p.reserved_elsewhere || reserveMut.isPending}
+                      estompee={p.reserved_elsewhere}
                       title={p.reserved_elsewhere ? 'Réservée à une autre ligne' : undefined}
-                      className={cn(
-                        'w-full text-left px-3.5 py-2 flex items-center gap-3 transition-colors select-none',
-                        bloquee ? 'cursor-not-allowed' : 'cursor-pointer',
-                        choisi ? 'bg-accent/[0.07]' : 'hover:bg-zinc-50',
-                        p.reserved_elsewhere && 'opacity-60',
+                      onBasculer={(shift) => basculer(p.id, shift)}
+                      note={p.reserved_elsewhere && (
+                        <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-amber-500/40 text-amber-700 bg-amber-500/10">Réservée ailleurs</Badge>
                       )}
-                    >
-                      <span className={cn('h-5 w-5 flex-shrink-0 rounded-md flex items-center justify-center border-2 transition-colors',
-                        choisi ? 'bg-accent border-accent text-accent-foreground' : 'border-zinc-300 bg-white')}>
-                        {choisi && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
-                      </span>
-                      {/* One line, fixed columns anchored left so the eye runs down each one (Vincent
-                          2026-10-28): numéro, coloris, poids, métrage; the space goes before the icons. */}
-                      <span className="w-24 flex-shrink-0 text-sm font-semibold tabular-nums truncate">{p.numero || `Pièce ${p.id}`}</span>
-                      <span className="w-20 flex-shrink-0 text-xs text-muted-foreground truncate">{p.coloris_reference || ''}</span>
-                      <span className="w-16 flex-shrink-0 text-right text-sm font-medium tabular-nums">{fmtNum(poids, 1)} kg</span>
-                      <span className="w-14 flex-shrink-0 text-right text-xs text-muted-foreground tabular-nums">
-                        {matiere.dim === 'metrage' && rendement > 0 ? `${fmtNum(poids * rendement, 0)} Ml` : ''}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        {p.reserved_elsewhere && (
-                          <Badge variant="outline" className="text-[10px] py-0 px-1.5 border-amber-500/40 text-amber-700 bg-amber-500/10">Réservée ailleurs</Badge>
-                        )}
-                      </span>
-                      {/* Defects (2e choix + visitage) and observations at the card's right edge, read on hover;
-                          a fixed slot keeps the weights aligned whether a piece has notes or not. */}
-                      <span className="w-14 h-6 flex-shrink-0 flex items-center justify-end gap-1">
-                        <RollDefautsIcon secondChoix={Number(p.second_choix) > 0} text={texteDefauts(p)} />
-                        <RollObservationsIcon text={p.observations} />
-                      </span>
-                    </div>
-                  )
-                })}
-                </div>
+                    />
+                  ))}
+                </PiecesEcruCarte>
               </section>
             )
           })}
@@ -402,9 +369,79 @@ function ReserverEcruDialog({ commandeId, ligneId, matiere, onReserve, onClose }
   )
 }
 
+/** The white card holding a run of piece rows (one per place / group of a selector). */
+export function PiecesEcruCarte({ children }: { children: ReactNode }) {
+  return <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden divide-y divide-border/40">{children}</div>
+}
+
+/** What a piece row reads: the selectors of the line drawer (« Réserver du tombé de métier », « Envoyer
+ *  en ennoblissement ») show the same row, so the pieces look the same from one gesture to the next. */
+export interface PieceEcruAffichee {
+  id: number
+  numero: string | null
+  poids: number | null
+  coloris_reference: string | null
+  second_choix: number | null
+  observations: string | null
+  defects?: PieceLibre['defects']
+}
+
+/** One selectable piece: tick, numéro, coloris, poids, métrage (when `mlParKg` > 0), a free `note` slot,
+ *  then the defect / observation icons. Shift+click is passed to `onBasculer` (§44). */
+export function PieceEcruLigne({ piece: p, mlParKg, choisi, bloquee, estompee, title, note, onBasculer }: {
+  piece: PieceEcruAffichee
+  mlParKg: number
+  choisi: boolean
+  bloquee: boolean
+  estompee?: boolean
+  title?: string
+  note?: ReactNode
+  onBasculer: (shift: boolean) => void
+}) {
+  const poids = Number(p.poids) || 0
+  // A div, not a button: the defect / observation icons inside are buttons.
+  return (
+    <div
+      role="button"
+      tabIndex={bloquee ? -1 : 0}
+      aria-pressed={choisi}
+      aria-disabled={bloquee}
+      onClick={(ev) => { if (!bloquee) onBasculer(ev.shiftKey) }}
+      onKeyDown={(ev) => { if (!bloquee && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); onBasculer(ev.shiftKey) } }}
+      title={title}
+      className={cn(
+        'w-full text-left px-3.5 py-2 flex items-center gap-3 transition-colors select-none',
+        bloquee ? 'cursor-not-allowed' : 'cursor-pointer',
+        choisi ? 'bg-accent/[0.07]' : 'hover:bg-zinc-50',
+        estompee && 'opacity-60',
+      )}
+    >
+      <span className={cn('h-5 w-5 flex-shrink-0 rounded-md flex items-center justify-center border-2 transition-colors',
+        choisi ? 'bg-accent border-accent text-accent-foreground' : 'border-zinc-300 bg-white')}>
+        {choisi && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+      </span>
+      {/* One line, fixed columns anchored left so the eye runs down each one (Vincent
+          2026-10-28): numéro, coloris, poids, métrage; the space goes before the icons. */}
+      <span className="w-24 flex-shrink-0 text-sm font-semibold tabular-nums truncate">{p.numero || `Pièce ${p.id}`}</span>
+      <span className="w-20 flex-shrink-0 text-xs text-muted-foreground truncate">{p.coloris_reference || ''}</span>
+      <span className="w-16 flex-shrink-0 text-right text-sm font-medium tabular-nums">{fmtNum(poids, 1)} kg</span>
+      <span className="w-14 flex-shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+        {mlParKg > 0 ? `${fmtNum(poids * mlParKg, 0)} Ml` : ''}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{note}</span>
+      {/* Defects (2e choix + visitage) and observations at the row's right edge, read on hover;
+          a fixed slot keeps the weights aligned whether a piece has notes or not. */}
+      <span className="w-14 h-6 flex-shrink-0 flex items-center justify-end gap-1">
+        <RollDefautsIcon secondChoix={Number(p.second_choix) > 0} text={texteDefauts(p)} />
+        <RollObservationsIcon text={p.observations} />
+      </span>
+    </div>
+  )
+}
+
 /** A piece's visitage defects as the tooltip reads them, one per line: the precise description, else
  *  type + count or size (as the TRM avis d'expédition prints them). */
-function texteDefauts(p: PieceLibre): string {
+function texteDefauts(p: PieceEcruAffichee): string {
   return (p.defects ?? [])
     .map((d) => {
       const desc = (d.description ?? '').trim()
