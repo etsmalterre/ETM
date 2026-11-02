@@ -1376,13 +1376,30 @@ export interface AgregatLigne {
   fini_poids: number
   ecru_metrage: number
   ecru_poids: number
+  /** fini rolls not validated yet, not shipped (still in quality control) + the latest one's entry, YYYYMMDD */
+  controle_metrage: number
+  controle_poids: number
+  controle_recu_le: string | null
+  /** écru still écru, affected to a dyer's line (stock_ecru.IDref_commande_affectation), per sst line id */
+  ecru_chez_sst: Record<number, { metrage: number; poids: number }>
 }
 
 const agregatVide = (): AgregatLigne => ({
   nb_rolls: 0, total_metrage: 0, total_poids: 0, exp_metrage: 0, exp_poids: 0,
   pret_metrage: 0, pret_poids: 0, enno_metrage: 0, enno_poids: 0, trico_metrage: 0, trico_poids: 0,
   fini_metrage: 0, fini_poids: 0, ecru_metrage: 0, ecru_poids: 0,
+  controle_metrage: 0, controle_poids: 0, controle_recu_le: null, ecru_chez_sst: {},
 })
+
+/** A roll's entry (stock_fini.date_saisie) as YYYYMMDD, whatever shape the driver returns. */
+function ymdSaisie(v: unknown): string | null {
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null
+    return `${v.getFullYear()}${String(v.getMonth() + 1).padStart(2, '0')}${String(v.getDate()).padStart(2, '0')}`
+  }
+  const d = String(v ?? '').replace(/[^0-9]/g, '').slice(0, 8)
+  return /^(19|20)\d{6}$/.test(d) ? d : null
+}
 
 /** Per-line "affecté" aggregates keyed by IDligne_commande_client. The gauge
  *  counts EVERY affectation source, matching the legacy "854 / 800 Ml" figure
@@ -1429,14 +1446,14 @@ export async function lineReservationAggregates(
     // 10 kg in donation 2071 yet reserved to the Thuasne line, added 29,8 Ml
     // nobody could find). The legacy windows still write the two FKs
     // independently, so the filter stays even after the data repair.
-    query<{ IDstock_ecru: number; IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition_ETM: number | null }>(
-      `SELECT se.IDstock_ecru, se.IDligne_commande_client, se.metrage, se.poids, se.IDligne_expedition_ETM
+    query<{ IDstock_ecru: number; IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition_ETM: number | null; IDref_commande_affectation: number | null }>(
+      `SELECT se.IDstock_ecru, se.IDligne_commande_client, se.metrage, se.poids, se.IDligne_expedition_ETM, se.IDref_commande_affectation
        FROM stock_ecru se WHERE se.IDligne_commande_client IN (${inList})
          AND (se.IDcommande_donation IS NULL OR se.IDcommande_donation = 0)
          AND NOT EXISTS (SELECT 1 FROM stock_fini sfx WHERE sfx.IDstock_ecru = se.IDstock_ecru)`,
     ),
-    query<{ IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition: number | null; IDetat_stock_fini: number | null }>(
-      `SELECT IDligne_commande_client, metrage, poids, IDligne_expedition, IDetat_stock_fini FROM stock_fini
+    query<{ IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition: number | null; IDetat_stock_fini: number | null; date_saisie: unknown }>(
+      `SELECT IDligne_commande_client, metrage, poids, IDligne_expedition, IDetat_stock_fini, date_saisie FROM stock_fini
        WHERE IDligne_commande_client IN (${inList})
          AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)`,
     ),
@@ -1476,6 +1493,11 @@ export async function lineReservationAggregates(
     } else {
       a.enno_metrage += metrage
       a.enno_poids += poids
+      // Back from the dyer, not validated: what is left of the quality control (lib/delai-au-plus-tot.ts).
+      a.controle_metrage += metrage
+      a.controle_poids += poids
+      const recu = ymdSaisie(r.date_saisie)
+      if (recu && (!a.controle_recu_le || recu > a.controle_recu_le)) a.controle_recu_le = recu
     }
   }
   for (const r of ecru) {
@@ -1497,6 +1519,12 @@ export async function lineReservationAggregates(
       // Still écru on a fini line: it goes (or went) to the dyer.
       a.enno_metrage += metrage
       a.enno_poids += poids
+      const sst = Number(r.IDref_commande_affectation) || 0
+      if (sst > 0) {
+        const c = a.ecru_chez_sst[sst] ?? (a.ecru_chez_sst[sst] = { metrage: 0, poids: 0 })
+        c.metrage += metrage
+        c.poids += poids
+      }
     } else {
       a.pret_metrage += metrage
       a.pret_poids += poids
@@ -1510,7 +1538,7 @@ export async function lineReservationAggregates(
     a.trico_poids += poids
   }
   for (const a of out.values()) {
-    for (const k of Object.keys(a) as (keyof AgregatLigne)[]) if (k !== 'nb_rolls') a[k] = round2c(a[k])
+    for (const k of Object.keys(a) as (keyof AgregatLigne)[]) { const v = a[k]; if (k !== 'nb_rolls' && typeof v === 'number') (a as any)[k] = round2c(v) }
   }
   return out
 }
@@ -1725,6 +1753,15 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
     // Earliest date per line while it is still to make (doctrine des délais §5 ter).
     const partenaires = soldee ? null : await partenairesParDefaut()
     const today = aujourdhuiYmd()
+    // Matter already at a partner (its délai) and the order's state: an order « En cours » reads its lines
+    // in margin / delay, without the Malterre reserve (lib/delai-au-plus-tot.ts, Vincent 2026-11-02).
+    const [ordresParLigne, enPrepLignes] = partenaires
+      ? await Promise.all([
+        ordresEnCoursParLigne(lignesFixed.map((l) => Number(l.IDligne_commande_client) || 0), aggMap),
+        commandesEnPreparation([id]),
+      ])
+      : [new Map<number, OrdresLigne>(), new Set<number>()]
+    const commandeEnCours = !enPrepLignes.has(id)
 
     const lignes = lignesFixed.map((l) => {
       const typeKind = Number(l.type_kind) || 0
@@ -1744,7 +1781,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       const lance = lancements.get(Number(l.IDligne_commande_client))?.date
       const preteSiLance = partenaires && statut?.etat === 'a_lancer' && lance && lance > today
         ? auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
-          agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, lance)?.date ?? null
+          agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, lance,
+          null, ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours)?.date ?? null
         : null
       return {
         IDligne_commande_client: Number(l.IDligne_commande_client),
@@ -1785,8 +1823,14 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
           ? (() => {
             const a = auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
               agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, today,
-              typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : null)
-            return a ? { ...a, marge: margeJours(a, typeof l.date_livraison === 'string' ? l.date_livraison : null) } : null
+              typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : null,
+              ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours)
+            const d = typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : null
+            return a ? {
+              ...a,
+              marge: margeJours(a, d),
+              en_cours: commandeEnCours,
+            } : null
           })()
           : null,
         // affectation aggregates + the gauge basis (poids for Kg, metrage for Ml)
@@ -4967,9 +5011,52 @@ function arriveeFil(f: FaitsLigneClient | undefined, today: string): string | nu
   return f.filAttendu.map((a) => String(a.date)).sort().at(-1) ?? null
 }
 
+/** Matter of a client line already at a partner on a launched order (lib/delai-au-plus-tot.ts): the écru
+ *  at a dyer (per dyer line, with its délai) and the knitting launched (its latest délai). Flat queries. */
+interface OrdresLigne {
+  enno: { metrage: number; poids: number; partenaire: string | null; delai: string | null }[]
+  tricotage: { partenaire: string | null; delai: string | null } | null
+}
+async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number, AgregatLigne>): Promise<Map<number, OrdresLigne>> {
+  const out = new Map<number, OrdresLigne>()
+  const ids = [...new Set(lineIds.filter((x) => x > 0))]
+  if (ids.length === 0) return out
+  const sql = mpsPg()
+  const alloc = await sql<{ lcc: number; lsst: number }[]>`
+    SELECT idligne_commande_client AS lcc, idligne_commande_sous_traitant AS lsst
+      FROM affectation_cmd_tricotage
+     WHERE idligne_commande_client = ANY(${ids as any}) AND idligne_commande_sous_traitant > 0 AND poids_affecte > 0`
+  const sstIds = new Set<number>(alloc.map((r) => Number(r.lsst)))
+  for (const id of ids) for (const k of Object.keys(agg.get(id)?.ecru_chez_sst ?? {})) sstIds.add(Number(k))
+  if (sstIds.size === 0) return out
+  const lignes = await sql<{ id: number; delai: string | null; sstatut: string | null; soldee: number | null; nom: string | null }[]>`
+    SELECT l.idligne_commande_sous_traitant AS id, to_char(l.date_livraison, 'YYYYMMDD') AS delai, l.sstatut,
+           c.est_soldee AS soldee, st.nom
+      FROM ligne_commande_sous_traitant l
+      LEFT JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
+      LEFT JOIN sous_traitant st ON st.idsous_traitant = c.idsous_traitant
+     WHERE l.idligne_commande_sous_traitant = ANY(${[...sstIds] as any})`
+  const parId = new Map(lignes.map((l) => [Number(l.id), l]))
+  const nom = (l: { nom: string | null } | undefined) => String(l?.nom ?? '').trim() || null
+  const ouverte = (l: { sstatut: string | null; soldee: number | null } | undefined) =>
+    !!l && !String(l.sstatut ?? '').startsWith('Termin') && Number(l.soldee) !== 1
+  for (const id of ids) {
+    const enno = Object.entries(agg.get(id)?.ecru_chez_sst ?? {}).map(([k, v]) => {
+      const l = parId.get(Number(k))
+      return { ...v, partenaire: nom(l), delai: l?.delai ?? null }
+    })
+    // The knitting launched: the latest délai of its open knitting lines (one knitting order in practice).
+    const trico = alloc.filter((a) => Number(a.lcc) === id).map((a) => parId.get(Number(a.lsst))).filter(ouverte)
+    const tard = trico.sort((x, y) => String(y!.delai ?? '99999999').localeCompare(String(x!.delai ?? '99999999')))[0]
+    out.set(id, { enno, tricotage: tard ? { partenaire: nom(tard), delai: tard.delai ?? null } : null })
+  }
+  return out
+}
+
 /** From the facts the detail route already holds; null on a divers line. */
 function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: FaitsLigneClient | undefined,
-  rouleaux: RouleauxEstimes | null | undefined, p: Partenaires, today: string, dateRetenue: string | null = null): DelaiAuPlusTot | null {
+  rouleaux: RouleauxEstimes | null | undefined, p: Partenaires, today: string, dateRetenue: string | null = null,
+  ordres?: OrdresLigne, enCours = false): DelaiAuPlusTot | null {
   const kind = lineStockKind(l.typeKind)
   if (kind === 'none') return null
   const m = lineDim(l.unite) === 'metrage'
@@ -4977,6 +5064,11 @@ function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: Faits
     kind,
     quantite: l.quantite,
     fini: m ? agg.fini_metrage : agg.fini_poids,
+    finiEnControle: m ? agg.controle_metrage : agg.controle_poids,
+    finiRecuLe: agg.controle_recu_le,
+    ecruChezEnnoblisseur: (ordres?.enno ?? []).map((o) => ({ quantite: m ? o.metrage : o.poids, partenaire: o.partenaire, delai: o.delai })),
+    tricotageLance: ordres?.tricotage ?? null,
+    enCours,
     ecru: m ? agg.ecru_metrage : agg.ecru_poids,
     tricotage: m ? agg.trico_metrage : agg.trico_poids,
     fil,
@@ -4999,9 +5091,17 @@ async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | n
     rouleauxEstimesParLigne(ls),
     partenairesParDefaut(),
   ])
+  const [ordres, valides] = await Promise.all([
+    ordresEnCoursParLigne(ls.map((l) => l.id), agg),
+    ls.length === 0 ? [] : mpsPg()<{ id: number }[]>`
+      SELECT l.idligne_commande_client AS id FROM ligne_commande_client l
+        JOIN commande_client c ON c.idcommande_client = l.idcommande_client
+       WHERE l.idligne_commande_client = ANY(${ls.map((l) => l.id) as any}) AND c.validee_le IS NOT NULL`,
+  ])
+  const enCours = new Set(valides.map((r) => Number(r.id)))
   const today = aujourdhuiYmd()
   return new Map(ls.map((l) => [l.id, auPlusTotDe(l, agg.get(l.id) ?? agregatVide(), fil.get(l.id) ?? 0, faits.get(l.id), rouleaux.get(l.id), p,
-    apresAujourdhui(depuis?.get(l.id), today), dateRetenue)]))
+    apresAujourdhui(depuis?.get(l.id), today), dateRetenue, ordres.get(l.id), enCours.has(l.id))]))
 }
 
 /** The later of a launch date (YYYYMMDD) and today: a passed date launches today. */

@@ -8,6 +8,11 @@ import { mpsPg } from './mps-pg.js'
 
 /** Doctrine §4, revised 2026-10-29: 1.5 working weeks, in working days. */
 export const RESERVE_MALTERRE_JOURS = 7.5
+/** Malterre's quality control after the dyer (Vincent 2026-11-02): the dyer sends the tirelles, we
+ *  receive them, measure, the client answers a soumission, « Valider le lot ». Measured from the BL to
+ *  « Valider le lot » (journal_activite, 53 lots received 2026-10-01..11-02): median 3, p75 6, p90 11
+ *  working days, 17 more still open (the long ones). 5 = the decided standard, Malterre working days. */
+export const CONTROLE_QUALITE_JOURS = 5
 /** Doctrine §4: the knitter gets the margin first, up to 4 working weeks. */
 export const MARGE_TRICOTEUR_MAX_JOURS = 20
 

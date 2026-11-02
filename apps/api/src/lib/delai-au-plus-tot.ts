@@ -1,20 +1,24 @@
 // The earliest date a client line can be ready (doctrine des délais §5 ter, Vincent 2026-10-29): computed
 // live from where its matter sits, never typed. Each portion of the line's quantity goes through the steps
 // still ahead of it, each partner in its own working days (lib/jours-ouvres.ts, its closures included):
-//   fini rolls reserved            → ready now
-//   écru pieces reserved           → dyer
-//   écru still to knit (orders)    → knitter, then dyer
-//   yarn reserved                  → from the supplier's date (or today if in stock), knitter, then dyer
-//   nothing reserved               → a yarn estimate, knitter, then dyer
+//   fini rolls validated           → ready now
+//   fini rolls not validated yet   → the rest of the quality control, counted from their reception
+//   écru pieces reserved           → dyer, then quality control
+//   écru still to knit (orders)    → knitter, then dyer, then quality control
+//   yarn reserved                  → from the supplier's date (or today if in stock), knitter, dyer, control
+//   nothing reserved               → a yarn estimate, knitter, then dyer, then quality control
 // A line whose matter covers SEUIL_EXPEDIE (90 %) of it is served by that matter: the uncovered rest is
 // ignored, as shipping counts the line done at the same threshold (AGAPE 3892: 1,1 Ml short of 214 Ml
 // put a whole yarn + knitting chain on the line, six weeks later).
 // The line's earliest date = the latest portion + the Malterre reserve (doctrine §4, 1.5 working weeks),
 // added only when a partner step is left. An écru line has no dyer step. The knitter's band reads the kg
 // still to knit on the whole line (one knitting order). Pure, pinned by delai-au-plus-tot.test.ts.
+// Matter already at a partner on a launched order (écru at a dyer, knitting launched) ends on that order's
+// délai, or today when it is past (« if it delivers today »). An order « En cours » has no reserve: its lines
+// read in margin / delay against their engagement (Vincent 2026-11-02).
 
 import { ajouterJoursOuvres, joursOuvresEntre, type Periode } from './jours-ouvres.js'
-import { MARGE_TRICOTEUR_MAX_JOURS, RESERVE_MALTERRE_JOURS, fermetures, standards, tricotageJours, type StandardsSst } from './delais-standards.js'
+import { CONTROLE_QUALITE_JOURS, MARGE_TRICOTEUR_MAX_JOURS, RESERVE_MALTERRE_JOURS, fermetures, standards, tricotageJours, type StandardsSst } from './delais-standards.js'
 import { MATEL_IDSOUS_TRAITANT } from './pricing-sst.js'
 import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 
@@ -22,7 +26,7 @@ import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 export const FIL_ESTIME_JOURS = 20
 
 export interface EtapeDelai {
-  /** what happens: « Fil », « Tricotage », « Ennoblissement », « Réserve Malterre » */
+  /** what happens: « Fil », « Tricotage », « Ennoblissement », « Contrôle qualité », « Réserve Malterre » */
   libelle: string
   /** YYYYMMDD, step start and end */
   du: string
@@ -30,6 +34,12 @@ export interface EtapeDelai {
   jours: number
   /** a figure that is not a partner's standard (the yarn estimate) */
   estime?: boolean
+  /** the partner holding the matter on a launched order (« MATEL »), null = a standard step */
+  partenaire?: string | null
+  /** YYYYMMDD the délai that partner gave on its order; past = the step ends today (best case) */
+  delai?: string | null
+  /** the délai is past: the partner must be chased (the step is « if it delivers today ») */
+  depasse?: boolean
 }
 
 export interface DelaiAuPlusTot {
@@ -68,6 +78,10 @@ export interface EntreeDelai {
   quantite: number
   /** fini rolls reserved (shipped included); 0 on an écru line */
   fini: number
+  /** of which not validated yet (En contrôle, Reprise, Attente décision): still in quality control */
+  finiEnControle?: number
+  /** YYYYMMDD the latest of those rolls came in, null = unknown (the control counted from today) */
+  finiRecuLe?: string | null
   /** écru pieces reserved, not dyed yet */
   ecru: number
   /** écru still to knit on knitting orders */
@@ -85,7 +99,17 @@ export interface EntreeDelai {
   fermeturesMalterre?: Periode[]
   /** YYYYMMDD the date retained, for the doctrine's plan */
   dateRetenue?: string | null
+  /** of `ecru`, the pieces already at a dyer on a launched order: its délai, not a standard from today */
+  ecruChezEnnoblisseur?: MatiereChezPartenaire[]
+  /** the knitting order(s) already launched for `tricotage`: their latest délai */
+  tricotageLance?: { partenaire: string | null; delai: string | null } | null
+  /** the order is validated (« En cours »): no Malterre reserve, the line reads in margin / delay against
+   *  its engagement (Vincent 2026-11-02: the reserve is a préparation concept) */
+  enCours?: boolean
 }
+
+/** Matter at a partner on a launched order, in the line's unit. */
+export interface MatiereChezPartenaire { quantite: number; partenaire: string | null; delai: string | null }
 
 const pos = (x: number) => (Number.isFinite(x) && x > 0 ? x : 0)
 
@@ -94,8 +118,24 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   if (reste <= 0) return null
   // Cascade, most advanced matter first, as the gauge reads it (lib/besoin-stades.ts).
   const prendre = (x: number) => { const p = Math.min(reste, pos(x)); reste -= p; return p }
-  if (e.kind === 'fini') prendre(e.fini)
+  let enControle = 0
+  if (e.kind === 'fini') {
+    const nc = Math.min(pos(e.finiEnControle ?? 0), pos(e.fini))
+    prendre(pos(e.fini) - nc)
+    // Validated rolls covering SEUIL_EXPEDIE of the line ship it: what is still in control does not hold it.
+    if (reste <= pos(e.quantite) * (1 - SEUIL_EXPEDIE) + 1e-9) prendre(nc)
+    else enControle = prendre(nc)
+  }
   const ecru = prendre(e.ecru)
+  // Of that écru, what already sits at a dyer on a launched order (each with its délai).
+  let ecruLibre = ecru
+  const chezEnno: MatiereChezPartenaire[] = []
+  for (const m of e.ecruChezEnnoblisseur ?? []) {
+    const q = Math.min(ecruLibre, pos(m.quantite))
+    if (q <= 0) continue
+    ecruLibre -= q
+    chezEnno.push({ ...m, quantite: q })
+  }
   const tricotage = prendre(e.tricotage)
   const fil = prendre(e.fil)
   const rien = reste <= pos(e.quantite) * (1 - SEUIL_EXPEDIE) + 1e-9 ? 0 : reste
@@ -105,23 +145,54 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   const joursTricot = tricotageJours(e.tricoteur.standards, aTricoterKg)
   const joursEnno = e.ennoblisseur.standards.ennoblissement_jours
 
-  const suite = (depart: string, avecTricot: boolean): EtapeDelai[] => {
+  const malterre = e.fermeturesMalterre ?? []
+  const controle = (du: string): EtapeDelai => {
+    // A lot past its standard and still open ends today at best: we cannot be ready before validating it.
+    const fin = ajouterJoursOuvres(du, CONTROLE_QUALITE_JOURS, malterre)
+    return { libelle: 'Contrôle qualité', du, au: fin > e.aujourdhui ? fin : e.aujourdhui, jours: CONTROLE_QUALITE_JOURS }
+  }
+  /** A step at a partner on a launched order: ends on its délai, or today when the délai is past (« if it
+   *  delivers today », Vincent 2026-11-02) — the user then gets a new délai and the date follows. Without
+   *  a délai: the partner's standard from today, as an estimate. */
+  const chezPartenaire = (libelle: string, m: { partenaire: string | null; delai: string | null }, standard: number, ferm: Periode[]): EtapeDelai => {
+    const delai = m.delai && /^\d{8}$/.test(m.delai) ? m.delai : null
+    if (!delai) {
+      const au = ajouterJoursOuvres(e.aujourdhui, standard, ferm)
+      return { libelle, du: e.aujourdhui, au, jours: standard, estime: true, partenaire: m.partenaire, delai: null }
+    }
+    const au = delai > e.aujourdhui ? delai : e.aujourdhui
+    return { libelle, du: e.aujourdhui, au, jours: joursOuvresEntre(e.aujourdhui, au, ferm), partenaire: m.partenaire, delai, depasse: delai < e.aujourdhui }
+  }
+  const suite = (depart: string, avecTricot: boolean, tricotLance?: EtapeDelai): EtapeDelai[] => {
     const out: EtapeDelai[] = []
     let t = depart
-    if (avecTricot) {
+    if (tricotLance) { out.push(tricotLance); t = tricotLance.au }
+    else if (avecTricot) {
       const au = ajouterJoursOuvres(t, joursTricot, e.tricoteur.fermetures)
       out.push({ libelle: 'Tricotage', du: t, au, jours: joursTricot }); t = au
     }
     if (e.kind === 'fini') {
       const au = ajouterJoursOuvres(t, joursEnno, e.ennoblisseur.fermetures)
       out.push({ libelle: 'Ennoblissement', du: t, au, jours: joursEnno })
+      out.push(controle(au))
     }
     return out
   }
 
   const portions: EtapeDelai[][] = []
-  if (ecru > 0) portions.push(suite(e.aujourdhui, false))
-  if (tricotage > 0) portions.push(suite(e.aujourdhui, true))
+  if (enControle > 0) {
+    const recu = e.finiRecuLe && /^\d{8}$/.test(e.finiRecuLe) && e.finiRecuLe < e.aujourdhui ? e.finiRecuLe : e.aujourdhui
+    portions.push([controle(recu)])
+  }
+  for (const m of chezEnno) {
+    const enno = chezPartenaire('Ennoblissement', m, joursEnno, e.ennoblisseur.fermetures)
+    portions.push(e.kind === 'fini' ? [enno, controle(enno.au)] : [enno])
+  }
+  if (ecruLibre > 0) portions.push(suite(e.aujourdhui, false))
+  if (tricotage > 0) {
+    const lance = e.tricotageLance ? chezPartenaire('Tricotage', e.tricotageLance, joursTricot, e.tricoteur.fermetures) : undefined
+    portions.push(suite(e.aujourdhui, true, lance))
+  }
   if (fil > 0) {
     const arrivee = e.filAttenduLe && e.filAttenduLe > e.aujourdhui ? e.filAttenduLe : null
     portions.push([
@@ -137,13 +208,22 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   const fin = (p: EtapeDelai[]) => p[p.length - 1]?.au ?? e.aujourdhui
   const decisive = portions.reduce<EtapeDelai[] | null>((m, p) => (m == null || fin(p) > fin(m) ? p : m), null)
   if (!decisive || decisive.length === 0) return { date: e.aujourdhui, etapes: [], sansMatiere: false }
+  if (e.enCours) {
+    // En cours: the date the matter can really be ready, no reserve; read against the engagement.
+    // The launch dialog still asks the knitter its standard (no margin to spend here).
+    const t = decisive.find((x) => x.libelle === 'Tricotage' && !x.partenaire)
+    return {
+      date: fin(decisive), etapes: decisive, sansMatiere: rien > 0, plan: null,
+      tricotageDemande: t ? { jours: t.jours, date: ajouterJoursOuvres(e.aujourdhui, t.jours, e.tricoteur.fermetures) } : null,
+    }
+  }
   const debutReserve = fin(decisive)
   const plan = planDoctrine(e, decisive, ajouterJoursOuvres(debutReserve, RESERVE_MALTERRE_JOURS, e.fermeturesMalterre ?? []))
   const jTricot = plan?.tricotage?.jours ?? decisive.find((x) => x.libelle === 'Tricotage')?.jours ?? null
   const tricotageDemande = jTricot != null
     ? { jours: jTricot, date: ajouterJoursOuvres(e.aujourdhui, jTricot, e.tricoteur.fermetures) }
     : null
-  const date = ajouterJoursOuvres(debutReserve, RESERVE_MALTERRE_JOURS, e.fermeturesMalterre ?? [])
+  const date = ajouterJoursOuvres(debutReserve, RESERVE_MALTERRE_JOURS, malterre)
   return {
     date,
     etapes: [...decisive, { libelle: 'Réserve Malterre', du: debutReserve, au: date, jours: RESERVE_MALTERRE_JOURS }],

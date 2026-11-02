@@ -209,11 +209,17 @@ const ATTENTE_ETUDE_LABEL: Record<AttenteEtude, string> = {
 
 interface AuPlusTot {
   date: string
-  etapes: { libelle: string; du: string; au: string; jours: number; estime?: boolean }[]
+  etapes: {
+    libelle: string; du: string; au: string; jours: number; estime?: boolean
+    /** the partner holding the matter on a launched order, its délai, and whether that délai is past */
+    partenaire?: string | null; delai?: string | null; depasse?: boolean
+  }[]
   /** part of the quantity has no matter reserved */
   sansMatiere: boolean
   /** working days between this date and the date retained, null without one */
   marge?: number | null
+  /** the order is validated: no Malterre reserve, read in margin / delay (Vincent 2026-11-02) */
+  en_cours?: boolean
   /** how the doctrine (§4) would spend that margin: proposed, never written */
   plan?: {
     marge: number
@@ -228,8 +234,10 @@ interface AuPlusTot {
 const fmtJours = (n: number) => `${String(n).replace('.', ',')} j`
 /** One swatch per step: the gauge's greens for the matter's stages, Malterre's blue for its reserve, amber
  *  for the margin (Vincent 2026-10-29: temporary, still to spread at the launches). */
+/** A delay: the engagement passed, or a partner past its délai (Vincent 2026-11-02). */
+const COULEUR_RETARD = '#dc2626'
 const COULEUR_ETAPE: Record<string, string> = {
-  Fil: '#bbf7d0', Tricotage: '#86efac', Ennoblissement: '#4ade80', 'Réserve Malterre': 'hsl(var(--primary))', Marge: '#f59e0b',
+  Fil: '#bbf7d0', Tricotage: '#86efac', Ennoblissement: '#4ade80', 'Contrôle qualité': '#22c55e', 'Réserve Malterre': 'hsl(var(--primary))', Marge: '#f59e0b',
 }
 
 /** The hover of a line's date (Vincent 2026-10-29: designed like the gauge's): the date given, its
@@ -250,14 +258,14 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
       )}
       {a && (
         <div className={cn(entete && 'mt-2 pt-2 border-t border-border/60')}>
-          {/* The margin between the two dates, amber (temporary, still to spread at the launches): read
-              downwards, « Prête le » → margin → « Prête au plus tôt » → its steps (Vincent 2026-10-29). */}
+          {/* The gap between the two dates, read downwards, « Prête le » → gap → « Prête au plus tôt » → its
+              steps (Vincent 2026-10-29). Negative = « Retard », red (Vincent 2026-11-02). */}
           {entete && a.marge != null && a.marge !== 0 && (
             <div className="mb-2 flex items-center gap-2 text-xs tabular-nums">
-              <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: COULEUR_ETAPE.Marge, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
-              <span className="flex-1">Marge</span>
-              <span className="text-muted-foreground">{formatHfsqlDate(a.date).slice(0, 5)} → {formatHfsqlDate(entete.date).slice(0, 5)}</span>
-              <span className={cn('w-10 text-right font-semibold', a.marge < 0 && 'text-amber-700')}>{fmtJours(a.marge)}</span>
+              <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: a.marge < 0 ? COULEUR_RETARD : COULEUR_ETAPE.Marge, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
+              <span className={cn('flex-1', a.marge < 0 && 'text-red-600 font-medium')}>{a.marge < 0 ? 'Retard' : 'Marge'}</span>
+              {a.marge > 0 && <span className="text-muted-foreground">{formatHfsqlDate(a.date).slice(0, 5)} → {formatHfsqlDate(entete.date).slice(0, 5)}</span>}
+              <span className={cn('w-10 text-right font-semibold', a.marge < 0 && 'text-red-600')}>{fmtJours(Math.abs(a.marge))}</span>
             </div>
           )}
           <div className="flex items-baseline justify-between gap-3">
@@ -271,9 +279,10 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
               {/* Latest step on top, read from the date down to today (Vincent 2026-10-29). */}
               {[...a.etapes].reverse().map((e) => (
                 <div key={e.libelle} className="flex items-center gap-2 text-xs tabular-nums">
-                  <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: COULEUR_ETAPE[e.libelle] ?? '#e4e4e7', boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
+                  {/* A partner past its délai: red swatch, read from that délai to today (« if it delivers today »). */}
+                  <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: e.depasse ? COULEUR_RETARD : (COULEUR_ETAPE[e.libelle] ?? '#e4e4e7'), boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
                   <span className="flex-1">{e.libelle}{e.estime && <span className="text-muted-foreground"> (estimé)</span>}</span>
-                  <span className="text-muted-foreground">{formatHfsqlDate(e.du).slice(0, 5)} → {formatHfsqlDate(e.au).slice(0, 5)}</span>
+                  <span className="text-muted-foreground">{formatHfsqlDate(e.depasse && e.delai ? e.delai : e.du).slice(0, 5)} → {formatHfsqlDate(e.au).slice(0, 5)}</span>
                   <span className={cn('w-10 text-right font-semibold', e.jours < 0 && 'text-amber-700')}>{fmtJours(e.jours)}</span>
                 </div>
               ))}
@@ -302,12 +311,6 @@ interface Expedition { groupee: boolean }
 /** The order's sentence (Info, list): only when its lines leave together. */
 function phraseEnsemble(depart: string | null): string {
   return `Toutes les lignes ensemble${depart ? `, le ${formatHfsqlDate(depart)}` : ''}`
-}
-
-/** A line's sentence (its hover): its own départ, then the order's « ensemble ». */
-function phraseLigne(mode: ModeLivraison, e: Expedition, depart: string | null): string {
-  const base = mode === 'sur_appel' ? 'Sur appel du client' : 'Expédiée dès que prête'
-  return e.groupee ? `${base}, avec toutes les lignes${depart ? ` le ${formatHfsqlDate(depart)}` : ''}` : base
 }
 
 function expeditionDe(c: Pick<CommandeDetail, 'expedition_groupee'>): Expedition {
@@ -1646,8 +1649,6 @@ function LignesSection({
           ) : (
             commande.lignes.map((l) => (
               <LineCard
-                expedition={expeditionDe(commande)}
-                departCommande={departCommande(commande.lignes)}
                 enPreparation={!!commande.en_preparation}
                 key={l.IDligne_commande_client}
                 line={l}
@@ -2339,13 +2340,9 @@ function departCommande(lignes: LigneCommande[]): string | null {
 }
 
 function LineCard({
-  line, expedition, departCommande, enPreparation, isEditing, linesLocked, isDrawerOpen, onEdit, onDelete, onOpenAffectation,
+  line, enPreparation, isEditing, linesLocked, isDrawerOpen, onEdit, onDelete, onOpenAffectation,
 }: {
   line: LigneCommande
-  /** how the order leaves: the line's hover says it */
-  expedition: Expedition
-  /** when the whole order can leave (hover of its lines) */
-  departCommande: string | null
   /** « En préparation »: a line without a date shows its earliest date, neutral (the validation gives it) */
   enPreparation: boolean
   isEditing: boolean
@@ -2482,7 +2479,6 @@ function LineCard({
                       date: line.date_livraison,
                       lignes: [
                         line.delai_initial && retard !== 0 ? `Engagement ${formatHfsqlDate(line.delai_initial)}` : enPreparation ? 'Date libre jusqu’à la validation' : 'Notre engagement',
-                        phraseLigne(line.mode_livraison, expedition, departCommande),
                       ],
                     }} />
                   }>{stat}</Tooltip>
@@ -6129,6 +6125,7 @@ function LineFormDialog({
   // the person picks another one (Vincent 2026-10-29). Open = a date of its own is being typed.
   const [autreDate, setAutreDate] = useState(false)
   const autreDateRef = useRef<HTMLInputElement>(null)
+  const preteLeRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -6742,13 +6739,44 @@ function LineFormDialog({
               it. Once validated, the date is an engagement: moving it asks why and who it is due to (QS). How the
               order leaves is set once for the whole order, in Info › Expédition. */}
           {valide && (
-            <div className="space-y-1 sm:w-1/2">
+            <div className={cn('space-y-1', !PICKER_DATE && 'sm:w-1/2')}>
               <label className="text-xs font-medium text-muted-foreground cursor-help" title="Prête à expédier à cette date : notre engagement">Prête le</label>
-              <input type="date" value={form.date_livraison} onChange={(e) => setForm({ ...form, date_livraison: e.target.value })} autoComplete="off" className={inputClass} />
-              {engagement && (
-                <p className={cn('text-[11px]', ecartEngagement > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
-                  Engagement {formatHfsqlDate(engagement)}{ecartEngagement !== 0 ? ` · ${ecartEngagement > 0 ? '+' : ''}${ecartEngagement} j` : ''}
-                </p>
+              {/* Same dashed box as Info › Expédition and the préparation branch (Vincent 2026-11-02): the date
+                  is read, « Changer » opens the calendar straight away (hidden date input under the link), the
+                  engagement sits under it. Without showPicker (old browser) a plain date field. */}
+              {PICKER_DATE ? (
+                <div className={cn('px-3 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm',
+                  engagement ? 'py-1.5' : 'h-9')}>
+                  <div className="min-w-0 leading-tight">
+                    {dateSaisie
+                      ? <div>Le <span className="font-semibold tabular-nums">{formatHfsqlDate(dateSaisie)}</span></div>
+                      : <div className="text-muted-foreground italic">Date à choisir</div>}
+                    {engagement && (
+                      <div className={cn('text-xs truncate', ecartEngagement > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
+                        Engagement {formatHfsqlDate(engagement)}{ecartEngagement !== 0 ? ` · ${ecartEngagement > 0 ? '+' : ''}${ecartEngagement} j` : ''}
+                      </div>
+                    )}
+                  </div>
+                  <span className="ml-auto relative flex items-center flex-shrink-0">
+                    <input ref={preteLeRef} type="date" tabIndex={-1} aria-hidden value={form.date_livraison}
+                      className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
+                      onChange={(e) => { if (e.target.value) setForm({ ...form, date_livraison: e.target.value }) }} />
+                    <button type="button"
+                      onClick={() => { try { preteLeRef.current?.showPicker() } catch { /* no picker */ } }}
+                      className="relative text-xs font-medium text-accent-blue hover:underline">
+                      {dateSaisie ? 'Changer' : 'Choisir la date'}
+                    </button>
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <input type="date" value={form.date_livraison} onChange={(e) => setForm({ ...form, date_livraison: e.target.value })} autoComplete="off" className={inputClass} />
+                  {engagement && (
+                    <p className={cn('text-[11px]', ecartEngagement > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
+                      Engagement {formatHfsqlDate(engagement)}{ecartEngagement !== 0 ? ` · ${ecartEngagement > 0 ? '+' : ''}${ecartEngagement} j` : ''}
+                    </p>
+                  )}
+                </>
               )}
               {line?.au_plus_tot && !!dateSaisie && dateSaisie < line.au_plus_tot.date && (
                 <Tooltip side="bottom" align="start" content={<DelaiLigneDetail auPlusTot={line.au_plus_tot} />}>
