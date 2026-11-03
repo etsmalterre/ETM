@@ -1,5 +1,5 @@
 import { Fragment, useState, useMemo, useEffect, useCallback, useRef, type ComponentType } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -29,10 +29,8 @@ import {
   Save,
   Trash2,
   Info,
-  CheckCircle2,
   ChevronRight,
   Leaf,
-  Circle,
   Package,
   Ruler,
   Factory,
@@ -53,6 +51,9 @@ import {
   Link2,
   QrCode,
   ExternalLink,
+  Check,
+  Minus,
+  Activity,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -154,9 +155,18 @@ interface RefFiniDetail {
   controle_sst_stab: number
   controle_sst_allongement: number
   en_developpement: number
-  /** Lot controls asked (lib/controles-lot.ts) — 1 unless switched off. */
+  /** Lot controls asked (lib/controles-lot.ts): 1 unless switched off. A side = any of its measures. */
   controle_ennoblisseur: number
   controle_malterre: number
+  /** Each measure of each side (#1345), as the lot cycle reads it. */
+  controle_ennoblisseur_laize: number
+  controle_ennoblisseur_poids: number
+  controle_ennoblisseur_stab: number
+  controle_malterre_laize: number
+  controle_malterre_poids: number
+  controle_malterre_stab: number
+  controle_ennoblisseur_vrillage: number
+  controle_malterre_vrillage: number
   archive: number
   catalogue_prive: number
   date_creation: string | null
@@ -322,9 +332,25 @@ interface HeaderDraft {
   controle_sst_stab: boolean
   controle_sst_allongement: boolean
   en_developpement: boolean
-  controle_ennoblisseur: boolean
-  controle_malterre: boolean
+  controle_ennoblisseur_laize: boolean
+  controle_ennoblisseur_poids: boolean
+  controle_ennoblisseur_stab: boolean
+  controle_malterre_laize: boolean
+  controle_malterre_poids: boolean
+  controle_malterre_stab: boolean
+  controle_ennoblisseur_vrillage: boolean
+  controle_malterre_vrillage: boolean
 }
+
+/** The lot-control switches of the fiche (#1345): one per measure and per side. */
+const CONTROLE_MESURES = [
+  { mesure: 'Laize', ennoblisseur: 'controle_ennoblisseur_laize', malterre: 'controle_malterre_laize' },
+  { mesure: 'Poids', ennoblisseur: 'controle_ennoblisseur_poids', malterre: 'controle_malterre_poids' },
+  { mesure: 'Stabilités', ennoblisseur: 'controle_ennoblisseur_stab', malterre: 'controle_malterre_stab' },
+  { mesure: 'Vrillage', ennoblisseur: 'controle_ennoblisseur_vrillage', malterre: 'controle_malterre_vrillage' },
+] as const
+type ControleKey = (typeof CONTROLE_MESURES)[number]['ennoblisseur' | 'malterre']
+const CONTROLE_KEYS: ControleKey[] = CONTROLE_MESURES.flatMap((r) => [r.ennoblisseur, r.malterre])
 
 const numStr = (n: number | null | undefined): string => (n == null ? '' : String(n))
 
@@ -362,8 +388,7 @@ function emptyDraft(): HeaderDraft {
     controle_sst_stab: false,
     controle_sst_allongement: false,
     en_developpement: false,
-    controle_ennoblisseur: true,
-    controle_malterre: true,
+    ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, true])) as Record<ControleKey, boolean>),
   }
 }
 
@@ -401,8 +426,7 @@ function draftFromDetail(d: RefFiniDetail): HeaderDraft {
     controle_sst_stab: !!d.controle_sst_stab,
     controle_sst_allongement: !!d.controle_sst_allongement,
     en_developpement: !!d.en_developpement,
-    controle_ennoblisseur: d.controle_ennoblisseur !== 0,
-    controle_malterre: d.controle_malterre !== 0,
+    ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, d[k] !== 0])) as Record<ControleKey, boolean>),
   }
 }
 
@@ -441,8 +465,7 @@ function draftToBody(d: HeaderDraft) {
     controle_sst_stab: d.controle_sst_stab,
     controle_sst_allongement: d.controle_sst_allongement,
     en_developpement: d.en_developpement,
-    controle_ennoblisseur: d.controle_ennoblisseur,
-    controle_malterre: d.controle_malterre,
+    ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, d[k]])) as Record<ControleKey, boolean>),
   }
 }
 
@@ -1841,43 +1864,6 @@ function SpecsCard({
           </SpecTile>
         </div>
 
-        {/* Contrôles à réception — the three sst flags, always all three shown */}
-        <SpecTile label="Contrôles à réception (sous-traitant)">
-          {isEditing ? (
-            <div className="grid grid-cols-3 gap-2">
-              {([
-                ['controle_sst_rendement', 'Rendement'],
-                ['controle_sst_stab', 'Stabilité'],
-                ['controle_sst_allongement', 'Allongement'],
-              ] as const).map(([k, label]) => (
-                <label key={k} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-white px-2.5 py-1.5">
-                  <span className="text-sm">{label}</span>
-                  <Pill value={draft[k]} onChange={(v) => onDraftChange({ ...draft, [k]: v })} />
-                </label>
-              ))}
-            </div>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {([
-                [detail.controle_sst_rendement, 'Rendement'],
-                [detail.controle_sst_stab, 'Stabilité'],
-                [detail.controle_sst_allongement, 'Allongement'],
-              ] as const).map(([on, label]) => (
-                <span
-                  key={label}
-                  className={cn(
-                    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium',
-                    on ? 'bg-accent/10 text-accent border-accent/25' : 'bg-transparent text-muted-foreground/60 border-border/60',
-                  )}
-                >
-                  {on ? <CheckCircle2 className="h-3 w-3" /> : <Circle className="h-3 w-3" />}
-                  {label}
-                </span>
-              ))}
-            </div>
-          )}
-        </SpecTile>
-
         {/* Prose fields — full-width tiles. The legacy texts are multi-line
             (CRLF-separated on every reference), so they are shown line by line
             and edited in textareas. Empty ones are hidden in view mode. */}
@@ -2013,7 +1999,7 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
                       {c.stock_lots > 0 ? (
                         <>
                           <span className="font-semibold">{fmtNum(c.stock_kg, 1)} kg</span>
-                          <span className="text-[11px] text-muted-foreground"> · {c.stock_lots} lot{c.stock_lots > 1 ? 's' : ''}</span>
+                          <span className="text-[11px] text-muted-foreground"> · {c.stock_lots} rouleau{c.stock_lots > 1 ? 'x' : ''}</span>
                         </>
                       ) : (
                         <span className="text-muted-foreground/40">—</span>
@@ -2358,7 +2344,7 @@ function AssocieesCard({
 
 // ── Right Panel: Sidebar ───────────────────────────────
 
-type SidebarTab = 'informations' | 'tarif'
+type SidebarTab = 'informations' | 'activite' | 'tarif'
 
 // ── Clients card — who has already ordered this reference (LIVA #1155) ──
 
@@ -2743,6 +2729,7 @@ function DetailSidebar({
       <div className="flex border-b p-1 gap-1 rounded-t-xl bg-zinc-200/50">
         {([
           { key: 'informations', label: 'Informations', icon: Info },
+          { key: 'activite', label: 'Activité', icon: Activity },
           { key: 'tarif', label: 'Tarif', icon: BadgeEuro },
         ] as { key: SidebarTab; label: string; icon: React.ElementType }[]).map((tab) => {
           const Icon = tab.icon
@@ -2766,6 +2753,41 @@ function DetailSidebar({
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-transparent">
         {activeTab === 'tarif' && <TarifTab key={detail.IDref_fini} detail={detail} />}
+        {/* Activité: who ordered the reference and what is in stock (read-only, any mode) */}
+        {activeTab === 'activite' && (
+        <div className="space-y-3">
+        {/* Stock actuel, read-only aggregate */}
+          <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Warehouse className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-semibold text-muted-foreground">Stock actuel</p>
+              <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">
+                {detail.stock_lots} rouleau{detail.stock_lots !== 1 ? 'x' : ''}
+              </Badge>
+            </div>
+            {detail.stock_lots === 0 ? (
+              <p className="text-sm text-muted-foreground italic">Aucun stock en cours</p>
+            ) : (
+              <>
+                <KV label="Poids" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_kg, 1)} kg</span>} />
+                <KV label="Métrage" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_m, 1)} Ml</span>} />
+                {detail.reference && (
+                  <Link
+                    to={`/finis/stock?ref=${encodeURIComponent(detail.reference)}`}
+                    className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline pt-1"
+                  >
+                    <Warehouse className="h-3.5 w-3.5" />
+                    Voir les rouleaux dans Stock Finis
+                  </Link>
+                )}
+              </>
+            )}
+          </div>
+
+        {/* Clients ayant commandé la référence (#1155), read-only */}
+        <ClientsCard refId={detail.IDref_fini} />
+        </div>
+        )}
         {activeTab === 'informations' && (
         <div className="space-y-3">
         {/* Métadonnées */}
@@ -2824,63 +2846,36 @@ function DetailSidebar({
           )}
         </div>
 
-        {/* Clients ayant commandé la référence (#1155) — read-only, view mode */}
-        {!isEditing && <ClientsCard refId={detail.IDref_fini} />}
-
-        {/* Stock actuel — read-only aggregate, moved here from the centre panel */}
-        {!isEditing && (
-          <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-            <div className="flex items-center gap-1.5">
-              <Warehouse className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="text-xs font-semibold text-muted-foreground">Stock actuel</p>
-              <Badge variant="secondary" className="text-[10px] py-0 ml-auto tabular-nums">
-                {detail.stock_lots} lot{detail.stock_lots !== 1 ? 's' : ''}
-              </Badge>
-            </div>
-            {detail.stock_lots === 0 ? (
-              <p className="text-sm text-muted-foreground italic">Aucun stock en cours</p>
-            ) : (
-              <>
-                <KV label="Poids" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_kg, 1)} kg</span>} />
-                <KV label="Métrage" value={<span className="tabular-nums font-semibold">{fmtNum(detail.stock_total_m, 1)} Ml</span>} />
-                {detail.reference && (
-                  <a
-                    href={`/finis/stock?q=${encodeURIComponent(detail.reference)}`}
-                    className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline pt-1"
-                  >
-                    <Warehouse className="h-3.5 w-3.5" />
-                    Voir les lots dans Stock Finis
-                  </a>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Contrôles des lots (2026-10-26, lib/controles-lot.ts): what « Valider le lot »
-            waits for on every dye lot of this reference. On = laize, poids AND stabilités. */}
+        {/* Contrôles des lots (2026-10-26, per measure since #1345, lib/controles-lot.ts):
+            what « Valider le lot » waits for on every dye lot of this reference. */}
         <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', isEditing && editSectionClass)}>
           <p className="text-xs font-semibold text-muted-foreground">Contrôles des lots</p>
           {isEditing && !droits.controles && <LectureSeule quoi="les contrôles des lots" />}
-          {([
-            ['controle_ennoblisseur', 'Contrôle ennoblisseur', Factory],
-            ['controle_malterre', 'Contrôle Malterre', Ruler],
-          ] as const).map(([key, label, Icon]) => (
-            <div key={key} className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                <Icon className="h-3.5 w-3.5" />
-                {label}
-              </span>
-              {isEditing && droits.controles ? (
-                <Pill value={draft[key]} onChange={(v) => onDraftChange({ ...draft, [key]: v })} />
-              ) : (
-                <span className="text-sm">{detail[key] !== 0 ? 'Oui' : 'Non'}</span>
-              )}
-            </div>
-          ))}
-          <p className="text-[11px] text-muted-foreground">
-            Un contrôle activé demande la laize, le poids et les stabilités avant « Valider le lot » ; désactivé, il n’est jamais demandé.
-          </p>
+          <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-4 gap-y-1.5">
+            <span />
+            <span className="text-[11px] text-muted-foreground flex items-center gap-1 justify-center" title="Contrôle ennoblisseur : les mesures du sous-traitant">
+              <Factory className="h-3.5 w-3.5" />Ennoblisseur
+            </span>
+            <span className="text-[11px] text-muted-foreground flex items-center gap-1 justify-center" title="Contrôle Malterre : les mesures de la tirelle">
+              <Ruler className="h-3.5 w-3.5" />Malterre
+            </span>
+            {CONTROLE_MESURES.map((r) => (
+              <Fragment key={r.mesure}>
+                <span className="text-xs text-muted-foreground">{r.mesure}</span>
+                {([r.ennoblisseur, r.malterre] as const).map((k) => (
+                  <span key={k} className="flex justify-center">
+                    {isEditing && droits.controles ? (
+                      <Pill value={draft[k]} onChange={(v) => onDraftChange({ ...draft, [k]: v })} />
+                    ) : detail[k] !== 0 ? (
+                      <Check className="h-4 w-4 text-success" aria-label="Demandé" />
+                    ) : (
+                      <Minus className="h-4 w-4 text-muted-foreground/60" aria-label="Non demandé" />
+                    )}
+                  </span>
+                ))}
+              </Fragment>
+            ))}
+          </div>
         </div>
 
         {/* QR du tag échantillon (#1222) — read-only, view mode */}

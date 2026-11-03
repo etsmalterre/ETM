@@ -922,6 +922,16 @@ function DetailHeader({
           <div className="flex items-center gap-2 flex-shrink-0">
             {isEditing ? (
               <>
+                {/* Delete lives in edit mode only (Vincent 2026-11-03, every screen). */}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 text-destructive hover:text-destructive"
+                  title="Supprimer la simulation"
+                  onClick={onDelete}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
                 <Button variant="outline" size="sm" onClick={onCancelEdit}><X className="h-3.5 w-3.5 mr-1.5" />Annuler</Button>
                 <Button size="sm" onClick={onSave} disabled={isSaving}>
                   {isSaving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
@@ -939,15 +949,6 @@ function DetailHeader({
                   disabled={isDuplicating}
                 >
                   {isDuplicating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 text-destructive hover:text-destructive"
-                  title="Supprimer la simulation"
-                  onClick={onDelete}
-                >
-                  <Trash2 className="h-4 w-4" />
                 </Button>
                 <Button variant="gold" size="sm" onClick={onStartEdit}><Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier</Button>
               </>

@@ -19,6 +19,7 @@ import {
 import { batchRepair } from '../lib/batch-repair.js'
 import type { PermissionKey } from '../lib/permission-keys.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { controlesDeRef, colonneMesure, coteDemande, MESURES_CONTROLE, type CoteControle } from '../lib/controles-lot.js'
 import { clesRequises, groupesModifies, LIBELLES_GROUPE, GROUPES_REF_FINI } from '../lib/ref-fini-droits.js'
 import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } from '../lib/ref-fini-reference.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
@@ -150,9 +151,9 @@ function normalizeRefFini(row: Record<string, unknown>) {
     controle_sst_stab: Number(row.controle_sst_stab) ? 1 : 0,
     controle_sst_allongement: Number(row.controle_sst_allongement) ? 1 : 0,
     en_developpement: Number(row.en_developpement) ? 1 : 0,
-    // lot controls (lib/controles-lot.ts) — on unless explicitly 0
-    controle_ennoblisseur: Number(row.controle_ennoblisseur ?? 1) !== 0 ? 1 : 0,
-    controle_malterre: Number(row.controle_malterre ?? 1) !== 0 ? 1 : 0,
+    // lot controls (lib/controles-lot.ts): on unless explicitly 0; each measure
+    // as the cycle reads it (a side off asks none of its measures, #1345)
+    ...controlesAplatis(row),
     // accented column names — resolved by prefix, never named in SQL
     archive: Number(pickKey(row, /^archiv/i)) ? 1 : 0,
     catalogue_prive: Number(pickKey(row, /^catalogue_priv/i)) ? 1 : 0,
@@ -975,6 +976,14 @@ const refFiniBody = z.object({
   en_developpement: z.boolean().optional(),
   controle_ennoblisseur: z.boolean().optional(),
   controle_malterre: z.boolean().optional(),
+  controle_ennoblisseur_laize: z.boolean().optional(),
+  controle_ennoblisseur_poids: z.boolean().optional(),
+  controle_ennoblisseur_stab: z.boolean().optional(),
+  controle_malterre_laize: z.boolean().optional(),
+  controle_malterre_poids: z.boolean().optional(),
+  controle_malterre_stab: z.boolean().optional(),
+  controle_ennoblisseur_vrillage: z.boolean().optional(),
+  controle_malterre_vrillage: z.boolean().optional(),
 })
 
 type RefFiniBody = z.infer<typeof refFiniBody>
@@ -1005,10 +1014,30 @@ function buildRefFiniSets(b: RefFiniBody): string[] {
   for (const c of NUMERIC_COLS) sets.push(`${c} = ${toNumOrNull(b[c]) ?? 0}`)
   for (const c of BOOL_COLS) sets.push(`${c} = ${b[c] ? 1 : 0}`)
   // On by default (lib/controles-lot.ts): written only when sent, never reset by omission.
-  for (const c of ['controle_ennoblisseur', 'controle_malterre'] as const) {
-    if (b[c] !== undefined) sets.push(`${c} = ${b[c] ? 1 : 0}`)
+  // A side sent with its three measures (#1345) stores them and its « any » flag;
+  // a side switch sent alone (a client from before #1345) writes the switch only.
+  for (const cote of ['ennoblisseur', 'malterre'] as const) {
+    const recues = MESURES_CONTROLE.map((m) => b[colonneMesure(cote, m) as keyof RefFiniBody])
+    if (recues.every((v) => v !== undefined)) {
+      MESURES_CONTROLE.forEach((m, i) => sets.push(`${colonneMesure(cote, m)} = ${recues[i] ? 1 : 0}`))
+      const d = Object.fromEntries(MESURES_CONTROLE.map((m, i) => [m, !!recues[i]])) as Record<(typeof MESURES_CONTROLE)[number], boolean>
+      sets.push(`controle_${cote} = ${coteDemande(d) ? 1 : 0}`)
+    } else if (b[`controle_${cote}`] !== undefined) {
+      sets.push(`controle_${cote} = ${b[`controle_${cote}`] ? 1 : 0}`)
+    }
   }
   return sets
+}
+
+/** The lot controls of a ref_fini row, flat for the fiche: each side's switch and
+ *  each measure as lib/controles-lot.ts reads them. */
+function controlesAplatis(row: Record<string, unknown>): Record<string, 0 | 1> {
+  const c = controlesDeRef(row)
+  const out: Record<string, 0 | 1> = { controle_ennoblisseur: c.ennoblisseur ? 1 : 0, controle_malterre: c.malterre ? 1 : 0 }
+  for (const cote of ['ennoblisseur', 'malterre'] as CoteControle[]) {
+    for (const m of MESURES_CONTROLE) out[colonneMesure(cote, m)] = c.mesures[cote][m] ? 1 : 0
+  }
+  return out
 }
 
 // POST /api/references-fini — inline-create an empty datasheet (named-column

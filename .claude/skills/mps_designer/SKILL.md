@@ -518,6 +518,8 @@ Every detail screen should surface the same canonical set of view-mode action bu
 
 **Icon choice is canonical**: use `AtSign` for the email *trigger* button (it's the recognisable "@" symbol and reads as an action, not a field label). `Mail` is reserved for the Dialog's large central icon and for contact-card sub-rows showing an email address inline. Do NOT swap them.
 
+**Delete lives in edit mode only** (Vincent 2026-11-03, a general rule for every screen of every Malterre app): the header « Supprimer » icon button (`Trash2`, `variant="outline" size="icon" className="h-9 w-9 text-destructive hover:text-destructive"`) is rendered in the `isEditing` branch, FIRST, before Annuler / Enregistrer, never next to Modifier in view mode. Reference: `FilsCommandes.tsx`. The confirm (§33) still resets `isEditing` before the mutation (§28.5). Same for an archive / désarchiver button standing in for delete (`ClientsGestion.tsx`). Swept 2026-11-03: Qualité › Actions, Qualité › Dossiers, Finis › Tarifs, Prospects › Demandes.
+
 **Modifier button colour is canonical**: always `variant="gold"`. Never `variant="outline"`, never `variant="default"` (which is primary blue). The gold CTA across all screens reinforces "this is THE primary action on a view-mode screen — enter edit mode".
 
 `onPrintClick` and `onEmailClick` flip page-level state (`setPrintModalOpen(true)` / `setEmailModalOpen(true)`) that opens the corresponding placeholder Dialog (§18). Both Dialogs are always mounted at the page root as siblings of the `MasterDetailLayout`, alongside any other top-level dialogs (`UnsavedChangesDialog`, `CreateXxxDialog`, etc.).

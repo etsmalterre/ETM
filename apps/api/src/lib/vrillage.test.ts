@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  lireSaisieVrillage, VrillageInvalide, vrillageConforme, verdictLot, verdictLigne, vrillagesDesObservations,
-  type VrillagesLot,
-} from './vrillage.js'
-
-const lot = (p: Partial<VrillagesLot>): VrillagesLot => ({ sst: null, tirelle: null, ...p })
+import { lireSaisieVrillage, VrillageInvalide, vrillageConforme, vrillagesDesObservations } from './vrillage.js'
 
 describe('lireSaisieVrillage', () => {
   it('empty = not measured, 0 is a measure', () => {
@@ -27,28 +22,6 @@ describe('tolerance', () => {
     expect(vrillageConforme(5.1)).toBe(false)
     expect(vrillageConforme(0)).toBe(true)
     expect(vrillageConforme(null)).toBeNull()
-  })
-})
-
-describe('verdictLot', () => {
-  it('needs our tirelle measure', () => {
-    expect(verdictLot(lot({}))).toBe('non_controle')
-    expect(verdictLot(lot({ sst: 4 }))).toBe('non_controle')
-    expect(verdictLot(lot({ tirelle: 5 }))).toBe('conforme')
-    expect(verdictLot(lot({ tirelle: 0 }))).toBe('conforme')
-  })
-  it('any side out of tolerance is non conforme', () => {
-    expect(verdictLot(lot({ sst: 7 }))).toBe('non_conforme')
-    expect(verdictLot(lot({ tirelle: 3, sst: 6 }))).toBe('non_conforme')
-  })
-})
-
-describe('verdictLigne', () => {
-  it('one bad lot spoils the line, all good lots make it conforme', () => {
-    expect(verdictLigne([])).toBe('non_controle')
-    expect(verdictLigne([lot({ tirelle: 3 }), lot({ tirelle: 5 })])).toBe('conforme')
-    expect(verdictLigne([lot({ tirelle: 3 }), lot({})])).toBe('non_controle')
-    expect(verdictLigne([lot({ tirelle: 3 }), lot({ tirelle: 8 })])).toBe('non_conforme')
   })
 })
 

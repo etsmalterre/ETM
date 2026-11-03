@@ -917,6 +917,19 @@ function DossierHeader({
         <div className="flex items-center gap-2 flex-shrink-0">
           {isEditing ? (
             <>
+              {/* Delete lives in edit mode only (Vincent 2026-11-03, every screen). */}
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 text-destructive hover:text-destructive"
+                  title="Supprimer"
+                  onClick={onDelete}
+                  disabled={saving}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={onCancelEdit} disabled={saving}>
                 <X className="h-3.5 w-3.5 mr-1.5" />
                 Annuler
@@ -932,17 +945,6 @@ function DossierHeader({
             </>
           ) : (
             <>
-              {canManage && (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 text-destructive hover:text-destructive"
-                  title="Supprimer"
-                  onClick={onDelete}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
               <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer la FNC" onClick={onPrint}>
                 <Printer className="h-4 w-4" />
               </Button>

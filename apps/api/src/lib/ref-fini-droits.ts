@@ -8,6 +8,7 @@
 // and associated refs have their own routes, guarded on their key directly.
 
 import type { PermissionKey } from './permission-keys.js'
+import { COLONNES_MESURES } from './controles-lot.js'
 
 export type GroupeRefFini = 'general' | 'specifications' | 'controles'
 
@@ -18,6 +19,9 @@ const TEXTE = [
 const BOOLEEN = [
   'en_developpement', 'controle_sst_rendement', 'controle_sst_stab',
   'controle_sst_allongement', 'controle_ennoblisseur', 'controle_malterre',
+  'controle_ennoblisseur_laize', 'controle_ennoblisseur_poids', 'controle_ennoblisseur_stab',
+  'controle_malterre_laize', 'controle_malterre_poids', 'controle_malterre_stab',
+  'controle_ennoblisseur_vrillage', 'controle_malterre_vrillage',
 ] as const
 
 export const GROUPES_REF_FINI: Record<GroupeRefFini, { cle: PermissionKey; champs: readonly string[] }> = {
@@ -40,7 +44,7 @@ export const GROUPES_REF_FINI: Record<GroupeRefFini, { cle: PermissionKey; champ
   },
   controles: {
     cle: 'edit_ref_fini_controles',
-    champs: ['controle_ennoblisseur', 'controle_malterre'],
+    champs: ['controle_ennoblisseur', 'controle_malterre', ...COLONNES_MESURES],
   },
 }
 

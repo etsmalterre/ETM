@@ -92,19 +92,19 @@ describe('#1304: client answer, rapport de contrôle, what blocks « Valider le 
   })
   it('prealables: everything still to do, in order; empty when the lot may be validated', () => {
     expect(prealablesValidation(lot({ stabilites: soum(), rcAEnvoyer: ['SAS LA FABRIQUE'] }))).toEqual([
-      'Contrôle ennoblisseur incomplet (laize, poids, stabilités de l’ennoblisseur).',
-      'Contrôle Malterre incomplet (laize, poids, stabilités de la tirelle).',
-      'Soumission des stabilités à envoyer.',
-      'Rapport de contrôle à envoyer à SAS LA FABRIQUE.',
+      'Ennoblisseur : laize, poids, stabilités',
+      'Malterre : laize, poids, stabilités',
+      'Soumission stabilités à envoyer',
+      'Rapport de contrôle à envoyer : SAS LA FABRIQUE',
     ])
     // Only what is still missing is named (lib/controles-lot.ts, 2026-10-26).
     expect(prealablesValidation(lot({ tirelleMesuree: true, manqueTeinturier: ['stabilités'] }))).toEqual([
-      'Contrôle ennoblisseur incomplet (stabilités de l’ennoblisseur).',
+      'Ennoblisseur : stabilités',
     ])
-    expect(prealablesValidation(lot({ ...controle, stabilites: soum({ le: '2026-10-20' }) }))).toEqual(['Réponse du client à la soumission des stabilités attendue.'])
+    expect(prealablesValidation(lot({ ...controle, stabilites: soum({ le: '2026-10-20' }) }))).toEqual(['Réponse client : stabilités'])
     expect(prealablesValidation(lot({ ...controle, stabilites: soum({ le: '2026-10-20', accepte: true }) }))).toEqual([])
-    expect(prealablesValidation(lot({ ...controle, repriseOuverte: true }))).toEqual(['Le lot est en reprise chez l’ennoblisseur.'])
-    expect(prealablesValidation(lot({ ...controle, etat: 3 }))).toEqual(['Lot déjà validé.'])
+    expect(prealablesValidation(lot({ ...controle, repriseOuverte: true }))).toEqual(['En reprise chez l’ennoblisseur'])
+    expect(prealablesValidation(lot({ ...controle, etat: 3 }))).toEqual(['Lot déjà validé'])
   })
 })
 
@@ -135,12 +135,12 @@ describe('#1313: the coloris soumission, before the stenter (Agape, Simone Pér�
   })
   it('a lot not received cannot be validated', () => {
     expect(prealablesValidation(lot({ ...avantRame, coloris: soum({ le: '2026-10-15', accepte: true }) }))).toEqual([
-      'Validation du coloris à transmettre à l’ennoblisseur.',
-      'Lot pas encore réceptionné.',
+      'OK coloris à transmettre à l’ennoblisseur',
+      'Lot pas encore reçu',
     ])
     expect(prealablesValidation(lot(avantRame))).toEqual([
-      'Réponse du client à la soumission coloris attendue.',
-      'Lot pas encore réceptionné.',
+      'Réponse client : coloris',
+      'Lot pas encore reçu',
     ])
   })
   it('chase: the client 5 working days after, us the next day, the dyer 3 days after the « coloris validé »', () => {

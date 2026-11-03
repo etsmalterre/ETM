@@ -188,25 +188,25 @@ export function etapeLot(l: LotFait): EtapeLot {
  *  work is done. Empty = the responsable qualité may validate. Text shown as is
  *  on Suivi lots (the button's reason) and returned by the 409. */
 export function prealablesValidation(l: LotFait): string[] {
-  if (l.etat === ETAT_LOT.VALIDE || l.etat === ETAT_LOT.EXPEDIE) return ['Lot déjà validé.']
+  if (l.etat === ETAT_LOT.VALIDE || l.etat === ETAT_LOT.EXPEDIE) return ['Lot déjà validé']
   const out: string[] = []
   const recu = !!l.reception
   const { coloris: c, stabilites: s } = l
-  if (l.etat === ETAT_LOT.EN_REPRISE || l.repriseOuverte) out.push('Le lot est en reprise chez l’ennoblisseur.')
-  if (enAttente(c)) out.push('Réponse du client à la soumission coloris attendue.')
-  else if (refusee(c)) out.push(recu ? 'Coloris refusé par le client : le lot est à reprendre.' : 'Coloris refusé par le client : le lot repart en teinture.')
-  else if (c.requise && !c.envoyeeLe) out.push('Soumission coloris à envoyer.')
-  else if (!recu && c.reponse?.accepte && !l.okRamerLe) out.push('Validation du coloris à transmettre à l’ennoblisseur.')
+  if (l.etat === ETAT_LOT.EN_REPRISE || l.repriseOuverte) out.push('En reprise chez l’ennoblisseur')
+  if (enAttente(c)) out.push('Réponse client : coloris')
+  else if (refusee(c)) out.push(recu ? 'Coloris refusé : à reprendre' : 'Coloris refusé : repart en teinture')
+  else if (c.requise && !c.envoyeeLe) out.push('Soumission coloris à envoyer')
+  else if (!recu && c.reponse?.accepte && !l.okRamerLe) out.push('OK coloris à transmettre à l’ennoblisseur')
   if (!recu) {
-    out.push('Lot pas encore réceptionné.')
+    out.push('Lot pas encore reçu')
     return out
   }
-  if (!l.mesuresTeinturier) out.push(`Contrôle ennoblisseur incomplet (${(l.manqueTeinturier?.length ? l.manqueTeinturier : ['laize', 'poids', 'stabilités']).join(', ')} de l’ennoblisseur).`)
-  if (!l.tirelleMesuree) out.push(`Contrôle Malterre incomplet (${(l.manqueMalterre?.length ? l.manqueMalterre : ['laize', 'poids', 'stabilités']).join(', ')} de la tirelle).`)
-  if (enAttente(s)) out.push('Réponse du client à la soumission des stabilités attendue.')
-  else if (refusee(s)) out.push('Stabilités refusées par le client : le lot est à reprendre.')
-  else if (s.requise && !s.envoyeeLe) out.push('Soumission des stabilités à envoyer.')
-  for (const nom of l.rcAEnvoyer ?? []) out.push(`Rapport de contrôle à envoyer à ${nom}.`)
+  if (!l.mesuresTeinturier) out.push(`Ennoblisseur : ${(l.manqueTeinturier?.length ? l.manqueTeinturier : ['laize', 'poids', 'stabilités']).join(', ')}`)
+  if (!l.tirelleMesuree) out.push(`Malterre : ${(l.manqueMalterre?.length ? l.manqueMalterre : ['laize', 'poids', 'stabilités']).join(', ')}`)
+  if (enAttente(s)) out.push('Réponse client : stabilités')
+  else if (refusee(s)) out.push('Stabilités refusées : à reprendre')
+  else if (s.requise && !s.envoyeeLe) out.push('Soumission stabilités à envoyer')
+  for (const nom of l.rcAEnvoyer ?? []) out.push(`Rapport de contrôle à envoyer : ${nom}`)
   return out
 }
 
@@ -465,6 +465,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       idsuivilot: number; ligne: number; lot: string | null; etat: number; reception: string | null; idref_fini: number
       laize_sst: number; poids_sst: number; stabh_sst: number; stabl_sst: number
       laize_tirelle: number; poids_tirelle: number; stabh_tirelle: number; stabl_tirelle: number
+      vrillage_sst: number | null; vrillage_tirelle: number | null
       idref_fini_colori: number; coloris_tirelle: string | null
     }[]>`
       SELECT idsuivilot, idligne_commande_sous_traitant AS ligne, lot::text AS lot, COALESCE(idetatlot, 0)::int AS etat,
@@ -473,6 +474,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
              COALESCE(stabh_sst, 0) AS stabh_sst, COALESCE(stabl_sst, 0) AS stabl_sst,
              COALESCE(laize_tirelle, 0) AS laize_tirelle, COALESCE(poids_tirelle, 0) AS poids_tirelle,
              COALESCE(stabh_tirelle, 0) AS stabh_tirelle, COALESCE(stabl_tirelle, 0) AS stabl_tirelle,
+             vrillage_sst, vrillage_tirelle,
              COALESCE(idref_fini_colori, 0) AS idref_fini_colori, coloris_tirelle
       FROM suivilot WHERE idligne_commande_sous_traitant = ANY(${lineIds})`,
     sql<{ ligne: number; idecru: number }[]>`
@@ -531,8 +533,11 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   const controlesParRef = new Map<number, ControlesRef>()
   const teinteParRef = new Map<number, number>()
   if (refsLots.length > 0) {
-    const rows = await sql<{ id: number; controle_ennoblisseur: number; controle_malterre: number; avec_teinture: number }[]>`
-      SELECT idref_fini AS id, controle_ennoblisseur, controle_malterre, COALESCE(avec_teinture, 0)::int AS avec_teinture
+    const rows = await sql<({ id: number; avec_teinture: number } & Record<string, unknown>)[]>`
+      SELECT idref_fini AS id, controle_ennoblisseur, controle_malterre,
+        controle_ennoblisseur_laize, controle_ennoblisseur_poids, controle_ennoblisseur_stab, controle_ennoblisseur_vrillage,
+        controle_malterre_laize, controle_malterre_poids, controle_malterre_stab, controle_malterre_vrillage,
+        COALESCE(avec_teinture, 0)::int AS avec_teinture
       FROM ref_fini WHERE idref_fini = ANY(${refsLots})`
     for (const r of rows) { controlesParRef.set(Number(r.id), controlesDeRef(r)); teinteParRef.set(Number(r.id), Number(r.avec_teinture)) }
   }
@@ -548,9 +553,9 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const ref = Number(s.idref_fini) > 0 ? Number(s.idref_fini) : Number(ligneParId.get(Number(s.ligne))?.idref_fini)
     const controles = controlesParRef.get(ref) ?? CONTROLES_PAR_DEFAUT
     const manqueTeinturier = controles.ennoblisseur
-      ? mesuresManquantes({ laize: s.laize_sst, poids: s.poids_sst, stabH: s.stabh_sst, stabL: s.stabl_sst }) : []
+      ? mesuresManquantes({ laize: s.laize_sst, poids: s.poids_sst, stabH: s.stabh_sst, stabL: s.stabl_sst, vrillage: s.vrillage_sst }, controles.mesures.ennoblisseur) : []
     const manqueMalterre = controles.malterre
-      ? mesuresManquantes({ laize: s.laize_tirelle, poids: s.poids_tirelle, stabH: s.stabh_tirelle, stabL: s.stabl_tirelle, colorisManquant: colorisManquant(s, ref) }) : []
+      ? mesuresManquantes({ laize: s.laize_tirelle, poids: s.poids_tirelle, stabH: s.stabh_tirelle, stabL: s.stabl_tirelle, vrillage: s.vrillage_tirelle, colorisManquant: colorisManquant(s, ref) }, controles.mesures.malterre) : []
     return {
       mesuresTeinturier: manqueTeinturier.length === 0,
       tirelleMesuree: manqueMalterre.length === 0,

@@ -23,6 +23,9 @@ describe('groupesModifies', () => {
     expect(groupesModifies(stocke, { poids_Min: 290 })).toEqual(['specifications'])
     expect(groupesModifies(stocke, { controle_sst_stab: false })).toEqual(['specifications'])
     expect(groupesModifies(stocke, { controle_malterre: false })).toEqual(['controles'])
+    // #1345: one measure of one side is a change of the controls group
+    expect(groupesModifies(stocke, { controle_malterre_stab: false })).toEqual(['controles'])
+    expect(groupesModifies(stocke, { controle_malterre_stab: true })).toEqual([])
     expect(groupesModifies(stocke, { en_developpement: true, IDref_ecru: 13 })).toEqual(['general', 'specifications'])
   })
   it('a field left out is not a change', () => {

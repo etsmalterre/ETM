@@ -720,11 +720,6 @@ function DetailHeader({
                   </Button>
                 )}
                 {canEdit && (
-                  <Button variant="outline" size="icon" className="h-9 w-9 text-destructive hover:text-destructive" title="Supprimer" onClick={onDelete}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
-                {canEdit && (
                   <Button variant="gold" size="sm" onClick={onStartEdit}>
                     <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
                   </Button>

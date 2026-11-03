@@ -1496,6 +1496,71 @@ ALTER TABLE suivilot DROP COLUMN vrillage_rangs_sst, DROP COLUMN vrillage_rangs_
 ALTER TABLE suivilot RENAME COLUMN vrillage_colonnes_sst TO vrillage_sst;
 ALTER TABLE suivilot RENAME COLUMN vrillage_colonnes_tirelle TO vrillage_tirelle;
 `,
+  },  {
+    // Contrôles des lots per MEASURE (#1345, 2026-11-02, lib/controles-lot.ts): the
+    // reference says which of laize / poids / stabilités / vrillage each side owes
+    // (Pierrot: Malterre never measured the stabs of the bords côtes). DEFAULT 1,
+    // not the usual 0: on is the rule, off the exception. Each starts from its
+    // side's switch. The vrillage is NEW as a requirement (Vincent: asked everywhere
+    // by default), so lots without one now wait for it.
+    name: '0054_ref_fini_controles_mesures',
+    sql: `
+ALTER TABLE ref_fini
+  ADD COLUMN controle_ennoblisseur_laize smallint NOT NULL DEFAULT 1 CHECK (controle_ennoblisseur_laize IN (0, 1)),
+  ADD COLUMN controle_ennoblisseur_poids smallint NOT NULL DEFAULT 1 CHECK (controle_ennoblisseur_poids IN (0, 1)),
+  ADD COLUMN controle_ennoblisseur_stab smallint NOT NULL DEFAULT 1 CHECK (controle_ennoblisseur_stab IN (0, 1)),
+  ADD COLUMN controle_malterre_laize smallint NOT NULL DEFAULT 1 CHECK (controle_malterre_laize IN (0, 1)),
+  ADD COLUMN controle_malterre_poids smallint NOT NULL DEFAULT 1 CHECK (controle_malterre_poids IN (0, 1)),
+  ADD COLUMN controle_malterre_stab smallint NOT NULL DEFAULT 1 CHECK (controle_malterre_stab IN (0, 1)),
+  ADD COLUMN controle_ennoblisseur_vrillage smallint NOT NULL DEFAULT 1 CHECK (controle_ennoblisseur_vrillage IN (0, 1)),
+  ADD COLUMN controle_malterre_vrillage smallint NOT NULL DEFAULT 1 CHECK (controle_malterre_vrillage IN (0, 1));
+UPDATE ref_fini SET
+  controle_ennoblisseur_laize = controle_ennoblisseur, controle_ennoblisseur_poids = controle_ennoblisseur,
+  controle_ennoblisseur_stab = controle_ennoblisseur, controle_ennoblisseur_vrillage = controle_ennoblisseur,
+  controle_malterre_laize = controle_malterre, controle_malterre_poids = controle_malterre,
+  controle_malterre_stab = controle_malterre, controle_malterre_vrillage = controle_malterre
+WHERE controle_ennoblisseur = 0 OR controle_malterre = 0;
+`,
+  },
+  {
+    // Qualité › Actions: the « vérifiée par le vrillage » option (0051, #1332) is
+    // removed (Vincent 2026-11-03: never intended). An action is always judged by
+    // a person, Conforme / Non conforme, before « Valider le lot » (lib/actions-lot.ts).
+    // Nothing was stored from it: its verdicts were computed at read time.
+    name: '0055_action_qualite_sans_controle',
+    sql: `
+ALTER TABLE action_qualite DROP COLUMN controle;
+`,
+  },
+  {
+    // Qualité › Actions judged PER LOT (Vincent 2026-11-03, lib/conformite-lot.ts):
+    // the legacy conformite_action holds one verdict per sst line, so the 2nd..5th
+    // lot of a dye line (21 % of 2026 lines) passed on the 1st one's verdict. Two
+    // answers only, a person's: no row = « à juger ». The legacy Conforme /
+    // Non conforme verdicts of dye lines are copied onto every lot of their line;
+    // « Aucun » and « Non contrôlé » are not answers and are not copied.
+    // conformite_action stays for the knitting lines (no lot yet, decision pending).
+    name: '0056_conformite_lot',
+    sql: `
+CREATE TABLE conformite_lot (
+  idsuivilot bigint NOT NULL,
+  idmention_qualite bigint NOT NULL,
+  conformite text NOT NULL CHECK (conformite IN ('conforme', 'non_conforme')),
+  par_id bigint NOT NULL DEFAULT 0,
+  par text NOT NULL DEFAULT '',
+  le timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (idsuivilot, idmention_qualite)
+);
+INSERT INTO conformite_lot (idsuivilot, idmention_qualite, conformite, par)
+SELECT s.idsuivilot, c.idmention_qualite,
+       CASE WHEN c.sconformite::text ILIKE 'conforme' THEN 'conforme' ELSE 'non_conforme' END,
+       'reprise WinDev'
+FROM conformite_action c
+JOIN suivilot s ON s.idligne_commande_sous_traitant = c.idligne_commande_sous_traitant
+WHERE c.idligne_commande_sous_traitant > 0
+  AND (c.sconformite::text ILIKE 'conforme' OR c.sconformite::text ILIKE 'non_conf%')
+ON CONFLICT DO NOTHING;
+`,
   },
 ]
 

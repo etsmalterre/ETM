@@ -23,20 +23,14 @@ import {
   loadAction,
   loadActions,
   loadAllMentions,
-  loadConformites,
-  loadLinesForMentions,
   loadMentionsForAction,
-  mentionsForLine,
   setActionTermine,
   updateActionText,
   updateMention,
-  type Conformite,
   type MentionRow,
-  type SstLineKey,
 } from '../lib/actions-qualite.js'
 import { MAX_TARGET, MIN_TARGET, getAllTargets, getTarget, setTarget } from '../lib/action-qualite-targets.js'
-import { actionsSuiviesParVrillage, verdictsVrillage, type VerdictCalcule } from '../lib/vrillage.js'
-import { mpsPg } from '../lib/mps-pg.js'
+import { conformitesDesMentions } from '../lib/conformite-actions.js'
 
 export const actionsQualiteRouter: RouterType = Router()
 
@@ -170,32 +164,6 @@ function decorateMention(m: MentionRow, maps: LabelMaps) {
 // ── List ─────────────────────────────────────────────────
 //
 // GET /actions-qualite?status=en_cours|termine|tous&q=
-/** Every (sst line, mention) pair an action's mentions apply to, with its verdict:
- *  the stored one, or — for an action followed by the vrillage (LIVA #1332) — the
- *  one computed from the line's lots controlled since the action was set up. */
-async function verdictsAction(
-  mentions: MentionRow[],
-  stored: Map<string, Conformite>,
-  vrillageDepuis: string | undefined,
-): Promise<Array<{ line: SstLineKey; mention: MentionRow; conformite: Conformite; calcul: VerdictCalcule | null }>> {
-  const lines = await loadLinesForMentions(mentions)
-  const pairs: Array<{ line: SstLineKey; mention: MentionRow }> = []
-  for (const line of lines) for (const m of mentionsForLine(line, mentions)) pairs.push({ line, mention: m })
-  const calcules = vrillageDepuis
-    ? await verdictsVrillage(pairs.map((p) => p.line.IDligne_commande_sous_traitant), vrillageDepuis)
-    : new Map<number, VerdictCalcule>()
-  return pairs.map((p) => {
-    const calcul = calcules.get(p.line.IDligne_commande_sous_traitant) ?? null
-    return {
-      ...p,
-      calcul,
-      conformite: calcul?.conformite
-        ?? stored.get(`${p.line.IDligne_commande_sous_traitant}|${p.mention.IDmention_qualite}`)
-        ?? 'non_controle',
-    }
-  })
-}
-
 actionsQualiteRouter.get('/', async (req: Request, res: Response) => {
   try {
     const status = (req.query.status as string) || 'en_cours'
@@ -213,24 +181,13 @@ actionsQualiteRouter.get('/', async (req: Request, res: Response) => {
     // Progress toward each action's objectif, for the list-card cue. One read of
     // each child table for the whole page rather than per-row queries.
     const mentions = await loadAllMentions()
-    const conformites = await loadConformites()
     const targets = await getAllTargets()
-    const parVrillage = await actionsSuiviesParVrillage()
-    // Actions followed by the vrillage count their computed verdicts (#1332).
-    const comptesCalcules = new Map<number, { conforme: number; nonConforme: number }>()
-    for (const a of actions) {
-      const depuis = parVrillage.get(a.IDaction_qualite)
-      if (!depuis) continue
-      const siennes = mentions.filter((m) => m.IDaction_qualite === a.IDaction_qualite)
-      const ids = new Set(siennes.map((m) => m.IDmention_qualite))
-      const stored = new Map(conformites.filter((c) => ids.has(c.IDmention_qualite))
-        .map((c) => [`${c.IDligne_commande_sous_traitant}|${c.IDmention_qualite}`, c.conformite] as const))
-      const v = await verdictsAction(siennes, stored, depuis)
-      comptesCalcules.set(a.IDaction_qualite, {
-        conforme: v.filter((x) => x.conformite === 'conforme').length,
-        nonConforme: v.filter((x) => x.conformite === 'non_conforme').length,
-      })
-    }
+    // Verdicts per lot on dye lines, per line on knitting ones (lib/conformite-actions.ts).
+    const vus = new Set(actions.map((a) => a.IDaction_qualite))
+    const rangs = await conformitesDesMentions(
+      mentions.filter((m) => vus.has(m.IDaction_qualite)),
+      new Map(actions.map((a) => [a.IDaction_qualite, a.date_creation])),
+    )
     const mentionsByAction = new Map<number, number[]>()
     for (const m of mentions) {
       const arr = mentionsByAction.get(m.IDaction_qualite) ?? []
@@ -246,10 +203,9 @@ actionsQualiteRouter.get('/', async (req: Request, res: Response) => {
         )
         .map((a) => {
           const mine = new Set(mentionsByAction.get(a.IDaction_qualite) ?? [])
-          const rows = conformites.filter((c) => mine.has(c.IDmention_qualite))
-          const calcule = comptesCalcules.get(a.IDaction_qualite)
-          const conforme = calcule?.conforme ?? rows.filter((c) => c.conformite === 'conforme').length
-          const nonConforme = calcule?.nonConforme ?? rows.filter((c) => c.conformite === 'non_conforme').length
+          const rows = rangs.filter((c) => c.IDaction_qualite === a.IDaction_qualite)
+          const conforme = rows.filter((c) => c.conformite === 'conforme').length
+          const nonConforme = rows.filter((c) => c.conformite === 'non_conforme').length
           const target = targets.get(a.IDaction_qualite) ?? null
           return {
             IDaction_qualite: a.IDaction_qualite,
@@ -257,7 +213,6 @@ actionsQualiteRouter.get('/', async (req: Request, res: Response) => {
             description: a.description,
             date_creation: a.date_creation,
             termine: a.termine,
-            controle: parVrillage.has(a.IDaction_qualite) ? 'vrillage' : null,
             mentions_count: mine.size,
             conforme_count: conforme,
             non_conforme_count: nonConforme,
@@ -420,21 +375,12 @@ actionsQualiteRouter.get('/:id', async (req: Request, res: Response) => {
     const mentions = await loadMentionsForAction(id)
     const maps = await loadLabelMaps(mentions)
 
-    // "Conformité des commandes": every sst line the action's mentions apply to,
-    // with its current verdict. Lines are found by IDreference (indexable) then
-    // narrowed in JS with the same matching rule the sst screen and PDF use.
-    const conformites = await loadConformites({
-      mentionIds: mentions.map((m) => m.IDmention_qualite),
-    })
-    const verdictByPair = new Map<string, Conformite>()
-    for (const c of conformites) {
-      verdictByPair.set(`${c.IDligne_commande_sous_traitant}|${c.IDmention_qualite}`, c.conformite)
-    }
-    const vrillageDepuis = (await actionsSuiviesParVrillage()).get(id)
-    const pairs = await verdictsAction(mentions, verdictByPair, vrillageDepuis)
+    // « Conformité »: a row per judged lot on dye lines, per line on knitting
+    // ones (lib/conformite-actions.ts, decision Vincent 2026-11-03).
+    const rangs = await conformitesDesMentions(mentions, new Map([[id, action.date_creation]]))
 
     // Sous-traitant names for the table's second column.
-    const sstIds = Array.from(new Set(pairs.map((p) => p.line.IDsous_traitant).filter((x) => x > 0)))
+    const sstIds = Array.from(new Set(rangs.map((r) => r.IDsous_traitant).filter((x) => x > 0)))
     const sstNames = new Map<number, string>()
     if (sstIds.length > 0) {
       const rows = await query<{ IDsous_traitant: number; nom: string | null }>(
@@ -444,18 +390,21 @@ actionsQualiteRouter.get('/:id', async (req: Request, res: Response) => {
         sstNames.set(Number(r.IDsous_traitant), (r.nom ?? '').toString())
     }
 
-    const commandes = pairs
-      .map((p) => ({
-        IDcommande_sous_traitant: p.line.IDcommande_sous_traitant,
-        IDligne_commande_sous_traitant: p.line.IDligne_commande_sous_traitant,
-        IDmention_qualite: p.mention.IDmention_qualite,
-        sous_traitant_nom: sstNames.get(p.line.IDsous_traitant) ?? '',
-        conformite: p.conformite,
-        /** Computed from the vrillage of these lots (#1332); absent = typed. */
-        lots_controle: p.calcul ? p.calcul.lots.map((l) => ({ lot: l.lot, verdict: l.verdict })) : null,
+    const commandes = rangs
+      .map((r) => ({
+        IDcommande_sous_traitant: r.IDcommande_sous_traitant,
+        IDligne_commande_sous_traitant: r.IDligne_commande_sous_traitant,
+        IDmention_qualite: r.IDmention_qualite,
+        sous_traitant_nom: sstNames.get(r.IDsous_traitant) ?? '',
+        IDsuivilot: r.IDsuivilot,
+        lot: r.lot,
+        reception: r.reception,
+        conformite: r.conformite,
+        par: r.par,
+        le: r.le,
       }))
-      // Most recent orders first — that's what the responsable is chasing.
-      .sort((a, b) => b.IDcommande_sous_traitant - a.IDcommande_sous_traitant)
+      // Most recent first (lot received, then order) — what the responsable chases.
+      .sort((a, b) => (b.reception ?? '').localeCompare(a.reception ?? '') || b.IDcommande_sous_traitant - a.IDcommande_sous_traitant)
 
     const conformeCount = commandes.filter((c) => c.conformite === 'conforme').length
     const objectif = await getTarget(id)
@@ -466,7 +415,6 @@ actionsQualiteRouter.get('/:id', async (req: Request, res: Response) => {
       description: action.description,
       date_creation: action.date_creation,
       termine: action.termine,
-      controle: vrillageDepuis ? 'vrillage' : null,
       objectif,
       objectif_atteint: objectif !== null && conformeCount >= objectif,
       conforme_count: conformeCount,
@@ -563,26 +511,6 @@ actionsQualiteRouter.put('/:id/objectif', async (req: Request, res: Response) =>
     res.json({ ok: true })
   } catch (err) {
     console.error('Error setting action-qualite objectif:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-// PUT /actions-qualite/:id/controle { controle: 'vrillage' | null }
-//
-// « Suivie par le vrillage » (LIVA #1332): the action's conformité per sst line
-// is then computed from the lots' vrillage, counted from the action's date.
-actionsQualiteRouter.put('/:id/controle', async (req: Request, res: Response) => {
-  try {
-    if (!(await ensureResponsable(req, res))) return
-    const id = parseInt(req.params.id, 10)
-    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const raw = req.body?.controle ?? null
-    if (raw !== null && raw !== 'vrillage') { res.status(400).json({ error: "controle must be 'vrillage' or null" }); return }
-    if (!(await loadAction(id))) { res.status(404).json({ error: 'Action not found' }); return }
-    await mpsPg()`UPDATE action_qualite SET controle = ${raw} WHERE idaction_qualite = ${id}`
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('Error setting action-qualite controle:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

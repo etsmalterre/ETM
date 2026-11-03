@@ -19,17 +19,11 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
+import { actionsSansVerdict, prealableActions } from '../lib/actions-lot.js'
+import { ecrireVerdictLot, verdictsDesLots, type VerdictLot } from '../lib/conformite-lot.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
-import {
-  CONFORMITE_VALUES,
-  loadActions,
-  loadAllMentions,
-  loadConformites,
-  mentionsForLine,
-  setConformite,
-  type Conformite,
-} from '../lib/actions-qualite.js'
+import { loadActions, loadAllMentions, mentionsForLine } from '../lib/actions-qualite.js'
 
 import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { ouvrirReprise, reprisesDuLot, RepriseRefusee } from '../lib/reprises.js'
@@ -51,7 +45,7 @@ import { RapportControlePdf } from '../lib/pdf/RapportControlePdf.js'
 import { CONTROLES_PAR_DEFAUT } from '../lib/controles-lot.js'
 import {
   CHAMPS_VRILLAGE, ecrireVrillages, lireSaisieVrillage, VrillageInvalide, vrillagesDuLot,
-  actionsSuiviesParVrillage, verdictsVrillage, VRILLAGE_MAX, type ChampVrillage, type VrillagesLot,
+  VRILLAGE_MAX, type ChampVrillage, type VrillagesLot,
 } from '../lib/vrillage.js'
 import { colorisAControler, colorisDemande, historiqueColoris, lireVerdictColoris, rondsZero, rondZeroDe } from '../lib/coloris-lot.js'
 
@@ -146,6 +140,17 @@ async function etapesDesLots(lots: Array<{ id: number; cmd: number }>): Promise<
     for (const f of c.lots) {
       if (!voulus.has(f.idsuivilot)) continue
       out.set(f.idsuivilot, { etape: etapeLot(f), prealables: prealablesValidation(f), fait: f })
+    }
+  }
+  // An open action qualité on the lot's line waits for a person's verdict
+  // (lib/actions-lot.ts, decision Vincent 2026-11-03): one more blocker of
+  // « Valider le lot » once the lot is received.
+  const recus = [...out.values()].filter((e) => e.fait.reception && Number(e.fait.idligne) > 0)
+  if (recus.length > 0) {
+    const sansVerdict = await actionsSansVerdict(recus.map((e) => ({ idsuivilot: e.fait.idsuivilot, ligne: Number(e.fait.idligne) })))
+    for (const e of recus) {
+      const phrase = prealableActions(sansVerdict.get(e.fait.idsuivilot) ?? [])
+      if (phrase) e.prealables.push(phrase)
     }
   }
   return out
@@ -483,10 +488,7 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
         for (const d of defFixed) {
           const ecru = keyToEcru(Number((d as any).reference) || 0)
           const targets = finiByEcru.get(ecru) ?? []
-          const typ = cleanText((d as any).type_defaut)
-          const desc = cleanText((d as any).description)
-          const text = [typ, desc].filter(Boolean).join(' — ')
-          for (const fid of targets) pushQuality(fid, { source: 'Défaut tricotage', author: '', text })
+          for (const fid of targets) pushQuality(fid, { source: 'Défaut tricotage', author: '', text: texteDefaut(d as Record<string, unknown>) })
         }
       }
       await collectDefauts(2, ecruIds, (ref) => ref)
@@ -763,6 +765,21 @@ async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: st
     controles: f?.controles ?? CONTROLES_PAR_DEFAUT,
     clients_rc: clients.get(cleLotLigne(ligneId, lot)) ?? [],
   }
+}
+
+/** A knitting defect as the roll's quality tooltip prints it (the lot's « Défauts »
+ *  tab was removed 2026-11-03, the tooltip carries what it showed): « Trou ×6 ·
+ *  12/10/2026 », the description on its own line when it says more than the type.
+ *  `taille_cm` is NOT centimetres (CLAUDE.md § Data semantics): never printed. */
+function texteDefaut(d: Record<string, unknown>): string {
+  const typ = cleanText(d.type_defaut)
+  const desc = cleanText(d.description)
+  const nombre = Number(d.nombre) || 0
+  const brut = String(d.DATE ?? d.date ?? '').trim()
+  const m = brut.match(/^(\d{4})-?(\d{2})-?(\d{2})/)
+  const date = m ? `${m[3]}/${m[2]}/${m[1]}` : ''
+  const tete = [[typ || 'Défaut', nombre > 1 ? `×${nombre}` : ''].filter(Boolean).join(' '), date].filter(Boolean).join(' · ')
+  return desc && desc.toLowerCase() !== typ.toLowerCase() ? `${tete}\n${desc}` : tete
 }
 
 // ── Évolution (trend série) ──────────────────────────────
@@ -1043,7 +1060,7 @@ suiviLotsRouter.post('/:id/etat', async (req: Request, res: Response) => {
     if (cycle && cycle.prealables.length > 0) {
       res.status(409).json({
         error: 'prealables',
-        message: `Le lot ne peut pas encore être validé : ${cycle.prealables.join(' ')}`,
+        message: `Le lot ne peut pas encore être validé : ${cycle.prealables.join(' · ')}.`,
         prealables: cycle.prealables,
       })
       return
@@ -1508,14 +1525,14 @@ suiviLotsRouter.get('/:id/actions', async (req: Request, res: Response) => {
       IDsous_traitant: Number(baseRows[0].IDsous_traitant) || 0,
     }
 
-    const [allMentions, actions, verdicts, parVrillage] = await Promise.all([
+    // The verdict is THIS lot's (lib/conformite-lot.ts, decision Vincent 2026-11-03).
+    const [allMentions, actions, verdicts] = await Promise.all([
       loadAllMentions(),
       loadActions(),
-      loadConformites({ ligneIds: [ligneId] }),
-      actionsSuiviesParVrillage(),
+      verdictsDesLots([id]),
     ])
     const actionById = new Map(actions.map((a) => [a.IDaction_qualite, a]))
-    const verdictByMention = new Map(verdicts.map((v) => [v.IDmention_qualite, v.conformite]))
+    const verdictByMention = new Map(verdicts.map((v) => [v.idmention, v]))
 
     // Mentions of OPEN actions that match this line, plus any mention this lot
     // already carries a verdict for. The second half matters: closing an action
@@ -1530,15 +1547,9 @@ suiviLotsRouter.get('/:id/actions', async (req: Request, res: Response) => {
       (m) => !seen.has(m.IDmention_qualite) && verdictByMention.has(m.IDmention_qualite),
     )
 
-    // An action followed by the vrillage: the line's verdict is computed from its
-    // lots controlled since the action was set up (lib/vrillage.ts), never typed.
-    const calcules = new Map<number, Awaited<ReturnType<typeof verdictsVrillage>>>()
-    for (const [actionId, depuis] of parVrillage) calcules.set(actionId, await verdictsVrillage([ligneId], depuis))
-
     res.json(
       [...openMatches, ...historic].map((m) => {
         const action = actionById.get(m.IDaction_qualite)
-        const calcul = calcules.get(m.IDaction_qualite)?.get(ligneId) ?? null
         return {
           IDmention_qualite: m.IDmention_qualite,
           IDaction_qualite: m.IDaction_qualite,
@@ -1546,15 +1557,13 @@ suiviLotsRouter.get('/:id/actions', async (req: Request, res: Response) => {
           action_description: action?.description ?? '',
           action_termine: action?.termine ?? 0,
           mention: m.mention,
-          conformite: calcul?.conformite ?? verdictByMention.get(m.IDmention_qualite) ?? 'non_controle',
+          /** null = à juger. */
+          conformite: verdictByMention.get(m.IDmention_qualite)?.conformite ?? null,
+          par: verdictByMention.get(m.IDmention_qualite)?.par ?? null,
+          le: verdictByMention.get(m.IDmention_qualite)?.le ?? null,
           /** false ⇒ shown only because a verdict already exists (action closed
            *  or the line no longer matches); the UI greys it out. */
           applicable: seen.has(m.IDmention_qualite),
-          /** 'vrillage' ⇒ the verdict is computed from the vrillage, not typed. */
-          controle: parVrillage.has(m.IDaction_qualite) ? 'vrillage' : null,
-          /** The lots the computed verdict counts (empty when none since the action). */
-          lots_controle: (calcul?.lots ?? []).map((l) => ({ lot: l.lot, verdict: l.verdict })),
-          controle_depuis: parVrillage.get(m.IDaction_qualite) ?? null,
         }
       }),
     )
@@ -1575,9 +1584,10 @@ suiviLotsRouter.put('/:id/actions/:mentionId', async (req: Request, res: Respons
     const mentionId = parseInt(req.params.mentionId, 10)
     if (isNaN(id) || isNaN(mentionId)) { res.status(400).json({ error: 'Invalid ID' }); return }
 
-    const code = String(req.body?.conformite ?? '')
-    if (!CONFORMITE_VALUES.includes(code as Conformite)) {
-      res.status(400).json({ error: `conformite must be one of ${CONFORMITE_VALUES.join(', ')}` })
+    // Two answers only, a person's; null takes a wrong click back (« à juger »).
+    const raw = req.body?.conformite ?? null
+    if (raw !== null && raw !== 'conforme' && raw !== 'non_conforme') {
+      res.status(400).json({ error: "conformite must be 'conforme', 'non_conforme' or null" })
       return
     }
 
@@ -1585,92 +1595,16 @@ suiviLotsRouter.put('/:id/actions/:mentionId', async (req: Request, res: Respons
       `SELECT IDligne_commande_sous_traitant FROM suivilot WHERE IDsuivilot = ${id}`,
     )
     if (baseRows.length === 0) { res.status(404).json({ error: 'Lot not found' }); return }
-    const ligneId = Number(baseRows[0].IDligne_commande_sous_traitant) || 0
-    if (ligneId === 0) {
-      res.status(400).json({ error: 'Ce lot n\'est rattaché à aucune ligne de commande sous-traitant.' })
-      return
-    }
 
     // Scope guard: refuse to invent a verdict against a mention that doesn't exist.
-    const mentions = await loadAllMentions()
-    const mention = mentions.find((m) => m.IDmention_qualite === mentionId)
-    if (!mention) {
-      res.status(404).json({ error: 'Mention not found' }); return
-    }
-    // An action followed by the vrillage computes its verdict from the lots' measures (#1332).
-    const depuis = (await actionsSuiviesParVrillage()).get(mention.IDaction_qualite)
-    if (depuis && (await verdictsVrillage([ligneId], depuis)).has(ligneId)) {
-      res.status(409).json({ error: 'verdict_calcule', message: 'Le verdict de cette action est calculé à partir du vrillage du lot : saisissez le vrillage dans Contrôles.' })
-      return
-    }
+    const mention = (await loadAllMentions()).find((m) => m.IDmention_qualite === mentionId)
+    if (!mention) { res.status(404).json({ error: 'Mention not found' }); return }
 
-    await setConformite(ligneId, mentionId, code as Conformite)
+    const nom = req.userId ? await nomUtilisateur(req.userId) : ''
+    await ecrireVerdictLot(id, mentionId, raw as VerdictLot | null, { id: req.userId ?? 0, nom })
     res.json({ ok: true })
   } catch (err) {
     console.error('Error saving suivi-lot conformité:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-// ── Défauts (read-only aggregate over the lot's source écrus) ─────
-//
-// GET /suivi-lots/:id/defauts
-suiviLotsRouter.get('/:id/defauts', async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10)
-    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-
-    const baseRows = await query<{ IDligne_commande_sous_traitant: number | null; lot: string | null }>(
-      `SELECT IDligne_commande_sous_traitant, lot FROM suivilot WHERE IDsuivilot = ${id}`,
-    )
-    if (baseRows.length === 0) { res.status(404).json({ error: 'Lot not found' }); return }
-    const ligneId = Number(baseRows[0].IDligne_commande_sous_traitant) || 0
-    const lot = (baseRows[0].lot ?? '').toString()
-    if (ligneId === 0) { res.json([]); return }
-
-    // The lot's rolls → their source écru ids (defaut_qualite.Type_Reference=2
-    // keys reference = stringified IDstock_ecru).
-    const rolls = await query<{ IDstock_fini: number; numero: string | null; IDstock_ecru: number | null }>(
-      `SELECT IDstock_fini, numero, IDstock_ecru
-       FROM stock_fini
-       WHERE IDref_commande_source = ${ligneId} AND lot = '${esc(lot)}'`,
-    )
-    const ecruIds = Array.from(new Set(rolls.map((r) => Number(r.IDstock_ecru)).filter((e) => e > 0)))
-    if (ecruIds.length === 0) { res.json([]); return }
-    const numByEcru = new Map<number, string>()
-    for (const r of rolls) {
-      const e = Number(r.IDstock_ecru)
-      if (e > 0 && !numByEcru.has(e)) numByEcru.set(e, (r.numero ?? '').toString())
-    }
-
-    const inList = ecruIds.map((e) => `'${e}'`).join(',')
-    // SELECT * + pickKey: defaut_qualite has accented cols (traité, récuperé).
-    const defRows = await queryRaw(
-      `SELECT * FROM defaut_qualite WHERE Type_Reference = 2 AND reference IN (${inList})`,
-    )
-    const fixed = await fixEncoding(
-      defRows as Record<string, unknown>[],
-      'defaut_qualite',
-      'IDdefaut_qualite',
-      ['description', 'type_defaut'],
-    )
-    res.json(
-      fixed.map((d) => {
-        const ecru = Number((d as any).reference) || 0
-        return {
-          IDdefaut_qualite: Number((d as any).IDdefaut_qualite),
-          reference: (d as any).reference ?? null,
-          roll_numero: numByEcru.get(ecru) ?? '',
-          description: ((d as any).description ?? '').toString(),
-          type_defaut: ((d as any).type_defaut ?? '').toString(),
-          taille_cm: n((d as any).taille_cm),
-          nombre: n((d as any).nombre),
-          date: ((d as any).DATE ?? '').toString(),
-        }
-      }),
-    )
-  } catch (err) {
-    console.error('Error loading suivi-lot defauts:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

@@ -147,7 +147,7 @@ function FreinteTricotageDialog({ open, onOpenChange, idRefEcru, reference, forc
                     </p>
                     <div className="mt-3 max-h-56 overflow-y-auto scrollbar-transparent">
                       <table className="w-full text-xs">
-                        <thead className="bg-zinc-200/60 sticky top-0">
+                        <thead className="bg-zinc-200 sticky top-0 z-10">
                           <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
                             <th className="px-2 py-1.5 text-left font-semibold">Date</th>
                             <th className="px-2 py-1.5 text-left font-semibold">OF</th>

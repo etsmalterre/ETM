@@ -505,8 +505,13 @@ function compareRows(a: StockFiniRow, b: StockFiniRow, key: SortKey): number {
 export function FinisStock() {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
-  // Field-scoped chips (see SEARCH_FIELDS above).
-  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>([])
+  // Field-scoped chips (see SEARCH_FIELDS above). `?ref=<référence>` opens the
+  // screen on a « Référence » chip (Finis › Références › Activité › Voir les rouleaux).
+  const [searchParams] = useSearchParams()
+  const [searchChips, setSearchChips] = useState<SearchChip<SearchFieldKey>[]>(() => {
+    const ref = searchParams.get('ref')?.trim()
+    return ref ? [{ field: 'ref_fini', value: ref }] : []
+  })
   // Mount ONE row branch (table at md+, cards below) — see useMediaQuery.
   const isMdUp = useMediaQuery(MD_UP)
   const [activeTags, setActiveTags] = useState<string[]>([])

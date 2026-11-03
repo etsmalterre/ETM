@@ -1650,7 +1650,7 @@ function TarifsCard({
               <div className="rounded-lg border border-border/60 bg-white overflow-hidden">
                 <div className="max-h-80 overflow-auto scrollbar-transparent">
                   <table className="w-full text-sm">
-                    <thead className="bg-zinc-200/60 sticky top-0">
+                    <thead className="bg-zinc-200 sticky top-0 z-10">
                       <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
                         {axis1.length > 0 && (
                           <th className="px-3 py-2 text-left font-semibold">{variationTypeLabel(type1)}</th>

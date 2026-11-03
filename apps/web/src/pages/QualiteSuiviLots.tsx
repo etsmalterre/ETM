@@ -227,7 +227,12 @@ interface SuiviLotDetail {
   /** 'YYYY-MM-DD': the « coloris validé » mailed to the dyer. */
   ok_ramer_le?: string | null
   /** The controls the lot's reference asks (Finis › Références, 2026-10-26). Absent = both. */
-  controles?: { ennoblisseur: boolean; malterre: boolean }
+  controles?: {
+    ennoblisseur: boolean
+    malterre: boolean
+    /** Per measure (#1345); absent from an older API = all asked. */
+    mesures?: Record<'ennoblisseur' | 'malterre', { laize: boolean; poids: boolean; stabilites: boolean; vrillage?: boolean }>
+  }
   /** The clients its pieces are affected to: the rapport de contrôle's recipients. */
   clients_rc?: ClientRc[]
 }
@@ -256,16 +261,6 @@ interface RefBounds {
   poids_max: number
   stab_hauteur: number
   stab_largeur: number
-}
-
-interface DefautRow {
-  IDdefaut_qualite: number
-  roll_numero: string
-  description: string
-  type_defaut: string
-  taille_cm: number
-  nombre: number
-  date: string
 }
 
 interface DocRow {
@@ -393,7 +388,7 @@ export function QualiteSuiviLots() {
   const [isEditing, setIsEditing] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
   const [tableauOpen, setTableauOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'defauts' | 'actions'>('controles')
+  const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'actions'>('controles')
   const [edit, setEdit] = useState<EditState | null>(null)
   const originalRef = useRef<EditState | null>(null)
 
@@ -416,10 +411,6 @@ export function QualiteSuiviLots() {
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['suivi-lots'] })
     queryClient.invalidateQueries({ queryKey: ['suivi-lot', selectedId] })
-    // A verdict « calculé par le vrillage » follows the measures just saved (#1332).
-    queryClient.invalidateQueries({ queryKey: ['suivi-lot-actions'] })
-    queryClient.invalidateQueries({ queryKey: ['actions-qualite'] })
-    queryClient.invalidateQueries({ queryKey: ['action-qualite'] })
   }, [queryClient, selectedId])
 
   // ── Edit lifecycle ──────────────────────────────────────
@@ -2015,8 +2006,8 @@ function LotSidebar({
   edit: EditState | null
   canManage: boolean
   onEditField: <K extends keyof EditState>(key: K, value: string) => void
-  activeTab: 'controles' | 'documents' | 'defauts' | 'actions'
-  onTabChange: (t: 'controles' | 'documents' | 'defauts' | 'actions') => void
+  activeTab: 'controles' | 'documents' | 'actions'
+  onTabChange: (t: 'controles' | 'documents' | 'actions') => void
   onEtatChange: (e: Etat) => void
   etatChanging: boolean
   onGeste: (g: GesteLot) => void
@@ -2026,7 +2017,6 @@ function LotSidebar({
   const tabs = [
     { key: 'controles' as const, label: 'Contrôles', icon: Ruler },
     { key: 'documents' as const, label: 'Documents', icon: FileText },
-    { key: 'defauts' as const, label: 'Défauts', icon: AlertTriangle },
     // Conformité vs the standing quality instructions attached to this lot's
     // sst line in Qualité › Actions.
     { key: 'actions' as const, label: 'Actions', icon: ClipboardCheck },
@@ -2068,7 +2058,6 @@ function LotSidebar({
         <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-transparent">
           {activeTab === 'controles' && <ControlesTab detail={detail} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
           {activeTab === 'documents' && <DocumentsTab commandeId={detail.IDcommande_sous_traitant} />}
-          {activeTab === 'defauts' && <DefautsTab lotId={detail.IDsuivilot} />}
           {activeTab === 'actions' && <ActionsQualiteTab lotId={detail.IDsuivilot} canManage={canManage} />}
         </div>
       </div>
@@ -2108,7 +2097,8 @@ function LotSidebar({
 // Verdicts write immediately — they're standalone judgements, not part of the
 // Contrôles form, so they follow the lot-état precedent rather than edit mode.
 
-type LotConformite = 'non_controle' | 'conforme' | 'non_conforme' | 'aucun'
+/** A person's verdict on the lot (per lot since 2026-11-03); null = à juger. */
+type LotConformite = 'conforme' | 'non_conforme'
 
 interface LotActionRow {
   IDmention_qualite: number
@@ -2117,22 +2107,18 @@ interface LotActionRow {
   action_description: string
   action_termine: 0 | 1
   mention: string
-  conformite: LotConformite
+  conformite: LotConformite | null
+  par: string | null
+  /** 'YYYY-MM-DDTHH:MM' */
+  le: string | null
   /** false ⇒ listed only because a verdict already exists (action closed since,
    *  or the line no longer matches). Read-only history, not a live instruction. */
   applicable: boolean
-  /** 'vrillage' ⇒ the verdict is computed from the lots' vrillage (LIVA #1332), never typed. */
-  controle?: 'vrillage' | null
-  /** The lots the computed verdict counts (controlled since the action was set up). */
-  lots_controle?: Array<{ lot: string; verdict: LotConformite }>
-  /** 'YYYY-MM-DD': the action's date, from which lots count. */
-  controle_depuis?: string | null
 }
 
 const LOT_CONFORMITE_CHOICES: { key: LotConformite; label: string; active: string }[] = [
   { key: 'conforme', label: 'Conforme', active: 'bg-emerald-600 text-white border-emerald-600' },
   { key: 'non_conforme', label: 'Non conforme', active: 'bg-red-600 text-white border-red-600' },
-  { key: 'non_controle', label: 'Non contrôlé', active: 'bg-zinc-500 text-white border-zinc-500' },
 ]
 
 function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boolean }) {
@@ -2147,7 +2133,7 @@ function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boo
   const [pendingId, setPendingId] = useState<number | null>(null)
 
   const setMut = useMutation({
-    mutationFn: ({ mentionId, conformite }: { mentionId: number; conformite: LotConformite }) =>
+    mutationFn: ({ mentionId, conformite }: { mentionId: number; conformite: LotConformite | null }) =>
       apiFetch(`/suivi-lots/${lotId}/actions/${mentionId}`, {
         method: 'PUT',
         body: JSON.stringify({ conformite }),
@@ -2156,6 +2142,9 @@ function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boo
     onSettled: () => setPendingId(null),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey })
+      // A verdict lifts (or sets back) a blocker of « Valider le lot » (lib/actions-lot.ts).
+      queryClient.invalidateQueries({ queryKey: ['suivi-lot', lotId] })
+      queryClient.invalidateQueries({ queryKey: ['suivi-lots'] })
       // The Actions screen shows these verdicts aggregated — keep it honest.
       queryClient.invalidateQueries({ queryKey: ['actions-qualite'] })
       queryClient.invalidateQueries({ queryKey: ['action-qualite'] })
@@ -2226,9 +2215,6 @@ function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boo
               </div>
             )}
 
-            {row.controle === 'vrillage' ? (
-              <VerdictVrillage row={row} />
-            ) : (
             <div className="flex gap-1 mt-2.5">
               {LOT_CONFORMITE_CHOICES.map((c) => {
                 const active = row.conformite === c.key
@@ -2237,10 +2223,9 @@ function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boo
                     key={c.key}
                     type="button"
                     disabled={!canManage || busy}
-                    onClick={() => {
-                      if (active) return
-                      setMut.mutate({ mentionId: row.IDmention_qualite, conformite: c.key })
-                    }}
+                    // Two answers only; a click on the active one takes it back (à juger).
+                    onClick={() => setMut.mutate({ mentionId: row.IDmention_qualite, conformite: active ? null : c.key })}
+                    title={active ? 'Annuler ce verdict' : undefined}
                     className={cn(
                       'flex-1 px-2 py-1 text-[11px] rounded-md border transition-colors',
                       active
@@ -2254,53 +2239,15 @@ function ActionsQualiteTab({ lotId, canManage }: { lotId: number; canManage: boo
                 )
               })}
             </div>
+            {row.conformite && (
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                {`Jugé${row.par ? ` par ${row.par}` : ''}${row.le ? ` le ${formatHfsqlDate(row.le.slice(0, 10).replace(/-/g, ''))}` : ''}`}
+              </p>
             )}
           </div>
         )
       })}
     </>
-  )
-}
-
-/** An action followed by the vrillage: the verdict is computed from the lots of
- *  this sst line controlled since the action was set up — no button to press,
- *  the measure is typed in Contrôles (LIVA #1332). */
-function VerdictVrillage({ row }: { row: LotActionRow }) {
-  const lots = row.lots_controle ?? []
-  const choice = LOT_CONFORMITE_CHOICES.find((c) => c.key === row.conformite) ?? LOT_CONFORMITE_CHOICES[2]
-  const depuis = row.controle_depuis ? formatHfsqlDate(row.controle_depuis.replace(/-/g, '')) : null
-  return (
-    <div className="mt-2.5 space-y-1.5">
-      <div className="flex items-center gap-2">
-        <span className={cn('px-2 py-0.5 text-[11px] rounded-md border font-medium', choice.active)}>{choice.label}</span>
-        <span className="text-[11px] text-muted-foreground">calculé par le vrillage</span>
-      </div>
-      {lots.length > 0 ? (
-        <div className="flex flex-wrap gap-1">
-          {lots.map((l, i) => (
-            <span
-              key={`${l.lot}-${i}`}
-              className={cn(
-                'px-1.5 py-0.5 rounded text-[10px] tabular-nums border',
-                l.verdict === 'conforme' && 'bg-emerald-50 text-emerald-700 border-emerald-200',
-                l.verdict === 'non_conforme' && 'bg-red-50 text-red-700 border-red-200',
-                l.verdict === 'non_controle' && 'bg-zinc-100 text-zinc-600 border-zinc-200',
-              )}
-              title={l.verdict === 'non_controle' ? 'Vrillage de la tirelle non saisi' : l.verdict === 'conforme' ? 'Vrillage dans la tolérance' : 'Vrillage hors tolérance'}
-            >
-              {l.lot || '—'}
-            </span>
-          ))}
-        </div>
-      ) : (
-        <p className="text-[11px] text-muted-foreground italic">
-          Aucun lot contrôlé{depuis ? ` depuis le ${depuis}` : ''} sur cette commande.
-        </p>
-      )}
-      {row.conformite === 'non_controle' && lots.length > 0 && (
-        <p className="text-[11px] text-muted-foreground">Saisissez le vrillage de la tirelle dans Contrôles.</p>
-      )}
-    </div>
   )
 }
 
@@ -2465,7 +2412,7 @@ function ControlesTab({
   return (
     <>
       {/* Sous-Traitant */}
-      <SidebarCard title="Sous-Traitant" icon={<Factory className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={controles.ennoblisseur ? null : <SansControle qui="ennoblisseur" />}>
+      <SidebarCard title="Sous-Traitant" icon={<Factory className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={<SansControle qui="ennoblisseur" asked={controles.ennoblisseur} mesures={controles.mesures?.ennoblisseur} />}>
         <CarteSansValeur.Provider value={!aDesValeurs('sst')}>
         <KVNum label="Laize" field="laize_sst" detailVal={detail.laize_sst} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_sst" detailVal={detail.poids_sst} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
@@ -2476,7 +2423,7 @@ function ControlesTab({
       </SidebarCard>
 
       {/* Tirelle */}
-      <SidebarCard title="Tirelle" icon={<Ruler className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={controles.malterre ? null : <SansControle qui="Malterre" />}>
+      <SidebarCard title="Tirelle" icon={<Ruler className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={<SansControle qui="Malterre" asked={controles.malterre} mesures={controles.mesures?.malterre} />}>
         <CarteSansValeur.Provider value={!aDesValeurs('tirelle')}>
         <KVNum label="Laize" field="laize_tirelle" detailVal={detail.laize_tirelle} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_tirelle" detailVal={detail.poids_tirelle} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
@@ -2557,13 +2504,26 @@ function SidebarCard({ title, icon, highlight, aside, children }: { title: strin
 
 /** Neutral chip: the lot's reference does not ask this control (Finis ›
  *  Références › Informations) — nothing to measure, nothing to chase. */
-function SansControle({ qui }: { qui: string }) {
+function SansControle({ qui, asked, mesures }: {
+  qui: string
+  asked: boolean
+  mesures?: { laize: boolean; poids: boolean; stabilites: boolean; vrillage?: boolean }
+}) {
+  // A side asked with every measure: nothing to say. Some measures off (#1345):
+  // name them, e.g. « Sans stabilités (réf.) » on a bord côte.
+  const absentes = asked && mesures
+    ? ([['laize', 'laize'], ['poids', 'poids'], ['stabilites', 'stabilités'], ['vrillage', 'vrillage']] as const).filter(([k]) => mesures[k] === false).map(([, l]) => l)
+    : []
+  if (asked && absentes.length === 0) return null
+  const quoi = asked ? absentes.join(', ') : `contrôle ${qui}`
   return (
     <span
       className="ml-auto rounded-full border border-border/60 bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
-      title={`La référence ne demande pas de contrôle ${qui} (Finis › Références › Informations) : aucune mesure n’est attendue.`}
+      title={asked
+        ? `La référence ne demande pas ${absentes.length > 1 ? 'ces mesures' : 'cette mesure'} au contrôle ${qui} (Finis › Références › Informations) : ${absentes.length > 1 ? 'elles ne sont' : 'elle n’est'} jamais attendue${absentes.length > 1 ? 's' : ''}.`
+        : `La référence ne demande pas de contrôle ${qui} (Finis › Références › Informations) : aucune mesure n’est attendue.`}
     >
-      Sans contrôle {qui} (réf.)
+      Sans {quoi} (réf.)
     </span>
   )
 }
@@ -2612,7 +2572,7 @@ function KVNum({
       schema={conformKind && conformKind !== 'rendement' ? conformKind : undefined}
       isEditing={isEditing && !!edit}
     >
-      <ConformMarker conform={conform} />
+      <MarkerSlot conform={conform} />
       {isEditing && edit ? (
         <input
           type="number"
@@ -2632,6 +2592,12 @@ function KVNum({
  *  2026-11-02 — the label used to sit above the gauge, a line per measure lost).
  *  Aligned on the gauge's bar: label and value are nudged so their text centre
  *  meets the bar, the bound labels hang under the bar. */
+/** The conformity marker in a fixed-width slot, empty when there is none, so
+ *  the values of a card line up on their left edge. */
+function MarkerSlot({ conform }: { conform: boolean | null }) {
+  return <span className="w-4 flex-shrink-0 inline-flex justify-center"><ConformMarker conform={conform} /></span>
+}
+
 /** True inside a card with no value at all (view mode): the value slot then
  *  collapses and every gauge starts right after its label (Vincent 2026-11-02). */
 const CarteSansValeur = createContext(false)
@@ -2644,7 +2610,9 @@ function MesureRow({ label, gauge, isEditing, schema, children }: { label: strin
       {/* The value sits between the label and the gauge, so every gauge runs to
           the card's edge whether the lot is measured or not (Vincent 2026-11-02). */}
       {!sansValeur && (
-        <span className={cn('flex-shrink-0 inline-flex items-center justify-end gap-1.5', isEditing ? 'w-[96px] -mt-1.5' : 'w-[58px] -mt-0.5')}>
+        // Left-aligned: the marker has its own fixed slot and every value starts
+        // at the same x, whatever its width (Vincent 2026-11-03).
+        <span className={cn('flex-shrink-0 inline-flex items-center justify-start gap-1.5', isEditing ? 'w-[96px] -mt-1.5' : 'w-[58px] -mt-0.5')}>
           {children}
         </span>
       )}
@@ -2659,9 +2627,11 @@ function MesureRow({ label, gauge, isEditing, schema, children }: { label: strin
  *  + help cursor say it can be hovered. */
 function LabelMesure({ label, aide }: { label: string; aide?: React.ReactNode }) {
   const cls = 'text-xs leading-4 text-muted-foreground whitespace-nowrap'
-  if (!aide) return <span className={cn('w-[82px] flex-shrink-0', cls)}>{label}</span>
+  if (!aide) return <span className={cn('w-[60px] flex-shrink-0', cls)}>{label}</span>
   return (
-    <span className="w-[82px] flex-shrink-0">
+    // flex: the Tooltip's inline-flex wrapper would otherwise sit on the text
+    // baseline of a taller line box and push the label 6 px under its value.
+    <span className="w-[60px] flex-shrink-0 flex">
       <Tooltip side="left" content={aide}>
         <span className={cn(cls, 'cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-2')}>{label}</span>
       </Tooltip>
@@ -2698,7 +2668,7 @@ function KVVrillage({
       schema="vrillage"
       isEditing={isEditing && !!edit}
     >
-          <ConformMarker conform={conform} />
+          <MarkerSlot conform={conform} />
           {isEditing && edit ? (
             <span className="inline-flex items-center gap-1">
               <input
@@ -2936,46 +2906,6 @@ function QualityHistoryCell({ numero, quality }: { numero: string; quality: Qual
     >
       <Icon className={cn('h-3.5 w-3.5 cursor-pointer', hasDefaut ? 'text-amber-600' : 'text-accent')} aria-label="Historique qualité" />
     </Tooltip>
-  )
-}
-
-// ── Défauts tab ──────────────────────────────────────────
-
-function DefautsTab({ lotId }: { lotId: number }) {
-  const { data: defauts, isLoading } = useQuery({
-    queryKey: ['suivi-lot-defauts', lotId],
-    queryFn: () => apiFetch<DefautRow[]>(`/suivi-lots/${lotId}/defauts`),
-    enabled: lotId > 0,
-  })
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-6">
-        <Loader2 className="h-5 w-5 animate-spin text-accent" />
-      </div>
-    )
-  }
-  if (!defauts || defauts.length === 0) {
-    return <p className="text-sm text-muted-foreground italic">Aucun défaut signalé</p>
-  }
-  return (
-    <>
-      {defauts.map((d) => (
-        <div key={d.IDdefaut_qualite} className="p-3 rounded-lg border-l-4 border-l-destructive/60 border bg-card shadow-sm">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-3.5 w-3.5 text-destructive/70 flex-shrink-0" />
-            <span className="text-sm font-medium truncate flex-1">{d.type_defaut || 'Défaut'}</span>
-            {!!d.roll_numero && <Badge variant="secondary" className="text-[10px] py-0">{d.roll_numero}</Badge>}
-          </div>
-          {!!d.description?.trim() && <p className="text-[11px] text-muted-foreground mt-1 ml-5">{d.description}</p>}
-          <div className="flex items-center gap-3 mt-1.5 ml-5 text-[11px] text-muted-foreground">
-            {d.taille_cm > 0 && <span>{fmtNum(d.taille_cm)} cm</span>}
-            {d.nombre > 0 && <span>×{d.nombre}</span>}
-            {!!d.date && <span className="ml-auto">{formatHfsqlDate(d.date)}</span>}
-          </div>
-        </div>
-      ))}
-    </>
   )
 }
 

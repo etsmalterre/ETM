@@ -4,7 +4,7 @@
 // zero or more *mentions*: automatic comments that print on every matching bon
 // de commande sous-traitant, scoped by (type sst, sous-traitant, référence,
 // coloris). Each mention accumulates conformité verdicts, recorded per lot from
-// Qualité › Suivi lots — surfaced read-only here as "Conformité des commandes".
+// Qualité › Suivi lots, surfaced read-only here in the « Conformité » tab (one row per lot).
 //
 // Layout: **Fiche** (mps_designer §4) — left list, multi-section centre panel,
 // right sidebar with tabs + a binary status footer (§29.3) for terminé.
@@ -15,6 +15,7 @@
 // auto-closing later.)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -30,7 +31,6 @@ import {
   Plus,
   Search,
   Save,
-  Ruler,
   Target,
   Trash2,
   X,
@@ -87,14 +87,20 @@ interface MentionRow {
   mention: string
 }
 
+/** One row of the « Conformité » tab: a judged lot on a dye line (per lot since
+ *  2026-11-03), or a knitting line (no lot, legacy per-line verdict). */
 interface CommandeRow {
   IDcommande_sous_traitant: number
   IDligne_commande_sous_traitant: number
   IDmention_qualite: number
   sous_traitant_nom: string
+  IDsuivilot: number | null
+  lot: string | null
+  /** 'YYYY-MM-DD' */
+  reception: string | null
   conformite: Conformite
-  /** Computed from the vrillage of these lots (LIVA #1332); null = typed in Suivi lots. */
-  lots_controle?: Array<{ lot: string; verdict: Conformite }> | null
+  par: string | null
+  le: string | null
 }
 
 interface ActionDetail {
@@ -103,8 +109,6 @@ interface ActionDetail {
   description: string
   date_creation: string
   termine: 0 | 1
-  /** 'vrillage' => every verdict is computed from the lots' vrillage (LIVA #1332). */
-  controle?: 'vrillage' | null
   objectif: number | null
   objectif_atteint: boolean
   conforme_count: number
@@ -167,7 +171,7 @@ const CONFORMITE_META: Record<Conformite, { label: string; soft: string; dot: st
     dot: 'bg-red-500',
   },
   non_controle: {
-    label: 'Non contrôlé',
+    label: 'À juger',
     soft: 'bg-zinc-100 text-zinc-700 border-zinc-200',
     dot: 'bg-zinc-400',
   },
@@ -213,8 +217,7 @@ export function QualiteActions() {
   const [editTitre, setEditTitre] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [editObjectif, setEditObjectif] = useState('')
-  const [editVrillage, setEditVrillage] = useState(false)
-  const originalDraftRef = useRef<{ titre: string; description: string; objectif: string; vrillage: boolean } | null>(null)
+  const originalDraftRef = useRef<{ titre: string; description: string; objectif: string } | null>(null)
 
   // Mention dialog state (a sub-form → feeds the dirty flag, §28.3.a)
   const [mentionDialogOpen, setMentionDialogOpen] = useState(false)
@@ -243,12 +246,10 @@ export function QualiteActions() {
       titre: detail.titre,
       description: detail.description,
       objectif: detail.objectif === null ? '' : String(detail.objectif),
-      vrillage: detail.controle === 'vrillage',
     }
     setEditTitre(snapshot.titre)
     setEditDescription(snapshot.description)
     setEditObjectif(snapshot.objectif)
-    setEditVrillage(snapshot.vrillage)
     originalDraftRef.current = snapshot
     setIsEditing(true)
   }, [detail])
@@ -274,12 +275,6 @@ export function QualiteActions() {
         method: 'PUT',
         body: JSON.stringify({ objectif: parsed }),
       })
-      if (editVrillage !== (originalDraftRef.current?.vrillage ?? false)) {
-        await apiFetch(`/actions-qualite/${selectedId}/controle`, {
-          method: 'PUT',
-          body: JSON.stringify({ controle: editVrillage ? 'vrillage' : null }),
-        })
-      }
     },
     onSuccess: () => {
       invalidateAll()
@@ -328,11 +323,10 @@ export function QualiteActions() {
     if (editTitre !== o.titre) return true
     if (editDescription !== o.description) return true
     if (editObjectif !== o.objectif) return true
-    if (editVrillage !== o.vrillage) return true
     // An open mention dialog counts as unsaved work.
     if (mentionDialogOpen) return true
     return false
-  }, [isEditing, editTitre, editDescription, editObjectif, editVrillage, mentionDialogOpen])
+  }, [isEditing, editTitre, editDescription, editObjectif, mentionDialogOpen])
 
   const guard = useUnsavedGuard({
     isDirty,
@@ -464,8 +458,6 @@ export function QualiteActions() {
               isEditing={isEditing}
               editObjectif={editObjectif}
               onObjectifChange={setEditObjectif}
-              editVrillage={editVrillage}
-              onVrillageChange={setEditVrillage}
               activeTab={sidebarTab}
               onTabChange={setSidebarTab}
               canManage={canManage}
@@ -760,6 +752,19 @@ function ActionHeader({
         <div className="flex items-center gap-2 flex-shrink-0">
           {isEditing ? (
             <>
+              {/* Delete lives in edit mode only (Vincent 2026-11-03, every screen). */}
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 text-destructive hover:text-destructive"
+                  title="Supprimer l'action"
+                  onClick={onDelete}
+                  disabled={saving}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={onCancelEdit} disabled={saving}>
                 <X className="h-3.5 w-3.5 mr-1.5" />
                 Annuler
@@ -774,21 +779,10 @@ function ActionHeader({
               </Button>
             </>
           ) : canManage ? (
-            <>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-9 w-9 text-destructive hover:text-destructive"
-                title="Supprimer l'action"
-                onClick={onDelete}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-              <Button variant="gold" size="sm" onClick={onStartEdit}>
-                <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                Modifier
-              </Button>
-            </>
+            <Button variant="gold" size="sm" onClick={onStartEdit}>
+              <Pencil className="h-3.5 w-3.5 mr-1.5" />
+              Modifier
+            </Button>
           ) : null}
         </div>
       </div>
@@ -805,6 +799,14 @@ function ActionHeader({
 
 // ── Centre panel ─────────────────────────────────────────
 
+const MAIN_TABS = [
+  { key: 'definition', label: 'Définition', icon: MessageSquare },
+  { key: 'conformite', label: 'Conformité', icon: Award },
+] as const
+type MainTab = (typeof MAIN_TABS)[number]['key']
+
+/** Centre panel, a Classeur (mps_designer §39, Vincent 2026-11-03): what the
+ *  action says (description + automatic comments) / what it was judged on. */
 function ActionDetailMain({
   detail, isEditing, editDescription, onDescriptionChange,
   onAddMention, onEditMention, onDeleteMention,
@@ -817,8 +819,34 @@ function ActionDetailMain({
   onEditMention: (m: MentionRow) => void
   onDeleteMention: (m: MentionRow) => void
 }) {
+  const [activeTab, setActiveTab] = useState<MainTab>('definition')
+  // Land on the definition for each action, and while editing (only it is editable).
+  useEffect(() => { setActiveTab('definition') }, [detail.IDaction_qualite])
+  useEffect(() => { if (isEditing) setActiveTab('definition') }, [isEditing])
   return (
-    <div className="flex-1 min-h-0 overflow-auto space-y-4 px-1 pb-1 scrollbar-transparent">
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-shrink-0 flex items-center gap-1 border-b border-border/60 pb-2">
+        {MAIN_TABS.map((t) => {
+          const Icon = t.icon
+          const active = activeTab === t.key
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setActiveTab(t.key)}
+              className={cn(
+                'flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap',
+                active ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10 hover:text-accent',
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {t.label}
+            </button>
+          )
+        })}
+      </div>
+      {activeTab === 'definition' ? (
+        <div className="flex-1 min-h-0 overflow-auto space-y-4 pt-3 px-1 pb-1 scrollbar-transparent">
       {/* Description */}
       <Card className={cn('card-premium', isEditing && editSectionClass)}>
         <CardHeader className="flex flex-row items-center gap-2 pb-2">
@@ -867,10 +895,6 @@ function ActionDetailMain({
           </Badge>
         </CardHeader>
         <CardContent className="space-y-2">
-          <p className="text-[11px] text-muted-foreground">
-            Ces mentions s'impriment automatiquement sur le bon de commande de chaque commande
-            sous-traitant correspondante, tant que l'action est en cours.
-          </p>
           {detail.mentions.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
               <AlertTriangle className="h-12 w-12 mb-3 opacity-40" />
@@ -909,73 +933,71 @@ function ActionDetailMain({
         </CardContent>
       </Card>
 
-      {/* Conformité des commandes */}
-      <Card className="card-premium">
-        <CardHeader className="flex flex-row items-center gap-2 pb-2">
-          <Award className="h-4 w-4 text-accent" />
-          <CardTitle className="text-sm font-semibold">Conformité des commandes</CardTitle>
-          <Badge variant="secondary" className="text-xs ml-auto flex-shrink-0">
-            {detail.commandes.length}
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          <p className="text-[11px] text-muted-foreground mb-2">
-            {detail.controle === 'vrillage'
-              ? 'Calculée par le vrillage saisi dans Qualité › Suivi lots, sur les lots contrôlés depuis la création de l’action.'
-              : 'Se renseigne depuis Qualité › Suivi lots, sur le lot correspondant.'}
-          </p>
-          {detail.commandes.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic py-4 text-center">
-              Aucune commande sous-traitant ne correspond encore à ces mentions
-            </p>
-          ) : (
-            <div className="rounded-lg border border-border/60 bg-card overflow-hidden">
-              <div className="max-h-80 overflow-auto scrollbar-transparent">
-                <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
-                  <colgroup>
-                    <col style={{ width: '25%' }} />
-                    <col style={{ width: '42%' }} />
-                    <col style={{ width: '33%' }} />
-                  </colgroup>
-                  <thead className="bg-zinc-200/60 border-b border-border/60 sticky top-0">
-                    <tr className="text-xs uppercase tracking-wide text-muted-foreground">
-                      <th className="px-3 py-2 text-left font-semibold">Commande N°</th>
-                      <th className="px-3 py-2 text-left font-semibold">Sous-traitant</th>
-                      <th className="px-3 py-2 text-left font-semibold">Conformité</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.commandes.map((c) => (
-                      <tr
-                        key={`${c.IDligne_commande_sous_traitant}-${c.IDmention_qualite}`}
-                        className="border-b border-border/40 last:border-b-0"
-                      >
-                        <td className="px-3 py-2 tabular-nums">{c.IDcommande_sous_traitant}</td>
-                        <td className="px-3 py-2 truncate" title={c.sous_traitant_nom}>
-                          {c.sous_traitant_nom || '—'}
-                        </td>
-                        <td className="px-3 py-2">
-                          <span
-                            className="inline-flex items-center gap-1.5"
-                            title={c.lots_controle ? c.lots_controle.map((l) => `${l.lot} : ${CONFORMITE_META[l.verdict].label}`).join('\n') : undefined}
-                          >
-                            <ConformitePill value={c.conformite} />
-                            {c.lots_controle && (
-                              <span className="text-[10px] text-muted-foreground tabular-nums">
-                                {c.lots_controle.length} lot{c.lots_controle.length > 1 ? 's' : ''}
-                              </span>
-                            )}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        </div>
+      ) : (
+        <ConformiteTab commandes={detail.commandes} />
+      )}
+    </div>
+  )
+}
+
+/** « Conformité »: one row per lot judged (or to judge) under the action, newest
+ *  first; a click opens the lot in Suivi lots, where the verdict is given. */
+function ConformiteTab({ commandes }: { commandes: CommandeRow[] }) {
+  const navigate = useNavigate()
+  if (commandes.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center py-12 text-muted-foreground">
+        <Award className="h-12 w-12 mb-3 opacity-40" />
+        <p className="text-sm">Aucun lot reçu depuis la création de l’action</p>
+      </div>
+    )
+  }
+  return (
+    <div className="flex-1 min-h-0 flex flex-col pt-3 px-1 pb-1">
+      <div className="flex-1 min-h-0 rounded-lg border border-border/60 bg-card overflow-auto scrollbar-transparent">
+        <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '20%' }} />
+            <col style={{ width: '15%' }} />
+            <col style={{ width: '15%' }} />
+            <col style={{ width: '22%' }} />
+            <col style={{ width: '28%' }} />
+          </colgroup>
+          <thead className="bg-zinc-200 border-b border-border/60 sticky top-0 z-10">
+            <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+              <th className="px-3 py-2 text-left font-semibold">Lot</th>
+              <th className="px-3 py-2 text-left font-semibold">Reçu le</th>
+              <th className="px-3 py-2 text-left font-semibold">Commande N°</th>
+              <th className="px-3 py-2 text-left font-semibold">Sous-traitant</th>
+              <th className="px-3 py-2 text-left font-semibold">Conformité</th>
+            </tr>
+          </thead>
+          <tbody>
+            {commandes.map((c) => {
+              const ouvrable = c.IDsuivilot !== null
+              return (
+                <tr
+                  key={`${c.IDligne_commande_sous_traitant}-${c.IDmention_qualite}-${c.IDsuivilot ?? 0}`}
+                  onClick={ouvrable ? () => navigate(`/qualite/suivi-lots?lot=${c.IDsuivilot}&statut=tous`) : undefined}
+                  title={ouvrable ? 'Ouvrir le lot dans Suivi lots' : 'Commande de tricotage : pas de lot à juger'}
+                  className={cn('border-b border-border/40 last:border-b-0', ouvrable && 'cursor-pointer hover:bg-accent/5')}
+                >
+                  <td className="px-3 py-2 truncate">{c.lot || '—'}</td>
+                  <td className="px-3 py-2 tabular-nums">{c.reception ? formatHfsqlDate(c.reception.replace(/-/g, '')) : '—'}</td>
+                  <td className="px-3 py-2 tabular-nums">{c.IDcommande_sous_traitant}</td>
+                  <td className="px-3 py-2 truncate" title={c.sous_traitant_nom}>{c.sous_traitant_nom || '—'}</td>
+                  <td className="px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5" title={c.par ? `${c.par}${c.le ? ` · ${formatHfsqlDate(c.le.slice(0, 10).replace(/-/g, ''))}` : ''}` : undefined}>
+                      <ConformitePill value={c.conformite} />
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -1058,15 +1080,13 @@ const SIDEBAR_TABS = [
 ]
 
 function ActionSidebar({
-  detail, isEditing, editObjectif, onObjectifChange, editVrillage, onVrillageChange, activeTab, onTabChange,
+  detail, isEditing, editObjectif, onObjectifChange, activeTab, onTabChange,
   canManage, onToggleTermine, isToggling,
 }: {
   detail: ActionDetail
   isEditing: boolean
   editObjectif: string
   onObjectifChange: (v: string) => void
-  editVrillage: boolean
-  onVrillageChange: (v: boolean) => void
   activeTab: 'suivi' | 'infos'
   onTabChange: (t: 'suivi' | 'infos') => void
   canManage: boolean
@@ -1106,8 +1126,6 @@ function ActionSidebar({
               isEditing={isEditing}
               editObjectif={editObjectif}
               onObjectifChange={onObjectifChange}
-              editVrillage={editVrillage}
-              onVrillageChange={onVrillageChange}
             />
           ) : (
             <InfosTab detail={detail} />
@@ -1126,16 +1144,13 @@ function ActionSidebar({
 }
 
 function SuiviTab({
-  detail, isEditing, editObjectif, onObjectifChange, editVrillage, onVrillageChange,
+  detail, isEditing, editObjectif, onObjectifChange,
 }: {
   detail: ActionDetail
   isEditing: boolean
   editObjectif: string
   onObjectifChange: (v: string) => void
-  editVrillage: boolean
-  onVrillageChange: (v: boolean) => void
 }) {
-  const vrillage = isEditing ? editVrillage : detail.controle === 'vrillage'
   // Progress is measured on the objectif being edited when in edit mode, so the
   // bar responds live while the user types a new target.
   const objectif = isEditing
@@ -1207,44 +1222,6 @@ function SuiviTab({
         )}
       </div>
 
-      {/* LIVA #1332: an action about the vrillage is checked by the measures typed in
-          Suivi lots > Contrôles: its verdicts are computed, never typed. */}
-      <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 text-sm font-semibold">
-              <Ruler className="h-3.5 w-3.5 text-accent" />
-              <span>Vérifiée par le vrillage</span>
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-0.5">
-              {vrillage
-                ? `Conforme quand le vrillage de la tirelle est mesuré et ne dépasse pas 5 %, sur chaque lot contrôlé depuis le ${detail.date_creation ? formatHfsqlDate(detail.date_creation) : 'début de l’action'}.`
-                : 'Les contrôles se saisissent à la main dans Suivi lots.'}
-            </p>
-          </div>
-          {isEditing && (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={editVrillage}
-              onClick={() => onVrillageChange(!editVrillage)}
-              className={cn(
-                'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                editVrillage ? 'bg-accent shadow-inner' : 'bg-zinc-300 hover:bg-zinc-400/80',
-              )}
-            >
-              <span
-                className={cn(
-                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ease-out',
-                  editVrillage ? 'translate-x-[18px]' : 'translate-x-0.5',
-                )}
-              />
-            </button>
-          )}
-        </div>
-      </div>
-
       <div className="p-3 rounded-lg border bg-card shadow-sm">
         <div className="flex items-center gap-2 mb-2">
           <Award className="h-3.5 w-3.5 text-accent" />
@@ -1253,7 +1230,7 @@ function SuiviTab({
         <div className="space-y-1.5">
           <CounterRow label="Conforme" value={detail.conforme_count} tone="conforme" />
           <CounterRow label="Non conforme" value={detail.non_conforme_count} tone="non_conforme" />
-          <CounterRow label="Non contrôlé" value={detail.non_controle_count} tone="non_controle" />
+          <CounterRow label="À juger" value={detail.non_controle_count} tone="non_controle" />
         </div>
       </div>
     </>
@@ -1286,7 +1263,7 @@ function InfosTab({ detail }: { detail: ActionDetail }) {
           value={detail.date_creation ? formatHfsqlDate(detail.date_creation) : '—'}
         />
         <KV label="Mentions" value={String(detail.mentions.length)} />
-        <KV label="Commandes concernées" value={String(detail.commandes.length)} />
+        <KV label="Lots concernés" value={String(detail.commandes.length)} />
         <KV label="Statut" value={detail.termine === 1 ? 'Terminée' : 'En cours'} />
       </div>
     </div>
