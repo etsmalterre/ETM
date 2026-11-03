@@ -45,6 +45,7 @@
 // corrected from PE's use like the point's rules.
 
 import { mpsPg } from './mps-pg.js'
+import { ajouterJoursOuvres } from './jours-ouvres.js'
 import { consumedEcruIds } from './fini-sources.js'
 import { faitsReprises } from './reprises.js'
 import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
@@ -124,13 +125,18 @@ export interface LotFait {
 
 /** Working days the other side gets before we chase. Estimates (2026-10-11). */
 export const RELANCE_J = {
-  /** The dyer's measures come in Perrine's answer to the next point. */
-  attente_mesures: 1,
+  /** « En contrôle » (Vincent 2026-11-03): once the BL is in and the rolls received,
+   *  the lot has this long, counted from its reception, for the dyer's measures,
+   *  our tirelle, the soumission, the rapport de contrôle and « Valider le lot ».
+   *  Red only after: relance the dyer or do the Malterre controls. The Point still
+   *  asks the measures every day, only the colour waits. */
+  controle: 5,
   /** The client answers a soumission. */
   soumis: 5,
   /** The dyer rames the lot and ships it after the « coloris validé » (estimate 2026-10-22). */
   en_rame: 3,
-  /** Our own steps: flagged once they wait this long. */
+  /** Our own decisions outside the control window (refused by the client,
+   *  coloris validé to pass on): flagged once they wait this long. */
   nous: 1,
 } as const
 
@@ -145,20 +151,11 @@ export interface EtatLot {
   reprises: number
 }
 
-const DAY = 86_400_000
-const ms = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10))
-const isoOf = (t: number) => new Date(t).toISOString().slice(0, 10)
 
-/** `iso` + n working days (Sat/Sun skipped, bank holidays not considered). */
+/** `iso` + n working days: no weekend, no French public holiday (lib/jours-ouvres.ts, #1339). */
 export function plusJoursOuvres(iso: string, n: number): string {
-  let t = ms(iso)
-  let added = 0
-  while (added < n) {
-    t += DAY
-    const dow = new Date(t).getUTCDay()
-    if (dow !== 0 && dow !== 6) added++
-  }
-  return isoOf(t)
+  const r = ajouterJoursOuvres(iso.replace(/-/g, ''), n)
+  return `${r.slice(0, 4)}-${r.slice(4, 6)}-${r.slice(6, 8)}`
 }
 
 const enAttente = (s: SoumissionFait) => !!s.envoyeeLe && !s.reponse
@@ -227,19 +224,19 @@ const MAIN: Record<EtapeLot, Main | null> = {
   valide: null,
 }
 
-/** Our steps on a received lot: chased from the reception. */
-const NOTRE_MAIN_RECU: EtapeLot[] = ['attente_tirelle', 'coloris_a_soumettre', 'a_soumettre', 'refuse_client', 'rc_a_envoyer', 'a_valider']
+/** The control steps of a received lot: one window from the reception (RELANCE_J.controle). */
+const CONTROLE_RECU: EtapeLot[] = ['attente_mesures', 'attente_tirelle', 'coloris_a_soumettre', 'a_soumettre', 'rc_a_envoyer', 'a_valider']
 
 export function etatLot(l: LotFait): EtatLot {
   const etape = etapeLot(l)
   const r = l.reception
   let relance: string | null = null
-  if (etape === 'attente_mesures' && r) relance = plusJoursOuvres(r, RELANCE_J.attente_mesures)
+  if (CONTROLE_RECU.includes(etape) && r) relance = plusJoursOuvres(r, RELANCE_J.controle)
   else if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) relance = plusJoursOuvres(l.coloris.envoyeeLe, RELANCE_J.soumis)
   else if (etape === 'soumis' && l.stabilites.envoyeeLe) relance = plusJoursOuvres(l.stabilites.envoyeeLe, RELANCE_J.soumis)
   else if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) relance = plusJoursOuvres(l.coloris.reponse.le.slice(0, 10), RELANCE_J.nous)
   else if (etape === 'en_rame' && l.okRamerLe) relance = plusJoursOuvres(l.okRamerLe, RELANCE_J.en_rame)
-  else if (NOTRE_MAIN_RECU.includes(etape) && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
+  else if (etape === 'refuse_client' && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
   // en_reprise / reteinture: the dyer gives the date back in the point, nothing to compute.
   return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance, reprises: l.reprises ?? 0 }
 }
@@ -301,7 +298,13 @@ export interface EtatDelai {
 export function etatCommande(c: CommandeFait): EtatCommande {
   const tous = c.lots.map(etatLot)
   const ouverts = tous.filter((l) => l.etape !== 'valide')
-  const solde = c.lots.length > 0 && c.ecruChezTeinturier > 0
+  // « En contrôle » starts with a reception (Vincent 2026-11-03: the BL in, the
+  // rolls received = delivered). A lot open before it (coloris soumis, validé,
+  // en rame, reteinture) is still the dyer's work: the order stays « en
+  // traitement » on its délai, the lot is followed on Suivi lots.
+  const recus = c.lots.map((l, i) => ({ l, e: tous[i] })).filter(({ l, e }) => e.etape !== 'valide' && !!l.reception)
+  // A solde = écru still at the dyer once something came back.
+  const solde = c.lots.some((l) => !!l.reception) && c.ecruChezTeinturier > 0
   if (c.est_soldee) return { etape: 'terminee', main: null, relance: null, lots: ouverts, solde: false }
   if (c.lots.length === 0) {
     if (c.rangStatut === 0) return { etape: 'non_envoye', main: 'nous', relance: null, lots: [], solde: false }
@@ -316,18 +319,17 @@ export function etatCommande(c: CommandeFait): EtatCommande {
     }
     return { etape: 'en_teinture', main: 'teinturier', relance: c.delai, lots: [], solde: false }
   }
-  // A lot still open = « en contrôle » (the most important move now is a lot's
-  // control, detailed on Qualité › Suivi lots), chased at the earliest open lot's
-  // date. Every lot validated: back « en traitement » while écru is still at the
-  // dyer, else ours to close (Vincent 2026-11-02).
-  if (ouverts.length > 0) {
-    const datees = ouverts.filter((l) => l.relance).sort((a, b) => a.relance!.localeCompare(b.relance!))
-    if (datees.length > 0) return { etape: 'en_controle', main: datees[0].main, relance: datees[0].relance, lots: ouverts, solde }
-    if (ouverts.some((l) => l.etape === 'en_reprise')) return { etape: 'en_controle', main: 'teinturier', relance: null, lots: ouverts, solde }
-    // Open lots with no chase date yet (e.g. not received): the dyer's délai for what is still there.
-    return { etape: 'en_controle', main: 'teinturier', relance: solde ? c.delai : null, lots: ouverts, solde }
+  // A received lot still open = « en contrôle ». The order carries no chase of its own
+  // then (Vincent 2026-11-03): each lot has its 5-working-day control window and
+  // turns red on Qualité › Suivi lots (urgenceLot), the one place the work is
+  // done; the dyer's measures are asked by the daily Point. Only écru still at
+  // the dyer (a solde) keeps the order on the dyer's délai. Every lot validated:
+  // back « en traitement » while écru is still at the dyer, else ours to close
+  // (Vincent 2026-11-02).
+  if (recus.length > 0) {
+    return { etape: 'en_controle', main: solde ? 'teinturier' : null, relance: solde ? c.delai : null, lots: ouverts, solde }
   }
-  if (solde) return { etape: 'en_teinture', main: 'teinturier', relance: c.delai, lots: ouverts, solde }
+  if (solde || ouverts.length > 0) return { etape: 'en_teinture', main: 'teinturier', relance: c.delai, lots: ouverts, solde }
   // Every lot validated, nothing left at the dyer: ours to close (8565).
   return { etape: 'a_cloturer', main: 'nous', relance: null, lots: ouverts, solde }
 }
@@ -359,7 +361,7 @@ export function urgenceLot(l: LotFait, today: string): UrgenceLot | null {
   let { relance, main } = e
   if (e.etape === 'valide') {
     if ((l.rcAEnvoyer?.length ?? 0) === 0 || !l.reception) return null
-    relance = plusJoursOuvres(l.reception, RELANCE_J.nous)
+    relance = plusJoursOuvres(l.reception, RELANCE_J.controle)
     main = 'nous'
   }
   if (!relance) return null

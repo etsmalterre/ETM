@@ -95,6 +95,7 @@ import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../
 import { affectationsCommandeSst } from '../lib/affectations-sst.js'
 import { enregistrerSoumission, naturesDemandees, NATURE_LIBELLE, type NatureSoumission } from '../lib/soumission-lot.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { jourDe, ligneLivreeLe } from '../lib/ligne-sst-livree.js'
 import { freinteTricotage, filPourEcru, ecruPourFil } from '../lib/freinte-tricotage.js'
 import {
   couvertureLigne, ecrireAffectation, filsALancer, lotsLibres, messageFilNonCouvert, nomsFils, planLancement, type PlanLancement,
@@ -1939,20 +1940,23 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       // tooltip in the frontend totals footer. Rolls with an empty lot
       // string group under ''.
       fini_lots: Array<{ lot: string; nb: number; metrage: number }>
+      /** 'YYYYMMDD' once every écru handed to the dyer came back dyed (lib/ligne-sst-livree.ts):
+       *  the line is delivered, its délai no longer alerts. Dyer lines only. */
+      livree_le: string | null
     }
-    const newAgg = (): LineAgg => ({ nb_ecru_lies: 0, total_kg_ecru_lie: 0, nb_fini_recu: 0, total_metrage_fini_recu: 0, fini_lots: [] })
+    const newAgg = (): LineAgg => ({ nb_ecru_lies: 0, total_kg_ecru_lie: 0, nb_fini_recu: 0, total_metrage_fini_recu: 0, fini_lots: [], livree_le: null })
     const piecesByLine = new Map<number, LineAgg>()
     if (lineIds.length > 0) {
       // Both écru queries return the line id under one alias so the merge
       // below is a single loop. Flat SELECTs, no JOIN (see CLAUDE.md).
       const [ecruAffectesRows, ecruProduitsRows, finiRows] = await Promise.all([
         affectationLineIds.length > 0
-          ? query<{ line_id: number; poids: number | null }>(
-            `SELECT IDref_commande_affectation AS line_id, poids
+          ? query<{ line_id: number; poids: number | null; IDstock_ecru: number }>(
+            `SELECT IDref_commande_affectation AS line_id, poids, IDstock_ecru
              FROM stock_ecru
              WHERE IDref_commande_affectation IN (${affectationLineIds.join(',')})`,
           )
-          : Promise.resolve([] as Array<{ line_id: number; poids: number | null }>),
+          : Promise.resolve([] as Array<{ line_id: number; poids: number | null; IDstock_ecru: number }>),
         tricoteurLineIds.length > 0
           ? query<{ line_id: number; poids: number | null }>(
             `SELECT IDref_commande_source AS line_id, poids
@@ -1960,8 +1964,8 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
              WHERE IDref_commande_source IN (${tricoteurLineIds.join(',')})`,
           )
           : Promise.resolve([] as Array<{ line_id: number; poids: number | null }>),
-        query<{ IDstock_fini: number; IDref_commande_source: number; metrage: number | null; lot: string | null }>(
-          `SELECT IDstock_fini, IDref_commande_source, metrage, lot
+        query<{ IDstock_fini: number; IDref_commande_source: number; metrage: number | null; lot: string | null; date_saisie: string | null }>(
+          `SELECT IDstock_fini, IDref_commande_source, metrage, lot, date_saisie
            FROM stock_fini
            WHERE IDref_commande_source IN (${lineIds.join(',')})`,
         ),
@@ -1990,6 +1994,25 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         lotAgg.nb += 1
         lotAgg.metrage += Number(r.metrage) || 0
         piecesByLine.set(lid, acc)
+      }
+      // Delivered = every écru handed to the dyer came back dyed (Vincent 2026-11-03).
+      const revenus = await consumedEcruIds(ecruAffectesRows.map((r) => Number(r.IDstock_ecru)).filter((x) => x > 0))
+      const ecruParLigne = new Map<number, { affectes: number; revenus: number }>()
+      for (const r of ecruAffectesRows) {
+        const lid = Number(r.line_id) || 0
+        const e = ecruParLigne.get(lid) ?? { affectes: 0, revenus: 0 }
+        e.affectes += 1
+        if (revenus.has(Number(r.IDstock_ecru))) e.revenus += 1
+        ecruParLigne.set(lid, e)
+      }
+      const receptionsParLigne = new Map<number, string[]>()
+      for (const r of finiRows) {
+        const lid = Number(r.IDref_commande_source) || 0
+        receptionsParLigne.set(lid, [...(receptionsParLigne.get(lid) ?? []), jourDe(r.date_saisie)])
+      }
+      for (const [lid, e] of ecruParLigne) {
+        const acc = piecesByLine.get(lid)
+        if (acc) acc.livree_le = ligneLivreeLe(e.affectes, e.revenus, receptionsParLigne.get(lid) ?? [])
       }
       // Lots by number on both databases (HFSQL's own order here is its
       // index's internal one, which PostgreSQL cannot reproduce).

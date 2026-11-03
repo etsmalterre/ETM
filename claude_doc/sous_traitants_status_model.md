@@ -206,7 +206,7 @@ En reprise (2) · Soumis au client (a soumission email names the lot,
 `envoi_email` 15 `notes`, digits + R kept by `cleLot()`; a soumission sent
 before any BL makes a lot of its own) · Contrôle ennoblisseur (ACP/ACB, key `attente_mesures`: no `laize_sst` /
 `poids_sst`, no `laize_tirelle`) · Contrôle Malterre (ACL, key `attente_tirelle`: dyer measures in, no
-`laize_tirelle`; our move, amber, flagged after 1 working day: Vincent
+`laize_tirelle`; our move, flagged at the end of the control window below: Vincent
 2026-10-11, was the dyer's until the label named Malterre; no « tirelle reçue »
 input) · À soumettre (tirelle measured,
 `designation_client.soumettre` for the line's client and ref) · À valider.
@@ -216,19 +216,39 @@ reteinture on a refusal) and stabilités on the received rolls (« Stabilités �
 soumettre / soumises »); `soumettre` is a bit set (1 stabilités, 2 coloris).
 Full rules: `screen_notes.md` § 10 « Two soumissions ».
 Each step has whose move (teinturier / nous / client) and a computed chase date
-(`RELANCE_J`: measures +1 working day after reception, tirelle +3, soumission +5,
-our steps +1; estimates to correct from use).
+(`RELANCE_J`). **Since 2026-11-03 (Vincent, order 9113) a received lot has ONE control
+window, `RELANCE_J.controle` = 5 working days from its reception** (public holidays
+counted, `lib/jours-ouvres.ts`), for every control step: dyer measures, tirelle,
+soumission to send, rapport de contrôle, « Valider le lot ». Red only after it: chase
+the dyer or do the Malterre controls (the Point still asks the measures daily, only
+the colour waits; it was +1 day and turned an order red the Monday after a Friday BL).
+Client answer to a soumission +5 from the send; refusé par le client / coloris validé
+to pass on stay +1 (decisions, not controls).
+**A dyer line is delivered once every écru handed over came back dyed**
+(`lib/ligne-sst-livree.ts`, the Point's v5 rule, shared): the API returns
+`livree_le` (day of the last roll received), the line card prints « Livrée le … »
+and its « Livraison » délai no longer turns red. The legacy `sstatut` « Terminé »
+is written by nobody any more and cannot be the signal.
 
 **Order steps**: À envoyer · Attente délai (relance = `date_notif`, the only date
 a person still moves) · En teinture (date shown = the earliest délai) ·
-En contrôle (at least one lot open, chase = earliest among them; the lot's own step —
-contrôle ennoblisseur / Malterre, soumissions, reprise — is detailed on Qualité › Suivi
-lots only) · back to En traitement once every lot is validated while écru is still at the
+En contrôle (at least one RECEIVED lot open: it starts with the first reception,
+Vincent 2026-11-03; a lot open before any reception (coloris soumis / validé, en rame,
+reteinture) leaves the order « En traitement » on its délai; **no date and no colour on the order since
+2026-11-03** (Vincent): each lot's control window turns IT red on Qualité › Suivi lots
+(`urgenceLot`), the one place the work is done, and the daily Point asks the dyer's
+measures; only écru still at the dyer (a solde) keeps the order on the dyer's délai.
+The lot's own step — contrôle ennoblisseur / Malterre, soumissions, reprise — is
+detailed on Suivi lots only) · back to En traitement once every lot is validated while écru is still at the
 dyer (the « solde ») · À clôturer (every lot validated, nothing at the dyer) · Terminée.
 « En réception » existed 2026-10-30 → 11-02 and was merged into En contrôle (Vincent:
 the most important move is a lot's control). The list's search tags are the order steps
-only; a coloured card prints its action (« Relancer le client · lot N »), and the detail
-panel's « Lots en cours » link to Suivi lots.
+only; the detail panel's « Lots en cours » (step pill, no date) link to Suivi lots.
+The side panel shows no date but the délai question's « Relance » (while it is
+asked): the délai is each LINE's, printed on its card, and a second copy in the
+panel read as a different date (no « La main est à », no solde sentence either);
+never typed on an ennoblissement order (the typed
+`date_notif` field survives on Tricotage orders only).
 The card's red / amber frame and the header counters follow the chase date
 (`urgenceCommande`). Typed search keywords still match a lot step
 (« tirelle », « soumis », « reprise »…); the tags offer order steps only. A client line's Ennoblissement tab shows the same step

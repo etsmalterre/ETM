@@ -31,7 +31,6 @@
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
-import { plusJoursOuvres } from './cycle-ennoblissement.js'
 import { ajouterJoursOuvres, joursOuvresEntre } from './jours-ouvres.js'
 
 /** `iso` + n working days: no weekend, no French public holiday (lib/jours-ouvres.ts,
@@ -95,6 +94,17 @@ export interface FaitsDelai {
   stockChezSst?: boolean
 }
 
+/** The old seed count (before 2026-11-02): weekends skipped, public holidays not. */
+function plusJoursSemaine(iso: string, n: number): string {
+  let t = Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10))
+  for (let k = 0; k < n;) {
+    t += 86_400_000
+    const j = new Date(t).getUTCDay()
+    if (j !== 0 && j !== 6) k++
+  }
+  return new Date(t).toISOString().slice(0, 10)
+}
+
 /** From when the délai is due: the latest report, else date_notif, else bon + 3
  *  (bon + 1 with the pieces already at the dyer). date_notif is seeded at bon + 3
  *  when the bon is made: only a date moved by hand overrides the seed. A seed
@@ -104,7 +114,7 @@ export function echeanceDelai(f: FaitsDelai): string | null {
   const report = [...f.reports].sort((a, b) => a.le.localeCompare(b.le)).at(-1)
   if (report) return report.echeance
   const seed = f.demandeLe ? plusOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
-  const ancienSeed = f.demandeLe ? plusJoursOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
+  const ancienSeed = f.demandeLe ? plusJoursSemaine(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
   if (f.dateNotif && f.dateNotif !== seed && f.dateNotif !== ancienSeed) return f.dateNotif
   if (f.stockChezSst && f.demandeLe) return plusOuvres(f.demandeLe, DELAI_STOCK_J)
   return seed ?? f.dateNotif

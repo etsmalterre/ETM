@@ -216,6 +216,9 @@ interface LigneCommande {
   total_kg_ecru_lie?: number
   nb_fini_recu?: number
   total_metrage_fini_recu?: number
+  /** 'YYYYMMDD' once every écru handed to the dyer came back dyed: the line is
+   *  delivered, its délai stops alerting (API lib/ligne-sst-livree.ts). */
+  livree_le?: string | null
   /** Per-lot breakdown of the received fini rolls (empty lot groups under
    *  ''). Feeds the "Ml reçus" tooltip in the totals footer. */
   fini_lots?: Array<{ lot: string; nb: number; metrage: number }>
@@ -601,10 +604,6 @@ const ETAPE_LOT_META: Record<EtapeLot, { label: string; classes: string; attente
   valide:          { label: 'Validé',          classes: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
 }
 
-const MAIN_LABEL: Record<MainCycle, string> = { teinturier: 'Teinturier', nous: 'À nous', client: 'Client' }
-
-const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
-
 function EtapeLotPill({ etape, compact, prefix, children }: { etape: EtapeLot; compact?: boolean; prefix?: string; children?: React.ReactNode }) {
   const m = ETAPE_LOT_META[etape]
   return (
@@ -631,20 +630,6 @@ function commandeTags(rows: CommandeListRow[], famille: SstFamille): SearchTagDe
     }
   })
   return phases
-}
-
-/** Ennoblissement card: a coloured card prints what to do (mps_designer §41) —
- *  whom to chase, and for which lot. The lot steps themselves stay on Qualité ›
- *  Suivi lots and in the detail panel (2026-11-02). */
-function CycleResume({ row, urgency }: { row: CommandeListRow; urgency: 'late' | 'soon' | null }) {
-  if (!urgency || row.phase !== 'en_controle' || !row.relance) return null
-  const lot = (row.lots ?? []).find((l) => l.relance === row.relance)
-  const quoi = row.main === 'teinturier' ? 'Relancer l’ennoblisseur' : row.main === 'client' ? 'Relancer le client' : 'Lot à traiter dans Suivi lots'
-  return (
-    <p className={cn('mt-1 text-[11px] font-medium truncate', urgency === 'late' ? 'text-red-600' : 'text-amber-700')}>
-      {quoi}{lot ? ` · lot ${lot.lot}` : ''}
-    </p>
-  )
 }
 
 /** A phase's pill meta. Both menus now share their labels (« À envoyer »
@@ -1581,7 +1566,6 @@ function CommandeList({
                 )}
               </div>
               {!!row.jauge && <JaugeTricotageBar jauge={row.jauge} />}
-              {famille === 'ennoblissement' && <CycleResume row={row} urgency={urgency} />}
             </div>
           )
         })}
@@ -2417,7 +2401,10 @@ function LineCard({
               // A rectiligne line's sstatut never moves (legacy parity: no
               // reception, no affectation), so the closed order is its only
               // « done » signal — without it every soldée col order reads late.
-              const lineDone = isLineDone(line.sstatut) || (isRecti && linesLocked)
+              // Delivered (every écru back dyed, Vincent 2026-11-03): the lot is
+              // « En contrôle » on its own clock, the délai no longer alerts.
+              const livreeLe = line.livree_le && /^\d{8}$/.test(line.livree_le) ? line.livree_le : ''
+              const lineDone = isLineDone(line.sstatut) || (isRecti && linesLocked) || !!livreeLe
               const lineUrgency = deliveryUrgency(dateLivRaw, lineDone ? 1 : 0)
               // When the délai is past, surface how overdue it is on a
               // second line right under the Livraison date.
@@ -2439,6 +2426,9 @@ function LineCard({
                       </span>
                     )}
                   </span>
+                  {livreeLe && (
+                    <span className="text-xs text-muted-foreground">Livrée le {formatHfsqlDate(livreeLe)}</span>
+                  )}
                   {lineUrgency === 'late' && (
                     <span className="text-xs font-medium">
                       {overdue >= 1
@@ -6716,35 +6706,35 @@ function MentionsQualiteCard({ commandeId }: { commandeId: number }) {
   )
 }
 
-/** Ennoblissement: whose move, when to chase, and the open lots with their
- *  step. The relance is computed from the step (lib/cycle-ennoblissement.ts).
- *  The délai question is moved by its two gestures only, « Relancer » and
- *  « Repousser » (lib/delai-sst.ts, LIVA #1314) — never by typing a date. */
+/** Ennoblissement: the délai question while it is asked (« Relancer » /
+ *  « Repousser » only, lib/delai-sst.ts, LIVA #1314), and the open lots with
+ *  their step, each linked to Qualité › Suivi lots where it turns red. No other
+ *  date (Vincent 2026-11-03): the délai is each LINE's, printed on its card;
+ *  repeating it here read as a second, different date. Never a typed date. */
 function CycleCard({ commande, cycle, isEditing }: {
   commande: CommandeDetail
   cycle: CycleCommande
   isEditing: boolean
 }) {
+  const attenteDelai = commande.phase === 'attente_delai'
+  if (!attenteDelai && cycle.lots.length === 0) return null
   return (
     <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-          {/* En traitement: the date is the dyer's délai, not a chase we chose. */}
-          <BellRing className="h-3.5 w-3.5 text-accent" />{commande.phase === 'en_teinture' ? 'Délai' : 'Relance'}
-        </span>
-        <span className={cn('text-sm', cycle.urgence === 'late' && 'text-red-600 font-semibold', cycle.urgence === 'soon' && 'text-amber-700 font-semibold')}>
-          {cycle.relance ? formatHfsqlDate(cycle.relance.replace(/-/g, '')) : '—'}
-        </span>
-      </div>
-      {!!cycle.main && (
-        <KV label="La main est à" value={<span className={cn(cycle.main === 'nous' && 'text-amber-700 font-medium')}>{cycle.main === 'teinturier' ? (commande.sous_traitant_nom || MAIN_LABEL.teinturier) : MAIN_LABEL[cycle.main]}</span>} />
+      {attenteDelai && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+            <BellRing className="h-3.5 w-3.5 text-accent" />Relance
+          </span>
+          <span className={cn('text-sm', cycle.urgence === 'late' && 'text-red-600 font-semibold', cycle.urgence === 'soon' && 'text-amber-700 font-semibold')}>
+            {cycle.relance ? formatHfsqlDate(cycle.relance.replace(/-/g, '')) : '—'}
+          </span>
+        </div>
       )}
-      {commande.phase === 'attente_delai' && cycle.delai && (
+      {attenteDelai && cycle.delai && (
         <DelaiQuestion commandeId={commande.IDcommande_sous_traitant} delai={cycle.delai} disabled={isEditing} enRetard={cycle.urgence === 'late'} />
       )}
-      {cycle.solde && <p className="text-[11px] text-muted-foreground">Des pièces sont encore chez le teinturier (solde).</p>}
       {cycle.lots.length > 0 && (
-        <div className="pt-2 border-t border-border/50 space-y-1.5">
+        <div className={cn('space-y-1.5', attenteDelai && 'pt-2 border-t border-border/50')}>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Lots en cours</p>
           {cycle.lots.map((l) => (
             <div key={`${l.lot}-${l.idsuivilot}`} className="flex items-center gap-2 text-sm">
@@ -6756,7 +6746,6 @@ function CycleCard({ commande, cycle, isEditing }: {
                 <span className="font-medium tabular-nums">{l.lot}</span>
               )}
               <EtapeLotPill etape={l.etape} />
-              <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">{l.relance ? `relance ${jjmm(l.relance)}` : ''}</span>
             </div>
           ))}
         </div>

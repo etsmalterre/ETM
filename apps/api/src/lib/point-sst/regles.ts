@@ -15,6 +15,8 @@
 // rule: db.ts carries it to the next points while the line's facts stay the
 // same (`reprisesRetirees()`), it never becomes a filter here.
 
+import { ecruToutRevenu } from '../ligne-sst-livree.js'
+
 export const SECTIONS = [
   { n: 1, titre: 'Pour mémoire, sont prévues en sortie dans les prochains jours les commandes suivantes :', court: 'Sorties prévues' },
   { n: 2, titre: 'Puis-je avoir vos contrôles des lots suivants :', court: 'Contrôles' },
@@ -118,7 +120,7 @@ export const lotCourt = (lot: string) => lot.replace(/^MA/i, '').trim()
  *  for the dyer (Vincent 2026-10-11). Without any écru handed over, rolls back
  *  make the line complete once its date has passed, a « solde » before (9013, 05/10). */
 function recueComplete(l: LigneFait, jour: string): boolean {
-  if (l.ecruAffectes > 0) return l.ecruRevenus >= l.ecruAffectes
+  if (l.ecruAffectes > 0) return ecruToutRevenu(l.ecruAffectes, l.ecruRevenus)
   return l.nbRecus > 0 && (!l.dateLivraison || l.dateLivraison < jour)
 }
 
