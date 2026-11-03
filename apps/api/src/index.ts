@@ -54,6 +54,7 @@ import { atelierRouter } from './routes/atelier.js'
 import { appareilsAtelierRouter } from './routes/appareils-atelier.js'
 import { trsRouter } from './routes/trs.js'
 import { pointageRouter } from './routes/pointage.js'
+import { tirelleRouter } from './routes/tirelle.js'
 import { pointageAdminRouter } from './routes/pointage-admin.js'
 import { dashboardTrmRouter } from './routes/dashboard-trm.js'
 import { primeTrmRouter } from './routes/prime-trm.js'
@@ -240,6 +241,10 @@ app.use('/api/trs', trsRouter)
 // client: the shared time clock, on the legacy `pointage` database. Enrolled
 // tablet only, under its own `mps_pointeuse` cookie (routes/pointage.ts).
 app.use('/api/pointage', pointageRouter)
+// Tirelle tablet (apps/tirelle, host tirelle.intra.etsmalterre.com) — the lab's
+// controls of the tirelles, an ETM client. Enrolled tablet only, under its own
+// `mps_tirelle` cookie (routes/tirelle.ts, lib/tirelle-labo.ts).
+app.use('/api/tirelle', tirelleRouter)
 // Admin Pointage — the office's side of the same time clock, from the TRM ERP
 // menu « Pointage » (cookie session + the menu grant screen_pointage, LIVA 1196).
 app.use('/api/pointage-admin', pointageAdminRouter)

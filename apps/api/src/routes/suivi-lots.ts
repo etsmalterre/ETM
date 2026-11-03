@@ -47,6 +47,7 @@ import {
   CHAMPS_VRILLAGE, ecrireVrillages, lireSaisieVrillage, VrillageInvalide, vrillagesDuLot,
   VRILLAGE_MAX, type ChampVrillage, type VrillagesLot,
 } from '../lib/vrillage.js'
+import { etatLaboDuLot } from '../lib/tirelle-labo.js'
 import { colorisAControler, colorisDemande, historiqueColoris, lireVerdictColoris, rondsZero, rondZeroDe } from '../lib/coloris-lot.js'
 
 export const suiviLotsRouter: RouterType = Router()
@@ -696,6 +697,9 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
           historique: await historiqueColoris(IDref_fini, IDref_fini_colori),
         }
       })(),
+
+      // Where the lab tablet stands on this lot (apps/tirelle, lib/tirelle-labo.ts).
+      labo: await etatLaboDuLot(id),
 
       observations: (fixedSelf?.observations ?? '').toString(),
       emplacement_tirelle: (fixedSelf?.emplacement_tirelle ?? '').toString(),

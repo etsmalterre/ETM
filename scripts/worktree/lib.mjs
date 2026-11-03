@@ -108,12 +108,15 @@ export const MAIN_SLOT = 0
 // Dev ports of the TRM monorepo's PWAs — apps/atelier (5176, also TRM slot 6),
 // apps/trs (5177) and apps/pointage (5178) — so every MPS API worktree answers them.
 export const TRM_PWA_PORTS = [5176, 5177, 5178]
+// Dev port of this repo's own PWA — apps/tirelle (the lab tablet, 5179).
+export const ETM_PWA_PORTS = [5179]
 
 export const DEV_WEB_ORIGINS = [
   ...new Set([
     5174,
     5175,
     ...TRM_PWA_PORTS,
+    ...ETM_PWA_PORTS,
     webPort(MAIN_SLOT),
     ...SLOTS.map(webPort),
     adminPort(MAIN_SLOT),

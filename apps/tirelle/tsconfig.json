@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    // WebWorker is here for src/sw.ts (the injectManifest service worker).
+    // vite-plugin-pwa's docs suggest a second tsconfig for the SW; one lib
+    // array is simpler and the only cost is that DOM globals type-check
+    // inside sw.ts too — which the `self` cast at the top of that file makes
+    // harmless.
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": ["vite/client", "vite-plugin-pwa/client"]
+  },
+  "include": ["src/**/*", "vite.config.ts"]
+}

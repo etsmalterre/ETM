@@ -44,11 +44,12 @@ const DATA_DIR = path.resolve(__dirname, '../../data')
 const FILE_PATH = path.join(DATA_DIR, 'appareils-atelier.json')
 
 /** What an enrolled device is for. The store also holds the POINTEUSE tablet
+ *  and, since 2026-11-03, the lab's TIRELLE tablet (routes/tirelle.ts)
  *  (routes/pointage.ts, 2026-09-15): one list in Paramètres › Utilisateurs ›
  *  Appareils, one revocation. A code enrols only its own type, and each app
  *  refuses the other's devices — a tablet never records production, a phone
  *  never clocks anyone in. Rows written before the type existed are phones. */
-export type AppareilType = 'atelier' | 'pointeuse'
+export type AppareilType = 'atelier' | 'pointeuse' | 'tirelle'
 
 export function typeAppareil(a: { type?: AppareilType }): AppareilType {
   return a.type ?? 'atelier'

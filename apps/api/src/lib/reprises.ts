@@ -14,7 +14,10 @@
 //     (Sous-traitants › Réception, chosen rolls) OPENS a reprise: one `reprise`
 //     row per (line, lot) episode, rank 1, 2…, with one `reprise_piece` per
 //     roll, rolls in état 2, the lot in état 2, the lot's measures kept in
-//     `lot_avant`;
+//     `lot_avant` and ERASED on suivilot — the dyer's and ours — so both
+//     controls are redone on return, and the lab tablet is asked to throw
+//     away the lot's round, square and tirelle (lib/tirelle-labo.ts,
+//     decision Vincent 2026-11-03);
 //   - the reprise réception (PATCH of each roll back to état 1) records the
 //     roll's new poids / métrage and CLOSES the reprise once no roll of it is
 //     still at the dyer;
@@ -28,6 +31,7 @@
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
+import { effacerControlesPourReprise } from './tirelle-labo.js'
 
 export interface Auteur { id: number; nom: string }
 
@@ -106,11 +110,15 @@ async function rouleauxDeLigne(tx: Sql, ligneId: number, ids: number[] | null, l
   }))
 }
 
-/** The lot's measures before the rework (the control is redone on return). */
+/** The lot's measures before the rework. Opening a reprise ERASES them on
+ *  suivilot (decision Vincent 2026-11-03, lib/tirelle-labo.ts): the reworked
+ *  lot is controlled again from scratch, by the dyer and by us, so this copy
+ *  is the only trace of the first control. */
 async function mesuresLot(tx: Sql, ligneId: number, lot: string): Promise<Record<string, unknown> | null> {
   const [s] = await tx<Record<string, unknown>[]>`
-    SELECT idsuivilot, idetatlot, laize_sst, poids_sst, rendement_sst, stabl_sst, stabh_sst,
-           laize_tirelle, poids_tirelle, rendement_tirelle, stabl_tirelle, stabh_tirelle
+    SELECT idsuivilot, idetatlot, laize_sst, poids_sst, rendement_sst, stabl_sst, stabh_sst, vrillage_sst,
+           laize_tirelle, poids_tirelle, rendement_tirelle, stabl_tirelle, stabh_tirelle, vrillage_tirelle,
+           coloris_tirelle, trim(emplacement_tirelle::text) AS emplacement_tirelle
     FROM suivilot WHERE idligne_commande_sous_traitant = ${ligneId} AND trim(lot::text) = ${lot}
     ORDER BY idsuivilot LIMIT 1`
   return s ?? null
@@ -167,6 +175,8 @@ export async function ouvrirReprise(opts: {
           INSERT INTO reprise (idligne_commande_sous_traitant, lot, rang, statut, origine, motif, nature, envoye_le, envoye_par_id, envoye_par, lot_avant)
           VALUES (${opts.ligneId}, ${lot}, ${rang}, 'ouverte', 'geste', ${motif}, ${opts.nature ?? 'rame'}, now(), ${opts.par.id}, ${opts.par.nom}, ${avant ? tx.json(avant as never) : null})
           RETURNING id, rang`
+        // Both controls start again, and the lab throws away round, square and tirelle.
+        await effacerControlesPourReprise(tx, opts.ligneId, lot, motif)
       }
       for (const r of rs) {
         await tx`

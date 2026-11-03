@@ -1562,6 +1562,26 @@ WHERE c.idligne_commande_sous_traitant > 0
 ON CONFLICT DO NOTHING;
 `,
   },
+  {
+    // The lab tablet « Tirelle » (apps/tirelle, lib/tirelle-labo.ts, 2026-11-03):
+    // the MEASURES stay on suivilot (*_tirelle, coloris_tirelle,
+    // emplacement_tirelle); this row only says the lab is done with the lot
+    // (`termine_le`) and, after a reprise (lib/reprises.ts), that its round,
+    // square and tirelle must be thrown away (`a_jeter_*`, cleared by « Jetés »).
+    name: '0057_tirelle_labo',
+    sql: `
+CREATE TABLE tirelle_labo (
+  idsuivilot bigint PRIMARY KEY,
+  termine_le timestamptz,
+  a_jeter_depuis timestamptz,
+  a_jeter_motif text,
+  a_jeter_casier text,
+  jete_le timestamptz,
+  maj_le timestamptz NOT NULL DEFAULT now()
+);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'tirelle_labo')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

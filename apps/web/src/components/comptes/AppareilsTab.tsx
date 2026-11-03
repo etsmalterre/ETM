@@ -23,7 +23,7 @@
 import { useEffect, useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertCircle, Check, Clock, KeyRound, Loader2, Monitor, Pencil, Plus, Smartphone,
+  AlertCircle, Check, Clock, FlaskConical, KeyRound, Loader2, Monitor, Pencil, Plus, Smartphone,
   Trash2, UserCheck, Users, X,
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
@@ -38,7 +38,7 @@ import { COMPTES_KEY, type Compte } from './CompteSidebar'
 
 // ── Wire types ─────────────────────────────────────────
 
-type Kind = 'pc' | 'atelier' | 'pointeuse'
+type Kind = 'pc' | 'atelier' | 'pointeuse' | 'tirelle'
 
 interface BonnetierRef { IDbonnetier: number; prenom: string; nom: string }
 
@@ -55,7 +55,7 @@ interface PostePc {
 
 interface Telephone {
   id: number
-  type: 'atelier' | 'pointeuse'
+  type: 'atelier' | 'pointeuse' | 'tirelle'
   libelle: string
   bonnetier: BonnetierRef | null
   creeLe: string
@@ -132,6 +132,15 @@ const KINDS: Record<Kind, {
     placeholder: 'Pointeuse atelier',
     aideLibelle: 'Ce nom distingue la tablette dans cette liste.',
   },
+  tirelle: {
+    label: 'Tablette labo',
+    icone: FlaskConical,
+    appareil: 'la tablette du labo',
+    hote: 'tirelle.intra.etsmalterre.com',
+    ouSaisir: '« Enrôler cette tablette », sur l’écran d’accueil de l’application Tirelle',
+    placeholder: 'Tablette labo',
+    aideLibelle: 'Ce nom distingue la tablette dans cette liste.',
+  },
 }
 
 /** What can be enrolled under this account — the API's rule
@@ -141,13 +150,14 @@ const KINDS: Record<Kind, {
  *  under a poste: it would carry the poste's screens and rights. */
 function typesPossibles(compte: Compte): Kind[] {
   if (compte.typeCompte === 'poste') return ['pc']
-  if (compte.typeCompte === 'appareils') return ['atelier', 'pointeuse']
+  if (compte.typeCompte === 'appareils') return ['atelier', 'pointeuse', 'tirelle']
   return compte.apps.includes('trm') ? ['atelier', 'pointeuse'] : []
 }
 
-const APPLICATIONS: Record<'atelier' | 'pointeuse', string> = {
+const APPLICATIONS: Record<'atelier' | 'pointeuse' | 'tirelle', string> = {
   atelier: 'Application atelier',
   pointeuse: 'Application pointeuse',
+  tirelle: 'Application Tirelle (labo)',
 }
 
 // ── Helpers ────────────────────────────────────────────
@@ -218,7 +228,7 @@ function lignesDe(data: AppareilsPayload): Ligne[] {
     applicationInconnue: false,
     ref: t.id,
   }))
-  const ordre: Record<Kind, number> = { pc: 0, pointeuse: 1, atelier: 2 }
+  const ordre: Record<Kind, number> = { pc: 0, pointeuse: 1, tirelle: 2, atelier: 3 }
   return [...pcs, ...tels].sort((a, b) => ordre[a.kind] - ordre[b.kind] || a.libelle.localeCompare(b.libelle, 'fr'))
 }
 
@@ -348,7 +358,7 @@ export function AppareilsTab({ compte }: { compte: Compte }) {
 
       <ConfirmDialog
         open={revoquerCible !== null}
-        title={revoquerCible ? `Révoquer ${revoquerCible.kind === 'pc' ? 'le PC' : revoquerCible.kind === 'pointeuse' ? 'la pointeuse' : 'le téléphone'}` : ''}
+        title={revoquerCible ? `Révoquer ${revoquerCible.kind === 'pc' ? 'le PC' : revoquerCible.kind === 'pointeuse' ? 'la pointeuse' : revoquerCible.kind === 'tirelle' ? 'la tablette du labo' : 'le téléphone'}` : ''}
         description={revoquerCible
           ? `« ${revoquerCible.libelle} » est déconnecté aussitôt et ne pourra plus rien enregistrer. Il faudra un nouveau code, saisi sur place, pour l’enrôler à nouveau.`
           : undefined}

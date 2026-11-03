@@ -1,0 +1,498 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* MPS/ETS Malterre Brand Colors */
+    /* Primary: #143D6B (Medium-dark blue) */
+    /* Accent Gold: #F2B80A (Vivid Gold) */
+    /* Accent Blue: #3B7DC9 (Corporate Blue) */
+
+    /* Light mode - bright warm whites */
+    --background: 40 18% 99%;
+    --foreground: 211 22% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 211 22% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 211 22% 14%;
+
+    /* Primary - MPS Blue #143D6B */
+    --primary: 211 68% 25%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary - Warm gray */
+    --secondary: 38 12% 96%;
+    --secondary-foreground: 211 12% 22%;
+
+    /* Muted - Warm soft backgrounds */
+    --muted: 38 12% 96%;
+    --muted-foreground: 211 8% 46%;
+
+    /* Accent - MPS Vivid Gold #F2B80A */
+    --accent: 44 92% 50%;
+    --accent-foreground: 211 25% 12%;
+
+    /* Brand Gold for highlights */
+    --gold: 44 92% 50%;
+    --gold-foreground: 211 25% 12%;
+    --gold-light: 44 85% 94%;
+
+    /* Accent Blue for alternative highlights */
+    --accent-blue: 211 68% 35%;
+    --accent-blue-foreground: 0 0% 100%;
+
+    /* Extended Palette - Teal */
+    --teal: 175 42% 45%;
+    --teal-light: 175 35% 92%;
+    --teal-foreground: 0 0% 100%;
+
+    /* Extended Palette - Terracotta */
+    --terracotta: 18 55% 48%;
+    --terracotta-light: 18 45% 92%;
+    --terracotta-foreground: 0 0% 100%;
+
+    /* Extended Palette - Sand */
+    --sand: 38 20% 93%;
+    --sand-darker: 38 16% 86%;
+    --sand-foreground: 38 15% 25%;
+
+    /* Success - Refined Green */
+    --success: 152 69% 40%;
+    --success-foreground: 0 0% 100%;
+
+    /* Warning - Warm Amber */
+    --warning: 38 92% 50%;
+    --warning-foreground: 38 92% 10%;
+
+    /* Destructive - Refined Red */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 211 10% 91%;
+    --input: 211 10% 91%;
+    --ring: 44 92% 50%;
+    --radius: 0.625rem;
+
+    /* Soft shadows with blue tint */
+    --shadow-sm: 0 1px 2px 0 rgb(20 61 107 / 0.04), 0 1px 3px 0 rgb(20 50 90 / 0.02);
+    --shadow-md: 0 4px 6px -1px rgb(20 61 107 / 0.05), 0 2px 4px -2px rgb(20 50 90 / 0.02);
+    --shadow-lg: 0 10px 15px -3px rgb(20 61 107 / 0.06), 0 4px 6px -4px rgb(20 50 90 / 0.03);
+    --shadow-xl: 0 20px 25px -5px rgb(20 61 107 / 0.08), 0 8px 10px -6px rgb(20 50 90 / 0.03);
+
+    /* Gradient tokens */
+    --gradient-brand: linear-gradient(135deg, hsl(211 68% 25%) 0%, hsl(211 68% 18%) 100%);
+    --gradient-surface: linear-gradient(180deg, hsl(40 18% 99%) 0%, hsl(38 14% 96%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(44 92% 50%) 0%, hsl(44 92% 43%) 100%);
+    --gradient-accent-subtle: linear-gradient(135deg, hsl(44 92% 50% / 0.10) 0%, hsl(44 92% 50% / 0.03) 100%);
+    --gradient-teal: linear-gradient(135deg, hsl(175 42% 45%) 0%, hsl(175 42% 38%) 100%);
+    --gradient-warm: linear-gradient(180deg, hsl(40 18% 99%) 0%, hsl(38 14% 97%) 100%);
+  }
+
+  .dark {
+    --background: 211 15% 8%;
+    --foreground: 40 18% 95%;
+    --card: 211 12% 11%;
+    --card-foreground: 40 18% 95%;
+    --popover: 211 12% 11%;
+    --popover-foreground: 40 18% 95%;
+
+    /* Primary - Lighter blue for dark mode */
+    --primary: 211 68% 50%;
+    --primary-foreground: 211 47% 6%;
+
+    --secondary: 211 12% 16%;
+    --secondary-foreground: 40 15% 90%;
+    --muted: 211 12% 16%;
+    --muted-foreground: 211 10% 60%;
+
+    /* Accent - Vivid Gold stays vibrant */
+    --accent: 44 92% 52%;
+    --accent-foreground: 211 25% 10%;
+
+    --gold: 44 92% 52%;
+    --gold-foreground: 211 25% 10%;
+    --gold-light: 44 60% 18%;
+
+    --accent-blue: 211 68% 50%;
+    --accent-blue-foreground: 0 0% 100%;
+
+    /* Extended Palette - Dark mode */
+    --teal: 175 42% 55%;
+    --teal-light: 175 30% 18%;
+    --teal-foreground: 0 0% 100%;
+
+    --terracotta: 18 55% 55%;
+    --terracotta-light: 18 40% 18%;
+    --terracotta-foreground: 0 0% 100%;
+
+    --sand: 38 15% 18%;
+    --sand-darker: 38 12% 14%;
+    --sand-foreground: 38 10% 85%;
+
+    --success: 152 69% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 38 92% 10%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 211 40% 98%;
+
+    --border: 211 12% 20%;
+    --input: 211 12% 20%;
+    --ring: 44 92% 52%;
+
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.4);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.45);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.5);
+
+    --gradient-brand: linear-gradient(135deg, hsl(211 68% 45%) 0%, hsl(211 68% 35%) 100%);
+    --gradient-surface: linear-gradient(180deg, hsl(211 12% 12%) 0%, hsl(211 12% 9%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(44 92% 52%) 0%, hsl(44 92% 45%) 100%);
+    --gradient-accent-subtle: linear-gradient(135deg, hsl(44 92% 52% / 0.15) 0%, hsl(44 92% 52% / 0.05) 100%);
+    --gradient-teal: linear-gradient(135deg, hsl(175 42% 55%) 0%, hsl(175 42% 45%) 100%);
+    --gradient-warm: linear-gradient(180deg, hsl(211 15% 10%) 0%, hsl(211 12% 8%) 100%);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    @apply h-full overflow-hidden;
+  }
+
+
+  body {
+    @apply bg-background text-foreground h-full overflow-hidden;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    background-image:
+      radial-gradient(ellipse 100% 60% at 50% -10%, hsl(44 92% 50% / 0.05), transparent 60%),
+      radial-gradient(ellipse 80% 50% at 0% 50%, hsl(211 68% 35% / 0.02), transparent),
+      linear-gradient(180deg, hsl(40 18% 99%) 0%, hsl(38 14% 98%) 100%);
+    background-attachment: fixed;
+  }
+
+  #root {
+    @apply h-full overflow-hidden;
+  }
+
+  .dark body {
+    background-image:
+      radial-gradient(ellipse 100% 60% at 50% -10%, hsl(44 92% 52% / 0.08), transparent 60%),
+      radial-gradient(ellipse 80% 50% at 0% 50%, hsl(211 68% 40% / 0.04), transparent);
+  }
+
+  /* Premium heading styles */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading tracking-tight;
+    text-wrap: balance;
+  }
+
+  /* Refined focus states - gold */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/40 ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer components {
+  /* Premium card styling */
+  .card-premium {
+    @apply relative overflow-hidden rounded-xl bg-card border border-border/50;
+    box-shadow: var(--shadow-md);
+    transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+  }
+
+  .card-premium:hover {
+    box-shadow: var(--shadow-lg);
+    @apply border-border;
+  }
+
+  /* Glass morphism effect */
+  .glass {
+    @apply bg-white/70 backdrop-blur-xl border border-white/20;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .dark .glass {
+    @apply bg-card/70;
+  }
+
+  /* Gradient text */
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: var(--gradient-brand);
+  }
+
+  /* Accent line decoration */
+  .accent-line {
+    @apply relative;
+  }
+
+  .accent-line::before {
+    content: '';
+    @apply absolute left-0 top-0 h-full w-1 rounded-full bg-accent;
+  }
+
+  /* Status badges */
+  .badge-status {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium;
+    @apply ring-1 ring-inset;
+  }
+
+  .badge-success {
+    @apply bg-success/10 text-success ring-success/20;
+  }
+
+  .badge-warning {
+    @apply bg-warning/10 text-warning ring-warning/30;
+  }
+
+  .badge-info {
+    @apply bg-primary/10 text-primary ring-primary/20;
+  }
+
+  .badge-pending {
+    @apply bg-muted text-muted-foreground ring-border;
+  }
+
+  .badge-teal {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium;
+    background: hsl(175 35% 92%);
+    color: hsl(175 42% 30%);
+    @apply ring-1 ring-inset;
+    ring-color: hsl(175 30% 80%);
+  }
+
+  .badge-terracotta {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium;
+    background: hsl(18 45% 92%);
+    color: hsl(18 55% 35%);
+    @apply ring-1 ring-inset;
+    ring-color: hsl(18 40% 80%);
+  }
+
+  /* Gold accent cards */
+  .card-warm {
+    @apply relative overflow-hidden rounded-xl bg-card border;
+    border-color: hsl(44 92% 50% / 0.15);
+    background: linear-gradient(135deg, hsl(0 0% 100%) 0%, hsl(44 92% 50% / 0.04) 100%);
+    box-shadow: var(--shadow-md), inset 0 1px 0 hsl(44 92% 50% / 0.06);
+    transition: all 0.2s ease;
+  }
+
+  .card-warm:hover {
+    border-color: hsl(44 92% 50% / 0.25);
+    box-shadow: var(--shadow-lg), inset 0 1px 0 hsl(44 92% 50% / 0.08);
+  }
+
+  .card-teal {
+    @apply relative overflow-hidden rounded-xl bg-card border;
+    border-color: hsl(175 42% 45% / 0.15);
+    background: linear-gradient(135deg, hsl(0 0% 100%) 0%, hsl(175 42% 45% / 0.04) 100%);
+    box-shadow: var(--shadow-md);
+    transition: all 0.2s ease;
+  }
+
+  .card-teal:hover {
+    border-color: hsl(175 42% 45% / 0.25);
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* Icon containers with color */
+  .icon-box-gold {
+    @apply flex items-center justify-center rounded-xl;
+    background: linear-gradient(135deg, hsl(44 92% 50% / 0.15) 0%, hsl(44 92% 50% / 0.08) 100%);
+    color: hsl(44 92% 40%);
+  }
+
+  .icon-box-teal {
+    @apply flex items-center justify-center rounded-xl;
+    background: linear-gradient(135deg, hsl(175 42% 45% / 0.15) 0%, hsl(175 42% 45% / 0.08) 100%);
+    color: hsl(175 42% 40%);
+  }
+
+  .icon-box-terracotta {
+    @apply flex items-center justify-center rounded-xl;
+    background: linear-gradient(135deg, hsl(18 55% 48% / 0.15) 0%, hsl(18 55% 48% / 0.08) 100%);
+    color: hsl(18 55% 42%);
+  }
+
+  /* Warm dividers - gold tint */
+  .divider-warm {
+    @apply w-full h-px;
+    background: linear-gradient(90deg, transparent, hsl(44 92% 50% / 0.25), transparent);
+  }
+
+  /* Stat card glow effect - warm gold glow */
+  .stat-glow {
+    @apply relative;
+  }
+
+  .stat-glow::after {
+    content: '';
+    @apply absolute -inset-px rounded-xl opacity-0 transition-opacity duration-300;
+    background: linear-gradient(135deg, hsl(44 92% 50% / 0.12), hsl(44 92% 50% / 0.06));
+    z-index: -1;
+  }
+
+  .stat-glow:hover::after {
+    @apply opacity-100;
+  }
+
+  /* Teal glow variant */
+  .stat-glow-teal::after {
+    background: linear-gradient(135deg, hsl(175 42% 45% / 0.12), hsl(175 42% 45% / 0.06));
+  }
+
+  /* Smooth transitions */
+  .transition-premium {
+    @apply transition-all duration-300 ease-out;
+  }
+}
+
+@layer utilities {
+  /* Transparent scrollbar track — blends with parent bg */
+  .scrollbar-transparent::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-transparent::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-transparent::-webkit-scrollbar-thumb {
+    background: hsl(211 10% 75%);
+    border-radius: 3px;
+  }
+  .scrollbar-transparent::-webkit-scrollbar-thumb:hover {
+    background: hsl(211 10% 65%);
+  }
+
+  /* Animation utilities */
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out forwards;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.5s ease-out forwards;
+  }
+
+  .animate-slide-in-right {
+    animation: slideInRight 0.4s ease-out forwards;
+  }
+
+  /* Stagger children animations */
+  .stagger-children > * {
+    @apply animate-fade-in opacity-0;
+  }
+
+  .stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger-children > *:nth-child(2) { animation-delay: 50ms; }
+  .stagger-children > *:nth-child(3) { animation-delay: 100ms; }
+  .stagger-children > *:nth-child(4) { animation-delay: 150ms; }
+  .stagger-children > *:nth-child(5) { animation-delay: 200ms; }
+  .stagger-children > *:nth-child(6) { animation-delay: 250ms; }
+  .stagger-children > *:nth-child(7) { animation-delay: 300ms; }
+  .stagger-children > *:nth-child(8) { animation-delay: 350ms; }
+
+  /* The spacer above a top header. viewport-fit=cover lets the navy band paint
+     under the status bar, so in a browser tab or a `standalone` install it must
+     clear it. In the `fullscreen` install there is no status bar — but Chrome
+     on Android still reports its height as safe-area-inset-top, which left an
+     empty navy strip above the header (user, 2026-09-15). */
+  .safe-top {
+    height: env(safe-area-inset-top);
+    flex-shrink: 0;
+  }
+  @media (display-mode: fullscreen) {
+    .safe-top {
+      height: 0;
+    }
+  }
+  /* Fullscreen asked by the app itself (lib/plein-ecran.ts): same bar, same
+     empty strip to avoid. */
+  html:fullscreen .safe-top {
+    height: 0;
+  }
+
+  /* Number font feature */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── Atelier shell ────────────────────────────────────────────────────────
+   The ERP sizes its shell with h-screen on AppShell; this app is a phone, so
+   the root owns the viewport instead, as `height: 100%` down the chain.
+   Not `100vh`: mobile browser chrome slides in and out, and `vh` would leave
+   the last tile under the URL bar for the whole session. Not `100dvh` either
+   (2026-09-22, Armor X6, Chrome 138, Android 9): in the installed fullscreen
+   app Chrome resolved it ONCE at launch, while its 56 px toolbar still
+   counted, and never re-resolved it — the page stayed 696 px in a 640 px
+   window, the last tile and the version footer below the screen. `100%` is
+   the initial containing block, which follows the real window, and in a
+   browser tab Chrome sizes it as if the URL bar were shown, so the last tile
+   still clears it.
+   Overscroll is locked so a pull at the top of the métier list does not
+   rubber-band the whole page — at a machine that reads as the app glitching. */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Gloves and grease: no text selection anywhere, and no 300ms tap highlight
+   flashing on every press. Inputs opt back in when the saisie band lands. */
+body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The lab types its measures: inputs select and edit text normally. */
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}

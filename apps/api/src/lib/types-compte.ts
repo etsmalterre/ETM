@@ -20,11 +20,11 @@ export const TYPES_COMPTE: readonly TypeCompte[] = ['personne', 'poste', 'appare
  *  a pointeuse under an appareils account — or, until the régleurs' phones
  *  move under it (plan « point 4 », on site), under a person who is a TRM
  *  member. Never under a poste: the device would carry its screens' rights. */
-export type TypeEnrolement = 'pc' | 'atelier' | 'pointeuse'
+export type TypeEnrolement = 'pc' | 'atelier' | 'pointeuse' | 'tirelle'
 
 export function enrolementsPossibles(type: TypeCompte, apps: readonly AppCode[]): TypeEnrolement[] {
   if (type === 'poste') return ['pc']
-  if (type === 'appareils') return ['atelier', 'pointeuse']
+  if (type === 'appareils') return ['atelier', 'pointeuse', 'tirelle']
   return apps.includes('trm') ? ['atelier', 'pointeuse'] : []
 }
 

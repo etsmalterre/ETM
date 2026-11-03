@@ -201,6 +201,8 @@ interface SuiviLotDetail {
   /** Malterre's coloris check against the rond 0 (LIVA #1332). Absent on an older API. */
   coloris_tirelle?: 'conforme' | 'ecart' | null
   coloris_controle?: ColorisControle
+  /** Where the lab tablet (apps/tirelle) stands on the lot; null = not in the lab. */
+  labo?: { etape: string | null; libelle: string; termine_le: string | null } | null
   observations: string
   emplacement_tirelle: string
   fin_archivage: string
@@ -2432,6 +2434,16 @@ function ControlesTab({
         <KVVrillage label="Vrillage" field="vrillage_tirelle" detailVal={detail.vrillage_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         {detail.coloris_controle && (detail.coloris_controle.demande || detail.coloris_controle.est_rond0) && (
           <KVColoris controle={detail.coloris_controle} detailVal={detail.coloris_tirelle ?? null} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        )}
+        {detail.labo && (
+          <KV
+            label="Labo"
+            value={
+              <span className={cn('text-xs font-medium', detail.labo.etape === 'a_jeter' ? 'text-destructive' : 'text-muted-foreground')}>
+                {detail.labo.libelle}
+              </span>
+            }
+          />
         )}
         </CarteSansValeur.Provider>
       </SidebarCard>

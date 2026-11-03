@@ -96,13 +96,13 @@ function ecart(mesure: number | null, ref: number | null, decimales: number): nu
 }
 
 /** Inside [min, max]; a 0 bound is « not set » (HFSQL zero-fill). */
-function horsBornes(v: number | null, min: number, max: number): boolean | null {
+export function horsBornes(v: number | null, min: number, max: number): boolean | null {
   if (v == null || (min <= 0 && max <= 0)) return null
   return (min > 0 && v < min) || (max > 0 && v > max)
 }
 
 /** Shrinkage is negative: a retrait passes when it is ≥ the référentiel. */
-function horsRetrait(v: number | null, ref: number | null): boolean | null {
+export function horsRetrait(v: number | null, ref: number | null): boolean | null {
   if (v == null || ref == null || ref === 0) return null
   return v < ref
 }

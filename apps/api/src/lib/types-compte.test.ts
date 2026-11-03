@@ -7,7 +7,7 @@ describe('enrolementsPossibles', () => {
   })
 
   it('an appareils account enrols phones and pointeuses, without any app', () => {
-    expect(enrolementsPossibles('appareils', [])).toEqual(['atelier', 'pointeuse'])
+    expect(enrolementsPossibles('appareils', [])).toEqual(['atelier', 'pointeuse', 'tirelle'])
   })
 
   it('a person enrols a phone only as a TRM member (régleur phones, until moved)', () => {

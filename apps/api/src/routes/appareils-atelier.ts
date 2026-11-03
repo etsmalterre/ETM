@@ -165,8 +165,9 @@ appareilsAtelierRouter.get('/', async (req: Request, res: Response) => {
 
 const codeBody = z
   .object({
-    /** 'pointeuse' = the pointage tablet (never a fixed identity). Default: a phone. */
-    type: z.enum(['atelier', 'pointeuse']).optional(),
+    /** 'pointeuse' = the pointage tablet, 'tirelle' = the lab tablet (apps/tirelle);
+     *  neither has a fixed identity. Default: a phone. */
+    type: z.enum(['atelier', 'pointeuse', 'tirelle']).optional(),
     IDutilisateur: z.number().int().positive(),
     /** A régleur's own phone; omit / null for a shared bonnetier phone. */
     IDbonnetier: z.number().int().positive().nullable().optional(),
@@ -190,6 +191,10 @@ appareilsAtelierRouter.post('/codes', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'pointeuse_partagee', message: 'Une pointeuse n’a pas d’identité fixe.' })
       return
     }
+    if (type === 'tirelle' && IDbonnetier !== null) {
+      res.status(400).json({ error: 'tablette_labo_partagee', message: 'La tablette du labo n’a pas d’identité fixe.' })
+      return
+    }
     if (IDbonnetier !== null) {
       // A fixed identity is a RÉGLEUR's: the whole point of the fixed phone
       // is the régleur screens, and a bonnetier keeps picking his face.
@@ -206,7 +211,7 @@ appareilsAtelierRouter.post('/codes', async (req: Request, res: Response) => {
     if (!compte?.actif || !enrolementsPossibles(compte.type_compte, (await appsDe(IDutilisateur)) ?? APPS).includes(type)) {
       res.status(409).json({
         error: 'compte_inadapte',
-        message: 'Un téléphone ou une pointeuse s’enrôle sous un compte d’appareils actif (ou, pour un régleur, sous son propre compte membre de TRM).',
+        message: 'Un téléphone, une pointeuse ou la tablette du labo s’enrôle sous un compte d’appareils actif (ou, pour un régleur, son téléphone sous son propre compte membre de TRM).',
       })
       return
     }
