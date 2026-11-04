@@ -5249,7 +5249,15 @@ async function upsertSuivilot(opts: {
       `SELECT IDsuivilot FROM suivilot
        WHERE IDligne_commande_sous_traitant = ${opts.ligneId} AND lot = '${esc(lot)}'`,
     )
-    if (existing.length > 0) return Number(existing[0].IDsuivilot)  // Lot already tracked.
+    if (existing.length > 0) {
+      // Lot already tracked. Created by its coloris soumission under this
+      // very name (LIVA #1347: MA109547 submitted and received as
+      // « MA109547 »), it has no reception date yet: the BL gives it one,
+      // or the lot stays « En rame » forever.
+      const id = Number(existing[0].IDsuivilot)
+      if (!opts.avantReception) await mpsPg()`UPDATE suivilot SET date = CURRENT_DATE WHERE idsuivilot = ${id} AND date IS NULL`
+      return id
+    }
 
     // A lot submitted for its coloris before the BL (LIVA #1313) exists
     // without a reception date, typed from Perrine's mail (« 109547 ») while
