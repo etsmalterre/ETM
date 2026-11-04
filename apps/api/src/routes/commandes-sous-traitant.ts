@@ -5576,11 +5576,19 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
        FROM stock_ecru
        WHERE IDref_ecru = ${ctx.IDref_ecru}
          AND IDmagasin = ${ctx.IDsous_traitant}
+         AND IDsociete = 1
+         AND (IDligne_expedition_ETM = 0 OR IDligne_expedition_ETM IS NULL)
          AND (IDref_commande_affectation IS NULL OR IDref_commande_affectation = 0)
          AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)
        ORDER BY date_saisie DESC, IDstock_ecru DESC`,
     )
-    available = await fixEncoding(availRows, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
+    // In stock = Tombé Métier › Stock's rule (ETM_ECRU_IN_STOCK_WHERE in
+    // stock-ecru.ts): ETM's piece, not shipped, not dyed (own fini or merged
+    // component), not donated. Until 2026-11-04 a piece shipped to the client
+    // straight from the dyer (IDmagasin stays the dyer's) was offered here:
+    // 13 Kidur écrus at MATEL, shipped on orders 2603 / 3509 / 3533.
+    const consommes = await consumedEcruIds(availRows.map((r) => Number(r.IDstock_ecru) || 0))
+    available = await fixEncoding(availRows.filter((r) => !consommes.has(Number(r.IDstock_ecru) || 0)), 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   }
 
   // Resolve each roll's client reservation in two batched JOIN hops.

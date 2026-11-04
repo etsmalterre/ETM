@@ -6129,13 +6129,19 @@ function LinkEcruDialog({
   const bloquee = (r: StockEcruLite): string | undefined => (r.reservation_hors_teinture
     ? `Réservée à ${r.client_nom ?? 'un client'}${r.commande_numero ? ` (commande N° ${r.commande_numero})` : ''} pour un autre article ou coloris : retirez la réservation depuis la commande client`
     : undefined)
+  // Pieces reserved for another article are hidden by default (they cannot
+  // be affected here until the client order releases them); a tick shows
+  // them, greyed (decision Vincent 2026-11-04, like Transferts' 2e choix #1119).
+  const [voirReserveesAilleurs, setVoirReserveesAilleurs] = useState(false)
+  const nbReserveesAilleurs = useMemo(() => sorted.filter((r) => !!r.reservation_hors_teinture).length, [sorted])
   const visible = useMemo(() => {
+    const base = voirReserveesAilleurs ? sorted : sorted.filter((r) => !r.reservation_hors_teinture)
     const q = foldSearch(search)
-    if (!q) return sorted
-    return sorted.filter((r) =>
+    if (!q) return base
+    return base.filter((r) =>
       foldSearch(r.numero ?? '').includes(q) || foldSearch(r.lot ?? '').includes(q),
     )
-  }, [sorted, search])
+  }, [sorted, search, voirReserveesAilleurs])
 
   // The selection is always a subset of the rows on screen (#1120 rule,
   // shared with the transfer picker): narrowing the search drops the
@@ -6220,8 +6226,9 @@ function LinkEcruDialog({
               Affecter des rouleaux écru
             </h2>
             <p className="text-xs text-white/70 truncate tabular-nums">
-              {available.length} rouleau{available.length > 1 ? 'x' : ''} disponible{available.length > 1 ? 's' : ''}
+              {available.length - nbReserveesAilleurs} rouleau{available.length - nbReserveesAilleurs > 1 ? 'x' : ''} disponible{available.length - nbReserveesAilleurs > 1 ? 's' : ''}
               {sousTraitantNom && ` chez ${sousTraitantNom}`}
+              {nbReserveesAilleurs > 0 && ` · ${nbReserveesAilleurs} réservé${nbReserveesAilleurs > 1 ? 's' : ''} à un autre article`}
             </p>
           </div>
           <Button
@@ -6240,8 +6247,8 @@ function LinkEcruDialog({
           {available.length > 0 && (
             // The same search the transfer picker opens on: a piece number
             // typed here finds its row instead of being scrolled for.
-            <div className="flex-shrink-0 px-4 pt-4 pb-2">
-              <div className="relative">
+            <div className="flex-shrink-0 px-4 pt-4 pb-2 flex items-center gap-3">
+              <div className="relative flex-1 min-w-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <input
                   type="text"
@@ -6253,6 +6260,17 @@ function LinkEcruDialog({
                   className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
+              {nbReserveesAilleurs > 0 && (
+                <label className="flex items-center gap-2 text-sm cursor-pointer select-none flex-shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={voirReserveesAilleurs}
+                    onChange={(e) => setVoirReserveesAilleurs(e.target.checked)}
+                    className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer"
+                  />
+                  <span>Afficher les {nbReserveesAilleurs} réservés à un autre article</span>
+                </label>
+              )}
             </div>
           )}
 
@@ -6261,6 +6279,11 @@ function LinkEcruDialog({
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                 <TmRollIcon className="h-12 w-12 mb-2 opacity-40" />
                 <p className="text-sm">Aucun rouleau écru disponible pour cette référence</p>
+              </div>
+            ) : visible.length === 0 && search.trim() === '' ? (
+              <div className="flex flex-col items-center justify-center py-12 text-muted-foreground text-center">
+                <TmRollIcon className="h-12 w-12 mb-2 opacity-40" />
+                <p className="text-sm">Aucun rouleau affectable : les {nbReserveesAilleurs} présents sont réservés à un autre article</p>
               </div>
             ) : visible.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
