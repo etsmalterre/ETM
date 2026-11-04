@@ -5557,6 +5557,32 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   )
   const finiFixed = await fixEncoding(finiRowsRaw, 'stock_fini', 'IDstock_fini', ['numero', 'lot', 'observations', 'observation_sst'])
 
+  // Available écru rolls — every roll of the ref_ecru that maps to this
+  // fini line, currently unaffected AND physically present at the sous-
+  // traitant's magasin (stock_ecru.IDmagasin = ctx.IDsous_traitant). The
+  // legacy MPS workflow only links rolls the ennoblisseur actually holds;
+  // showing Malterre-magasin rolls here would let an operator link rolls
+  // that still need to be transferred. Coloris is intentionally not
+  // filtered: the ennoblisseur dyes regardless of source coloris. Their
+  // client reservation comes along: the « Affecter » picker greys a piece
+  // reserved for another article (the route refuses it, #1261) instead of
+  // letting the click fail.
+  let available: StockEcruLite[] = []
+  if (ctx.IDref_ecru > 0 && ctx.IDsous_traitant > 0) {
+    const availRows = await query<StockEcruLite>(
+      `SELECT IDstock_ecru, numero, lot, poids, metrage, IDref_ecru, IDcolori_ecru,
+              IDmagasin, IDordre_fabrication, date_saisie, IDligne_commande_client,
+              second_choix, observations
+       FROM stock_ecru
+       WHERE IDref_ecru = ${ctx.IDref_ecru}
+         AND IDmagasin = ${ctx.IDsous_traitant}
+         AND (IDref_commande_affectation IS NULL OR IDref_commande_affectation = 0)
+         AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)
+       ORDER BY date_saisie DESC, IDstock_ecru DESC`,
+    )
+    available = await fixEncoding(availRows, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
+  }
+
   // Resolve each roll's client reservation in two batched JOIN hops.
   // We can't do a 3-way JOIN here because the legacy bridge has issues
   // with CONVERT() across joins (see CLAUDE.md), so we walk the chain
@@ -5567,6 +5593,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   const lccIds = Array.from(new Set([
     ...linkedFixed.map((r) => Number(r.IDligne_commande_client) || 0),
     ...finiFixed.map((r) => Number((r as any).IDligne_commande_client) || 0),
+    ...available.map((r) => Number((r as any).IDligne_commande_client) || 0),
   ].filter((x) => x > 0)))
   if (lccIds.length > 0) {
     const lccRows = await query<{ IDligne_commande_client: number; IDcommande_client: number }>(
@@ -5609,28 +5636,6 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
     }
   }
 
-  // Available écru rolls — every roll of the ref_ecru that maps to this
-  // fini line, currently unaffected AND physically present at the sous-
-  // traitant's magasin (stock_ecru.IDmagasin = ctx.IDsous_traitant). The
-  // legacy MPS workflow only links rolls the ennoblisseur actually holds;
-  // showing Malterre-magasin rolls here would let an operator link rolls
-  // that still need to be transferred. Coloris is intentionally not
-  // filtered: the ennoblisseur dyes regardless of source coloris.
-  let available: StockEcruLite[] = []
-  if (ctx.IDref_ecru > 0 && ctx.IDsous_traitant > 0) {
-    const availRows = await query<StockEcruLite>(
-      `SELECT IDstock_ecru, numero, lot, poids, metrage, IDref_ecru, IDcolori_ecru,
-              IDmagasin, IDordre_fabrication, date_saisie,
-              second_choix, observations
-       FROM stock_ecru
-       WHERE IDref_ecru = ${ctx.IDref_ecru}
-         AND IDmagasin = ${ctx.IDsous_traitant}
-         AND (IDref_commande_affectation IS NULL OR IDref_commande_affectation = 0)
-         AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)
-       ORDER BY date_saisie DESC, IDstock_ecru DESC`,
-    )
-    available = await fixEncoding(availRows, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
-  }
 
   // Batch-fetch structured defects from `defaut_qualite` for every écru
   // roll we're about to return (linked + available). The link is
@@ -5672,7 +5677,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
 
   // A reservation for another article/coloris than this dyer line makes
   // (LIVA #1261) — the badge turns red so it gets released from here.
-  const lccKeys = await loadClientLineKeys(linkedFixed.map((r) => Number(r.IDligne_commande_client) || 0))
+  const lccKeys = await loadClientLineKeys([...linkedFixed, ...available].map((r) => Number((r as any).IDligne_commande_client) || 0))
   const dye = { ref: ctx.IDref_fini, coloris: ctx.IDColoris }
   // TRM-knitted pieces whose OF fed a yarn off the écru reference's sheet
   // (lib/hors-ref-trm.ts) — the reception card shows it on écru and fini.
@@ -5696,6 +5701,12 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   available = available.map((r) => ({
     ...r,
     hors_ref: horsRefEcru.get(Number(r.IDstock_ecru) || 0) ?? [],
+    client_nom: clientByLcc.get(Number((r as any).IDligne_commande_client) || 0) ?? null,
+    commande_numero: commandeNumByLcc.get(Number((r as any).IDligne_commande_client) || 0) ?? null,
+    reservation_hors_teinture: (() => {
+      const key = lccKeys.get(Number((r as any).IDligne_commande_client) || 0)
+      return !!key && !reservationFitsDyeLine(key, dye)
+    })(),
     defects: defectsByEcruId.get(Number(r.IDstock_ecru) || 0) ?? [],
   }))
 
@@ -6751,43 +6762,10 @@ commandesSousTraitantRouter.delete(
   },
 )
 
-// Release a piece's CLIENT reservation from the dyer order (LIVA #1261). The
-// client order's Ennoblissement tab only lists dyer lines of its own article,
-// so a reservation that no longer fits the dyer line can only be undone here.
-// The piece stays on the dyer line.
-commandesSousTraitantRouter.delete(
-  '/:commandeId/lignes/:ligneId/pieces/ecru/:stockEcruId/reservation',
-  async (req: Request, res: Response) => {
-    try {
-      const commandeId = parseInt(req.params.commandeId, 10)
-      const ligneId = parseInt(req.params.ligneId, 10)
-      const stockEcruId = parseInt(req.params.stockEcruId, 10)
-      if (isNaN(commandeId) || isNaN(ligneId) || isNaN(stockEcruId)) {
-        res.status(400).json({ error: 'Invalid ID' }); return
-      }
-      const ctx = await loadEnnoblisseurLineContext(commandeId, ligneId)
-      if (!ctx) { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
-      if (refuseIfTerminee(res, await loadCommandeSoldee(commandeId))) return
-
-      const rows = await query<{ IDref_commande_affectation: number | null; IDligne_expedition_ETM: number | null }>(
-        `SELECT IDref_commande_affectation, IDligne_expedition_ETM FROM stock_ecru WHERE IDstock_ecru = ${stockEcruId}`,
-      )
-      if (rows.length === 0 || (Number(rows[0].IDref_commande_affectation) || 0) !== ligneId) {
-        res.status(404).json({ error: 'Stock ecru not on this line' }); return
-      }
-      // Same lock as the client side: a shipped écru's affectation belongs to the expedition.
-      if ((Number(rows[0].IDligne_expedition_ETM) || 0) > 0) {
-        res.status(409).json({ error: 'Roll already shipped — affectation locked', message: 'Pièce déjà expédiée : la réservation ne peut plus être retirée.' })
-        return
-      }
-      await query(`UPDATE stock_ecru SET IDligne_commande_client = 0 WHERE IDstock_ecru = ${stockEcruId}`)
-      res.json(await fetchPiecesPayload(ctx, ligneId))
-    } catch (err) {
-      console.error('Error releasing client reservation from sst line:', err)
-      res.status(500).json({ error: 'Internal server error' })
-    }
-  },
-)
+// No « release the client reservation » route here any more (2026-11-04,
+// decision Vincent): a reservation is managed on the client order. The route
+// existed for #1261's misfits (a reservation the client order could not see);
+// none is left in prod and every writer refuses new ones (lib/reservation-teinture.ts).
 
 const finiBody = z.object({
   numero: z.string().min(1).max(20),

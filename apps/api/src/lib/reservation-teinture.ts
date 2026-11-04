@@ -13,8 +13,10 @@
 // Rule: while a piece is still écru (not consumed into a fini roll — once dyed
 // the pointers are stale history, `consumedEcruIds()`), a reservation next to a
 // dyer line must name a FINI client line of the dyer line's reference and
-// coloris. Every writer of either pointer checks it; the sst « Affectés » tab
-// can release a reservation that does not fit.
+// coloris. Every writer of either pointer checks it. The sst « Affectés » tab
+// shows a misfit as a red badge and its « Affecter » picker greys one; the
+// release from the sst order was removed 2026-11-04 (none left in prod): a
+// reservation is managed on the client order.
 
 import { query } from './hfsql-auto.js'
 import { consumedEcruIds } from './fini-sources.js'

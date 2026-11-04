@@ -2811,28 +2811,6 @@ function PiecesDrawer({
     },
   })
 
-  // Release a piece's client reservation, the piece staying on this line.
-  // The client order cannot do it when the reservation no longer fits this
-  // dyer line — its Ennoblissement tab never lists it (LIVA #1261).
-  const [releaseTarget, setReleaseTarget] = useState<StockEcruLite | null>(null)
-  const releaseReservationMut = useMutation({
-    mutationFn: (stockEcruId: number) => apiFetch(
-      `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/ecru/${stockEcruId}/reservation`,
-      { method: 'DELETE' }
-    ),
-    onSuccess: (payload: PiecesPayload) => {
-      queryClient.setQueryData(queryKey, payload)
-      // The client order's gauge and Ennoblissement tab read the reservation.
-      queryClient.invalidateQueries({ queryKey: ['commandes-client'] })
-      queryClient.invalidateQueries({ queryKey: ['commande-client'] })
-      queryClient.invalidateQueries({ queryKey: ['commande-client-supply'] })
-      queryClient.invalidateQueries({ queryKey: ['commande-client-pieces'] })
-      invalidateStockCaches(queryClient)
-      setReleaseTarget(null)
-      onSuccess()
-    },
-  })
-
   const editFiniMut = useMutation({
     mutationFn: ({ stockFiniId, ...changes }: { stockFiniId: number } & FiniRollChanges) => apiFetch(
       `/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces/fini/${stockFiniId}`,
@@ -3091,6 +3069,10 @@ function PiecesDrawer({
                   columns={[
                     { key: 'entre', header: 'Entré le', cell: (r) => (r.date_saisie ? formatHfsqlDate(r.date_saisie) : '') },
                     {
+                      // Who the piece is promised to; a reservation is managed on the
+                      // client order (no release from here since 2026-11-04: none left
+                      // that misfits in prod, the routes refuse new ones, #1261). The
+                      // badge still turns red if one ever reappears.
                       key: 'client', header: 'Client', cell: (r) => {
                         const received = ecruIdsWithFini.has(r.id)
                         return (
@@ -3098,7 +3080,6 @@ function PiecesDrawer({
                             clientNom={r.client_nom}
                             commandeNumero={r.commande_numero}
                             misfit={!received && !!r.reservation_hors_teinture}
-                            onRelease={!commandeSoldee && !received ? () => setReleaseTarget(r) : undefined}
                           />
                         )
                       },
@@ -3138,19 +3119,6 @@ function PiecesDrawer({
                 onClose={() => setShowLinkEcruDialog(false)}
               />
             )}
-            <ConfirmDialog
-              open={releaseTarget !== null}
-              title="Retirer la réservation client"
-              description={releaseTarget
-                ? `La pièce ${releaseTarget.numero ?? ''} ne sera plus réservée à ${releaseTarget.client_nom ?? 'ce client'}`
-                  + `${releaseTarget.commande_numero ? ` (commande N° ${releaseTarget.commande_numero})` : ''}. Elle reste sur cette commande d’ennoblissement.`
-                : undefined}
-              confirmLabel="Retirer"
-              isPending={releaseReservationMut.isPending}
-              error={mutationMessage(releaseReservationMut.error)}
-              onCancel={() => { setReleaseTarget(null); releaseReservationMut.reset() }}
-              onConfirm={() => { if (releaseTarget) releaseReservationMut.mutate(releaseTarget.IDstock_ecru) }}
-            />
           </>
           )
         })()}
@@ -4091,13 +4059,11 @@ function TricoteurReceptionDialog({
 /** Client-reservation tag on a roll card. Carries the order number: a client
  *  often has several orders open and the name alone sent people looking on
  *  the wrong one (LIVA #1258). */
-function ClientReservationBadge({ clientNom, commandeNumero, misfit = false, onRelease }: {
+function ClientReservationBadge({ clientNom, commandeNumero, misfit = false }: {
   clientNom?: string | null
   commandeNumero?: number | null
   /** Reserved for another article/coloris than this dyer line makes (LIVA #1261). */
   misfit?: boolean
-  /** Shown as a ✕ inside the badge: releases the client reservation. */
-  onRelease?: () => void
 }) {
   if (!clientNom) return null
   const reserved = commandeNumero ? `Rouleau réservé à la commande N° ${commandeNumero} de ${clientNom}` : 'Rouleau réservé à ce client'
@@ -4113,16 +4079,6 @@ function ClientReservationBadge({ clientNom, commandeNumero, misfit = false, onR
       {misfit ? <AlertTriangle className="h-3 w-3" /> : <Building2 className="h-3 w-3" />}
       {clientNom}
       {!!commandeNumero && <span className={cn('font-normal', misfit ? 'text-destructive/80' : 'text-muted-foreground')}>· N° {commandeNumero}</span>}
-      {onRelease && (
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onRelease() }}
-          title="Retirer la réservation client"
-          className="ml-0.5 -mr-1 rounded-full p-0.5 hover:bg-destructive/20 hover:text-destructive transition-colors"
-        >
-          <X className="h-3 w-3" />
-        </button>
-      )}
     </Badge>
   )
 }
@@ -4137,10 +4093,8 @@ function texteDefauts(defects: StockEcruLite['defects']): string {
 
 function EcruRollRow({
   roll, action, onAction, isBusy, hideAction,
-  selectable = false, selected = false, onSelectToggle, received = false, onReleaseReservation,
+  selectable = false, selected = false, onSelectToggle, received = false,
 }: {
-  /** Releases the client reservation from the dyer order (LIVA #1261). */
-  onReleaseReservation?: () => void
   roll: StockEcruLite
   action: 'link' | 'unlink'
   onAction: () => void
@@ -4218,7 +4172,6 @@ function EcruRollRow({
           clientNom={roll.client_nom}
           commandeNumero={roll.commande_numero}
           misfit={!received && !!roll.reservation_hors_teinture}
-          onRelease={onReleaseReservation}
         />
         {!hideAction && (
           action === 'unlink' ? (
@@ -6171,6 +6124,11 @@ function LinkEcruDialog({
   // instead of the API's date_saisie DESC — the operator reads OF numbers,
   // and mixed OFs made the list unusable to scan (#1140).
   const sorted = useMemo(() => available.slice().sort(byNumeroAsc), [available])
+  // A piece reserved for another article than this dyeing is refused by the
+  // route (#1261): greyed here with the way out, instead of a failed click.
+  const bloquee = (r: StockEcruLite): string | undefined => (r.reservation_hors_teinture
+    ? `Réservée à ${r.client_nom ?? 'un client'}${r.commande_numero ? ` (commande N° ${r.commande_numero})` : ''} pour un autre article ou coloris : retirez la réservation depuis la commande client`
+    : undefined)
   const visible = useMemo(() => {
     const q = foldSearch(search)
     if (!q) return sorted
@@ -6184,18 +6142,19 @@ function LinkEcruDialog({
   // rolls that left the list, so the footer count and Affecter never
   // carry rolls the user no longer sees. pruneSelection returns the same
   // Set when nothing changed, so this never loops.
+  const choisissables = useMemo(() => visible.filter((r) => !bloquee(r)), [visible])
   useEffect(() => {
-    setSelected((prev) => pruneSelection(prev, visible.map((r) => r.IDstock_ecru)))
-  }, [visible])
+    setSelected((prev) => pruneSelection(prev, choisissables.map((r) => r.IDstock_ecru)))
+  }, [choisissables])
 
   const totalKg = visible
     .filter((r) => selected.has(r.IDstock_ecru))
     .reduce((s, r) => s + (Number(r.poids) || 0), 0)
-  const allSelected = visible.length > 0 && visible.every((r) => selected.has(r.IDstock_ecru))
+  const allSelected = choisissables.length > 0 && choisissables.every((r) => selected.has(r.IDstock_ecru))
 
   const selectAll = () => {
-    setSelected(new Set(visible.map((r) => r.IDstock_ecru)))
-    lastSelectedRef.current = visible[visible.length - 1]?.IDstock_ecru ?? null
+    setSelected(new Set(choisissables.map((r) => r.IDstock_ecru)))
+    lastSelectedRef.current = choisissables[choisissables.length - 1]?.IDstock_ecru ?? null
   }
   const clearSelection = () => {
     setSelected(new Set())
@@ -6203,7 +6162,8 @@ function LinkEcruDialog({
   }
 
   const handleToggle = (id: number, shiftKey: boolean) => {
-    const ids = visible.map((r) => r.IDstock_ecru)
+    // A range runs over the pickable rows only (§44).
+    const ids = choisissables.map((r) => r.IDstock_ecru)
     const anchor = lastSelectedRef.current
     // Shift+click: extend the selection from the anchor to the clicked row.
     // The anchor stays put so successive Shift+clicks keep the range based
@@ -6316,10 +6276,16 @@ function LinkEcruDialog({
                   onToggle: handleToggle,
                   onToggleAll: allSelected ? clearSelection : selectAll,
                   allTitle: 'Tout sélectionner',
+                  blockedReason: bloquee,
                 }}
                 numeroExtra={(r) => <HorsRefBadge fils={r.hors_ref} />}
                 columns={[
                   { key: 'entre', header: 'Entré le', cell: (r) => (r.date_saisie ? formatHfsqlDate(r.date_saisie) : '') },
+                  {
+                    key: 'client', header: 'Client', cell: (r) => (
+                      <ClientReservationBadge clientNom={r.client_nom} commandeNumero={r.commande_numero} misfit={!!r.reservation_hors_teinture} />
+                    ),
+                  },
                 ]}
                 notes={(r) => (
                   <>
