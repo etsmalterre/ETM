@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { categorie, CATEGORIES, libelleGmail, normaliserCategories } from './categories.js'
-import { TRIAGE_PROMPT_V1, TRIAGE_PROMPT_V2, TRIAGE_SCHEMA } from './prompt.js'
+import { TRIAGE_PROMPT_V1, TRIAGE_PROMPT_V2, TRIAGE_PROMPT_V3, TRIAGE_SCHEMA } from './prompt.js'
 
 describe('categories', () => {
   it('unknown keys dropped, duplicates removed, order kept, « autre » when empty', () => {
@@ -19,7 +19,7 @@ describe('categories', () => {
     expect(CATEGORIES.some((c) => /^(spam|inbox|trash|sent|draft|important|starred)$/i.test(c.libelle))).toBe(false)
   })
   it('the prompt defines every category and the schema enumerates them all', () => {
-    for (const c of CATEGORIES) expect(TRIAGE_PROMPT_V1).toContain(`- ${c.cle} :`)
+    for (const p of [TRIAGE_PROMPT_V1, TRIAGE_PROMPT_V2, TRIAGE_PROMPT_V3]) for (const c of CATEGORIES) expect(p).toContain(`- ${c.cle} :`)
     expect(TRIAGE_SCHEMA.properties.categories.items.enum).toEqual(CATEGORIES.map((c) => c.cle))
   })
 })
@@ -43,5 +43,13 @@ describe('prompt v2', () => {
     expect(TRIAGE_PROMPT_V2).toContain('« TAD INFOS CLIENTS »')
     expect(TRIAGE_PROMPT_V2).toContain('sans nouveau document joint est interne')
     expect(TRIAGE_PROMPT_V2.split('\n').length).toBe(TRIAGE_PROMPT_V1.split('\n').length)
+  })
+})
+
+describe('prompt v3 (2026-11-04, cde TAD 8922)', () => {
+  it('is v2 plus one fact: TAD’s shipment BL is transport, its mise à dispo stays the BL', () => {
+    expect(TRIAGE_PROMPT_V3).toContain('Chez TAD, seule la mise à disposition')
+    expect(TRIAGE_PROMPT_V3).toContain('→ transport.')
+    expect(TRIAGE_PROMPT_V3.replace(/ Chez TAD, seule[^\n]*→ transport\./, '')).toBe(TRIAGE_PROMPT_V2)
   })
 })

@@ -1,4 +1,4 @@
-// Agent « Triage » — the prompt (versions 1 and 2, stored and versioned in Agents IA
+// Agent « Triage » — the prompt (versions 1 to 3, stored and versioned in Agents IA
 // like every agent's), the strict JSON schema, and what the model reads for
 // one mail.
 //
@@ -59,6 +59,22 @@ export const TRIAGE_PROMPT_V2 = remplacer(
   ),
   '4. Un message écrit par une personne d’ETS Malterre est interne, seul — sauf s’il transfère un BL ou une facture d’ennoblisseur : il reste alors bl_ennoblisseur / facture_sous_traitant (c’est le document qui compte).',
   '4. Un message écrit par une personne d’ETS Malterre est interne, seul — sauf s’il TRANSFÈRE un BL ou une facture d’ennoblisseur en pièce jointe : il reste alors bl_ennoblisseur / facture_sous_traitant (c’est le document qui compte). Sa réponse dans un fil de BL ou de facture (« Re: BL métrages … ») sans nouveau document joint est interne.',
+)
+
+/** v3 (2026-11-04) = v2 + one fact about TAD: its mise à disposition closes
+ *  the dyeing (the BL agent reads it), its « BON DE LIVRAISON - CDE » is the
+ *  shipment to the client after our request: transport (cde 8922, three false
+ *  alerts of the BL agent). A generic wording (« the document that closes the
+ *  dyer's operation », with the dyer's habit given in the input by the code)
+ *  was replayed first on 173 real mails: it moved none of the 6 TAD shipments
+ *  and sent 14 MATEL « RE: Point du » to bl_ennoblisseur. This wording, on the
+ *  125 dyers' mails: the 6 moved, nothing else (two MATEL replies differ as
+ *  v2 differs from itself). Another dyer that sends a mise à disposition gets
+ *  its own sentence here. */
+export const TRIAGE_PROMPT_V3 = remplacer(
+  TRIAGE_PROMPT_V2,
+  'n’est PAS un BL → sous_traitant.',
+  'n’est PAS un BL → sous_traitant. Chez TAD, seule la mise à disposition (« MISE A DISPO - OF N° … ») est un BL : son « BON DE LIVRAISON - CDE : … » annonce l’expédition au client de pièces déjà mises à disposition → transport.',
 )
 
 export const TRIAGE_SCHEMA = {
