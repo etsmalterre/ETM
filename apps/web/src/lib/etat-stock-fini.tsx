@@ -20,8 +20,9 @@ export function etatPillClass(libelle: string | null, variant: EtatPillVariant =
     return solid ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-100 text-amber-800 border-amber-200'
   if (l.includes('reprise'))
     return solid ? 'bg-orange-500 text-white border-orange-500' : 'bg-orange-100 text-orange-800 border-orange-200'
-  // "Validé" / "Disponible" / "Prêt" are all positive, approved states → green.
-  if (l.includes('valid') || l.includes('disponible') || l.includes('prêt') || l.includes('pret'))
+  // "Validé" / "Disponible" / "Prêt" are all positive, approved states → green;
+  // so is « Reçu », an écru that came back dyed (Sous-traitants › Affectés).
+  if (l.includes('valid') || l.includes('disponible') || l.includes('prêt') || l.includes('pret') || l === 'reçu')
     return solid ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-100 text-emerald-800 border-emerald-200'
   if (l.includes('refus') || l.includes('rebut'))
     return solid ? 'bg-red-600 text-white border-red-600' : 'bg-red-100 text-red-700 border-red-200'

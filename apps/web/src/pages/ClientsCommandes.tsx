@@ -25,7 +25,6 @@ import {
   CheckCircle2,
   Check,
   Eye,
-  Minus,
   Clock,
   Package,
   Link2,
@@ -53,7 +52,6 @@ import {
   FileSignature,
   Percent,
   Barcode,
-  Ban,
   BadgeEuro,
   FlaskConical,
 } from 'lucide-react'
@@ -68,6 +66,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-select'
 import { Tooltip } from '@/components/ui/tooltip'
 import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
+import { CaseACocher, RollTable, type RollTableColumn } from '@/components/stock/RollTable'
 import type { RollNoteDefect } from '@/components/shared/RollNotes'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
@@ -2932,6 +2931,8 @@ function AffectationDrawer({
                 <RollTable
                   rolls={linked}
                   kind={kind === 'fini' ? 'fini' : 'ecru'}
+                  columns={COLONNES_AFFECTATION}
+                  etat={etatAffectation(kind === 'fini' ? 'fini' : 'ecru')}
                   // Expédier: only validated rolls not shipped yet (#1235); a terminée order selects nothing.
                   selection={soldee ? undefined : {
                     selected: shipSel,
@@ -2978,6 +2979,8 @@ function AffectationDrawer({
                 <RollTable
                   rolls={available}
                   kind={kind === 'fini' ? 'fini' : 'ecru'}
+                  columns={COLONNES_AFFECTATION}
+                  etat={etatAffectation(kind === 'fini' ? 'fini' : 'ecru')}
                   selection={{
                     selected: linkSel,
                     onToggle: toggleLink,
@@ -3370,110 +3373,13 @@ function SupplyTable<T extends { id: number }>({
 // action at the right. A selectable row is the click target (Shift+click range, §44); the header box
 // ticks all / none. Light-navy header: the table sits on the drawer's zinc panel (§31.4).
 
-interface RollTableSelection {
-  selected: Set<number>
-  onToggle: (id: number, shiftKey: boolean) => void
-  /** why a row cannot be picked (undefined = it can) */
-  blockedReason?: (r: RollLite) => string | undefined
-  onToggleAll: () => void
-  allTitle: string
-}
-
-function RollTable({ rolls, kind, selection, notes, action }: {
-  rolls: RollLite[]
-  kind: 'ecru' | 'fini'
-  selection?: RollTableSelection
-  notes: (r: RollLite) => ReactNode
-  action?: (r: RollLite) => ReactNode
-}) {
-  const choisissables = selection ? rolls.filter((r) => !selection.blockedReason?.(r)) : []
-  // A tombé de métier is weighed, not measured: no Métrage column unless a roll has one.
-  const avecMetrage = kind === 'fini' || rolls.some((r) => Number(r.metrage) > 0)
-  const nbCoches = choisissables.filter((r) => selection?.selected.has(r.id)).length
-  const etatTout: 'oui' | 'non' | 'partiel' = nbCoches === 0 ? 'non' : nbCoches === choisissables.length ? 'oui' : 'partiel'
-  return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-      <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
-        <colgroup>
-          {selection && <col style={{ width: '40px' }} />}
-          <col style={{ width: '150px' }} />
-          <col style={{ width: '80px' }} />
-          {avecMetrage && <col style={{ width: '86px' }} />}
-          <col style={{ width: '120px' }} />
-          <col style={{ width: '110px' }} />
-          {kind === 'fini' && <col style={{ width: '120px' }} />}
-          <col />
-        </colgroup>
-        <thead className="bg-primary/10 border-b border-primary/10">
-          <tr className="text-[10px] uppercase tracking-wide text-primary/80">
-            {selection && (
-              <th className="px-2.5 py-2 text-center">
-                {choisissables.length > 0 && (
-                  <button type="button" role="checkbox" aria-checked={etatTout === 'oui'} onClick={selection.onToggleAll}
-                    title={etatTout === 'oui' ? 'Tout désélectionner' : selection.allTitle} className="inline-flex align-middle cursor-pointer">
-                    <CaseACocher etat={etatTout} />
-                  </button>
-                )}
-              </th>
-            )}
-            <th className="px-2.5 py-2 text-left font-semibold">Pièce</th>
-            <th className="px-2.5 py-2 text-right font-semibold">Poids</th>
-            {avecMetrage && <th className="px-2.5 py-2 text-right font-semibold">Métrage</th>}
-            <th className="pl-5 pr-2.5 py-2 text-left font-semibold">Lot</th>
-            <th className="px-2.5 py-2 text-left font-semibold">Localisation</th>
-            {kind === 'fini' && <th className="px-2.5 py-2 text-left font-semibold">État</th>}
-            <th className="px-2.5 py-2" />
-          </tr>
-        </thead>
-        <tbody>
-          {rolls.map((r) => {
-            const bloque = selection?.blockedReason?.(r)
-            const choisissable = !!selection && !bloque
-            const coche = choisissable && selection!.selected.has(r.id)
-            return (
-              <tr key={r.id}
-                onClick={choisissable ? (e) => selection!.onToggle(r.id, e.shiftKey) : undefined}
-                className={cn('border-b border-border/40 last:border-0',
-                  choisissable && 'cursor-pointer select-none',
-                  coche ? 'bg-accent/10' : choisissable && 'hover:bg-accent/5')}>
-                {selection && (
-                  <td className="px-2.5 py-1.5 text-center">
-                    {choisissable ? <CaseACocher etat={coche ? 'oui' : 'non'} /> : bloque ? (
-                      <span title={bloque} className="inline-flex h-4 w-4 items-center justify-center rounded border border-input bg-muted align-middle cursor-not-allowed">
-                        <Ban className="h-2.5 w-2.5 text-muted-foreground/70" />
-                      </span>
-                    ) : null}
-                  </td>
-                )}
-                <td className="px-2.5 py-1.5">
-                  <span className="inline-flex items-center gap-2 font-medium tabular-nums min-w-0">
-                    <span title={kind === 'fini' ? 'Fini' : 'Tombé de métier'} className="inline-flex flex-shrink-0">
-                      {kind === 'fini' ? <FiniRollIcon className="h-4 w-4 text-green-700" /> : <TmRollIcon className="h-4 w-4 text-muted-foreground" />}
-                    </span>
-                    <span className="truncate">{r.numero || `Rouleau ${r.id}`}</span>
-                  </span>
-                </td>
-                <td className="px-2.5 py-1.5 text-right tabular-nums">{Number(r.poids) > 0 ? `${fmtNum(Number(r.poids), 1)} kg` : '—'}</td>
-                {avecMetrage && <td className="px-2.5 py-1.5 text-right tabular-nums">{Number(r.metrage) > 0 ? `${fmtNum(Number(r.metrage), 1)} Ml` : ''}</td>}
-                <td className="pl-5 pr-2.5 py-1.5 truncate text-muted-foreground" title={r.lot ?? undefined}>{r.lot || '—'}</td>
-                {/* Where it is; on an expedition = shipped, whatever the roll row still says. */}
-                <td className="px-2.5 py-1.5 truncate" title={r.expedie ? 'Expédié' : r.magasin_nom ?? undefined}>{r.expedie ? 'Expédié' : r.magasin_nom || '—'}</td>
-                {/* A fini's quality état (can it ship?); a tombé de métier gives its location only. */}
-                {kind === 'fini' && <td className="px-2.5 py-1.5">{r.expedie ? null : <EtatPill libelle={r.etat_label} />}</td>}
-                <td className="px-2.5 py-1.5">
-                  <div className="flex items-center justify-end gap-1.5">
-                    {notes(r)}
-                    {action?.(r)}
-                  </div>
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+/** Localisation: Clients › Commandes' own column on the shared roll table. */
+const COLONNES_AFFECTATION: RollTableColumn<RollLite>[] = [
+  // Where it is; on an expedition = shipped, whatever the roll row still says.
+  { key: 'loc', header: 'Localisation', cell: (r) => (r.expedie ? 'Expédié' : r.magasin_nom || '—') },
+]
+/** A fini's quality état (can it ship?), at the far right; a tombé de métier has none. */
+const etatAffectation = (kind: 'ecru' | 'fini') => (kind === 'fini' ? (r: RollLite) => (r.expedie ? null : <EtatPill libelle={r.etat_label} />) : undefined)
 
 /** A roll's notes at the end of its table row: défauts (dyer report, 2e choix), Ml non facturés, observations. */
 function RollNotes({ roll, onEditObs, onOpenMlNf, mlNfEditable = false }: {
@@ -4971,15 +4877,6 @@ function ReservationChip({ r }: { r: ReservationPiece }) {
 }
 
 /** A tick box drawn by hand: the row click owns the state (never preventDefault on a controlled checkbox, #1207). */
-function CaseACocher({ etat }: { etat: 'oui' | 'non' | 'partiel' }) {
-  return (
-    <span className={cn('inline-flex h-4 w-4 items-center justify-center rounded border transition-colors',
-      etat === 'non' ? 'border-input bg-background' : 'border-accent bg-accent text-accent-foreground')}>
-      {etat === 'oui' && <Check className="h-3 w-3" />}
-      {etat === 'partiel' && <Minus className="h-3 w-3" />}
-    </span>
-  )
-}
 
 function EnnoblissementAffectationDialog({
   commandeId, ligneId, row, onClose, onSuccess,
