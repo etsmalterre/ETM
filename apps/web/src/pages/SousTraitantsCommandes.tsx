@@ -4556,6 +4556,81 @@ function EnvoiRepriseDialog({
  *  original's écru / coloris / magasin. Matches legacy FEN_Coupe_Fini.
  *  Tricobot cuts by itself when the BL lists `<numero>-1`, `<numero>-2`.
  */
+/** A BL Tricobot read for the line (GET /tricobot/bls): written, or left to
+ *  a person by a blocking check (`bloque`, his reasons in `motifs`). */
+interface TricobotBl {
+  runId: string
+  luLe: string
+  ennoblisseur: string | null
+  bordereau: string
+  commande: string
+  bloque: boolean
+  motifs: string[]
+  pieces: Array<{ numero: string; poids: number | null; metrage: number | null; observations: string }>
+  fichiers: Array<{ n: number; nom: string }>
+}
+
+/** A BL piece numero → the écru numeros it names (« 3510/11+3510/2 », a cut
+ *  « 3545/26-1 » names 3545/26): how a BL is matched to the dialog's rolls. */
+function numerosEcruDuBl(numero: string): string[] {
+  return numero.split('+').map((n) => n.trim().replace(/-\d+$/, '')).filter(Boolean)
+}
+
+/** « MATEL 109547A, lu le 03/11 à 11:41 ». */
+function libelleBl(bl: TricobotBl): string {
+  const lu = new Date(bl.luLe)
+  const quand = Number.isNaN(lu.getTime())
+    ? ''
+    : `, lu le ${lu.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })} à ${lu.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+  return `${bl.ennoblisseur ? `${bl.ennoblisseur} ` : ''}${bl.bordereau || '(numéro illisible)'}${quand}`
+}
+
+/** Tricobot's reasoning on a BL he did not write: amber (§41: ours to do now,
+ *  type the rolls by hand; nothing is late, so never red). */
+function TricobotBlBloqueNote({ bl, explication, onExplication }: {
+  bl: TricobotBl
+  /** What the person tells Tricobot about this BL (sent with the réception). */
+  explication: string
+  onExplication: (v: string) => void
+}) {
+  return (
+    <div className="rounded-lg border-l-4 border-l-amber-500 border border-amber-500/30 bg-amber-50 p-3 shadow-sm text-xs leading-snug text-amber-900">
+      <div className="flex items-start gap-2">
+        <TricobotMascot className="h-6 w-6 flex-shrink-0" />
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="font-semibold">J'ai lu le BL {libelleBl(bl)}, mais je ne l'ai pas saisi :</p>
+          <ul className="list-disc pl-4">
+            {bl.motifs.map((m) => <li key={m}>{m}</li>)}
+          </ul>
+          {bl.pieces.length > 0 && (
+            <p className="text-amber-800/90 tabular-nums">
+              Sur le BL :{' '}
+              {bl.pieces
+                .map((p) => [
+                  p.numero || '?',
+                  p.poids != null ? `${fmtNum(p.poids, 1)} kg` : null,
+                  p.metrage != null ? `${fmtNum(p.metrage, 1)} m` : null,
+                  p.observations ? `« ${p.observations} »` : null,
+                ].filter(Boolean).join(' '))
+                .join(' · ')}
+            </p>
+          )}
+          <p className="font-semibold">Saisis ces rouleaux à la main.</p>
+          {/* A lesson, not a score: blocking was right; the next version of
+              the agent is written from what people explain here. */}
+          <input
+            type="text"
+            value={explication}
+            onChange={(e) => onExplication(e.target.value)}
+            placeholder="Tu peux m'expliquer ce cas ? (facultatif) Ex. : coupe de 86 m demandée, la tirelle est sur l'autre pièce"
+            className="mt-1 w-full h-7 px-2 text-xs rounded-md border border-amber-500/30 bg-white text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface BatchReceptionRow {
   lot: string
   poids: string
@@ -4659,6 +4734,10 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   // or the BL — named them). Members leave the wizard list; the leader's
   // step edits the whole roll and POSTs once with `IDstock_ecru_sources`.
   const [groups, setGroups] = useState<Record<number, number[]>>({})
+  // The preview row whose « Fusionner avec … » button is hovered: it and the
+  // current roll get a dashed gold outline, so the two pieces about to become
+  // one roll are seen before the click.
+  const [fusionSurvol, setFusionSurvol] = useState<number | null>(null)
   const memberOf = new Map<number, number>()
   for (const [leaderKey, members] of Object.entries(groups)) {
     const leader = Number(leaderKey)
@@ -4815,6 +4894,26 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
   // text. A "found nothing" result still sets state='done' (the run did
   // complete), so the colour can't key off `tricobotState`.
   const [tricobotMsgError, setTricobotMsgError] = useState(false)
+  // Rolls Tricobot filled on his last run (his tile says « rien saisi » at 0).
+  const [tricobotRempli, setTricobotRempli] = useState(0)
+  // Écru numeros still unfilled once Tricobot ran (null before): a blocked BL
+  // naming one of them shows his reasoning instead of « aucun rouleau »
+  // (LIVA #1347).
+  const [numerosRestants, setNumerosRestants] = useState<Set<string> | null>(null)
+  // Tricobot is the first way BLs are keyed (2026-11-04): the dialog runs him
+  // on open and lands on his proposal (« recap », one table, one button);
+  // « Éditer la réception » opens the roll-by-roll editor. Nothing read →
+  // straight to the editor.
+  const [vue, setVue] = useState<'chargement' | 'recap' | 'edition'>('chargement')
+  // The BLs Tricobot read for this line, shown beside the rolls (§32 viewer).
+  const blsQuery = useQuery({
+    queryKey: ['tricobot-bls', ligne.IDligne_commande_sous_traitant],
+    queryFn: () => apiFetch<{ bls: TricobotBl[] }>(`/tricobot/bls?ligneId=${ligne.IDligne_commande_sous_traitant}`),
+    staleTime: 0,
+  })
+  const [blActif, setBlActif] = useState<string | null>(null)
+  // What the person explains to Tricobot about a BL he left to them, by run.
+  const [explicationsBl, setExplicationsBl] = useState<Record<string, string>>({})
   // What Tricobot wrote into each roll (« Former Tricobot », 2026-10-02):
   // received unchanged = he read the BL right; any value the person changes
   // is a correction sent back to the BL Ennoblisseur agent on submit
@@ -5262,20 +5361,39 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
       // Counted in tombés de métier: a roll cut into pieces is one roll found.
       const total = baseRolls.length - hiddenNow.size
       const missing = total - filled
+      // Rolls still unfilled: a blocked BL naming one of them explains why.
+      setNumerosRestants(new Set(
+        baseRolls
+          .filter((r) => !hiddenNow.has(r.id) && !matchedRolls.has(r.id))
+          .map((r) => (r.numero ?? '').trim())
+          .filter(Boolean),
+      ))
+      setTricobotRempli(filled)
+      setVue((v) => (v === 'chargement' ? (filled > 0 ? 'recap' : 'edition') : v))
       setTricobotMsgError(filled === 0)
       setTricobotMessage(
         filled === 0
           ? `Tricobot n'a trouvé aucun rouleau correspondant dans la base.`
           : missing === 0
-            ? `Tricobot a trouvé les ${filled} rouleaux 🎉`
+            ? `Tricobot a trouvé les ${filled} rouleaux`
             : `Tricobot a trouvé ${filled} rouleau${filled > 1 ? 'x' : ''} sur ${total} · ${missing} restant${missing > 1 ? 's' : ''} à compléter manuellement`,
       )
     } catch (err) {
       setTricobotState('idle')
       setTricobotMsgError(true)
       setTricobotMessage(err instanceof Error ? err.message : 'Erreur Tricobot')
+      setVue((v) => (v === 'chargement' ? 'edition' : v))
     }
   }
+
+  // Tricobot runs once on open (the ref survives StrictMode's double effect).
+  const tricobotLance = useRef(false)
+  useEffect(() => {
+    if (tricobotLance.current) return
+    tricobotLance.current = true
+    void handleTricobotClick()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleSubmit = async () => {
     setError(null)
@@ -5396,6 +5514,15 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
           }),
         }).catch((e) => console.warn('[tricobot] feedback not recorded', e))
       }
+      // What the person explained about a BL Tricobot left to them: a lesson
+      // on that run (no score). Best effort, like the feedback above.
+      for (const [runId, texte] of Object.entries(explicationsBl)) {
+        if (!texte.trim()) continue
+        apiFetch('/tricobot/bl-explication', {
+          method: 'POST',
+          body: JSON.stringify({ ligneId: ligne.IDligne_commande_sous_traitant, runId, commentaire: texte.trim() }),
+        }).catch((e) => console.warn('[tricobot] explanation not recorded', e))
+      }
       if (lastPayload) onSuccess(lastPayload)
     } catch (err) {
       // The server's French message when it refuses (e.g. « piece_deja_recue »), not « API 409 ».
@@ -5436,80 +5563,223 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
     </button>
   ) : null
 
+  // ── BLs beside the rolls ──
+  // Only the BLs naming one of the dialog's rolls (a line receives several lots
+  // over time; an older lot's BL is not this réception's).
+  const numerosDuDialog = new Set(baseRolls.flatMap((r) => numerosEcruDuBl(r.numero ?? '')))
+  const blsDuLot = (blsQuery.data?.bls ?? []).filter((b) =>
+    b.pieces.some((pc) => numerosEcruDuBl(pc.numero).some((n) => numerosDuDialog.has(n))))
+  const restantsBase = numerosRestants ? new Set([...numerosRestants].flatMap(numerosEcruDuBl)) : null
+  const blsBloques = restantsBase
+    ? blsDuLot.filter((b) => b.bloque && b.pieces.some((pc) => numerosEcruDuBl(pc.numero).some((n) => restantsBase.has(n))))
+    : []
+  const docsBl = blsDuLot.flatMap((b) => b.fichiers.map((f) => ({ key: `${b.runId}:${f.n}`, bl: b, fichier: f })))
+  const docActif = docsBl.find((d) => d.key === blActif) ?? docsBl[0] ?? null
+  // « Aucun rouleau » says nothing a blocked BL's reasoning does not say better.
+  const messageTricobot = tricobotMsgError && blsBloques.length > 0 ? null : tricobotMessage
+  const article = [ligne.ref_label, ligne.colori_reference].filter(Boolean).join(' - ')
+
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !submitting) onClose() }}>
-      <DialogContent className="max-w-3xl w-[92vw] h-[88vh] flex flex-col p-0 overflow-hidden" onClose={submitting ? undefined : onClose}>
-        {/* Header — gold gradient, matches §32 SendEmailDialog look.
-            Tricobot sits in the top right; clicking him pre-fills every
-            roll from `data_bl_tricotbot`. */}
-        <div className="flex-shrink-0 px-6 pt-4 pb-3 border-b bg-gradient-to-r from-gold/25 via-gold/10 to-transparent flex items-start gap-3">
-          <div className="h-10 w-10 rounded-lg icon-box-gold flex items-center justify-center flex-shrink-0">
-            <FiniRollIcon className="h-6 w-6" />
+      {/* §18.D banded dialog: navy band, zinc body, zinc footer. Left: the
+          rolls (Tricobot's proposal, or the roll-by-roll editor); right: the
+          BL as Tricobot read it, like the email dialog's preview (§32). */}
+      <DialogContent className="max-w-6xl w-[94vw] h-[88vh] p-0 border-0 bg-primary overflow-hidden flex flex-col">
+        <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5 rounded-t-lg">
+          <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+            <FiniRollIcon className="h-[18px] w-[18px]" />
           </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-base font-heading font-bold tracking-tight truncate">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
               {isReprise
                 ? `Réceptionner la reprise · ${finiCount} rouleau${finiCount > 1 ? 'x' : ''}`
                 : `Réceptionner ${finiCount} rouleau${finiCount > 1 ? 'x' : ''}`}
             </h2>
-            <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
-              Tombé métier {safeIndex + 1} sur {rolls.length}
+            <p className="text-xs text-white/70 truncate tabular-nums">
+              {article}
             </p>
-            {!!tricobotMessage && (
-              <p
-                className={cn(
-                  'text-[11px] mt-1 leading-snug',
-                  tricobotMsgError ? 'text-destructive' : 'text-green-700',
-                )}
-              >
-                {tricobotMessage}
-              </p>
-            )}
           </div>
-          <button
-            type="button"
-            onClick={handleTricobotClick}
-            disabled={tricobotState !== 'idle'}
-            title={tricobotState === 'done'
-              ? 'Données importées par Tricobot'
-              : 'Remplir automatiquement avec Tricobot'}
-            className={cn(
-              // mr-8 keeps Tricobot clear of the dialog's top-right close X.
-              // rounded-md keeps the corner curve tight enough that the
-              // bot's outstretched arms don't get visibly clipped, so we
-              // can drop the inner padding and let him fill the frame.
-              'group relative h-20 w-20 flex-shrink-0 mr-8 rounded-md border-2 border-transparent bg-white/40 backdrop-blur-sm transition-all p-0.5',
-              tricobotState === 'idle' && 'cursor-pointer hover:border-gold hover:bg-white hover:shadow-md hover:scale-105',
-              tricobotState === 'loading' && 'cursor-wait opacity-80',
-              tricobotState === 'done' && 'border-green-500/60 bg-green-50/60 cursor-default',
-            )}
-          >
-            <img
-              src={tricobotState === 'done' ? '/tricobot/tricobot-thumbs.jpeg' : '/tricobot/tricobot-wave.png'}
-              alt="Tricobot"
-              className="h-full w-full object-contain"
-              draggable={false}
-            />
-            {tricobotState === 'loading' && (
-              <div className="absolute inset-0 flex items-center justify-center bg-white/50 rounded-lg">
-                <Loader2 className="h-6 w-6 animate-spin text-accent" />
-              </div>
-            )}
-            {tricobotState === 'idle' && (
-              <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-primary bg-white shadow-sm border border-gold/40 rounded px-2 py-0.5">
-                Tricobot
-              </span>
-            )}
-          </button>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white"
+              title="Fermer"
+              onClick={onClose}
+              disabled={submitting}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
+        <div className="flex-1 min-h-0 flex bg-zinc-100">
+          {/* ── Left: the rolls ── */}
+          <div className="flex-1 min-w-0 flex flex-col md:border-r md:border-border/60">
+            {(!!messageTricobot || blsBloques.length > 0) && (
+              <div className="flex-shrink-0 px-4 pt-4 space-y-2">
+                {/* Tricobot speaks next to what he says (his tile left the band,
+                    2026-11-04); a failed run is retried from here. */}
+                {!!messageTricobot && (
+                  // Same speech as Former Tricobot (TricobotRetour.tsx): the
+                  // mascot, his words in a bubble pointing at him.
+                  <div className="flex items-end gap-2.5">
+                    <TricobotMascot className="h-14 w-14 flex-shrink-0 -mb-1" />
+                    <div className={cn(
+                      // Raised to his head, not his feet: the corner points at his mouth.
+                      'min-w-0 flex-1 mb-6 rounded-xl rounded-bl-none border px-3 py-2 flex items-center gap-2',
+                      tricobotMsgError ? 'border-destructive/30 bg-destructive/5' : 'border-green-600/25 bg-green-50',
+                    )}>
+                      <p className={cn('text-sm font-medium', tricobotMsgError ? 'text-destructive' : 'text-green-800')}>
+                        {messageTricobot}
+                      </p>
+                      {tricobotState === 'idle' && (
+                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs ml-auto bg-white" onClick={handleTricobotClick}>
+                          <RotateCcw className="h-3.5 w-3.5 mr-1" />Relancer Tricobot
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {blsBloques.map((b) => (
+                  <TricobotBlBloqueNote
+                    key={b.runId}
+                    bl={b}
+                    explication={explicationsBl[b.runId] ?? ''}
+                    onExplication={(v) => setExplicationsBl((prev) => ({ ...prev, [b.runId]: v }))}
+                  />
+                ))}
+              </div>
+            )}
+
+            {vue === 'chargement' && (
+              <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                <Loader2 className="h-8 w-8 animate-spin text-accent" />
+                <p className="text-sm">Tricobot lit le BL…</p>
+              </div>
+            )}
+
+            {vue === 'recap' && (
+              <div className="flex-1 min-h-0 flex flex-col px-4 pt-4 pb-3 gap-2">
+                {/* Same header line in both views: one gold button that switches
+                    role at the same place (Éditer / Terminer l'édition). */}
+                <div className="flex-shrink-0 flex items-center gap-2 min-h-9">
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+                    {finiCount} rouleau{finiCount > 1 ? 'x' : ''} à réceptionner
+                  </p>
+                  <Button
+                    variant="gold"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => setVue('edition')}
+                    title="Parcourir et modifier les rouleaux un par un"
+                  >
+                    <Pencil className="h-3.5 w-3.5 mr-1.5" />Éditer la réception
+                  </Button>
+                </div>
+                <div className="flex-1 min-h-0 rounded-lg border border-border/60 bg-card shadow-sm overflow-auto scrollbar-transparent">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-zinc-200 border-b border-border/60">
+                      <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+                        <th className="px-3 py-2 text-left font-semibold">Rouleau</th>
+                        <th className="px-3 py-2 text-left font-semibold">Lot</th>
+                        <th className="px-3 py-2 text-right font-semibold">Poids</th>
+                        <th className="px-3 py-2 text-right font-semibold">Métrage</th>
+                        <th className="px-3 py-2 text-left font-semibold">Défaut / commentaire</th>
+                        <th className="px-3 py-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {finiPreview.map((e) => {
+                        const row = rows[e.ecruId]
+                        return (
+                          <tr
+                            key={e.key}
+                            onClick={() => { goTo(e.wizardIndex); setVue('edition') }}
+                            title="Ouvrir ce rouleau"
+                            className="border-b border-border/40 last:border-b-0 cursor-pointer hover:bg-accent/5 transition-colors"
+                          >
+                            <td className="px-3 py-2 font-medium whitespace-nowrap">
+                              {/* Same roll cell as Clients › Commandes: the fini icon, then the numero. */}
+                              <span className="inline-flex items-center gap-2">
+                                <FiniRollIcon className="h-4 w-4 text-green-700 flex-shrink-0" />
+                                {e.numero}
+                                {e.piece > 0 && <span title="Pièce d'une coupe"><Scissors className="h-3 w-3 text-accent" /></span>}
+                                {e.merged > 0 && <span title={`${e.merged} pièces fusionnées`}><Merge className="h-3 w-3 text-accent" /></span>}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 truncate max-w-[120px]">{e.lot || <span className="text-amber-700">à saisir</span>}</td>
+                            <td className={cn('px-3 py-2 text-right tabular-nums whitespace-nowrap', e.tropLourd && 'text-amber-700 font-medium')}>
+                              {e.poids > 0 ? `${fmtNum(e.poids, 1)} kg` : ''}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">
+                              {e.metrage > 0 ? `${fmtNum(e.metrage, 1)} Ml` : <span className="text-amber-700">à saisir</span>}
+                            </td>
+                            <td className="px-3 py-2 text-xs max-w-[200px]">
+                              <div className="flex flex-col gap-0.5 min-w-0">
+                                {!!row?.observation_sst.trim() && (
+                                  <span className="flex items-center gap-1 text-red-700 truncate" title={row.observation_sst}>
+                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />{row.observation_sst}
+                                  </span>
+                                )}
+                                {!!row?.observations.trim() && (
+                                  <span className="flex items-center gap-1 text-blue-700 truncate" title={row.observations}>
+                                    <MessageSquare className="h-3 w-3 flex-shrink-0" />{row.observations}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <span className="inline-flex items-center gap-1">
+                                <HorsRefBadge fils={e.horsRef} />
+                                {e.complete
+                                  ? <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                  : <span title="Lot et métrage requis"><AlertCircle className="h-4 w-4 text-amber-600" /></span>}
+                              </span>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {vue === 'edition' && (<>
+            {/* « Terminer l'édition » saves nothing (« Réceptionner » does):
+                it goes back to the table, so it never reads « Valider ». No
+                table to go back to when Tricobot filled nothing. */}
+            <div className="flex-shrink-0 px-4 pt-4 flex items-center gap-2 min-h-9">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold tabular-nums">
+                {Object.keys(tricobotFill).length > 0 ? 'Édition · ' : ''}rouleau {safeIndex + 1} / {rolls.length}
+              </p>
+              {Object.keys(tricobotFill).length > 0 && (
+                <>
+                  <Badge className="bg-accent text-accent-foreground gap-1 shadow-sm text-[10px] py-0">
+                    <Pencil className="h-3 w-3" />Mode édition
+                  </Badge>
+                  <Button
+                    variant="gold"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => setVue('recap')}
+                    title="Revenir au tableau des rouleaux (rien n'est enregistré avant « Réceptionner »)"
+                  >
+                    <Check className="h-3.5 w-3.5 mr-1.5" />Terminer l'édition
+                  </Button>
+                </>
+              )}
+            </div>
         {/* Batch fields */}
         {/* Editor card for the current roll. Référence fini + Magasin are
             no longer surfaced as user inputs — `idRefFini` defaults to
             `ligne.IDreference` (the line's target ref) and `idMagasin`
             stays 0; both apply implicitly to every reception in the batch. */}
-        <div className="flex-shrink-0 px-6 pt-4">
-          <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-accent/[0.03] p-3 space-y-3">
+        <div className="flex-shrink-0 px-4 pt-2">
+          <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card p-3 shadow-sm space-y-3">
+            {/* One header line: the roll, its écru facts, its actions, and the
+                ‹ N / M › navigation (Entrée in the métrage = next roll). */}
             <div className="flex items-center gap-2 min-w-0">
               <div className={cn(
                 'h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0',
@@ -5519,41 +5789,27 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                   ? <Merge className="h-4 w-4 text-accent" />
                   : <TmRollIcon className="h-4 w-4 text-muted-foreground" />}
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold truncate">
-                    {current.numero || `#${current.id}`}
-                  </span>
-                  {current.lot && !current.members && (
-                    <span className="text-[11px] text-muted-foreground truncate">
-                      · lot {isReprise ? 'actuel' : 'écru'} {current.lot}
-                    </span>
-                  )}
-                </div>
-                {current.members ? (
-                  // Grouped roll: the pieces the dyer joined + the écru sum,
-                  // which the BL weight should match to the 100 g.
-                  <p className="text-[10px] text-muted-foreground mt-0.5 tabular-nums truncate">
-                    {current.members.length} pièces fusionnées : {current.members.map((m) => m.numero || `#${m.id}`).join(' + ')}
-                    {current.poidsRef != null && current.poidsRef > 0 && ` · poids écru ${fmtNum(current.poidsRef, 1)} kg`}
-                  </p>
-                ) : current.cutOf !== undefined ? (
-                  // A piece of a cut roll: which piece, and how the pieces'
-                  // weights add up against the roll they come from.
-                  <p className={cn(
-                    'text-[10px] mt-0.5 tabular-nums truncate',
-                    coupeCourante ? 'text-amber-700 font-medium' : 'text-muted-foreground',
-                  )}>
-                    Pièce {current.piece}/{current.pieceCount} de {current.baseNumero}
-                    {current.poidsRef != null && current.poidsRef > 0 && (
-                      <> · pièces {fmtNum(poidsCoupes.get(current.cutOf)?.total ?? 0, 1)} kg / {isReprise ? 'rouleau' : 'écru'} {fmtNum(current.poidsRef, 1)} kg</>
-                    )}
-                  </p>
-                ) : current.poidsRef != null && current.poidsRef > 0 && (
-                  <p className="text-[10px] text-muted-foreground mt-0.5 tabular-nums">
-                    {isReprise ? 'Poids actuel' : 'Poids écru'}: {fmtNum(current.poidsRef, 1)} kg
-                  </p>
-                )}
+              <div className="min-w-0 flex-1 flex items-baseline gap-1.5">
+                <span className="text-sm font-semibold truncate flex-shrink-0 max-w-[55%]">
+                  {current.numero || `#${current.id}`}
+                </span>
+                <span className={cn(
+                  'text-[11px] tabular-nums truncate',
+                  current.cutOf !== undefined && coupeCourante ? 'text-amber-700 font-medium' : 'text-muted-foreground',
+                )}>
+                  {current.members
+                    // Grouped roll: the pieces the dyer joined + the écru sum,
+                    // which the BL weight should match to the 100 g.
+                    ? `${current.members.length} pièces : ${current.members.map((m) => m.numero || `#${m.id}`).join(' + ')}${current.poidsRef ? ` · écru ${fmtNum(current.poidsRef, 1)} kg` : ''}`
+                    : current.cutOf !== undefined
+                      // A piece of a cut roll: which piece, and how the pieces'
+                      // weights add up against the roll they come from.
+                      ? `pièce ${current.piece}/${current.pieceCount} de ${current.baseNumero}${current.poidsRef ? ` · ${fmtNum(poidsCoupes.get(current.cutOf)?.total ?? 0, 1)} / ${fmtNum(current.poidsRef, 1)} kg ${isReprise ? 'rouleau' : 'écru'}` : ''}`
+                      : [
+                          current.lot ? `lot ${isReprise ? 'actuel' : 'écru'} ${current.lot}` : null,
+                          current.poidsRef ? `${isReprise ? 'actuel' : 'écru'} ${fmtNum(current.poidsRef, 1)} kg` : null,
+                        ].filter(Boolean).join(' · ')}
+                </span>
               </div>
               {current.cutOf !== undefined && (current.piece ?? 1) > 1 && (
                 <Button
@@ -5564,7 +5820,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                   title="Retirer cette pièce de la coupe"
                 >
                   <X className="h-3.5 w-3.5 mr-1" />
-                  Retirer la pièce
+                  Retirer
                 </Button>
               )}
               {current.members && (
@@ -5579,22 +5835,11 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                   Séparer
                 </Button>
               )}
-            </div>
-
-            {/* Lot + Couper. Couper appends a piece of this roll to the list
-                (`<numero>-1`, `-2`, …) — each piece is then an ordinary step.
-                Create mode POSTs every piece; reprise PATCHes the existing
-                roll into piece 1 and POSTs the others (see handleSubmit). */}
-            <div className="flex items-end gap-3">
-              <div className="flex-1 min-w-0">
-                <LabeledInput
-                  label="Lot"
-                  value={currentRow.lot}
-                  onChange={(v) => updateCurrent({ lot: v })}
-                  autoFocus
-                />
-              </div>
-              {/* A joined roll is one roll: no cut on a group. */}
+              {/* Couper appends a piece of this roll to the list (`<numero>-1`,
+                  `-2`, …), each piece then an ordinary step. Create mode POSTs
+                  every piece; reprise PATCHes the existing roll into piece 1
+                  and POSTs the others (see handleSubmit). A joined roll is one
+                  roll: no cut on a group. */}
               {!current.members && (
                 <button
                   type="button"
@@ -5602,15 +5847,49 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                   title={current.cutOf !== undefined
                     ? `Ajouter une pièce à ${current.baseNumero}`
                     : "Le rouleau a été coupé par l'ennoblisseur : ajouter une pièce à la liste"}
-                  className="flex items-center gap-2 h-8 flex-shrink-0 rounded-md border border-border/60 bg-white px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-accent/40 hover:text-accent"
+                  className="flex items-center gap-1.5 h-7 flex-shrink-0 rounded-md border border-border/60 bg-white px-2 text-xs font-medium text-muted-foreground transition-colors hover:border-accent/40 hover:text-accent"
                 >
                   <Scissors className="h-3.5 w-3.5" />
                   {current.cutOf !== undefined ? 'Ajouter une pièce' : 'Couper'}
                 </button>
               )}
+              {rolls.length > 1 && (
+                <div className="flex items-center gap-0.5 flex-shrink-0 pl-1 border-l border-border/60">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => { goTo(safeIndex - 1); focusMetrageNextTick() }}
+                    disabled={!canPrev}
+                    title="Rouleau précédent"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="text-xs tabular-nums text-muted-foreground min-w-[2.5rem] text-center">
+                    {safeIndex + 1} / {rolls.length}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => { goTo(safeIndex + 1); focusMetrageNextTick() }}
+                    disabled={!canNext}
+                    title="Rouleau suivant (Entrée dans le métrage)"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            {/* Lot, poids, métrage on one line: the three figures of the BL. */}
+            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2">
+              <LabeledInput
+                label="Lot"
+                value={currentRow.lot}
+                onChange={(v) => updateCurrent({ lot: v })}
+                autoFocus
+              />
               <LabeledInput
                 label="Poids (kg)"
                 type="number"
@@ -5625,6 +5904,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                     value={currentRow.metrage}
                     onChange={(v) => updateCurrent({ metrage: v })}
                     inputRef={metrageInputRef}
+                    onEnter={canNext ? () => { goTo(safeIndex + 1); focusMetrageNextTick() } : undefined}
                   />
                 </div>
                 {mlNfButton}
@@ -5638,7 +5918,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                 <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
                 <span>
                   Les pièces de {coupeCourante.numero} pèsent {fmtNum(coupeCourante.total, 1)} kg
-                  pour {fmtNum(coupeCourante.reference, 1)} kg {isReprise ? 'de rouleau' : "d'écru"} — vérifiez les poids.
+                  pour {fmtNum(coupeCourante.reference, 1)} kg {isReprise ? 'de rouleau' : "d'écru"} : vérifiez les poids.
                 </span>
               </p>
             )}
@@ -5649,7 +5929,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               <div className="rounded-md border border-amber-300/60 bg-amber-50/50 px-2.5 py-2 space-y-1">
                 <label className="text-[10px] font-medium text-amber-800 flex items-center gap-1">
                   <BadgeEuro className="h-3 w-3" />
-                  Ml non facturés — le métrage reste le métrage réel
+                  Ml non facturés : le métrage reste le métrage réel
                 </label>
                 <MlNonFacturesInputs
                   compact
@@ -5689,33 +5969,14 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                 />
               </div>
             </div>
-
-            <div className="flex items-center justify-between pt-1">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { goTo(safeIndex - 1); focusMetrageNextTick() }}
-                disabled={!canPrev}
-              >
-                <ChevronLeft className="h-4 w-4 mr-1" /> Précédent
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { goTo(safeIndex + 1); focusMetrageNextTick() }}
-                disabled={!canNext}
-              >
-                Suivant <ChevronRight className="h-4 w-4 ml-1" />
-              </Button>
-            </div>
           </div>
         </div>
 
         {/* Bottom roll list — compact summary, click-to-jump */}
-        <div className="flex-1 min-h-0 flex flex-col border-t mt-4 bg-zinc-100/80">
-          <div className="flex-shrink-0 px-6 pt-3 pb-1.5 flex items-center justify-between gap-2">
+        <div className="flex-1 min-h-0 flex flex-col border-t border-border/60 mt-4">
+          <div className="flex-shrink-0 px-4 pt-3 pb-0.5 flex items-center justify-between gap-2">
             <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
-              Aperçu des {finiCount} rouleau{finiCount > 1 ? 'x' : ''} finis
+              {finiCount > 1 ? `Les ${finiCount} rouleaux finis` : 'Le rouleau fini'}
             </p>
             {canMerge && rolls.length > 1 && (
               <p className="text-[10px] text-muted-foreground truncate" title="L'ennoblisseur a cousu plusieurs pièces en un seul rouleau : fusionnez-les pour saisir un seul poids et un seul métrage.">
@@ -5723,7 +5984,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
               </p>
             )}
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-3 space-y-1 scrollbar-transparent">
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 pt-1 pb-3 space-y-1 scrollbar-transparent">
             {finiPreview.map((e, idx) => {
               const isCurrent = e.wizardIndex === safeIndex
               const isVisited = visited.has(e.ecruId)
@@ -5744,7 +6005,9 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                     'group/row w-full rounded-md border bg-card p-2 text-left text-xs flex items-center gap-2 transition-colors cursor-pointer select-none',
                     isCurrent
                       ? 'border-accent ring-1 ring-accent shadow-[inset_3px_0_0_0_rgb(242_184_10)]'
-                      : 'border-border/60 hover:border-accent/40'
+                      : 'border-border/60 hover:border-accent/40',
+                    fusionSurvol !== null && (isCurrent || e.ecruId === fusionSurvol)
+                      && 'outline-dashed outline-2 outline-offset-2 outline-accent',
                   )}
                 >
                   <div className={cn(
@@ -5774,7 +6037,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                       </span>
                     )}
                     {e.metrage > 0 && <span>· {fmtNum(e.metrage, 1)} Ml</span>}
-                    {!hasData && e.merged === 0 && <span className="italic">— en attente</span>}
+                    {!hasData && e.merged === 0 && <span className="italic">· en attente</span>}
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <HorsRefBadge fils={e.horsRef} />
@@ -5791,14 +6054,21 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
                       </button>
                     )}
                     {mergeable && (
-                      // Touch fallback for Ctrl + clic: a hover-revealed
-                      // checkbox that merges this roll into the current step.
-                      <Checkbox
-                        checked={false}
-                        onClick={(ev) => { ev.stopPropagation(); mergeInto(current!.id, [e.ecruId]) }}
-                        title="Fusionner avec le rouleau en cours"
-                        className="h-3.5 w-3.5 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 transition-opacity"
-                      />
+                      // The mouse / touch way to Ctrl + clic: names the roll it
+                      // merges into, and outlines both while hovered.
+                      <button
+                        type="button"
+                        onClick={(ev) => { ev.stopPropagation(); setFusionSurvol(null); mergeInto(current!.id, [e.ecruId]) }}
+                        onMouseEnter={() => setFusionSurvol(e.ecruId)}
+                        onMouseLeave={() => setFusionSurvol(null)}
+                        onFocus={() => setFusionSurvol(e.ecruId)}
+                        onBlur={() => setFusionSurvol(null)}
+                        title={`Fusionner avec ${current!.numero || 'le rouleau en cours'}`}
+                        aria-label={`Fusionner avec ${current!.numero || 'le rouleau en cours'}`}
+                        className="h-6 w-6 flex-shrink-0 rounded-md flex items-center justify-center text-muted-foreground opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 transition-all hover:bg-accent/10 hover:text-accent"
+                      >
+                        <Merge className="h-3.5 w-3.5" />
+                      </button>
                     )}
                   </div>
                 </div>
@@ -5806,9 +6076,64 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
             })}
           </div>
         </div>
+            </>)}
+          </div>
+
+          {/* ── Right: the BL Tricobot read (hidden below md, the rolls win) ── */}
+          <div className="hidden md:flex w-[46%] flex-shrink-0 flex-col bg-zinc-200/50">
+            {docsBl.length > 1 && (
+              <div className="flex-shrink-0 flex flex-wrap gap-1 border-b border-border/60 p-1">
+                {docsBl.map((d) => (
+                  <button
+                    key={d.key}
+                    type="button"
+                    onClick={() => setBlActif(d.key)}
+                    className={cn(
+                      'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer',
+                      d.key === docActif?.key ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
+                    )}
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    BL {d.bl.bordereau || '?'}{d.bl.fichiers.length > 1 ? ` (${d.fichier.n + 1})` : ''}
+                  </button>
+                ))}
+              </div>
+            )}
+            {docActif ? (
+              <>
+                <div className="flex-shrink-0 px-3 py-2 text-xs text-muted-foreground flex items-center gap-1.5 min-w-0">
+                  <FileText className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="truncate">BL {libelleBl(docActif.bl)}</span>
+                  {docActif.bl.bloque && (
+                    <span className="ml-auto flex-shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0 text-[10px] font-medium text-amber-800">
+                      non saisi par Tricobot
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 min-h-0 mx-3 mb-3 rounded-lg border border-border/60 bg-zinc-50 overflow-hidden">
+                  <iframe
+                    key={docActif.key}
+                    src={`${API_URL}/tricobot/bl-pdf?ligneId=${ligne.IDligne_commande_sous_traitant}&runId=${encodeURIComponent(docActif.bl.runId)}&n=${docActif.fichier.n}#view=FitH`}
+                    className="w-full h-full"
+                    title={`BL ${docActif.bl.bordereau}`}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground px-6 text-center">
+                {blsQuery.isLoading
+                  ? <Loader2 className="h-6 w-6 animate-spin text-accent" />
+                  : <>
+                      <FileText className="h-12 w-12 opacity-30" />
+                      <p className="text-sm">Aucun BL lu par Tricobot pour ces rouleaux</p>
+                    </>}
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* Footer */}
-        <div className="flex-shrink-0 px-6 py-3 border-t bg-zinc-200/50">
+        <div className="flex-shrink-0 px-4 py-3 border-t border-border/60 bg-zinc-200 rounded-b-lg">
           {tricobotCorrections.length > 0 && (
             <div className="mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[11px]">
               <div className="flex items-start gap-1.5">
@@ -7724,7 +8049,7 @@ function KV({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function LabeledInput({
-  label, value, onChange, type = 'text', autoFocus, disabled, helper, inputRef,
+  label, value, onChange, type = 'text', autoFocus, disabled, helper, inputRef, onEnter,
 }: {
   label: string
   value: string
@@ -7742,6 +8067,8 @@ function LabeledInput({
    *  need programmatic focus (e.g. BatchReceptionDialog's Suivant button
    *  jumps focus straight into the metrage field). */
   inputRef?: React.Ref<HTMLInputElement>
+  /** Enter in the field (the réception's métrage: next roll). */
+  onEnter?: () => void
 }) {
   return (
     <div className="space-y-1">
@@ -7752,6 +8079,7 @@ function LabeledInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         autoFocus={autoFocus}
+        onKeyDown={onEnter ? (e) => { if (e.key === 'Enter') { e.preventDefault(); onEnter() } } : undefined}
         autoComplete="off"
         data-form-type="other"
         data-lpignore="true"

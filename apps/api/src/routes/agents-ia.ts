@@ -776,6 +776,7 @@ routes.get('/:slug/retours', async (req, res) => {
       for (const [cle, xs] of Object.entries(r.leconsPoints ?? {})) {
         for (const x of xs) lecons.push({ runId: r.id, runLe: r.createdAt, titre: titres.get(cle) ?? cle, ...x })
       }
+      for (const x of r.lecons ?? []) lecons.push({ runId: r.id, runLe: r.createdAt, titre: r.resume, ...x })
       for (const x of r.notesDev ?? []) notesDev.push({ runId: r.id, runLe: r.createdAt, titre: r.resume, ...x })
     }
     retours.sort((a, b) => b.le.localeCompare(a.le))

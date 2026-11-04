@@ -7,6 +7,15 @@
 //     réussite, any pre-filled value changed = échec with what changed (and
 //     why, if said). Scored per BL run, the one that wrote the lot.
 //
+//   GET /bls?ligneId=: the BLs Tricobot read for this sst order line, written
+//     or left to a person (blocked checks, with his reasons): the réception
+//     shows the PDF beside the rolls and the reasons instead of « aucun
+//     rouleau » (LIVA #1347, lib/agents/bls-ligne.ts).
+//   GET /bl-pdf?ligneId=&runId=&n=: one PDF of such a run, for the réception's
+//     viewer (Agents IA's own file route is the console's, closed to the ERP).
+//   POST /bl-explication: what the person explains about a BL Tricobot left to
+//     them (« Tu peux m'expliquer ce cas ? »): a lesson on the run, no score.
+//
 //   GET /conversation — what Tricobot did with a Gmail conversation, for the
 //     Tricobot Gmail extension (apps/gmail-extension).
 //   GET /fil — that conversation's mails, read live from Gmail (+ attachments).
@@ -20,6 +29,8 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { auteur } from './agents-ia.js'
 import { enregistrerRetour } from '../lib/agents/retours.js'
 import { BL_ENNOBLISSEUR_SLUG, runDuLot } from '../lib/agents/bl-ennoblisseur.js'
+import { blsDeLigne, runSurLaLigne } from '../lib/agents/bls-ligne.js'
+import { lireFichier, lireRuns, modifierRun } from '../lib/agents/store.js'
 import { agentsDeLaBoite, chargerConversation, filConnu, lireFilConversation } from '../lib/tricobot-conversation.js'
 import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reader.js'
 import { ECRAN_FACTURES_SST } from './factures-sst.js'
@@ -70,6 +81,74 @@ tricobotRouter.put('/bl-reception', async (req, res) => {
     res.json({ retours })
   } catch (err) {
     console.error('[tricobot] bl-reception failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── GET /bls, /bl-pdf: the BLs Tricobot read for a line, at the réception ──
+const ligneDe = (req: Request, res: Response): number | null => {
+  const ligneId = parseInt(String(req.query.ligneId ?? ''), 10)
+  if (!Number.isFinite(ligneId) || ligneId <= 0) { res.status(400).json({ error: 'ligneId invalide' }); return null }
+  return ligneId
+}
+
+tricobotRouter.get('/bls', async (req, res) => {
+  if (await garde(req, res, '/sous-traitants', '/sous-traitants/ennoblissement') === null) return
+  const ligneId = ligneDe(req, res)
+  if (ligneId === null) return
+  try {
+    res.json({ bls: blsDeLigne(await lireRuns(BL_ENNOBLISSEUR_SLUG), ligneId) })
+  } catch (err) {
+    console.error('[tricobot] bls failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+tricobotRouter.get('/bl-pdf', async (req, res) => {
+  if (await garde(req, res, '/sous-traitants', '/sous-traitants/ennoblissement') === null) return
+  const ligneId = ligneDe(req, res)
+  if (ligneId === null) return
+  const runId = String(req.query.runId ?? '')
+  const n = parseInt(String(req.query.n ?? '0'), 10)
+  try {
+    // Only a run of THIS line: the gate is the line's screen, not Agents IA.
+    const run = (await lireRuns(BL_ENNOBLISSEUR_SLUG)).find((r) => r.id === runId)
+    const f = run && runSurLaLigne(run, ligneId) ? run.fichiers?.[n] : undefined
+    const buf = f ? await lireFichier(f.fichier) : null
+    if (!f || !buf) { res.status(404).json({ error: 'BL introuvable' }); return }
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(f.nom)}"`)
+    // Shown in the réception dialog's iframe (web and API on different origins).
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.end(buf)
+  } catch (err) {
+    console.error('[tricobot] bl-pdf failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const blExplication = z.object({
+  ligneId: z.number().int().positive(),
+  runId: z.string().min(1).max(100),
+  commentaire: z.string().trim().min(1).max(2000),
+})
+
+tricobotRouter.post('/bl-explication', async (req, res) => {
+  const uid = await garde(req, res, '/sous-traitants', '/sous-traitants/ennoblissement')
+  if (uid === null) return
+  const p = blExplication.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'corps invalide' }); return }
+  try {
+    const run = (await lireRuns(BL_ENNOBLISSEUR_SLUG)).find((r) => r.id === p.data.runId)
+    if (!run || !runSurLaLigne(run, p.data.ligneId)) { res.status(404).json({ error: 'BL introuvable' }); return }
+    const par = await auteur(uid)
+    const lecon = { commentaire: p.data.commentaire, par, le: new Date().toISOString() }
+    await modifierRun(BL_ENNOBLISSEUR_SLUG, run.id, (x) => { x.lecons = [...(x.lecons ?? []), lecon] })
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[tricobot] bl-explication failed:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
