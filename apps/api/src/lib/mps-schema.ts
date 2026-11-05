@@ -1582,6 +1582,18 @@ CREATE TABLE tirelle_labo (
 ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'tirelle_labo')}
 `,
   },
+  {
+    // How a client line's reservation on a knitting order is meant (LIVA #1350,
+    // lib/repartition-tricotage.ts, decision Vincent 2026-11-05): 0 = « Quantité
+    // exacte » (the line takes its kg, what is knitted beyond goes to stock),
+    // 1 = « Toute la commande » (every knitted piece goes to the line; only when
+    // no other client line reserved on the same knitting line). Existing rows
+    // stay exact.
+    name: '0058_affectation_tricotage_toute_commande',
+    sql: `
+ALTER TABLE affectation_cmd_tricotage ADD COLUMN toute_commande smallint NOT NULL DEFAULT 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {

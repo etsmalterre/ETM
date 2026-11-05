@@ -38,6 +38,8 @@ describe('releaseSets', () => {
     expect(sets).toContain('IDref_commande_source = 0')
     expect(sets).toContain('IDsociete = 2')
     expect(sets).toContain("lot = ''")
+    // the automatic reservation of the shipment goes back with the roll (LIVA #1350)
+    expect(sets).toContain('IDligne_commande_client = 0')
     for (const s of sets) expect(s).not.toMatch(/IDmagasin/i)
   })
 })

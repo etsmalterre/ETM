@@ -12,10 +12,12 @@
 //     rarely closed: 908 « En_Cours », many on soldée orders — the head decides too);
 //   - else max(0, poids_affecte − kg of the écru pieces already knitted on that sst line for that client
 //     line), the pieces counted whatever became of them (dyed, merged, shipped): they sit in a later
-//     stage of the gauge. A TRM piece carries the ETM sst line only once TRM ships it (handoverSets):
+//     stage of the gauge. « For that client line » = reserved to it, or free and due to it by the
+//     split of lib/repartition-tricotage.ts (LIVA #1350). A TRM piece carries the ETM sst line only once TRM ships it (handoverSets):
 //     until then it is still at the knitter, so still « en tricotage ».
 
 import { query } from './hfsql-auto.js'
+import { allocationsParLigneTricot, repartir } from './repartition-tricotage.js'
 
 export interface AllocationTricotage {
   /** IDligne_commande_client */
@@ -80,17 +82,23 @@ export async function kgATricoterParLigne(lineIds: readonly number[]): Promise<M
     .filter((l) => !String(l.sstatut ?? '').startsWith('Termin') && !soldees.has(num(l.cmd)))
     .map((l) => num(l.id)))
 
+  // Knitted for a client line = the pieces reserved to it from that knitting line PLUS the free pieces
+  // of the knitting line that would go to it (lib/repartition-tricotage.ts, LIVA #1350). Counting only
+  // the reserved ones left 307 Ml « en tricotage » on order 3905 for knitting that was done: 6 of the
+  // 7 pieces of order 9126 had arrived free. Every client line of the knitting line takes part in the
+  // split, not only the asked ones, so two lines never both count the same free piece.
   const tricote = new Map<string, number>()
-  const actives = allocations.filter((a) => ouvertes.has(a.lsst))
-  if (actives.length > 0) {
-    const lsst = new Set(actives.map((a) => a.lsst))
-    const pieces = await queryIn<{ lcc: number; lsst: number; poids: number | null }>(actives.map((a) => a.lcc), (inl) =>
-      `SELECT IDligne_commande_client AS lcc, IDref_commande_source AS lsst, poids
-       FROM stock_ecru WHERE IDligne_commande_client IN (${inl}) AND IDref_commande_source > 0`)
-    for (const p of pieces) {
-      if (!lsst.has(num(p.lsst))) continue
-      const k = cle(num(p.lsst), num(p.lcc))
-      tricote.set(k, (tricote.get(k) ?? 0) + num(p.poids))
+  const lsstOuvertes = [...new Set(allocations.filter((a) => ouvertes.has(a.lsst)).map((a) => a.lsst))]
+  if (lsstOuvertes.length > 0) {
+    const [parLsst, pieces] = await Promise.all([
+      allocationsParLigneTricot(lsstOuvertes),
+      queryIn<{ id: number; lcc: number | null; lsst: number; poids: number | null }>(lsstOuvertes, (inl) =>
+        `SELECT IDstock_ecru AS id, IDligne_commande_client AS lcc, IDref_commande_source AS lsst, poids
+         FROM stock_ecru WHERE IDref_commande_source IN (${inl})`),
+    ])
+    for (const l of lsstOuvertes) {
+      const siens = pieces.filter((p) => num(p.lsst) === l).map((p) => ({ id: num(p.id), poids: num(p.poids), lcc: num(p.lcc) }))
+      for (const [lcc, kg] of repartir(parLsst.get(l) ?? [], siens).tenu) tricote.set(cle(l, lcc), kg)
     }
   }
   return resteATricoter(allocations, ouvertes, tricote)

@@ -37,7 +37,9 @@ export function handoverSets(o: HandoverOpts): string[] {
 }
 
 /** The reverse, for « retirer » / deleting an avis: unshipped, TRM's again,
- *  and no longer knitted "for" anything on ETM's side. */
+ *  and no longer knitted "for" anything on ETM's side — nor reserved to an ETM
+ *  client line: the only reservation a released roll can carry is the automatic
+ *  one of the shipment (LIVA #1350); releaseShippedPieces blocks any other. */
 export function releaseSets(): string[] {
-  return ['IDligne_expedition_TRM = 0', "lot = ''", 'IDsociete = 2', 'IDref_commande_source = 0']
+  return ['IDligne_expedition_TRM = 0', "lot = ''", 'IDsociete = 2', 'IDref_commande_source = 0', 'IDligne_commande_client = 0']
 }

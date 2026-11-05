@@ -50,6 +50,8 @@ import { trmLinePrix } from '../lib/pricing-trm.js'
 import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdown } from '../lib/pricing-sst.js'
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
 import { consumedEcruIds, deleteFiniSources, insertFiniSources, loadFiniSources, probeFiniSourceTable, FiniSourceUnavailableError } from '../lib/fini-sources.js'
+import { reserverPiecesTricotees } from '../lib/repartition-tricotage.js'
+import { reservationsClient } from '../lib/reservations-client.js'
 import { horsRefParEcru, horsRefParFini, type FilHorsRef } from '../lib/hors-ref-trm.js'
 import {
   loadActions,
@@ -5599,59 +5601,12 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
     available = await fixEncoding(availRows.filter((r) => !consommes.has(Number(r.IDstock_ecru) || 0)), 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   }
 
-  // Resolve each roll's client reservation in two batched JOIN hops.
-  // We can't do a 3-way JOIN here because the legacy bridge has issues
-  // with CONVERT() across joins (see CLAUDE.md), so we walk the chain
-  // ligne_commande_client → commande_client → client manually and
-  // assemble the name map.
-  const clientByLcc = new Map<number, string>()
-  const commandeNumByLcc = new Map<number, number>()
-  const lccIds = Array.from(new Set([
+  // Each roll's client reservation (client name + order numero), one lookup.
+  const { clientByLcc, commandeNumByLcc } = await reservationsClient([
     ...linkedFixed.map((r) => Number(r.IDligne_commande_client) || 0),
     ...finiFixed.map((r) => Number((r as any).IDligne_commande_client) || 0),
     ...available.map((r) => Number((r as any).IDligne_commande_client) || 0),
-  ].filter((x) => x > 0)))
-  if (lccIds.length > 0) {
-    const lccRows = await query<{ IDligne_commande_client: number; IDcommande_client: number }>(
-      `SELECT IDligne_commande_client, IDcommande_client
-       FROM ligne_commande_client
-       WHERE IDligne_commande_client IN (${lccIds.join(',')})`,
-    )
-    const ccIds = Array.from(new Set(
-      lccRows.map((r) => Number(r.IDcommande_client) || 0).filter((x) => x > 0)
-    ))
-    const clientIdByCC = new Map<number, number>()
-    const numeroByCC = new Map<number, number>()
-    if (ccIds.length > 0) {
-      const ccRows = await query<{ IDcommande_client: number; IDclient: number; numero: number | null }>(
-        `SELECT IDcommande_client, IDclient, numero FROM commande_client
-         WHERE IDcommande_client IN (${ccIds.join(',')})`,
-      )
-      for (const r of ccRows) {
-        clientIdByCC.set(Number(r.IDcommande_client), Number(r.IDclient))
-        if (Number(r.numero) > 0) numeroByCC.set(Number(r.IDcommande_client), Number(r.numero))
-      }
-    }
-    const clientIds = Array.from(new Set(Array.from(clientIdByCC.values()).filter((x) => x > 0)))
-    const nameById = new Map<number, string>()
-    if (clientIds.length > 0) {
-      const clRows = await query<{ IDclient: number; nom: string | null }>(
-        `SELECT IDclient, nom FROM client WHERE IDclient IN (${clientIds.join(',')})`,
-      )
-      const fixedCl = await fixEncoding(clRows, 'client', 'IDclient', ['nom'])
-      for (const r of fixedCl) nameById.set(Number(r.IDclient), (r.nom ?? '').trim())
-    }
-    for (const r of lccRows) {
-      const num = numeroByCC.get(Number(r.IDcommande_client))
-      if (num) commandeNumByLcc.set(Number(r.IDligne_commande_client), num)
-      const cid = clientIdByCC.get(Number(r.IDcommande_client))
-      if (cid && cid > 0) {
-        const nm = nameById.get(cid)
-        if (nm) clientByLcc.set(Number(r.IDligne_commande_client), nm)
-      }
-    }
-  }
-
+  ])
 
   // Batch-fetch structured defects from `defaut_qualite` for every écru
   // roll we're about to return (linked + available). The link is
@@ -6158,7 +6113,7 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
   // already keyed on the ETM sst line.
   const ecruRows = await query<StockEcruLite>(
     `SELECT IDstock_ecru, numero, lot, poids, metrage, IDref_ecru, IDcolori_ecru,
-            IDmagasin, IDordre_fabrication, date_saisie,
+            IDmagasin, IDordre_fabrication, date_saisie, IDligne_commande_client,
             second_choix, observations
      FROM stock_ecru
      WHERE IDref_commande_source = ${ligneId}
@@ -6197,8 +6152,13 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
     }
   }
 
+  // Who each knitted roll is reserved to: the drawer's Client column, as on the dyer side.
+  const { clientByLcc, commandeNumByLcc } = await reservationsClient(
+    (ecruFixed as StockEcruLite[]).map((r) => Number(r.IDligne_commande_client) || 0))
   const ecruProduced: StockEcruLite[] = (ecruFixed as StockEcruLite[]).map((r) => ({
     ...r,
+    client_nom: clientByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
+    commande_numero: commandeNumByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
     defects: defectsByEcruId.get(Number(r.IDstock_ecru) || 0) ?? [],
   }))
 
@@ -6587,6 +6547,9 @@ commandesSousTraitantRouter.post(
                  ${IDLigne_Commande_TRM}, 1, ${d.second_choix ?? 0},
                  ${sqlText(d.observations)}, '${todayStr}')`,
       )
+      // The roll is ETM's as soon as it is received: it goes to the client line(s) that reserved
+      // on this knitting order (LIVA #1350, lib/repartition-tricotage.ts).
+      await reserverPiecesTricotees([ligneId])
 
       res.status(201).json({ ok: true, payload: await fetchPiecesFilPayload(ctx, ligneId) })
     } catch (err) {

@@ -62,6 +62,7 @@ import { query, fixEncoding } from '../lib/hfsql-auto.js'
 import { resolveMachineLabels } from '../lib/production-trm.js'
 import { consumedEcruIds } from '../lib/fini-sources.js'
 import { handoverSets, releaseSets } from '../lib/trm-handover.js'
+import { allocationsParLigneTricot, reserverPiecesTricotees } from '../lib/repartition-tricotage.js'
 import { n, dateDigits as dateStr } from '../lib/sst-shared.js'
 import { trmUserHasPermission } from '../lib/permissions-trm.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
@@ -176,6 +177,9 @@ export async function stampShippedPieces(expId: number, leId: number, stockIds: 
       `WHERE IDstock_ecru IN (${ids.join(',')}) AND IDsociete = ${SOCIETE_TRM} ` +
       `AND (IDligne_expedition_TRM IS NULL OR IDligne_expedition_TRM = 0)`,
   )
+  // The rolls are ETM's now: those knitted for client lines that reserved on the
+  // ETM knitting order go to them (LIVA #1350, lib/repartition-tricotage.ts).
+  if (toEtm && etmLineId > 0) await reserverPiecesTricotees([etmLineId])
   const after = await query<{ nb: number }>(
     `SELECT COUNT(*) AS nb FROM stock_ecru WHERE IDstock_ecru IN (${ids.join(',')}) AND IDligne_expedition_TRM = ${leId}`,
   )
@@ -196,7 +200,8 @@ export async function releaseShippedPieces(
   if (les.length === 0) return { released: [], blocked: [] }
   const onlyIds = (only ?? []).filter((x) => x > 0)
   const rows = await query<any>(
-    `SELECT IDstock_ecru, IDligne_commande_client, IDref_commande_affectation, IDMagasin, IDligne_expedition_ETM ` +
+    `SELECT IDstock_ecru, IDligne_commande_client, IDref_commande_affectation, IDMagasin, IDligne_expedition_ETM, ` +
+      `IDref_commande_source ` +
       `FROM stock_ecru WHERE IDligne_expedition_TRM IN (${les.join(',')})` +
       (onlyIds.length > 0 ? ` AND IDstock_ecru IN (${onlyIds.join(',')})` : ''),
   )
@@ -205,12 +210,18 @@ export async function releaseShippedPieces(
   // Own fini child OR component of a grouped roll (LIVA #1149) — both mean ETM
   // has dyed the piece and TRM can no longer take the avis back.
   const withFini = await consumedEcruIds(ids)
+  // A reservation to a client line that reserved on the piece's knitting order
+  // is the automatic one of the shipment (LIVA #1350): it goes back with the
+  // piece (releaseSets clears it) instead of blocking the « retirer ».
+  const allocs = await allocationsParLigneTricot(rows.map((r: any) => Number(r.IDref_commande_source) || 0))
+  const auto = (r: any) => (allocs.get(Number(r.IDref_commande_source) || 0) ?? [])
+    .some((a) => a.lcc === (Number(r.IDligne_commande_client) || 0))
   const released: number[] = []
   const blocked: number[] = []
   for (const r of rows) {
     const id = Number(r.IDstock_ecru)
     const touched =
-      (Number(r.IDligne_commande_client) || 0) > 0 ||
+      ((Number(r.IDligne_commande_client) || 0) > 0 && !auto(r)) ||
       (Number(r.IDref_commande_affectation) || 0) > 0 ||
       (Number(r.IDMagasin) || 0) > 0 ||
       (Number(r.IDligne_expedition_ETM) || 0) > 0 ||

@@ -3552,18 +3552,27 @@ function TricoteurDrawer({
                 <p className="text-sm">Aucune réception pour cette ligne</p>
               </div>
             ) : (
-              <div className="space-y-2">
-                {ecruProduced.map((roll) => (
-                  <EcruRollRow
-                    key={roll.IDstock_ecru}
-                    roll={roll}
-                    action="unlink"
-                    onAction={() => {}}
-                    isBusy={false}
-                    hideAction
-                  />
-                ))}
-              </div>
+              // The shared roll table (components/stock/RollTable), as in the
+              // ennoblisseur drawer: one line per écru, its notes as hover icons.
+              <RollTable
+                rolls={ecruProduced.map((r) => ({ ...r, id: r.IDstock_ecru }))}
+                kind="ecru"
+                numeroExtra={(r) => <HorsRefBadge fils={r.hors_ref} />}
+                columns={[
+                  { key: 'entre', header: 'Entré le', cell: (r) => (r.date_saisie ? formatHfsqlDate(r.date_saisie) : '') },
+                  {
+                    key: 'client',
+                    header: 'Client',
+                    cell: (r) => <ClientReservationBadge clientNom={r.client_nom} commandeNumero={r.commande_numero} />,
+                  },
+                ]}
+                notes={(r) => (
+                  <>
+                    <RollObservationsIcon text={r.observations} />
+                    <RollDefautsIcon secondChoix={Number(r.second_choix) > 0} text={texteDefauts(r.defects)} />
+                  </>
+                )}
+              />
             )}
           </>
         )}

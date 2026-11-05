@@ -70,6 +70,8 @@ import { fetchDefectsByEcru, defautSummary, type DefautQualite } from './stock-e
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
 import { consumedEcruIds, finiIdsByComponentEcru, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { kgATricoterParLigne } from '../lib/tricotage-restant.js'
+import { reserverPiecesTricotees } from '../lib/repartition-tricotage.js'
+import { reservationsClient } from '../lib/reservations-client.js'
 import { ECRU_CONSUMED_ERROR, ennoSupplyBuckets, liveEcruRolls, type EnnoEcruRow } from '../lib/ennoblissement-supply.js'
 import {
   ECRU_AT_DYER_MESSAGE, RESERVATION_MISFIT_ERROR, ecruStillAtDyer, findReservationMisfits, misfitMessage, reservationFitsDyeLine,
@@ -3054,6 +3056,13 @@ interface SupplyTricoRow {
   poids_disponible: number
   poids_affecte: number
   metrage_potentiel: number
+  /** the knitting line's quantity, kg */
+  quantite: number
+  /** this line takes every piece the exact lines leave (« Toute la commande » / « Tout le reste »,
+   *  lib/repartition-tricotage.ts) */
+  toute_commande: boolean
+  /** the other client lines' reservations on this knitting line */
+  autres_reservations: { client_nom: string | null; commande_numero: number | null; poids: number; toute_commande: boolean }[]
 }
 interface SupplyEnnoRow {
   id: number
@@ -3137,18 +3146,32 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
   // reserved to the client line via stock_ecru).
   const affThis = new Map<number, number>()
   const allocAll = new Map<number, number>()
+  // How each reservation is meant (lib/repartition-tricotage.ts): this line's mode, and the other client
+  // lines' reservations (who, kg, mode) — the dialog's gauge « client A · client B · stock ».
+  const touteThis = new Set<number>()
+  const autres = new Map<number, { lcc: number; poids: number; toute: boolean }[]>()
   if (lineIds.length > 0) {
     const rows = await query<any>(
-      `SELECT IDligne_commande_sous_traitant AS lid, IDligne_commande_client AS lcc, poids_affecte
+      `SELECT IDligne_commande_sous_traitant AS lid, IDligne_commande_client AS lcc, poids_affecte, toute_commande
          FROM affectation_cmd_tricotage WHERE IDligne_commande_sous_traitant IN (${lineIds.join(',')})`,
     )
     for (const r of rows) {
       const lid = Number(r.lid)
       const p = Number(r.poids_affecte) || 0
       allocAll.set(lid, (allocAll.get(lid) ?? 0) + p)
-      if (Number(r.lcc) === ligneId) affThis.set(lid, (affThis.get(lid) ?? 0) + p)
+      if (Number(r.lcc) === ligneId) {
+        affThis.set(lid, (affThis.get(lid) ?? 0) + p)
+        if (Number(r.toute_commande) === 1) touteThis.add(lid)
+      } else if (p !== 0) {
+        const arr = autres.get(lid) ?? []
+        const prev = arr.find((x) => x.lcc === Number(r.lcc))
+        if (prev) { prev.poids += p; prev.toute ||= Number(r.toute_commande) === 1 }
+        else arr.push({ lcc: Number(r.lcc), poids: p, toute: Number(r.toute_commande) === 1 })
+        autres.set(lid, arr)
+      }
     }
   }
+  const { clientByLcc, commandeNumByLcc } = await reservationsClient([...autres.values()].flat().map((x) => x.lcc))
   const sstNames = await resolveMagasinNames(lines.map((l: any) => Number(l.sstid)))
   return lines.map((l: any) => {
     const lid = Number(l.lid)
@@ -3164,6 +3187,14 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
       poids_disponible: round2c(dispo),
       poids_affecte: round2c(aff),
       metrage_potentiel: round2c(aff * rendement),
+      quantite: round2c(Number(l.q) || 0),
+      toute_commande: touteThis.has(lid),
+      autres_reservations: (autres.get(lid) ?? []).map((x) => ({
+        client_nom: clientByLcc.get(x.lcc) ?? null,
+        commande_numero: commandeNumByLcc.get(x.lcc) ?? null,
+        poids: round2c(x.poids),
+        toute_commande: x.toute,
+      })),
     }
   })
 }
@@ -4719,10 +4750,13 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
 
     // Planning allocation to this client line (the "Poids affecté" input) —
     // the same table the Tricotage tab's affecté column reads.
+    // An order knitted wholly for the line (nothing « pour le stock ») takes every piece it yields:
+    // « Toute la commande » (lib/repartition-tricotage.ts); the Tricotage tab dialog changes it.
     if (d.poids_affecte !== 0) {
+      const toute = d.poids_stock <= 0 ? 1 : 0
       await query(
-        `INSERT INTO affectation_cmd_tricotage (poids_affecte, IDligne_commande_sous_traitant, IDligne_commande_client)
-         VALUES (${n(d.poids_affecte)}, ${created.IDligne_commande_sous_traitant}, ${ligneId})`,
+        `INSERT INTO affectation_cmd_tricotage (poids_affecte, IDligne_commande_sous_traitant, IDligne_commande_client, toute_commande)
+         VALUES (${n(d.poids_affecte)}, ${created.IDligne_commande_sous_traitant}, ${ligneId}, ${toute})`,
       )
     }
 
@@ -4742,6 +4776,9 @@ const tricoAffectationBody = z.object({
   // Kg of this knitting order allocated to THIS client line. Legacy allows
   // negative adjustments, so no lower bound — only the over-allocation guard.
   poids_affecte: z.number().finite(),
+  // « Toute la commande » (every knitted piece goes to the line) vs « Quantité exacte » (the line
+  // takes its kg, the rest goes to stock) — lib/repartition-tricotage.ts. Absent = exact.
+  toute_commande: z.boolean().optional(),
 })
 
 // Adjust the affectation_cmd_tricotage allocation of one tricoteur line to
@@ -4756,7 +4793,7 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
     if (isNaN(commandeId) || isNaN(ligneId) || isNaN(sstLineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const parsed = tricoAffectationBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
-    const value = parsed.data.poids_affecte
+    let value = parsed.data.poids_affecte
     const ctx = await loadClientLineContext(commandeId, ligneId)
     if (!ctx || ctx.kind === 'none') { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
     if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
@@ -4769,16 +4806,51 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
 
     // Over-allocation guard: allocations across ALL client lines stay within
     // the knitting order's quantity.
-    const allocs = await query<{ lcc: number; poids_affecte: number | null }>(
-      `SELECT IDligne_commande_client AS lcc, poids_affecte FROM affectation_cmd_tricotage
+    const allocs = await query<{ lcc: number; poids_affecte: number | null; toute_commande: number | null }>(
+      `SELECT IDligne_commande_client AS lcc, poids_affecte, toute_commande FROM affectation_cmd_tricotage
         WHERE IDligne_commande_sous_traitant = ${sstLineId}`,
     )
-    const othersTotal = allocs
-      .filter((a) => Number(a.lcc) !== ligneId)
-      .reduce((s, a) => s + (Number(a.poids_affecte) || 0), 0)
-    if (value + othersTotal > quantite + 0.01) {
+    const others = allocs.filter((a) => Number(a.lcc) !== ligneId && (Number(a.poids_affecte) || 0) !== 0)
+    const othersTotal = others.reduce((s, a) => s + (Number(a.poids_affecte) || 0), 0)
+    // « Toute la commande » / « Tout le reste »: the line takes what the other lines leave, so its kg
+    // are the order's quantity less theirs, whatever was sent. One such line per knitting line.
+    const toute = parsed.data.toute_commande === true
+    if (toute) {
+      if (others.some((a) => Number(a.toute_commande) === 1)) {
+        res.status(409).json({
+          error: 'reste_deja_pris',
+          message: 'Une autre commande client prend déjà tout le reste de cette commande tricoteur : choisissez une quantité exacte.',
+        })
+        return
+      }
+      value = round2c(Math.max(0, quantite - othersTotal))
+      if (value <= 0) {
+        res.status(409).json({ error: 'rien_a_prendre', message: 'Les autres commandes client ont déjà réservé toute la commande tricoteur.' })
+        return
+      }
+    }
+    // Another line on « tout le reste » gives way to an exact reservation (and takes the kg back
+    // when one shrinks): only the exact lines bound this one.
+    const resteAutre = toute ? null : others.find((a) => Number(a.toute_commande) === 1) ?? null
+    const bornes = resteAutre ? others.filter((a) => a !== resteAutre) : others
+    const bornesTotal = bornes.reduce((s, a) => s + (Number(a.poids_affecte) || 0), 0)
+    if (value + bornesTotal > quantite + 0.01) {
       res.status(400).json({ error: 'Le poids affecté dépasse le disponible de la commande tricoteur' })
       return
+    }
+    if (resteAutre) {
+      const reste = round2c(quantite - bornesTotal - value)
+      if (reste <= 0.01) {
+        res.status(409).json({
+          error: 'reste_vide',
+          message: "Une autre commande client prend tout le reste de cette commande tricoteur : réduisez la quantité pour lui en laisser, ou passez-la en quantité exacte.",
+        })
+        return
+      }
+      await query(
+        `UPDATE affectation_cmd_tricotage SET poids_affecte = ${n(reste)}
+          WHERE IDligne_commande_sous_traitant = ${sstLineId} AND IDligne_commande_client = ${Number(resteAutre.lcc)}`,
+      )
     }
 
     await query(
@@ -4787,11 +4859,13 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
     )
     if (value !== 0) {
       await query(
-        `INSERT INTO affectation_cmd_tricotage (poids_affecte, IDligne_commande_sous_traitant, IDligne_commande_client)
-         VALUES (${n(value)}, ${sstLineId}, ${ligneId})`,
+        `INSERT INTO affectation_cmd_tricotage (poids_affecte, IDligne_commande_sous_traitant, IDligne_commande_client, toute_commande)
+         VALUES (${n(value)}, ${sstLineId}, ${ligneId}, ${toute ? 1 : 0})`,
       )
     }
-    res.json({ ok: true, poids_affecte: value })
+    // Pieces already knitted and still free go to the line(s) now (lib/repartition-tricotage.ts).
+    const reservees = await reserverPiecesTricotees([sstLineId])
+    res.json({ ok: true, poids_affecte: value, toute_commande: toute, pieces_reservees: reservees })
   } catch (err) {
     console.error('Error updating tricotage affectation:', err)
     res.status(500).json({ error: 'Internal server error' })

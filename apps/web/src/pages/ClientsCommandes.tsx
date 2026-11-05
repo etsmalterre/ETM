@@ -375,6 +375,12 @@ interface SupplyTricoRow {
   poids_disponible: number
   poids_affecte: number
   metrage_potentiel: number
+  /** the knitting line's quantity, kg */
+  quantite: number
+  /** « Toute la commande »: every knitted piece goes to this line (API lib/repartition-tricotage.ts) */
+  toute_commande: boolean
+  /** the other client lines' reservations on this knitting order */
+  autres_reservations: { client_nom: string | null; commande_numero: number | null; poids: number; toute_commande: boolean }[]
 }
 interface SupplyEnnoRow {
   id: number
@@ -3151,7 +3157,7 @@ function AffectationDrawer({
                 { key: 'sst', label: 'Tricoteur', align: 'left', render: (r) => r.sous_traitant_nom || '—' },
                 { key: 'dl', label: 'Délai', align: 'left', render: (r) => fmtSupplyDate(r.date_livraison) },
                 { key: 'di', label: 'Poids dispo.', align: 'right', render: (r) => `${fmtNum(r.poids_disponible, 1)} Kg` },
-                { key: 'af', label: 'Poids affecté', align: 'right', render: (r) => `${fmtNum(r.poids_affecte, 1)} Kg` },
+                { key: 'af', label: 'Réservé', align: 'right', render: (r) => `${fmtNum(r.poids_affecte, 1)} Kg` },
                 { key: 'mp', label: 'Métrage pot.', align: 'right', render: (r) => <span className="font-semibold">{fmtNum(r.metrage_potentiel, 0)} Ml</span> },
               ]}
             />
@@ -3222,6 +3228,9 @@ function AffectationDrawer({
           queryClient.invalidateQueries({ queryKey: ['commande-client-supply', commandeId, ligne.IDligne_commande_client] })
           queryClient.invalidateQueries({ queryKey })
           queryClient.invalidateQueries({ queryKey: matiereEcruQueryKey(commandeId, ligne.IDligne_commande_client) })
+          // Knitted pieces still free are reserved to the line by the save (LIVA #1350).
+          invalidateStockCaches(queryClient)
+          invalidateSstCommandeCaches(queryClient)
           onSuccess()
         }}
       />
@@ -5124,20 +5133,63 @@ function TricotageAffectationDialog({
   onClose: () => void
   onSuccess: () => void
 }) {
+  // The line's reservation on a knitting order (LIVA #1350, API lib/repartition-tricotage.ts), mode
+  // first (Vincent 2026-11-05): « Toute la commande » / « Tout le reste » takes every piece the other
+  // lines' exact quantities leave, its kg computed; « Quantité exacte » asks for the kg.
   const current = Number(row.poids_affecte) || 0
-  const [valueStr, setValueStr] = useState(() => (current !== 0 ? String(current) : ''))
+  const quantite = Number(row.quantite) || 0
+  const autres = row.autres_reservations ?? []
+  const resteAutre = autres.find((a) => a.toute_commande) ?? null
+  const exactesAutres = autres.filter((a) => !a.toute_commande).reduce((s, a) => s + (Number(a.poids) || 0), 0)
+  const resteDispo = Math.max(0, Math.round((quantite - exactesAutres) * 100) / 100)
+  const toutePossible = !resteAutre && resteDispo > 0.005
+  const libelleToute = autres.length > 0 ? 'Tout le reste' : 'Toute la commande'
+
+  const [mode, setMode] = useState<'toute' | 'exacte'>(() => {
+    if (current !== 0) return row.toute_commande && toutePossible ? 'toute' : 'exacte'
+    return toutePossible && autres.length === 0 ? 'toute' : 'exacte'
+  })
+  const [valueStr, setValueStr] = useState(() => (current !== 0 && !row.toute_commande ? String(current) : ''))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const parsed = parseFloat(valueStr.replace(',', '.'))
-  const value = Number.isFinite(parsed) ? parsed : 0
+  const saisi = Number.isFinite(parsed) ? parsed : 0
+  // What the line reserves once saved, kg.
+  const value = mode === 'toute' ? resteDispo : saisi
   const delta = value - current
-  // Live remaining on the knitting order (its dispo already excludes the
-  // current allocation, so only the delta moves it).
-  const dispoLive = Math.round(((Number(row.poids_disponible) || 0) - delta) * 100) / 100
-  const over = dispoLive < -0.005
+  // An exact reservation is bounded by the other exact ones; a line on « tout le reste » gives way but
+  // must keep something.
+  const maxExacte = Math.round((quantite - exactesAutres - (resteAutre ? 0.01 : 0)) * 100) / 100
+  const over = mode === 'exacte' && saisi > maxExacte + 0.005
   const projected = dim === 'metrage' ? reserved + delta * rendement : reserved + delta
-  const canSubmit = !busy && !over && Math.abs(delta) > 0.0001
+  const modeChange = (mode === 'toute') !== (current !== 0 && row.toute_commande)
+  const sansChangement = Math.abs(delta) <= 0.0001 && !(value !== 0 && modeChange)
+  const canSubmit = !busy && !over && (mode === 'toute' ? value > 0 : true) && !sansChangement
+  // Why « Enregistrer » is greyed: a disabled button with no reason reads as broken.
+  const pourquoiGrise = busy ? null
+    : over ? 'La quantité dépasse le maximum de cette commande.'
+    : mode === 'toute' && value <= 0 ? 'Plus rien à réserver sur cette commande.'
+    : sansChangement ? (current !== 0 ? 'Déjà enregistré : changez la quantité ou le mode.' : 'Saisissez une quantité.')
+    : null
+
+  // The order's gauge: this line, the other lines, what is left for stock.
+  const moi = clientNom ?? 'Cette commande'
+  const COULEURS = ['bg-primary', 'bg-accent-blue', 'bg-teal']
+  const segments = [
+    { cle: 'moi', nom: moi, detail: 'cette ligne', kg: value, tag: mode === 'toute' ? libelleToute.toLowerCase() : null, couleur: 'bg-accent' },
+    ...autres.map((a, i) => ({
+      cle: `a${i}`,
+      nom: a.client_nom ?? 'Autre client',
+      detail: a.commande_numero ? `N° ${a.commande_numero}` : '',
+      // a line on « tout le reste » gives way to this exact reservation
+      kg: a.toute_commande ? Math.max(0, quantite - exactesAutres - value) : Number(a.poids) || 0,
+      tag: a.toute_commande ? 'tout le reste' : null,
+      couleur: COULEURS[i % COULEURS.length],
+    })),
+  ]
+  const totalReserve = segments.reduce((s, x) => s + Math.max(0, x.kg), 0)
+  const stock = Math.max(0, quantite - totalReserve)
 
   const handleSubmit = async () => {
     if (!canSubmit) return
@@ -5146,12 +5198,12 @@ function TricotageAffectationDialog({
     try {
       await apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/supply/tricotage/${row.id}/affectation`, {
         method: 'PUT',
-        body: JSON.stringify({ poids_affecte: value }),
+        body: JSON.stringify({ poids_affecte: value, toute_commande: mode === 'toute' }),
       })
       onSuccess()
       onClose()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur')
+      setError((e as { body?: { message?: string } })?.body?.message ?? (e instanceof Error ? e.message : 'Erreur'))
     } finally {
       setBusy(false)
     }
@@ -5162,9 +5214,9 @@ function TricotageAffectationDialog({
       <DialogContent className="max-w-lg p-0 border-0 bg-primary overflow-hidden flex flex-col">
         <BandeauDialog
           icon={KnitIcon}
-          titre={`Affectation — Commande N° ${row.commande_id}`}
+          titre={`Réservation — Commande N° ${row.commande_id}`}
           sousTitre={<>
-            {row.sous_traitant_nom || 'Tricoteur'} · {fmtSupplyDate(row.date_commande)}
+            {row.sous_traitant_nom || 'Tricoteur'} · {fmtSupplyDate(row.date_commande)} · {fmtNum(quantite, 1)} kg
             {row.etat_label && <> · <SupplyEtatPill label={row.etat_label} /></>}
           </>}
           disabled={busy}
@@ -5172,41 +5224,111 @@ function TricotageAffectationDialog({
         />
 
         <div className="p-4 bg-zinc-100 space-y-3">
-          <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-            <TricoWeightField
-              label={`Affecté à la commande${clientNom ? ` ${clientNom}` : ' client'}`}
-              value={valueStr}
-              onChange={setValueStr}
-              disabled={busy}
-              rendement={rendement}
-              refLabel={refLabel}
-              autoFocus
-            />
-            <div className={cn(
-              'flex items-baseline justify-between gap-2 pt-2 border-t border-border/40 text-[11px] tabular-nums',
-              over ? 'text-destructive font-medium' : 'text-muted-foreground',
-            )}>
-              <span>Disponible sur la commande tricoteur</span>
-              <span>{fmtNum(dispoLive, 1)} kg</span>
+          {/* 1 · the mode, then the kg only for an exact quantity */}
+          <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm p-3 space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Réserver pour {moi}</p>
+            <div className="flex gap-1 rounded-md bg-zinc-100 p-1">
+              {([['toute', libelleToute], ['exacte', 'Quantité exacte']] as const).map(([k, label]) => {
+                const off = k === 'toute' && !toutePossible
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    disabled={busy || off}
+                    title={off ? (resteAutre ? `${resteAutre.client_nom ?? 'Une autre commande'} prend déjà tout le reste` : 'Plus rien à réserver sur cette commande') : undefined}
+                    onClick={() => setMode(k)}
+                    className={cn(
+                      'flex-1 px-2 py-1.5 text-sm rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+                      mode === k ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10',
+                    )}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
             </div>
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Info className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
+              {mode === 'toute'
+                ? (autres.length > 0 ? 'Toutes les pièces non réservées, surplus compris.' : 'Toutes les pièces, surplus compris.')
+                : <>La quantité saisie, le surplus part {resteAutre ? <>à {resteAutre.client_nom ?? 'l’autre commande'}</> : 'en stock'}.</>}
+            </p>
+            {mode === 'toute' && (
+              <div className="flex items-baseline justify-between gap-2 border-t border-border/40 pt-2 text-sm tabular-nums">
+                <span className="text-xs text-muted-foreground">Prévu</span>
+                <span className="font-semibold">
+                  {fmtNum(resteDispo, 1)} kg
+                  {rendement > 0 && <span className="ml-1.5 text-xs font-normal text-muted-foreground">≈ {fmtNum(resteDispo * rendement, 1)} Ml</span>}
+                </span>
+              </div>
+            )}
+            {mode === 'exacte' && (
+              <div className="pt-1">
+                <TricoWeightField
+                  label="Quantité réservée"
+                  value={valueStr}
+                  onChange={setValueStr}
+                  disabled={busy}
+                  rendement={rendement}
+                  refLabel={refLabel}
+                  autoFocus
+                />
+                <div className={cn('flex items-baseline justify-between gap-2 text-[11px] tabular-nums', over ? 'text-destructive font-medium' : 'text-muted-foreground')}>
+                  <span>Maximum sur cette commande</span>
+                  <span>{fmtNum(Math.max(0, maxExacte), 1)} kg</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 2 · who the order's pieces will go to */}
+          <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Réservations de la commande N° {row.commande_id}</p>
+            <div className="h-2.5 rounded-full bg-zinc-200 overflow-hidden flex">
+              {quantite > 0 && segments.filter((s) => s.kg > 0).map((s) => (
+                <div key={s.cle} className={cn('h-full transition-all', s.couleur)} style={{ width: `${Math.min(100, (s.kg / quantite) * 100)}%` }} />
+              ))}
+            </div>
+            <ul className="space-y-1 text-xs">
+              {segments.map((s) => (
+                <li key={s.cle} className="flex items-center gap-2 tabular-nums">
+                  <span className={cn('h-2.5 w-2.5 rounded-sm flex-shrink-0', s.couleur)} />
+                  <span className={cn('truncate', s.cle === 'moi' && 'font-medium')}>{s.nom}</span>
+                  {s.detail && <span className="text-muted-foreground truncate">· {s.detail}</span>}
+                  {s.tag && <span className="text-[10px] rounded border border-border/60 bg-zinc-100 px-1 text-muted-foreground flex-shrink-0">{s.tag}</span>}
+                  <span className="ml-auto flex-shrink-0">{fmtNum(Math.max(0, s.kg), 1)} kg</span>
+                </li>
+              ))}
+              <li className="flex items-center gap-2 tabular-nums text-muted-foreground">
+                <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0 bg-zinc-200 border border-border/60" />
+                <span>Stock</span>
+                <span className="ml-auto flex-shrink-0">{fmtNum(stock, 1)} kg</span>
+              </li>
+            </ul>
           </div>
         </div>
 
         <div className="flex-shrink-0 rounded-b-lg px-4 py-3 border-t border-border/60 bg-zinc-200">
           {!!error && (
             <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
-              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-all">{error}</span>
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-words">{error}</span>
             </div>
           )}
+          {!error && pourquoiGrise && (
+            <p className="mb-2 text-right text-[11px] text-muted-foreground">{pourquoiGrise}</p>
+          )}
           <div className="flex items-center gap-3">
-            <AffecteGauge projected={projected} target={target} uniteLabel={uniteLabel} clientNom={clientNom} />
+            <AffecteGauge projected={projected} target={target} uniteLabel={uniteLabel} libelle="réservé pour la ligne" />
             <div className="flex gap-2 flex-shrink-0">
               <Button variant="outline" onClick={onClose} disabled={busy}>Annuler</Button>
-              <Button onClick={handleSubmit} disabled={!canSubmit}>
-                {busy
-                  ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Enregistrement…</>
-                  : <><Save className="h-3.5 w-3.5 mr-1.5" />Enregistrer</>}
-              </Button>
+              {/* the span carries the reason: a disabled button shows no tooltip */}
+              <span title={pourquoiGrise ?? undefined}>
+                <Button onClick={handleSubmit} disabled={!canSubmit}>
+                  {busy
+                    ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Enregistrement…</>
+                    : <><Save className="h-3.5 w-3.5 mr-1.5" />Enregistrer</>}
+                </Button>
+              </span>
             </div>
           </div>
         </div>
