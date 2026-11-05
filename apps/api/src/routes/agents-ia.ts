@@ -51,6 +51,8 @@ import { BL_ENNOBLISSEUR_SLUG, etiqueterVerifie } from '../lib/agents/bl-ennobli
 import { rouleauxEnStock, type RouleauEnStock } from '../lib/agents/bl-ennoblisseur-db.js'
 import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
 import { relaisTriage } from '../lib/agents/triage/relais.js'
+import { conseiller, libelleEtat, mesurer, MODES_COMPETENCE, FENETRE_DEFAUT, type ModeCompetence } from '../lib/agents/competences.js'
+import { changerModeCompetence, etatCompetence } from '../lib/agents/store.js'
 
 const routes: RouterType = Router()
 
@@ -232,7 +234,36 @@ async function vueAgent(def: AgentDef) {
     versionActive: { version: v.version, model: v.model },
     stats: statistiques(def, runs, state),
     sondage: etatSondage(def.slug),
+    competences: await vueCompetences(def, runs, state),
   }
+}
+
+/** Each skill: its mode, its three measures on the version it runs, and
+ *  whether to propose going up or down (claude_doc/agents_autonomie.md). */
+async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState) {
+  if (!def.competences) return []
+  return Promise.all(def.competences.map(async (c) => {
+    const etat = etatCompetence(state, c.cle, c.defaut)
+    let points: Awaited<ReturnType<typeof c.points>> = []
+    let erreur: string | null = null
+    try { points = await c.points(runs, def.slug, state.activeVersion) } catch (e) { erreur = e instanceof Error ? e.message : String(e) }
+    return {
+      cle: c.cle,
+      nom: c.nom,
+      description: c.description,
+      modes: c.modes,
+      mode: etat.mode,
+      taux: etat.taux ?? null,
+      fenetre: etat.fenetre ?? null,
+      libelle: libelleEtat(etat),
+      changeLe: etat.changeLe ?? null,
+      changePar: etat.changePar ?? null,
+      version: c.version ?? state.activeVersion,
+      mesures: mesurer(points),
+      conseil: conseiller(etat, c.modes, points),
+      erreur,
+    }
+  }))
 }
 
 // ── agents ───────────────────────────────────────────────
@@ -282,6 +313,33 @@ routes.patch('/:slug', async (req, res) => {
     res.json(await vueAgent(def))
   } catch (err) {
     console.error('[agents-ia] mode failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const competenceBody = z.object({
+  mode: z.enum(MODES_COMPETENCE as [ModeCompetence, ...ModeCompetence[]]),
+  taux: z.number().int().min(1).max(99).optional(),
+  fenetre: z.number().int().min(2).max(100).optional(),
+})
+
+/** A skill's mode (piloting right, like the agent's). « autonomie » needs its share. */
+routes.patch('/:slug/competences/:cle', async (req, res) => {
+  const uid = await pilote(req, res)
+  if (uid === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  const c = def.competences?.find((x) => x.cle === req.params.cle)
+  if (!c) { res.status(404).json({ error: 'compétence inconnue' }); return }
+  const p = competenceBody.safeParse(req.body)
+  if (!p.success) { res.status(400).json({ error: 'mode invalide' }); return }
+  if (!c.modes.includes(p.data.mode)) { res.status(400).json({ error: 'mode non proposé pour cette compétence' }); return }
+  if (p.data.mode === 'autonomie' && !p.data.taux) { res.status(400).json({ error: 'taux_requis', message: 'Indiquez la part des exécutions faites seules.' }); return }
+  try {
+    await changerModeCompetence(def.slug, def.versionInitiale, c.cle, { mode: p.data.mode, taux: p.data.taux, fenetre: p.data.fenetre ?? FENETRE_DEFAUT }, await auteur(uid))
+    res.json(await vueAgent(def))
+  } catch (err) {
+    console.error('[agents-ia] competence mode failed:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

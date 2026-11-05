@@ -18,6 +18,7 @@ import { commandesSousTraitantRouter } from './routes/commandes-sous-traitant.js
 import { facturesSstRouter } from './routes/factures-sst.js'
 import { pointsSstRouter } from './routes/points-sst.js'
 import { tricobotRouter } from './routes/tricobot.js'
+import { tricobotSaisiesRouter } from './routes/tricobot-saisies.js'
 import { commandesClientRouter } from './routes/commandes-client.js'
 import { etiquettesSpRouter } from './routes/etiquettes-sp.js'
 import { commandesTrmRouter } from './routes/commandes-trm.js'
@@ -178,6 +179,7 @@ app.use('/api/factures-sst', facturesSstRouter)
 // The daily « Point du JJ/MM » to a dyer (Sous-traitants › Point, automate « Point sous-traitant »).
 app.use('/api/points-sst', pointsSstRouter)
 // Tricobot feedback given where the work is done (lib/agents/retours.ts).
+app.use('/api/tricobot/saisies', tricobotSaisiesRouter)
 app.use('/api/tricobot', tricobotRouter)
 app.use('/api/commandes-client', commandesClientRouter)
 // Simone Pérèle roll labels (LIVA #1200) — the « Étiquettes » tab of an order line.

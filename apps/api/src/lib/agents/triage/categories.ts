@@ -31,7 +31,9 @@ export const CATEGORIES: readonly Categorie[] = [
   { cle: 'suivi_client', libelle: 'Suivi client', description: 'Échange avec un client sur une commande en cours : délai, validation, cahier des charges, rapport ou prévisionnel.' },
   { cle: 'facturation_client', libelle: 'Facturation client', description: 'Un client écrit au sujet de NOS factures : paiement, relance, litige, demande de facture, d’avoir ou de relevé.' },
   { cle: 'qualite', libelle: 'Qualité', description: 'Réclamation, défaut, retour, écart de métrage ; demandes de certificats, RSE, audits.' },
-  { cle: 'sous_traitant', libelle: 'Échange sous-traitant', description: 'Échange avec un ennoblisseur ou un sous-traitant hors BL et facture : point du jour, plan de charge, question sur un lot.' },
+  // Handed to Flux Ennoblisseur since 2026-11-05: a dyer's reply to the Point du
+  // jour carries its délais and controls (another sous-traitant's mail leaves an « ignoré » run).
+  { cle: 'sous_traitant', libelle: 'Échange sous-traitant', description: 'Échange avec un ennoblisseur ou un sous-traitant hors BL et facture : point du jour, plan de charge, question sur un lot.', cible: 'bl-ennoblisseur' },
   { cle: 'fournisseur', libelle: 'Fournisseur', description: 'Achat de fil ou de fournitures : confirmation de commande, offre, délai, livraison d’un fournisseur.' },
   { cle: 'transport', libelle: 'Transport', description: 'Enlèvement, suivi d’expédition, information d’un transporteur (hors facture).' },
   { cle: 'facture_fournisseur', libelle: 'Facture fournisseur', description: 'Facture, avis de prélèvement ou relance d’un fournisseur, transporteur ou prestataire (hors sous-traitants).' },

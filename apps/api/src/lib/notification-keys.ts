@@ -31,9 +31,9 @@ export const NOTIFICATION_KEYS = [
   },
   {
     key: 'notif_agent_bl',
-    label: 'BL Ennoblisseur à vérifier',
+    label: 'Flux Ennoblisseur — BL à vérifier',
     description:
-      'Envoie un email quand l’agent IA « BL Ennoblisseur » n’a pas pu enregistrer un bordereau de livraison reçu de MATEL (pièce inconnue, totaux qui ne correspondent pas, numéro illisible, erreur de lecture) : la réception de ce BL doit être vérifiée à la main. Le message donne le motif et le lien vers l’exécution dans Agents IA.',
+      'Envoie un email quand l’agent IA « Flux Ennoblisseur » n’a pas pu enregistrer un bordereau de livraison reçu d’un ennoblisseur (pièce inconnue, totaux qui ne correspondent pas, numéro illisible, erreur de lecture) : la réception de ce BL doit être vérifiée à la main. Le message donne le motif et le lien vers l’exécution dans Agents IA.',
     category: 'Agents IA',
   },
   // No « Superviseur » key since 2026-09-23: its report is read in Agents IA

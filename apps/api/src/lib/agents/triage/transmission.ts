@@ -58,7 +58,7 @@ const premier = (xs: Array<string | null | undefined>): string | null => xs.find
 export const DESTINATAIRES: Record<string, Destinataire> = {
   [BL_ENNOBLISSEUR_SLUG]: {
     slug: BL_ENNOBLISSEUR_SLUG,
-    nom: 'BL Ennoblisseur',
+    nom: 'Flux Ennoblisseur',
     versionInitiale: BL_ENNOBLISSEUR_VERSION_INITIALE,
     recevoir: recevoirBl,
     sousCategorie: (runs) => premier(runs.map((r) => profilDe((r.resultat as { profil?: string | null }).profil)?.nom)),

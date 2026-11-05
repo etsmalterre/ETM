@@ -102,6 +102,8 @@ import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { SchemaControle, type SchemaKind } from '@/components/qualite/SchemaControle'
 import { cn } from '@/lib/utils'
+import { ouvertes, tricobotAttend, TricobotAvatar, useSaisiesLotTricobot, type CompteurTricobot } from '@/components/tricobot/SaisiesTricobot'
+import { TricobotPriseEnMain } from '@/components/tricobot/TricobotPriseEnMain'
 
 // ── Types ────────────────────────────────────────────────
 
@@ -117,8 +119,10 @@ interface ListRow {
   etape?: EtapeLot | null
   /** A validated lot still owes a client its rapport de contrôle. */
   rc_a_envoyer?: boolean
-  /** Red / amber card (§41): the lot's relance is due (API urgenceLot). */
+  /** Red / amber card (§41): the lot's relance is due (API urgenceLot), or Tricobot waits on its measures. */
   urgence?: { niveau: NiveauUrgence; raison: string } | null
+  /** What Tricobot wrote or asked on the lot's dyer measures (Flux Ennoblisseur › Contrôles). */
+  tricobot?: CompteurTricobot | null
   date: string | null
 }
 
@@ -416,7 +420,14 @@ export function QualiteSuiviLots() {
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['suivi-lots'] })
     queryClient.invalidateQueries({ queryKey: ['suivi-lot', selectedId] })
+    // Measures typed by hand judge Tricobot's saisie on the lot (API lotModifie).
+    queryClient.invalidateQueries({ queryKey: ['tricobot-saisies'] })
   }, [queryClient, selectedId])
+
+  // Tricobot takes over the lot while his measures wait for a person
+  // (claude_doc/agents_autonomie.md §6).
+  const { data: saisiesTricobot } = useSaisiesLotTricobot(selectedId)
+  const saisiesOuvertes = ouvertes(saisiesTricobot)
 
   // ── Edit lifecycle ──────────────────────────────────────
   const startEdit = useCallback(() => {
@@ -655,6 +666,15 @@ export function QualiteSuiviLots() {
   // ── Render ──────────────────────────────────────────────
   return (
     <>
+      {!isEditing && selectedId !== null && saisiesOuvertes.some((x) => x.statut === 'a_revoir') && (
+        <TricobotPriseEnMain
+          key={selectedId}
+          sujet="lot"
+          saisies={saisiesOuvertes}
+          libelle={() => `Lot ${detail?.lot || ''}`.trim()}
+          onChanged={invalidateAll}
+        />
+      )}
       <MasterDetailLayout
         hasSelection={selectedId !== null}
         onBack={handleBack}
@@ -981,7 +1001,7 @@ function LotList({
   onSoumettreColoris?: () => void
 }) {
   return (
-    <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
+    <div data-tricobot-liste className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       {/* Search + filter */}
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
         <div className="flex items-center gap-2">
@@ -1066,17 +1086,24 @@ function LotList({
                   u?.lisere,
                 )}
               >
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                  <span className="font-medium text-sm tabular-nums flex-shrink-0">{row.lot || '—'}</span>
-                  <LotStatutPill row={row} className="ml-auto min-w-0" />
+                {/* Tricobot waiting on the lot's measures: his figure takes the icon's place,
+                    left of the lot number and the sous-traitant (as on Sous-traitants › Ennoblissement). */}
+                <div className={cn(tricobotAttend(row.tricobot ?? undefined) && 'flex items-center gap-2.5')}>
+                  {tricobotAttend(row.tricobot ?? undefined) && <TricobotAvatar c={row.tricobot ?? undefined} />}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      {!tricobotAttend(row.tricobot ?? undefined) && <ShieldCheck className="h-4 w-4 text-muted-foreground flex-shrink-0" />}
+                      <span className="font-medium text-sm tabular-nums flex-shrink-0">{row.lot || '—'}</span>
+                      <LotStatutPill row={row} className="ml-auto min-w-0" />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1 truncate">{row.sous_traitant_nom || '—'}</p>
+                    {row.urgence && u && (
+                      <p className={cn('text-[11px] font-medium mt-1 truncate', u.text)} title={row.urgence.raison}>
+                        {row.urgence.raison}
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <p className="text-xs text-muted-foreground mt-1 truncate">{row.sous_traitant_nom || '—'}</p>
-                {row.urgence && u && (
-                  <p className={cn('text-[11px] font-medium mt-1 truncate', u.text)} title={row.urgence.raison}>
-                    {row.urgence.raison}
-                  </p>
-                )}
                 {(row.date || rcDu || row.etape) && (
                   <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                     {row.date ? <span>Reçu le {formatHfsqlDate(row.date)}</span> : row.etape && <span className="italic">Pas encore réceptionné</span>}
@@ -2050,6 +2077,7 @@ function LotSidebar({
               <button
                 key={t.key}
                 type="button"
+                data-tricobot-lecture
                 onClick={() => onTabChange(t.key)}
                 title={t.label}
                 className={cn(

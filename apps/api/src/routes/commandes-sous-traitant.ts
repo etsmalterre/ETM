@@ -90,6 +90,7 @@ import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { journaliserEnvoiRc } from '../lib/rapport-controle-lot.js'
 import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PIECE_RC, rcPourSoumission, renderRapportControle } from '../lib/rc-soumission.js'
+import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
@@ -1059,7 +1060,7 @@ async function computeUrgencyBuckets(famille: SstFamille | null = null): Promise
       if (u === 'late') out.late.add(id)
       else if (u === 'soon') out.soon.add(id)
     }
-    return out
+    return avecTricobot(out, openRowsAll.map((r) => Number(r.IDcommande_sous_traitant)))
   }
   const openRows = openRowsAll
   const openIds = openRows.map((r) => Number(r.IDcommande_sous_traitant)).filter((n) => n > 0)
@@ -1160,7 +1161,23 @@ async function computeUrgencyBuckets(famille: SstFamille | null = null): Promise
     if (diff <= 0) late.add(id)
     else if (diff <= 3) soon.add(id)
   }
-  return { late, soon }
+  return avecTricobot({ late, soon }, openIds)
+}
+
+/** Tricobot waits for a person on an order (a délai to validate, an aide): a
+ *  Malterre action now — red, in the counter and its filter like any other
+ *  (claude_doc/agents_autonomie.md §6). Never fails the buckets. */
+async function avecTricobot(b: { late: Set<number>; soon: Set<number> }, openIds: number[]): Promise<{ late: Set<number>; soon: Set<number> }> {
+  try {
+    const ouvertes = new Set(openIds)
+    for (const [id, c] of Object.entries(await compteursParCommande())) {
+      const n = Number(id)
+      if (c.aValider + c.aide > 0 && ouvertes.has(n)) { b.late.add(n); b.soon.delete(n) }
+    }
+  } catch (err) {
+    console.error('[sst] Tricobot counts not added to the urgency buckets:', err)
+  }
+  return b
 }
 
 // ── Urgency pill counts ──────────────────────────────────
@@ -5064,6 +5081,11 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     // The dyer answered the délai question (LIVA #1314: Qualité de service).
     if ((cur.sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && statutApres !== STATUT_ATTENTE_DELAI && statutApres !== STATUT_NON_ENVOYE) {
       await noterDelaiRecu(lineId, delaiApres, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
+    }
+    // A délai Tricobot wrote on this line and nobody judged yet: the hand-typed
+    // value judges it (same = validée, another = corrigée — claude_doc/agents_autonomie.md §4).
+    if (d.date_livraison !== undefined) {
+      await ligneModifiee(lineId, delaiApres ?? '', req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
     }
 
     // Auto-close on "all lines done" was removed when we moved to the

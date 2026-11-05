@@ -1653,6 +1653,63 @@ ALTER TABLE tache_atelier
   ADD COLUMN frequence_jours integer CHECK (frequence_jours IS NULL OR frequence_jours BETWEEN 1 AND 365);
 `,
   },
+  {
+    // What an AI agent wrote or decided, point by point, and what a person said
+    // of it (claude_doc/agents_autonomie.md, decision Vincent 2026-11-05). First
+    // writer: Flux Ennoblisseur › Délais (a dyer's délai on a sst line). One row
+    // = one point: a « saisie » (the agent wrote a value), a « rien » (it read the
+    // mail and found nothing to write — judged too, an omission is its échec) or
+    // an « aide » (it asked a person, with the value it would have written).
+    // The three measures (fiabilité, autonomie, discernement) are read from here.
+    // UPDATE only moves statut / valeur_finale / commentaire / revu_* — never
+    // what the agent decided.
+    name: '0062_saisie_agent',
+    sql: `
+CREATE TABLE saisie_agent (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  agent text NOT NULL,
+  competence text NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  run_id text NOT NULL,
+  message_id text,
+  thread_id text,
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  mode text NOT NULL CHECK (mode IN ('supervise', 'autonome')),
+  decision text NOT NULL CHECK (decision IN ('saisie', 'rien', 'aide')),
+  idsous_traitant bigint NOT NULL DEFAULT 0,
+  idcommande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idligne_commande_sous_traitant bigint NOT NULL DEFAULT 0,
+  -- Contrôles: the lot whose dyer measures were written (suivilot).
+  idsuivilot bigint NOT NULL DEFAULT 0,
+  champ text,
+  valeur_avant text,
+  -- The row's fields before the agent wrote (to undo a « Supprimer »): for a
+  -- délai, { date_livraison, date_delai, sstatut } of the line.
+  etat_avant jsonb,
+  proposition text,
+  ecrit boolean NOT NULL DEFAULT false,
+  explication text NOT NULL DEFAULT '',
+  citation text NOT NULL DEFAULT '',
+  statut text NOT NULL CHECK (statut IN ('a_revoir', 'autonome', 'validee', 'corrigee', 'supprimee', 'omission', 'resolue')),
+  valeur_finale text,
+  commentaire text,
+  -- An aide settled: did the person think asking was right? (the Discernement
+  -- measure — never inferred from the value kept, Vincent 2026-11-05)
+  doute_justifie boolean,
+  doute_commentaire text,
+  revu_par_id bigint,
+  revu_par text,
+  revu_le timestamptz,
+  CHECK (decision <> 'saisie' OR (champ IS NOT NULL AND proposition IS NOT NULL))
+);
+CREATE INDEX saisie_agent_commande ON saisie_agent (idcommande_sous_traitant) WHERE statut IN ('a_revoir', 'autonome');
+CREATE INDEX saisie_agent_ligne ON saisie_agent (idligne_commande_sous_traitant, cree_le);
+CREATE INDEX saisie_agent_lot ON saisie_agent (idsuivilot) WHERE statut IN ('a_revoir', 'autonome');
+CREATE INDEX saisie_agent_competence ON saisie_agent (agent, competence, version, cree_le);
+${grantApi('SELECT, INSERT, UPDATE', 'saisie_agent')}
+${grantApi('USAGE, SELECT', 'SEQUENCE saisie_agent_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -52,6 +52,7 @@ import type { ResultatSuperviseur } from './superviseur/superviseur.js'
 import type { AgentMode, AgentRun, AgentState, AgentVersion, Auteur, VersionInitiale } from './store.js'
 import type { Contexte } from './bl-ennoblisseur.js'
 import { deLApp, type AppIa } from './app-scope.js'
+import { COMPETENCES_FLUX, type CompetenceDef } from './flux-ennoblisseur/competences-flux.js'
 import {
   PLANNING_ATELIER_SLUG,
   PLANNING_ATELIER_VERSION_INITIALE,
@@ -139,6 +140,9 @@ export interface AgentDef {
   confianceParDefaut?: boolean
   /** Extra fields of a run for the Exécutions list (routes/agents-ia.ts `allege`). */
   ligne?(run: AgentRun): Record<string, unknown>
+  /** Its skills, each with its own mode and measures (competences.ts,
+   *  claude_doc/agents_autonomie.md). Absent = one skill, the agent itself. */
+  competences?: readonly CompetenceDef[]
 }
 
 const MODELES_MISTRAL = ['mistral-small-latest', 'mistral-medium-latest', 'mistral-large-latest', 'ministral-8b-latest'].filter(isChatModel)
@@ -148,7 +152,7 @@ export const AGENTS: readonly AgentDef[] = [
     slug: TRIAGE_SLUG,
     nom: 'Triage',
     description:
-      `L’agent de tête de la boîte ${TRIAGE_BOITE} : chaque mail reçu prend une ou plusieurs catégories (BL ennoblisseur, facture sous-traitant, commande client, qualité, transport…), un libellé Gmail sous « ETM/ », et part vers l’agent qui le traite — les BL vers BL Ennoblisseur, les factures des ennoblisseurs vers Factures Ennoblisseur. Son tri est tenu pour juste tant que personne ne le corrige.`,
+      `L’agent de tête de la boîte ${TRIAGE_BOITE} : chaque mail reçu prend une ou plusieurs catégories (BL ennoblisseur, facture sous-traitant, commande client, qualité, transport…), un libellé Gmail sous « ETM/ », et part vers l’agent qui le traite — les BL et les échanges des ennoblisseurs vers Flux Ennoblisseur, les factures des ennoblisseurs vers Factures Ennoblisseur. Son tri est tenu pour juste tant que personne ne le corrige.`,
     declenchement: { type: 'releve', intervalleMs: 60_000 },
     declencheur: `Relève chaque minute la boîte ${TRIAGE_BOITE} : tous les mails reçus (jamais ceux qu’elle envoie), depuis sa mise en route et au plus les 7 derniers jours, du plus ancien au plus récent. L’expéditeur est reconnu dans les contacts d’ETM (clients, sous-traitants, fournisseurs, transporteurs, prospects) ; le modèle lit l’objet, le corps, les noms des pièces jointes et les deux messages précédents du fil.`,
     ecritures: [
@@ -163,7 +167,7 @@ export const AGENTS: readonly AgentDef[] = [
       guide: {
         question: 'Est-ce que ce mail serait arrivé au bon service, au bon agent ? Oui → rien à faire (réussite). Non → « Corriger le tri », en disant pourquoi (échec).',
         exemples: {
-          reussite: '« BL métrages 109235 » de MATEL → BL ennoblisseur (MATEL), transmis à BL Ennoblisseur.',
+          reussite: '« BL métrages 109235 » de MATEL → BL ennoblisseur (MATEL), transmis à Flux Ennoblisseur.',
           echec: 'Une demande de certificat Oeko-Tex classée « Suivi client » au lieu de « Qualité ».',
         },
         remarques: [
@@ -199,18 +203,20 @@ export const AGENTS: readonly AgentDef[] = [
   },
   {
     slug: BL_ENNOBLISSEUR_SLUG,
-    nom: 'BL Ennoblisseur',
+    nom: 'Flux Ennoblisseur',
     description:
-      `Lit les bordereaux de livraison des ennoblisseurs (${PROFILS.map((p) => p.nom).join(', ')}) et prépare la réception : chaque pièce (métrage, observations, et le poids pour MATEL) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande. Les autres pièces jointes de ces expéditeurs (palettes, plans de charge, factures, nos propres documents renvoyés) sont écartées sans alerte.`,
+      `Traite les mails des ennoblisseurs (${PROFILS.map((p) => p.nom).join(', ')}), compétence par compétence : BL, Délais, Contrôles — chacune avec son mode (supervisé, autonomie X %) et ses mesures (fiabilité, autonomie, discernement). BL : lit les bordereaux de livraison et prépare la réception : chaque pièce (métrage, observations, et le poids pour MATEL) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande. Les autres pièces jointes de ces expéditeurs (palettes, plans de charge, factures, nos propres documents renvoyés) sont écartées sans alerte.`,
     declenchement: { type: 'releve', intervalleMs: 2 * 60_000 },
-    declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE} : mails avec pièce jointe venant des contacts de ${PROFILS.map((p) => p.nom).join(', ')} (Sous-traitants › Gestion › Contacts — une nouvelle adresse du même domaine est prise d’office). C’est le texte du PDF qui décide s’il s’agit d’un BL. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).${((essai) => (essai.length ? ` ${essai.join(' et ')} : en essai quel que soit le mode de l’agent, le temps de valider leur lecture.` : ''))(PROFILS.filter((p) => p.modeMax === 'essai').map((p) => p.nom))}`,
+    declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE} : mails venant des contacts de ${PROFILS.map((p) => p.nom).join(', ')} (Sous-traitants › Gestion › Contacts — une nouvelle adresse du même domaine est prise d’office). C’est le texte du PDF qui décide s’il s’agit d’un BL. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).${((essai) => (essai.length ? ` ${essai.join(' et ')} : en essai quel que soit le mode de l’agent, le temps de valider leur lecture.` : ''))(PROFILS.filter((p) => p.modeMax === 'essai').map((p) => p.nom))}`,
     ecritures: [
       'Le PDF dans les documents de la commande sous-traitant (type « BL retour ennoblisseur »), nommé comme le lot (un 2e bordereau du même lot MATEL prend sa lettre : MA109269B). Un document dont toutes les pièces sont déjà importées est seulement classé — c’est le cas du BL TAD qui suit la mise à dispo : la preuve de l’expédition au client.',
       'Une ligne par pièce dans les données de réception (table data_bl_tricotbot). Lot : « MA » + n° de BL (MATEL), « BON » + n° de BL (Bontemps), « TA » + n° d’OF (TAD, mise à dispo comme BL). Poids : celui du BL pour MATEL, aucun pour les autres (Malterre pèse).',
       'Un libellé Gmail « ETM/BL traité » ou « ETM/BL à vérifier » sur le mail (mode actif seulement).',
+      'Délais (réponse au « Point du JJ/MM », section 5) : le délai sur chaque ligne demandée (« s N » = mercredi de la semaine N), comme si une personne l’avait saisi. En supervisé, chaque délai attend sa validation sur la carte de la commande (Sous-traitants › Ennoblissement) ; un doute n’écrit rien et demande l’avis d’une personne.',
+      'Contrôles (section 2 de la même réponse) : lus et rapprochés des lots, rien d’écrit pour l’instant (essai).',
     ],
     abstention:
-      'Rien n’est enregistré si un contrôle bloque : numéro de commande, de bordereau ou d’OF illisible, commande inconnue ou chez un autre ennoblisseur, pièce introuvable (avec le numéro probable quand un seul écru de la commande est à un caractère près), affectée à aucune commande ou à une autre commande (nommée — « BL probablement mal numéroté » quand toutes les pièces y sont), BL commun à plusieurs commandes (« 9040+9045 » : quelle pièce va sur quelle commande, réception à la main), somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « BL Ennoblisseur à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
+      'Rien n’est enregistré si un contrôle bloque : numéro de commande, de bordereau ou d’OF illisible, commande inconnue ou chez un autre ennoblisseur, pièce introuvable (avec le numéro probable quand un seul écru de la commande est à un caractère près), affectée à aucune commande ou à une autre commande (nommée — « BL probablement mal numéroté » quand toutes les pièces y sont), BL commun à plusieurs commandes (« 9040+9045 » : quelle pièce va sur quelle commande, réception à la main), somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « Flux Ennoblisseur — BL à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
     evaluation: {
       reussite: 'Gardé tel quel : les pièces pré-remplies sont bonnes, rien n’a été retouché à la réception.',
       echec: 'Tout jeté : inutilisable (mauvaise commande, pièces inventées ou manquantes en nombre). Les pièces pré-remplies sont retirées de la réception ; le PDF reste dans les documents de la commande.',
@@ -231,6 +237,7 @@ export const AGENTS: readonly AgentDef[] = [
     modeles: MODELES_MISTRAL,
     sonder: sonderBlEnnoblisseur,
     traiter: traiterBlEnnoblisseur,
+    competences: COMPETENCES_FLUX,
   },
   {
     slug: FACTURES_SST_SLUG,
@@ -238,7 +245,7 @@ export const AGENTS: readonly AgentDef[] = [
     description:
       'Contrôle les factures des ennoblisseurs comme le faisait Pierre-Emmanuel avec « Lire facture » dans l’ancien Suivi lots : pour chaque lot facturé, le poids envoyé, le rendement et les traitements qui donnent le prix, comparés au tarif ETM du sous-traitant. La facture est enregistrée une seule fois dans Sous-traitants › Factures et rattachée à chaque commande qu’elle facture. Seules les factures avec un écart demandent une intervention.',
     declenchement: { type: 'releve', intervalleMs: 5 * 60_000 },
-    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que BL Ennoblisseur) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).`,
+    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que Flux Ennoblisseur) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).`,
     ecritures: [
       'La facture et son PDF dans Sous-traitants › Factures, une ligne par ligne imprimée, chaque lot rattaché à sa ligne de commande sous-traitant (avec le poids ETM, le prix attendu et le verdict).',
       'Le n° de facture sur les lignes de commande facturées, là où il est vide (comme dans l’ancien Suivi lots) — seulement si la lecture est fiable.',

@@ -22,6 +22,7 @@ import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { exclusive, readJson, writeJson } from './json-store.js'
+import { tirer, type EtatCompetence, type ModeCompetence } from './competences.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const AGENTS_DIR = path.resolve(__dirname, '../../../data/agents')
@@ -59,6 +60,9 @@ export interface AgentState {
   dernierePlanification?: string | null
   /** The agent's options a pilot switched (AgentDef.options), absent = its default. */
   options?: Record<string, boolean>
+  /** Each skill's mode and autonomy draw (AgentDef.competences, competences.ts),
+   *  absent = the skill's default mode. */
+  competences?: Record<string, EtatCompetence>
 }
 
 // ── Runs ─────────────────────────────────────────────────
@@ -142,6 +146,9 @@ export interface AgentRun {
   version: number
   model: string
   statut: RunStatut
+  /** The skill this run exercised (AgentDef.competences). Absent = the agent's
+   *  first skill (Flux Ennoblisseur: « bl », every run before 2026-11-05). */
+  competence?: string
   /** Free-form per agent (for BL Ennoblisseur: OCR text, extraction, resolution, checks, write). */
   resultat: Record<string, unknown>
   resume: string
@@ -316,6 +323,45 @@ export function changerOption(slug: string, initiale: VersionInitiale, cle: stri
 /** An option's value: what a pilot set, else the agent's default. */
 export function optionDe(s: AgentState, cle: string, defaut: boolean): boolean {
   return s.options?.[cle] ?? defaut
+}
+
+/** A skill's state: what a pilot set, else its default mode. */
+export function etatCompetence(s: AgentState, cle: string, defaut: ModeCompetence): EtatCompetence {
+  return s.competences?.[cle] ?? { mode: defaut }
+}
+
+/** A pilot sets a skill's mode (and, for autonomie, its share and block). A
+ *  new block is drawn on every change. */
+export function changerModeCompetence(
+  slug: string,
+  initiale: VersionInitiale,
+  cle: string,
+  e: { mode: ModeCompetence; taux?: number; fenetre?: number },
+  par: Auteur,
+): Promise<AgentState> {
+  return modifierEtat(slug, initiale, (s) => {
+    s.competences = {
+      ...(s.competences ?? {}),
+      [cle]: {
+        mode: e.mode,
+        ...(e.mode === 'autonomie' ? { taux: e.taux, fenetre: e.fenetre } : {}),
+        changeLe: new Date().toISOString(),
+        changePar: par,
+      },
+    }
+  })
+}
+
+/** Draw the next execution of a skill (competences.ts `tirer`), persisted:
+ *  true = done alone. Never alone outside « autonomie ». */
+export async function tirerCompetence(slug: string, initiale: VersionInitiale, cle: string, defaut: ModeCompetence): Promise<boolean> {
+  let seul = false
+  await modifierEtat(slug, initiale, (s) => {
+    const t = tirer(etatCompetence(s, cle, defaut))
+    seul = t.seul
+    if (t.etat.mode === 'autonomie') s.competences = { ...(s.competences ?? {}), [cle]: t.etat }
+  })
+  return seul
 }
 
 export function marquerPlanification(slug: string, initiale: VersionInitiale, jour: string): Promise<AgentState> {

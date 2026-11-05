@@ -1,4 +1,10 @@
-// Agent « BL Ennoblisseur » — reads the delivery notes (bordereaux de livraison)
+// Agent « Flux Ennoblisseur » (ex-« BL Ennoblisseur » until 2026-11-05, slug,
+// Gmail labels and notification kept) — the dyers' mail to contact@, skill by
+// skill (flux-ennoblisseur/competences-flux.ts, claude_doc/agents_autonomie.md):
+// BL (this file), Délais and Contrôles (flux-ennoblisseur/delais.ts, a reply to
+// our « Point du JJ/MM »). Each skill has its own mode, inside the agent's.
+//
+// The BL skill reads the delivery notes (bordereaux de livraison)
 // the dyers (MATEL, Bontemps, TAD — bl-profils.ts) mail to contact@ and feeds
 // the réception of Sous-traitants › Commandes. Replaces the n8n workflow « BL
 // Processing (Gemini) » + the WebDev REST service localapi.malterre
@@ -19,7 +25,9 @@
 
 import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
-import { listerMessages, lireMessage, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
+import { listerMessages, lireMessage, lireFil, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
+import { traiterReponsePoint } from './flux-ennoblisseur/delais.js'
+import type { ModeCompetence } from './competences.js'
 import { relaisTriage, triesParTriage } from './triage/relais.js'
 import {
   BL_PROMPT_V1,
@@ -51,7 +59,10 @@ import { classerPdf, cleDeLigne, contactsEnnoblisseurs, ecrireBl, poidsEcrit, re
 import {
   ajouterRun,
   enregistrerFichier as enregistrerFichierRun,
+  etatCompetence,
+  lireEtat,
   lireRuns,
+  tirerCompetence,
   messagesTraites,
   nouvelIdRun,
   optionDe,
@@ -362,7 +373,8 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
   const termes = termesExpediteurs(cs.map((c) => c.mail))
   if (termes.length === 0) return []
   const apres = Math.floor(new Date(state.startedAt).getTime() / 1000)
-  const q = `${requeteExpediteurs(termes)} has:attachment after:${apres}`
+  // Every mail of the dyers: a reply to the Point carries no PDF (Délais skill).
+  const q = `${requeteExpediteurs(termes)} after:${apres}`
   const ids = await listerMessages(BL_ENNOBLISSEUR_BOITE, q, 50)
   const deja = await messagesTraites(BL_ENNOBLISSEUR_SLUG)
   const tries = await triesParTriage()
@@ -385,8 +397,34 @@ export async function traiterMessage(
 ): Promise<AgentRun[]> {
   const { mode, version, source, lancePar } = ctx
   const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
-  const pjs = m.piecesJointes.filter(estPieceCandidate)
+  const state = await lireEtat(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE)
+  const sst = sousTraitantExpediteur(m.de, await contacts())
+  const runs: AgentRun[] = []
+
+  // Délais / Contrôles: the body of a reply to our Point (no PDF needed).
+  const modeDe = (cle: string, defaut: ModeCompetence) => effectif(mode, etatCompetence(state, cle, defaut).mode)
+  const delais = modeDe('delais', 'essai')
+  const controles = modeDe('controles', 'essai')
+  if (sst != null && (delais !== 'off' || controles !== 'off')) {
+    try {
+      const complet = (await lireFil(BL_ENNOBLISSEUR_BOITE, m.threadId)).find((x) => x.id === m.id)
+      if (complet) {
+        runs.push(...(await traiterReponsePoint(complet, {
+          delais, controles, source, lancePar, slug: BL_ENNOBLISSEUR_SLUG, idsousTraitant: sst,
+          tirerSeul: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'delais', 'essai'),
+          tirerSeulControles: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'controles', 'essai'),
+        })))
+      }
+    } catch (err) {
+      console.error(`[agents] ${BL_ENNOBLISSEUR_SLUG}: délais of ${m.id} failed:`, err)
+    }
+  }
+
+  // BL: the PDF attachments.
+  const bl = modeDe('bl', 'supervise')
+  const pjs = bl === 'off' ? [] : m.piecesJointes.filter(estPieceCandidate)
   if (pjs.length === 0) {
+    if (runs.length) return runs
     const run: AgentRun = {
       id: nouvelIdRun(), slug: BL_ENNOBLISSEUR_SLUG, createdAt: new Date().toISOString(), source, mode,
       lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
@@ -395,15 +433,21 @@ export async function traiterMessage(
     await ajouterRun(run)
     return [run]
   }
-  const sst = sousTraitantExpediteur(m.de, await contacts())
   const pdfs = await Promise.all(pjs.map(async (p) => ({ nom: p.nom, contenu: await lirePieceJointe(BL_ENNOBLISSEUR_BOITE, m.id, p.attachmentId) })))
-  const runs = await traiterPdfs(pdfs, {
-    mode, version, source, message, lancePar,
+  const blRuns = await traiterPdfs(pdfs, {
+    mode: bl === 'essai' ? 'essai' : mode, version, source, message, lancePar,
     profilAttendu: sst != null ? profilDuSousTraitant(sst)?.cle ?? null : null,
   })
-  await etiqueter(m.id, runs)
-  await prevenir(runs)
-  return runs
+  await etiqueter(m.id, blRuns)
+  await prevenir(blRuns)
+  return [...runs, ...blRuns]
+}
+
+/** A skill's mode under the agent's: an agent in essai runs every skill in
+ *  essai at most, an agent off runs nothing. */
+function effectif(agent: AgentMode, competence: ModeCompetence): ModeCompetence {
+  if (agent === 'off' || competence === 'off') return 'off'
+  return agent === 'essai' ? 'essai' : competence
 }
 
 /** Label the mail, from its « actif » runs only: « traité » when every
@@ -447,12 +491,12 @@ export async function prevenir(runs: AgentRun[]): Promise<void> {
     const profil = profilDe(res.profil)
     const bloque = r.statut === 'a_verifier' || r.statut === 'erreur'
     await notify('notif_agent_bl', {
-      subject: `BL Ennoblisseur à vérifier${profil ? ` — ${profil.nom}` : ''}${res.extraction?.numero_bordereau ? ` ${res.extraction.numero_bordereau}` : ''}`,
+      subject: `Flux Ennoblisseur — BL à vérifier${profil ? ` — ${profil.nom}` : ''}${res.extraction?.numero_bordereau ? ` ${res.extraction.numero_bordereau}` : ''}`,
       content: {
-        title: r.statut === 'erreur' ? 'BL Ennoblisseur : lecture en erreur' : 'BL Ennoblisseur à vérifier',
+        title: r.statut === 'erreur' ? 'Flux Ennoblisseur : BL en erreur de lecture' : 'Flux Ennoblisseur : BL à vérifier',
         tone: 'alert',
         intro: bloque
-          ? 'L’agent « BL Ennoblisseur » n’a rien enregistré pour ce bordereau : une vérification est nécessaire avant la réception.'
+          ? 'L’agent « Flux Ennoblisseur » n’a rien enregistré pour ce bordereau : une vérification est nécessaire avant la réception.'
           : 'Ce bordereau change des pièces déjà réceptionnées : le stock est à corriger.',
         rows: [
           { label: 'Ennoblisseur', value: profil?.nom ?? '—' },

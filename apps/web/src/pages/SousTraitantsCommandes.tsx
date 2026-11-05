@@ -81,6 +81,8 @@ import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { HorsRefBadge, type FilHorsRef } from '@/components/shared/HorsRef'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
+import { ouvertes, tricobotAttend, TricobotAvatar, useCompteursTricobot, useSaisiesTricobot, type CompteurTricobot } from '@/components/tricobot/SaisiesTricobot'
+import { TricobotPriseEnMain } from '@/components/tricobot/TricobotPriseEnMain'
 import { RollTable } from '@/components/stock/RollTable'
 import { EtatPill } from '@/lib/etat-stock-fini'
 import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
@@ -662,6 +664,44 @@ function rowUrgency(row: CommandeListRow): 'late' | 'soon' | null {
     : deliveryUrgency(row.earliest_delivery, row.est_soldee)
 }
 
+/** What to do on a red / amber card, in a few words, printed under the
+ *  sous-traitant in the card's colour (mps_designer §41: a coloured card
+ *  always says the Malterre action, like Clients › Commandes). Read from the
+ *  same facts as the colour: Tricobot waiting, the order's step and its chase
+ *  date (API lib/cycle-ennoblissement.ts, lib/sst-tricotage.ts). */
+function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tricobot: CompteurTricobot | undefined): string | null {
+  if (tricobotAttend(tricobot)) {
+    return tricobot!.aide > 0 && tricobot!.aValider === 0
+      ? 'Tricobot demande ton avis'
+      : `Tricobot : ${tricobot!.aValider + tricobot!.aide > 1 ? 'délais à valider' : 'délai à valider'}`
+  }
+  if (!urgence) return null
+  const quand = (iso: string | null | undefined) => {
+    if (!iso) return ''
+    const d = iso.replace(/-/g, '')
+    return /^\d{8}$/.test(d) ? `${d.slice(6, 8)}/${d.slice(4, 6)}` : ''
+  }
+  const tard = urgence === 'late'
+  switch (row.phase) {
+    case 'attente_delai':
+      return tard ? 'Délai à relancer' : 'Délai à relancer demain'
+    case 'non_envoye':
+      return 'Bon de commande à envoyer'
+    case 'a_cloturer':
+      return 'Commande à clôturer'
+    case 'fil_a_affecter':
+      return 'Fil à affecter'
+    case 'a_lancer':
+      return tard ? 'À lancer' : 'À lancer bientôt'
+    default: {
+      // En traitement / en tricotage / solde en contrôle: the délai of the line.
+      const d = quand(row.relance) || (row.earliest_delivery ? quand(row.earliest_delivery) : '')
+      if (tard) return d ? `Délai du ${d} dépassé : relancer` : 'Sans délai : le demander'
+      return d ? `Délai le ${d} : s’assurer du départ` : null
+    }
+  }
+}
+
 /** Tricotage card gauge: kg shipped (solid) and knitted not yet shipped
  *  (light) over kg ordered. Hidden on a rectiligne-only order (pieces). */
 function JaugeTricotageBar({ jauge }: { jauge: JaugeTricotage }) {
@@ -969,6 +1009,8 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
     // nothing in this browser can invalidate. Cached pages render meanwhile.
     ...STOCK_QUERY_FRESHNESS,
   })
+  // Tricobot waiting on an order makes it red (claude_doc/agents_autonomie.md §6).
+  const { data: compteursTricobotPage } = useCompteursTricobot(famille === 'ennoblissement')
   const commandes = useMemo<CommandeListRow[] | undefined>(
     () => {
       const flat = commandesPages?.pages.flatMap((p) => p)
@@ -977,7 +1019,7 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
       if (!urgencyFilterActive) return flat
       // Pills on → server already returned only urgent rows; resort so red
       // (`late`) sits above amber (`soon`), then by ID DESC inside a band.
-      const urgencyOf = rowUrgency
+      const urgencyOf = (r: CommandeListRow) => (tricobotAttend(compteursTricobotPage?.[r.IDcommande_sous_traitant]) ? 'late' : rowUrgency(r))
       const rank = (u: 'late' | 'soon' | null) => (u === 'late' ? 0 : u === 'soon' ? 1 : 2)
       return [...flat].sort((a, b) => {
         const ra = rank(urgencyOf(a))
@@ -986,7 +1028,7 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
         return b.IDcommande_sous_traitant - a.IDcommande_sous_traitant
       })
     },
-    [commandesPages, urgencyFilterActive],
+    [commandesPages, urgencyFilterActive, compteursTricobotPage],
   )
 
   // A deep-linked order must also show selected in the LEFT list, not only in
@@ -1064,6 +1106,8 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
     // Réception creates a suivilot, reprise re-syncs its état — both surface on
     // Qualité › Suivi des lots, so refresh both screens (not just this one).
     invalidateLotQualityCaches(queryClient)
+    // A délai typed on a line judges Tricobot's saisie on it (API ligneModifiee).
+    queryClient.invalidateQueries({ queryKey: ['tricobot-saisies'] })
   }, [queryClient])
 
   const startEdit = useCallback(() => {
@@ -1424,6 +1468,8 @@ function CommandeList({
   /** True while the next page is currently in-flight. */
   isFetchingNextPage: boolean
 }) {
+  // What Tricobot wrote or asked on each order (Flux Ennoblisseur › Délais, claude_doc/agents_autonomie.md).
+  const { data: compteursTricobot } = useCompteursTricobot(famille === 'ennoblissement')
   // IntersectionObserver-driven infinite scroll. The sentinel sits at the
   // bottom of the list's scroll container; the moment it enters the
   // viewport we call `onLoadMore`. The observer's `root` is the scroll
@@ -1445,7 +1491,7 @@ function CommandeList({
     return () => observer.disconnect()
   }, [hasNextPage, onLoadMore, rows.length])
   return (
-    <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
+    <div data-tricobot-liste className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
         <div className="flex items-center gap-2">
           <SmartSearchInput<never, CommandeListRow>
@@ -1532,7 +1578,12 @@ function CommandeList({
           // `attente_delai` cards measure urgency from the `date_notif`
           // relance date (amber the day before, red on the day and after).
           // All other open phases keep using the earliest-delivery deadline.
-          const urgency = rowUrgency(row)
+          // Tricobot waiting on the order is a Malterre action now: red, like any red card.
+          const urgency = tricobotAttend(compteursTricobot?.[row.IDcommande_sous_traitant]) ? 'late' : rowUrgency(row)
+          const raison = raisonCarte(row, urgency, compteursTricobot?.[row.IDcommande_sous_traitant])
+          const raisonEl = raison && (
+            <p className={cn('text-xs font-medium mt-0.5 truncate', urgency === 'late' ? 'text-red-600' : 'text-amber-700')}>{raison}</p>
+          )
           const selectedRingClass =
             urgency === 'late' ? 'border-red-500 ring-1 ring-red-500'
             : urgency === 'soon' ? 'border-amber-500 ring-1 ring-amber-500'
@@ -1553,12 +1604,32 @@ function CommandeList({
                 urgency === 'soon' && 'shadow-[inset_4px_0_0_0_rgb(245_158_11)]'
               )}
             >
-              <div className="flex items-center gap-2">
-                <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                <span className="font-medium text-sm">N° {row.IDcommande_sous_traitant}</span>
-                <PhasePill phase={row.phase} famille={famille} className="ml-auto" />
-              </div>
-              <p className="text-xs text-muted-foreground mt-1 truncate">{row.sous_traitant_nom || '—'}</p>
+              {/* Tricobot waiting on the order: his round takes the icon's
+                  place, left of the number and the sous-traitant. */}
+              {tricobotAttend(compteursTricobot?.[row.IDcommande_sous_traitant]) ? (
+                <div className="flex items-center gap-2.5">
+                  <TricobotAvatar c={compteursTricobot?.[row.IDcommande_sous_traitant]} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-sm">N° {row.IDcommande_sous_traitant}</span>
+                      <PhasePill phase={row.phase} famille={famille} className="ml-auto" />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1 truncate">{row.sous_traitant_nom || '—'}</p>
+                    {raisonEl}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                    <span className="font-medium text-sm">N° {row.IDcommande_sous_traitant}</span>
+                    <TricobotAvatar c={compteursTricobot?.[row.IDcommande_sous_traitant]} />
+                    <PhasePill phase={row.phase} famille={famille} className="ml-auto" />
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1 truncate">{row.sous_traitant_nom || '—'}</p>
+                  {raisonEl}
+                </>
+              )}
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
                 {row.date_commande && <span>{formatHfsqlDate(row.date_commande)}</span>}
                 {/* No type chip: the menu (Ennoblissement / Tricotage) already says it. */}
@@ -1792,6 +1863,12 @@ function LignesSection({
 }) {
   const [editingLineId, setEditingLineId] = useState<number | null>(null)
   const [showLineForm, setShowLineForm] = useState(false)
+  // Tricobot's revue (claude_doc/agents_autonomie.md §6): while some of his
+  // saisies wait, only the lines he wrote stay lit, the rest is greyed.
+  const { data: saisiesTricobot } = useSaisiesTricobot(commande.IDcommande_sous_traitant)
+  const saisiesOuvertes = ouvertes(saisiesTricobot)
+  const enRevue = !isEditing && saisiesOuvertes.some((x) => x.statut === 'a_revoir')
+  const lignesTricobot = new Set(saisiesOuvertes.map((x) => x.idligne))
   const [deleteLineConfirmId, setDeleteLineConfirmId] = useState<number | null>(null)
   const [deleteLineError, setDeleteLineError] = useState<string | null>(null)
   // For ennoblisseur lines, IDreference holds an IDref_fini (the desired
@@ -2023,6 +2100,17 @@ function LignesSection({
             drawerMounted ? 'flex-shrink-0 max-h-[40%]' : 'flex-1 min-h-0'
           )}
         >
+          {enRevue && (
+            <TricobotPriseEnMain
+              key={commande.IDcommande_sous_traitant}
+              saisies={saisiesOuvertes}
+              libelle={(x) => {
+                const l = commande.lignes.find((y) => y.IDligne_commande_sous_traitant === x.idligne)
+                return l ? [l.ref_label, l.colori_reference].filter(Boolean).join(' - ') : x.idligne ? `Ligne ${x.idligne}` : 'Commande'
+              }}
+              onChanged={onMutationSuccess}
+            />
+          )}
           {commande.lignes.length === 0 && !showLineForm ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <FiniRollIcon className="h-12 w-12 mb-3 opacity-40" />
@@ -2064,9 +2152,17 @@ function LignesSection({
                   </InlineForm>
                 )
               }
+              const parTricobot = lignesTricobot.has(l.IDligne_commande_sous_traitant)
               return (
-                <LineCard
+                <div
                   key={l.IDligne_commande_sous_traitant}
+                  className="relative rounded-lg"
+                  data-tricobot-ligne={parTricobot ? l.IDligne_commande_sous_traitant : undefined}
+                >
+                {parTricobot && !enRevue && (
+                  <span className="absolute right-2 top-2 z-10" title="Délai saisi par Tricobot"><TricobotMascot className="h-7 w-7" /></span>
+                )}
+                <LineCard
                   line={l}
                   isEditing={isEditing}
                   linesLocked={linesLocked}
@@ -2080,6 +2176,7 @@ function LignesSection({
                   onDelete={() => setDeleteLineConfirmId(l.IDligne_commande_sous_traitant)}
                   onOpenDrawer={onOpenPiecesDrawer}
                 />
+                </div>
               )
             })
           )}
@@ -2414,6 +2511,7 @@ function LineCard({
               const overdue = lineUrgency === 'late' ? deliveryOverdueDays(dateLivRaw) : 0
               return (
                 <span
+                  data-tricobot-cible={line.IDligne_commande_sous_traitant}
                   className={cn(
                     'ml-auto flex flex-col items-end leading-tight',
                     lineUrgency === 'late' ? 'text-red-600'
@@ -2454,6 +2552,7 @@ function LineCard({
                   : `Attente depuis ${attenteDays} jour${attenteDays > 1 ? 's' : ''}`
               return (
                 <span
+                  data-tricobot-cible={line.IDligne_commande_sous_traitant}
                   className={cn(
                     'ml-auto flex items-center gap-1 font-medium',
                     urgency === 'late' ? 'text-red-600'
@@ -2955,6 +3054,7 @@ function PiecesDrawer({
             <button
               key={t.key}
               type="button"
+              data-tricobot-lecture
               onClick={() => setActiveTab(t.key)}
               className={cn(
                 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer',
@@ -3452,6 +3552,7 @@ function TricoteurDrawer({
             <button
               key={t.key}
               type="button"
+              data-tricobot-lecture
               onClick={() => setActiveTab(t.key)}
               className={cn(
                 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer',
@@ -6613,6 +6714,7 @@ function DetailSidebar({
             return (
               <button
                 key={tab.key}
+                data-tricobot-lecture
                 onClick={() => setActiveTab(tab.key)}
                 className={cn(
                   'flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md transition-colors',
