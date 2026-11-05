@@ -426,7 +426,7 @@ function BlocAvantLavage({ lot, correction = false, onAnnuler, onFait }: {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {demande('laize') && (
             <ChampNombre label="Laize" unite="cm" valeur={laize} onChange={setLaize}
-              aide={aides.laize} hors={horsBornes(lireNombre(laize), lot.tolerances.laize)} autoFocus />
+              aide={aides.laize} hors={horsBornes(lireNombre(laize), lot.tolerances.laize)} />
           )}
           {demande('poids') && (
             <ChampNombre label="Poids" unite="g/m²" valeur={poids} onChange={setPoids}
