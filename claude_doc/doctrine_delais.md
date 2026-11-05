@@ -87,11 +87,12 @@ Une ligne porte une **date de lancement de sa prochaine étape**, quel que soit 
 Décidé avec Vincent le 2026-10-28, **codé le même jour** (migration 0041, `lib/urgence-commande-client.ts`, `lib/report-ligne-client.ts`).
 
 - **Une seule date par ligne, « Prête le » D** (`ligne_commande_client.date_livraison`) : la ligne est prête à expédier le D. Le libellé ne change jamais ; la production vise toujours D, la marge est la réserve Malterre (§7.3), jamais une seconde date.
-- **Le départ est celui de CHAQUE LIGNE** (révisé avec Vincent le 2026-10-30, migration 0050 ; l'essai du 2026-10-28 « un départ pour toute la commande » est abandonné) : dans la fenêtre de la ligne, « Départ » = **Dès que prête** (par défaut) ou **Sur appel du client** (`ligne_commande_client.mode_livraison` 0 / 2, `departLigne()` dans `lib/mode-expedition.ts`).
+- **Le départ est celui de CHAQUE LIGNE** (révisé avec Vincent le 2026-10-30, migration 0050 ; l'essai du 2026-10-28 « un départ pour toute la commande » est abandonné) : dans la fenêtre de la ligne, « Départ » = **Dès que prête** (par défaut), **Date exacte** (expédiée LE jour de D, jamais avant : c'est toujours une date d'expédition, pas de livraison — LIVA #1354, 2026-11-05) ou **Sur appel du client** (`ligne_commande_client.mode_livraison` 0 / 1 / 2, `departLigne()` dans `lib/mode-expedition.ts`). La carte de la ligne affiche le départ à droite de « Prête le ».
 
 | Départ (ligne) | Ce qui suit « prête » | Couleur une fois prête |
 |---|---|---|
 | Dès que prête | expédier tout de suite, au plus tard à D | ambre en avance, rouge près de D |
+| Date exacte | expédier le jour de D, jamais avant (le geste « Expédier » acte la date, la suite est du transport) | neutre avant D, rouge à partir de D, jamais ambre |
 | Sur appel du client | attendre l'appel | relance 120 j après D (ou le délai du client) |
 
 - **La commande ne dit qu'une chose** (Info › Expédition) : **« Expédier toutes les lignes ensemble »** (`expedition_groupee`). Cochée, on choisit UNE date, jamais avant la plus tardive des dates au plus tôt des lignes, écrite sur toutes les lignes restantes (`PUT …/lignes-date`, un seul motif de report si la commande est validée) ; une ligne prête attend les autres. Décochée, les dates restent (ce sont des engagements). Une ligne ajoutée prend la date commune ; si elle ne peut pas la tenir, on repousse la date de toutes. « À la date demandée par le client » n'existe plus : c'est cette date commune.

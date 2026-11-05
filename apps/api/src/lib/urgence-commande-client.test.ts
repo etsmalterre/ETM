@@ -126,23 +126,21 @@ describe('urgenceLigne: mode de livraison of a ready line', () => {
     // only « sur appel » reads it
     expect(niveau({ ...pae(-5, 'des_que_prete'), relanceAppel: 365 })).toBe('rouge')
   })
-  it('« date convenue » ships ON its date D (one date per line, 2026-10-28): red near it, never amber', () => {
-    expect(niveau(pae(30, 'date_client'))).toBe(null)
-    expect(niveau(pae(10, 'date_client'))).toBe(null)
-    expect(niveau(pae(3, 'date_client'))).toBe('rouge')
-    expect(urgenceLigne(pae(-61, 'date_client'), today)?.action).toBe('solder')
-  })
-  it('« date demandée » is judged on the client’s date, not on D', () => {
-    expect(niveau({ ...pae(-20, 'date_client'), dateClient: dans(30) })).toBe(null)
-    expect(niveau({ ...pae(-20, 'date_client'), dateClient: dans(2) })).toBe('rouge')
+  it('« date exacte » ships ON its date D (one date per line, 2026-10-28): neutral before, red from D, never amber (#1354)', () => {
+    expect(niveau(pae(30, 'date_exacte'))).toBe(null)
+    expect(niveau(pae(10, 'date_exacte'))).toBe(null)
+    expect(niveau(pae(3, 'date_exacte'))).toBe(null)
+    expect(niveau(pae(1, 'date_exacte'))).toBe(null)
+    expect(niveau(pae(0, 'date_exacte'))).toBe('rouge')
+    expect(urgenceLigne(pae(-61, 'date_exacte'), today)?.action).toBe('solder')
   })
   it('« ensemble » holds a ready line whatever the départ, while another is in production', () => {
     expect(niveau({ ...pae(-5, 'des_que_prete'), groupee: true, commandeIncomplete: true })).toBe(null)
-    expect(niveau({ ...pae(2, 'date_client'), groupee: true, commandeIncomplete: true })).toBe(null)
+    expect(niveau({ ...pae(2, 'date_exacte'), groupee: true, commandeIncomplete: true })).toBe(null)
     expect(niveau({ ...pae(-5, 'des_que_prete'), groupee: true })).toBe('rouge')
   })
-  it('« date convenue » without its date is a line without date: red, give one', () => {
-    expect(urgenceLigne({ etat: 'pae', typeKind: 2, dateLivraison: null, modeLivraison: 'date_client' }, today)?.action).toBe('sans_delai')
+  it('« date exacte » without its date is a line without date: red, give one', () => {
+    expect(urgenceLigne({ etat: 'pae', typeKind: 2, dateLivraison: null, modeLivraison: 'date_exacte' }, today)?.action).toBe('sans_delai')
   })
   it('the mode never changes the production stages, which run on the délai', () => {
     const lancer: LigneUrgence = { etat: 'a_lancer', typeKind: 2, dateLivraison: dans(20), modeLivraison: 'sur_appel' }
@@ -158,7 +156,7 @@ describe('urgenceLigne: mode de livraison of a ready line', () => {
     expect(urgenceCommande([pae(-5, 'commande_complete'), { ...l('a_lancer', 30), typeKind: 3 }], today)?.niveau).toBe('rouge')
   })
   it('the reason names the action only, never a date (the card orients, Vincent 2026-10-30)', () => {
-    expect(urgenceCommande([pae(2, 'date_client')], today)?.raison)
+    expect(urgenceCommande([pae(0, 'date_exacte')], today)?.raison)
       .toBe(`1 ligne à expédier`)
     expect(urgenceCommande([pae(-130, 'sur_appel')], today)?.raison)
       .toBe(`1 ligne sur appel : relancer le client`)
@@ -168,7 +166,7 @@ describe('urgenceLigne: mode de livraison of a ready line', () => {
 describe('modeLivraisonDe', () => {
   it('reads the smallint, anything unknown is « dès que prête »', () => {
     expect(modeLivraisonDe(0)).toBe('des_que_prete')
-    expect(modeLivraisonDe(1)).toBe('date_client')
+    expect(modeLivraisonDe(1)).toBe('date_exacte')
     expect(modeLivraisonDe('2')).toBe('sur_appel')
     expect(modeLivraisonDe(3)).toBe('commande_complete')
     expect(modeLivraisonDe(null)).toBe('des_que_prete')

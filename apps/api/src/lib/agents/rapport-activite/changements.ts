@@ -14,7 +14,7 @@ import { stripRtf } from '../../rtf-utils.js'
 import type { Changements } from '../../journal-activite.js'
 import { modeLivraisonDe } from '../../urgence-commande-client.js'
 
-const MODES: Record<string, string> = { des_que_prete: 'dès que prête', date_client: 'date convenue', sur_appel: 'sur appel', commande_complete: 'commande complète' }
+const MODES: Record<string, string> = { des_que_prete: 'dès que prête', date_exacte: 'date exacte', sur_appel: 'sur appel', commande_complete: 'commande complète' }
 
 type Sorte = 'mode' | 'date' | 'delai' | 'nombre' | 'texte' | 'statut' | 'drapeau' | 'lien' | 'ignore'
 

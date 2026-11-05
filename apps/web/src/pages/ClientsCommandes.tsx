@@ -185,7 +185,7 @@ interface LigneCommande {
 }
 
 /** A line's départ (API lib/mode-expedition.ts departLigne). */
-type ModeLivraison = 'des_que_prete' | 'sur_appel'
+type ModeLivraison = 'des_que_prete' | 'date_exacte' | 'sur_appel'
 
 /** Who holds the étude now (API etatEtude): the lab, the client, or nobody. */
 type AttenteEtude = 'labo' | 'client' | 'acceptee' | 'annulee'
@@ -301,9 +301,10 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
 
 /** How an order leaves (API lib/mode-expedition.ts, Vincent 2026-10-30): the ORDER only says « expédier
  *  toutes les lignes ensemble » (one date on its lines); the DÉPART is each line's. */
-const DEPARTS_LIGNE: { mode: ModeLivraison; label: string }[] = [
-  { mode: 'des_que_prete', label: 'Dès que prête' },
-  { mode: 'sur_appel', label: 'Sur appel du client' },
+const DEPARTS_LIGNE: { mode: ModeLivraison; label: string; court: string; aide: string }[] = [
+  { mode: 'des_que_prete', label: 'Dès que prête', court: 'Dès que prête', aide: 'Expédiée dès qu’elle est prête, au plus tard le jour de la date' },
+  { mode: 'date_exacte', label: 'Date exacte', court: 'Date exacte', aide: 'Expédiée le jour de la date, jamais avant : rouge ce jour-là' },
+  { mode: 'sur_appel', label: 'Sur appel du client', court: 'Sur appel', aide: 'Prête à la date, expédiée quand le client appelle' },
 ]
 interface Expedition { groupee: boolean }
 
@@ -2472,13 +2473,14 @@ function LineCard({
                 }
                 const stat = (
                   <LineStat
-                    label={`Prête le${retard > 0 ? ` · +${retard} j` : ''}${line.mode_livraison === 'sur_appel' ? ' · sur appel' : ''}`}
+                    label={`Prête le${retard > 0 ? ` · +${retard} j` : ''}`}
                     value={line.date_livraison ? formatHfsqlDate(line.date_livraison) : partie ? '—' : 'À obtenir'}
                     valueClass={!line.date_livraison ? (partie ? 'text-muted-foreground' : 'text-red-600') : cn(SOULIGNE_INFO, !(parLancement || enPreparation) && tint)}
                   />
                 )
                 if (!line.date_livraison) return stat
                 return (
+                  <>
                   <Tooltip side="top" content={
                     <DelaiLigneDetail auPlusTot={partie ? null : line.au_plus_tot} entete={{
                       date: line.date_livraison,
@@ -2487,6 +2489,12 @@ function LineCard({
                       ],
                     }} />
                   }>{stat}</Tooltip>
+                  {/* How the line leaves once ready (LIVA #1354), right of its date. */}
+                  {!partie && (() => {
+                    const d = DEPARTS_LIGNE.find((x) => x.mode === line.mode_livraison) ?? DEPARTS_LIGNE[0]
+                    return <LineStat label="Départ" value={d.court} title={d.aide} />
+                  })()}
+                  </>
                 )
               })()}
             </div>
@@ -6884,12 +6892,13 @@ function LineFormDialog({
               </div>
             )
           })()}
-          {/* The line's départ (Vincent 2026-10-30): dès que prête by default, or when the client calls. */}
+          {/* The line's départ (Vincent 2026-10-30, date exacte #1354): dès que prête by default, exactly on
+              its date (an expedition date, never earlier), or when the client calls. */}
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Départ</label>
             <div className="flex gap-1">
               {DEPARTS_LIGNE.map((d) => (
-                <button key={d.mode} type="button" onClick={() => setForm({ ...form, mode_livraison: d.mode })}
+                <button key={d.mode} type="button" title={d.aide} onClick={() => setForm({ ...form, mode_livraison: d.mode })}
                   className={cn('px-3 py-1 rounded-md text-xs font-medium border transition-colors',
                     form.mode_livraison === d.mode ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
                   {d.label}

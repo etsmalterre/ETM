@@ -22,8 +22,9 @@
 // leaves is the ORDER's (lib/mode-expedition.ts), two questions (2026-10-11, Isabelle's review: ready
 // orders the client will call for were red for months):
 //   départ des_que_prete  ship as soon as ready, at the latest on D: amber ahead, red near D
-//   départ date_client    ship ON the date the client asked for (dateClient, else D): red from a few
-//                         days before (book the transport), never amber — early is not what was agreed
+//   départ date_exacte    leaves our factory ON D, never before (LIVA #1354): neutral before D, red
+//                         from D (« Expédier » acts the date — the avis is what ETM sees as shipped,
+//                         and the demande de transport asks a pickup the same day), never amber
 //   départ sur_appel      ready from D, the client will call: nothing to do until 4 months past D, then
 //                         chase (per client: client.relance_sur_appel, 0 = these 4 months — 2026-10-14)
 //   groupee (« ensemble », with any départ)  a ready line waits, neutral, while another line of the
@@ -62,7 +63,7 @@ export const SEUILS_URGENCE = {
   relanceAppel: 120,
 } as const
 
-export const MODES_LIVRAISON = ['des_que_prete', 'date_client', 'sur_appel', 'commande_complete'] as const
+export const MODES_LIVRAISON = ['des_que_prete', 'date_exacte', 'sur_appel', 'commande_complete'] as const
 export type ModeLivraison = (typeof MODES_LIVRAISON)[number]
 
 /** ligne_commande_client.mode_livraison (smallint) → mode; anything unknown reads « dès que prête ». */
@@ -88,8 +89,6 @@ export interface LigneUrgence {
   modeLivraison?: ModeLivraison
   /** the order ships all its lines together (with any départ) */
   groupee?: boolean
-  /** départ date_client: the date the client asked for (YYYYMMDD; absent = D) */
-  dateClient?: string | null
   /** groupee only: another line of the order is still in production */
   commandeIncomplete?: boolean
   /** mode sur_appel only: the client's own relance delay in days (client.relance_sur_appel);
@@ -191,13 +190,11 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     if (mode === 'sur_appel') {
       return j < -relanceAppelDe(l.relanceAppel) ? { niveau: 'rouge', action: 'relancer', jours: j, date } : null
     }
-    if (mode === 'date_client') {
-      // Ship ON the date the client asked for: never amber (early is not what the client asked).
-      const dc = ymd(l.dateClient) ?? date
-      const jc = joursAvant(dc, today)
-      const v = (action: Action): Verdict => ({ niveau: 'rouge', action, jours: jc, date: dc })
-      if (jc < -S.soldeApres) return v('solder')
-      return jc <= S.expedierRouge ? v('expedier') : null
+    if (mode === 'date_exacte') {
+      // Leaves ON D: nothing to do before (shipping early is not what the client asked), « Expédier »
+      // on the day; never amber.
+      if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
+      return j <= 0 ? { niveau: 'rouge', action: 'expedier', jours: j, date } : null
     }
     if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
     return palier('expedier', S.expedierRouge, S.expedierAmbre)

@@ -1,24 +1,26 @@
 // Clients › Commandes: how an order leaves (doctrine des délais §5 bis; revised by Vincent 2026-10-30).
 // The ORDER answers one question, Info › Expédition: « Expédier toutes les lignes ensemble »
 // (expedition_groupee) — ticked, one date is written on every line still to ship and a ready line waits
-// for the others. The DÉPART is each LINE's (ligne_commande_client.mode_livraison): dès que prête (0) or
-// sur appel du client (2), read by departLigne(). Every line carries ONE date, « Prête le »
-// (date_livraison, the engagement).
+// for the others. The DÉPART is each LINE's (ligne_commande_client.mode_livraison): dès que prête (0),
+// date exacte (1: it leaves ON D, never before — LIVA #1354, 2026-11-05) or sur appel du client (2), read
+// by departLigne(). Every line carries ONE date, « Prête le » (date_livraison, the engagement).
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { versDatePg } from './lancement-ligne.js'
 import { estUnReport, type Imputable } from './report-ligne-client.js'
 
-/** A line's départ: the client calls for it, or it leaves as soon as it is ready (every other stored value). */
-export const DEPARTS_LIGNE = ['des_que_prete', 'sur_appel'] as const
+/** A line's départ: as soon as it is ready, exactly on its date D (an expedition date, never earlier), or
+ *  when the client calls. Any other stored value reads « dès que prête ». */
+export const DEPARTS_LIGNE = ['des_que_prete', 'date_exacte', 'sur_appel'] as const
 export type DepartLigne = (typeof DEPARTS_LIGNE)[number]
 export function departLigne(v: unknown): DepartLigne {
-  return Number(v) === 2 ? 'sur_appel' : 'des_que_prete'
+  const n = Number(v)
+  return n === 2 ? 'sur_appel' : n === 1 ? 'date_exacte' : 'des_que_prete'
 }
 /** The stored value (ligne_commande_client.mode_livraison, the legacy scale). */
 export function codeDepartLigne(d: DepartLigne): number {
-  return d === 'sur_appel' ? 2 : 0
+  return d === 'sur_appel' ? 2 : d === 'date_exacte' ? 1 : 0
 }
 
 export interface Expedition {
