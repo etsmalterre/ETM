@@ -83,6 +83,7 @@ const WEB_TIERS = [
   { key: 'atelier', label: 'atelier', repo: TRM, dir: 'mps_atelier', src: 'apps/atelier', head: 'TRM' },
   { key: 'trs',     label: 'TRS',     repo: TRM, dir: 'mps_trs',     src: 'apps/trs',     head: 'TRM' },
   { key: 'pointage', label: 'pointage', repo: TRM, dir: 'mps_pointage', src: 'apps/pointage', head: 'TRM' },
+  { key: 'tirelle', label: 'tirelle', repo: ETM, dir: 'mps_tirelle', src: 'apps/tirelle', head: 'ETM' },
   // etm: the console's screens and doctrines are ETM's files (see the ETM check below).
   { key: 'admin',   label: 'admin',   repo: ADMIN, dir: 'mps_admin',  src: 'apps/web',     head: 'ADMIN', etm: true },
 ]
