@@ -22,10 +22,10 @@
 // coloris (one line per écru coloris). Écru kg → Ml = kg × ref_fini.rendement,
 // as everywhere else in ETM. Pure — the loader is in routes/stock-potentiel.ts.
 
+import { isFiniExpediable } from './fini-expediable.js'
+
 export type StatutPotentiel = 'dispo' | 'a_valider' | 'a_ennoblir' | 'a_tricoter'
 
-/** stock_fini.IDetat_stock_fini of a shippable roll. */
-export const ETAT_VALIDE = 3
 const LIBELLE_ETAT: Record<number, string> = { 1: 'en contrôle', 2: 'en reprise', 5: 'attente de décision' }
 
 export interface RefFiniPotentiel {
@@ -38,6 +38,8 @@ export interface RefFiniPotentiel {
   avec_teinture: number
   /** g/m² (ref_fini.poids_moy, the Grammage of Finis › Stock); null = unknown. */
   grammage: number | null
+  /** « Expédier dès la réception » (#1351): its En Contrôle rolls are Dispo. */
+  expedierDesReception?: boolean
   /** The écru's contexture (« jersey vanisé »), as Finis › Stock shows it. */
   contexture: string | null
   /** ref_ecru.bio / ref_ecru.recycle — the écru's certification, which the
@@ -198,7 +200,7 @@ export function calculerStockPotentiel(input: StockPotentielInput): LignePotenti
   for (const f of input.finisLibres) {
     const ref = refById.get(f.idref_fini)
     if (!ref) continue
-    const statut: StatutPotentiel = f.etat === ETAT_VALIDE ? 'dispo' : 'a_valider'
+    const statut: StatutPotentiel = isFiniExpediable(f.etat, !!ref.expedierDesReception) ? 'dispo' : 'a_valider'
     const k = `${statut}:${f.idref_fini}:${f.idcoloris}:${f.second_choix ? 2 : 1}`
     const cur = dispo.get(k) ?? {
       ref, statut, idcoloris: f.idcoloris, second_choix: f.second_choix, poids: 0, metrage: 0, pieces: 0, repartition: {},

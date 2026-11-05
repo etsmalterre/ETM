@@ -71,7 +71,7 @@ import { company } from '../lib/pdf/theme.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { ADRESSE_A_DEFINIR_REFUS, isAdresseADefinir, withAdresseADefinir } from '../lib/adresse-a-definir.js'
-import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable } from '../lib/fini-expediable.js'
+import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable, refsExpedieesDesReception } from '../lib/fini-expediable.js'
 import { mentionRouleauNonFacture, paragraphePointsASignaler, pointsASignaler, type RouleauASignaler } from '../lib/bl-points-a-signaler.js'
 import { rechercherExpeditionsDivers, rechercherExpeditionsFormelles, type RechercheEtat } from '../lib/expeditions-recherche.js'
 
@@ -1125,13 +1125,15 @@ async function buildRollPayload(expId: number, ctx: LineCtx) {
       resolveMagasinNames(all.map((r) => Number(r.IDmagasin))),
       resolveFiniColoris(all.map((r) => Number(r.IDColoris)), avec),
     ])
+    // Every roll here is of the line's reference (#1351: « Expédier dès la réception »).
+    const desReception = (await refsExpedieesDesReception([ctx.refId])).has(ctx.refId)
     const toRoll = (r: any): RollLite => ({
       id: Number(r.IDstock_fini), numero: r.numero ?? null, lot: r.lot ?? null,
       poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
       coloris_reference: col.get(Number(r.IDColoris)) ?? null, magasin_nom: mag.get(Number(r.IDmagasin)) ?? null,
       second_choix: Number(r.second_choix) || 0, observations: r.observations ?? null,
       etat_label: ETAT_FINI_LABELS[Number(r.IDetat_stock_fini)] ?? null,
-      expediable: isFiniExpediable(r.IDetat_stock_fini),
+      expediable: isFiniExpediable(r.IDetat_stock_fini, desReception),
     })
     base.onExp = onFixed.map(toRoll)
     base.dispo = dispoFixed.map(toRoll)
@@ -1194,10 +1196,11 @@ expeditionsRouter.put('/formelle/:id/lignes/:lccId/rolls/:stockId', async (req: 
     // Only validated fini rolls ship (#1235) — checked before the lazy
     // ligne_expedition insert below so a refusal leaves no empty line behind.
     if (ctx.kind === 'fini') {
-      const pre = await query<{ IDligne_expedition: number | null; IDetat_stock_fini: number | null; numero: string | null }>(
-        `SELECT IDligne_expedition, IDetat_stock_fini, numero FROM stock_fini WHERE IDstock_fini = ${stockId}`,
+      const pre = await query<{ IDligne_expedition: number | null; IDetat_stock_fini: number | null; IDref_fini: number | null; numero: string | null }>(
+        `SELECT IDligne_expedition, IDetat_stock_fini, IDref_fini, numero FROM stock_fini WHERE IDstock_fini = ${stockId}`,
       )
-      if (pre.length > 0 && (Number(pre[0].IDligne_expedition) || 0) === 0 && !isFiniExpediable(pre[0].IDetat_stock_fini)) {
+      const desReception = pre.length > 0 && (await refsExpedieesDesReception([Number(pre[0].IDref_fini)])).size > 0
+      if (pre.length > 0 && (Number(pre[0].IDligne_expedition) || 0) === 0 && !isFiniExpediable(pre[0].IDetat_stock_fini, desReception)) {
         res.status(409).json(finiNonValideRefus([String(pre[0].numero ?? stockId)])); return
       }
     }

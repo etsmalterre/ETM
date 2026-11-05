@@ -1594,6 +1594,17 @@ ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'tirelle_labo')}
 ALTER TABLE affectation_cmd_tricotage ADD COLUMN toute_commande smallint NOT NULL DEFAULT 0;
 `,
   },
+  {
+    // « Expédier dès la réception » (#1351, decision Vincent 2026-11-05,
+    // lib/fini-expediable.ts): a reference Malterre masters (228/122) ships its
+    // rolls « En Contrôle » without waiting for « Valider le lot »; the lot keeps
+    // its control cycle afterwards. Off by default: the controls come first.
+    name: '0059_ref_fini_expedier_des_reception',
+    sql: `
+ALTER TABLE ref_fini
+  ADD COLUMN expedier_des_reception smallint NOT NULL DEFAULT 0 CHECK (expedier_des_reception IN (0, 1));
+`,
+  },
 ]
 
 export interface MigrationStatus {

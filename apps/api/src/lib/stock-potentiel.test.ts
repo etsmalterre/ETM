@@ -96,6 +96,21 @@ describe('calculerStockPotentiel', () => {
     ]))
   })
 
+  it('« Expédier dès la réception » (#1351): En contrôle is Dispo, a reprise still À valider', () => {
+    const base = input()
+    const lignes = calculerStockPotentiel(input({
+      refsFini: base.refsFini.map((r) => (r.idref_fini === 1 ? { ...r, expedierDesReception: true } : r)),
+      finisLibres: [
+        { idref_fini: 1, idcoloris: 50, poids: 10, metrage: 30, etat: 1, second_choix: false },
+        { idref_fini: 1, idcoloris: 50, poids: 10, metrage: 30, etat: 2, second_choix: false },
+      ],
+    }))
+    expect(lignes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ statut: 'dispo', pieces: 1 }),
+      expect.objectContaining({ statut: 'a_valider', pieces: 1, repartition: { 'en reprise': 1 } }),
+    ]))
+  })
+
   it('counts the 2nd-choice écru pieces of an À ennoblir line', () => {
     const [l] = calculerStockPotentiel(input({
       refsFini: [{ idref_fini: 1, reference: '029A', designation: null, idref_ecru: 29, rendement: 3, avec_teinture: 1, grammage: null, contexture: null, bio: false, recycle: false }],

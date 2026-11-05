@@ -22,6 +22,7 @@ const BOOLEEN = [
   'controle_ennoblisseur_laize', 'controle_ennoblisseur_poids', 'controle_ennoblisseur_stab',
   'controle_malterre_laize', 'controle_malterre_poids', 'controle_malterre_stab',
   'controle_ennoblisseur_vrillage', 'controle_malterre_vrillage',
+  'expedier_des_reception',
 ] as const
 
 export const GROUPES_REF_FINI: Record<GroupeRefFini, { cle: PermissionKey; champs: readonly string[] }> = {
@@ -44,7 +45,7 @@ export const GROUPES_REF_FINI: Record<GroupeRefFini, { cle: PermissionKey; champ
   },
   controles: {
     cle: 'edit_ref_fini_controles',
-    champs: ['controle_ennoblisseur', 'controle_malterre', ...COLONNES_MESURES],
+    champs: ['controle_ennoblisseur', 'controle_malterre', ...COLONNES_MESURES, 'expedier_des_reception'],
   },
 }
 

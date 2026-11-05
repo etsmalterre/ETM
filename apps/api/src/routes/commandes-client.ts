@@ -50,7 +50,7 @@ import { CGV_ATTACHMENT_FILENAME, CGV_MENTION, cgvAttachment, getCgvPdf } from '
 import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
 import { attachDonationSql, detachDonationSql, planDonationSet } from '../lib/donation-pieces.js'
-import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable } from '../lib/fini-expediable.js'
+import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable, refsExpedieesDesReception } from '../lib/fini-expediable.js'
 import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-ligne-client.js'
 import { cotesARevoir, appliquerReprix } from '../lib/reprix-associes.js'
 import { prixUnitOf, resolveLigneTarifMode } from '../lib/tarif-client.js'
@@ -1454,8 +1454,8 @@ export async function lineReservationAggregates(
          AND (se.IDcommande_donation IS NULL OR se.IDcommande_donation = 0)
          AND NOT EXISTS (SELECT 1 FROM stock_fini sfx WHERE sfx.IDstock_ecru = se.IDstock_ecru)`,
     ),
-    query<{ IDligne_commande_client: number; metrage: number | null; poids: number | null; IDligne_expedition: number | null; IDetat_stock_fini: number | null; date_saisie: unknown }>(
-      `SELECT IDligne_commande_client, metrage, poids, IDligne_expedition, IDetat_stock_fini, date_saisie FROM stock_fini
+    query<{ IDligne_commande_client: number; IDref_fini: number | null; metrage: number | null; poids: number | null; IDligne_expedition: number | null; IDetat_stock_fini: number | null; date_saisie: unknown }>(
+      `SELECT IDligne_commande_client, IDref_fini, metrage, poids, IDligne_expedition, IDetat_stock_fini, date_saisie FROM stock_fini
        WHERE IDligne_commande_client IN (${inList})
          AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)`,
     ),
@@ -1466,6 +1466,8 @@ export async function lineReservationAggregates(
     mergedComponentEcruIds(),
   ])
   const ecru = ecruRaw.filter((r) => !mergedComponents.has(Number(r.IDstock_ecru)))
+  // References switched « Expédier dès la réception » (#1351): their En Contrôle rolls are ready.
+  const desReception = await refsExpedieesDesReception(fini.map((r) => Number(r.IDref_fini)))
   const acc = (lid: number) => {
     const a = out.get(lid) ?? agregatVide()
     out.set(lid, a)
@@ -1483,13 +1485,14 @@ export async function lineReservationAggregates(
     a.total_poids += poids
     a.fini_metrage += metrage
     a.fini_poids += poids
-    // Shipped = état Expédié or attached to an expedition line. Ready = validated only (the one roll
-    // that may ship, lib/fini-expediable.ts); En contrôle / Reprise / Attente décision are still the
-    // dyer's — the line status says « en ennoblissement » for them too (statut-ligne-client.ts).
+    // Shipped = état Expédié or attached to an expedition line. Ready = a roll that may ship
+    // (lib/fini-expediable.ts: validated, or En contrôle on a reference shipped « dès la réception »,
+    // #1351); the others are still the dyer's — the line status says « en ennoblissement » for them
+    // too (statut-ligne-client.ts).
     if (Number(r.IDetat_stock_fini) === 4 || (Number(r.IDligne_expedition) || 0) > 0) {
       a.exp_metrage += metrage
       a.exp_poids += poids
-    } else if (isFiniExpediable(r.IDetat_stock_fini)) {
+    } else if (isFiniExpediable(r.IDetat_stock_fini, desReception.has(Number(r.IDref_fini)))) {
       a.pret_metrage += metrage
       a.pret_poids += poids
     } else {
@@ -3011,6 +3014,8 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
   const availFixed = await fixEncoding(availRaw, 'stock_fini', 'IDstock_fini', ['numero', 'lot', 'observations', 'observation_sst'])
   const magNames = await resolveMagasinNames([...linkedFixed, ...availFixed].map((r: any) => Number(r.IDmagasin)))
   const colNames = await resolveFiniColoris([...linkedFixed, ...availFixed].map((r: any) => Number(r.IDColoris)), avecTeinture)
+  // Every roll here is of the line's reference (#1351: « Expédier dès la réception »).
+  const desReception = (await refsExpedieesDesReception([ctx.refId])).has(ctx.refId)
   const toRoll = (r: any): RollLite => ({
     id: Number(r.IDstock_fini),
     numero: r.numero ?? null,
@@ -3025,7 +3030,7 @@ async function fetchAffectationPayload(ctx: ClientLineContext) {
     ml_non_factures: Number(r.ml_non_factures) || 0,
     ml_non_factures_motif: r.ml_non_factures_motif ?? null,
     etat_label: ETAT_FINI_LABELS[Number(r.IDetat_stock_fini)] ?? null,
-    expediable: isFiniExpediable(r.IDetat_stock_fini),
+    expediable: isFiniExpediable(r.IDetat_stock_fini, desReception),
     expedie: Number(r.IDetat_stock_fini) === 4 || (Number(r.IDligne_expedition) || 0) > 0,
   })
   base.linked = linkedFixed.map(toRoll)
@@ -5575,7 +5580,7 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
     const inIds = parsed.data.stockIds.join(',')
     const rollRows = ctx.kind === 'fini'
       ? await query<any>(
-          `SELECT IDstock_fini AS id, IDligne_commande_client AS lcc, IDligne_expedition AS le, IDetat_stock_fini, numero
+          `SELECT IDstock_fini AS id, IDligne_commande_client AS lcc, IDligne_expedition AS le, IDetat_stock_fini, IDref_fini, numero
              FROM stock_fini WHERE IDstock_fini IN (${inIds})`,
         )
       : await query<any>(
@@ -5587,7 +5592,8 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
     // Only validated fini rolls ship (#1235): refuse the whole request rather
     // than silently leave some behind, so the user sees which ones to untick.
     if (ctx.kind === 'fini') {
-      const nonValides = usable.filter((r: any) => !isFiniExpediable(r.IDetat_stock_fini))
+      const desReception = await refsExpedieesDesReception(usable.map((r: any) => Number(r.IDref_fini)))
+      const nonValides = usable.filter((r: any) => !isFiniExpediable(r.IDetat_stock_fini, desReception.has(Number(r.IDref_fini))))
       if (nonValides.length > 0) {
         res.status(409).json(finiNonValideRefus(nonValides.map((r: any) => String(r.numero ?? r.id))))
         return

@@ -9,12 +9,15 @@
 //    one of that client's orders (stock_fini.IDligne_commande_client). A lot
 //    with no affected roll offers no RC.
 //  - A client switched « rapport de contrôle » (client.inclureRapportQualite)
-//    is OWED one while it holds pieces of the lot not shipped yet and has had
-//    no RC for the lot since the lot's last return from reprise (the measures
-//    changed). Owed RCs block « Valider le lot » (lib/cycle-ennoblissement.ts);
-//    on an already validated lot they are a task, the lot never goes back.
-//  - Pieces already shipped are past: shipments before 2026-10-22 carried the
-//    RC on their BL, and only a « Validé » roll ships (#1235).
+//    is OWED one while it holds pieces of the lot — shipped or not (#1351,
+//    decision Vincent 2026-11-05: the RC blocks the lot's validation, never the
+//    shipment, since a reference shipped « dès la réception » leaves before its
+//    controls) — and has had no RC for the lot since the lot's last return from
+//    reprise (the measures changed). Owed RCs block « Valider le lot »
+//    (lib/cycle-ennoblissement.ts); on an already validated lot they are a
+//    task, the lot never goes back.
+//  - Pieces shipped before RC_HORS_BL_DEPUIS are past: those shipments carried
+//    the RC on their BL.
 //  - Any other client of the lot may be sent one by hand; never owed.
 //  - A client DISPENSED of the lot's RC (rapport_controle_dispense, migration
 //    0034, why required) is never owed one for it.
@@ -33,6 +36,8 @@ export interface ClientDuLot {
   pieces: number
   /** …of which not shipped yet. */
   piecesNonExpediees: number
+  /** …of which owe an RC: not shipped, or shipped since RC_HORS_BL_DEPUIS. */
+  piecesARapporter: number
   /** Last RC sent to this client for the lot, 'YYYY-MM-DD HH:MM' (Paris), any date. */
   dernierEnvoi: string | null
   /** Why the client is dispensed of this lot's RC, or null. */
@@ -40,6 +45,9 @@ export interface ClientDuLot {
   /** An RC is owed (see the rules above). */
   du: boolean
 }
+
+/** The RC left the BL on this day (#1304): a shipment before it carried its RC. */
+export const RC_HORS_BL_DEPUIS = '2026-10-22'
 
 export const cleLotLigne = (ligne: number, lot: string) => `${ligne}:${lot.trim()}`
 
@@ -52,14 +60,17 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
   const sql = mpsPg()
 
   const [rouleaux, envois, reprises, dispenses] = await Promise.all([
-    sql<{ ligne: number; lot: string; idclient: number; nom: string | null; rc: number; expedie: boolean }[]>`
+    sql<{ ligne: number; lot: string; idclient: number; nom: string | null; rc: number; expedie: boolean; avec_bl: boolean }[]>`
       SELECT sf.idref_commande_source AS ligne, trim(sf.lot::text) AS lot, cc.idclient, c.nom::text AS nom,
              COALESCE(c.inclurerapportqualite, 0)::int AS rc,
-             COALESCE(sf.idligne_expedition, 0) > 0 AS expedie
+             COALESCE(sf.idligne_expedition, 0) > 0 AS expedie,
+             COALESCE(e.date::date < ${RC_HORS_BL_DEPUIS}::date, false) AS avec_bl
       FROM stock_fini sf
       JOIN ligne_commande_client lcc ON lcc.idligne_commande_client = sf.idligne_commande_client
       JOIN commande_client cc ON cc.idcommande_client = lcc.idcommande_client
       JOIN client c ON c.idclient = cc.idclient
+      LEFT JOIN ligne_expedition le ON le.idligne_expedition = sf.idligne_expedition AND COALESCE(sf.idligne_expedition, 0) > 0
+      LEFT JOIN expedition e ON e.idexpedition = le.idexpedition
       WHERE sf.idref_commande_source = ANY(${lignes}) AND sf.idligne_commande_client > 0
         AND COALESCE(sf.idcommande_donation, 0) = 0`,
     sql<{ ligne: number; lot: string; idclient: number; dernier: string; jour: string }[]>`
@@ -85,10 +96,11 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
     const id = Number(r.idclient)
     const c = clients.get(id) ?? {
       idclient: id, nom: (r.nom ?? '').trim(), rcActif: Number(r.rc) === 1,
-      pieces: 0, piecesNonExpediees: 0, dernierEnvoi: null, dispense: null, du: false,
+      pieces: 0, piecesNonExpediees: 0, piecesARapporter: 0, dernierEnvoi: null, dispense: null, du: false,
     }
     c.pieces++
     if (!r.expedie) c.piecesNonExpediees++
+    if (!r.expedie || !r.avec_bl) c.piecesARapporter++
     clients.set(id, c)
   }
   for (const [cle, clients] of parCle) {
@@ -98,7 +110,7 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
       // An RC sent before the lot came back from reprise reported the old dye.
       const valable = envoi && (!retour || envoi.jour >= retour)
       const dispense = dispensePar.get(`${cle}:${c.idclient}`) ?? null
-      return { ...c, dernierEnvoi: envoi?.dernier ?? null, dispense, du: c.rcActif && c.piecesNonExpediees > 0 && !valable && !dispense }
+      return { ...c, dernierEnvoi: envoi?.dernier ?? null, dispense, du: c.rcActif && c.piecesARapporter > 0 && !valable && !dispense }
     })
     out.set(cle, liste.sort((a, b) => a.nom.localeCompare(b.nom, 'fr')))
   }

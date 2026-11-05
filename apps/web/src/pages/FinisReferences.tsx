@@ -54,6 +54,7 @@ import {
   Check,
   Minus,
   Activity,
+  Truck,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -167,6 +168,8 @@ interface RefFiniDetail {
   controle_malterre_stab: number
   controle_ennoblisseur_vrillage: number
   controle_malterre_vrillage: number
+  /** « Expédier dès la réception » (#1351): En Contrôle rolls may ship. */
+  expedier_des_reception: number
   archive: number
   catalogue_prive: number
   date_creation: string | null
@@ -340,6 +343,7 @@ interface HeaderDraft {
   controle_malterre_stab: boolean
   controle_ennoblisseur_vrillage: boolean
   controle_malterre_vrillage: boolean
+  expedier_des_reception: boolean
 }
 
 /** The lot-control switches of the fiche (#1345): one per measure and per side. */
@@ -389,6 +393,7 @@ function emptyDraft(): HeaderDraft {
     controle_sst_allongement: false,
     en_developpement: false,
     ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, true])) as Record<ControleKey, boolean>),
+    expedier_des_reception: false,
   }
 }
 
@@ -427,6 +432,7 @@ function draftFromDetail(d: RefFiniDetail): HeaderDraft {
     controle_sst_allongement: !!d.controle_sst_allongement,
     en_developpement: !!d.en_developpement,
     ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, d[k] !== 0])) as Record<ControleKey, boolean>),
+    expedier_des_reception: !!d.expedier_des_reception,
   }
 }
 
@@ -466,6 +472,7 @@ function draftToBody(d: HeaderDraft) {
     controle_sst_allongement: d.controle_sst_allongement,
     en_developpement: d.en_developpement,
     ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, d[k]])) as Record<ControleKey, boolean>),
+    expedier_des_reception: d.expedier_des_reception,
   }
 }
 
@@ -2875,6 +2882,22 @@ function DetailSidebar({
                 ))}
               </Fragment>
             ))}
+          </div>
+          {/* « Expédier dès la réception » (#1351, lib/fini-expediable.ts): the rolls
+              ship « En contrôle », the lot keeps its controls afterwards. */}
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/50">
+            <span
+              className="text-xs text-muted-foreground flex items-center gap-1.5"
+              title="Les rouleaux « En contrôle » peuvent être expédiés sans attendre la validation du lot. Le lot suit ensuite ses contrôles."
+            >
+              <Truck className="h-3.5 w-3.5" />
+              Expédier dès la réception
+            </span>
+            {isEditing && droits.controles ? (
+              <Pill value={draft.expedier_des_reception} onChange={(v) => onDraftChange({ ...draft, expedier_des_reception: v })} />
+            ) : (
+              <span className="text-sm">{detail.expedier_des_reception ? 'Oui' : 'Non'}</span>
+            )}
           </div>
         </div>
 

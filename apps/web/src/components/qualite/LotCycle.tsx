@@ -296,7 +296,7 @@ export function CycleCard({
               <p key={c.idclient} className="flex items-baseline justify-between gap-2">
                 <span className="truncate">{c.nom} <span className="text-muted-foreground">· {c.pieces} pièce{c.pieces > 1 ? 's' : ''}</span></span>
                 <span className={cn('flex-shrink-0', c.du ? 'text-amber-700 font-medium' : 'text-muted-foreground')} title={c.dispense ?? undefined}>
-                  {c.du ? 'À envoyer' : c.dernierEnvoi ? `Envoyé le ${fmtJour(c.dernierEnvoi)}` : c.dispense ? 'Dispensé' : c.rcActif ? 'Pièces expédiées' : 'Facultatif'}
+                  {c.du ? 'À envoyer' : c.dernierEnvoi ? `Envoyé le ${fmtJour(c.dernierEnvoi)}` : c.dispense ? 'Dispensé' : c.rcActif ? 'Envoyé avec le BL' : 'Facultatif'}
                 </span>
               </p>
             ))}

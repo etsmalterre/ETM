@@ -41,8 +41,8 @@ stockPotentielRouter.get('/potentiel', async (_req: Request, res: Response) => {
   try {
     const sql = mpsPg()
     const [refsFini, refsEcru, colorisEcru, colorisFini, finis, ecruRows, compositions, lotsFil] = await Promise.all([
-      sql<Array<{ idref_fini: number; reference: string | null; designation: string | null; idref_ecru: number | null; rendement: number | null; avec_teinture: number | null; poids_moy: number | null }>>`
-        SELECT idref_fini, reference, designation, idref_ecru, rendement::float8 AS rendement, avec_teinture, poids_moy::float8 AS poids_moy
+      sql<Array<{ idref_fini: number; reference: string | null; designation: string | null; idref_ecru: number | null; rendement: number | null; avec_teinture: number | null; poids_moy: number | null; expedier_des_reception: number | null }>>`
+        SELECT idref_fini, reference, designation, idref_ecru, rendement::float8 AS rendement, avec_teinture, poids_moy::float8 AS poids_moy, expedier_des_reception
         FROM ref_fini WHERE COALESCE(archive, 0) = 0`,
       // Contexture lives on the écru (Finis › Stock reads it the same way).
       sql<Array<{ idref_ecru: number; reference: string | null; contexture: string | null; bio: number | null; recycle: number | null }>>`
@@ -128,6 +128,7 @@ stockPotentielRouter.get('/potentiel', async (_req: Request, res: Response) => {
           rendement: Number(r.rendement) || 0,
           avec_teinture: Number(r.avec_teinture) || 0,
           grammage: Number(r.poids_moy) > 0 ? Number(r.poids_moy) : null,
+          expedierDesReception: Number(r.expedier_des_reception) === 1,
           contexture: contextureParEcru.get(Number(r.idref_ecru) || 0) ?? null,
           bio: Number(ecruParId.get(Number(r.idref_ecru) || 0)?.bio) === 1,
           recycle: Number(ecruParId.get(Number(r.idref_ecru) || 0)?.recycle) === 1,

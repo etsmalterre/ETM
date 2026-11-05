@@ -154,6 +154,7 @@ function normalizeRefFini(row: Record<string, unknown>) {
     // lot controls (lib/controles-lot.ts): on unless explicitly 0; each measure
     // as the cycle reads it (a side off asks none of its measures, #1345)
     ...controlesAplatis(row),
+    expedier_des_reception: Number(row.expedier_des_reception) ? 1 : 0,
     // accented column names — resolved by prefix, never named in SQL
     archive: Number(pickKey(row, /^archiv/i)) ? 1 : 0,
     catalogue_prive: Number(pickKey(row, /^catalogue_priv/i)) ? 1 : 0,
@@ -984,6 +985,7 @@ const refFiniBody = z.object({
   controle_malterre_stab: z.boolean().optional(),
   controle_ennoblisseur_vrillage: z.boolean().optional(),
   controle_malterre_vrillage: z.boolean().optional(),
+  expedier_des_reception: z.boolean().optional(),
 })
 
 type RefFiniBody = z.infer<typeof refFiniBody>
@@ -1026,6 +1028,8 @@ function buildRefFiniSets(b: RefFiniBody): string[] {
       sets.push(`controle_${cote} = ${b[`controle_${cote}`] ? 1 : 0}`)
     }
   }
+  // « Expédier dès la réception » (#1351): written only when sent, like the controls.
+  if (b.expedier_des_reception !== undefined) sets.push(`expedier_des_reception = ${b.expedier_des_reception ? 1 : 0}`)
   return sets
 }
 
