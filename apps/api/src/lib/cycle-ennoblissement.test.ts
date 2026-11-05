@@ -5,7 +5,11 @@ import {
   faitSoumission,
   etatCommande,
   etatLot,
+  depuisEtape,
+  joursOuvresDepuis,
   plusJoursOuvres,
+  prealableAttendu,
+  prealablesDetail,
   prealablesValidation,
   urgenceCommande,
   urgenceLot,
@@ -296,5 +300,41 @@ describe('helpers', () => {
     expect(cleLot('109331/s')).toBe('109331')
     expect(cleLot('MA109102R')).toBe('109102')
     expect(cleLot('MA109090 REPRIS')).toBe('109090')
+  })
+})
+
+describe('prealableAttendu: the card leads with the step the flow waits for (2026-11-05)', () => {
+  const attendu = (l: LotFait) => prealableAttendu(etapeLot(l), prealablesDetail(l))
+  it('the dyer measures: the dyer’s move in front, our tirelle after', () => {
+    expect(attendu(lot())).toMatchObject({ texte: 'Ennoblisseur : laize, poids, stabilités', main: 'teinturier' })
+    expect(attendu(lot({ mesuresTeinturier: true }))).toMatchObject({ texte: 'Malterre : laize, poids, stabilités', main: 'nous' })
+  })
+  it('a soumission out waits on the client before anything else', () => {
+    const l = lot({ stabilites: soum({ le: '2026-10-20' }) })
+    expect(attendu(l)).toMatchObject({ texte: 'Réponse client : stabilités', main: 'client' })
+  })
+  it('not received, coloris accepted: ours to pass on the « coloris validé »', () => {
+    const l = lot({ reception: null, coloris: soum({ le: '2026-10-15', accepte: true }) })
+    expect(attendu(l)).toMatchObject({ texte: 'OK coloris à transmettre à l’ennoblisseur', main: 'nous' })
+  })
+  it('not received, nothing to answer: the lot itself is awaited from the dyer', () => {
+    expect(attendu(lot({ reception: null }))).toMatchObject({ texte: 'Lot pas encore reçu', main: 'teinturier' })
+  })
+  it('every prealable belongs to a step and nothing left = null', () => {
+    const controle = { mesuresTeinturier: true, tirelleMesuree: true }
+    expect(attendu(lot({ ...controle, rcAEnvoyer: ['LEMAHIEU'] }))).toMatchObject({ etape: 'rc_a_envoyer', main: 'nous' })
+    expect(attendu(lot(controle))).toBeNull()
+  })
+})
+
+describe('depuisEtape: how long the lot has been at its step (2026-11-05)', () => {
+  it('the controls count from the reception, 5 working days', () => {
+    expect(depuisEtape(lot())).toEqual({ depuis: '2026-10-08', delai: 5 })
+    // Thursday 08/10 → Tuesday 13/10: Fri, Mon, Tue = 3 working days.
+    expect(joursOuvresDepuis('2026-10-08', '2026-10-13')).toBe(3)
+  })
+  it('a soumission counts from its sending, a reprise has no date', () => {
+    expect(depuisEtape(lot({ stabilites: soum({ le: '2026-10-20' }) }))).toEqual({ depuis: '2026-10-20', delai: 5 })
+    expect(depuisEtape(lot({ repriseOuverte: true }))).toBeNull()
   })
 })

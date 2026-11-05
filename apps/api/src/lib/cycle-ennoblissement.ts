@@ -45,7 +45,7 @@
 // corrected from PE's use like the point's rules.
 
 import { mpsPg } from './mps-pg.js'
-import { ajouterJoursOuvres } from './jours-ouvres.js'
+import { ajouterJoursOuvres, joursOuvresEntre } from './jours-ouvres.js'
 import { consumedEcruIds } from './fini-sources.js'
 import { faitsReprises } from './reprises.js'
 import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
@@ -181,30 +181,53 @@ export function etapeLot(l: LotFait): EtapeLot {
   return 'a_valider'
 }
 
+/** One thing standing between the lot and « Valider le lot ». */
+export interface Prealable {
+  texte: string
+  /** The step it belongs to: the card leads with the one matching etapeLot(). */
+  etape: EtapeLot | null
+  /** Whose move it is. */
+  main: Main
+}
+
 /** What still stands between the lot and « Valider le lot », in the order the
- *  work is done. Empty = the responsable qualité may validate. Text shown as is
- *  on Suivi lots (the button's reason) and returned by the 409. */
-export function prealablesValidation(l: LotFait): string[] {
-  if (l.etat === ETAT_LOT.VALIDE || l.etat === ETAT_LOT.EXPEDIE) return ['Lot déjà validé']
-  const out: string[] = []
+ *  work is done, with whose move each is. Empty = the responsable qualité may
+ *  validate. The texts are shown as is on Suivi lots and returned by the 409. */
+export function prealablesDetail(l: LotFait): Prealable[] {
+  if (l.etat === ETAT_LOT.VALIDE || l.etat === ETAT_LOT.EXPEDIE) return [{ texte: 'Lot déjà validé', etape: 'valide', main: 'nous' }]
+  const out: Prealable[] = []
   const recu = !!l.reception
   const { coloris: c, stabilites: s } = l
-  if (l.etat === ETAT_LOT.EN_REPRISE || l.repriseOuverte) out.push('En reprise chez l’ennoblisseur')
-  if (enAttente(c)) out.push('Réponse client : coloris')
-  else if (refusee(c)) out.push(recu ? 'Coloris refusé : à reprendre' : 'Coloris refusé : repart en teinture')
-  else if (c.requise && !c.envoyeeLe) out.push('Soumission coloris à envoyer')
-  else if (!recu && c.reponse?.accepte && !l.okRamerLe) out.push('OK coloris à transmettre à l’ennoblisseur')
+  if (l.etat === ETAT_LOT.EN_REPRISE || l.repriseOuverte) out.push({ texte: 'En reprise chez l’ennoblisseur', etape: 'en_reprise', main: 'teinturier' })
+  if (enAttente(c)) out.push({ texte: 'Réponse client : coloris', etape: 'coloris_soumis', main: 'client' })
+  else if (refusee(c)) {
+    out.push(recu
+      ? { texte: 'Coloris refusé : à reprendre', etape: 'refuse_client', main: 'nous' }
+      : { texte: 'Coloris refusé : repart en teinture', etape: 'reteinture', main: 'teinturier' })
+  } else if (c.requise && !c.envoyeeLe) out.push({ texte: 'Soumission coloris à envoyer', etape: 'coloris_a_soumettre', main: 'nous' })
+  else if (!recu && c.reponse?.accepte && !l.okRamerLe) out.push({ texte: 'OK coloris à transmettre à l’ennoblisseur', etape: 'ok_ramer_a_envoyer', main: 'nous' })
   if (!recu) {
-    out.push('Lot pas encore reçu')
+    out.push({ texte: 'Lot pas encore reçu', etape: c.reponse?.accepte ? 'en_rame' : 'attente_mesures', main: 'teinturier' })
     return out
   }
-  if (!l.mesuresTeinturier) out.push(`Ennoblisseur : ${(l.manqueTeinturier?.length ? l.manqueTeinturier : ['laize', 'poids', 'stabilités']).join(', ')}`)
-  if (!l.tirelleMesuree) out.push(`Malterre : ${(l.manqueMalterre?.length ? l.manqueMalterre : ['laize', 'poids', 'stabilités']).join(', ')}`)
-  if (enAttente(s)) out.push('Réponse client : stabilités')
-  else if (refusee(s)) out.push('Stabilités refusées : à reprendre')
-  else if (s.requise && !s.envoyeeLe) out.push('Soumission stabilités à envoyer')
-  for (const nom of l.rcAEnvoyer ?? []) out.push(`Rapport de contrôle à envoyer : ${nom}`)
+  if (!l.mesuresTeinturier) out.push({ texte: `Ennoblisseur : ${(l.manqueTeinturier?.length ? l.manqueTeinturier : ['laize', 'poids', 'stabilités']).join(', ')}`, etape: 'attente_mesures', main: 'teinturier' })
+  if (!l.tirelleMesuree) out.push({ texte: `Malterre : ${(l.manqueMalterre?.length ? l.manqueMalterre : ['laize', 'poids', 'stabilités']).join(', ')}`, etape: 'attente_tirelle', main: 'nous' })
+  if (enAttente(s)) out.push({ texte: 'Réponse client : stabilités', etape: 'soumis', main: 'client' })
+  else if (refusee(s)) out.push({ texte: 'Stabilités refusées : à reprendre', etape: 'refuse_client', main: 'nous' })
+  else if (s.requise && !s.envoyeeLe) out.push({ texte: 'Soumission stabilités à envoyer', etape: 'a_soumettre', main: 'nous' })
+  for (const nom of l.rcAEnvoyer ?? []) out.push({ texte: `Rapport de contrôle à envoyer : ${nom}`, etape: 'rc_a_envoyer', main: 'nous' })
   return out
+}
+
+/** The texts of prealablesDetail(): the button's reason and the 409. */
+export function prealablesValidation(l: LotFait): string[] {
+  return prealablesDetail(l).map((p) => p.texte)
+}
+
+/** The one prealable the lot waits for before its flow goes on: the one of its
+ *  step (etapeLot), else the first of ours, else the first. null = nothing left. */
+export function prealableAttendu(etape: EtapeLot, prealables: Prealable[]): Prealable | null {
+  return prealables.find((p) => p.etape === etape) ?? prealables.find((p) => p.main === 'nous') ?? prealables[0] ?? null
 }
 
 const MAIN: Record<EtapeLot, Main | null> = {
@@ -226,6 +249,27 @@ const MAIN: Record<EtapeLot, Main | null> = {
 
 /** The control steps of a received lot: one window from the reception (RELANCE_J.controle). */
 const CONTROLE_RECU: EtapeLot[] = ['attente_mesures', 'attente_tirelle', 'coloris_a_soumettre', 'a_soumettre', 'rc_a_envoyer', 'a_valider']
+
+/** Since when the lot is at its step and how many working days the step gets
+ *  before we chase (the same dates as etatLot's relance). The control steps share
+ *  one window from the reception (« en contrôle » = 5 working days, 2026-11-03):
+ *  2 days in is fine, 5 is a problem (Vincent 2026-11-05). null = no date known
+ *  (en reprise, reteinture: the dyer gives it back in the point). */
+export function depuisEtape(l: LotFait, etape: EtapeLot = etapeLot(l)): { depuis: string; delai: number } | null {
+  const r = l.reception
+  if (CONTROLE_RECU.includes(etape) && r) return { depuis: r, delai: RELANCE_J.controle }
+  if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) return { depuis: l.coloris.envoyeeLe, delai: RELANCE_J.soumis }
+  if (etape === 'soumis' && l.stabilites.envoyeeLe) return { depuis: l.stabilites.envoyeeLe, delai: RELANCE_J.soumis }
+  if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) return { depuis: l.coloris.reponse.le.slice(0, 10), delai: RELANCE_J.nous }
+  if (etape === 'en_rame' && l.okRamerLe) return { depuis: l.okRamerLe, delai: RELANCE_J.en_rame }
+  if (etape === 'refuse_client' && r) return { depuis: r, delai: RELANCE_J.nous }
+  return null
+}
+
+/** Working days from `depuis` to `today` ('YYYY-MM-DD'), the start day excluded. */
+export function joursOuvresDepuis(depuis: string, today: string): number {
+  return Math.max(0, joursOuvresEntre(depuis.replace(/-/g, ''), today.replace(/-/g, '')))
+}
 
 export function etatLot(l: LotFait): EtatLot {
   const etape = etapeLot(l)

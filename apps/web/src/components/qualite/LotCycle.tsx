@@ -12,7 +12,6 @@ import {
   AlertCircle,
   CheckCircle2,
   ChevronUp,
-  CircleDashed,
   ClipboardCheck,
   Droplets,
   Hourglass,
@@ -120,7 +119,6 @@ export function EtapeLotPill({ etape, className, children }: { etape: EtapeLot; 
 }
 
 const fmtJour = (iso: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '')
-const fmtJourHeure = (iso: string | null) => (iso ? `${fmtJour(iso)} ${iso.slice(11, 16)}` : '')
 
 // ── Footer: the step pill + its gestures (§29.4) ─────────
 
@@ -221,117 +219,139 @@ export function LotCycleFooter({
   )
 }
 
-// ── Center: what the lot still needs ─────────────────────
+// ── Center: the step the lot waits for ───────────────────
 
-/** « Avant validation »: the checklist the validation obeys, the soumission
- *  and its answer, and the rapport de contrôle per client. */
+/** Whose move a prealable is (API cycle-ennoblissement.ts `Main`). */
+export type MainLot = 'teinturier' | 'nous' | 'client'
+
+/** The one step the flow waits for, and since when (API `prealableAttendu` + `depuisEtape`). */
+export interface AttenduLot {
+  texte: string
+  main: MainLot
+  /** 'YYYY-MM-DD': the day the step started (reception, soumission sent…). */
+  depuis: string | null
+  /** Working days since `depuis`, start day excluded. */
+  jours: number | null
+  /** Working days the step gets before we chase (5 for the controls). */
+  delai: number | null
+}
+
+const MAIN_LABEL: Record<MainLot, string> = {
+  nous: 'À faire chez Malterre',
+  teinturier: 'Attendu de l’ennoblisseur',
+  client: 'Attendu du client',
+}
+
+/** What the step's start date is, in words. */
+function libelleDepuis(etape: EtapeLot): string {
+  if (etape === 'coloris_soumis' || etape === 'soumis') return 'Soumission envoyée le'
+  if (etape === 'ok_ramer_a_envoyer') return 'Coloris accepté le'
+  if (etape === 'en_rame') return 'Validation transmise le'
+  return 'Lot reçu le'
+}
+
+/** « Prochaine étape »: ONE thing, the step the lot waits for and how long it has
+ *  been there against the days it gets (Vincent 2026-11-05: 2 days in « contrôle
+ *  ennoblisseur » is fine, 5 is a problem). What else blocks « Valider le lot »
+ *  stays in the footer menu, with every gesture (no button on the card, 2026-11-05);
+ *  the RC per client in the header button. */
 export function CycleCard({
-  etape, prealables, soumissions, okRamerLe, recu, clients,
+  etape, prealables, attendu, clients,
 }: {
   etape: EtapeLot
   prealables: string[]
-  soumissions: SoumissionsLot
-  /** 'YYYY-MM-DD': the « coloris validé » mail to the dyer. */
-  okRamerLe: string | null
-  recu: boolean
+  /** Absent from an older API: the card falls back to the first prealable. */
+  attendu?: AttenduLot | null
   clients: ClientRc[]
 }) {
   const valide = etape === 'valide'
   const rcDus = clients.filter((c) => c.du)
-  const { coloris, stabilites } = soumissions
-  const avecColoris = coloris.requise || !!coloris.envoyee_le
+  const tete: AttenduLot | null = attendu
+    ?? (prealables[0] ? { texte: prealables[0], main: 'nous', depuis: null, jours: null, delai: null } : null)
+  const toutFait = !valide && prealables.length === 0
+  const meta = ETAPE_LOT_META[etape]
+  const EtapeIcon = meta.icon
+  const jours = tete?.jours ?? null
+  const delai = tete?.delai ?? null
+  const mesure = !valide && jours !== null && delai !== null && delai > 0
+  // §41, the same thresholds as the list card (urgenceLot): red once the days are
+  // used up, amber on the last one.
+  const niveau = !mesure ? null : jours >= delai ? 'rouge' : jours >= delai - 1 ? 'ambre' : null
+  const retard = mesure ? jours - delai : 0
+
   return (
     <div className={cn(
       'rounded-xl border bg-card shadow-sm p-4 border-l-4',
-      valide ? (rcDus.length ? 'border-l-amber-400/70' : 'border-l-green-500/60')
-        : prealables.length ? 'border-l-amber-400/70' : 'border-l-green-500/60',
+      niveau === 'rouge' ? 'border-l-red-500'
+        : niveau === 'ambre' ? 'border-l-amber-500'
+          : valide ? (rcDus.length ? 'border-l-amber-500' : 'border-l-green-500/60')
+            : 'border-l-border',
     )}>
-      <div className="flex items-center gap-2 mb-2">
-        <ShieldCheck className="h-4 w-4 text-accent" />
-        <h2 className="text-sm font-semibold">{valide ? 'Lot validé' : 'Avant validation'}</h2>
-      </div>
+      {!valide && tete && (
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
+            <EtapeIcon className={cn('h-5 w-5', meta.iconColor)} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-base font-semibold leading-snug">{meta.label}</p>
+            <p className="text-xs text-muted-foreground truncate" title={tete.texte}>
+              {MAIN_LABEL[tete.main]}{tete.depuis ? ` · ${libelleDepuis(etape)} ${fmtJour(tete.depuis)}` : ''}
+            </p>
+          </div>
+          {mesure && (
+            <div className="flex-shrink-0 text-right">
+              <p className={cn(
+                'text-2xl font-bold tabular-nums leading-none',
+                niveau === 'rouge' ? 'text-red-600' : niveau === 'ambre' ? 'text-amber-600' : 'text-foreground',
+              )}>
+                {jours} j
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">sur {delai} j ouvrés</p>
+            </div>
+          )}
+        </div>
+      )}
 
-      {!valide && (prealables.length > 0 ? (
-        <ul className="space-y-1">
-          {prealables.map((p) => (
-            <li key={p} className="flex items-start gap-2 text-sm">
-              <CircleDashed className="h-4 w-4 flex-shrink-0 mt-0.5 text-amber-600" />
-              <span>{p}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
+      {mesure && (
+        <div className="mt-3">
+          <div className="flex gap-1">
+            {Array.from({ length: delai }, (_, i) => (
+              <div
+                key={i}
+                className={cn(
+                  'h-2 flex-1 rounded-full',
+                  i >= jours ? 'bg-zinc-200'
+                    : niveau === 'rouge' ? 'bg-red-500' : niveau === 'ambre' ? 'bg-amber-500' : 'bg-sky-500',
+                )}
+              />
+            ))}
+          </div>
+          {niveau && (
+            <p className={cn('mt-1.5 text-xs font-medium', niveau === 'rouge' ? 'text-red-700' : 'text-amber-700')}>
+              {niveau === 'ambre'
+                ? `Dernier jour demain : ${tete!.main === 'nous' ? 'à traiter' : `relancer ${tete!.main === 'client' ? 'le client' : 'l’ennoblisseur'}`}`
+                : `${tete!.main === 'nous' ? 'À traiter' : `Relancer ${tete!.main === 'client' ? 'le client' : 'l’ennoblisseur'}`}${retard > 0 ? ` : ${retard} j de retard` : ' aujourd’hui'}`}
+            </p>
+          )}
+        </div>
+      )}
+
+      {toutFait && !tete && (
         <p className="flex items-center gap-2 text-sm text-green-700">
           <CheckCircle2 className="h-4 w-4" />Tout est fait : le lot peut être validé.
         </p>
-      ))}
-      {valide && rcDus.length > 0 && (
+      )}
+      {valide && (rcDus.length > 0 ? (
         <p className="flex items-start gap-2 text-sm text-amber-800">
           <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
           <span>Rapport de contrôle à envoyer à {rcDus.map((c) => c.nom).join(', ')} : des pièces ont été affectées après la validation.</span>
         </p>
-      )}
-
-      {(avecColoris || stabilites.requise || stabilites.envoyee_le || clients.length > 0) && (
-        <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-          <div className="space-y-3">
-            {avecColoris && (
-              <SoumissionBloc titre="Soumission coloris (avant rame)" s={coloris}>
-                {coloris.reponse?.accepte && !recu && (
-                  okRamerLe
-                    ? <p className="text-sky-700">Validation du coloris transmise le {fmtJour(okRamerLe)}</p>
-                    : <p className="text-amber-700">Validation du coloris à transmettre à l’ennoblisseur</p>
-                )}
-              </SoumissionBloc>
-            )}
-            {(!avecColoris || stabilites.requise || stabilites.envoyee_le) && (
-              <SoumissionBloc titre={avecColoris ? 'Soumission stabilités' : 'Soumission'} s={stabilites} />
-            )}
-          </div>
-          <div className="space-y-1">
-            <p className="font-semibold text-muted-foreground uppercase tracking-wide text-[10px]">Rapport de contrôle</p>
-            {clients.length === 0 ? (
-              <p className="text-muted-foreground italic">Aucune pièce affectée à un client</p>
-            ) : clients.map((c) => (
-              <p key={c.idclient} className="flex items-baseline justify-between gap-2">
-                <span className="truncate">{c.nom} <span className="text-muted-foreground">· {c.pieces} pièce{c.pieces > 1 ? 's' : ''}</span></span>
-                <span className={cn('flex-shrink-0', c.du ? 'text-amber-700 font-medium' : 'text-muted-foreground')} title={c.dispense ?? undefined}>
-                  {c.du ? 'À envoyer' : c.dernierEnvoi ? `Envoyé le ${fmtJour(c.dernierEnvoi)}` : c.dispense ? 'Dispensé' : c.rcActif ? 'Envoyé avec le BL' : 'Facultatif'}
-                </span>
-              </p>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** One soumission in the « Avant validation » card. */
-function SoumissionBloc({ titre, s, children }: { titre: string; s: SoumissionLot; children?: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <p className="font-semibold text-muted-foreground uppercase tracking-wide text-[10px]">{titre}</p>
-      {!s.requise && !s.envoyee_le ? (
-        <p className="text-muted-foreground italic">Non demandée par le client</p>
-      ) : !s.envoyee_le ? (
-        <p className="text-amber-700">À envoyer</p>
       ) : (
-        <>
-          <p>Envoyée le {fmtJour(s.envoyee_le)}</p>
-          {s.reponse ? (
-            <p className={s.reponse.accepte ? 'text-green-700' : 'text-red-700'}>
-              {s.reponse.accepte ? 'Acceptée' : 'Refusée'} par le client
-              {s.reponse.le ? ` · saisi le ${fmtJourHeure(s.reponse.le)}` : ''}
-              {s.reponse.par ? ` par ${s.reponse.par}` : ''}
-              {s.reponse.commentaire ? <span className="block italic text-muted-foreground">« {s.reponse.commentaire} »</span> : null}
-            </p>
-          ) : (
-            <p className="text-violet-700">Réponse du client attendue</p>
-          )}
-        </>
-      )}
-      {children}
+        <p className="flex items-center gap-2 text-sm text-green-700">
+          <CheckCircle2 className="h-4 w-4" />Lot validé.
+        </p>
+      ))}
+
     </div>
   )
 }

@@ -34,7 +34,7 @@ import { mpsPg } from '../lib/mps-pg.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import {
-  cleLot, etapeLot, lireCommandesEnnoblissement, prealablesValidation, urgenceLot, type EtapeLot, type LotFait, type SoumissionFait,
+  cleLot, depuisEtape, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, prealableAttendu, prealablesDetail, urgenceLot, type Prealable, type EtapeLot, type LotFait, type SoumissionFait,
 } from '../lib/cycle-ennoblissement.js'
 import { enregistrerOkRamer, type NatureSoumission } from '../lib/soumission-lot.js'
 import { findEligibleLots } from './commandes-sous-traitant.js'
@@ -126,7 +126,7 @@ function cleanText(value: unknown): string {
 // lib/cycle-ennoblissement.ts from the same facts as Sous-traitants ›
 // Ennoblissement, so both screens always agree.
 
-interface EtapeDuLot { etape: EtapeLot; prealables: string[]; fait: LotFait }
+interface EtapeDuLot { etape: EtapeLot; prealables: string[]; detail: Prealable[]; fait: LotFait }
 
 /** The cycle facts of the given lots, read per dye order. */
 async function etapesDesLots(lots: Array<{ id: number; cmd: number }>): Promise<Map<number, EtapeDuLot>> {
@@ -138,7 +138,8 @@ async function etapesDesLots(lots: Array<{ id: number; cmd: number }>): Promise<
   for (const c of faits.values()) {
     for (const f of c.lots) {
       if (!voulus.has(f.idsuivilot)) continue
-      out.set(f.idsuivilot, { etape: etapeLot(f), prealables: prealablesValidation(f), fait: f })
+      const detail = prealablesDetail(f)
+      out.set(f.idsuivilot, { etape: etapeLot(f), prealables: detail.map((p) => p.texte), detail, fait: f })
     }
   }
   // An open action qualité on the lot's line waits for a person's verdict
@@ -149,7 +150,10 @@ async function etapesDesLots(lots: Array<{ id: number; cmd: number }>): Promise<
     const sansVerdict = await actionsSansVerdict(recus.map((e) => ({ idsuivilot: e.fait.idsuivilot, ligne: Number(e.fait.idligne) })))
     for (const e of recus) {
       const phrase = prealableActions(sansVerdict.get(e.fait.idsuivilot) ?? [])
-      if (phrase) e.prealables.push(phrase)
+      if (phrase) {
+        e.prealables.push(phrase)
+        e.detail.push({ texte: phrase, etape: null, main: 'nous' })
+      }
     }
   }
   return out
@@ -757,9 +761,28 @@ async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: st
     ligneId > 0 && lot.trim() ? clientsDesLots([{ ligne: ligneId, lot }]) : Promise.resolve(new Map<string, ClientDuLot[]>()),
   ])
   const f = e?.fait
+  const t = new Date()
+  const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+  // The card says one thing: the step the flow waits for and since when, against
+  // the days it gets (Vincent 2026-11-05: 2 days in « contrôle ennoblisseur » is
+  // fine, 5 is a problem). The full list stays behind « Valider le lot ».
+  // Nothing left: the lot waits for « Valider le lot », ours, still in its control window.
+  const attendu = e && e.etape !== 'valide'
+    ? prealableAttendu(e.etape, e.detail) ?? { texte: 'Valider le lot', etape: e.etape, main: 'nous' as const }
+    : null
+  const fenetre = f && e && attendu?.etape === e.etape ? depuisEtape(f, e.etape) : null
   return {
     etape: e?.etape ?? null,
     prealables: e?.prealables ?? [],
+    attendu: attendu
+      ? {
+        texte: attendu.texte,
+        main: attendu.main,
+        depuis: fenetre?.depuis ?? null,
+        jours: fenetre ? joursOuvresDepuis(fenetre.depuis, today) : null,
+        delai: fenetre?.delai ?? null,
+      }
+      : null,
     recu: !!f?.reception,
     soumissions: { coloris: soumissionDuDetail(f?.coloris), stabilites: soumissionDuDetail(f?.stabilites) },
     ok_ramer_le: f?.okRamerLe ?? null,

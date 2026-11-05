@@ -88,6 +88,7 @@ import {
   RefusClientDialog,
   natureEnAttente,
   SANS_SOUMISSIONS,
+  type AttenduLot,
   type ClientRc,
   type EtapeLot,
   type GesteLot,
@@ -222,6 +223,8 @@ interface SuiviLotDetail {
   etape?: EtapeLot | null
   /** What still blocks « Valider le lot », in order. */
   prealables?: string[]
+  /** The step the flow waits for and since when (2026-11-05). */
+  attendu?: AttenduLot | null
   /** The lot came back from the dyer (false: it exists through its coloris soumission, LIVA #1313). */
   recu?: boolean
   /** Coloris (before the stenter) and stabilités soumissions (LIVA #1313). */
@@ -1750,9 +1753,7 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
         <CycleCard
           etape={detail.etape}
           prealables={detail.prealables ?? []}
-          soumissions={detail.soumissions ?? SANS_SOUMISSIONS}
-          okRamerLe={detail.ok_ramer_le ?? null}
-          recu={detail.recu ?? true}
+          attendu={detail.attendu}
           clients={detail.clients_rc ?? []}
         />
       )}
