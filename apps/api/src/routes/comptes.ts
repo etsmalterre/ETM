@@ -29,7 +29,7 @@ import { annulerCodePoste, codesPosteEnAttente, genererCodePoste } from '../lib/
 import { listerAppareils, listerCodes, typeAppareil } from '../lib/appareils-atelier.js'
 import { selectBonnetiers } from '../lib/production-trm.js'
 import { APPS, appsDe, appsParUtilisateur, ecrireApps, oublierApps, refusApps, type AppCode } from '../lib/utilisateur-apps.js'
-import { refusAppsDuType, TYPES_COMPTE, type TypeCompte } from '../lib/types-compte.js'
+import { appDeLAppareil, refusAppsDuType, TYPES_COMPTE, type TypeCompte } from '../lib/types-compte.js'
 
 export const comptesRouter: RouterType = Router()
 
@@ -55,7 +55,8 @@ interface LigneCompte {
 const iso = (d: Date | null) => d?.toISOString() ?? null
 
 /** `apps` null = membership unknown (migration 0004 pending): both apps. */
-function versJson(r: LigneCompte, apps: Map<number, AppCode[]> | null, telephones: Map<number, number>) {
+function versJson(r: LigneCompte, apps: Map<number, AppCode[]> | null, telephones: Map<number, Telephones>) {
+  const tel = telephones.get(r.idutilisateur)
   return {
     IDutilisateur: r.idutilisateur,
     prenom: r.prenom,
@@ -71,7 +72,10 @@ function versJson(r: LigneCompte, apps: Map<number, AppCode[]> | null, telephone
     derniereConnexion: iso(r.derniere_connexion),
     sessions: r.sessions,
     /** Enrolled PCs + phones + pointeuses — the « Appareils » tab. */
-    appareils: r.postes + (telephones.get(r.idutilisateur) ?? 0),
+    appareils: r.postes + (tel?.nombre ?? 0),
+    /** The companies its phones / pointeuses / lab tablets work for — where
+     *  Utilisateurs lists an appareils account (lib/types-compte.ts). */
+    appsAppareils: tel ? [...tel.apps].sort() : [],
     apps: apps ? apps.get(r.idutilisateur) ?? [] : APPS,
   }
 }
@@ -82,10 +86,17 @@ async function unCompte(id: number) {
   return c ? versJson(c, await appsParUtilisateur(), await telephonesParCompte()) : null
 }
 
-/** Phones + pointeuses enrolled per account (lib/appareils-atelier.ts store). */
-async function telephonesParCompte(): Promise<Map<number, number>> {
-  const m = new Map<number, number>()
-  for (const a of await listerAppareils()) m.set(a.IDutilisateur, (m.get(a.IDutilisateur) ?? 0) + 1)
+interface Telephones { nombre: number; apps: Set<'etm' | 'trm'> }
+
+/** Phones, pointeuses and lab tablets enrolled per account (lib/appareils-atelier.ts store). */
+async function telephonesParCompte(): Promise<Map<number, Telephones>> {
+  const m = new Map<number, Telephones>()
+  for (const a of await listerAppareils()) {
+    const t = m.get(a.IDutilisateur) ?? { nombre: 0, apps: new Set<'etm' | 'trm'>() }
+    t.nombre++
+    t.apps.add(appDeLAppareil(typeAppareil(a)))
+    m.set(a.IDutilisateur, t)
+  }
   return m
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { enrolementsPossibles, refusAppsDuType } from './types-compte.js'
+import { appDeLAppareil, enrolementsPossibles, refusAppsDuType } from './types-compte.js'
 
 describe('enrolementsPossibles', () => {
   it('a poste enrols PCs only — never a phone carrying its screens', () => {
@@ -26,6 +26,12 @@ describe('refusAppsDuType', () => {
   it('an appareils account holds none', () => {
     expect(refusAppsDuType('appareils', [])).toBeNull()
     expect(refusAppsDuType('appareils', ['etm'])).toMatch(/aucune application/)
+  })
+
+  it('a device works for TRM, the lab tablet for ETM', () => {
+    expect(appDeLAppareil('atelier')).toBe('trm')
+    expect(appDeLAppareil('pointeuse')).toBe('trm')
+    expect(appDeLAppareil('tirelle')).toBe('etm')
   })
 
   it('the console is never enough on its own, and never for a poste', () => {

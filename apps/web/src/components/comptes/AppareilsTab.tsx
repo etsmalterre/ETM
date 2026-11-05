@@ -340,9 +340,9 @@ export function AppareilsTab({ compte }: { compte: Compte }) {
 
           <p className="text-xs text-muted-foreground">
             {types.length === 0
-              ? 'Rien ne s’enrôle sous ce compte : un PC s’enrôle sous un compte de poste, un téléphone ou une pointeuse sous un compte d’appareils d’atelier.'
+              ? 'Rien ne s’enrôle sous ce compte : un PC s’enrôle sous un compte de poste, un téléphone, une pointeuse ou la tablette du labo sous un compte d’appareils d’atelier.'
               : compte.typeCompte === 'appareils'
-                ? 'Un appareil enrôlé ici n’ouvre que sa propre application (atelier ou pointeuse), jamais l’ERP : ce compte n’a ni écrans ni droits. Le révoquer le déconnecte aussitôt : il faudra un nouveau code, saisi sur place, pour l’enrôler à nouveau.'
+                ? 'Un appareil enrôlé ici n’ouvre que sa propre application (atelier, pointeuse ou tablette du labo), jamais l’ERP : ce compte n’a ni écrans ni droits. Le révoquer le déconnecte aussitôt : il faudra un nouveau code, saisi sur place, pour l’enrôler à nouveau.'
                 : 'Un appareil enrôlé agit sous ce compte, avec ses écrans et ses permissions, sans mot de passe. Le révoquer le déconnecte aussitôt : il faudra un nouveau code, saisi sur place, pour l’enrôler à nouveau.'}
           </p>
         </div>

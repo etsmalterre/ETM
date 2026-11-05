@@ -53,6 +53,10 @@ export interface Compte {
   sessions: number
   /** Enrolled PCs + phones + pointeuses — the « Appareils » tab. */
   appareils: number
+  /** Companies its phones / pointeuses / lab tablets work for (TRM / ETM).
+   *  An appareils account is listed there, or in both while it has none.
+   *  Optional: an API older than this field lists it in both. */
+  appsAppareils?: Array<'etm' | 'trm'>
   /** The apps it belongs to — each app's Utilisateurs screen lists its members. */
   apps: AppMembre[]
 }

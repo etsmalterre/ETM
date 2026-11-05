@@ -28,6 +28,14 @@ export function enrolementsPossibles(type: TypeCompte, apps: readonly AppCode[])
   return apps.includes('trm') ? ['atelier', 'pointeuse'] : []
 }
 
+/** The company a device kind works for: phones and pointeuses at TRM, the
+ *  lab tablet (apps/tirelle) at ETM. An appareils account belongs to no app;
+ *  Utilisateurs lists it under the company of its devices (both while it has
+ *  none, so it shows wherever it was just created). */
+export function appDeLAppareil(type: 'atelier' | 'pointeuse' | 'tirelle'): 'etm' | 'trm' {
+  return type === 'tirelle' ? 'etm' : 'trm'
+}
+
 /** Why this account cannot hold `apps`, or null. An appareils account holds
  *  none; the others at least one company (to shut one out of both, deactivate
  *  it), a poste never the console. */

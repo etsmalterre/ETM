@@ -96,9 +96,10 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
               hideEmpty
               options={[
                 { id: 1, primary: 'Personne', description: 'Se connecte avec un identifiant et un mot de passe.' },
-                { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code. Ses écrans et ses droits sont ceux du compte.' },
-                // Devices are TRM's: ETM's screen does not list such an account.
-                ...(app === 'trm' ? [{ id: 4 as const, primary: 'Appareils d’atelier', description: 'Téléphones et pointeuses qui ont leur propre application. Aucun accès à l’ERP.' }] : []),
+                { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code. Ses écrans et ses droits sont ceux du compte. Une tablette ou un téléphone va sous « Appareils d’atelier ».' },
+                // Member of no company: both screens offer and list it (phones and
+                // pointeuses run at TRM, the lab tablet at ETM).
+                { id: 4, primary: 'Appareils d’atelier', description: 'Téléphones, pointeuses et tablette du labo, qui ont leur propre application. Aucun accès à l’ERP.' },
                 { id: 3, primary: 'Compte existant', description: 'Une personne qui a déjà un compte dans l’autre application.' },
               ]}
             />

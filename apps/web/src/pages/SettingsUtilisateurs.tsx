@@ -197,6 +197,13 @@ function isVincent(u: PermissionUser): boolean {
   )
 }
 
+/** Whether this app's screen lists an appareils account: under the company
+ *  its devices work for, in both while it has none (API `appsAppareils`). */
+function listeAppareils(c: Compte, app: string): boolean {
+  const apps = c.appsAppareils ?? []
+  return apps.length === 0 || (apps as string[]).includes(app)
+}
+
 // ── Page ───────────────────────────────────────────────
 
 export function SettingsUtilisateurs({
@@ -236,12 +243,13 @@ export function SettingsUtilisateurs({
   const isLoading = usersLoading || comptesLoading
 
   // This app's members only — the other company's users live in its own
-  // screen. Appareils accounts belong to no app; their devices are TRM's, so
-  // only TRM's screen lists them.
+  // screen. Appareils accounts belong to no app: each is listed under the
+  // company of its devices (phones / pointeuses → TRM, lab tablet → ETM), and
+  // in both while it has none — so it stays visible where it was created.
   const users = useMemo(
     () => (allUsers ?? []).filter((u) => {
       const c = compteById.get(u.IDutilisateur)
-      return !!c && (c.apps.includes(app) || (c.typeCompte === 'appareils' && app === 'trm'))
+      return !!c && (c.apps.includes(app) || (c.typeCompte === 'appareils' && listeAppareils(c, app)))
     }),
     [allUsers, compteById, app],
   )
