@@ -30,8 +30,6 @@ import { ouvrirReprise, reprisesDuLot, RepriseRefusee } from '../lib/reprises.js
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { finiCommandeParClientEtiquettes, lotColoriId } from './etiquettes-sp.js'
 import { z } from 'zod'
-import React from 'react'
-import { renderToBuffer } from '@react-pdf/renderer'
 import { mpsPg } from '../lib/mps-pg.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
@@ -41,7 +39,7 @@ import {
 import { enregistrerOkRamer, type NatureSoumission } from '../lib/soumission-lot.js'
 import { findEligibleLots } from './commandes-sous-traitant.js'
 import { clientsDesLots, cleLotLigne, journaliserEnvoiRc, rapportControleLot, type ClientDuLot, type RapportControleLot } from '../lib/rapport-controle-lot.js'
-import { RapportControlePdf } from '../lib/pdf/RapportControlePdf.js'
+import { nomFichierRc, renderRapportControle } from '../lib/rc-soumission.js'
 import { CONTROLES_PAR_DEFAUT } from '../lib/controles-lot.js'
 import {
   CHAMPS_VRILLAGE, ecrireVrillages, lireSaisieVrillage, VrillageInvalide, vrillagesDuLot,
@@ -1341,15 +1339,8 @@ suiviLotsRouter.post('/:id/ok-ramer/email', async (req: Request, res: Response) 
 //   GET  /suivi-lots/:id/rapport-controle/email-defaults?client=
 //   POST /suivi-lots/:id/rapport-controle/email { client, to, … }
 
-async function renderRcBuffer(rc: RapportControleLot): Promise<Buffer> {
-  return renderToBuffer(
-    React.createElement(RapportControlePdf, { data: rc.data }) as unknown as React.ReactElement<
-      import('@react-pdf/renderer').DocumentProps
-    >,
-  )
-}
-
-const rcFilename = (rc: RapportControleLot) => `rapport-controle-${rc.lot.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`
+const renderRcBuffer = renderRapportControle
+const rcFilename = nomFichierRc
 
 async function rcDepuisRequete(req: Request, res: Response, client: unknown): Promise<RapportControleLot | null> {
   const id = parseInt(req.params.id, 10)

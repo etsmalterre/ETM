@@ -551,7 +551,9 @@ export function SendEmailDialog({
         body: CORPS_RICHE + (body || '<p>[Faux envoi dev — pas de corps]</p>'),
         attachPdf: false,
         userAttachments: [],
-        optionalAttachments: {},
+        // The ticks travel like a real send, so a fake one runs the same side
+        // effects (the RC journaled with a soumission, LIVA #1349); nothing is sent.
+        optionalAttachments: Object.fromEntries(visibleOptional.map((a) => [a.id, optionalChecked[a.id] === true])),
         devSkipSend: true,
       })
       setSuccessMessage('Faux envoi enregistré (statut mis à jour, aucun email réel envoyé)')
@@ -561,7 +563,7 @@ export function SendEmailDialog({
     } finally {
       setIsSending(false)
     }
-  }, [subject, body, onSend, onClose])
+  }, [subject, body, onSend, onClose, visibleOptional, optionalChecked])
 
   // ── Preview resolution ───────────────────────────────
   // Resolve what the right-pane viewer should render based on previewedId.

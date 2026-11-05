@@ -803,6 +803,14 @@ export function QualiteSuiviLots() {
           loadDefaults={() => apiFetch(`/commandes-sous-traitant/${soumissionLot.cmd}/soumission/email-defaults?${buildSoumissionLotQuery(soumissionLot.lot, soumissionLot.nature)}`)}
           pdfUrl={`${API_URL}/commandes-sous-traitant/${soumissionLot.cmd}/soumission/pdf?${buildSoumissionLotQuery(soumissionLot.lot, soumissionLot.nature)}`}
           pdfAttachmentLabel={`soumission-${soumissionLot.nature === 'coloris' ? 'coloris' : 'lot'}-${soumissionLot.lot.lot}.pdf`}
+          // The client's rapport de contrôle rides with a stabilités soumission
+          // (LIVA #1349): the server lists it only when the client is owed it.
+          optionalServerAttachments={soumissionLot.nature === 'stabilites' && selectedId !== null && detail?.lot === soumissionLot.lot.lot ? [{
+            id: 'rapport-controle',
+            label: `rapport-controle-${soumissionLot.lot.lot}.pdf`,
+            url: `${API_URL}/suivi-lots/${selectedId}/rapport-controle/pdf?client=${soumissionLot.lot.IDclient}`,
+            defaultChecked: false,
+          }] : undefined}
           onSend={async (p) => {
             await postEmail(`${API_URL}/commandes-sous-traitant/${soumissionLot.cmd}/soumission/email`, p, {
               includeAttachPdf: true,
@@ -812,6 +820,7 @@ export function QualiteSuiviLots() {
                 lot: soumissionLot.lot.lot,
                 commande_client: soumissionLot.lot.IDcommande_client,
                 nature: soumissionLot.nature,
+                attach_rc: p.optionalAttachments?.['rapport-controle'] === true,
               },
             })
             // The lot moves to « soumis » here and on the dye order (a coloris one is created).

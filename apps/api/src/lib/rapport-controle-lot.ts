@@ -12,8 +12,10 @@
 //    is OWED one while it holds pieces of the lot — shipped or not (#1351,
 //    decision Vincent 2026-11-05: the RC blocks the lot's validation, never the
 //    shipment, since a reference shipped « dès la réception » leaves before its
-//    controls) — and has had no RC for the lot since the lot's last return from
-//    reprise (the measures changed). Owed RCs block « Valider le lot »
+//    controls) — and has had no RC for the lot since its latest reprise was
+//    opened (opening erases both controls: the measures changed; to the
+//    minute since #1349, a same-day RC sent before the reprise counted).
+//    Owed RCs block « Valider le lot »
 //    (lib/cycle-ennoblissement.ts); on an already validated lot they are a
 //    task, the lot never goes back.
 //  - Pieces shipped before RC_HORS_BL_DEPUIS are past: those shipments carried
@@ -24,7 +26,6 @@
 // Every send is a row of rapport_controle_envoi (migration 0029), append-only.
 
 import { mpsPg } from './mps-pg.js'
-import { faitsReprises } from './reprises.js'
 import type { RapportControlePdfData } from './pdf/RapportControlePdf.js'
 
 export interface ClientDuLot {
@@ -73,13 +74,18 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
       LEFT JOIN expedition e ON e.idexpedition = le.idexpedition
       WHERE sf.idref_commande_source = ANY(${lignes}) AND sf.idligne_commande_client > 0
         AND COALESCE(sf.idcommande_donation, 0) = 0`,
-    sql<{ ligne: number; lot: string; idclient: number; dernier: string; jour: string }[]>`
+    sql<{ ligne: number; lot: string; idclient: number; dernier: string; ts: string }[]>`
       SELECT idligne_commande_sous_traitant AS ligne, lot, idclient,
              to_char(max(envoye_le) AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD HH24:MI') AS dernier,
-             to_char(max(envoye_le) AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS jour
+             to_char(max(envoye_le) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS ts
       FROM rapport_controle_envoi WHERE idligne_commande_sous_traitant = ANY(${lignes})
       GROUP BY 1, 2, 3`,
-    faitsReprises(lignes),
+    // When the latest reprise of each lot was opened (a row without its opening
+    // date counts from its return).
+    sql<{ ligne: number; lot: string; ts: string | null }[]>`
+      SELECT idligne_commande_sous_traitant AS ligne, trim(lot) AS lot,
+             to_char(max(COALESCE(envoye_le, retour_le)) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS ts
+      FROM reprise WHERE idligne_commande_sous_traitant = ANY(${lignes}) GROUP BY 1, 2`,
     sql<{ ligne: number; lot: string; idclient: number; motif: string }[]>`
       SELECT idligne_commande_sous_traitant AS ligne, lot, idclient, motif
       FROM rapport_controle_dispense WHERE idligne_commande_sous_traitant = ANY(${lignes})`,
@@ -103,18 +109,24 @@ export async function clientsDesLots(lots: Array<{ ligne: number; lot: string }>
     if (!r.expedie || !r.avec_bl) c.piecesARapporter++
     clients.set(id, c)
   }
+  const repriseDepuis = new Map(reprises.filter((r) => r.ts).map((r) => [cleLotLigne(Number(r.ligne), r.lot), r.ts!]))
   for (const [cle, clients] of parCle) {
-    const retour = reprises.get(cle)?.dernierRetour ?? null
+    const reprise = repriseDepuis.get(cle) ?? null
     const liste = [...clients.values()].map((c) => {
       const envoi = envoiPar.get(`${cle}:${c.idclient}`)
-      // An RC sent before the lot came back from reprise reported the old dye.
-      const valable = envoi && (!retour || envoi.jour >= retour)
+      const valable = !!envoi && rcValable(envoi.ts, reprise)
       const dispense = dispensePar.get(`${cle}:${c.idclient}`) ?? null
       return { ...c, dernierEnvoi: envoi?.dernier ?? null, dispense, du: c.rcActif && c.piecesARapporter > 0 && !valable && !dispense }
     })
     out.set(cle, liste.sort((a, b) => a.nom.localeCompare(b.nom, 'fr')))
   }
   return out
+}
+
+/** An RC sent at `envoi` still reports the lot: no reprise opened since.
+ *  Both 'YYYY-MM-DD HH:MM:SS.ffffff' UTC. Pure. */
+export function rcValable(envoi: string, repriseOuverteLe: string | null): boolean {
+  return !repriseOuverteLe || envoi > repriseOuverteLe
 }
 
 // ── The document ────────────────────────────────────────

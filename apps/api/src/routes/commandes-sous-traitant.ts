@@ -88,6 +88,8 @@ import { uniteLabel } from './expeditions.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
+import { journaliserEnvoiRc } from '../lib/rapport-controle-lot.js'
+import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PIECE_RC, rcPourSoumission, renderRapportControle } from '../lib/rc-soumission.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
@@ -2687,6 +2689,8 @@ interface EmailDefaultsPayload {
   numero: string
   /** Pre-filled Cc addresses (the dialog hydrates its Cc field from this). */
   cc?: string[]
+  /** The dialog's tickable attachments (the RC on a stabilités soumission, LIVA #1349). */
+  optional_attachments?: Array<{ id: string; default_checked: boolean }>
 }
 
 async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | null> {
@@ -4041,6 +4045,11 @@ async function buildSoumissionEmailDefaults(
   const ccFixed = await fixEncoding(ccRows as any[], 'commande_client', 'IDcommande_client', ['ref_client'])
   const refCommandeClient = ((ccFixed[0] as any)?.ref_client ?? '').toString().trim()
 
+  // The client's RC rides with a stabilités soumission (LIVA #1349, lib/rc-soumission.ts).
+  const rc = lot.kind === 'received'
+    ? await rcPourSoumission({ commandeId, ligneId: lot.ligneId, lot: lotString, idclient: lot.IDclient, nature: params.nature })
+    : null
+
   const coloris = params.nature === 'coloris'
   const subject = `Soumission ${coloris ? 'coloris' : 'Lot'} ${lotString} - ${lot.ref_malterre}${lot.coloris_reference ? ` · ${lot.coloris_reference}` : ''}${refCommandeClient ? ` · ${refCommandeClient}` : ''}`
   const body = coloris
@@ -4055,6 +4064,7 @@ async function buildSoumissionEmailDefaults(
       `Veuillez trouver ci-joint la soumission du lot ${lotString} pour la référence ${lot.client_designation || lot.ref_malterre}${lot.coloris_reference ? ` (coloris ${lot.coloris_reference})` : ''}.\n\n` +
       (refCommandeClient ? `Réf commande client : ${refCommandeClient}\n\n` : '') +
       `Un échantillon est joint au document imprimé.\n\n` +
+      (rc ? `${PHRASE_RC_SOUMISSION}\n\n` : '') +
       `Cordialement,`
 
   return {
@@ -4064,6 +4074,8 @@ async function buildSoumissionEmailDefaults(
     sousTraitantNom: lot.client_nom, // reuse the field — the email dialog displays it as contextLabel
     numero: lotString,
     cc: cc.length > 0 ? cc : undefined,
+    // Always sent: an absent list would show the dialog's RC chip on every soumission.
+    optional_attachments: rc ? [{ id: PIECE_RC, default_checked: true }] : [],
   }
 }
 
@@ -4099,6 +4111,8 @@ const soumissionEmailBody = z.object({
   lot: z.string().min(1).max(200),
   commande_client: z.number().int().positive(),
   nature: z.enum(['coloris', 'stabilites']).optional(),
+  /** The client's RC ticked in the dialog (LIVA #1349); attached only when it applies. */
+  attach_rc: z.boolean().optional(),
   // Dev-only — see emailBody for semantics.
   dev_skip_send: z.boolean().optional(),
 })
@@ -4138,11 +4152,15 @@ commandesSousTraitantRouter.post('/:id/soumission/email', async (req: Request, r
 
     // Dev-only fake send — see the bon-de-commande endpoint above.
     const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
+    // The client's RC, when ticked and still owed (LIVA #1349, lib/rc-soumission.ts).
+    const rc = parsed.data.attach_rc === true && candidat.kind === 'received'
+      ? await rcPourSoumission({ commandeId: id, ligneId: candidat.ligneId, lot: lotParams.lot, idclient: candidat.IDclient, nature: lotParams.nature })
+      : null
 
     let messageId: string
     if (devSkip) {
       messageId = `dev-skip-${Date.now()}`
-      console.log(`[dev-skip-send] soumission #${id} lot=${parsed.data.lot} — fake send to ${parsed.data.to.join(', ')}`)
+      console.log(`[dev-skip-send] soumission #${id} lot=${parsed.data.lot}${rc ? ' + rapport de contrôle' : ''} — fake send to ${parsed.data.to.join(', ')}`)
     } else {
       const senderEmail = await getUserEmail(req.userId)
       if (!senderEmail) {
@@ -4175,6 +4193,7 @@ commandesSousTraitantRouter.post('/:id/soumission/email', async (req: Request, r
           contentType: 'application/pdf',
         })
       }
+      if (rc) attachments.push({ filename: nomFichierRc(rc), content: await renderRapportControle(rc), contentType: 'application/pdf' })
       for (const a of parsed.data.extra_attachments ?? []) {
         attachments.push({
           filename: a.filename,
@@ -4193,6 +4212,19 @@ commandesSousTraitantRouter.post('/:id/soumission/email', async (req: Request, r
         body: parsed.data.body,
         attachments: attachments.length > 0 ? attachments : undefined,
       })
+    }
+
+    // The RC left with the soumission: it counts as sent to the client only when
+    // the client is in copy (lib/rc-soumission.ts). A fake send counts, to test the cycle.
+    if (rc) {
+      try {
+        const dest = [...parsed.data.to, ...(parsed.data.cc ?? [])]
+        if (devSkip || clientEnCopie(dest, await adressesDuClient(rc.idclient))) {
+          await journaliserEnvoiRc(rc, { id: req.userId, nom: await nomUtilisateur(req.userId) }, dest)
+        }
+      } catch (err) {
+        console.error(`RC journal failed for commande=${id} lot=${lotParams.lot}:`, err)
+      }
     }
 
     // Audit: log one envoi_email row per recipient (to+cc). The legacy
