@@ -209,9 +209,8 @@ function CarteLot({ lot, actif, onClick, droite }: { lot: LotLabo; actif: boolea
           {hors && <AlertTriangle className="h-4 w-4 text-destructive self-center" aria-label="Mesure hors tolérance" />}
         </div>
         <p className="text-sm truncate">{article(lot) || '—'}</p>
-        <p className="text-xs text-muted-foreground truncate">
-          {rouge ? `Repris : ${lot.a_jeter?.motif || 'reprise'}` : [lot.sous_traitant, lot.reception && `reçu le ${jour(lot.reception)}`].filter(Boolean).join(' · ')}
-        </p>
+        {/* Dyer and reception date are on the open lot's title, not on the card. */}
+        {rouge && <p className="text-xs text-muted-foreground truncate">Repris : {lot.a_jeter?.motif || 'reprise'}</p>}
       </div>
       {droite}
     </div>
@@ -230,7 +229,7 @@ function DetailLot({ lot, onFermer, onFait }: {
   // After the wash: reopen the round's measures in place of the square's.
   const [corriger, setCorriger] = useState(false)
   return (
-    <div className="flex-1 min-h-0 flex flex-col gap-3">
+    <div className="flex-1 min-w-0 min-h-0 flex flex-col gap-2">
       {/* The selected lot, straight on the grey: it is the detail of the card
           picked on the left, not a window — no band, no close button (another
           card is picked instead). The back arrow exists only in one column. */}
@@ -238,13 +237,13 @@ function DetailLot({ lot, onFermer, onFait }: {
         <button type="button" onClick={onFermer} className="h-11 w-11 -ml-1 rounded-xl flex items-center justify-center active:bg-zinc-200/60 min-[900px]:hidden" title="Retour à la liste">
           <ArrowLeft className="h-6 w-6" />
         </button>
-        <div className="min-w-0 flex-1 flex items-baseline gap-3">
-          <h2 className="flex-shrink-0 text-3xl font-heading font-bold tracking-tight tabular-nums">{lot.lot}</h2>
-          <p className="min-w-0 truncate text-base">
-            {article(lot) || '—'}
-            <span className="text-muted-foreground">
-              {[lot.sous_traitant, lot.reception && `reçu le ${jour(lot.reception)}`].filter(Boolean).map((t) => ` · ${t}`).join('')}
-            </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-3">
+            <h2 className="flex-shrink-0 text-3xl leading-9 font-heading font-bold tracking-tight tabular-nums">{lot.lot}</h2>
+            <p className="min-w-0 truncate text-base">{article(lot) || '—'}</p>
+          </div>
+          <p className="truncate text-sm text-muted-foreground">
+            {[lot.sous_traitant, lot.reception && `reçu le ${jour(lot.reception)}`].filter(Boolean).join(' · ') || '—'}
           </p>
         </div>
         <span className={cn(
@@ -256,7 +255,7 @@ function DetailLot({ lot, onFermer, onFait }: {
       </div>
       {/* Only the step to do now, filling the pane; its button sits at the
           bottom, at the same place for every lot. */}
-      <div className="flex-1 min-h-0 flex flex-col gap-3">
+      <div className="flex-1 min-h-0 flex flex-col gap-2">
         {lot.etape === 'a_jeter' ? (
           <BlocJeter lot={lot} onFait={() => onFait(false)} />
         ) : lot.etape === 'avant_lavage' ? (
@@ -282,24 +281,38 @@ function DetailLot({ lot, onFermer, onFait }: {
   )
 }
 
-/** The step: its cards scroll on the grey background, `pied` stays at the bottom. */
+/** The step: its cards on the grey background, `pied` stays at the bottom.
+ *  Sized to fit a Galaxy Tab A9 in landscape (1005 × 600) without scrolling;
+ *  the scroll is only a fallback for a smaller screen. */
 function Etape({ pied, children }: { pied: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex-1 min-h-0 flex flex-col gap-3">
+    <div className="flex-1 min-w-0 min-h-0 flex flex-col gap-2">
       {/* p-1 -m-1: room for the inputs' focus ring inside the scroll clip. */}
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent space-y-3 p-1 -m-1">{children}</div>
-      <div className="flex-shrink-0 space-y-3">{pied}</div>
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent space-y-2 p-1 -m-1">{children}</div>
+      <div className="flex-shrink-0 space-y-2">{pied}</div>
     </div>
+  )
+}
+
+/** What to do now: the instruction itself, no title row (it is the step's first card). */
+function Consigne({ icone: Icone = ClipboardList, children }: { icone?: typeof Scissors; children: ReactNode }) {
+  return (
+    <section className="flex items-start gap-3 rounded-xl border border-border/60 bg-card px-4 py-2.5 shadow-sm">
+      <div className="icon-box-gold h-7 w-7 rounded-lg flex items-center justify-center flex-shrink-0">
+        <Icone className="h-4 w-4" />
+      </div>
+      <div className="min-w-0 flex-1 space-y-2 text-base">{children}</div>
+    </section>
   )
 }
 
 /** One group of the step (what to do, the measures, the coloris…): a white card. */
 function Bloc({ titre, icone: Icone, children }: { titre: string; icone: typeof Scissors; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-border/60 bg-card p-4 shadow-sm space-y-3">
+    <section className="rounded-xl border border-border/60 bg-card px-4 py-2.5 shadow-sm space-y-2">
       <div className="flex items-center gap-2.5">
-        <div className="icon-box-gold h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0">
-          <Icone className="h-[18px] w-[18px]" />
+        <div className="icon-box-gold h-7 w-7 rounded-lg flex items-center justify-center flex-shrink-0">
+          <Icone className="h-4 w-4" />
         </div>
         <h3 className="text-base font-semibold text-primary">{titre}</h3>
       </div>
@@ -318,7 +331,7 @@ function RecapAvantLavage({ lot, onCorriger }: { lot: LotLabo; onCorriger: () =>
   if (demande('poids')) parts.push({ k: 'poids', texte: `poids ${fmt(m.poids || null) || '—'} g/m²` })
   if (demande('coloris') && m.coloris) parts.push({ k: 'coloris', texte: m.coloris === 'ecart' ? 'écart de coloris' : 'coloris conforme' })
   return (
-    <div className="flex-shrink-0 flex items-center gap-3 rounded-xl border border-border/60 bg-white px-4 py-2 shadow-sm">
+    <div className="flex-shrink-0 flex items-center gap-3 rounded-xl border border-border/60 bg-white px-4 py-1 shadow-sm">
       <CheckCircle2 className="h-5 w-5 text-success flex-shrink-0" />
       <p className="min-w-0 flex-1 text-base truncate">
         <span className="font-semibold">Avant lavage</span>
@@ -351,7 +364,7 @@ function BoutonAction({ enCours, disabled, onClick, icone: Icone, children, ton 
       disabled={disabled || enCours}
       onClick={onClick}
       className={cn(
-        'w-full h-16 rounded-xl text-xl font-semibold flex items-center justify-center gap-2 active:opacity-90 disabled:opacity-40',
+        'w-full h-14 rounded-xl text-xl font-semibold flex items-center justify-center gap-2 active:opacity-90 disabled:opacity-40',
         ton === 'gold' && 'bg-gold text-gold-foreground',
         ton === 'rouge' && 'bg-destructive text-white',
         ton === 'neutre' && 'border border-border bg-background',
@@ -413,17 +426,17 @@ function BlocAvantLavage({ lot, correction = false, onAnnuler, onFait }: {
         </>
       )}
     >
-      <Bloc titre={correction ? 'Corriger les mesures du rond' : 'À faire'} icone={correction ? Pencil : ClipboardList}>
-        <p className="text-base text-muted-foreground">
+      <Consigne icone={correction ? Pencil : ClipboardList}>
+        <p className="text-muted-foreground">
           {correction
-            ? 'Le lot reste en contrôles après lavage : seules les mesures du rond changent.'
+            ? 'Correction des mesures du rond : le lot reste en contrôles après lavage.'
             : <>Découpez le rond et le carré de 50 × 50 cm (lot écrit dessus){rien ? '. Rien à mesurer avant le lavage pour cette référence.' : ', pesez le rond et mesurez la laize.'}</>}
         </p>
-        {(demande('coloris') || lot.rond0?.estCeLot) && <InfoRond0 lot={lot} />}
-      </Bloc>
+        {!demande('coloris') && lot.rond0?.estCeLot && <InfoRond0 lot={lot} />}
+      </Consigne>
       {(demande('laize') || demande('poids')) && (
         <Bloc titre="Mesures du rond" icone={Ruler}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {demande('laize') && (
             <ChampNombre label="Laize" unite="cm" valeur={laize} onChange={setLaize}
               aide={aides.laize} hors={horsBornes(lireNombre(laize), lot.tolerances.laize)} />
@@ -437,6 +450,7 @@ function BlocAvantLavage({ lot, correction = false, onAnnuler, onFait }: {
       )}
       {demande('coloris') && (
         <Bloc titre="Coloris comparé au rond 0" icone={Palette}>
+          <InfoRond0 lot={lot} />
           <div className="grid grid-cols-2 gap-3">
             {([['conforme', 'Conforme', CheckCircle2], ['ecart', 'Écart', AlertTriangle]] as const).map(([v, libelle, Icone]) => (
               <button
@@ -444,7 +458,7 @@ function BlocAvantLavage({ lot, correction = false, onAnnuler, onFait }: {
                 type="button"
                 onClick={() => setColoris(v)}
                 className={cn(
-                  'h-16 rounded-xl border-2 text-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60',
+                  'h-14 rounded-xl border-2 text-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60',
                   coloris === v
                     ? v === 'conforme' ? 'bg-success border-success text-white' : 'bg-destructive border-destructive text-white'
                     : 'bg-background border-border',
@@ -470,26 +484,27 @@ function BlocAvantLavage({ lot, correction = false, onAnnuler, onFait }: {
   )
 }
 
+// One line (text-sm): the step must fit the tablet in landscape.
 function InfoRond0({ lot }: { lot: LotLabo }) {
   const r0 = lot.rond0
   if (r0?.estCeLot) {
     return (
-      <div className="rounded-xl bg-gold/15 border border-gold/40 p-3 text-base">
+      <div className="rounded-lg bg-gold/15 border border-gold/40 px-3 py-1.5 text-sm">
         <strong>Premier lot de ce coloris :</strong> son rond devient le rond 0 du classeur.
       </div>
     )
   }
   if (!r0) {
     return (
-      <div className="rounded-xl bg-zinc-100 border border-border p-3 text-base text-muted-foreground">
+      <div className="rounded-lg bg-zinc-100 border border-border px-3 py-1.5 text-sm text-muted-foreground">
         Aucun rond 0 connu dans ETM pour ce coloris : comparez avec le classeur.
       </div>
     )
   }
   return (
-    <div className="rounded-xl bg-primary/10 border border-primary/20 p-3 text-base">
-      Sortez le <strong>rond 0</strong> du classeur : lot <strong className="tabular-nums">{r0.lot}</strong>
-      {r0.date && <> du {jour(r0.date)}</>}. Rangez le nouveau rond à côté.
+    <div className="rounded-lg bg-primary/10 border border-primary/20 px-3 py-1.5 text-sm">
+      Sortez le <strong>rond 0</strong> : lot <strong className="tabular-nums">{r0.lot}</strong>
+      {r0.date && <> du {jour(r0.date)}</>}, rangez le nouveau à côté.
     </div>
   )
 }
@@ -553,16 +568,17 @@ function BlocApresLavage({ lot, onFait }: { lot: LotLabo; onFait: () => void }) 
         </>
       )}
     >
-      <Bloc titre="À faire" icone={ClipboardList}>
-        <p className="text-base text-muted-foreground">
+      <Consigne>
+        <p className="text-muted-foreground">
           {aMesurer
             ? `Mesurez ${aMesurer} sur le carré lavé et séché, puis rangez le carré avec la tirelle et indiquez le casier.`
             : 'Rien à mesurer après le lavage pour cette référence : rangez le carré avec la tirelle et indiquez le casier.'}
         </p>
-      </Bloc>
-      {aMesurer && (
-        <Bloc titre="Mesures du carré" icone={Ruler}>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      </Consigne>
+      {/* One card: the square's measures, then the casier where square and
+          tirelle are stored (not a measure, but typed in the same gesture). */}
+      <Bloc titre={aMesurer ? 'Mesures du carré et rangement' : 'Rangement'} icone={aMesurer ? Ruler : Archive}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {demande('stabilités') && (
               <>
                 <ChampNombre label="Stab H" unite="%" valeur={stabh} onChange={setStabh} signe={sh} onSigne={setSh}
@@ -576,23 +592,17 @@ function BlocApresLavage({ lot, onFait }: { lot: LotLabo; onFait: () => void }) 
                 aide={aides.vrillage}
                 hors={lireNombre(vrillage) == null ? null : lireNombre(vrillage)! > lot.tolerances.vrillageMax} />
             )}
+            <div className="space-y-1 min-w-0">
+              <label className="block text-sm font-semibold text-muted-foreground uppercase tracking-wide">Casier</label>
+              <input
+                type="text"
+                value={casier}
+                onChange={(e) => setCasier(e.target.value)}
+                maxLength={40}
+                className="w-full min-w-0 h-14 rounded-xl border-2 border-border bg-background px-4 text-3xl font-bold focus:outline-none focus:ring-4 focus:ring-gold/40"
+              />
+            </div>
           </div>
-        </Bloc>
-      )}
-      {/* Where the square and the tirelle are stored: not a measure. */}
-      <Bloc titre="Rangement" icone={Archive}>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="space-y-1.5 min-w-0">
-          <label className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Casier</label>
-          <input
-            type="text"
-            value={casier}
-            onChange={(e) => setCasier(e.target.value)}
-            maxLength={40}
-            className="w-full h-16 rounded-xl border-2 border-border bg-background px-4 text-3xl font-bold focus:outline-none focus:ring-4 focus:ring-gold/40"
-          />
-        </div>
-      </div>
       </Bloc>
     </Etape>
   )

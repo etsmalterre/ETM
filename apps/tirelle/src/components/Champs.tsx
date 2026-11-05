@@ -63,8 +63,17 @@ export function ChampNombre({
   autoFocus?: boolean
 }) {
   return (
-    <div className="space-y-1.5 min-w-0">
-      <label className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{label}</label>
+    <div className="space-y-1 min-w-0">
+      {/* The tolerance on the label's line, not under the field: the whole step
+          fits the tablet in landscape without scrolling. */}
+      <div className="flex items-baseline justify-between gap-2">
+        <label className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{label}</label>
+        {(aide || hors === true) && (
+          <span className={cn('min-w-0 truncate text-sm', hors === true ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
+            {hors === true ? `Hors tolérance${aide ? ` (${aide})` : ''}` : aide}
+          </span>
+        )}
+      </div>
       <div className="flex items-stretch gap-2">
         {signe && onSigne && (
           <div className="flex rounded-xl border border-border overflow-hidden flex-shrink-0">
@@ -96,7 +105,7 @@ export function ChampNombre({
             value={valeur}
             onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ''))}
             className={cn(
-              'w-full h-16 rounded-xl border-2 bg-background pl-4 pr-16 text-3xl font-bold tabular-nums',
+              'w-full min-w-0 h-14 rounded-xl border-2 bg-background pl-4 pr-16 text-3xl font-bold tabular-nums',
               'focus:outline-none focus:ring-4 focus:ring-gold/40 disabled:opacity-60',
               hors === true ? 'border-destructive text-destructive' : hors === false ? 'border-success' : 'border-border',
             )}
@@ -104,11 +113,6 @@ export function ChampNombre({
           <span className="absolute right-4 top-1/2 -translate-y-1/2 text-lg text-muted-foreground pointer-events-none">{unite}</span>
         </div>
       </div>
-      {(aide || hors === true) && (
-        <p className={cn('text-sm', hors === true ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
-          {hors === true ? `Hors tolérance${aide ? ` (${aide})` : ''}` : `Tolérance : ${aide}`}
-        </p>
-      )}
     </div>
   )
 }
