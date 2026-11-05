@@ -51,6 +51,7 @@ import { planningProdTrmRouter } from './routes/planning-prod-trm.js'
 import { recorderRouter } from './routes/recorder.js'
 import { visitageTrmRouter } from './routes/visitage-trm.js'
 import { atelierRouter } from './routes/atelier.js'
+import { atelierTachesRouter } from './routes/atelier-taches.js'
 import { appareilsAtelierRouter } from './routes/appareils-atelier.js'
 import { trsRouter } from './routes/trs.js'
 import { pointageRouter } from './routes/pointage.js'
@@ -233,6 +234,8 @@ app.use('/api/visitage-trm', visitageTrmRouter)
 // enrolled (routes/appareils-atelier.ts) — mounted first so the more specific
 // path wins over /api/atelier.
 app.use('/api/atelier/appareils', appareilsAtelierRouter)
+// Tâches d'atelier (lib/taches-atelier.ts) — general factory jobs, régleurs edit.
+app.use('/api/atelier/taches', atelierTachesRouter)
 app.use('/api/atelier', atelierRouter)
 // TRS wall tablet (TRM/apps/trs, host trs.intra.etsmalterre.com) — a THIRD TRM client:
 // the shift TRS of every métier on the floor plan. Read-only, no identity.

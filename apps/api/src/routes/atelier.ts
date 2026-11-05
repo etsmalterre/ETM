@@ -802,7 +802,7 @@ atelierRouter.get('/of/:id/reglage', async (req: Request, res: Response) => {
  *      in the shared grid — the plan's §3.3 rule, enforced here, not only in
  *      the UI).
  *  Sends the refusal itself; null when refused. */
-async function gateSaisie(
+export async function gateSaisie(
   req: Request,
   res: Response,
   IDbonnetier: number,

@@ -1605,6 +1605,54 @@ ALTER TABLE ref_fini
   ADD COLUMN expedier_des_reception smallint NOT NULL DEFAULT 0 CHECK (expedier_des_reception IN (0, 1));
 `,
   },
+  {
+    // Tâches d'atelier (decision Vincent 2026-11-05, lib/taches-atelier.ts): the
+    // general jobs of the factory (cobwebs in the stock, the workshop floors…)
+    // the bonnetiers do when few métiers run. A task is a STANDING item: « Fait »
+    // adds a dated réalisation with its team, the task stays on the list.
+    // Régleurs create / edit / archive from the atelier phone; « Supprimer »
+    // archives, so the history of who did what is kept. Hour only, no duration,
+    // no frequency (2026-11-05).
+    name: '0061_taches_atelier',
+    sql: `
+CREATE TABLE tache_atelier (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  libelle text NOT NULL,
+  description text NOT NULL DEFAULT '',
+  cree_par bigint NOT NULL,
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  modifie_le timestamptz,
+  archivee_le timestamptz,
+  archivee_par bigint
+);
+CREATE TABLE tache_atelier_realisation (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idtache bigint NOT NULL REFERENCES tache_atelier(id),
+  fait_le timestamptz NOT NULL DEFAULT now(),
+  declare_par bigint NOT NULL
+);
+CREATE INDEX tache_atelier_realisation_tache ON tache_atelier_realisation (idtache, fait_le DESC);
+CREATE TABLE tache_atelier_participant (
+  idrealisation bigint NOT NULL REFERENCES tache_atelier_realisation(id) ON DELETE CASCADE,
+  idbonnetier bigint NOT NULL,
+  PRIMARY KEY (idrealisation, idbonnetier)
+);
+${grantApi('SELECT, INSERT, UPDATE', 'tache_atelier')}
+${grantApi('SELECT, INSERT, DELETE', 'tache_atelier_realisation, tache_atelier_participant')}
+${grantApi('USAGE, SELECT', 'SEQUENCE tache_atelier_id_seq, tache_atelier_realisation_id_seq')}
+`,
+  },
+  {
+    // A task's frequency in days, set by the régleur (decision Vincent
+    // 2026-11-05, lib/taches-atelier.ts `niveauTache`): red from F days since
+    // the last réalisation, amber from F minus 10 %, green below. NULL = no
+    // frequency, the « il y a N j » tag stays grey.
+    name: '0062_tache_atelier_frequence',
+    sql: `
+ALTER TABLE tache_atelier
+  ADD COLUMN frequence_jours integer CHECK (frequence_jours IS NULL OR frequence_jours BETWEEN 1 AND 365);
+`,
+  },
 ]
 
 export interface MigrationStatus {
