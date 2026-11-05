@@ -123,7 +123,7 @@ export interface ReponseDelai {
 }
 
 /** « cde 9086 s 49 », « Cdes 9074-9081 s 50 », « 9086 : s 49 » → the orders named and the rest. */
-function commandesNommees(ligne: string): { commandes: string[]; reste: string } {
+export function commandesNommees(ligne: string): { commandes: string[]; reste: string } {
   const m = /^(?:cdes?\.?\s*|commandes?\s*)?((?:\d{4,6})(?:\s*(?:[-+/,&]|et)\s*\d{4,6})*)\s*[:=-]?\s*(.*)$/i.exec(ligne)
   if (!m || !/^(cdes?|commandes?)/i.test(ligne) && !/^\d{4,6}\s*[:=-]/.test(ligne)) return { commandes: [], reste: ligne }
   return { commandes: m[1].split(/\s*(?:[-+/,&]|et)\s*/i).filter(Boolean), reste: m[2].trim() }

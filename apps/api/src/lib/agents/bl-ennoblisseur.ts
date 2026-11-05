@@ -27,6 +27,7 @@ import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
 import { listerMessages, lireMessage, lireFil, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
 import { traiterReponsePoint } from './flux-ennoblisseur/delais.js'
+import { CONTROLES_VERSIONS_LIVREES, DELAIS_VERSIONS_LIVREES } from './flux-ennoblisseur/lecture.js'
 import type { ModeCompetence } from './competences.js'
 import { relaisTriage, triesParTriage } from './triage/relais.js'
 import {
@@ -66,6 +67,9 @@ import {
   messagesTraites,
   nouvelIdRun,
   optionDe,
+  modePlafonne,
+  promptsCompetence,
+  versionCompetenceActive,
   type AgentMode,
   type AgentRun,
   type AgentState,
@@ -411,6 +415,8 @@ export async function traiterMessage(
       if (complet) {
         runs.push(...(await traiterReponsePoint(complet, {
           delais, controles, source, lancePar, slug: BL_ENNOBLISSEUR_SLUG, idsousTraitant: sst,
+          promptDelais: versionCompetenceActive(promptsCompetence(state, 'delais', DELAIS_VERSIONS_LIVREES)),
+          promptControles: versionCompetenceActive(promptsCompetence(state, 'controles', CONTROLES_VERSIONS_LIVREES)),
           tirerSeul: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'delais', 'essai'),
           tirerSeulControles: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'controles', 'essai'),
         })))
@@ -445,10 +451,7 @@ export async function traiterMessage(
 
 /** A skill's mode under the agent's: an agent in essai runs every skill in
  *  essai at most, an agent off runs nothing. */
-function effectif(agent: AgentMode, competence: ModeCompetence): ModeCompetence {
-  if (agent === 'off' || competence === 'off') return 'off'
-  return agent === 'essai' ? 'essai' : competence
-}
+const effectif = modePlafonne
 
 /** Label the mail, from its « actif » runs only: « traité » when every
  *  document was written or already there, « à vérifier » otherwise. A mail

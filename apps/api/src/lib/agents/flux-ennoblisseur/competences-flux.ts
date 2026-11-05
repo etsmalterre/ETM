@@ -4,12 +4,14 @@
 //   bl         the delivery notes — measures re-read from the runs: « à
 //              vérifier » = an aide, « écrit » = a saisie judged at the réception;
 //   delais     the délais of a reply to the Point — PG saisie_agent;
-//   controles  §2 of the same reply — essai only for now (no measures yet).
+//   controles  the dyer's measures in the same reply — PG saisie_agent.
+// Délais and Contrôles have their own prompt versions (lecture.ts, doctrine
+// §0 « le modèle lit, le code vérifie »); the BL's prompt is the agent's.
 
 import type { ModeCompetence, PointMesure } from '../competences.js'
-import { noteBinaire, type AgentRun } from '../store.js'
+import { noteBinaire, promptsCompetence, type AgentRun, type AgentState, type PromptsCompetence, type VersionInitiale } from '../store.js'
 import { saisiesDeCompetence, pointDe } from './saisies.js'
-import { CONTROLES_VERSION, DELAIS_VERSION } from './delais.js'
+import { CONTROLES_VERSIONS_LIVREES, DELAIS_VERSIONS_LIVREES } from './lecture.js'
 
 export interface CompetenceDef {
   cle: string
@@ -19,10 +21,11 @@ export interface CompetenceDef {
   modes: readonly ModeCompetence[]
   /** The mode before a pilot sets one. */
   defaut: ModeCompetence
-  /** The behaviour version its measures cover. Null = the agent's active prompt version. */
-  version: number | null
-  /** Every point of the version, as the measures read them. */
-  points(runs: readonly AgentRun[], slug: string, versionAgent: number): Promise<PointMesure[]>
+  /** Its own prompt versions, as shipped (AgentState.promptsCompetences once
+   *  stored). Absent = the skill runs on the agent's prompt (the BL). */
+  versionsLivrees?: readonly VersionInitiale[]
+  /** Every point of a version of the skill (null = every version), as the measures read them. */
+  points(runs: readonly AgentRun[], slug: string, version: number | null): Promise<PointMesure[]>
 }
 
 /** A run belongs to the skill it names; a run naming none is the BL's (before 2026-11-05). */
@@ -30,10 +33,24 @@ export const competenceDuRun = (r: Pick<AgentRun, 'competence'>) => r.competence
 
 /** BL: one point per document read. « à vérifier » (or checked since) = an
  *  aide; written = a saisie, judged by the réception (silence = validée, a
- *  correction = corrigée). Errors, ignored mails, essai runs are no decision. */
+ *  correction = corrigée). In observation (essai) the same, judged by the
+ *  rolls received (bl-observation.ts). Errors, ignored mails, PDF tests are no decision. */
 export function pointsBl(runs: readonly AgentRun[]): PointMesure[] {
   const out: PointMesure[] = []
   for (const r of runs) {
+    // Observation (essai, 2026-11-05): a BL read and not pre-filled, judged against the réception (bl-observation.ts).
+    if (competenceDuRun(r) === 'bl' && r.mode === 'essai' && r.source !== 'essai_manuel' && (r.statut === 'simule' || r.statut === 'a_verifier')) {
+      const aide = r.statut === 'a_verifier'
+      out.push({
+        decision: aide ? 'aide' : 'saisie',
+        statut: r.observation?.statut ?? 'observation',
+        douteJustifie: r.observation?.douteJustifie ?? null,
+        le: r.createdAt,
+        proposition: null,
+        observation: true,
+      })
+      continue
+    }
     if (competenceDuRun(r) !== 'bl' || r.mode !== 'actif' || r.source === 'essai_manuel') continue
     const aide = r.statut === 'a_verifier' || (r.statut === 'verifie' && r.verification?.statutAvant === 'a_verifier')
     if (aide) { out.push({ decision: 'aide', statut: r.statut === 'verifie' ? 'resolue' : 'a_revoir', le: r.createdAt, proposition: null }); continue }
@@ -51,29 +68,33 @@ export const COMPETENCES_FLUX: readonly CompetenceDef[] = [
     description: 'Lit les bordereaux de livraison et pré-remplit la réception. La réception, faite par une personne, valide le pré-remplissage : pas d’autonomie au-delà.',
     modes: ['off', 'essai', 'supervise'],
     defaut: 'supervise',
-    version: null,
-    points: async (runs, _slug, v) => pointsBl(runs.filter((r) => r.version === v)),
+    points: async (runs, _slug, v) => pointsBl(v === null ? runs : runs.filter((r) => r.version === v)),
   },
   {
     cle: 'delais',
     nom: 'Délais',
-    description: 'Lit les délais que l’ennoblisseur donne en réponse au « Point du JJ/MM » (section 5) et les saisit sur les lignes. En supervisé, chaque délai attend sa validation dans Sous-traitants › Ennoblissement.',
+    description: 'Lit les délais que l’ennoblisseur donne en réponse au « Point du JJ/MM », quelle que soit sa façon d’écrire, et les saisit sur les lignes. En supervisé, chaque délai attend sa validation dans Sous-traitants › Ennoblissement.',
     modes: ['off', 'essai', 'supervise', 'autonomie'],
     // Shipped in essai: a pilot switches it to supervisé (doctrine §1).
     defaut: 'essai',
-    version: DELAIS_VERSION,
-    points: async (_runs, slug) => (await saisiesDeCompetence(slug, 'delais', DELAIS_VERSION)).map(pointDe),
+    versionsLivrees: DELAIS_VERSIONS_LIVREES,
+    points: async (_runs, slug, v) => (await saisiesDeCompetence(slug, 'delais', v ?? undefined)).map(pointDe),
   },
   {
     cle: 'controles',
     nom: 'Contrôles',
-    description: 'Lit les mesures de l’ennoblisseur (laize, poids, stabilités, vrillage) en section 2 de la réponse au Point et les reporte sur le lot, côté ennoblisseur. En supervisé, chaque lot attend sa validation dans Qualité › Suivi lots.',
+    description: 'Lit les mesures de l’ennoblisseur (laize, poids, stabilités, vrillage) dans sa réponse au Point et les reporte sur le lot, côté ennoblisseur. En supervisé, chaque lot attend sa validation dans Qualité › Suivi lots.',
     modes: ['off', 'essai', 'supervise', 'autonomie'],
     // Shipped in essai: a pilot switches it to supervisé (doctrine §1).
     defaut: 'essai',
-    version: CONTROLES_VERSION,
-    points: async (_runs, slug) => (await saisiesDeCompetence(slug, 'controles', CONTROLES_VERSION)).map(pointDe),
+    versionsLivrees: CONTROLES_VERSIONS_LIVREES,
+    points: async (_runs, slug, v) => (await saisiesDeCompetence(slug, 'controles', v ?? undefined)).map(pointDe),
   },
 ]
 
 export const competenceFlux = (cle: string) => COMPETENCES_FLUX.find((c) => c.cle === cle)
+
+/** A skill's prompt versions: its own, or the agent's for a skill without (the BL). */
+export function versionsDeCompetence(c: Pick<CompetenceDef, 'cle' | 'versionsLivrees'>, s: AgentState): PromptsCompetence {
+  return c.versionsLivrees ? promptsCompetence(s, c.cle, c.versionsLivrees) : { activeVersion: s.activeVersion, versions: s.versions }
+}

@@ -63,6 +63,16 @@ export interface AgentState {
   /** Each skill's mode and autonomy draw (AgentDef.competences, competences.ts),
    *  absent = the skill's default mode. */
   competences?: Record<string, EtatCompetence>
+  /** The prompt versions of each skill that has its own prompt (Flux
+   *  Ennoblisseur › Délais, Contrôles; doctrine §0 « le modèle lit »). Absent =
+   *  the skill's shipped versions (CompetenceDef.versionsLivrees). The agent's
+   *  own `versions` stay the first skill's (the BL). */
+  promptsCompetences?: Record<string, PromptsCompetence>
+}
+
+export interface PromptsCompetence {
+  activeVersion: number
+  versions: AgentVersion[]
 }
 
 // ── Runs ─────────────────────────────────────────────────
@@ -176,6 +186,9 @@ export interface AgentRun {
   /** A pilot marked an « à vérifier » / « erreur » run as checked (Agents IA,
    *  2026-10-12): statut became 'verifie', the original is kept here. Not a score. */
   verification?: { statutAvant: RunStatut; commentaire: string; par: Auteur; le: string } | null
+  /** BL in observation (skill in essai, 2026-11-05): how the reading compared with
+   *  the rolls a person received (bl-observation.ts). Absent = not compared yet. */
+  observation?: { statut: 'validee' | 'corrigee' | 'resolue'; ecarts: number; douteJustifie: boolean | null; le: string } | null
   /** Legacy — see RunVerdict. */
   verdict?: RunVerdict | null
 }
@@ -330,25 +343,66 @@ export function etatCompetence(s: AgentState, cle: string, defaut: ModeCompetenc
   return s.competences?.[cle] ?? { mode: defaut }
 }
 
+/** A skill's mode as it runs: the agent's mode caps it. Since 2026-11-05 an
+ *  agent with skills has no mode of its own (derived, below): the cap only
+ *  matters for a state written before. */
+export function modePlafonne(agent: AgentMode, competence: ModeCompetence): ModeCompetence {
+  if (agent === 'off' || competence === 'off') return 'off'
+  return agent === 'essai' ? 'essai' : competence
+}
+
+/** The agent's mode of an agent with skills, derived from them (Vincent
+ *  2026-11-05, one switch per skill): « off » when every skill is off, else
+ *  « actif » — each skill's own mode then decides what is written. The poll,
+ *  the Triage hand-off and the scheduler read it as « is anything running ». */
+export const modeDerive = (modes: readonly ModeCompetence[]): AgentMode => (modes.every((m) => m === 'off') ? 'off' : 'actif')
+
 /** A pilot sets a skill's mode (and, for autonomie, its share and block). A
- *  new block is drawn on every change. */
+ *  new block is drawn on every change. Every skill's mode is written out as it
+ *  runs (an old agent mode capping them is folded in once), then the agent's
+ *  mode is derived from them; the mailbox is read from the first time a skill
+ *  leaves « off ». `defauts`: each skill's mode before a pilot set one. */
 export function changerModeCompetence(
   slug: string,
   initiale: VersionInitiale,
   cle: string,
   e: { mode: ModeCompetence; taux?: number; fenetre?: number },
   par: Auteur,
+  defauts: Readonly<Record<string, ModeCompetence>>,
 ): Promise<AgentState> {
   return modifierEtat(slug, initiale, (s) => {
-    s.competences = {
-      ...(s.competences ?? {}),
-      [cle]: {
-        mode: e.mode,
-        ...(e.mode === 'autonomie' ? { taux: e.taux, fenetre: e.fenetre } : {}),
-        changeLe: new Date().toISOString(),
-        changePar: par,
-      },
+    const competences: Record<string, EtatCompetence> = { ...(s.competences ?? {}) }
+    for (const [k, d] of Object.entries(defauts)) {
+      const actuel = competences[k] ?? { mode: d }
+      const m = modePlafonne(s.mode, actuel.mode)
+      competences[k] = m === actuel.mode ? actuel : { mode: m }
     }
+    const le = new Date().toISOString()
+    const avant = competences[cle]
+    // The autonomy cycle is kept whatever the mode (prepared before going autonome, 2026-11-05).
+    const taux = e.taux ?? avant?.taux
+    const fenetre = e.fenetre ?? avant?.fenetre
+    competences[cle] = {
+      mode: e.mode,
+      ...(taux != null ? { taux } : {}),
+      ...(fenetre != null ? { fenetre } : {}),
+      changeLe: le,
+      changePar: par,
+    }
+    s.competences = competences
+    const mode = modeDerive(Object.values(competences).map((x) => x.mode))
+    if (mode !== s.mode) { s.mode = mode; s.modeChangedAt = le; s.modeChangedBy = par }
+    if (mode !== 'off' && !s.startedAt) s.startedAt = le
+  })
+}
+
+/** The autonomy cycle of a skill (share done alone, block size), set from the
+ *  side panel whatever the mode. In « autonomie », a new block is drawn. */
+export function reglerCycle(slug: string, initiale: VersionInitiale, cle: string, defaut: ModeCompetence, c: { taux: number; fenetre: number }): Promise<AgentState> {
+  return modifierEtat(slug, initiale, (s) => {
+    const e = etatCompetence(s, cle, defaut)
+    const { tirage: _tirage, ...reste } = e
+    s.competences = { ...(s.competences ?? {}), [cle]: { ...reste, taux: c.taux, fenetre: c.fenetre } }
   })
 }
 
@@ -362,6 +416,48 @@ export async function tirerCompetence(slug: string, initiale: VersionInitiale, c
     if (t.etat.mode === 'autonomie') s.competences = { ...(s.competences ?? {}), [cle]: t.etat }
   })
   return seul
+}
+
+// ── A skill's own prompt versions ───────────────────────
+
+/** A skill's prompt versions as stored, else seeded from the ones it ships
+ *  with (the last shipped one active). Once stored, a prompt shipped later is
+ *  only offered (« prompt livré », estPublie): publishing it stays a pilot's gesture. */
+export function promptsCompetence(s: AgentState, cle: string, livrees: readonly VersionInitiale[]): PromptsCompetence {
+  const stocke = s.promptsCompetences?.[cle]
+  if (stocke) return stocke
+  const versions = livrees.map((v, i) => ({ version: i + 1, ...v, createdBy: null, createdAt: new Date(0).toISOString() }))
+  return { activeVersion: versions.length, versions }
+}
+
+export function versionCompetenceActive(p: PromptsCompetence): AgentVersion {
+  return p.versions.find((v) => v.version === p.activeVersion) ?? p.versions[p.versions.length - 1]
+}
+
+export function publierVersionCompetence(
+  slug: string,
+  initiale: VersionInitiale,
+  cle: string,
+  livrees: readonly VersionInitiale[],
+  v: { model: string; prompt: string; note: string },
+  par: Auteur,
+): Promise<AgentState> {
+  return modifierEtat(slug, initiale, (s) => {
+    const p = promptsCompetence(s, cle, livrees)
+    const version = Math.max(0, ...p.versions.map((x) => x.version)) + 1
+    s.promptsCompetences = {
+      ...(s.promptsCompetences ?? {}),
+      [cle]: { activeVersion: version, versions: [...p.versions, { version, ...v, createdBy: par, createdAt: new Date().toISOString() }] },
+    }
+  })
+}
+
+export function activerVersionCompetence(slug: string, initiale: VersionInitiale, cle: string, livrees: readonly VersionInitiale[], version: number): Promise<AgentState> {
+  return modifierEtat(slug, initiale, (s) => {
+    const p = promptsCompetence(s, cle, livrees)
+    if (!p.versions.some((v) => v.version === version)) throw new Error(`version ${version} inconnue`)
+    s.promptsCompetences = { ...(s.promptsCompetences ?? {}), [cle]: { ...p, activeVersion: version } }
+  })
 }
 
 export function marquerPlanification(slug: string, initiale: VersionInitiale, jour: string): Promise<AgentState> {

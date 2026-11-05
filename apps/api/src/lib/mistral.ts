@@ -47,12 +47,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** POST with retries on 429 / 5xx / network errors (the API rate-limits bursts). */
 async function post<T>(path: string, body: unknown, timeoutMs = 120_000): Promise<T> {
   let last = ''
+  // A missing key is not worth five retries: fail at once.
+  const cle = apiKey()
   for (let attempt = 0; attempt < 5; attempt++) {
     let r: Response
     try {
       r = await fetch(`${BASE}/${path}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey()}`, 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${cle}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       })

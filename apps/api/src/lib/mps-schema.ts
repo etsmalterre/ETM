@@ -1663,7 +1663,7 @@ ALTER TABLE tache_atelier
     // The three measures (fiabilité, autonomie, discernement) are read from here.
     // UPDATE only moves statut / valeur_finale / commentaire / revu_* — never
     // what the agent decided.
-    name: '0062_saisie_agent',
+    name: '0063_saisie_agent',
     sql: `
 CREATE TABLE saisie_agent (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -1708,6 +1708,21 @@ CREATE INDEX saisie_agent_lot ON saisie_agent (idsuivilot) WHERE statut IN ('a_r
 CREATE INDEX saisie_agent_competence ON saisie_agent (agent, competence, version, cree_le);
 ${grantApi('SELECT, INSERT, UPDATE', 'saisie_agent')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE saisie_agent_id_seq')}
+`,
+  },
+  {
+    // A skill in « observation » (ex-essai, Vincent 2026-11-05): Tricobot records
+    // what he would have done, invisible to everyone (mode and statut
+    // 'observation'), and the value a person types afterwards on the line or
+    // the lot judges it. ETM's screens read 'a_revoir' / 'autonome' only.
+    name: '0064_saisie_agent_observation',
+    sql: `
+ALTER TABLE saisie_agent DROP CONSTRAINT saisie_agent_mode_check;
+ALTER TABLE saisie_agent ADD CONSTRAINT saisie_agent_mode_check CHECK (mode IN ('supervise', 'autonome', 'observation'));
+ALTER TABLE saisie_agent DROP CONSTRAINT saisie_agent_statut_check;
+ALTER TABLE saisie_agent ADD CONSTRAINT saisie_agent_statut_check
+  CHECK (statut IN ('a_revoir', 'autonome', 'validee', 'corrigee', 'supprimee', 'omission', 'resolue', 'observation'));
+CREATE INDEX saisie_agent_observation ON saisie_agent (idligne_commande_sous_traitant, idsuivilot) WHERE statut = 'observation';
 `,
   },
 ]

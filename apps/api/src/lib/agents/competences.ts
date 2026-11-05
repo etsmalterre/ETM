@@ -19,9 +19,9 @@ export const MODES_COMPETENCE: readonly ModeCompetence[] = ['off', 'essai', 'sup
 
 export const LIBELLE_MODE: Record<ModeCompetence, string> = {
   off: 'Arrêt',
-  essai: 'Essai',
+  essai: 'Observation',
   supervise: 'Supervisé',
-  autonomie: 'Autonomie',
+  autonomie: 'Autonome',
 }
 
 /** The steps offered by « proposer de monter » (doctrine §5). */
@@ -30,9 +30,9 @@ export const FENETRE_DEFAUT = 10
 
 export interface EtatCompetence {
   mode: ModeCompetence
-  /** autonomie only: share of executions done alone, 1..99 (%). */
+  /** The autonomy cycle: share of executions done alone, 1..99 (%). Kept outside « autonomie » (2026-11-05). */
   taux?: number
-  /** autonomie only: block size the share is drawn on. */
+  /** The autonomy cycle: block size the share is drawn on. Kept outside « autonomie ». */
   fenetre?: number
   /** What is left of the current block, true = done alone (drawn at random). */
   tirage?: boolean[]
@@ -40,10 +40,10 @@ export interface EtatCompetence {
   changePar?: { id: number; nom: string } | null
 }
 
-/** A skill's mode as a label: « Autonomie 10 % / 10 exécutions ». */
+/** A skill's mode as a label: « Autonome 10 % / 10 exécutions ». */
 export function libelleEtat(e: Pick<EtatCompetence, 'mode' | 'taux' | 'fenetre'>): string {
   if (e.mode !== 'autonomie') return LIBELLE_MODE[e.mode]
-  return `Autonomie ${e.taux ?? 0} % / ${e.fenetre ?? FENETRE_DEFAUT} exécutions`
+  return `Autonome ${e.taux ?? 0} % / ${e.fenetre ?? FENETRE_DEFAUT} exécutions`
 }
 
 /** A fresh block of `fenetre` slots, round(taux × fenetre) of them alone, shuffled. */
@@ -77,8 +77,10 @@ export type Decision = 'saisie' | 'rien' | 'aide'
  *  autonome   done alone, nobody has to look (still correctable);
  *  validee / corrigee / supprimee   a person judged a saisie or a « rien »;
  *  omission   a « rien » a person said was wrong (something was in the mail);
- *  resolue    an aide a person settled. */
-export type StatutPoint = 'a_revoir' | 'autonome' | 'validee' | 'corrigee' | 'supprimee' | 'omission' | 'resolue'
+ *  resolue    an aide a person settled;
+ *  observation  recorded in « observation » (mode essai), invisible, waiting for the
+ *             value a person types to be compared with (then validee / corrigee / resolue). */
+export type StatutPoint = 'a_revoir' | 'autonome' | 'validee' | 'corrigee' | 'supprimee' | 'omission' | 'resolue' | 'observation'
 
 export interface PointMesure {
   decision: Decision
@@ -93,6 +95,8 @@ export interface PointMesure {
   le: string
   /** Written alone (mode autonomie, drawn) — the descent alert reads it. */
   autonome?: boolean
+  /** Recorded in observation: judged by comparison, never by a person's gesture. */
+  observation?: boolean
 }
 
 export interface Ratio {
@@ -110,6 +114,10 @@ export interface Mesures {
   aRevoir: number
   /** Points done alone that nobody judged (never counted as a réussite). */
   nonRevus: number
+  /** Observation points still waiting for a person's value to be compared with. */
+  enObservation: number
+  /** Points judged by comparing with what a person typed (observation), among the judged ones. */
+  compares: number
   total: number
 }
 
@@ -130,11 +138,13 @@ export function aideInutile(p: Pick<PointMesure, 'proposition' | 'valeurFinale'>
 
 /** The three measures over a skill's points (doctrine §4). Pure. */
 export function mesurer(points: readonly PointMesure[]): Mesures {
-  let fOk = 0, fDen = 0, agit = 0, dOk = 0, dDen = 0, aRevoir = 0, nonRevus = 0
+  let fOk = 0, fDen = 0, agit = 0, dOk = 0, dDen = 0, aRevoir = 0, nonRevus = 0, enObservation = 0, compares = 0
   for (const p of points) {
     if (p.decision !== 'aide') agit++
     if (p.statut === 'a_revoir') aRevoir++
     if (p.statut === 'autonome') nonRevus++
+    if (p.statut === 'observation') enObservation++
+    else if (p.observation) compares++
     if (estJuge(p)) {
       fDen++
       if (JUGE_OK.has(p.statut)) fOk++
@@ -151,6 +161,8 @@ export function mesurer(points: readonly PointMesure[]): Mesures {
     discernement: ratio(dOk, dDen),
     aRevoir,
     nonRevus,
+    enObservation,
+    compares,
     total: points.length,
   }
 }
@@ -159,6 +171,8 @@ export function mesurer(points: readonly PointMesure[]): Mesures {
 
 export const MONTEE_MIN_JUGES = 30
 export const MONTEE_FIABILITE = 0.95
+/** From observation to supervisé: the agreement with what people typed (doctrine §5). */
+export const MONTEE_OBSERVATION = 0.9
 
 export interface Conseil {
   /** The next step, when the criterion is met. */
@@ -186,17 +200,19 @@ export function conseiller(e: EtatCompetence, modes: readonly ModeCompetence[], 
   const pct = (x: number) => `${Math.round(x * 100)} %`
   const critere = juges.length < MONTEE_MIN_JUGES
     ? `${juges.length} point${juges.length > 1 ? 's' : ''} jugé${juges.length > 1 ? 's' : ''} sur ${MONTEE_MIN_JUGES} avant de pouvoir monter d’un cran`
-    : `Fiabilité ${pct(f!)} sur les ${MONTEE_MIN_JUGES} derniers points jugés (${pct(MONTEE_FIABILITE)} demandés)`
+    : `Fiabilité ${pct(f!)} sur les ${MONTEE_MIN_JUGES} derniers points jugés (${pct(e.mode === 'essai' ? MONTEE_OBSERVATION : MONTEE_FIABILITE)} demandés)`
   const suivant = crantSuivant(e, modes)
-  const pret = e.mode !== 'off' && e.mode !== 'essai' && juges.length >= MONTEE_MIN_JUGES && f !== null && f >= MONTEE_FIABILITE
+  // In observation the bar is the agreement with what people typed (90 %); above, 95 % of judged points.
+  const seuil = e.mode === 'essai' ? MONTEE_OBSERVATION : MONTEE_FIABILITE
+  const pret = e.mode !== 'off' && juges.length >= MONTEE_MIN_JUGES && f !== null && f >= seuil
   const monter = suivant && pret
-    ? { ...suivant, texte: suivant.mode === 'autonomie' ? `Passer en autonomie ${suivant.taux} %` : 'Passer en supervisé' }
+    ? { ...suivant, texte: suivant.mode === 'autonomie' ? `Passer en autonome ${suivant.taux} %` : 'Passer en supervisé' }
     : null
   const depuis = e.changeLe ?? ''
   const rate = points.find((p) => p.autonome && JUGE_KO.has(p.statut) && p.le >= depuis)
   return {
     monter,
-    descendre: rate && e.mode === 'autonomie' ? 'Un point fait seul a été corrigé depuis le passage en autonomie : redescendre d’un cran ?' : null,
+    descendre: rate && e.mode === 'autonomie' ? 'Un point fait seul a été corrigé depuis le passage en autonome : redescendre d’un cran ?' : null,
     critere,
   }
 }

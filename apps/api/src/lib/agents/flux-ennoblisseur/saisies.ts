@@ -13,7 +13,7 @@
 // A person who changes a line's date by hand while Tricobot's saisie waits (or
 // was written alone) corrects it too (`ligneModifiee`, PUT lignes).
 
-import type { Sql } from 'postgres'
+import type { PendingQuery, Row, Sql } from 'postgres'
 import { mpsPg } from '../../mps-pg.js'
 import { query } from '../../hfsql-auto.js'
 import { esc, sstDelaiSets, STATUT_ATTENTE_DELAI, STATUT_NON_ENVOYE } from '../../sst-shared.js'
@@ -34,7 +34,8 @@ export interface Saisie {
   messageId: string | null
   threadId: string | null
   creeLe: string
-  mode: 'supervise' | 'autonome'
+  /** 'observation': recorded in observation (skill in essai), invisible in ETM. */
+  mode: 'supervise' | 'autonome' | 'observation'
   decision: Decision
   idsousTraitant: number
   idcommande: number
@@ -98,6 +99,7 @@ export const pointDe = (s: Saisie): PointMesure => ({
   le: s.creeLe,
   autonome: s.mode === 'autonome',
   douteJustifie: s.douteJustifie,
+  observation: s.mode === 'observation',
 })
 
 // ── Reads ────────────────────────────────────────────────
@@ -109,9 +111,17 @@ export async function saisiesDeCompetence(agent: string, competence: string, ver
   return rows.map(versSaisie)
 }
 
+/** Every saisie of these runs (Agents IA: a run's points as judged, the replay's reference). */
+export async function saisiesDeRuns(runIds: readonly string[], sql: Sql = mpsPg()): Promise<Saisie[]> {
+  if (!runIds.length) return []
+  const rows = await sql`SELECT * FROM saisie_agent WHERE run_id IN ${sql(runIds as string[])} ORDER BY cree_le, id`
+  return rows.map(versSaisie)
+}
+
 /** Every saisie on one sst order, newest first (the order's revue). */
 export async function saisiesDeCommande(idcommande: number, sql: Sql = mpsPg()): Promise<Saisie[]> {
-  const rows = await sql`SELECT * FROM saisie_agent WHERE idcommande_sous_traitant = ${idcommande} AND idsuivilot = 0 ORDER BY cree_le DESC, id`
+  // Observation points are invisible in ETM (2026-11-05): only Agents IA reads them.
+  const rows = await sql`SELECT * FROM saisie_agent WHERE idcommande_sous_traitant = ${idcommande} AND idsuivilot = 0 AND mode <> 'observation' ORDER BY cree_le DESC, id`
   return rows.map(versSaisie)
 }
 
@@ -122,7 +132,7 @@ export async function saisie(id: number, sql: Sql = mpsPg()): Promise<Saisie | n
 
 /** Every saisie on one lot (Contrôles), newest first. */
 export async function saisiesDeLot(idsuivilot: number, sql: Sql = mpsPg()): Promise<Saisie[]> {
-  const rows = await sql`SELECT * FROM saisie_agent WHERE idsuivilot = ${idsuivilot} ORDER BY cree_le DESC, id`
+  const rows = await sql`SELECT * FROM saisie_agent WHERE idsuivilot = ${idsuivilot} AND mode <> 'observation' ORDER BY cree_le DESC, id`
   return rows.map(versSaisie)
 }
 
@@ -180,7 +190,7 @@ export interface NouvelleSaisie {
   runId: string
   messageId: string | null
   threadId: string | null
-  mode: 'supervise' | 'autonome'
+  mode: 'supervise' | 'autonome' | 'observation'
   decision: Decision
   idsousTraitant: number
   idcommande: number
@@ -196,7 +206,7 @@ export interface NouvelleSaisie {
 }
 
 export async function enregistrerSaisie(n: NouvelleSaisie, sql: Sql = mpsPg()): Promise<number> {
-  const statut: StatutPoint = n.mode === 'autonome' && n.decision !== 'aide' ? 'autonome' : 'a_revoir'
+  const statut: StatutPoint = n.mode === 'observation' ? 'observation' : n.mode === 'autonome' && n.decision !== 'aide' ? 'autonome' : 'a_revoir'
   const [r] = await sql<{ id: number }[]>`
     INSERT INTO saisie_agent (agent, competence, version, run_id, message_id, thread_id, mode, decision,
       idsous_traitant, idcommande_sous_traitant, idligne_commande_sous_traitant, idsuivilot, champ, valeur_avant, etat_avant,
@@ -417,6 +427,8 @@ export async function ligneModifiee(idligne: number, delaiDigits: string, par: A
       if (iso && iso === s.proposition) await marquer(s.id, 'validee', qui, iso, null, sql)
       else await marquer(s.id, 'corrigee', qui, iso, 'Délai modifié depuis la ligne de commande.', sql)
     }
+    // Observation: what Tricobot would have done, judged by the délai the person typed.
+    if (iso) await comparerObservations(sql`idligne_commande_sous_traitant = ${idligne} AND champ = 'date_livraison'`, iso, qui, 'la ligne de commande', sql)
   } catch (e) {
     console.error('[saisies] line edit not reflected on Tricobot’s saisies', idligne, e)
   }
@@ -431,7 +443,6 @@ export async function lotModifie(idsuivilot: number, par: Auteur | null): Promis
     const ouvertes = (await sql`
       SELECT * FROM saisie_agent WHERE idsuivilot = ${idsuivilot}
         AND decision = 'saisie' AND champ = 'mesures_sst' AND statut IN ('a_revoir', 'autonome')`).map(versSaisie)
-    if (!ouvertes.length) return
     const m = await lireMesuresLot(idsuivilot, sql)
     if (!m) return
     const t = texteMesures(m)
@@ -440,7 +451,36 @@ export async function lotModifie(idsuivilot: number, par: Auteur | null): Promis
       if (t === s.proposition) await marquer(s.id, 'validee', qui, t, null, sql)
       else await marquer(s.id, 'corrigee', qui, t, 'Mesures modifiées depuis Suivi lots.', sql)
     }
+    if (aDesMesures(m)) await comparerObservations(sql`idsuivilot = ${idsuivilot} AND champ = 'mesures_sst'`, t, qui, 'Suivi lots', sql)
   } catch (e) {
     console.error('[saisies] lot edit not reflected on Tricobot’s saisies', idsuivilot, e)
+  }
+}
+
+// ── Observation (ex-essai, Vincent 2026-11-05) ───────────
+
+/** An observation point is compared with the first value a person types within this many days. */
+export const OBSERVATION_FENETRE_J = 14
+
+/** Judge the observation points of a line or a lot by the value a person just
+ *  typed (canonical: 'YYYY-MM-DD', texteMesures()). A saisie with the same
+ *  value is validated, another is corrected; an aide is settled with that
+ *  value, and its doubt is ESTIMATED (nobody was asked): asking was useful
+ *  unless its own proposal was already right. Only points of the last
+ *  OBSERVATION_FENETRE_J days, once each. */
+async function comparerObservations(ou: PendingQuery<Row[]>, valeur: string, par: Auteur, ou_lu: string, sql: Sql): Promise<void> {
+  const points = (await sql`
+    SELECT * FROM saisie_agent WHERE statut = 'observation' AND ${ou}
+      AND cree_le > now() - make_interval(days => ${OBSERVATION_FENETRE_J})`).map(versSaisie)
+  for (const s of points) {
+    const pareil = (s.proposition ?? '') === valeur
+    if (s.decision === 'saisie') {
+      await marquer(s.id, pareil ? 'validee' : 'corrigee', par, valeur, pareil ? null : `Comparé à la saisie faite depuis ${ou_lu} (observation).`, sql)
+    } else if (s.decision === 'aide') {
+      await marquer(s.id, 'resolue', par, valeur, null, sql)
+      await sql`UPDATE saisie_agent SET doute_justifie = ${!pareil},
+        doute_commentaire = ${pareil ? 'Estimé en observation : sa proposition était la valeur saisie, il pouvait décider seul.' : null}
+        WHERE id = ${s.id}`
+    }
   }
 }

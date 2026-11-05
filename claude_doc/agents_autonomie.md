@@ -5,22 +5,71 @@ tout agent IA de Malterre, pas seulement à Flux Ennoblisseur. Code :
 `apps/api/src/lib/agents/competences.ts` (règles pures, testées) ; l'agent
 « Flux Ennoblisseur » en est le premier client.
 
+## 0. Deux principes, pour tous les agents
+
+**Le droit de ne pas savoir** (Vincent, 2026-11-05). Un agent a toujours le
+droit de demander l'intervention d'une personne. Quand une valeur est absente,
+ambiguë ou incertaine, il ne la devine pas : il la laisse vide, dit pourquoi,
+et propose ce qu'il aurait fait quand il en a une idée (une **aide**, §3). Le
+prompt de chaque agent le dit en toutes lettres, et son format de sortie le
+permet (une valeur `null`, un `certain: false` avec sa raison) ; le code fait
+d'un « je ne sais pas » une aide, jamais une saisie. Demander est ce qui rend
+l'agent mesurable (§4) : **une autonomie basse n'est pas un défaut**, c'est un
+agent qui a encore besoin d'informations et de l'expérience des personnes pour
+mieux servir. Il progresse par les retours ; on le juge d'abord sur sa
+fiabilité et son discernement. Le discernement est le contrepoids : le droit de
+demander, mais une demande qui sert.
+
+**Le modèle lit, le code vérifie** (Vincent, 2026-11-05). Lire un mail, un PDF,
+une réponse rédigée par un partenaire, c'est le travail du modèle, guidé par
+**un prompt par compétence** qui dit exactement ce qu'on attend (les délais,
+les stabilités, le poids…, leurs unités et les règles de la maison) et le
+format à rendre (un schéma JSON). Il le déduit de tout mail, quel que soit le
+partenaire ou sa mise en forme. On n'écrit pas d'expressions régulières par
+partenaire : un nouveau partenaire ou un format qui change ne demande pas de
+développeur, seulement un prompt qui se spécialise au fil des retours, publié
+depuis l'écran (Agents IA › Prompt, une version par compétence, rejouée sur les
+exécutions passées avant d'être publiée). Le **code garde le dernier mot** sur
+tout ce qui ne dépend pas du format : la citation doit se trouver dans le mail,
+la valeur doit être lisible et vraisemblable (délai passé, à plus de 6 mois,
+ligne déjà datée autrement, commande ou lot non demandé, lot introuvable ou
+déjà validé), et quand une forme connue (« s 49 », « laize = 156 ») se relit
+sans doute, le code la relit et un désaccord avec le modèle devient une aide.
+Reste du travail de développeur : une nouvelle compétence, un nouveau champ à
+écrire, une nouvelle règle de vérification, une nouvelle source.
+
 ## 1. On délègue à un agent comme à un nouvel employé
 
 - Un agent a des **compétences** (Flux Ennoblisseur : BL, Délais, Contrôles).
   Chaque compétence a **son mode et ses mesures**. Le BL peut être bien rodé
   pendant que Délais démarre.
-- Un nouvel agent, ou une nouvelle compétence, **commence toujours supervisé**.
+- Un nouvel agent, ou une nouvelle compétence, commence en **observation**,
+  puis passe **supervisé** : jamais d'écriture sans qu'une personne la valide
+  avant d'avoir des mesures.
 
 ## 2. Les modes d'une compétence
 
 | Mode | Ce qu'il fait |
 |---|---|
 | `off` | Rien. |
-| `essai` | Lit et décide, n'écrit RIEN. Sert à la mise au point, sur le corpus. |
+| `essai`, affiché **« Observation »** | L'agent existe mais est **transparent** pour tout le monde (Vincent, 2026-11-05) : il lit et décide, n'écrit RIEN et ne montre rien dans ETM. Chaque point est enregistré (`saisie_agent`, mode et statut `observation`), puis jugé **par comparaison** avec la valeur qu'une personne saisit ensuite : le délai tapé sur la ligne (`ligneModifiee`), les mesures tapées dans Suivi lots (`lotModifie`), les rouleaux reçus pour un BL (`bl-observation.ts`). Même valeur = validée, une autre = corrigée ; une aide est tranchée par cette valeur et son discernement est **estimé** (utile si sa proposition était fausse). Un point sans saisie dans les 14 jours (30 pour un BL) n'est jamais comparé. On mesure un accord avec la personne, pas la vérité. De la donnée métier sans aucun impact : la compétence arrive en supervisé avec ses mesures. |
 | `supervise` | **Propose, n'écrit rien** : chaque exécution attend qu'une personne la valide, et c'est « Valider » qui écrit (révisé 2026-11-05 : rien ne change dans ETM — Point, couleurs, cycle — avant qu'une personne en ait pris la responsabilité). |
-| `autonomie` X % / N exécutions | Sur chaque bloc de N exécutions, X % (arrondi) sont tirées **au hasard** pour être faites seules — **écrites tout de suite** —, les autres sont supervisées (proposées). 10 % / 10 = 1 exécution seule sur 10. |
+| `autonomie` X % / N exécutions, affiché **« Autonome »** | Sur chaque bloc de N exécutions, X % (arrondi) sont tirées **au hasard** pour être faites seules — **écrites tout de suite** —, les autres sont supervisées (proposées). 10 % / 10 = 1 exécution seule sur 10. |
 
+- **Un seul interrupteur par compétence** (Vincent, 2026-11-05) : un agent à
+  compétences n'a plus de mode à lui. Son mode stocké est déduit des leurs
+  (`modeDerive` : « off » si toutes sont à l'arrêt, sinon en marche) et ne sert
+  qu'à dire au relevé, au Triage et au planificateur « quelque chose tourne » ;
+  ce qui s'écrit, chaque compétence en décide par son propre mode. Un ancien
+  mode d'agent (essai, off) qui les bridait est reporté une fois sur chacune au
+  premier changement (`changerModeCompetence`). La boîte est lue à partir de la
+  première fois qu'une compétence sort de l'arrêt. Dans Agents IA, chaque
+  compétence apparaît comme un agent, sous la carte de son groupe, avec son mode
+  au pied de son panneau.
+- Le **cycle d'autonomie** (N exécutions, X %) se règle dans le panneau de droite
+  quel que soit le mode, et se garde (`reglerCycle`) : il s'applique au passage
+  en Autonome. Couleurs : supervisé = ambre (une personne valide encore),
+  autonome = vert.
 - Le tirage est aléatoire : un « 1 sur 10 » fixe ferait toujours passer seuls
   les mêmes créneaux, donc les mêmes types de mails.
 - **Un doute garde la priorité** : une exécution tirée « seule » où l'agent
@@ -46,9 +95,9 @@ l'agent prend une de ces trois décisions :
   reste vide (« ? »), jamais un 0 ; « Appliquer ma proposition » n'est offert
   que pour une proposition complète.
 
-Le doute vient du **code** (contrôles : commande inconnue, réponse qui n'est pas
-une semaine ou une date…) et d'un champ explicite « je ne sais pas » renvoyé par
-le modèle. Il ne vient jamais d'un score de confiance chiffré par le modèle : ce
+Le doute vient du **modèle** (son « je ne sais pas » explicite, §0) et du
+**code** (citation introuvable dans le mail, commande non demandée, délai
+invraisemblable, désaccord avec une forme que le code relit…). Il ne vient jamais d'un score de confiance chiffré par le modèle : ce
 score n'est pas calibré.
 
 ## 4. Les trois mesures
@@ -61,7 +110,7 @@ agent qui ne demande jamais a 100 % d'autonomie.
 |---|---|---|
 | **Fiabilité** | Quand il agit, a-t-il raison ? | saisies et « rien » validés ÷ saisies et « rien » jugés (validé, corrigé, supprimé, omission) |
 | **Autonomie** | Agit-il sans demander ? | (saisies + « rien ») ÷ tous les points |
-| **Discernement** | Quand il demande, était-ce utile ? | aides que la personne dit justifiées ÷ aides tranchées. **Demandé à la personne**, jamais déduit de la valeur retenue (révisé 2026-11-05 : une proposition juste peut quand même valoir d'être demandée). |
+| **Discernement** | Quand il demande, est-ce utile ? | aides que la personne dit justifiées ÷ aides tranchées. **Demandé à la personne**, jamais déduit de la valeur retenue (révisé 2026-11-05 : une proposition juste peut quand même valoir d'être demandée). |
 
 Ce que fait la personne, et ce que ça compte :
 
@@ -92,7 +141,9 @@ Ce que fait la personne, et ce que ça compte :
 
 - **Proposer de monter d'un cran** : au moins `MONTEE_MIN_JUGES` points jugés sur
   la version (30), et une fiabilité ≥ `MONTEE_FIABILITE` (95 %) sur les 30
-  derniers. Les crans sont : supervisé → 10 % → 25 % → 50 % → 75 %.
+  derniers ; depuis l'observation, 90 % d'accord avec ce que les personnes ont
+  saisi (`MONTEE_OBSERVATION`). Les crans sont : observation → supervisé → 10 %
+  → 25 % → 50 % → 75 %.
 - **Proposer de redescendre** : un échec de fiabilité sur un point autonome
   depuis le dernier changement de mode.
 - Une nouvelle version (nouveau prompt ou nouveau comportement) repart de zéro,
@@ -147,17 +198,25 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
 
 - **BL** : inchangé. Mesures relues sur l'historique : un run « à vérifier » =
   une aide, un run écrit = une saisie jugée à la réception.
-- **Délais** : les réponses des teinturiers au « Point du JJ/MM ». MATEL répond
-  section par section ; la section 5 (« Pouvez-vous me confirmer les délais… »)
-  porte les délais. Une réponse nue (« 5) s 49 ») vaut pour **toutes** les
-  commandes de la section 5 de ce Point. « s N » = **le mercredi de la semaine
-  ISO N** : c'est ce que Pierre-Emmanuel saisit (« s 47 » du 23/10 → 18/11,
-  mesuré sur `delai_sst_evenement`). Toute autre forme (« lundi ou mardi »,
-  « fin de semaine », un numéro de commande inconnu) → aide, avec la proposition
-  du modèle. La saisie écrit `date_livraison` de la ligne par les mêmes règles
-  que l'écran (`sstDelaiSets`, `noterDelaiRecu` par Tricobot).
-- **Contrôles** : la section 2 du même mail (« lot 109579 laize = 156cm poids =
-  166g/m² stabs h = -3 l = -3 V = 4% »). Le lot est retrouvé par son numéro
+- **Délais** : les réponses des teinturiers au « Point du JJ/MM ». Depuis la
+  v2 (2026-11-05), le modèle lit la réponse entière avec son prompt
+  (`flux-ennoblisseur/lecture.ts`) et la liste des commandes que le Point
+  demandait : pour chacune, le passage qui y répond (cité mot pour mot), la
+  date, s'il en est sûr et pourquoi. MATEL répond section par section et une
+  réponse nue (« 5) s 49 ») vaut pour **toutes** les commandes de la section 5 ;
+  un autre partenaire peut écrire autrement, c'est au prompt de le dire.
+  « s N » = **le mercredi de la semaine ISO N** : c'est ce que Pierre-Emmanuel
+  saisit (« s 47 » du 23/10 → 18/11, mesuré sur `delai_sst_evenement`). Le code
+  vérifie ensuite (§0) : citation présente dans le mail, relecture des formes
+  sûres (« s 49 », « 02/12 ») et désaccord → aide, puis les règles de la ligne.
+  La v1 (regex MATEL) reste dans l'historique. La saisie écrit
+  `date_livraison` de la ligne par les mêmes règles que l'écran
+  (`sstDelaiSets`, `noterDelaiRecu` par Tricobot).
+- **Contrôles** : les mesures que l'ennoblisseur donne par lot (MATEL : section
+  2, « lot 109579 laize = 156cm poids = 166g/m² stabs h = -3 l = -3 V = 4% »),
+  lues par le modèle avec son propre prompt depuis la v2 ; le code relit la
+  ligne citée quand elle a la forme MATEL et un écart devient une aide (« h »
+  écrit deux fois reste une aide, jamais un choix). Le lot est retrouvé par son numéro
   (MA109579, jamais un numéro plus long). Saisie = laize, poids, stabilités et
   vrillage écrits côté ennoblisseur (`suivilot.*_sst`). Aide = lot introuvable,
   ou lot qui porte déjà d'autres mesures (jamais remplacées sans personne).
@@ -171,7 +230,14 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
 
 ## 8. Ce qui reste à faire
 
-- Une version de prompt par compétence (aujourd'hui le prompt versionné de
-  l'agent est celui du BL ; Délais porte sa version dans le code,
-  `DELAIS_VERSION`).
-- Étendre le modèle aux autres agents (Factures Ennoblisseur, Triage…).
+- Fait le 2026-11-05 : une version de prompt par compétence. Le BL garde le
+  prompt de l'agent ; Délais et Contrôles ont chacune le leur
+  (`AgentState.promptsCompetences`), publié et réactivé depuis Agents IA ›
+  Prompt, rejoué avant publication sur les dernières exécutions (« Rejouer »,
+  rien n'est écrit). Dans Agents IA, la liste de gauche montre le groupe
+  (Flux Ennoblisseur) et, dépliées dessous, ses compétences, chacune gérée comme
+  un agent : son onglet **Score** (le premier : les trois mesures en grand, sur
+  la version choisie, et le cran suivant), ses exécutions, ses retours, son
+  prompt, ses coûts, et son mode au pied du panneau de droite.
+- Étendre le modèle aux autres agents (Factures Ennoblisseur, Triage…), §0 en
+  tête de chaque prompt.

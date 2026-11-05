@@ -258,6 +258,10 @@ export function SmartSearchInput<K extends string, T = unknown>({
         <input
           ref={inputRef}
           type="text"
+          // A search bar, never a form to fill: no browser or password-manager autofill (Dashlane, LastPass).
+          autoComplete="off"
+          data-form-type="other"
+          data-lpignore="true"
           value={value}
           onChange={(e) => {
             onValueChange(e.target.value)
