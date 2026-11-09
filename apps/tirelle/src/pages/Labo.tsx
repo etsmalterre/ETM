@@ -479,11 +479,9 @@ function Etape({ pied, children }: { pied: ReactNode; children: ReactNode }) {
 }
 
 /** One numbered task: its number turns into a green tick once done. */
-function Tache({ n, titre, sousTitre, fait, facultatif, droite, etirer, children }: {
+function Tache({ n, titre, fait, facultatif, droite, etirer, children }: {
   n: number
   titre: string
-  /** The instruction that goes with the task, under its title. */
-  sousTitre?: ReactNode
   fait: boolean
   facultatif?: boolean
   droite?: ReactNode
@@ -508,7 +506,6 @@ function Tache({ n, titre, sousTitre, fait, facultatif, droite, etirer, children
         {facultatif && !fait && <span className="text-sm text-muted-foreground">facultatif</span>}
         {droite && <div className="ml-auto min-w-0">{droite}</div>}
       </div>
-      {sousTitre && <div className="-mt-1 mb-2 pl-[38px] text-sm text-muted-foreground space-y-1">{sousTitre}</div>}
       <div className="flex-1 min-h-0 flex flex-col gap-3">{children}</div>
     </section>
   )
@@ -651,7 +648,7 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
     >
       {(correction || !mesureRond) && (
         <Consigne icone={correction ? Pencil : Scissors}>
-          <p>{correction ? 'Correction des mesures du rond : le lot reste en contrôles après lavage.' : decoupe}</p>
+          <p>{correction ? 'Correction de la laize et du poids : le lot reste en contrôles après lavage.' : decoupe}</p>
           {!demande('coloris') && lot.rond0?.estCeLot && <InfoRond0 lot={lot} />}
         </Consigne>
       )}
@@ -659,13 +656,8 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
           other; the observations below take the rest of the height. */}
       <div className={cn('grid grid-cols-1 gap-3', mesureRond && demande('coloris') && 'md:grid-cols-2')}>
         {mesureRond && (
-          <Tache n={++n} titre="Mesurer le rond" fait={mesuresFaites}
-            sousTitre={correction ? undefined : (
-              <>
-                <p>{decoupe}</p>
-                {!demande('coloris') && lot.rond0?.estCeLot && <InfoRond0 lot={lot} />}
-              </>
-            )}>
+          // The laize is measured on the tirelle, its weight from the round: a title only (Vincent 2026-11-09).
+          <Tache n={++n} titre="Mesurer la tirelle" fait={mesuresFaites}>
             {demande('laize') && (
               <ChampNombre grand label="Laize" unite="cm" valeur={laize} onChange={setLaize} jauge={bornes(lot.tolerances.laize)}
                 aide={aides.laize} hors={horsBornes(lireNombre(laize), lot.tolerances.laize)} />
