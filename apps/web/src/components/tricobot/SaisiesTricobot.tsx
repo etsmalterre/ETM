@@ -86,7 +86,7 @@ export function useSaisiesLotTricobot(idsuivilot: number | null) {
 
 // ── The dyer's measures (Contrôles) ──────────────────────
 
-export interface MesuresSst { laize: number; poids: number; stabH: number; stabL: number; vrillage: number | null }
+export interface MesuresSst { laize: number; poids: number; stabH: number | null; stabL: number | null; vrillage: number | null }
 
 export function lireMesures(v: string | null): MesuresSst | null {
   if (!v) return null

@@ -13,8 +13,9 @@ export interface Appareil {
 export interface MesuresTirelle {
   laize: number
   poids: number
-  stabh: number
-  stabl: number
+  /** null = not measured, 0 is a measure (#1358). */
+  stabh: number | null
+  stabl: number | null
   vrillage: number | null
   coloris: VerdictColoris | null
 }

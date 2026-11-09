@@ -50,7 +50,11 @@ describe('horsTolerance', () => {
     expect(h).toEqual({ laize: true, poids: false, stabh: true, stabl: false, vrillage: false, coloris: true })
   })
   it('says nothing about what is not measured', () => {
-    const h = horsTolerance({ laize: 0, poids: 0, stabh: 0, stabl: 0, vrillage: null, coloris: null }, t)
+    const h = horsTolerance({ laize: 0, poids: 0, stabh: null, stabl: null, vrillage: null, coloris: null }, t)
     expect(h).toEqual({ laize: null, poids: null, stabh: null, stabl: null, vrillage: null, coloris: null })
+  })
+  it('0 / 0 is an ultra-stable matter, within tolerance (#1358)', () => {
+    const h = horsTolerance({ laize: 155, poids: 210, stabh: 0, stabl: 0, vrillage: 0, coloris: null }, t)
+    expect(h).toMatchObject({ stabh: false, stabl: false, vrillage: false })
   })
 })

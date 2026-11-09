@@ -36,6 +36,7 @@ import {
 import { colorisAControler, rondsZero, rondZeroDe, lireVerdictColoris, type VerdictColoris } from './coloris-lot.js'
 import { horsBornes, horsRetrait } from './analyse-qualite.js'
 import { VRILLAGE_MAX, lireSaisieVrillage, VrillageInvalide } from './vrillage.js'
+import { lireSaisieStab, StabInvalide, valeurStab } from './stabilites.js'
 
 // ── The steps (pure) ─────────────────────────────────────
 
@@ -59,8 +60,9 @@ export interface LaboRow {
 export interface MesuresTirelle {
   laize: number
   poids: number
-  stabh: number
-  stabl: number
+  /** NULL = not measured, 0 is a measure (#1358). */
+  stabh: number | null
+  stabl: number | null
   vrillage: number | null
   coloris: VerdictColoris | null
 }
@@ -121,8 +123,8 @@ export function horsTolerance(m: MesuresTirelle, t: Tolerances): HorsTolerance {
   return {
     laize: horsBornes(pos(m.laize), t.laize.min, t.laize.max),
     poids: horsBornes(pos(m.poids), t.poids.min, t.poids.max),
-    stabh: m.stabh !== 0 || m.stabl !== 0 ? horsRetrait(m.stabh, t.stabh) : null,
-    stabl: m.stabh !== 0 || m.stabl !== 0 ? horsRetrait(m.stabl, t.stabl) : null,
+    stabh: horsRetrait(m.stabh, t.stabh),
+    stabl: horsRetrait(m.stabl, t.stabl),
     vrillage: m.vrillage == null ? null : m.vrillage > t.vrillageMax,
     coloris: m.coloris == null ? null : m.coloris === 'ecart',
   }
@@ -257,8 +259,8 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
     const mesures: MesuresTirelle = {
       laize: num(r.laize_tirelle),
       poids: num(r.poids_tirelle),
-      stabh: num(r.stabh_tirelle),
-      stabl: num(r.stabl_tirelle),
+      stabh: valeurStab(r.stabh_tirelle),
+      stabl: valeurStab(r.stabl_tirelle),
       vrillage: r.vrillage_tirelle == null ? null : num(r.vrillage_tirelle),
       coloris: lireVerdictColoris(r.coloris_tirelle),
     }
@@ -383,8 +385,15 @@ export async function terminerApresLavage(id: number, b: { stabh?: unknown; stab
       ? 'Ce lot est parti en reprise : jetez d’abord son rond, son carré et sa tirelle.'
       : 'Finissez d’abord les contrôles avant lavage (laize, poids, coloris).')
   }
-  const stabh = borner(lireNombre(b.stabh), -60, 60, 'Stab H')
-  const stabl = borner(lireNombre(b.stabl), -60, 60, 'Stab L')
+  let stabh: number | null
+  let stabl: number | null
+  try {
+    stabh = lireSaisieStab('stabh_tirelle', b.stabh, 'Stab H')
+    stabl = lireSaisieStab('stabl_tirelle', b.stabl, 'Stab L')
+  } catch (e) {
+    if (e instanceof StabInvalide) throw new RefusLabo('valeur_hors_limites', e.message, 400)
+    throw e
+  }
   let vrillage: number | null
   try {
     vrillage = lireSaisieVrillage('vrillage_tirelle', b.vrillage)
@@ -394,10 +403,10 @@ export async function terminerApresLavage(id: number, b: { stabh?: unknown; stab
   }
   const casier = typeof b.casier === 'string' ? b.casier.trim().slice(0, CASIER_MAX) : ''
   const manque: string[] = []
-  if (l.demandes.carre.includes('stabilités')) {
-    if (stabh === null || stabl === null) manque.push('les deux stabilités')
-    // ETM reads a 0 / 0 pair as « not measured » (columns hold 0, never NULL).
-    else if (stabh === 0 && stabl === 0) throw new RefusLabo('stab_zero', 'Stab H et stab L à 0 toutes les deux : ETM le lit comme « non mesuré ». Vérifiez le carré.', 400)
+  // 0 / 0 is an ultra-stable matter, a real measure (#1358). A value already on
+  // the lot (typed on a PC) stands for the one left empty.
+  if (l.demandes.carre.includes('stabilités') && ((stabh ?? l.mesures.stabh) === null || (stabl ?? l.mesures.stabl) === null)) {
+    manque.push('les deux stabilités')
   }
   if (l.demandes.carre.includes('vrillage') && vrillage === null) manque.push('le vrillage')
   if (!casier) manque.push('le casier')
@@ -434,8 +443,8 @@ export async function effacerControlesPourReprise(tx: Sql, ligneId: number, lot:
   if (lots.length === 0) return
   const ids = lots.map((l) => Number(l.idsuivilot))
   await tx`UPDATE suivilot SET
-      laize_sst = 0, poids_sst = 0, rendement_sst = 0, stabh_sst = 0, stabl_sst = 0, vrillage_sst = NULL,
-      laize_tirelle = 0, poids_tirelle = 0, rendement_tirelle = 0, stabh_tirelle = 0, stabl_tirelle = 0,
+      laize_sst = 0, poids_sst = 0, rendement_sst = 0, stabh_sst = NULL, stabl_sst = NULL, vrillage_sst = NULL,
+      laize_tirelle = 0, poids_tirelle = 0, rendement_tirelle = 0, stabh_tirelle = NULL, stabl_tirelle = NULL,
       vrillage_tirelle = NULL, coloris_tirelle = NULL
     WHERE idsuivilot = ANY(${ids})`
   // The lab's material of a received lot goes to the bin; the reworked lot

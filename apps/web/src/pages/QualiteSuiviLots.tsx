@@ -191,13 +191,14 @@ interface SuiviLotDetail {
   poids_sst: number
   rendement_sst: number
   freinte_sst: number
-  stabH_sst: number
-  stabL_sst: number
+  /** NULL = not measured, 0 is a measure (#1358). */
+  stabH_sst: number | null
+  stabL_sst: number | null
   laize_tirelle: number
   poids_tirelle: number
   rendement_tirelle: number
-  stabH_tirelle: number
-  stabL_tirelle: number
+  stabH_tirelle: number | null
+  stabL_tirelle: number | null
   /** Vrillage in % (LIVA #1332): null = not measured, 0 is a measure. Absent on an older API. */
   vrillage_sst?: number | null
   vrillage_tirelle?: number | null
@@ -336,18 +337,23 @@ function numStr(v: number): string {
   return v === 0 ? '' : String(v)
 }
 
+/** A stabilité: only null (not measured) is empty, 0 is a measure (#1358). */
+function stabStr(v: number | null): string {
+  return v == null ? '' : String(v)
+}
+
 function snapshotEdit(d: SuiviLotDetail): EditState {
   return {
     laize_sst: numStr(d.laize_sst),
     poids_sst: numStr(d.poids_sst),
     rendement_sst: numStr(d.rendement_sst),
-    stabH_sst: numStr(d.stabH_sst),
-    stabL_sst: numStr(d.stabL_sst),
+    stabH_sst: stabStr(d.stabH_sst),
+    stabL_sst: stabStr(d.stabL_sst),
     laize_tirelle: numStr(d.laize_tirelle),
     poids_tirelle: numStr(d.poids_tirelle),
     rendement_tirelle: numStr(d.rendement_tirelle),
-    stabH_tirelle: numStr(d.stabH_tirelle),
-    stabL_tirelle: numStr(d.stabL_tirelle),
+    stabH_tirelle: stabStr(d.stabH_tirelle),
+    stabL_tirelle: stabStr(d.stabL_tirelle),
     // 0 is a real vrillage: only null (not measured) is empty.
     vrillage_sst: d.vrillage_sst == null ? '' : String(d.vrillage_sst),
     vrillage_tirelle: d.vrillage_tirelle == null ? '' : String(d.vrillage_tirelle),
@@ -1298,8 +1304,8 @@ interface TrendPoint {
   IDsuivilot: number
   lot: string
   date: string | null
-  laize_sst: number; poids_sst: number; stabH_sst: number; stabL_sst: number
-  laize_tirelle: number; poids_tirelle: number; stabH_tirelle: number; stabL_tirelle: number
+  laize_sst: number; poids_sst: number; stabH_sst: number | null; stabL_sst: number | null
+  laize_tirelle: number; poids_tirelle: number; stabH_tirelle: number | null; stabL_tirelle: number | null
   laize_demandee: number; poids_demande: number; stabH_demandee: number; stabL_demandee: number
 }
 // Per-roll point (rendement = the roll's actual rdt = metrage/poids).
@@ -1417,12 +1423,25 @@ function LotTrendDialog({
       const v = l[f] as number
       return typeof v === 'number' && v > 0 ? v : null
     }
+    // A stabilité is negative (shrinkage) and 0 is a measure; null = not measured (#1358).
+    // Its référentiel keeps 0 = nothing asked.
+    const estStab = cfg.key === 'stabH' || cfg.key === 'stabL'
+    const mesure = (l: TrendPoint, f: keyof TrendPoint) => {
+      if (!estStab) return num(l, f)
+      const v = l[f] as number | null
+      return typeof v === 'number' && Number.isFinite(v) ? v : null
+    }
+    const cible = (l: TrendPoint, f: keyof TrendPoint) => {
+      if (!estStab) return num(l, f)
+      const v = l[f] as number
+      return typeof v === 'number' && v !== 0 ? v : null
+    }
     const points: ChartPoint[] = lots.map((l) => ({
       id: l.IDsuivilot,
       primary: l.lot || `Lot #${l.IDsuivilot}`,
       date: l.date,
       isCurrent: l.IDsuivilot === curId,
-      values: { sst: num(l, cfg.fields.sst), tirelle: num(l, cfg.fields.tirelle), cible: num(l, cfg.fields.cible) },
+      values: { sst: mesure(l, cfg.fields.sst), tirelle: mesure(l, cfg.fields.tirelle), cible: cible(l, cfg.fields.cible) },
     }))
     return { unit: 'lot' as const, decimals: cfg.decimals, seriesKeys: ['sst', 'tirelle', 'cible'] as SerieKey[], points, total: data?.points.length ?? 0 }
   }, [data, param, windowSize, isRendement])
@@ -1588,8 +1607,9 @@ function TrendChart({
   }, [])
 
   const valOf = (pt: ChartPoint, s: SerieKey): number | null => {
+    // The model already left out what is not measured (a stabilité may be ≤ 0, #1358).
     const v = pt.values[s]
-    return v != null && v > 0 ? v : null
+    return v != null && Number.isFinite(v) ? v : null
   }
 
   const M = { top: 16, right: 16, bottom: 30, left: 48 }
@@ -1597,7 +1617,7 @@ function TrendChart({
   const plotH = Math.max(0, height - M.top - M.bottom)
   const n = points.length
 
-  // Y domain across active series (treat 0 / negative as not measured).
+  // Y domain across active series (null = not measured).
   const allVals: number[] = []
   for (const pt of points) for (const s of seriesKeys) { const v = valOf(pt, s); if (v != null) allVals.push(v) }
   const hasData = allVals.length > 0
@@ -2329,11 +2349,11 @@ function resolveTolerance(kind: ConformKind, b: RefBounds | undefined, rdt: Tole
 
 // Conformité d'une mesure vs sa tolérance. Returns null when there's nothing to
 // flag: no bound defined, or value not entered (0).
-function checkConform(val: number, t: Tolerance): boolean | null {
+function checkConform(val: number, t: Tolerance, zeroIsValue = false): boolean | null {
   if (t.min == null && t.max == null) return null
-  // 0 = control not made yet (no marker). A real measurement is non-zero —
-  // including negative stab readings (shrinkage).
-  if (val === 0) return null
+  // 0 = control not made yet (no marker), except on a stabilité where 0 is an
+  // ultra-stable matter (#1358). Negative stab readings are shrinkage.
+  if (val === 0 && !zeroIsValue) return null
   if (t.min != null && val < t.min) return false
   if (t.max != null && val > t.max) return false
   return true
@@ -2456,8 +2476,8 @@ function ControlesTab({
         <CarteSansValeur.Provider value={!aDesValeurs('sst')}>
         <KVNum label="Laize" field="laize_sst" detailVal={detail.laize_sst} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_sst" detailVal={detail.poids_sst} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab H" field="stabH_sst" detailVal={detail.stabH_sst} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab L" field="stabL_sst" detailVal={detail.stabL_sst} conformKind="stabL" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVNum label="Stab H" field="stabH_sst" detailVal={detail.stabH_sst} conformKind="stabH" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVNum label="Stab L" field="stabL_sst" detailVal={detail.stabL_sst} conformKind="stabL" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVVrillage label="Vrillage" field="vrillage_sst" detailVal={detail.vrillage_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         </CarteSansValeur.Provider>
       </SidebarCard>
@@ -2467,8 +2487,8 @@ function ControlesTab({
         <CarteSansValeur.Provider value={!aDesValeurs('tirelle')}>
         <KVNum label="Laize" field="laize_tirelle" detailVal={detail.laize_tirelle} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Poids" field="poids_tirelle" detailVal={detail.poids_tirelle} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab L" field="stabL_tirelle" detailVal={detail.stabL_tirelle} conformKind="stabL" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        <KVNum label="Stab L" field="stabL_tirelle" detailVal={detail.stabL_tirelle} conformKind="stabL" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVVrillage label="Vrillage" field="vrillage_tirelle" detailVal={detail.vrillage_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         {detail.coloris_controle && (detail.coloris_controle.demande || detail.coloris_controle.est_rond0) && (
           <KVColoris controle={detail.coloris_controle} detailVal={detail.coloris_tirelle ?? null} isEditing={isEditing} edit={edit} onEditField={onEditField} />
@@ -2598,10 +2618,12 @@ function KVNum({
   conformKind,
   bounds,
   rdtBounds,
+  zeroIsValue,
 }: {
   label: string
   field: keyof EditState
-  detailVal: number
+  /** null = not measured. */
+  detailVal: number | null
   dec?: number
   isEditing: boolean
   edit: EditState | null
@@ -2609,16 +2631,22 @@ function KVNum({
   conformKind?: ConformKind
   bounds?: RefBounds
   rdtBounds?: Tolerance
+  /** The stabilités: 0 is a measure, only null / empty is « not measured » (#1358). */
+  zeroIsValue?: boolean
 }) {
   // Conformity is computed off the live value: the edited string while editing,
   // the saved value otherwise — so the marker + gauge update as the user types.
-  const currentVal = isEditing && edit ? Number(edit[field]) || 0 : detailVal
+  const raw = isEditing && edit ? edit[field].trim().replace(',', '.') : null
+  const lu: number | null = raw === null ? detailVal : raw === '' || isNaN(Number(raw)) ? null : Number(raw)
+  // Laize / poids / rendement: 0 means empty.
+  const currentVal: number | null = lu === 0 && !zeroIsValue ? null : lu
   const tol = conformKind ? resolveTolerance(conformKind, bounds, rdtBounds) : null
-  const conform = tol ? checkConform(currentVal, tol) : null
+  const conform = tol && currentVal !== null ? checkConform(currentVal, tol, zeroIsValue) : null
+  const affiche = detailVal === null || (detailVal === 0 && !zeroIsValue) ? '' : fmtNum(detailVal, dec)
   return (
     <MesureRow
       label={label}
-      gauge={tol && <ToleranceGauge value={currentVal} tol={tol} conform={conform} dec={dec} />}
+      gauge={tol && <ToleranceGauge value={currentVal ?? 0} tol={tol} conform={conform} dec={dec} zeroIsValue={zeroIsValue} />}
       schema={conformKind && conformKind !== 'rendement' ? conformKind : undefined}
       isEditing={isEditing && !!edit}
     >
@@ -2632,7 +2660,7 @@ function KVNum({
           className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[72px] tabular-nums"
         />
       ) : (
-        <span className="tabular-nums text-sm">{detailVal === 0 ? '' : fmtNum(detailVal, dec)}</span>
+        <span className="tabular-nums text-sm">{affiche}</span>
       )}
     </MesureRow>
   )

@@ -100,6 +100,7 @@ import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../
 import { affectationsCommandeSst } from '../lib/affectations-sst.js'
 import { enregistrerSoumission, naturesDemandees, NATURE_LIBELLE, type NatureSoumission } from '../lib/soumission-lot.js'
 import { mpsPg } from '../lib/mps-pg.js'
+import { valeurStab } from '../lib/stabilites.js'
 import { jourDe, ligneLivreeLe } from '../lib/ligne-sst-livree.js'
 import { freinteTricotage, filPourEcru, ecruPourFil } from '../lib/freinte-tricotage.js'
 import {
@@ -5414,11 +5415,10 @@ async function upsertSuivilot(opts: {
  *  checked — the accented `*_demandée` spec columns are system-filled copies
  *  of ref_fini and carry no operator input. */
 function suivilotHasControles(row: Record<string, unknown>): boolean {
-  const numCols = [
-    'laize_sst', 'poids_sst', 'rendement_sst', 'stabH_sst', 'stabL_sst',
-    'laize_tirelle', 'poids_tirelle', 'rendement_tirelle', 'stabH_tirelle', 'stabL_tirelle',
-  ]
+  const numCols = ['laize_sst', 'poids_sst', 'rendement_sst', 'laize_tirelle', 'poids_tirelle', 'rendement_tirelle']
   if (numCols.some((c) => Number(row[c]) > 0)) return true
+  // A stabilité is NULL when not measured, 0 is a measure (#1358).
+  if (['stabH_sst', 'stabL_sst', 'stabH_tirelle', 'stabL_tirelle'].some((c) => valeurStab(row[c]) !== null)) return true
   const textCols = ['observations', 'emplacement_tirelle', 'fin_archivage']
   return textCols.some((c) => (row[c] ?? '').toString().replace(/\0/g, '').trim() !== '')
 }

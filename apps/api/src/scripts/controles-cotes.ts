@@ -25,8 +25,8 @@ async function main() {
     WITH l AS (SELECT * FROM suivilot WHERE date > now() - interval '2 years')
     SELECT r.idref_fini AS id, r.reference, r.designation::text AS designation, r.controle_malterre_stab AS stab,
            count(l.idsuivilot)::int AS lots,
-           (count(*) FILTER (WHERE l.stabh_sst <> 0 OR l.stabl_sst <> 0))::int AS stab_sst,
-           (count(*) FILTER (WHERE l.stabh_tirelle <> 0 OR l.stabl_tirelle <> 0))::int AS stab_malt
+           (count(*) FILTER (WHERE l.stabh_sst IS NOT NULL AND l.stabl_sst IS NOT NULL))::int AS stab_sst,
+           (count(*) FILTER (WHERE l.stabh_tirelle IS NOT NULL AND l.stabl_tirelle IS NOT NULL))::int AS stab_malt
     FROM ref_fini r LEFT JOIN l ON l.idref_fini = r.idref_fini
     WHERE COALESCE(r.archive, 0) = 0 AND r.designation ~* '\\mc[oô]te'
     GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC, 2`

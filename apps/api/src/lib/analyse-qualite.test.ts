@@ -37,13 +37,16 @@ describe('analyserLot', () => {
     expect(a.mesures.stabl).toMatchObject({ sst: -6, ecart_sst: -1, hors_sst: true })
   })
 
-  it('reads a 0 retrait as measured only when the control was done', () => {
+  it('a 0 retrait is a real 0, NULL is not measured (#1358)', () => {
     const a = analyserLot(lot())
-    // Tirelle laize filled → its 0 retrait H is a real 0.
     expect(a.mesures.stabh.interne).toBe(0)
-    const b = analyserLot(lot({ laize_tirelle: 0, poids_tirelle: 0 }))
-    expect(b.mesures.stabh.interne).toBeNull()
-    expect(b.mesures.stabl.interne).toBeNull()
+    // 0 / 0 measured without laize nor poids still counts.
+    const b = analyserLot(lot({ laize_tirelle: 0, poids_tirelle: 0, stabh_tirelle: 0, stabl_tirelle: 0 }))
+    expect(b.mesures.stabh.interne).toBe(0)
+    expect(b.mesures.stabl.interne).toBe(0)
+    const c = analyserLot(lot({ stabh_tirelle: null, stabl_tirelle: null }))
+    expect(c.mesures.stabh.interne).toBeNull()
+    expect(c.mesures.stabl.interne).toBeNull()
   })
 
   it('takes the fiche retraits when the lot has none (lots of 2026-05 → 09)', () => {

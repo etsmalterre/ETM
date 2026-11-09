@@ -15,6 +15,7 @@
 
 import type { PendingQuery, Row, Sql } from 'postgres'
 import { mpsPg } from '../../mps-pg.js'
+import { valeurStab } from '../../stabilites.js'
 import { query } from '../../hfsql-auto.js'
 import { esc, sstDelaiSets, STATUT_ATTENTE_DELAI, STATUT_NON_ENVOYE } from '../../sst-shared.js'
 import { noterDelaiRecu } from '../../delai-sst.js'
@@ -268,8 +269,8 @@ async function remettreLigne(idligne: number, e: EtatLigne): Promise<void> {
 // ── The dyer's measures on a lot (Contrôles) ─────────────
 
 /** The dyer side of a lot's control (suivilot *_sst). laize / poids / stab are
- *  integers in the table; vrillage NULL = not measured, 0 is a measure. */
-export interface MesuresSst { laize: number; poids: number; stabH: number; stabL: number; vrillage: number | null }
+ *  integers in the table; stab and vrillage NULL = not measured, 0 is a measure (#1358). */
+export interface MesuresSst { laize: number; poids: number; stabH: number | null; stabL: number | null; vrillage: number | null }
 
 /** One canonical text per measure set — what `proposition` / `valeur_finale`
  *  hold, so « the person kept Tricobot's values » is a string comparison. */
@@ -281,18 +282,19 @@ export function lireMesures(v: string | null): MesuresSst | null {
   try {
     const o = JSON.parse(v) as Partial<MesuresSst>
     const nombre = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : 0)
-    return { laize: nombre(o.laize), poids: nombre(o.poids), stabH: nombre(o.stabH), stabL: nombre(o.stabL), vrillage: typeof o.vrillage === 'number' ? o.vrillage : null }
+    const ouNull = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+    return { laize: nombre(o.laize), poids: nombre(o.poids), stabH: ouNull(o.stabH), stabL: ouNull(o.stabL), vrillage: ouNull(o.vrillage) }
   } catch {
     return null
   }
 }
 
 export async function lireMesuresLot(idsuivilot: number, sql: Sql = mpsPg()): Promise<MesuresSst | null> {
-  const [r] = await sql<{ laize: number; poids: number; stabh: number; stabl: number; vrillage: number | null }[]>`
+  const [r] = await sql<{ laize: number; poids: number; stabh: number | null; stabl: number | null; vrillage: number | null }[]>`
     SELECT laize_sst AS laize, poids_sst AS poids, stabh_sst AS stabh, stabl_sst AS stabl, vrillage_sst AS vrillage
     FROM suivilot WHERE idsuivilot = ${idsuivilot}`
   if (!r) return null
-  return { laize: Number(r.laize) || 0, poids: Number(r.poids) || 0, stabH: Number(r.stabh) || 0, stabL: Number(r.stabl) || 0, vrillage: r.vrillage == null ? null : Number(r.vrillage) }
+  return { laize: Number(r.laize) || 0, poids: Number(r.poids) || 0, stabH: valeurStab(r.stabh), stabL: valeurStab(r.stabl), vrillage: r.vrillage == null ? null : Number(r.vrillage) }
 }
 
 /** Write the dyer side of a lot's control, as a person would on Suivi lots. Returns what was there. */
@@ -301,13 +303,13 @@ export async function ecrireMesures(idsuivilot: number, m: MesuresSst, sql: Sql 
   if (!avant) throw new Error(`lot ${idsuivilot} introuvable`)
   await sql`
     UPDATE suivilot SET laize_sst = ${Math.round(m.laize)}, poids_sst = ${Math.round(m.poids)},
-      stabh_sst = ${Math.round(m.stabH)}, stabl_sst = ${Math.round(m.stabL)}, vrillage_sst = ${m.vrillage}
+      stabh_sst = ${m.stabH == null ? null : Math.round(m.stabH)}, stabl_sst = ${m.stabL == null ? null : Math.round(m.stabL)}, vrillage_sst = ${m.vrillage}
     WHERE idsuivilot = ${idsuivilot}`
   return avant
 }
 
 /** Does the lot hold any dyer measure already? */
-export const aDesMesures = (m: MesuresSst) => m.laize !== 0 || m.poids !== 0 || m.stabH !== 0 || m.stabL !== 0 || m.vrillage != null
+export const aDesMesures = (m: MesuresSst) => m.laize !== 0 || m.poids !== 0 || m.stabH != null || m.stabL != null || m.vrillage != null
 
 // ── The person's gestures ────────────────────────────────
 
@@ -368,7 +370,7 @@ async function ecrireValeur(s: Saisie, valeur: string, par: Auteur): Promise<str
 export async function corriger(id: number, valeur: string, commentaire: string, par: Auteur): Promise<void> {
   const s = await aJuger(id, ['saisie'])
   const why = pourquoi(commentaire)
-  const canon = s.champ === 'mesures_sst' ? texteMesures(lireMesures(valeur) ?? { laize: NaN, poids: 0, stabH: 0, stabL: 0, vrillage: null }) : valeur
+  const canon = s.champ === 'mesures_sst' ? texteMesures(lireMesures(valeur) ?? { laize: NaN, poids: 0, stabH: null, stabL: null, vrillage: null }) : valeur
   if (canon === s.proposition) throw new GesteRefuse('meme_valeur', 'Ce sont les valeurs de Tricobot : validez-les plutôt.')
   const ecrit = await ecrireValeur(s, valeur, par)
   await marquer(id, 'corrigee', par, ecrit, why)

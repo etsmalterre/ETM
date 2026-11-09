@@ -11,13 +11,14 @@
 //  - Rendement SST: stored only until 2026-06; the legacy value was the lot's
 //    Σ metrage / Σ poids over its fini pieces (checked on 10 lots, 2026-10-13),
 //    so it is recomputed from the pieces when the column is 0.
-//  - A control « was done » when its laize or poids is filled: only then is a
-//    0 retrait a real 0 (no shrinkage) instead of « not measured ».
+//  - A retrait is NULL when not measured and 0 is a real 0 (no shrinkage,
+//    LIVA #1358, lib/stabilites.ts).
 //  - Tolerances come from the CURRENT fiche (same as Suivi lots): laize and
 //    poids within [min, max], retrait ≥ the référentiel (shrinkage is negative),
 //    rendement within the bounds of lib suivi-lots (gxRendementMini/Maxi).
 
 import { mpsPg } from './mps-pg.js'
+import { valeurStab } from './stabilites.js'
 
 /** One raw row of the analysis query (numbers already coerced). */
 export interface LotBrut {
@@ -37,12 +38,13 @@ export interface LotBrut {
   laize_sst: number
   poids_sst: number
   rendement_sst: number
-  stabh_sst: number
-  stabl_sst: number
+  /** NULL = not measured, 0 is a measure (#1358). */
+  stabh_sst: number | null
+  stabl_sst: number | null
   laize_tirelle: number
   poids_tirelle: number
-  stabh_tirelle: number
-  stabl_tirelle: number
+  stabh_tirelle: number | null
+  stabl_tirelle: number | null
   /** Σ metrage / Σ poids of the lot's fini pieces (null without pieces). */
   rendement_pieces: number | null
   // Current fiche of the reference.
@@ -124,9 +126,6 @@ export function bornesRendement(b: LotBrut): { min: number; max: number } {
 const pos = (v: number): number | null => (v > 0 ? v : null)
 
 export function analyserLot(b: LotBrut): LotAnalyse {
-  const controleSst = b.laize_sst > 0 || b.poids_sst > 0
-  const controleInterne = b.laize_tirelle > 0 || b.poids_tirelle > 0
-
   const refRetraitsFiche =
     b.stabh_demandee === 0 && b.stabl_demandee === 0 &&
     (b.fiche_stab_hauteur !== 0 || b.fiche_stab_largeur !== 0)
@@ -169,9 +168,7 @@ export function analyserLot(b: LotBrut): LotAnalyse {
     hors_sst: horsBornes(rdtSst, rdtBornes.min, rdtBornes.max),
     hors_interne: null,
   }
-  const retrait = (ref: number | null, sstVal: number, intVal: number): ValeursMesure => {
-    const sst = controleSst ? sstVal : null
-    const interne = controleInterne ? intVal : null
+  const retrait = (ref: number | null, sst: number | null, interne: number | null): ValeursMesure => {
     return {
       ref,
       sst,
@@ -231,12 +228,12 @@ export async function chargerLotsAnalyse(): Promise<LotAnalyse[]> {
            COALESCE(s.laize_sst, 0)::float8 AS laize_sst,
            COALESCE(s.poids_sst, 0)::float8 AS poids_sst,
            COALESCE(s.rendement_sst, 0)::float8 AS rendement_sst,
-           COALESCE(s.stabh_sst, 0)::float8 AS stabh_sst,
-           COALESCE(s.stabl_sst, 0)::float8 AS stabl_sst,
+           s.stabh_sst::float8 AS stabh_sst,
+           s.stabl_sst::float8 AS stabl_sst,
            COALESCE(s.laize_tirelle, 0)::float8 AS laize_tirelle,
            COALESCE(s.poids_tirelle, 0)::float8 AS poids_tirelle,
-           COALESCE(s.stabh_tirelle, 0)::float8 AS stabh_tirelle,
-           COALESCE(s.stabl_tirelle, 0)::float8 AS stabl_tirelle,
+           s.stabh_tirelle::float8 AS stabh_tirelle,
+           s.stabl_tirelle::float8 AS stabl_tirelle,
            CASE WHEN p.poids > 0 THEN p.metrage / p.poids END AS rendement_pieces,
            COALESCE(rf.laizeht_min, 0)::float8 AS fiche_laize_min,
            COALESCE(rf.laizeht_max, 0)::float8 AS fiche_laize_max,
@@ -263,6 +260,7 @@ function versLotBrut(r: Record<string, unknown>): LotBrut {
     const v = Number(r[k])
     return Number.isFinite(v) ? v : 0
   }
+  const numOuNull = (k: string) => valeurStab(r[k])
   const str = (k: string) => String(r[k] ?? '').trim()
   return {
     idsuivilot: num('idsuivilot'),
@@ -281,12 +279,12 @@ function versLotBrut(r: Record<string, unknown>): LotBrut {
     laize_sst: num('laize_sst'),
     poids_sst: num('poids_sst'),
     rendement_sst: num('rendement_sst'),
-    stabh_sst: num('stabh_sst'),
-    stabl_sst: num('stabl_sst'),
+    stabh_sst: numOuNull('stabh_sst'),
+    stabl_sst: numOuNull('stabl_sst'),
     laize_tirelle: num('laize_tirelle'),
     poids_tirelle: num('poids_tirelle'),
-    stabh_tirelle: num('stabh_tirelle'),
-    stabl_tirelle: num('stabl_tirelle'),
+    stabh_tirelle: numOuNull('stabh_tirelle'),
+    stabl_tirelle: numOuNull('stabl_tirelle'),
     rendement_pieces: r.rendement_pieces == null ? null : num('rendement_pieces'),
     fiche_laize_min: num('fiche_laize_min'),
     fiche_laize_max: num('fiche_laize_max'),

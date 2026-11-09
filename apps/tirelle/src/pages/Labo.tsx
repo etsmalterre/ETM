@@ -522,9 +522,10 @@ function dernierCasier(): string {
 // After the wash — on the square: stab H, stab L, vrillage, then the casier
 // where square and tirelle are stored. One button: the lab is done with the lot.
 function BlocApresLavage({ lot, onFait }: { lot: LotLabo; onFait: () => void }) {
-  const signeDe = (v: number) => (v > 0 ? '+' : '-') as '-' | '+'
-  const [stabh, setStabh] = useState(fmt(lot.mesures.stabh ? Math.abs(lot.mesures.stabh) : null))
-  const [stabl, setStabl] = useState(fmt(lot.mesures.stabl ? Math.abs(lot.mesures.stabl) : null))
+  const signeDe = (v: number | null) => (v != null && v > 0 ? '+' : '-') as '-' | '+'
+  // null = not measured; 0 is a measure, an ultra-stable matter (#1358).
+  const [stabh, setStabh] = useState(fmt(lot.mesures.stabh == null ? null : Math.abs(lot.mesures.stabh)))
+  const [stabl, setStabl] = useState(fmt(lot.mesures.stabl == null ? null : Math.abs(lot.mesures.stabl)))
   const [sh, setSh] = useState<'-' | '+'>(signeDe(lot.mesures.stabh))
   const [sl, setSl] = useState<'-' | '+'>(signeDe(lot.mesures.stabl))
   const [vrillage, setVrillage] = useState(fmt(lot.mesures.vrillage))

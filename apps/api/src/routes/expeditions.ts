@@ -74,6 +74,7 @@ import { ADRESSE_A_DEFINIR_REFUS, isAdresseADefinir, withAdresseADefinir } from 
 import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable, refsExpedieesDesReception } from '../lib/fini-expediable.js'
 import { mentionRouleauNonFacture, paragraphePointsASignaler, pointsASignaler, type RouleauASignaler } from '../lib/bl-points-a-signaler.js'
 import { rechercherExpeditionsDivers, rechercherExpeditionsFormelles, type RechercheEtat } from '../lib/expeditions-recherche.js'
+import { valeurStab } from '../lib/stabilites.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -2116,11 +2117,10 @@ async function loadFormelleFiniLines(id: number): Promise<FormelleFiniCtx | null
 /** Prefer the suivilot row that carries operator data — measurements can be
  *  negative (stab), so check "any non-zero" plus the free-text columns. */
 function suivilotRowHasData(row: Record<string, unknown>): boolean {
-  const numCols = [
-    'laize_sst', 'poids_sst', 'rendement_sst', 'stabH_sst', 'stabL_sst',
-    'laize_tirelle', 'poids_tirelle', 'rendement_tirelle', 'stabH_tirelle', 'stabL_tirelle',
-  ]
+  const numCols = ['laize_sst', 'poids_sst', 'rendement_sst', 'laize_tirelle', 'poids_tirelle', 'rendement_tirelle']
   if (numCols.some((c) => Number(row[c]) !== 0 && Number.isFinite(Number(row[c])))) return true
+  // A stabilité is NULL when not measured, 0 is a measure (#1358).
+  if (['stabH_sst', 'stabL_sst', 'stabH_tirelle', 'stabL_tirelle'].some((c) => valeurStab(row[c]) !== null)) return true
   const textCols = ['observations', 'emplacement_tirelle', 'fin_archivage']
   return textCols.some((c) => (row[c] ?? '').toString().replace(/\0/g, '').trim() !== '')
 }

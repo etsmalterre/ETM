@@ -11,10 +11,14 @@ describe('mesuresManquantes', () => {
     expect(mesuresManquantes({ laize: 160, poids: 210, stabH: 0, stabL: 2, vrillage: 2 })).toEqual([])
   })
   it('names what is missing, in display order', () => {
-    expect(mesuresManquantes({ laize: 0, poids: 0, stabH: 0, stabL: 0, vrillage: 2 })).toEqual(['laize', 'poids', 'stabilités'])
+    expect(mesuresManquantes({ laize: 0, poids: 0, stabH: null, stabL: null, vrillage: 2 })).toEqual(['laize', 'poids', 'stabilités'])
     // The old rule (laize OR poids) passed this lot: stabilités are now due too.
-    expect(mesuresManquantes({ laize: 160, poids: 210, stabH: 0, stabL: 0, vrillage: 2 })).toEqual(['stabilités'])
+    expect(mesuresManquantes({ laize: 160, poids: 210, stabH: null, stabL: null, vrillage: 2 })).toEqual(['stabilités'])
     expect(mesuresManquantes({ laize: 0, poids: 210, stabH: -2, stabL: -1, vrillage: 2 })).toEqual(['laize'])
+  })
+  it('0 / 0 is an ultra-stable matter, a real measure (#1358); one side missing is not measured', () => {
+    expect(mesuresManquantes({ laize: 160, poids: 210, stabH: 0, stabL: 0, vrillage: 2 })).toEqual([])
+    expect(mesuresManquantes({ laize: 160, poids: 210, stabH: 0, stabL: null, vrillage: 2 })).toEqual(['stabilités'])
   })
 })
 

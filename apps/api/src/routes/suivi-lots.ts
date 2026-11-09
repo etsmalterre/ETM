@@ -48,6 +48,7 @@ import {
   VRILLAGE_MAX, type ChampVrillage, type VrillagesLot,
 } from '../lib/vrillage.js'
 import { etatLaboDuLot } from '../lib/tirelle-labo.js'
+import { lireSaisieStab, StabInvalide, valeurStab } from '../lib/stabilites.js'
 import { colorisAControler, colorisDemande, historiqueColoris, lireVerdictColoris, rondsZero, rondZeroDe } from '../lib/coloris-lot.js'
 
 /** Tricobot waits for a person on a lot. */
@@ -682,15 +683,16 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
       poids_sst: n(raw.poids_sst),
       rendement_sst: n(raw.rendement_sst),
       freinte_sst, // computed (ratio); UI shows as percentage
-      stabH_sst: n(raw.stabH_sst),
-      stabL_sst: n(raw.stabL_sst),
+      // NULL = not measured, 0 is a measure (#1358).
+      stabH_sst: valeurStab(raw.stabH_sst),
+      stabL_sst: valeurStab(raw.stabL_sst),
 
       // Contrôles — Tirelle
       laize_tirelle: n(raw.laize_tirelle),
       poids_tirelle: n(raw.poids_tirelle),
       rendement_tirelle: n(raw.rendement_tirelle),
-      stabH_tirelle: n(raw.stabH_tirelle),
-      stabL_tirelle: n(raw.stabL_tirelle),
+      stabH_tirelle: valeurStab(raw.stabH_tirelle),
+      stabL_tirelle: valeurStab(raw.stabL_tirelle),
 
       // Vrillage (LIVA #1332, lib/vrillage.ts): null = not measured, 0 is a measure.
       ...(await vrillagesDuLot(id).then((v) => ({
@@ -895,6 +897,11 @@ suiviLotsRouter.get('/:id/serie', async (req: Request, res: Response) => {
       const k = Object.keys(row).find((key) => re.test(key))
       return k !== undefined ? n(row[k]) : 0
     }
+    // A measured stabilité: NULL = not measured, 0 is a measure (#1358).
+    const pickStab = (row: Record<string, unknown>, re: RegExp): number | null => {
+      const k = Object.keys(row).find((key) => re.test(key))
+      return k !== undefined ? valeurStab(row[k]) : null
+    }
 
     // Per-lot points (laize / poids / stab — measured once per lot). Newest-first
     // from SQL → reverse to oldest→newest for the X axis.
@@ -906,13 +913,13 @@ suiviLotsRouter.get('/:id/serie', async (req: Request, res: Response) => {
 
         laize_sst: pickNum(row, /^laize_sst$/i),
         poids_sst: pickNum(row, /^poids_sst$/i),
-        stabH_sst: pickNum(row, /^stabh_sst$/i),
-        stabL_sst: pickNum(row, /^stabl_sst$/i),
+        stabH_sst: pickStab(row, /^stabh_sst$/i),
+        stabL_sst: pickStab(row, /^stabl_sst$/i),
 
         laize_tirelle: pickNum(row, /^laize_tir/i),
         poids_tirelle: pickNum(row, /^poids_tir/i),
-        stabH_tirelle: pickNum(row, /^stabh_tir/i),
-        stabL_tirelle: pickNum(row, /^stabl_tir/i),
+        stabH_tirelle: pickStab(row, /^stabh_tir/i),
+        stabL_tirelle: pickStab(row, /^stabl_tir/i),
 
         laize_demandee: pickNum(row, /^laize_dem/i),
         poids_demande: pickNum(row, /^poids_dem/i),
@@ -1022,13 +1029,25 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
       if (e instanceof VrillageInvalide) { res.status(400).json({ error: 'vrillage_invalide', champ: e.champ, message: e.message }); return }
       throw e
     }
+    // Stabilités: empty = not measured (NULL), 0 is a measure (#1358). A field the
+    // body leaves out keeps its value.
+    const stabs: string[] = []
+    try {
+      for (const [champ, libelle] of [['stabH_sst', 'Stab H ennoblisseur'], ['stabL_sst', 'Stab L ennoblisseur'], ['stabH_tirelle', 'Stab H Malterre'], ['stabL_tirelle', 'Stab L Malterre']] as const) {
+        if (!(champ in b)) continue
+        const v = lireSaisieStab(champ, b[champ], libelle)
+        stabs.push(`${champ} = ${v === null ? 'NULL' : v}`)
+      }
+    } catch (e) {
+      if (e instanceof StabInvalide) { res.status(400).json({ error: 'stab_invalide', champ: e.champ, message: e.message }); return }
+      throw e
+    }
 
     await query(
       `UPDATE suivilot SET
          laize_sst = ${n(b.laize_sst)}, poids_sst = ${n(b.poids_sst)}, rendement_sst = ${n(b.rendement_sst)},
-         stabH_sst = ${n(b.stabH_sst)}, stabL_sst = ${n(b.stabL_sst)},
          laize_tirelle = ${n(b.laize_tirelle)}, poids_tirelle = ${n(b.poids_tirelle)}, rendement_tirelle = ${n(b.rendement_tirelle)},
-         stabH_tirelle = ${n(b.stabH_tirelle)}, stabL_tirelle = ${n(b.stabL_tirelle)},
+         ${stabs.map((x) => `${x}, `).join('')}
          observations = ${sqlText(b.observations)}, emplacement_tirelle = ${sqlText(b.emplacement_tirelle)},
          fin_archivage = '${dateStr(b.fin_archivage)}'
        WHERE IDsuivilot = ${id}`,

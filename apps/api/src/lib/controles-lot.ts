@@ -20,17 +20,19 @@
 // Never a « nc » typed on the lot: not measuring is a decision on the
 // article, taken once, not a way out of one lot.
 //
-// The stabilités are a pair (hauteur / largeur) stored 0 when empty, and 0 is
-// also a real shrinkage: the pair counts as measured when either side is non-zero
-// (prod 2026: no lot holds a genuine 0 / 0). The vrillage is NULL when not
-// measured and 0 is a real one (lib/vrillage.ts).
+// The stabilités are a pair (hauteur / largeur), NULL when not measured and 0 a
+// real shrinkage since #1358 (lib/stabilites.ts): measured when both are given.
+// The vrillage is NULL when not measured and 0 is a real one (lib/vrillage.ts).
+
+import { stabMesurees } from './stabilites.js'
 
 /** suivilot measures of one side. */
 export interface MesuresLot {
   laize: number
   poids: number
-  stabH: number
-  stabL: number
+  /** NULL = not measured; 0 is a measure (#1358). */
+  stabH: number | null
+  stabL: number | null
   /** NULL / absent = not measured; 0 is a measure. */
   vrillage?: number | null
   /** Malterre only: the coloris is owed (dyed fini, not the rond 0) and not given yet. */
@@ -74,7 +76,7 @@ export function mesuresManquantes(m: MesuresLot, demandees: MesuresDemandees = T
   const out: string[] = []
   if (demandees.laize && !(Number(m.laize) > 0)) out.push('laize')
   if (demandees.poids && !(Number(m.poids) > 0)) out.push('poids')
-  if (demandees.stabilites && !(Number(m.stabH) !== 0 || Number(m.stabL) !== 0)) out.push('stabilités')
+  if (demandees.stabilites && !stabMesurees(m.stabH, m.stabL)) out.push('stabilités')
   if (demandees.vrillage && (m.vrillage == null || !Number.isFinite(Number(m.vrillage)))) out.push('vrillage')
   if (m.colorisManquant) out.push('coloris')
   return out

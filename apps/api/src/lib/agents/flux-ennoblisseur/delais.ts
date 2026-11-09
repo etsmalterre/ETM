@@ -203,7 +203,7 @@ export async function deciderControles(e: EntreeFlux, prompt: Pick<AgentVersion,
       FROM suivilot WHERE lot::text ~* ${'(^|[^0-9])' + c.lot + '([^0-9]|$)'} ORDER BY idsuivilot DESC LIMIT 1` : []
     const actuel = l ? await lireMesuresLot(Number(l.idsuivilot), sql) : null
     const lu: MesuresSst | null = c.laize != null || c.poids != null || c.stabH != null || c.stabL != null || c.vrillage != null
-      ? { laize: c.laize ?? 0, poids: c.poids ?? 0, stabH: c.stabH ?? 0, stabL: c.stabL ?? 0, vrillage: c.vrillage }
+      ? { laize: c.laize ?? 0, poids: c.poids ?? 0, stabH: c.stabH, stabL: c.stabL, vrillage: c.vrillage }
       : null
     const r: ControleRapproche = {
       ...c,
@@ -227,7 +227,7 @@ export async function deciderControles(e: EntreeFlux, prompt: Pick<AgentVersion,
     } else if (actuel && texteMesures(actuel) === texteMesures(lu)) r.explication = 'Le lot porte déjà ces mesures.'
     else {
       r.decision = 'saisie'
-      r.explication = `Laize ${lu.laize} cm, poids ${lu.poids} g/m², stabilités ${lu.stabH} / ${lu.stabL}${lu.vrillage != null ? `, vrillage ${lu.vrillage} %` : ''} : à reporter côté ennoblisseur.`
+      r.explication = `Laize ${lu.laize} cm, poids ${lu.poids} g/m², stabilités ${lu.stabH ?? '?'} / ${lu.stabL ?? '?'}${lu.vrillage != null ? `, vrillage ${lu.vrillage} %` : ''} : à reporter côté ennoblisseur.`
     }
     r.mesures = lu
     out.push(r)

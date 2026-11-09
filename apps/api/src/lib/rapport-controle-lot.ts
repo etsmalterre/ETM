@@ -27,6 +27,7 @@
 
 import { mpsPg } from './mps-pg.js'
 import type { RapportControlePdfData } from './pdf/RapportControlePdf.js'
+import { valeurStab } from './stabilites.js'
 
 export interface ClientDuLot {
   idclient: number
@@ -155,12 +156,12 @@ export async function rapportControleLot(idsuivilot: number, idclient: number): 
   const sql = mpsPg()
   const [s] = await sql<{
     ligne: number; lot: string; idref_fini: number; idref_fini_colori: number; idcoloris: number
-    laize: number; poids: number; stabh: number; stabl: number
+    laize: number; poids: number; stabh: number | null; stabl: number | null
   }[]>`
     SELECT idligne_commande_sous_traitant AS ligne, trim(lot::text) AS lot, COALESCE(idref_fini, 0) AS idref_fini,
            COALESCE(idref_fini_colori, 0) AS idref_fini_colori, COALESCE(idcoloris, 0) AS idcoloris,
            COALESCE(laize_tirelle, 0) AS laize, COALESCE(poids_tirelle, 0) AS poids,
-           COALESCE(stabh_tirelle, 0) AS stabh, COALESCE(stabl_tirelle, 0) AS stabl
+           stabh_tirelle AS stabh, stabl_tirelle AS stabl
     FROM suivilot WHERE idsuivilot = ${idsuivilot}`
   if (!s || !(Number(s.ligne) > 0) || !s.lot) return null
 
@@ -215,8 +216,8 @@ export async function rapportControleLot(idsuivilot: number, idclient: number): 
         rows: [
           { parametre: 'Laize HT', min: nul0(rf?.lmin), max: nul0(rf?.lmax), releve: nul0(s.laize) },
           { parametre: 'Poids', min: nul0(rf?.pmin), max: nul0(rf?.pmax), releve: nul0(s.poids) },
-          { parametre: 'Stab H', min: nul0(rf?.sh), max: null, releve: nul0(s.stabh) },
-          { parametre: 'Stab L', min: nul0(rf?.sl), max: null, releve: nul0(s.stabl) },
+          { parametre: 'Stab H', min: nul0(rf?.sh), max: null, releve: valeurStab(s.stabh) },
+          { parametre: 'Stab L', min: nul0(rf?.sl), max: null, releve: valeurStab(s.stabl) },
         ],
       }],
       pieces: rouleaux.map((r) => ({ numero: (r.numero ?? '').trim() || `#${r.id}`, poids: Number(r.poids), metrage: Number(r.metrage) })),

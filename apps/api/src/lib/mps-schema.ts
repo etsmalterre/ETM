@@ -1725,6 +1725,23 @@ ALTER TABLE saisie_agent ADD CONSTRAINT saisie_agent_statut_check
 CREATE INDEX saisie_agent_observation ON saisie_agent (idligne_commande_sous_traitant, idsuivilot) WHERE statut = 'observation';
 `,
   },
+  {
+    // Stabilités: NULL = not measured, 0 is a real measure — an ultra-stable matter
+    // (LIVA #1358, Laetitia, decision Vincent 2026-11-09; lib/stabilites.ts). A
+    // stored 0 / 0 pair was what ETM read as « non mesuré »: it becomes NULL / NULL,
+    // so nothing read today changes. A single 0 beside a non-zero side stays a 0.
+    // The *_demandee columns (what the client asks) keep 0 = nothing asked.
+    name: '0065_stabilites_null_non_mesure',
+    sql: `
+ALTER TABLE suivilot
+  ALTER COLUMN stabh_sst DROP DEFAULT, ALTER COLUMN stabl_sst DROP DEFAULT,
+  ALTER COLUMN stabh_tirelle DROP DEFAULT, ALTER COLUMN stabl_tirelle DROP DEFAULT;
+UPDATE suivilot SET stabh_sst = NULL, stabl_sst = NULL
+WHERE COALESCE(stabh_sst, 0) = 0 AND COALESCE(stabl_sst, 0) = 0 AND (stabh_sst IS NOT NULL OR stabl_sst IS NOT NULL);
+UPDATE suivilot SET stabh_tirelle = NULL, stabl_tirelle = NULL
+WHERE COALESCE(stabh_tirelle, 0) = 0 AND COALESCE(stabl_tirelle, 0) = 0 AND (stabh_tirelle IS NOT NULL OR stabl_tirelle IS NOT NULL);
+`,
+  },
 ]
 
 export interface MigrationStatus {
