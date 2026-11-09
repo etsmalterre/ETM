@@ -48,6 +48,7 @@ export function ChampNombre({
   onSigne,
   disabled,
   autoFocus,
+  grand,
 }: {
   label: string
   unite: string
@@ -61,6 +62,8 @@ export function ChampNombre({
   onSigne?: (s: '-' | '+') => void
   disabled?: boolean
   autoFocus?: boolean
+  /** Bench size: a taller field and bigger digits (the lab screen's two columns). */
+  grand?: boolean
 }) {
   return (
     <div className="space-y-1 min-w-0">
@@ -84,7 +87,8 @@ export function ChampNombre({
                 disabled={disabled}
                 onClick={() => onSigne(s)}
                 className={cn(
-                  'w-12 text-2xl font-bold transition-colors',
+                  grand ? 'w-16 text-3xl' : 'w-12 text-2xl',
+                  'font-bold transition-colors',
                   signe === s ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground active:bg-muted',
                 )}
                 aria-pressed={signe === s}
@@ -105,7 +109,8 @@ export function ChampNombre({
             value={valeur}
             onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ''))}
             className={cn(
-              'w-full min-w-0 h-14 rounded-xl border-2 bg-background pl-4 pr-16 text-3xl font-bold tabular-nums',
+              'w-full min-w-0 rounded-xl border-2 bg-background pl-4 pr-16 font-bold tabular-nums',
+              grand ? 'h-[72px] text-4xl' : 'h-14 text-3xl',
               'focus:outline-none focus:ring-4 focus:ring-gold/40 disabled:opacity-60',
               hors === true ? 'border-destructive text-destructive' : hors === false ? 'border-success' : 'border-border',
             )}

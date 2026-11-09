@@ -464,27 +464,36 @@ function Piste({ etape }: { etape: EtapeLabo }) {
 
 // ── Step layout ─────────────────────────────────────────
 
-/** Tasks scroll (only as a fallback on a small screen), the action stays at the bottom. */
+/** The tasks fill the height between the band and the action (the scroll is
+ *  only a fallback for a small screen); the action stays at the bottom. */
 function Etape({ pied, children }: { pied: ReactNode; children: ReactNode }) {
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent space-y-2 p-3">{children}</div>
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent flex flex-col gap-3 p-3">{children}</div>
       <div className="flex-shrink-0 space-y-2 border-t border-border/60 bg-white p-3">{pied}</div>
     </div>
   )
 }
 
 /** One numbered task: its number turns into a green tick once done. */
-function Tache({ n, titre, fait, facultatif, droite, children }: {
+function Tache({ n, titre, sousTitre, fait, facultatif, droite, etirer, children }: {
   n: number
   titre: string
+  /** The instruction that goes with the task, under its title. */
+  sousTitre?: ReactNode
   fait: boolean
   facultatif?: boolean
   droite?: ReactNode
+  /** Take the column's remaining height (the last task of a column). */
+  etirer?: boolean
   children: ReactNode
 }) {
   return (
-    <section className={cn('rounded-xl border bg-white px-4 py-2.5 shadow-sm transition-colors', fait ? 'border-success/40' : 'border-border/60')}>
+    <section className={cn(
+      'rounded-xl border bg-white px-4 py-3 shadow-sm transition-colors flex flex-col',
+      etirer && 'flex-1',
+      fait ? 'border-success/40' : 'border-border/60',
+    )}>
       <div className="flex items-center gap-2.5 mb-2">
         <span className={cn(
           'h-7 w-7 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 transition-colors',
@@ -496,7 +505,8 @@ function Tache({ n, titre, fait, facultatif, droite, children }: {
         {facultatif && !fait && <span className="text-sm text-muted-foreground">facultatif</span>}
         {droite && <div className="ml-auto min-w-0">{droite}</div>}
       </div>
-      {children}
+      {sousTitre && <div className="-mt-1 mb-2 pl-[38px] text-sm text-muted-foreground space-y-1">{sousTitre}</div>}
+      <div className="flex-1 min-h-0 flex flex-col gap-3">{children}</div>
     </section>
   )
 }
@@ -513,7 +523,7 @@ function Consigne({ icone: Icone, children }: { icone: typeof Scissors; children
 
 function Observations({ n, valeur, onChange, ecart }: { n: number; valeur: string; onChange: (v: string) => void; ecart?: boolean }) {
   return (
-    <Tache n={n} titre="Observations" fait={!!valeur.trim()} facultatif={!ecart}>
+    <Tache n={n} titre="Observations" fait={!!valeur.trim()} facultatif={!ecart} etirer>
       <textarea
         value={valeur}
         onChange={(e) => onChange(e.target.value)}
@@ -521,7 +531,7 @@ function Observations({ n, valeur, onChange, ecart }: { n: number; valeur: strin
         maxLength={2000}
         placeholder={ecart ? 'Décrivez l’écart de coloris…' : 'Une remarque sur le lot'}
         className={cn(
-          'w-full rounded-xl border-2 bg-background px-3 py-2 text-lg focus:outline-none focus:ring-4 focus:ring-gold/40 resize-none',
+          'flex-1 min-h-[64px] w-full rounded-xl border-2 bg-background px-3 py-2 text-lg focus:outline-none focus:ring-4 focus:ring-gold/40 resize-none',
           ecart && !valeur.trim() ? 'border-gold' : 'border-border',
         )}
       />
@@ -611,6 +621,8 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
     demande('coloris') && !coloris && 'le coloris',
   ].filter(Boolean) as string[]
   const mesuresFaites = (!demande('laize') || !!lireNombre(laize)) && (!demande('poids') || !!lireNombre(poids))
+  const mesureRond = demande('laize') || demande('poids')
+  const decoupe = <>Découpez le <strong className="text-foreground">rond</strong> et le <strong className="text-foreground">carré de 50 × 50 cm</strong>, lot écrit dessus.</>
   let n = 0
   const action = (
     <Action enCours={mut.isPending} manque={manque} onClick={() => mut.mutate()} icone={Check}>
@@ -634,50 +646,58 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
         </>
       )}
     >
-      <Consigne icone={correction ? Pencil : Scissors}>
-        <p>
-          {correction
-            ? 'Correction des mesures du rond : le lot reste en contrôles après lavage.'
-            : <>Découpez le <strong>rond</strong> et le <strong>carré de 50 × 50 cm</strong>, lot écrit dessus.</>}
-        </p>
-        {!demande('coloris') && lot.rond0?.estCeLot && <InfoRond0 lot={lot} />}
-      </Consigne>
-      {(demande('laize') || demande('poids')) && (
-        <Tache n={++n} titre="Mesurer le rond" fait={mesuresFaites}>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {(correction || !mesureRond) && (
+        <Consigne icone={correction ? Pencil : Scissors}>
+          <p>{correction ? 'Correction des mesures du rond : le lot reste en contrôles après lavage.' : decoupe}</p>
+          {!demande('coloris') && lot.rond0?.estCeLot && <InfoRond0 lot={lot} />}
+        </Consigne>
+      )}
+      {/* One row: the round's measures beside its coloris, as tall as each
+          other; the observations below take the rest of the height. */}
+      <div className={cn('grid grid-cols-1 gap-3', mesureRond && demande('coloris') && 'md:grid-cols-2')}>
+        {mesureRond && (
+          <Tache n={++n} titre="Mesurer le rond" fait={mesuresFaites}
+            sousTitre={correction ? undefined : (
+              <>
+                <p>{decoupe}</p>
+                {!demande('coloris') && lot.rond0?.estCeLot && <InfoRond0 lot={lot} />}
+              </>
+            )}>
             {demande('laize') && (
-              <ChampNombre label="Laize" unite="cm" valeur={laize} onChange={setLaize}
+              <ChampNombre grand label="Laize" unite="cm" valeur={laize} onChange={setLaize}
                 aide={aides.laize} hors={horsBornes(lireNombre(laize), lot.tolerances.laize)} />
             )}
             {demande('poids') && (
-              <ChampNombre label="Poids" unite="g/m²" valeur={poids} onChange={setPoids}
+              <ChampNombre grand label="Poids" unite="g/m²" valeur={poids} onChange={setPoids}
                 aide={aides.poids} hors={horsBornes(lireNombre(poids), lot.tolerances.poids)} />
             )}
-          </div>
-        </Tache>
-      )}
-      {demande('coloris') && (
-        <Tache n={++n} titre="Comparer le coloris au rond 0" fait={!!coloris} droite={<InfoRond0 lot={lot} />}>
-          <div className="grid grid-cols-2 gap-3">
-            {([['conforme', 'Conforme', CheckCircle2], ['ecart', 'Écart', AlertTriangle]] as const).map(([v, libelle, Icone]) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => setColoris(v)}
-                aria-pressed={coloris === v}
-                className={cn(
-                  'h-14 rounded-xl border-2 text-xl font-semibold flex items-center justify-center gap-2 transition-colors',
-                  coloris === v
-                    ? v === 'conforme' ? 'bg-success border-success text-white shadow-sm' : 'bg-destructive border-destructive text-white shadow-sm'
-                    : v === 'conforme' ? 'bg-white border-success/40 text-success active:bg-success/10' : 'bg-white border-destructive/40 text-destructive active:bg-destructive/10',
-                )}
-              >
-                <Icone className="h-6 w-6" />{libelle}
-              </button>
-            ))}
-          </div>
-        </Tache>
-      )}
+          </Tache>
+        )}
+        {demande('coloris') && (
+              <Tache n={++n} titre="Comparer le coloris au rond 0" fait={!!coloris}>
+                <InfoRond0 lot={lot} />
+                {/* The two buttons grow to the measures' height: big targets. */}
+                <div className="flex-1 grid grid-cols-2 gap-3">
+                  {([['conforme', 'Conforme', CheckCircle2], ['ecart', 'Écart', AlertTriangle]] as const).map(([v, libelle, Icone]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setColoris(v)}
+                      aria-pressed={coloris === v}
+                      className={cn(
+                        'h-full min-h-[72px] rounded-xl border-2 text-2xl font-semibold flex items-center justify-center gap-2 transition-colors',
+                        coloris === v
+                          ? v === 'conforme' ? 'bg-success border-success text-white shadow-sm' : 'bg-destructive border-destructive text-white shadow-sm'
+                          : v === 'conforme' ? 'bg-white border-success/40 text-success active:bg-success/10' : 'bg-white border-destructive/40 text-destructive active:bg-destructive/10',
+                      )}
+                    >
+                      <Icone className="h-7 w-7" />{libelle}
+                    </button>
+                  ))}
+                </div>
+              </Tache>
+        )}
+      </div>
       <Observations n={++n} valeur={observations} onChange={setObservations} ecart={coloris === 'ecart'} />
     </Etape>
   )
@@ -750,40 +770,44 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
       )}
     >
       <RecapRond lot={lot} onCorriger={onCorriger} />
-      {aMesurer && (
-        <Tache n={++n} titre="Mesurer le carré lavé et séché" fait={stabsFaites && vrillageFait}>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* The square's measures side by side (up to three: the step must fit the
+          tablet's 600 px), then the casier beside the observations. */}
+        {aMesurer && (
+          <Tache n={++n} titre="Mesurer le carré lavé et séché" fait={stabsFaites && vrillageFait}>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {demande('stabilités') && (
               <>
-                <ChampNombre label="Stab H" unite="%" valeur={stabh} onChange={setStabh} signe={sh} onSigne={setSh}
+                <ChampNombre grand label="Stab H" unite="%" valeur={stabh} onChange={setStabh} signe={sh} onSigne={setSh}
                   aide={aides.stabh} hors={horsRetrait(vh, lot.tolerances.stabh)} />
-                <ChampNombre label="Stab L" unite="%" valeur={stabl} onChange={setStabl} signe={sl} onSigne={setSl}
+                <ChampNombre grand label="Stab L" unite="%" valeur={stabl} onChange={setStabl} signe={sl} onSigne={setSl}
                   aide={aides.stabl} hors={horsRetrait(vl, lot.tolerances.stabl)} />
               </>
             )}
             {demande('vrillage') && (
-              <ChampNombre label="Vrillage" unite="%" valeur={vrillage} onChange={setVrillage}
+              <ChampNombre grand label="Vrillage" unite="%" valeur={vrillage} onChange={setVrillage}
                 aide={aides.vrillage}
                 hors={lireNombre(vrillage) == null ? null : lireNombre(vrillage)! > lot.tolerances.vrillageMax} />
             )}
-          </div>
-        </Tache>
-      )}
-      <Tache n={++n} titre="Ranger le carré avec la tirelle" fait={!!casier.trim()}>
-        <div className="flex items-center gap-3">
-          <Archive className="h-6 w-6 text-muted-foreground flex-shrink-0" />
-          <label className="text-sm font-semibold text-muted-foreground uppercase tracking-wide flex-shrink-0">Casier</label>
-          <input
-            type="text"
-            value={casier}
-            onChange={(e) => setCasier(e.target.value)}
-            maxLength={40}
-            className="w-48 min-w-0 h-14 rounded-xl border-2 border-border bg-background px-4 text-3xl font-bold focus:outline-none focus:ring-4 focus:ring-gold/40"
-          />
-          {dernierCasier() && <span className="text-sm text-muted-foreground">dernier : {dernierCasier()}</span>}
-        </div>
-      </Tache>
-      <Observations n={++n} valeur={observations} onChange={setObservations} />
+            </div>
+          </Tache>
+        )}
+      <div className="flex-1 min-h-fit grid grid-cols-1 md:grid-cols-[2fr_3fr] gap-3">
+            <Tache n={++n} titre="Ranger le carré avec la tirelle" fait={!!casier.trim()}
+              droite={dernierCasier() ? <span className="text-sm text-muted-foreground">dernier : {dernierCasier()}</span> : undefined}>
+              <div className="relative">
+                <Archive className="absolute left-4 top-1/2 -translate-y-1/2 h-7 w-7 text-muted-foreground pointer-events-none" />
+                <input
+                  type="text"
+                  value={casier}
+                  onChange={(e) => setCasier(e.target.value)}
+                  maxLength={40}
+                  placeholder="Casier"
+                  className="w-full h-[72px] rounded-xl border-2 border-border bg-background pl-14 pr-4 text-4xl font-bold placeholder:text-2xl placeholder:font-normal focus:outline-none focus:ring-4 focus:ring-gold/40"
+                />
+              </div>
+            </Tache>
+        <Observations n={++n} valeur={observations} onChange={setObservations} />
+      </div>
     </Etape>
   )
 }
